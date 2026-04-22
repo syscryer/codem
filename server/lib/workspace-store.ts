@@ -1,0 +1,1419 @@
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
+
+type OrganizeBy = 'project' | 'timeline' | 'chat-first';
+type SortBy = 'created' | 'updated';
+type Visibility = 'all' | 'relevant';
+
+export type PanelState = {
+  organizeBy: OrganizeBy;
+  sortBy: SortBy;
+  visibility: Visibility;
+};
+
+export type ThreadTurn = {
+  id: string;
+  userText: string;
+  assistantText: string;
+  status: 'pending' | 'running' | 'done' | 'error' | 'stopped';
+  activity?: string;
+  metrics?: string;
+  sessionId?: string;
+  items: Array<
+    | { id: string; type: 'text'; text: string }
+    | {
+        id: string;
+        type: 'tool';
+        tool: {
+          id: string;
+          name: string;
+          title: string;
+          status: 'done' | 'error';
+          toolUseId?: string;
+          inputText?: string;
+          resultText?: string;
+          isError?: boolean;
+        };
+      }
+  >;
+  tools: Array<{
+    id: string;
+    name: string;
+    title: string;
+    status: 'done' | 'error';
+    toolUseId?: string;
+    inputText?: string;
+    resultText?: string;
+    isError?: boolean;
+  }>;
+};
+
+export type ThreadSummary = {
+  id: string;
+  projectId: string;
+  title: string;
+  sessionId: string;
+  workingDirectory: string;
+  updatedAt: string;
+  updatedLabel: string;
+  provider: string;
+  model?: string;
+  permissionMode?: string;
+};
+
+export type ProjectSummary = {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: string;
+  updatedAt: string;
+  gitBranch?: string;
+  isGitRepo: boolean;
+  threads: ThreadSummary[];
+};
+
+export type WorkspaceBootstrap = {
+  projects: ProjectSummary[];
+  activeProjectId: string | null;
+  activeThreadId: string | null;
+  panelState: PanelState;
+};
+
+type ClaudeSessionMetadata = {
+  sessionId: string;
+  cwd: string;
+  transcriptPath: string;
+  updatedAt: string;
+  sessionLabel?: string;
+  lastPrompt?: string;
+  firstUserText?: string;
+  model?: string;
+  permissionMode?: string;
+  gitBranch?: string;
+};
+
+type StoredProjectRow = {
+  id: string;
+  path: string;
+  name: string;
+  custom_name: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type StoredThreadRow = {
+  id: string;
+  project_id: string;
+  provider: string;
+  title: string;
+  custom_title: number;
+  session_id: string | null;
+  transcript_path: string | null;
+  working_directory: string;
+  model: string | null;
+  permission_mode: string | null;
+  imported: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type StoredMessageRow = {
+  id: string;
+  thread_id: string;
+  turn_id: string;
+  turn_sort: number;
+  item_sort: number;
+  role: 'user' | 'assistant';
+  content: string;
+  status: string | null;
+  activity: string | null;
+  metrics: string | null;
+  session_id: string | null;
+  created_at: string;
+};
+
+type StoredToolCallRow = {
+  id: string;
+  thread_id: string;
+  turn_id: string;
+  turn_sort: number;
+  item_sort: number;
+  tool_sort: number;
+  tool_id: string;
+  name: string;
+  title: string;
+  status: 'done' | 'error';
+  tool_use_id: string | null;
+  input_text: string | null;
+  result_text: string | null;
+  is_error: number;
+};
+
+type StoredTurnState = ThreadTurn & {
+  turnSort: number;
+  itemBuckets: Array<
+    | { itemSort: number; type: 'text'; text: string }
+    | {
+        itemSort: number;
+        type: 'tool';
+        tool: ThreadTurn['tools'][number];
+      }
+  >;
+};
+
+const DEFAULT_PANEL_STATE: PanelState = {
+  organizeBy: 'project',
+  sortBy: 'updated',
+  visibility: 'all',
+};
+
+const APP_DIR = resolveAppDirectory();
+const DATABASE_PATH = path.join(APP_DIR, 'codem.sqlite');
+const db = new DatabaseSync(DATABASE_PATH);
+
+initializeDatabase();
+
+export function getWorkspaceBootstrap(): WorkspaceBootstrap {
+  importClaudeSessions();
+
+  const panelState = readPanelState();
+  const projectRows = db
+    .prepare(`
+      SELECT id, path, name, custom_name, created_at, updated_at
+      FROM projects
+      ORDER BY updated_at DESC, created_at DESC
+    `)
+    .all() as StoredProjectRow[];
+  const threadRows = db
+    .prepare(`
+      SELECT id, project_id, provider, title, custom_title, session_id, transcript_path, working_directory, model, permission_mode, imported, created_at, updated_at
+      FROM threads
+      ORDER BY updated_at DESC, created_at DESC
+    `)
+    .all() as StoredThreadRow[];
+
+  const groupedThreads = new Map<string, ThreadSummary[]>();
+  for (const row of threadRows) {
+    const list = groupedThreads.get(row.project_id) ?? [];
+    list.push({
+      id: row.id,
+      projectId: row.project_id,
+      title: row.title,
+      sessionId: row.session_id ?? '',
+      workingDirectory: row.working_directory,
+      updatedAt: row.updated_at,
+      updatedLabel: formatRelativeTime(row.updated_at),
+      provider: row.provider,
+      model: row.model ?? undefined,
+      permissionMode: row.permission_mode ?? undefined,
+    });
+    groupedThreads.set(row.project_id, list);
+  }
+
+  const projects = projectRows.map((row) => {
+    const gitInfo = readGitInfo(row.path);
+    return {
+      id: row.id,
+      name: row.name,
+      path: row.path,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      gitBranch: gitInfo.branch,
+      isGitRepo: gitInfo.isGitRepo,
+      threads: groupedThreads.get(row.id) ?? [],
+    } satisfies ProjectSummary;
+  });
+
+  let activeProjectId = readStateValue('activeProjectId');
+  let activeThreadId = readStateValue('activeThreadId');
+
+  if (!activeProjectId || !projects.some((project) => project.id === activeProjectId)) {
+    activeProjectId = projects[0]?.id ?? null;
+  }
+
+  const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
+  if (!activeThreadId || !activeProject?.threads.some((thread) => thread.id === activeThreadId)) {
+    activeThreadId = activeProject?.threads[0]?.id ?? null;
+  }
+
+  if (activeProjectId) {
+    writeStateValue('activeProjectId', activeProjectId);
+  }
+  if (activeThreadId) {
+    writeStateValue('activeThreadId', activeThreadId);
+  }
+
+  return {
+    projects,
+    activeProjectId,
+    activeThreadId,
+    panelState,
+  };
+}
+
+export function createProject(projectPath: string) {
+  const normalizedPath = path.resolve(projectPath);
+  const now = new Date().toISOString();
+  const existing = db
+    .prepare(`
+      SELECT id, path, name, custom_name, created_at, updated_at
+      FROM projects
+      WHERE path = ?
+    `)
+    .get(normalizedPath) as StoredProjectRow | undefined;
+
+  if (existing) {
+    db.prepare(`UPDATE projects SET updated_at = ? WHERE id = ?`).run(now, existing.id);
+    writeStateValue('activeProjectId', existing.id);
+    return existing.id;
+  }
+
+  const id = randomUUID();
+  const defaultName = path.basename(normalizedPath) || normalizedPath;
+  db.prepare(`
+    INSERT INTO projects (id, path, name, custom_name, created_at, updated_at)
+    VALUES (?, ?, ?, 0, ?, ?)
+  `).run(id, normalizedPath, defaultName, now, now);
+  writeStateValue('activeProjectId', id);
+  return id;
+}
+
+export function renameProject(projectId: string, name: string) {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new Error('项目名称不能为空');
+  }
+
+  db.prepare(`
+    UPDATE projects
+    SET name = ?, custom_name = 1, updated_at = ?
+    WHERE id = ?
+  `).run(trimmed, new Date().toISOString(), projectId);
+}
+
+export function removeProject(projectId: string) {
+  db.prepare(`DELETE FROM threads WHERE project_id = ?`).run(projectId);
+  db.prepare(`DELETE FROM projects WHERE id = ?`).run(projectId);
+
+  if (readStateValue('activeProjectId') === projectId) {
+    deleteStateValue('activeProjectId');
+  }
+  if (readStateValue('activeThreadId')) {
+    const remainingThread = db.prepare(`SELECT id FROM threads LIMIT 1`).get() as { id: string } | undefined;
+    if (!remainingThread) {
+      deleteStateValue('activeThreadId');
+    }
+  }
+}
+
+export function createThread(projectId: string, title?: string) {
+  const project = db
+    .prepare(`SELECT id, path, name, custom_name, created_at, updated_at FROM projects WHERE id = ?`)
+    .get(projectId) as StoredProjectRow | undefined;
+
+  if (!project) {
+    throw new Error('项目不存在');
+  }
+
+  const now = new Date().toISOString();
+  const id = randomUUID();
+  const threadTitle = title?.trim() || '新建聊天';
+  db.prepare(`
+    INSERT INTO threads (
+      id, project_id, provider, title, custom_title, session_id, transcript_path, working_directory, model, permission_mode, imported, created_at, updated_at
+    )
+    VALUES (?, ?, 'claude-code', ?, 0, NULL, NULL, ?, NULL, NULL, 0, ?, ?)
+  `).run(id, projectId, threadTitle, project.path, now, now);
+
+  db.prepare(`UPDATE projects SET updated_at = ? WHERE id = ?`).run(now, projectId);
+  writeStateValue('activeProjectId', projectId);
+  writeStateValue('activeThreadId', id);
+
+  return id;
+}
+
+export function renameThread(threadId: string, title: string) {
+  const trimmed = title.trim();
+  if (!trimmed) {
+    throw new Error('聊天名称不能为空');
+  }
+
+  db.prepare(`
+    UPDATE threads
+    SET title = ?, custom_title = 1, updated_at = ?
+    WHERE id = ?
+  `).run(trimmed, new Date().toISOString(), threadId);
+}
+
+export function updateThreadMetadata(
+  threadId: string,
+  payload: {
+    sessionId?: string;
+    workingDirectory?: string;
+    model?: string;
+    permissionMode?: string;
+    title?: string;
+  },
+) {
+  const row = db
+    .prepare(`
+      SELECT id, project_id, provider, title, custom_title, session_id, transcript_path, working_directory, model, permission_mode, imported, created_at, updated_at
+      FROM threads
+      WHERE id = ?
+    `)
+    .get(threadId) as StoredThreadRow | undefined;
+
+  if (!row) {
+    throw new Error('聊天不存在');
+  }
+
+  const workingDirectory = payload.workingDirectory?.trim() || row.working_directory;
+  const sessionId = payload.sessionId?.trim() || row.session_id || null;
+  const transcriptPath = sessionId ? resolveClaudeTranscriptPath(workingDirectory, sessionId) : row.transcript_path;
+  const title = payload.title?.trim() || row.title;
+  const customTitle = payload.title?.trim() ? 1 : row.custom_title;
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    UPDATE threads
+    SET title = ?,
+        custom_title = ?,
+        session_id = ?,
+        transcript_path = ?,
+        working_directory = ?,
+        model = ?,
+        permission_mode = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(
+    title,
+    customTitle,
+    sessionId,
+    transcriptPath,
+    workingDirectory,
+    payload.model?.trim() || row.model,
+    payload.permissionMode?.trim() || row.permission_mode,
+    now,
+    threadId,
+  );
+
+  db.prepare(`UPDATE projects SET updated_at = ? WHERE id = ?`).run(now, row.project_id);
+}
+
+export function setActiveSelection(projectId: string | null, threadId: string | null) {
+  if (projectId) {
+    writeStateValue('activeProjectId', projectId);
+  }
+  if (threadId) {
+    writeStateValue('activeThreadId', threadId);
+  }
+}
+
+export function updatePanelState(nextState: Partial<PanelState>) {
+  const panelState = {
+    ...readPanelState(),
+    ...nextState,
+  };
+
+  writeStateValue('panel.organizeBy', panelState.organizeBy);
+  writeStateValue('panel.sortBy', panelState.sortBy);
+  writeStateValue('panel.visibility', panelState.visibility);
+}
+
+export function getThreadHistory(threadId: string) {
+  const thread = db
+    .prepare(`
+      SELECT id, project_id, provider, title, custom_title, session_id, transcript_path, working_directory, model, permission_mode, imported, created_at, updated_at
+      FROM threads
+      WHERE id = ?
+    `)
+    .get(threadId) as StoredThreadRow | undefined;
+
+  if (!thread) {
+    throw new Error('聊天不存在');
+  }
+
+  const storedTurns = readStoredThreadHistory(threadId);
+  if (storedTurns.length > 0) {
+    return {
+      threadId,
+      turns: storedTurns,
+    };
+  }
+
+  const turns =
+    thread.transcript_path && existsSync(thread.transcript_path)
+      ? parseClaudeTranscript(thread.transcript_path, thread.session_id ?? undefined)
+      : [];
+
+  if (turns.length > 0) {
+    saveThreadHistory(threadId, turns);
+  }
+
+  return {
+    threadId,
+    turns,
+  };
+}
+
+export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
+  const thread = db
+    .prepare(`
+      SELECT id, project_id, provider, title, custom_title, session_id, transcript_path, working_directory, model, permission_mode, imported, created_at, updated_at
+      FROM threads
+      WHERE id = ?
+    `)
+    .get(threadId) as StoredThreadRow | undefined;
+
+  if (!thread) {
+    throw new Error('聊天不存在');
+  }
+
+  const now = new Date().toISOString();
+  const insertMessage = db.prepare(`
+    INSERT INTO messages (
+      id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics, session_id, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertToolCall = db.prepare(`
+    INSERT INTO tool_calls (
+      id, thread_id, turn_id, turn_sort, item_sort, tool_sort, tool_id, name, title, status, tool_use_id, input_text, result_text, is_error
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  try {
+    db.exec('BEGIN');
+    db.prepare(`DELETE FROM tool_calls WHERE thread_id = ?`).run(threadId);
+    db.prepare(`DELETE FROM messages WHERE thread_id = ?`).run(threadId);
+
+    turns.forEach((turn, turnIndex) => {
+      const baseCreatedAt = new Date(Date.now() + turnIndex).toISOString();
+      insertMessage.run(
+        randomUUID(),
+        threadId,
+        turn.id,
+        turnIndex,
+        0,
+        'user',
+        turn.userText ?? '',
+        turn.status,
+        turn.activity ?? null,
+        turn.metrics ?? null,
+        turn.sessionId ?? null,
+        baseCreatedAt,
+      );
+
+      let nextToolSort = 0;
+      const assistantItems =
+        turn.items.length > 0
+          ? turn.items
+          : turn.assistantText.trim() || turn.activity
+            ? [{ id: randomUUID(), type: 'text' as const, text: turn.assistantText || '' }]
+            : [];
+
+      assistantItems.forEach((item, itemIndex) => {
+        if (item.type === 'text') {
+          insertMessage.run(
+            randomUUID(),
+            threadId,
+            turn.id,
+            turnIndex,
+            itemIndex,
+            'assistant',
+            item.text,
+            turn.status,
+            turn.activity ?? null,
+            turn.metrics ?? null,
+            turn.sessionId ?? null,
+            baseCreatedAt,
+          );
+          return;
+        }
+
+        insertToolCall.run(
+          randomUUID(),
+          threadId,
+          turn.id,
+          turnIndex,
+          itemIndex,
+          nextToolSort,
+          item.tool.id,
+          item.tool.name,
+          item.tool.title,
+          item.tool.status === 'error' ? 'error' : 'done',
+          item.tool.toolUseId ?? null,
+          item.tool.inputText ?? null,
+          item.tool.resultText ?? null,
+          item.tool.isError ? 1 : 0,
+        );
+        nextToolSort += 1;
+      });
+    });
+
+    db.prepare(`UPDATE threads SET updated_at = ? WHERE id = ?`).run(now, threadId);
+    db.prepare(`UPDATE projects SET updated_at = ? WHERE id = ?`).run(now, thread.project_id);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export function openProjectInExplorer(projectId: string) {
+  const project = db
+    .prepare(`SELECT path FROM projects WHERE id = ?`)
+    .get(projectId) as { path: string } | undefined;
+
+  if (!project) {
+    throw new Error('项目不存在');
+  }
+
+  spawnSync('explorer.exe', [project.path], {
+    windowsHide: true,
+  });
+}
+
+function initializeDatabase() {
+  db.exec(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA foreign_keys = ON;
+
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      path TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      custom_name INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS threads (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL,
+      title TEXT NOT NULL,
+      custom_title INTEGER NOT NULL DEFAULT 0,
+      session_id TEXT UNIQUE,
+      transcript_path TEXT,
+      working_directory TEXT NOT NULL,
+      model TEXT,
+      permission_mode TEXT,
+      imported INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS app_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      turn_id TEXT NOT NULL,
+      turn_sort INTEGER NOT NULL,
+      item_sort INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      status TEXT,
+      activity TEXT,
+      metrics TEXT,
+      session_id TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS tool_calls (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      turn_id TEXT NOT NULL,
+      turn_sort INTEGER NOT NULL,
+      item_sort INTEGER NOT NULL,
+      tool_sort INTEGER NOT NULL,
+      tool_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL,
+      tool_use_id TEXT,
+      input_text TEXT,
+      result_text TEXT,
+      is_error INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_messages_thread_turn
+    ON messages (thread_id, turn_sort, item_sort, role);
+
+    CREATE INDEX IF NOT EXISTS idx_tool_calls_thread_turn
+    ON tool_calls (thread_id, turn_sort, item_sort, tool_sort);
+  `);
+
+  ensureColumn('tool_calls', 'turn_sort', 'INTEGER NOT NULL DEFAULT 0');
+}
+
+function resolveAppDirectory() {
+  const baseDirectory =
+    process.env.LOCALAPPDATA ||
+    process.env.APPDATA ||
+    path.join(homedir(), 'AppData', 'Local');
+  const directory = path.join(baseDirectory, 'CodeM');
+  mkdirSync(directory, { recursive: true });
+  return directory;
+}
+
+function ensureColumn(tableName: string, columnName: string, definition: string) {
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  if (rows.some((row) => row.name === columnName)) {
+    return;
+  }
+
+  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+}
+
+function importClaudeSessions() {
+  const root = path.join(homedir(), '.claude', 'projects');
+  if (!existsSync(root)) {
+    return;
+  }
+
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const directory = path.join(root, entry.name);
+    for (const fileEntry of readdirSync(directory, { withFileTypes: true })) {
+      if (!fileEntry.isFile() || !fileEntry.name.endsWith('.jsonl')) {
+        continue;
+      }
+
+      const transcriptPath = path.join(directory, fileEntry.name);
+      const metadata = readClaudeSessionMetadata(transcriptPath);
+      if (!metadata?.cwd || !existsSync(metadata.cwd)) {
+        continue;
+      }
+
+      const projectId = upsertImportedProject(metadata.cwd, metadata.updatedAt);
+      upsertImportedThread(projectId, metadata);
+    }
+  }
+}
+
+function upsertImportedProject(projectPath: string, updatedAt: string) {
+  const normalizedPath = path.resolve(projectPath);
+  const existing = db
+    .prepare(`
+      SELECT id, path, name, custom_name, created_at, updated_at
+      FROM projects
+      WHERE path = ?
+    `)
+    .get(normalizedPath) as StoredProjectRow | undefined;
+
+  if (existing) {
+    if (updatedAt > existing.updated_at) {
+      db.prepare(`UPDATE projects SET updated_at = ? WHERE id = ?`).run(updatedAt, existing.id);
+    }
+    return existing.id;
+  }
+
+  const id = randomUUID();
+  const defaultName = path.basename(normalizedPath) || normalizedPath;
+  db.prepare(`
+    INSERT INTO projects (id, path, name, custom_name, created_at, updated_at)
+    VALUES (?, ?, ?, 0, ?, ?)
+  `).run(id, normalizedPath, defaultName, updatedAt, updatedAt);
+  return id;
+}
+
+function upsertImportedThread(projectId: string, metadata: ClaudeSessionMetadata) {
+  const existing = db
+    .prepare(`
+      SELECT id, project_id, provider, title, custom_title, session_id, transcript_path, working_directory, model, permission_mode, imported, created_at, updated_at
+      FROM threads
+      WHERE session_id = ?
+    `)
+    .get(metadata.sessionId) as StoredThreadRow | undefined;
+
+  const importedTitle = deriveImportedThreadTitle(metadata);
+
+  if (existing) {
+    db.prepare(`
+      UPDATE threads
+      SET transcript_path = ?,
+          working_directory = ?,
+          model = COALESCE(?, model),
+          permission_mode = COALESCE(?, permission_mode),
+          updated_at = ?,
+          title = CASE WHEN custom_title = 0 THEN ? ELSE title END
+      WHERE id = ?
+    `).run(
+      metadata.transcriptPath,
+      metadata.cwd,
+      metadata.model ?? null,
+      metadata.permissionMode ?? null,
+      metadata.updatedAt,
+      importedTitle,
+      existing.id,
+    );
+    return existing.id;
+  }
+
+  const id = randomUUID();
+  db.prepare(`
+    INSERT INTO threads (
+      id, project_id, provider, title, custom_title, session_id, transcript_path, working_directory, model, permission_mode, imported, created_at, updated_at
+    )
+    VALUES (?, ?, 'claude-code', ?, 0, ?, ?, ?, ?, ?, 1, ?, ?)
+  `).run(
+    id,
+    projectId,
+    importedTitle,
+    metadata.sessionId,
+    metadata.transcriptPath,
+    metadata.cwd,
+    metadata.model ?? null,
+    metadata.permissionMode ?? null,
+    metadata.updatedAt,
+    metadata.updatedAt,
+  );
+  return id;
+}
+
+function readClaudeSessionMetadata(transcriptPath: string): ClaudeSessionMetadata | null {
+  const content = readFileSync(transcriptPath, 'utf8');
+  const lines = content.split(/\r?\n/).filter(Boolean);
+
+  let sessionId = '';
+  let cwd = '';
+  let lastPrompt = '';
+  let firstUserText = '';
+  let updatedAt = '';
+  let sessionLabel = '';
+  let model = '';
+  let permissionMode = '';
+  let gitBranch = '';
+
+  for (const line of lines) {
+    try {
+      const payload = JSON.parse(line) as Record<string, unknown>;
+      if (!sessionId) {
+        const candidate = readString(payload, ['sessionId', 'session_id']);
+        if (candidate) {
+          sessionId = candidate;
+        }
+      }
+
+      const timestamp = readString(payload, ['timestamp']);
+      if (timestamp && timestamp > updatedAt) {
+        updatedAt = timestamp;
+      }
+
+      if (!sessionLabel) {
+        const candidate = readString(payload, ['sessionName', 'displayName', 'title']);
+        if (candidate) {
+          sessionLabel = candidate;
+        } else {
+          const slug = readString(payload, ['slug']);
+          if (slug) {
+            sessionLabel = slug.replace(/-/g, ' ');
+          }
+        }
+      }
+
+      if (!cwd) {
+        const workingDirectory = readString(payload, ['cwd']);
+        if (workingDirectory) {
+          cwd = workingDirectory;
+        }
+      }
+
+      if (!lastPrompt && payload.type === 'last-prompt') {
+        const prompt = readString(payload, ['lastPrompt']);
+        const normalizedPrompt = normalizeImportedTitleText(prompt);
+        if (normalizedPrompt) {
+          lastPrompt = normalizedPrompt;
+        }
+      }
+
+      const message = payload.message;
+      if (!firstUserText && message && typeof message === 'object') {
+        const role = readString(message as Record<string, unknown>, ['role']);
+        const contentValue = (message as Record<string, unknown>).content;
+        if (role === 'user') {
+          const userText = normalizeImportedTitleText(extractUserText(contentValue));
+          if (userText) {
+            firstUserText = userText;
+          }
+        }
+
+        const assistantModel = readString(message as Record<string, unknown>, ['model']);
+        if (assistantModel) {
+          model = assistantModel;
+        }
+      }
+
+      if (!permissionMode) {
+        const nextPermission = readString(payload, ['permissionMode']);
+        if (nextPermission) {
+          permissionMode = nextPermission;
+        }
+      }
+
+      if (!gitBranch) {
+        const nextBranch = readString(payload, ['gitBranch']);
+        if (nextBranch) {
+          gitBranch = nextBranch;
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  if (!sessionId || !cwd) {
+    return null;
+  }
+
+  return {
+    sessionId,
+    cwd,
+    transcriptPath,
+    updatedAt: updatedAt || new Date().toISOString(),
+    sessionLabel: sessionLabel || undefined,
+    lastPrompt: lastPrompt || undefined,
+    firstUserText: firstUserText || undefined,
+    model: model || undefined,
+    permissionMode: permissionMode || undefined,
+    gitBranch: gitBranch || undefined,
+  };
+}
+
+function deriveImportedThreadTitle(metadata: ClaudeSessionMetadata) {
+  const title = metadata.sessionLabel || metadata.lastPrompt || metadata.firstUserText || metadata.sessionId;
+  const trimmed = title.trim();
+  if (!trimmed) {
+    return metadata.sessionId;
+  }
+
+  return trimmed.length > 28 ? `${trimmed.slice(0, 28)}...` : trimmed;
+}
+
+function parseClaudeTranscript(transcriptPath: string, sessionId?: string): ThreadTurn[] {
+  const lines = readFileSync(transcriptPath, 'utf8').split(/\r?\n/).filter(Boolean);
+  const turns: ThreadTurn[] = [];
+  let currentTurn: ThreadTurn | null = null;
+  const toolLookup = new Map<string, ThreadTurn['tools'][number]>();
+
+  for (const line of lines) {
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+
+    const message = payload.message;
+    if (payload.type === 'user' && message && typeof message === 'object') {
+      const role = readString(message as Record<string, unknown>, ['role']);
+      const contentValue = (message as Record<string, unknown>).content;
+
+      if (role === 'user' && !containsToolResult(contentValue)) {
+        const userText = extractUserText(contentValue) || '';
+        currentTurn = {
+          id: randomUUID(),
+          userText,
+          assistantText: '',
+          status: 'done',
+          sessionId,
+          items: [],
+          tools: [],
+        };
+        turns.push(currentTurn);
+        continue;
+      }
+
+      if (role === 'user' && currentTurn) {
+        attachToolResults(currentTurn, contentValue);
+      }
+    }
+
+    if (payload.type === 'assistant' && message && typeof message === 'object') {
+      const role = readString(message as Record<string, unknown>, ['role']);
+      if (role !== 'assistant') {
+        continue;
+      }
+
+      if (!currentTurn) {
+        currentTurn = {
+          id: randomUUID(),
+          userText: '',
+          assistantText: '',
+          status: 'done',
+          sessionId,
+          items: [],
+          tools: [],
+        };
+        turns.push(currentTurn);
+      }
+
+      const contentBlocks = extractContentBlocks((message as Record<string, unknown>).content);
+      for (const block of contentBlocks) {
+        if (block.type === 'text' && block.text) {
+          currentTurn.assistantText += block.text;
+          pushTextItem(currentTurn, block.text);
+          continue;
+        }
+
+        if (block.type === 'tool_use' && block.name) {
+          const tool = {
+            id: block.id || randomUUID(),
+            name: block.name,
+            title: describeToolCall(block.name, formatJson(block.input)),
+            status: 'done' as const,
+            toolUseId: block.id,
+            inputText: formatJson(block.input),
+          };
+          currentTurn.tools.push(tool);
+          currentTurn.items.push({
+            id: tool.id,
+            type: 'tool',
+            tool,
+          });
+          if (tool.toolUseId) {
+            toolLookup.set(tool.toolUseId, tool);
+          }
+        }
+      }
+    }
+  }
+
+  return turns.filter((turn) => turn.userText.trim() || turn.assistantText.trim() || turn.tools.length > 0);
+
+  function attachToolResults(turn: ThreadTurn, contentValue: unknown) {
+    if (!Array.isArray(contentValue)) {
+      return;
+    }
+
+    for (const item of contentValue) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+
+      const block = item as Record<string, unknown>;
+      if (block.type !== 'tool_result') {
+        continue;
+      }
+
+      const toolUseId = readString(block, ['tool_use_id']);
+      if (!toolUseId) {
+        continue;
+      }
+
+      const resultText = stringifyClaudeContent(block.content);
+      const isError = Boolean(block.is_error);
+      const tool = toolLookup.get(toolUseId) ?? turn.tools.find((entry) => entry.toolUseId === toolUseId);
+      if (!tool) {
+        continue;
+      }
+
+      tool.resultText = resultText;
+      tool.isError = isError;
+      tool.status = isError ? 'error' : 'done';
+    }
+  }
+}
+
+function readStoredThreadHistory(threadId: string): ThreadTurn[] {
+  const messageRows = db
+    .prepare(`
+      SELECT id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics, session_id, created_at
+      FROM messages
+      WHERE thread_id = ?
+      ORDER BY turn_sort ASC, item_sort ASC, CASE role WHEN 'user' THEN 0 ELSE 1 END ASC
+    `)
+    .all(threadId) as StoredMessageRow[];
+  const toolRows = db
+    .prepare(`
+      SELECT id, thread_id, turn_id, item_sort, tool_sort, tool_id, name, title, status, tool_use_id, input_text, result_text, is_error
+      FROM tool_calls
+      WHERE thread_id = ?
+      ORDER BY turn_sort ASC, item_sort ASC, tool_sort ASC
+    `)
+    .all(threadId) as StoredToolCallRow[];
+
+  if (messageRows.length === 0 && toolRows.length === 0) {
+    return [];
+  }
+
+  const turnMap = new Map<string, StoredTurnState>();
+
+  for (const row of messageRows) {
+    let turn: StoredTurnState | undefined = turnMap.get(row.turn_id);
+    if (!turn) {
+      turn = {
+        id: row.turn_id,
+        userText: '',
+        assistantText: '',
+        status: (row.status as ThreadTurn['status'] | null) ?? 'done',
+        activity: row.activity ?? undefined,
+        metrics: row.metrics ?? undefined,
+        sessionId: row.session_id ?? undefined,
+        items: [],
+        tools: [],
+        turnSort: row.turn_sort,
+        itemBuckets: [],
+      } as StoredTurnState;
+    }
+
+    turn.turnSort = Math.min(turn.turnSort, row.turn_sort);
+    const nextStatus = normalizeTurnStatus(row.status);
+    if (nextStatus) {
+      (turn as StoredTurnState).status = nextStatus;
+    }
+    turn.activity = row.activity ?? turn.activity;
+    turn.metrics = row.metrics ?? turn.metrics;
+    turn.sessionId = row.session_id ?? turn.sessionId;
+
+    if (row.role === 'user') {
+      turn.userText = row.content;
+    } else {
+      turn.assistantText += row.content;
+      turn.itemBuckets.push({
+        itemSort: row.item_sort,
+        type: 'text',
+        text: row.content,
+      });
+    }
+
+    turnMap.set(row.turn_id, turn);
+  }
+
+  for (const row of toolRows) {
+    let turn: StoredTurnState | undefined = turnMap.get(row.turn_id);
+    if (!turn) {
+      turn = {
+        id: row.turn_id,
+        userText: '',
+        assistantText: '',
+        status: 'done',
+        items: [],
+        tools: [],
+        turnSort: row.turn_sort,
+        itemBuckets: [],
+      } as StoredTurnState;
+    }
+
+    turn.turnSort = Math.min(turn.turnSort, row.turn_sort);
+    const tool = {
+      id: row.tool_id,
+      name: row.name,
+      title: row.title,
+      status: row.status,
+      toolUseId: row.tool_use_id ?? undefined,
+      inputText: row.input_text ?? undefined,
+      resultText: row.result_text ?? undefined,
+      isError: row.is_error === 1,
+    };
+
+    turn.tools.push(tool);
+    turn.itemBuckets.push({
+      itemSort: row.item_sort,
+      type: 'tool',
+      tool,
+    });
+
+    turnMap.set(row.turn_id, turn);
+  }
+
+  return [...turnMap.values()]
+    .sort((left, right) => left.turnSort - right.turnSort)
+    .map(({ itemBuckets, turnSort: _turnSort, ...turn }) => ({
+      ...turn,
+      items: itemBuckets
+        .sort((left, right) => left.itemSort - right.itemSort)
+        .map((entry) =>
+          entry.type === 'text'
+            ? { id: randomUUID(), type: 'text' as const, text: entry.text }
+            : { id: entry.tool.id, type: 'tool' as const, tool: entry.tool },
+        ),
+    }));
+}
+
+function readPanelState(): PanelState {
+  return {
+    organizeBy: (readStateValue('panel.organizeBy') as OrganizeBy | null) ?? DEFAULT_PANEL_STATE.organizeBy,
+    sortBy: (readStateValue('panel.sortBy') as SortBy | null) ?? DEFAULT_PANEL_STATE.sortBy,
+    visibility: (readStateValue('panel.visibility') as Visibility | null) ?? DEFAULT_PANEL_STATE.visibility,
+  };
+}
+
+function readStateValue(key: string) {
+  const row = db.prepare(`SELECT value FROM app_state WHERE key = ?`).get(key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+function writeStateValue(key: string, value: string) {
+  db.prepare(`
+    INSERT INTO app_state (key, value)
+    VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, value);
+}
+
+function deleteStateValue(key: string) {
+  db.prepare(`DELETE FROM app_state WHERE key = ?`).run(key);
+}
+
+function readGitInfo(projectPath: string) {
+  if (!existsSync(projectPath)) {
+    return {
+      isGitRepo: false,
+      branch: undefined,
+    };
+  }
+
+  const workTreeCheck = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
+    cwd: projectPath,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+
+  if (workTreeCheck.status !== 0 || workTreeCheck.stdout.trim() !== 'true') {
+    return {
+      isGitRepo: false,
+      branch: undefined,
+    };
+  }
+
+  const branchResult = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+    cwd: projectPath,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  const branch = branchResult.status === 0 ? branchResult.stdout.trim() || 'HEAD' : 'HEAD';
+
+  return {
+    isGitRepo: true,
+    branch,
+  };
+}
+
+function readString(value: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return '';
+}
+
+function normalizeTurnStatus(value: string | null) {
+  if (value === 'pending' || value === 'running' || value === 'done' || value === 'error' || value === 'stopped') {
+    return value;
+  }
+  return null;
+}
+
+function extractUserText(content: unknown) {
+  if (typeof content === 'string') {
+    return content.trim();
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+
+  return content
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return '';
+      }
+
+      const block = item as Record<string, unknown>;
+      if (block.type === 'text' && typeof block.text === 'string') {
+        return block.text;
+      }
+
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+function normalizeImportedTitleText(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => {
+      if (!line) {
+        return false;
+      }
+      if (line.startsWith('<local-command-')) {
+        return false;
+      }
+      if (line.startsWith('<command-name>') || line.startsWith('<command-message>') || line.startsWith('<command-args>')) {
+        return false;
+      }
+      if (line.startsWith('<system-reminder>') || line.startsWith('</system-reminder>')) {
+        return false;
+      }
+      return true;
+    })
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function containsToolResult(content: unknown) {
+  return Array.isArray(content) && content.some((item) => item && typeof item === 'object' && (item as Record<string, unknown>).type === 'tool_result');
+}
+
+function extractContentBlocks(content: unknown) {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+
+  return content
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => item as Record<string, unknown>)
+    .map((item) => ({
+      type: typeof item.type === 'string' ? item.type : undefined,
+      text: typeof item.text === 'string' ? item.text : undefined,
+      id: typeof item.id === 'string' ? item.id : undefined,
+      name: typeof item.name === 'string' ? item.name : undefined,
+      input: item.input,
+    }));
+}
+
+function pushTextItem(turn: ThreadTurn, text: string) {
+  const last = turn.items.at(-1);
+  if (last?.type === 'text') {
+    last.text += text;
+    return;
+  }
+
+  turn.items.push({
+    id: randomUUID(),
+    type: 'text',
+    text,
+  });
+}
+
+function formatJson(value: unknown) {
+  if (value == null || value === '') {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  return JSON.stringify(value, null, 2);
+}
+
+function stringifyClaudeContent(content: unknown) {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (typeof item === 'string') {
+          return item;
+        }
+        if (item && typeof item === 'object') {
+          const block = item as Record<string, unknown>;
+          if (typeof block.text === 'string') {
+            return block.text;
+          }
+        }
+        return formatJson(item);
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  return formatJson(content);
+}
+
+function describeToolCall(name: string, inputText?: string) {
+  let parsed: Record<string, unknown> | undefined;
+  if (inputText?.trim()) {
+    try {
+      parsed = JSON.parse(inputText) as Record<string, unknown>;
+    } catch {
+      parsed = undefined;
+    }
+  }
+
+  const filePath = parsed && readString(parsed, ['file_path', 'path', 'notebook_path']);
+  const pattern = parsed && readString(parsed, ['pattern', 'query']);
+  const command = parsed && readString(parsed, ['command', 'cmd', 'cmdString']);
+
+  if (name === 'Read' && filePath) {
+    return `读取文件 ${filePath}`;
+  }
+  if (name === 'Grep' && pattern) {
+    return `搜索代码 ${pattern}`;
+  }
+  if (name === 'Glob' && pattern) {
+    return `匹配文件 ${pattern}`;
+  }
+  if (name === 'Bash' && command) {
+    return `运行命令 ${command}`;
+  }
+  if ((name === 'Edit' || name === 'Write' || name === 'NotebookEdit') && filePath) {
+    return `修改文件 ${filePath}`;
+  }
+  if (name.startsWith('mcp__')) {
+    return `调用 MCP 工具 ${name}`;
+  }
+  return `调用工具 ${name}`;
+}
+
+function resolveClaudeTranscriptPath(workingDirectory: string, sessionId: string) {
+  const root = path.join(homedir(), '.claude', 'projects', sanitizeProjectPath(workingDirectory));
+  return path.join(root, `${sessionId}.jsonl`);
+}
+
+function sanitizeProjectPath(projectPath: string) {
+  return path.resolve(projectPath).replace(/[:\\/]/g, '-');
+}
+
+function formatRelativeTime(value: string) {
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    return '现在';
+  }
+
+  const diffMs = Date.now() - timestamp;
+  const diffMinutes = Math.max(0, Math.floor(diffMs / 60000));
+
+  if (diffMinutes < 1) {
+    return '现在';
+  }
+  if (diffMinutes < 60) {
+    return `${diffMinutes} 分钟前`;
+  }
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `${diffHours} 小时前`;
+  }
+
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 30) {
+    return `${diffDays} 天前`;
+  }
+
+  return new Date(timestamp).toLocaleDateString('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+  });
+}

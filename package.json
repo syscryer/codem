@@ -1,0 +1,32 @@
+{
+  "name": "codem",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:web": "vite",
+    "dev:server": "tsx watch server/index.ts",
+    "typecheck": "tsc -b",
+    "build": "tsc -b && vite build"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "lucide-react": "^1.8.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.7.2",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.0",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.10"
+  }
+}
