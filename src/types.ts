@@ -26,6 +26,60 @@ export type UsageSnapshot = {
   cacheReadInputTokens?: number;
 };
 
+export type RuntimeReconnectReason =
+  | 'resume-session-missing'
+  | 'broken-pipe'
+  | 'runtime-ended'
+  | 'stale-session'
+  | 'transport-error'
+  | 'unknown';
+
+export type RuntimeSuggestedAction = 'retry' | 'resend' | 'recover';
+
+export type RuntimeEventSource = 'status' | 'stderr' | 'result' | 'process';
+
+export type RuntimeRecoveryHint = {
+  reason: RuntimeReconnectReason;
+  message: string;
+  retryable: boolean;
+  suggestedAction: RuntimeSuggestedAction;
+  source: RuntimeEventSource;
+};
+
+export type RequestUserInputOption = {
+  label: string;
+  description?: string;
+};
+
+export type RequestUserInputQuestion = {
+  id?: string;
+  header?: string;
+  question: string;
+  options?: RequestUserInputOption[];
+  multiSelect?: boolean;
+  required?: boolean;
+  secret?: boolean;
+  isOther?: boolean;
+  placeholder?: string;
+};
+
+export type RequestUserInputRequest = {
+  requestId?: string;
+  title?: string;
+  description?: string;
+  questions: RequestUserInputQuestion[];
+};
+
+export type ApprovalRequest = {
+  requestId?: string;
+  title: string;
+  description?: string;
+  command?: string[];
+  danger?: 'low' | 'medium' | 'high';
+};
+
+export type ApprovalDecision = 'approve' | 'reject';
+
 export type ClaudeEvent =
   | { type: 'status'; runId: string; message: string }
   | { type: 'session'; runId: string; sessionId: string }
@@ -33,6 +87,10 @@ export type ClaudeEvent =
   | { type: 'phase'; runId: string; phase: TurnPhase; label: string }
   | ({ type: 'usage'; runId: string } & UsageSnapshot)
   | { type: 'claude-event'; runId: string; label: string; eventType?: string; subtype?: string; status?: string; raw: unknown }
+  | { type: 'request-user-input'; runId: string; request: RequestUserInputRequest }
+  | { type: 'approval-request'; runId: string; request: ApprovalRequest }
+  | { type: 'runtime-reconnect-hint'; runId: string; hint: RuntimeRecoveryHint }
+  | { type: 'retryable-error'; runId: string; message: string; hint: RuntimeRecoveryHint }
   | { type: 'tool-start'; runId: string; blockIndex: number; toolUseId?: string; name: string; input?: unknown }
   | { type: 'tool-input-delta'; runId: string; blockIndex: number; text: string }
   | { type: 'tool-stop'; runId: string; blockIndex: number }
@@ -79,6 +137,9 @@ export type ConversationTurn = {
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
   totalCostUsd?: number;
+  pendingUserInputRequests?: RequestUserInputRequest[];
+  pendingApprovalRequests?: ApprovalRequest[];
+  recoveryHint?: RuntimeRecoveryHint;
 };
 
 export type DebugEvent = {

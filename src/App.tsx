@@ -16,7 +16,14 @@ import { SidebarProjects } from './components/SidebarProjects';
 import { WorkspaceStatus } from './components/WorkspaceStatus';
 import { useClaudeRun } from './hooks/useClaudeRun';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
-import type { ThreadSummary } from './types';
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  ConversationTurn,
+  RequestUserInputRequest,
+  RuntimeSuggestedAction,
+  ThreadSummary,
+} from './types';
 
 export default function App() {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
@@ -80,6 +87,9 @@ export default function App() {
     setModel,
     handlePermissionModeSelect,
     handleSubmit,
+    submitRequestUserInput,
+    submitRuntimeRecoveryAction,
+    submitApprovalDecision,
     stopRun,
   } = useClaudeRun({
     activeProjectId,
@@ -217,6 +227,18 @@ export default function App() {
             activeTurnId={activeTurnIdRef.current}
             transcriptRef={transcriptRef}
             bottomRef={conversationBottomRef}
+            onSubmitRequestUserInput={(
+              turn: ConversationTurn,
+              request: RequestUserInputRequest,
+              answers: Record<string, string>,
+            ) => submitRequestUserInput(turn, request, answers)}
+            onSubmitRuntimeRecoveryAction={(turn: ConversationTurn, action: RuntimeSuggestedAction) =>
+              submitRuntimeRecoveryAction(turn, action)}
+            onSubmitApprovalDecision={(
+              turn: ConversationTurn,
+              request: ApprovalRequest,
+              decision: ApprovalDecision,
+            ) => submitApprovalDecision(turn, request, decision)}
           />
 
           <Composer
