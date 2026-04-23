@@ -290,10 +290,24 @@ function RequestUserInputCard({
     answers: Record<string, string>,
   ) => Promise<boolean>;
 }) {
-  const [selectedOptions, setSelectedOptions] = useState<Record<string, number[]>>({});
-  const [notes, setNotes] = useState<Record<string, string>>({});
+  const submitted = Boolean(request.submittedAnswers);
+  const [selectedOptions, setSelectedOptions] = useState<Record<string, number[]>>(() =>
+    getRequestUserInputSelectionsFromAnswers(request),
+  );
+  const [notes, setNotes] = useState<Record<string, string>>(() =>
+    getRequestUserInputNotesFromAnswers(request),
+  );
   const [submitError, setSubmitError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!request.submittedAnswers) {
+      return;
+    }
+
+    setSelectedOptions(getRequestUserInputSelectionsFromAnswers(request));
+    setNotes(getRequestUserInputNotesFromAnswers(request));
+  }, [request]);
 
   const canSubmit = request.questions.some((question, index) => {
     const key = question.id ?? `question-${index}`;
@@ -301,6 +315,10 @@ function RequestUserInputCard({
   });
 
   async function handleSubmit() {
+    if (submitted) {
+      return;
+    }
+
     const validationMessage = validateRequestUserInput(request, selectedOptions, notes);
     if (validationMessage) {
       setSubmitError(validationMessage);
@@ -324,9 +342,11 @@ function RequestUserInputCard({
   }
 
   return (
-    <section className="assistant-runtime-card request-user-input-card">
+    <section className={`assistant-runtime-card request-user-input-card${submitted ? ' submitted' : ''}`}>
       <header className="assistant-runtime-card-head">
-        <span className="assistant-runtime-badge waiting">等待输入</span>
+        <span className={`assistant-runtime-badge ${submitted ? 'answered' : 'waiting'}`}>
+          {submitted ? '已回答' : '等待输入'}
+        </span>
         <div className="assistant-runtime-card-heading">
           <strong>{request.title || 'Claude 需要补充信息'}</strong>
           {request.description ? <p>{request.description}</p> : null}
@@ -341,6 +361,7 @@ function RequestUserInputCard({
             questionKey={question.id ?? `question-${index}`}
             selectedOptions={selectedOptions[question.id ?? `question-${index}`] ?? []}
             note={notes[question.id ?? `question-${index}`] ?? ''}
+            disabled={submitted || submitting}
             onToggleOption={(optionIndex) =>
               setSelectedOptions((current) =>
                 updateQuestionSelections(
@@ -362,14 +383,16 @@ function RequestUserInputCard({
       </div>
 
       <div className="assistant-runtime-card-foot">
-        <span className="assistant-runtime-footnote">填写后会作为续聊消息继续当前任务。</span>
+        <span className="assistant-runtime-footnote">
+          {submitted ? '答案已提交，卡片保留为上下文记录。' : '填写后会作为续聊消息继续当前任务。'}
+        </span>
         <button
           type="button"
           className="assistant-runtime-submit-button"
-          disabled={!canSubmit || submitting}
+          disabled={submitted || !canSubmit || submitting}
           onClick={() => void handleSubmit()}
         >
-          {submitting ? '提交中...' : '继续任务'}
+          {submitted ? '已继续' : submitting ? '提交中...' : '继续任务'}
         </button>
       </div>
       {submitError ? <div className="assistant-runtime-error">{submitError}</div> : null}
@@ -382,6 +405,7 @@ function RequestUserInputQuestionBlock({
   questionKey,
   selectedOptions,
   note,
+  disabled = false,
   onToggleOption,
   onNoteChange,
 }: {
@@ -389,6 +413,7 @@ function RequestUserInputQuestionBlock({
   questionKey: string;
   selectedOptions: number[];
   note: string;
+  disabled?: boolean;
   onToggleOption: (optionIndex: number) => void;
   onNoteChange: (value: string) => void;
 }) {
@@ -406,6 +431,7 @@ function RequestUserInputQuestionBlock({
               key={`${question.id ?? question.question}-option-${index}`}
               type="button"
               className={`assistant-runtime-option-chip${selectedOptions.includes(index) ? ' selected' : ''}`}
+              disabled={disabled}
               onClick={() => onToggleOption(index)}
             >
               {option.label}
@@ -418,6 +444,7 @@ function RequestUserInputQuestionBlock({
           className="assistant-runtime-textarea"
           value={note}
           onChange={(event) => onNoteChange(event.target.value)}
+          disabled={disabled}
           placeholder={question.placeholder || '填写你的回答'}
           rows={question.options?.length ? 2 : 3}
           aria-label={questionKey}
@@ -926,6 +953,52 @@ function buildRequestUserInputAnswers(
     }
   });
   return answers;
+}
+
+function getRequestUserInputSelectionsFromAnswers(request: RequestUserInputRequest) {
+  const selections: Record<string, number[]> = {};
+  if (!request.submittedAnswers) {
+    return selections;
+  }
+
+  request.questions.forEach((question, index) => {
+    const key = question.id ?? `question-${index}`;
+    const answerParts = splitSubmittedAnswer(request.submittedAnswers?.[key]);
+    const selectedOptionIndexes = answerParts
+      .map((answerPart) => question.options?.findIndex((option) => option.label === answerPart) ?? -1)
+      .filter((optionIndex) => optionIndex >= 0);
+    if (selectedOptionIndexes.length > 0) {
+      selections[key] = selectedOptionIndexes;
+    }
+  });
+
+  return selections;
+}
+
+function getRequestUserInputNotesFromAnswers(request: RequestUserInputRequest) {
+  const notes: Record<string, string> = {};
+  if (!request.submittedAnswers) {
+    return notes;
+  }
+
+  request.questions.forEach((question, index) => {
+    const key = question.id ?? `question-${index}`;
+    const answerParts = splitSubmittedAnswer(request.submittedAnswers?.[key]);
+    const optionLabels = new Set(question.options?.map((option) => option.label) ?? []);
+    const noteParts = answerParts.filter((answerPart) => !optionLabels.has(answerPart));
+    if (noteParts.length > 0) {
+      notes[key] = noteParts.join('\n');
+    }
+  });
+
+  return notes;
+}
+
+function splitSubmittedAnswer(answer?: string) {
+  return answer
+    ?.split('\n')
+    .map((part) => part.trim())
+    .filter(Boolean) ?? [];
 }
 
 function getToolSummary(tool: ToolStep, preview: ToolPreview | null) {

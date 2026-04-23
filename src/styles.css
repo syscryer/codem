@@ -1232,6 +1232,11 @@ svg {
   color: #46627f;
 }
 
+.assistant-runtime-badge.answered {
+  background: #edf7ed;
+  color: #2f6b3d;
+}
+
 .assistant-runtime-badge.caution {
   background: #fff3e6;
   color: #9a5b16;
@@ -1294,6 +1299,15 @@ svg {
   border-color: #cfd9e4;
   background: #edf4fb;
   color: #315b86;
+}
+
+.assistant-runtime-option-chip:disabled {
+  cursor: default;
+}
+
+.request-user-input-card.submitted .assistant-runtime-option-chip:not(.selected),
+.request-user-input-card.submitted .assistant-runtime-textarea {
+  opacity: 0.58;
 }
 
 .assistant-runtime-textarea {

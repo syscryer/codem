@@ -822,7 +822,11 @@ export function useClaudeRun({
 
     updateThreadTurn(activeThreadId, turn.id, (currentTurn) => ({
       ...currentTurn,
-      pendingUserInputRequests: removePendingUserInputRequest(currentTurn.pendingUserInputRequests, request),
+      pendingUserInputRequests: markPendingUserInputRequestSubmitted(
+        currentTurn.pendingUserInputRequests,
+        request,
+        answers,
+      ),
     }));
     appendDebug(activeThreadId, {
       title: '已提交补充输入',
@@ -964,32 +968,65 @@ function upsertRequestUserInput(
   }
 
   const next = [...current];
-  next[index] = request;
+  next[index] = {
+    ...request,
+    submittedAnswers: current[index].submittedAnswers,
+    submittedAtMs: current[index].submittedAtMs,
+  };
   return next;
 }
 
-function removePendingUserInputRequest(
+function markPendingUserInputRequestSubmitted(
   requests: RequestUserInputRequest[] | undefined,
   request: RequestUserInputRequest,
+  answers: Record<string, string>,
 ) {
   const current = requests ?? [];
+  const submittedRequest = {
+    ...request,
+    submittedAnswers: answers,
+    submittedAtMs: Date.now(),
+  };
+
   if (!request.requestId) {
     const targetSignature = JSON.stringify({
       title: request.title,
       description: request.description,
       questions: request.questions,
     });
-    return current.filter((item) => {
+    const index = current.findIndex((item) => {
       const itemSignature = JSON.stringify({
         title: item.title,
         description: item.description,
         questions: item.questions,
       });
-      return itemSignature !== targetSignature;
+      return itemSignature === targetSignature;
     });
+    if (index === -1) {
+      return [...current, submittedRequest];
+    }
+
+    const next = [...current];
+    next[index] = {
+      ...next[index],
+      submittedAnswers: answers,
+      submittedAtMs: submittedRequest.submittedAtMs,
+    };
+    return next;
   }
 
-  return current.filter((item) => item.requestId !== request.requestId);
+  const index = current.findIndex((item) => item.requestId === request.requestId);
+  if (index === -1) {
+    return [...current, submittedRequest];
+  }
+
+  const next = [...current];
+  next[index] = {
+    ...next[index],
+    submittedAnswers: answers,
+    submittedAtMs: submittedRequest.submittedAtMs,
+  };
+  return next;
 }
 
 function upsertApprovalRequest(

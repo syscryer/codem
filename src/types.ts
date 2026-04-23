@@ -68,6 +68,8 @@ export type RequestUserInputRequest = {
   title?: string;
   description?: string;
   questions: RequestUserInputQuestion[];
+  submittedAnswers?: Record<string, string>;
+  submittedAtMs?: number;
 };
 
 export type ApprovalRequest = {
