@@ -527,6 +527,17 @@ export function getThreadHistory(threadId: string) {
 
   const storedTurns = readStoredThreadHistory(threadId);
   if (storedTurns.length > 0) {
+    if (thread.transcript_path && existsSync(thread.transcript_path) && shouldReparseStoredHistory(storedTurns)) {
+      const reparsedTurns = parseClaudeTranscript(thread.transcript_path, thread.session_id ?? undefined);
+      if (reparsedTurns.length > 0) {
+        saveThreadHistory(threadId, reparsedTurns);
+        return {
+          threadId,
+          turns: reparsedTurns,
+        };
+      }
+    }
+
     return {
       threadId,
       turns: storedTurns,
@@ -610,8 +621,8 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
       let nextToolSort = 0;
       const assistantItems =
         turn.items.length > 0
-          ? turn.items
-          : turn.assistantText.trim() || turn.activity
+          ? turn.items.filter((item) => item.type === 'tool' || item.text.trim())
+          : turn.assistantText.trim()
             ? [{ id: randomUUID(), type: 'text' as const, text: turn.assistantText || '' }]
             : [];
 
@@ -1086,6 +1097,10 @@ function readClaudeSessionMetadata(transcriptPath: string): ClaudeSessionMetadat
   for (const line of lines) {
     try {
       const payload = JSON.parse(line) as Record<string, unknown>;
+      if (payload.isSidechain || payload.isMeta) {
+        continue;
+      }
+
       if (!sessionId) {
         const candidate = readString(payload, ['sessionId', 'session_id']);
         if (candidate) {
@@ -1199,6 +1214,10 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
     try {
       payload = JSON.parse(line) as Record<string, unknown>;
     } catch {
+      continue;
+    }
+
+    if (payload.isSidechain || payload.isMeta) {
       continue;
     }
 
@@ -1325,7 +1344,7 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
     .all(threadId) as StoredMessageRow[];
   const toolRows = db
     .prepare(`
-      SELECT id, thread_id, turn_id, item_sort, tool_sort, tool_id, name, title, status, tool_use_id, input_text, result_text, is_error
+      SELECT id, thread_id, turn_id, turn_sort, item_sort, tool_sort, tool_id, name, title, status, tool_use_id, input_text, result_text, is_error
       FROM tool_calls
       WHERE thread_id = ?
       ORDER BY turn_sort ASC, item_sort ASC, tool_sort ASC
@@ -1383,7 +1402,7 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
 
     if (row.role === 'user') {
       turn.userText = row.content;
-    } else {
+    } else if (row.content.trim()) {
       turn.assistantText += row.content;
       turn.itemBuckets.push({
         itemSort: row.item_sort,
@@ -1444,6 +1463,18 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
             : { id: entry.tool.id, type: 'tool' as const, tool: entry.tool },
         ),
     }));
+}
+
+function shouldReparseStoredHistory(turns: ThreadTurn[]) {
+  return turns.some((turn) =>
+    turn.tools.some(
+      (tool) =>
+        tool.name === 'tool_result' ||
+        ((tool.name === 'Agent' || tool.name === 'Task') &&
+          tool.inputText?.trim() &&
+          tool.title !== describeToolCall(tool.name, tool.inputText)),
+    ),
+  );
 }
 
 function readPanelState(): PanelState {
@@ -1856,6 +1887,8 @@ function describeToolCall(name: string, inputText?: string) {
   const filePath = parsed && readString(parsed, ['file_path', 'path', 'notebook_path']);
   const pattern = parsed && readString(parsed, ['pattern', 'query']);
   const command = parsed && readString(parsed, ['command', 'cmd', 'cmdString']);
+  const agentName = parsed && readString(parsed, ['subagent_type', 'agent', 'agent_name', 'name']);
+  const taskDescription = parsed && readString(parsed, ['description', 'summary', 'task', 'prompt']);
 
   if (name === 'Read' && filePath) {
     return `Read(${compactToolArgument(filePath)})`;
@@ -1871,6 +1904,10 @@ function describeToolCall(name: string, inputText?: string) {
   }
   if ((name === 'Edit' || name === 'Write' || name === 'NotebookEdit') && filePath) {
     return `${name}(${compactToolArgument(filePath)})`;
+  }
+  if (name === 'Agent' || name === 'Task') {
+    const summary = taskDescription || agentName;
+    return summary ? `Agent(${compactToolArgument(summary)})` : 'Agent';
   }
   if (name.startsWith('mcp__')) {
     return `MCP(${getReadableToolName(name)})`;

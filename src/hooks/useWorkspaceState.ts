@@ -197,12 +197,18 @@ export function useWorkspaceState() {
         }
 
         const repairedTurns = payload.turns.map(repairConversationTurn);
+        const repairedTurnIds = new Set(repairedTurns.map((turn) => turn.id));
+        const currentTurnsById = new Map(existing.turns.map((turn) => [turn.id, turn]));
+        const mergedTurns = [
+          ...repairedTurns.map((turn) => currentTurnsById.get(turn.id) ?? turn),
+          ...existing.turns.filter((turn) => !repairedTurnIds.has(turn.id)),
+        ];
 
         return {
           ...current,
           [payload.threadId]: {
             ...existing,
-            turns: repairedTurns,
+            turns: mergedTurns,
             historyLoaded: true,
             historyLoading: false,
           },

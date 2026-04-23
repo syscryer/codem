@@ -62,6 +62,8 @@ type ClaudeContentBlock = {
 type ClaudeJsonLine = {
   type?: string;
   subtype?: string;
+  isSidechain?: boolean;
+  isMeta?: boolean;
   session_id?: string;
   is_error?: boolean;
   result?: string;
@@ -225,6 +227,10 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
 
     try {
       const payload = JSON.parse(trimmed) as ClaudeJsonLine;
+      if (payload.isSidechain) {
+        return;
+      }
+
       queue.push({
         type: 'raw',
         runId,

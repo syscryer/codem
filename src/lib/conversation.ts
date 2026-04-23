@@ -38,25 +38,40 @@ export function repairConversationTurn(turn: ConversationTurn): ConversationTurn
     return turn;
   }
 
-  const repairedToolInputs = new Map<string, string | undefined>();
+  const repairedToolsById = new Map<string, ToolStep>();
   for (const item of repairedItems) {
     if (item.type === 'tool') {
-      repairedToolInputs.set(item.tool.id, item.tool.inputText);
+      repairedToolsById.set(item.tool.id, item.tool);
     }
   }
 
   let toolsChanged = false;
   const repairedTools = turn.tools.map((tool) => {
-    const nextInputText = repairedToolInputs.get(tool.id);
-    if (nextInputText === undefined || nextInputText === tool.inputText) {
+    const nextTool = repairedToolsById.get(tool.id);
+    if (!nextTool) {
+      return tool;
+    }
+
+    const next = {
+      ...tool,
+      inputText: nextTool.inputText,
+      resultText: nextTool.resultText,
+      status: nextTool.status,
+      isError: nextTool.isError,
+      title: nextTool.title,
+    };
+    if (
+      next.inputText === tool.inputText &&
+      next.resultText === tool.resultText &&
+      next.status === tool.status &&
+      next.isError === tool.isError &&
+      next.title === tool.title
+    ) {
       return tool;
     }
 
     toolsChanged = true;
-    return {
-      ...tool,
-      inputText: nextInputText,
-    };
+    return next;
   });
 
   return {
@@ -92,10 +107,8 @@ export function normalizeTurnsForPersist(turns: ConversationTurn[]) {
 export function hasTurnVisibleOutput(turn: ConversationTurn) {
   return Boolean(
     turn.assistantText.trim() ||
-      turn.items.length > 0 ||
-      turn.tools.length > 0 ||
-      turn.outputTokens ||
-      turn.metrics,
+      turn.items.some((item) => (item.type === 'text' ? item.text.trim() : true)) ||
+      turn.tools.length > 0,
   );
 }
 
@@ -126,6 +139,10 @@ export function upsertToolStep(steps: ToolStep[], step: ToolStep) {
 }
 
 export function appendTextItem(items: AssistantItem[], text: string): AssistantItem[] {
+  if (!text) {
+    return items;
+  }
+
   const last = items.at(-1);
   if (last?.type === 'text') {
     return [
@@ -179,7 +196,7 @@ export function upsertToolDelta(steps: ToolStep[], event: Extract<ClaudeEvent, {
 }
 
 export function attachToolResult(steps: ToolStep[], event: Extract<ClaudeEvent, { type: 'tool-result' }>) {
-  const index = steps.findIndex((item) => item.toolUseId && item.toolUseId === event.toolUseId);
+  const index = findToolResultIndex(steps, event);
   if (index === -1) {
     return [
       ...steps,
@@ -203,6 +220,24 @@ export function attachToolResult(steps: ToolStep[], event: Extract<ClaudeEvent, 
     isError: event.isError,
   };
   return next;
+}
+
+export function findToolResultIndex(steps: ToolStep[], event: Extract<ClaudeEvent, { type: 'tool-result' }>) {
+  if (event.toolUseId) {
+    const exactIndex = steps.findIndex((item) => item.toolUseId === event.toolUseId);
+    if (exactIndex !== -1) {
+      return exactIndex;
+    }
+  }
+
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const tool = steps[index];
+    if (tool.name !== 'tool_result' && !tool.resultText?.trim()) {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 export function settleRunningToolSteps(
@@ -338,6 +373,8 @@ function describeToolCall(name: string, inputText?: string) {
   const filePath = getString(input, ['file_path', 'path', 'notebook_path']);
   const pattern = getString(input, ['pattern', 'query']);
   const command = getString(input, ['command', 'cmd', 'cmdString']);
+  const agentName = getString(input, ['subagent_type', 'agent', 'agent_name', 'name']);
+  const taskDescription = getString(input, ['description', 'summary', 'task', 'prompt']);
 
   if (name === 'Read' && filePath) {
     return `Read(${compactToolArgument(filePath)})`;
@@ -357,6 +394,11 @@ function describeToolCall(name: string, inputText?: string) {
 
   if ((name === 'Edit' || name === 'Write' || name === 'NotebookEdit') && filePath) {
     return `${name}(${compactToolArgument(filePath)})`;
+  }
+
+  if (name === 'Agent' || name === 'Task') {
+    const summary = taskDescription || agentName;
+    return summary ? `Agent(${compactToolArgument(summary)})` : 'Agent';
   }
 
   if (name.startsWith('mcp__')) {
@@ -454,7 +496,8 @@ type ToolInputChunk = {
 };
 
 function repairTurnItems(items: AssistantItem[]) {
-  const toolEntries = items
+  const mergedItems = mergeOrphanToolResultItems(items);
+  const mergedToolEntries = mergedItems
     .map((item, index) =>
       item.type === 'tool'
         ? {
@@ -465,19 +508,19 @@ function repairTurnItems(items: AssistantItem[]) {
         : null,
     )
     .filter(Boolean) as Array<{ index: number; tool: ToolStep; chunks: ToolInputChunk[] }>;
-  const repairCandidates = toolEntries.filter(({ tool, chunks }) => !tool.inputText?.trim() || chunks.length > 1);
-  const hasCombinedInput = toolEntries.some(({ chunks }) => chunks.length > 1);
+  const repairCandidates = mergedToolEntries.filter(({ tool, chunks }) => !tool.inputText?.trim() || chunks.length > 1);
+  const hasCombinedInput = mergedToolEntries.some(({ chunks }) => chunks.length > 1);
 
   if (!hasCombinedInput || repairCandidates.length <= 1) {
-    return items;
+    return mergedItems;
   }
 
   const chunks = repairCandidates.flatMap(({ chunks }) => chunks);
   if (chunks.length < repairCandidates.length) {
-    return items;
+    return mergedItems;
   }
 
-  const repairedItems = [...items];
+  const repairedItems = [...mergedItems];
   const used = new Set<number>();
   let changed = false;
 
@@ -504,7 +547,55 @@ function repairTurnItems(items: AssistantItem[]) {
     } as AssistantItem;
   });
 
-  return changed ? repairedItems : items;
+  return changed ? repairedItems : mergedItems;
+}
+
+function mergeOrphanToolResultItems(items: AssistantItem[]) {
+  let changed = false;
+  const mergedItems: AssistantItem[] = [];
+
+  for (const item of items) {
+    if (item.type !== 'tool' || item.tool.name !== 'tool_result') {
+      mergedItems.push(item);
+      continue;
+    }
+
+    const targetIndex = findPreviousToolWithoutResult(mergedItems);
+    if (targetIndex === -1) {
+      mergedItems.push(item);
+      continue;
+    }
+
+    const target = mergedItems[targetIndex];
+    if (target.type !== 'tool') {
+      mergedItems.push(item);
+      continue;
+    }
+
+    changed = true;
+    mergedItems[targetIndex] = {
+      ...target,
+      tool: {
+        ...target.tool,
+        status: item.tool.isError ? 'error' : 'done',
+        resultText: item.tool.resultText,
+        isError: item.tool.isError,
+      },
+    };
+  }
+
+  return changed ? mergedItems : items;
+}
+
+function findPreviousToolWithoutResult(items: AssistantItem[]) {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.type === 'tool' && item.tool.name !== 'tool_result' && !item.tool.resultText?.trim()) {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 function splitToolInputChunks(inputText?: string) {

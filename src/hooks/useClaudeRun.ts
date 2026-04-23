@@ -6,10 +6,12 @@ import {
   closeDanglingTurns,
   closeTurnWithoutTerminalEvent,
   createToolStep,
+  findToolResultIndex,
   findLatestToolIndex,
   formatJson,
   formatMetrics,
   getElapsedDuration,
+  hasTurnVisibleOutput,
   isPermissionMode,
   mergeUsageSnapshot,
   settleRunningToolSteps,
@@ -499,8 +501,12 @@ export function useClaudeRun({
 
     if (event.type === 'tool-result') {
       updateRunningTurn((turn) => {
+        const toolIndex = findToolResultIndex(turn.tools, event);
         const tools = attachToolResult(turn.tools, event);
-        const tool = tools.find((item) => item.toolUseId && item.toolUseId === event.toolUseId);
+        const tool =
+          toolIndex >= 0
+            ? tools[toolIndex]
+            : tools.find((item) => item.toolUseId && item.toolUseId === event.toolUseId);
         return {
           ...turn,
           activity: summarizeToolResult(event),
@@ -549,20 +555,39 @@ export function useClaudeRun({
 
     if (event.type === 'done') {
       const targetThreadId = runThreadIdRef.current || activeThreadId;
-      updateRunningTurn((turn) => ({
-        ...turn,
-        ...settleRunningToolSteps(turn, 'done'),
-        status: 'done',
-        assistantText: turn.assistantText.trim() ? turn.assistantText : event.result,
-        items: turn.items.length > 0 ? turn.items : appendTextItem(turn.items, event.result),
-        activity: '运行完成',
-        phase: undefined,
-        metrics: formatMetrics(event),
-        sessionId: event.sessionId ?? turn.sessionId,
-        durationMs: event.durationMs ?? turn.durationMs ?? getElapsedDuration(turn),
-        totalCostUsd: event.totalCostUsd ?? turn.totalCostUsd,
-        ...mergeUsageSnapshot(turn, event),
-      }));
+      updateRunningTurn((turn) => {
+        const assistantText = turn.assistantText.trim()
+          ? turn.assistantText
+          : event.result.trim()
+            ? event.result
+            : turn.assistantText;
+        const nextTurn = {
+          ...turn,
+          ...settleRunningToolSteps(turn, 'done'),
+          assistantText,
+          items: turn.items.length > 0 || !event.result.trim() ? turn.items : appendTextItem(turn.items, event.result),
+          activity: '运行完成',
+          phase: undefined,
+          metrics: formatMetrics(event),
+          sessionId: event.sessionId ?? turn.sessionId,
+          durationMs: event.durationMs ?? turn.durationMs ?? getElapsedDuration(turn),
+          totalCostUsd: event.totalCostUsd ?? turn.totalCostUsd,
+          ...mergeUsageSnapshot(turn, event),
+        };
+
+        if (!hasTurnVisibleOutput(nextTurn)) {
+          return {
+            ...nextTurn,
+            status: 'stopped',
+            activity: '运行结束但没有返回正文',
+          };
+        }
+
+        return {
+          ...nextTurn,
+          status: 'done',
+        };
+      });
       if (targetThreadId) {
         void persistThreadMetadata(targetThreadId, {
           sessionId: event.sessionId,
