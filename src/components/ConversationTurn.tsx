@@ -47,7 +47,9 @@ export function ConversationTurnView({
     decision: ApprovalDecision,
   ) => Promise<boolean>;
 }) {
-  const visibleItems = turn.items.filter((item) => item.type === 'text' || !shouldHideToolStep(item.tool));
+  const visibleItems = turn.items.filter(
+    (item) => item.type === 'text' || !shouldHideTurnToolStep(turn, item.tool),
+  );
   const running = isTurnInFlight(turn, isLiveRunning);
   const showProgressLine =
     running ||
@@ -799,6 +801,41 @@ function formatRecoveryAction(action: RuntimeRecoveryHint['suggestedAction']) {
     default:
       return '重试当前请求';
   }
+}
+
+function shouldHideTurnToolStep(turn: ConversationTurn, tool: ToolStep) {
+  if (shouldHideToolStep(tool)) {
+    return true;
+  }
+
+  const normalizedName = normalizeRuntimeToolName(tool.name);
+  if (
+    normalizedName === 'askuserquestion' ||
+    normalizedName === 'requestuserinput' ||
+    normalizedName === 'approvalrequest'
+  ) {
+    return true;
+  }
+
+  if (
+    turn.pendingUserInputRequests?.length &&
+    (normalizedName === 'askuserquestion' || normalizedName === 'requestuserinput')
+  ) {
+    return true;
+  }
+
+  if (
+    turn.pendingApprovalRequests?.length &&
+    normalizedName === 'approvalrequest'
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function normalizeRuntimeToolName(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 function getRecoveryActions(hint: RuntimeRecoveryHint): RuntimeSuggestedAction[] {

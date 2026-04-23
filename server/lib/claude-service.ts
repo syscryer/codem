@@ -157,6 +157,14 @@ type ClaudeRawUsage = {
 
 type ClaudeChildProcess = ChildProcessByStdio<null, Readable, Readable>;
 
+type ToolInputAccumulator = {
+  name: string;
+  toolUseId?: string;
+  inputText: string;
+  emittedRequestUserInput: boolean;
+  emittedApprovalRequest: boolean;
+};
+
 const activeRuns = new Map<string, ClaudeChildProcess>();
 
 export async function isDirectoryAccessible(directory: string) {
@@ -287,6 +295,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
   let finalResult = '';
   let seenDoneEvent = false;
   const blockTypeByIndex = new Map<number, string>();
+  const toolInputByIndex = new Map<number, ToolInputAccumulator>();
   const emittedRecoveryHintKeys = new Set<string>();
   const enqueue = (event: StreamEvent) => {
     queue.push(event);
@@ -386,8 +395,23 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         }
 
         if (block?.type === 'tool_use' && block.name) {
-          const requestUserInput = parseRequestUserInputEvent(block.name, block.input);
+          if (typeof payload.event.index === 'number') {
+            toolInputByIndex.set(payload.event.index, {
+              name: block.name,
+              toolUseId: block.id,
+              inputText: getToolInputSeed(block.input),
+              emittedRequestUserInput: false,
+              emittedApprovalRequest: false,
+            });
+          }
+
+          const requestUserInput = parseRequestUserInputEvent(block.name, block.input, block.id);
           if (requestUserInput) {
+            const accumulator =
+              typeof payload.event.index === 'number' ? toolInputByIndex.get(payload.event.index) : undefined;
+            if (accumulator) {
+              accumulator.emittedRequestUserInput = true;
+            }
             enqueue({
               type: 'request-user-input',
               runId,
@@ -395,8 +419,13 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
             });
           }
 
-          const approvalRequest = parseApprovalRequestEvent(block.name, block.input);
+          const approvalRequest = parseApprovalRequestEvent(block.name, block.input, block.id);
           if (approvalRequest) {
+            const accumulator =
+              typeof payload.event.index === 'number' ? toolInputByIndex.get(payload.event.index) : undefined;
+            if (accumulator) {
+              accumulator.emittedApprovalRequest = true;
+            }
             enqueue({
               type: 'approval-request',
               runId,
@@ -465,6 +494,14 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         payload.event.delta?.type === 'input_json_delta' &&
         payload.event.delta.partial_json
       ) {
+        if (typeof payload.event.index === 'number') {
+          const accumulator = toolInputByIndex.get(payload.event.index);
+          if (accumulator) {
+            accumulator.inputText += payload.event.delta.partial_json;
+            emitStructuredToolEventsFromAccumulator(runId, accumulator, enqueue);
+          }
+        }
+
         enqueue({
           type: 'tool-input-delta',
           runId,
@@ -484,6 +521,11 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
           typeof payload.event.index === 'number' ? blockTypeByIndex.get(payload.event.index) : undefined;
         if (typeof payload.event.index === 'number') {
           blockTypeByIndex.delete(payload.event.index);
+          const accumulator = toolInputByIndex.get(payload.event.index);
+          if (accumulator) {
+            emitStructuredToolEventsFromAccumulator(runId, accumulator, enqueue);
+            toolInputByIndex.delete(payload.event.index);
+          }
         }
 
         if (currentBlockType === 'tool_use') {
@@ -501,6 +543,30 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
           runId,
           blocks: payload.message.content,
         });
+
+        for (const block of payload.message.content) {
+          if (block.type !== 'tool_use' || !block.name) {
+            continue;
+          }
+
+          const requestUserInput = parseRequestUserInputEvent(block.name, block.input, block.id);
+          if (requestUserInput) {
+            enqueue({
+              type: 'request-user-input',
+              runId,
+              request: requestUserInput,
+            });
+          }
+
+          const approvalRequest = parseApprovalRequestEvent(block.name, block.input, block.id);
+          if (approvalRequest) {
+            enqueue({
+              type: 'approval-request',
+              runId,
+              request: approvalRequest,
+            });
+          }
+        }
 
         const assistantText = payload.message.content
           .filter((item) => item.type === 'text' && item.text)
@@ -934,14 +1000,20 @@ function getSuggestedRuntimeAction(reason: RuntimeReconnectReason): RuntimeSugge
 function parseRequestUserInputEvent(
   toolName: string,
   input: unknown,
+  toolUseId?: string,
 ): RequestUserInputRequest | null {
-  const normalizedToolName = toolName.trim().toLowerCase();
-  if (normalizedToolName !== 'request_user_input' && normalizedToolName !== 'request-user-input') {
+  const normalizedToolName = normalizeToolName(toolName);
+  const payload = asRecord(input);
+  const rawQuestions = Array.isArray(payload.questions) ? payload.questions : [];
+  const matchesStructuredQuestions = rawQuestions.some((question) => hasRequestUserInputShape(question));
+  if (
+    normalizedToolName !== 'requestuserinput' &&
+    normalizedToolName !== 'askuserquestion' &&
+    !matchesStructuredQuestions
+  ) {
     return null;
   }
 
-  const payload = asRecord(input);
-  const rawQuestions = Array.isArray(payload.questions) ? payload.questions : [];
   const questions = rawQuestions
     .map((question, index) => parseRequestUserInputQuestion(question, index))
     .filter((question): question is RequestUserInputQuestion => Boolean(question));
@@ -950,11 +1022,76 @@ function parseRequestUserInputEvent(
   }
 
   return {
-    requestId: firstNonEmptyString(payload, ['requestId', 'request_id', 'toolUseId', 'tool_use_id']),
-    title: firstNonEmptyString(payload, ['title']),
-    description: firstNonEmptyString(payload, ['description']),
+    requestId:
+      firstNonEmptyString(payload, ['requestId', 'request_id', 'toolUseId', 'tool_use_id']) ??
+      toolUseId,
+    title: firstNonEmptyString(payload, ['title', 'message', 'prompt']) ?? '需要你的选择',
+    description: firstNonEmptyString(payload, ['description', 'instructions']),
     questions,
   };
+}
+
+function emitStructuredToolEventsFromAccumulator(
+  runId: string,
+  accumulator: ToolInputAccumulator,
+  enqueue: (event: StreamEvent) => void,
+) {
+  const input = parseJsonObject(accumulator.inputText);
+  if (!input) {
+    return;
+  }
+
+  if (!accumulator.emittedRequestUserInput) {
+    const request = parseRequestUserInputEvent(accumulator.name, input, accumulator.toolUseId);
+    if (request) {
+      accumulator.emittedRequestUserInput = true;
+      enqueue({
+        type: 'request-user-input',
+        runId,
+        request,
+      });
+    }
+  }
+
+  if (!accumulator.emittedApprovalRequest) {
+    const request = parseApprovalRequestEvent(accumulator.name, input, accumulator.toolUseId);
+    if (request) {
+      accumulator.emittedApprovalRequest = true;
+      enqueue({
+        type: 'approval-request',
+        runId,
+        request,
+      });
+    }
+  }
+}
+
+function parseJsonObject(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function getToolInputSeed(input: unknown) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return '';
+  }
+
+  if (Object.keys(input).length === 0) {
+    return '';
+  }
+
+  return JSON.stringify(input);
 }
 
 function parseRequestUserInputQuestion(
@@ -985,6 +1122,20 @@ function parseRequestUserInputQuestion(
   };
 }
 
+function hasRequestUserInputShape(value: unknown) {
+  const question = asRecord(value);
+  const hasQuestionText = Boolean(firstNonEmptyString(question, ['question', 'prompt', 'label']));
+  if (!hasQuestionText) {
+    return false;
+  }
+
+  if (!('options' in question)) {
+    return true;
+  }
+
+  return Array.isArray(question.options);
+}
+
 function parseRequestUserInputOption(value: unknown): RequestUserInputOption | null {
   const option = asRecord(value);
   const label = firstNonEmptyString(option, ['label', 'title', 'value']);
@@ -998,9 +1149,13 @@ function parseRequestUserInputOption(value: unknown): RequestUserInputOption | n
   };
 }
 
-function parseApprovalRequestEvent(toolName: string, input: unknown): ApprovalRequest | null {
-  const normalizedToolName = toolName.trim().toLowerCase();
-  if (normalizedToolName !== 'approval_request' && normalizedToolName !== 'approval-request') {
+function parseApprovalRequestEvent(
+  toolName: string,
+  input: unknown,
+  toolUseId?: string,
+): ApprovalRequest | null {
+  const normalizedToolName = normalizeToolName(toolName);
+  if (normalizedToolName !== 'approvalrequest') {
     return null;
   }
 
@@ -1009,7 +1164,7 @@ function parseApprovalRequestEvent(toolName: string, input: unknown): ApprovalRe
   const command = normalizeCommand(payload.command ?? payload.argv ?? payload.args);
 
   return {
-    requestId: firstNonEmptyString(payload, ['requestId', 'request_id', 'toolUseId', 'tool_use_id']),
+    requestId: firstNonEmptyString(payload, ['requestId', 'request_id', 'toolUseId', 'tool_use_id']) ?? toolUseId,
     title,
     description: firstNonEmptyString(payload, ['description', 'reason']),
     command,
@@ -1040,6 +1195,10 @@ function asRecord(value: unknown) {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function normalizeToolName(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 function firstNonEmptyString(record: Record<string, unknown>, keys: string[]) {

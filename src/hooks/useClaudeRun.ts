@@ -707,8 +707,6 @@ export function useClaudeRun({
           sessionId: event.sessionId ?? turn.sessionId,
           durationMs: event.durationMs ?? turn.durationMs ?? getElapsedDuration(turn),
           totalCostUsd: event.totalCostUsd ?? turn.totalCostUsd,
-          pendingUserInputRequests: [],
-          pendingApprovalRequests: [],
           recoveryHint: undefined,
           ...mergeUsageSnapshot(turn, event),
         };
