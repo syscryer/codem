@@ -343,6 +343,7 @@ app.post('/api/claude/run', async (request, response) => {
   response.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
   response.setHeader('Cache-Control', 'no-cache, no-transform');
   response.setHeader('Connection', 'keep-alive');
+  response.flushHeaders();
 
   const stream = await createClaudeStream({
     prompt,

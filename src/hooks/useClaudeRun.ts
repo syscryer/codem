@@ -94,6 +94,8 @@ export function useClaudeRun({
   const abortRef = useRef<AbortController | null>(null);
   const activeTurnIdRef = useRef('');
   const runThreadIdRef = useRef<string | null>(null);
+  const pendingAssistantTextRef = useRef('');
+  const assistantTextFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     void loadHealth();
@@ -121,6 +123,14 @@ export function useClaudeRun({
 
     return () => window.clearInterval(timer);
   }, [isRunning]);
+
+  useEffect(() => {
+    return () => {
+      if (assistantTextFrameRef.current !== null) {
+        window.cancelAnimationFrame(assistantTextFrameRef.current);
+      }
+    };
+  }, []);
 
   async function loadHealth() {
     try {
@@ -196,6 +206,46 @@ export function useClaudeRun({
     }
 
     appendRawEvent(targetThreadId, line);
+  }
+
+  function applyAssistantTextDelta(text: string) {
+    updateRunningTurn((turn) => ({
+      ...turn,
+      status: 'running',
+      assistantText: `${turn.assistantText}${text}`,
+      items: appendTextItem(turn.items, text),
+      activity: 'Computing...',
+      phase: 'computing',
+    }));
+  }
+
+  function flushQueuedAssistantText() {
+    const text = pendingAssistantTextRef.current;
+    pendingAssistantTextRef.current = '';
+    assistantTextFrameRef.current = null;
+
+    if (text) {
+      applyAssistantTextDelta(text);
+    }
+  }
+
+  function flushQueuedAssistantTextNow() {
+    if (assistantTextFrameRef.current !== null) {
+      window.cancelAnimationFrame(assistantTextFrameRef.current);
+      assistantTextFrameRef.current = null;
+    }
+
+    flushQueuedAssistantText();
+  }
+
+  function queueAssistantTextDelta(text: string) {
+    pendingAssistantTextRef.current += text;
+
+    if (assistantTextFrameRef.current !== null) {
+      return;
+    }
+
+    assistantTextFrameRef.current = window.requestAnimationFrame(flushQueuedAssistantText);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -304,11 +354,13 @@ export function useClaudeRun({
 
       if (!sawTerminalEvent) {
         const targetThreadId = runThreadIdRef.current || activeThreadId;
+        flushQueuedAssistantTextNow();
         updateRunningTurn(closeTurnWithoutTerminalEvent);
         schedulePersistThreadHistory(targetThreadId);
       }
     } catch (error) {
       const targetThreadId = runThreadIdRef.current || activeThreadId;
+      flushQueuedAssistantTextNow();
       updateRunningTurn((turn) => ({
         ...turn,
         ...settleRunningToolSteps(turn, error instanceof DOMException && error.name === 'AbortError' ? 'done' : 'error'),
@@ -353,6 +405,17 @@ export function useClaudeRun({
   }
 
   function handleClaudeEvent(event: ClaudeEvent) {
+    if (
+      event.type === 'tool-start' ||
+      event.type === 'tool-input-delta' ||
+      event.type === 'tool-stop' ||
+      event.type === 'tool-result' ||
+      event.type === 'done' ||
+      event.type === 'error'
+    ) {
+      flushQueuedAssistantTextNow();
+    }
+
     if ('runId' in event && event.runId) {
       setBackendRunId(event.runId);
       updateRunningTurn((turn) => ({
@@ -436,14 +499,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'delta') {
-      updateRunningTurn((turn) => ({
-        ...turn,
-        status: 'running',
-        assistantText: `${turn.assistantText}${event.text}`,
-        items: appendTextItem(turn.items, event.text),
-        activity: 'Computing...',
-        phase: 'computing',
-      }));
+      queueAssistantTextDelta(event.text);
       return;
     }
 

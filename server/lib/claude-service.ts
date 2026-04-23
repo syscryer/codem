@@ -213,11 +213,22 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
   activeRuns.set(runId, child);
 
   const queue: StreamEvent[] = [];
+  let wakeQueue: (() => void) | null = null;
   let finished = false;
   let sessionId = resumeSessionId;
   let finalResult = '';
   let seenDoneEvent = false;
   const blockTypeByIndex = new Map<number, string>();
+  const enqueue = (event: StreamEvent) => {
+    queue.push(event);
+    wakeQueue?.();
+    wakeQueue = null;
+  };
+  const markFinished = () => {
+    finished = true;
+    wakeQueue?.();
+    wakeQueue = null;
+  };
 
   const flushStdoutLine = (line: string) => {
     const trimmed = line.trim();
@@ -231,7 +242,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         return;
       }
 
-      queue.push({
+      enqueue({
         type: 'raw',
         runId,
         raw: payload,
@@ -240,7 +251,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       const resultErrorMessage = getResultErrorMessage(payload);
       if (payload.session_id && payload.session_id !== sessionId && !resultErrorMessage) {
         sessionId = payload.session_id;
-        queue.push({
+        enqueue({
           type: 'session',
           runId,
           sessionId,
@@ -248,7 +259,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       }
 
       if (payload.type === 'system') {
-        queue.push({
+        enqueue({
           type: 'claude-event',
           runId,
           label: describeSystemEvent(payload),
@@ -260,7 +271,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
 
       if (payload.type === 'system' && payload.subtype === 'status') {
         if (payload.status === 'requesting') {
-          queue.push({
+          enqueue({
             type: 'phase',
             runId,
             phase: 'requesting',
@@ -268,7 +279,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
           });
         }
 
-        queue.push({
+        enqueue({
           type: 'claude-event',
           runId,
           label: `状态：${payload.status ?? 'unknown'}`,
@@ -282,7 +293,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       if (payload.type === 'stream_event') {
         const usage = extractUsage(payload);
         if (usage) {
-          queue.push({
+          enqueue({
             type: 'usage',
             runId,
             ...usage,
@@ -297,7 +308,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         }
 
         if (block?.type === 'thinking') {
-          queue.push({
+          enqueue({
             type: 'phase',
             runId,
             phase: 'thinking',
@@ -306,13 +317,13 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         }
 
         if (block?.type === 'tool_use' && block.name) {
-          queue.push({
+          enqueue({
             type: 'phase',
             runId,
             phase: 'tool',
             label: 'Computing...',
           });
-          queue.push({
+          enqueue({
             type: 'tool-start',
             runId,
             blockIndex: payload.event.index ?? -1,
@@ -335,12 +346,12 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
           return;
         }
 
-        queue.push({
+        enqueue({
           type: 'delta',
           runId,
           text: payload.event.delta.text,
         });
-        queue.push({
+        enqueue({
           type: 'phase',
           runId,
           phase: 'computing',
@@ -353,7 +364,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         payload.event?.type === 'content_block_delta' &&
         payload.event.delta?.type === 'thinking_delta'
       ) {
-        queue.push({
+        enqueue({
           type: 'phase',
           runId,
           phase: 'thinking',
@@ -367,13 +378,13 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         payload.event.delta?.type === 'input_json_delta' &&
         payload.event.delta.partial_json
       ) {
-        queue.push({
+        enqueue({
           type: 'tool-input-delta',
           runId,
           blockIndex: payload.event.index ?? -1,
           text: payload.event.delta.partial_json,
         });
-        queue.push({
+        enqueue({
           type: 'phase',
           runId,
           phase: 'tool',
@@ -389,7 +400,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         }
 
         if (currentBlockType === 'tool_use') {
-          queue.push({
+          enqueue({
             type: 'tool-stop',
             runId,
             blockIndex: payload.event.index ?? -1,
@@ -398,7 +409,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       }
 
       if (payload.type === 'assistant' && Array.isArray(payload.message?.content)) {
-        queue.push({
+        enqueue({
           type: 'assistant-snapshot',
           runId,
           blocks: payload.message.content,
@@ -420,7 +431,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
             continue;
           }
 
-          queue.push({
+          enqueue({
             type: 'tool-result',
             runId,
             toolUseId: block.tool_use_id,
@@ -433,7 +444,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       if (payload.type === 'result') {
         const usage = normalizeUsage(payload.usage);
         if (usage) {
-          queue.push({
+          enqueue({
             type: 'usage',
             runId,
             ...usage,
@@ -443,7 +454,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         const errorMessage = getResultErrorMessage(payload);
         if (errorMessage) {
           seenDoneEvent = true;
-          queue.push({
+          enqueue({
             type: 'error',
             runId,
             message: errorMessage,
@@ -453,7 +464,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
 
         finalResult = payload.result ?? finalResult;
         seenDoneEvent = true;
-        queue.push({
+        enqueue({
           type: 'done',
           runId,
           sessionId,
@@ -464,7 +475,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         });
       }
     } catch {
-      queue.push({
+      enqueue({
         type: 'stderr',
         runId,
         text: trimmed,
@@ -494,7 +505,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         continue;
       }
 
-      queue.push({
+      enqueue({
         type: 'stderr',
         runId,
         text: line.trim(),
@@ -503,12 +514,12 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
   });
 
   child.once('error', (error) => {
-    queue.push({
+    enqueue({
       type: 'error',
       runId,
       message: error.message,
     });
-    finished = true;
+    markFinished();
   });
 
   child.once('close', (code, signal) => {
@@ -518,7 +529,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
     }
 
     if (stderrBuffer.trim()) {
-      queue.push({
+      enqueue({
         type: 'stderr',
         runId,
         text: stderrBuffer.trim(),
@@ -529,14 +540,14 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
     if (!seenDoneEvent) {
       if (code === 0 || signal === 'SIGTERM') {
         seenDoneEvent = true;
-        queue.push({
+        enqueue({
           type: 'done',
           runId,
           sessionId,
           result: finalResult,
         });
       } else {
-        queue.push({
+        enqueue({
           type: 'error',
           runId,
           message: `Claude 退出异常，code=${code ?? 'null'} signal=${signal ?? 'null'}`,
@@ -545,7 +556,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
     }
 
     activeRuns.delete(runId);
-    finished = true;
+    markFinished();
   });
 
   while (!finished || queue.length > 0) {
@@ -555,7 +566,9 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       continue;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await new Promise<void>((resolve) => {
+      wakeQueue = resolve;
+    });
   }
 }
 
