@@ -194,6 +194,13 @@ type ConfirmDialogState =
       confirmLabel: string;
       projectId: string;
     }
+  | {
+      kind: 'remove-thread';
+      title: string;
+      description: string;
+      confirmLabel: string;
+      threadId: string;
+    }
   | null;
 
 type ToastState = {
@@ -203,7 +210,6 @@ type ToastState = {
 };
 
 const DEFAULT_MODEL_VALUE = '__default';
-const DEFAULT_WORKSPACE = 'D:\\cursor_project\\codem';
 
 const permissionModes = [
   'default',
@@ -224,7 +230,7 @@ const EMPTY_PANEL_STATE: PanelState = {
 
 export default function App() {
   const [prompt, setPrompt] = useState('');
-  const [workspace, setWorkspace] = useState(DEFAULT_WORKSPACE);
+  const [workspace, setWorkspace] = useState('');
   const [permissionMode, setPermissionMode] =
     useState<(typeof permissionModes)[number]>('default');
   const [model, setModel] = useState(DEFAULT_MODEL_VALUE);
@@ -275,7 +281,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const nextWorkspace = activeThreadSummary?.workingDirectory || activeProject?.path || DEFAULT_WORKSPACE;
+    const nextWorkspace = activeThreadSummary?.workingDirectory || activeProject?.path || '';
     setWorkspace(nextWorkspace);
   }, [activeProject?.path, activeThreadSummary?.workingDirectory]);
 
@@ -467,6 +473,23 @@ export default function App() {
     });
   }
 
+  function openRemoveThreadDialog(thread: ThreadSummary) {
+    if (isRunning && thread.id === activeThreadId) {
+      showToast('当前聊天正在运行，请先停止再删除。', 'info');
+      setThreadMenuThreadId(null);
+      return;
+    }
+
+    setThreadMenuThreadId(null);
+    setConfirmDialog({
+      kind: 'remove-thread',
+      title: '删除聊天',
+      description: `删除聊天“${thread.title}”后，只会删除 CodeM 的索引与本地消息记录，不会删除 Claude Code 原始 session 文件。`,
+      confirmLabel: '删除聊天',
+      threadId: thread.id,
+    });
+  }
+
   async function loadThreadHistory(threadId: string) {
     setThreadDetails((current) => {
       const existing = current[threadId];
@@ -535,7 +558,7 @@ export default function App() {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ turns }),
+      body: JSON.stringify({ turns: normalizeTurnsForPersist(turns) }),
     });
   }
 
@@ -551,7 +574,7 @@ export default function App() {
       }
 
       void persistThreadHistory(threadId, thread.turns);
-    }, 0);
+    }, 80);
   }
 
   function updateActiveThread(updater: (thread: ThreadDetail) => ThreadDetail) {
@@ -675,7 +698,7 @@ export default function App() {
         [thread.id]: {
           ...existing,
           turns: [
-            ...existing.turns,
+            ...closeDanglingTurns(existing.turns),
             {
               id: turnId,
               userText: trimmedPrompt,
@@ -728,6 +751,7 @@ export default function App() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let sawTerminalEvent = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -740,12 +764,24 @@ export default function App() {
         buffer = lines.pop() ?? '';
 
         for (const line of lines) {
-          handleStreamLine(line);
+          const eventPayload = handleStreamLine(line);
+          if (eventPayload?.type === 'done' || eventPayload?.type === 'error') {
+            sawTerminalEvent = true;
+          }
         }
       }
 
       if (buffer.trim()) {
-        handleStreamLine(buffer);
+        const eventPayload = handleStreamLine(buffer);
+        if (eventPayload?.type === 'done' || eventPayload?.type === 'error') {
+          sawTerminalEvent = true;
+        }
+      }
+
+      if (!sawTerminalEvent) {
+        const targetThreadId = runThreadIdRef.current || activeThreadId;
+        updateActiveTurn(closeTurnWithoutTerminalEvent);
+        schedulePersistThreadHistory(targetThreadId);
       }
     } catch (error) {
       const targetThreadId = runThreadIdRef.current || activeThreadId;
@@ -772,7 +808,7 @@ export default function App() {
 
   function handleStreamLine(line: string) {
     if (!line.trim()) {
-      return;
+      return null;
     }
 
     appendRawEvent(line);
@@ -780,12 +816,14 @@ export default function App() {
     try {
       const eventPayload = JSON.parse(line) as ClaudeEvent;
       handleClaudeEvent(eventPayload);
+      return eventPayload;
     } catch (error) {
       appendDebug({
         title: '事件解析失败',
         content: error instanceof Error ? error.message : '无法解析后端事件',
         tone: 'error',
       });
+      return null;
     }
   }
 
@@ -1154,7 +1192,7 @@ export default function App() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          initialPath: activeProject?.path ?? DEFAULT_WORKSPACE,
+          initialPath: activeProject?.path || undefined,
         }),
       });
 
@@ -1243,12 +1281,29 @@ export default function App() {
     }
   }
 
-  async function confirmRemoveProject() {
-    if (!confirmDialog || confirmDialog.kind !== 'remove-project') {
+  async function confirmRemoveDialog() {
+    if (!confirmDialog) {
       return;
     }
 
-    const response = await fetch(`/api/projects/${confirmDialog.projectId}`, {
+    if (confirmDialog.kind === 'remove-project') {
+      const response = await fetch(`/api/projects/${confirmDialog.projectId}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        showToast(await response.text(), 'error');
+        return;
+      }
+
+      const payload = (await response.json()) as { workspace: WorkspaceBootstrap };
+      syncWorkspace(payload.workspace);
+      setConfirmDialog(null);
+      showToast('项目已移除');
+      return;
+    }
+
+    const removedThreadId = confirmDialog.threadId;
+    const response = await fetch(`/api/threads/${removedThreadId}`, {
       method: 'DELETE',
     });
     if (!response.ok) {
@@ -1258,8 +1313,13 @@ export default function App() {
 
     const payload = (await response.json()) as { workspace: WorkspaceBootstrap };
     syncWorkspace(payload.workspace);
+    setThreadDetails((current) => {
+      const next = { ...current };
+      delete next[removedThreadId];
+      return next;
+    });
     setConfirmDialog(null);
-    showToast('项目已移除');
+    showToast('聊天已删除');
   }
 
   async function handleOpenProject(project: ProjectSummary) {
@@ -1577,6 +1637,9 @@ export default function App() {
                               <button type="button" className="workspace-menu-item" onClick={() => void handleCopySessionId(thread)}>
                                 <span>复制会话 ID</span>
                               </button>
+                              <button type="button" className="workspace-menu-item danger" onClick={() => openRemoveThreadDialog(thread)}>
+                                <span>删除聊天</span>
+                              </button>
                             </div>
                           ) : null}
                         </div>
@@ -1625,7 +1688,7 @@ export default function App() {
                 type="button"
                 className="icon-button"
                 title="使用当前项目目录"
-                onClick={() => setWorkspace(activeProject?.path ?? DEFAULT_WORKSPACE)}
+                onClick={() => setWorkspace(activeProject?.path ?? '')}
               >
                 <Home size={14} />
               </button>
@@ -1651,7 +1714,14 @@ export default function App() {
                 <p>输入需求后，Claude 的正文会连续显示，工具调用会以轻量步骤内嵌在回答中。</p>
               </div>
             ) : (
-              activeThread.turns.map((turn) => <ConversationTurnView key={turn.id} turn={turn} nowMs={clockNowMs} />)
+              activeThread.turns.map((turn) => (
+                <ConversationTurnView
+                  key={turn.id}
+                  turn={turn}
+                  nowMs={clockNowMs}
+                  isLiveRunning={isRunning && turn.id === activeTurnIdRef.current}
+                />
+              ))
             )}
             <div ref={conversationBottomRef} />
           </section>
@@ -1812,7 +1882,7 @@ export default function App() {
               <button type="button" className="dialog-button secondary" onClick={() => setConfirmDialog(null)}>
                 取消
               </button>
-              <button type="button" className="dialog-button danger" onClick={() => void confirmRemoveProject()}>
+              <button type="button" className="dialog-button danger" onClick={() => void confirmRemoveDialog()}>
                 {confirmDialog.confirmLabel}
               </button>
             </div>
@@ -1873,11 +1943,62 @@ function isPermissionMode(value: unknown): value is (typeof permissionModes)[num
   return typeof value === 'string' && permissionModes.includes(value as (typeof permissionModes)[number]);
 }
 
-function ConversationTurnView({ turn, nowMs }: { turn: ConversationTurn; nowMs: number }) {
+function closeDanglingTurns(turns: ConversationTurn[]) {
+  return turns.map((turn) =>
+    turn.status === 'pending' || turn.status === 'running'
+      ? closeTurnWithoutTerminalEvent(turn)
+      : turn,
+  );
+}
+
+function closeTurnWithoutTerminalEvent(turn: ConversationTurn): ConversationTurn {
+  const hasVisibleOutput = hasTurnVisibleOutput(turn);
+
+  return {
+    ...turn,
+    ...settleRunningToolSteps(turn, hasVisibleOutput ? 'done' : 'error'),
+    status: hasVisibleOutput ? 'done' : 'stopped',
+    phase: undefined,
+    durationMs: turn.durationMs ?? getElapsedDuration(turn),
+    activity: hasVisibleOutput ? '运行完成' : '运行结束但没有返回正文',
+  };
+}
+
+function normalizeTurnsForPersist(turns: ConversationTurn[]) {
+  return turns.map((turn) => {
+    if (turn.status !== 'pending' && turn.status !== 'running') {
+      return turn;
+    }
+
+    return closeTurnWithoutTerminalEvent(turn);
+  });
+}
+
+function hasTurnVisibleOutput(turn: ConversationTurn) {
+  return Boolean(
+    turn.assistantText.trim() ||
+      turn.items.length > 0 ||
+      turn.tools.length > 0 ||
+      turn.outputTokens ||
+      turn.metrics,
+  );
+}
+
+function ConversationTurnView({
+  turn,
+  nowMs,
+  isLiveRunning,
+}: {
+  turn: ConversationTurn;
+  nowMs: number;
+  isLiveRunning: boolean;
+}) {
   const visibleItems = turn.items.filter((item) => item.type === 'text' || !shouldHideToolStep(item.tool));
+  const running = isTurnInFlight(turn, isLiveRunning);
   const showProgressLine =
-    turn.status === 'pending' ||
-    turn.status === 'running' ||
+    running ||
+    turn.status === 'stopped' ||
+    turn.status === 'error' ||
     Boolean(turn.durationMs || turn.outputTokens || turn.inputTokens);
 
   return (
@@ -1899,20 +2020,20 @@ function ConversationTurnView({ turn, nowMs }: { turn: ConversationTurn; nowMs: 
               ),
             )
           ) : (
-            turn.status === 'pending' || turn.status === 'running' ? (
-              <TurnProgressLine turn={turn} nowMs={nowMs} />
+            running ? (
+              <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} />
             ) : null
           )}
 
-          {visibleItems.length > 0 && turn.status === 'running' ? (
-            <TurnProgressLine turn={turn} nowMs={nowMs} compact />
+          {visibleItems.length > 0 && running ? (
+            <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
           ) : null}
 
-          {showProgressLine && turn.status !== 'running' && turn.status !== 'pending' ? (
-            <TurnProgressLine turn={turn} nowMs={nowMs} compact />
+          {showProgressLine && !running ? (
+            <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
           ) : null}
           {!showProgressLine && turn.metrics ? <div className="turn-metrics">{turn.metrics}</div> : null}
-          {turn.status === 'error' || turn.status === 'stopped' ? (
+          {turn.status === 'error' && turn.activity ? (
             <div className={`turn-status ${turn.status}`}>{turn.activity}</div>
           ) : null}
         </div>
@@ -1924,14 +2045,16 @@ function ConversationTurnView({ turn, nowMs }: { turn: ConversationTurn; nowMs: 
 function TurnProgressLine({
   turn,
   nowMs,
+  isLiveRunning,
   compact = false,
 }: {
   turn: ConversationTurn;
   nowMs: number;
+  isLiveRunning: boolean;
   compact?: boolean;
 }) {
-  const running = turn.status === 'pending' || turn.status === 'running';
-  const text = formatTurnProgress(turn, running ? nowMs : undefined);
+  const running = isTurnInFlight(turn, isLiveRunning);
+  const text = formatTurnProgress(turn, running ? nowMs : undefined, isLiveRunning);
 
   return (
     <div className={`working-line tui-progress ${compact ? 'compact' : ''}`}>
@@ -2243,7 +2366,7 @@ function compactToolArgument(value: string) {
   return `${clean.slice(0, 93)}...`;
 }
 
-function formatTurnProgress(turn: ConversationTurn, nowMs?: number) {
+function formatTurnProgress(turn: ConversationTurn, nowMs?: number, isLiveRunning = false) {
   if (turn.status === 'stopped') {
     return 'Stopped';
   }
@@ -2252,10 +2375,14 @@ function formatTurnProgress(turn: ConversationTurn, nowMs?: number) {
     return 'Error';
   }
 
+  const running = isTurnInFlight(turn, isLiveRunning);
   const parts: string[] = [];
-  const durationMs = turn.durationMs ?? (nowMs && turn.startedAtMs ? Math.max(0, nowMs - turn.startedAtMs) : undefined);
-  if (typeof durationMs === 'number') {
-    parts.push(formatDuration(durationMs));
+  const durationMs =
+    turn.durationMs ??
+    (running && nowMs && turn.startedAtMs ? Math.max(0, nowMs - turn.startedAtMs) : undefined);
+  const duration = typeof durationMs === 'number' ? formatDuration(durationMs) : undefined;
+  if (duration) {
+    parts.push(duration);
   }
   if (typeof turn.outputTokens === 'number' && turn.outputTokens > 0) {
     parts.push(`↓ ${turn.outputTokens} tokens`);
@@ -2265,13 +2392,48 @@ function formatTurnProgress(turn: ConversationTurn, nowMs?: number) {
   }
 
   const prefix =
-    turn.status === 'done'
-      ? 'Done'
+    !running
+      ? getCompletedTurnLabel(turn)
       : turn.phase === 'thinking' || turn.phase === 'requesting'
         ? 'Thinking...'
         : 'Computing...';
 
+  if (!running && prefix === 'Baked' && duration) {
+    const tail = parts.slice(1);
+    return tail.length > 0 ? `${prefix} for ${duration} · ${tail.join(' · ')}` : `${prefix} for ${duration}`;
+  }
+
   return parts.length > 0 ? `${prefix} (${parts.join(' · ')})` : prefix;
+}
+
+function isTurnInFlight(turn: ConversationTurn, isLiveRunning = false) {
+  if (turn.status !== 'pending' && turn.status !== 'running') {
+    return false;
+  }
+
+  if (!isLiveRunning) {
+    return false;
+  }
+
+  return !hasCompletionSignal(turn);
+}
+
+function hasCompletionSignal(turn: ConversationTurn) {
+  return Boolean(
+    turn.durationMs ||
+      turn.totalCostUsd ||
+      (turn.outputTokens && turn.assistantText.trim()) ||
+      (turn.metrics && turn.assistantText.trim()) ||
+      (turn.status === 'running' && turn.activity === '运行完成'),
+  );
+}
+
+function getCompletedTurnLabel(turn: ConversationTurn) {
+  if (turn.status === 'pending' || turn.status === 'running') {
+    return hasTurnVisibleOutput(turn) ? 'Baked' : 'Stopped';
+  }
+
+  return turn.status === 'done' ? 'Baked' : 'Done';
 }
 
 function formatDuration(durationMs: number) {

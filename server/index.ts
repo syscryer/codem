@@ -16,6 +16,7 @@ import {
   getWorkspaceBootstrap,
   openProjectInExplorer,
   removeProject,
+  removeThread,
   renameProject,
   renameThread,
   saveThreadHistory,
@@ -198,6 +199,18 @@ app.patch('/api/threads/:threadId', (request, response) => {
     });
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '聊天更新失败');
+  }
+});
+
+app.delete('/api/threads/:threadId', (_request, response) => {
+  try {
+    removeThread(_request.params.threadId);
+    response.json({
+      ok: true,
+      workspace: getWorkspaceBootstrap(),
+    });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '聊天删除失败');
   }
 });
 

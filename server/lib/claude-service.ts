@@ -1,5 +1,7 @@
 import { access } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import path from 'node:path';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type { Readable } from 'node:stream';
@@ -61,7 +63,9 @@ type ClaudeJsonLine = {
   type?: string;
   subtype?: string;
   session_id?: string;
+  is_error?: boolean;
   result?: string;
+  errors?: string[];
   duration_ms?: number;
   total_cost_usd?: number;
   usage?: ClaudeRawUsage;
@@ -163,6 +167,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
     return;
   }
 
+  const resumeSessionId = getResumeSessionId(input.workingDirectory, input.sessionId);
   const args = [
     '-p',
     '--verbose',
@@ -177,8 +182,8 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
     args.push('--model', input.model);
   }
 
-  if (input.sessionId) {
-    args.push('--resume', input.sessionId);
+  if (resumeSessionId) {
+    args.push('--resume', resumeSessionId);
   }
 
   args.push(input.prompt);
@@ -188,6 +193,14 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
     runId,
     message: `已启动 Claude Code，工作目录：${input.workingDirectory}`,
   };
+
+  if (input.sessionId && !resumeSessionId) {
+    yield {
+      type: 'status',
+      runId,
+      message: `原会话 ${input.sessionId} 在 Claude 记录中不存在，已自动开启新会话。`,
+    };
+  }
 
   const child = spawn(command, args, {
     cwd: input.workingDirectory,
@@ -199,7 +212,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
 
   const queue: StreamEvent[] = [];
   let finished = false;
-  let sessionId = input.sessionId;
+  let sessionId = resumeSessionId;
   let finalResult = '';
   let seenDoneEvent = false;
 
@@ -217,7 +230,8 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         raw: payload,
       });
 
-      if (payload.session_id && payload.session_id !== sessionId) {
+      const resultErrorMessage = getResultErrorMessage(payload);
+      if (payload.session_id && payload.session_id !== sessionId && !resultErrorMessage) {
         sessionId = payload.session_id;
         queue.push({
           type: 'session',
@@ -401,6 +415,17 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
           });
         }
 
+        const errorMessage = getResultErrorMessage(payload);
+        if (errorMessage) {
+          seenDoneEvent = true;
+          queue.push({
+            type: 'error',
+            runId,
+            message: errorMessage,
+          });
+          return;
+        }
+
         finalResult = payload.result ?? finalResult;
         seenDoneEvent = true;
         queue.push({
@@ -578,6 +603,40 @@ function readConfiguredClaudeModel() {
   } catch {
     return undefined;
   }
+}
+
+function getResumeSessionId(workingDirectory: string, sessionId?: string) {
+  const trimmedSessionId = sessionId?.trim();
+  if (!trimmedSessionId) {
+    return undefined;
+  }
+
+  return existsSync(resolveClaudeTranscriptPath(workingDirectory, trimmedSessionId))
+    ? trimmedSessionId
+    : undefined;
+}
+
+function resolveClaudeTranscriptPath(workingDirectory: string, sessionId: string) {
+  return path.join(homedir(), '.claude', 'projects', sanitizeProjectPath(workingDirectory), `${sessionId}.jsonl`);
+}
+
+function sanitizeProjectPath(projectPath: string) {
+  return path.resolve(projectPath).replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+function getResultErrorMessage(payload: ClaudeJsonLine) {
+  if (payload.type !== 'result') {
+    return '';
+  }
+
+  const errors = Array.isArray(payload.errors) ? payload.errors.filter(Boolean) : [];
+  const hasError = payload.is_error || payload.subtype === 'error_during_execution' || errors.length > 0;
+  if (!hasError) {
+    return '';
+  }
+
+  const details = errors.join('\n').trim();
+  return details || payload.result?.trim() || 'Claude 运行失败，但未返回具体错误。';
 }
 
 function describeSystemEvent(payload: ClaudeJsonLine) {

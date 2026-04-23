@@ -365,6 +365,37 @@ export function renameThread(threadId: string, title: string) {
   `).run(trimmed, new Date().toISOString(), threadId);
 }
 
+export function removeThread(threadId: string) {
+  const row = db
+    .prepare(`
+      SELECT id, project_id
+      FROM threads
+      WHERE id = ?
+    `)
+    .get(threadId) as { id: string; project_id: string } | undefined;
+
+  if (!row) {
+    throw new Error('聊天不存在');
+  }
+
+  const now = new Date().toISOString();
+  try {
+    db.exec('BEGIN');
+    db.prepare(`DELETE FROM tool_calls WHERE thread_id = ?`).run(threadId);
+    db.prepare(`DELETE FROM messages WHERE thread_id = ?`).run(threadId);
+    db.prepare(`DELETE FROM threads WHERE id = ?`).run(threadId);
+    db.prepare(`UPDATE projects SET updated_at = ? WHERE id = ?`).run(now, row.project_id);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+
+  if (readStateValue('activeThreadId') === threadId) {
+    deleteStateValue('activeThreadId');
+  }
+}
+
 export function updateThreadMetadata(
   threadId: string,
   payload: {
@@ -511,6 +542,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
 
     turns.forEach((turn, turnIndex) => {
       const baseCreatedAt = new Date(Date.now() + turnIndex).toISOString();
+      const turnStatus = normalizePersistedTurnStatus(turn);
       insertMessage.run(
         randomUUID(),
         threadId,
@@ -519,7 +551,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
         0,
         'user',
         turn.userText ?? '',
-        turn.status,
+        turnStatus,
         turn.activity ?? null,
         turn.metrics ?? null,
         turn.sessionId ?? null,
@@ -552,7 +584,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
             itemIndex,
             'assistant',
             item.text,
-            turn.status,
+            turnStatus,
             turn.activity ?? null,
             turn.metrics ?? null,
             turn.sessionId ?? null,
@@ -1199,7 +1231,7 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
   return [...turnMap.values()]
     .sort((left, right) => left.turnSort - right.turnSort)
     .map(({ itemBuckets, turnSort: _turnSort, ...turn }) => ({
-      ...turn,
+      ...normalizePersistedTurn(turn),
       items: itemBuckets
         .sort((left, right) => left.itemSort - right.itemSort)
         .map((entry) =>
@@ -1291,6 +1323,30 @@ function normalizeToolStatus(value: string | null): ThreadTurn['tools'][number][
     return value;
   }
   return 'done';
+}
+
+function normalizePersistedTurn<T extends Pick<ThreadTurn, 'status' | 'activity' | 'metrics' | 'assistantText' | 'durationMs' | 'outputTokens' | 'totalCostUsd'>>(turn: T): T {
+  return {
+    ...turn,
+    status: normalizePersistedTurnStatus(turn),
+  };
+}
+
+function normalizePersistedTurnStatus(turn: Pick<ThreadTurn, 'status' | 'activity' | 'metrics' | 'assistantText' | 'durationMs' | 'outputTokens' | 'totalCostUsd'>): ThreadTurn['status'] {
+  if (turn.status !== 'pending' && turn.status !== 'running') {
+    return turn.status;
+  }
+
+  if (
+    turn.durationMs ||
+    turn.totalCostUsd ||
+    ((turn.outputTokens || turn.metrics) && turn.assistantText.trim()) ||
+    turn.activity === '运行完成'
+  ) {
+    return 'done';
+  }
+
+  return 'stopped';
 }
 
 function extractUserText(content: unknown) {
@@ -1474,7 +1530,7 @@ function resolveClaudeTranscriptPath(workingDirectory: string, sessionId: string
 }
 
 function sanitizeProjectPath(projectPath: string) {
-  return path.resolve(projectPath).replace(/[:\\/]/g, '-');
+  return path.resolve(projectPath).replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 function formatRelativeTime(value: string) {
