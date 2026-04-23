@@ -1,6 +1,6 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { EMPTY_PANEL_STATE } from '../constants';
-import { createThreadDetail, normalizeTurnsForPersist, repairConversationTurn } from '../lib/conversation';
+import { createThreadDetail, metricsFromTurn, normalizeTurnsForPersist, repairConversationTurn } from '../lib/conversation';
 import type {
   ConfirmDialogState,
   ConversationTurn,
@@ -196,11 +196,22 @@ export function useWorkspaceState() {
           return current;
         }
 
-        const repairedTurns = payload.turns.map(repairConversationTurn);
+        const repairedTurns = payload.turns.map((t) => {
+          const repaired = repairConversationTurn(t);
+          if (repaired.status === 'done' || repaired.status === 'error') {
+            const metrics = metricsFromTurn(repaired);
+            return metrics !== repaired.metrics ? { ...repaired, metrics } : repaired;
+          }
+          return repaired;
+        });
         const repairedTurnIds = new Set(repairedTurns.map((turn) => turn.id));
         const currentTurnsById = new Map(existing.turns.map((turn) => [turn.id, turn]));
         const mergedTurns = [
-          ...repairedTurns.map((turn) => currentTurnsById.get(turn.id) ?? turn),
+          ...repairedTurns.map((turn) => {
+            const current = currentTurnsById.get(turn.id);
+            // prefer in-memory turn if it's still running, otherwise use repaired (has fresh metrics)
+            return current && (current.status === 'running' || current.status === 'pending') ? current : turn;
+          }),
           ...existing.turns.filter((turn) => !repairedTurnIds.has(turn.id)),
         ];
 

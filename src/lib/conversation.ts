@@ -324,6 +324,11 @@ export function summarizeToolResult(event: Extract<ClaudeEvent, { type: 'tool-re
 }
 
 export function summarizeToolRow(tool: ToolStep) {
+  const usageSummary = extractToolUsageSummary(tool);
+  if (usageSummary) {
+    return `${tool.status === 'error' ? 'Error' : 'Done'} (${usageSummary})`;
+  }
+
   if (tool.resultText?.trim()) {
     const firstLine = extractToolResultSummary(tool.resultText);
     return tool.isError ? `Error: ${firstLine}` : firstLine;
@@ -341,19 +346,35 @@ export function formatDuration(durationMs: number) {
   return `${seconds}s`;
 }
 
-export function formatMetrics(event: Extract<ClaudeEvent, { type: 'done' }>) {
+export function metricsFromTurn(turn: ConversationTurn): string {
+  const parts: string[] = [];
+  if (turn.tools.length) parts.push(`${turn.tools.length} tool uses`);
+  if (typeof turn.outputTokens === 'number') {
+    const k = turn.outputTokens >= 1000 ? `${(turn.outputTokens / 1000).toFixed(1)}k` : `${turn.outputTokens}`;
+    parts.push(`${k} tokens`);
+  }
+  if (typeof turn.durationMs === 'number') parts.push(`耗时 ${(turn.durationMs / 1000).toFixed(1)}s`);
+  if (typeof turn.totalCostUsd === 'number') parts.push(`$${turn.totalCostUsd.toFixed(4)}`);
+  return parts.join(' · ');
+}
+
+export function formatMetrics(event: Extract<ClaudeEvent, { type: 'done' }>, toolCount?: number) {
   const metrics: string[] = [];
-  if (typeof event.totalCostUsd === 'number') {
-    metrics.push(`花费 $${event.totalCostUsd.toFixed(4)}`);
+  if (toolCount) {
+    metrics.push(`${toolCount} tool uses`);
+  }
+  if (typeof event.outputTokens === 'number') {
+    const k = event.outputTokens >= 1000 ? `${(event.outputTokens / 1000).toFixed(1)}k` : `${event.outputTokens}`;
+    metrics.push(`${k} tokens`);
   }
   if (typeof event.durationMs === 'number') {
     metrics.push(`耗时 ${(event.durationMs / 1000).toFixed(1)}s`);
   }
-  if (typeof event.outputTokens === 'number') {
-    metrics.push(`输出 ${event.outputTokens} tokens`);
+  if (typeof event.totalCostUsd === 'number') {
+    metrics.push(`$${event.totalCostUsd.toFixed(4)}`);
   }
 
-  return metrics.join('，');
+  return metrics.join(' · ');
 }
 
 export function formatJson(value: unknown) {
@@ -430,6 +451,101 @@ function extractToolResultSummary(text: string) {
     .filter(Boolean);
   const line = lines.find((item) => !item.startsWith('```')) ?? lines[0] ?? clean;
   return summarizeText(line);
+}
+
+function extractToolUsageSummary(tool: ToolStep) {
+  if ((tool.name !== 'Agent' && tool.name !== 'Task') || !tool.resultText?.trim()) {
+    return '';
+  }
+
+  const usageBlockMatch = tool.resultText.match(/<usage>([\s\S]*?)<\/usage>/i);
+  if (!usageBlockMatch) {
+    return '';
+  }
+
+  const values = parseUsageBlock(usageBlockMatch[1]);
+  const parts: string[] = [];
+  if (typeof values.toolUses === 'number') {
+    parts.push(`${values.toolUses} tool uses`);
+  }
+  if (typeof values.totalTokens === 'number') {
+    parts.push(`${formatTokenCount(values.totalTokens)} tokens`);
+  }
+  if (typeof values.durationMs === 'number') {
+    parts.push(formatUsageDuration(values.durationMs));
+  }
+
+  return parts.join(' · ');
+}
+
+function parseUsageBlock(block: string) {
+  const result: {
+    totalTokens?: number;
+    toolUses?: number;
+    durationMs?: number;
+  } = {};
+
+  const lines = block
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const separatorIndex = line.indexOf(':');
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const key = line.slice(0, separatorIndex).trim();
+    const rawValue = line.slice(separatorIndex + 1).trim();
+    const numericValue = Number.parseInt(rawValue, 10);
+    if (!Number.isFinite(numericValue)) {
+      continue;
+    }
+
+    if (key === 'total_tokens') {
+      result.totalTokens = numericValue;
+      continue;
+    }
+
+    if (key === 'tool_uses') {
+      result.toolUses = numericValue;
+      continue;
+    }
+
+    if (key === 'duration_ms') {
+      result.durationMs = numericValue;
+    }
+  }
+
+  return result;
+}
+
+function formatTokenCount(value: number) {
+  if (value < 1000) {
+    return `${value}`;
+  }
+
+  const compact = (value / 1000).toFixed(1);
+  return compact.endsWith('.0') ? `${compact.slice(0, -2)}k` : `${compact}k`;
+}
+
+function formatUsageDuration(durationMs: number) {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts: string[] = [];
+
+  if (hours > 0) {
+    parts.push(`${hours}h`);
+  }
+  if (minutes > 0 || hours > 0) {
+    parts.push(`${minutes}m`);
+  }
+  parts.push(`${seconds}s`);
+
+  return parts.join(' ');
 }
 
 function summarizeText(text: string) {

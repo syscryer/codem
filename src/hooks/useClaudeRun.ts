@@ -624,7 +624,7 @@ export function useClaudeRun({
           items: turn.items.length > 0 || !event.result.trim() ? turn.items : appendTextItem(turn.items, event.result),
           activity: '运行完成',
           phase: undefined,
-          metrics: formatMetrics(event),
+          metrics: formatMetrics(event, turn.tools.length),
           sessionId: event.sessionId ?? turn.sessionId,
           durationMs: event.durationMs ?? turn.durationMs ?? getElapsedDuration(turn),
           totalCostUsd: event.totalCostUsd ?? turn.totalCostUsd,

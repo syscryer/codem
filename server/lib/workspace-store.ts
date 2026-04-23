@@ -527,7 +527,11 @@ export function getThreadHistory(threadId: string) {
 
   const storedTurns = readStoredThreadHistory(threadId);
   if (storedTurns.length > 0) {
-    if (thread.transcript_path && existsSync(thread.transcript_path) && shouldReparseStoredHistory(storedTurns)) {
+    if (
+      thread.transcript_path &&
+      existsSync(thread.transcript_path) &&
+      shouldRefreshStoredHistory(threadId, thread.transcript_path, storedTurns)
+    ) {
       const reparsedTurns = parseClaudeTranscript(thread.transcript_path, thread.session_id ?? undefined);
       if (reparsedTurns.length > 0) {
         saveThreadHistory(threadId, reparsedTurns);
@@ -1475,6 +1479,31 @@ function shouldReparseStoredHistory(turns: ThreadTurn[]) {
           tool.title !== describeToolCall(tool.name, tool.inputText)),
     ),
   );
+}
+
+function shouldRefreshStoredHistory(threadId: string, transcriptPath: string, turns: ThreadTurn[]) {
+  return shouldReparseStoredHistory(turns) || isStoredHistoryOutdated(threadId, transcriptPath);
+}
+
+function isStoredHistoryOutdated(threadId: string, transcriptPath: string) {
+  const latestStoredRow = db
+    .prepare(`
+      SELECT MAX(created_at) AS latest_created_at
+      FROM messages
+      WHERE thread_id = ?
+    `)
+    .get(threadId) as { latest_created_at: string | null } | undefined;
+
+  if (!latestStoredRow?.latest_created_at) {
+    return true;
+  }
+
+  try {
+    const transcriptUpdatedAt = statSync(transcriptPath).mtime.toISOString();
+    return transcriptUpdatedAt > latestStoredRow.latest_created_at;
+  } catch {
+    return false;
+  }
 }
 
 function readPanelState(): PanelState {
