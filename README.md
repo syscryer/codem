@@ -33,6 +33,21 @@
 - Claude 调用：本机 `claude` CLI
 - 本地持久化：Node.js 内置 `node:sqlite`
 
+## 规范与协作
+
+- 开发规范入口：`.trellis/workflow.md`
+- frontend 规范：`.trellis/spec/frontend/`
+- backend 规范：`.trellis/spec/backend/`
+- 思考指南：`.trellis/spec/guides/`
+- 后续任务沉淀：`.trellis/tasks/`
+- 行为提案与变更记录：`openspec/README.md`
+
+当前仓库采用的是轻量 `.trellis` 结构：
+
+- 已提供规范目录和任务目录骨架
+- 暂未引入 `.trellis/scripts/`、developer 初始化、session record 自动化
+- 适合当前阶段先约束重构和功能开发，再按需要逐步补齐流程能力
+
 ## 运行方式
 
 ```bash
@@ -59,6 +74,7 @@ npm run dev
 - 这样可以更快验证“Claude CLI 是否能被稳定包装”
 - 如果后面确认交互可行，再包成桌面应用会比较顺手
 - 数据模型与持久化方向已经开始按多 provider 演进，后续不只支持 `Claude Code`
+- 规范层使用轻量 `.trellis`，功能提案层预留 `openspec/`
 
 ## 已知边界
 
