@@ -41,6 +41,7 @@
 - 思考指南：`.trellis/spec/guides/`
 - 后续任务沉淀：`.trellis/tasks/`
 - 行为提案与变更记录：`openspec/README.md`
+- 后续开发路线图：`roadmap.md`
 
 当前仓库采用的是轻量 `.trellis` 结构：
 

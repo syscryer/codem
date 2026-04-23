@@ -11,3 +11,4 @@ logs/
 output/
 .playwright-cli/
 *.tsbuildinfo
+.idea/
