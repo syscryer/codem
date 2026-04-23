@@ -31,9 +31,6 @@ export function useWorkspaceState() {
   const [debugOpen, setDebugOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [panelMenuOpen, setPanelMenuOpen] = useState(false);
-  const [projectMenuProjectId, setProjectMenuProjectId] = useState<string | null>(null);
-  const [threadMenuThreadId, setThreadMenuThreadId] = useState<string | null>(null);
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const [inputDialog, setInputDialog] = useState<InputDialogState | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
@@ -124,7 +121,6 @@ export function useWorkspaceState() {
   }
 
   function openRenameProjectDialog(project: ProjectSummary) {
-    setProjectMenuProjectId(null);
     setInputDialog({
       kind: 'rename-project',
       title: '修改项目名称',
@@ -136,7 +132,6 @@ export function useWorkspaceState() {
   }
 
   function openRenameThreadDialog(thread: ThreadSummary) {
-    setThreadMenuThreadId(null);
     setInputDialog({
       kind: 'rename-thread',
       title: '重命名聊天',
@@ -148,7 +143,6 @@ export function useWorkspaceState() {
   }
 
   function openRemoveProjectDialog(project: ProjectSummary) {
-    setProjectMenuProjectId(null);
     setConfirmDialog({
       kind: 'remove-project',
       title: '移除项目',
@@ -159,7 +153,6 @@ export function useWorkspaceState() {
   }
 
   function openRemoveThreadDialog(thread: ThreadSummary) {
-    setThreadMenuThreadId(null);
     setConfirmDialog({
       kind: 'remove-thread',
       title: '删除聊天',
@@ -384,8 +377,6 @@ export function useWorkspaceState() {
   }
 
   async function createThread(projectId: string) {
-    setProjectMenuProjectId(null);
-    setThreadMenuThreadId(null);
     const response = await fetch(`/api/projects/${projectId}/threads`, {
       method: 'POST',
       headers: {
@@ -576,8 +567,6 @@ export function useWorkspaceState() {
       showToast(await response.text(), 'error');
       return;
     }
-
-    setProjectMenuProjectId(null);
   }
 
   async function handleCopySessionId(thread: ThreadSummary) {
@@ -588,7 +577,6 @@ export function useWorkspaceState() {
 
     try {
       await navigator.clipboard.writeText(thread.sessionId);
-      setThreadMenuThreadId(null);
       showToast('会话 ID 已复制');
     } catch {
       showToast(`复制失败，请手动复制：${thread.sessionId}`, 'error');
@@ -627,7 +615,6 @@ export function useWorkspaceState() {
       ...nextState,
     };
     setPanelState(merged);
-    setPanelMenuOpen(false);
     await fetch('/api/workspace/panel', {
       method: 'PATCH',
       headers: {
@@ -699,9 +686,6 @@ export function useWorkspaceState() {
     debugOpen,
     searchOpen,
     searchQuery,
-    panelMenuOpen,
-    projectMenuProjectId,
-    threadMenuThreadId,
     collapsedProjects,
     inputDialog,
     confirmDialog,
@@ -713,9 +697,6 @@ export function useWorkspaceState() {
     setDebugOpen,
     setSearchOpen,
     setSearchQuery,
-    setPanelMenuOpen,
-    setProjectMenuProjectId,
-    setThreadMenuThreadId,
     setInputDialog,
     setConfirmDialog,
     setActiveProjectId,
