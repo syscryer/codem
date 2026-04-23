@@ -45,6 +45,8 @@ type ClaudeEvent =
   | { type: 'status'; runId: string; message: string }
   | { type: 'session'; runId: string; sessionId: string }
   | { type: 'delta'; runId: string; text: string }
+  | { type: 'phase'; runId: string; phase: TurnPhase; label: string }
+  | ({ type: 'usage'; runId: string } & UsageSnapshot)
   | { type: 'claude-event'; runId: string; label: string; eventType?: string; subtype?: string; status?: string; raw: unknown }
   | { type: 'tool-start'; runId: string; blockIndex: number; toolUseId?: string; name: string; input?: unknown }
   | { type: 'tool-input-delta'; runId: string; blockIndex: number; text: string }
@@ -53,8 +55,17 @@ type ClaudeEvent =
   | { type: 'assistant-snapshot'; runId: string; blocks: ClaudeContentBlock[] }
   | { type: 'raw'; runId: string; raw: unknown }
   | { type: 'stderr'; runId: string; text: string }
-  | { type: 'done'; runId: string; sessionId?: string; result: string; totalCostUsd?: number; durationMs?: number }
+  | ({ type: 'done'; runId: string; sessionId?: string; result: string; totalCostUsd?: number; durationMs?: number } & UsageSnapshot)
   | { type: 'error'; runId: string; message: string };
+
+type TurnPhase = 'requesting' | 'thinking' | 'computing' | 'tool';
+
+type UsageSnapshot = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+};
 
 type ToolStep = {
   id: string;
@@ -84,6 +95,14 @@ type ConversationTurn = {
   activity?: string;
   metrics?: string;
   sessionId?: string;
+  phase?: TurnPhase;
+  startedAtMs?: number;
+  durationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+  totalCostUsd?: number;
 };
 
 type DebugEvent = {
@@ -220,6 +239,7 @@ export default function App() {
   const [threadDetails, setThreadDetails] = useState<Record<string, ThreadDetail>>({});
   const [backendRunId, setBackendRunId] = useState('');
   const [isRunning, setIsRunning] = useState(false);
+  const [clockNowMs, setClockNowMs] = useState(Date.now());
   const [debugOpen, setDebugOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -260,10 +280,27 @@ export default function App() {
   }, [activeProject?.path, activeThreadSummary?.workingDirectory]);
 
   useEffect(() => {
+    setPermissionMode(isPermissionMode(activeThreadSummary?.permissionMode) ? activeThreadSummary.permissionMode : 'default');
+  }, [activeThreadSummary?.id, activeThreadSummary?.permissionMode]);
+
+  useEffect(() => {
     if (activeThreadId) {
       void loadThreadHistory(activeThreadId);
     }
   }, [activeThreadId]);
+
+  useEffect(() => {
+    if (!isRunning) {
+      return undefined;
+    }
+
+    setClockNowMs(Date.now());
+    const timer = window.setInterval(() => {
+      setClockNowMs(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [isRunning]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -648,6 +685,8 @@ export default function App() {
               items: [],
               status: 'pending',
               activity: '等待 Claude 响应',
+              phase: 'requesting',
+              startedAtMs: Date.now(),
             },
           ],
         },
@@ -679,6 +718,7 @@ export default function App() {
         updateActiveTurn((turn) => ({
           ...turn,
           status: 'error',
+          durationMs: turn.durationMs ?? getElapsedDuration(turn),
           activity: message || '后端没有返回可读流。',
         }));
         schedulePersistThreadHistory(targetThreadId);
@@ -711,7 +751,9 @@ export default function App() {
       const targetThreadId = runThreadIdRef.current || activeThreadId;
       updateActiveTurn((turn) => ({
         ...turn,
+        ...settleRunningToolSteps(turn, error instanceof DOMException && error.name === 'AbortError' ? 'done' : 'error'),
         status: error instanceof DOMException && error.name === 'AbortError' ? 'stopped' : 'error',
+        durationMs: turn.durationMs ?? getElapsedDuration(turn),
         activity:
           error instanceof DOMException && error.name === 'AbortError'
             ? '已停止当前运行'
@@ -770,11 +812,30 @@ export default function App() {
         ...turn,
         status: 'running',
         activity: 'Claude Code 已启动',
+        phase: 'requesting',
       }));
       appendDebug({
         title: '启动运行',
         content: event.message,
       });
+      return;
+    }
+
+    if (event.type === 'phase') {
+      updateActiveTurn((turn) => ({
+        ...turn,
+        status: turn.status === 'pending' ? 'running' : turn.status,
+        phase: event.phase,
+        activity: event.label,
+      }));
+      return;
+    }
+
+    if (event.type === 'usage') {
+      updateActiveTurn((turn) => ({
+        ...turn,
+        ...mergeUsageSnapshot(turn, event),
+      }));
       return;
     }
 
@@ -812,7 +873,8 @@ export default function App() {
         status: 'running',
         assistantText: `${turn.assistantText}${event.text}`,
         items: appendTextItem(turn.items, event.text),
-        activity: '正在接收 Claude 输出',
+        activity: 'Computing...',
+        phase: 'computing',
       }));
       return;
     }
@@ -825,6 +887,7 @@ export default function App() {
           ...turn,
           status: 'running',
           activity: step.title,
+          phase: 'tool',
           tools,
           items: syncToolItem(turn.items, step),
         };
@@ -838,6 +901,7 @@ export default function App() {
         const tool = tools.find((item) => matchesToolBlock(item, event.blockIndex));
         return {
           ...turn,
+          phase: 'tool',
           tools,
           items: tool ? syncToolItem(turn.items, tool) : turn.items,
         };
@@ -869,6 +933,7 @@ export default function App() {
         return {
           ...turn,
           activity: summarizeToolResult(event),
+          phase: event.isError ? turn.phase : 'computing',
           tools,
           items: tool ? syncToolItem(turn.items, tool) : turn.items,
         };
@@ -897,7 +962,9 @@ export default function App() {
       const targetThreadId = runThreadIdRef.current || activeThreadId;
       updateActiveTurn((turn) => ({
         ...turn,
+        ...settleRunningToolSteps(turn, 'error'),
         status: 'error',
+        durationMs: turn.durationMs ?? getElapsedDuration(turn),
         activity: event.message,
       }));
       appendDebug({
@@ -913,12 +980,17 @@ export default function App() {
       const targetThreadId = runThreadIdRef.current || activeThreadId;
       updateActiveTurn((turn) => ({
         ...turn,
+        ...settleRunningToolSteps(turn, 'done'),
         status: 'done',
         assistantText: turn.assistantText.trim() ? turn.assistantText : event.result,
         items: turn.items.length > 0 ? turn.items : appendTextItem(turn.items, event.result),
         activity: '运行完成',
+        phase: undefined,
         metrics: formatMetrics(event),
         sessionId: event.sessionId ?? turn.sessionId,
+        durationMs: event.durationMs ?? turn.durationMs ?? getElapsedDuration(turn),
+        totalCostUsd: event.totalCostUsd ?? turn.totalCostUsd,
+        ...mergeUsageSnapshot(turn, event),
       }));
       void persistActiveThreadMetadata({
         sessionId: event.sessionId,
@@ -954,6 +1026,15 @@ export default function App() {
     if (response.ok) {
       const result = (await response.json()) as { workspace: WorkspaceBootstrap };
       syncWorkspace(result.workspace);
+    }
+  }
+
+  function handlePermissionModeSelect(mode: (typeof permissionModes)[number]) {
+    setPermissionMode(mode);
+    setPermissionMenuOpen(false);
+
+    if (activeThreadId) {
+      void persistActiveThreadMetadata({ permissionMode: mode });
     }
   }
 
@@ -1570,7 +1651,7 @@ export default function App() {
                 <p>输入需求后，Claude 的正文会连续显示，工具调用会以轻量步骤内嵌在回答中。</p>
               </div>
             ) : (
-              activeThread.turns.map((turn) => <ConversationTurnView key={turn.id} turn={turn} />)
+              activeThread.turns.map((turn) => <ConversationTurnView key={turn.id} turn={turn} nowMs={clockNowMs} />)
             )}
             <div ref={conversationBottomRef} />
           </section>
@@ -1597,10 +1678,7 @@ export default function App() {
                             className="permission-menu-item"
                             role="menuitemradio"
                             aria-checked={permissionMode === mode}
-                            onClick={() => {
-                              setPermissionMode(mode);
-                              setPermissionMenuOpen(false);
-                            }}
+                            onClick={() => handlePermissionModeSelect(mode)}
                           >
                             <span className={`permission-icon permission-icon-${mode}`} aria-hidden="true" />
                             <span>{permissionLabel(mode)}</span>
@@ -1791,7 +1869,17 @@ function createThreadDetail(summary: ThreadSummary): ThreadDetail {
   };
 }
 
-function ConversationTurnView({ turn }: { turn: ConversationTurn }) {
+function isPermissionMode(value: unknown): value is (typeof permissionModes)[number] {
+  return typeof value === 'string' && permissionModes.includes(value as (typeof permissionModes)[number]);
+}
+
+function ConversationTurnView({ turn, nowMs }: { turn: ConversationTurn; nowMs: number }) {
+  const visibleItems = turn.items.filter((item) => item.type === 'text' || !shouldHideToolStep(item.tool));
+  const showProgressLine =
+    turn.status === 'pending' ||
+    turn.status === 'running' ||
+    Boolean(turn.durationMs || turn.outputTokens || turn.inputTokens);
+
   return (
     <article className="turn">
       <section className="message user-message">
@@ -1802,8 +1890,8 @@ function ConversationTurnView({ turn }: { turn: ConversationTurn }) {
       <section className="message assistant-message">
         <div className="message-label">Claude</div>
         <div className="assistant-content">
-          {turn.items.length > 0 ? (
-            turn.items.map((item) =>
+          {visibleItems.length > 0 ? (
+            visibleItems.map((item) =>
               item.type === 'text' ? (
                 <MarkdownMessage key={item.id} content={item.text} />
               ) : (
@@ -1811,26 +1899,45 @@ function ConversationTurnView({ turn }: { turn: ConversationTurn }) {
               ),
             )
           ) : (
-            <div className="working-line">
-              <span className={`activity-dot ${turn.status === 'running' ? 'pulse' : ''}`} />
-              <span>{turn.activity ?? '等待 Claude 响应'}</span>
-            </div>
+            turn.status === 'pending' || turn.status === 'running' ? (
+              <TurnProgressLine turn={turn} nowMs={nowMs} />
+            ) : null
           )}
 
-          {turn.items.length > 0 && turn.status === 'running' ? (
-            <div className="working-line compact">
-              <span className="activity-dot pulse" />
-              <span>{turn.activity ?? '正在处理'}</span>
-            </div>
+          {visibleItems.length > 0 && turn.status === 'running' ? (
+            <TurnProgressLine turn={turn} nowMs={nowMs} compact />
           ) : null}
 
-          {turn.metrics ? <div className="turn-metrics">{turn.metrics}</div> : null}
+          {showProgressLine && turn.status !== 'running' && turn.status !== 'pending' ? (
+            <TurnProgressLine turn={turn} nowMs={nowMs} compact />
+          ) : null}
+          {!showProgressLine && turn.metrics ? <div className="turn-metrics">{turn.metrics}</div> : null}
           {turn.status === 'error' || turn.status === 'stopped' ? (
             <div className={`turn-status ${turn.status}`}>{turn.activity}</div>
           ) : null}
         </div>
       </section>
     </article>
+  );
+}
+
+function TurnProgressLine({
+  turn,
+  nowMs,
+  compact = false,
+}: {
+  turn: ConversationTurn;
+  nowMs: number;
+  compact?: boolean;
+}) {
+  const running = turn.status === 'pending' || turn.status === 'running';
+  const text = formatTurnProgress(turn, running ? nowMs : undefined);
+
+  return (
+    <div className={`working-line tui-progress ${compact ? 'compact' : ''}`}>
+      <span className={`activity-dot ${running ? 'pulse' : ''}`} />
+      <span>{text}</span>
+    </div>
   );
 }
 
@@ -1844,6 +1951,7 @@ function MarkdownMessage({ content }: { content: string }) {
 
 function ToolStepRow({ tool }: { tool: ToolStep }) {
   const hasDetails = Boolean(tool.inputText?.trim() || tool.resultText?.trim());
+  const summary = summarizeToolRow(tool);
 
   return (
     <div className={`tool-step tool-${tool.status}`}>
@@ -1851,7 +1959,7 @@ function ToolStepRow({ tool }: { tool: ToolStep }) {
         <span className="tool-status-dot" />
         <div>
           <div className="tool-title">{tool.title}</div>
-          <div className="tool-subtitle">{tool.name}{tool.resultText ? ` · ${summarizeText(tool.resultText)}` : ''}</div>
+          {summary ? <div className="tool-subtitle">{summary}</div> : null}
         </div>
       </div>
 
@@ -1982,6 +2090,54 @@ function attachToolResult(steps: ToolStep[], event: Extract<ClaudeEvent, { type:
   return next;
 }
 
+function settleRunningToolSteps(
+  turn: ConversationTurn,
+  nextStatus: Exclude<ToolStep['status'], 'running'>,
+) {
+  const tools = turn.tools.map((tool) =>
+    tool.status === 'running'
+      ? {
+          ...tool,
+          status: nextStatus,
+        }
+      : tool,
+  );
+
+  const items = turn.items.map((item) =>
+    item.type === 'tool' && item.tool.status === 'running'
+      ? {
+          ...item,
+          tool: {
+            ...item.tool,
+            status: nextStatus,
+          },
+        }
+      : item,
+  );
+
+  return {
+    tools,
+    items,
+  };
+}
+
+function mergeUsageSnapshot(turn: ConversationTurn, snapshot: UsageSnapshot): Partial<ConversationTurn> {
+  return {
+    inputTokens: snapshot.inputTokens ?? turn.inputTokens,
+    outputTokens: snapshot.outputTokens ?? turn.outputTokens,
+    cacheCreationInputTokens: snapshot.cacheCreationInputTokens ?? turn.cacheCreationInputTokens,
+    cacheReadInputTokens: snapshot.cacheReadInputTokens ?? turn.cacheReadInputTokens,
+  };
+}
+
+function getElapsedDuration(turn: ConversationTurn) {
+  if (!turn.startedAtMs) {
+    return undefined;
+  }
+
+  return Math.max(0, Date.now() - turn.startedAtMs);
+}
+
 function matchesToolBlock(tool: ToolStep, blockIndex: number) {
   return tool.blockIndex === blockIndex;
 }
@@ -1993,34 +2149,52 @@ function describeToolCall(name: string, inputText?: string) {
   const command = getString(input, ['command', 'cmd', 'cmdString']);
 
   if (name === 'Read' && filePath) {
-    return `读取文件 ${filePath}`;
+    return `Read(${compactToolArgument(filePath)})`;
   }
 
   if (name === 'Grep' && pattern) {
-    return `搜索代码 ${pattern}`;
+    return `Grep(${compactToolArgument(pattern)})`;
   }
 
   if (name === 'Glob' && pattern) {
-    return `匹配文件 ${pattern}`;
+    return `Glob(${compactToolArgument(pattern)})`;
   }
 
   if (name === 'Bash' && command) {
-    return `运行命令 ${command}`;
+    return `Bash(${compactToolArgument(command)})`;
   }
 
   if ((name === 'Edit' || name === 'Write' || name === 'NotebookEdit') && filePath) {
-    return `修改文件 ${filePath}`;
+    return `${name}(${compactToolArgument(filePath)})`;
   }
 
   if (name.startsWith('mcp__')) {
-    return `调用 MCP 工具 ${name}`;
+    return `MCP(${getReadableToolName(name)})`;
   }
 
-  return `调用工具 ${name}`;
+  return getReadableToolName(name);
+}
+
+function shouldHideToolStep(tool: ToolStep) {
+  const hasDetails = Boolean(tool.inputText?.trim() || tool.resultText?.trim());
+  if (hasDetails) {
+    return false;
+  }
+
+  return tool.title === getReadableToolName(tool.name);
+}
+
+function getReadableToolName(name: string) {
+  if (name.startsWith('mcp__')) {
+    const segments = name.split('__').filter(Boolean);
+    return segments.at(-1) ?? name;
+  }
+
+  return name;
 }
 
 function summarizeToolResult(event: Extract<ClaudeEvent, { type: 'tool-result' }>) {
-  return event.isError ? '工具返回异常' : '工具调用完成';
+  return event.isError ? 'Error' : 'Done';
 }
 
 function summarizeText(text: string) {
@@ -2032,6 +2206,79 @@ function summarizeText(text: string) {
   return clean.length > 80 ? `${clean.slice(0, 80)}...` : clean;
 }
 
+function summarizeToolRow(tool: ToolStep) {
+  if (tool.resultText?.trim()) {
+    const firstLine = extractToolResultSummary(tool.resultText);
+    return tool.isError ? `Error: ${firstLine}` : firstLine;
+  }
+
+  if (tool.status === 'running') {
+    return 'Running';
+  }
+
+  return tool.status === 'error' ? 'Error' : 'Done';
+}
+
+function extractToolResultSummary(text: string) {
+  const clean = text.replace(/\r/g, '').trim();
+  const exitMatch = clean.match(/Error:\s*Exit code\s*(\d+)/i);
+  if (exitMatch) {
+    return `Exit code ${exitMatch[1]}`;
+  }
+
+  const lines = clean
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const line = lines.find((item) => !item.startsWith('```')) ?? lines[0] ?? clean;
+  return summarizeText(line);
+}
+
+function compactToolArgument(value: string) {
+  const clean = value.replace(/\s+/g, ' ').trim();
+  if (clean.length <= 96) {
+    return clean;
+  }
+
+  return `${clean.slice(0, 93)}...`;
+}
+
+function formatTurnProgress(turn: ConversationTurn, nowMs?: number) {
+  if (turn.status === 'stopped') {
+    return 'Stopped';
+  }
+
+  if (turn.status === 'error') {
+    return 'Error';
+  }
+
+  const parts: string[] = [];
+  const durationMs = turn.durationMs ?? (nowMs && turn.startedAtMs ? Math.max(0, nowMs - turn.startedAtMs) : undefined);
+  if (typeof durationMs === 'number') {
+    parts.push(formatDuration(durationMs));
+  }
+  if (typeof turn.outputTokens === 'number' && turn.outputTokens > 0) {
+    parts.push(`↓ ${turn.outputTokens} tokens`);
+  }
+  if (typeof turn.totalCostUsd === 'number') {
+    parts.push(`$${turn.totalCostUsd.toFixed(4)}`);
+  }
+
+  const prefix =
+    turn.status === 'done'
+      ? 'Done'
+      : turn.phase === 'thinking' || turn.phase === 'requesting'
+        ? 'Thinking...'
+        : 'Computing...';
+
+  return parts.length > 0 ? `${prefix} (${parts.join(' · ')})` : prefix;
+}
+
+function formatDuration(durationMs: number) {
+  const seconds = Math.max(0, Math.round(durationMs / 1000));
+  return `${seconds}s`;
+}
+
 function formatMetrics(event: Extract<ClaudeEvent, { type: 'done' }>) {
   const metrics: string[] = [];
   if (typeof event.totalCostUsd === 'number') {
@@ -2039,6 +2286,9 @@ function formatMetrics(event: Extract<ClaudeEvent, { type: 'done' }>) {
   }
   if (typeof event.durationMs === 'number') {
     metrics.push(`耗时 ${(event.durationMs / 1000).toFixed(1)}s`);
+  }
+  if (typeof event.outputTokens === 'number') {
+    metrics.push(`输出 ${event.outputTokens} tokens`);
   }
 
   return metrics.join('，');

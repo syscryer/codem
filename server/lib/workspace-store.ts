@@ -23,6 +23,14 @@ export type ThreadTurn = {
   activity?: string;
   metrics?: string;
   sessionId?: string;
+  phase?: 'requesting' | 'thinking' | 'computing' | 'tool';
+  startedAtMs?: number;
+  durationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+  totalCostUsd?: number;
   items: Array<
     | { id: string; type: 'text'; text: string }
     | {
@@ -32,7 +40,7 @@ export type ThreadTurn = {
           id: string;
           name: string;
           title: string;
-          status: 'done' | 'error';
+          status: 'running' | 'done' | 'error';
           toolUseId?: string;
           inputText?: string;
           resultText?: string;
@@ -44,7 +52,7 @@ export type ThreadTurn = {
     id: string;
     name: string;
     title: string;
-    status: 'done' | 'error';
+    status: 'running' | 'done' | 'error';
     toolUseId?: string;
     inputText?: string;
     resultText?: string;
@@ -133,6 +141,14 @@ type StoredMessageRow = {
   activity: string | null;
   metrics: string | null;
   session_id: string | null;
+  phase: ThreadTurn['phase'] | null;
+  started_at_ms: number | null;
+  duration_ms: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  cache_read_input_tokens: number | null;
+  total_cost_usd: number | null;
   created_at: string;
 };
 
@@ -146,7 +162,7 @@ type StoredToolCallRow = {
   tool_id: string;
   name: string;
   title: string;
-  status: 'done' | 'error';
+  status: 'running' | 'done' | 'error';
   tool_use_id: string | null;
   input_text: string | null;
   result_text: string | null;
@@ -476,9 +492,11 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
   const now = new Date().toISOString();
   const insertMessage = db.prepare(`
     INSERT INTO messages (
-      id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics, session_id, created_at
+      id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics, session_id,
+      phase, started_at_ms, duration_ms, input_tokens, output_tokens, cache_creation_input_tokens,
+      cache_read_input_tokens, total_cost_usd, created_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertToolCall = db.prepare(`
     INSERT INTO tool_calls (
@@ -505,6 +523,14 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
         turn.activity ?? null,
         turn.metrics ?? null,
         turn.sessionId ?? null,
+        turn.phase ?? null,
+        turn.startedAtMs ?? null,
+        turn.durationMs ?? null,
+        turn.inputTokens ?? null,
+        turn.outputTokens ?? null,
+        turn.cacheCreationInputTokens ?? null,
+        turn.cacheReadInputTokens ?? null,
+        turn.totalCostUsd ?? null,
         baseCreatedAt,
       );
 
@@ -530,6 +556,14 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
             turn.activity ?? null,
             turn.metrics ?? null,
             turn.sessionId ?? null,
+            turn.phase ?? null,
+            turn.startedAtMs ?? null,
+            turn.durationMs ?? null,
+            turn.inputTokens ?? null,
+            turn.outputTokens ?? null,
+            turn.cacheCreationInputTokens ?? null,
+            turn.cacheReadInputTokens ?? null,
+            turn.totalCostUsd ?? null,
             baseCreatedAt,
           );
           return;
@@ -545,7 +579,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
           item.tool.id,
           item.tool.name,
           item.tool.title,
-          item.tool.status === 'error' ? 'error' : 'done',
+          normalizeToolStatus(item.tool.status),
           item.tool.toolUseId ?? null,
           item.tool.inputText ?? null,
           item.tool.resultText ?? null,
@@ -625,6 +659,14 @@ function initializeDatabase() {
       activity TEXT,
       metrics TEXT,
       session_id TEXT,
+      phase TEXT,
+      started_at_ms INTEGER,
+      duration_ms INTEGER,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cache_creation_input_tokens INTEGER,
+      cache_read_input_tokens INTEGER,
+      total_cost_usd REAL,
       created_at TEXT NOT NULL
     );
 
@@ -653,6 +695,14 @@ function initializeDatabase() {
   `);
 
   ensureColumn('tool_calls', 'turn_sort', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('messages', 'phase', 'TEXT');
+  ensureColumn('messages', 'started_at_ms', 'INTEGER');
+  ensureColumn('messages', 'duration_ms', 'INTEGER');
+  ensureColumn('messages', 'input_tokens', 'INTEGER');
+  ensureColumn('messages', 'output_tokens', 'INTEGER');
+  ensureColumn('messages', 'cache_creation_input_tokens', 'INTEGER');
+  ensureColumn('messages', 'cache_read_input_tokens', 'INTEGER');
+  ensureColumn('messages', 'total_cost_usd', 'REAL');
 }
 
 function resolveAppDirectory() {
@@ -746,7 +796,7 @@ function upsertImportedThread(projectId: string, metadata: ClaudeSessionMetadata
       SET transcript_path = ?,
           working_directory = ?,
           model = COALESCE(?, model),
-          permission_mode = COALESCE(?, permission_mode),
+          permission_mode = COALESCE(permission_mode, ?),
           updated_at = ?,
           title = CASE WHEN custom_title = 0 THEN ? ELSE title END
       WHERE id = ?
@@ -1031,6 +1081,7 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
   const messageRows = db
     .prepare(`
       SELECT id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics, session_id, created_at
+      , phase, started_at_ms, duration_ms, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_cost_usd
       FROM messages
       WHERE thread_id = ?
       ORDER BY turn_sort ASC, item_sort ASC, CASE role WHEN 'user' THEN 0 ELSE 1 END ASC
@@ -1062,6 +1113,14 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
         activity: row.activity ?? undefined,
         metrics: row.metrics ?? undefined,
         sessionId: row.session_id ?? undefined,
+        phase: row.phase ?? undefined,
+        startedAtMs: row.started_at_ms ?? undefined,
+        durationMs: row.duration_ms ?? undefined,
+        inputTokens: row.input_tokens ?? undefined,
+        outputTokens: row.output_tokens ?? undefined,
+        cacheCreationInputTokens: row.cache_creation_input_tokens ?? undefined,
+        cacheReadInputTokens: row.cache_read_input_tokens ?? undefined,
+        totalCostUsd: row.total_cost_usd ?? undefined,
         items: [],
         tools: [],
         turnSort: row.turn_sort,
@@ -1077,6 +1136,14 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
     turn.activity = row.activity ?? turn.activity;
     turn.metrics = row.metrics ?? turn.metrics;
     turn.sessionId = row.session_id ?? turn.sessionId;
+    turn.phase = row.phase ?? turn.phase;
+    turn.startedAtMs = row.started_at_ms ?? turn.startedAtMs;
+    turn.durationMs = row.duration_ms ?? turn.durationMs;
+    turn.inputTokens = row.input_tokens ?? turn.inputTokens;
+    turn.outputTokens = row.output_tokens ?? turn.outputTokens;
+    turn.cacheCreationInputTokens = row.cache_creation_input_tokens ?? turn.cacheCreationInputTokens;
+    turn.cacheReadInputTokens = row.cache_read_input_tokens ?? turn.cacheReadInputTokens;
+    turn.totalCostUsd = row.total_cost_usd ?? turn.totalCostUsd;
 
     if (row.role === 'user') {
       turn.userText = row.content;
@@ -1112,7 +1179,7 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
       id: row.tool_id,
       name: row.name,
       title: row.title,
-      status: row.status,
+      status: normalizeToolStatus(row.status),
       toolUseId: row.tool_use_id ?? undefined,
       inputText: row.input_text ?? undefined,
       resultText: row.result_text ?? undefined,
@@ -1217,6 +1284,13 @@ function normalizeTurnStatus(value: string | null) {
     return value;
   }
   return null;
+}
+
+function normalizeToolStatus(value: string | null): ThreadTurn['tools'][number]['status'] {
+  if (value === 'running' || value === 'done' || value === 'error') {
+    return value;
+  }
+  return 'done';
 }
 
 function extractUserText(content: unknown) {
@@ -1357,24 +1431,41 @@ function describeToolCall(name: string, inputText?: string) {
   const command = parsed && readString(parsed, ['command', 'cmd', 'cmdString']);
 
   if (name === 'Read' && filePath) {
-    return `读取文件 ${filePath}`;
+    return `Read(${compactToolArgument(filePath)})`;
   }
   if (name === 'Grep' && pattern) {
-    return `搜索代码 ${pattern}`;
+    return `Grep(${compactToolArgument(pattern)})`;
   }
   if (name === 'Glob' && pattern) {
-    return `匹配文件 ${pattern}`;
+    return `Glob(${compactToolArgument(pattern)})`;
   }
   if (name === 'Bash' && command) {
-    return `运行命令 ${command}`;
+    return `Bash(${compactToolArgument(command)})`;
   }
   if ((name === 'Edit' || name === 'Write' || name === 'NotebookEdit') && filePath) {
-    return `修改文件 ${filePath}`;
+    return `${name}(${compactToolArgument(filePath)})`;
   }
   if (name.startsWith('mcp__')) {
-    return `调用 MCP 工具 ${name}`;
+    return `MCP(${getReadableToolName(name)})`;
   }
-  return `调用工具 ${name}`;
+  return getReadableToolName(name);
+}
+
+function compactToolArgument(value: string) {
+  const clean = value.replace(/\s+/g, ' ').trim();
+  if (clean.length <= 96) {
+    return clean;
+  }
+  return `${clean.slice(0, 93)}...`;
+}
+
+function getReadableToolName(name: string) {
+  if (name.startsWith('mcp__')) {
+    const segments = name.split('__').filter(Boolean);
+    return segments.at(-1) ?? name;
+  }
+
+  return name;
 }
 
 function resolveClaudeTranscriptPath(workingDirectory: string, sessionId: string) {

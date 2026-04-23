@@ -789,6 +789,12 @@ svg {
   margin-top: 4px;
 }
 
+.tui-progress {
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-style: italic;
+  letter-spacing: -0.01em;
+}
+
 .activity-dot,
 .tool-status-dot {
   width: 8px;
@@ -805,15 +811,15 @@ svg {
 
 .tool-step {
   width: 100%;
-  border-radius: 8px;
-  background: #eeeeee;
-  padding: 8px 10px;
+  border-radius: 0;
+  background: transparent;
+  padding: 4px 0;
 }
 
 .tool-step-main {
   display: grid;
-  grid-template-columns: 11px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 7px;
   align-items: start;
 }
 
@@ -832,23 +838,31 @@ svg {
 }
 
 .tool-title {
-  color: #242424;
-  font-size: 12px;
-  font-weight: 600;
+  color: #5f6368;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
 
 .tool-subtitle {
-  margin-top: 2px;
-  color: #737373;
-  font-size: 11px;
+  margin-top: 3px;
+  color: #7b7f86;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
   line-height: 1.5;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.tool-error .tool-title,
+.tool-error .tool-subtitle {
+  color: #a05a5f;
+}
+
 .tool-details {
-  margin: 7px 0 0 19px;
+  margin: 7px 0 0 21px;
   color: #747474;
 }
 

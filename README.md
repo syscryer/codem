@@ -12,6 +12,8 @@
 - 按 turn 聚合展示对话，用户输入和 Claude 正文保持主线连续
 - Claude 正文支持 Markdown / GFM 渲染，包括表格、列表、代码块和链接
 - 工具调用以内联步骤展示，参数和结果默认折叠
+- 运行中会展示接近 Claude Code TUI 的 `Thinking...` / `Computing...` 状态、耗时和输出 token
+- 工具调用行改为 `Bash(...)` / `Read(...)` / `Edit(...)` 等紧凑 TUI 风格，并保留错误摘要
 - system/raw/snapshot/stderr 等调试信息放入右侧调试抽屉
 - 可查看最近的原始事件流和 assistant message snapshot
 - 支持保留多个线程，新建聊天不会清空旧线程
@@ -66,4 +68,5 @@ npm run dev
 - 线程历史持久化以 CodeM 自己的 SQLite 为主，Claude transcript 作为导入与补录来源
 - 排序 / 显示按钮、插件、自动化目前仍以基础占位为主
 - 模型内部隐藏思考链不会展示；界面只展示 Claude CLI 在 `stream-json` 中实际暴露的事件
+- `thinking_delta` 只用于驱动状态展示，不把隐藏思考文本渲染到主对话区
 - 详细需求与演进路线见 `requirements.md`

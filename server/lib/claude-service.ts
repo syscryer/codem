@@ -24,6 +24,8 @@ type StreamEvent =
   | { type: 'status'; runId: string; message: string }
   | { type: 'session'; runId: string; sessionId: string }
   | { type: 'delta'; runId: string; text: string }
+  | { type: 'phase'; runId: string; phase: ClaudePhase; label: string }
+  | ({ type: 'usage'; runId: string } & ClaudeUsage)
   | { type: 'claude-event'; runId: string; label: string; eventType?: string; subtype?: string; status?: string; raw: unknown }
   | { type: 'tool-start'; runId: string; blockIndex: number; toolUseId?: string; name: string; input?: unknown }
   | { type: 'tool-input-delta'; runId: string; blockIndex: number; text: string }
@@ -32,8 +34,17 @@ type StreamEvent =
   | { type: 'assistant-snapshot'; runId: string; blocks: ClaudeContentBlock[] }
   | { type: 'raw'; runId: string; raw: unknown }
   | { type: 'stderr'; runId: string; text: string }
-  | { type: 'done'; runId: string; sessionId?: string; result: string; totalCostUsd?: number; durationMs?: number }
+  | ({ type: 'done'; runId: string; sessionId?: string; result: string; totalCostUsd?: number; durationMs?: number } & ClaudeUsage)
   | { type: 'error'; runId: string; message: string };
+
+type ClaudePhase = 'requesting' | 'thinking' | 'computing' | 'tool';
+
+type ClaudeUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+};
 
 type ClaudeContentBlock = {
   type?: string;
@@ -53,12 +64,18 @@ type ClaudeJsonLine = {
   result?: string;
   duration_ms?: number;
   total_cost_usd?: number;
+  usage?: ClaudeRawUsage;
   message?: {
     content?: ClaudeContentBlock[];
+    usage?: ClaudeRawUsage;
   };
   event?: {
     type?: string;
     index?: number;
+    message?: {
+      usage?: ClaudeRawUsage;
+    };
+    usage?: ClaudeRawUsage;
     content_block?: ClaudeContentBlock;
     delta?: {
       type?: string;
@@ -67,6 +84,13 @@ type ClaudeJsonLine = {
     };
   };
   status?: string;
+};
+
+type ClaudeRawUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
 };
 
 type ClaudeChildProcess = ChildProcessByStdio<null, Readable, Readable>;
@@ -177,6 +201,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
   let finished = false;
   let sessionId = input.sessionId;
   let finalResult = '';
+  let seenDoneEvent = false;
 
   const flushStdoutLine = (line: string) => {
     const trimmed = line.trim();
@@ -213,6 +238,15 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       }
 
       if (payload.type === 'system' && payload.subtype === 'status') {
+        if (payload.status === 'requesting') {
+          queue.push({
+            type: 'phase',
+            runId,
+            phase: 'requesting',
+            label: 'Thinking...',
+          });
+        }
+
         queue.push({
           type: 'claude-event',
           runId,
@@ -224,9 +258,35 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         });
       }
 
+      if (payload.type === 'stream_event') {
+        const usage = extractUsage(payload);
+        if (usage) {
+          queue.push({
+            type: 'usage',
+            runId,
+            ...usage,
+          });
+        }
+      }
+
       if (payload.type === 'stream_event' && payload.event?.type === 'content_block_start') {
         const block = payload.event.content_block;
+        if (block?.type === 'thinking') {
+          queue.push({
+            type: 'phase',
+            runId,
+            phase: 'thinking',
+            label: 'Thinking...',
+          });
+        }
+
         if (block?.type === 'tool_use' && block.name) {
+          queue.push({
+            type: 'phase',
+            runId,
+            phase: 'tool',
+            label: 'Computing...',
+          });
           queue.push({
             type: 'tool-start',
             runId,
@@ -249,6 +309,25 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
           runId,
           text: payload.event.delta.text,
         });
+        queue.push({
+          type: 'phase',
+          runId,
+          phase: 'computing',
+          label: 'Computing...',
+        });
+      }
+
+      if (
+        payload.type === 'stream_event' &&
+        payload.event?.type === 'content_block_delta' &&
+        payload.event.delta?.type === 'thinking_delta'
+      ) {
+        queue.push({
+          type: 'phase',
+          runId,
+          phase: 'thinking',
+          label: 'Thinking...',
+        });
       }
 
       if (
@@ -262,6 +341,12 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
           runId,
           blockIndex: payload.event.index ?? -1,
           text: payload.event.delta.partial_json,
+        });
+        queue.push({
+          type: 'phase',
+          runId,
+          phase: 'tool',
+          label: 'Computing...',
         });
       }
 
@@ -307,7 +392,17 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       }
 
       if (payload.type === 'result') {
+        const usage = normalizeUsage(payload.usage);
+        if (usage) {
+          queue.push({
+            type: 'usage',
+            runId,
+            ...usage,
+          });
+        }
+
         finalResult = payload.result ?? finalResult;
+        seenDoneEvent = true;
         queue.push({
           type: 'done',
           runId,
@@ -315,6 +410,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
           result: finalResult,
           totalCostUsd: payload.total_cost_usd,
           durationMs: payload.duration_ms,
+          ...usage,
         });
       }
     } catch {
@@ -380,9 +476,9 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       stderrBuffer = '';
     }
 
-    const hasDoneEvent = queue.some((item) => item.type === 'done');
-    if (!hasDoneEvent) {
+    if (!seenDoneEvent) {
       if (code === 0 || signal === 'SIGTERM') {
+        seenDoneEvent = true;
         queue.push({
           type: 'done',
           runId,
@@ -411,6 +507,36 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
 
     await new Promise((resolve) => setTimeout(resolve, 40));
   }
+}
+
+function extractUsage(payload: ClaudeJsonLine) {
+  return (
+    normalizeUsage(payload.event?.usage) ??
+    normalizeUsage(payload.event?.message?.usage) ??
+    normalizeUsage(payload.message?.usage)
+  );
+}
+
+function normalizeUsage(usage?: ClaudeRawUsage) {
+  if (!usage) {
+    return undefined;
+  }
+
+  const next: ClaudeUsage = {};
+  if (typeof usage.input_tokens === 'number') {
+    next.inputTokens = usage.input_tokens;
+  }
+  if (typeof usage.output_tokens === 'number') {
+    next.outputTokens = usage.output_tokens;
+  }
+  if (typeof usage.cache_creation_input_tokens === 'number') {
+    next.cacheCreationInputTokens = usage.cache_creation_input_tokens;
+  }
+  if (typeof usage.cache_read_input_tokens === 'number') {
+    next.cacheReadInputTokens = usage.cache_read_input_tokens;
+  }
+
+  return Object.keys(next).length > 0 ? next : undefined;
 }
 
 function resolveClaudeCommand() {
