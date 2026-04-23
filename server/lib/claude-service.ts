@@ -215,6 +215,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
   let sessionId = resumeSessionId;
   let finalResult = '';
   let seenDoneEvent = false;
+  const blockTypeByIndex = new Map<number, string>();
 
   const flushStdoutLine = (line: string) => {
     const trimmed = line.trim();
@@ -285,6 +286,10 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
 
       if (payload.type === 'stream_event' && payload.event?.type === 'content_block_start') {
         const block = payload.event.content_block;
+        if (typeof payload.event.index === 'number' && block?.type) {
+          blockTypeByIndex.set(payload.event.index, block.type);
+        }
+
         if (block?.type === 'thinking') {
           queue.push({
             type: 'phase',
@@ -318,6 +323,12 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         payload.event.delta?.type === 'text_delta' &&
         payload.event.delta.text
       ) {
+        const currentBlockType =
+          typeof payload.event.index === 'number' ? blockTypeByIndex.get(payload.event.index) : undefined;
+        if (currentBlockType === 'thinking' || currentBlockType === 'redacted_thinking') {
+          return;
+        }
+
         queue.push({
           type: 'delta',
           runId,
@@ -365,11 +376,19 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       }
 
       if (payload.type === 'stream_event' && payload.event?.type === 'content_block_stop') {
-        queue.push({
-          type: 'tool-stop',
-          runId,
-          blockIndex: payload.event.index ?? -1,
-        });
+        const currentBlockType =
+          typeof payload.event.index === 'number' ? blockTypeByIndex.get(payload.event.index) : undefined;
+        if (typeof payload.event.index === 'number') {
+          blockTypeByIndex.delete(payload.event.index);
+        }
+
+        if (currentBlockType === 'tool_use') {
+          queue.push({
+            type: 'tool-stop',
+            runId,
+            blockIndex: payload.event.index ?? -1,
+          });
+        }
       }
 
       if (payload.type === 'assistant' && Array.isArray(payload.message?.content)) {

@@ -32,12 +32,13 @@ export function ConversationPane({
           <p>输入需求后，Claude 的正文会连续显示，工具调用会以轻量步骤内嵌在回答中。</p>
         </div>
       ) : (
-        activeThread.turns.map((turn) => (
+        activeThread.turns.map((turn, index) => (
           <ConversationTurnView
             key={turn.id}
             turn={turn}
             nowMs={clockNowMs}
             isLiveRunning={isRunning && turn.id === activeTurnId}
+            isLatest={index === activeThread.turns.length - 1}
           />
         ))
       )}

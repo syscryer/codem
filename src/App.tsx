@@ -48,9 +48,10 @@ export default function App() {
     submitInputDialog,
     confirmRemoveDialog,
     handleOpenProject,
+    handleOpenProjectInEditor,
+    refreshProjectGitSummary,
     handleCopySessionId,
     selectThread,
-    selectProject,
     handlePanelStateChange,
     toggleProjectCollapse,
     toggleAllProjects,
@@ -65,6 +66,7 @@ export default function App() {
     appendRawEvent,
     schedulePersistThreadHistory,
   } = workspaceState;
+  const wasRunningRef = useRef(false);
   const {
     prompt,
     permissionMode,
@@ -106,6 +108,23 @@ export default function App() {
     return () => cancelAnimationFrame(frame);
   }, [activeThread?.turns]);
 
+  useEffect(() => {
+    if (!activeProjectId) {
+      return;
+    }
+
+    void refreshProjectGitSummary(activeProjectId);
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    const wasRunning = wasRunningRef.current;
+    wasRunningRef.current = isRunning;
+
+    if (activeProjectId && wasRunning && !isRunning) {
+      void refreshProjectGitSummary(activeProjectId);
+    }
+  }, [activeProjectId, isRunning]);
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
       return;
@@ -118,11 +137,6 @@ export default function App() {
   async function handleSelectThread(projectId: string, threadId: string) {
     activeTurnIdRef.current = '';
     await selectThread(projectId, threadId);
-  }
-
-  async function handleSelectProject(projectId: string) {
-    activeTurnIdRef.current = '';
-    await selectProject(projectId);
   }
 
   function handleOpenRemoveThreadDialog(thread: ThreadSummary) {
@@ -175,7 +189,6 @@ export default function App() {
           onToggleAllProjects={toggleAllProjects}
           onPanelStateChange={handlePanelStateChange}
           onPickProjectDirectory={handlePickProjectDirectory}
-          onSelectProject={handleSelectProject}
           onCreateThread={createThread}
           onOpenProject={handleOpenProject}
           onOpenRenameProjectDialog={openRenameProjectDialog}
@@ -192,6 +205,8 @@ export default function App() {
             activeProject={activeProject}
             activeThread={activeThread}
             onToggleDebug={() => setDebugOpen((value) => !value)}
+            onOpenEditor={() => activeProject ? void handleOpenProjectInEditor(activeProject) : showToast('请先选择项目。', 'info')}
+            onRefreshGitDiff={() => activeProjectId ? void refreshProjectGitSummary(activeProjectId) : undefined}
             onUseProjectWorkspace={() => setWorkspace(activeProject?.path ?? '')}
           />
 

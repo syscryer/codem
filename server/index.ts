@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'node:path';
+import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   cancelRun,
@@ -10,10 +11,13 @@ import {
   type ClaudePermissionMode,
 } from './lib/claude-service.js';
 import {
+  canPreviewWorkspaceFile,
   createProject,
   createThread,
+  getProjectGitSummary,
   getThreadHistory,
   getWorkspaceBootstrap,
+  openProjectInEditor,
   openProjectInExplorer,
   removeProject,
   removeThread,
@@ -150,6 +154,65 @@ app.post('/api/projects/:projectId/open', (request, response) => {
   }
 });
 
+app.get('/api/system/file-preview', (request, response) => {
+  const filePath =
+    typeof request.query.path === 'string' && request.query.path.trim()
+      ? path.resolve(request.query.path.trim())
+      : '';
+
+  if (!filePath) {
+    response.status(400).send('path 不能为空');
+    return;
+  }
+
+  if (!canPreviewWorkspaceFile(filePath)) {
+    response.status(403).send('无权访问该路径');
+    return;
+  }
+
+  try {
+    const stats = statSync(filePath);
+    if (!stats.isFile()) {
+      response.status(400).send('目标不是文件');
+      return;
+    }
+    if (stats.size > 200 * 1024) {
+      response.status(400).send('文件过大，暂不预览');
+      return;
+    }
+
+    const buffer = readFileSync(filePath);
+    if (buffer.includes(0)) {
+      response.status(400).send('二进制文件暂不预览');
+      return;
+    }
+
+    response.json({
+      path: filePath,
+      content: buffer.toString('utf8'),
+    });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '文件预览失败');
+  }
+});
+
+app.post('/api/projects/:projectId/open-editor', (request, response) => {
+  try {
+    openProjectInEditor(request.params.projectId);
+    response.json({ ok: true });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '打开编辑器失败');
+  }
+});
+
+app.get('/api/projects/:projectId/git', (request, response) => {
+  try {
+    response.json(getProjectGitSummary(request.params.projectId));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '读取 Git 状态失败');
+  }
+});
+
 app.post('/api/projects/:projectId/threads', (request, response) => {
   const title =
     typeof request.body?.title === 'string' && request.body.title.trim()
@@ -170,8 +233,14 @@ app.post('/api/projects/:projectId/threads', (request, response) => {
 
 app.patch('/api/threads/:threadId', (request, response) => {
   try {
-    if (typeof request.body?.title === 'string' && request.body.title.trim()) {
-      renameThread(request.params.threadId, request.body.title.trim());
+    const nextTitle =
+      typeof request.body?.title === 'string' && request.body.title.trim()
+        ? request.body.title.trim()
+        : undefined;
+    const shouldRefreshWorkspace = Boolean(nextTitle);
+
+    if (nextTitle) {
+      renameThread(request.params.threadId, nextTitle);
     }
 
     updateThreadMetadata(request.params.threadId, {
@@ -193,10 +262,15 @@ app.patch('/api/threads/:threadId', (request, response) => {
           : undefined,
     });
 
-    response.json({
-      ok: true,
-      workspace: getWorkspaceBootstrap(),
-    });
+    if (shouldRefreshWorkspace) {
+      response.json({
+        ok: true,
+        workspace: getWorkspaceBootstrap(),
+      });
+      return;
+    }
+
+    response.json({ ok: true });
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '聊天更新失败');
   }
@@ -205,10 +279,7 @@ app.patch('/api/threads/:threadId', (request, response) => {
 app.delete('/api/threads/:threadId', (_request, response) => {
   try {
     removeThread(_request.params.threadId);
-    response.json({
-      ok: true,
-      workspace: getWorkspaceBootstrap(),
-    });
+    response.json({ ok: true });
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '聊天删除失败');
   }

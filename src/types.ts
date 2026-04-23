@@ -97,6 +97,7 @@ export type ThreadSummary = {
   updatedAt: string;
   updatedLabel: string;
   provider: string;
+  imported?: boolean;
   model?: string;
   permissionMode?: string;
 };
@@ -108,8 +109,15 @@ export type ProjectSummary = {
   createdAt: string;
   updatedAt: string;
   gitBranch?: string;
+  gitDiff: GitDiffSummary;
   isGitRepo: boolean;
   threads: ThreadSummary[];
+};
+
+export type GitDiffSummary = {
+  additions: number;
+  deletions: number;
+  filesChanged: number;
 };
 
 export type PanelState = {

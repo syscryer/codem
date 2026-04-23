@@ -32,6 +32,40 @@ export function closeDanglingTurns(turns: ConversationTurn[]) {
   );
 }
 
+export function repairConversationTurn(turn: ConversationTurn): ConversationTurn {
+  const repairedItems = repairTurnItems(turn.items);
+  if (repairedItems === turn.items) {
+    return turn;
+  }
+
+  const repairedToolInputs = new Map<string, string | undefined>();
+  for (const item of repairedItems) {
+    if (item.type === 'tool') {
+      repairedToolInputs.set(item.tool.id, item.tool.inputText);
+    }
+  }
+
+  let toolsChanged = false;
+  const repairedTools = turn.tools.map((tool) => {
+    const nextInputText = repairedToolInputs.get(tool.id);
+    if (nextInputText === undefined || nextInputText === tool.inputText) {
+      return tool;
+    }
+
+    toolsChanged = true;
+    return {
+      ...tool,
+      inputText: nextInputText,
+    };
+  });
+
+  return {
+    ...turn,
+    items: repairedItems,
+    tools: toolsChanged ? repairedTools : turn.tools,
+  };
+}
+
 export function closeTurnWithoutTerminalEvent(turn: ConversationTurn): ConversationTurn {
   const hasVisibleOutput = hasTurnVisibleOutput(turn);
 
@@ -118,7 +152,7 @@ export function syncToolItem(items: AssistantItem[], step: ToolStep): AssistantI
 }
 
 export function upsertToolDelta(steps: ToolStep[], event: Extract<ClaudeEvent, { type: 'tool-input-delta' }>) {
-  const index = steps.findIndex((item) => matchesToolBlock(item, event.blockIndex));
+  const index = findLatestToolIndex(steps, event.blockIndex);
   if (index === -1) {
     return [
       ...steps,
@@ -221,6 +255,24 @@ export function getElapsedDuration(turn: ConversationTurn) {
 
 export function matchesToolBlock(tool: ToolStep, blockIndex: number) {
   return tool.blockIndex === blockIndex;
+}
+
+export function findLatestToolIndex(steps: ToolStep[], blockIndex: number) {
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const tool = steps[index];
+    if (tool.status === 'running' && matchesToolBlock(tool, blockIndex)) {
+      return index;
+    }
+  }
+
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const tool = steps[index];
+    if (matchesToolBlock(tool, blockIndex)) {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 export function shouldHideToolStep(tool: ToolStep) {
@@ -394,4 +446,179 @@ function getString(value: unknown, keys: string[]) {
   }
 
   return undefined;
+}
+
+type ToolInputChunk = {
+  raw: string;
+  parsed: Record<string, unknown>;
+};
+
+function repairTurnItems(items: AssistantItem[]) {
+  const toolEntries = items
+    .map((item, index) =>
+      item.type === 'tool'
+        ? {
+            index,
+            tool: item.tool,
+            chunks: splitToolInputChunks(item.tool.inputText),
+          }
+        : null,
+    )
+    .filter(Boolean) as Array<{ index: number; tool: ToolStep; chunks: ToolInputChunk[] }>;
+  const repairCandidates = toolEntries.filter(({ tool, chunks }) => !tool.inputText?.trim() || chunks.length > 1);
+  const hasCombinedInput = toolEntries.some(({ chunks }) => chunks.length > 1);
+
+  if (!hasCombinedInput || repairCandidates.length <= 1) {
+    return items;
+  }
+
+  const chunks = repairCandidates.flatMap(({ chunks }) => chunks);
+  if (chunks.length < repairCandidates.length) {
+    return items;
+  }
+
+  const repairedItems = [...items];
+  const used = new Set<number>();
+  let changed = false;
+
+  repairCandidates.forEach(({ index, tool }, candidateIndex) => {
+    const matchedChunkIndex = findMatchingChunkIndex(tool.name, chunks, used, candidateIndex);
+    if (matchedChunkIndex === -1) {
+      return;
+    }
+
+    const nextInputText = chunks[matchedChunkIndex].raw;
+    if (nextInputText === tool.inputText) {
+      used.add(matchedChunkIndex);
+      return;
+    }
+
+    used.add(matchedChunkIndex);
+    changed = true;
+    repairedItems[index] = {
+      ...repairedItems[index],
+      tool: {
+        ...tool,
+        inputText: nextInputText,
+      },
+    } as AssistantItem;
+  });
+
+  return changed ? repairedItems : items;
+}
+
+function splitToolInputChunks(inputText?: string) {
+  if (!inputText?.trim()) {
+    return [];
+  }
+
+  const direct = parseLooseJson(inputText);
+  if (direct) {
+    return [{ raw: inputText, parsed: direct as Record<string, unknown> }];
+  }
+
+  const chunks: ToolInputChunk[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < inputText.length; index += 1) {
+    const char = inputText[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === '{') {
+      if (depth === 0) {
+        start = index;
+      }
+      depth += 1;
+      continue;
+    }
+
+    if (char !== '}') {
+      continue;
+    }
+
+    depth -= 1;
+    if (depth !== 0 || start === -1) {
+      continue;
+    }
+
+    const raw = inputText.slice(start, index + 1);
+    try {
+      chunks.push({
+        raw,
+        parsed: JSON.parse(raw) as Record<string, unknown>,
+      });
+    } catch {
+      return [];
+    }
+    start = -1;
+  }
+
+  return chunks;
+}
+
+function findMatchingChunkIndex(
+  toolName: string,
+  chunks: ToolInputChunk[],
+  used: Set<number>,
+  fallbackIndex: number,
+) {
+  for (let index = 0; index < chunks.length; index += 1) {
+    if (used.has(index)) {
+      continue;
+    }
+
+    if (doesChunkMatchTool(toolName, chunks[index].parsed)) {
+      return index;
+    }
+  }
+
+  for (let index = fallbackIndex; index < chunks.length; index += 1) {
+    if (!used.has(index)) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function doesChunkMatchTool(toolName: string, parsed: Record<string, unknown>) {
+  if (toolName === 'Bash') {
+    return typeof parsed.command === 'string' || typeof parsed.cmd === 'string' || typeof parsed.cmdString === 'string';
+  }
+
+  if (toolName === 'Grep' || toolName === 'Glob') {
+    return typeof parsed.pattern === 'string' || typeof parsed.query === 'string';
+  }
+
+  if (toolName === 'Read') {
+    return typeof parsed.file_path === 'string' && !('old_string' in parsed) && !('new_string' in parsed);
+  }
+
+  if (toolName === 'Edit' || toolName === 'NotebookEdit') {
+    return 'old_string' in parsed || 'new_string' in parsed || 'diff' in parsed || 'patch' in parsed;
+  }
+
+  if (toolName === 'Write') {
+    return typeof parsed.file_path === 'string' && ('content' in parsed || 'diff' in parsed || 'patch' in parsed);
+  }
+
+  return false;
 }

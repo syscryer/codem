@@ -6,11 +6,11 @@ import {
   closeDanglingTurns,
   closeTurnWithoutTerminalEvent,
   createToolStep,
+  findLatestToolIndex,
   formatJson,
   formatMetrics,
   getElapsedDuration,
   isPermissionMode,
-  matchesToolBlock,
   mergeUsageSnapshot,
   settleRunningToolSteps,
   summarizeToolResult,
@@ -325,6 +325,7 @@ export function useClaudeRun({
       setIsRunning(false);
       setBackendRunId('');
       runThreadIdRef.current = null;
+      clearActiveTurnSelection();
     }
   }
 
@@ -463,7 +464,8 @@ export function useClaudeRun({
     if (event.type === 'tool-input-delta') {
       updateRunningTurn((turn) => {
         const tools = upsertToolDelta(turn.tools, event);
-        const tool = tools.find((item) => matchesToolBlock(item, event.blockIndex));
+        const toolIndex = findLatestToolIndex(tools, event.blockIndex);
+        const tool = toolIndex >= 0 ? tools[toolIndex] : undefined;
         return {
           ...turn,
           phase: 'tool',
@@ -476,12 +478,16 @@ export function useClaudeRun({
 
     if (event.type === 'tool-stop') {
       updateRunningTurn((turn) => {
-        const tools = turn.tools.map((tool) =>
-          matchesToolBlock(tool, event.blockIndex) && tool.status === 'running'
-            ? { ...tool, status: 'done' as const }
-            : tool,
-        );
-        const tool = tools.find((item) => matchesToolBlock(item, event.blockIndex));
+        const index = findLatestToolIndex(turn.tools, event.blockIndex);
+        const tools =
+          index === -1
+            ? turn.tools
+            : turn.tools.map((tool, toolIndex) =>
+                toolIndex === index && tool.status === 'running'
+                  ? { ...tool, status: 'done' as const }
+                  : tool,
+              );
+        const tool = index >= 0 ? tools[index] : undefined;
         return {
           ...turn,
           tools,
@@ -581,6 +587,7 @@ export function useClaudeRun({
     abortRef.current?.abort();
 
     if (!backendRunId) {
+      clearActiveTurnSelection();
       return;
     }
 

@@ -1,6 +1,6 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { EMPTY_PANEL_STATE } from '../constants';
-import { createThreadDetail, normalizeTurnsForPersist } from '../lib/conversation';
+import { createThreadDetail, normalizeTurnsForPersist, repairConversationTurn } from '../lib/conversation';
 import type {
   ConfirmDialogState,
   ConversationTurn,
@@ -156,7 +156,7 @@ export function useWorkspaceState() {
     setConfirmDialog({
       kind: 'remove-thread',
       title: '删除聊天',
-      description: `删除聊天“${thread.title}”后，只会删除 CodeM 的索引与本地消息记录，不会删除 Claude Code 原始 session 文件。`,
+      description: `删除聊天“${thread.title}”后，会删除 CodeM 索引、消息记录，以及关联的 Claude Code 原始 session 文件。`,
       confirmLabel: '删除聊天',
       threadId: thread.id,
     });
@@ -196,11 +196,13 @@ export function useWorkspaceState() {
           return current;
         }
 
+        const repairedTurns = payload.turns.map(repairConversationTurn);
+
         return {
           ...current,
           [payload.threadId]: {
             ...existing,
-            turns: payload.turns,
+            turns: repairedTurns,
             historyLoaded: true,
             historyLoading: false,
           },
@@ -277,7 +279,7 @@ export function useWorkspaceState() {
       threadId,
       (thread) => ({
         ...thread,
-        turns: thread.turns.map((turn) => (turn.id === turnId ? updater(turn) : turn)),
+        turns: thread.turns.map((turn) => (turn.id === turnId ? repairConversationTurn(updater(turn)) : turn)),
       }),
       fallbackSummary,
     );
@@ -333,8 +335,10 @@ export function useWorkspaceState() {
     });
 
     if (response.ok) {
-      const result = (await response.json()) as { workspace: WorkspaceBootstrap };
-      syncWorkspace(result.workspace);
+      const result = (await response.json()) as { workspace?: WorkspaceBootstrap };
+      if (result.workspace) {
+        syncWorkspace(result.workspace);
+      }
     }
   }
 
@@ -548,8 +552,15 @@ export function useWorkspaceState() {
       return;
     }
 
-    const payload = (await response.json()) as { workspace: WorkspaceBootstrap };
-    syncWorkspace(payload.workspace);
+    const nextActiveThreadId = pickNextThreadAfterRemoval(projects, activeProjectId, activeThreadId, removedThreadId);
+    setProjects((current) =>
+      current.map((project) => ({
+        ...project,
+        threads: project.threads.filter((thread) => thread.id !== removedThreadId),
+      })),
+    );
+    setActiveThreadId(nextActiveThreadId);
+    await persistSelection(activeProjectId, nextActiveThreadId);
     setThreadDetails((current) => {
       const next = { ...current };
       delete next[removedThreadId];
@@ -567,6 +578,41 @@ export function useWorkspaceState() {
       showToast(await response.text(), 'error');
       return;
     }
+  }
+
+  async function handleOpenProjectInEditor(project: ProjectSummary) {
+    const response = await fetch(`/api/projects/${project.id}/open-editor`, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      showToast(await response.text(), 'error');
+      return;
+    }
+
+    showToast('已请求编辑器打开项目');
+  }
+
+  async function refreshProjectGitSummary(projectId: string) {
+    const response = await fetch(`/api/projects/${projectId}/git`, {
+      method: 'GET',
+    });
+    if (!response.ok) {
+      return;
+    }
+
+    const payload = (await response.json()) as Pick<ProjectSummary, 'gitBranch' | 'gitDiff' | 'isGitRepo'>;
+    setProjects((current) =>
+      current.map((project) =>
+        project.id === projectId
+          ? {
+              ...project,
+              gitBranch: payload.gitBranch,
+              gitDiff: payload.gitDiff,
+              isGitRepo: payload.isGitRepo,
+            }
+          : project,
+      ),
+    );
   }
 
   async function handleCopySessionId(thread: ThreadSummary) {
@@ -677,6 +723,30 @@ export function useWorkspaceState() {
     });
   }
 
+  function pickNextThreadAfterRemoval(
+    currentProjects: ProjectSummary[],
+    selectedProjectId: string | null,
+    selectedThreadId: string | null,
+    removedThreadId: string,
+  ) {
+    if (selectedThreadId !== removedThreadId) {
+      return selectedThreadId;
+    }
+
+    const currentThreads = currentProjects.find((project) => project.id === selectedProjectId)?.threads ?? [];
+    const removedIndex = currentThreads.findIndex((thread) => thread.id === removedThreadId);
+    if (removedIndex === -1) {
+      return null;
+    }
+
+    const remainingThreads = currentThreads.filter((thread) => thread.id !== removedThreadId);
+    if (remainingThreads.length === 0) {
+      return null;
+    }
+
+    return remainingThreads[removedIndex]?.id ?? remainingThreads[remainingThreads.length - 1]?.id ?? null;
+  }
+
   return {
     projects,
     panelState,
@@ -709,6 +779,8 @@ export function useWorkspaceState() {
     submitInputDialog,
     confirmRemoveDialog,
     handleOpenProject,
+    handleOpenProjectInEditor,
+    refreshProjectGitSummary,
     handleCopySessionId,
     selectThread,
     selectProject,

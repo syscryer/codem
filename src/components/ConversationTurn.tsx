@@ -1,5 +1,7 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Check, Copy } from 'lucide-react';
 import {
   formatDuration,
   hasTurnVisibleOutput,
@@ -12,10 +14,12 @@ export function ConversationTurnView({
   turn,
   nowMs,
   isLiveRunning,
+  isLatest,
 }: {
   turn: ConversationTurn;
   nowMs: number;
   isLiveRunning: boolean;
+  isLatest: boolean;
 }) {
   const visibleItems = turn.items.filter((item) => item.type === 'text' || !shouldHideToolStep(item.tool));
   const running = isTurnInFlight(turn, isLiveRunning);
@@ -25,16 +29,29 @@ export function ConversationTurnView({
     turn.status === 'error' ||
     Boolean(turn.durationMs || turn.outputTokens || turn.inputTokens);
 
+  const assistantCopyText = getAssistantCopyText(turn);
+  const messageTime = formatMessageTime(turn.startedAtMs);
+
   return (
-    <article className="turn">
+    <article className={`turn ${isLatest ? 'latest-turn' : ''}`}>
       <section className="message user-message">
         <div className="message-label">You</div>
-        <div className="message-body preserve-format">{turn.userText}</div>
+        <div className="user-message-content">
+          <div className="message-body preserve-format">{turn.userText}</div>
+          <div className="turn-actions user-turn-actions" aria-label="用户消息操作">
+            <InlineCopyButton text={turn.userText} title="复制消息" />
+            {messageTime ? <span className="turn-time">{messageTime}</span> : null}
+          </div>
+        </div>
       </section>
 
       <section className="message assistant-message">
         <div className="message-label">Claude</div>
         <div className="assistant-content">
+          {showProgressLine ? (
+            <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
+          ) : null}
+
           {visibleItems.length > 0 ? (
             visibleItems.map((item) =>
               item.type === 'text' ? (
@@ -45,21 +62,18 @@ export function ConversationTurnView({
             )
           ) : (
             running ? (
-              <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} />
+              null
             ) : null
           )}
 
-          {visibleItems.length > 0 && running ? (
-            <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
-          ) : null}
-
-          {showProgressLine && !running ? (
-            <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
-          ) : null}
-          {!showProgressLine && turn.metrics ? <div className="turn-metrics">{turn.metrics}</div> : null}
           {turn.status === 'error' && turn.activity ? (
             <div className={`turn-status ${turn.status}`}>{turn.activity}</div>
           ) : null}
+
+          <div className="turn-actions" aria-label="消息操作">
+            <InlineCopyButton text={assistantCopyText} title="复制回复" />
+            {messageTime ? <span className="turn-time">{messageTime}</span> : null}
+          </div>
         </div>
       </section>
     </article>
@@ -91,27 +105,49 @@ function TurnProgressLine({
 function MarkdownMessage({ content }: { content: string }) {
   return (
     <div className="message-body markdown-body">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          pre({ children }) {
+            const text = extractCodeText(children);
+            return (
+              <div className="code-block-shell">
+                <pre>{children}</pre>
+                <InlineCopyButton text={text} title="复制代码" className="code-copy-button" />
+              </div>
+            );
+          },
+        }}
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   );
 }
 
 function ToolStepRow({ tool }: { tool: ToolStep }) {
-  const hasDetails = Boolean(tool.inputText?.trim() || tool.resultText?.trim());
-  const summary = summarizeToolRow(tool);
+  const preview = useMemo(() => getToolPreview(tool), [tool]);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  if (preview) {
+    return <CompactToolPreview tool={tool} preview={preview} />;
+  }
+
+  const hasDetails = Boolean(preview || tool.inputText?.trim() || tool.resultText?.trim());
+  const summary = getToolSummary(tool, preview);
+  const displayTitle = tool.title;
 
   return (
     <div className={`tool-step tool-${tool.status}`}>
       <div className="tool-step-main">
         <span className="tool-status-dot" />
         <div>
-          <div className="tool-title">{tool.title}</div>
+          <div className="tool-title">{displayTitle}</div>
           {summary ? <div className="tool-subtitle">{summary}</div> : null}
         </div>
       </div>
 
       {hasDetails ? (
-        <details className="tool-details">
+        <details className="tool-details" onToggle={(event) => setDetailsOpen((event.target as HTMLDetailsElement).open)}>
           <summary>查看详情</summary>
           {tool.inputText?.trim() ? (
             <>
@@ -125,19 +161,75 @@ function ToolStepRow({ tool }: { tool: ToolStep }) {
               <pre>{tool.resultText}</pre>
             </>
           ) : null}
+          {detailsOpen && preview ? <ToolPreviewPanel preview={preview} /> : null}
         </details>
       ) : null}
     </div>
   );
 }
 
+function CompactToolPreview({
+  tool,
+  preview,
+}: {
+  tool: ToolStep;
+  preview: ToolPreview;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className={`tool-step tool-preview-step tool-${tool.status}`}>
+      <button
+        type="button"
+        className="tool-preview-summary"
+        onClick={() => setExpanded((current) => !current)}
+      >
+        <div className="tool-preview-summary-main">
+          <span className="tool-preview-kind">{getToolPreviewTitle(preview)}</span>
+          {preview.additions > 0 ? <span className="tool-preview-add">+{preview.additions}</span> : null}
+          {preview.deletions > 0 ? <span className="tool-preview-del">-{preview.deletions}</span> : null}
+          <span className="tool-preview-name">{preview.fileName}</span>
+        </div>
+        <span className={`tool-preview-chevron ${expanded ? 'expanded' : ''}`}>{'>'}</span>
+      </button>
+      {expanded ? <ToolPreviewPanel preview={preview} /> : null}
+    </div>
+  );
+}
+
+function ToolPreviewPanel({ preview }: { preview: ToolPreview }) {
+  return (
+    <div className="tool-preview-card">
+      <div className="tool-preview-card-head">
+        <span className="tool-preview-file">{preview.fileName}</span>
+        <div className="tool-preview-stats">
+          {preview.additions > 0 ? <span className="tool-preview-add">+{preview.additions}</span> : null}
+          {preview.deletions > 0 ? <span className="tool-preview-del">-{preview.deletions}</span> : null}
+        </div>
+      </div>
+      {preview.kind === 'write' ? (
+        <pre className="tool-preview-code">{preview.afterText}</pre>
+      ) : (
+        <div className="tool-diff-preview">
+          {preview.rows.map((row, index) => (
+            <div key={`${row.type}-${index}`} className={`tool-diff-line ${row.type}`}>
+              <span className="tool-diff-sign">{getDiffSign(row.type)}</span>
+              <code>{row.text || ' '}</code>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function formatTurnProgress(turn: ConversationTurn, nowMs?: number, isLiveRunning = false) {
   if (turn.status === 'stopped') {
-    return 'Stopped';
+    return '已停止';
   }
 
   if (turn.status === 'error') {
-    return 'Error';
+    return '处理失败';
   }
 
   const running = isTurnInFlight(turn, isLiveRunning);
@@ -149,26 +241,19 @@ function formatTurnProgress(turn: ConversationTurn, nowMs?: number, isLiveRunnin
   if (duration) {
     parts.push(duration);
   }
-  if (typeof turn.outputTokens === 'number' && turn.outputTokens > 0) {
-    parts.push(`↓ ${turn.outputTokens} tokens`);
-  }
-  if (typeof turn.totalCostUsd === 'number') {
-    parts.push(`$${turn.totalCostUsd.toFixed(4)}`);
-  }
 
   const prefix =
     !running
       ? getCompletedTurnLabel(turn)
       : turn.phase === 'thinking' || turn.phase === 'requesting'
-        ? 'Thinking...'
-        : 'Computing...';
+        ? '思考中'
+        : '处理中';
 
-  if (!running && prefix === 'Baked' && duration) {
-    const tail = parts.slice(1);
-    return tail.length > 0 ? `${prefix} for ${duration} · ${tail.join(' · ')}` : `${prefix} for ${duration}`;
+  if (!running && prefix === '已处理' && duration) {
+    return `${prefix} ${duration}`;
   }
 
-  return parts.length > 0 ? `${prefix} (${parts.join(' · ')})` : prefix;
+  return parts.length > 0 ? `${prefix} ${parts.join(' · ')}` : prefix;
 }
 
 function isTurnInFlight(turn: ConversationTurn, isLiveRunning = false) {
@@ -195,8 +280,374 @@ function hasCompletionSignal(turn: ConversationTurn) {
 
 function getCompletedTurnLabel(turn: ConversationTurn) {
   if (turn.status === 'pending' || turn.status === 'running') {
-    return hasTurnVisibleOutput(turn) ? 'Baked' : 'Stopped';
+    return hasTurnVisibleOutput(turn) ? '已处理' : '已停止';
   }
 
-  return turn.status === 'done' ? 'Baked' : 'Done';
+  return turn.status === 'done' ? '已处理' : '已完成';
+}
+
+function getAssistantCopyText(turn: ConversationTurn) {
+  const visibleText = turn.items
+    .map((item) => (item.type === 'text' ? item.text : ''))
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+
+  return visibleText || turn.assistantText.trim();
+}
+
+function formatMessageTime(timestamp?: number) {
+  if (!timestamp) {
+    return '';
+  }
+
+  return new Date(timestamp).toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+function extractCodeText(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(extractCodeText).join('');
+  }
+
+  if (value && typeof value === 'object' && 'props' in value) {
+    const props = (value as { props?: { children?: unknown } }).props;
+    return extractCodeText(props?.children);
+  }
+
+  return '';
+}
+
+type ToolPreview = {
+  kind: 'edit' | 'write';
+  filePath: string;
+  fileName: string;
+  beforeText: string;
+  afterText: string;
+  additions: number;
+  deletions: number;
+  rows: Array<{ type: 'context' | 'add' | 'remove'; text: string }>;
+};
+
+const TOOL_DIFF_CONTEXT_LINE_COUNT = 2;
+
+function getToolPreview(tool: ToolStep): ToolPreview | null {
+  if (tool.name !== 'Edit' && tool.name !== 'Write' && tool.name !== 'NotebookEdit') {
+    return null;
+  }
+
+  const input = parseToolInput(tool.inputText);
+  if (!input) {
+    return null;
+  }
+
+  const filePath = getToolInputString(input, ['file_path', 'path', 'notebook_path']);
+  if (!filePath) {
+    return null;
+  }
+
+  const oldString = getToolInputString(input, ['old_string']);
+  const newString = getToolInputString(input, ['new_string']);
+  const content = getToolInputString(input, ['content']);
+  const diff = getToolInputString(input, ['diff', 'patch']);
+  const changeType = getToolInputString(input, ['change_type']) ?? 'update';
+
+  let kind: ToolPreview['kind'] = tool.name === 'Write' ? 'write' : 'edit';
+  let beforeText = '';
+  let afterText = '';
+
+  if (oldString !== undefined || newString !== undefined) {
+    beforeText = oldString ?? '';
+    afterText = newString ?? '';
+  } else if (content !== undefined) {
+    if (changeType === 'delete') {
+      beforeText = content;
+      afterText = '';
+    } else {
+      afterText = content;
+      if (tool.name !== 'Write') {
+        kind = changeType === 'create' ? 'write' : 'edit';
+      }
+    }
+  } else if (diff) {
+    const parsedDiff = parseDiffContent(diff);
+    beforeText = parsedDiff.beforeText;
+    afterText = parsedDiff.afterText;
+  }
+
+  if (!beforeText && !afterText) {
+    return null;
+  }
+
+  if (!beforeText && afterText) {
+    kind = 'write';
+  }
+
+  const stats = calculateLineDiffStats(beforeText, afterText);
+
+  return {
+    kind,
+    filePath,
+    fileName: getFileName(filePath),
+    beforeText,
+    afterText,
+    additions: stats.additions,
+    deletions: stats.deletions,
+    rows: kind === 'edit' ? buildDiffRows(beforeText, afterText) : [],
+  };
+}
+
+function getToolPreviewTitle(preview: ToolPreview) {
+  return preview.kind === 'write' ? '已新增' : '已编辑';
+}
+
+function getToolSummary(tool: ToolStep, preview: ToolPreview | null) {
+  if (!preview) {
+    return summarizeToolRow(tool);
+  }
+
+  const stats: string[] = [];
+  if (preview.additions > 0) {
+    stats.push(`+${preview.additions}`);
+  }
+  if (preview.deletions > 0) {
+    stats.push(`-${preview.deletions}`);
+  }
+
+  const fileLabel = preview.fileName || preview.filePath;
+  return stats.length > 0 ? `${fileLabel} ${stats.join(' ')}` : fileLabel;
+}
+
+function parseToolInput(inputText?: string) {
+  if (!inputText?.trim()) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(inputText) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function getToolInputString(input: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = input[key];
+    if (typeof value === 'string') {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function parseDiffContent(diff: string) {
+  const lines = normalizePreviewText(diff).split('\n');
+  const beforeLines: string[] = [];
+  const afterLines: string[] = [];
+
+  for (const line of lines) {
+    if (
+      line.startsWith('diff ') ||
+      line.startsWith('index ') ||
+      line.startsWith('---') ||
+      line.startsWith('+++') ||
+      line.startsWith('@@')
+    ) {
+      continue;
+    }
+
+    if (line.startsWith('-')) {
+      beforeLines.push(line.slice(1));
+      continue;
+    }
+
+    if (line.startsWith('+')) {
+      afterLines.push(line.slice(1));
+      continue;
+    }
+
+    const text = line.startsWith(' ') ? line.slice(1) : line;
+    beforeLines.push(text);
+    afterLines.push(text);
+  }
+
+  return {
+    beforeText: beforeLines.join('\n'),
+    afterText: afterLines.join('\n'),
+  };
+}
+
+function calculateLineDiffStats(beforeText: string, afterText: string) {
+  const beforeLines = splitPreviewLines(beforeText);
+  const afterLines = splitPreviewLines(afterText);
+  let prefix = 0;
+
+  while (
+    prefix < beforeLines.length &&
+    prefix < afterLines.length &&
+    beforeLines[prefix] === afterLines[prefix]
+  ) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < beforeLines.length - prefix &&
+    suffix < afterLines.length - prefix &&
+    beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  return {
+    additions: Math.max(0, afterLines.length - prefix - suffix),
+    deletions: Math.max(0, beforeLines.length - prefix - suffix),
+  };
+}
+
+function buildDiffRows(beforeText: string, afterText: string) {
+  const beforeLines = splitPreviewLines(beforeText);
+  const afterLines = splitPreviewLines(afterText);
+
+  let prefix = 0;
+  while (
+    prefix < beforeLines.length &&
+    prefix < afterLines.length &&
+    beforeLines[prefix] === afterLines[prefix]
+  ) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < beforeLines.length - prefix &&
+    suffix < afterLines.length - prefix &&
+    beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  const contextStart = Math.max(0, prefix - TOOL_DIFF_CONTEXT_LINE_COUNT);
+  const beforeChangedEnd = Math.max(prefix, beforeLines.length - suffix);
+  const afterChangedEnd = Math.max(prefix, afterLines.length - suffix);
+  const rows: ToolPreview['rows'] = [];
+
+  if (contextStart > 0) {
+    rows.push({ type: 'context', text: '...' });
+  }
+
+  for (const line of afterLines.slice(contextStart, prefix)) {
+    rows.push({ type: 'context', text: line });
+  }
+
+  for (const line of beforeLines.slice(prefix, beforeChangedEnd)) {
+    rows.push({ type: 'remove', text: line });
+  }
+
+  for (const line of afterLines.slice(prefix, afterChangedEnd)) {
+    rows.push({ type: 'add', text: line });
+  }
+
+  const trailingContext = afterLines.slice(
+    afterChangedEnd,
+    Math.min(afterChangedEnd + TOOL_DIFF_CONTEXT_LINE_COUNT, afterLines.length),
+  );
+  for (const line of trailingContext) {
+    rows.push({ type: 'context', text: line });
+  }
+
+  if (afterChangedEnd + trailingContext.length < afterLines.length) {
+    rows.push({ type: 'context', text: '...' });
+  }
+
+  if (rows.length === 0) {
+    return [{ type: 'context' as const, text: afterLines[0] ?? '' }];
+  }
+
+  return rows;
+}
+
+function splitPreviewLines(value: string) {
+  return normalizePreviewText(value).split('\n');
+}
+
+function normalizePreviewText(value: string) {
+  return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function getDiffSign(type: 'context' | 'add' | 'remove') {
+  if (type === 'add') {
+    return '+';
+  }
+
+  if (type === 'remove') {
+    return '-';
+  }
+
+  return ' ';
+}
+
+function getFileName(filePath: string) {
+  const segments = filePath.split(/[\\/]/);
+  return segments[segments.length - 1] || filePath;
+}
+
+function InlineCopyButton({
+  text,
+  title,
+  className = '',
+}: {
+  text: string;
+  title: string;
+  className?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        window.clearTimeout(timerRef.current);
+      }
+    };
+  }, []);
+
+  async function handleCopy() {
+    if (!text.trim()) {
+      return;
+    }
+
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+
+    if (timerRef.current) {
+      window.clearTimeout(timerRef.current);
+    }
+
+    timerRef.current = window.setTimeout(() => {
+      setCopied(false);
+      timerRef.current = null;
+    }, 1400);
+  }
+
+  return (
+    <button
+      type="button"
+      className={`inline-copy-button ${copied ? 'copied' : ''} ${className}`.trim()}
+      title={copied ? '已复制' : title}
+      aria-label={copied ? '已复制' : title}
+      disabled={!text.trim()}
+      onClick={() => void handleCopy()}
+    >
+      {copied ? <Check size={14} /> : <Copy size={14} />}
+    </button>
+  );
 }
