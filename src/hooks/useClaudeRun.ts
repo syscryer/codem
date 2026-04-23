@@ -33,6 +33,7 @@ import type {
   RuntimeRecoveryHint,
   RuntimeReconnectReason,
   RuntimeSuggestedAction,
+  ToolStep,
   ThreadDetail,
   ThreadSummary,
 } from '../types';
@@ -88,7 +89,7 @@ export function useClaudeRun({
 }: UseClaudeRunArgs) {
   const [prompt, setPrompt] = useState('');
   const [workspace, setWorkspace] = useState('');
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>('bypassPermissions');
   const [model, setModel] = useState(DEFAULT_MODEL_VALUE);
   const [models, setModels] = useState<string[]>([]);
   const [, setHealth] = useState<{ available: boolean; command?: string; error?: string }>({
@@ -116,7 +117,11 @@ export function useClaudeRun({
   }, [activeProjectPath, activeThreadSummary?.workingDirectory]);
 
   useEffect(() => {
-    setPermissionMode(isPermissionMode(activeThreadSummary?.permissionMode) ? activeThreadSummary.permissionMode : 'default');
+    setPermissionMode(
+      isPermissionMode(activeThreadSummary?.permissionMode)
+        ? activeThreadSummary.permissionMode
+        : 'bypassPermissions',
+    );
   }, [activeThreadSummary?.id, activeThreadSummary?.permissionMode]);
 
   useEffect(() => {
@@ -262,6 +267,7 @@ export function useClaudeRun({
     options?: {
       workingDirectory?: string;
       sessionId?: string;
+      permissionModeOverride?: PermissionMode;
       onStarted?: () => void;
     },
   ) {
@@ -274,6 +280,7 @@ export function useClaudeRun({
       options?.workingDirectory?.trim() || thread.workingDirectory;
     const runSessionId =
       options?.sessionId && options.sessionId.trim() ? options.sessionId.trim() : undefined;
+    const runPermissionMode = options?.permissionModeOverride ?? permissionMode;
     runWorkingDirectoryRef.current = runWorkingDirectory;
     const turnId = crypto.randomUUID();
     activeTurnIdRef.current = turnId;
@@ -318,7 +325,7 @@ export function useClaudeRun({
         body: JSON.stringify({
           prompt: trimmedPrompt,
           workingDirectory: runWorkingDirectory,
-          permissionMode,
+          permissionMode: runPermissionMode,
           model: model === DEFAULT_MODEL_VALUE ? undefined : model,
           sessionId: runSessionId,
         }),
@@ -642,12 +649,16 @@ export function useClaudeRun({
           toolIndex >= 0
             ? tools[toolIndex]
             : tools.find((item) => item.toolUseId && item.toolUseId === event.toolUseId);
+        const approvalRequest = createApprovalRequestFromToolResult(tool, event);
         return {
           ...turn,
           activity: summarizeToolResult(event),
           phase: event.isError ? turn.phase : 'computing',
           tools,
           items: tool ? syncToolItem(turn.items, tool) : turn.items,
+          pendingApprovalRequests: approvalRequest
+            ? upsertApprovalRequest(turn.pendingApprovalRequests, approvalRequest)
+            : turn.pendingApprovalRequests,
         };
       });
       return;
@@ -906,6 +917,7 @@ export function useClaudeRun({
     const started = await startRun(activeThreadSummary, promptText, {
       workingDirectory: turn.workspace.trim() || activeThreadSummary.workingDirectory,
       sessionId: turn.sessionId?.trim() || activeThreadSummary.sessionId.trim() || undefined,
+      permissionModeOverride: decision === 'approve' ? 'bypassPermissions' : undefined,
     });
 
     if (!started) {
@@ -1034,17 +1046,21 @@ function upsertApprovalRequest(
   request: ApprovalRequest,
 ) {
   const current = requests ?? [];
-  if (!request.requestId) {
-    return [...current, request];
-  }
-
-  const index = current.findIndex((item) => item.requestId === request.requestId);
+  const signature = getApprovalRequestSignature(request);
+  const index = current.findIndex(
+    (item) =>
+      (request.requestId && item.requestId === request.requestId) ||
+      getApprovalRequestSignature(item) === signature,
+  );
   if (index === -1) {
     return [...current, request];
   }
 
   const next = [...current];
-  next[index] = request;
+  next[index] = {
+    ...next[index],
+    ...request,
+  };
   return next;
 }
 
@@ -1053,25 +1069,110 @@ function removePendingApprovalRequest(
   request: ApprovalRequest,
 ) {
   const current = requests ?? [];
-  if (!request.requestId) {
-    const targetSignature = JSON.stringify({
-      title: request.title,
-      description: request.description,
-      command: request.command,
-      danger: request.danger,
-    });
-    return current.filter((item) => {
-      const itemSignature = JSON.stringify({
-        title: item.title,
-        description: item.description,
-        command: item.command,
-        danger: item.danger,
-      });
-      return itemSignature !== targetSignature;
-    });
+  const targetSignature = getApprovalRequestSignature(request);
+  return current.filter(
+    (item) =>
+      !(
+        (request.requestId && item.requestId === request.requestId) ||
+        getApprovalRequestSignature(item) === targetSignature
+      ),
+  );
+}
+
+function getApprovalRequestSignature(request: ApprovalRequest) {
+  return JSON.stringify({
+    title: request.title,
+    description: request.description,
+    command: request.command ?? [],
+    danger: request.danger,
+  });
+}
+
+function createApprovalRequestFromToolResult(
+  tool: ToolStep | undefined,
+  event: Extract<ClaudeEvent, { type: 'tool-result' }>,
+): ApprovalRequest | null {
+  if (!event.isError || !isApprovalRequiredToolResult(event.content)) {
+    return null;
   }
 
-  return current.filter((item) => item.requestId !== request.requestId);
+  const command = extractCommandFromTool(tool);
+
+  return {
+    requestId: tool?.toolUseId ?? event.toolUseId ?? tool?.id,
+    title: '工具调用需要你确认',
+    description: command?.length
+      ? '当前会话未放行这一步。批准后会以完全访问模式继续执行该命令。'
+      : 'Claude 返回该操作需要批准后才能继续。批准后会以完全访问模式继续执行。',
+    command,
+    danger: normalizeApprovalDanger(tool, command),
+  };
+}
+
+function isApprovalRequiredToolResult(content: string) {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes('this command requires approval') ||
+    normalized.includes('requires approval') ||
+    normalized.includes('requires your approval') ||
+    normalized.includes('approval required')
+  );
+}
+
+function extractCommandFromTool(tool?: ToolStep) {
+  if (!tool?.inputText?.trim()) {
+    return undefined;
+  }
+
+  try {
+    const payload = JSON.parse(tool.inputText) as Record<string, unknown>;
+    const directCommand = normalizeApprovalCommandInput(
+      payload.command ?? payload.cmd ?? payload.cmdString ?? payload.argv ?? payload.args,
+    );
+    if (directCommand?.length) {
+      return directCommand;
+    }
+  } catch {
+    // Ignore malformed tool input and fall back to the summarized title below.
+  }
+
+  const bashMatch = tool.title.match(/^Bash\(([\s\S]+)\)$/);
+  if (bashMatch?.[1]?.trim()) {
+    return [bashMatch[1].trim()];
+  }
+
+  return undefined;
+}
+
+function normalizeApprovalCommandInput(value: unknown) {
+  if (typeof value === 'string' && value.trim()) {
+    return [value.trim()];
+  }
+
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const command = value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean);
+
+  return command.length > 0 ? command : undefined;
+}
+
+function normalizeApprovalDanger(
+  tool: ToolStep | undefined,
+  command: string[] | undefined,
+): ApprovalRequest['danger'] {
+  if (tool?.name === 'Bash' || command?.length) {
+    return 'medium';
+  }
+
+  return 'low';
 }
 
 function createRuntimeRecoveryHint(

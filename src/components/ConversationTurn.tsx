@@ -858,11 +858,37 @@ function shouldHideTurnToolStep(turn: ConversationTurn, tool: ToolStep) {
     return true;
   }
 
+  if (
+    turn.pendingApprovalRequests?.some(
+      (request) => request.requestId && request.requestId === (tool.toolUseId ?? tool.id),
+    )
+  ) {
+    return true;
+  }
+
+  if (normalizedName === 'bash' && isApprovalRequiredToolError(tool.resultText)) {
+    return true;
+  }
+
   return false;
 }
 
 function normalizeRuntimeToolName(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function isApprovalRequiredToolError(resultText?: string) {
+  const normalized = resultText?.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes('this command requires approval') ||
+    normalized.includes('requires approval') ||
+    normalized.includes('requires your approval') ||
+    normalized.includes('approval required')
+  );
 }
 
 function getRecoveryActions(hint: RuntimeRecoveryHint): RuntimeSuggestedAction[] {

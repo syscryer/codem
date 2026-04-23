@@ -1,4 +1,4 @@
-import { KeyboardEvent, useEffect, useRef } from 'react';
+import { KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
@@ -22,12 +22,14 @@ import type {
   ConversationTurn,
   RequestUserInputRequest,
   RuntimeSuggestedAction,
+  ThreadDetail,
   ThreadSummary,
 } from './types';
 
 export default function App() {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
+  const [dismissedApprovalDialogKey, setDismissedApprovalDialogKey] = useState<string | null>(null);
   const workspaceState = useWorkspaceState();
   const {
     panelState,
@@ -135,6 +137,15 @@ export default function App() {
     }
   }, [activeProjectId, isRunning]);
 
+  const latestApprovalDialog = useMemo(
+    () => getLatestPendingApprovalDialog(activeThread),
+    [activeThread],
+  );
+  const approvalDialog =
+    latestApprovalDialog && latestApprovalDialog.key !== dismissedApprovalDialogKey
+      ? latestApprovalDialog
+      : null;
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
       return;
@@ -160,6 +171,14 @@ export default function App() {
 
   function handleInputDialogValueChange(value: string) {
     setInputDialog((current) => (current ? { ...current, value } : current));
+  }
+
+  function handleCloseApprovalDialog() {
+    if (!latestApprovalDialog) {
+      return;
+    }
+
+    setDismissedApprovalDialogKey(latestApprovalDialog.key);
   }
 
   return (
@@ -260,9 +279,23 @@ export default function App() {
       </div>
 
       <Dialogs
+        approvalDialog={
+          approvalDialog
+            ? {
+                turn: approvalDialog.turn,
+                request: approvalDialog.request,
+              }
+            : null
+        }
         inputDialog={inputDialog}
         confirmDialog={confirmDialog}
         toast={toast}
+        onCloseApprovalDialog={handleCloseApprovalDialog}
+        onSubmitApprovalDecision={(
+          turn: ConversationTurn,
+          request: ApprovalRequest,
+          decision: ApprovalDecision,
+        ) => submitApprovalDecision(turn, request, decision)}
         onCloseInputDialog={() => setInputDialog(null)}
         onInputDialogValueChange={handleInputDialogValueChange}
         onSubmitInputDialog={submitInputDialog}
@@ -272,4 +305,42 @@ export default function App() {
       <DebugDrawer activeThread={activeThread} open={debugOpen} onClose={() => setDebugOpen(false)} />
     </div>
   );
+}
+
+function getLatestPendingApprovalDialog(activeThread: ThreadDetail | null) {
+  if (!activeThread) {
+    return null;
+  }
+
+  for (let turnIndex = activeThread.turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
+    const turn = activeThread.turns[turnIndex];
+    const requests = turn.pendingApprovalRequests ?? [];
+    if (!requests.length) {
+      continue;
+    }
+
+    const requestIndex = requests.length - 1;
+    const request = requests[requestIndex];
+    return {
+      key: buildApprovalDialogKey(activeThread.id, turn.id, request, requestIndex),
+      turn,
+      request,
+    };
+  }
+
+  return null;
+}
+
+function buildApprovalDialogKey(
+  threadId: string,
+  turnId: string,
+  request: ApprovalRequest,
+  requestIndex: number,
+) {
+  const identity =
+    request.requestId?.trim() ||
+    request.command?.join(' ') ||
+    request.title.trim() ||
+    `${requestIndex}`;
+  return `${threadId}:${turnId}:${identity}`;
 }

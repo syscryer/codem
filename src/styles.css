@@ -1865,6 +1865,12 @@ svg {
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.14);
 }
 
+.dialog-card.approval-dialog {
+  width: min(560px, calc(100vw - 32px));
+  display: grid;
+  gap: 14px;
+}
+
 .dialog-head h3 {
   margin: 0;
   color: #202020;
@@ -1907,6 +1913,29 @@ svg {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 16px;
+}
+
+.dialog-badge-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.approval-dialog-actions {
+  margin-top: 0;
+}
+
+.dialog-code {
+  margin-top: -2px;
+}
+
+.dialog-footnote {
+  margin-top: -4px;
+}
+
+.dialog-error {
+  margin-top: -4px;
 }
 
 .dialog-button {

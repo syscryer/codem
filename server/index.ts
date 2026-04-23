@@ -316,7 +316,7 @@ app.post('/api/claude/run', async (request, response) => {
       ? request.body.sessionId.trim()
       : undefined;
   const permissionMode = (
-    typeof request.body?.permissionMode === 'string' ? request.body.permissionMode : 'default'
+    typeof request.body?.permissionMode === 'string' ? request.body.permissionMode : 'bypassPermissions'
   ) as ClaudePermissionMode;
   const model =
     typeof request.body?.model === 'string' && request.body.model.trim()
