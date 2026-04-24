@@ -525,6 +525,21 @@ export function getThreadHistory(threadId: string) {
     throw new Error('聊天不存在');
   }
 
+  if (thread.session_id) {
+    const turns = hasUsableTranscript(thread)
+      ? parseClaudeTranscript(thread.transcript_path ?? '', thread.session_id)
+      : [];
+
+    if (turns.length > 0) {
+      saveThreadHistory(threadId, turns);
+    }
+
+    return {
+      threadId,
+      turns,
+    };
+  }
+
   const storedTurns = readStoredThreadHistory(threadId);
   if (storedTurns.length > 0) {
     if (
@@ -864,6 +879,9 @@ function importClaudeSessions() {
       if (!fileEntry.isFile() || !fileEntry.name.endsWith('.jsonl')) {
         continue;
       }
+      if (fileEntry.name.startsWith('agent-')) {
+        continue;
+      }
 
       const transcriptPath = path.join(directory, fileEntry.name);
       const metadata = readClaudeSessionMetadata(transcriptPath);
@@ -915,34 +933,7 @@ function deleteDuplicateThreadsBySessionId(sessionId: string, excludeThreadId: s
 }
 
 function filterVisibleThreadRows(threadRows: StoredThreadRow[]) {
-  const groups = new Map<string, StoredThreadRow[]>();
-  for (const row of threadRows) {
-    const key = `${row.project_id}::${row.title.trim().toLowerCase()}`;
-    const list = groups.get(key) ?? [];
-    list.push(row);
-    groups.set(key, list);
-  }
-
-  const hiddenIds = new Set<string>();
-  for (const rows of groups.values()) {
-    if (rows.length < 2) {
-      continue;
-    }
-
-    const importedRows = rows.filter((row) => row.imported === 1);
-    const localRows = rows.filter((row) => row.imported !== 1);
-    if (importedRows.length === 0 || localRows.length === 0) {
-      continue;
-    }
-
-    for (const row of importedRows) {
-      if (!hasUsableTranscript(row)) {
-        hiddenIds.add(row.id);
-      }
-    }
-  }
-
-  return threadRows.filter((row) => !hiddenIds.has(row.id));
+  return threadRows.filter(hasVisibleThreadSource);
 }
 
 function hasUsableTranscript(row: StoredThreadRow) {
@@ -951,6 +942,14 @@ function hasUsableTranscript(row: StoredThreadRow) {
   }
 
   return existsSync(row.transcript_path);
+}
+
+function hasVisibleThreadSource(row: StoredThreadRow) {
+  if (!row.session_id) {
+    return row.imported !== 1;
+  }
+
+  return hasUsableTranscript(row);
 }
 
 function isPathInsideRoot(targetPath: string, rootPath: string) {
