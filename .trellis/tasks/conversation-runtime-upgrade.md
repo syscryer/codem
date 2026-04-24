@@ -139,3 +139,16 @@
 - 优先按“先 contract、后交互、再滚动和鲁棒性”的顺序推进
 - 不要求一次性复制参考项目的全部消息架构
 - 每个阶段结束都要重新检查 terminal path 与 refresh restore path
+
+## Completed 2026-04-24
+
+- [x] 修复 history restore 覆盖本地新 turn：按 turn id 合并历史结果与当前本地 turns。
+- [x] 修复空 `done` 成功态：空结果不追加文本，无可见输出时标记为 `stopped`。
+- [x] 修复空 assistant 持久化：保存历史时只写非空 text item。
+- [x] 修复 tool result 回挂与历史中孤立 `tool_result` 的展示错位。
+- [x] 修复 Agent/Task 工具标题，使用任务描述作为可读摘要。
+- [x] 过滤实时 `isSidechain` 事件，避免子 Agent 内部步骤污染主对话。
+- [x] transcript 解析跳过 `isSidechain` / `isMeta`，并清理旧格式内部文本。
+- [x] 会话列表收敛为 Claude jsonl 单一来源：已绑定 `session_id` 的线程必须有真实 jsonl 才展示。
+- [x] 导入时跳过 `agent-*.jsonl` 子 Agent 文件。
+- [x] 清理标题为 `1` 的历史 Claude Code 会话。

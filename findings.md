@@ -33,3 +33,12 @@
 - `system/raw/snapshot` 等事件适合进入调试抽屉，避免干扰主对话。
 - assistant 正文与工具调用必须按事件到达顺序共同渲染，不能分别渲染正文和工具列表，否则会出现顺序错位。
 - 在 CSS grid 消息布局中，assistant 的所有正文和工具内容必须包进同一个右侧内容列，否则后续子元素会被自动排到左侧标签列。
+
+## Claude 会话来源与历史解析
+
+- Claude Code 会话的权威来源是 `~/.claude/projects/**/*.jsonl`。
+- 已绑定 `session_id` 的线程如果 jsonl 不存在，不应从 SQLite 旧缓存推断历史、标题或可见性；这会制造重复线程和过期会话。
+- SQLite 中的 `messages` / `tool_calls` 只作为可刷新缓存和本地未绑定草稿的存储；对已绑定 session，历史应可由 jsonl 重建。
+- `agent-*.jsonl` 是子 Agent 内部会话，不应作为主线程导入；实时流中的 `isSidechain` 事件也不应进入主对话。
+- transcript 中 `isMeta`、技能注入 prompt、continuation prompt 以及旧格式 `<thinking>` 文本都不是用户可见主对话内容。
+- 工具结果必须绑定到真实 tool use；空 `done` 和空 assistant 文本不能被当作成功输出。

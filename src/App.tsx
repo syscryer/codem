@@ -77,18 +77,17 @@ export default function App() {
   } = workspaceState;
   const wasRunningRef = useRef(false);
   const {
-    prompt,
     permissionMode,
     model,
     models,
     isRunning,
+    runningThreadId,
     clockNowMs,
     activeTurnIdRef,
-    setPrompt,
     setWorkspace,
     setModel,
     handlePermissionModeSelect,
-    handleSubmit,
+    submitPrompt,
     submitRequestUserInput,
     submitRuntimeRecoveryAction,
     submitApprovalDecision,
@@ -113,14 +112,6 @@ export default function App() {
   });
 
   useEffect(() => {
-    const frame = requestAnimationFrame(() => {
-      conversationBottomRef.current?.scrollIntoView({ block: 'end' });
-    });
-
-    return () => cancelAnimationFrame(frame);
-  }, [activeThread?.turns]);
-
-  useEffect(() => {
     if (!activeProjectId) {
       return;
     }
@@ -136,6 +127,20 @@ export default function App() {
       void refreshProjectGitSummary(activeProjectId);
     }
   }, [activeProjectId, isRunning]);
+
+  useEffect(() => {
+    function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
+      if (!event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'g') {
+        return;
+      }
+
+      event.preventDefault();
+      setSearchOpen(true);
+    }
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [setSearchOpen]);
 
   const latestApprovalDialog = useMemo(
     () => getLatestPendingApprovalDialog(activeThread),
@@ -161,7 +166,7 @@ export default function App() {
   }
 
   function handleOpenRemoveThreadDialog(thread: ThreadSummary) {
-    if (isRunning && thread.id === activeThreadId) {
+    if (isRunning && thread.id === runningThreadId) {
       showToast('当前聊天正在运行，请先停止再删除。', 'info');
       return;
     }
@@ -179,6 +184,23 @@ export default function App() {
     }
 
     setDismissedApprovalDialogKey(latestApprovalDialog.key);
+  }
+
+  async function handleCreateThread(projectId: string) {
+    try {
+      await createThread(projectId);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '新建聊天失败', 'error');
+    }
+  }
+
+  async function handleCreatePrimaryChat() {
+    if (!activeProjectId) {
+      await handlePickProjectDirectory();
+      return;
+    }
+
+    await handleCreateThread(activeProjectId);
   }
 
   return (
@@ -212,13 +234,13 @@ export default function App() {
           searchOpen={searchOpen}
           searchQuery={searchQuery}
           panelState={panelState}
-          onCreatePrimaryChat={() => activeProjectId ? void createThread(activeProjectId) : void handlePickProjectDirectory()}
+          onCreatePrimaryChat={() => void handleCreatePrimaryChat()}
           onToggleSearch={() => setSearchOpen((value) => !value)}
           onSearchQueryChange={setSearchQuery}
           onToggleAllProjects={toggleAllProjects}
           onPanelStateChange={handlePanelStateChange}
           onPickProjectDirectory={handlePickProjectDirectory}
-          onCreateThread={createThread}
+          onCreateThread={handleCreateThread}
           onOpenProject={handleOpenProject}
           onOpenRenameProjectDialog={openRenameProjectDialog}
           onOpenRemoveProjectDialog={openRemoveProjectDialog}
@@ -261,13 +283,11 @@ export default function App() {
           />
 
           <Composer
-            prompt={prompt}
             permissionMode={permissionMode}
             model={model}
             models={models}
             isRunning={isRunning}
-            onSubmit={handleSubmit}
-            onPromptChange={setPrompt}
+            onSubmitPrompt={submitPrompt}
             onKeyDown={handleComposerKeyDown}
             onSelectPermissionMode={handlePermissionModeSelect}
             onSelectModel={setModel}

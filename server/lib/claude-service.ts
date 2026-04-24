@@ -1,10 +1,8 @@
 import { access } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import type { Readable } from 'node:stream';
+import type { Readable, Writable } from 'node:stream';
 
 export type ClaudePermissionMode =
   | 'default'
@@ -20,13 +18,16 @@ type StreamInput = {
   sessionId?: string;
   permissionMode: ClaudePermissionMode;
   model?: string;
+  requestReceivedAtMs?: number;
+  clientSubmitAtMs?: number;
 };
 
 type StreamEvent =
   | { type: 'status'; runId: string; message: string }
   | { type: 'session'; runId: string; sessionId: string }
   | { type: 'delta'; runId: string; text: string }
-  | { type: 'phase'; runId: string; phase: ClaudePhase; label: string }
+  | { type: 'trace'; runId: string; name: string; atMs: number; elapsedMs: number; detail?: string }
+  | { type: 'phase'; runId: string; phase: ClaudePhase; label: string; thoughtCount?: number }
   | ({ type: 'usage'; runId: string } & ClaudeUsage)
   | { type: 'claude-event'; runId: string; label: string; eventType?: string; subtype?: string; status?: string; raw: unknown }
   | { type: 'request-user-input'; runId: string; request: RequestUserInputRequest }
@@ -115,6 +116,17 @@ type ClaudeContentBlock = {
   is_error?: boolean;
 };
 
+type ClaudeInputMessage = {
+  type: 'user';
+  message: {
+    role: 'user';
+    content: Array<{
+      type: 'text';
+      text: string;
+    }>;
+  };
+};
+
 type ClaudeJsonLine = {
   type?: string;
   subtype?: string;
@@ -128,6 +140,8 @@ type ClaudeJsonLine = {
   total_cost_usd?: number;
   usage?: ClaudeRawUsage;
   message?: {
+    role?: string;
+    model?: string;
     content?: ClaudeContentBlock[];
     usage?: ClaudeRawUsage;
   };
@@ -155,7 +169,7 @@ type ClaudeRawUsage = {
   cache_read_input_tokens?: number;
 };
 
-type ClaudeChildProcess = ChildProcessByStdio<null, Readable, Readable>;
+type ClaudeChildProcess = ChildProcessByStdio<Writable, Readable, Readable>;
 
 type ToolInputAccumulator = {
   name: string;
@@ -165,7 +179,44 @@ type ToolInputAccumulator = {
   emittedApprovalRequest: boolean;
 };
 
-const activeRuns = new Map<string, ClaudeChildProcess>();
+type RunState = {
+  runId: string;
+  input: StreamInput;
+  traceStartedAtMs: number;
+  queue: StreamEvent[];
+  wakeQueue: (() => void) | null;
+  finished: boolean;
+  pendingTextDelta: string;
+  pendingTextDeltaTimer: ReturnType<typeof setTimeout> | null;
+  firstStdoutAtMs?: number;
+  firstDeltaAtMs?: number;
+  firstDeltaFlushedAtMs?: number;
+  sessionId?: string;
+  finalResult: string;
+  seenDoneEvent: boolean;
+  thoughtCount: number;
+  blockTypeByIndex: Map<number, string>;
+  toolInputByIndex: Map<number, ToolInputAccumulator>;
+  emittedRecoveryHintKeys: Set<string>;
+};
+
+type ClaudeRuntime = {
+  child: ClaudeChildProcess;
+  sessionId?: string;
+  useStreamJsonInput: boolean;
+  stdoutBuffer: string;
+  stderrBuffer: string;
+  currentRun: RunState | null;
+};
+
+type ActiveRun = {
+  runtime: ClaudeRuntime;
+  cancel: () => boolean;
+};
+
+const activeRuns = new Map<string, ActiveRun>();
+const TEXT_DELTA_COALESCE_MS = process.platform === 'win32' ? 32 : 0;
+let cachedClaudeCommand: string | null | undefined;
 
 export async function isDirectoryAccessible(directory: string) {
   try {
@@ -210,19 +261,21 @@ export function getClaudeModels() {
 }
 
 export function cancelRun(runId: string) {
-  const child = activeRuns.get(runId);
-  if (!child) {
+  const activeRun = activeRuns.get(runId);
+  if (!activeRun) {
     return false;
   }
 
-  child.kill();
+  activeRun.cancel();
   activeRuns.delete(runId);
   return true;
 }
 
 export async function* createClaudeStream(input: StreamInput): AsyncGenerator<StreamEvent> {
   const runId = randomUUID();
+  const streamStartedAtMs = Date.now();
   const command = resolveClaudeCommand();
+  const commandResolvedAtMs = Date.now();
 
   if (!command) {
     yield {
@@ -233,16 +286,193 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
     return;
   }
 
-  const resumeSessionId = getResumeSessionId(input.workingDirectory, input.sessionId);
-  const args = [
-    '-p',
-    '--verbose',
-    '--output-format',
-    'stream-json',
-    '--include-partial-messages',
-    '--permission-mode',
-    input.permissionMode,
-  ];
+  const spawnStartedAtMs = Date.now();
+  const runtime = spawnClaudeRuntime(command, input);
+  const spawnReturnedAtMs = Date.now();
+  const state = createRunState(runId, input, runtime.sessionId ?? input.sessionId?.trim());
+  runtime.currentRun = state;
+  activeRuns.set(runId, {
+    runtime,
+    cancel: () => cancelRuntimeRun(runtime, runId),
+  });
+
+  if (input.clientSubmitAtMs) {
+    enqueueTrace(state, 'client_submit', input.clientSubmitAtMs);
+  }
+  if (input.requestReceivedAtMs) {
+    enqueueTrace(state, 'server_request_received', input.requestReceivedAtMs);
+  }
+  enqueueTrace(state, 'create_stream_started', streamStartedAtMs);
+  enqueueTrace(state, 'claude_command_resolved', commandResolvedAtMs, command);
+  enqueueTrace(state, 'claude_spawn_started', spawnStartedAtMs);
+  enqueueTrace(state, 'claude_process_spawned', spawnReturnedAtMs, `${spawnReturnedAtMs - spawnStartedAtMs}ms`);
+  enqueueRunEvent(state, {
+    type: 'status',
+    runId,
+    message: runtime.sessionId || input.sessionId ? '已连接 Claude Code 会话' : '已启动 Claude Code 会话',
+  });
+
+  writePromptToClaude(runtime, state, input.prompt);
+
+  while (!state.finished || state.queue.length > 0) {
+    const next = state.queue.shift();
+    if (next) {
+      yield next;
+      continue;
+    }
+
+    await new Promise<void>((resolve) => {
+      state.wakeQueue = resolve;
+    });
+  }
+}
+
+function createRunState(runId: string, input: StreamInput, sessionId?: string): RunState {
+  return {
+    runId,
+    input,
+    traceStartedAtMs: input.clientSubmitAtMs ?? input.requestReceivedAtMs ?? Date.now(),
+    queue: [],
+    wakeQueue: null,
+    finished: false,
+    pendingTextDelta: '',
+    pendingTextDeltaTimer: null,
+    firstStdoutAtMs: undefined,
+    firstDeltaAtMs: undefined,
+    firstDeltaFlushedAtMs: undefined,
+    sessionId,
+    finalResult: '',
+    seenDoneEvent: false,
+    thoughtCount: 0,
+    blockTypeByIndex: new Map(),
+    toolInputByIndex: new Map(),
+    emittedRecoveryHintKeys: new Set(),
+  };
+}
+
+function enqueueRunEvent(state: RunState, event: StreamEvent) {
+  if (state.finished) {
+    return;
+  }
+
+  if (event.type !== 'delta') {
+    flushPendingTextDelta(state);
+  }
+
+  pushRunEvent(state, event);
+}
+
+function enqueueTrace(state: RunState, name: string, atMs = Date.now(), detail?: string) {
+  enqueueRunEvent(state, {
+    type: 'trace',
+    runId: state.runId,
+    name,
+    atMs,
+    elapsedMs: Math.max(0, atMs - state.traceStartedAtMs),
+    detail,
+  });
+}
+
+function pushRunEvent(state: RunState, event: StreamEvent) {
+  state.queue.push(event);
+  state.wakeQueue?.();
+  state.wakeQueue = null;
+}
+
+function finishRuntimeRun(runtime: ClaudeRuntime, state: RunState) {
+  flushPendingTextDelta(state);
+
+  if (runtime.currentRun === state) {
+    runtime.currentRun = null;
+  }
+
+  activeRuns.delete(state.runId);
+  state.finished = true;
+  state.wakeQueue?.();
+  state.wakeQueue = null;
+}
+
+function enqueueTextDelta(state: RunState, text: string) {
+  if (!text) {
+    return;
+  }
+
+  if (!state.firstDeltaAtMs) {
+    state.firstDeltaAtMs = Date.now();
+    enqueueTrace(state, 'first_delta_received', state.firstDeltaAtMs, `${text.length} chars`);
+  }
+
+  if (TEXT_DELTA_COALESCE_MS <= 0) {
+    enqueueRunEvent(state, {
+      type: 'delta',
+      runId: state.runId,
+      text,
+    });
+    return;
+  }
+
+  state.pendingTextDelta += text;
+  if (state.pendingTextDeltaTimer) {
+    return;
+  }
+
+  state.pendingTextDeltaTimer = setTimeout(() => {
+    state.pendingTextDeltaTimer = null;
+    flushPendingTextDelta(state);
+  }, TEXT_DELTA_COALESCE_MS);
+}
+
+function flushPendingTextDelta(state: RunState) {
+  if (state.pendingTextDeltaTimer) {
+    clearTimeout(state.pendingTextDeltaTimer);
+    state.pendingTextDeltaTimer = null;
+  }
+
+  if (!state.pendingTextDelta || state.finished) {
+    return;
+  }
+
+  const text = state.pendingTextDelta;
+  state.pendingTextDelta = '';
+  if (!state.firstDeltaFlushedAtMs) {
+    state.firstDeltaFlushedAtMs = Date.now();
+    enqueueTrace(state, 'first_delta_flushed', state.firstDeltaFlushedAtMs, `${text.length} chars`);
+  }
+  pushRunEvent(state, {
+    type: 'delta',
+    runId: state.runId,
+    text,
+  });
+}
+
+function cancelRuntimeRun(runtime: ClaudeRuntime, runId: string) {
+  const state = runtime.currentRun;
+  if (!state || state.runId !== runId) {
+    return false;
+  }
+
+  runtime.child.kill();
+  return true;
+}
+
+function spawnClaudeRuntime(command: string, input: StreamInput): ClaudeRuntime {
+  const resumeSessionId = input.sessionId?.trim();
+  const useStreamJsonInput = shouldUseStreamJsonInput(input.prompt);
+  const args = ['-p'];
+
+  if (useStreamJsonInput) {
+    args.push('', '--input-format', 'stream-json');
+  } else {
+    args.push(input.prompt);
+  }
+
+  args.push('--verbose', '--output-format', 'stream-json', '--include-partial-messages');
+
+  if (input.permissionMode === 'bypassPermissions') {
+    args.push('--dangerously-skip-permissions');
+  } else {
+    args.push('--permission-mode', input.permissionMode);
+  }
 
   if (input.model) {
     args.push('--model', input.model);
@@ -252,483 +482,502 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
     args.push('--resume', resumeSessionId);
   }
 
-  args.push(input.prompt);
-
-  yield {
-    type: 'status',
-    runId,
-    message: `已启动 Claude Code，工作目录：${input.workingDirectory}`,
-  };
-
-  if (input.sessionId && !resumeSessionId) {
-    const message = `原会话 ${input.sessionId} 在 Claude 记录中不存在，已自动开启新会话。`;
-    yield {
-      type: 'status',
-      runId,
-      message,
-    };
-    yield {
-      type: 'runtime-reconnect-hint',
-      runId,
-      hint: {
-        reason: 'resume-session-missing',
-        message,
-        retryable: true,
-        suggestedAction: 'recover',
-        source: 'status',
-      },
-    };
-  }
-
   const child = spawn(command, args, {
     cwd: input.workingDirectory,
     env: process.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
 
-  activeRuns.set(runId, child);
-
-  const queue: StreamEvent[] = [];
-  let wakeQueue: (() => void) | null = null;
-  let finished = false;
-  let sessionId = resumeSessionId;
-  let finalResult = '';
-  let seenDoneEvent = false;
-  const blockTypeByIndex = new Map<number, string>();
-  const toolInputByIndex = new Map<number, ToolInputAccumulator>();
-  const emittedRecoveryHintKeys = new Set<string>();
-  const enqueue = (event: StreamEvent) => {
-    queue.push(event);
-    wakeQueue?.();
-    wakeQueue = null;
-  };
-  const markFinished = () => {
-    finished = true;
-    wakeQueue?.();
-    wakeQueue = null;
+  const runtime: ClaudeRuntime = {
+    child,
+    sessionId: resumeSessionId,
+    useStreamJsonInput,
+    stdoutBuffer: '',
+    stderrBuffer: '',
+    currentRun: null,
   };
 
-  const flushStdoutLine = (line: string) => {
-    const trimmed = line.trim();
-    if (!trimmed) {
+  bindClaudeRuntime(runtime);
+  return runtime;
+}
+
+function bindClaudeRuntime(runtime: ClaudeRuntime) {
+  runtime.child.stdout.on('data', (chunk: Buffer | string) => {
+    runtime.stdoutBuffer += chunk.toString();
+    const lines = runtime.stdoutBuffer.split(/\r?\n/);
+    runtime.stdoutBuffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      flushRuntimeStdoutLine(runtime, line);
+    }
+  });
+
+  runtime.child.stderr.on('data', (chunk: Buffer | string) => {
+    runtime.stderrBuffer += chunk.toString();
+    const lines = runtime.stderrBuffer.split(/\r?\n/);
+    runtime.stderrBuffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      flushRuntimeStderrLine(runtime, line);
+    }
+  });
+
+  runtime.child.stdin.on('error', (error) => {
+    const state = runtime.currentRun;
+    if (!state) {
       return;
     }
 
-    try {
-      const payload = JSON.parse(trimmed) as ClaudeJsonLine;
-      if (payload.isSidechain) {
-        return;
-      }
-
-      enqueue({
-        type: 'raw',
-        runId,
-        raw: payload,
-      });
-
-      const resultErrorMessage = getResultErrorMessage(payload);
-      if (payload.session_id && payload.session_id !== sessionId && !resultErrorMessage) {
-        sessionId = payload.session_id;
-        enqueue({
-          type: 'session',
-          runId,
-          sessionId,
-        });
-      }
-
-      if (payload.type === 'system') {
-        enqueue({
-          type: 'claude-event',
-          runId,
-          label: describeSystemEvent(payload),
-          eventType: payload.type,
-          subtype: payload.subtype,
-          raw: payload,
-        });
-      }
-
-      if (payload.type === 'system' && payload.subtype === 'status') {
-        if (payload.status === 'requesting') {
-          enqueue({
-            type: 'phase',
-            runId,
-            phase: 'requesting',
-            label: 'Thinking...',
-          });
-        }
-
-        enqueue({
-          type: 'claude-event',
-          runId,
-          label: `状态：${payload.status ?? 'unknown'}`,
-          eventType: payload.type,
-          subtype: payload.subtype,
-          status: payload.status,
-          raw: payload,
-        });
-      }
-
-      if (payload.type === 'stream_event') {
-        const usage = extractUsage(payload);
-        if (usage) {
-          enqueue({
-            type: 'usage',
-            runId,
-            ...usage,
-          });
-        }
-      }
-
-      if (payload.type === 'stream_event' && payload.event?.type === 'content_block_start') {
-        const block = payload.event.content_block;
-        if (typeof payload.event.index === 'number' && block?.type) {
-          blockTypeByIndex.set(payload.event.index, block.type);
-        }
-
-        if (block?.type === 'thinking') {
-          enqueue({
-            type: 'phase',
-            runId,
-            phase: 'thinking',
-            label: 'Thinking...',
-          });
-        }
-
-        if (block?.type === 'tool_use' && block.name) {
-          if (typeof payload.event.index === 'number') {
-            toolInputByIndex.set(payload.event.index, {
-              name: block.name,
-              toolUseId: block.id,
-              inputText: getToolInputSeed(block.input),
-              emittedRequestUserInput: false,
-              emittedApprovalRequest: false,
-            });
-          }
-
-          const requestUserInput = parseRequestUserInputEvent(block.name, block.input, block.id);
-          if (requestUserInput) {
-            const accumulator =
-              typeof payload.event.index === 'number' ? toolInputByIndex.get(payload.event.index) : undefined;
-            if (accumulator) {
-              accumulator.emittedRequestUserInput = true;
-            }
-            enqueue({
-              type: 'request-user-input',
-              runId,
-              request: requestUserInput,
-            });
-          }
-
-          const approvalRequest = parseApprovalRequestEvent(block.name, block.input, block.id);
-          if (approvalRequest) {
-            const accumulator =
-              typeof payload.event.index === 'number' ? toolInputByIndex.get(payload.event.index) : undefined;
-            if (accumulator) {
-              accumulator.emittedApprovalRequest = true;
-            }
-            enqueue({
-              type: 'approval-request',
-              runId,
-              request: approvalRequest,
-            });
-          }
-
-          enqueue({
-            type: 'phase',
-            runId,
-            phase: 'tool',
-            label: 'Computing...',
-          });
-          enqueue({
-            type: 'tool-start',
-            runId,
-            blockIndex: payload.event.index ?? -1,
-            toolUseId: block.id,
-            name: block.name,
-            input: block.input,
-          });
-        }
-      }
-
-      if (
-        payload.type === 'stream_event' &&
-        payload.event?.type === 'content_block_delta' &&
-        payload.event.delta?.type === 'text_delta' &&
-        payload.event.delta.text
-      ) {
-        const currentBlockType =
-          typeof payload.event.index === 'number' ? blockTypeByIndex.get(payload.event.index) : undefined;
-        if (currentBlockType === 'thinking' || currentBlockType === 'redacted_thinking') {
-          return;
-        }
-
-        enqueue({
-          type: 'delta',
-          runId,
-          text: payload.event.delta.text,
-        });
-        enqueue({
-          type: 'phase',
-          runId,
-          phase: 'computing',
-          label: 'Computing...',
-        });
-      }
-
-      if (
-        payload.type === 'stream_event' &&
-        payload.event?.type === 'content_block_delta' &&
-        payload.event.delta?.type === 'thinking_delta'
-      ) {
-        enqueue({
-          type: 'phase',
-          runId,
-          phase: 'thinking',
-          label: 'Thinking...',
-        });
-      }
-
-      if (
-        payload.type === 'stream_event' &&
-        payload.event?.type === 'content_block_delta' &&
-        payload.event.delta?.type === 'input_json_delta' &&
-        payload.event.delta.partial_json
-      ) {
-        if (typeof payload.event.index === 'number') {
-          const accumulator = toolInputByIndex.get(payload.event.index);
-          if (accumulator) {
-            accumulator.inputText += payload.event.delta.partial_json;
-            emitStructuredToolEventsFromAccumulator(runId, accumulator, enqueue);
-          }
-        }
-
-        enqueue({
-          type: 'tool-input-delta',
-          runId,
-          blockIndex: payload.event.index ?? -1,
-          text: payload.event.delta.partial_json,
-        });
-        enqueue({
-          type: 'phase',
-          runId,
-          phase: 'tool',
-          label: 'Computing...',
-        });
-      }
-
-      if (payload.type === 'stream_event' && payload.event?.type === 'content_block_stop') {
-        const currentBlockType =
-          typeof payload.event.index === 'number' ? blockTypeByIndex.get(payload.event.index) : undefined;
-        if (typeof payload.event.index === 'number') {
-          blockTypeByIndex.delete(payload.event.index);
-          const accumulator = toolInputByIndex.get(payload.event.index);
-          if (accumulator) {
-            emitStructuredToolEventsFromAccumulator(runId, accumulator, enqueue);
-            toolInputByIndex.delete(payload.event.index);
-          }
-        }
-
-        if (currentBlockType === 'tool_use') {
-          enqueue({
-            type: 'tool-stop',
-            runId,
-            blockIndex: payload.event.index ?? -1,
-          });
-        }
-      }
-
-      if (payload.type === 'assistant' && Array.isArray(payload.message?.content)) {
-        enqueue({
-          type: 'assistant-snapshot',
-          runId,
-          blocks: payload.message.content,
-        });
-
-        for (const block of payload.message.content) {
-          if (block.type !== 'tool_use' || !block.name) {
-            continue;
-          }
-
-          const requestUserInput = parseRequestUserInputEvent(block.name, block.input, block.id);
-          if (requestUserInput) {
-            enqueue({
-              type: 'request-user-input',
-              runId,
-              request: requestUserInput,
-            });
-          }
-
-          const approvalRequest = parseApprovalRequestEvent(block.name, block.input, block.id);
-          if (approvalRequest) {
-            enqueue({
-              type: 'approval-request',
-              runId,
-              request: approvalRequest,
-            });
-          }
-        }
-
-        const assistantText = payload.message.content
-          .filter((item) => item.type === 'text' && item.text)
-          .map((item) => item.text ?? '')
-          .join('');
-
-        if (assistantText) {
-          finalResult = assistantText;
-        }
-      }
-
-      if (payload.type === 'user' && Array.isArray(payload.message?.content)) {
-        for (const block of payload.message.content) {
-          if (block.type !== 'tool_result') {
-            continue;
-          }
-
-          enqueue({
-            type: 'tool-result',
-            runId,
-            toolUseId: block.tool_use_id,
-            content: stringifyClaudeContent(block.content),
-            isError: block.is_error,
-          });
-        }
-      }
-
-      if (payload.type === 'result') {
-        const usage = normalizeUsage(payload.usage);
-        if (usage) {
-          enqueue({
-            type: 'usage',
-            runId,
-            ...usage,
-          });
-        }
-
-        const errorMessage = getResultErrorMessage(payload);
-        if (errorMessage) {
-          enqueueRetryableRuntimeError(runId, errorMessage, 'result', emittedRecoveryHintKeys, enqueue);
-          seenDoneEvent = true;
-          enqueue({
-            type: 'error',
-            runId,
-            message: errorMessage,
-          });
-          return;
-        }
-
-        finalResult = payload.result ?? finalResult;
-        seenDoneEvent = true;
-        enqueue({
-          type: 'done',
-          runId,
-          sessionId,
-          result: finalResult,
-          totalCostUsd: payload.total_cost_usd,
-          durationMs: payload.duration_ms,
-          ...usage,
-        });
-      }
-    } catch {
-      enqueue({
-        type: 'stderr',
-        runId,
-        text: trimmed,
-      });
-      enqueueRuntimeReconnectHint(runId, trimmed, 'stderr', emittedRecoveryHintKeys, enqueue);
-    }
-  };
-
-  let stdoutBuffer = '';
-  child.stdout.on('data', (chunk: Buffer | string) => {
-    stdoutBuffer += chunk.toString();
-    const lines = stdoutBuffer.split(/\r?\n/);
-    stdoutBuffer = lines.pop() ?? '';
-
-    for (const line of lines) {
-      flushStdoutLine(line);
-    }
+    const message = `写入 Claude Code 输入失败：${error.message}`;
+    enqueueRetryableRuntimeError(state.runId, message, 'process', state.emittedRecoveryHintKeys, (event) =>
+      enqueueRunEvent(state, event),
+    );
+    enqueueRunEvent(state, {
+      type: 'error',
+      runId: state.runId,
+      message,
+    });
+    finishRuntimeRun(runtime, state);
   });
 
-  let stderrBuffer = '';
-  child.stderr.on('data', (chunk: Buffer | string) => {
-    stderrBuffer += chunk.toString();
-    const lines = stderrBuffer.split(/\r?\n/);
-    stderrBuffer = lines.pop() ?? '';
+  runtime.child.once('error', (error) => {
+    const state = runtime.currentRun;
+    if (state) {
+      enqueueRetryableRuntimeError(state.runId, error.message, 'process', state.emittedRecoveryHintKeys, (event) =>
+        enqueueRunEvent(state, event),
+      );
+      enqueueRunEvent(state, {
+        type: 'error',
+        runId: state.runId,
+        message: error.message,
+      });
+      finishRuntimeRun(runtime, state);
+    }
 
-    for (const line of lines) {
-      if (!line.trim()) {
+    closeClaudeRuntime(runtime);
+  });
+
+  runtime.child.once('close', (code, signal) => {
+    if (runtime.stdoutBuffer.trim()) {
+      flushRuntimeStdoutLine(runtime, runtime.stdoutBuffer);
+      runtime.stdoutBuffer = '';
+    }
+
+    if (runtime.stderrBuffer.trim()) {
+      flushRuntimeStderrLine(runtime, runtime.stderrBuffer);
+      runtime.stderrBuffer = '';
+    }
+
+    const state = runtime.currentRun;
+    if (state && !state.seenDoneEvent) {
+      if (code === 0 || signal === 'SIGTERM') {
+        state.seenDoneEvent = true;
+        enqueueRunEvent(state, {
+          type: 'done',
+          runId: state.runId,
+          sessionId: state.sessionId,
+          result: state.finalResult,
+        });
+      } else {
+        const message = `Claude 退出异常，code=${code ?? 'null'} signal=${signal ?? 'null'}`;
+        enqueueRetryableRuntimeError(state.runId, message, 'process', state.emittedRecoveryHintKeys, (event) =>
+          enqueueRunEvent(state, event),
+        );
+        enqueueRunEvent(state, {
+          type: 'error',
+          runId: state.runId,
+          message,
+        });
+      }
+      finishRuntimeRun(runtime, state);
+    }
+
+    closeClaudeRuntime(runtime);
+  });
+}
+
+function flushRuntimeStdoutLine(runtime: ClaudeRuntime, line: string) {
+  const state = runtime.currentRun;
+  if (!state) {
+    return;
+  }
+
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return;
+  }
+
+  if (!state.firstStdoutAtMs) {
+    state.firstStdoutAtMs = Date.now();
+    enqueueTrace(state, 'first_stdout_line', state.firstStdoutAtMs);
+  }
+
+  try {
+    const payload = JSON.parse(trimmed) as ClaudeJsonLine;
+    if (payload.isSidechain) {
+      return;
+    }
+
+    enqueueRunEvent(state, {
+      type: 'raw',
+      runId: state.runId,
+      raw: payload,
+    });
+
+    const resultErrorMessage = getResultErrorMessage(payload);
+    if (payload.session_id && payload.session_id !== state.sessionId && !resultErrorMessage) {
+      state.sessionId = payload.session_id;
+      runtime.sessionId = payload.session_id;
+      enqueueRunEvent(state, {
+        type: 'session',
+        runId: state.runId,
+        sessionId: payload.session_id,
+      });
+    }
+
+    handleClaudePayload(runtime, state, payload);
+  } catch {
+    enqueueRunEvent(state, {
+      type: 'stderr',
+      runId: state.runId,
+      text: trimmed,
+    });
+    enqueueRuntimeReconnectHint(state.runId, trimmed, 'stderr', state.emittedRecoveryHintKeys, (event) =>
+      enqueueRunEvent(state, event),
+    );
+  }
+}
+
+function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: ClaudeJsonLine) {
+  const enqueue = (event: StreamEvent) => enqueueRunEvent(state, event);
+  const { runId } = state;
+
+  if (payload.type === 'system') {
+    enqueue({
+      type: 'claude-event',
+      runId,
+      label: describeSystemEvent(payload),
+      eventType: payload.type,
+      subtype: payload.subtype,
+      raw: payload,
+    });
+  }
+
+  if (payload.type === 'system' && payload.subtype === 'status') {
+    if (payload.status === 'requesting') {
+      enqueue({
+        type: 'phase',
+        runId,
+        phase: 'requesting',
+        label: 'Thinking...',
+      });
+    }
+
+    enqueue({
+      type: 'claude-event',
+      runId,
+      label: `状态：${payload.status ?? 'unknown'}`,
+      eventType: payload.type,
+      subtype: payload.subtype,
+      status: payload.status,
+      raw: payload,
+    });
+  }
+
+  if (payload.type !== 'result') {
+    const usage = extractUsage(payload);
+    if (usage) {
+      enqueue({
+        type: 'usage',
+        runId,
+        ...usage,
+      });
+    }
+  }
+
+  if (payload.type === 'stream_event' && payload.event?.type === 'content_block_start') {
+    const block = payload.event.content_block;
+    if (typeof payload.event.index === 'number' && block?.type) {
+      state.blockTypeByIndex.set(payload.event.index, block.type);
+    }
+
+    if (block?.type === 'thinking') {
+      state.thoughtCount += 1;
+      enqueue({
+        type: 'phase',
+        runId,
+        phase: 'thinking',
+        label: 'Thinking...',
+        thoughtCount: state.thoughtCount,
+      });
+    }
+
+    if (block?.type === 'tool_use' && block.name) {
+      if (typeof payload.event.index === 'number') {
+        state.toolInputByIndex.set(payload.event.index, {
+          name: block.name,
+          toolUseId: block.id,
+          inputText: getToolInputSeed(block.input),
+          emittedRequestUserInput: false,
+          emittedApprovalRequest: false,
+        });
+      }
+
+      const requestUserInput = parseRequestUserInputEvent(block.name, block.input, block.id);
+      if (requestUserInput) {
+        const accumulator =
+          typeof payload.event.index === 'number' ? state.toolInputByIndex.get(payload.event.index) : undefined;
+        if (accumulator) {
+          accumulator.emittedRequestUserInput = true;
+        }
+        enqueue({
+          type: 'request-user-input',
+          runId,
+          request: requestUserInput,
+        });
+      }
+
+      const approvalRequest = parseApprovalRequestEvent(block.name, block.input, block.id);
+      if (approvalRequest) {
+        const accumulator =
+          typeof payload.event.index === 'number' ? state.toolInputByIndex.get(payload.event.index) : undefined;
+        if (accumulator) {
+          accumulator.emittedApprovalRequest = true;
+        }
+        enqueue({
+          type: 'approval-request',
+          runId,
+          request: approvalRequest,
+        });
+      }
+
+      enqueue({
+        type: 'phase',
+        runId,
+        phase: 'tool',
+        label: 'Computing...',
+      });
+      enqueue({
+        type: 'tool-start',
+        runId,
+        blockIndex: payload.event.index ?? -1,
+        toolUseId: block.id,
+        name: block.name,
+        input: block.input,
+      });
+    }
+  }
+
+  if (
+    payload.type === 'stream_event' &&
+    payload.event?.type === 'content_block_delta' &&
+    payload.event.delta?.type === 'text_delta' &&
+    payload.event.delta.text
+  ) {
+    const currentBlockType =
+      typeof payload.event.index === 'number' ? state.blockTypeByIndex.get(payload.event.index) : undefined;
+    if (currentBlockType === 'thinking' || currentBlockType === 'redacted_thinking') {
+      return;
+    }
+
+    enqueueTextDelta(state, payload.event.delta.text);
+    enqueue({
+      type: 'phase',
+      runId,
+      phase: 'computing',
+      label: 'Computing...',
+    });
+  }
+
+  if (
+    payload.type === 'stream_event' &&
+    payload.event?.type === 'content_block_delta' &&
+    payload.event.delta?.type === 'thinking_delta'
+  ) {
+    enqueue({
+      type: 'phase',
+      runId,
+      phase: 'thinking',
+      label: 'Thinking...',
+      thoughtCount: state.thoughtCount || undefined,
+    });
+  }
+
+  if (
+    payload.type === 'stream_event' &&
+    payload.event?.type === 'content_block_delta' &&
+    payload.event.delta?.type === 'input_json_delta' &&
+    payload.event.delta.partial_json
+  ) {
+    if (typeof payload.event.index === 'number') {
+      const accumulator = state.toolInputByIndex.get(payload.event.index);
+      if (accumulator) {
+        accumulator.inputText += payload.event.delta.partial_json;
+        emitStructuredToolEventsFromAccumulator(runId, accumulator, enqueue);
+      }
+    }
+
+    enqueue({
+      type: 'tool-input-delta',
+      runId,
+      blockIndex: payload.event.index ?? -1,
+      text: payload.event.delta.partial_json,
+    });
+    enqueue({
+      type: 'phase',
+      runId,
+      phase: 'tool',
+      label: 'Computing...',
+    });
+  }
+
+  if (payload.type === 'stream_event' && payload.event?.type === 'content_block_stop') {
+    const currentBlockType =
+      typeof payload.event.index === 'number' ? state.blockTypeByIndex.get(payload.event.index) : undefined;
+    if (typeof payload.event.index === 'number') {
+      state.blockTypeByIndex.delete(payload.event.index);
+      const accumulator = state.toolInputByIndex.get(payload.event.index);
+      if (accumulator) {
+        emitStructuredToolEventsFromAccumulator(runId, accumulator, enqueue);
+        state.toolInputByIndex.delete(payload.event.index);
+      }
+    }
+
+    if (currentBlockType === 'tool_use') {
+      enqueue({
+        type: 'tool-stop',
+        runId,
+        blockIndex: payload.event.index ?? -1,
+      });
+    }
+  }
+
+  if (payload.type === 'assistant' && isNoResponseRequestedAssistant(payload)) {
+    return;
+  }
+
+  if (payload.type === 'assistant' && Array.isArray(payload.message?.content)) {
+    enqueue({
+      type: 'assistant-snapshot',
+      runId,
+      blocks: payload.message.content,
+    });
+
+    for (const block of payload.message.content) {
+      if (block.type !== 'tool_use' || !block.name) {
+        continue;
+      }
+
+      const requestUserInput = parseRequestUserInputEvent(block.name, block.input, block.id);
+      if (requestUserInput) {
+        enqueue({
+          type: 'request-user-input',
+          runId,
+          request: requestUserInput,
+        });
+      }
+
+      const approvalRequest = parseApprovalRequestEvent(block.name, block.input, block.id);
+      if (approvalRequest) {
+        enqueue({
+          type: 'approval-request',
+          runId,
+          request: approvalRequest,
+        });
+      }
+    }
+
+    const assistantText = payload.message.content
+      .filter((item) => item.type === 'text' && item.text)
+      .map((item) => item.text ?? '')
+      .join('');
+
+    if (assistantText) {
+      state.finalResult = assistantText;
+    }
+  }
+
+  if (payload.type === 'user' && Array.isArray(payload.message?.content)) {
+    if (isReplayedPrompt(payload, state.input.prompt)) {
+      enqueue({
+        type: 'status',
+        runId,
+        message: 'Claude Code 已接收用户消息',
+      });
+    }
+
+    for (const block of payload.message.content) {
+      if (block.type !== 'tool_result') {
         continue;
       }
 
       enqueue({
-        type: 'stderr',
+        type: 'tool-result',
         runId,
-        text: line.trim(),
+        toolUseId: block.tool_use_id,
+        content: stringifyClaudeContent(block.content),
+        isError: block.is_error,
       });
-      enqueueRuntimeReconnectHint(runId, line.trim(), 'stderr', emittedRecoveryHintKeys, enqueue);
     }
-  });
-
-  child.once('error', (error) => {
-    enqueueRetryableRuntimeError(runId, error.message, 'process', emittedRecoveryHintKeys, enqueue);
-    enqueue({
-      type: 'error',
-      runId,
-      message: error.message,
-    });
-    markFinished();
-  });
-
-  child.once('close', (code, signal) => {
-    if (stdoutBuffer.trim()) {
-      flushStdoutLine(stdoutBuffer);
-      stdoutBuffer = '';
-    }
-
-    if (stderrBuffer.trim()) {
-      enqueue({
-        type: 'stderr',
-        runId,
-        text: stderrBuffer.trim(),
-      });
-      stderrBuffer = '';
-    }
-
-    if (!seenDoneEvent) {
-      if (code === 0 || signal === 'SIGTERM') {
-        seenDoneEvent = true;
-        enqueue({
-          type: 'done',
-          runId,
-          sessionId,
-          result: finalResult,
-        });
-      } else {
-        const message = `Claude 退出异常，code=${code ?? 'null'} signal=${signal ?? 'null'}`;
-        enqueueRetryableRuntimeError(runId, message, 'process', emittedRecoveryHintKeys, enqueue);
-        enqueue({
-          type: 'error',
-          runId,
-          message,
-        });
-      }
-    }
-
-    activeRuns.delete(runId);
-    markFinished();
-  });
-
-  while (!finished || queue.length > 0) {
-    const next = queue.shift();
-    if (next) {
-      yield next;
-      continue;
-    }
-
-    await new Promise<void>((resolve) => {
-      wakeQueue = resolve;
-    });
   }
+
+  if (payload.type === 'result') {
+    const usage = normalizeUsage(payload.usage);
+    if (usage) {
+      enqueue({
+        type: 'usage',
+        runId,
+        ...usage,
+      });
+    }
+
+    const errorMessage = getResultErrorMessage(payload);
+    if (errorMessage) {
+      enqueueRetryableRuntimeError(runId, errorMessage, 'result', state.emittedRecoveryHintKeys, enqueue);
+      state.seenDoneEvent = true;
+      enqueue({
+        type: 'error',
+        runId,
+        message: errorMessage,
+      });
+      finishRuntimeRun(runtime, state);
+      return;
+    }
+
+    state.finalResult = payload.result ?? state.finalResult;
+    state.seenDoneEvent = true;
+    enqueue({
+      type: 'done',
+      runId,
+      sessionId: state.sessionId,
+      result: state.finalResult,
+      totalCostUsd: payload.total_cost_usd,
+      durationMs: payload.duration_ms,
+      ...usage,
+    });
+    finishRuntimeRun(runtime, state);
+  }
+}
+
+function flushRuntimeStderrLine(runtime: ClaudeRuntime, line: string) {
+  const state = runtime.currentRun;
+  const trimmed = line.trim();
+  if (!state || !trimmed) {
+    return;
+  }
+
+  enqueueRunEvent(state, {
+    type: 'stderr',
+    runId: state.runId,
+    text: trimmed,
+  });
+  enqueueRuntimeReconnectHint(state.runId, trimmed, 'stderr', state.emittedRecoveryHintKeys, (event) =>
+    enqueueRunEvent(state, event),
+  );
+}
+
+function closeClaudeRuntime(runtime: ClaudeRuntime) {
+  runtime.currentRun = null;
 }
 
 function extractUsage(payload: ClaudeJsonLine) {
@@ -762,21 +1011,27 @@ function normalizeUsage(usage?: ClaudeRawUsage) {
 }
 
 function resolveClaudeCommand() {
+  if (cachedClaudeCommand !== undefined) {
+    return cachedClaudeCommand;
+  }
+
   const lookupCommand = process.platform === 'win32' ? 'where.exe' : 'which';
   const lookup = spawnSync(lookupCommand, ['claude'], {
     encoding: 'utf8',
   });
 
   if (lookup.status !== 0) {
+    cachedClaudeCommand = null;
     return null;
   }
 
-  return (
+  cachedClaudeCommand =
     lookup.stdout
       .split(/\r?\n/)
       .map((item) => item.trim())
-      .find(Boolean) ?? null
-  );
+      .find(Boolean) ?? null;
+
+  return cachedClaudeCommand;
 }
 
 function getConfiguredModelOptions() {
@@ -802,23 +1057,79 @@ function readConfiguredClaudeModel() {
   }
 }
 
-function getResumeSessionId(workingDirectory: string, sessionId?: string) {
-  const trimmedSessionId = sessionId?.trim();
-  if (!trimmedSessionId) {
-    return undefined;
+function isNoResponseRequestedAssistant(payload: ClaudeJsonLine) {
+  if (payload.type !== 'assistant' || !Array.isArray(payload.message?.content)) {
+    return false;
   }
 
-  return existsSync(resolveClaudeTranscriptPath(workingDirectory, trimmedSessionId))
-    ? trimmedSessionId
-    : undefined;
+  const visibleText = payload.message.content
+    .filter((item) => item.type === 'text' && typeof item.text === 'string')
+    .map((item) => item.text?.trim() ?? '')
+    .join('\n')
+    .trim();
+
+  return visibleText === 'No response requested.';
 }
 
-function resolveClaudeTranscriptPath(workingDirectory: string, sessionId: string) {
-  return path.join(homedir(), '.claude', 'projects', sanitizeProjectPath(workingDirectory), `${sessionId}.jsonl`);
+function buildClaudeInputMessage(prompt: string): ClaudeInputMessage {
+  return {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: prompt,
+        },
+      ],
+    },
+  };
 }
 
-function sanitizeProjectPath(projectPath: string) {
-  return path.resolve(projectPath).replace(/[^a-zA-Z0-9]/g, '-');
+function writePromptToClaude(runtime: ClaudeRuntime, state: RunState, prompt: string) {
+  if (!runtime.useStreamJsonInput) {
+    enqueueTrace(state, 'prompt_sent_as_arg', Date.now(), `${prompt.length} chars`);
+    runtime.child.stdin.end();
+    return;
+  }
+
+  const payload = `${JSON.stringify(buildClaudeInputMessage(prompt))}\n`;
+  runtime.child.stdin.write(payload, (error) => {
+    if (error) {
+      const message = `写入 Claude Code 输入失败：${error.message}`;
+      enqueueRetryableRuntimeError(state.runId, message, 'process', state.emittedRecoveryHintKeys, (event) =>
+        enqueueRunEvent(state, event),
+      );
+      enqueueRunEvent(state, {
+        type: 'error',
+        runId: state.runId,
+        message,
+      });
+      finishRuntimeRun(runtime, state);
+      return;
+    }
+
+    runtime.child.stdin.end();
+    enqueueTrace(state, 'stdin_prompt_written', Date.now(), `${prompt.length} chars`);
+  });
+}
+
+function shouldUseStreamJsonInput(prompt: string) {
+  return prompt.includes('\n') || prompt.includes('\r');
+}
+
+function isReplayedPrompt(payload: ClaudeJsonLine, prompt: string) {
+  if (payload.type !== 'user' || !Array.isArray(payload.message?.content)) {
+    return false;
+  }
+
+  const text = payload.message.content
+    .filter((item) => item.type === 'text' && typeof item.text === 'string')
+    .map((item) => item.text ?? '')
+    .join('')
+    .trim();
+
+  return text === prompt.trim();
 }
 
 function getResultErrorMessage(payload: ClaudeJsonLine) {

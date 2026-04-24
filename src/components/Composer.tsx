@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEventHandler, type KeyboardEventHandler } from 'react';
+import { useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
 import { ArrowUp, Check, Mic, Plus, Square } from 'lucide-react';
 import { permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
@@ -6,13 +6,11 @@ import { modelLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels
 import type { PermissionMode } from '../types';
 
 type ComposerProps = {
-  prompt: string;
   permissionMode: PermissionMode;
   model: string;
   models: string[];
   isRunning: boolean;
-  onSubmit: FormEventHandler<HTMLFormElement>;
-  onPromptChange: (value: string) => void;
+  onSubmitPrompt: (prompt: string) => Promise<boolean> | boolean;
   onKeyDown: KeyboardEventHandler<HTMLTextAreaElement>;
   onSelectPermissionMode: (mode: PermissionMode) => void;
   onSelectModel: (model: string) => void;
@@ -20,18 +18,17 @@ type ComposerProps = {
 };
 
 export function Composer({
-  prompt,
   permissionMode,
   model,
   models,
   isRunning,
-  onSubmit,
-  onPromptChange,
+  onSubmitPrompt,
   onKeyDown,
   onSelectPermissionMode,
   onSelectModel,
   onStopRun,
 }: ComposerProps) {
+  const [draft, setDraft] = useState('');
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const permissionMenuRef = useRef<HTMLDivElement | null>(null);
@@ -44,13 +41,23 @@ export function Composer({
     ],
   });
 
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const submittedDraft = draft;
+    setDraft('');
+    const submitted = await onSubmitPrompt(submittedDraft);
+    if (!submitted) {
+      setDraft(submittedDraft);
+    }
+  }
+
   return (
-    <form className="composer" onSubmit={onSubmit}>
+    <form className="composer" onSubmit={(event) => void handleSubmit(event)}>
       <div className="composer-card">
         <textarea
           className="composer-input"
-          value={prompt}
-          onChange={(event) => onPromptChange(event.target.value)}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
           placeholder="要求后续变更"
         />
@@ -135,7 +142,7 @@ export function Composer({
                 <Square size={13} fill="currentColor" />
               </button>
             ) : (
-              <button type="submit" className="send-button" disabled={!prompt.trim()} title="发送">
+              <button type="submit" className="send-button" disabled={!draft.trim()} title="发送">
                 <ArrowUp size={18} />
               </button>
             )}

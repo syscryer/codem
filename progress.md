@@ -73,3 +73,18 @@
 - 优化 Claude Code session 标题导入规则：优先读取 transcript 中的 `sessionName` / `displayName` / `title` / `slug`，再回退到首条有效 prompt 文本，并过滤本地命令元信息。
 - 去掉项目和线程操作里的 `prompt / confirm / alert`，改为应用内输入弹层、确认弹层和 toast，新增项目、重命名、移除、复制会话 ID 的交互更贴近桌面端。
 - 已再次通过 `npm run typecheck`，并验证新加的线程历史写接口可返回 `200`。
+
+## 2026-04-24
+
+### 会话历史与来源收敛
+
+- 修复历史加载晚返回覆盖本地新 turn：加载结果按 turn id 与当前状态合并，避免正在运行或刚创建的 turn 消失。
+- 修复空 `done` 被当成成功回复：空结果不再追加空文本项，无正文和工具输出时落为 `stopped`，活动文案为“运行结束但没有返回正文”。
+- 修复保存历史时伪造空 assistant 文本：持久化时只写入非空文本项，`activity` 只作为元信息保留。
+- 修复工具结果回挂：`tool_result` 找不到精确 `toolUseId` 时回挂最近未有结果的工具；历史修复时也会把孤立结果合并回前一个未完成工具。
+- 修复 Agent/Task 工具标题：优先从 `description`、`prompt`、`subagent_type` 提取摘要，例如 `Agent(全面代码 review)`。
+- 服务端实时流过滤 `isSidechain`，transcript 解析跳过 `isSidechain` / `isMeta`，避免子 Agent 内部步骤和技能注入内容混入主对话。
+- 清理旧格式 transcript 中的 `<thinking>...</thinking>`、`answer for user question` 和 meta continuation 的 `No response requested.`。
+- Claude Code 会话列表改为以真实存在的 `~/.claude/projects/**/*.jsonl` 为单一来源：已绑定 `session_id` 但 jsonl 不存在的旧缓存线程不再展示，也不从 SQLite 旧数据推断标题或历史。
+- 导入时跳过 `agent-*.jsonl` 子 Agent 文件。
+- 清理标题为 `1` 的 Claude Code 会话 62 条，其中 24 条删除了对应 jsonl，38 条只清理旧索引；已写入 ignored，防止重新导入。

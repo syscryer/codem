@@ -224,3 +224,26 @@ Persistence 主要影响：
 
 - Current repo: `D:\project\codem`
 - Reference repo: `D:\project\desktop-cc-gui`
+
+## Current Implementation Notes
+
+### Completed Fixes
+
+- History restore no longer blindly replaces local turns; it preserves local turns by turn id so newly created or running turns are not lost when async history loading returns late.
+- Empty `done` events no longer create empty assistant text items. Turns with no visible assistant text or tool output settle as stopped.
+- History persistence only writes non-empty assistant text items. `activity` remains metadata and no longer creates empty Markdown blocks.
+- Tool results are attached to the matching tool use when possible, and runtime repair attaches them to the latest unresolved tool to avoid standalone `tool_result` rows in the UI.
+- Agent/Task tool titles are derived from task description / prompt / subagent type for readable inline steps.
+- Claude stream handling ignores `isSidechain` events.
+- Transcript parsing ignores `isSidechain` and `isMeta` records, skips meta continuation `No response requested.`, and strips old-format internal `<thinking>` text.
+
+### Source Of Truth Decision
+
+Claude Code sessions are treated as jsonl-backed records:
+
+- `~/.claude/projects/**/*.jsonl` is the authoritative source for imported Claude sessions.
+- `agent-*.jsonl` files are sub Agent internals and are not imported as top-level threads.
+- A thread with `session_id` is visible only when its jsonl file exists.
+- When jsonl exists, history is parsed from jsonl and may refresh the SQLite cache.
+- When jsonl is missing, CodeM does not infer title, history, or visibility from stale SQLite cache.
+- SQLite `messages` / `tool_calls` remain useful for local draft threads and as a refreshable cache, not as a replacement source for missing Claude sessions.

@@ -86,7 +86,8 @@ export type ClaudeEvent =
   | { type: 'status'; runId: string; message: string }
   | { type: 'session'; runId: string; sessionId: string }
   | { type: 'delta'; runId: string; text: string }
-  | { type: 'phase'; runId: string; phase: TurnPhase; label: string }
+  | { type: 'trace'; runId: string; name: string; atMs: number; elapsedMs: number; detail?: string }
+  | { type: 'phase'; runId: string; phase: TurnPhase; label: string; thoughtCount?: number }
   | ({ type: 'usage'; runId: string } & UsageSnapshot)
   | { type: 'claude-event'; runId: string; label: string; eventType?: string; subtype?: string; status?: string; raw: unknown }
   | { type: 'request-user-input'; runId: string; request: RequestUserInputRequest }
@@ -139,6 +140,7 @@ export type ConversationTurn = {
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
   totalCostUsd?: number;
+  thoughtCount?: number;
   pendingUserInputRequests?: RequestUserInputRequest[];
   pendingApprovalRequests?: ApprovalRequest[];
   recoveryHint?: RuntimeRecoveryHint;

@@ -308,6 +308,7 @@ app.put('/api/threads/:threadId/history', (request, response) => {
 });
 
 app.post('/api/claude/run', async (request, response) => {
+  const requestReceivedAtMs = Date.now();
   const prompt = typeof request.body?.prompt === 'string' ? request.body.prompt.trim() : '';
   const workingDirectory =
     typeof request.body?.workingDirectory === 'string' ? request.body.workingDirectory.trim() : '';
@@ -321,6 +322,10 @@ app.post('/api/claude/run', async (request, response) => {
   const model =
     typeof request.body?.model === 'string' && request.body.model.trim()
       ? request.body.model.trim()
+      : undefined;
+  const clientSubmitAtMs =
+    typeof request.body?.clientSubmitAtMs === 'number' && Number.isFinite(request.body.clientSubmitAtMs)
+      ? request.body.clientSubmitAtMs
       : undefined;
 
   if (!prompt) {
@@ -351,6 +356,8 @@ app.post('/api/claude/run', async (request, response) => {
     sessionId,
     permissionMode,
     model,
+    requestReceivedAtMs,
+    clientSubmitAtMs,
   });
   let currentRunId: string | undefined;
 
@@ -371,6 +378,7 @@ app.post('/api/claude/run', async (request, response) => {
     }
 
     response.write(`${JSON.stringify(message)}\n`);
+    (response as typeof response & { flush?: () => void }).flush?.();
   }
 
   response.end();

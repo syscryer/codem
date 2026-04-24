@@ -160,6 +160,7 @@ export function SidebarProjects({
           <div className="sidebar-search">
             <Search size={13} />
             <input
+              autoFocus
               value={searchQuery}
               onChange={(event) => onSearchQueryChange(event.target.value)}
               placeholder="搜索项目和聊天"

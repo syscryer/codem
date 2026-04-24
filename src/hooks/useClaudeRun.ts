@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_MODEL_VALUE } from '../constants';
 import {
   appendTextItem,
@@ -87,7 +87,6 @@ export function useClaudeRun({
   persistThreadMetadata,
   clearActiveTurnSelection,
 }: UseClaudeRunArgs) {
-  const [prompt, setPrompt] = useState('');
   const [workspace, setWorkspace] = useState('');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('bypassPermissions');
   const [model, setModel] = useState(DEFAULT_MODEL_VALUE);
@@ -97,14 +96,20 @@ export function useClaudeRun({
   });
   const [backendRunId, setBackendRunId] = useState('');
   const [isRunning, setIsRunning] = useState(false);
+  const [runningThreadId, setRunningThreadId] = useState<string | null>(null);
   const [clockNowMs, setClockNowMs] = useState(Date.now());
 
   const abortRef = useRef<AbortController | null>(null);
+  const backendRunIdRef = useRef('');
   const activeTurnIdRef = useRef('');
   const runThreadIdRef = useRef<string | null>(null);
+  const terminalRunIdRef = useRef('');
   const runWorkingDirectoryRef = useRef('');
   const pendingAssistantTextRef = useRef('');
   const assistantTextFrameRef = useRef<number | null>(null);
+  const runTraceStartedAtRef = useRef(0);
+  const firstClientDeltaAtRef = useRef(0);
+  const firstTextApplyAtRef = useRef(0);
 
   useEffect(() => {
     void loadHealth();
@@ -190,7 +195,12 @@ export function useClaudeRun({
       return null;
     }
 
-    return createThread(activeProjectId);
+    try {
+      return await createThread(activeProjectId);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '新建聊天失败', 'error');
+      return null;
+    }
   }
 
   function updateRunningTurn(updater: (turn: ConversationTurn) => ConversationTurn) {
@@ -203,6 +213,15 @@ export function useClaudeRun({
     updateThreadTurn(targetThreadId, activeTurnId, updater);
   }
 
+  function setBackendRunIdValue(runId: string) {
+    backendRunIdRef.current = runId;
+    setBackendRunId(runId);
+  }
+
+  function markRunStreamProgress() {
+    setClockNowMs(Date.now());
+  }
+
   function appendRunningDebug(event: Omit<DebugEvent, 'id'>) {
     const targetThreadId = runThreadIdRef.current || activeThreadId;
     if (!targetThreadId) {
@@ -210,6 +229,15 @@ export function useClaudeRun({
     }
 
     appendDebug(targetThreadId, event);
+  }
+
+  function appendTraceDebug(name: string, atMs = Date.now(), detail?: string) {
+    const startedAtMs = runTraceStartedAtRef.current || atMs;
+    const elapsedMs = Math.max(0, atMs - startedAtMs);
+    appendRunningDebug({
+      title: `Trace: ${name}`,
+      content: detail ? `+${elapsedMs}ms\n${detail}` : `+${elapsedMs}ms`,
+    });
   }
 
   function appendRunningRawEvent(line: string) {
@@ -239,6 +267,10 @@ export function useClaudeRun({
 
     if (text) {
       applyAssistantTextDelta(text);
+      if (!firstTextApplyAtRef.current) {
+        firstTextApplyAtRef.current = Date.now();
+        appendTraceDebug('client_first_text_apply', firstTextApplyAtRef.current, `${text.length} chars`);
+      }
     }
   }
 
@@ -281,12 +313,18 @@ export function useClaudeRun({
     const runSessionId =
       options?.sessionId && options.sessionId.trim() ? options.sessionId.trim() : undefined;
     const runPermissionMode = options?.permissionModeOverride ?? permissionMode;
+    const submitAtMs = Date.now();
+    runTraceStartedAtRef.current = submitAtMs;
+    firstClientDeltaAtRef.current = 0;
+    firstTextApplyAtRef.current = 0;
     runWorkingDirectoryRef.current = runWorkingDirectory;
     const turnId = crypto.randomUUID();
     activeTurnIdRef.current = turnId;
     runThreadIdRef.current = thread.id;
-    setBackendRunId('');
+    terminalRunIdRef.current = '';
+    setBackendRunIdValue('');
     setIsRunning(true);
+    setRunningThreadId(thread.id);
     options?.onStarted?.();
     updateThreadDetail(
       thread.id,
@@ -317,6 +355,8 @@ export function useClaudeRun({
     abortRef.current = controller;
 
     try {
+      appendTraceDebug('client_submit', submitAtMs, `${trimmedPrompt.length} chars`);
+      appendTraceDebug('fetch_start');
       const response = await fetch('/api/claude/run', {
         method: 'POST',
         headers: {
@@ -328,9 +368,11 @@ export function useClaudeRun({
           permissionMode: runPermissionMode,
           model: model === DEFAULT_MODEL_VALUE ? undefined : model,
           sessionId: runSessionId,
+          clientSubmitAtMs: submitAtMs,
         }),
         signal: controller.signal,
       });
+      appendTraceDebug('response_headers');
 
       if (!response.ok || !response.body) {
         const message = await response.text();
@@ -342,7 +384,7 @@ export function useClaudeRun({
           activity: message || '后端没有返回可读流。',
         }));
         schedulePersistThreadHistory(targetThreadId);
-        return;
+        return true;
       }
 
       const reader = response.body.getReader();
@@ -378,7 +420,7 @@ export function useClaudeRun({
       if (!sawTerminalEvent) {
         const targetThreadId = runThreadIdRef.current || activeThreadId;
         flushQueuedAssistantTextNow();
-        updateRunningTurn(closeTurnWithoutTerminalEvent);
+        updateRunningTurn(closeTurnAfterUnexpectedStreamEnd);
         schedulePersistThreadHistory(targetThreadId);
       }
     } catch (error) {
@@ -403,8 +445,10 @@ export function useClaudeRun({
     } finally {
       abortRef.current = null;
       setIsRunning(false);
-      setBackendRunId('');
+      setRunningThreadId(null);
+      setBackendRunIdValue('');
       runThreadIdRef.current = null;
+      terminalRunIdRef.current = '';
       clearActiveTurnSelection();
     }
 
@@ -416,6 +460,7 @@ export function useClaudeRun({
       return null;
     }
 
+    markRunStreamProgress();
     appendRunningRawEvent(line);
 
     try {
@@ -433,6 +478,11 @@ export function useClaudeRun({
   }
 
   function handleClaudeEvent(event: ClaudeEvent) {
+    const eventRunId = 'runId' in event ? event.runId : '';
+    if (eventRunId && terminalRunIdRef.current === eventRunId) {
+      return;
+    }
+
     if (
       event.type === 'request-user-input' ||
       event.type === 'approval-request' ||
@@ -449,12 +499,20 @@ export function useClaudeRun({
     }
 
     if ('runId' in event && event.runId) {
-      setBackendRunId(event.runId);
+      setBackendRunIdValue(event.runId);
       updateRunningTurn((turn) => ({
         ...turn,
         backendRunId: event.runId,
         status: turn.status === 'pending' ? 'running' : turn.status,
       }));
+    }
+
+    if (event.type === 'trace') {
+      appendRunningDebug({
+        title: `Trace: ${event.name}`,
+        content: event.detail ? `+${event.elapsedMs}ms\n${event.detail}` : `+${event.elapsedMs}ms`,
+      });
+      return;
     }
 
     if (event.type === 'raw') {
@@ -469,7 +527,7 @@ export function useClaudeRun({
       updateRunningTurn((turn) => ({
         ...turn,
         status: 'running',
-        activity: 'Claude Code 已启动',
+        activity: event.message.includes('已接收用户消息') ? 'Claude Code 已接收用户消息' : 'Claude Code 已启动',
         phase: 'requesting',
       }));
       appendRunningDebug({
@@ -485,6 +543,7 @@ export function useClaudeRun({
         status: turn.status === 'pending' ? 'running' : turn.status,
         phase: event.phase,
         activity: event.label,
+        thoughtCount: event.thoughtCount ?? turn.thoughtCount,
       }));
       return;
     }
@@ -585,6 +644,10 @@ export function useClaudeRun({
     }
 
     if (event.type === 'delta') {
+      if (!firstClientDeltaAtRef.current) {
+        firstClientDeltaAtRef.current = Date.now();
+        appendTraceDebug('client_first_delta_received', firstClientDeltaAtRef.current, `${event.text.length} chars`);
+      }
       queueAssistantTextDelta(event.text);
       return;
     }
@@ -682,6 +745,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'error') {
+      terminalRunIdRef.current = event.runId;
       const targetThreadId = runThreadIdRef.current || activeThreadId;
       updateRunningTurn((turn) => ({
         ...turn,
@@ -700,8 +764,13 @@ export function useClaudeRun({
     }
 
     if (event.type === 'done') {
+      terminalRunIdRef.current = event.runId;
       const targetThreadId = runThreadIdRef.current || activeThreadId;
       updateRunningTurn((turn) => {
+        if (turn.status === 'error' || turn.status === 'stopped') {
+          return turn;
+        }
+
         const assistantText = turn.assistantText.trim()
           ? turn.assistantText
           : event.result.trim()
@@ -748,25 +817,20 @@ export function useClaudeRun({
     }
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const trimmedPrompt = prompt.trim();
-
+  async function submitPrompt(promptText: string) {
+    const trimmedPrompt = promptText.trim();
     if (!trimmedPrompt || isRunning) {
-      return;
+      return false;
     }
 
     const thread = await ensureActiveThread();
     if (!thread) {
-      return;
+      return false;
     }
 
-    await startRun(thread, trimmedPrompt, {
+    return startRun(thread, trimmedPrompt, {
       workingDirectory: workspace.trim() || thread.workingDirectory,
       sessionId: thread.sessionId.trim() ? thread.sessionId.trim() : undefined,
-      onStarted: () => {
-        setPrompt('');
-      },
     });
   }
 
@@ -780,14 +844,21 @@ export function useClaudeRun({
 
   async function stopRun() {
     abortRef.current?.abort();
+    const currentRunId = backendRunIdRef.current || backendRunId;
 
-    if (!backendRunId) {
+    if (!currentRunId) {
+      const targetThreadId = runThreadIdRef.current || activeThreadId;
+      flushQueuedAssistantTextNow();
+      updateRunningTurn(closeTurnWithoutTerminalEvent);
+      schedulePersistThreadHistory(targetThreadId);
       clearActiveTurnSelection();
+      setIsRunning(false);
+      setRunningThreadId(null);
       return;
     }
 
     try {
-      await fetch(`/api/claude/run/${backendRunId}`, {
+      await fetch(`/api/claude/run/${currentRunId}`, {
         method: 'DELETE',
       });
     } catch {
@@ -943,21 +1014,20 @@ export function useClaudeRun({
   }
 
   return {
-    prompt,
     workspace,
     permissionMode,
     model,
     models,
     backendRunId,
     isRunning,
+    runningThreadId,
     clockNowMs,
     activeTurnIdRef,
-    setPrompt,
     setWorkspace,
     setPermissionMode,
     setModel,
     handlePermissionModeSelect,
-    handleSubmit,
+    submitPrompt,
     submitRequestUserInput,
     submitRuntimeRecoveryAction,
     submitApprovalDecision,
@@ -1235,6 +1305,19 @@ function getSuggestedRuntimeAction(reason: RuntimeReconnectReason): RuntimeSugge
   }
 
   return 'retry';
+}
+
+function closeTurnAfterUnexpectedStreamEnd(turn: ConversationTurn): ConversationTurn {
+  const hasVisibleOutput = hasTurnVisibleOutput(turn);
+
+  return {
+    ...turn,
+    ...settleRunningToolSteps(turn, 'error'),
+    status: 'error',
+    phase: undefined,
+    durationMs: turn.durationMs ?? getElapsedDuration(turn),
+    activity: hasVisibleOutput ? '连接中断，已保留部分输出' : '连接中断，Claude 未返回完成事件',
+  };
 }
 
 function formatRuntimeErrorActivity(message: string, hint?: RuntimeRecoveryHint) {

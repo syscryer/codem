@@ -1,5 +1,5 @@
 import { ArrowDown } from 'lucide-react';
-import { useEffect, useState, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { ConversationTurnView } from './ConversationTurn';
 import type {
   ApprovalDecision,
@@ -47,6 +47,8 @@ export function ConversationPane({
   onSubmitApprovalDecision,
 }: ConversationPaneProps) {
   const [showBottomAnchor, setShowBottomAnchor] = useState(false);
+  const shouldAutoFollowRef = useRef(true);
+  const previousThreadIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const transcript = transcriptRef.current;
@@ -58,6 +60,7 @@ export function ConversationPane({
     const syncAnchorVisibility = () => {
       const distanceToBottom =
         transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
+      shouldAutoFollowRef.current = distanceToBottom <= BOTTOM_ANCHOR_THRESHOLD_PX;
       setShowBottomAnchor(
         Boolean(activeThread?.turns.length) && distanceToBottom > BOTTOM_ANCHOR_THRESHOLD_PX,
       );
@@ -71,9 +74,32 @@ export function ConversationPane({
       transcript.removeEventListener('scroll', syncAnchorVisibility);
       window.removeEventListener('resize', syncAnchorVisibility);
     };
-  }, [activeThread?.id, activeThread?.turns, transcriptRef]);
+  }, [activeThread?.id, transcriptRef]);
+
+  useLayoutEffect(() => {
+    const threadChanged = previousThreadIdRef.current !== activeThread?.id;
+    previousThreadIdRef.current = activeThread?.id ?? null;
+
+    if (threadChanged) {
+      shouldAutoFollowRef.current = true;
+    }
+
+    if (!threadChanged && !shouldAutoFollowRef.current) {
+      return undefined;
+    }
+
+    const frame = requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ block: 'end' });
+      setShowBottomAnchor(false);
+      shouldAutoFollowRef.current = true;
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [activeThread?.id, activeThread?.turns, activeThread?.historyLoaded, bottomRef]);
 
   function handleScrollToBottom() {
+    shouldAutoFollowRef.current = true;
+    setShowBottomAnchor(false);
     bottomRef.current?.scrollIntoView({
       block: 'end',
       behavior: 'smooth',
@@ -87,6 +113,11 @@ export function ConversationPane({
           <div className="empty-state">
             <h3>从左侧选择一个项目或聊天</h3>
             <p>CodeM 会导入 Claude Code 本地 session，并把它们组织到项目工作区下面。</p>
+          </div>
+        ) : activeThread.historyLoading && activeThread.turns.length === 0 ? (
+          <div className="empty-state">
+            <h3>正在加载聊天历史</h3>
+            <p>历史消息读取完成后会显示在这里。</p>
           </div>
         ) : activeThread.turns.length === 0 ? (
           <div className="empty-state">

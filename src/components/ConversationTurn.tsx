@@ -56,6 +56,8 @@ export function ConversationTurnView({
     turn.status === 'stopped' ||
     turn.status === 'error' ||
     Boolean(turn.durationMs || turn.outputTokens || turn.inputTokens);
+  const showLeadingProgressLine = showProgressLine && !running;
+  const showTrailingProgressLine = showProgressLine && running;
 
   const assistantCopyText = getAssistantCopyText(turn);
   const messageTime = formatMessageTime(turn.startedAtMs);
@@ -76,7 +78,7 @@ export function ConversationTurnView({
       <section className="message assistant-message">
         <div className="message-label">Claude</div>
         <div className="assistant-content">
-          {showProgressLine ? (
+          {showLeadingProgressLine ? (
             <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
           ) : null}
 
@@ -93,6 +95,10 @@ export function ConversationTurnView({
               null
             ) : null
           )}
+
+          {showTrailingProgressLine ? (
+            <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
+          ) : null}
 
           {turn.pendingUserInputRequests?.map((request, index) => (
             <RequestUserInputCard
@@ -612,6 +618,12 @@ function formatTurnProgress(turn: ConversationTurn, nowMs?: number, isLiveRunnin
   if (duration) {
     parts.push(duration);
   }
+  if (typeof turn.outputTokens === 'number') {
+    parts.push(`↓ ${formatTokenCount(turn.outputTokens)} tokens`);
+  }
+  if (typeof turn.thoughtCount === 'number' && turn.thoughtCount > 0) {
+    parts.push(`thought for ${turn.thoughtCount}`);
+  }
 
   const prefix =
     !running
@@ -627,6 +639,14 @@ function formatTurnProgress(turn: ConversationTurn, nowMs?: number, isLiveRunnin
   return parts.length > 0 ? `${prefix} ${parts.join(' · ')}` : prefix;
 }
 
+function formatTokenCount(tokens: number) {
+  if (tokens >= 1000) {
+    return `${(tokens / 1000).toFixed(1)}k`;
+  }
+
+  return `${tokens}`;
+}
+
 function isTurnInFlight(turn: ConversationTurn, isLiveRunning = false) {
   if (turn.status !== 'pending' && turn.status !== 'running') {
     return false;
@@ -640,12 +660,15 @@ function isTurnInFlight(turn: ConversationTurn, isLiveRunning = false) {
 }
 
 function hasCompletionSignal(turn: ConversationTurn) {
+  if (turn.status === 'pending' || turn.status === 'running') {
+    return turn.activity === '运行完成';
+  }
+
   return Boolean(
     turn.durationMs ||
       turn.totalCostUsd ||
       (turn.outputTokens && turn.assistantText.trim()) ||
-      (turn.metrics && turn.assistantText.trim()) ||
-      (turn.status === 'running' && turn.activity === '运行完成'),
+      (turn.metrics && turn.assistantText.trim()),
   );
 }
 

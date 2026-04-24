@@ -855,12 +855,22 @@ function resolveAppDirectory() {
 }
 
 function ensureColumn(tableName: string, columnName: string, definition: string) {
-  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  const tableIdentifier = quoteSqlIdentifier(tableName);
+  const columnIdentifier = quoteSqlIdentifier(columnName);
+  const rows = db.prepare(`PRAGMA table_info(${tableIdentifier})`).all() as Array<{ name: string }>;
   if (rows.some((row) => row.name === columnName)) {
     return;
   }
 
-  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  db.exec(`ALTER TABLE ${tableIdentifier} ADD COLUMN ${columnIdentifier} ${definition}`);
+}
+
+function quoteSqlIdentifier(identifier: string) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier)) {
+    throw new Error(`非法数据库标识符：${identifier}`);
+  }
+
+  return `"${identifier}"`;
 }
 
 function importClaudeSessions() {
@@ -1235,7 +1245,8 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
           id: randomUUID(),
           userText,
           assistantText: '',
-          status: 'done',
+          status: 'stopped',
+          activity: '运行结束但没有返回正文',
           sessionId,
           items: [],
           tools: [],
@@ -1268,15 +1279,20 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
         turns.push(currentTurn);
       }
 
+      applyTranscriptMetrics(currentTurn, payload, message as Record<string, unknown>);
       const contentBlocks = extractContentBlocks((message as Record<string, unknown>).content);
       for (const block of contentBlocks) {
         if (block.type === 'text' && block.text) {
+          currentTurn.status = 'done';
+          currentTurn.activity = undefined;
           currentTurn.assistantText += block.text;
           pushTextItem(currentTurn, block.text);
           continue;
         }
 
         if (block.type === 'tool_use' && block.name) {
+          currentTurn.status = 'done';
+          currentTurn.activity = undefined;
           const tool = {
             id: block.id || randomUUID(),
             name: block.name,
@@ -1296,6 +1312,10 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
           }
         }
       }
+    }
+
+    if (payload.type === 'result' && currentTurn) {
+      applyTranscriptMetrics(currentTurn, payload);
     }
   }
 
@@ -1333,6 +1353,23 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
       tool.status = isError ? 'error' : 'done';
     }
   }
+}
+
+function applyTranscriptMetrics(
+  turn: ThreadTurn,
+  payload: Record<string, unknown>,
+  message?: Record<string, unknown>,
+) {
+  const usage = asRecord(payload.usage) ?? asRecord(message?.usage);
+  if (usage) {
+    turn.inputTokens = readNumber(usage, ['input_tokens']) ?? turn.inputTokens;
+    turn.outputTokens = readNumber(usage, ['output_tokens']) ?? turn.outputTokens;
+    turn.cacheCreationInputTokens = readNumber(usage, ['cache_creation_input_tokens']) ?? turn.cacheCreationInputTokens;
+    turn.cacheReadInputTokens = readNumber(usage, ['cache_read_input_tokens']) ?? turn.cacheReadInputTokens;
+  }
+
+  turn.durationMs = readNumber(payload, ['duration_ms']) ?? turn.durationMs;
+  turn.totalCostUsd = readNumber(payload, ['total_cost_usd']) ?? turn.totalCostUsd;
 }
 
 function readStoredThreadHistory(threadId: string): ThreadTurn[] {
@@ -1737,6 +1774,23 @@ function readString(value: Record<string, unknown>, keys: string[]) {
   return '';
 }
 
+function readNumber(value: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function asRecord(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 function normalizeTurnStatus(value: string | null) {
   if (value === 'pending' || value === 'running' || value === 'done' || value === 'error' || value === 'stopped') {
     return value;
@@ -1840,6 +1894,13 @@ function extractContentBlocks(content: unknown) {
     .filter((item) => {
       const type = typeof item.type === 'string' ? item.type : '';
       return type !== 'thinking' && type !== 'redacted_thinking';
+    })
+    .filter((item) => {
+      if (item.type !== 'text' || typeof item.text !== 'string') {
+        return true;
+      }
+
+      return item.text.trim() !== 'No response requested.';
     })
     .map((item) => ({
       type: typeof item.type === 'string' ? item.type : undefined,

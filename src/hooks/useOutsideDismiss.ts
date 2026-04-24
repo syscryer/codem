@@ -1,4 +1,4 @@
-import { useEffect, type RefObject } from 'react';
+import { useEffect, useRef, type RefObject } from 'react';
 
 type OutsideRefEntry = {
   ref: RefObject<HTMLElement | null>;
@@ -16,17 +16,21 @@ type UseOutsideDismissArgs = {
 };
 
 export function useOutsideDismiss({ refs = [], selectors = [] }: UseOutsideDismissArgs) {
+  const latestArgsRef = useRef({ refs, selectors });
+  latestArgsRef.current = { refs, selectors };
+
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
       const target = event.target as Node;
+      const { refs: currentRefs, selectors: currentSelectors } = latestArgsRef.current;
 
-      for (const entry of refs) {
+      for (const entry of currentRefs) {
         if (!entry.ref.current?.contains(target)) {
           entry.onDismiss();
         }
       }
 
-      for (const entry of selectors) {
+      for (const entry of currentSelectors) {
         const element = document.querySelector(entry.selector);
         if (element && !element.contains(target)) {
           entry.onDismiss();
@@ -36,5 +40,5 @@ export function useOutsideDismiss({ refs = [], selectors = [] }: UseOutsideDismi
 
     document.addEventListener('pointerdown', handlePointerDown);
     return () => document.removeEventListener('pointerdown', handlePointerDown);
-  }, [refs, selectors]);
+  }, []);
 }
