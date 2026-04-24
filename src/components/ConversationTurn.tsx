@@ -8,20 +8,48 @@ import {
   shouldHideToolStep,
   summarizeToolRow,
 } from '../lib/conversation';
-import type { ConversationTurn, ToolStep } from '../types';
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  ConversationTurn,
+  RequestUserInputQuestion,
+  RequestUserInputRequest,
+  RuntimeRecoveryHint,
+  RuntimeSuggestedAction,
+  ToolStep,
+} from '../types';
 
 export function ConversationTurnView({
   turn,
   nowMs,
   isLiveRunning,
   isLatest,
+  onSubmitRequestUserInput,
+  onSubmitRuntimeRecoveryAction,
+  onSubmitApprovalDecision,
 }: {
   turn: ConversationTurn;
   nowMs: number;
   isLiveRunning: boolean;
   isLatest: boolean;
+  onSubmitRequestUserInput: (
+    turn: ConversationTurn,
+    request: RequestUserInputRequest,
+    answers: Record<string, string>,
+  ) => Promise<boolean>;
+  onSubmitRuntimeRecoveryAction: (
+    turn: ConversationTurn,
+    action: RuntimeSuggestedAction,
+  ) => Promise<boolean>;
+  onSubmitApprovalDecision: (
+    turn: ConversationTurn,
+    request: ApprovalRequest,
+    decision: ApprovalDecision,
+  ) => Promise<boolean>;
 }) {
-  const visibleItems = turn.items.filter((item) => item.type === 'text' || !shouldHideToolStep(item.tool));
+  const visibleItems = turn.items.filter(
+    (item) => item.type === 'text' || !shouldHideTurnToolStep(turn, item.tool),
+  );
   const running = isTurnInFlight(turn, isLiveRunning);
   const showProgressLine =
     running ||
@@ -65,6 +93,32 @@ export function ConversationTurnView({
               null
             ) : null
           )}
+
+          {turn.pendingUserInputRequests?.map((request, index) => (
+            <RequestUserInputCard
+              key={request.requestId ?? `${turn.id}-request-input-${index}`}
+              request={request}
+              turn={turn}
+              onSubmitRequestUserInput={onSubmitRequestUserInput}
+            />
+          ))}
+
+          {turn.pendingApprovalRequests?.map((request, index) => (
+            <ApprovalRequestCard
+              key={request.requestId ?? `${turn.id}-approval-${index}`}
+              request={request}
+              turn={turn}
+              onSubmitApprovalDecision={onSubmitApprovalDecision}
+            />
+          ))}
+
+          {turn.recoveryHint && turn.status !== 'done' ? (
+            <RuntimeRecoveryCard
+              hint={turn.recoveryHint}
+              turn={turn}
+              onSubmitRuntimeRecoveryAction={onSubmitRuntimeRecoveryAction}
+            />
+          ) : null}
 
           {turn.status === 'error' && turn.activity ? (
             <div className={`turn-status ${turn.status}`}>{turn.activity}</div>
@@ -220,6 +274,323 @@ function ToolPreviewPanel({ preview }: { preview: ToolPreview }) {
         </div>
       )}
     </div>
+  );
+}
+
+function RequestUserInputCard({
+  request,
+  turn,
+  onSubmitRequestUserInput,
+}: {
+  request: RequestUserInputRequest;
+  turn: ConversationTurn;
+  onSubmitRequestUserInput: (
+    turn: ConversationTurn,
+    request: RequestUserInputRequest,
+    answers: Record<string, string>,
+  ) => Promise<boolean>;
+}) {
+  const submitted = Boolean(request.submittedAnswers);
+  const [selectedOptions, setSelectedOptions] = useState<Record<string, number[]>>(() =>
+    getRequestUserInputSelectionsFromAnswers(request),
+  );
+  const [notes, setNotes] = useState<Record<string, string>>(() =>
+    getRequestUserInputNotesFromAnswers(request),
+  );
+  const [submitError, setSubmitError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!request.submittedAnswers) {
+      return;
+    }
+
+    setSelectedOptions(getRequestUserInputSelectionsFromAnswers(request));
+    setNotes(getRequestUserInputNotesFromAnswers(request));
+  }, [request]);
+
+  const canSubmit = request.questions.some((question, index) => {
+    const key = question.id ?? `question-${index}`;
+    return Boolean(selectedOptions[key]?.length || notes[key]?.trim());
+  });
+
+  async function handleSubmit() {
+    if (submitted) {
+      return;
+    }
+
+    const validationMessage = validateRequestUserInput(request, selectedOptions, notes);
+    if (validationMessage) {
+      setSubmitError(validationMessage);
+      return;
+    }
+
+    const answers = buildRequestUserInputAnswers(request, selectedOptions, notes);
+    setSubmitError('');
+    setSubmitting(true);
+    try {
+      const submitted = await onSubmitRequestUserInput(turn, request, answers);
+      if (!submitted) {
+        setSubmitError('提交未完成，请稍后重试。');
+        return;
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : '提交失败，请稍后重试。');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <section className={`assistant-runtime-card request-user-input-card${submitted ? ' submitted' : ''}`}>
+      <header className="assistant-runtime-card-head">
+        <span className={`assistant-runtime-badge ${submitted ? 'answered' : 'waiting'}`}>
+          {submitted ? '已回答' : '等待输入'}
+        </span>
+        <div className="assistant-runtime-card-heading">
+          <strong>{request.title || 'Claude 需要补充信息'}</strong>
+          {request.description ? <p>{request.description}</p> : null}
+        </div>
+      </header>
+
+      <div className="assistant-runtime-question-list">
+        {request.questions.map((question, index) => (
+          <RequestUserInputQuestionBlock
+            key={question.id ?? `${request.requestId ?? 'request'}-question-${index}`}
+            question={question}
+            questionKey={question.id ?? `question-${index}`}
+            selectedOptions={selectedOptions[question.id ?? `question-${index}`] ?? []}
+            note={notes[question.id ?? `question-${index}`] ?? ''}
+            disabled={submitted || submitting}
+            onToggleOption={(optionIndex) =>
+              setSelectedOptions((current) =>
+                updateQuestionSelections(
+                  current,
+                  question.id ?? `question-${index}`,
+                  optionIndex,
+                  Boolean(question.multiSelect),
+                ),
+              )
+            }
+            onNoteChange={(value) =>
+              setNotes((current) => ({
+                ...current,
+                [question.id ?? `question-${index}`]: value,
+              }))
+            }
+          />
+        ))}
+      </div>
+
+      <div className="assistant-runtime-card-foot">
+        <span className="assistant-runtime-footnote">
+          {submitted ? '答案已提交，卡片保留为上下文记录。' : '填写后会作为续聊消息继续当前任务。'}
+        </span>
+        <button
+          type="button"
+          className="assistant-runtime-submit-button"
+          disabled={submitted || !canSubmit || submitting}
+          onClick={() => void handleSubmit()}
+        >
+          {submitted ? '已继续' : submitting ? '提交中...' : '继续任务'}
+        </button>
+      </div>
+      {submitError ? <div className="assistant-runtime-error">{submitError}</div> : null}
+    </section>
+  );
+}
+
+function RequestUserInputQuestionBlock({
+  question,
+  questionKey,
+  selectedOptions,
+  note,
+  disabled = false,
+  onToggleOption,
+  onNoteChange,
+}: {
+  question: RequestUserInputQuestion;
+  questionKey: string;
+  selectedOptions: number[];
+  note: string;
+  disabled?: boolean;
+  onToggleOption: (optionIndex: number) => void;
+  onNoteChange: (value: string) => void;
+}) {
+  const hint = getRequestQuestionHint(question);
+  const showTextarea = !question.options?.length || question.isOther;
+
+  return (
+    <section className="assistant-runtime-question">
+      {question.header ? <div className="assistant-runtime-question-header">{question.header}</div> : null}
+      <div className="assistant-runtime-question-text">{question.question}</div>
+      {question.options?.length ? (
+        <div className="assistant-runtime-option-list">
+          {question.options.map((option, index) => (
+            <button
+              key={`${question.id ?? question.question}-option-${index}`}
+              type="button"
+              className={`assistant-runtime-option-chip${selectedOptions.includes(index) ? ' selected' : ''}`}
+              disabled={disabled}
+              onClick={() => onToggleOption(index)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {showTextarea ? (
+        <textarea
+          className="assistant-runtime-textarea"
+          value={note}
+          onChange={(event) => onNoteChange(event.target.value)}
+          disabled={disabled}
+          placeholder={question.placeholder || '填写你的回答'}
+          rows={question.options?.length ? 2 : 3}
+          aria-label={questionKey}
+        />
+      ) : null}
+      {hint ? <div className="assistant-runtime-question-hint">{hint}</div> : null}
+    </section>
+  );
+}
+
+function ApprovalRequestCard({
+  request,
+  turn,
+  onSubmitApprovalDecision,
+}: {
+  request: ApprovalRequest;
+  turn: ConversationTurn;
+  onSubmitApprovalDecision: (
+    turn: ConversationTurn,
+    request: ApprovalRequest,
+    decision: ApprovalDecision,
+  ) => Promise<boolean>;
+}) {
+  const [submittingDecision, setSubmittingDecision] = useState<ApprovalDecision | null>(null);
+  const [submitError, setSubmitError] = useState('');
+
+  async function handleDecision(decision: ApprovalDecision) {
+    setSubmitError('');
+    setSubmittingDecision(decision);
+    try {
+      const submitted = await onSubmitApprovalDecision(turn, request, decision);
+      if (!submitted) {
+        setSubmitError('操作未完成，请稍后重试。');
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : '操作失败，请稍后重试。');
+    } finally {
+      setSubmittingDecision(null);
+    }
+  }
+
+  return (
+    <section className="assistant-runtime-card approval-request-card">
+      <header className="assistant-runtime-card-head">
+        <span className="assistant-runtime-badge caution">等待批准</span>
+        <div className="assistant-runtime-card-heading">
+          <strong>{request.title}</strong>
+          {request.description ? <p>{request.description}</p> : null}
+        </div>
+      </header>
+
+      {request.command?.length ? (
+        <pre className="assistant-runtime-code">{request.command.join(' ')}</pre>
+      ) : null}
+
+      <div className="assistant-runtime-card-foot">
+        <span className="assistant-runtime-footnote">
+          {request.danger === 'high'
+            ? '该操作风险较高，批准前请确认目标范围。'
+            : '该操作需要确认后才能继续。'}
+        </span>
+        <div className="assistant-runtime-action-list">
+          <button
+            type="button"
+            className="assistant-runtime-submit-button danger"
+            disabled={Boolean(submittingDecision)}
+            onClick={() => void handleDecision('reject')}
+          >
+            {submittingDecision === 'reject' ? '处理中...' : '拒绝'}
+          </button>
+          <button
+            type="button"
+            className="assistant-runtime-submit-button"
+            disabled={Boolean(submittingDecision)}
+            onClick={() => void handleDecision('approve')}
+          >
+            {submittingDecision === 'approve' ? '处理中...' : '批准并继续'}
+          </button>
+        </div>
+      </div>
+      {submitError ? <div className="assistant-runtime-error">{submitError}</div> : null}
+    </section>
+  );
+}
+
+function RuntimeRecoveryCard({
+  hint,
+  turn,
+  onSubmitRuntimeRecoveryAction,
+}: {
+  hint: RuntimeRecoveryHint;
+  turn: ConversationTurn;
+  onSubmitRuntimeRecoveryAction: (
+    turn: ConversationTurn,
+    action: RuntimeSuggestedAction,
+  ) => Promise<boolean>;
+}) {
+  const [submittingAction, setSubmittingAction] = useState<RuntimeSuggestedAction | null>(null);
+  const [submitError, setSubmitError] = useState('');
+  const actions = getRecoveryActions(hint);
+
+  async function handleAction(action: RuntimeSuggestedAction) {
+    setSubmitError('');
+    setSubmittingAction(action);
+    try {
+      const submitted = await onSubmitRuntimeRecoveryAction(turn, action);
+      if (!submitted) {
+        setSubmitError('恢复动作未完成，请稍后重试。');
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : '恢复失败，请稍后重试。');
+    } finally {
+      setSubmittingAction(null);
+    }
+  }
+
+  return (
+    <section className="assistant-runtime-card runtime-recovery-card">
+      <header className="assistant-runtime-card-head">
+        <span className="assistant-runtime-badge recovery">可恢复</span>
+        <div className="assistant-runtime-card-heading">
+          <strong>{getRecoveryTitle(hint)}</strong>
+          <p>{hint.message}</p>
+        </div>
+      </header>
+
+      <div className="assistant-runtime-card-foot">
+        <span className="assistant-runtime-footnote">
+          建议操作：{formatRecoveryAction(hint.suggestedAction)}
+        </span>
+        <div className="assistant-runtime-action-list">
+          {actions.map((action) => (
+            <button
+              key={action}
+              type="button"
+              className={`assistant-runtime-submit-button${action !== hint.suggestedAction ? ' secondary' : ''}`}
+              disabled={Boolean(submittingAction)}
+              onClick={() => void handleAction(action)}
+            >
+              {submittingAction === action ? '处理中...' : formatRecoveryAction(action)}
+            </button>
+          ))}
+        </div>
+      </div>
+      {submitError ? <div className="assistant-runtime-error">{submitError}</div> : null}
+    </section>
   );
 }
 
@@ -406,6 +777,254 @@ function getToolPreview(tool: ToolStep): ToolPreview | null {
 
 function getToolPreviewTitle(preview: ToolPreview) {
   return preview.kind === 'write' ? '已新增' : '已编辑';
+}
+
+function getRequestQuestionHint(question: RequestUserInputQuestion) {
+  const hints: string[] = [];
+  if (question.multiSelect) {
+    hints.push('可多选');
+  } else if (question.options?.length) {
+    hints.push('单选');
+  }
+
+  if (question.secret) {
+    hints.push('保密输入');
+  }
+
+  if (!question.options?.length) {
+    hints.push(question.placeholder || '文本回答');
+  } else if (question.isOther) {
+    hints.push(question.placeholder || '可补充备注');
+  }
+
+  return hints.join(' · ');
+}
+
+function getRecoveryTitle(hint: RuntimeRecoveryHint) {
+  switch (hint.reason) {
+    case 'resume-session-missing':
+      return '原会话不可恢复，已切换为新会话';
+    case 'stale-session':
+      return '当前会话可能已失效';
+    case 'broken-pipe':
+      return '运行连接已中断';
+    case 'runtime-ended':
+      return '运行提前结束';
+    case 'transport-error':
+      return '运行通道异常';
+    case 'unknown':
+    default:
+      return '运行可尝试恢复';
+  }
+}
+
+function formatRecoveryAction(action: RuntimeRecoveryHint['suggestedAction']) {
+  switch (action) {
+    case 'recover':
+      return '恢复运行';
+    case 'resend':
+      return '重发上一条消息';
+    case 'retry':
+    default:
+      return '重试当前请求';
+  }
+}
+
+function shouldHideTurnToolStep(turn: ConversationTurn, tool: ToolStep) {
+  if (shouldHideToolStep(tool)) {
+    return true;
+  }
+
+  const normalizedName = normalizeRuntimeToolName(tool.name);
+  if (
+    normalizedName === 'askuserquestion' ||
+    normalizedName === 'requestuserinput' ||
+    normalizedName === 'approvalrequest'
+  ) {
+    return true;
+  }
+
+  if (
+    turn.pendingUserInputRequests?.length &&
+    (normalizedName === 'askuserquestion' || normalizedName === 'requestuserinput')
+  ) {
+    return true;
+  }
+
+  if (
+    turn.pendingApprovalRequests?.length &&
+    normalizedName === 'approvalrequest'
+  ) {
+    return true;
+  }
+
+  if (
+    turn.pendingApprovalRequests?.some(
+      (request) => request.requestId && request.requestId === (tool.toolUseId ?? tool.id),
+    )
+  ) {
+    return true;
+  }
+
+  if (normalizedName === 'bash' && isApprovalRequiredToolError(tool.resultText)) {
+    return true;
+  }
+
+  return false;
+}
+
+function normalizeRuntimeToolName(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function isApprovalRequiredToolError(resultText?: string) {
+  const normalized = resultText?.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes('this command requires approval') ||
+    normalized.includes('requires approval') ||
+    normalized.includes('requires your approval') ||
+    normalized.includes('approval required')
+  );
+}
+
+function getRecoveryActions(hint: RuntimeRecoveryHint): RuntimeSuggestedAction[] {
+  const ordered: RuntimeSuggestedAction[] = [hint.suggestedAction];
+  const fallbackActions: RuntimeSuggestedAction[] =
+    hint.reason === 'resume-session-missing'
+      ? ['resend', 'retry']
+      : hint.reason === 'stale-session'
+        ? ['recover', 'retry']
+        : ['resend', 'recover'];
+
+  for (const action of fallbackActions) {
+    if (!ordered.includes(action)) {
+      ordered.push(action);
+    }
+  }
+
+  return ordered;
+}
+
+function updateQuestionSelections(
+  current: Record<string, number[]>,
+  questionKey: string,
+  optionIndex: number,
+  multiSelect: boolean,
+) {
+  const existing = current[questionKey] ?? [];
+  let nextSelection: number[];
+  if (multiSelect) {
+    nextSelection = existing.includes(optionIndex)
+      ? existing.filter((index) => index !== optionIndex)
+      : [...existing, optionIndex];
+  } else if (existing.length === 1 && existing[0] === optionIndex) {
+    nextSelection = [];
+  } else {
+    nextSelection = [optionIndex];
+  }
+
+  return {
+    ...current,
+    [questionKey]: nextSelection,
+  };
+}
+
+function validateRequestUserInput(
+  request: RequestUserInputRequest,
+  selectedOptions: Record<string, number[]>,
+  notes: Record<string, string>,
+) {
+  for (let index = 0; index < request.questions.length; index += 1) {
+    const question = request.questions[index];
+    const key = question.id ?? `question-${index}`;
+    const hasAnswer = Boolean(selectedOptions[key]?.length || notes[key]?.trim());
+    if (question.required && !hasAnswer) {
+      return `请先填写“${question.question}”。`;
+    }
+  }
+
+  const hasAnyAnswer = request.questions.some((question, index) => {
+    const key = question.id ?? `question-${index}`;
+    return Boolean(selectedOptions[key]?.length || notes[key]?.trim());
+  });
+  if (!hasAnyAnswer) {
+    return '请至少填写一项回答。';
+  }
+
+  return '';
+}
+
+function buildRequestUserInputAnswers(
+  request: RequestUserInputRequest,
+  selectedOptions: Record<string, number[]>,
+  notes: Record<string, string>,
+) {
+  const answers: Record<string, string> = {};
+  request.questions.forEach((question, index) => {
+    const key = question.id ?? `question-${index}`;
+    const optionLabels = (selectedOptions[key] ?? [])
+      .map((optionIndex) => question.options?.[optionIndex]?.label ?? '')
+      .filter(Boolean);
+    const note = notes[key]?.trim();
+    const parts = [...optionLabels];
+    if (note) {
+      parts.push(note);
+    }
+    if (parts.length > 0) {
+      answers[key] = parts.join('\n');
+    }
+  });
+  return answers;
+}
+
+function getRequestUserInputSelectionsFromAnswers(request: RequestUserInputRequest) {
+  const selections: Record<string, number[]> = {};
+  if (!request.submittedAnswers) {
+    return selections;
+  }
+
+  request.questions.forEach((question, index) => {
+    const key = question.id ?? `question-${index}`;
+    const answerParts = splitSubmittedAnswer(request.submittedAnswers?.[key]);
+    const selectedOptionIndexes = answerParts
+      .map((answerPart) => question.options?.findIndex((option) => option.label === answerPart) ?? -1)
+      .filter((optionIndex) => optionIndex >= 0);
+    if (selectedOptionIndexes.length > 0) {
+      selections[key] = selectedOptionIndexes;
+    }
+  });
+
+  return selections;
+}
+
+function getRequestUserInputNotesFromAnswers(request: RequestUserInputRequest) {
+  const notes: Record<string, string> = {};
+  if (!request.submittedAnswers) {
+    return notes;
+  }
+
+  request.questions.forEach((question, index) => {
+    const key = question.id ?? `question-${index}`;
+    const answerParts = splitSubmittedAnswer(request.submittedAnswers?.[key]);
+    const optionLabels = new Set(question.options?.map((option) => option.label) ?? []);
+    const noteParts = answerParts.filter((answerPart) => !optionLabels.has(answerPart));
+    if (noteParts.length > 0) {
+      notes[key] = noteParts.join('\n');
+    }
+  });
+
+  return notes;
+}
+
+function splitSubmittedAnswer(answer?: string) {
+  return answer
+    ?.split('\n')
+    .map((part) => part.trim())
+    .filter(Boolean) ?? [];
 }
 
 function getToolSummary(tool: ToolStep, preview: ToolPreview | null) {

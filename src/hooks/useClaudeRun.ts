@@ -21,11 +21,19 @@ import {
   upsertToolStep,
 } from '../lib/conversation';
 import type {
+  ApprovalDecision,
+  ApprovalRequest,
   ClaudeEvent,
   ClaudeModelInfo,
   ConversationTurn,
   DebugEvent,
   PermissionMode,
+  RequestUserInputRequest,
+  RuntimeEventSource,
+  RuntimeRecoveryHint,
+  RuntimeReconnectReason,
+  RuntimeSuggestedAction,
+  ToolStep,
   ThreadDetail,
   ThreadSummary,
 } from '../types';
@@ -81,7 +89,7 @@ export function useClaudeRun({
 }: UseClaudeRunArgs) {
   const [prompt, setPrompt] = useState('');
   const [workspace, setWorkspace] = useState('');
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>('bypassPermissions');
   const [model, setModel] = useState(DEFAULT_MODEL_VALUE);
   const [models, setModels] = useState<string[]>([]);
   const [, setHealth] = useState<{ available: boolean; command?: string; error?: string }>({
@@ -94,6 +102,9 @@ export function useClaudeRun({
   const abortRef = useRef<AbortController | null>(null);
   const activeTurnIdRef = useRef('');
   const runThreadIdRef = useRef<string | null>(null);
+  const runWorkingDirectoryRef = useRef('');
+  const pendingAssistantTextRef = useRef('');
+  const assistantTextFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     void loadHealth();
@@ -106,7 +117,11 @@ export function useClaudeRun({
   }, [activeProjectPath, activeThreadSummary?.workingDirectory]);
 
   useEffect(() => {
-    setPermissionMode(isPermissionMode(activeThreadSummary?.permissionMode) ? activeThreadSummary.permissionMode : 'default');
+    setPermissionMode(
+      isPermissionMode(activeThreadSummary?.permissionMode)
+        ? activeThreadSummary.permissionMode
+        : 'bypassPermissions',
+    );
   }, [activeThreadSummary?.id, activeThreadSummary?.permissionMode]);
 
   useEffect(() => {
@@ -121,6 +136,14 @@ export function useClaudeRun({
 
     return () => window.clearInterval(timer);
   }, [isRunning]);
+
+  useEffect(() => {
+    return () => {
+      if (assistantTextFrameRef.current !== null) {
+        window.cancelAnimationFrame(assistantTextFrameRef.current);
+      }
+    };
+  }, []);
 
   async function loadHealth() {
     try {
@@ -198,25 +221,73 @@ export function useClaudeRun({
     appendRawEvent(targetThreadId, line);
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const trimmedPrompt = prompt.trim();
+  function applyAssistantTextDelta(text: string) {
+    updateRunningTurn((turn) => ({
+      ...turn,
+      status: 'running',
+      assistantText: `${turn.assistantText}${text}`,
+      items: appendTextItem(turn.items, text),
+      activity: 'Computing...',
+      phase: 'computing',
+    }));
+  }
 
+  function flushQueuedAssistantText() {
+    const text = pendingAssistantTextRef.current;
+    pendingAssistantTextRef.current = '';
+    assistantTextFrameRef.current = null;
+
+    if (text) {
+      applyAssistantTextDelta(text);
+    }
+  }
+
+  function flushQueuedAssistantTextNow() {
+    if (assistantTextFrameRef.current !== null) {
+      window.cancelAnimationFrame(assistantTextFrameRef.current);
+      assistantTextFrameRef.current = null;
+    }
+
+    flushQueuedAssistantText();
+  }
+
+  function queueAssistantTextDelta(text: string) {
+    pendingAssistantTextRef.current += text;
+
+    if (assistantTextFrameRef.current !== null) {
+      return;
+    }
+
+    assistantTextFrameRef.current = window.requestAnimationFrame(flushQueuedAssistantText);
+  }
+
+  async function startRun(
+    thread: ThreadSummary,
+    promptText: string,
+    options?: {
+      workingDirectory?: string;
+      sessionId?: string;
+      permissionModeOverride?: PermissionMode;
+      onStarted?: () => void;
+    },
+  ) {
+    const trimmedPrompt = promptText.trim();
     if (!trimmedPrompt || isRunning) {
-      return;
+      return false;
     }
 
-    const thread = await ensureActiveThread();
-    if (!thread) {
-      return;
-    }
-
+    const runWorkingDirectory =
+      options?.workingDirectory?.trim() || thread.workingDirectory;
+    const runSessionId =
+      options?.sessionId && options.sessionId.trim() ? options.sessionId.trim() : undefined;
+    const runPermissionMode = options?.permissionModeOverride ?? permissionMode;
+    runWorkingDirectoryRef.current = runWorkingDirectory;
     const turnId = crypto.randomUUID();
     activeTurnIdRef.current = turnId;
     runThreadIdRef.current = thread.id;
     setBackendRunId('');
-    setPrompt('');
     setIsRunning(true);
+    options?.onStarted?.();
     updateThreadDetail(
       thread.id,
       (existing) => ({
@@ -226,7 +297,7 @@ export function useClaudeRun({
           {
             id: turnId,
             userText: trimmedPrompt,
-            workspace: workspace.trim() || thread.workingDirectory,
+            workspace: runWorkingDirectory,
             assistantText: '',
             tools: [],
             items: [],
@@ -234,6 +305,8 @@ export function useClaudeRun({
             activity: '等待 Claude 响应',
             phase: 'requesting',
             startedAtMs: Date.now(),
+            pendingUserInputRequests: [],
+            pendingApprovalRequests: [],
           },
         ],
       }),
@@ -251,10 +324,10 @@ export function useClaudeRun({
         },
         body: JSON.stringify({
           prompt: trimmedPrompt,
-          workingDirectory: workspace.trim() || thread.workingDirectory,
-          permissionMode,
+          workingDirectory: runWorkingDirectory,
+          permissionMode: runPermissionMode,
           model: model === DEFAULT_MODEL_VALUE ? undefined : model,
-          sessionId: thread.sessionId.trim() ? thread.sessionId.trim() : undefined,
+          sessionId: runSessionId,
         }),
         signal: controller.signal,
       });
@@ -304,11 +377,13 @@ export function useClaudeRun({
 
       if (!sawTerminalEvent) {
         const targetThreadId = runThreadIdRef.current || activeThreadId;
+        flushQueuedAssistantTextNow();
         updateRunningTurn(closeTurnWithoutTerminalEvent);
         schedulePersistThreadHistory(targetThreadId);
       }
     } catch (error) {
       const targetThreadId = runThreadIdRef.current || activeThreadId;
+      flushQueuedAssistantTextNow();
       updateRunningTurn((turn) => ({
         ...turn,
         ...settleRunningToolSteps(turn, error instanceof DOMException && error.name === 'AbortError' ? 'done' : 'error'),
@@ -317,9 +392,12 @@ export function useClaudeRun({
         activity:
           error instanceof DOMException && error.name === 'AbortError'
             ? '已停止当前运行'
-            : error instanceof Error
-              ? error.message
-              : '未知错误',
+            : formatRuntimeErrorActivity(
+                error instanceof Error ? error.message : '未知错误',
+                turn.recoveryHint ??
+                  createRuntimeRecoveryHint(error instanceof Error ? error.message : '未知错误', 'process') ??
+                  undefined,
+              ),
       }));
       schedulePersistThreadHistory(targetThreadId);
     } finally {
@@ -329,6 +407,8 @@ export function useClaudeRun({
       runThreadIdRef.current = null;
       clearActiveTurnSelection();
     }
+
+    return true;
   }
 
   function handleStreamLine(line: string) {
@@ -353,6 +433,21 @@ export function useClaudeRun({
   }
 
   function handleClaudeEvent(event: ClaudeEvent) {
+    if (
+      event.type === 'request-user-input' ||
+      event.type === 'approval-request' ||
+      event.type === 'runtime-reconnect-hint' ||
+      event.type === 'retryable-error' ||
+      event.type === 'tool-start' ||
+      event.type === 'tool-input-delta' ||
+      event.type === 'tool-stop' ||
+      event.type === 'tool-result' ||
+      event.type === 'done' ||
+      event.type === 'error'
+    ) {
+      flushQueuedAssistantTextNow();
+    }
+
     if ('runId' in event && event.runId) {
       setBackendRunId(event.runId);
       updateRunningTurn((turn) => ({
@@ -435,15 +530,62 @@ export function useClaudeRun({
       return;
     }
 
-    if (event.type === 'delta') {
+    if (event.type === 'request-user-input') {
       updateRunningTurn((turn) => ({
         ...turn,
-        status: 'running',
-        assistantText: `${turn.assistantText}${event.text}`,
-        items: appendTextItem(turn.items, event.text),
-        activity: 'Computing...',
-        phase: 'computing',
+        status: turn.status === 'pending' ? 'running' : turn.status,
+        activity: event.request.title || '等待补充输入',
+        pendingUserInputRequests: upsertRequestUserInput(turn.pendingUserInputRequests, event.request),
       }));
+      appendRunningDebug({
+        title: '请求用户输入',
+        content: formatJson(event.request),
+      });
+      return;
+    }
+
+    if (event.type === 'approval-request') {
+      updateRunningTurn((turn) => ({
+        ...turn,
+        status: turn.status === 'pending' ? 'running' : turn.status,
+        activity: event.request.title || '等待批准',
+        pendingApprovalRequests: upsertApprovalRequest(turn.pendingApprovalRequests, event.request),
+      }));
+      appendRunningDebug({
+        title: '批准请求',
+        content: formatJson(event.request),
+      });
+      return;
+    }
+
+    if (event.type === 'runtime-reconnect-hint') {
+      updateRunningTurn((turn) => ({
+        ...turn,
+        recoveryHint: event.hint,
+      }));
+      appendRunningDebug({
+        title: '运行恢复提示',
+        content: formatRuntimeRecoveryHintDebug(event.hint),
+        tone: 'error',
+      });
+      return;
+    }
+
+    if (event.type === 'retryable-error') {
+      updateRunningTurn((turn) => ({
+        ...turn,
+        recoveryHint: event.hint,
+      }));
+      appendRunningDebug({
+        title: '可恢复错误',
+        content: formatRuntimeRecoveryHintDebug(event.hint),
+        tone: 'error',
+      });
+      return;
+    }
+
+    if (event.type === 'delta') {
+      queueAssistantTextDelta(event.text);
       return;
     }
 
@@ -507,12 +649,16 @@ export function useClaudeRun({
           toolIndex >= 0
             ? tools[toolIndex]
             : tools.find((item) => item.toolUseId && item.toolUseId === event.toolUseId);
+        const approvalRequest = createApprovalRequestFromToolResult(tool, event);
         return {
           ...turn,
           activity: summarizeToolResult(event),
           phase: event.isError ? turn.phase : 'computing',
           tools,
           items: tool ? syncToolItem(turn.items, tool) : turn.items,
+          pendingApprovalRequests: approvalRequest
+            ? upsertApprovalRequest(turn.pendingApprovalRequests, approvalRequest)
+            : turn.pendingApprovalRequests,
         };
       });
       return;
@@ -542,7 +688,7 @@ export function useClaudeRun({
         ...settleRunningToolSteps(turn, 'error'),
         status: 'error',
         durationMs: turn.durationMs ?? getElapsedDuration(turn),
-        activity: event.message,
+        activity: formatRuntimeErrorActivity(event.message, turn.recoveryHint),
       }));
       appendRunningDebug({
         title: 'Claude 运行异常',
@@ -568,10 +714,11 @@ export function useClaudeRun({
           items: turn.items.length > 0 || !event.result.trim() ? turn.items : appendTextItem(turn.items, event.result),
           activity: '运行完成',
           phase: undefined,
-          metrics: formatMetrics(event),
+          metrics: formatMetrics(event, turn.tools.length),
           sessionId: event.sessionId ?? turn.sessionId,
           durationMs: event.durationMs ?? turn.durationMs ?? getElapsedDuration(turn),
           totalCostUsd: event.totalCostUsd ?? turn.totalCostUsd,
+          recoveryHint: undefined,
           ...mergeUsageSnapshot(turn, event),
         };
 
@@ -593,11 +740,34 @@ export function useClaudeRun({
           sessionId: event.sessionId,
           model: model === DEFAULT_MODEL_VALUE ? undefined : model,
           permissionMode,
-          workingDirectory: workspace.trim() || activeThreadSummary?.workingDirectory,
+          workingDirectory:
+            runWorkingDirectoryRef.current || workspace.trim() || activeThreadSummary?.workingDirectory,
         });
       }
       schedulePersistThreadHistory(targetThreadId);
     }
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmedPrompt = prompt.trim();
+
+    if (!trimmedPrompt || isRunning) {
+      return;
+    }
+
+    const thread = await ensureActiveThread();
+    if (!thread) {
+      return;
+    }
+
+    await startRun(thread, trimmedPrompt, {
+      workingDirectory: workspace.trim() || thread.workingDirectory,
+      sessionId: thread.sessionId.trim() ? thread.sessionId.trim() : undefined,
+      onStarted: () => {
+        setPrompt('');
+      },
+    });
   }
 
   function handlePermissionModeSelect(mode: PermissionMode) {
@@ -631,6 +801,147 @@ export function useClaudeRun({
     }
   }
 
+  async function submitRequestUserInput(
+    turn: ConversationTurn,
+    request: RequestUserInputRequest,
+    answers: Record<string, string>,
+  ) {
+    if (isRunning) {
+      showToast('当前仍有运行中的请求，请先等待结束或停止后再提交。', 'info');
+      return false;
+    }
+
+    if (!activeThreadId || !activeThreadSummary || activeThreadSummary.id !== activeThreadId) {
+      showToast('当前线程状态不可用，请重新选择聊天后重试。', 'error');
+      return false;
+    }
+
+    const promptText = buildRequestUserInputPrompt(request, answers);
+    if (!promptText) {
+      showToast('请先填写至少一项有效回答。', 'info');
+      return false;
+    }
+
+    const started = await startRun(activeThreadSummary, promptText, {
+      workingDirectory: turn.workspace.trim() || activeThreadSummary.workingDirectory,
+      sessionId: turn.sessionId?.trim() || activeThreadSummary.sessionId.trim() || undefined,
+    });
+
+    if (!started) {
+      return false;
+    }
+
+    updateThreadTurn(activeThreadId, turn.id, (currentTurn) => ({
+      ...currentTurn,
+      pendingUserInputRequests: markPendingUserInputRequestSubmitted(
+        currentTurn.pendingUserInputRequests,
+        request,
+        answers,
+      ),
+    }));
+    appendDebug(activeThreadId, {
+      title: '已提交补充输入',
+      content: formatJson({ requestId: request.requestId, answers }),
+    });
+    schedulePersistThreadHistory(activeThreadId);
+    showToast('已将补充信息作为续聊提交。', 'success');
+    return true;
+  }
+
+  async function submitRuntimeRecoveryAction(
+    turn: ConversationTurn,
+    action: RuntimeSuggestedAction,
+  ) {
+    if (isRunning) {
+      showToast('当前仍有运行中的请求，请先等待结束或停止后再操作。', 'info');
+      return false;
+    }
+
+    if (!activeThreadId || !activeThreadSummary || activeThreadSummary.id !== activeThreadId) {
+      showToast('当前线程状态不可用，请重新选择聊天后重试。', 'error');
+      return false;
+    }
+
+    const promptText = turn.userText.trim();
+    if (!promptText) {
+      showToast('当前 turn 没有可重试的用户输入。', 'error');
+      return false;
+    }
+
+    const sessionId =
+      action === 'retry'
+        ? turn.sessionId?.trim() || activeThreadSummary.sessionId.trim() || undefined
+        : undefined;
+    const started = await startRun(activeThreadSummary, promptText, {
+      workingDirectory: turn.workspace.trim() || activeThreadSummary.workingDirectory,
+      sessionId,
+    });
+
+    if (!started) {
+      return false;
+    }
+
+    updateThreadTurn(activeThreadId, turn.id, (currentTurn) => ({
+      ...currentTurn,
+      recoveryHint: undefined,
+    }));
+    appendDebug(activeThreadId, {
+      title: '已触发恢复动作',
+      content: formatJson({
+        action,
+        turnId: turn.id,
+        reusedSessionId: sessionId ?? null,
+      }),
+    });
+    schedulePersistThreadHistory(activeThreadId);
+    showToast(getRecoveryToastMessage(action), 'success');
+    return true;
+  }
+
+  async function submitApprovalDecision(
+    turn: ConversationTurn,
+    request: ApprovalRequest,
+    decision: ApprovalDecision,
+  ) {
+    if (isRunning) {
+      showToast('当前仍有运行中的请求，请先等待结束或停止后再操作。', 'info');
+      return false;
+    }
+
+    if (!activeThreadId || !activeThreadSummary || activeThreadSummary.id !== activeThreadId) {
+      showToast('当前线程状态不可用，请重新选择聊天后重试。', 'error');
+      return false;
+    }
+
+    const promptText = buildApprovalDecisionPrompt(request, decision);
+    const started = await startRun(activeThreadSummary, promptText, {
+      workingDirectory: turn.workspace.trim() || activeThreadSummary.workingDirectory,
+      sessionId: turn.sessionId?.trim() || activeThreadSummary.sessionId.trim() || undefined,
+      permissionModeOverride: decision === 'approve' ? 'bypassPermissions' : undefined,
+    });
+
+    if (!started) {
+      return false;
+    }
+
+    updateThreadTurn(activeThreadId, turn.id, (currentTurn) => ({
+      ...currentTurn,
+      pendingApprovalRequests: removePendingApprovalRequest(currentTurn.pendingApprovalRequests, request),
+    }));
+    appendDebug(activeThreadId, {
+      title: decision === 'approve' ? '已批准请求' : '已拒绝请求',
+      content: formatJson({
+        requestId: request.requestId,
+        title: request.title,
+        decision,
+        command: request.command,
+      }),
+    });
+    schedulePersistThreadHistory(activeThreadId);
+    showToast(decision === 'approve' ? '已批准并继续任务。' : '已拒绝该操作并继续任务。', 'success');
+    return true;
+  }
+
   return {
     prompt,
     workspace,
@@ -647,6 +958,373 @@ export function useClaudeRun({
     setModel,
     handlePermissionModeSelect,
     handleSubmit,
+    submitRequestUserInput,
+    submitRuntimeRecoveryAction,
+    submitApprovalDecision,
     stopRun,
   };
+}
+
+function upsertRequestUserInput(
+  requests: RequestUserInputRequest[] | undefined,
+  request: RequestUserInputRequest,
+) {
+  const current = requests ?? [];
+  if (!request.requestId) {
+    return [...current, request];
+  }
+
+  const index = current.findIndex((item) => item.requestId === request.requestId);
+  if (index === -1) {
+    return [...current, request];
+  }
+
+  const next = [...current];
+  next[index] = {
+    ...request,
+    submittedAnswers: current[index].submittedAnswers,
+    submittedAtMs: current[index].submittedAtMs,
+  };
+  return next;
+}
+
+function markPendingUserInputRequestSubmitted(
+  requests: RequestUserInputRequest[] | undefined,
+  request: RequestUserInputRequest,
+  answers: Record<string, string>,
+) {
+  const current = requests ?? [];
+  const submittedRequest = {
+    ...request,
+    submittedAnswers: answers,
+    submittedAtMs: Date.now(),
+  };
+
+  if (!request.requestId) {
+    const targetSignature = JSON.stringify({
+      title: request.title,
+      description: request.description,
+      questions: request.questions,
+    });
+    const index = current.findIndex((item) => {
+      const itemSignature = JSON.stringify({
+        title: item.title,
+        description: item.description,
+        questions: item.questions,
+      });
+      return itemSignature === targetSignature;
+    });
+    if (index === -1) {
+      return [...current, submittedRequest];
+    }
+
+    const next = [...current];
+    next[index] = {
+      ...next[index],
+      submittedAnswers: answers,
+      submittedAtMs: submittedRequest.submittedAtMs,
+    };
+    return next;
+  }
+
+  const index = current.findIndex((item) => item.requestId === request.requestId);
+  if (index === -1) {
+    return [...current, submittedRequest];
+  }
+
+  const next = [...current];
+  next[index] = {
+    ...next[index],
+    submittedAnswers: answers,
+    submittedAtMs: submittedRequest.submittedAtMs,
+  };
+  return next;
+}
+
+function upsertApprovalRequest(
+  requests: ApprovalRequest[] | undefined,
+  request: ApprovalRequest,
+) {
+  const current = requests ?? [];
+  const signature = getApprovalRequestSignature(request);
+  const index = current.findIndex(
+    (item) =>
+      (request.requestId && item.requestId === request.requestId) ||
+      getApprovalRequestSignature(item) === signature,
+  );
+  if (index === -1) {
+    return [...current, request];
+  }
+
+  const next = [...current];
+  next[index] = {
+    ...next[index],
+    ...request,
+  };
+  return next;
+}
+
+function removePendingApprovalRequest(
+  requests: ApprovalRequest[] | undefined,
+  request: ApprovalRequest,
+) {
+  const current = requests ?? [];
+  const targetSignature = getApprovalRequestSignature(request);
+  return current.filter(
+    (item) =>
+      !(
+        (request.requestId && item.requestId === request.requestId) ||
+        getApprovalRequestSignature(item) === targetSignature
+      ),
+  );
+}
+
+function getApprovalRequestSignature(request: ApprovalRequest) {
+  return JSON.stringify({
+    title: request.title,
+    description: request.description,
+    command: request.command ?? [],
+    danger: request.danger,
+  });
+}
+
+function createApprovalRequestFromToolResult(
+  tool: ToolStep | undefined,
+  event: Extract<ClaudeEvent, { type: 'tool-result' }>,
+): ApprovalRequest | null {
+  if (!event.isError || !isApprovalRequiredToolResult(event.content)) {
+    return null;
+  }
+
+  const command = extractCommandFromTool(tool);
+
+  return {
+    requestId: tool?.toolUseId ?? event.toolUseId ?? tool?.id,
+    title: '工具调用需要你确认',
+    description: command?.length
+      ? '当前会话未放行这一步。批准后会以完全访问模式继续执行该命令。'
+      : 'Claude 返回该操作需要批准后才能继续。批准后会以完全访问模式继续执行。',
+    command,
+    danger: normalizeApprovalDanger(tool, command),
+  };
+}
+
+function isApprovalRequiredToolResult(content: string) {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes('this command requires approval') ||
+    normalized.includes('requires approval') ||
+    normalized.includes('requires your approval') ||
+    normalized.includes('approval required')
+  );
+}
+
+function extractCommandFromTool(tool?: ToolStep) {
+  if (!tool?.inputText?.trim()) {
+    return undefined;
+  }
+
+  try {
+    const payload = JSON.parse(tool.inputText) as Record<string, unknown>;
+    const directCommand = normalizeApprovalCommandInput(
+      payload.command ?? payload.cmd ?? payload.cmdString ?? payload.argv ?? payload.args,
+    );
+    if (directCommand?.length) {
+      return directCommand;
+    }
+  } catch {
+    // Ignore malformed tool input and fall back to the summarized title below.
+  }
+
+  const bashMatch = tool.title.match(/^Bash\(([\s\S]+)\)$/);
+  if (bashMatch?.[1]?.trim()) {
+    return [bashMatch[1].trim()];
+  }
+
+  return undefined;
+}
+
+function normalizeApprovalCommandInput(value: unknown) {
+  if (typeof value === 'string' && value.trim()) {
+    return [value.trim()];
+  }
+
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const command = value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean);
+
+  return command.length > 0 ? command : undefined;
+}
+
+function normalizeApprovalDanger(
+  tool: ToolStep | undefined,
+  command: string[] | undefined,
+): ApprovalRequest['danger'] {
+  if (tool?.name === 'Bash' || command?.length) {
+    return 'medium';
+  }
+
+  return 'low';
+}
+
+function createRuntimeRecoveryHint(
+  message: string,
+  source: RuntimeEventSource,
+): RuntimeRecoveryHint | null {
+  const normalized = message.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const lower = normalized.toLowerCase();
+  let reason: RuntimeReconnectReason | null = null;
+  if (lower.includes('broken pipe') || lower.includes('epipe')) {
+    reason = 'broken-pipe';
+  } else if (
+    lower.includes('socket hang up') ||
+    lower.includes('connection reset') ||
+    lower.includes('stream closed') ||
+    lower.includes('network error')
+  ) {
+    reason = 'transport-error';
+  } else if (
+    lower.includes('runtime ended') ||
+    lower.includes('unexpected eof') ||
+    lower.includes(' has ended') ||
+    lower === 'eof'
+  ) {
+    reason = 'runtime-ended';
+  } else if (
+    lower.includes('stale') ||
+    lower.includes('session expired') ||
+    lower.includes('thread expired')
+  ) {
+    reason = 'stale-session';
+  } else if (lower.includes('resume') && lower.includes('not exist')) {
+    reason = 'resume-session-missing';
+  }
+
+  if (!reason) {
+    return null;
+  }
+
+  return {
+    reason,
+    message: normalized,
+    retryable: true,
+    suggestedAction: getSuggestedRuntimeAction(reason),
+    source,
+  };
+}
+
+function getSuggestedRuntimeAction(reason: RuntimeReconnectReason): RuntimeSuggestedAction {
+  if (reason === 'resume-session-missing') {
+    return 'recover';
+  }
+
+  if (reason === 'stale-session') {
+    return 'resend';
+  }
+
+  return 'retry';
+}
+
+function formatRuntimeErrorActivity(message: string, hint?: RuntimeRecoveryHint) {
+  if (!hint) {
+    return message;
+  }
+
+  return `${message}（可尝试${formatSuggestedRuntimeAction(hint.suggestedAction)}）`;
+}
+
+function formatRuntimeRecoveryHintDebug(hint: RuntimeRecoveryHint) {
+  return [
+    `reason: ${hint.reason}`,
+    `source: ${hint.source}`,
+    `action: ${hint.suggestedAction}`,
+    `message: ${hint.message}`,
+  ].join('\n');
+}
+
+function formatSuggestedRuntimeAction(action: RuntimeSuggestedAction) {
+  switch (action) {
+    case 'recover':
+      return '恢复运行';
+    case 'resend':
+      return '重发上一条消息';
+    case 'retry':
+    default:
+      return '重试';
+  }
+}
+
+function getRecoveryToastMessage(action: RuntimeSuggestedAction) {
+  switch (action) {
+    case 'recover':
+      return '已尝试在新会话中恢复当前任务。';
+    case 'resend':
+      return '已重发上一条消息。';
+    case 'retry':
+    default:
+      return '已重新发起当前请求。';
+  }
+}
+
+function buildRequestUserInputPrompt(
+  request: RequestUserInputRequest,
+  answers: Record<string, string>,
+) {
+  const sections = request.questions
+    .map((question, index) => {
+      const key = question.id ?? `question-${index}`;
+      const answer = answers[key]?.trim();
+      if (!answer) {
+        return '';
+      }
+
+      return [
+        `${index + 1}. ${question.question}`,
+        answer,
+      ].join('\n');
+    })
+    .filter(Boolean);
+
+  if (sections.length === 0) {
+    return '';
+  }
+
+  const header = request.title?.trim() || '补充输入';
+  const description = request.description?.trim();
+
+  return [
+    `以下是针对“${header}”的补充信息，请基于这些回答继续刚才的任务。`,
+    description ? `补充说明：${description}` : '',
+    '',
+    sections.join('\n\n'),
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function buildApprovalDecisionPrompt(request: ApprovalRequest, decision: ApprovalDecision) {
+  const command = request.command?.length ? request.command.join(' ') : '';
+  const lines = [
+    decision === 'approve'
+      ? '用户已批准刚才请求的操作，请继续执行原任务。'
+      : '用户已拒绝刚才请求的操作，请不要执行该操作，并改用安全替代方案继续原任务。',
+    `请求：${request.title}`,
+    request.description ? `说明：${request.description}` : '',
+    command ? `命令：${command}` : '',
+    request.danger ? `风险级别：${request.danger}` : '',
+  ];
+
+  return lines.filter(Boolean).join('\n');
 }

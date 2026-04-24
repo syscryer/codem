@@ -470,6 +470,11 @@ svg {
   background: #ffffff;
 }
 
+.conversation-shell {
+  position: relative;
+  min-height: 0;
+}
+
 .chat-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -610,6 +615,48 @@ svg {
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: rgba(156, 163, 175, 0.42) transparent;
+}
+
+.conversation-anchor-layer {
+  position: absolute;
+  right: 0;
+  bottom: 28px;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.conversation-bottom-anchor {
+  width: 48px;
+  height: 48px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(222, 219, 211, 0.95);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #353535;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+  cursor: pointer;
+  pointer-events: auto;
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.conversation-bottom-anchor:hover {
+  border-color: #d7d1c7;
+  background: #ffffff;
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.16);
+  transform: translateY(-1px);
+}
+
+.conversation-bottom-anchor:focus-visible {
+  outline: 2px solid rgba(35, 116, 198, 0.22);
+  outline-offset: 3px;
 }
 
 .empty-state {
@@ -1130,6 +1177,221 @@ svg {
   color: #dc2626;
 }
 
+.assistant-runtime-card {
+  display: grid;
+  gap: 12px;
+  margin: 2px 0 8px;
+  padding: 12px 14px;
+  border: 1px solid #e7e5e4;
+  border-radius: 14px;
+  background: #fbfbfa;
+}
+
+.assistant-runtime-card-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.assistant-runtime-card-heading {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.assistant-runtime-card-heading strong {
+  color: #2f2f2f;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.assistant-runtime-card-heading p,
+.assistant-runtime-footnote,
+.assistant-runtime-question-hint {
+  margin: 0;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.assistant-runtime-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.assistant-runtime-badge.waiting {
+  background: #eef3f8;
+  color: #46627f;
+}
+
+.assistant-runtime-badge.answered {
+  background: #edf7ed;
+  color: #2f6b3d;
+}
+
+.assistant-runtime-badge.caution {
+  background: #fff3e6;
+  color: #9a5b16;
+}
+
+.assistant-runtime-badge.recovery {
+  background: #fef2f2;
+  color: #b42318;
+}
+
+.assistant-runtime-question-list {
+  display: grid;
+  gap: 10px;
+}
+
+.assistant-runtime-question {
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  background: #ffffff;
+  border: 1px solid #efede9;
+}
+
+.assistant-runtime-question-header {
+  color: #8a8176;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.assistant-runtime-question-text {
+  color: #2f2f2f;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.assistant-runtime-option-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.assistant-runtime-option-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid #e8e3db;
+  border-radius: 999px;
+  background: #f7f4ef;
+  color: #5b5852;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.assistant-runtime-option-chip.selected {
+  border-color: #cfd9e4;
+  background: #edf4fb;
+  color: #315b86;
+}
+
+.assistant-runtime-option-chip:disabled {
+  cursor: default;
+}
+
+.request-user-input-card.submitted .assistant-runtime-option-chip:not(.selected),
+.request-user-input-card.submitted .assistant-runtime-textarea {
+  opacity: 0.58;
+}
+
+.assistant-runtime-textarea {
+  width: 100%;
+  min-height: 68px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid #e6e1d9;
+  border-radius: 10px;
+  background: #fbfbfa;
+  color: #2f2f2f;
+  font-size: 13px;
+  line-height: 1.55;
+  outline: none;
+}
+
+.assistant-runtime-textarea:focus {
+  border-color: #cfd9e4;
+  box-shadow: 0 0 0 3px rgba(35, 116, 198, 0.08);
+}
+
+.assistant-runtime-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.assistant-runtime-code {
+  margin: 0;
+  padding: 11px 12px;
+  border-radius: 11px;
+  background: #f5f5f4;
+  color: #2f2f2f;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.assistant-runtime-submit-button {
+  min-width: 92px;
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 9px;
+  background: #242424;
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.assistant-runtime-submit-button.secondary {
+  border: 1px solid #e5e1da;
+  background: #ffffff;
+  color: #4b5563;
+}
+
+.assistant-runtime-submit-button.danger {
+  border: 1px solid #f1d6d3;
+  background: #fff7f7;
+  color: #b42318;
+}
+
+.assistant-runtime-submit-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.assistant-runtime-action-list {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.assistant-runtime-error {
+  color: #b42318;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .turn-metrics,
 .turn-status {
   display: inline-flex;
@@ -1603,6 +1865,12 @@ svg {
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.14);
 }
 
+.dialog-card.approval-dialog {
+  width: min(560px, calc(100vw - 32px));
+  display: grid;
+  gap: 14px;
+}
+
 .dialog-head h3 {
   margin: 0;
   color: #202020;
@@ -1645,6 +1913,29 @@ svg {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 16px;
+}
+
+.dialog-badge-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.approval-dialog-actions {
+  margin-top: 0;
+}
+
+.dialog-code {
+  margin-top: -2px;
+}
+
+.dialog-footnote {
+  margin-top: -4px;
+}
+
+.dialog-error {
+  margin-top: -4px;
 }
 
 .dialog-button {

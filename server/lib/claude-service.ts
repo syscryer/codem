@@ -29,6 +29,10 @@ type StreamEvent =
   | { type: 'phase'; runId: string; phase: ClaudePhase; label: string }
   | ({ type: 'usage'; runId: string } & ClaudeUsage)
   | { type: 'claude-event'; runId: string; label: string; eventType?: string; subtype?: string; status?: string; raw: unknown }
+  | { type: 'request-user-input'; runId: string; request: RequestUserInputRequest }
+  | { type: 'approval-request'; runId: string; request: ApprovalRequest }
+  | { type: 'runtime-reconnect-hint'; runId: string; hint: RuntimeRecoveryHint }
+  | { type: 'retryable-error'; runId: string; message: string; hint: RuntimeRecoveryHint }
   | { type: 'tool-start'; runId: string; blockIndex: number; toolUseId?: string; name: string; input?: unknown }
   | { type: 'tool-input-delta'; runId: string; blockIndex: number; text: string }
   | { type: 'tool-stop'; runId: string; blockIndex: number }
@@ -46,6 +50,58 @@ type ClaudeUsage = {
   outputTokens?: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
+};
+
+type RuntimeReconnectReason =
+  | 'resume-session-missing'
+  | 'broken-pipe'
+  | 'runtime-ended'
+  | 'stale-session'
+  | 'transport-error'
+  | 'unknown';
+
+type RuntimeSuggestedAction = 'retry' | 'resend' | 'recover';
+
+type RuntimeEventSource = 'status' | 'stderr' | 'result' | 'process';
+
+type RuntimeRecoveryHint = {
+  reason: RuntimeReconnectReason;
+  message: string;
+  retryable: boolean;
+  suggestedAction: RuntimeSuggestedAction;
+  source: RuntimeEventSource;
+};
+
+type RequestUserInputOption = {
+  label: string;
+  description?: string;
+};
+
+type RequestUserInputQuestion = {
+  id?: string;
+  header?: string;
+  question: string;
+  options?: RequestUserInputOption[];
+  multiSelect?: boolean;
+  required?: boolean;
+  secret?: boolean;
+  isOther?: boolean;
+  placeholder?: string;
+};
+
+type RequestUserInputRequest = {
+  requestId?: string;
+  title?: string;
+  description?: string;
+  questions: RequestUserInputQuestion[];
+};
+
+type ApprovalRequest = {
+  requestId?: string;
+  title: string;
+  description?: string;
+  command?: string[];
+  danger?: 'low' | 'medium' | 'high';
 };
 
 type ClaudeContentBlock = {
@@ -100,6 +156,14 @@ type ClaudeRawUsage = {
 };
 
 type ClaudeChildProcess = ChildProcessByStdio<null, Readable, Readable>;
+
+type ToolInputAccumulator = {
+  name: string;
+  toolUseId?: string;
+  inputText: string;
+  emittedRequestUserInput: boolean;
+  emittedApprovalRequest: boolean;
+};
 
 const activeRuns = new Map<string, ClaudeChildProcess>();
 
@@ -197,10 +261,22 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
   };
 
   if (input.sessionId && !resumeSessionId) {
+    const message = `原会话 ${input.sessionId} 在 Claude 记录中不存在，已自动开启新会话。`;
     yield {
       type: 'status',
       runId,
-      message: `原会话 ${input.sessionId} 在 Claude 记录中不存在，已自动开启新会话。`,
+      message,
+    };
+    yield {
+      type: 'runtime-reconnect-hint',
+      runId,
+      hint: {
+        reason: 'resume-session-missing',
+        message,
+        retryable: true,
+        suggestedAction: 'recover',
+        source: 'status',
+      },
     };
   }
 
@@ -213,11 +289,24 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
   activeRuns.set(runId, child);
 
   const queue: StreamEvent[] = [];
+  let wakeQueue: (() => void) | null = null;
   let finished = false;
   let sessionId = resumeSessionId;
   let finalResult = '';
   let seenDoneEvent = false;
   const blockTypeByIndex = new Map<number, string>();
+  const toolInputByIndex = new Map<number, ToolInputAccumulator>();
+  const emittedRecoveryHintKeys = new Set<string>();
+  const enqueue = (event: StreamEvent) => {
+    queue.push(event);
+    wakeQueue?.();
+    wakeQueue = null;
+  };
+  const markFinished = () => {
+    finished = true;
+    wakeQueue?.();
+    wakeQueue = null;
+  };
 
   const flushStdoutLine = (line: string) => {
     const trimmed = line.trim();
@@ -231,7 +320,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         return;
       }
 
-      queue.push({
+      enqueue({
         type: 'raw',
         runId,
         raw: payload,
@@ -240,7 +329,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       const resultErrorMessage = getResultErrorMessage(payload);
       if (payload.session_id && payload.session_id !== sessionId && !resultErrorMessage) {
         sessionId = payload.session_id;
-        queue.push({
+        enqueue({
           type: 'session',
           runId,
           sessionId,
@@ -248,7 +337,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       }
 
       if (payload.type === 'system') {
-        queue.push({
+        enqueue({
           type: 'claude-event',
           runId,
           label: describeSystemEvent(payload),
@@ -260,7 +349,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
 
       if (payload.type === 'system' && payload.subtype === 'status') {
         if (payload.status === 'requesting') {
-          queue.push({
+          enqueue({
             type: 'phase',
             runId,
             phase: 'requesting',
@@ -268,7 +357,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
           });
         }
 
-        queue.push({
+        enqueue({
           type: 'claude-event',
           runId,
           label: `状态：${payload.status ?? 'unknown'}`,
@@ -282,7 +371,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       if (payload.type === 'stream_event') {
         const usage = extractUsage(payload);
         if (usage) {
-          queue.push({
+          enqueue({
             type: 'usage',
             runId,
             ...usage,
@@ -297,7 +386,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         }
 
         if (block?.type === 'thinking') {
-          queue.push({
+          enqueue({
             type: 'phase',
             runId,
             phase: 'thinking',
@@ -306,13 +395,51 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         }
 
         if (block?.type === 'tool_use' && block.name) {
-          queue.push({
+          if (typeof payload.event.index === 'number') {
+            toolInputByIndex.set(payload.event.index, {
+              name: block.name,
+              toolUseId: block.id,
+              inputText: getToolInputSeed(block.input),
+              emittedRequestUserInput: false,
+              emittedApprovalRequest: false,
+            });
+          }
+
+          const requestUserInput = parseRequestUserInputEvent(block.name, block.input, block.id);
+          if (requestUserInput) {
+            const accumulator =
+              typeof payload.event.index === 'number' ? toolInputByIndex.get(payload.event.index) : undefined;
+            if (accumulator) {
+              accumulator.emittedRequestUserInput = true;
+            }
+            enqueue({
+              type: 'request-user-input',
+              runId,
+              request: requestUserInput,
+            });
+          }
+
+          const approvalRequest = parseApprovalRequestEvent(block.name, block.input, block.id);
+          if (approvalRequest) {
+            const accumulator =
+              typeof payload.event.index === 'number' ? toolInputByIndex.get(payload.event.index) : undefined;
+            if (accumulator) {
+              accumulator.emittedApprovalRequest = true;
+            }
+            enqueue({
+              type: 'approval-request',
+              runId,
+              request: approvalRequest,
+            });
+          }
+
+          enqueue({
             type: 'phase',
             runId,
             phase: 'tool',
             label: 'Computing...',
           });
-          queue.push({
+          enqueue({
             type: 'tool-start',
             runId,
             blockIndex: payload.event.index ?? -1,
@@ -335,12 +462,12 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
           return;
         }
 
-        queue.push({
+        enqueue({
           type: 'delta',
           runId,
           text: payload.event.delta.text,
         });
-        queue.push({
+        enqueue({
           type: 'phase',
           runId,
           phase: 'computing',
@@ -353,7 +480,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         payload.event?.type === 'content_block_delta' &&
         payload.event.delta?.type === 'thinking_delta'
       ) {
-        queue.push({
+        enqueue({
           type: 'phase',
           runId,
           phase: 'thinking',
@@ -367,13 +494,21 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         payload.event.delta?.type === 'input_json_delta' &&
         payload.event.delta.partial_json
       ) {
-        queue.push({
+        if (typeof payload.event.index === 'number') {
+          const accumulator = toolInputByIndex.get(payload.event.index);
+          if (accumulator) {
+            accumulator.inputText += payload.event.delta.partial_json;
+            emitStructuredToolEventsFromAccumulator(runId, accumulator, enqueue);
+          }
+        }
+
+        enqueue({
           type: 'tool-input-delta',
           runId,
           blockIndex: payload.event.index ?? -1,
           text: payload.event.delta.partial_json,
         });
-        queue.push({
+        enqueue({
           type: 'phase',
           runId,
           phase: 'tool',
@@ -386,10 +521,15 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
           typeof payload.event.index === 'number' ? blockTypeByIndex.get(payload.event.index) : undefined;
         if (typeof payload.event.index === 'number') {
           blockTypeByIndex.delete(payload.event.index);
+          const accumulator = toolInputByIndex.get(payload.event.index);
+          if (accumulator) {
+            emitStructuredToolEventsFromAccumulator(runId, accumulator, enqueue);
+            toolInputByIndex.delete(payload.event.index);
+          }
         }
 
         if (currentBlockType === 'tool_use') {
-          queue.push({
+          enqueue({
             type: 'tool-stop',
             runId,
             blockIndex: payload.event.index ?? -1,
@@ -398,11 +538,35 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       }
 
       if (payload.type === 'assistant' && Array.isArray(payload.message?.content)) {
-        queue.push({
+        enqueue({
           type: 'assistant-snapshot',
           runId,
           blocks: payload.message.content,
         });
+
+        for (const block of payload.message.content) {
+          if (block.type !== 'tool_use' || !block.name) {
+            continue;
+          }
+
+          const requestUserInput = parseRequestUserInputEvent(block.name, block.input, block.id);
+          if (requestUserInput) {
+            enqueue({
+              type: 'request-user-input',
+              runId,
+              request: requestUserInput,
+            });
+          }
+
+          const approvalRequest = parseApprovalRequestEvent(block.name, block.input, block.id);
+          if (approvalRequest) {
+            enqueue({
+              type: 'approval-request',
+              runId,
+              request: approvalRequest,
+            });
+          }
+        }
 
         const assistantText = payload.message.content
           .filter((item) => item.type === 'text' && item.text)
@@ -420,7 +584,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
             continue;
           }
 
-          queue.push({
+          enqueue({
             type: 'tool-result',
             runId,
             toolUseId: block.tool_use_id,
@@ -433,7 +597,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       if (payload.type === 'result') {
         const usage = normalizeUsage(payload.usage);
         if (usage) {
-          queue.push({
+          enqueue({
             type: 'usage',
             runId,
             ...usage,
@@ -442,8 +606,9 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
 
         const errorMessage = getResultErrorMessage(payload);
         if (errorMessage) {
+          enqueueRetryableRuntimeError(runId, errorMessage, 'result', emittedRecoveryHintKeys, enqueue);
           seenDoneEvent = true;
-          queue.push({
+          enqueue({
             type: 'error',
             runId,
             message: errorMessage,
@@ -453,7 +618,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
 
         finalResult = payload.result ?? finalResult;
         seenDoneEvent = true;
-        queue.push({
+        enqueue({
           type: 'done',
           runId,
           sessionId,
@@ -464,11 +629,12 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         });
       }
     } catch {
-      queue.push({
+      enqueue({
         type: 'stderr',
         runId,
         text: trimmed,
       });
+      enqueueRuntimeReconnectHint(runId, trimmed, 'stderr', emittedRecoveryHintKeys, enqueue);
     }
   };
 
@@ -494,21 +660,23 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
         continue;
       }
 
-      queue.push({
+      enqueue({
         type: 'stderr',
         runId,
         text: line.trim(),
       });
+      enqueueRuntimeReconnectHint(runId, line.trim(), 'stderr', emittedRecoveryHintKeys, enqueue);
     }
   });
 
   child.once('error', (error) => {
-    queue.push({
+    enqueueRetryableRuntimeError(runId, error.message, 'process', emittedRecoveryHintKeys, enqueue);
+    enqueue({
       type: 'error',
       runId,
       message: error.message,
     });
-    finished = true;
+    markFinished();
   });
 
   child.once('close', (code, signal) => {
@@ -518,7 +686,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
     }
 
     if (stderrBuffer.trim()) {
-      queue.push({
+      enqueue({
         type: 'stderr',
         runId,
         text: stderrBuffer.trim(),
@@ -529,23 +697,25 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
     if (!seenDoneEvent) {
       if (code === 0 || signal === 'SIGTERM') {
         seenDoneEvent = true;
-        queue.push({
+        enqueue({
           type: 'done',
           runId,
           sessionId,
           result: finalResult,
         });
       } else {
-        queue.push({
+        const message = `Claude 退出异常，code=${code ?? 'null'} signal=${signal ?? 'null'}`;
+        enqueueRetryableRuntimeError(runId, message, 'process', emittedRecoveryHintKeys, enqueue);
+        enqueue({
           type: 'error',
           runId,
-          message: `Claude 退出异常，code=${code ?? 'null'} signal=${signal ?? 'null'}`,
+          message,
         });
       }
     }
 
     activeRuns.delete(runId);
-    finished = true;
+    markFinished();
   });
 
   while (!finished || queue.length > 0) {
@@ -555,7 +725,9 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
       continue;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await new Promise<void>((resolve) => {
+      wakeQueue = resolve;
+    });
   }
 }
 
@@ -715,4 +887,327 @@ function stringifyClaudeContent(content: unknown) {
   }
 
   return JSON.stringify(content, null, 2);
+}
+
+function enqueueRuntimeReconnectHint(
+  runId: string,
+  message: string,
+  source: RuntimeEventSource,
+  emittedRecoveryHintKeys: Set<string>,
+  enqueue: (event: StreamEvent) => void,
+) {
+  const hint = createRuntimeRecoveryHint(message, source);
+  if (!hint) {
+    return null;
+  }
+
+  const key = `${hint.reason}:${hint.message}`;
+  if (emittedRecoveryHintKeys.has(key)) {
+    return hint;
+  }
+
+  emittedRecoveryHintKeys.add(key);
+  enqueue({
+    type: 'runtime-reconnect-hint',
+    runId,
+    hint,
+  });
+  return hint;
+}
+
+function enqueueRetryableRuntimeError(
+  runId: string,
+  message: string,
+  source: RuntimeEventSource,
+  emittedRecoveryHintKeys: Set<string>,
+  enqueue: (event: StreamEvent) => void,
+) {
+  const hint = enqueueRuntimeReconnectHint(runId, message, source, emittedRecoveryHintKeys, enqueue);
+  if (!hint) {
+    return;
+  }
+
+  enqueue({
+    type: 'retryable-error',
+    runId,
+    message,
+    hint,
+  });
+}
+
+function createRuntimeRecoveryHint(
+  message: string,
+  source: RuntimeEventSource,
+): RuntimeRecoveryHint | null {
+  const normalized = message.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const lower = normalized.toLowerCase();
+  let reason: RuntimeReconnectReason | null = null;
+  if (lower.includes('broken pipe') || lower.includes('epipe')) {
+    reason = 'broken-pipe';
+  } else if (
+    lower.includes('socket hang up') ||
+    lower.includes('connection reset') ||
+    lower.includes('stream closed') ||
+    lower.includes('network error')
+  ) {
+    reason = 'transport-error';
+  } else if (
+    lower.includes('runtime ended') ||
+    lower.includes('unexpected eof') ||
+    lower.includes(' has ended') ||
+    lower === 'eof'
+  ) {
+    reason = 'runtime-ended';
+  } else if (
+    lower.includes('stale') ||
+    lower.includes('session expired') ||
+    lower.includes('thread expired')
+  ) {
+    reason = 'stale-session';
+  } else if (lower.includes('resume') && lower.includes('not exist')) {
+    reason = 'resume-session-missing';
+  }
+
+  if (!reason) {
+    return null;
+  }
+
+  return {
+    reason,
+    message: normalized,
+    retryable: true,
+    suggestedAction: getSuggestedRuntimeAction(reason),
+    source,
+  };
+}
+
+function getSuggestedRuntimeAction(reason: RuntimeReconnectReason): RuntimeSuggestedAction {
+  if (reason === 'resume-session-missing') {
+    return 'recover';
+  }
+
+  if (reason === 'stale-session') {
+    return 'resend';
+  }
+
+  return 'retry';
+}
+
+function parseRequestUserInputEvent(
+  toolName: string,
+  input: unknown,
+  toolUseId?: string,
+): RequestUserInputRequest | null {
+  const normalizedToolName = normalizeToolName(toolName);
+  const payload = asRecord(input);
+  const rawQuestions = Array.isArray(payload.questions) ? payload.questions : [];
+  const matchesStructuredQuestions = rawQuestions.some((question) => hasRequestUserInputShape(question));
+  if (
+    normalizedToolName !== 'requestuserinput' &&
+    normalizedToolName !== 'askuserquestion' &&
+    !matchesStructuredQuestions
+  ) {
+    return null;
+  }
+
+  const questions = rawQuestions
+    .map((question, index) => parseRequestUserInputQuestion(question, index))
+    .filter((question): question is RequestUserInputQuestion => Boolean(question));
+  if (questions.length === 0) {
+    return null;
+  }
+
+  return {
+    requestId:
+      firstNonEmptyString(payload, ['requestId', 'request_id', 'toolUseId', 'tool_use_id']) ??
+      toolUseId,
+    title: firstNonEmptyString(payload, ['title', 'message', 'prompt']) ?? '需要你的选择',
+    description: firstNonEmptyString(payload, ['description', 'instructions']),
+    questions,
+  };
+}
+
+function emitStructuredToolEventsFromAccumulator(
+  runId: string,
+  accumulator: ToolInputAccumulator,
+  enqueue: (event: StreamEvent) => void,
+) {
+  const input = parseJsonObject(accumulator.inputText);
+  if (!input) {
+    return;
+  }
+
+  if (!accumulator.emittedRequestUserInput) {
+    const request = parseRequestUserInputEvent(accumulator.name, input, accumulator.toolUseId);
+    if (request) {
+      accumulator.emittedRequestUserInput = true;
+      enqueue({
+        type: 'request-user-input',
+        runId,
+        request,
+      });
+    }
+  }
+
+  if (!accumulator.emittedApprovalRequest) {
+    const request = parseApprovalRequestEvent(accumulator.name, input, accumulator.toolUseId);
+    if (request) {
+      accumulator.emittedApprovalRequest = true;
+      enqueue({
+        type: 'approval-request',
+        runId,
+        request,
+      });
+    }
+  }
+}
+
+function parseJsonObject(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function getToolInputSeed(input: unknown) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return '';
+  }
+
+  if (Object.keys(input).length === 0) {
+    return '';
+  }
+
+  return JSON.stringify(input);
+}
+
+function parseRequestUserInputQuestion(
+  value: unknown,
+  index: number,
+): RequestUserInputQuestion | null {
+  const question = asRecord(value);
+  const text = firstNonEmptyString(question, ['question', 'prompt', 'label']);
+  if (!text) {
+    return null;
+  }
+
+  const rawOptions = Array.isArray(question.options) ? question.options : [];
+  const options = rawOptions
+    .map((option) => parseRequestUserInputOption(option))
+    .filter((option): option is RequestUserInputOption => Boolean(option));
+
+  return {
+    id: firstNonEmptyString(question, ['id']) ?? `question-${index}`,
+    header: firstNonEmptyString(question, ['header']),
+    question: text,
+    options: options.length > 0 ? options : undefined,
+    multiSelect: Boolean(question.multiSelect ?? question.multi_select),
+    required: Boolean(question.required),
+    secret: Boolean(question.secret),
+    isOther: Boolean(question.isOther ?? question.is_other),
+    placeholder: firstNonEmptyString(question, ['placeholder']),
+  };
+}
+
+function hasRequestUserInputShape(value: unknown) {
+  const question = asRecord(value);
+  const hasQuestionText = Boolean(firstNonEmptyString(question, ['question', 'prompt', 'label']));
+  if (!hasQuestionText) {
+    return false;
+  }
+
+  if (!('options' in question)) {
+    return true;
+  }
+
+  return Array.isArray(question.options);
+}
+
+function parseRequestUserInputOption(value: unknown): RequestUserInputOption | null {
+  const option = asRecord(value);
+  const label = firstNonEmptyString(option, ['label', 'title', 'value']);
+  if (!label) {
+    return null;
+  }
+
+  return {
+    label,
+    description: firstNonEmptyString(option, ['description']),
+  };
+}
+
+function parseApprovalRequestEvent(
+  toolName: string,
+  input: unknown,
+  toolUseId?: string,
+): ApprovalRequest | null {
+  const normalizedToolName = normalizeToolName(toolName);
+  if (normalizedToolName !== 'approvalrequest') {
+    return null;
+  }
+
+  const payload = asRecord(input);
+  const title = firstNonEmptyString(payload, ['title', 'message', 'question']) ?? '等待批准';
+  const command = normalizeCommand(payload.command ?? payload.argv ?? payload.args);
+
+  return {
+    requestId: firstNonEmptyString(payload, ['requestId', 'request_id', 'toolUseId', 'tool_use_id']) ?? toolUseId,
+    title,
+    description: firstNonEmptyString(payload, ['description', 'reason']),
+    command,
+    danger: normalizeDangerLevel(firstNonEmptyString(payload, ['danger', 'risk'])),
+  };
+}
+
+function normalizeCommand(value: unknown) {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const command = value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean);
+  return command.length > 0 ? command : undefined;
+}
+
+function normalizeDangerLevel(value?: string): ApprovalRequest['danger'] | undefined {
+  if (value === 'low' || value === 'medium' || value === 'high') {
+    return value;
+  }
+
+  return undefined;
+}
+
+function asRecord(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function normalizeToolName(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function firstNonEmptyString(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
 }

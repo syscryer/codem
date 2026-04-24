@@ -210,7 +210,6 @@ initializeDatabase();
 
 export function getWorkspaceBootstrap(): WorkspaceBootstrap {
   importClaudeSessions();
-  syncUncustomizedThreadTitles();
 
   const panelState = readPanelState();
   const projectRows = db
@@ -526,23 +525,23 @@ export function getThreadHistory(threadId: string) {
     throw new Error('聊天不存在');
   }
 
-  if (thread.session_id) {
-    const turns = hasUsableTranscript(thread)
-      ? parseClaudeTranscript(thread.transcript_path ?? '', thread.session_id)
-      : [];
-
-    if (turns.length > 0) {
-      saveThreadHistory(threadId, turns);
-    }
-
-    return {
-      threadId,
-      turns,
-    };
-  }
-
   const storedTurns = readStoredThreadHistory(threadId);
   if (storedTurns.length > 0) {
+    if (
+      thread.transcript_path &&
+      existsSync(thread.transcript_path) &&
+      shouldRefreshStoredHistory(threadId, thread.transcript_path, storedTurns)
+    ) {
+      const reparsedTurns = parseClaudeTranscript(thread.transcript_path, thread.session_id ?? undefined);
+      if (reparsedTurns.length > 0) {
+        saveThreadHistory(threadId, reparsedTurns);
+        return {
+          threadId,
+          turns: reparsedTurns,
+        };
+      }
+    }
+
     return {
       threadId,
       turns: storedTurns,
@@ -865,9 +864,6 @@ function importClaudeSessions() {
       if (!fileEntry.isFile() || !fileEntry.name.endsWith('.jsonl')) {
         continue;
       }
-      if (fileEntry.name.startsWith('agent-')) {
-        continue;
-      }
 
       const transcriptPath = path.join(directory, fileEntry.name);
       const metadata = readClaudeSessionMetadata(transcriptPath);
@@ -918,39 +914,35 @@ function deleteDuplicateThreadsBySessionId(sessionId: string, excludeThreadId: s
   }
 }
 
-function syncUncustomizedThreadTitles() {
-  const rows = db
-    .prepare(`
-      SELECT id, project_id, provider, title, custom_title, session_id, transcript_path, working_directory, model, permission_mode, imported, created_at, updated_at
-      FROM threads
-      WHERE custom_title = 0 AND session_id IS NOT NULL AND transcript_path IS NOT NULL
-    `)
-    .all() as StoredThreadRow[];
+function filterVisibleThreadRows(threadRows: StoredThreadRow[]) {
+  const groups = new Map<string, StoredThreadRow[]>();
+  for (const row of threadRows) {
+    const key = `${row.project_id}::${row.title.trim().toLowerCase()}`;
+    const list = groups.get(key) ?? [];
+    list.push(row);
+    groups.set(key, list);
+  }
 
-  const updateTitle = db.prepare(`UPDATE threads SET title = ? WHERE id = ?`);
-  for (const row of rows) {
-    const nextTitle = deriveSyncedThreadTitle(row);
-    if (!nextTitle || nextTitle === row.title) {
+  const hiddenIds = new Set<string>();
+  for (const rows of groups.values()) {
+    if (rows.length < 2) {
       continue;
     }
 
-    updateTitle.run(nextTitle, row.id);
-  }
-}
+    const importedRows = rows.filter((row) => row.imported === 1);
+    const localRows = rows.filter((row) => row.imported !== 1);
+    if (importedRows.length === 0 || localRows.length === 0) {
+      continue;
+    }
 
-function deriveSyncedThreadTitle(row: StoredThreadRow) {
-  if (row.transcript_path && existsSync(row.transcript_path)) {
-    const metadata = readClaudeSessionMetadata(row.transcript_path);
-    if (metadata) {
-      return deriveImportedThreadTitle(metadata);
+    for (const row of importedRows) {
+      if (!hasUsableTranscript(row)) {
+        hiddenIds.add(row.id);
+      }
     }
   }
 
-  return '';
-}
-
-function filterVisibleThreadRows(threadRows: StoredThreadRow[]) {
-  return threadRows.filter(hasVisibleThreadSource);
+  return threadRows.filter((row) => !hiddenIds.has(row.id));
 }
 
 function hasUsableTranscript(row: StoredThreadRow) {
@@ -959,14 +951,6 @@ function hasUsableTranscript(row: StoredThreadRow) {
   }
 
   return existsSync(row.transcript_path);
-}
-
-function hasVisibleThreadSource(row: StoredThreadRow) {
-  if (!row.session_id) {
-    return row.imported !== 1;
-  }
-
-  return hasUsableTranscript(row);
 }
 
 function isPathInsideRoot(targetPath: string, rootPath: string) {
@@ -1152,7 +1136,7 @@ function readClaudeSessionMetadata(transcriptPath: string): ClaudeSessionMetadat
         }
       }
 
-      if (payload.type === 'last-prompt') {
+      if (!lastPrompt && payload.type === 'last-prompt') {
         const prompt = readString(payload, ['lastPrompt']);
         const normalizedPrompt = normalizeImportedTitleText(prompt);
         if (normalizedPrompt) {
@@ -1214,7 +1198,7 @@ function readClaudeSessionMetadata(transcriptPath: string): ClaudeSessionMetadat
 }
 
 function deriveImportedThreadTitle(metadata: ClaudeSessionMetadata) {
-  const title = metadata.sessionLabel || metadata.firstUserText || metadata.lastPrompt || metadata.sessionId;
+  const title = metadata.sessionLabel || metadata.lastPrompt || metadata.firstUserText || metadata.sessionId;
   const trimmed = title.trim();
   if (!trimmed) {
     return metadata.sessionId;
@@ -1228,7 +1212,6 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
   const turns: ThreadTurn[] = [];
   let currentTurn: ThreadTurn | null = null;
   const toolLookup = new Map<string, ThreadTurn['tools'][number]>();
-  const hiddenContinuationUuids = new Set<string>();
 
   for (const line of lines) {
     let payload: Record<string, unknown>;
@@ -1238,36 +1221,11 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
       continue;
     }
 
-    if (payload.isSidechain) {
+    if (payload.isSidechain || payload.isMeta) {
       continue;
     }
 
     const message = payload.message;
-    if (payload.isMeta) {
-      if (
-        message &&
-        typeof message === 'object' &&
-        isHiddenContinuationPrompt(extractUserText((message as Record<string, unknown>).content))
-      ) {
-        const uuid = readString(payload, ['uuid']);
-        if (uuid) {
-          hiddenContinuationUuids.add(uuid);
-        }
-      }
-      continue;
-    }
-
-    if (
-      payload.type === 'assistant' &&
-      hiddenContinuationUuids.has(readString(payload, ['parentUuid', 'parent_uuid'])) &&
-      message &&
-      typeof message === 'object' &&
-      cleanAssistantTranscriptText(extractUserText((message as Record<string, unknown>).content)).trim() ===
-        'No response requested.'
-    ) {
-      continue;
-    }
-
     if (payload.type === 'user' && message && typeof message === 'object') {
       const role = readString(message as Record<string, unknown>, ['role']);
       const contentValue = (message as Record<string, unknown>).content;
@@ -1314,13 +1272,8 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
       const contentBlocks = extractContentBlocks((message as Record<string, unknown>).content);
       for (const block of contentBlocks) {
         if (block.type === 'text' && block.text) {
-          const text = cleanAssistantTranscriptText(block.text);
-          if (!text) {
-            continue;
-          }
-
-          currentTurn.assistantText += text;
-          pushTextItem(currentTurn, text);
+          currentTurn.assistantText += block.text;
+          pushTextItem(currentTurn, block.text);
           continue;
         }
 
@@ -1329,7 +1282,7 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
             id: block.id || randomUUID(),
             name: block.name,
             title: describeToolCall(block.name, formatJson(block.input)),
-            status: 'running' as const,
+            status: 'done' as const,
             toolUseId: block.id,
             inputText: formatJson(block.input),
           };
@@ -1347,9 +1300,7 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
     }
   }
 
-  return finalizeTranscriptTurns(turns).filter(
-    (turn) => turn.userText.trim() || turn.assistantText.trim() || turn.tools.length > 0,
-  );
+  return turns.filter((turn) => turn.userText.trim() || turn.assistantText.trim() || turn.tools.length > 0);
 
   function attachToolResults(turn: ThreadTurn, contentValue: unknown) {
     if (!Array.isArray(contentValue)) {
@@ -1516,6 +1467,43 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
             : { id: entry.tool.id, type: 'tool' as const, tool: entry.tool },
         ),
     }));
+}
+
+function shouldReparseStoredHistory(turns: ThreadTurn[]) {
+  return turns.some((turn) =>
+    turn.tools.some(
+      (tool) =>
+        tool.name === 'tool_result' ||
+        ((tool.name === 'Agent' || tool.name === 'Task') &&
+          tool.inputText?.trim() &&
+          tool.title !== describeToolCall(tool.name, tool.inputText)),
+    ),
+  );
+}
+
+function shouldRefreshStoredHistory(threadId: string, transcriptPath: string, turns: ThreadTurn[]) {
+  return shouldReparseStoredHistory(turns) || isStoredHistoryOutdated(threadId, transcriptPath);
+}
+
+function isStoredHistoryOutdated(threadId: string, transcriptPath: string) {
+  const latestStoredRow = db
+    .prepare(`
+      SELECT MAX(created_at) AS latest_created_at
+      FROM messages
+      WHERE thread_id = ?
+    `)
+    .get(threadId) as { latest_created_at: string | null } | undefined;
+
+  if (!latestStoredRow?.latest_created_at) {
+    return true;
+  }
+
+  try {
+    const transcriptUpdatedAt = statSync(transcriptPath).mtime.toISOString();
+    return transcriptUpdatedAt > latestStoredRow.latest_created_at;
+  } catch {
+    return false;
+  }
 }
 
 function readPanelState(): PanelState {
@@ -1812,57 +1800,6 @@ function extractUserText(content: unknown) {
     .filter(Boolean)
     .join('\n')
     .trim();
-}
-
-function finalizeTranscriptTurns(turns: ThreadTurn[]) {
-  return turns.map((turn) => {
-    let hasUnresolvedTool = false;
-    const tools = turn.tools.map((tool) => {
-      if (tool.status !== 'running') {
-        return tool;
-      }
-
-      hasUnresolvedTool = true;
-      return {
-        ...tool,
-        status: 'error' as const,
-      };
-    });
-
-    if (!hasUnresolvedTool) {
-      return turn;
-    }
-
-    const toolsById = new Map(tools.map((tool) => [tool.id, tool]));
-    return {
-      ...turn,
-      status: 'stopped' as const,
-      tools,
-      items: turn.items.map((item) =>
-        item.type === 'tool' && toolsById.has(item.tool.id)
-          ? {
-              ...item,
-              tool: toolsById.get(item.tool.id) ?? item.tool,
-            }
-          : item,
-      ),
-    };
-  });
-}
-
-function cleanAssistantTranscriptText(text: string) {
-  const cleaned = text
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
-    .split(/\r?\n/)
-    .filter((line) => line.trim() !== 'answer for user question')
-    .join('\n')
-    .trimStart();
-
-  return cleaned;
-}
-
-function isHiddenContinuationPrompt(text: string) {
-  return text.trim() === 'Continue from where you left off.';
 }
 
 function normalizeImportedTitleText(value: string) {
