@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   cancelRun,
   createClaudeStream,
+  closeThreadRuntime,
   detectClaudeCommand,
   getClaudeModels,
   isDirectoryAccessible,
@@ -279,6 +280,7 @@ app.patch('/api/threads/:threadId', (request, response) => {
 app.delete('/api/threads/:threadId', (_request, response) => {
   try {
     removeThread(_request.params.threadId);
+    closeThreadRuntime(_request.params.threadId);
     response.json({ ok: true });
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '聊天删除失败');
@@ -309,6 +311,7 @@ app.put('/api/threads/:threadId/history', (request, response) => {
 
 app.post('/api/claude/run', async (request, response) => {
   const requestReceivedAtMs = Date.now();
+  const threadId = typeof request.body?.threadId === 'string' ? request.body.threadId.trim() : '';
   const prompt = typeof request.body?.prompt === 'string' ? request.body.prompt.trim() : '';
   const workingDirectory =
     typeof request.body?.workingDirectory === 'string' ? request.body.workingDirectory.trim() : '';
@@ -333,6 +336,11 @@ app.post('/api/claude/run', async (request, response) => {
     return;
   }
 
+  if (!threadId) {
+    response.status(400).send('threadId 不能为空');
+    return;
+  }
+
   if (!workingDirectory) {
     response.status(400).send('workingDirectory 不能为空');
     return;
@@ -351,6 +359,7 @@ app.post('/api/claude/run', async (request, response) => {
   response.flushHeaders();
 
   const stream = await createClaudeStream({
+    threadId,
     prompt,
     workingDirectory: resolvedDirectory,
     sessionId,
@@ -387,6 +396,11 @@ app.post('/api/claude/run', async (request, response) => {
 app.delete('/api/claude/run/:runId', (request, response) => {
   const cancelled = cancelRun(request.params.runId);
   response.json({ cancelled });
+});
+
+app.post('/api/claude/runtime/:threadId/close', (request, response) => {
+  const closed = closeThreadRuntime(request.params.threadId);
+  response.json({ closed });
 });
 
 if (await isDirectoryAccessible(distRoot)) {

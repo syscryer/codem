@@ -9,7 +9,8 @@ function extractFunctionBody(functionName: string) {
   const start = functionMatch?.index ?? -1;
   assert.notEqual(start, -1, `${functionName} should exist`);
 
-  const openBrace = source.indexOf('{', start);
+  const bodyOpenMatch = /\{\r?\n/.exec(source.slice(start));
+  const openBrace = bodyOpenMatch ? start + bodyOpenMatch.index : -1;
   assert.notEqual(openBrace, -1, `${functionName} should have a body`);
 
   let depth = 0;
@@ -28,25 +29,43 @@ function extractFunctionBody(functionName: string) {
   assert.fail(`${functionName} body should be closed`);
 }
 
-test('continuing a Claude session starts a new CLI process and resumes by session id', () => {
+test('continuing a Claude thread reuses a managed runtime before spawning a new one', () => {
   const createClaudeStreamBody = extractFunctionBody('createClaudeStream');
+  const getOrCreateClaudeRuntimeBody = extractFunctionBody('getOrCreateClaudeRuntime');
+  const isRuntimeCompatibleBody = extractFunctionBody('isRuntimeCompatible');
   const spawnClaudeRuntimeBody = extractFunctionBody('spawnClaudeRuntime');
 
-  assert.match(createClaudeStreamBody, /spawnClaudeRuntime\(command,\s*input\)/);
-  assert.match(spawnClaudeRuntimeBody, /const\s+args\s*=\s*\[\s*['"]-p['"]\s*\]/);
+  assert.match(createClaudeStreamBody, /getOrCreateClaudeRuntime\(command,\s*input\)/);
+  assert.match(getOrCreateClaudeRuntimeBody, /threadRuntimes\.get\(key\)/);
+  assert.match(getOrCreateClaudeRuntimeBody, /existing\.currentRun[\s\S]*reused:\s*false/);
+  assert.match(getOrCreateClaudeRuntimeBody, /isRuntimeCompatible\(existing,\s*input\)/);
+  assert.match(getOrCreateClaudeRuntimeBody, /threadRuntimes\.set\(key,\s*runtime\)/);
+  assert.match(isRuntimeCompatibleBody, /runtime\.inputMode\s*===\s*['"]stdin['"]/);
+  assert.match(isRuntimeCompatibleBody, /runtime\.reusable/);
+  assert.match(spawnClaudeRuntimeBody, /inputMode\s*===\s*['"]stdin['"]/);
+  assert.match(spawnClaudeRuntimeBody, /\[\s*['"]-p['"],\s*['"]['"],\s*['"]--input-format['"],\s*['"]stream-json['"]\s*\]/);
   assert.match(spawnClaudeRuntimeBody, /if\s*\(\s*resumeSessionId\s*\)\s*{\s*args\.push\(['"]--resume['"],\s*resumeSessionId\)/s);
   assert.match(spawnClaudeRuntimeBody, /spawn\(command,\s*args,\s*{/);
 });
 
-test('multiline prompts use stream-json stdin instead of passing the prompt as argv', () => {
+test('reusable runtime prompts are sent through stream-json stdin', () => {
   const spawnClaudeRuntimeBody = extractFunctionBody('spawnClaudeRuntime');
-  const shouldUseStreamJsonInputBody = extractFunctionBody('shouldUseStreamJsonInput');
   const writePromptToClaudeBody = extractFunctionBody('writePromptToClaude');
 
-  assert.match(spawnClaudeRuntimeBody, /const\s+useStreamJsonInput\s*=\s*shouldUseStreamJsonInput\(input\.prompt\)/);
-  assert.match(spawnClaudeRuntimeBody, /args\.push\(['"]['"],\s*['"]--input-format['"],\s*['"]stream-json['"]\)/);
-  assert.match(spawnClaudeRuntimeBody, /args\.push\(input\.prompt\)/);
-  assert.match(shouldUseStreamJsonInputBody, /prompt\.includes\(['"]\\n['"]\)/);
+  assert.match(spawnClaudeRuntimeBody, /inputMode\s*===\s*['"]stdin['"]/);
+  assert.match(spawnClaudeRuntimeBody, /\[\s*['"]-p['"],\s*['"]['"],\s*['"]--input-format['"],\s*['"]stream-json['"]\s*\]/);
+  assert.match(spawnClaudeRuntimeBody, /\[\s*['"]-p['"],\s*input\.prompt\s*\]/);
   assert.match(writePromptToClaudeBody, /JSON\.stringify\(buildClaudeInputMessage\(prompt\)\)/);
   assert.match(writePromptToClaudeBody, /runtime\.child\.stdin\.write\(payload,/);
+});
+
+test('cold resume keeps the legacy argv prompt path instead of starting stdin runtime', () => {
+  const getOrCreateClaudeRuntimeBody = extractFunctionBody('getOrCreateClaudeRuntime');
+  const writePromptToClaudeBody = extractFunctionBody('writePromptToClaude');
+
+  assert.match(getOrCreateClaudeRuntimeBody, /input\.sessionId\?\.trim\(\)/);
+  assert.match(getOrCreateClaudeRuntimeBody, /spawnClaudeRuntime\(command,\s*input,\s*['"]argv['"]\)/);
+  assert.match(writePromptToClaudeBody, /runtime\.inputMode\s*===\s*['"]argv['"]/);
+  assert.match(writePromptToClaudeBody, /prompt_sent_as_arg/);
+  assert.match(writePromptToClaudeBody, /runtime\.child\.stdin\.end\(\)/);
 });

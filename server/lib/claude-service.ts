@@ -13,6 +13,7 @@ export type ClaudePermissionMode =
   | 'bypassPermissions';
 
 type StreamInput = {
+  threadId: string;
   prompt: string;
   workingDirectory: string;
   sessionId?: string;
@@ -201,12 +202,18 @@ type RunState = {
 };
 
 type ClaudeRuntime = {
+  key: string;
   child: ClaudeChildProcess;
   sessionId?: string;
-  useStreamJsonInput: boolean;
+  workingDirectory: string;
+  permissionMode: ClaudePermissionMode;
+  model?: string;
+  inputMode: 'argv' | 'stdin';
+  reusable: boolean;
   stdoutBuffer: string;
   stderrBuffer: string;
   currentRun: RunState | null;
+  closed: boolean;
 };
 
 type ActiveRun = {
@@ -215,6 +222,7 @@ type ActiveRun = {
 };
 
 const activeRuns = new Map<string, ActiveRun>();
+const threadRuntimes = new Map<string, ClaudeRuntime>();
 const TEXT_DELTA_COALESCE_MS = process.platform === 'win32' ? 32 : 0;
 let cachedClaudeCommand: string | null | undefined;
 
@@ -271,11 +279,22 @@ export function cancelRun(runId: string) {
   return true;
 }
 
+export function closeThreadRuntime(threadId: string) {
+  const runtime = threadRuntimes.get(threadId.trim());
+  if (!runtime) {
+    return false;
+  }
+
+  closeClaudeRuntime(runtime);
+  return true;
+}
+
 export async function* createClaudeStream(input: StreamInput): AsyncGenerator<StreamEvent> {
   const runId = randomUUID();
   const streamStartedAtMs = Date.now();
   const command = resolveClaudeCommand();
   const commandResolvedAtMs = Date.now();
+  const runtimeKey = getRuntimeKey(input);
 
   if (!command) {
     yield {
@@ -287,8 +306,18 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
   }
 
   const spawnStartedAtMs = Date.now();
-  const runtime = spawnClaudeRuntime(command, input);
+  const { runtime, reused } = getOrCreateClaudeRuntime(command, input);
   const spawnReturnedAtMs = Date.now();
+
+  if (runtime.currentRun) {
+    yield {
+      type: 'error',
+      runId,
+      message: '当前会话仍有运行中的 Claude 请求，请等待结束或停止后再发送。',
+    };
+    return;
+  }
+
   const state = createRunState(runId, input, runtime.sessionId ?? input.sessionId?.trim());
   runtime.currentRun = state;
   activeRuns.set(runId, {
@@ -304,12 +333,16 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
   }
   enqueueTrace(state, 'create_stream_started', streamStartedAtMs);
   enqueueTrace(state, 'claude_command_resolved', commandResolvedAtMs, command);
-  enqueueTrace(state, 'claude_spawn_started', spawnStartedAtMs);
-  enqueueTrace(state, 'claude_process_spawned', spawnReturnedAtMs, `${spawnReturnedAtMs - spawnStartedAtMs}ms`);
+  if (reused) {
+    enqueueTrace(state, 'claude_runtime_reused', spawnReturnedAtMs, runtimeKey);
+  } else {
+    enqueueTrace(state, 'claude_spawn_started', spawnStartedAtMs);
+    enqueueTrace(state, 'claude_process_spawned', spawnReturnedAtMs, `${spawnReturnedAtMs - spawnStartedAtMs}ms`);
+  }
   enqueueRunEvent(state, {
     type: 'status',
     runId,
-    message: runtime.sessionId || input.sessionId ? '已连接 Claude Code 会话' : '已启动 Claude Code 会话',
+    message: reused ? '已复用 Claude Code 会话' : '已启动 Claude Code 会话',
   });
 
   writePromptToClaude(runtime, state, input.prompt);
@@ -390,6 +423,7 @@ function finishRuntimeRun(runtime: ClaudeRuntime, state: RunState) {
   state.finished = true;
   state.wakeQueue?.();
   state.wakeQueue = null;
+
 }
 
 function enqueueTextDelta(state: RunState, text: string) {
@@ -451,20 +485,64 @@ function cancelRuntimeRun(runtime: ClaudeRuntime, runId: string) {
     return false;
   }
 
-  runtime.child.kill();
+  state.seenDoneEvent = true;
+  enqueueRunEvent(state, {
+    type: 'done',
+    runId: state.runId,
+    sessionId: state.sessionId,
+    result: state.finalResult,
+  });
+  finishRuntimeRun(runtime, state);
+  closeClaudeRuntime(runtime);
   return true;
 }
 
-function spawnClaudeRuntime(command: string, input: StreamInput): ClaudeRuntime {
-  const resumeSessionId = input.sessionId?.trim();
-  const useStreamJsonInput = shouldUseStreamJsonInput(input.prompt);
-  const args = ['-p'];
+function getRuntimeKey(input: StreamInput) {
+  return input.threadId.trim();
+}
 
-  if (useStreamJsonInput) {
-    args.push('', '--input-format', 'stream-json');
-  } else {
-    args.push(input.prompt);
+function getOrCreateClaudeRuntime(command: string, input: StreamInput): { runtime: ClaudeRuntime; reused: boolean } {
+  const key = getRuntimeKey(input);
+  const existing = threadRuntimes.get(key);
+
+  if (existing) {
+    if (existing.currentRun) {
+      return { runtime: existing, reused: false };
+    }
+
+    if (isRuntimeCompatible(existing, input)) {
+      return { runtime: existing, reused: true };
+    }
+
+    closeClaudeRuntime(existing);
   }
+
+  if (input.sessionId?.trim()) {
+    return { runtime: spawnClaudeRuntime(command, input, 'argv'), reused: false };
+  }
+
+  const runtime = spawnClaudeRuntime(command, input, 'stdin');
+  threadRuntimes.set(key, runtime);
+  return { runtime, reused: false };
+}
+
+function isRuntimeCompatible(runtime: ClaudeRuntime, input: StreamInput) {
+  const requestedSessionId = input.sessionId?.trim();
+
+  return (
+    !runtime.closed &&
+    runtime.reusable &&
+    runtime.inputMode === 'stdin' &&
+    runtime.workingDirectory === input.workingDirectory &&
+    runtime.permissionMode === input.permissionMode &&
+    runtime.model === input.model &&
+    (!requestedSessionId || !runtime.sessionId || runtime.sessionId === requestedSessionId)
+  );
+}
+
+function spawnClaudeRuntime(command: string, input: StreamInput, inputMode: ClaudeRuntime['inputMode']): ClaudeRuntime {
+  const resumeSessionId = input.sessionId?.trim();
+  const args = inputMode === 'stdin' ? ['-p', '', '--input-format', 'stream-json'] : ['-p', input.prompt];
 
   args.push('--verbose', '--output-format', 'stream-json', '--include-partial-messages');
 
@@ -489,12 +567,18 @@ function spawnClaudeRuntime(command: string, input: StreamInput): ClaudeRuntime 
   });
 
   const runtime: ClaudeRuntime = {
+    key: getRuntimeKey(input),
     child,
     sessionId: resumeSessionId,
-    useStreamJsonInput,
+    workingDirectory: input.workingDirectory,
+    permissionMode: input.permissionMode,
+    model: input.model,
+    inputMode,
+    reusable: inputMode === 'stdin',
     stdoutBuffer: '',
     stderrBuffer: '',
     currentRun: null,
+    closed: false,
   };
 
   bindClaudeRuntime(runtime);
@@ -538,6 +622,7 @@ function bindClaudeRuntime(runtime: ClaudeRuntime) {
       message,
     });
     finishRuntimeRun(runtime, state);
+    closeClaudeRuntime(runtime);
   });
 
   runtime.child.once('error', (error) => {
@@ -977,7 +1062,23 @@ function flushRuntimeStderrLine(runtime: ClaudeRuntime, line: string) {
 }
 
 function closeClaudeRuntime(runtime: ClaudeRuntime) {
-  runtime.currentRun = null;
+  if (runtime.closed) {
+    return;
+  }
+
+  runtime.closed = true;
+  threadRuntimes.delete(runtime.key);
+  const state = runtime.currentRun;
+  if (state) {
+    state.seenDoneEvent = true;
+    enqueueRunEvent(state, {
+      type: 'error',
+      runId: state.runId,
+      message: 'Claude 会话已关闭。',
+    });
+    finishRuntimeRun(runtime, state);
+  }
+  runtime.child.kill();
 }
 
 function extractUsage(payload: ClaudeJsonLine) {
@@ -1087,7 +1188,7 @@ function buildClaudeInputMessage(prompt: string): ClaudeInputMessage {
 }
 
 function writePromptToClaude(runtime: ClaudeRuntime, state: RunState, prompt: string) {
-  if (!runtime.useStreamJsonInput) {
+  if (runtime.inputMode === 'argv') {
     enqueueTrace(state, 'prompt_sent_as_arg', Date.now(), `${prompt.length} chars`);
     runtime.child.stdin.end();
     return;
@@ -1106,16 +1207,12 @@ function writePromptToClaude(runtime: ClaudeRuntime, state: RunState, prompt: st
         message,
       });
       finishRuntimeRun(runtime, state);
+      closeClaudeRuntime(runtime);
       return;
     }
 
-    runtime.child.stdin.end();
     enqueueTrace(state, 'stdin_prompt_written', Date.now(), `${prompt.length} chars`);
   });
-}
-
-function shouldUseStreamJsonInput(prompt: string) {
-  return prompt.includes('\n') || prompt.includes('\r');
 }
 
 function isReplayedPrompt(payload: ClaudeJsonLine, prompt: string) {

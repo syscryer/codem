@@ -142,6 +142,26 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [setSearchOpen]);
 
+  useEffect(() => {
+    function closeActiveThreadRuntime() {
+      if (!activeThreadId) {
+        return;
+      }
+
+      if (navigator.sendBeacon?.(`/api/claude/runtime/${encodeURIComponent(activeThreadId)}/close`)) {
+        return;
+      }
+
+      void fetch(`/api/claude/runtime/${encodeURIComponent(activeThreadId)}/close`, {
+        method: 'POST',
+        keepalive: true,
+      }).catch(() => undefined);
+    }
+
+    window.addEventListener('pagehide', closeActiveThreadRuntime);
+    return () => window.removeEventListener('pagehide', closeActiveThreadRuntime);
+  }, [activeThreadId]);
+
   const latestApprovalDialog = useMemo(
     () => getLatestPendingApprovalDialog(activeThread),
     [activeThread],

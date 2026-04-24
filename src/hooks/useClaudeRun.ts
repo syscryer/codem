@@ -363,6 +363,7 @@ export function useClaudeRun({
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
+          threadId: thread.id,
           prompt: trimmedPrompt,
           workingDirectory: runWorkingDirectory,
           permissionMode: runPermissionMode,
