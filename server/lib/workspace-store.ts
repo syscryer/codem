@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 
 type OrganizeBy = 'project' | 'timeline' | 'chat-first';
@@ -119,6 +119,17 @@ export type GitDiffSummary = {
   filesChanged: number;
 };
 
+type GitInfo = {
+  isGitRepo: boolean;
+  branch?: string;
+  diff: GitDiffSummary;
+};
+
+type GitCommandResult = {
+  status: number | null;
+  stdout: string;
+};
+
 export type WorkspaceBootstrap = {
   projects: ProjectSummary[];
   activeProjectId: string | null;
@@ -227,7 +238,7 @@ const EMPTY_GIT_DIFF: GitDiffSummary = {
   deletions: 0,
   filesChanged: 0,
 };
-const MAX_UNTRACKED_LINE_COUNT_FILES = 300;
+const GIT_COMMAND_TIMEOUT_MS = 3000;
 
 const APP_DIR = resolveAppDirectory();
 const DATABASE_PATH = path.join(APP_DIR, 'codem.sqlite');
@@ -761,9 +772,9 @@ export function canPreviewWorkspaceFile(filePath: string) {
   return projectRows.some((row) => isPathInsideRoot(resolvedPath, row.path));
 }
 
-export function getProjectGitSummary(projectId: string) {
+export async function getProjectGitSummary(projectId: string) {
   const projectPath = readProjectPath(projectId);
-  const gitInfo = readGitInfo(projectPath, true);
+  const gitInfo = await readGitInfoAsync(projectPath, true);
 
   return {
     gitBranch: gitInfo.branch,
@@ -1618,7 +1629,7 @@ function readProjectPath(projectId: string) {
   return project.path;
 }
 
-function readGitInfo(projectPath: string, includeDiff = false) {
+function readGitInfo(projectPath: string, includeDiff = false): GitInfo {
   if (!existsSync(projectPath)) {
     return {
       isGitRepo: false,
@@ -1630,6 +1641,7 @@ function readGitInfo(projectPath: string, includeDiff = false) {
   const workTreeCheck = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
     cwd: projectPath,
     encoding: 'utf8',
+    timeout: GIT_COMMAND_TIMEOUT_MS,
     windowsHide: true,
   });
 
@@ -1644,6 +1656,7 @@ function readGitInfo(projectPath: string, includeDiff = false) {
   const branchResult = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
     cwd: projectPath,
     encoding: 'utf8',
+    timeout: GIT_COMMAND_TIMEOUT_MS,
     windowsHide: true,
   });
   const branch = branchResult.status === 0 ? branchResult.stdout.trim() || 'HEAD' : 'HEAD';
@@ -1663,6 +1676,7 @@ function readGitDiff(projectPath: string): GitDiffSummary {
   const diffResult = spawnSync('git', ['diff', '--numstat', 'HEAD', '--'], {
     cwd: projectPath,
     encoding: 'utf8',
+    timeout: GIT_COMMAND_TIMEOUT_MS,
     windowsHide: true,
   });
   const diffOutput =
@@ -1671,6 +1685,7 @@ function readGitDiff(projectPath: string): GitDiffSummary {
       : spawnSync('git', ['diff', '--numstat', '--'], {
           cwd: projectPath,
           encoding: 'utf8',
+          timeout: GIT_COMMAND_TIMEOUT_MS,
           windowsHide: true,
         }).stdout;
 
@@ -1687,9 +1702,6 @@ function readGitDiff(projectPath: string): GitDiffSummary {
 
   const untrackedFiles = readUntrackedFiles(projectPath);
   filesChanged += untrackedFiles.length;
-  for (const relativePath of untrackedFiles.slice(0, MAX_UNTRACKED_LINE_COUNT_FILES)) {
-    additions += countReadableFileLines(path.resolve(projectPath, relativePath));
-  }
 
   return {
     additions,
@@ -1711,6 +1723,7 @@ function readUntrackedFiles(projectPath: string) {
   const result = spawnSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
     cwd: projectPath,
     encoding: 'utf8',
+    timeout: GIT_COMMAND_TIMEOUT_MS,
     windowsHide: true,
   });
 
@@ -1721,28 +1734,107 @@ function readUntrackedFiles(projectPath: string) {
   return result.stdout.split('\0').filter(Boolean);
 }
 
-function countReadableFileLines(filePath: string) {
-  try {
-    const stats = statSync(filePath);
-    if (!stats.isFile() || stats.size > 2_000_000) {
-      return 0;
-    }
-
-    const buffer = readFileSync(filePath);
-    if (buffer.includes(0)) {
-      return 0;
-    }
-
-    const text = buffer.toString('utf8');
-    if (!text) {
-      return 0;
-    }
-
-    const newlineCount = text.match(/\n/g)?.length ?? 0;
-    return text.endsWith('\n') ? newlineCount : newlineCount + 1;
-  } catch {
-    return 0;
+async function readGitInfoAsync(projectPath: string, includeDiff = false): Promise<GitInfo> {
+  if (!existsSync(projectPath)) {
+    return {
+      isGitRepo: false,
+      branch: undefined,
+      diff: EMPTY_GIT_DIFF,
+    };
   }
+
+  const workTreeCheck = await runGitCommand(projectPath, ['rev-parse', '--is-inside-work-tree']);
+
+  if (workTreeCheck.status !== 0 || workTreeCheck.stdout.trim() !== 'true') {
+    return {
+      isGitRepo: false,
+      branch: undefined,
+      diff: EMPTY_GIT_DIFF,
+    };
+  }
+
+  const branchResult = await runGitCommand(projectPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const branch = branchResult.status === 0 ? branchResult.stdout.trim() || 'HEAD' : 'HEAD';
+
+  return {
+    isGitRepo: true,
+    branch,
+    diff: includeDiff ? await readGitDiffAsync(projectPath) : EMPTY_GIT_DIFF,
+  };
+}
+
+async function readGitDiffAsync(projectPath: string): Promise<GitDiffSummary> {
+  let additions = 0;
+  let deletions = 0;
+  let filesChanged = 0;
+
+  const diffResult = await runGitCommand(projectPath, ['diff', '--numstat', 'HEAD', '--']);
+  const diffOutput =
+    diffResult.status === 0
+      ? diffResult.stdout
+      : (await runGitCommand(projectPath, ['diff', '--numstat', '--'])).stdout;
+
+  for (const line of diffOutput.split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+
+    const [added, deleted] = line.split('\t');
+    filesChanged += 1;
+    additions += parseGitNumstatValue(added);
+    deletions += parseGitNumstatValue(deleted);
+  }
+
+  const untrackedFiles = await readUntrackedFilesAsync(projectPath);
+  filesChanged += untrackedFiles.length;
+
+  return {
+    additions,
+    deletions,
+    filesChanged,
+  };
+}
+
+async function readUntrackedFilesAsync(projectPath: string) {
+  const result = await runGitCommand(projectPath, ['ls-files', '--others', '--exclude-standard', '-z']);
+
+  if (result.status !== 0 || !result.stdout) {
+    return [];
+  }
+
+  return result.stdout.split('\0').filter(Boolean);
+}
+
+function runGitCommand(projectPath: string, args: string[]): Promise<GitCommandResult> {
+  return new Promise((resolve) => {
+    const child = spawn('git', args, {
+      cwd: projectPath,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let stdout = '';
+    let settled = false;
+    const settle = (result: GitCommandResult) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      settle({ status: null, stdout });
+    }, GIT_COMMAND_TIMEOUT_MS);
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.once('error', () => settle({ status: null, stdout: '' }));
+    child.once('close', (code) => settle({ status: code, stdout }));
+  });
 }
 
 function resolveEditorCommand() {

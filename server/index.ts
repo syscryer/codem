@@ -213,9 +213,9 @@ app.post('/api/projects/:projectId/open-editor', (request, response) => {
   }
 });
 
-app.get('/api/projects/:projectId/git', (request, response) => {
+app.get('/api/projects/:projectId/git', async (request, response) => {
   try {
-    response.json(getProjectGitSummary(request.params.projectId));
+    response.json(await getProjectGitSummary(request.params.projectId));
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '读取 Git 状态失败');
   }
