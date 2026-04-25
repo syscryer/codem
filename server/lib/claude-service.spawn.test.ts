@@ -60,15 +60,13 @@ test('reusable runtime prompts are sent through stream-json stdin', () => {
   assert.match(writePromptToClaudeBody, /runtime\.child\.stdin\.write\(payload,/);
 });
 
-test('cold resume keeps the legacy argv prompt path instead of starting stdin runtime', () => {
+test('cold resume starts a stream-json runtime so tool results can be sent while running', () => {
   const getOrCreateClaudeRuntimeBody = extractFunctionBody('getOrCreateClaudeRuntime');
   const writePromptToClaudeBody = extractFunctionBody('writePromptToClaude');
 
-  assert.match(getOrCreateClaudeRuntimeBody, /input\.sessionId\?\.trim\(\)/);
-  assert.match(getOrCreateClaudeRuntimeBody, /spawnClaudeRuntime\(command,\s*input,\s*['"]argv['"]\)/);
-  assert.match(writePromptToClaudeBody, /runtime\.inputMode\s*===\s*['"]argv['"]/);
-  assert.match(writePromptToClaudeBody, /prompt_sent_as_arg/);
-  assert.match(writePromptToClaudeBody, /runtime\.child\.stdin\.end\(\)/);
+  assert.doesNotMatch(getOrCreateClaudeRuntimeBody, /spawnClaudeRuntime\(command,\s*input,\s*['"]argv['"]\)/);
+  assert.match(getOrCreateClaudeRuntimeBody, /spawnClaudeRuntime\(command,\s*input,\s*['"]stdin['"]\)/);
+  assert.match(writePromptToClaudeBody, /runtime\.child\.stdin\.write\(payload,/);
 });
 
 test('run events are buffered for reconnect instead of being tied to one response', () => {
@@ -92,4 +90,30 @@ test('client disconnect detaches a run instead of cancelling the Claude process'
   assert.doesNotMatch(serverSource, /response\.on\(['"]close['"][\s\S]{0,160}cancelRun/);
   assert.match(serverSource, /\/api\/claude\/runs\/active\/:threadId/);
   assert.match(serverSource, /\/api\/claude\/run\/:runId\/events/);
+});
+
+test('request user input answers are sent back as stream-json tool results', () => {
+  const submitBody = extractFunctionBody('submitRunRequestUserInput');
+  const buildToolResultBody = extractFunctionBody('buildClaudeToolResultMessage');
+
+  assert.match(serverSource, /\/api\/claude\/run\/:runId\/request-user-input/);
+  assert.match(serverSource, /submitRunRequestUserInput\(request\.params\.runId,\s*requestId,\s*answers\)/);
+  assert.match(submitBody, /runtime\.inputMode\s*!==\s*['"]stdin['"]/);
+  assert.match(submitBody, /runtime\.child\.stdin\.write\(payload,/);
+  assert.match(buildToolResultBody, /type:\s*['"]tool_result['"]/);
+  assert.match(buildToolResultBody, /tool_use_id:\s*requestId/);
+});
+
+test('human input requests pause the run before Claude Code auto-answers the tool call', () => {
+  const handleBody = extractFunctionBody('handleClaudePayload');
+  const pauseBody = extractFunctionBody('pauseRuntimeRunForHumanInput');
+  const parseApprovalBody = extractFunctionBody('parseApprovalRequestEvent');
+
+  assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_user_input['"]\)/);
+  assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_approval_request['"]\)/);
+  assert.match(parseApprovalBody, /normalizedToolName\s*===\s*['"]exitplanmode['"]/);
+  assert.match(pauseBody, /enqueueTrace\(state,\s*traceName,\s*Date\.now\(\)\)/);
+  assert.match(pauseBody, /type:\s*['"]done['"]/);
+  assert.match(pauseBody, /runtime\.child\.kill\(\)/);
+  assert.match(pauseBody, /threadRuntimes\.delete\(runtime\.key\)/);
 });

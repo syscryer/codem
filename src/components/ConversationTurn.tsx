@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Check, Copy } from 'lucide-react';
+import { Check, Copy, ListChecks, Maximize2 } from 'lucide-react';
 import {
   formatDuration,
   hasTurnVisibleOutput,
@@ -422,36 +422,34 @@ function TodoWritePreview({
   tool: ToolStep;
   preview: TodoWritePreviewData;
 }) {
-  const [expanded, setExpanded] = useState(false);
-
   return (
     <div className={`tool-step todo-preview-step tool-${tool.status}`}>
-      <button
-        type="button"
-        className="tool-preview-summary todo-preview-summary"
-        onClick={() => setExpanded((current) => !current)}
-      >
-        <span className="tool-status-dot" />
-        <div className="tool-preview-summary-main">
-          <span className="tool-preview-kind">TodoWrite</span>
-          <span className="todo-preview-count">{formatTodoPreviewSummary(preview)}</span>
-        </div>
-        <span className={`tool-preview-chevron ${expanded ? 'expanded' : ''}`}>{'>'}</span>
-      </button>
-
-      {expanded ? (
-        <div className="todo-preview-card">
-          <div className="todo-preview-list">
-            {preview.todos.map((todo, index) => (
-              <div key={`${todo.content}-${index}`} className={`todo-preview-item ${todo.status}`}>
-                <span className="todo-preview-status">{formatTodoStatus(todo.status)}</span>
-                <span className="todo-preview-content">{todo.content}</span>
-              </div>
-            ))}
+      <div className="todo-preview-card">
+        <header className="todo-preview-head">
+          <div className="todo-preview-title">
+            <ListChecks size={15} aria-hidden="true" />
+            <span>{formatTodoPreviewSummary(preview)}</span>
           </div>
-          {tool.resultText?.trim() ? <div className="todo-preview-result">{tool.resultText.trim()}</div> : null}
-        </div>
-      ) : null}
+          <Maximize2 className="todo-preview-expand-icon" size={14} aria-hidden="true" />
+        </header>
+
+        <ol className="todo-preview-list">
+          {preview.todos.map((todo, index) => (
+            <li key={`${todo.content}-${index}`} className={`todo-preview-item ${todo.status}`}>
+              <span className="todo-preview-status" aria-hidden="true">
+                {todo.status === 'completed' ? '✓' : ''}
+              </span>
+              <span className="todo-preview-content">
+                {index + 1}. {todo.content}
+              </span>
+            </li>
+          ))}
+        </ol>
+
+        {tool.resultText?.trim() ? (
+          <footer className="todo-preview-result">{tool.resultText.trim()}</footer>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -568,13 +566,13 @@ function RequestUserInputCard({
           {submitted
             ? '答案已提交，卡片保留为上下文记录。'
             : turnInFlight
-              ? 'Claude 还在输出，结束后可继续任务。'
+              ? '填写后会直接回答当前运行中的提问。'
               : '填写后会作为续聊消息继续当前任务。'}
         </span>
         <button
           type="button"
           className="assistant-runtime-submit-button"
-          disabled={submitted || turnInFlight || !canSubmit || submitting}
+          disabled={submitted || !canSubmit || submitting}
           onClick={() => void handleSubmit()}
         >
           {submitted
@@ -582,7 +580,7 @@ function RequestUserInputCard({
             : submitting
               ? '提交中...'
               : turnInFlight
-                ? '等待 Claude 完成...'
+                ? '提交答案'
                 : '继续任务'}
         </button>
       </div>
@@ -661,6 +659,7 @@ function ApprovalRequestCard({
 }) {
   const [submittingDecision, setSubmittingDecision] = useState<ApprovalDecision | null>(null);
   const [submitError, setSubmitError] = useState('');
+  const planApproval = isPlanApprovalRequest(request);
 
   async function handleDecision(decision: ApprovalDecision) {
     setSubmitError('');
@@ -678,14 +677,18 @@ function ApprovalRequestCard({
   }
 
   return (
-    <section className="assistant-runtime-card approval-request-card">
+    <section className={`assistant-runtime-card approval-request-card${planApproval ? ' plan-approval-card' : ''}`}>
       <header className="assistant-runtime-card-head">
-        <span className="assistant-runtime-badge caution">等待批准</span>
+        <span className="assistant-runtime-badge caution">{planApproval ? '计划确认' : '等待批准'}</span>
         <div className="assistant-runtime-card-heading">
           <strong>{request.title}</strong>
-          {request.description ? <p>{request.description}</p> : null}
+          {request.description && !planApproval ? <p>{request.description}</p> : null}
         </div>
       </header>
+
+      {planApproval && request.description ? (
+        <pre className="assistant-runtime-code plan-approval-code">{request.description}</pre>
+      ) : null}
 
       {request.command?.length ? (
         <pre className="assistant-runtime-code">{request.command.join(' ')}</pre>
@@ -693,7 +696,9 @@ function ApprovalRequestCard({
 
       <div className="assistant-runtime-card-foot">
         <span className="assistant-runtime-footnote">
-          {request.danger === 'high'
+          {planApproval
+            ? '批准后继续执行计划；拒绝后会让 Claude 重新调整。'
+            : request.danger === 'high'
             ? '该操作风险较高，批准前请确认目标范围。'
             : '该操作需要确认后才能继续。'}
         </span>
@@ -803,7 +808,15 @@ function formatTurnProgress(turn: ConversationTurn, nowMs?: number, isLiveRunnin
   if (duration) {
     parts.push(duration);
   }
-  if (typeof turn.outputTokens === 'number') {
+  if (running) {
+    const estimatedOutputTokens = estimateOutputTokens(turn.assistantText);
+    const realOutputTokens = typeof turn.outputTokens === 'number' ? turn.outputTokens : 0;
+    if (estimatedOutputTokens > realOutputTokens) {
+      parts.push(`↓ ≈ ${formatTokenCount(estimatedOutputTokens)} tokens`);
+    } else if (realOutputTokens > 0) {
+      parts.push(`↓ ${formatTokenCount(realOutputTokens)} tokens`);
+    }
+  } else if (typeof turn.outputTokens === 'number') {
     parts.push(`↓ ${formatTokenCount(turn.outputTokens)} tokens`);
   }
   if (typeof turn.thoughtCount === 'number' && turn.thoughtCount > 0) {
@@ -830,6 +843,29 @@ function formatTokenCount(tokens: number) {
   }
 
   return `${tokens}`;
+}
+
+function estimateOutputTokens(text: string) {
+  const normalized = text.trim();
+  if (!normalized) {
+    return 0;
+  }
+
+  let asciiCount = 0;
+  let nonAsciiCount = 0;
+  for (const char of normalized) {
+    if (/\s/.test(char)) {
+      continue;
+    }
+
+    if (char.charCodeAt(0) <= 0x7f) {
+      asciiCount += 1;
+    } else {
+      nonAsciiCount += 1;
+    }
+  }
+
+  return Math.max(1, Math.round(asciiCount / 4 + nonAsciiCount / 1.7));
 }
 
 function isTurnInFlight(turn: ConversationTurn, isLiveRunning = false) {
@@ -1231,31 +1267,7 @@ function normalizeTodoStatus(status?: string): TodoStatus {
 }
 
 function formatTodoPreviewSummary(preview: TodoWritePreviewData) {
-  const parts = [`${preview.todos.length} 项`];
-  if (preview.counts.in_progress) {
-    parts.push(`${preview.counts.in_progress} 进行中`);
-  }
-  if (preview.counts.pending) {
-    parts.push(`${preview.counts.pending} 待办`);
-  }
-  if (preview.counts.completed) {
-    parts.push(`${preview.counts.completed} 已完成`);
-  }
-  return parts.join(' · ');
-}
-
-function formatTodoStatus(status: TodoStatus) {
-  switch (status) {
-    case 'in_progress':
-      return '进行中';
-    case 'completed':
-      return '已完成';
-    case 'pending':
-      return '待办';
-    case 'unknown':
-    default:
-      return '未知';
-  }
+  return `共 ${preview.todos.length} 个任务，已经完成 ${preview.counts.completed} 个`;
 }
 
 function getRequestQuestionHint(question: RequestUserInputQuestion) {
@@ -1331,7 +1343,9 @@ function shouldHideTurnToolStep(turn: ConversationTurn, tool: ToolStep) {
   if (
     normalizedName === 'askuserquestion' ||
     normalizedName === 'requestuserinput' ||
-    normalizedName === 'approvalrequest'
+    normalizedName === 'approvalrequest' ||
+    normalizedName === 'enterplanmode' ||
+    normalizedName === 'exitplanmode'
   ) {
     return true;
   }
@@ -1367,6 +1381,10 @@ function shouldHideTurnToolStep(turn: ConversationTurn, tool: ToolStep) {
 
 function normalizeRuntimeToolName(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function isPlanApprovalRequest(request: ApprovalRequest) {
+  return request.title === '计划待确认';
 }
 
 function isApprovalRequiredToolError(resultText?: string) {

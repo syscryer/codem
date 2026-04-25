@@ -2,6 +2,7 @@ import { KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
+  ListChecks,
   Minus,
   PanelLeft,
   Square,
@@ -24,6 +25,7 @@ import type {
   RuntimeSuggestedAction,
   ThreadDetail,
   ThreadSummary,
+  ToolStep,
 } from './types';
 
 export default function App() {
@@ -84,6 +86,7 @@ export default function App() {
     runningThreadIds,
     activeTurnIdsByThreadId,
     queuedPrompts,
+    removeQueuedPrompt,
     clockNowMs,
     setWorkspace,
     setModel,
@@ -281,6 +284,8 @@ export default function App() {
             ) => submitApprovalDecision(turn, request, decision)}
           />
 
+          <CurrentTaskDock activeThread={activeThread} />
+
           <Composer
             permissionMode={permissionMode}
             model={model}
@@ -288,6 +293,7 @@ export default function App() {
             isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
             queuedPrompts={queuedPrompts}
             onSubmitPrompt={submitPrompt}
+            onRemoveQueuedPrompt={removeQueuedPrompt}
             onKeyDown={handleComposerKeyDown}
             onSelectPermissionMode={handlePermissionModeSelect}
             onSelectModel={setModel}
@@ -327,6 +333,38 @@ export default function App() {
   );
 }
 
+function CurrentTaskDock({ activeThread }: { activeThread: ThreadDetail | null }) {
+  const preview = useMemo(() => getLatestTodoWritePreview(activeThread), [activeThread]);
+  if (!preview) {
+    return null;
+  }
+
+  return (
+    <section className="task-dock" aria-label="当前任务">
+      <div className="task-dock-card">
+        <header className="task-dock-head">
+          <div className="task-dock-title">
+            <ListChecks size={15} aria-hidden="true" />
+            <span>{formatTodoDockSummary(preview)}</span>
+          </div>
+        </header>
+        <ol className="task-dock-list">
+          {preview.todos.map((todo, index) => (
+            <li key={`${todo.content}-${index}`} className={`task-dock-item ${todo.status}`}>
+              <span className="task-dock-status" aria-hidden="true">
+                {todo.status === 'completed' ? '✓' : ''}
+              </span>
+              <span className="task-dock-content">
+                {index + 1}. {todo.content}
+              </span>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </section>
+  );
+}
+
 function getLatestPendingApprovalDialog(activeThread: ThreadDetail | null) {
   if (!activeThread) {
     return null;
@@ -363,4 +401,122 @@ function buildApprovalDialogKey(
     request.title.trim() ||
     `${requestIndex}`;
   return `${threadId}:${turnId}:${identity}`;
+}
+
+type TodoDockStatus = 'pending' | 'in_progress' | 'completed' | 'unknown';
+
+type TodoDockPreview = {
+  todos: Array<{
+    content: string;
+    status: TodoDockStatus;
+  }>;
+  counts: Record<TodoDockStatus, number>;
+};
+
+function getLatestTodoWritePreview(activeThread: ThreadDetail | null): TodoDockPreview | null {
+  if (!activeThread) {
+    return null;
+  }
+
+  for (let turnIndex = activeThread.turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
+    const turn = activeThread.turns[turnIndex];
+    for (let toolIndex = turn.tools.length - 1; toolIndex >= 0; toolIndex -= 1) {
+      const preview = getTodoWritePreviewFromTool(turn.tools[toolIndex]);
+      if (preview) {
+        return hasOpenTodoDockItems(preview) ? preview : null;
+      }
+    }
+  }
+
+  return null;
+}
+
+function getTodoWritePreviewFromTool(tool: ToolStep): TodoDockPreview | null {
+  if (normalizeToolName(tool.name) !== 'todowrite') {
+    return null;
+  }
+
+  const input = parseToolJson(tool.inputText);
+  if (!input || !Array.isArray(input.todos)) {
+    return null;
+  }
+
+  const todos = input.todos
+    .map((item) => normalizeTodoDockItem(item))
+    .filter((item): item is TodoDockPreview['todos'][number] => Boolean(item));
+  if (!todos.length) {
+    return null;
+  }
+
+  const counts: Record<TodoDockStatus, number> = {
+    pending: 0,
+    in_progress: 0,
+    completed: 0,
+    unknown: 0,
+  };
+  todos.forEach((todo) => {
+    counts[todo.status] += 1;
+  });
+
+  return { todos, counts };
+}
+
+function normalizeTodoDockItem(item: unknown) {
+  if (!item || typeof item !== 'object') {
+    return null;
+  }
+
+  const record = item as Record<string, unknown>;
+  const content = getStringValue(record.content) ?? getStringValue(record.text) ?? getStringValue(record.title);
+  if (!content) {
+    return null;
+  }
+
+  return {
+    content,
+    status: normalizeTodoDockStatus(getStringValue(record.status)),
+  };
+}
+
+function normalizeTodoDockStatus(status?: string): TodoDockStatus {
+  switch (status) {
+    case 'pending':
+    case 'in_progress':
+    case 'completed':
+      return status;
+    default:
+      return 'unknown';
+  }
+}
+
+function formatTodoDockSummary(preview: TodoDockPreview) {
+  return `共 ${preview.todos.length} 个任务，已经完成 ${preview.counts.completed} 个`;
+}
+
+function hasOpenTodoDockItems(preview: TodoDockPreview) {
+  return preview.counts.pending > 0 || preview.counts.in_progress > 0 || preview.counts.unknown > 0;
+}
+
+function parseToolJson(value?: string) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function getStringValue(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeToolName(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }

@@ -1,5 +1,5 @@
 import { useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
-import { ArrowUp, Check, Mic, Plus, Square } from 'lucide-react';
+import { ArrowUp, Check, Mic, Plus, Square, X } from 'lucide-react';
 import { permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { modelLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
@@ -12,6 +12,7 @@ type ComposerProps = {
   isRunning: boolean;
   queuedPrompts: Array<{ id: string; text: string; createdAtMs: number }>;
   onSubmitPrompt: (prompt: string) => Promise<boolean> | boolean;
+  onRemoveQueuedPrompt: (promptId: string) => void;
   onKeyDown: KeyboardEventHandler<HTMLTextAreaElement>;
   onSelectPermissionMode: (mode: PermissionMode) => void;
   onSelectModel: (model: string) => void;
@@ -25,6 +26,7 @@ export function Composer({
   isRunning,
   queuedPrompts,
   onSubmitPrompt,
+  onRemoveQueuedPrompt,
   onKeyDown,
   onSelectPermissionMode,
   onSelectModel,
@@ -71,6 +73,15 @@ export function Composer({
               <div key={prompt.id} className="composer-queued-prompt">
                 <span className="composer-queued-index">{index + 1}</span>
                 <span className="composer-queued-text">{prompt.text}</span>
+                <button
+                  type="button"
+                  className="composer-queued-remove"
+                  aria-label="取消排队提示"
+                  title="取消排队"
+                  onClick={() => onRemoveQueuedPrompt(prompt.id)}
+                >
+                  <X size={13} />
+                </button>
               </div>
             ))}
           </div>

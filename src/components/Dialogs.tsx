@@ -147,8 +147,11 @@ function ApprovalRequestDialog({
   }
 
   const actionLocked = Boolean(submittingDecision);
+  const planApproval = isPlanApprovalRequest(request);
   const footnote =
-    request.danger === 'high'
+    planApproval
+      ? '批准后继续执行计划；拒绝后会让 Claude 重新调整。'
+      : request.danger === 'high'
       ? '该操作风险较高，批准前请确认目标范围。'
       : '批准后会以完全访问模式继续当前任务。';
 
@@ -171,11 +174,15 @@ function ApprovalRequestDialog({
       >
         <div className="dialog-head">
           <div className="dialog-badge-row">
-            <span className="assistant-runtime-badge caution">等待批准</span>
+            <span className="assistant-runtime-badge caution">{planApproval ? '计划确认' : '等待批准'}</span>
           </div>
           <h3 id="approval-dialog-title">{request.title}</h3>
-          <p>{request.description || '该操作需要确认后才能继续。'}</p>
+          <p>{planApproval ? '请确认是否按这个计划继续。' : request.description || '该操作需要确认后才能继续。'}</p>
         </div>
+
+        {planApproval && request.description ? (
+          <pre className="assistant-runtime-code dialog-code plan-approval-code">{request.description}</pre>
+        ) : null}
 
         {request.command?.length ? (
           <pre className="assistant-runtime-code dialog-code">{request.command.join(' ')}</pre>
@@ -214,4 +221,8 @@ function ApprovalRequestDialog({
       </div>
     </div>
   );
+}
+
+function isPlanApprovalRequest(request: ApprovalRequest) {
+  return request.title === '计划待确认';
 }

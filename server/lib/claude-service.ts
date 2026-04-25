@@ -122,12 +122,21 @@ type ClaudeInputMessage = {
   type: 'user';
   message: {
     role: 'user';
-    content: Array<{
-      type: 'text';
-      text: string;
-    }>;
+    content: ClaudeInputContentBlock[];
   };
 };
+
+type ClaudeInputContentBlock =
+  | {
+      type: 'text';
+      text: string;
+    }
+  | {
+      type: 'tool_result';
+      tool_use_id: string;
+      content: string;
+      is_error?: boolean;
+    };
 
 type ClaudeJsonLine = {
   type?: string;
@@ -204,6 +213,7 @@ type RunState = {
   blockTypeByIndex: Map<number, string>;
   toolInputByIndex: Map<number, ToolInputAccumulator>;
   emittedRecoveryHintKeys: Set<string>;
+  pausedForUserInput: boolean;
 };
 
 type ClaudeRuntime = {
@@ -320,6 +330,58 @@ export function acknowledgeRunEvents(runId: string) {
 
   removeRunRecord(activeRun.state);
   return true;
+}
+
+export function submitRunRequestUserInput(runId: string, requestId: string, answers: Record<string, string>) {
+  const activeRun = activeRuns.get(runId);
+  if (!activeRun || activeRun.state.finished) {
+    return {
+      submitted: false,
+      error: '当前运行不存在或已经结束。',
+    };
+  }
+
+  if (!requestId.trim()) {
+    return {
+      submitted: false,
+      error: '缺少提问请求 ID。',
+    };
+  }
+
+  if (activeRun.runtime.inputMode !== 'stdin' || activeRun.runtime.closed) {
+    return {
+      submitted: false,
+      error: '当前 Claude 运行不支持运行中回答，请等待结束后再继续。',
+    };
+  }
+
+  const payload = `${JSON.stringify(buildClaudeToolResultMessage(requestId, answers))}\n`;
+  activeRun.runtime.child.stdin.write(payload, (error) => {
+    if (error) {
+      const message = `写入 Claude Code 提问答案失败：${error.message}`;
+      enqueueRetryableRuntimeError(
+        activeRun.state.runId,
+        message,
+        'process',
+        activeRun.state.emittedRecoveryHintKeys,
+        (event) => enqueueRunEvent(activeRun.state, event),
+      );
+      enqueueRunEvent(activeRun.state, {
+        type: 'error',
+        runId: activeRun.state.runId,
+        message,
+      });
+      finishRuntimeRun(activeRun.runtime, activeRun.state);
+      closeClaudeRuntime(activeRun.runtime);
+      return;
+    }
+
+    enqueueTrace(activeRun.state, 'stdin_tool_result_written', Date.now(), requestId);
+  });
+
+  return {
+    submitted: true,
+  };
 }
 
 export function getActiveRunForThread(threadId: string) {
@@ -480,6 +542,7 @@ function createRunState(runId: string, input: StreamInput, sessionId?: string): 
     blockTypeByIndex: new Map(),
     toolInputByIndex: new Map(),
     emittedRecoveryHintKeys: new Set(),
+    pausedForUserInput: false,
   };
 }
 
@@ -605,6 +668,27 @@ function cancelRuntimeRun(runtime: ClaudeRuntime, runId: string) {
   return true;
 }
 
+function pauseRuntimeRunForHumanInput(runtime: ClaudeRuntime, state: RunState, traceName: string) {
+  if (state.finished || state.pausedForUserInput) {
+    return;
+  }
+
+  state.pausedForUserInput = true;
+  state.seenDoneEvent = true;
+  enqueueTrace(state, traceName, Date.now());
+  enqueueRunEvent(state, {
+    type: 'done',
+    runId: state.runId,
+    sessionId: state.sessionId,
+    result: state.finalResult,
+  });
+  finishRuntimeRun(runtime, state);
+
+  runtime.closed = true;
+  threadRuntimes.delete(runtime.key);
+  runtime.child.kill();
+}
+
 function scheduleRunRecordCleanup(state: RunState) {
   if (state.cleanupTimer) {
     clearTimeout(state.cleanupTimer);
@@ -649,10 +733,6 @@ function getOrCreateClaudeRuntime(command: string, input: StreamInput): { runtim
     }
 
     closeClaudeRuntime(existing);
-  }
-
-  if (input.sessionId?.trim()) {
-    return { runtime: spawnClaudeRuntime(command, input, 'argv'), reused: false };
   }
 
   const runtime = spawnClaudeRuntime(command, input, 'stdin');
@@ -954,6 +1034,8 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
           runId,
           request: requestUserInput,
         });
+        pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input');
+        return;
       }
 
       const approvalRequest = parseApprovalRequestEvent(block.name, block.input, block.id);
@@ -968,6 +1050,8 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
           runId,
           request: approvalRequest,
         });
+        pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_approval_request');
+        return;
       }
 
       enqueue({
@@ -1032,7 +1116,15 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
       const accumulator = state.toolInputByIndex.get(payload.event.index);
       if (accumulator) {
         accumulator.inputText += payload.event.delta.partial_json;
-        emitStructuredToolEventsFromAccumulator(runId, accumulator, enqueue);
+        const emittedRequestUserInput = emitStructuredToolEventsFromAccumulator(runId, accumulator, enqueue);
+        if (emittedRequestUserInput) {
+          pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input');
+          return;
+        }
+        if (accumulator.emittedApprovalRequest) {
+          pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_approval_request');
+          return;
+        }
       }
     }
 
@@ -1057,7 +1149,15 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
       state.blockTypeByIndex.delete(payload.event.index);
       const accumulator = state.toolInputByIndex.get(payload.event.index);
       if (accumulator) {
-        emitStructuredToolEventsFromAccumulator(runId, accumulator, enqueue);
+        const emittedRequestUserInput = emitStructuredToolEventsFromAccumulator(runId, accumulator, enqueue);
+        if (emittedRequestUserInput) {
+          pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input');
+          return;
+        }
+        if (accumulator.emittedApprovalRequest) {
+          pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_approval_request');
+          return;
+        }
         state.toolInputByIndex.delete(payload.event.index);
       }
     }
@@ -1094,6 +1194,8 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
           runId,
           request: requestUserInput,
         });
+        pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input');
+        return;
       }
 
       const approvalRequest = parseApprovalRequestEvent(block.name, block.input, block.id);
@@ -1103,6 +1205,8 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
           runId,
           request: approvalRequest,
         });
+        pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_approval_request');
+        return;
       }
     }
 
@@ -1315,6 +1419,22 @@ function buildClaudeInputMessage(prompt: string): ClaudeInputMessage {
         {
           type: 'text',
           text: prompt,
+        },
+      ],
+    },
+  };
+}
+
+function buildClaudeToolResultMessage(requestId: string, answers: Record<string, string>): ClaudeInputMessage {
+  return {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: requestId,
+          content: JSON.stringify(answers),
         },
       ],
     },
@@ -1580,7 +1700,7 @@ function emitStructuredToolEventsFromAccumulator(
 ) {
   const input = parseJsonObject(accumulator.inputText);
   if (!input) {
-    return;
+    return false;
   }
 
   if (!accumulator.emittedRequestUserInput) {
@@ -1592,6 +1712,7 @@ function emitStructuredToolEventsFromAccumulator(
         runId,
         request,
       });
+      return true;
     }
   }
 
@@ -1606,6 +1727,8 @@ function emitStructuredToolEventsFromAccumulator(
       });
     }
   }
+
+  return false;
 }
 
 function parseJsonObject(value: string) {
@@ -1697,6 +1820,16 @@ function parseApprovalRequestEvent(
   toolUseId?: string,
 ): ApprovalRequest | null {
   const normalizedToolName = normalizeToolName(toolName);
+  if (normalizedToolName === 'exitplanmode') {
+    const payload = asRecord(input);
+    return {
+      requestId: firstNonEmptyString(payload, ['requestId', 'request_id', 'toolUseId', 'tool_use_id']) ?? toolUseId,
+      title: '计划待确认',
+      description: firstNonEmptyString(payload, ['plan', 'description', 'reason', 'message']),
+      danger: 'low',
+    };
+  }
+
   if (normalizedToolName !== 'approvalrequest') {
     return null;
   }

@@ -152,6 +152,7 @@ export function useClaudeRun({
   const isRunning = runningThreadIds.length > 0;
   const runningThreadId = runningThreadIds[0] ?? null;
   const backendRunId = activeThreadId ? activeRunsByThreadId[activeThreadId]?.runId ?? '' : '';
+  const activeThreadIsRunning = Boolean(activeThreadId && activeRunsByThreadId[activeThreadId]);
   const activeTurnIdsByThreadId = Object.fromEntries(
     Object.entries(activeRunsByThreadId).map(([threadId, run]) => [threadId, run.turnId]),
   );
@@ -161,6 +162,18 @@ export function useClaudeRun({
     void loadHealth();
     void loadClaudeModels();
   }, []);
+
+  useEffect(() => {
+    setModel(activeThreadSummary?.model?.trim() || DEFAULT_MODEL_VALUE);
+  }, [activeThreadSummary?.id, activeThreadSummary?.model]);
+
+  useEffect(() => {
+    if (!activeThreadSummary || activeThreadIsRunning) {
+      return;
+    }
+
+    void loadClaudeModels();
+  }, [activeThreadSummary?.id, activeThreadIsRunning]);
 
   useEffect(() => {
     const nextWorkspace = activeThreadSummary?.workingDirectory || activeProjectPath || '';
@@ -390,6 +403,33 @@ export function useClaudeRun({
       return next;
     });
     return nextPrompt;
+  }
+
+  function removeQueuedPrompt(promptId: string) {
+    const targetThreadId = activeThreadId;
+    if (!targetThreadId || !promptId) {
+      return;
+    }
+
+    updateQueuedPrompts((current) => {
+      const currentQueue = current[targetThreadId] ?? [];
+      const nextQueue = currentQueue.filter((prompt) => prompt.id !== promptId);
+      if (nextQueue.length === currentQueue.length) {
+        return current;
+      }
+
+      const next = { ...current };
+      if (nextQueue.length) {
+        next[targetThreadId] = nextQueue;
+      } else {
+        delete next[targetThreadId];
+      }
+      return next;
+    });
+    appendDebug(targetThreadId, {
+      title: '已取消排队提示',
+      content: promptId,
+    });
   }
 
   function maybeStartQueuedPrompt(threadId: string) {
@@ -1213,15 +1253,53 @@ export function useClaudeRun({
       return false;
     }
 
-    if (isThreadRunning(activeThreadId)) {
-      showToast('当前聊天正在运行，请等待结束或先停止。', 'info');
-      return false;
-    }
-
     const promptText = buildRequestUserInputPrompt(request, answers);
     if (!promptText) {
       showToast('请先填写至少一项有效回答。', 'info');
       return false;
+    }
+
+    if (isThreadRunning(activeThreadId)) {
+      const runId =
+        runContextsByThreadIdRef.current.get(activeThreadId)?.runId ||
+        turn.backendRunId ||
+        activeRunsByThreadId[activeThreadId]?.runId ||
+        '';
+      if (!runId || !request.requestId) {
+        showToast('当前提问还没有可提交的运行标识，请稍后重试。', 'info');
+        return false;
+      }
+
+      const response = await fetch(`/api/claude/run/${encodeURIComponent(runId)}/request-user-input`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestId: request.requestId,
+          answers,
+        }),
+      });
+
+      if (!response.ok) {
+        const message = await readErrorResponseText(response);
+        showToast(message || '提交补充信息失败。', 'error');
+        return false;
+      }
+
+      updateThreadTurn(activeThreadId, turn.id, (currentTurn) => ({
+        ...currentTurn,
+        pendingUserInputRequests: markPendingUserInputRequestSubmitted(
+          currentTurn.pendingUserInputRequests,
+          request,
+          answers,
+        ),
+      }));
+      appendDebug(activeThreadId, {
+        title: '已提交运行中提问答案',
+        content: formatJson({ requestId: request.requestId, answers }),
+      });
+      schedulePersistThreadHistory(activeThreadId);
+      showToast('已回答 Claude 的提问。', 'success');
+      return true;
     }
 
     const started = await startRun(activeThreadSummary, promptText, {
@@ -1315,31 +1393,30 @@ export function useClaudeRun({
       return false;
     }
 
+    const threadId = activeThreadId;
     const promptText = buildApprovalDecisionPrompt(request, decision);
-    const started = await startRun(activeThreadSummary, promptText, {
+    void startRun(activeThreadSummary, promptText, {
       workingDirectory: turn.workspace.trim() || activeThreadSummary.workingDirectory,
       sessionId: turn.sessionId?.trim() || activeThreadSummary.sessionId.trim() || undefined,
-      permissionModeOverride: decision === 'approve' ? 'bypassPermissions' : undefined,
+      permissionModeOverride: decision === 'approve' && !isPlanApprovalRequest(request) ? 'bypassPermissions' : undefined,
+      onStarted: () => {
+        updateThreadTurn(threadId, turn.id, (currentTurn) => ({
+          ...currentTurn,
+          pendingApprovalRequests: removePendingApprovalRequest(currentTurn.pendingApprovalRequests, request),
+        }));
+        appendDebug(threadId, {
+          title: decision === 'approve' ? '已批准请求' : '已拒绝请求',
+          content: formatJson({
+            requestId: request.requestId,
+            title: request.title,
+            decision,
+            command: request.command,
+          }),
+        });
+        schedulePersistThreadHistory(threadId);
+      },
     });
 
-    if (!started) {
-      return false;
-    }
-
-    updateThreadTurn(activeThreadId, turn.id, (currentTurn) => ({
-      ...currentTurn,
-      pendingApprovalRequests: removePendingApprovalRequest(currentTurn.pendingApprovalRequests, request),
-    }));
-    appendDebug(activeThreadId, {
-      title: decision === 'approve' ? '已批准请求' : '已拒绝请求',
-      content: formatJson({
-        requestId: request.requestId,
-        title: request.title,
-        decision,
-        command: request.command,
-      }),
-    });
-    schedulePersistThreadHistory(activeThreadId);
     showToast(decision === 'approve' ? '已批准并继续任务。' : '已拒绝该操作并继续任务。', 'success');
     return true;
   }
@@ -1363,6 +1440,7 @@ export function useClaudeRun({
     setModel,
     handlePermissionModeSelect,
     submitPrompt,
+    removeQueuedPrompt,
     submitRequestUserInput,
     submitRuntimeRecoveryAction,
     submitApprovalDecision,
@@ -1733,6 +1811,16 @@ function buildRequestUserInputPrompt(
 }
 
 function buildApprovalDecisionPrompt(request: ApprovalRequest, decision: ApprovalDecision) {
+  if (isPlanApprovalRequest(request)) {
+    const lines = [
+      decision === 'approve'
+        ? '用户已批准这个计划，请退出 Plan 模式并开始执行。'
+        : '用户拒绝了这个计划，请继续保持 Plan 模式，重新调整计划后再提交确认。',
+      request.description ? `计划内容：\n${request.description}` : '',
+    ];
+    return lines.filter(Boolean).join('\n\n');
+  }
+
   const command = request.command?.length ? request.command.join(' ') : '';
   const lines = [
     decision === 'approve'
@@ -1745,4 +1833,22 @@ function buildApprovalDecisionPrompt(request: ApprovalRequest, decision: Approva
   ];
 
   return lines.filter(Boolean).join('\n');
+}
+
+function isPlanApprovalRequest(request: ApprovalRequest) {
+  return request.title === '计划待确认';
+}
+
+async function readErrorResponseText(response: Response) {
+  const text = await response.text();
+  if (!text.trim()) {
+    return '';
+  }
+
+  try {
+    const payload = JSON.parse(text) as { error?: unknown };
+    return typeof payload.error === 'string' ? payload.error : text;
+  } catch {
+    return text;
+  }
 }

@@ -14,6 +14,7 @@ import {
   markRunDetached,
   markThreadRunDetached,
   reconnectClaudeRunEvents,
+  submitRunRequestUserInput,
   type ClaudePermissionMode,
 } from './lib/claude-service.js';
 import {
@@ -452,6 +453,37 @@ app.get('/api/claude/run/:runId/events', async (request, response) => {
 app.post('/api/claude/run/:runId/ack', (request, response) => {
   const acknowledged = acknowledgeRunEvents(request.params.runId);
   response.json({ acknowledged });
+});
+
+app.post('/api/claude/run/:runId/request-user-input', (request, response) => {
+  const requestId = typeof request.body?.requestId === 'string' ? request.body.requestId.trim() : '';
+  const rawAnswers = request.body?.answers;
+  const answers =
+    rawAnswers && typeof rawAnswers === 'object' && !Array.isArray(rawAnswers)
+      ? Object.fromEntries(
+          Object.entries(rawAnswers)
+            .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : ''])
+            .filter(([key, value]) => key.trim() && value),
+        )
+      : {};
+
+  if (!requestId) {
+    response.status(400).json({ submitted: false, error: '缺少提问请求 ID。' });
+    return;
+  }
+
+  if (Object.keys(answers).length === 0) {
+    response.status(400).json({ submitted: false, error: '缺少有效回答。' });
+    return;
+  }
+
+  const result = submitRunRequestUserInput(request.params.runId, requestId, answers);
+  if (!result.submitted) {
+    response.status(409).json(result);
+    return;
+  }
+
+  response.json(result);
 });
 
 app.delete('/api/claude/run/:runId', (request, response) => {
