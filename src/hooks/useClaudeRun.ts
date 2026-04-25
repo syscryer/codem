@@ -82,6 +82,12 @@ type RunContext = {
   permissionMode: PermissionMode;
 };
 
+type QueuedPrompt = {
+  id: string;
+  text: string;
+  createdAtMs: number;
+};
+
 type UseClaudeRunArgs = {
   activeProjectId: string | null;
   activeProjectPath?: string;
@@ -132,11 +138,14 @@ export function useClaudeRun({
     available: false,
   });
   const [activeRunsByThreadId, setActiveRunsByThreadId] = useState<Record<string, ActiveRunView>>({});
+  const [queuedPromptsByThreadId, setQueuedPromptsByThreadId] = useState<Record<string, QueuedPrompt[]>>({});
   const [clockNowMs, setClockNowMs] = useState(Date.now());
 
   const runContextsByThreadIdRef = useRef(new Map<string, RunContext>());
   const runContextsByRunIdRef = useRef(new Map<string, RunContext>());
   const reconnectingThreadIdsRef = useRef(new Set<string>());
+  const threadSummariesByIdRef = useRef(new Map<string, ThreadSummary>());
+  const queuedPromptsByThreadIdRef = useRef<Record<string, QueuedPrompt[]>>({});
   const activeTurnIdRef = useRef('');
 
   const runningThreadIds = Object.keys(activeRunsByThreadId);
@@ -146,6 +155,7 @@ export function useClaudeRun({
   const activeTurnIdsByThreadId = Object.fromEntries(
     Object.entries(activeRunsByThreadId).map(([threadId, run]) => [threadId, run.turnId]),
   );
+  const queuedPrompts = activeThreadId ? queuedPromptsByThreadId[activeThreadId] ?? [] : [];
 
   useEffect(() => {
     void loadHealth();
@@ -156,6 +166,12 @@ export function useClaudeRun({
     const nextWorkspace = activeThreadSummary?.workingDirectory || activeProjectPath || '';
     setWorkspace(nextWorkspace);
   }, [activeProjectPath, activeThreadSummary?.workingDirectory]);
+
+  useEffect(() => {
+    if (activeThreadSummary) {
+      threadSummariesByIdRef.current.set(activeThreadSummary.id, activeThreadSummary);
+    }
+  }, [activeThreadSummary]);
 
   useEffect(() => {
     setPermissionMode(
@@ -322,6 +338,91 @@ export function useClaudeRun({
 
   function isThreadRunning(threadId: string | null | undefined) {
     return Boolean(threadId && runContextsByThreadIdRef.current.has(threadId));
+  }
+
+  function updateQueuedPrompts(
+    updater: (current: Record<string, QueuedPrompt[]>) => Record<string, QueuedPrompt[]>,
+  ) {
+    const next = updater(queuedPromptsByThreadIdRef.current);
+    queuedPromptsByThreadIdRef.current = next;
+    setQueuedPromptsByThreadId(next);
+    return next;
+  }
+
+  function enqueuePrompt(thread: ThreadSummary, text: string) {
+    const queuedPrompt: QueuedPrompt = {
+      id: crypto.randomUUID(),
+      text,
+      createdAtMs: Date.now(),
+    };
+    threadSummariesByIdRef.current.set(thread.id, thread);
+    updateQueuedPrompts((current) => ({
+      ...current,
+      [thread.id]: [...(current[thread.id] ?? []), queuedPrompt],
+    }));
+    appendDebug(thread.id, {
+      title: '已排队下一轮提示',
+      content: text,
+    });
+    return queuedPrompt;
+  }
+
+  function shiftQueuedPrompt(threadId: string) {
+    const queue = queuedPromptsByThreadIdRef.current[threadId] ?? [];
+    const [nextPrompt] = queue;
+    if (!nextPrompt) {
+      return null;
+    }
+
+    updateQueuedPrompts((current) => {
+      const currentQueue = current[threadId] ?? [];
+      if (currentQueue[0]?.id !== nextPrompt.id) {
+        return current;
+      }
+
+      const remaining = currentQueue.slice(1);
+      const next = { ...current };
+      if (remaining.length) {
+        next[threadId] = remaining;
+      } else {
+        delete next[threadId];
+      }
+      return next;
+    });
+    return nextPrompt;
+  }
+
+  function maybeStartQueuedPrompt(threadId: string) {
+    const nextPrompt = shiftQueuedPrompt(threadId);
+    if (!nextPrompt) {
+      return;
+    }
+
+    const thread = threadSummariesByIdRef.current.get(threadId);
+    if (!thread) {
+      updateQueuedPrompts((current) => ({
+        ...current,
+        [threadId]: [nextPrompt, ...(current[threadId] ?? [])],
+      }));
+      return;
+    }
+
+    window.setTimeout(() => {
+      void startRun(thread, nextPrompt.text, {
+        workingDirectory: thread.workingDirectory,
+        sessionId: thread.sessionId.trim() ? thread.sessionId.trim() : undefined,
+      }).then((started) => {
+        if (started) {
+          showToast('已发送排队提示。', 'success');
+          return;
+        }
+
+        updateQueuedPrompts((current) => ({
+          ...current,
+          [threadId]: [nextPrompt, ...(current[threadId] ?? [])],
+        }));
+      });
+    }, 0);
   }
 
   function markRunStreamProgress() {
@@ -636,6 +737,7 @@ export function useClaudeRun({
     const decoder = new TextDecoder();
     let buffer = '';
     let sawTerminalEvent = false;
+    let completedSuccessfully = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -651,6 +753,7 @@ export function useClaudeRun({
         const eventPayload = handleStreamLine(line, context);
         if (eventPayload?.type === 'done' || eventPayload?.type === 'error') {
           sawTerminalEvent = true;
+          completedSuccessfully = eventPayload.type === 'done';
         }
       }
     }
@@ -659,7 +762,12 @@ export function useClaudeRun({
       const eventPayload = handleStreamLine(buffer, context);
       if (eventPayload?.type === 'done' || eventPayload?.type === 'error') {
         sawTerminalEvent = true;
+        completedSuccessfully = eventPayload.type === 'done';
       }
+    }
+
+    if (completedSuccessfully) {
+      maybeStartQueuedPrompt(context.threadId);
     }
 
     return sawTerminalEvent;
@@ -1031,8 +1139,9 @@ export function useClaudeRun({
     }
 
     if (isThreadRunning(thread.id)) {
-      showToast('当前聊天正在运行，请等待结束或先停止。', 'info');
-      return false;
+      enqueuePrompt(thread, trimmedPrompt);
+      showToast('已排队，当前运行完成后会继续发送。', 'success');
+      return true;
     }
 
     return startRun(thread, trimmedPrompt, {
@@ -1246,6 +1355,7 @@ export function useClaudeRun({
     runningThreadIds,
     activeRunsByThreadId,
     activeTurnIdsByThreadId,
+    queuedPrompts,
     clockNowMs,
     activeTurnIdRef,
     setWorkspace,

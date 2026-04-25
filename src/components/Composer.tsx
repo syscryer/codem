@@ -10,6 +10,7 @@ type ComposerProps = {
   model: string;
   models: string[];
   isRunning: boolean;
+  queuedPrompts: Array<{ id: string; text: string; createdAtMs: number }>;
   onSubmitPrompt: (prompt: string) => Promise<boolean> | boolean;
   onKeyDown: KeyboardEventHandler<HTMLTextAreaElement>;
   onSelectPermissionMode: (mode: PermissionMode) => void;
@@ -22,6 +23,7 @@ export function Composer({
   model,
   models,
   isRunning,
+  queuedPrompts,
   onSubmitPrompt,
   onKeyDown,
   onSelectPermissionMode,
@@ -40,10 +42,19 @@ export function Composer({
       { ref: modelMenuRef, onDismiss: () => setModelMenuOpen(false) },
     ],
   });
+  const hasDraft = Boolean(draft.trim());
+  const showStopButton = isRunning && !hasDraft;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const submittedDraft = draft;
+    if (!submittedDraft.trim()) {
+      if (isRunning) {
+        await onStopRun();
+      }
+      return;
+    }
+
     setDraft('');
     const submitted = await onSubmitPrompt(submittedDraft);
     if (!submitted) {
@@ -54,12 +65,22 @@ export function Composer({
   return (
     <form className="composer" onSubmit={(event) => void handleSubmit(event)}>
       <div className="composer-card">
+        {queuedPrompts.length > 0 ? (
+          <div className="composer-queued-prompts" aria-label="已排队提示">
+            {queuedPrompts.map((prompt, index) => (
+              <div key={prompt.id} className="composer-queued-prompt">
+                <span className="composer-queued-index">{index + 1}</span>
+                <span className="composer-queued-text">{prompt.text}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
         <textarea
           className="composer-input"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="要求后续变更"
+          placeholder={isRunning ? '追加下一轮提示' : '要求后续变更'}
         />
         <div className="composer-toolbar">
           <div className="composer-left-tools">
@@ -137,12 +158,12 @@ export function Composer({
               </button>
             </div>
             <button type="button" className="plain-icon"><Mic size={15} /></button>
-            {isRunning ? (
+            {showStopButton ? (
               <button type="button" className="send-button stop" onClick={() => void onStopRun()} title="停止">
                 <Square size={13} fill="currentColor" />
               </button>
             ) : (
-              <button type="submit" className="send-button" disabled={!draft.trim()} title="发送">
+              <button type="submit" className="send-button" disabled={!hasDraft} title={isRunning ? '排队下一轮提示' : '发送'}>
                 <ArrowUp size={18} />
               </button>
             )}

@@ -83,6 +83,7 @@ export default function App() {
     isRunning,
     runningThreadIds,
     activeTurnIdsByThreadId,
+    queuedPrompts,
     clockNowMs,
     setWorkspace,
     setModel,
@@ -285,6 +286,7 @@ export default function App() {
             model={model}
             models={models}
             isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
+            queuedPrompts={queuedPrompts}
             onSubmitPrompt={submitPrompt}
             onKeyDown={handleComposerKeyDown}
             onSelectPermissionMode={handlePermissionModeSelect}
