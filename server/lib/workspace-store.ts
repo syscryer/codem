@@ -9,6 +9,32 @@ type OrganizeBy = 'project' | 'timeline' | 'chat-first';
 type SortBy = 'created' | 'updated';
 type Visibility = 'all' | 'relevant';
 
+type RequestUserInputOption = {
+  label: string;
+  description?: string;
+};
+
+type RequestUserInputQuestion = {
+  id?: string;
+  header?: string;
+  question: string;
+  options?: RequestUserInputOption[];
+  multiSelect?: boolean;
+  required?: boolean;
+  secret?: boolean;
+  isOther?: boolean;
+  placeholder?: string;
+};
+
+type RequestUserInputRequest = {
+  requestId?: string;
+  title?: string;
+  description?: string;
+  questions: RequestUserInputQuestion[];
+  submittedAnswers?: Record<string, string>;
+  submittedAtMs?: number;
+};
+
 export type PanelState = {
   organizeBy: OrganizeBy;
   sortBy: SortBy;
@@ -58,6 +84,7 @@ export type ThreadTurn = {
     resultText?: string;
     isError?: boolean;
   }>;
+  pendingUserInputRequests?: RequestUserInputRequest[];
 };
 
 export type ThreadSummary = {
@@ -1310,6 +1337,10 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
           if (tool.toolUseId) {
             toolLookup.set(tool.toolUseId, tool);
           }
+          const requestUserInput = parseRequestUserInputEvent(block.name, block.input, block.id);
+          if (requestUserInput) {
+            upsertRequestUserInput(currentTurn, requestUserInput);
+          }
         }
       }
     }
@@ -1351,6 +1382,7 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
       tool.resultText = resultText;
       tool.isError = isError;
       tool.status = isError ? 'error' : 'done';
+      markRequestUserInputSubmitted(turn, toolUseId, resultText);
     }
   }
 }
@@ -1487,6 +1519,13 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
       type: 'tool',
       tool,
     });
+    const requestUserInput = parseRequestUserInputEvent(tool.name, parseJsonObject(tool.inputText), tool.toolUseId);
+    if (requestUserInput) {
+      upsertRequestUserInput(turn, requestUserInput);
+      if (tool.resultText) {
+        markRequestUserInputSubmitted(turn, requestUserInput.requestId ?? tool.toolUseId, tool.resultText);
+      }
+    }
 
     turnMap.set(row.turn_id, turn);
   }
@@ -1923,6 +1962,245 @@ function pushTextItem(turn: ThreadTurn, text: string) {
     type: 'text',
     text,
   });
+}
+
+function parseRequestUserInputEvent(
+  toolName: string,
+  input: unknown,
+  toolUseId?: string,
+): RequestUserInputRequest | null {
+  const normalizedToolName = normalizeToolName(toolName);
+  const payload = asRecord(input) ?? {};
+  const rawQuestions = Array.isArray(payload.questions) ? payload.questions : [];
+  const matchesStructuredQuestions = rawQuestions.some((question) => hasRequestUserInputShape(question));
+  if (
+    normalizedToolName !== 'requestuserinput' &&
+    normalizedToolName !== 'askuserquestion' &&
+    !matchesStructuredQuestions
+  ) {
+    return null;
+  }
+
+  const questions = rawQuestions
+    .map((question, index) => parseRequestUserInputQuestion(question, index))
+    .filter((question): question is RequestUserInputQuestion => Boolean(question));
+  if (questions.length === 0) {
+    return null;
+  }
+
+  return {
+    requestId:
+      firstNonEmptyString(payload, ['requestId', 'request_id', 'toolUseId', 'tool_use_id']) ??
+      toolUseId,
+    title: firstNonEmptyString(payload, ['title', 'message', 'prompt']) ?? '需要你的选择',
+    description: firstNonEmptyString(payload, ['description', 'instructions']),
+    questions,
+  };
+}
+
+function parseRequestUserInputQuestion(
+  value: unknown,
+  index: number,
+): RequestUserInputQuestion | null {
+  const question = asRecord(value);
+  if (!question) {
+    return null;
+  }
+
+  const text = firstNonEmptyString(question, ['question', 'prompt', 'label']);
+  if (!text) {
+    return null;
+  }
+
+  const rawOptions = Array.isArray(question.options) ? question.options : [];
+  const options = rawOptions
+    .map((option) => parseRequestUserInputOption(option))
+    .filter((option): option is RequestUserInputOption => Boolean(option));
+
+  return {
+    id: firstNonEmptyString(question, ['id']) ?? `question-${index}`,
+    header: firstNonEmptyString(question, ['header']),
+    question: text,
+    options: options.length > 0 ? options : undefined,
+    multiSelect: Boolean(question.multiSelect ?? question.multi_select),
+    required: Boolean(question.required),
+    secret: Boolean(question.secret),
+    isOther: Boolean(question.isOther ?? question.is_other),
+    placeholder: firstNonEmptyString(question, ['placeholder']),
+  };
+}
+
+function parseRequestUserInputOption(value: unknown): RequestUserInputOption | null {
+  const option = asRecord(value);
+  if (!option) {
+    return null;
+  }
+
+  const label = firstNonEmptyString(option, ['label', 'title', 'value']);
+  if (!label) {
+    return null;
+  }
+
+  return {
+    label,
+    description: firstNonEmptyString(option, ['description']),
+  };
+}
+
+function hasRequestUserInputShape(value: unknown) {
+  const question = asRecord(value);
+  if (!question) {
+    return false;
+  }
+
+  const hasQuestionText = Boolean(firstNonEmptyString(question, ['question', 'prompt', 'label']));
+  if (!hasQuestionText) {
+    return false;
+  }
+
+  if (!('options' in question)) {
+    return true;
+  }
+
+  return Array.isArray(question.options);
+}
+
+function upsertRequestUserInput(turn: ThreadTurn, request: RequestUserInputRequest) {
+  const current = turn.pendingUserInputRequests ?? [];
+  if (!request.requestId) {
+    turn.pendingUserInputRequests = [...current, request];
+    return;
+  }
+
+  const index = current.findIndex((item) => item.requestId === request.requestId);
+  if (index === -1) {
+    turn.pendingUserInputRequests = [...current, request];
+    return;
+  }
+
+  const next = [...current];
+  next[index] = {
+    ...request,
+    submittedAnswers: current[index].submittedAnswers,
+    submittedAtMs: current[index].submittedAtMs,
+  };
+  turn.pendingUserInputRequests = next;
+}
+
+function markRequestUserInputSubmitted(
+  turn: ThreadTurn,
+  requestId: string | undefined,
+  resultText: string,
+) {
+  if (!requestId || !turn.pendingUserInputRequests?.length) {
+    return;
+  }
+
+  const index = turn.pendingUserInputRequests.findIndex((request) => request.requestId === requestId);
+  if (index === -1) {
+    return;
+  }
+
+  const request = turn.pendingUserInputRequests[index];
+  const answers = parseSubmittedRequestUserInputAnswers(request, resultText);
+  if (Object.keys(answers).length === 0) {
+    return;
+  }
+
+  const next = [...turn.pendingUserInputRequests];
+  next[index] = {
+    ...request,
+    submittedAnswers: answers,
+    submittedAtMs: request.submittedAtMs ?? 1,
+  };
+  turn.pendingUserInputRequests = next;
+}
+
+function parseSubmittedRequestUserInputAnswers(
+  request: RequestUserInputRequest,
+  resultText: string,
+) {
+  const trimmed = resultText.trim();
+  if (!trimmed) {
+    return {};
+  }
+
+  const answers: Record<string, string> = {};
+  const parsed = parseJsonObject(trimmed);
+  if (parsed) {
+    request.questions.forEach((question, index) => {
+      const key = question.id ?? `question-${index}`;
+      const value = parsed[key] ?? parsed[question.question];
+      const text = formatSubmittedAnswer(value);
+      if (text) {
+        answers[key] = text;
+      }
+    });
+  }
+
+  if (Object.keys(answers).length === 0 && request.questions.length === 1) {
+    const key = request.questions[0].id ?? 'question-0';
+    answers[key] = trimmed;
+  }
+
+  return answers;
+}
+
+function formatSubmittedAnswer(value: unknown) {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => typeof item === 'string' ? item.trim() : formatJson(item))
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  if (value == null) {
+    return '';
+  }
+
+  return formatJson(value);
+}
+
+function firstNonEmptyString(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const candidate = record[key];
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  return undefined;
+}
+
+function parseJsonObject(value: unknown) {
+  if (!value) {
+    return null;
+  }
+
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeToolName(value: string) {
+  return value.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 }
 
 function formatJson(value: unknown) {

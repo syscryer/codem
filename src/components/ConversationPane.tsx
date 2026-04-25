@@ -50,6 +50,21 @@ export function ConversationPane({
   const shouldAutoFollowRef = useRef(true);
   const previousThreadIdRef = useRef<string | null>(null);
 
+  function syncBottomAnchorVisibility() {
+    const transcript = transcriptRef.current;
+    if (!transcript) {
+      setShowBottomAnchor(false);
+      return;
+    }
+
+    const distanceToBottom =
+      transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
+    shouldAutoFollowRef.current = distanceToBottom <= BOTTOM_ANCHOR_THRESHOLD_PX;
+    setShowBottomAnchor(
+      Boolean(activeThread?.turns.length) && distanceToBottom > BOTTOM_ANCHOR_THRESHOLD_PX,
+    );
+  }
+
   useEffect(() => {
     const transcript = transcriptRef.current;
     if (!transcript) {
@@ -57,24 +72,15 @@ export function ConversationPane({
       return undefined;
     }
 
-    const syncAnchorVisibility = () => {
-      const distanceToBottom =
-        transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
-      shouldAutoFollowRef.current = distanceToBottom <= BOTTOM_ANCHOR_THRESHOLD_PX;
-      setShowBottomAnchor(
-        Boolean(activeThread?.turns.length) && distanceToBottom > BOTTOM_ANCHOR_THRESHOLD_PX,
-      );
-    };
-
-    syncAnchorVisibility();
-    transcript.addEventListener('scroll', syncAnchorVisibility, { passive: true });
-    window.addEventListener('resize', syncAnchorVisibility);
+    syncBottomAnchorVisibility();
+    transcript.addEventListener('scroll', syncBottomAnchorVisibility, { passive: true });
+    window.addEventListener('resize', syncBottomAnchorVisibility);
 
     return () => {
-      transcript.removeEventListener('scroll', syncAnchorVisibility);
-      window.removeEventListener('resize', syncAnchorVisibility);
+      transcript.removeEventListener('scroll', syncBottomAnchorVisibility);
+      window.removeEventListener('resize', syncBottomAnchorVisibility);
     };
-  }, [activeThread?.id, transcriptRef]);
+  }, [activeThread?.id, activeThread?.turns.length, transcriptRef]);
 
   useLayoutEffect(() => {
     const threadChanged = previousThreadIdRef.current !== activeThread?.id;
@@ -89,13 +95,27 @@ export function ConversationPane({
     }
 
     const frame = requestAnimationFrame(() => {
-      bottomRef.current?.scrollIntoView({ block: 'end' });
+      const transcript = transcriptRef.current;
+      if (transcript) {
+        transcript.scrollTop = transcript.scrollHeight;
+      } else {
+        bottomRef.current?.scrollIntoView({ block: 'end' });
+      }
       setShowBottomAnchor(false);
       shouldAutoFollowRef.current = true;
     });
 
     return () => cancelAnimationFrame(frame);
   }, [activeThread?.id, activeThread?.turns, activeThread?.historyLoaded, bottomRef]);
+
+  useLayoutEffect(() => {
+    if (shouldAutoFollowRef.current) {
+      return undefined;
+    }
+
+    const frame = requestAnimationFrame(syncBottomAnchorVisibility);
+    return () => cancelAnimationFrame(frame);
+  }, [activeThread?.turns, activeThread?.historyLoaded]);
 
   function handleScrollToBottom() {
     shouldAutoFollowRef.current = true;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Check, Copy } from 'lucide-react';
@@ -19,7 +19,7 @@ import type {
   ToolStep,
 } from '../types';
 
-export function ConversationTurnView({
+function ConversationTurnViewComponent({
   turn,
   nowMs,
   isLiveRunning,
@@ -47,10 +47,34 @@ export function ConversationTurnView({
     decision: ApprovalDecision,
   ) => Promise<boolean>;
 }) {
-  const visibleItems = turn.items.filter(
-    (item) => item.type === 'text' || !shouldHideTurnToolStep(turn, item.tool),
-  );
   const running = isTurnInFlight(turn, isLiveRunning);
+  const requestCardsByToolId = useMemo(() => {
+    const requests = turn.pendingUserInputRequests ?? [];
+    return new Map(
+      requests
+        .filter((request) => request.requestId)
+        .map((request) => [request.requestId as string, request]),
+    );
+  }, [turn.pendingUserInputRequests]);
+  const anchoredRequestIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of turn.items) {
+      if (item.type === 'tool') {
+        const request = getToolAnchoredRequest(item.tool, requestCardsByToolId);
+        if (request?.requestId) {
+          ids.add(request.requestId);
+        }
+      }
+    }
+    return ids;
+  }, [requestCardsByToolId, turn.items]);
+  const visibleItems = turn.items.filter((item) => {
+    if (item.type === 'text') {
+      return true;
+    }
+
+    return !shouldHideTurnToolStep(turn, item.tool) || Boolean(getToolAnchoredRequest(item.tool, requestCardsByToolId));
+  });
   const showProgressLine =
     running ||
     turn.status === 'stopped' ||
@@ -87,7 +111,14 @@ export function ConversationTurnView({
               item.type === 'text' ? (
                 <MarkdownMessage key={item.id} content={item.text} />
               ) : (
-                <ToolStepRow key={item.id} tool={item.tool} />
+                <ToolItemWithAnchoredCards
+                  key={item.id}
+                  tool={item.tool}
+                  turn={turn}
+                  turnInFlight={running}
+                  requestCardsByToolId={requestCardsByToolId}
+                  onSubmitRequestUserInput={onSubmitRequestUserInput}
+                />
               ),
             )
           ) : (
@@ -100,14 +131,21 @@ export function ConversationTurnView({
             <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
           ) : null}
 
-          {turn.pendingUserInputRequests?.map((request, index) => (
-            <RequestUserInputCard
-              key={request.requestId ?? `${turn.id}-request-input-${index}`}
-              request={request}
-              turn={turn}
-              onSubmitRequestUserInput={onSubmitRequestUserInput}
-            />
-          ))}
+          {turn.pendingUserInputRequests?.map((request, index) => {
+            if (request.requestId && anchoredRequestIds.has(request.requestId)) {
+              return null;
+            }
+
+            return (
+              <RequestUserInputCard
+                key={request.requestId ?? `${turn.id}-request-input-${index}`}
+                request={request}
+                turn={turn}
+                turnInFlight={running}
+                onSubmitRequestUserInput={onSubmitRequestUserInput}
+              />
+            );
+          })}
 
           {turn.pendingApprovalRequests?.map((request, index) => (
             <ApprovalRequestCard
@@ -185,9 +223,55 @@ function MarkdownMessage({ content }: { content: string }) {
   );
 }
 
+export const ConversationTurnView = memo(ConversationTurnViewComponent);
+
+function ToolItemWithAnchoredCards({
+  tool,
+  turn,
+  turnInFlight,
+  requestCardsByToolId,
+  onSubmitRequestUserInput,
+}: {
+  tool: ToolStep;
+  turn: ConversationTurn;
+  turnInFlight: boolean;
+  requestCardsByToolId: Map<string, RequestUserInputRequest>;
+  onSubmitRequestUserInput: (
+    turn: ConversationTurn,
+    request: RequestUserInputRequest,
+    answers: Record<string, string>,
+  ) => Promise<boolean>;
+}) {
+  const request = getToolAnchoredRequest(tool, requestCardsByToolId);
+
+  return (
+    <>
+      {!shouldHideTurnToolStep(turn, tool) ? <ToolStepRow tool={tool} /> : null}
+      {request ? (
+        <RequestUserInputCard
+          request={request}
+          turn={turn}
+          turnInFlight={turnInFlight}
+          onSubmitRequestUserInput={onSubmitRequestUserInput}
+        />
+      ) : null}
+    </>
+  );
+}
+
 function ToolStepRow({ tool }: { tool: ToolStep }) {
   const preview = useMemo(() => getToolPreview(tool), [tool]);
+  const todoPreview = useMemo(() => getTodoWritePreview(tool), [tool]);
+  const agentPreview = useMemo(() => getAgentTaskPreview(tool), [tool]);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  if (agentPreview) {
+    return <AgentTaskPreview tool={tool} preview={agentPreview} />;
+  }
+
+  if (todoPreview) {
+    return <TodoWritePreview tool={tool} preview={todoPreview} />;
+  }
+
   if (preview) {
     return <CompactToolPreview tool={tool} preview={preview} />;
   }
@@ -283,13 +367,104 @@ function ToolPreviewPanel({ preview }: { preview: ToolPreview }) {
   );
 }
 
+function AgentTaskPreview({
+  tool,
+  preview,
+}: {
+  tool: ToolStep;
+  preview: AgentTaskPreviewData;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className={`tool-step agent-preview-step tool-${tool.status}`}>
+      <button
+        type="button"
+        className="tool-preview-summary agent-preview-summary"
+        onClick={() => setExpanded((current) => !current)}
+      >
+        <span className="tool-status-dot" />
+        <div className="tool-preview-summary-main agent-preview-summary-main">
+          <span className="agent-preview-title">{tool.title}</span>
+          <span className="agent-preview-meta">{preview.summary}</span>
+        </div>
+        <span className={`tool-preview-chevron ${expanded ? 'expanded' : ''}`}>{'>'}</span>
+      </button>
+
+      {expanded ? (
+        <div className="agent-preview-card">
+          {preview.files.length > 0 ? (
+            <section className="agent-preview-section">
+              <h4>涉及文件</h4>
+              <div className="agent-preview-file-list">
+                {preview.files.map((filePath) => (
+                  <code key={filePath}>{filePath}</code>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {preview.resultText ? (
+            <section className="agent-preview-section">
+              <h4>结果</h4>
+              <pre>{preview.resultText}</pre>
+            </section>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TodoWritePreview({
+  tool,
+  preview,
+}: {
+  tool: ToolStep;
+  preview: TodoWritePreviewData;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className={`tool-step todo-preview-step tool-${tool.status}`}>
+      <button
+        type="button"
+        className="tool-preview-summary todo-preview-summary"
+        onClick={() => setExpanded((current) => !current)}
+      >
+        <span className="tool-status-dot" />
+        <div className="tool-preview-summary-main">
+          <span className="tool-preview-kind">TodoWrite</span>
+          <span className="todo-preview-count">{formatTodoPreviewSummary(preview)}</span>
+        </div>
+        <span className={`tool-preview-chevron ${expanded ? 'expanded' : ''}`}>{'>'}</span>
+      </button>
+
+      {expanded ? (
+        <div className="todo-preview-card">
+          <div className="todo-preview-list">
+            {preview.todos.map((todo, index) => (
+              <div key={`${todo.content}-${index}`} className={`todo-preview-item ${todo.status}`}>
+                <span className="todo-preview-status">{formatTodoStatus(todo.status)}</span>
+                <span className="todo-preview-content">{todo.content}</span>
+              </div>
+            ))}
+          </div>
+          {tool.resultText?.trim() ? <div className="todo-preview-result">{tool.resultText.trim()}</div> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function RequestUserInputCard({
   request,
   turn,
+  turnInFlight,
   onSubmitRequestUserInput,
 }: {
   request: RequestUserInputRequest;
   turn: ConversationTurn;
+  turnInFlight: boolean;
   onSubmitRequestUserInput: (
     turn: ConversationTurn,
     request: RequestUserInputRequest,
@@ -321,7 +496,7 @@ function RequestUserInputCard({
   });
 
   async function handleSubmit() {
-    if (submitted) {
+    if (submitted || turnInFlight) {
       return;
     }
 
@@ -390,15 +565,25 @@ function RequestUserInputCard({
 
       <div className="assistant-runtime-card-foot">
         <span className="assistant-runtime-footnote">
-          {submitted ? '答案已提交，卡片保留为上下文记录。' : '填写后会作为续聊消息继续当前任务。'}
+          {submitted
+            ? '答案已提交，卡片保留为上下文记录。'
+            : turnInFlight
+              ? 'Claude 还在输出，结束后可继续任务。'
+              : '填写后会作为续聊消息继续当前任务。'}
         </span>
         <button
           type="button"
           className="assistant-runtime-submit-button"
-          disabled={submitted || !canSubmit || submitting}
+          disabled={submitted || turnInFlight || !canSubmit || submitting}
           onClick={() => void handleSubmit()}
         >
-          {submitted ? '已继续' : submitting ? '提交中...' : '继续任务'}
+          {submitted
+            ? '已继续'
+            : submitting
+              ? '提交中...'
+              : turnInFlight
+                ? '等待 Claude 完成...'
+                : '继续任务'}
         </button>
       </div>
       {submitError ? <div className="assistant-runtime-error">{submitError}</div> : null}
@@ -730,6 +915,22 @@ type ToolPreview = {
   rows: Array<{ type: 'context' | 'add' | 'remove'; text: string }>;
 };
 
+type TodoWritePreviewData = {
+  todos: Array<{
+    content: string;
+    status: TodoStatus;
+  }>;
+  counts: Record<TodoStatus, number>;
+};
+
+type AgentTaskPreviewData = {
+  summary: string;
+  files: string[];
+  resultText: string;
+};
+
+type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'unknown';
+
 const TOOL_DIFF_CONTEXT_LINE_COUNT = 2;
 
 function getToolPreview(tool: ToolStep): ToolPreview | null {
@@ -802,6 +1003,261 @@ function getToolPreviewTitle(preview: ToolPreview) {
   return preview.kind === 'write' ? '已新增' : '已编辑';
 }
 
+function getAgentTaskPreview(tool: ToolStep): AgentTaskPreviewData | null {
+  const normalizedName = normalizeRuntimeToolName(tool.name);
+  if (normalizedName !== 'agent' && normalizedName !== 'task') {
+    return null;
+  }
+
+  const resultText = stripUsageBlock(tool.resultText ?? '').trim();
+  const usageSummary = getUsageSummaryFromText(tool.resultText);
+  const files = extractAgentResultFiles(resultText);
+  const summary = formatAgentTaskSummary(tool, usageSummary, files.length);
+
+  return {
+    summary,
+    files,
+    resultText,
+  };
+}
+
+function formatAgentTaskSummary(tool: ToolStep, usageSummary: string, fileCount: number) {
+  const state = tool.status === 'running' ? '运行中' : tool.status === 'error' ? 'Error' : '完成子任务';
+  const details: string[] = [];
+  if (usageSummary) {
+    details.push(usageSummary);
+  } else if (fileCount > 0) {
+    details.push(`${fileCount} 个文件`);
+  }
+
+  return details.length ? `${state} · ${details.join(' · ')}` : state;
+}
+
+function extractAgentResultFiles(resultText: string) {
+  const files: string[] = [];
+  const seen = new Set<string>();
+  const lines = resultText
+    .split(/\r?\n/)
+    .map((line) => normalizeAgentResultLine(line))
+    .filter(Boolean);
+
+  for (const line of lines) {
+    if (!isLikelyFilePath(line) || seen.has(line)) {
+      continue;
+    }
+
+    seen.add(line);
+    files.push(line);
+    if (files.length >= 12) {
+      break;
+    }
+  }
+
+  return files;
+}
+
+function normalizeAgentResultLine(line: string) {
+  return line
+    .trim()
+    .replace(/^[-*+]\s+/, '')
+    .replace(/^\d+\.\s+/, '')
+    .replace(/^`+|`+$/g, '')
+    .replace(/^["']|["']$/g, '')
+    .trim();
+}
+
+function isLikelyFilePath(value: string) {
+  if (!value || value.length > 180 || /\s{2,}/.test(value)) {
+    return false;
+  }
+
+  return /^(?:[\w.@()[\]-]+[\\/])*[\w .@()[\]-]+\.[A-Za-z0-9]{1,8}$/.test(value);
+}
+
+function stripUsageBlock(value: string) {
+  return value.replace(/<usage>[\s\S]*?<\/usage>/gi, '').trim();
+}
+
+function getUsageSummaryFromText(value?: string) {
+  const usageBlockMatch = value?.match(/<usage>([\s\S]*?)<\/usage>/i);
+  if (!usageBlockMatch) {
+    return '';
+  }
+
+  const values = parseUsageBlock(usageBlockMatch[1]);
+  const parts: string[] = [];
+  if (typeof values.toolUses === 'number') {
+    parts.push(`${values.toolUses} tool uses`);
+  }
+  if (typeof values.totalTokens === 'number') {
+    parts.push(formatUsageTokenCount(values.totalTokens));
+  }
+  if (typeof values.durationMs === 'number') {
+    parts.push(formatUsageDuration(values.durationMs));
+  }
+
+  return parts.join(' · ');
+}
+
+function parseUsageBlock(block: string) {
+  const result: {
+    totalTokens?: number;
+    toolUses?: number;
+    durationMs?: number;
+  } = {};
+
+  const lines = block
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const separatorIndex = line.indexOf(':');
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const key = line.slice(0, separatorIndex).trim();
+    const rawValue = line.slice(separatorIndex + 1).trim();
+    const numericValue = Number.parseInt(rawValue, 10);
+    if (!Number.isFinite(numericValue)) {
+      continue;
+    }
+
+    if (key === 'total_tokens') {
+      result.totalTokens = numericValue;
+      continue;
+    }
+
+    if (key === 'tool_uses') {
+      result.toolUses = numericValue;
+      continue;
+    }
+
+    if (key === 'duration_ms') {
+      result.durationMs = numericValue;
+    }
+  }
+
+  return result;
+}
+
+function formatUsageTokenCount(value: number) {
+  if (value < 1000) {
+    return `${value} tokens`;
+  }
+
+  const compact = (value / 1000).toFixed(1);
+  return `${compact.endsWith('.0') ? compact.slice(0, -2) : compact}k tokens`;
+}
+
+function formatUsageDuration(durationMs: number) {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts: string[] = [];
+
+  if (hours > 0) {
+    parts.push(`${hours}h`);
+  }
+  if (minutes > 0 || hours > 0) {
+    parts.push(`${minutes}m`);
+  }
+  parts.push(`${seconds}s`);
+
+  return parts.join(' ');
+}
+
+function getTodoWritePreview(tool: ToolStep): TodoWritePreviewData | null {
+  if (normalizeRuntimeToolName(tool.name) !== 'todowrite') {
+    return null;
+  }
+
+  const input = parseToolInput(tool.inputText);
+  if (!input || !Array.isArray(input.todos)) {
+    return null;
+  }
+
+  const todos = input.todos
+    .map((item) => normalizeTodoWriteItem(item))
+    .filter((item): item is { content: string; status: TodoStatus } => Boolean(item));
+  if (todos.length === 0) {
+    return null;
+  }
+
+  const counts: Record<TodoStatus, number> = {
+    pending: 0,
+    in_progress: 0,
+    completed: 0,
+    unknown: 0,
+  };
+  todos.forEach((todo) => {
+    counts[todo.status] += 1;
+  });
+
+  return {
+    todos,
+    counts,
+  };
+}
+
+function normalizeTodoWriteItem(item: unknown) {
+  if (!item || typeof item !== 'object') {
+    return null;
+  }
+
+  const record = item as Record<string, unknown>;
+  const content = getStringValue(record.content) ?? getStringValue(record.text) ?? getStringValue(record.title);
+  if (!content) {
+    return null;
+  }
+
+  return {
+    content,
+    status: normalizeTodoStatus(getStringValue(record.status)),
+  };
+}
+
+function normalizeTodoStatus(status?: string): TodoStatus {
+  switch (status) {
+    case 'pending':
+    case 'in_progress':
+    case 'completed':
+      return status;
+    default:
+      return 'unknown';
+  }
+}
+
+function formatTodoPreviewSummary(preview: TodoWritePreviewData) {
+  const parts = [`${preview.todos.length} 项`];
+  if (preview.counts.in_progress) {
+    parts.push(`${preview.counts.in_progress} 进行中`);
+  }
+  if (preview.counts.pending) {
+    parts.push(`${preview.counts.pending} 待办`);
+  }
+  if (preview.counts.completed) {
+    parts.push(`${preview.counts.completed} 已完成`);
+  }
+  return parts.join(' · ');
+}
+
+function formatTodoStatus(status: TodoStatus) {
+  switch (status) {
+    case 'in_progress':
+      return '进行中';
+    case 'completed':
+      return '已完成';
+    case 'pending':
+      return '待办';
+    case 'unknown':
+    default:
+      return '未知';
+  }
+}
+
 function getRequestQuestionHint(question: RequestUserInputQuestion) {
   const hints: string[] = [];
   if (question.multiSelect) {
@@ -851,6 +1307,19 @@ function formatRecoveryAction(action: RuntimeRecoveryHint['suggestedAction']) {
     default:
       return '重试当前请求';
   }
+}
+
+function getToolAnchoredRequest(
+  tool: ToolStep,
+  requestCardsByToolId: Map<string, RequestUserInputRequest>,
+) {
+  const normalizedName = normalizeRuntimeToolName(tool.name);
+  if (normalizedName !== 'askuserquestion' && normalizedName !== 'requestuserinput') {
+    return null;
+  }
+
+  const requestId = tool.toolUseId ?? tool.id;
+  return requestCardsByToolId.get(requestId) ?? null;
 }
 
 function shouldHideTurnToolStep(turn: ConversationTurn, tool: ToolStep) {
@@ -1088,6 +1557,10 @@ function getToolInputString(input: Record<string, unknown>, keys: string[]) {
   }
 
   return undefined;
+}
+
+function getStringValue(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function parseDiffContent(diff: string) {

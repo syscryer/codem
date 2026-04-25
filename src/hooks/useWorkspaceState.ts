@@ -22,6 +22,14 @@ type ThreadMetadataPatch = {
   permissionMode?: string;
 };
 
+function isLiveTurn(turn: ConversationTurn) {
+  return turn.status === 'pending' || turn.status === 'running';
+}
+
+function hasLiveTurns(turns: ConversationTurn[]) {
+  return turns.some(isLiveTurn);
+}
+
 export function useWorkspaceState() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [panelState, setPanelState] = useState<PanelState>(EMPTY_PANEL_STATE);
@@ -51,9 +59,14 @@ export function useWorkspaceState() {
   }, []);
 
   useEffect(() => {
-    if (activeThreadId) {
-      void loadThreadHistory(activeThreadId);
+    if (!activeThreadId) {
+      return;
     }
+
+    const existing = threadDetailsRef.current[activeThreadId];
+    void loadThreadHistory(activeThreadId, {
+      force: Boolean(existing?.historyLoaded && !hasLiveTurns(existing.turns)),
+    });
   }, [activeThreadId]);
 
   useEffect(() => {
@@ -162,10 +175,11 @@ export function useWorkspaceState() {
     });
   }
 
-  async function loadThreadHistory(threadId: string) {
+  async function loadThreadHistory(threadId: string, options?: { force?: boolean }) {
+    const force = options?.force ?? false;
     setThreadDetails((current) => {
       const existing = current[threadId];
-      if (!existing || existing.historyLoaded || existing.historyLoading) {
+      if (!existing || existing.historyLoading || (existing.historyLoaded && !force)) {
         return current;
       }
 
@@ -179,7 +193,7 @@ export function useWorkspaceState() {
     });
 
     const currentDetail = threadDetailsRef.current[threadId];
-    if (currentDetail?.historyLoaded || currentDetail?.historyLoading) {
+    if (currentDetail?.historyLoading || (currentDetail?.historyLoaded && !force)) {
       return;
     }
 
@@ -209,10 +223,9 @@ export function useWorkspaceState() {
         const mergedTurns = [
           ...repairedTurns.map((turn) => {
             const current = currentTurnsById.get(turn.id);
-            // prefer in-memory turn if it's still running, otherwise use repaired (has fresh metrics)
-            return current && (current.status === 'running' || current.status === 'pending') ? current : turn;
+            return current && isLiveTurn(current) ? current : turn;
           }),
-          ...existing.turns.filter((turn) => !repairedTurnIds.has(turn.id)),
+          ...existing.turns.filter((turn) => !repairedTurnIds.has(turn.id) && (!force || isLiveTurn(turn))),
         ];
 
         return {

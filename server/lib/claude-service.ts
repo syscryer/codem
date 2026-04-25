@@ -14,6 +14,7 @@ export type ClaudePermissionMode =
 
 type StreamInput = {
   threadId: string;
+  turnId?: string;
   prompt: string;
   workingDirectory: string;
   sessionId?: string;
@@ -186,7 +187,11 @@ type RunState = {
   traceStartedAtMs: number;
   queue: StreamEvent[];
   wakeQueue: (() => void) | null;
+  eventLog: StreamEvent[];
+  eventWaiters: Set<() => void>;
   finished: boolean;
+  detached: boolean;
+  cleanupTimer: ReturnType<typeof setTimeout> | null;
   pendingTextDelta: string;
   pendingTextDeltaTimer: ReturnType<typeof setTimeout> | null;
   firstStdoutAtMs?: number;
@@ -218,12 +223,15 @@ type ClaudeRuntime = {
 
 type ActiveRun = {
   runtime: ClaudeRuntime;
+  state: RunState;
   cancel: () => boolean;
 };
 
 const activeRuns = new Map<string, ActiveRun>();
+const threadActiveRuns = new Map<string, string>();
 const threadRuntimes = new Map<string, ClaudeRuntime>();
 const TEXT_DELTA_COALESCE_MS = process.platform === 'win32' ? 32 : 0;
+const RUN_RECONNECT_RETENTION_MS = 10 * 60 * 1000;
 let cachedClaudeCommand: string | null | undefined;
 
 export async function isDirectoryAccessible(directory: string) {
@@ -270,7 +278,7 @@ export function getClaudeModels() {
 
 export function cancelRun(runId: string) {
   const activeRun = activeRuns.get(runId);
-  if (!activeRun) {
+  if (!activeRun || activeRun.state.finished) {
     return false;
   }
 
@@ -287,6 +295,92 @@ export function closeThreadRuntime(threadId: string) {
 
   closeClaudeRuntime(runtime);
   return true;
+}
+
+export function markRunDetached(runId: string) {
+  const activeRun = activeRuns.get(runId);
+  if (!activeRun) {
+    return false;
+  }
+
+  activeRun.state.detached = true;
+  return true;
+}
+
+export function markThreadRunDetached(threadId: string) {
+  const runId = threadActiveRuns.get(threadId.trim());
+  return runId ? markRunDetached(runId) : false;
+}
+
+export function acknowledgeRunEvents(runId: string) {
+  const activeRun = activeRuns.get(runId);
+  if (!activeRun?.state.finished) {
+    return false;
+  }
+
+  removeRunRecord(activeRun.state);
+  return true;
+}
+
+export function getActiveRunForThread(threadId: string) {
+  const normalizedThreadId = threadId.trim();
+  const runId = threadActiveRuns.get(normalizedThreadId);
+  if (!runId) {
+    return null;
+  }
+
+  const activeRun = activeRuns.get(runId);
+  if (!activeRun) {
+    threadActiveRuns.delete(normalizedThreadId);
+    return null;
+  }
+
+  const { state } = activeRun;
+  if (state.finished && !state.detached) {
+    return null;
+  }
+
+  return {
+    runId: state.runId,
+    threadId: state.input.threadId,
+    turnId: state.input.turnId,
+    prompt: state.input.prompt,
+    workingDirectory: state.input.workingDirectory,
+    sessionId: state.sessionId,
+    permissionMode: state.input.permissionMode,
+    model: state.input.model,
+    startedAtMs: state.traceStartedAtMs,
+    eventCount: state.eventLog.length,
+    finished: state.finished,
+  };
+}
+
+export async function* reconnectClaudeRunEvents(
+  runId: string,
+  afterEventIndex = 0,
+): AsyncGenerator<StreamEvent> {
+  const activeRun = activeRuns.get(runId);
+  if (!activeRun) {
+    return;
+  }
+
+  const { state } = activeRun;
+  let index = Math.max(0, Math.floor(afterEventIndex));
+
+  while (true) {
+    while (index < state.eventLog.length) {
+      yield state.eventLog[index];
+      index += 1;
+    }
+
+    if (state.finished) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      state.eventWaiters.add(resolve);
+    });
+  }
 }
 
 export async function* createClaudeStream(input: StreamInput): AsyncGenerator<StreamEvent> {
@@ -322,8 +416,10 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
   runtime.currentRun = state;
   activeRuns.set(runId, {
     runtime,
+    state,
     cancel: () => cancelRuntimeRun(runtime, runId),
   });
+  threadActiveRuns.set(getRuntimeKey(input), runId);
 
   if (input.clientSubmitAtMs) {
     enqueueTrace(state, 'client_submit', input.clientSubmitAtMs);
@@ -367,7 +463,11 @@ function createRunState(runId: string, input: StreamInput, sessionId?: string): 
     traceStartedAtMs: input.clientSubmitAtMs ?? input.requestReceivedAtMs ?? Date.now(),
     queue: [],
     wakeQueue: null,
+    eventLog: [],
+    eventWaiters: new Set(),
     finished: false,
+    detached: false,
+    cleanupTimer: null,
     pendingTextDelta: '',
     pendingTextDeltaTimer: null,
     firstStdoutAtMs: undefined,
@@ -407,9 +507,14 @@ function enqueueTrace(state: RunState, name: string, atMs = Date.now(), detail?:
 }
 
 function pushRunEvent(state: RunState, event: StreamEvent) {
+  state.eventLog.push(event);
   state.queue.push(event);
   state.wakeQueue?.();
   state.wakeQueue = null;
+  for (const wake of state.eventWaiters) {
+    wake();
+  }
+  state.eventWaiters.clear();
 }
 
 function finishRuntimeRun(runtime: ClaudeRuntime, state: RunState) {
@@ -419,11 +524,14 @@ function finishRuntimeRun(runtime: ClaudeRuntime, state: RunState) {
     runtime.currentRun = null;
   }
 
-  activeRuns.delete(state.runId);
   state.finished = true;
   state.wakeQueue?.();
   state.wakeQueue = null;
-
+  for (const wake of state.eventWaiters) {
+    wake();
+  }
+  state.eventWaiters.clear();
+  scheduleRunRecordCleanup(state);
 }
 
 function enqueueTextDelta(state: RunState, text: string) {
@@ -495,6 +603,32 @@ function cancelRuntimeRun(runtime: ClaudeRuntime, runId: string) {
   finishRuntimeRun(runtime, state);
   closeClaudeRuntime(runtime);
   return true;
+}
+
+function scheduleRunRecordCleanup(state: RunState) {
+  if (state.cleanupTimer) {
+    clearTimeout(state.cleanupTimer);
+  }
+
+  state.cleanupTimer = setTimeout(() => {
+    removeRunRecord(state);
+  }, RUN_RECONNECT_RETENTION_MS);
+}
+
+function removeRunRecord(state: RunState) {
+  if (!state.finished) {
+    return;
+  }
+
+  if (state.cleanupTimer) {
+    clearTimeout(state.cleanupTimer);
+    state.cleanupTimer = null;
+  }
+
+  activeRuns.delete(state.runId);
+  if (threadActiveRuns.get(state.input.threadId) === state.runId) {
+    threadActiveRuns.delete(state.input.threadId);
+  }
 }
 
 function getRuntimeKey(input: StreamInput) {

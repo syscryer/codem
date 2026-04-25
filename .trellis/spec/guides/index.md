@@ -15,4 +15,5 @@
 - 改 `useClaudeRun`、`useWorkspaceState`
 - 改 `/api/claude/run` 事件结构
 - 改 project/thread bootstrap payload
+- 改聊天 timeline、AI 提问卡片、热会话恢复或历史刷新
 - 大规模拆 `App.tsx`、`server/index.ts`

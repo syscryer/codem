@@ -81,9 +81,9 @@ export default function App() {
     model,
     models,
     isRunning,
-    runningThreadId,
+    runningThreadIds,
+    activeTurnIdsByThreadId,
     clockNowMs,
-    activeTurnIdRef,
     setWorkspace,
     setModel,
     handlePermissionModeSelect,
@@ -106,9 +106,7 @@ export default function App() {
     appendRawEvent,
     schedulePersistThreadHistory,
     persistThreadMetadata,
-    clearActiveTurnSelection: () => {
-      activeTurnIdRef.current = '';
-    },
+    clearActiveTurnSelection: () => undefined,
   });
 
   useEffect(() => {
@@ -142,26 +140,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [setSearchOpen]);
 
-  useEffect(() => {
-    function closeActiveThreadRuntime() {
-      if (!activeThreadId) {
-        return;
-      }
-
-      if (navigator.sendBeacon?.(`/api/claude/runtime/${encodeURIComponent(activeThreadId)}/close`)) {
-        return;
-      }
-
-      void fetch(`/api/claude/runtime/${encodeURIComponent(activeThreadId)}/close`, {
-        method: 'POST',
-        keepalive: true,
-      }).catch(() => undefined);
-    }
-
-    window.addEventListener('pagehide', closeActiveThreadRuntime);
-    return () => window.removeEventListener('pagehide', closeActiveThreadRuntime);
-  }, [activeThreadId]);
-
   const latestApprovalDialog = useMemo(
     () => getLatestPendingApprovalDialog(activeThread),
     [activeThread],
@@ -181,12 +159,11 @@ export default function App() {
   }
 
   async function handleSelectThread(projectId: string, threadId: string) {
-    activeTurnIdRef.current = '';
     await selectThread(projectId, threadId);
   }
 
   function handleOpenRemoveThreadDialog(thread: ThreadSummary) {
-    if (isRunning && thread.id === runningThreadId) {
+    if (runningThreadIds.includes(thread.id)) {
       showToast('当前聊天正在运行，请先停止再删除。', 'info');
       return;
     }
@@ -249,6 +226,7 @@ export default function App() {
         <SidebarProjects
           activeProjectId={activeProjectId}
           activeThreadId={activeThreadId}
+          runningThreadIds={runningThreadIds}
           filteredProjects={filteredProjects}
           collapsedProjects={collapsedProjects}
           searchOpen={searchOpen}
@@ -284,8 +262,8 @@ export default function App() {
           <ConversationPane
             activeThread={activeThread}
             clockNowMs={clockNowMs}
-            isRunning={isRunning}
-            activeTurnId={activeTurnIdRef.current}
+            isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
+            activeTurnId={activeThreadId ? activeTurnIdsByThreadId[activeThreadId] ?? '' : ''}
             transcriptRef={transcriptRef}
             bottomRef={conversationBottomRef}
             onSubmitRequestUserInput={(
@@ -306,12 +284,12 @@ export default function App() {
             permissionMode={permissionMode}
             model={model}
             models={models}
-            isRunning={isRunning}
+            isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
             onSubmitPrompt={submitPrompt}
             onKeyDown={handleComposerKeyDown}
             onSelectPermissionMode={handlePermissionModeSelect}
             onSelectModel={setModel}
-            onStopRun={stopRun}
+            onStopRun={() => stopRun(activeThreadId ?? undefined)}
           />
 
           <WorkspaceStatus activeProject={activeProject} activeThread={activeThread} />

@@ -34,11 +34,21 @@
 - backendRunId
 - streaming event handling
 
+### 4. Conversation Timeline State
+
+聊天渲染相关状态需要遵守 `conversation-rendering-model.md`：
+
+- `turn.items` 应逐步成为 assistant 侧内容的单一渲染来源
+- AI 提问、审批、工具和文本都应按事件顺序进入 timeline
+- `pendingUserInputRequests` / `pendingApprovalRequests` 可以作为待处理索引，但不应长期承担布局职责
+
 ## 边界规则
 
 - `useWorkspaceState` 不要承接纯 UI 菜单开关
 - `useClaudeRun` 不要关心 sidebar 的筛选和项目菜单
 - 组件内状态不要反向污染全局 workspace state，除非它影响持久化或业务流程
+- 热会话的 pending/running turn 不应被历史强刷覆盖
+- 非热会话切换进入时应允许重新拉取历史，避免使用陈旧缓存
 
 ## 更新原则
 

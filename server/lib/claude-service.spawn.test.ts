@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const source = readFileSync(new URL('./claude-service.ts', import.meta.url), 'utf8');
+const serverSource = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
 
 function extractFunctionBody(functionName: string) {
   const functionMatch = new RegExp(`(?:export\\s+)?(?:async\\s+)?function\\*?\\s+${functionName}\\s*\\(`).exec(source);
@@ -68,4 +69,27 @@ test('cold resume keeps the legacy argv prompt path instead of starting stdin ru
   assert.match(writePromptToClaudeBody, /runtime\.inputMode\s*===\s*['"]argv['"]/);
   assert.match(writePromptToClaudeBody, /prompt_sent_as_arg/);
   assert.match(writePromptToClaudeBody, /runtime\.child\.stdin\.end\(\)/);
+});
+
+test('run events are buffered for reconnect instead of being tied to one response', () => {
+  const createRunStateBody = extractFunctionBody('createRunState');
+  const pushRunEventBody = extractFunctionBody('pushRunEvent');
+  const reconnectBody = extractFunctionBody('reconnectClaudeRunEvents');
+
+  assert.match(createRunStateBody, /eventLog:\s*\[\]/);
+  assert.match(createRunStateBody, /eventWaiters:\s*new Set/);
+  assert.match(pushRunEventBody, /state\.eventLog\.push\(event\)/);
+  assert.match(pushRunEventBody, /state\.eventWaiters/);
+  assert.match(reconnectBody, /afterEventIndex/);
+  assert.match(reconnectBody, /state\.eventLog\.length/);
+  assert.match(reconnectBody, /yield state\.eventLog\[index\]/);
+});
+
+test('client disconnect detaches a run instead of cancelling the Claude process', () => {
+  assert.match(serverSource, /response\.on\(['"]close['"]/);
+  assert.match(serverSource, /markRunDetached\(currentRunId\)/);
+  assert.match(serverSource, /markThreadRunDetached\(threadId\)/);
+  assert.doesNotMatch(serverSource, /response\.on\(['"]close['"][\s\S]{0,160}cancelRun/);
+  assert.match(serverSource, /\/api\/claude\/runs\/active\/:threadId/);
+  assert.match(serverSource, /\/api\/claude\/run\/:runId\/events/);
 });

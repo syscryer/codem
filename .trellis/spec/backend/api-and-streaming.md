@@ -25,3 +25,9 @@
 
 - `sessionId` 只有在确认有效时才应持久化
 - 无效 resume / stale transcript 需要可恢复，不能污染本地 thread metadata
+
+## Conversation Timeline 规则
+
+- streaming event、Claude JSONL transcript、SQLite stored history 应尽量生成一致的 turn timeline
+- `request_user_input` / `ask_user_question` / approval 类 tool_use 不应只作为普通工具日志处理，它们需要保留可交互卡片语义
+- 后端改 transcript parser 或 stored history 结构时，需要同步检查 frontend `Conversation Rendering Model`

@@ -22,6 +22,7 @@ const VISIBLE_THREAD_PREVIEW_LIMIT = 5;
 type SidebarProjectsProps = {
   activeProjectId: string | null;
   activeThreadId: string | null;
+  runningThreadIds: string[];
   filteredProjects: ProjectSummary[];
   collapsedProjects: Record<string, boolean>;
   searchOpen: boolean;
@@ -47,6 +48,7 @@ type SidebarProjectsProps = {
 export function SidebarProjects({
   activeProjectId,
   activeThreadId,
+  runningThreadIds,
   filteredProjects,
   collapsedProjects,
   searchOpen,
@@ -81,6 +83,7 @@ export function SidebarProjects({
       { selector: '.thread-menu-popover', onDismiss: () => setThreadMenuThreadId(null) },
     ],
   });
+  const runningThreadIdSet = new Set(runningThreadIds);
 
   return (
     <aside className="app-sidebar">
@@ -178,9 +181,11 @@ export function SidebarProjects({
             const collapsed = Boolean(collapsedProjects[project.id]);
             const threadExpanded = Boolean(expandedThreadProjects[project.id]);
             const hasMoreThreads = project.threads.length > VISIBLE_THREAD_PREVIEW_LIMIT;
+            const previewThreads = project.threads.slice(0, VISIBLE_THREAD_PREVIEW_LIMIT);
+            const runningThreads = project.threads.filter((thread) => runningThreadIdSet.has(thread.id));
             const visibleThreads = threadExpanded
               ? project.threads
-              : project.threads.slice(0, VISIBLE_THREAD_PREVIEW_LIMIT);
+              : mergeVisibleThreads(previewThreads, runningThreads);
 
             return (
               <div key={project.id} className={`sidebar-project ${project.id === activeProjectId ? 'active' : ''}`}>
@@ -234,35 +239,45 @@ export function SidebarProjects({
 
                 {!collapsed ? (
                   <div className="sidebar-thread-list">
-                    {visibleThreads.map((thread) => (
-                      <div key={thread.id} className={`sidebar-thread-row ${thread.id === activeThreadId ? 'active' : ''}`}>
-                        <button type="button" className="sidebar-thread" onClick={() => void onSelectThread(project.id, thread.id)}>
-                          <span>{thread.title}</span>
-                          <small>{thread.updatedLabel}</small>
-                        </button>
-                        <button
-                          type="button"
-                          className="sidebar-row-action thread-row-action"
-                          title="聊天菜单"
-                          onClick={() => setThreadMenuThreadId((value) => value === thread.id ? null : thread.id)}
+                    {visibleThreads.map((thread) => {
+                      const isRunningThread = runningThreadIdSet.has(thread.id);
+
+                      return (
+                        <div
+                          key={thread.id}
+                          className={`sidebar-thread-row ${thread.id === activeThreadId ? 'active' : ''}${isRunningThread ? ' running' : ''}`}
                         >
-                          <MoreHorizontal size={13} />
-                        </button>
-                        {threadMenuThreadId === thread.id ? (
-                          <div className="workspace-menu thread-menu-popover">
-                            <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); onOpenRenameThreadDialog(thread); }}>
-                              <span>重命名聊天</span>
-                            </button>
-                            <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); void onCopySessionId(thread); }}>
-                              <span>复制会话 ID</span>
-                            </button>
-                            <button type="button" className="workspace-menu-item danger" onClick={() => { setThreadMenuThreadId(null); onOpenRemoveThreadDialog(thread); }}>
-                              <span>删除聊天</span>
-                            </button>
-                          </div>
-                        ) : null}
-                      </div>
-                    ))}
+                          <button type="button" className="sidebar-thread" onClick={() => void onSelectThread(project.id, thread.id)}>
+                            <span className="sidebar-thread-title">
+                              {isRunningThread ? <span className="sidebar-thread-running-dot" aria-label="运行中" /> : null}
+                              <span className="sidebar-thread-title-text">{thread.title}</span>
+                            </span>
+                            <small>{thread.updatedLabel}</small>
+                          </button>
+                          <button
+                            type="button"
+                            className="sidebar-row-action thread-row-action"
+                            title="聊天菜单"
+                            onClick={() => setThreadMenuThreadId((value) => value === thread.id ? null : thread.id)}
+                          >
+                            <MoreHorizontal size={13} />
+                          </button>
+                          {threadMenuThreadId === thread.id ? (
+                            <div className="workspace-menu thread-menu-popover">
+                              <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); onOpenRenameThreadDialog(thread); }}>
+                                <span>重命名聊天</span>
+                              </button>
+                              <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); void onCopySessionId(thread); }}>
+                                <span>复制会话 ID</span>
+                              </button>
+                              <button type="button" className="workspace-menu-item danger" onClick={() => { setThreadMenuThreadId(null); onOpenRemoveThreadDialog(thread); }}>
+                                <span>删除聊天</span>
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : null}
 
@@ -291,4 +306,20 @@ export function SidebarProjects({
       </div>
     </aside>
   );
+}
+
+function mergeVisibleThreads(previewThreads: ThreadSummary[], runningThreads: ThreadSummary[]) {
+  const seen = new Set<string>();
+  const merged: ThreadSummary[] = [];
+
+  for (const thread of [...previewThreads, ...runningThreads]) {
+    if (seen.has(thread.id)) {
+      continue;
+    }
+
+    seen.add(thread.id);
+    merged.push(thread);
+  }
+
+  return merged;
 }

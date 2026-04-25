@@ -1,14 +1,19 @@
-import express from 'express';
+import express, { type ErrorRequestHandler } from 'express';
 import path from 'node:path';
 import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
+  acknowledgeRunEvents,
   cancelRun,
-  createClaudeStream,
   closeThreadRuntime,
+  createClaudeStream,
   detectClaudeCommand,
+  getActiveRunForThread,
   getClaudeModels,
   isDirectoryAccessible,
+  markRunDetached,
+  markThreadRunDetached,
+  reconnectClaudeRunEvents,
   type ClaudePermissionMode,
 } from './lib/claude-service.js';
 import {
@@ -36,10 +41,12 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 const distRoot = path.join(projectRoot, 'dist');
 const port = Number(process.env.PORT ?? 3001);
+const jsonBodyLimit = process.env.CODEM_JSON_BODY_LIMIT ?? '25mb';
 
 const app = express();
 
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: jsonBodyLimit }));
+app.use(createJsonBodyErrorHandler());
 
 app.get('/api/health', async (_request, response) => {
   const result = await detectClaudeCommand();
@@ -312,6 +319,10 @@ app.put('/api/threads/:threadId/history', (request, response) => {
 app.post('/api/claude/run', async (request, response) => {
   const requestReceivedAtMs = Date.now();
   const threadId = typeof request.body?.threadId === 'string' ? request.body.threadId.trim() : '';
+  const turnId =
+    typeof request.body?.turnId === 'string' && request.body.turnId.trim()
+      ? request.body.turnId.trim()
+      : undefined;
   const prompt = typeof request.body?.prompt === 'string' ? request.body.prompt.trim() : '';
   const workingDirectory =
     typeof request.body?.workingDirectory === 'string' ? request.body.workingDirectory.trim() : '';
@@ -360,6 +371,7 @@ app.post('/api/claude/run', async (request, response) => {
 
   const stream = await createClaudeStream({
     threadId,
+    turnId,
     prompt,
     workingDirectory: resolvedDirectory,
     sessionId,
@@ -369,10 +381,15 @@ app.post('/api/claude/run', async (request, response) => {
     clientSubmitAtMs,
   });
   let currentRunId: string | undefined;
+  let streamCompleted = false;
 
   response.on('close', () => {
-    if (currentRunId) {
-      cancelRun(currentRunId);
+    if (!streamCompleted) {
+      if (currentRunId) {
+        markRunDetached(currentRunId);
+      } else {
+        markThreadRunDetached(threadId);
+      }
     }
   });
 
@@ -381,7 +398,9 @@ app.post('/api/claude/run', async (request, response) => {
 
     if (response.writableEnded || response.destroyed) {
       if (currentRunId) {
-        cancelRun(currentRunId);
+        markRunDetached(currentRunId);
+      } else {
+        markThreadRunDetached(threadId);
       }
       break;
     }
@@ -390,7 +409,49 @@ app.post('/api/claude/run', async (request, response) => {
     (response as typeof response & { flush?: () => void }).flush?.();
   }
 
+  streamCompleted = true;
   response.end();
+});
+
+app.get('/api/claude/runs/active/:threadId', (request, response) => {
+  const activeRun = getActiveRunForThread(request.params.threadId);
+  if (!activeRun) {
+    response.status(404).json({ active: false });
+    return;
+  }
+
+  response.json({ active: true, ...activeRun });
+});
+
+app.get('/api/claude/run/:runId/events', async (request, response) => {
+  const after =
+    typeof request.query.after === 'string' && request.query.after.trim()
+      ? Number.parseInt(request.query.after, 10)
+      : 0;
+
+  response.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  response.setHeader('Cache-Control', 'no-cache, no-transform');
+  response.setHeader('Connection', 'keep-alive');
+  response.flushHeaders();
+
+  for await (const message of reconnectClaudeRunEvents(
+    request.params.runId,
+    Number.isFinite(after) ? after : 0,
+  )) {
+    if (response.writableEnded || response.destroyed) {
+      break;
+    }
+
+    response.write(`${JSON.stringify(message)}\n`);
+    (response as typeof response & { flush?: () => void }).flush?.();
+  }
+
+  response.end();
+});
+
+app.post('/api/claude/run/:runId/ack', (request, response) => {
+  const acknowledged = acknowledgeRunEvents(request.params.runId);
+  response.json({ acknowledged });
 });
 
 app.delete('/api/claude/run/:runId', (request, response) => {
@@ -413,3 +474,25 @@ if (await isDirectoryAccessible(distRoot)) {
 app.listen(port, () => {
   console.log(`CodeM bridge listening at http://127.0.0.1:${port}`);
 });
+
+function createJsonBodyErrorHandler(): ErrorRequestHandler {
+  return (error, _request, response, next) => {
+    if (isPayloadTooLargeError(error)) {
+      response
+        .status(413)
+        .send(`请求内容过大，当前 JSON 上限为 ${jsonBodyLimit}。请缩短会话历史或调高 CODEM_JSON_BODY_LIMIT。`);
+      return;
+    }
+
+    next(error);
+  };
+}
+
+function isPayloadTooLargeError(error: unknown) {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const candidate = error as { status?: unknown; statusCode?: unknown; type?: unknown };
+  return candidate.status === 413 || candidate.statusCode === 413 || candidate.type === 'entity.too.large';
+}

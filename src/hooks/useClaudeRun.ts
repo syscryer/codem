@@ -45,6 +45,43 @@ type ThreadMetadataPatch = {
   permissionMode?: string;
 };
 
+type ActiveRunInfo = {
+  active: true;
+  runId: string;
+  threadId: string;
+  turnId?: string;
+  prompt: string;
+  workingDirectory: string;
+  sessionId?: string;
+  permissionMode: PermissionMode;
+  model?: string;
+  startedAtMs: number;
+  eventCount: number;
+  finished: boolean;
+};
+
+type ActiveRunView = {
+  runId: string;
+  turnId: string;
+  startedAtMs: number;
+};
+
+type RunContext = {
+  threadId: string;
+  turnId: string;
+  runId: string;
+  abortController: AbortController | null;
+  terminalRunId: string;
+  workingDirectory: string;
+  pendingAssistantText: string;
+  assistantTextFrame: number | null;
+  traceStartedAtMs: number;
+  firstClientDeltaAtMs: number;
+  firstTextApplyAtMs: number;
+  model: string;
+  permissionMode: PermissionMode;
+};
+
 type UseClaudeRunArgs = {
   activeProjectId: string | null;
   activeProjectPath?: string;
@@ -94,22 +131,21 @@ export function useClaudeRun({
   const [, setHealth] = useState<{ available: boolean; command?: string; error?: string }>({
     available: false,
   });
-  const [backendRunId, setBackendRunId] = useState('');
-  const [isRunning, setIsRunning] = useState(false);
-  const [runningThreadId, setRunningThreadId] = useState<string | null>(null);
+  const [activeRunsByThreadId, setActiveRunsByThreadId] = useState<Record<string, ActiveRunView>>({});
   const [clockNowMs, setClockNowMs] = useState(Date.now());
 
-  const abortRef = useRef<AbortController | null>(null);
-  const backendRunIdRef = useRef('');
+  const runContextsByThreadIdRef = useRef(new Map<string, RunContext>());
+  const runContextsByRunIdRef = useRef(new Map<string, RunContext>());
+  const reconnectingThreadIdsRef = useRef(new Set<string>());
   const activeTurnIdRef = useRef('');
-  const runThreadIdRef = useRef<string | null>(null);
-  const terminalRunIdRef = useRef('');
-  const runWorkingDirectoryRef = useRef('');
-  const pendingAssistantTextRef = useRef('');
-  const assistantTextFrameRef = useRef<number | null>(null);
-  const runTraceStartedAtRef = useRef(0);
-  const firstClientDeltaAtRef = useRef(0);
-  const firstTextApplyAtRef = useRef(0);
+
+  const runningThreadIds = Object.keys(activeRunsByThreadId);
+  const isRunning = runningThreadIds.length > 0;
+  const runningThreadId = runningThreadIds[0] ?? null;
+  const backendRunId = activeThreadId ? activeRunsByThreadId[activeThreadId]?.runId ?? '' : '';
+  const activeTurnIdsByThreadId = Object.fromEntries(
+    Object.entries(activeRunsByThreadId).map(([threadId, run]) => [threadId, run.turnId]),
+  );
 
   useEffect(() => {
     void loadHealth();
@@ -130,7 +166,7 @@ export function useClaudeRun({
   }, [activeThreadSummary?.id, activeThreadSummary?.permissionMode]);
 
   useEffect(() => {
-    if (!isRunning) {
+    if (runningThreadIds.length === 0) {
       return undefined;
     }
 
@@ -140,12 +176,22 @@ export function useClaudeRun({
     }, 1000);
 
     return () => window.clearInterval(timer);
-  }, [isRunning]);
+  }, [runningThreadIds.length]);
+
+  useEffect(() => {
+    if (!activeThreadSummary || runContextsByThreadIdRef.current.has(activeThreadSummary.id)) {
+      return;
+    }
+
+    void reconnectActiveRun(activeThreadSummary);
+  }, [activeThreadSummary?.id]);
 
   useEffect(() => {
     return () => {
-      if (assistantTextFrameRef.current !== null) {
-        window.cancelAnimationFrame(assistantTextFrameRef.current);
+      for (const context of runContextsByThreadIdRef.current.values()) {
+        if (context.assistantTextFrame !== null) {
+          window.cancelAnimationFrame(context.assistantTextFrame);
+        }
       }
     };
   }, []);
@@ -171,7 +217,7 @@ export function useClaudeRun({
       setModels(nextModels);
       setModel((current) => current || nextModels[0] || DEFAULT_MODEL_VALUE);
     } catch (error) {
-      const targetThreadId = runThreadIdRef.current || activeThreadId;
+      const targetThreadId = activeThreadId;
       if (!targetThreadId) {
         return;
       }
@@ -203,54 +249,104 @@ export function useClaudeRun({
     }
   }
 
-  function updateRunningTurn(updater: (turn: ConversationTurn) => ConversationTurn) {
-    const targetThreadId = runThreadIdRef.current || activeThreadId;
-    const activeTurnId = activeTurnIdRef.current;
-    if (!targetThreadId || !activeTurnId) {
+  function updateRunningTurn(context: RunContext, updater: (turn: ConversationTurn) => ConversationTurn) {
+    if (!context.threadId || !context.turnId) {
       return;
     }
 
-    updateThreadTurn(targetThreadId, activeTurnId, updater);
+    updateThreadTurn(context.threadId, context.turnId, updater);
   }
 
-  function setBackendRunIdValue(runId: string) {
-    backendRunIdRef.current = runId;
-    setBackendRunId(runId);
+  function registerRunContext(context: RunContext) {
+    runContextsByThreadIdRef.current.set(context.threadId, context);
+    if (context.runId) {
+      runContextsByRunIdRef.current.set(context.runId, context);
+    }
+    setActiveRunsByThreadId((current) => ({
+      ...current,
+      [context.threadId]: {
+        runId: context.runId,
+        turnId: context.turnId,
+        startedAtMs: context.traceStartedAtMs,
+      },
+    }));
+    if (context.threadId === activeThreadId) {
+      activeTurnIdRef.current = context.turnId;
+    }
+  }
+
+  function updateRunContextRunId(context: RunContext, runId: string) {
+    if (!runId || context.runId === runId) {
+      return;
+    }
+
+    if (context.runId) {
+      runContextsByRunIdRef.current.delete(context.runId);
+    }
+    context.runId = runId;
+    runContextsByRunIdRef.current.set(runId, context);
+    setActiveRunsByThreadId((current) => ({
+      ...current,
+      [context.threadId]: {
+        runId,
+        turnId: context.turnId,
+        startedAtMs: context.traceStartedAtMs,
+      },
+    }));
+  }
+
+  function removeRunContext(context: RunContext) {
+    if (context.assistantTextFrame !== null) {
+      window.cancelAnimationFrame(context.assistantTextFrame);
+      context.assistantTextFrame = null;
+    }
+
+    runContextsByThreadIdRef.current.delete(context.threadId);
+    if (context.runId) {
+      runContextsByRunIdRef.current.delete(context.runId);
+    }
+    setActiveRunsByThreadId((current) => {
+      if (!current[context.threadId]) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[context.threadId];
+      return next;
+    });
+    if (activeThreadId === context.threadId) {
+      activeTurnIdRef.current = '';
+      clearActiveTurnSelection();
+    }
+  }
+
+  function isThreadRunning(threadId: string | null | undefined) {
+    return Boolean(threadId && runContextsByThreadIdRef.current.has(threadId));
   }
 
   function markRunStreamProgress() {
     setClockNowMs(Date.now());
   }
 
-  function appendRunningDebug(event: Omit<DebugEvent, 'id'>) {
-    const targetThreadId = runThreadIdRef.current || activeThreadId;
-    if (!targetThreadId) {
-      return;
-    }
-
-    appendDebug(targetThreadId, event);
+  function appendRunningDebug(context: RunContext, event: Omit<DebugEvent, 'id'>) {
+    appendDebug(context.threadId, event);
   }
 
-  function appendTraceDebug(name: string, atMs = Date.now(), detail?: string) {
-    const startedAtMs = runTraceStartedAtRef.current || atMs;
+  function appendTraceDebug(context: RunContext, name: string, atMs = Date.now(), detail?: string) {
+    const startedAtMs = context.traceStartedAtMs || atMs;
     const elapsedMs = Math.max(0, atMs - startedAtMs);
-    appendRunningDebug({
+    appendRunningDebug(context, {
       title: `Trace: ${name}`,
       content: detail ? `+${elapsedMs}ms\n${detail}` : `+${elapsedMs}ms`,
     });
   }
 
-  function appendRunningRawEvent(line: string) {
-    const targetThreadId = runThreadIdRef.current || activeThreadId;
-    if (!targetThreadId) {
-      return;
-    }
-
-    appendRawEvent(targetThreadId, line);
+  function appendRunningRawEvent(context: RunContext, line: string) {
+    appendRawEvent(context.threadId, line);
   }
 
-  function applyAssistantTextDelta(text: string) {
-    updateRunningTurn((turn) => ({
+  function applyAssistantTextDelta(context: RunContext, text: string) {
+    updateRunningTurn(context, (turn) => ({
       ...turn,
       status: 'running',
       assistantText: `${turn.assistantText}${text}`,
@@ -260,37 +356,37 @@ export function useClaudeRun({
     }));
   }
 
-  function flushQueuedAssistantText() {
-    const text = pendingAssistantTextRef.current;
-    pendingAssistantTextRef.current = '';
-    assistantTextFrameRef.current = null;
+  function flushQueuedAssistantText(context: RunContext) {
+    const text = context.pendingAssistantText;
+    context.pendingAssistantText = '';
+    context.assistantTextFrame = null;
 
     if (text) {
-      applyAssistantTextDelta(text);
-      if (!firstTextApplyAtRef.current) {
-        firstTextApplyAtRef.current = Date.now();
-        appendTraceDebug('client_first_text_apply', firstTextApplyAtRef.current, `${text.length} chars`);
+      applyAssistantTextDelta(context, text);
+      if (!context.firstTextApplyAtMs) {
+        context.firstTextApplyAtMs = Date.now();
+        appendTraceDebug(context, 'client_first_text_apply', context.firstTextApplyAtMs, `${text.length} chars`);
       }
     }
   }
 
-  function flushQueuedAssistantTextNow() {
-    if (assistantTextFrameRef.current !== null) {
-      window.cancelAnimationFrame(assistantTextFrameRef.current);
-      assistantTextFrameRef.current = null;
+  function flushQueuedAssistantTextNow(context: RunContext) {
+    if (context.assistantTextFrame !== null) {
+      window.cancelAnimationFrame(context.assistantTextFrame);
+      context.assistantTextFrame = null;
     }
 
-    flushQueuedAssistantText();
+    flushQueuedAssistantText(context);
   }
 
-  function queueAssistantTextDelta(text: string) {
-    pendingAssistantTextRef.current += text;
+  function queueAssistantTextDelta(context: RunContext, text: string) {
+    context.pendingAssistantText += text;
 
-    if (assistantTextFrameRef.current !== null) {
+    if (context.assistantTextFrame !== null) {
       return;
     }
 
-    assistantTextFrameRef.current = window.requestAnimationFrame(flushQueuedAssistantText);
+    context.assistantTextFrame = window.requestAnimationFrame(() => flushQueuedAssistantText(context));
   }
 
   async function startRun(
@@ -304,7 +400,7 @@ export function useClaudeRun({
     },
   ) {
     const trimmedPrompt = promptText.trim();
-    if (!trimmedPrompt || isRunning) {
+    if (!trimmedPrompt || isThreadRunning(thread.id)) {
       return false;
     }
 
@@ -313,18 +409,25 @@ export function useClaudeRun({
     const runSessionId =
       options?.sessionId && options.sessionId.trim() ? options.sessionId.trim() : undefined;
     const runPermissionMode = options?.permissionModeOverride ?? permissionMode;
+    const runModel = model;
     const submitAtMs = Date.now();
-    runTraceStartedAtRef.current = submitAtMs;
-    firstClientDeltaAtRef.current = 0;
-    firstTextApplyAtRef.current = 0;
-    runWorkingDirectoryRef.current = runWorkingDirectory;
     const turnId = crypto.randomUUID();
-    activeTurnIdRef.current = turnId;
-    runThreadIdRef.current = thread.id;
-    terminalRunIdRef.current = '';
-    setBackendRunIdValue('');
-    setIsRunning(true);
-    setRunningThreadId(thread.id);
+    const context: RunContext = {
+      threadId: thread.id,
+      turnId,
+      runId: '',
+      abortController: null,
+      terminalRunId: '',
+      workingDirectory: runWorkingDirectory,
+      pendingAssistantText: '',
+      assistantTextFrame: null,
+      traceStartedAtMs: submitAtMs,
+      firstClientDeltaAtMs: 0,
+      firstTextApplyAtMs: 0,
+      model: runModel,
+      permissionMode: runPermissionMode,
+    };
+    registerRunContext(context);
     options?.onStarted?.();
     updateThreadDetail(
       thread.id,
@@ -352,11 +455,11 @@ export function useClaudeRun({
     );
 
     const controller = new AbortController();
-    abortRef.current = controller;
+    context.abortController = controller;
 
     try {
-      appendTraceDebug('client_submit', submitAtMs, `${trimmedPrompt.length} chars`);
-      appendTraceDebug('fetch_start');
+      appendTraceDebug(context, 'client_submit', submitAtMs, `${trimmedPrompt.length} chars`);
+      appendTraceDebug(context, 'fetch_start');
       const response = await fetch('/api/claude/run', {
         method: 'POST',
         headers: {
@@ -364,70 +467,40 @@ export function useClaudeRun({
         },
         body: JSON.stringify({
           threadId: thread.id,
+          turnId,
           prompt: trimmedPrompt,
           workingDirectory: runWorkingDirectory,
           permissionMode: runPermissionMode,
-          model: model === DEFAULT_MODEL_VALUE ? undefined : model,
+          model: runModel === DEFAULT_MODEL_VALUE ? undefined : runModel,
           sessionId: runSessionId,
           clientSubmitAtMs: submitAtMs,
         }),
         signal: controller.signal,
       });
-      appendTraceDebug('response_headers');
+      appendTraceDebug(context, 'response_headers');
 
       if (!response.ok || !response.body) {
         const message = await response.text();
-        const targetThreadId = runThreadIdRef.current || activeThreadId;
-        updateRunningTurn((turn) => ({
+        updateRunningTurn(context, (turn) => ({
           ...turn,
           status: 'error',
           durationMs: turn.durationMs ?? getElapsedDuration(turn),
           activity: message || '后端没有返回可读流。',
         }));
-        schedulePersistThreadHistory(targetThreadId);
+        schedulePersistThreadHistory(context.threadId);
         return true;
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let sawTerminalEvent = false;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        for (const line of lines) {
-          const eventPayload = handleStreamLine(line);
-          if (eventPayload?.type === 'done' || eventPayload?.type === 'error') {
-            sawTerminalEvent = true;
-          }
-        }
-      }
-
-      if (buffer.trim()) {
-        const eventPayload = handleStreamLine(buffer);
-        if (eventPayload?.type === 'done' || eventPayload?.type === 'error') {
-          sawTerminalEvent = true;
-        }
-      }
+      const sawTerminalEvent = await consumeClaudeEventStream(response, context);
 
       if (!sawTerminalEvent) {
-        const targetThreadId = runThreadIdRef.current || activeThreadId;
-        flushQueuedAssistantTextNow();
-        updateRunningTurn(closeTurnAfterUnexpectedStreamEnd);
-        schedulePersistThreadHistory(targetThreadId);
+        flushQueuedAssistantTextNow(context);
+        updateRunningTurn(context, closeTurnAfterUnexpectedStreamEnd);
+        schedulePersistThreadHistory(context.threadId);
       }
     } catch (error) {
-      const targetThreadId = runThreadIdRef.current || activeThreadId;
-      flushQueuedAssistantTextNow();
-      updateRunningTurn((turn) => ({
+      flushQueuedAssistantTextNow(context);
+      updateRunningTurn(context, (turn) => ({
         ...turn,
         ...settleRunningToolSteps(turn, error instanceof DOMException && error.name === 'AbortError' ? 'done' : 'error'),
         status: error instanceof DOMException && error.name === 'AbortError' ? 'stopped' : 'error',
@@ -442,34 +515,170 @@ export function useClaudeRun({
                   undefined,
               ),
       }));
-      schedulePersistThreadHistory(targetThreadId);
+      schedulePersistThreadHistory(context.threadId);
     } finally {
-      abortRef.current = null;
-      setIsRunning(false);
-      setRunningThreadId(null);
-      setBackendRunIdValue('');
-      runThreadIdRef.current = null;
-      terminalRunIdRef.current = '';
-      clearActiveTurnSelection();
+      context.abortController = null;
+      removeRunContext(context);
     }
 
     return true;
   }
 
-  function handleStreamLine(line: string) {
+  async function reconnectActiveRun(thread: ThreadSummary) {
+    if (reconnectingThreadIdsRef.current.has(thread.id) || runContextsByThreadIdRef.current.has(thread.id)) {
+      return;
+    }
+
+    reconnectingThreadIdsRef.current.add(thread.id);
+    let context: RunContext | null = null;
+    let retainContext = false;
+    try {
+      const activeResponse = await fetch(`/api/claude/runs/active/${encodeURIComponent(thread.id)}`);
+      if (activeResponse.status === 404) {
+        return;
+      }
+      if (!activeResponse.ok) {
+        return;
+      }
+
+      const activeRun = (await activeResponse.json()) as ActiveRunInfo | { active: false };
+      if (!activeRun.active || !activeRun.turnId) {
+        return;
+      }
+
+      const startedAtMs = activeRun.startedAtMs || Date.now();
+      context = {
+        threadId: thread.id,
+        turnId: activeRun.turnId,
+        runId: activeRun.runId,
+        abortController: null,
+        terminalRunId: '',
+        workingDirectory: activeRun.workingDirectory || thread.workingDirectory,
+        pendingAssistantText: '',
+        assistantTextFrame: null,
+        traceStartedAtMs: startedAtMs,
+        firstClientDeltaAtMs: 0,
+        firstTextApplyAtMs: 0,
+        model: activeRun.model || model,
+        permissionMode: activeRun.permissionMode || permissionMode,
+      };
+      registerRunContext(context);
+
+      updateThreadDetail(thread.id, (existing) => {
+        const replayTurn: ConversationTurn = {
+          id: activeRun.turnId ?? crypto.randomUUID(),
+          backendRunId: activeRun.runId,
+          userText: activeRun.prompt,
+          workspace: activeRun.workingDirectory || thread.workingDirectory,
+          assistantText: '',
+          tools: [],
+          items: [],
+          status: 'running',
+          activity: activeRun.finished ? '同步后台输出' : '重新连接 Claude 输出',
+          phase: activeRun.finished ? 'computing' : 'requesting',
+          startedAtMs,
+          sessionId: activeRun.sessionId,
+          pendingUserInputRequests: [],
+          pendingApprovalRequests: [],
+        };
+        const turns = existing.turns.some((turn) => turn.id === replayTurn.id)
+          ? existing.turns.map((turn) => (turn.id === replayTurn.id ? replayTurn : turn))
+          : [...closeDanglingTurns(existing.turns), replayTurn];
+
+        return {
+          ...existing,
+          turns,
+        };
+      }, thread);
+      appendDebug(thread.id, {
+        title: '已重新连接后台运行',
+        content: `${activeRun.runId}\n${activeRun.eventCount} buffered events`,
+      });
+
+      const eventsResponse = await fetch(`/api/claude/run/${encodeURIComponent(activeRun.runId)}/events?after=0`);
+      if (!eventsResponse.ok || !eventsResponse.body) {
+        showToast('后台运行仍在，但事件流重连失败。', 'error');
+        retainContext = true;
+        return;
+      }
+
+      const sawTerminalEvent = await consumeClaudeEventStream(eventsResponse, context);
+      if (!sawTerminalEvent && !activeRun.finished) {
+        flushQueuedAssistantTextNow(context);
+        updateRunningTurn(context, (turn) => ({
+          ...turn,
+          activity: '后台运行仍在，事件流暂时断开',
+        }));
+        retainContext = true;
+      }
+
+      if (sawTerminalEvent || activeRun.finished) {
+        await fetch(`/api/claude/run/${encodeURIComponent(activeRun.runId)}/ack`, {
+          method: 'POST',
+        }).catch(() => undefined);
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '后台运行重连失败', 'error');
+    } finally {
+      reconnectingThreadIdsRef.current.delete(thread.id);
+      if (context && !retainContext) {
+        removeRunContext(context);
+      }
+    }
+  }
+
+  async function consumeClaudeEventStream(response: Response, context: RunContext) {
+    if (!response.body) {
+      return false;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let sawTerminalEvent = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        const eventPayload = handleStreamLine(line, context);
+        if (eventPayload?.type === 'done' || eventPayload?.type === 'error') {
+          sawTerminalEvent = true;
+        }
+      }
+    }
+
+    if (buffer.trim()) {
+      const eventPayload = handleStreamLine(buffer, context);
+      if (eventPayload?.type === 'done' || eventPayload?.type === 'error') {
+        sawTerminalEvent = true;
+      }
+    }
+
+    return sawTerminalEvent;
+  }
+
+  function handleStreamLine(line: string, context: RunContext) {
     if (!line.trim()) {
       return null;
     }
 
     markRunStreamProgress();
-    appendRunningRawEvent(line);
+    appendRunningRawEvent(context, line);
 
     try {
       const eventPayload = JSON.parse(line) as ClaudeEvent;
-      handleClaudeEvent(eventPayload);
+      handleClaudeEvent(eventPayload, context);
       return eventPayload;
     } catch (error) {
-      appendRunningDebug({
+      appendRunningDebug(context, {
         title: '事件解析失败',
         content: error instanceof Error ? error.message : '无法解析后端事件',
         tone: 'error',
@@ -478,9 +687,9 @@ export function useClaudeRun({
     }
   }
 
-  function handleClaudeEvent(event: ClaudeEvent) {
+  function handleClaudeEvent(event: ClaudeEvent, context: RunContext) {
     const eventRunId = 'runId' in event ? event.runId : '';
-    if (eventRunId && terminalRunIdRef.current === eventRunId) {
+    if (eventRunId && context.terminalRunId === eventRunId) {
       return;
     }
 
@@ -496,12 +705,12 @@ export function useClaudeRun({
       event.type === 'done' ||
       event.type === 'error'
     ) {
-      flushQueuedAssistantTextNow();
+      flushQueuedAssistantTextNow(context);
     }
 
     if ('runId' in event && event.runId) {
-      setBackendRunIdValue(event.runId);
-      updateRunningTurn((turn) => ({
+      updateRunContextRunId(context, event.runId);
+      updateRunningTurn(context, (turn) => ({
         ...turn,
         backendRunId: event.runId,
         status: turn.status === 'pending' ? 'running' : turn.status,
@@ -509,7 +718,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'trace') {
-      appendRunningDebug({
+      appendRunningDebug(context, {
         title: `Trace: ${event.name}`,
         content: event.detail ? `+${event.elapsedMs}ms\n${event.detail}` : `+${event.elapsedMs}ms`,
       });
@@ -517,7 +726,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'raw') {
-      appendRunningDebug({
+      appendRunningDebug(context, {
         title: 'Raw Event',
         content: formatJson(event.raw),
       });
@@ -525,13 +734,13 @@ export function useClaudeRun({
     }
 
     if (event.type === 'status') {
-      updateRunningTurn((turn) => ({
+      updateRunningTurn(context, (turn) => ({
         ...turn,
         status: 'running',
         activity: event.message.includes('已接收用户消息') ? 'Claude Code 已接收用户消息' : 'Claude Code 已启动',
         phase: 'requesting',
       }));
-      appendRunningDebug({
+      appendRunningDebug(context, {
         title: '启动运行',
         content: event.message,
       });
@@ -539,7 +748,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'phase') {
-      updateRunningTurn((turn) => ({
+      updateRunningTurn(context, (turn) => ({
         ...turn,
         status: turn.status === 'pending' ? 'running' : turn.status,
         phase: event.phase,
@@ -550,7 +759,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'usage') {
-      updateRunningTurn((turn) => ({
+      updateRunningTurn(context, (turn) => ({
         ...turn,
         ...mergeUsageSnapshot(turn, event),
       }));
@@ -558,17 +767,12 @@ export function useClaudeRun({
     }
 
     if (event.type === 'session') {
-      const targetThreadId = runThreadIdRef.current || activeThreadId;
-      if (!targetThreadId) {
-        return;
-      }
-
-      updateRunningTurn((turn) => ({
+      updateRunningTurn(context, (turn) => ({
         ...turn,
         sessionId: event.sessionId,
       }));
-      void persistThreadMetadata(targetThreadId, { sessionId: event.sessionId });
-      appendRunningDebug({
+      void persistThreadMetadata(context.threadId, { sessionId: event.sessionId });
+      appendRunningDebug(context, {
         title: 'Session 已绑定',
         content: event.sessionId,
       });
@@ -577,13 +781,13 @@ export function useClaudeRun({
 
     if (event.type === 'claude-event') {
       if (event.status === 'requesting') {
-        updateRunningTurn((turn) => ({
+        updateRunningTurn(context, (turn) => ({
           ...turn,
           activity: '等待 Claude 响应',
         }));
       }
 
-      appendRunningDebug({
+      appendRunningDebug(context, {
         title: event.label,
         content: formatJson(event.raw),
       });
@@ -591,13 +795,13 @@ export function useClaudeRun({
     }
 
     if (event.type === 'request-user-input') {
-      updateRunningTurn((turn) => ({
+      updateRunningTurn(context, (turn) => ({
         ...turn,
         status: turn.status === 'pending' ? 'running' : turn.status,
         activity: event.request.title || '等待补充输入',
         pendingUserInputRequests: upsertRequestUserInput(turn.pendingUserInputRequests, event.request),
       }));
-      appendRunningDebug({
+      appendRunningDebug(context, {
         title: '请求用户输入',
         content: formatJson(event.request),
       });
@@ -605,13 +809,13 @@ export function useClaudeRun({
     }
 
     if (event.type === 'approval-request') {
-      updateRunningTurn((turn) => ({
+      updateRunningTurn(context, (turn) => ({
         ...turn,
         status: turn.status === 'pending' ? 'running' : turn.status,
         activity: event.request.title || '等待批准',
         pendingApprovalRequests: upsertApprovalRequest(turn.pendingApprovalRequests, event.request),
       }));
-      appendRunningDebug({
+      appendRunningDebug(context, {
         title: '批准请求',
         content: formatJson(event.request),
       });
@@ -619,11 +823,11 @@ export function useClaudeRun({
     }
 
     if (event.type === 'runtime-reconnect-hint') {
-      updateRunningTurn((turn) => ({
+      updateRunningTurn(context, (turn) => ({
         ...turn,
         recoveryHint: event.hint,
       }));
-      appendRunningDebug({
+      appendRunningDebug(context, {
         title: '运行恢复提示',
         content: formatRuntimeRecoveryHintDebug(event.hint),
         tone: 'error',
@@ -632,11 +836,11 @@ export function useClaudeRun({
     }
 
     if (event.type === 'retryable-error') {
-      updateRunningTurn((turn) => ({
+      updateRunningTurn(context, (turn) => ({
         ...turn,
         recoveryHint: event.hint,
       }));
-      appendRunningDebug({
+      appendRunningDebug(context, {
         title: '可恢复错误',
         content: formatRuntimeRecoveryHintDebug(event.hint),
         tone: 'error',
@@ -645,16 +849,16 @@ export function useClaudeRun({
     }
 
     if (event.type === 'delta') {
-      if (!firstClientDeltaAtRef.current) {
-        firstClientDeltaAtRef.current = Date.now();
-        appendTraceDebug('client_first_delta_received', firstClientDeltaAtRef.current, `${event.text.length} chars`);
+      if (!context.firstClientDeltaAtMs) {
+        context.firstClientDeltaAtMs = Date.now();
+        appendTraceDebug(context, 'client_first_delta_received', context.firstClientDeltaAtMs, `${event.text.length} chars`);
       }
-      queueAssistantTextDelta(event.text);
+      queueAssistantTextDelta(context, event.text);
       return;
     }
 
     if (event.type === 'tool-start') {
-      updateRunningTurn((turn) => {
+      updateRunningTurn(context, (turn) => {
         const step = createToolStep(event);
         const tools = upsertToolStep(turn.tools, step);
         return {
@@ -670,7 +874,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'tool-input-delta') {
-      updateRunningTurn((turn) => {
+      updateRunningTurn(context, (turn) => {
         const tools = upsertToolDelta(turn.tools, event);
         const toolIndex = findLatestToolIndex(tools, event.blockIndex);
         const tool = toolIndex >= 0 ? tools[toolIndex] : undefined;
@@ -685,7 +889,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'tool-stop') {
-      updateRunningTurn((turn) => {
+      updateRunningTurn(context, (turn) => {
         const index = findLatestToolIndex(turn.tools, event.blockIndex);
         const tools =
           index === -1
@@ -706,7 +910,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'tool-result') {
-      updateRunningTurn((turn) => {
+      updateRunningTurn(context, (turn) => {
         const toolIndex = findToolResultIndex(turn.tools, event);
         const tools = attachToolResult(turn.tools, event);
         const tool =
@@ -729,7 +933,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'assistant-snapshot') {
-      appendRunningDebug({
+      appendRunningDebug(context, {
         title: `Assistant Message Snapshot (${event.blocks.length} blocks)`,
         content: formatJson(event.blocks),
       });
@@ -737,7 +941,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'stderr') {
-      appendRunningDebug({
+      appendRunningDebug(context, {
         title: 'stderr',
         content: event.text,
         tone: 'error',
@@ -746,28 +950,26 @@ export function useClaudeRun({
     }
 
     if (event.type === 'error') {
-      terminalRunIdRef.current = event.runId;
-      const targetThreadId = runThreadIdRef.current || activeThreadId;
-      updateRunningTurn((turn) => ({
+      context.terminalRunId = event.runId;
+      updateRunningTurn(context, (turn) => ({
         ...turn,
         ...settleRunningToolSteps(turn, 'error'),
         status: 'error',
         durationMs: turn.durationMs ?? getElapsedDuration(turn),
         activity: formatRuntimeErrorActivity(event.message, turn.recoveryHint),
       }));
-      appendRunningDebug({
+      appendRunningDebug(context, {
         title: 'Claude 运行异常',
         content: event.message,
         tone: 'error',
       });
-      schedulePersistThreadHistory(targetThreadId);
+      schedulePersistThreadHistory(context.threadId);
       return;
     }
 
     if (event.type === 'done') {
-      terminalRunIdRef.current = event.runId;
-      const targetThreadId = runThreadIdRef.current || activeThreadId;
-      updateRunningTurn((turn) => {
+      context.terminalRunId = event.runId;
+      updateRunningTurn(context, (turn) => {
         if (turn.status === 'error' || turn.status === 'stopped') {
           return turn;
         }
@@ -805,27 +1007,31 @@ export function useClaudeRun({
           status: 'done',
         };
       });
-      if (targetThreadId) {
-        void persistThreadMetadata(targetThreadId, {
+      if (context.threadId) {
+        void persistThreadMetadata(context.threadId, {
           sessionId: event.sessionId,
-          model: model === DEFAULT_MODEL_VALUE ? undefined : model,
-          permissionMode,
-          workingDirectory:
-            runWorkingDirectoryRef.current || workspace.trim() || activeThreadSummary?.workingDirectory,
+          model: context.model === DEFAULT_MODEL_VALUE ? undefined : context.model,
+          permissionMode: context.permissionMode,
+          workingDirectory: context.workingDirectory,
         });
       }
-      schedulePersistThreadHistory(targetThreadId);
+      schedulePersistThreadHistory(context.threadId);
     }
   }
 
   async function submitPrompt(promptText: string) {
     const trimmedPrompt = promptText.trim();
-    if (!trimmedPrompt || isRunning) {
+    if (!trimmedPrompt) {
       return false;
     }
 
     const thread = await ensureActiveThread();
     if (!thread) {
+      return false;
+    }
+
+    if (isThreadRunning(thread.id)) {
+      showToast('当前聊天正在运行，请等待结束或先停止。', 'info');
       return false;
     }
 
@@ -843,18 +1049,21 @@ export function useClaudeRun({
     }
   }
 
-  async function stopRun() {
-    abortRef.current?.abort();
-    const currentRunId = backendRunIdRef.current || backendRunId;
+  async function stopRun(threadId = activeThreadId ?? undefined) {
+    const context = threadId ? runContextsByThreadIdRef.current.get(threadId) : undefined;
+    if (!context) {
+      return;
+    }
+
+    const hadLocalStream = Boolean(context.abortController);
+    context.abortController?.abort();
+    const currentRunId = context.runId;
 
     if (!currentRunId) {
-      const targetThreadId = runThreadIdRef.current || activeThreadId;
-      flushQueuedAssistantTextNow();
-      updateRunningTurn(closeTurnWithoutTerminalEvent);
-      schedulePersistThreadHistory(targetThreadId);
-      clearActiveTurnSelection();
-      setIsRunning(false);
-      setRunningThreadId(null);
+      flushQueuedAssistantTextNow(context);
+      updateRunningTurn(context, closeTurnWithoutTerminalEvent);
+      schedulePersistThreadHistory(context.threadId);
+      removeRunContext(context);
       return;
     }
 
@@ -863,13 +1072,25 @@ export function useClaudeRun({
         method: 'DELETE',
       });
     } catch {
-      appendRunningDebug({
+      appendRunningDebug(context, {
         title: '取消请求未确认',
         content: '前端已停止等待，但后端取消请求未确认完成。',
         tone: 'error',
       });
     } finally {
-      clearActiveTurnSelection();
+      if (!hadLocalStream) {
+        flushQueuedAssistantTextNow(context);
+        updateRunningTurn(context, (turn) => ({
+          ...turn,
+          ...settleRunningToolSteps(turn, 'done'),
+          status: 'stopped',
+          phase: undefined,
+          durationMs: turn.durationMs ?? getElapsedDuration(turn),
+          activity: '已停止当前运行',
+        }));
+        schedulePersistThreadHistory(context.threadId);
+        removeRunContext(context);
+      }
     }
   }
 
@@ -878,13 +1099,13 @@ export function useClaudeRun({
     request: RequestUserInputRequest,
     answers: Record<string, string>,
   ) {
-    if (isRunning) {
-      showToast('当前仍有运行中的请求，请先等待结束或停止后再提交。', 'info');
+    if (!activeThreadId || !activeThreadSummary || activeThreadSummary.id !== activeThreadId) {
+      showToast('当前线程状态不可用，请重新选择聊天后重试。', 'error');
       return false;
     }
 
-    if (!activeThreadId || !activeThreadSummary || activeThreadSummary.id !== activeThreadId) {
-      showToast('当前线程状态不可用，请重新选择聊天后重试。', 'error');
+    if (isThreadRunning(activeThreadId)) {
+      showToast('当前聊天正在运行，请等待结束或先停止。', 'info');
       return false;
     }
 
@@ -924,13 +1145,13 @@ export function useClaudeRun({
     turn: ConversationTurn,
     action: RuntimeSuggestedAction,
   ) {
-    if (isRunning) {
-      showToast('当前仍有运行中的请求，请先等待结束或停止后再操作。', 'info');
+    if (!activeThreadId || !activeThreadSummary || activeThreadSummary.id !== activeThreadId) {
+      showToast('当前线程状态不可用，请重新选择聊天后重试。', 'error');
       return false;
     }
 
-    if (!activeThreadId || !activeThreadSummary || activeThreadSummary.id !== activeThreadId) {
-      showToast('当前线程状态不可用，请重新选择聊天后重试。', 'error');
+    if (isThreadRunning(activeThreadId)) {
+      showToast('当前聊天正在运行，请等待结束或先停止。', 'info');
       return false;
     }
 
@@ -975,13 +1196,13 @@ export function useClaudeRun({
     request: ApprovalRequest,
     decision: ApprovalDecision,
   ) {
-    if (isRunning) {
-      showToast('当前仍有运行中的请求，请先等待结束或停止后再操作。', 'info');
+    if (!activeThreadId || !activeThreadSummary || activeThreadSummary.id !== activeThreadId) {
+      showToast('当前线程状态不可用，请重新选择聊天后重试。', 'error');
       return false;
     }
 
-    if (!activeThreadId || !activeThreadSummary || activeThreadSummary.id !== activeThreadId) {
-      showToast('当前线程状态不可用，请重新选择聊天后重试。', 'error');
+    if (isThreadRunning(activeThreadId)) {
+      showToast('当前聊天正在运行，请等待结束或先停止。', 'info');
       return false;
     }
 
@@ -1022,6 +1243,9 @@ export function useClaudeRun({
     backendRunId,
     isRunning,
     runningThreadId,
+    runningThreadIds,
+    activeRunsByThreadId,
+    activeTurnIdsByThreadId,
     clockNowMs,
     activeTurnIdRef,
     setWorkspace,

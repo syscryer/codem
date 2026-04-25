@@ -329,6 +329,14 @@ export function summarizeToolRow(tool: ToolStep) {
     return `${tool.status === 'error' ? 'Error' : 'Done'} (${usageSummary})`;
   }
 
+  if (tool.name === 'Agent' || tool.name === 'Task') {
+    if (tool.status === 'running') {
+      return 'Running';
+    }
+
+    return tool.status === 'error' ? 'Error' : 'Done';
+  }
+
   if (tool.resultText?.trim()) {
     const firstLine = extractToolResultSummary(tool.resultText);
     return tool.isError ? `Error: ${firstLine}` : firstLine;
