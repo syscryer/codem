@@ -161,6 +161,34 @@ export type DebugEvent = {
   tone?: 'neutral' | 'error';
 };
 
+export type SettingsSection =
+  | 'basic'
+  | 'appearance'
+  | 'shortcuts'
+  | 'providers'
+  | 'usage'
+  | 'sessions'
+  | 'mcp'
+  | 'skills'
+  | 'globalPrompts'
+  | 'openWith';
+
+export type ThemeMode = 'system' | 'light' | 'dark';
+export type InterfaceDensity = 'comfortable' | 'compact';
+export type SidebarWidthMode = 'narrow' | 'default' | 'wide';
+
+export type AppearanceSettings = {
+  themeMode: ThemeMode;
+  density: InterfaceDensity;
+  uiFontSize: 12 | 13 | 14 | 15;
+  codeFontSize: 12 | 13 | 14;
+  sidebarWidth: SidebarWidthMode;
+};
+
+export type AppSettings = {
+  appearance: AppearanceSettings;
+};
+
 export type ThreadSummary = {
   id: string;
   projectId: string;
