@@ -3185,6 +3185,54 @@ svg {
   min-width: 0;
 }
 
+.settings-open-target-list {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-open-target-row {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid #ededed;
+  border-radius: 8px;
+  background: #fbfbfb;
+}
+
+.settings-open-target-row > img {
+  width: 18px;
+  height: 18px;
+  justify-self: center;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
+.settings-open-target-row > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.settings-open-target-row strong {
+  overflow: hidden;
+  color: #303030;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-open-target-row small {
+  overflow: hidden;
+  color: #888888;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .settings-action-button,
 .settings-icon-button {
   border: 1px solid #dedede;
