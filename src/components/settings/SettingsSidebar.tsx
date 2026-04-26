@@ -24,7 +24,7 @@ const settingsSections: Array<{ id: SettingsSection; label: string; icon: typeof
   { id: 'basic', label: '基础设置', icon: Settings },
   { id: 'appearance', label: '外观', icon: Palette },
   { id: 'shortcuts', label: '快捷键', icon: Keyboard },
-  { id: 'providers', label: '供应商管理', icon: Box },
+  { id: 'providers', label: '模型设置', icon: Box },
   { id: 'usage', label: '使用情况', icon: BarChart3 },
   { id: 'sessions', label: '会话管理', icon: MessageSquareText },
   { id: 'mcp', label: 'MCP 管理', icon: Server },

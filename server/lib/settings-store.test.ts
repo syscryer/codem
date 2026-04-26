@@ -74,6 +74,81 @@ test('normalizeAppSettings preserves valid appearance values', () => {
       codeFontSize: 14,
       sidebarWidth: 'wide',
     },
+    models: defaultAppSettings.models,
+  });
+});
+
+test('normalizeAppSettings preserves valid model settings', () => {
+  const settings = normalizeAppSettings({
+    models: {
+      customModels: [
+        {
+          id: 'anthropic/claude-sonnet-4.5',
+          label: 'Sonnet',
+          description: 'Primary model',
+        },
+      ],
+      defaultModelId: 'anthropic/claude-sonnet-4.5',
+    },
+  });
+
+  assert.deepEqual(settings.models, {
+    customModels: [
+      {
+        id: 'anthropic/claude-sonnet-4.5',
+        label: 'Sonnet',
+        description: 'Primary model',
+      },
+    ],
+    defaultModelId: 'anthropic/claude-sonnet-4.5',
+  });
+});
+
+test('normalizeAppSettings filters invalid and duplicate custom models', () => {
+  const settings = normalizeAppSettings({
+    models: {
+      customModels: [
+        { id: ' custom/model ' },
+        { id: 'custom/model', label: 'Duplicate' },
+        { id: 'has spaces' },
+        { id: '' },
+        { id: 'x'.repeat(161) },
+        { id: 'provider/model:202604[beta]', label: '  Beta  ', description: '  Experimental  ' },
+      ],
+      defaultModelId: 'missing/model',
+    },
+  });
+
+  assert.deepEqual(settings.models, {
+    customModels: [
+      { id: 'custom/model' },
+      { id: 'provider/model:202604[beta]', label: 'Beta', description: 'Experimental' },
+    ],
+    defaultModelId: '__default',
+  });
+});
+
+test('updateModelSettings writes formatted JSON and can read it back', () => {
+  withTemporaryDirectory((directory) => {
+    const store = createSettingsStore(directory);
+
+    const settings = store.updateModelSettings({
+      customModels: [{ id: 'custom/model' }],
+      defaultModelId: 'custom/model',
+    });
+
+    const expected = {
+      appearance: defaultAppSettings.appearance,
+      models: {
+        customModels: [{ id: 'custom/model' }],
+        defaultModelId: 'custom/model',
+      },
+    };
+    const serialized = readFileSync(path.join(directory, 'settings.json'), 'utf8');
+
+    assert.deepEqual(settings, expected);
+    assert.equal(serialized, `${JSON.stringify(expected, null, 2)}\n`);
+    assert.deepEqual(store.getAppSettings(), expected);
   });
 });
 
@@ -233,6 +308,7 @@ test('getAppSettings fills defaults for missing appearance fields', () => {
         themeMode: 'dark',
         uiFontSize: 15,
       },
+      models: defaultAppSettings.models,
     });
   });
 });
@@ -257,6 +333,7 @@ test('updateAppearanceSettings writes formatted JSON and can read it back', () =
         codeFontSize: 13,
         sidebarWidth: 'narrow',
       },
+      models: defaultAppSettings.models,
     };
     const serialized = readFileSync(path.join(directory, 'settings.json'), 'utf8');
 

@@ -85,12 +85,13 @@ export default function App() {
   const [appView, setAppView] = useState<{ kind: 'workspace' } | { kind: 'settings'; section: SettingsSection }>({
     kind: 'workspace',
   });
-  const { appearance, updateAppearance } = useAppSettings(showToast);
+  const { appearance, models: appModelSettings, updateAppearance, updateModels } = useAppSettings(showToast);
   const wasRunningRef = useRef(false);
   const {
     permissionMode,
     model,
     models,
+    claudeModels,
     isRunning,
     runningThreadIds,
     activeTurnIdsByThreadId,
@@ -110,6 +111,7 @@ export default function App() {
     activeProjectPath: activeProject?.path,
     activeThreadId,
     activeThreadSummary,
+    appModelSettings,
     createThread,
     handlePickProjectDirectory,
     showToast,
@@ -256,8 +258,11 @@ export default function App() {
         <SettingsView
           activeSection={appView.section}
           appearance={appearance}
+          models={appModelSettings}
+          claudeModels={claudeModels}
           onSelectSection={(section) => setAppView({ kind: 'settings', section })}
           onUpdateAppearance={updateAppearance}
+          onUpdateModels={updateModels}
           onReturnWorkspace={returnWorkspace}
         />
       ) : (

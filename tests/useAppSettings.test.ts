@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { AppSettings, AppearanceSettings } from '../src/types';
+import type { AppSettings, AppearanceSettings, ModelSettings } from '../src/types';
 import {
   createLatestAppearanceSaveQueue,
   defaultAppearanceSettings,
+  defaultModelSettings,
   resolveAppearanceUpdate,
+  resolveModelSettingsUpdate,
 } from '../src/hooks/useAppSettings';
 
 test('resolveAppearanceUpdate merges patches against the latest appearance', () => {
@@ -22,6 +24,34 @@ test('resolveAppearanceUpdate accepts updater functions', () => {
 
   assert.equal(next.uiFontSize, 14);
   assert.equal(next.codeFontSize, defaultAppearanceSettings.codeFontSize);
+});
+
+test('resolveModelSettingsUpdate merges patches against the latest model settings', () => {
+  const current: ModelSettings = {
+    customModels: [{ id: 'custom/model' }],
+    defaultModelId: 'custom/model',
+  };
+
+  const next = resolveModelSettingsUpdate(current, {
+    customModels: [...current.customModels, { id: 'other/model' }],
+  });
+
+  assert.deepEqual(next, {
+    customModels: [{ id: 'custom/model' }, { id: 'other/model' }],
+    defaultModelId: 'custom/model',
+  });
+});
+
+test('resolveModelSettingsUpdate normalizes duplicate custom models and stale defaults', () => {
+  const next = resolveModelSettingsUpdate(defaultModelSettings, {
+    customModels: [{ id: ' custom/model ' }, { id: 'custom/model' }, { id: 'bad model' }],
+    defaultModelId: 'missing/model',
+  });
+
+  assert.deepEqual(next, {
+    customModels: [{ id: 'custom/model' }],
+    defaultModelId: '__default',
+  });
 });
 
 test('createLatestAppearanceSaveQueue writes the latest pending appearance last', async () => {

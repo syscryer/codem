@@ -185,8 +185,20 @@ export type AppearanceSettings = {
   sidebarWidth: SidebarWidthMode;
 };
 
+export type CustomModel = {
+  id: string;
+  label?: string;
+  description?: string;
+};
+
+export type ModelSettings = {
+  customModels: CustomModel[];
+  defaultModelId: string;
+};
+
 export type AppSettings = {
   appearance: AppearanceSettings;
+  models: ModelSettings;
 };
 
 export type ThreadSummary = {
@@ -258,6 +270,54 @@ export type ClaudeModelInfo = {
   available: boolean;
   models: string[];
   error?: string;
+};
+
+export type ClaudeGlobalPrompt = {
+  path: string;
+  content: string;
+  exists: boolean;
+  updatedAt?: string;
+  length: number;
+};
+
+export type McpServerSummary = {
+  id: string;
+  name: string;
+  source: string;
+  status: 'available' | 'unknown' | 'error';
+  tools: Array<{ name: string; description?: string }>;
+  command?: string;
+  args?: string[];
+  error?: string;
+};
+
+export type McpSourceError = {
+  source: string;
+  path: string;
+  message: string;
+};
+
+export type McpServersResponse = {
+  servers: McpServerSummary[];
+  errors: McpSourceError[];
+};
+
+export type SkillSummary = {
+  id: string;
+  name: string;
+  description?: string;
+  path: string;
+  source: 'user' | 'plugin' | 'project' | 'system' | 'unknown';
+};
+
+export type SkillScanError = {
+  path: string;
+  message: string;
+};
+
+export type SkillsResponse = {
+  skills: SkillSummary[];
+  errors: SkillScanError[];
 };
 
 export type InputDialogState =

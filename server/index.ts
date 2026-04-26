@@ -41,7 +41,14 @@ import {
 import {
   getAppSettings,
   updateAppearanceSettings,
+  updateModelSettings,
 } from './lib/settings-store.js';
+import {
+  readClaudeGlobalPrompt,
+  saveClaudeGlobalPrompt,
+} from './lib/claude-global-prompt.js';
+import { listMcpServers } from './lib/mcp-inspector.js';
+import { listSkills } from './lib/skills-scanner.js';
 import { selectDirectory } from './lib/system-dialog.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -65,6 +72,25 @@ app.get('/api/claude/models', (_request, response) => {
   response.json(getClaudeModels());
 });
 
+app.get('/api/claude/system-prompt', (_request, response) => {
+  try {
+    response.json(readClaudeGlobalPrompt());
+  } catch (error) {
+    console.error('读取 Claude 全局提示词失败', error);
+    response.status(500).json({ error: '读取 Claude 全局提示词失败' });
+  }
+});
+
+app.put('/api/claude/system-prompt', (request, response) => {
+  try {
+    response.json(saveClaudeGlobalPrompt(request.body?.content));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '保存 Claude 全局提示词失败';
+    console.error('保存 Claude 全局提示词失败', error);
+    response.status(400).json({ error: message });
+  }
+});
+
 app.get('/api/settings', (_request, response) => {
   try {
     response.json(getAppSettings());
@@ -80,6 +106,33 @@ app.put('/api/settings/appearance', (request, response) => {
   } catch (error) {
     console.error('保存外观设置失败', error);
     response.status(500).json({ error: '保存外观设置失败' });
+  }
+});
+
+app.put('/api/settings/models', (request, response) => {
+  try {
+    response.json(updateModelSettings(request.body));
+  } catch (error) {
+    console.error('保存模型设置失败', error);
+    response.status(500).json({ error: '保存模型设置失败' });
+  }
+});
+
+app.get('/api/mcp/servers', (_request, response) => {
+  try {
+    response.json(listMcpServers());
+  } catch (error) {
+    console.error('读取 MCP 配置失败', error);
+    response.status(500).json({ error: '读取 MCP 配置失败' });
+  }
+});
+
+app.get('/api/skills', (_request, response) => {
+  try {
+    response.json(listSkills({ projectDirectory: projectRoot }));
+  } catch (error) {
+    console.error('读取 Skills 失败', error);
+    response.status(500).json({ error: '读取 Skills 失败' });
   }
 });
 

@@ -15,8 +15,20 @@ export type AppearanceSettings = {
   sidebarWidth: SidebarWidthMode;
 };
 
+export type CustomModel = {
+  id: string;
+  label?: string;
+  description?: string;
+};
+
+export type ModelSettings = {
+  customModels: CustomModel[];
+  defaultModelId: string;
+};
+
 export type AppSettings = {
   appearance: AppearanceSettings;
+  models: ModelSettings;
 };
 
 const SETTINGS_FILE_NAME = 'settings.json';
@@ -41,8 +53,14 @@ export const defaultAppearanceSettings: AppearanceSettings = {
   sidebarWidth: 'default',
 };
 
+export const defaultModelSettings: ModelSettings = {
+  customModels: [],
+  defaultModelId: '__default',
+};
+
 export const defaultAppSettings: AppSettings = {
   appearance: defaultAppearanceSettings,
+  models: defaultModelSettings,
 };
 
 let defaultSettingsStore: ReturnType<typeof createSettingsStore> | undefined;
@@ -53,6 +71,10 @@ export function getAppSettings(): AppSettings {
 
 export function updateAppearanceSettings(nextAppearance: unknown): AppSettings {
   return getDefaultSettingsStore().updateAppearanceSettings(nextAppearance);
+}
+
+export function updateModelSettings(nextModels: unknown): AppSettings {
+  return getDefaultSettingsStore().updateModelSettings(nextModels);
 }
 
 function getDefaultSettingsStore() {
@@ -85,9 +107,20 @@ export function createSettingsStore(
     return next;
   }
 
+  function updateStoreModelSettings(nextModels: unknown): AppSettings {
+    const current = getStoreAppSettings();
+    const next = normalizeAppSettings({
+      ...current,
+      models: nextModels,
+    });
+    writeSettingsFile(directory, settingsPath, next, fileSystem);
+    return next;
+  }
+
   return {
     getAppSettings: getStoreAppSettings,
     updateAppearanceSettings: updateStoreAppearanceSettings,
+    updateModelSettings: updateStoreModelSettings,
   };
 }
 
@@ -95,6 +128,7 @@ export function normalizeAppSettings(value: unknown): AppSettings {
   const record = isRecord(value) ? value : {};
   return {
     appearance: normalizeAppearanceSettings(record.appearance),
+    models: normalizeModelSettings(record.models),
   };
 }
 
@@ -107,6 +141,81 @@ function normalizeAppearanceSettings(value: unknown): AppearanceSettings {
     codeFontSize: normalizeNumber(record.codeFontSize, [12, 13, 14], defaultAppearanceSettings.codeFontSize),
     sidebarWidth: normalizeEnum(record.sidebarWidth, ['narrow', 'default', 'wide'], defaultAppearanceSettings.sidebarWidth),
   };
+}
+
+function normalizeModelSettings(value: unknown): ModelSettings {
+  const record = isRecord(value) ? value : {};
+  const customModels = normalizeCustomModels(record.customModels);
+  const defaultModelId = normalizeDefaultModelId(record.defaultModelId, customModels);
+
+  return {
+    customModels,
+    defaultModelId,
+  };
+}
+
+function normalizeCustomModels(value: unknown): CustomModel[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seenIds = new Set<string>();
+  const models: CustomModel[] = [];
+
+  for (const item of value) {
+    if (!isRecord(item)) {
+      continue;
+    }
+
+    const id = normalizeModelId(item.id);
+    if (!id || seenIds.has(id)) {
+      continue;
+    }
+
+    seenIds.add(id);
+    const model: CustomModel = { id };
+    const label = normalizeOptionalString(item.label);
+    const description = normalizeOptionalString(item.description);
+    if (label) {
+      model.label = label;
+    }
+    if (description) {
+      model.description = description;
+    }
+    models.push(model);
+  }
+
+  return models;
+}
+
+function normalizeDefaultModelId(value: unknown, customModels: CustomModel[]) {
+  const id = normalizeModelId(value);
+  if (!id || id === '__default') {
+    return defaultModelSettings.defaultModelId;
+  }
+
+  return customModels.some((model) => model.id === id) ? id : defaultModelSettings.defaultModelId;
+}
+
+function normalizeModelId(value: unknown) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 160 || /\s/.test(trimmed)) {
+    return '';
+  }
+
+  return trimmed;
+}
+
+function normalizeOptionalString(value: unknown) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value.trim();
 }
 
 function readSettingsFile(settingsPath: string): unknown {

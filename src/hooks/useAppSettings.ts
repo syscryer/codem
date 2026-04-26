@@ -2,16 +2,22 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   defaultAppSettings,
   defaultAppearanceSettings,
+  defaultModelSettings,
   fetchAppSettings,
+  normalizeModelSettings,
   saveAppearanceSettings,
+  saveModelSettings,
 } from '../lib/settings-api';
-import type { AppSettings, AppearanceSettings, ToastState } from '../types';
+import type { AppSettings, AppearanceSettings, ModelSettings, ToastState } from '../types';
 
 type ToastTone = ToastState['tone'];
 type ShowToast = (message: string, tone?: ToastTone) => void;
 export type AppearanceSettingsUpdate =
   | Partial<AppearanceSettings>
   | ((current: AppearanceSettings) => Partial<AppearanceSettings> | AppearanceSettings);
+export type ModelSettingsUpdate =
+  | Partial<ModelSettings>
+  | ((current: ModelSettings) => Partial<ModelSettings> | ModelSettings);
 
 type AppearanceSaveQueueOptions = {
   save: (appearance: AppearanceSettings) => Promise<AppSettings>;
@@ -25,6 +31,7 @@ type AppearanceSaveQueue = {
 };
 
 export { defaultAppSettings, defaultAppearanceSettings };
+export { defaultModelSettings };
 
 export function useAppSettings(showToast?: ShowToast) {
   const [settings, setSettings] = useState<AppSettings>(defaultAppSettings);
@@ -113,11 +120,36 @@ export function useAppSettings(showToast?: ShowToast) {
     [applySettings, getSaveQueue],
   );
 
+  const updateModels = useCallback(
+    async (update: ModelSettingsUpdate) => {
+      ++requestVersionRef.current;
+      const currentSettings = latestSettingsRef.current;
+      const nextModels = resolveModelSettingsUpdate(currentSettings.models, update);
+      const optimisticSettings = mergeAppSettings({
+        ...currentSettings,
+        models: nextModels,
+      });
+
+      applySettings(optimisticSettings);
+      setLoading(false);
+
+      try {
+        const savedSettings = await saveModelSettings(optimisticSettings.models);
+        applySettings(savedSettings);
+      } catch (error) {
+        toastRef.current?.(error instanceof Error ? error.message : '保存模型设置失败', 'error');
+      }
+    },
+    [applySettings],
+  );
+
   return {
     settings,
     appearance: settings.appearance,
+    models: settings.models,
     loading,
     updateAppearance,
+    updateModels,
   };
 }
 
@@ -127,6 +159,17 @@ export function resolveAppearanceUpdate(
 ): AppearanceSettings {
   const patch = typeof update === 'function' ? update(current) : update;
   return mergeAppearanceSettings({
+    ...current,
+    ...patch,
+  });
+}
+
+export function resolveModelSettingsUpdate(
+  current: ModelSettings,
+  update: ModelSettingsUpdate,
+): ModelSettings {
+  const patch = typeof update === 'function' ? update(current) : update;
+  return normalizeModelSettings({
     ...current,
     ...patch,
   });
@@ -177,6 +220,7 @@ export function createLatestAppearanceSaveQueue(options: AppearanceSaveQueueOpti
 function mergeAppSettings(settings: Partial<AppSettings> | null | undefined): AppSettings {
   return {
     appearance: mergeAppearanceSettings(settings?.appearance),
+    models: normalizeModelSettings(settings?.models),
   };
 }
 

@@ -34,6 +34,7 @@ import type {
   ClaudeModelInfo,
   ConversationTurn,
   DebugEvent,
+  ModelSettings,
   PermissionMode,
   RequestUserInputRequest,
   RuntimeEventSource,
@@ -100,6 +101,7 @@ type UseClaudeRunArgs = {
   activeProjectPath?: string;
   activeThreadId: string | null;
   activeThreadSummary: ThreadSummary | null;
+  appModelSettings: ModelSettings;
   createThread: (projectId: string) => Promise<ThreadSummary | null>;
   handlePickProjectDirectory: () => Promise<void>;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
@@ -126,6 +128,7 @@ export function useClaudeRun({
   activeProjectPath,
   activeThreadId,
   activeThreadSummary,
+  appModelSettings,
   createThread,
   handlePickProjectDirectory,
   showToast,
@@ -140,7 +143,7 @@ export function useClaudeRun({
   const [workspace, setWorkspace] = useState('');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('bypassPermissions');
   const [model, setModel] = useState(DEFAULT_MODEL_VALUE);
-  const [models, setModels] = useState<string[]>([]);
+  const [claudeModels, setClaudeModels] = useState<ClaudeModelInfo>({ available: false, models: [] });
   const [, setHealth] = useState<{ available: boolean; command?: string; error?: string }>({
     available: false,
   });
@@ -164,6 +167,7 @@ export function useClaudeRun({
     Object.entries(activeRunsByThreadId).map(([threadId, run]) => [threadId, run.turnId]),
   );
   const queuedPrompts = activeThreadId ? queuedPromptsByThreadId[activeThreadId] ?? [] : [];
+  const models = mergeModelOptions(claudeModels.models, appModelSettings.customModels.map((item) => item.id));
 
   useEffect(() => {
     void loadHealth();
@@ -171,8 +175,8 @@ export function useClaudeRun({
   }, []);
 
   useEffect(() => {
-    setModel(activeThreadSummary?.model?.trim() || DEFAULT_MODEL_VALUE);
-  }, [activeThreadSummary?.id, activeThreadSummary?.model]);
+    setModel(activeThreadSummary?.model?.trim() || appModelSettings.defaultModelId || DEFAULT_MODEL_VALUE);
+  }, [activeThreadSummary?.id, activeThreadSummary?.model, appModelSettings.defaultModelId]);
 
   useEffect(() => {
     if (!activeThreadSummary || activeThreadIsRunning) {
@@ -249,9 +253,12 @@ export function useClaudeRun({
     try {
       const response = await fetch('/api/claude/models');
       const payload = (await response.json()) as ClaudeModelInfo;
-      const nextModels = Array.isArray(payload.models) ? payload.models.filter(Boolean) : [];
-      setModels(nextModels);
-      setModel((current) => current || nextModels[0] || DEFAULT_MODEL_VALUE);
+      setClaudeModels({
+        available: payload.available === true,
+        models: Array.isArray(payload.models) ? payload.models.filter(Boolean) : [],
+        error: typeof payload.error === 'string' ? payload.error : undefined,
+      });
+      setModel((current) => current || appModelSettings.defaultModelId || DEFAULT_MODEL_VALUE);
     } catch (error) {
       const targetThreadId = activeThreadId;
       if (!targetThreadId) {
@@ -1526,6 +1533,7 @@ export function useClaudeRun({
     permissionMode,
     model,
     models,
+    claudeModels,
     backendRunId,
     isRunning,
     runningThreadId,
@@ -1975,6 +1983,17 @@ function isVisiblePermissionMode(value: unknown): value is (typeof permissionMen
 
 function normalizeSessionId(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function mergeModelOptions(configuredModels: string[], customModels: string[]) {
+  const result: string[] = [];
+  for (const item of [DEFAULT_MODEL_VALUE, ...configuredModels, ...customModels]) {
+    const model = item.trim();
+    if (model && !result.includes(model)) {
+      result.push(model);
+    }
+  }
+  return result;
 }
 
 async function readErrorResponseText(response: Response) {
