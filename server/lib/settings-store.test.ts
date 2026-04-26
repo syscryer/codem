@@ -20,6 +20,41 @@ function withTemporaryDirectory<T>(callback: (directory: string) => T): T {
   }
 }
 
+function assertDefaultStoreWritesToPath(
+  environment: NodeJS.ProcessEnv,
+  expectedSettingsPath: string,
+) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      '-e',
+      `
+        const { existsSync, readFileSync } = await import('node:fs');
+        const assert = await import('node:assert/strict');
+        const { updateAppearanceSettings } = await import('./server/lib/settings-store.ts');
+
+        updateAppearanceSettings({ themeMode: 'dark' });
+
+        const settingsPath = ${JSON.stringify(expectedSettingsPath)};
+        assert.default.equal(existsSync(settingsPath), true);
+        assert.default.equal(
+          JSON.parse(readFileSync(settingsPath, 'utf8')).appearance.themeMode,
+          'dark',
+        );
+      `,
+    ],
+    {
+      cwd: process.cwd(),
+      env: environment,
+      encoding: 'utf8',
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+}
+
 test('normalizeAppSettings preserves valid appearance values', () => {
   const settings = normalizeAppSettings({
     appearance: {
@@ -81,6 +116,71 @@ test('importing settings store does not create the default app settings director
 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(existsSync(path.join(localAppData, 'CodeM')), false);
+  });
+});
+
+test('default settings store writes under LOCALAPPDATA when it is set', () => {
+  withTemporaryDirectory((directory) => {
+    const localAppData = path.join(directory, 'local-app-data');
+    const appData = path.join(directory, 'app-data');
+    const home = path.join(directory, 'home');
+    const expectedSettingsPath = path.join(localAppData, 'CodeM', 'settings.json');
+
+    assertDefaultStoreWritesToPath(
+      {
+        ...process.env,
+        LOCALAPPDATA: localAppData,
+        APPDATA: appData,
+        HOME: home,
+        USERPROFILE: home,
+      },
+      expectedSettingsPath,
+    );
+
+    assert.equal(existsSync(expectedSettingsPath), true);
+    assert.equal(existsSync(path.join(appData, 'CodeM', 'settings.json')), false);
+  });
+});
+
+test('default settings store writes under APPDATA when LOCALAPPDATA is unset', () => {
+  withTemporaryDirectory((directory) => {
+    const appData = path.join(directory, 'app-data');
+    const home = path.join(directory, 'home');
+    const expectedSettingsPath = path.join(appData, 'CodeM', 'settings.json');
+
+    assertDefaultStoreWritesToPath(
+      {
+        ...process.env,
+        LOCALAPPDATA: '',
+        APPDATA: appData,
+        HOME: home,
+        USERPROFILE: home,
+      },
+      expectedSettingsPath,
+    );
+
+    assert.equal(existsSync(expectedSettingsPath), true);
+    assert.equal(existsSync(path.join(home, 'AppData', 'Local', 'CodeM', 'settings.json')), false);
+  });
+});
+
+test('default settings store writes under homedir AppData Local when app data env vars are unset', () => {
+  withTemporaryDirectory((directory) => {
+    const home = path.join(directory, 'home');
+    const expectedSettingsPath = path.join(home, 'AppData', 'Local', 'CodeM', 'settings.json');
+
+    assertDefaultStoreWritesToPath(
+      {
+        ...process.env,
+        LOCALAPPDATA: '',
+        APPDATA: '',
+        HOME: home,
+        USERPROFILE: home,
+      },
+      expectedSettingsPath,
+    );
+
+    assert.equal(existsSync(expectedSettingsPath), true);
   });
 });
 
