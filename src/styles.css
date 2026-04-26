@@ -487,9 +487,12 @@ svg {
 }
 
 .chat-shell {
+  --composer-max-width: 820px;
+  --workspace-footer-height: 20px;
+  --workspace-footer-content-height: 18px;
   min-height: 0;
   display: grid;
-  grid-template-rows: 44px minmax(0, 1fr) auto auto 28px;
+  grid-template-rows: 44px minmax(0, 1fr) auto auto var(--workspace-footer-height);
   overflow: hidden;
   background: #ffffff;
 }
@@ -2058,7 +2061,7 @@ svg {
 }
 
 .composer-card {
-  width: min(100%, 820px);
+  width: min(100%, var(--composer-max-width));
   overflow: visible;
   border: 1px solid #d8d8d8;
   border-radius: 17px;
@@ -2396,15 +2399,27 @@ svg {
 }
 
 .workspace-status {
+  width: min(calc(100% - 40px), var(--composer-max-width));
+  margin: 0 auto;
   display: flex;
   align-items: center;
   gap: 18px;
-  height: 28px;
-  padding: 0 22px 1px;
-  border-top: 1px solid #f3f3f3;
+  height: var(--workspace-footer-height);
+  padding: 0;
+  border-top: 0;
   color: #777;
   font-size: 12px;
+  line-height: var(--workspace-footer-content-height);
   background: #ffffff;
+}
+
+.workspace-status > .status-item,
+.workspace-status > .status-branch-picker,
+.workspace-status > span:not(.status-spacer) {
+  height: var(--workspace-footer-content-height);
+  display: inline-flex;
+  align-items: center;
+  line-height: var(--workspace-footer-content-height);
 }
 
 .dialog-backdrop {
@@ -2575,8 +2590,8 @@ svg {
 }
 
 .status-branch-trigger {
-  height: 22px;
-  padding: 0 6px;
+  height: var(--workspace-footer-content-height);
+  padding: 0 4px;
   border: 0;
   border-radius: 7px;
   background: transparent;

@@ -1,4 +1,4 @@
-import { Check, GitBranch, LayoutPanelLeft } from 'lucide-react';
+import { Check, GitFork, LayoutPanelLeft } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import type { GitBranchSummary, ProjectSummary, ThreadDetail } from '../types';
@@ -150,7 +150,7 @@ export function WorkspaceStatus({
           disabled={!canSelectBranch}
           onClick={() => void handleBranchTriggerClick()}
         >
-          <GitBranch size={12} />
+          <GitFork size={12} />
           <span>{activeProject?.gitBranch ?? '未检测到 Git'}</span>
           {canSelectBranch ? <span className="footer-chevron" aria-hidden="true" /> : null}
         </button>

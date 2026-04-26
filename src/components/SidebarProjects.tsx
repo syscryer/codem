@@ -6,7 +6,7 @@ import {
   Clock3,
   Folder,
   FolderPlus,
-  GitBranch,
+  GitFork,
   MoreHorizontal,
   Plus,
   Search,
@@ -199,7 +199,7 @@ export function SidebarProjects({
                     <strong>{project.name}</strong>
                     {project.gitBranch ? (
                       <small className="sidebar-branch">
-                        <GitBranch size={11} />
+                        <GitFork size={11} />
                         {project.gitBranch}
                       </small>
                     ) : null}
