@@ -702,9 +702,14 @@ svg {
 
 .diff-chip {
   display: inline-flex;
-  gap: 4px;
+  align-items: center;
+  gap: 3px;
+  min-width: 38px;
+  height: 28px;
+  justify-content: center;
   font-size: 12px;
-  padding: 0 4px;
+  padding: 0 6px;
+  color: #5f6368;
 }
 
 .open-app-menu {
@@ -814,12 +819,14 @@ svg {
   color: #737373;
 }
 
-.diff-chip .add {
-  color: #16a34a;
+.diff-chip .diff-count {
+  color: #202124;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
-.diff-chip .del {
-  color: #dc2626;
+.diff-chip .diff-label {
+  color: #717171;
 }
 
 .conversation {

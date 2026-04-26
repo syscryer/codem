@@ -1,6 +1,7 @@
 import { Check, ChevronDown, Home, MoreHorizontal, Play, SquareSplitHorizontal, TerminalSquare } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
+import { getGitDiffBadgeLabels } from '../lib/git-diff';
 import { getOpenAppIcon } from '../lib/open-app-icons';
 import type { OpenAppTarget, ProjectSummary, ThreadDetail } from '../types';
 
@@ -30,10 +31,11 @@ export function ChatHeader({
   onUseProjectWorkspace,
 }: ChatHeaderProps) {
   const gitDiff = activeProject?.gitDiff ?? { additions: 0, deletions: 0, filesChanged: 0 };
+  const gitDiffLabels = getGitDiffBadgeLabels(gitDiff);
   const diffTitle = !activeProject
     ? '未选择项目'
     : activeProject.isGitRepo
-      ? `${gitDiff.filesChanged} 个文件变更（点击刷新）`
+      ? `${gitDiff.filesChanged} 个文件变更，${gitDiffLabels.detail}（点击刷新）`
       : '当前目录不是 Git 仓库';
 
   return (
@@ -80,8 +82,8 @@ export function ChatHeader({
           disabled={!activeProject?.isGitRepo}
           onClick={onRefreshGitDiff}
         >
-          <span className="add">+{gitDiff.additions}</span>
-          <span className="del">-{gitDiff.deletions}</span>
+          <span className="diff-count">{gitDiffLabels.primary}</span>
+          <span className="diff-label">{gitDiffLabels.secondary}</span>
         </button>
         <button type="button" className="icon-button" title="布局">
           <SquareSplitHorizontal size={14} />

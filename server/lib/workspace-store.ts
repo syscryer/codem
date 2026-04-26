@@ -325,8 +325,15 @@ export function getWorkspaceBootstrap(): WorkspaceBootstrap {
     groupedThreads.set(row.project_id, list);
   }
 
+  let activeProjectId = settings.general.restoreLastSelectionOnLaunch ? readStateValue('activeProjectId') : null;
+  let activeThreadId = settings.general.restoreLastSelectionOnLaunch ? readStateValue('activeThreadId') : null;
+
+  if (!activeProjectId || !projectRows.some((project) => project.id === activeProjectId)) {
+    activeProjectId = projectRows[0]?.id ?? null;
+  }
+
   const projects = projectRows.map((row) => {
-    const gitInfo = readGitInfo(row.path);
+    const gitInfo = readGitInfo(row.path, row.id === activeProjectId);
     return {
       id: row.id,
       name: row.name,
@@ -339,13 +346,6 @@ export function getWorkspaceBootstrap(): WorkspaceBootstrap {
       threads: groupedThreads.get(row.id) ?? [],
     } satisfies ProjectSummary;
   });
-
-  let activeProjectId = settings.general.restoreLastSelectionOnLaunch ? readStateValue('activeProjectId') : null;
-  let activeThreadId = settings.general.restoreLastSelectionOnLaunch ? readStateValue('activeThreadId') : null;
-
-  if (!activeProjectId || !projects.some((project) => project.id === activeProjectId)) {
-    activeProjectId = projects[0]?.id ?? null;
-  }
 
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   if (!activeThreadId || !activeProject?.threads.some((thread) => thread.id === activeThreadId)) {
