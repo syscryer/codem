@@ -19,10 +19,10 @@ test('resolveAppearanceUpdate merges patches against the latest appearance', () 
 
 test('resolveAppearanceUpdate accepts updater functions', () => {
   const next = resolveAppearanceUpdate(defaultAppearanceSettings, (current) => ({
-    uiFontSize: current.uiFontSize === 12 ? 13 : 12,
+    uiFontSize: current.uiFontSize === 13 ? 14 : 13,
   }));
 
-  assert.equal(next.uiFontSize, 13);
+  assert.equal(next.uiFontSize, 14);
   assert.equal(next.codeFontSize, defaultAppearanceSettings.codeFontSize);
 });
 

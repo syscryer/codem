@@ -3387,6 +3387,11 @@ svg {
   border-color: var(--app-border);
 }
 
+.codex-desktop .assistant-message .message-body {
+  background: transparent;
+  border-color: transparent;
+}
+
 .codex-desktop .settings-row,
 .codex-desktop .chat-header,
 .codex-desktop .desktop-menubar {
