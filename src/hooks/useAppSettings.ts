@@ -6,6 +6,7 @@ import {
   defaultOpenWithSettings,
   defaultShortcutSettings,
   fetchAppSettings,
+  fetchOpenWithTargets,
   normalizeOpenWithSettings,
   normalizeModelSettings,
   normalizeShortcutSettings,
@@ -18,6 +19,7 @@ import type {
   AppSettings,
   AppearanceSettings,
   ModelSettings,
+  OpenAppTarget,
   OpenWithSettings,
   ShortcutSettings,
   ToastState,
@@ -54,6 +56,7 @@ export { defaultModelSettings, defaultOpenWithSettings, defaultShortcutSettings 
 
 export function useAppSettings(showToast?: ShowToast) {
   const [settings, setSettings] = useState<AppSettings>(defaultAppSettings);
+  const [openTargets, setOpenTargets] = useState<OpenAppTarget[]>([]);
   const [loading, setLoading] = useState(true);
   const latestSettingsRef = useRef(defaultAppSettings);
   const requestVersionRef = useRef(0);
@@ -70,6 +73,22 @@ export function useAppSettings(showToast?: ShowToast) {
     setSettings(mergedSettings);
   }, []);
 
+  const refreshOpenTargets = useCallback(async () => {
+    try {
+      const response = await fetchOpenWithTargets();
+      setOpenTargets(response.targets);
+      applySettings({
+        ...latestSettingsRef.current,
+        openWith: {
+          ...latestSettingsRef.current.openWith,
+          selectedTargetId: response.selectedTargetId,
+        },
+      });
+    } catch (error) {
+      toastRef.current?.(error instanceof Error ? error.message : '读取打开工具失败', 'error');
+    }
+  }, [applySettings]);
+
   useEffect(() => {
     let cancelled = false;
     const requestVersion = ++requestVersionRef.current;
@@ -80,6 +99,7 @@ export function useAppSettings(showToast?: ShowToast) {
         const nextSettings = await fetchAppSettings();
         if (!cancelled && requestVersion === requestVersionRef.current) {
           applySettings(nextSettings);
+          void refreshOpenTargets();
         }
       } catch (error) {
         if (!cancelled && requestVersion === requestVersionRef.current) {
@@ -97,7 +117,7 @@ export function useAppSettings(showToast?: ShowToast) {
     return () => {
       cancelled = true;
     };
-  }, [applySettings]);
+  }, [applySettings, refreshOpenTargets]);
 
   const getSaveQueue = useCallback(() => {
     if (!saveQueueRef.current) {
@@ -201,6 +221,7 @@ export function useAppSettings(showToast?: ShowToast) {
       try {
         const savedSettings = await saveOpenWithSettings(optimisticSettings.openWith);
         applySettings(savedSettings);
+        void refreshOpenTargets();
       } catch (error) {
         toastRef.current?.(error instanceof Error ? error.message : '保存打开方式失败', 'error');
       }
@@ -214,11 +235,13 @@ export function useAppSettings(showToast?: ShowToast) {
     models: settings.models,
     shortcuts: settings.shortcuts,
     openWith: settings.openWith,
+    openTargets,
     loading,
     updateAppearance,
     updateModels,
     updateShortcuts,
     updateOpenWith,
+    refreshOpenTargets,
   };
 }
 

@@ -205,12 +205,24 @@ export type ShortcutSettings = {
   composerSend: ComposerSendShortcut;
 };
 
-export type OpenWithTarget = 'auto' | 'cursor' | 'vscode' | 'custom';
+export type OpenAppTargetKind = 'app' | 'command' | 'explorer' | 'terminal' | 'git-bash' | 'wsl';
+
+export type OpenAppTarget = {
+  id: string;
+  label: string;
+  kind: OpenAppTargetKind;
+  command?: string;
+  args: string[];
+};
 
 export type OpenWithSettings = {
-  target: OpenWithTarget;
-  customCommand: string;
-  customArgs: string;
+  selectedTargetId: string;
+  customTargets: OpenAppTarget[];
+};
+
+export type OpenWithTargetsResponse = {
+  targets: OpenAppTarget[];
+  selectedTargetId: string;
 };
 
 export type AppSettings = {

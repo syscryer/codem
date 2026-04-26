@@ -73,17 +73,31 @@ test('resolveShortcutSettingsUpdate normalizes shortcuts and supports clearing a
   });
 });
 
-test('resolveOpenWithSettingsUpdate normalizes custom command settings', () => {
+test('resolveOpenWithSettingsUpdate normalizes selected target and custom tools', () => {
   const next = resolveOpenWithSettingsUpdate(defaultOpenWithSettings, {
-    target: 'custom',
-    customCommand: ' C:\\Tools\\editor.exe ',
-    customArgs: ' --reuse-window ',
+    selectedTargetId: ' custom-editor ',
+    customTargets: [
+      {
+        id: ' custom-editor ',
+        label: ' Custom Editor ',
+        kind: 'command',
+        command: ' C:\\Tools\\editor.exe ',
+        args: [' --reuse-window '],
+      },
+    ],
   });
 
   assert.deepEqual(next, {
-    target: 'custom',
-    customCommand: 'C:\\Tools\\editor.exe',
-    customArgs: '--reuse-window',
+    selectedTargetId: 'custom-editor',
+    customTargets: [
+      {
+        id: 'custom-editor',
+        label: 'Custom Editor',
+        kind: 'command',
+        command: 'C:\\Tools\\editor.exe',
+        args: ['--reuse-window'],
+      },
+    ],
   });
 });
 

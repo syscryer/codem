@@ -3,6 +3,7 @@ import type {
   AppearanceSettings,
   ClaudeModelInfo,
   ModelSettings,
+  OpenAppTarget,
   OpenWithSettings,
   SettingsSection,
   ShortcutSettings,
@@ -29,6 +30,7 @@ type SettingsViewProps = {
   models: ModelSettings;
   shortcuts: ShortcutSettings;
   openWith: OpenWithSettings;
+  openTargets: OpenAppTarget[];
   claudeModels: ClaudeModelInfo;
   onSelectSection: (section: SettingsSection) => void;
   onUpdateAppearance: (update: AppearanceSettingsUpdate) => void;
@@ -57,6 +59,7 @@ export function SettingsView({
   models,
   shortcuts,
   openWith,
+  openTargets,
   claudeModels,
   onSelectSection,
   onUpdateAppearance,
@@ -98,6 +101,7 @@ export function SettingsView({
       return (
         <OpenWithSettingsSection
           openWith={openWith}
+          openTargets={openTargets}
           onUpdateOpenWith={onUpdateOpenWith}
         />
       );
@@ -122,6 +126,7 @@ export function SettingsView({
     claudeModels,
     models,
     openWith,
+    openTargets,
     shortcuts,
     onUpdateAppearance,
     onUpdateModels,

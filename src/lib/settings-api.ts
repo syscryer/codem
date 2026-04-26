@@ -4,7 +4,9 @@ import type {
   AppearanceSettings,
   CustomModel,
   ModelSettings,
+  OpenAppTarget,
   OpenWithSettings,
+  OpenWithTargetsResponse,
   ShortcutSettings,
 } from '../types';
 
@@ -29,9 +31,8 @@ export const defaultShortcutSettings: ShortcutSettings = {
 };
 
 export const defaultOpenWithSettings: OpenWithSettings = {
-  target: 'auto',
-  customCommand: '',
-  customArgs: '',
+  selectedTargetId: 'vscode',
+  customTargets: [],
 };
 
 export const defaultAppSettings: AppSettings = {
@@ -102,6 +103,18 @@ export async function saveOpenWithSettings(openWith: OpenWithSettings): Promise<
   }
 }
 
+export async function fetchOpenWithTargets(): Promise<OpenWithTargetsResponse> {
+  try {
+    const response = await fetch('/api/open-with/targets');
+    if (!response.ok) {
+      throw new Error('读取打开工具失败');
+    }
+    return normalizeOpenWithTargetsResponse(await response.json());
+  } catch {
+    throw new Error('读取打开工具失败');
+  }
+}
+
 async function readSettingsResponse(response: Response, failureMessage: string): Promise<AppSettings> {
   if (!response.ok) {
     throw new Error(failureMessage);
@@ -159,12 +172,86 @@ export function normalizeShortcutSettings(shortcuts: unknown): ShortcutSettings 
 
 export function normalizeOpenWithSettings(openWith: unknown): OpenWithSettings {
   const record = isRecord(openWith) ? openWith : {};
-  const target = normalizeOneOf(record.target, ['auto', 'cursor', 'vscode', 'custom'], defaultOpenWithSettings.target);
+  if ('target' in record) {
+    return normalizeLegacyOpenWithSettings(record);
+  }
+
   return {
-    target,
-    customCommand: target === 'custom' ? normalizeLimitedString(record.customCommand, 300) : '',
-    customArgs: target === 'custom' ? normalizeLimitedString(record.customArgs, 600) : '',
+    selectedTargetId: normalizeOpenTargetId(record.selectedTargetId) || defaultOpenWithSettings.selectedTargetId,
+    customTargets: normalizeOpenAppTargets(record.customTargets),
   };
+}
+
+function normalizeLegacyOpenWithSettings(record: Record<string, unknown>): OpenWithSettings {
+  const target = normalizeOneOf(record.target, ['auto', 'cursor', 'vscode', 'custom'], 'auto');
+  if (target === 'cursor' || target === 'vscode') {
+    return {
+      selectedTargetId: target,
+      customTargets: [],
+    };
+  }
+
+  if (target === 'custom') {
+    const command = normalizeLimitedString(record.customCommand, 300);
+    if (command) {
+      return {
+        selectedTargetId: 'custom',
+        customTargets: [
+          {
+            id: 'custom',
+            label: 'Custom',
+            kind: 'command',
+            command,
+            args: parseOpenWithArgs(normalizeLimitedString(record.customArgs, 600)),
+          },
+        ],
+      };
+    }
+  }
+
+  return defaultOpenWithSettings;
+}
+
+function normalizeOpenWithTargetsResponse(value: unknown): OpenWithTargetsResponse {
+  const record = isRecord(value) ? value : {};
+  const targets = normalizeOpenAppTargets(record.targets);
+  return {
+    targets,
+    selectedTargetId: normalizeOpenTargetId(record.selectedTargetId) || targets[0]?.id || defaultOpenWithSettings.selectedTargetId,
+  };
+}
+
+export function normalizeOpenAppTargets(value: unknown): OpenAppTarget[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seenIds = new Set<string>();
+  const targets: OpenAppTarget[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) {
+      continue;
+    }
+
+    const id = normalizeOpenTargetId(item.id);
+    const label = normalizeLimitedString(item.label, 80);
+    const kind = normalizeOpenAppTargetKind(item.kind);
+    if (!id || !label || !kind || seenIds.has(id)) {
+      continue;
+    }
+
+    seenIds.add(id);
+    const command = normalizeLimitedString(item.command, 300);
+    targets.push({
+      id,
+      label,
+      kind,
+      command: command || undefined,
+      args: normalizeStringArray(item.args, 80),
+    });
+  }
+
+  return targets;
 }
 
 function normalizeCustomModels(value: unknown): CustomModel[] {
@@ -223,6 +310,19 @@ function normalizeModelId(value: unknown) {
   return trimmed;
 }
 
+function normalizeOpenTargetId(value: unknown) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 160 || !/^[a-zA-Z0-9._-]+$/.test(trimmed)) {
+    return '';
+  }
+
+  return trimmed;
+}
+
 function normalizeOptionalString(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -241,6 +341,61 @@ function normalizeLimitedString(value: unknown, maxLength: number) {
 
   const trimmed = value.trim();
   return trimmed.length <= maxLength ? trimmed : '';
+}
+
+function normalizeStringArray(value: unknown, maxItemLength: number) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map((item) => normalizeLimitedString(item, maxItemLength)).filter(Boolean);
+}
+
+function normalizeOpenAppTargetKind(value: unknown): OpenAppTarget['kind'] | '' {
+  if (
+    value === 'app' ||
+    value === 'command' ||
+    value === 'explorer' ||
+    value === 'terminal' ||
+    value === 'git-bash' ||
+    value === 'wsl'
+  ) {
+    return value;
+  }
+
+  return '';
+}
+
+function parseOpenWithArgs(value: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if ((character === '"' || character === "'") && !quote) {
+      quote = character;
+      continue;
+    }
+    if (quote && character === quote) {
+      quote = null;
+      continue;
+    }
+    if (!quote && /\s/.test(character)) {
+      if (current) {
+        args.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += character;
+  }
+
+  if (current) {
+    args.push(current);
+  }
+
+  return args;
 }
 
 function normalizeOneOf<T extends string | number>(value: unknown, allowed: readonly T[], fallback: T): T {

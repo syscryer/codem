@@ -35,12 +35,19 @@ export type ShortcutSettings = {
   composerSend: ComposerSendShortcut;
 };
 
-export type OpenWithTarget = 'auto' | 'cursor' | 'vscode' | 'custom';
+export type OpenAppTargetKind = 'app' | 'command' | 'explorer' | 'terminal' | 'git-bash' | 'wsl';
+
+export type OpenAppTarget = {
+  id: string;
+  label: string;
+  kind: OpenAppTargetKind;
+  command?: string;
+  args: string[];
+};
 
 export type OpenWithSettings = {
-  target: OpenWithTarget;
-  customCommand: string;
-  customArgs: string;
+  selectedTargetId: string;
+  customTargets: OpenAppTarget[];
 };
 
 export type AppSettings = {
@@ -85,9 +92,8 @@ export const defaultShortcutSettings: ShortcutSettings = {
 };
 
 export const defaultOpenWithSettings: OpenWithSettings = {
-  target: 'auto',
-  customCommand: '',
-  customArgs: '',
+  selectedTargetId: 'vscode',
+  customTargets: [],
 };
 
 export const defaultAppSettings: AppSettings = {
@@ -238,12 +244,95 @@ function normalizeShortcutSettings(value: unknown): ShortcutSettings {
 
 function normalizeOpenWithSettings(value: unknown): OpenWithSettings {
   const record = isRecord(value) ? value : {};
-  const target = normalizeEnum(record.target, ['auto', 'cursor', 'vscode', 'custom'], defaultOpenWithSettings.target);
+  if ('target' in record) {
+    return normalizeLegacyOpenWithSettings(record);
+  }
+
+  const customTargets = normalizeOpenAppTargets(record.customTargets);
+  const selectedTargetId = normalizeOpenTargetId(record.selectedTargetId) || defaultOpenWithSettings.selectedTargetId;
   return {
-    target,
-    customCommand: target === 'custom' ? normalizeLimitedString(record.customCommand, 300) : '',
-    customArgs: target === 'custom' ? normalizeLimitedString(record.customArgs, 600) : '',
+    selectedTargetId,
+    customTargets,
   };
+}
+
+function normalizeLegacyOpenWithSettings(record: Record<string, unknown>): OpenWithSettings {
+  const target = normalizeEnum(record.target, ['auto', 'cursor', 'vscode', 'custom'], 'auto');
+  if (target === 'cursor' || target === 'vscode') {
+    return {
+      selectedTargetId: target,
+      customTargets: [],
+    };
+  }
+
+  if (target === 'custom') {
+    const command = normalizeLimitedString(record.customCommand, 300);
+    if (command) {
+      return {
+        selectedTargetId: 'custom',
+        customTargets: [
+          {
+            id: 'custom',
+            label: 'Custom',
+            kind: 'command',
+            command,
+            args: parseOpenWithArgs(normalizeLimitedString(record.customArgs, 600)),
+          },
+        ],
+      };
+    }
+  }
+
+  return defaultOpenWithSettings;
+}
+
+function normalizeOpenAppTargets(value: unknown): OpenAppTarget[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seenIds = new Set<string>();
+  const targets: OpenAppTarget[] = [];
+
+  for (const item of value) {
+    if (!isRecord(item)) {
+      continue;
+    }
+
+    const id = normalizeOpenTargetId(item.id);
+    const label = normalizeLimitedString(item.label, 80);
+    const kind = normalizeOpenAppTargetKind(item.kind);
+    if (!id || seenIds.has(id) || !label || !kind) {
+      continue;
+    }
+
+    seenIds.add(id);
+    const command = normalizeLimitedString(item.command, 300);
+    targets.push({
+      id,
+      label,
+      kind,
+      command: command || undefined,
+      args: normalizeStringArray(item.args, 80),
+    });
+  }
+
+  return targets;
+}
+
+function normalizeOpenAppTargetKind(value: unknown): OpenAppTargetKind | '' {
+  if (
+    value === 'app' ||
+    value === 'command' ||
+    value === 'explorer' ||
+    value === 'terminal' ||
+    value === 'git-bash' ||
+    value === 'wsl'
+  ) {
+    return value;
+  }
+
+  return '';
 }
 
 function normalizeCustomModels(value: unknown): CustomModel[] {
@@ -296,6 +385,19 @@ function normalizeModelId(value: unknown) {
 
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > 160 || /\s/.test(trimmed)) {
+    return '';
+  }
+
+  return trimmed;
+}
+
+function normalizeOpenTargetId(value: unknown) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 160 || !/^[a-zA-Z0-9._-]+$/.test(trimmed)) {
     return '';
   }
 
@@ -374,6 +476,48 @@ function normalizeLimitedString(value: unknown, maxLength: number) {
 
   const trimmed = value.trim();
   return trimmed.length <= maxLength ? trimmed : '';
+}
+
+function normalizeStringArray(value: unknown, maxItemLength: number) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => normalizeLimitedString(item, maxItemLength))
+    .filter(Boolean);
+}
+
+function parseOpenWithArgs(value: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if ((character === '"' || character === "'") && !quote) {
+      quote = character;
+      continue;
+    }
+    if (quote && character === quote) {
+      quote = null;
+      continue;
+    }
+    if (!quote && /\s/.test(character)) {
+      if (current) {
+        args.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += character;
+  }
+
+  if (current) {
+    args.push(current);
+  }
+
+  return args;
 }
 
 function readSettingsFile(settingsPath: string): unknown {

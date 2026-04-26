@@ -115,9 +115,16 @@ test('normalizeAppSettings preserves valid shortcuts and open-with settings', ()
       composerSend: 'modEnter',
     },
     openWith: {
-      target: 'custom',
-      customCommand: ' C:\\Tools\\editor.exe ',
-      customArgs: ' --reuse-window ',
+      selectedTargetId: ' custom-editor ',
+      customTargets: [
+        {
+          id: ' custom-editor ',
+          label: ' Custom Editor ',
+          kind: 'command',
+          command: ' C:\\Tools\\editor.exe ',
+          args: [' --reuse-window ', 3, ''],
+        },
+      ],
     },
   });
 
@@ -128,9 +135,16 @@ test('normalizeAppSettings preserves valid shortcuts and open-with settings', ()
     composerSend: 'modEnter',
   });
   assert.deepEqual(settings.openWith, {
-    target: 'custom',
-    customCommand: 'C:\\Tools\\editor.exe',
-    customArgs: '--reuse-window',
+    selectedTargetId: 'custom-editor',
+    customTargets: [
+      {
+        id: 'custom-editor',
+        label: 'Custom Editor',
+        kind: 'command',
+        command: 'C:\\Tools\\editor.exe',
+        args: ['--reuse-window'],
+      },
+    ],
   });
 });
 
@@ -143,9 +157,13 @@ test('normalizeAppSettings falls back for invalid shortcuts and open-with settin
       composerSend: 'bad',
     },
     openWith: {
-      target: 'missing',
-      customCommand: 'x'.repeat(301),
-      customArgs: 'y'.repeat(601),
+      selectedTargetId: 'bad id',
+      customTargets: [
+        { id: '', label: 'Missing id', kind: 'command', command: 'x' },
+        { id: 'x'.repeat(161), label: 'Long id', kind: 'command', command: 'x' },
+        { id: 'ok', label: '', kind: 'command', command: 'x' },
+        { id: 'bad-kind', label: 'Bad kind', kind: 'nope', command: 'x' },
+      ],
     },
   });
 
@@ -163,8 +181,16 @@ test('updateShortcutSettings and updateOpenWithSettings write formatted JSON and
       composerSend: 'modEnter',
     });
     const settings = store.updateOpenWithSettings({
-      target: 'cursor',
-      customCommand: 'ignored',
+      selectedTargetId: 'custom-editor',
+      customTargets: [
+        {
+          id: 'custom-editor',
+          label: 'Custom Editor',
+          kind: 'command',
+          command: 'custom-editor',
+          args: ['--reuse-window'],
+        },
+      ],
     });
 
     const expected = {
@@ -177,9 +203,16 @@ test('updateShortcutSettings and updateOpenWithSettings write formatted JSON and
         composerSend: 'modEnter',
       },
       openWith: {
-        target: 'cursor',
-        customCommand: '',
-        customArgs: '',
+        selectedTargetId: 'custom-editor',
+        customTargets: [
+          {
+            id: 'custom-editor',
+            label: 'Custom Editor',
+            kind: 'command',
+            command: 'custom-editor',
+            args: ['--reuse-window'],
+          },
+        ],
       },
     };
     const serialized = readFileSync(path.join(directory, 'settings.json'), 'utf8');
@@ -188,6 +221,44 @@ test('updateShortcutSettings and updateOpenWithSettings write formatted JSON and
     assert.equal(serialized, `${JSON.stringify(expected, null, 2)}\n`);
     assert.deepEqual(store.getAppSettings(), expected);
   });
+});
+
+test('normalizeAppSettings migrates legacy open-with settings', () => {
+  assert.deepEqual(
+    normalizeAppSettings({
+      openWith: {
+        target: 'cursor',
+        customCommand: '',
+        customArgs: '',
+      },
+    }).openWith,
+    {
+      selectedTargetId: 'cursor',
+      customTargets: [],
+    },
+  );
+
+  assert.deepEqual(
+    normalizeAppSettings({
+      openWith: {
+        target: 'custom',
+        customCommand: 'custom-editor',
+        customArgs: '--reuse-window "--profile default"',
+      },
+    }).openWith,
+    {
+      selectedTargetId: 'custom',
+      customTargets: [
+        {
+          id: 'custom',
+          label: 'Custom',
+          kind: 'command',
+          command: 'custom-editor',
+          args: ['--reuse-window', '--profile default'],
+        },
+      ],
+    },
+  );
 });
 
 test('normalizeAppSettings filters invalid and duplicate custom models', () => {

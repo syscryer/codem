@@ -25,6 +25,7 @@ import {
   getProjectGitSummary,
   getThreadHistory,
   getWorkspaceBootstrap,
+  listOpenTargets,
   listProjectGitBranches,
   openProjectInEditor,
   openProjectInExplorer,
@@ -135,6 +136,19 @@ app.put('/api/settings/open-with', (request, response) => {
   } catch (error) {
     console.error('保存打开方式失败', error);
     response.status(500).json({ error: '保存打开方式失败' });
+  }
+});
+
+app.get('/api/open-with/targets', (_request, response) => {
+  try {
+    const settings = getAppSettings();
+    response.json({
+      targets: listOpenTargets(),
+      selectedTargetId: settings.openWith.selectedTargetId,
+    });
+  } catch (error) {
+    console.error('读取打开工具失败', error);
+    response.status(500).json({ error: '读取打开工具失败' });
   }
 });
 
@@ -305,7 +319,11 @@ app.get('/api/system/file-preview', (request, response) => {
 
 app.post('/api/projects/:projectId/open-editor', (request, response) => {
   try {
-    openProjectInEditor(request.params.projectId);
+    const targetId =
+      typeof request.body?.targetId === 'string' && request.body.targetId.trim()
+        ? request.body.targetId.trim()
+        : undefined;
+    openProjectInEditor(request.params.projectId, targetId);
     response.json({ ok: true });
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '打开编辑器失败');

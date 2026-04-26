@@ -653,7 +653,6 @@ svg {
 }
 
 .icon-button,
-.editor-button,
 .pill-button,
 .diff-chip,
 .plain-icon {
@@ -672,7 +671,6 @@ svg {
   font-size: 13px;
 }
 
-.editor-button,
 .pill-button {
   height: 30px;
   display: inline-flex;
@@ -685,7 +683,6 @@ svg {
 }
 
 .icon-button:disabled,
-.editor-button:disabled,
 .pill-button:disabled,
 .diff-chip:disabled {
   cursor: not-allowed;
@@ -703,15 +700,118 @@ svg {
   transform-origin: center;
 }
 
-.editor-mark {
-  color: #0a8fe8;
-}
-
 .diff-chip {
   display: inline-flex;
   gap: 4px;
   font-size: 12px;
   padding: 0 4px;
+}
+
+.open-app-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.open-app-trigger {
+  height: 28px;
+  display: inline-flex;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.open-app-main,
+.open-app-toggle {
+  height: 26px;
+  border: 0;
+  background: transparent;
+  color: #717171;
+  cursor: pointer;
+}
+
+.open-app-main {
+  min-width: 30px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.open-app-toggle {
+  min-width: 21px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-left: 1px solid #eeeeee;
+}
+
+.open-app-main:disabled,
+.open-app-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.open-app-trigger:hover,
+.open-app-menu:has(.open-app-toggle[aria-expanded="true"]) .open-app-trigger {
+  background: #f8f8f8;
+}
+
+.open-app-icon {
+  width: 17px;
+  height: 17px;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.open-app-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  width: 190px;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid #ececec;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.16);
+}
+
+.open-app-option {
+  height: 32px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #282828;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+  padding: 0 8px;
+}
+
+.open-app-option:hover,
+.open-app-option.active {
+  background: #f5f5f5;
+}
+
+.open-app-option-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
+.open-app-check {
+  color: #737373;
 }
 
 .diff-chip .add {

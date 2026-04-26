@@ -91,6 +91,7 @@ export default function App() {
     models: appModelSettings,
     shortcuts,
     openWith,
+    openTargets,
     updateAppearance,
     updateModels,
     updateShortcuts,
@@ -295,6 +296,7 @@ export default function App() {
           models={appModelSettings}
           shortcuts={shortcuts}
           openWith={openWith}
+          openTargets={openTargets}
           claudeModels={claudeModels}
           onSelectSection={(section) => setAppView({ kind: 'settings', section })}
           onUpdateAppearance={updateAppearance}
@@ -336,8 +338,11 @@ export default function App() {
             <ChatHeader
               activeProject={activeProject}
               activeThread={activeThread}
+              openTargets={openTargets}
+              selectedOpenTargetId={openWith.selectedTargetId}
               onToggleDebug={() => setDebugOpen((value) => !value)}
-              onOpenEditor={() => activeProject ? void handleOpenProjectInEditor(activeProject) : showToast('请先选择项目。', 'info')}
+              onOpenTarget={(targetId) => activeProject ? void handleOpenProjectInEditor(activeProject, targetId) : showToast('请先选择项目。', 'info')}
+              onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
               onRefreshGitDiff={() => activeProjectId ? void refreshProjectGitSummary(activeProjectId) : undefined}
               onUseProjectWorkspace={() => setWorkspace(activeProject?.path ?? '')}
             />

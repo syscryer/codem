@@ -632,9 +632,13 @@ export function useWorkspaceState() {
     }
   }
 
-  async function handleOpenProjectInEditor(project: ProjectSummary) {
+  async function handleOpenProjectInEditor(project: ProjectSummary, targetId?: string) {
     const response = await fetch(`/api/projects/${project.id}/open-editor`, {
       method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ targetId }),
     });
     if (!response.ok) {
       showToast(await response.text(), 'error');

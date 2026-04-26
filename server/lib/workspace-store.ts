@@ -4,7 +4,11 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
-import { createEditorLaunchRequest } from './open-with.js';
+import {
+  buildOpenTargetLaunch,
+  discoverOpenTargets,
+  findOpenTarget,
+} from './open-with.js';
 import { getAppSettings } from './settings-store.js';
 
 type OrganizeBy = 'project' | 'timeline' | 'chat-first';
@@ -792,16 +796,27 @@ export function openProjectInExplorer(projectId: string) {
   });
 }
 
-export function openProjectInEditor(projectId: string) {
+export function listOpenTargets() {
+  return discoverOpenTargets(getAppSettings().openWith, resolveCommandPath);
+}
+
+export function openProjectInEditor(projectId: string, targetId?: string) {
   const projectPath = readProjectPath(projectId);
-  const editorCommand = resolveEditorLaunchConfig();
-  if (!editorCommand.command) {
-    throw new Error('未找到可用编辑器，请安装 Cursor 或 VS Code，或在设置中配置打开方式。');
+  const settings = getAppSettings();
+  const targets = discoverOpenTargets(settings.openWith, resolveCommandPath);
+  const target = findOpenTarget(targets, targetId || settings.openWith.selectedTargetId);
+  if (!target) {
+    throw new Error('未找到可用打开工具，请安装 VS Code、Cursor、Terminal 或在设置中配置打开方式。');
   }
 
-  const opened = startEditorProcess(editorCommand.command, projectPath, editorCommand.args);
+  const launch = buildOpenTargetLaunch(target, projectPath);
+  if (!launch.command) {
+    throw new Error(`打开工具不可用：${target.label}`);
+  }
+
+  const opened = startEditorProcess(launch.command, launch.args);
   if (!opened) {
-    throw new Error(`编辑器启动失败：${editorCommand.command}`);
+    throw new Error(`打开工具启动失败：${target.label}`);
   }
 }
 
@@ -2113,25 +2128,6 @@ function normalizeGitCommandError(result: GitCommandResult, fallbackMessage: str
   return fallbackMessage;
 }
 
-function resolveEditorLaunchConfig() {
-  const request = createEditorLaunchRequest(getAppSettings().openWith, process.env);
-
-  for (const candidate of request.candidates) {
-    const command = resolveCommandPath(candidate);
-    if (command) {
-      return {
-        command,
-        args: request.args,
-      };
-    }
-  }
-
-  return {
-    command: '',
-    args: request.args,
-  };
-}
-
 function resolveCommandPath(command: string) {
   if (existsSync(command)) {
     return command;
@@ -2153,8 +2149,8 @@ function resolveCommandPath(command: string) {
   return paths.find((item) => /\.(cmd|exe|bat)$/i.test(item)) ?? paths[0] ?? '';
 }
 
-function startEditorProcess(command: string, projectPath: string, args: string[] = []) {
-  const argumentList = [...args, projectPath]
+function startEditorProcess(command: string, args: string[] = []) {
+  const argumentList = args
     .map((argument) => `'${escapePowerShellString(argument)}'`)
     .join(', ');
   const script = `

@@ -1,11 +1,17 @@
-import { Code2, Home, MoreHorizontal, Play, SquareSplitHorizontal, TerminalSquare } from 'lucide-react';
-import type { ProjectSummary, ThreadDetail } from '../types';
+import { Check, ChevronDown, Home, MoreHorizontal, Play, SquareSplitHorizontal, TerminalSquare } from 'lucide-react';
+import { useMemo, useRef, useState } from 'react';
+import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
+import { getOpenAppIcon } from '../lib/open-app-icons';
+import type { OpenAppTarget, ProjectSummary, ThreadDetail } from '../types';
 
 type ChatHeaderProps = {
   activeProject: ProjectSummary | null;
   activeThread: ThreadDetail | null;
+  openTargets: OpenAppTarget[];
+  selectedOpenTargetId: string;
   onToggleDebug: () => void;
-  onOpenEditor: () => void;
+  onOpenTarget: (targetId?: string) => void;
+  onSelectOpenTarget: (targetId: string) => void;
   onRefreshGitDiff: () => void;
   onUseProjectWorkspace: () => void;
 };
@@ -13,8 +19,11 @@ type ChatHeaderProps = {
 export function ChatHeader({
   activeProject,
   activeThread,
+  openTargets,
+  selectedOpenTargetId,
   onToggleDebug,
-  onOpenEditor,
+  onOpenTarget,
+  onSelectOpenTarget,
   onRefreshGitDiff,
   onUseProjectWorkspace,
 }: ChatHeaderProps) {
@@ -38,16 +47,13 @@ export function ChatHeader({
         <button type="button" className="icon-button" title="运行">
           <Play size={14} />
         </button>
-        <button
-          type="button"
-          className="editor-button"
-          title="用编辑器打开"
+        <OpenAppMenu
           disabled={!activeProject}
-          onClick={onOpenEditor}
-        >
-          <Code2 className="editor-mark" size={16} />
-          <span className="header-chevron" aria-hidden="true" />
-        </button>
+          targets={openTargets}
+          selectedTargetId={selectedOpenTargetId}
+          onOpenTarget={onOpenTarget}
+          onSelectOpenTarget={onSelectOpenTarget}
+        />
         <button type="button" className="pill-button">
           提交
           <span className="header-chevron" aria-hidden="true" />
@@ -78,5 +84,83 @@ export function ChatHeader({
         </button>
       </div>
     </header>
+  );
+}
+
+function OpenAppMenu({
+  disabled,
+  targets,
+  selectedTargetId,
+  onOpenTarget,
+  onSelectOpenTarget,
+}: {
+  disabled: boolean;
+  targets: OpenAppTarget[];
+  selectedTargetId: string;
+  onOpenTarget: (targetId?: string) => void;
+  onSelectOpenTarget: (targetId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const selectedTarget = useMemo(
+    () => targets.find((target) => target.id === selectedTargetId) ?? targets[0],
+    [selectedTargetId, targets],
+  );
+
+  useOutsideDismiss({
+    refs: [{ ref: menuRef, onDismiss: () => setOpen(false) }],
+  });
+
+  const selectedIcon = getOpenAppIcon(selectedTarget?.id ?? 'vscode');
+  const selectedLabel = selectedTarget?.label ?? 'Open';
+
+  return (
+    <div className="open-app-menu" ref={menuRef}>
+      <div className="open-app-trigger">
+        <button
+          type="button"
+          className="open-app-main"
+          title={`在 ${selectedLabel} 中打开`}
+          aria-label={`在 ${selectedLabel} 中打开`}
+          disabled={disabled || !selectedTarget}
+          onClick={() => onOpenTarget(selectedTarget?.id)}
+        >
+          <img className="open-app-icon" src={selectedIcon} alt="" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="open-app-toggle"
+          title="选择打开工具"
+          aria-label="选择打开工具"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          disabled={disabled || targets.length === 0}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <ChevronDown size={14} />
+        </button>
+      </div>
+      {open ? (
+        <div className="open-app-dropdown" role="menu">
+          {targets.map((target) => (
+            <button
+              key={target.id}
+              type="button"
+              className={`open-app-option${target.id === selectedTarget?.id ? ' active' : ''}`}
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onSelectOpenTarget(target.id);
+                onOpenTarget(target.id);
+              }}
+            >
+              <img className="open-app-option-icon" src={getOpenAppIcon(target.id)} alt="" aria-hidden="true" />
+              <span>{target.label}</span>
+              {target.id === selectedTarget?.id ? <Check className="open-app-check" size={14} /> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
