@@ -14,6 +14,13 @@
 - 项目 / 线程导入与持久化
 - SQLite 持久化
 - 项目 / 线程基础菜单
+- 权限菜单三档收敛：默认、自动执行、完全访问
+- 模型选择与非运行线程 provider 配置刷新
+- Plan 确认、权限审批、AI 提问卡片
+- `stdin + stream-json` 热会话复用，以及人工输入节点的冷恢复策略
+- `TodoWrite` 计划卡片和输入框上方当前任务固定展示
+- 运行中后续 prompt 队列和队列项删除
+- 运行中 token 估算平滑展示
 - 一轮前端结构化重构
 - 轻量 `.trellis` 和 `openspec` 骨架
 
@@ -21,11 +28,12 @@
 
 这部分优先保证“每天能稳定用”，优先级最高。
 
-- 修完运行态边界问题：
+- 继续收敛运行态边界问题：
   - 停止后残留状态
-  - 空回复
   - terminal event 缺失时的 turn 收尾
   - resume / stale transcript 恢复
+  - Plan / 审批 / AI 提问暂停后的冷恢复一致性
+  - 运行队列与线程切换的边界验证
 - 把 header 里的 `用编辑器打开` 做成真实能力
 - 把 header 里的 diff 数字接真实 git diff
 - 给 `运行` / `提交` 按钮接最小可用闭环
@@ -66,6 +74,8 @@
 - 统一 provider / model / session / workspace 数据模型
 - 处理 provider 切换后的会话延续规则
 - 处理多窗口 / 刷新后的 provider-model 同步
+- 明确热会话运行中不切换 provider、运行结束后再同步配置的产品规则
+- 评估 Claude Code 如果提供原生 stdin 审批协议后，是否可以减少 Plan / 审批节点的冷恢复成本
 
 ## P1 Backend 工程化
 
@@ -89,6 +99,10 @@
   - history persist/restore
   - session resume fallback
   - stream terminal event handling
+  - Plan approval 暂停与恢复
+  - 权限拦截转审批卡片
+  - queued prompt 删除
+  - 当前任务固定卡片完成后收起
 - 至少补一层 smoke / hook / service 测试
 - 除 `npm run typecheck` 外，补充更可靠的验证路径
 
@@ -99,6 +113,7 @@
 - 更完整的项目区排序 / 显示策略
 - 更细的工具步骤展示
 - 更接近 Claude Code TUI / Codex Desktop 的事件与统计展示
+- 更完整的任务卡片交互，例如展开、跳转到原始 turn、历史任务查看
 
 ## P2 规范和流程
 

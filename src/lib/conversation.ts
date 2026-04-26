@@ -123,6 +123,8 @@ export function createToolStep(event: Extract<ClaudeEvent, { type: 'tool-start' 
     status: 'running',
     blockIndex: event.blockIndex,
     toolUseId: event.toolUseId,
+    parentToolUseId: event.parentToolUseId,
+    isSidechain: event.isSidechain,
     inputText,
   };
 }
@@ -136,6 +138,104 @@ export function upsertToolStep(steps: ToolStep[], step: ToolStep) {
   const next = [...steps];
   next[index] = { ...next[index], ...step };
   return next;
+}
+
+export function upsertToolStepDeep(steps: ToolStep[], step: ToolStep) {
+  if (!step.parentToolUseId) {
+    return upsertToolStep(steps, step);
+  }
+
+  const attached = updateToolTree(steps, step.parentToolUseId, (parent) => ({
+    ...parent,
+    subtools: upsertToolStep(parent.subtools ?? [], step),
+  }));
+
+  return attached.changed ? attached.tools : upsertToolStep(steps, step);
+}
+
+export function upsertSubagentText(steps: ToolStep[], parentToolUseId: string | undefined, text: string) {
+  if (!parentToolUseId || !text) {
+    return steps;
+  }
+
+  const attached = updateToolTree(steps, parentToolUseId, (parent) => {
+    const subMessages = [...(parent.subMessages ?? [])];
+    const lastIndex = subMessages.length - 1;
+    if (lastIndex >= 0) {
+      subMessages[lastIndex] = `${subMessages[lastIndex]}${text}`;
+    } else {
+      subMessages.push(text);
+    }
+
+    return {
+      ...parent,
+      subMessages,
+    };
+  });
+
+  return attached.changed ? attached.tools : steps;
+}
+
+export function upsertToolDeltaDeep(steps: ToolStep[], event: Extract<ClaudeEvent, { type: 'tool-input-delta' }>) {
+  if (!event.parentToolUseId) {
+    return upsertToolDelta(steps, event);
+  }
+
+  const attached = updateToolTree(steps, event.parentToolUseId, (parent) => ({
+    ...parent,
+    subtools: upsertToolDelta(parent.subtools ?? [], event),
+  }));
+
+  return attached.changed ? attached.tools : steps;
+}
+
+export function attachToolResultDeep(steps: ToolStep[], event: Extract<ClaudeEvent, { type: 'tool-result' }>) {
+  if (!event.parentToolUseId) {
+    return attachToolResult(steps, event);
+  }
+
+  const attached = updateToolTree(steps, event.parentToolUseId, (parent) => ({
+    ...parent,
+    subtools: attachToolResult(parent.subtools ?? [], event),
+  }));
+
+  return attached.changed ? attached.tools : attachToolResult(steps, event);
+}
+
+export function settleToolStopDeep(steps: ToolStep[], event: Extract<ClaudeEvent, { type: 'tool-stop' }>) {
+  if (!event.parentToolUseId) {
+    return settleToolStop(steps, event);
+  }
+
+  const attached = updateToolTree(steps, event.parentToolUseId, (parent) => ({
+    ...parent,
+    subtools: settleToolStop(parent.subtools ?? [], event),
+  }));
+
+  return attached.changed ? attached.tools : steps;
+}
+
+export function findToolByUseId(steps: ToolStep[], toolUseId?: string): ToolStep | undefined {
+  if (!toolUseId) {
+    return undefined;
+  }
+
+  for (const tool of steps) {
+    if (tool.toolUseId === toolUseId || tool.id === toolUseId) {
+      return tool;
+    }
+
+    const child = findToolByUseId(tool.subtools ?? [], toolUseId);
+    if (child) {
+      return child;
+    }
+  }
+
+  return undefined;
+}
+
+export function findParentToolForEvent(steps: ToolStep[], event: { parentToolUseId?: string }) {
+  return findToolByUseId(steps, event.parentToolUseId);
 }
 
 export function appendTextItem(items: AssistantItem[], text: string): AssistantItem[] {
@@ -157,6 +257,25 @@ export function appendTextItem(items: AssistantItem[], text: string): AssistantI
   return [...items, { id: crypto.randomUUID(), type: 'text', text }];
 }
 
+export function appendThinkingItem(items: AssistantItem[], text: string): AssistantItem[] {
+  if (!text) {
+    return items;
+  }
+
+  const last = items.at(-1);
+  if (last?.type === 'thinking') {
+    return [
+      ...items.slice(0, -1),
+      {
+        ...last,
+        text: `${last.text}${text}`,
+      },
+    ];
+  }
+
+  return [...items, { id: crypto.randomUUID(), type: 'thinking', text }];
+}
+
 export function syncToolItem(items: AssistantItem[], step: ToolStep): AssistantItem[] {
   const index = items.findIndex((item) => item.type === 'tool' && item.tool.id === step.id);
   if (index === -1) {
@@ -169,7 +288,7 @@ export function syncToolItem(items: AssistantItem[], step: ToolStep): AssistantI
 }
 
 export function upsertToolDelta(steps: ToolStep[], event: Extract<ClaudeEvent, { type: 'tool-input-delta' }>) {
-  const index = findLatestToolIndex(steps, event.blockIndex);
+  const index = findLatestToolIndex(steps, event.blockIndex, event.toolUseId);
   if (index === -1) {
     return [
       ...steps,
@@ -179,6 +298,9 @@ export function upsertToolDelta(steps: ToolStep[], event: Extract<ClaudeEvent, {
         title: '工具参数流',
         status: 'running' as const,
         blockIndex: event.blockIndex,
+        toolUseId: event.toolUseId,
+        parentToolUseId: event.parentToolUseId,
+        isSidechain: event.isSidechain,
         inputText: event.text,
       },
     ];
@@ -206,6 +328,8 @@ export function attachToolResult(steps: ToolStep[], event: Extract<ClaudeEvent, 
         title: event.isError ? '工具返回异常' : '工具返回结果',
         status: event.isError ? ('error' as const) : ('done' as const),
         toolUseId: event.toolUseId,
+        parentToolUseId: event.parentToolUseId,
+        isSidechain: event.isSidechain,
         resultText: event.content,
         isError: event.isError,
       },
@@ -238,6 +362,19 @@ export function findToolResultIndex(steps: ToolStep[], event: Extract<ClaudeEven
   }
 
   return -1;
+}
+
+export function settleToolStop(steps: ToolStep[], event: Extract<ClaudeEvent, { type: 'tool-stop' }>) {
+  const index = findLatestToolIndex(steps, event.blockIndex, event.toolUseId);
+  if (index === -1) {
+    return steps;
+  }
+
+  return steps.map((tool, toolIndex) =>
+    toolIndex === index && tool.status === 'running'
+      ? { ...tool, status: 'done' as const }
+      : tool,
+  );
 }
 
 export function settleRunningToolSteps(
@@ -292,7 +429,14 @@ export function matchesToolBlock(tool: ToolStep, blockIndex: number) {
   return tool.blockIndex === blockIndex;
 }
 
-export function findLatestToolIndex(steps: ToolStep[], blockIndex: number) {
+export function findLatestToolIndex(steps: ToolStep[], blockIndex: number, toolUseId?: string) {
+  if (toolUseId) {
+    const exactIndex = steps.findIndex((item) => item.toolUseId === toolUseId || item.id === toolUseId);
+    if (exactIndex !== -1) {
+      return exactIndex;
+    }
+  }
+
   for (let index = steps.length - 1; index >= 0; index -= 1) {
     const tool = steps[index];
     if (tool.status === 'running' && matchesToolBlock(tool, blockIndex)) {
@@ -400,8 +544,10 @@ export function formatJson(value: unknown) {
 function describeToolCall(name: string, inputText?: string) {
   const input = parseLooseJson(inputText);
   const filePath = getString(input, ['file_path', 'path', 'notebook_path']);
+  const directoryPath = getString(input, ['path', 'directory', 'dir']);
   const pattern = getString(input, ['pattern', 'query']);
   const command = getString(input, ['command', 'cmd', 'cmdString']);
+  const url = getString(input, ['url']);
   const agentName = getString(input, ['subagent_type', 'agent', 'agent_name', 'name']);
   const taskDescription = getString(input, ['description', 'summary', 'task', 'prompt']);
 
@@ -417,12 +563,60 @@ function describeToolCall(name: string, inputText?: string) {
     return `Glob(${compactToolArgument(pattern)})`;
   }
 
+  if (name === 'LS' && directoryPath) {
+    return `LS(${compactToolArgument(directoryPath)})`;
+  }
+
   if (name === 'Bash' && command) {
     return `Bash(${compactToolArgument(command)})`;
   }
 
-  if ((name === 'Edit' || name === 'Write' || name === 'NotebookEdit') && filePath) {
+  if (name === 'BashOutput') {
+    return 'BashOutput';
+  }
+
+  if (name === 'KillShell') {
+    return 'KillShell';
+  }
+
+  if ((name === 'Edit' || name === 'MultiEdit' || name === 'Write' || name === 'NotebookEdit') && filePath) {
     return `${name}(${compactToolArgument(filePath)})`;
+  }
+
+  if (name === 'TodoRead') {
+    return 'TodoRead';
+  }
+
+  if (name === 'TodoWrite') {
+    return 'TodoWrite';
+  }
+
+  if (name === 'UpdatePlan') {
+    return 'UpdatePlan';
+  }
+
+  if (name === 'WebSearch' && pattern) {
+    return `WebSearch(${compactToolArgument(pattern)})`;
+  }
+
+  if (name === 'WebFetch' && url) {
+    return `WebFetch(${compactToolArgument(url)})`;
+  }
+
+  if (name === 'ViewImage' && filePath) {
+    return `ViewImage(${compactToolArgument(filePath)})`;
+  }
+
+  if (name === 'TaskOutput') {
+    return 'TaskOutput';
+  }
+
+  if (name === 'TaskCreate' || name === 'TaskUpdate' || name === 'TaskList' || name === 'TaskGet') {
+    return taskDescription ? `${name}(${compactToolArgument(taskDescription)})` : name;
+  }
+
+  if (name === 'EnterPlanMode') {
+    return '进入 Plan 模式';
   }
 
   if (name === 'Agent' || name === 'Task') {
@@ -677,14 +871,24 @@ function repairTurnItems(items: AssistantItem[]) {
 function mergeOrphanToolResultItems(items: AssistantItem[]) {
   let changed = false;
   const mergedItems: AssistantItem[] = [];
+  const toolIndexByUseId = new Map<string, number>();
 
   for (const item of items) {
     if (item.type !== 'tool' || item.tool.name !== 'tool_result') {
+      if (item.type === 'tool') {
+        const key = item.tool.toolUseId ?? item.tool.id;
+        if (key) {
+          toolIndexByUseId.set(key, mergedItems.length);
+        }
+      }
       mergedItems.push(item);
       continue;
     }
 
-    const targetIndex = findPreviousToolWithoutResult(mergedItems);
+    const targetIndex =
+      item.tool.toolUseId && toolIndexByUseId.has(item.tool.toolUseId)
+        ? toolIndexByUseId.get(item.tool.toolUseId) ?? -1
+        : findPreviousToolWithoutResult(mergedItems);
     if (targetIndex === -1) {
       mergedItems.push(item);
       continue;
@@ -709,6 +913,37 @@ function mergeOrphanToolResultItems(items: AssistantItem[]) {
   }
 
   return changed ? mergedItems : items;
+}
+
+function updateToolTree(
+  steps: ToolStep[],
+  toolUseId: string,
+  updater: (tool: ToolStep) => ToolStep,
+): { tools: ToolStep[]; changed: boolean } {
+  let changed = false;
+  const tools = steps.map((tool) => {
+    if (tool.toolUseId === toolUseId || tool.id === toolUseId) {
+      changed = true;
+      return updater(tool);
+    }
+
+    if (!tool.subtools?.length) {
+      return tool;
+    }
+
+    const nested = updateToolTree(tool.subtools, toolUseId, updater);
+    if (!nested.changed) {
+      return tool;
+    }
+
+    changed = true;
+    return {
+      ...tool,
+      subtools: nested.tools,
+    };
+  });
+
+  return { tools, changed };
 }
 
 function findPreviousToolWithoutResult(items: AssistantItem[]) {
@@ -823,16 +1058,44 @@ function doesChunkMatchTool(toolName: string, parsed: Record<string, unknown>) {
     return typeof parsed.pattern === 'string' || typeof parsed.query === 'string';
   }
 
-  if (toolName === 'Read') {
+  if (toolName === 'Read' || toolName === 'ViewImage') {
     return typeof parsed.file_path === 'string' && !('old_string' in parsed) && !('new_string' in parsed);
   }
 
-  if (toolName === 'Edit' || toolName === 'NotebookEdit') {
+  if (toolName === 'LS') {
+    return typeof parsed.path === 'string' || typeof parsed.directory === 'string';
+  }
+
+  if (toolName === 'Edit' || toolName === 'MultiEdit' || toolName === 'NotebookEdit') {
     return 'old_string' in parsed || 'new_string' in parsed || 'diff' in parsed || 'patch' in parsed;
   }
 
   if (toolName === 'Write') {
     return typeof parsed.file_path === 'string' && ('content' in parsed || 'diff' in parsed || 'patch' in parsed);
+  }
+
+  if (toolName === 'TodoWrite') {
+    return Array.isArray(parsed.todos);
+  }
+
+  if (toolName === 'TodoRead' || toolName === 'UpdatePlan') {
+    return true;
+  }
+
+  if (toolName === 'WebSearch') {
+    return typeof parsed.query === 'string';
+  }
+
+  if (toolName === 'WebFetch') {
+    return typeof parsed.url === 'string';
+  }
+
+  if (toolName === 'Task' || toolName === 'Agent') {
+    return typeof parsed.description === 'string' || typeof parsed.prompt === 'string';
+  }
+
+  if (toolName === 'BashOutput' || toolName === 'KillShell' || toolName === 'TaskOutput') {
+    return true;
   }
 
   return false;

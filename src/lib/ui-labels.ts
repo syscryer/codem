@@ -3,12 +3,12 @@ import type { PermissionMode } from '../types';
 
 export function permissionLabel(mode: PermissionMode) {
   const labels: Record<PermissionMode, string> = {
-    default: '默认权限',
+    default: '默认',
     plan: '计划模式',
     acceptEdits: '接受编辑',
     auto: '自动执行',
     dontAsk: '无需确认',
-    bypassPermissions: '完全访问权限',
+    bypassPermissions: '完全访问',
   };
 
   return labels[mode];

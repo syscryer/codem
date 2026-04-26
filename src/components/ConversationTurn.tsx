@@ -69,12 +69,13 @@ function ConversationTurnViewComponent({
     return ids;
   }, [requestCardsByToolId, turn.items]);
   const visibleItems = turn.items.filter((item) => {
-    if (item.type === 'text') {
+    if (item.type === 'text' || item.type === 'thinking') {
       return true;
     }
 
     return !shouldHideTurnToolStep(turn, item.tool) || Boolean(getToolAnchoredRequest(item.tool, requestCardsByToolId));
   });
+  const groupedVisibleItems = useMemo(() => groupReadToolItems(visibleItems), [visibleItems]);
   const showProgressLine =
     running ||
     turn.status === 'stopped' ||
@@ -106,11 +107,21 @@ function ConversationTurnViewComponent({
             <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
           ) : null}
 
-          {visibleItems.length > 0 ? (
-            visibleItems.map((item) =>
-              item.type === 'text' ? (
-                <MarkdownMessage key={item.id} content={item.text} />
-              ) : (
+          {groupedVisibleItems.length > 0 ? (
+            groupedVisibleItems.map((item) => {
+              if (item.type === 'text') {
+                return <MarkdownMessage key={item.id} content={item.text} />;
+              }
+
+              if (item.type === 'thinking') {
+                return <ThinkingMessage key={item.id} content={item.text} />;
+              }
+
+              if (item.type === 'read-group') {
+                return <ReadToolsGroup key={item.id} tools={item.tools} />;
+              }
+
+              return (
                 <ToolItemWithAnchoredCards
                   key={item.id}
                   tool={item.tool}
@@ -119,8 +130,8 @@ function ConversationTurnViewComponent({
                   requestCardsByToolId={requestCardsByToolId}
                   onSubmitRequestUserInput={onSubmitRequestUserInput}
                 />
-              ),
-            )
+              );
+            })
           ) : (
             running ? (
               null
@@ -193,9 +204,8 @@ function TurnProgressLine({
   const text = formatTurnProgress(turn, running ? nowMs : undefined, isLiveRunning);
 
   return (
-    <div className={`working-line tui-progress ${compact ? 'compact' : ''}`}>
-      <span className={`activity-dot ${running ? 'pulse' : ''}`} />
-      <span>{text}</span>
+    <div className={`working-line tui-progress ${compact ? 'compact' : ''} ${running ? 'running' : ''}`}>
+      <span className="tui-progress-text">{text}</span>
     </div>
   );
 }
@@ -223,7 +233,70 @@ function MarkdownMessage({ content }: { content: string }) {
   );
 }
 
+function ThinkingMessage({ content }: { content: string }) {
+  const cleanContent = content.trim();
+  if (!cleanContent) {
+    return null;
+  }
+
+  return (
+    <details className="thinking-message">
+      <summary>
+        <span className="thinking-dot" />
+        <span>Thinking</span>
+        <span className="thinking-count">{formatThinkingLength(cleanContent)}</span>
+      </summary>
+      <pre>{cleanContent}</pre>
+    </details>
+  );
+}
+
 export const ConversationTurnView = memo(ConversationTurnViewComponent);
+
+type DisplayAssistantItem =
+  | ConversationTurn['items'][number]
+  | { id: string; type: 'read-group'; tools: ToolStep[] };
+
+function ReadToolsGroup({ tools }: { tools: ToolStep[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const status = tools.some((tool) => tool.status === 'error')
+    ? 'error'
+    : tools.some((tool) => tool.status === 'running')
+      ? 'running'
+      : 'done';
+  const fileNames = tools
+    .map((tool) => getReadToolPath(tool))
+    .filter((filePath): filePath is string => Boolean(filePath))
+    .map((filePath) => getFileName(filePath));
+  const summary = fileNames.length
+    ? fileNames.slice(0, 3).join('、') + (fileNames.length > 3 ? ` 等 ${fileNames.length} 个文件` : '')
+    : `${tools.length} 个文件`;
+
+  return (
+    <div className={`tool-step read-group-step tool-${status}`}>
+      <button
+        type="button"
+        className="tool-preview-summary read-group-summary"
+        onClick={() => setExpanded((current) => !current)}
+      >
+        <span className="tool-status-dot" />
+        <div className="tool-preview-summary-main read-group-summary-main">
+          <span className="read-group-title">批量读取 {tools.length} 个文件</span>
+          <span className="read-group-meta">{summary}</span>
+        </div>
+        <span className={`tool-preview-chevron ${expanded ? 'expanded' : ''}`}>{'>'}</span>
+      </button>
+
+      {expanded ? (
+        <div className="read-group-card">
+          {tools.map((tool) => (
+            <ToolStepRow key={tool.id} tool={tool} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function ToolItemWithAnchoredCards({
   tool,
@@ -263,6 +336,7 @@ function ToolStepRow({ tool }: { tool: ToolStep }) {
   const preview = useMemo(() => getToolPreview(tool), [tool]);
   const todoPreview = useMemo(() => getTodoWritePreview(tool), [tool]);
   const agentPreview = useMemo(() => getAgentTaskPreview(tool), [tool]);
+  const structuredPreview = useMemo(() => getStructuredToolPreview(tool), [tool]);
   const [detailsOpen, setDetailsOpen] = useState(false);
   if (agentPreview) {
     return <AgentTaskPreview tool={tool} preview={agentPreview} />;
@@ -274,6 +348,10 @@ function ToolStepRow({ tool }: { tool: ToolStep }) {
 
   if (preview) {
     return <CompactToolPreview tool={tool} preview={preview} />;
+  }
+
+  if (structuredPreview) {
+    return <StructuredToolPreview tool={tool} preview={structuredPreview} />;
   }
 
   const hasDetails = Boolean(preview || tool.inputText?.trim() || tool.resultText?.trim());
@@ -409,6 +487,89 @@ function AgentTaskPreview({
               <pre>{preview.resultText}</pre>
             </section>
           ) : null}
+          {preview.subMessages.length > 0 ? (
+            <section className="agent-preview-section">
+              <h4>子代理消息</h4>
+              {preview.subMessages.map((message, index) => (
+                <pre key={`sub-message-${index}`}>{message}</pre>
+              ))}
+            </section>
+          ) : null}
+          {preview.subtools.length > 0 ? (
+            <section className="agent-preview-section">
+              <h4>子代理工具</h4>
+              <div className="structured-preview-list">
+                {preview.subtools.map((subtool) => (
+                  <div key={subtool.id} className={`structured-preview-row tool-${subtool.status}`}>
+                    <span className="structured-preview-label">工具</span>
+                    <span className="structured-preview-value">
+                      {subtool.title} · {summarizeToolRow(subtool)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function StructuredToolPreview({
+  tool,
+  preview,
+}: {
+  tool: ToolStep;
+  preview: StructuredToolPreviewData;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className={`tool-step structured-preview-step tool-${tool.status}`}>
+      <button
+        type="button"
+        className="tool-preview-summary structured-preview-summary"
+        onClick={() => setExpanded((current) => !current)}
+      >
+        <span className="tool-status-dot" />
+        <div className="tool-preview-summary-main structured-preview-summary-main">
+          <span className="structured-preview-title">{preview.title}</span>
+          <span className="structured-preview-meta">{preview.summary}</span>
+        </div>
+        <span className={`tool-preview-chevron ${expanded ? 'expanded' : ''}`}>{'>'}</span>
+      </button>
+
+      {expanded ? (
+        <div className="structured-preview-card">
+          {preview.rows.length > 0 ? (
+            <div className="structured-preview-list">
+              {preview.rows.map((row, index) => (
+                <div key={`${row.label}-${index}`} className="structured-preview-row">
+                  <span className="structured-preview-label">{row.label}</span>
+                  <span className="structured-preview-value">{row.value}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {preview.content ? <pre>{preview.content}</pre> : null}
+          {tool.inputText?.trim() || tool.resultText?.trim() ? (
+            <details className="tool-details structured-preview-raw">
+              <summary>原始详情</summary>
+              {tool.inputText?.trim() ? (
+                <>
+                  <h4>参数</h4>
+                  <pre>{tool.inputText}</pre>
+                </>
+              ) : null}
+              {tool.resultText?.trim() ? (
+                <>
+                  <h4>结果</h4>
+                  <pre>{tool.resultText}</pre>
+                </>
+              ) : null}
+            </details>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -422,6 +583,8 @@ function TodoWritePreview({
   tool: ToolStep;
   preview: TodoWritePreviewData;
 }) {
+  const resultText = getTodoWriteVisibleResult(tool.resultText);
+
   return (
     <div className={`tool-step todo-preview-step tool-${tool.status}`}>
       <div className="todo-preview-card">
@@ -446,8 +609,8 @@ function TodoWritePreview({
           ))}
         </ol>
 
-        {tool.resultText?.trim() ? (
-          <footer className="todo-preview-result">{tool.resultText.trim()}</footer>
+        {resultText ? (
+          <footer className="todo-preview-result">{resultText}</footer>
         ) : null}
       </div>
     </div>
@@ -819,22 +982,56 @@ function formatTurnProgress(turn: ConversationTurn, nowMs?: number, isLiveRunnin
   } else if (typeof turn.outputTokens === 'number') {
     parts.push(`↓ ${formatTokenCount(turn.outputTokens)} tokens`);
   }
-  if (typeof turn.thoughtCount === 'number' && turn.thoughtCount > 0) {
-    parts.push(`thought for ${turn.thoughtCount}`);
+  if (typeof turn.thoughtCount === 'number' && turn.thoughtCount > 0 && (!running || turn.phase === 'thinking')) {
+    parts.push(`思考 ${turn.thoughtCount} 段`);
   }
 
   const prefix =
     !running
       ? getCompletedTurnLabel(turn)
-      : turn.phase === 'thinking' || turn.phase === 'requesting'
-        ? '思考中'
-        : '处理中';
+      : getRunningTurnLabel(turn);
 
   if (!running && prefix === '已处理' && duration) {
     return `${prefix} ${duration}`;
   }
 
   return parts.length > 0 ? `${prefix} ${parts.join(' · ')}` : prefix;
+}
+
+function getRunningTurnLabel(turn: ConversationTurn) {
+  if (turn.pendingApprovalRequests?.length) {
+    return '等待批准';
+  }
+
+  if (turn.pendingUserInputRequests?.length) {
+    return '等待输入';
+  }
+
+  if (turn.phase === 'thinking') {
+    return '思考中';
+  }
+
+  if (turn.phase === 'requesting') {
+    if (turn.activity === '继续执行中') {
+      return '继续执行中';
+    }
+
+    if (turn.activity === '等待 Claude 调整计划') {
+      return '等待调整计划';
+    }
+
+    return '等待响应';
+  }
+
+  if (turn.phase === 'tool') {
+    return '执行工具中';
+  }
+
+  if (turn.phase === 'computing') {
+    return '生成回复中';
+  }
+
+  return turn.activity?.trim() || '处理中';
 }
 
 function formatTokenCount(tokens: number) {
@@ -911,6 +1108,15 @@ function getAssistantCopyText(turn: ConversationTurn) {
   return visibleText || turn.assistantText.trim();
 }
 
+function formatThinkingLength(content: string) {
+  const chars = content.trim().length;
+  if (chars >= 1000) {
+    return `${(chars / 1000).toFixed(1)}k chars`;
+  }
+
+  return `${chars} chars`;
+}
+
 function formatMessageTime(timestamp?: number) {
   if (!timestamp) {
     return '';
@@ -963,6 +1169,15 @@ type AgentTaskPreviewData = {
   summary: string;
   files: string[];
   resultText: string;
+  subMessages: string[];
+  subtools: ToolStep[];
+};
+
+type StructuredToolPreviewData = {
+  title: string;
+  summary: string;
+  rows: Array<{ label: string; value: string }>;
+  content?: string;
 };
 
 type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'unknown';
@@ -1054,7 +1269,138 @@ function getAgentTaskPreview(tool: ToolStep): AgentTaskPreviewData | null {
     summary,
     files,
     resultText,
+    subMessages: tool.subMessages?.filter((message) => message.trim()) ?? [],
+    subtools: tool.subtools ?? [],
   };
+}
+
+function getStructuredToolPreview(tool: ToolStep): StructuredToolPreviewData | null {
+  const normalizedName = normalizeRuntimeToolName(tool.name);
+  const input = parseToolInput(tool.inputText);
+  const rows: StructuredToolPreviewData['rows'] = [];
+  const resultText = normalizeToolResultText(tool.resultText);
+
+  if (input) {
+    const filePath = getToolInputString(input, ['file_path', 'path', 'notebook_path']);
+    const pattern = getToolInputString(input, ['pattern', 'query']);
+    const url = getToolInputString(input, ['url']);
+    const command = getToolInputString(input, ['command', 'cmd', 'cmdString']);
+    const description = getToolInputString(input, ['description', 'summary', 'task', 'prompt']);
+
+    if (filePath) rows.push({ label: '路径', value: filePath });
+    if (pattern) rows.push({ label: normalizedName === 'websearch' ? '查询' : '匹配', value: pattern });
+    if (url) rows.push({ label: 'URL', value: url });
+    if (command) rows.push({ label: '命令', value: command });
+    if (description) rows.push({ label: '任务', value: summarizePlainText(description, 140) });
+  }
+
+  if (normalizedName === 'enterplanmode') {
+    return {
+      title: '进入 Plan 模式',
+      summary: '后续写入和执行会先请求确认',
+      rows,
+      content: resultText,
+    };
+  }
+
+  if (normalizedName === 'updatplan' || normalizedName === 'updateplan') {
+    const planRows = extractPlanRows(input);
+    return {
+      title: '更新计划',
+      summary: planRows.length ? `${planRows.length} 项` : summarizeToolRow(tool),
+      rows: planRows.length ? planRows : rows,
+      content: resultText,
+    };
+  }
+
+  if (normalizedName === 'todoread') {
+    return {
+      title: '读取 Todo',
+      summary: resultText ? `${countNonEmptyLines(resultText)} 行结果` : summarizeToolRow(tool),
+      rows,
+      content: resultText,
+    };
+  }
+
+  if (normalizedName === 'ls') {
+    return {
+      title: '目录列表',
+      summary: resultText ? `${countNonEmptyLines(resultText)} 项` : summarizeToolRow(tool),
+      rows,
+      content: resultText,
+    };
+  }
+
+  if (normalizedName === 'grep' || normalizedName === 'glob') {
+    return {
+      title: normalizedName === 'grep' ? '搜索匹配' : '文件匹配',
+      summary: resultText ? `${countNonEmptyLines(resultText)} 条结果` : summarizeToolRow(tool),
+      rows,
+      content: resultText,
+    };
+  }
+
+  if (normalizedName === 'websearch' || normalizedName === 'webfetch') {
+    return {
+      title: normalizedName === 'websearch' ? '网页搜索' : '网页读取',
+      summary: resultText ? summarizePlainText(resultText, 90) : summarizeToolRow(tool),
+      rows,
+      content: resultText,
+    };
+  }
+
+  if (normalizedName === 'bashoutput' || normalizedName === 'killshell' || normalizedName === 'taskoutput') {
+    return {
+      title: getReadableStructuredToolTitle(tool.name),
+      summary: resultText ? summarizePlainText(resultText, 90) : summarizeToolRow(tool),
+      rows,
+      content: resultText,
+    };
+  }
+
+  if (normalizedName === 'multiedit') {
+    const editCount = input && Array.isArray(input.edits) ? input.edits.length : 0;
+    return {
+      title: '批量编辑',
+      summary: editCount > 0 ? `${editCount} 处修改` : summarizeToolRow(tool),
+      rows,
+      content: resultText,
+    };
+  }
+
+  if (normalizedName === 'viewimage') {
+    return {
+      title: '查看图片',
+      summary: rows[0]?.value ?? summarizeToolRow(tool),
+      rows,
+      content: resultText,
+    };
+  }
+
+  if (
+    normalizedName === 'taskcreate' ||
+    normalizedName === 'taskupdate' ||
+    normalizedName === 'tasklist' ||
+    normalizedName === 'taskget'
+  ) {
+    return {
+      title: getReadableStructuredToolTitle(tool.name),
+      summary: resultText ? summarizePlainText(resultText, 90) : summarizeToolRow(tool),
+      rows,
+      content: resultText,
+    };
+  }
+
+  if (tool.name.startsWith('mcp__') && resultText) {
+    return {
+      title: tool.title,
+      summary: summarizePlainText(resultText, 90),
+      rows,
+      content: resultText,
+    };
+  }
+
+  return null;
 }
 
 function formatAgentTaskSummary(tool: ToolStep, usageSummary: string, fileCount: number) {
@@ -1067,6 +1413,138 @@ function formatAgentTaskSummary(tool: ToolStep, usageSummary: string, fileCount:
   }
 
   return details.length ? `${state} · ${details.join(' · ')}` : state;
+}
+
+function extractPlanRows(input: Record<string, unknown> | null): StructuredToolPreviewData['rows'] {
+  if (!input) {
+    return [];
+  }
+
+  const rawItems = Array.isArray(input.plan)
+    ? input.plan
+    : Array.isArray(input.todos)
+      ? input.todos
+      : Array.isArray(input.items)
+        ? input.items
+        : [];
+
+  return rawItems
+    .map((item, index) => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+
+      const record = item as Record<string, unknown>;
+      const step = getStringValue(record.step) ?? getStringValue(record.content) ?? getStringValue(record.title);
+      if (!step) {
+        return null;
+      }
+
+      const status = getStringValue(record.status) ?? 'pending';
+      return {
+        label: `${index + 1}. ${formatPlanStatus(status)}`,
+        value: step,
+      };
+    })
+    .filter((item): item is { label: string; value: string } => Boolean(item));
+}
+
+function formatPlanStatus(status: string) {
+  switch (status) {
+    case 'completed':
+    case 'complete':
+      return '已完成';
+    case 'in_progress':
+    case 'running':
+      return '进行中';
+    case 'pending':
+      return '待处理';
+    default:
+      return status;
+  }
+}
+
+function normalizeToolResultText(value?: string) {
+  const text = value?.trim() ?? '';
+  if (!text) {
+    return '';
+  }
+
+  const parsed = parseJsonResultContent(text);
+  if (parsed) {
+    return parsed;
+  }
+
+  return text;
+}
+
+function parseJsonResultContent(text: string) {
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed === 'string') {
+      return parsed;
+    }
+
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item) => {
+          if (typeof item === 'string') return item;
+          if (item && typeof item === 'object') {
+            const record = item as Record<string, unknown>;
+            if (typeof record.text === 'string') return record.text;
+            if (typeof record.content === 'string') return record.content;
+          }
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+    }
+
+    if (parsed && typeof parsed === 'object') {
+      const record = parsed as Record<string, unknown>;
+      if (typeof record.text === 'string') return record.text;
+      if (typeof record.content === 'string') return record.content;
+    }
+  } catch {
+    return '';
+  }
+
+  return '';
+}
+
+function countNonEmptyLines(value: string) {
+  return value.split(/\r?\n/).filter((line) => line.trim()).length;
+}
+
+function summarizePlainText(value: string, maxLength: number) {
+  const clean = value.replace(/\s+/g, ' ').trim();
+  if (!clean) {
+    return '无输出';
+  }
+
+  return clean.length > maxLength ? `${clean.slice(0, maxLength - 3)}...` : clean;
+}
+
+function getReadableStructuredToolTitle(name: string) {
+  switch (normalizeRuntimeToolName(name)) {
+    case 'bashoutput':
+      return '读取命令输出';
+    case 'killshell':
+      return '停止命令';
+    case 'taskoutput':
+      return '读取任务输出';
+    case 'taskcreate':
+      return '创建任务';
+    case 'taskupdate':
+      return '更新任务';
+    case 'tasklist':
+      return '任务列表';
+    case 'taskget':
+      return '任务详情';
+    default:
+      return name;
+  }
 }
 
 function extractAgentResultFiles(resultText: string) {
@@ -1270,6 +1748,23 @@ function formatTodoPreviewSummary(preview: TodoWritePreviewData) {
   return `共 ${preview.todos.length} 个任务，已经完成 ${preview.counts.completed} 个`;
 }
 
+function getTodoWriteVisibleResult(resultText?: string) {
+  const text = resultText?.trim();
+  if (!text) {
+    return '';
+  }
+
+  const normalized = text.replace(/\s+/g, ' ').trim().toLowerCase();
+  if (
+    normalized ===
+    'todos have been modified successfully. ensure that you continue to use the todo list to track your progress. please proceed with the current tasks if applicable'
+  ) {
+    return '';
+  }
+
+  return text;
+}
+
 function getRequestQuestionHint(question: RequestUserInputQuestion) {
   const hints: string[] = [];
   if (question.multiSelect) {
@@ -1334,6 +1829,56 @@ function getToolAnchoredRequest(
   return requestCardsByToolId.get(requestId) ?? null;
 }
 
+function groupReadToolItems(items: ConversationTurn['items']): DisplayAssistantItem[] {
+  const result: DisplayAssistantItem[] = [];
+  let pendingReadTools: ToolStep[] = [];
+
+  const flushReadTools = () => {
+    if (pendingReadTools.length === 0) {
+      return;
+    }
+
+    if (pendingReadTools.length === 1) {
+      const tool = pendingReadTools[0];
+      result.push({
+        id: tool.id,
+        type: 'tool',
+        tool,
+      });
+    } else {
+      result.push({
+        id: `read-group-${pendingReadTools.map((tool) => tool.id).join('-')}`,
+        type: 'read-group',
+        tools: pendingReadTools,
+      });
+    }
+
+    pendingReadTools = [];
+  };
+
+  for (const item of items) {
+    if (item.type === 'tool' && isReadTool(item.tool)) {
+      pendingReadTools.push(item.tool);
+      continue;
+    }
+
+    flushReadTools();
+    result.push(item);
+  }
+
+  flushReadTools();
+  return result;
+}
+
+function isReadTool(tool: ToolStep) {
+  return normalizeRuntimeToolName(tool.name) === 'read';
+}
+
+function getReadToolPath(tool: ToolStep) {
+  const input = parseToolInput(tool.inputText);
+  return input ? getToolInputString(input, ['file_path', 'path']) : undefined;
+}
+
 function shouldHideTurnToolStep(turn: ConversationTurn, tool: ToolStep) {
   if (shouldHideToolStep(tool)) {
     return true;
@@ -1344,7 +1889,6 @@ function shouldHideTurnToolStep(turn: ConversationTurn, tool: ToolStep) {
     normalizedName === 'askuserquestion' ||
     normalizedName === 'requestuserinput' ||
     normalizedName === 'approvalrequest' ||
-    normalizedName === 'enterplanmode' ||
     normalizedName === 'exitplanmode'
   ) {
     return true;
@@ -1397,7 +1941,17 @@ function isApprovalRequiredToolError(resultText?: string) {
     normalized.includes('this command requires approval') ||
     normalized.includes('requires approval') ||
     normalized.includes('requires your approval') ||
-    normalized.includes('approval required')
+    normalized.includes('approval required') ||
+    isSecurityPolicyBlockedToolError(normalized)
+  );
+}
+
+function isSecurityPolicyBlockedToolError(normalized: string) {
+  return Boolean(
+    normalized &&
+      normalized.includes('was blocked') &&
+      normalized.includes('for security') &&
+      normalized.includes('claude code'),
   );
 }
 

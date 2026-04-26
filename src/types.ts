@@ -86,6 +86,7 @@ export type ClaudeEvent =
   | { type: 'status'; runId: string; message: string }
   | { type: 'session'; runId: string; sessionId: string }
   | { type: 'delta'; runId: string; text: string }
+  | { type: 'thinking-delta'; runId: string; text: string }
   | { type: 'trace'; runId: string; name: string; atMs: number; elapsedMs: number; detail?: string }
   | { type: 'phase'; runId: string; phase: TurnPhase; label: string; thoughtCount?: number }
   | ({ type: 'usage'; runId: string } & UsageSnapshot)
@@ -94,10 +95,11 @@ export type ClaudeEvent =
   | { type: 'approval-request'; runId: string; request: ApprovalRequest }
   | { type: 'runtime-reconnect-hint'; runId: string; hint: RuntimeRecoveryHint }
   | { type: 'retryable-error'; runId: string; message: string; hint: RuntimeRecoveryHint }
-  | { type: 'tool-start'; runId: string; blockIndex: number; toolUseId?: string; name: string; input?: unknown }
-  | { type: 'tool-input-delta'; runId: string; blockIndex: number; text: string }
-  | { type: 'tool-stop'; runId: string; blockIndex: number }
-  | { type: 'tool-result'; runId: string; toolUseId?: string; content: string; isError?: boolean }
+  | { type: 'tool-start'; runId: string; blockIndex: number; toolUseId?: string; parentToolUseId?: string; isSidechain?: boolean; name: string; input?: unknown }
+  | { type: 'tool-input-delta'; runId: string; blockIndex: number; toolUseId?: string; parentToolUseId?: string; isSidechain?: boolean; text: string }
+  | { type: 'tool-stop'; runId: string; blockIndex: number; toolUseId?: string; parentToolUseId?: string; isSidechain?: boolean }
+  | { type: 'tool-result'; runId: string; toolUseId?: string; parentToolUseId?: string; isSidechain?: boolean; content: string; isError?: boolean }
+  | { type: 'subagent-delta'; runId: string; parentToolUseId?: string; text: string }
   | { type: 'assistant-snapshot'; runId: string; blocks: ClaudeContentBlock[] }
   | { type: 'raw'; runId: string; raw: unknown }
   | { type: 'stderr'; runId: string; text: string }
@@ -111,13 +113,18 @@ export type ToolStep = {
   status: 'running' | 'done' | 'error';
   blockIndex?: number;
   toolUseId?: string;
+  parentToolUseId?: string;
+  isSidechain?: boolean;
   inputText?: string;
   resultText?: string;
   isError?: boolean;
+  subtools?: ToolStep[];
+  subMessages?: string[];
 };
 
 export type AssistantItem =
   | { id: string; type: 'text'; text: string }
+  | { id: string; type: 'thinking'; text: string }
   | { id: string; type: 'tool'; tool: ToolStep };
 
 export type ConversationTurn = {

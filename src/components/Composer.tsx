@@ -1,5 +1,5 @@
 import { useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
-import { ArrowUp, Check, Mic, Plus, Square, X } from 'lucide-react';
+import { ArrowUp, Check, Mic, Plus, Shield, Square, Unlock, X, Zap } from 'lucide-react';
 import { permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { modelLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
@@ -111,7 +111,7 @@ export function Composer({
                         setPermissionMenuOpen(false);
                       }}
                     >
-                      <span className={`permission-icon permission-icon-${mode}`} aria-hidden="true" />
+                      <PermissionModeIcon mode={mode} size={15} />
                       <span>{permissionLabel(mode)}</span>
                       {permissionMode === mode ? <Check className="permission-check" size={14} /> : null}
                     </button>
@@ -125,7 +125,7 @@ export function Composer({
                 aria-expanded={permissionMenuOpen}
                 onClick={() => setPermissionMenuOpen((value) => !value)}
               >
-                <span className="permission-trigger-icon" aria-hidden="true" />
+                <PermissionModeIcon mode={permissionMode} size={15} />
                 <span>{permissionLabel(permissionMode)}</span>
                 <span className="permission-trigger-chevron" aria-hidden="true" />
               </button>
@@ -183,4 +183,16 @@ export function Composer({
       </div>
     </form>
   );
+}
+
+function PermissionModeIcon({ mode, size }: { mode: PermissionMode; size: number }) {
+  if (mode === 'auto') {
+    return <Zap className="permission-lucide-icon" size={size} aria-hidden="true" />;
+  }
+
+  if (mode === 'bypassPermissions') {
+    return <Unlock className="permission-lucide-icon" size={size} aria-hidden="true" />;
+  }
+
+  return <Shield className="permission-lucide-icon" size={size} aria-hidden="true" />;
 }

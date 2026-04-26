@@ -11,7 +11,11 @@ export const permissionModes = [
   'bypassPermissions',
 ] as const satisfies readonly PermissionMode[];
 
-export const permissionMenuModes = permissionModes;
+export const permissionMenuModes = [
+  'default',
+  'auto',
+  'bypassPermissions',
+] as const satisfies readonly PermissionMode[];
 
 export const EMPTY_PANEL_STATE: PanelState = {
   organizeBy: 'project',

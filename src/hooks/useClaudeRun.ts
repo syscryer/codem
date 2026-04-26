@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { DEFAULT_MODEL_VALUE } from '../constants';
+import { DEFAULT_MODEL_VALUE, permissionMenuModes } from '../constants';
 import {
+  appendThinkingItem,
   appendTextItem,
   attachToolResult,
+  attachToolResultDeep,
   closeDanglingTurns,
   closeTurnWithoutTerminalEvent,
   createToolStep,
+  findParentToolForEvent,
   findToolResultIndex,
   findLatestToolIndex,
   formatJson,
@@ -15,10 +18,14 @@ import {
   isPermissionMode,
   mergeUsageSnapshot,
   settleRunningToolSteps,
+  settleToolStopDeep,
   summarizeToolResult,
   syncToolItem,
+  upsertSubagentText,
   upsertToolDelta,
+  upsertToolDeltaDeep,
   upsertToolStep,
+  upsertToolStepDeep,
 } from '../lib/conversation';
 import type {
   ApprovalDecision,
@@ -188,7 +195,7 @@ export function useClaudeRun({
 
   useEffect(() => {
     setPermissionMode(
-      isPermissionMode(activeThreadSummary?.permissionMode)
+      isVisiblePermissionMode(activeThreadSummary?.permissionMode)
         ? activeThreadSummary.permissionMode
         : 'bypassPermissions',
     );
@@ -492,7 +499,7 @@ export function useClaudeRun({
       status: 'running',
       assistantText: `${turn.assistantText}${text}`,
       items: appendTextItem(turn.items, text),
-      activity: 'Computing...',
+      activity: '生成回复中',
       phase: 'computing',
     }));
   }
@@ -537,6 +544,11 @@ export function useClaudeRun({
       workingDirectory?: string;
       sessionId?: string;
       permissionModeOverride?: PermissionMode;
+      toolResult?: {
+        requestId: string;
+        content: string;
+        isError?: boolean;
+      };
       onStarted?: () => void;
     },
   ) {
@@ -614,6 +626,7 @@ export function useClaudeRun({
           permissionMode: runPermissionMode,
           model: runModel === DEFAULT_MODEL_VALUE ? undefined : runModel,
           sessionId: runSessionId,
+          toolResult: options?.toolResult,
           clientSubmitAtMs: submitAtMs,
         }),
         signal: controller.signal,
@@ -846,6 +859,7 @@ export function useClaudeRun({
       event.type === 'approval-request' ||
       event.type === 'runtime-reconnect-hint' ||
       event.type === 'retryable-error' ||
+      event.type === 'thinking-delta' ||
       event.type === 'tool-start' ||
       event.type === 'tool-input-delta' ||
       event.type === 'tool-stop' ||
@@ -1005,17 +1019,32 @@ export function useClaudeRun({
       return;
     }
 
-    if (event.type === 'tool-start') {
+    if (event.type === 'thinking-delta') {
       updateRunningTurn(context, (turn) => {
-        const step = createToolStep(event);
-        const tools = upsertToolStep(turn.tools, step);
+        const toolIsRunning = hasRunningTool(turn);
         return {
           ...turn,
           status: 'running',
-          activity: step.title,
+          activity: toolIsRunning ? turn.activity : '思考中',
+          phase: toolIsRunning ? turn.phase : 'thinking',
+          items: appendThinkingItem(turn.items, event.text),
+        };
+      });
+      return;
+    }
+
+    if (event.type === 'tool-start') {
+      updateRunningTurn(context, (turn) => {
+        const step = createToolStep(event);
+        const tools = event.parentToolUseId ? upsertToolStepDeep(turn.tools, step) : upsertToolStep(turn.tools, step);
+        const visibleTool = event.parentToolUseId ? findParentToolForEvent(tools, event) : step;
+        return {
+          ...turn,
+          status: 'running',
+          activity: event.isSidechain ? turn.activity : step.title,
           phase: 'tool',
           tools,
-          items: syncToolItem(turn.items, step),
+          items: visibleTool ? syncToolItem(turn.items, visibleTool) : turn.items,
         };
       });
       return;
@@ -1023,9 +1052,13 @@ export function useClaudeRun({
 
     if (event.type === 'tool-input-delta') {
       updateRunningTurn(context, (turn) => {
-        const tools = upsertToolDelta(turn.tools, event);
-        const toolIndex = findLatestToolIndex(tools, event.blockIndex);
-        const tool = toolIndex >= 0 ? tools[toolIndex] : undefined;
+        const tools = event.parentToolUseId ? upsertToolDeltaDeep(turn.tools, event) : upsertToolDelta(turn.tools, event);
+        const toolIndex = event.parentToolUseId ? -1 : findLatestToolIndex(tools, event.blockIndex, event.toolUseId);
+        const tool = event.parentToolUseId
+          ? findParentToolForEvent(tools, event)
+          : toolIndex >= 0
+            ? tools[toolIndex]
+            : undefined;
         return {
           ...turn,
           phase: 'tool',
@@ -1038,16 +1071,13 @@ export function useClaudeRun({
 
     if (event.type === 'tool-stop') {
       updateRunningTurn(context, (turn) => {
-        const index = findLatestToolIndex(turn.tools, event.blockIndex);
-        const tools =
-          index === -1
-            ? turn.tools
-            : turn.tools.map((tool, toolIndex) =>
-                toolIndex === index && tool.status === 'running'
-                  ? { ...tool, status: 'done' as const }
-                  : tool,
-              );
-        const tool = index >= 0 ? tools[index] : undefined;
+        const tools = settleToolStopDeep(turn.tools, event);
+        const index = event.parentToolUseId ? -1 : findLatestToolIndex(tools, event.blockIndex, event.toolUseId);
+        const tool = event.parentToolUseId
+          ? findParentToolForEvent(tools, event)
+          : index >= 0
+            ? tools[index]
+            : undefined;
         return {
           ...turn,
           tools,
@@ -1059,22 +1089,37 @@ export function useClaudeRun({
 
     if (event.type === 'tool-result') {
       updateRunningTurn(context, (turn) => {
-        const toolIndex = findToolResultIndex(turn.tools, event);
-        const tools = attachToolResult(turn.tools, event);
+        const toolIndex = event.parentToolUseId ? -1 : findToolResultIndex(turn.tools, event);
+        const tools = event.parentToolUseId ? attachToolResultDeep(turn.tools, event) : attachToolResult(turn.tools, event);
         const tool =
-          toolIndex >= 0
+          event.parentToolUseId
+            ? findParentToolForEvent(tools, event)
+            : toolIndex >= 0
             ? tools[toolIndex]
             : tools.find((item) => item.toolUseId && item.toolUseId === event.toolUseId);
-        const approvalRequest = createApprovalRequestFromToolResult(tool, event);
+        const approvalRequest = event.parentToolUseId ? null : createApprovalRequestFromToolResult(tool, event);
         return {
           ...turn,
-          activity: summarizeToolResult(event),
-          phase: event.isError ? turn.phase : 'computing',
+          activity: event.isSidechain ? turn.activity : summarizeToolResult(event),
+          phase: event.isError ? turn.phase : event.isSidechain ? turn.phase : 'computing',
           tools,
           items: tool ? syncToolItem(turn.items, tool) : turn.items,
           pendingApprovalRequests: approvalRequest
             ? upsertApprovalRequest(turn.pendingApprovalRequests, approvalRequest)
             : turn.pendingApprovalRequests,
+        };
+      });
+      return;
+    }
+
+    if (event.type === 'subagent-delta') {
+      updateRunningTurn(context, (turn) => {
+        const tools = upsertSubagentText(turn.tools, event.parentToolUseId, event.text);
+        const parentTool = findParentToolForEvent(tools, event);
+        return {
+          ...turn,
+          tools,
+          items: parentTool ? syncToolItem(turn.items, parentTool) : turn.items,
         };
       });
       return;
@@ -1388,17 +1433,69 @@ export function useClaudeRun({
       return false;
     }
 
-    if (isThreadRunning(activeThreadId)) {
-      showToast('当前聊天正在运行，请等待结束或先停止。', 'info');
-      return false;
-    }
-
     const threadId = activeThreadId;
     const promptText = buildApprovalDecisionPrompt(request, decision);
+    const toolResultContent = buildApprovalDecisionToolResultContent(request, decision);
+
+    if (isThreadRunning(activeThreadId)) {
+      const runId =
+        runContextsByThreadIdRef.current.get(activeThreadId)?.runId ||
+        turn.backendRunId ||
+        activeRunsByThreadId[activeThreadId]?.runId ||
+        '';
+      if (!runId || !request.requestId) {
+        showToast('当前批准请求还没有可提交的运行标识，请稍后重试。', 'info');
+        return false;
+      }
+
+      const response = await fetch(`/api/claude/run/${encodeURIComponent(runId)}/approval-decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestId: request.requestId,
+          decision,
+          content: toolResultContent,
+        }),
+      });
+
+      if (!response.ok) {
+        const message = await readErrorResponseText(response);
+        showToast(message || '提交批准结果失败。', 'error');
+        return false;
+      }
+
+      updateThreadTurn(threadId, turn.id, (currentTurn) => ({
+        ...currentTurn,
+        activity: decision === 'approve' ? '继续执行中' : '等待 Claude 调整计划',
+        phase: 'requesting',
+        pendingApprovalRequests: removePendingApprovalRequest(currentTurn.pendingApprovalRequests, request),
+      }));
+      appendDebug(threadId, {
+        title: decision === 'approve' ? '已批准请求' : '已拒绝请求',
+        content: formatJson({
+          requestId: request.requestId,
+          title: request.title,
+          decision,
+          command: request.command,
+          mode: 'stdin_tool_result',
+        }),
+      });
+      schedulePersistThreadHistory(threadId);
+      showToast(decision === 'approve' ? '已批准并继续任务。' : '已拒绝该操作并继续任务。', 'success');
+      return true;
+    }
+
     void startRun(activeThreadSummary, promptText, {
       workingDirectory: turn.workspace.trim() || activeThreadSummary.workingDirectory,
       sessionId: turn.sessionId?.trim() || activeThreadSummary.sessionId.trim() || undefined,
       permissionModeOverride: decision === 'approve' && !isPlanApprovalRequest(request) ? 'bypassPermissions' : undefined,
+      toolResult: request.requestId
+        ? {
+            requestId: request.requestId,
+            content: toolResultContent,
+            isError: decision === 'reject',
+          }
+        : undefined,
       onStarted: () => {
         updateThreadTurn(threadId, turn.id, (currentTurn) => ({
           ...currentTurn,
@@ -1562,6 +1659,10 @@ function removePendingApprovalRequest(
   );
 }
 
+function hasRunningTool(turn: ConversationTurn) {
+  return turn.tools.some((tool) => tool.status === 'running');
+}
+
 function getApprovalRequestSignature(request: ApprovalRequest) {
   return JSON.stringify({
     title: request.title,
@@ -1580,13 +1681,16 @@ function createApprovalRequestFromToolResult(
   }
 
   const command = extractCommandFromTool(tool);
+  const blockedBySecurityPolicy = isSecurityPolicyBlockedToolResult(event.content);
 
   return {
     requestId: tool?.toolUseId ?? event.toolUseId ?? tool?.id,
-    title: '工具调用需要你确认',
-    description: command?.length
-      ? '当前会话未放行这一步。批准后会以完全访问模式继续执行该命令。'
-      : 'Claude 返回该操作需要批准后才能继续。批准后会以完全访问模式继续执行。',
+    title: blockedBySecurityPolicy ? '访问被安全策略拦截' : '工具调用需要你确认',
+    description: blockedBySecurityPolicy
+      ? '当前会话的访问范围不足。批准后会以完全访问模式继续执行。'
+      : command?.length
+        ? '当前会话未放行这一步。批准后会以完全访问模式继续执行该命令。'
+        : 'Claude 返回该操作需要批准后才能继续。批准后会以完全访问模式继续执行。',
     command,
     danger: normalizeApprovalDanger(tool, command),
   };
@@ -1602,7 +1706,18 @@ function isApprovalRequiredToolResult(content: string) {
     normalized.includes('this command requires approval') ||
     normalized.includes('requires approval') ||
     normalized.includes('requires your approval') ||
-    normalized.includes('approval required')
+    normalized.includes('approval required') ||
+    isSecurityPolicyBlockedToolResult(normalized)
+  );
+}
+
+function isSecurityPolicyBlockedToolResult(content: string) {
+  const normalized = content.trim().toLowerCase();
+  return Boolean(
+    normalized &&
+      normalized.includes('was blocked') &&
+      normalized.includes('for security') &&
+      normalized.includes('claude code'),
   );
 }
 
@@ -1835,8 +1950,24 @@ function buildApprovalDecisionPrompt(request: ApprovalRequest, decision: Approva
   return lines.filter(Boolean).join('\n');
 }
 
+function buildApprovalDecisionToolResultContent(request: ApprovalRequest, decision: ApprovalDecision) {
+  if (isPlanApprovalRequest(request)) {
+    return decision === 'approve'
+      ? 'The user approved this plan. Exit plan mode and proceed with implementation.'
+      : 'The user rejected this plan. Stay in plan mode, revise the plan, and ask for approval again.';
+  }
+
+  return decision === 'approve'
+    ? 'The user approved this request. Continue the original task.'
+    : 'The user rejected this request. Do not perform the requested action; choose a safe alternative.';
+}
+
 function isPlanApprovalRequest(request: ApprovalRequest) {
   return request.title === '计划待确认';
+}
+
+function isVisiblePermissionMode(value: unknown): value is (typeof permissionMenuModes)[number] {
+  return isPermissionMode(value) && permissionMenuModes.includes(value as (typeof permissionMenuModes)[number]);
 }
 
 async function readErrorResponseText(response: Response) {

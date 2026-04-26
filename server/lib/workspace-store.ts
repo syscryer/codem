@@ -35,6 +35,21 @@ type RequestUserInputRequest = {
   submittedAtMs?: number;
 };
 
+type ThreadTool = {
+  id: string;
+  name: string;
+  title: string;
+  status: 'running' | 'done' | 'error';
+  toolUseId?: string;
+  parentToolUseId?: string;
+  isSidechain?: boolean;
+  inputText?: string;
+  resultText?: string;
+  isError?: boolean;
+  subtools?: ThreadTool[];
+  subMessages?: string[];
+};
+
 export type PanelState = {
   organizeBy: OrganizeBy;
   sortBy: SortBy;
@@ -59,6 +74,7 @@ export type ThreadTurn = {
   totalCostUsd?: number;
   items: Array<
     | { id: string; type: 'text'; text: string }
+    | { id: string; type: 'thinking'; text: string }
     | {
         id: string;
         type: 'tool';
@@ -68,22 +84,17 @@ export type ThreadTurn = {
           title: string;
           status: 'running' | 'done' | 'error';
           toolUseId?: string;
+          parentToolUseId?: string;
+          isSidechain?: boolean;
           inputText?: string;
           resultText?: string;
           isError?: boolean;
+          subtools?: ThreadTool[];
+          subMessages?: string[];
         };
       }
   >;
-  tools: Array<{
-    id: string;
-    name: string;
-    title: string;
-    status: 'running' | 'done' | 'error';
-    toolUseId?: string;
-    inputText?: string;
-    resultText?: string;
-    isError?: boolean;
-  }>;
+  tools: ThreadTool[];
   pendingUserInputRequests?: RequestUserInputRequest[];
 };
 
@@ -210,9 +221,13 @@ type StoredToolCallRow = {
   title: string;
   status: 'running' | 'done' | 'error';
   tool_use_id: string | null;
+  parent_tool_use_id: string | null;
+  is_sidechain: number;
   input_text: string | null;
   result_text: string | null;
   is_error: number;
+  subtools_json: string | null;
+  sub_messages_json: string | null;
 };
 
 type StoredTurnState = ThreadTurn & {
@@ -640,9 +655,10 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
   `);
   const insertToolCall = db.prepare(`
     INSERT INTO tool_calls (
-      id, thread_id, turn_id, turn_sort, item_sort, tool_sort, tool_id, name, title, status, tool_use_id, input_text, result_text, is_error
+      id, thread_id, turn_id, turn_sort, item_sort, tool_sort, tool_id, name, title, status, tool_use_id,
+      parent_tool_use_id, is_sidechain, input_text, result_text, is_error, subtools_json, sub_messages_json
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   try {
     db.exec('BEGIN');
@@ -678,7 +694,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
       let nextToolSort = 0;
       const assistantItems =
         turn.items.length > 0
-          ? turn.items.filter((item) => item.type === 'tool' || item.text.trim())
+          ? turn.items.filter((item) => item.type === 'tool' || (item.type === 'text' && item.text.trim()))
           : turn.assistantText.trim()
             ? [{ id: randomUUID(), type: 'text' as const, text: turn.assistantText || '' }]
             : [];
@@ -710,6 +726,10 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
           return;
         }
 
+        if (item.type !== 'tool') {
+          return;
+        }
+
         insertToolCall.run(
           randomUUID(),
           threadId,
@@ -722,9 +742,13 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
           item.tool.title,
           normalizeToolStatus(item.tool.status),
           item.tool.toolUseId ?? null,
+          item.tool.parentToolUseId ?? null,
+          item.tool.isSidechain ? 1 : 0,
           item.tool.inputText ?? null,
           item.tool.resultText ?? null,
           item.tool.isError ? 1 : 0,
+          item.tool.subtools?.length ? JSON.stringify(item.tool.subtools) : null,
+          item.tool.subMessages?.length ? JSON.stringify(item.tool.subMessages) : null,
         );
         nextToolSort += 1;
       });
@@ -859,9 +883,13 @@ function initializeDatabase() {
       title TEXT NOT NULL,
       status TEXT NOT NULL,
       tool_use_id TEXT,
+      parent_tool_use_id TEXT,
+      is_sidechain INTEGER NOT NULL DEFAULT 0,
       input_text TEXT,
       result_text TEXT,
-      is_error INTEGER NOT NULL DEFAULT 0
+      is_error INTEGER NOT NULL DEFAULT 0,
+      subtools_json TEXT,
+      sub_messages_json TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_messages_thread_turn
@@ -872,6 +900,10 @@ function initializeDatabase() {
   `);
 
   ensureColumn('tool_calls', 'turn_sort', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('tool_calls', 'parent_tool_use_id', 'TEXT');
+  ensureColumn('tool_calls', 'is_sidechain', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('tool_calls', 'subtools_json', 'TEXT');
+  ensureColumn('tool_calls', 'sub_messages_json', 'TEXT');
   ensureColumn('messages', 'phase', 'TEXT');
   ensureColumn('messages', 'started_at_ms', 'INTEGER');
   ensureColumn('messages', 'duration_ms', 'INTEGER');
@@ -1268,11 +1300,32 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
       continue;
     }
 
-    if (payload.isSidechain || payload.isMeta) {
+    if (payload.isMeta) {
       continue;
     }
 
     const message = payload.message;
+    if (payload.isSidechain) {
+      const parentToolUseId = readString(payload, ['parent_tool_use_id']);
+      if (!parentToolUseId || !message || typeof message !== 'object') {
+        continue;
+      }
+
+      const role = readString(message as Record<string, unknown>, ['role']);
+      if (role === 'assistant') {
+        attachSidechainAssistantMessage(parentToolUseId, message as Record<string, unknown>);
+        continue;
+      }
+
+      if (role === 'user') {
+        const parentTurn = findTurnByToolUseId(turns, parentToolUseId) ?? currentTurn;
+        if (parentTurn) {
+          attachToolResults(parentTurn, (message as Record<string, unknown>).content);
+        }
+        continue;
+      }
+    }
+
     if (payload.type === 'user' && message && typeof message === 'object') {
       const role = readString(message as Record<string, unknown>, ['role']);
       const contentValue = (message as Record<string, unknown>).content;
@@ -1396,6 +1449,41 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
       markRequestUserInputSubmitted(turn, toolUseId, resultText);
     }
   }
+
+  function attachSidechainAssistantMessage(parentToolUseId: string, message: Record<string, unknown>) {
+    const parentTool = toolLookup.get(parentToolUseId) ?? findToolByUseIdInTurns(turns, parentToolUseId);
+    if (!parentTool) {
+      return;
+    }
+
+    const contentBlocks = extractContentBlocks(message.content);
+    for (const block of contentBlocks) {
+      if (block.type === 'text' && block.text?.trim()) {
+        parentTool.subMessages = [...(parentTool.subMessages ?? []), block.text];
+        continue;
+      }
+
+      if (block.type !== 'tool_use' || !block.name) {
+        continue;
+      }
+
+      const inputText = formatJson(block.input);
+      const tool = {
+        id: block.id || randomUUID(),
+        name: block.name,
+        title: describeToolCall(block.name, inputText),
+        status: 'done' as const,
+        toolUseId: block.id,
+        parentToolUseId,
+        isSidechain: true,
+        inputText,
+      };
+      parentTool.subtools = [...(parentTool.subtools ?? []), tool];
+      if (tool.toolUseId) {
+        toolLookup.set(tool.toolUseId, tool);
+      }
+    }
+  }
 }
 
 function applyTranscriptMetrics(
@@ -1415,6 +1503,36 @@ function applyTranscriptMetrics(
   turn.totalCostUsd = readNumber(payload, ['total_cost_usd']) ?? turn.totalCostUsd;
 }
 
+function findTurnByToolUseId(turns: ThreadTurn[], toolUseId: string) {
+  return turns.find((turn) => Boolean(findToolByUseId(turn.tools, toolUseId)));
+}
+
+function findToolByUseIdInTurns(turns: ThreadTurn[], toolUseId: string) {
+  for (const turn of turns) {
+    const tool = findToolByUseId(turn.tools, toolUseId);
+    if (tool) {
+      return tool;
+    }
+  }
+
+  return undefined;
+}
+
+function findToolByUseId(tools: ThreadTool[], toolUseId: string): ThreadTool | undefined {
+  for (const tool of tools) {
+    if (tool.toolUseId === toolUseId || tool.id === toolUseId) {
+      return tool;
+    }
+
+    const child = findToolByUseId(tool.subtools ?? [], toolUseId);
+    if (child) {
+      return child;
+    }
+  }
+
+  return undefined;
+}
+
 function readStoredThreadHistory(threadId: string): ThreadTurn[] {
   const messageRows = db
     .prepare(`
@@ -1427,7 +1545,8 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
     .all(threadId) as StoredMessageRow[];
   const toolRows = db
     .prepare(`
-      SELECT id, thread_id, turn_id, turn_sort, item_sort, tool_sort, tool_id, name, title, status, tool_use_id, input_text, result_text, is_error
+      SELECT id, thread_id, turn_id, turn_sort, item_sort, tool_sort, tool_id, name, title, status, tool_use_id,
+             parent_tool_use_id, is_sidechain, input_text, result_text, is_error, subtools_json, sub_messages_json
       FROM tool_calls
       WHERE thread_id = ?
       ORDER BY turn_sort ASC, item_sort ASC, tool_sort ASC
@@ -1519,9 +1638,13 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
       title: row.title,
       status: normalizeToolStatus(row.status),
       toolUseId: row.tool_use_id ?? undefined,
+      parentToolUseId: row.parent_tool_use_id ?? undefined,
+      isSidechain: row.is_sidechain === 1,
       inputText: row.input_text ?? undefined,
       resultText: row.result_text ?? undefined,
       isError: row.is_error === 1,
+      subtools: parseStoredThreadTools(row.subtools_json),
+      subMessages: parseStoredStringArray(row.sub_messages_json),
     };
 
     turn.tools.push(tool);
@@ -2291,6 +2414,81 @@ function parseJsonObject(value: unknown) {
   }
 }
 
+function parseStoredThreadTools(value: string | null): ThreadTool[] | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return undefined;
+    }
+
+    const tools = parsed
+      .map((item) => normalizeStoredThreadTool(item))
+      .filter((item): item is ThreadTool => Boolean(item));
+    return tools.length > 0 ? tools : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeStoredThreadTool(value: unknown): ThreadTool | null {
+  const item = asRecord(value);
+  if (!item) {
+    return null;
+  }
+
+  const id = firstNonEmptyString(item, ['id', 'toolUseId', 'toolUseId']) ?? randomUUID();
+  const name = firstNonEmptyString(item, ['name']) ?? 'tool';
+  const title = firstNonEmptyString(item, ['title']) ?? describeToolCall(name, getStringFromUnknown(item.inputText));
+  const status = normalizeToolStatus(getStringFromUnknown(item.status) ?? null);
+
+  return {
+    id,
+    name,
+    title,
+    status,
+    toolUseId: firstNonEmptyString(item, ['toolUseId', 'tool_use_id']),
+    parentToolUseId: firstNonEmptyString(item, ['parentToolUseId', 'parent_tool_use_id']),
+    isSidechain: Boolean(item.isSidechain ?? item.is_sidechain),
+    inputText: getStringFromUnknown(item.inputText ?? item.input_text),
+    resultText: getStringFromUnknown(item.resultText ?? item.result_text),
+    isError: Boolean(item.isError ?? item.is_error),
+    subtools: Array.isArray(item.subtools)
+      ? item.subtools
+          .map((child) => normalizeStoredThreadTool(child))
+          .filter((child): child is ThreadTool => Boolean(child))
+      : undefined,
+    subMessages: Array.isArray(item.subMessages)
+      ? item.subMessages.filter((message): message is string => typeof message === 'string')
+      : undefined,
+  };
+}
+
+function parseStoredStringArray(value: string | null): string[] | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return undefined;
+    }
+
+    const values = parsed.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()));
+    return values.length > 0 ? values : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getStringFromUnknown(value: unknown) {
+  return typeof value === 'string' ? value : undefined;
+}
+
 function normalizeToolName(value: string) {
   return value.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 }
@@ -2344,8 +2542,10 @@ function describeToolCall(name: string, inputText?: string) {
   }
 
   const filePath = parsed && readString(parsed, ['file_path', 'path', 'notebook_path']);
+  const directoryPath = parsed && readString(parsed, ['path', 'directory', 'dir']);
   const pattern = parsed && readString(parsed, ['pattern', 'query']);
   const command = parsed && readString(parsed, ['command', 'cmd', 'cmdString']);
+  const url = parsed && readString(parsed, ['url']);
   const agentName = parsed && readString(parsed, ['subagent_type', 'agent', 'agent_name', 'name']);
   const taskDescription = parsed && readString(parsed, ['description', 'summary', 'task', 'prompt']);
 
@@ -2358,11 +2558,41 @@ function describeToolCall(name: string, inputText?: string) {
   if (name === 'Glob' && pattern) {
     return `Glob(${compactToolArgument(pattern)})`;
   }
+  if (name === 'LS' && directoryPath) {
+    return `LS(${compactToolArgument(directoryPath)})`;
+  }
   if (name === 'Bash' && command) {
     return `Bash(${compactToolArgument(command)})`;
   }
-  if ((name === 'Edit' || name === 'Write' || name === 'NotebookEdit') && filePath) {
+  if (name === 'BashOutput') {
+    return 'BashOutput';
+  }
+  if (name === 'KillShell') {
+    return 'KillShell';
+  }
+  if ((name === 'Edit' || name === 'MultiEdit' || name === 'Write' || name === 'NotebookEdit') && filePath) {
     return `${name}(${compactToolArgument(filePath)})`;
+  }
+  if (name === 'TodoRead' || name === 'TodoWrite' || name === 'UpdatePlan') {
+    return name;
+  }
+  if (name === 'WebSearch' && pattern) {
+    return `WebSearch(${compactToolArgument(pattern)})`;
+  }
+  if (name === 'WebFetch' && url) {
+    return `WebFetch(${compactToolArgument(url)})`;
+  }
+  if (name === 'ViewImage' && filePath) {
+    return `ViewImage(${compactToolArgument(filePath)})`;
+  }
+  if (name === 'TaskOutput') {
+    return 'TaskOutput';
+  }
+  if (name === 'TaskCreate' || name === 'TaskUpdate' || name === 'TaskList' || name === 'TaskGet') {
+    return taskDescription ? `${name}(${compactToolArgument(taskDescription)})` : name;
+  }
+  if (name === 'EnterPlanMode') {
+    return '进入 Plan 模式';
   }
   if (name === 'Agent' || name === 'Task') {
     const summary = taskDescription || agentName;

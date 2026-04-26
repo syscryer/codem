@@ -56,7 +56,7 @@ test('reusable runtime prompts are sent through stream-json stdin', () => {
   assert.match(spawnClaudeRuntimeBody, /inputMode\s*===\s*['"]stdin['"]/);
   assert.match(spawnClaudeRuntimeBody, /\[\s*['"]-p['"],\s*['"]['"],\s*['"]--input-format['"],\s*['"]stream-json['"]\s*\]/);
   assert.match(spawnClaudeRuntimeBody, /\[\s*['"]-p['"],\s*input\.prompt\s*\]/);
-  assert.match(writePromptToClaudeBody, /JSON\.stringify\(buildClaudeInputMessage\(prompt\)\)/);
+  assert.match(writePromptToClaudeBody, /JSON\.stringify\(buildClaudeInputMessage\(input\)\)/);
   assert.match(writePromptToClaudeBody, /runtime\.child\.stdin\.write\(payload,/);
 });
 
@@ -100,6 +100,7 @@ test('request user input answers are sent back as stream-json tool results', () 
   assert.match(serverSource, /submitRunRequestUserInput\(request\.params\.runId,\s*requestId,\s*answers\)/);
   assert.match(submitBody, /runtime\.inputMode\s*!==\s*['"]stdin['"]/);
   assert.match(submitBody, /runtime\.child\.stdin\.write\(payload,/);
+  assert.match(submitBody, /pausedForUserInput\s*=\s*false/);
   assert.match(buildToolResultBody, /type:\s*['"]tool_result['"]/);
   assert.match(buildToolResultBody, /tool_use_id:\s*requestId/);
 });
@@ -111,6 +112,11 @@ test('human input requests pause the run before Claude Code auto-answers the too
 
   assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_user_input['"]\)/);
   assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_approval_request['"]\)/);
+  assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_approval_result['"],\s*\{\s*closeRuntime:\s*true\s*\}\)/);
+  assert.match(handleBody, /isHumanApprovalToolResultContent\(content\)/);
+  assert.match(handleBody, /isInternalHumanInputToolResult\(state,\s*block,\s*content\)/);
+  assert.match(source, /function emitApprovalRequestEvent/);
+  assert.match(source, /emittedApprovalRequestKeys/);
   assert.match(parseApprovalBody, /normalizedToolName\s*===\s*['"]exitplanmode['"]/);
   assert.match(pauseBody, /enqueueTrace\(state,\s*traceName,\s*Date\.now\(\)\)/);
   assert.match(pauseBody, /type:\s*['"]done['"]/);

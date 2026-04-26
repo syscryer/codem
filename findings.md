@@ -33,6 +33,10 @@
 - `system/raw/snapshot` 等事件适合进入调试抽屉，避免干扰主对话。
 - assistant 正文与工具调用必须按事件到达顺序共同渲染，不能分别渲染正文和工具列表，否则会出现顺序错位。
 - 在 CSS grid 消息布局中，assistant 的所有正文和工具内容必须包进同一个右侧内容列，否则后续子元素会被自动排到左侧标签列。
+- Any-code 的工具注册体系不适合直接迁移到 CodeM；CodeM 当前更适合继续沿用 `ToolStep + AssistantItem`，在工具标题、结果合并、专用预览和历史解析上补覆盖。
+- `system/init` 仍应留在调试信息，不进入主对话；`EnterPlanMode` 可以作为轻量工具卡显示，`ExitPlanMode` 继续走审批卡。
+- 子代理 `isSidechain` 事件不应直接插入主 assistant 文本；更稳妥的展示方式是通过 `parent_tool_use_id` 挂到父 `Agent/Task` 工具详情中。
+- 工具结果可能晚于工具调用、跨消息到达，历史修复应优先按 `toolUseId` 回挂，找不到再回退到最近未完成工具。
 
 ## Claude 会话来源与历史解析
 

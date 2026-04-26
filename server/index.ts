@@ -14,6 +14,7 @@ import {
   markRunDetached,
   markThreadRunDetached,
   reconnectClaudeRunEvents,
+  submitRunApprovalDecision,
   submitRunRequestUserInput,
   type ClaudePermissionMode,
 } from './lib/claude-service.js';
@@ -338,6 +339,19 @@ app.post('/api/claude/run', async (request, response) => {
     typeof request.body?.model === 'string' && request.body.model.trim()
       ? request.body.model.trim()
       : undefined;
+  const toolResultPayload =
+    request.body?.toolResult && typeof request.body.toolResult === 'object' ? request.body.toolResult : undefined;
+  const toolResult =
+    toolResultPayload &&
+    typeof toolResultPayload.requestId === 'string' &&
+    toolResultPayload.requestId.trim() &&
+    typeof toolResultPayload.content === 'string'
+      ? {
+          requestId: toolResultPayload.requestId.trim(),
+          content: toolResultPayload.content,
+          isError: toolResultPayload.isError === true,
+        }
+      : undefined;
   const clientSubmitAtMs =
     typeof request.body?.clientSubmitAtMs === 'number' && Number.isFinite(request.body.clientSubmitAtMs)
       ? request.body.clientSubmitAtMs
@@ -378,6 +392,7 @@ app.post('/api/claude/run', async (request, response) => {
     sessionId,
     permissionMode,
     model,
+    toolResult,
     requestReceivedAtMs,
     clientSubmitAtMs,
   });
@@ -478,6 +493,30 @@ app.post('/api/claude/run/:runId/request-user-input', (request, response) => {
   }
 
   const result = submitRunRequestUserInput(request.params.runId, requestId, answers);
+  if (!result.submitted) {
+    response.status(409).json(result);
+    return;
+  }
+
+  response.json(result);
+});
+
+app.post('/api/claude/run/:runId/approval-decision', (request, response) => {
+  const requestId = typeof request.body?.requestId === 'string' ? request.body.requestId.trim() : '';
+  const decision = request.body?.decision === 'reject' ? 'reject' : 'approve';
+  const content =
+    typeof request.body?.content === 'string' && request.body.content.trim()
+      ? request.body.content.trim()
+      : decision === 'approve'
+        ? 'The user approved this request. Continue the original task.'
+        : 'The user rejected this request. Do not perform the requested action.';
+
+  if (!requestId) {
+    response.status(400).json({ submitted: false, error: '缺少批准请求 ID。' });
+    return;
+  }
+
+  const result = submitRunApprovalDecision(request.params.runId, requestId, decision, content);
   if (!result.submitted) {
     response.status(409).json(result);
     return;

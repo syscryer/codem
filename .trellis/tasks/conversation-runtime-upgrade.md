@@ -152,3 +152,15 @@
 - [x] 会话列表收敛为 Claude jsonl 单一来源：已绑定 `session_id` 的线程必须有真实 jsonl 才展示。
 - [x] 导入时跳过 `agent-*.jsonl` 子 Agent 文件。
 - [x] 清理标题为 `1` 的历史 Claude Code 会话。
+
+## Completed 2026-04-26
+
+- [x] 权限菜单收敛为“默认 / 自动执行 / 完全访问”，内部继续兼容 Claude Code 全量权限值。
+- [x] 切换非运行线程时恢复线程模型选择，并刷新 provider/model 配置；热会话运行中不强制切换。
+- [x] 运行中后续 prompt 进入当前线程队列，并支持删除未执行队列项。
+- [x] `TodoWrite` 渲染为计划任务卡片，并在输入框上方固定展示最新未完成任务。
+- [x] 最新 `TodoWrite` 全部完成后，底部固定任务卡片自动隐藏。
+- [x] `ExitPlanMode` 转成“计划待确认”审批卡片，批准和拒绝使用不同续聊 prompt。
+- [x] 权限审批和 Claude Code 安全拦截结果转成审批卡片，避免只显示普通红色错误。
+- [x] Plan / 审批 / AI 提问出现时暂停热 runtime，优先用 tool result 写回当前运行，不可写时再用同一 `sessionId` 冷恢复。
+- [x] 运行中 token 展示增加本地估算，结束后使用真实统计。

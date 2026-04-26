@@ -886,19 +886,55 @@ svg {
 .working-line {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  color: #8c8c8c;
-  font-size: 12px;
+  gap: 6px;
+  color: #7a7f87;
+  font-size: 13px;
+  line-height: 1.35;
 }
 
 .working-line.compact {
-  margin: 0 0 2px;
+  margin: 1px 0 4px;
 }
 
 .tui-progress {
-  font-family: "Cascadia Code", Consolas, monospace;
-  font-style: italic;
-  letter-spacing: -0.01em;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  font-style: normal;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.tui-progress-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tui-progress-text::after {
+  content: "›";
+  color: #8a9099;
+  font-size: 16px;
+  line-height: 1;
+  transform: translateY(-1px);
+}
+
+.tui-progress.running .tui-progress-text {
+  background: linear-gradient(
+    90deg,
+    #7a7f87 0%,
+    #7a7f87 34%,
+    #aeb4bc 48%,
+    #7a7f87 64%,
+    #7a7f87 100%
+  );
+  background-size: 280% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: progress-flow 3s linear infinite;
+}
+
+.tui-progress.running .tui-progress-text::after {
+  color: #8a9099;
 }
 
 .activity-dot,
@@ -1000,6 +1036,7 @@ svg {
 }
 
 .tool-details pre,
+.thinking-message pre,
 .debug-item pre,
 .raw-pre {
   margin: 0;
@@ -1014,6 +1051,57 @@ svg {
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.thinking-message {
+  margin: 3px 0;
+  color: #6b7280;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+}
+
+.thinking-message summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 24px;
+  color: #69707a;
+  cursor: pointer;
+  list-style: none;
+}
+
+.thinking-message summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking-message summary::after {
+  content: ">";
+  color: #a0a6af;
+  font-size: 11px;
+  line-height: 1;
+  transition: transform 140ms ease;
+}
+
+.thinking-message[open] summary::after {
+  transform: rotate(90deg);
+}
+
+.thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #9ca3af;
+}
+
+.thinking-count {
+  color: #a0a6af;
+}
+
+.thinking-message pre {
+  margin-top: 6px;
+  margin-left: 18px;
+  background: #fbfbfb;
+  color: #4b5563;
 }
 
 .tool-preview-card {
@@ -1113,6 +1201,159 @@ svg {
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.structured-preview-step {
+  margin: 2px 0 8px;
+  padding: 0;
+}
+
+.structured-preview-summary {
+  gap: 8px;
+}
+
+.structured-preview-summary .tool-status-dot {
+  flex: 0 0 auto;
+  margin-top: 0;
+}
+
+.structured-preview-summary-main {
+  min-width: 0;
+}
+
+.structured-preview-title {
+  min-width: 0;
+  max-width: 360px;
+  overflow: hidden;
+  color: #4b5563;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.structured-preview-meta {
+  min-width: 0;
+  overflow: hidden;
+  color: #6b7280;
+  font-family: "Cascadia Code", Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.structured-preview-card {
+  margin: 6px 0 2px 18px;
+  max-width: min(760px, 100%);
+  overflow: hidden;
+  border: 1px solid #e7e5e4;
+  border-radius: 8px;
+  background: #fbfbfb;
+}
+
+.structured-preview-list {
+  display: grid;
+  gap: 1px;
+}
+
+.structured-preview-row {
+  display: grid;
+  grid-template-columns: minmax(70px, max-content) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 7px 10px;
+  border-bottom: 1px solid #efede9;
+  color: #3f3f46;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.structured-preview-row:last-child {
+  border-bottom: 0;
+}
+
+.structured-preview-row .tool-status-dot {
+  margin-top: 6px;
+}
+
+.structured-preview-label {
+  color: #71717a;
+  white-space: nowrap;
+}
+
+.structured-preview-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.structured-preview-card > pre {
+  margin: 0;
+  max-height: 300px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-top: 1px solid #efede9;
+  color: #3f3f46;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.structured-preview-raw {
+  margin: 8px 10px 10px;
+}
+
+.read-group-step {
+  margin: 2px 0 8px;
+  padding: 0;
+}
+
+.read-group-summary {
+  gap: 8px;
+}
+
+.read-group-summary .tool-status-dot {
+  flex: 0 0 auto;
+  margin-top: 0;
+}
+
+.read-group-summary-main {
+  min-width: 0;
+}
+
+.read-group-title {
+  min-width: 0;
+  overflow: hidden;
+  color: #4b5563;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.read-group-meta {
+  min-width: 0;
+  overflow: hidden;
+  color: #6b7280;
+  font-family: "Cascadia Code", Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.read-group-card {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 2px 18px;
+  max-width: min(760px, 100%);
+  padding: 8px 10px;
+  border: 1px solid #e7e5e4;
+  border-radius: 8px;
+  background: #fbfbfb;
+}
+
+.read-group-card .tool-step {
+  padding-bottom: 2px;
 }
 
 .todo-preview-step {
@@ -2049,7 +2290,7 @@ svg {
   border: 0;
   border-radius: 999px;
   background: transparent;
-  color: #e95534;
+  color: #303030;
   cursor: pointer;
   font-size: 12px;
   font-weight: 650;
@@ -2057,31 +2298,20 @@ svg {
 
 .permission-trigger:hover,
 .permission-trigger[aria-expanded="true"] {
-  background: #fff1ea;
+  background: #f4f4f4;
 }
 
-.permission-trigger-icon {
-  width: 15px;
-  height: 15px;
-  position: relative;
-  border: 1.4px solid #ff6a3d;
-  border-radius: 999px;
-}
-
-.permission-trigger-icon::after {
-  content: "";
-  position: absolute;
-  inset: 4px;
-  border: 1.4px solid #ff6a3d;
-  border-radius: 2px;
+.permission-lucide-icon {
+  flex: 0 0 auto;
+  color: #5f6368;
 }
 
 .permission-trigger-chevron {
   width: 6px;
   height: 6px;
   display: inline-block;
-  border-right: 1.4px solid #e95534;
-  border-bottom: 1.4px solid #e95534;
+  border-right: 1.4px solid #777777;
+  border-bottom: 1.4px solid #777777;
   margin-top: -3px;
   transform: rotate(45deg);
   transform-origin: center;
@@ -2092,7 +2322,7 @@ svg {
   left: -16px;
   bottom: calc(100% + 7px);
   z-index: 30;
-  width: 196px;
+  width: 176px;
   overflow: hidden;
   padding: 6px;
   border: 1px solid rgba(0, 0, 0, 0.07);
@@ -2121,79 +2351,6 @@ svg {
 
 .permission-menu-item:hover {
   background: #f6f6f6;
-}
-
-.permission-icon {
-  width: 15px;
-  height: 15px;
-  position: relative;
-  justify-self: center;
-  color: #333333;
-}
-
-.permission-icon::before {
-  content: "";
-  position: absolute;
-  inset: 2px;
-  border: 1.4px solid #3f3f46;
-  border-radius: 999px;
-}
-
-.permission-icon-default::before,
-.permission-icon-plan::before {
-  border-right-color: transparent;
-}
-
-.permission-icon-acceptEdits::after {
-  content: "";
-  position: absolute;
-  left: 4px;
-  top: 4px;
-  width: 6px;
-  height: 3px;
-  border-left: 1.4px solid #3f3f46;
-  border-bottom: 1.4px solid #3f3f46;
-  transform: rotate(-45deg);
-}
-
-.permission-icon-auto::after {
-  content: "";
-  position: absolute;
-  left: 6px;
-  top: 3px;
-  width: 3px;
-  height: 8px;
-  background: #3f3f46;
-  border-radius: 999px;
-  transform: rotate(22deg);
-}
-
-.permission-icon-dontAsk::after {
-  content: "";
-  position: absolute;
-  left: 7px;
-  top: 2px;
-  width: 1.4px;
-  height: 11px;
-  background: #3f3f46;
-  border-radius: 999px;
-  transform: rotate(45deg);
-}
-
-.permission-icon-bypassPermissions::before {
-  content: "";
-  position: absolute;
-  inset: 2px;
-  border: 1.4px solid #3f3f46;
-  border-radius: 2px;
-}
-
-.permission-icon-bypassPermissions::after {
-  content: "";
-  position: absolute;
-  inset: 5px;
-  background: #3f3f46;
-  border-radius: 1px;
 }
 
 .permission-check {
@@ -2547,6 +2704,16 @@ svg {
   100% {
     opacity: 0.35;
     transform: scale(0.9);
+  }
+}
+
+@keyframes progress-flow {
+  0% {
+    background-position: 120% 0;
+  }
+
+  100% {
+    background-position: -120% 0;
   }
 }
 

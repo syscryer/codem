@@ -96,3 +96,19 @@
 - 活动会话在 AI 回复进行中向上滚动会有发涩感；非运行中的同类会话滚动正常，说明问题集中在运行态高频 UI 更新。
 - 初步定位为 delta 按帧更新当前 turn、Markdown 重解析、滚动跟随测量和 raw/debug 事件状态更新叠加导致。
 - 暂不修复，后续可优先降低运行态渲染频率、减少 Markdown 重解析，并调整自动贴底逻辑。
+
+## 2026-04-26
+
+### AI 返回信息解析补齐
+
+- 对照 `D:\cursor_project\Any-code` 的消息解析范围，确认 CodeM 不迁移工具注册体系，继续扩展现有 `ToolStep` 模型。
+- 前后端事件增加 `parentToolUseId`、`isSidechain` 和 `subagent-delta`，用于保留子代理消息。
+- 实时流不再直接丢弃 `isSidechain`，改为将子代理文本和子工具挂到父 `Agent/Task` 工具详情中。
+- transcript 历史解析同步支持 sidechain 归组；SQLite `tool_calls` 增加子工具和子消息 JSON 字段。
+- 工具标题和前端结构化预览补充覆盖：`EnterPlanMode`、`TodoRead`、`UpdatePlan`、`LS`、`Grep`、`Glob`、`WebSearch`、`WebFetch`、`BashOutput`、`KillShell`、`TaskOutput`、`TaskCreate/TaskUpdate/TaskList/TaskGet`、`MultiEdit`、`ViewImage`、MCP 结果。
+- 增强孤立 `tool_result` 修复，优先按 `toolUseId` 回挂，减少多工具并发或历史恢复时错挂。
+- 已运行 `npm run typecheck`，结果通过。
+- 已重启 `npm run dev`，后端监听 `http://127.0.0.1:3001`，前端监听 `http://127.0.0.1:5173/`。
+- 已验证 `/api/health` 和 `/api/workspace/bootstrap` 正常，浏览器打开 `CodeM` 无 console error。
+- 增加连续 `Read` 工具的批量折叠展示：多个连续读取默认合并为“批量读取 N 个文件”，展开后可查看每个 Read 的原始详情。
+- 已再次运行 `npm run typecheck`，结果通过；浏览器页面可正常加载。

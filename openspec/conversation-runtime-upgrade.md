@@ -236,6 +236,15 @@ Persistence 主要影响：
 - Agent/Task tool titles are derived from task description / prompt / subagent type for readable inline steps.
 - Claude stream handling ignores `isSidechain` events.
 - Transcript parsing ignores `isSidechain` and `isMeta` records, skips meta continuation `No response requested.`, and strips old-format internal `<thinking>` text.
+- Permission menu exposes only three product-facing modes: default, auto, and bypass permissions. Historical Claude Code modes remain valid internally for compatibility.
+- Non-running thread switches restore thread model metadata and refresh the available model list, so external provider changes can be reflected without restarting the app.
+- Running threads keep their current runtime model/provider configuration until the run finishes.
+- Running-time prompts are queued per thread and can be removed before execution.
+- `TodoWrite` is rendered as a task plan card. The latest unfinished `TodoWrite` is also shown above the composer and disappears when all items are completed.
+- `ExitPlanMode` is mapped to a plan approval request instead of a plain tool error.
+- Permission-blocked tool results, including Claude Code security blocks, are mapped to approval requests when possible.
+- Plan approval, permission approval, and user-input requests intentionally pause and close the hot runtime; the next user decision cold-resumes the same `sessionId`.
+- Token display may use an estimated value during streaming and switches to Claude Code's real usage numbers after completion.
 
 ### Source Of Truth Decision
 

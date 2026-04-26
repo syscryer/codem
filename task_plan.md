@@ -28,6 +28,16 @@
 - 增加模型、额外参数、allowedTools 等高级设置。
 - 如果要做成桌面端，可在当前基础上再包 Electron 或 Tauri。
 
+## 当前解析补齐计划：AI 返回信息覆盖
+| 阶段 | 状态 | 说明 |
+| --- | --- | --- |
+| 1. 对照 Any-code 解析范围 | completed | 已确认不迁移注册体系，只补 CodeM 现有 ToolStep 模型缺口 |
+| 2. 工具类型覆盖 | completed | 已补 Plan、TodoRead、UpdatePlan、LS/Grep/Glob、Web、BashOutput、KillShell、TaskOutput、Task 系列、MultiEdit、ViewImage 等标题和预览 |
+| 3. 子代理消息 | completed | 已支持 `parent_tool_use_id` / `isSidechain`，子代理文本和工具挂到父 Agent/Task 详情 |
+| 4. 工具结果细节 | completed | 已增强 tool result 按 `toolUseId` 合并，历史 orphan result 优先按 id 回挂 |
+| 5. 历史持久化 | completed | 已为工具记录补充子工具和子消息 JSON 字段，兼容实时和 transcript 恢复 |
+| 6. 校验 | completed | 已通过 typecheck、重启 dev 服务，并完成浏览器 smoke test |
+
 ## 当前重构计划：Codex Desktop 类对话流
 | 阶段 | 状态 | 说明 |
 | --- | --- | --- |
