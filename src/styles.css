@@ -3227,6 +3227,106 @@ svg {
   font-size: calc(var(--app-ui-font-size, 13px) + 5px);
 }
 
+.codex-desktop .status-branch-menu {
+  border-color: var(--app-border);
+  background: var(--app-surface);
+  color: var(--app-text);
+}
+
+.codex-desktop .status-branch-menu-title,
+.codex-desktop .status-branch-menu-state,
+.codex-desktop .status-branch-menu-meta {
+  color: var(--app-muted);
+}
+
+.codex-desktop .status-branch-menu-item {
+  color: var(--app-text);
+}
+
+.codex-desktop .status-branch-menu-item:hover {
+  background: var(--app-hover);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop :where(.tool-title, .tool-subtitle, .tool-details summary, .tool-details h4, .tool-details pre, .thinking-message, .thinking-message pre, .debug-item pre, .raw-pre, .assistant-runtime-code, .assistant-runtime-code code, .markdown-body code, .markdown-body .code-block-shell pre code) {
+  font-size: var(--app-code-font-size, 12px);
+}
+
+.codex-desktop[data-density="compact"] .sidebar-primary {
+  gap: 0;
+  padding: 10px 8px 12px;
+}
+
+.codex-desktop[data-density="compact"] .sidebar-primary button,
+.codex-desktop[data-density="compact"] .sidebar-footer button {
+  padding: 5px 10px;
+}
+
+.codex-desktop[data-density="compact"] .sidebar-projects {
+  padding: 0 8px 8px 6px;
+}
+
+.codex-desktop[data-density="compact"] .sidebar-project {
+  gap: 2px;
+  margin-bottom: 5px;
+}
+
+.codex-desktop[data-density="compact"] .sidebar-project-title {
+  padding: 5px 8px;
+}
+
+.codex-desktop[data-density="compact"] .sidebar-thread-list {
+  gap: 1px;
+  padding-bottom: 1px;
+}
+
+.codex-desktop[data-density="compact"] .sidebar-thread {
+  padding: 6px 9px;
+}
+
+.codex-desktop[data-density="compact"] .conversation {
+  padding: 20px 0 16px;
+}
+
+.codex-desktop[data-density="compact"] .turn {
+  margin-bottom: 22px;
+}
+
+.codex-desktop[data-density="compact"] .message {
+  margin: 12px 0;
+}
+
+.codex-desktop[data-density="compact"] .message-body {
+  line-height: 1.58;
+}
+
+.codex-desktop[data-density="compact"] .composer {
+  padding: 6px 18px 7px;
+}
+
+.codex-desktop[data-density="compact"] .composer-input {
+  min-height: 54px;
+  padding: 10px 14px 4px;
+}
+
+.codex-desktop[data-density="compact"] .composer-toolbar {
+  padding: 4px 8px 7px;
+}
+
+.codex-desktop[data-density="compact"] .settings-page-section {
+  padding-top: 60px;
+}
+
+.codex-desktop[data-density="compact"] .settings-row {
+  min-height: 50px;
+  padding: 6px 10px;
+}
+
+.codex-desktop[data-density="compact"] .settings-return,
+.codex-desktop[data-density="compact"] .settings-nav-item {
+  min-height: 26px;
+}
+
 .debug-drawer {
   position: fixed;
   top: 76px;
