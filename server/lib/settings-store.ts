@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -32,22 +33,38 @@ export const defaultAppSettings: AppSettings = {
   appearance: defaultAppearanceSettings,
 };
 
-const appDirectory = resolveAppDirectory();
-const settingsPath = path.join(appDirectory, SETTINGS_FILE_NAME);
+const defaultSettingsStore = createSettingsStore(resolveAppDirectory());
 
 export function getAppSettings(): AppSettings {
-  const raw = readSettingsFile();
-  return normalizeAppSettings(raw);
+  return defaultSettingsStore.getAppSettings();
 }
 
 export function updateAppearanceSettings(nextAppearance: unknown): AppSettings {
-  const current = getAppSettings();
-  const next = normalizeAppSettings({
-    ...current,
-    appearance: nextAppearance,
-  });
-  writeSettingsFile(next);
-  return next;
+  return defaultSettingsStore.updateAppearanceSettings(nextAppearance);
+}
+
+export function createSettingsStore(directory: string) {
+  const settingsPath = path.join(directory, SETTINGS_FILE_NAME);
+
+  function getStoreAppSettings(): AppSettings {
+    const raw = readSettingsFile(settingsPath);
+    return normalizeAppSettings(raw);
+  }
+
+  function updateStoreAppearanceSettings(nextAppearance: unknown): AppSettings {
+    const current = getStoreAppSettings();
+    const next = normalizeAppSettings({
+      ...current,
+      appearance: nextAppearance,
+    });
+    writeSettingsFile(directory, settingsPath, next);
+    return next;
+  }
+
+  return {
+    getAppSettings: getStoreAppSettings,
+    updateAppearanceSettings: updateStoreAppearanceSettings,
+  };
 }
 
 export function normalizeAppSettings(value: unknown): AppSettings {
@@ -68,7 +85,7 @@ function normalizeAppearanceSettings(value: unknown): AppearanceSettings {
   };
 }
 
-function readSettingsFile(): unknown {
+function readSettingsFile(settingsPath: string): unknown {
   try {
     return JSON.parse(readFileSync(settingsPath, 'utf8')) as unknown;
   } catch {
@@ -76,9 +93,9 @@ function readSettingsFile(): unknown {
   }
 }
 
-function writeSettingsFile(settings: AppSettings) {
-  mkdirSync(appDirectory, { recursive: true });
-  const temporaryPath = `${settingsPath}.tmp`;
+function writeSettingsFile(directory: string, settingsPath: string, settings: AppSettings) {
+  mkdirSync(directory, { recursive: true });
+  const temporaryPath = `${settingsPath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
   renameSync(temporaryPath, settingsPath);
 }
