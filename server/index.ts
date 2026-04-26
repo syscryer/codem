@@ -38,6 +38,10 @@ import {
   updatePanelState,
   updateThreadMetadata,
 } from './lib/workspace-store.js';
+import {
+  getAppSettings,
+  updateAppearanceSettings,
+} from './lib/settings-store.js';
 import { selectDirectory } from './lib/system-dialog.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -59,6 +63,22 @@ app.get('/api/health', async (_request, response) => {
 
 app.get('/api/claude/models', (_request, response) => {
   response.json(getClaudeModels());
+});
+
+app.get('/api/settings', (_request, response) => {
+  try {
+    response.json(getAppSettings());
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : '读取设置失败' });
+  }
+});
+
+app.put('/api/settings/appearance', (request, response) => {
+  try {
+    response.json(updateAppearanceSettings(request.body));
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : '保存外观设置失败' });
+  }
 });
 
 app.get('/api/workspace/bootstrap', (_request, response) => {
