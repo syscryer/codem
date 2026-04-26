@@ -33,14 +33,19 @@ export const defaultAppSettings: AppSettings = {
   appearance: defaultAppearanceSettings,
 };
 
-const defaultSettingsStore = createSettingsStore(resolveAppDirectory());
+let defaultSettingsStore: ReturnType<typeof createSettingsStore> | undefined;
 
 export function getAppSettings(): AppSettings {
-  return defaultSettingsStore.getAppSettings();
+  return getDefaultSettingsStore().getAppSettings();
 }
 
 export function updateAppearanceSettings(nextAppearance: unknown): AppSettings {
-  return defaultSettingsStore.updateAppearanceSettings(nextAppearance);
+  return getDefaultSettingsStore().updateAppearanceSettings(nextAppearance);
+}
+
+function getDefaultSettingsStore() {
+  defaultSettingsStore ??= createSettingsStore(resolveAppDirectory());
+  return defaultSettingsStore;
 }
 
 export function createSettingsStore(directory: string) {
@@ -88,8 +93,16 @@ function normalizeAppearanceSettings(value: unknown): AppearanceSettings {
 function readSettingsFile(settingsPath: string): unknown {
   try {
     return JSON.parse(readFileSync(settingsPath, 'utf8')) as unknown;
-  } catch {
-    return defaultAppSettings;
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') {
+      return defaultAppSettings;
+    }
+
+    if (error instanceof SyntaxError) {
+      return defaultAppSettings;
+    }
+
+    throw error;
   }
 }
 
@@ -110,6 +123,10 @@ function normalizeNumber<T extends number>(value: unknown, allowed: readonly T[]
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error;
 }
 
 function resolveAppDirectory() {
