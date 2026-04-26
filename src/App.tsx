@@ -61,6 +61,8 @@ export default function App() {
     handleOpenProject,
     handleOpenProjectInEditor,
     refreshProjectGitSummary,
+    loadProjectGitBranches,
+    switchProjectGitBranch,
     handleCopySessionId,
     selectThread,
     handlePanelStateChange,
@@ -300,7 +302,12 @@ export default function App() {
             onStopRun={() => stopRun(activeThreadId ?? undefined)}
           />
 
-          <WorkspaceStatus activeProject={activeProject} activeThread={activeThread} />
+          <WorkspaceStatus
+            activeProject={activeProject}
+            activeThread={activeThread}
+            onLoadBranches={loadProjectGitBranches}
+            onSelectBranch={switchProjectGitBranch}
+          />
         </main>
       </div>
 

@@ -25,6 +25,7 @@ import {
   getProjectGitSummary,
   getThreadHistory,
   getWorkspaceBootstrap,
+  listProjectGitBranches,
   openProjectInEditor,
   openProjectInExplorer,
   removeProject,
@@ -33,6 +34,7 @@ import {
   renameThread,
   saveThreadHistory,
   setActiveSelection,
+  switchProjectGitBranch,
   updatePanelState,
   updateThreadMetadata,
 } from './lib/workspace-store.js';
@@ -220,6 +222,28 @@ app.get('/api/projects/:projectId/git', async (request, response) => {
     response.json(await getProjectGitSummary(request.params.projectId));
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '读取 Git 状态失败');
+  }
+});
+
+app.get('/api/projects/:projectId/git/branches', async (request, response) => {
+  try {
+    response.json(await listProjectGitBranches(request.params.projectId));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '读取 Git 分支失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/switch', async (request, response) => {
+  const branch = typeof request.body?.branch === 'string' ? request.body.branch.trim() : '';
+  if (!branch) {
+    response.status(400).send('branch 不能为空');
+    return;
+  }
+
+  try {
+    response.json(await switchProjectGitBranch(request.params.projectId, branch));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '切换 Git 分支失败');
   }
 });
 

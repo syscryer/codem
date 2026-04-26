@@ -193,6 +193,13 @@ export type GitDiffSummary = {
   filesChanged: number;
 };
 
+export type GitBranchSummary = {
+  name: string;
+  current: boolean;
+};
+
+export type ProjectGitSummary = Pick<ProjectSummary, 'gitBranch' | 'gitDiff' | 'isGitRepo'>;
+
 export type PanelState = {
   organizeBy: 'project' | 'timeline' | 'chat-first';
   sortBy: 'created' | 'updated';

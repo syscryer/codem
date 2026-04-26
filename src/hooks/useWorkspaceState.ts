@@ -5,8 +5,10 @@ import type {
   ConfirmDialogState,
   ConversationTurn,
   DebugEvent,
+  GitBranchSummary,
   InputDialogState,
   PanelState,
+  ProjectGitSummary,
   ProjectSummary,
   ThreadDetail,
   ThreadHistoryPayload,
@@ -650,7 +652,39 @@ export function useWorkspaceState() {
       return;
     }
 
-    const payload = (await response.json()) as Pick<ProjectSummary, 'gitBranch' | 'gitDiff' | 'isGitRepo'>;
+    const payload = (await response.json()) as ProjectGitSummary;
+    applyProjectGitSummary(projectId, payload);
+  }
+
+  async function loadProjectGitBranches(projectId: string) {
+    const response = await fetch(`/api/projects/${projectId}/git/branches`, {
+      method: 'GET',
+    });
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+
+    return (await response.json()) as GitBranchSummary[];
+  }
+
+  async function switchProjectGitBranch(projectId: string, branchName: string) {
+    const response = await fetch(`/api/projects/${projectId}/git/switch`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ branch: branchName }),
+    });
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+
+    const payload = (await response.json()) as ProjectGitSummary;
+    applyProjectGitSummary(projectId, payload);
+    showToast(`已切换到 ${payload.gitBranch ?? branchName}`);
+  }
+
+  function applyProjectGitSummary(projectId: string, payload: ProjectGitSummary) {
     setProjects((current) =>
       current.map((project) =>
         project.id === projectId
@@ -831,6 +865,8 @@ export function useWorkspaceState() {
     handleOpenProject,
     handleOpenProjectInEditor,
     refreshProjectGitSummary,
+    loadProjectGitBranches,
+    switchProjectGitBranch,
     handleCopySessionId,
     selectThread,
     selectProject,

@@ -140,6 +140,11 @@ export type GitDiffSummary = {
   filesChanged: number;
 };
 
+export type GitBranchSummary = {
+  name: string;
+  current: boolean;
+};
+
 type GitInfo = {
   isGitRepo: boolean;
   branch?: string;
@@ -149,6 +154,7 @@ type GitInfo = {
 type GitCommandResult = {
   status: number | null;
   stdout: string;
+  stderr: string;
 };
 
 export type WorkspaceBootstrap = {
@@ -818,6 +824,74 @@ export async function getProjectGitSummary(projectId: string) {
     gitDiff: gitInfo.diff,
     isGitRepo: gitInfo.isGitRepo,
   };
+}
+
+export async function listProjectGitBranches(projectId: string): Promise<GitBranchSummary[]> {
+  const projectPath = readProjectPath(projectId);
+  const gitInfo = await readGitInfoAsync(projectPath, false);
+  if (!gitInfo.isGitRepo) {
+    return [];
+  }
+
+  const result = await runGitCommand(projectPath, ['branch', '--list', '--format=%(refname:short)']);
+  if (result.status !== 0) {
+    throw new Error(normalizeGitCommandError(result, '读取分支列表失败'));
+  }
+
+  const currentBranch = gitInfo.branch?.trim();
+  const listedBranches = result.stdout
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const seen = new Set<string>();
+  const branches: GitBranchSummary[] = [];
+
+  if (currentBranch && !listedBranches.includes(currentBranch)) {
+    branches.push({ name: currentBranch, current: true });
+    seen.add(currentBranch);
+  }
+
+  for (const branchName of listedBranches) {
+    if (seen.has(branchName)) {
+      continue;
+    }
+
+    seen.add(branchName);
+    branches.push({
+      name: branchName,
+      current: branchName === currentBranch,
+    });
+  }
+
+  return branches;
+}
+
+export async function switchProjectGitBranch(projectId: string, branchName: string) {
+  const projectPath = readProjectPath(projectId);
+  const targetBranch = branchName.trim();
+  if (!targetBranch) {
+    throw new Error('branch 不能为空');
+  }
+
+  const gitInfo = await readGitInfoAsync(projectPath, false);
+  if (!gitInfo.isGitRepo) {
+    throw new Error('当前项目不是 Git 仓库');
+  }
+
+  if (gitInfo.branch === targetBranch) {
+    return getProjectGitSummary(projectId);
+  }
+
+  let switchResult = await runGitCommand(projectPath, ['switch', targetBranch]);
+  if (shouldFallbackToGitCheckout(switchResult)) {
+    switchResult = await runGitCommand(projectPath, ['checkout', targetBranch]);
+  }
+
+  if (switchResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(switchResult, `切换到分支“${targetBranch}”失败`));
+  }
+
+  return getProjectGitSummary(projectId);
 }
 
 function initializeDatabase() {
@@ -1977,9 +2051,10 @@ function runGitCommand(projectPath: string, args: string[]): Promise<GitCommandR
     const child = spawn('git', args, {
       cwd: projectPath,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
+    let stderr = '';
     let settled = false;
     const settle = (result: GitCommandResult) => {
       if (settled) {
@@ -1992,16 +2067,48 @@ function runGitCommand(projectPath: string, args: string[]): Promise<GitCommandR
     };
     const timer = setTimeout(() => {
       child.kill();
-      settle({ status: null, stdout });
+      settle({ status: null, stdout, stderr });
     }, GIT_COMMAND_TIMEOUT_MS);
 
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
       stdout += chunk;
     });
-    child.once('error', () => settle({ status: null, stdout: '' }));
-    child.once('close', (code) => settle({ status: code, stdout }));
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once('error', () => settle({ status: null, stdout: '', stderr: '' }));
+    child.once('close', (code) => settle({ status: code, stdout, stderr }));
   });
+}
+
+function shouldFallbackToGitCheckout(result: GitCommandResult) {
+  if (result.status === 129) {
+    return true;
+  }
+
+  const stderr = result.stderr.trim().toLowerCase();
+  return Boolean(
+    stderr &&
+      (stderr.includes('unknown switch') ||
+        stderr.includes('did you mean `checkout`') ||
+        stderr.includes('not a git command')),
+  );
+}
+
+function normalizeGitCommandError(result: GitCommandResult, fallbackMessage: string) {
+  const stderr = result.stderr.trim();
+  if (stderr) {
+    return stderr;
+  }
+
+  const stdout = result.stdout.trim();
+  if (stdout) {
+    return stdout;
+  }
+
+  return fallbackMessage;
 }
 
 function resolveEditorCommand() {
