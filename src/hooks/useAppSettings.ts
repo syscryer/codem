@@ -1,43 +1,51 @@
-import { useCallback, useEffect, useState } from 'react';
-import { fetchAppSettings, saveAppearanceSettings } from '../lib/settings-api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  defaultAppSettings,
+  defaultAppearanceSettings,
+  fetchAppSettings,
+  saveAppearanceSettings,
+} from '../lib/settings-api';
 import type { AppSettings, AppearanceSettings, ToastState } from '../types';
 
 type ToastTone = ToastState['tone'];
 type ShowToast = (message: string, tone?: ToastTone) => void;
-type AppearanceSettingsPatch = Partial<AppearanceSettings>;
 
-export const defaultAppearanceSettings: AppearanceSettings = {
-  themeMode: 'system',
-  density: 'comfortable',
-  uiFontSize: 13,
-  codeFontSize: 12,
-  sidebarWidth: 'default',
-};
-
-export const defaultAppSettings: AppSettings = {
-  appearance: defaultAppearanceSettings,
-};
+export { defaultAppSettings, defaultAppearanceSettings };
 
 export function useAppSettings(showToast?: ShowToast) {
   const [settings, setSettings] = useState<AppSettings>(defaultAppSettings);
   const [loading, setLoading] = useState(true);
+  const latestSettingsRef = useRef(defaultAppSettings);
+  const requestVersionRef = useRef(0);
+  const toastRef = useRef(showToast);
+
+  useEffect(() => {
+    toastRef.current = showToast;
+  }, [showToast]);
+
+  const applySettings = useCallback((nextSettings: AppSettings) => {
+    const mergedSettings = mergeAppSettings(nextSettings);
+    latestSettingsRef.current = mergedSettings;
+    setSettings(mergedSettings);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
+    const requestVersion = ++requestVersionRef.current;
 
     async function loadSettings() {
       setLoading(true);
       try {
         const nextSettings = await fetchAppSettings();
-        if (!cancelled) {
-          setSettings(mergeAppSettings(nextSettings));
+        if (!cancelled && requestVersion === requestVersionRef.current) {
+          applySettings(nextSettings);
         }
       } catch (error) {
-        if (!cancelled) {
-          showToast?.(error instanceof Error ? error.message : '读取设置失败', 'error');
+        if (!cancelled && requestVersion === requestVersionRef.current) {
+          toastRef.current?.(error instanceof Error ? error.message : '读取设置失败', 'error');
         }
       } finally {
-        if (!cancelled) {
+        if (!cancelled && requestVersion === requestVersionRef.current) {
           setLoading(false);
         }
       }
@@ -48,30 +56,33 @@ export function useAppSettings(showToast?: ShowToast) {
     return () => {
       cancelled = true;
     };
-  }, [showToast]);
+  }, [applySettings]);
 
   const updateAppearance = useCallback(
-    async (nextAppearance: AppearanceSettingsPatch) => {
-      const previousSettings = settings;
+    async (nextAppearance: AppearanceSettings) => {
+      const requestVersion = ++requestVersionRef.current;
+      const previousSettings = latestSettingsRef.current;
       const optimisticSettings = mergeAppSettings({
-        ...settings,
-        appearance: {
-          ...settings.appearance,
-          ...nextAppearance,
-        },
+        ...previousSettings,
+        appearance: nextAppearance,
       });
 
-      setSettings(optimisticSettings);
+      applySettings(optimisticSettings);
+      setLoading(false);
 
       try {
         const savedSettings = await saveAppearanceSettings(optimisticSettings.appearance);
-        setSettings(mergeAppSettings(savedSettings));
+        if (requestVersion === requestVersionRef.current) {
+          applySettings(savedSettings);
+        }
       } catch (error) {
-        setSettings(previousSettings);
-        showToast?.(error instanceof Error ? error.message : '保存外观设置失败', 'error');
+        if (requestVersion === requestVersionRef.current) {
+          applySettings(previousSettings);
+          toastRef.current?.(error instanceof Error ? error.message : '保存外观设置失败', 'error');
+        }
       }
     },
-    [settings, showToast],
+    [applySettings],
   );
 
   return {
