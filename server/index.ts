@@ -69,7 +69,8 @@ app.get('/api/settings', (_request, response) => {
   try {
     response.json(getAppSettings());
   } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : '读取设置失败' });
+    console.error('读取设置失败', error);
+    response.status(500).json({ error: '读取设置失败' });
   }
 });
 
@@ -77,7 +78,8 @@ app.put('/api/settings/appearance', (request, response) => {
   try {
     response.json(updateAppearanceSettings(request.body));
   } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : '保存外观设置失败' });
+    console.error('保存外观设置失败', error);
+    response.status(500).json({ error: '保存外观设置失败' });
   }
 });
 
