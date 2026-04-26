@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -20,6 +20,18 @@ export type AppSettings = {
 };
 
 const SETTINGS_FILE_NAME = 'settings.json';
+
+type SettingsStoreFileSystem = {
+  renameSync: typeof renameSync;
+  rmSync: typeof rmSync;
+  writeFileSync: typeof writeFileSync;
+};
+
+const nodeSettingsStoreFileSystem: SettingsStoreFileSystem = {
+  renameSync,
+  rmSync,
+  writeFileSync,
+};
 
 export const defaultAppearanceSettings: AppearanceSettings = {
   themeMode: 'system',
@@ -48,7 +60,14 @@ function getDefaultSettingsStore() {
   return defaultSettingsStore;
 }
 
-export function createSettingsStore(directory: string) {
+export function createSettingsStore(
+  directory: string,
+  fileSystemOverrides: Partial<SettingsStoreFileSystem> = {},
+) {
+  const fileSystem = {
+    ...nodeSettingsStoreFileSystem,
+    ...fileSystemOverrides,
+  };
   const settingsPath = path.join(directory, SETTINGS_FILE_NAME);
 
   function getStoreAppSettings(): AppSettings {
@@ -62,7 +81,7 @@ export function createSettingsStore(directory: string) {
       ...current,
       appearance: nextAppearance,
     });
-    writeSettingsFile(directory, settingsPath, next);
+    writeSettingsFile(directory, settingsPath, next, fileSystem);
     return next;
   }
 
@@ -106,11 +125,25 @@ function readSettingsFile(settingsPath: string): unknown {
   }
 }
 
-function writeSettingsFile(directory: string, settingsPath: string, settings: AppSettings) {
+function writeSettingsFile(
+  directory: string,
+  settingsPath: string,
+  settings: AppSettings,
+  fileSystem: SettingsStoreFileSystem,
+) {
   mkdirSync(directory, { recursive: true });
   const temporaryPath = `${settingsPath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
-  renameSync(temporaryPath, settingsPath);
+  try {
+    fileSystem.writeFileSync(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+    fileSystem.renameSync(temporaryPath, settingsPath);
+  } catch (error) {
+    try {
+      fileSystem.rmSync(temporaryPath, { force: true });
+    } catch {
+      // Preserve the original write/rename failure for callers.
+    }
+    throw error;
+  }
 }
 
 function normalizeEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {

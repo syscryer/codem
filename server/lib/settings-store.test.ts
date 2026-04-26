@@ -293,3 +293,23 @@ test('updateAppearanceSettings leaves no temporary settings files after rename',
     );
   });
 });
+
+test('updateAppearanceSettings removes temporary settings files when rename fails', () => {
+  withTemporaryDirectory((directory) => {
+    const renameError = new Error('rename failed');
+    const store = createSettingsStore(directory, {
+      renameSync() {
+        throw renameError;
+      },
+    });
+
+    assert.throws(
+      () => store.updateAppearanceSettings({ themeMode: 'dark' }),
+      (error) => error === renameError,
+    );
+    assert.deepEqual(
+      readdirSync(directory).filter((fileName) => fileName.endsWith('.tmp')),
+      [],
+    );
+  });
+});
