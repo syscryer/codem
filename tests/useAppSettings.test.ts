@@ -5,8 +5,12 @@ import {
   createLatestAppearanceSaveQueue,
   defaultAppearanceSettings,
   defaultModelSettings,
+  defaultOpenWithSettings,
+  defaultShortcutSettings,
   resolveAppearanceUpdate,
   resolveModelSettingsUpdate,
+  resolveOpenWithSettingsUpdate,
+  resolveShortcutSettingsUpdate,
 } from '../src/hooks/useAppSettings';
 
 test('resolveAppearanceUpdate merges patches against the latest appearance', () => {
@@ -54,6 +58,35 @@ test('resolveModelSettingsUpdate normalizes duplicate custom models and stale de
   });
 });
 
+test('resolveShortcutSettingsUpdate normalizes shortcuts and supports clearing actions', () => {
+  const next = resolveShortcutSettingsUpdate(defaultShortcutSettings, {
+    newChat: ' Ctrl + Alt + N ',
+    toggleSearch: null,
+    composerSend: 'modEnter',
+  });
+
+  assert.deepEqual(next, {
+    ...defaultShortcutSettings,
+    newChat: 'ctrl+alt+n',
+    toggleSearch: null,
+    composerSend: 'modEnter',
+  });
+});
+
+test('resolveOpenWithSettingsUpdate normalizes custom command settings', () => {
+  const next = resolveOpenWithSettingsUpdate(defaultOpenWithSettings, {
+    target: 'custom',
+    customCommand: ' C:\\Tools\\editor.exe ',
+    customArgs: ' --reuse-window ',
+  });
+
+  assert.deepEqual(next, {
+    target: 'custom',
+    customCommand: 'C:\\Tools\\editor.exe',
+    customArgs: '--reuse-window',
+  });
+});
+
 test('createLatestAppearanceSaveQueue writes the latest pending appearance last', async () => {
   const savedPayloads: AppearanceSettings[] = [];
   const appliedPayloads: AppSettings[] = [];
@@ -78,16 +111,16 @@ test('createLatestAppearanceSaveQueue writes the latest pending appearance last'
 
   assert.deepEqual(savedPayloads.map((appearance) => appearance.themeMode), ['light']);
 
-  firstSave.resolve({ appearance: firstAppearance });
+  firstSave.resolve({ appearance: firstAppearance } as AppSettings);
   await waitForMicrotasks();
 
   assert.deepEqual(appliedPayloads, []);
   assert.deepEqual(savedPayloads.map((appearance) => appearance.themeMode), ['light', 'dark']);
 
-  secondSave.resolve({ appearance: latestAppearance });
+  secondSave.resolve({ appearance: latestAppearance } as AppSettings);
   await waitForMicrotasks();
 
-  assert.deepEqual(appliedPayloads, [{ appearance: latestAppearance }]);
+  assert.deepEqual(appliedPayloads, [{ appearance: latestAppearance } as AppSettings]);
   assert.deepEqual(failures, []);
 });
 
@@ -118,10 +151,10 @@ test('createLatestAppearanceSaveQueue ignores stale save failures when a newer s
 
   assert.deepEqual(failures, []);
 
-  secondSave.resolve({ appearance: latestAppearance });
+  secondSave.resolve({ appearance: latestAppearance } as AppSettings);
   await waitForMicrotasks();
 
-  assert.deepEqual(appliedPayloads, [{ appearance: latestAppearance }]);
+  assert.deepEqual(appliedPayloads, [{ appearance: latestAppearance } as AppSettings]);
   assert.deepEqual(failures, []);
 });
 

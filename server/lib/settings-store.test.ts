@@ -75,6 +75,8 @@ test('normalizeAppSettings preserves valid appearance values', () => {
       sidebarWidth: 'wide',
     },
     models: defaultAppSettings.models,
+    shortcuts: defaultAppSettings.shortcuts,
+    openWith: defaultAppSettings.openWith,
   });
 });
 
@@ -101,6 +103,90 @@ test('normalizeAppSettings preserves valid model settings', () => {
       },
     ],
     defaultModelId: 'anthropic/claude-sonnet-4.5',
+  });
+});
+
+test('normalizeAppSettings preserves valid shortcuts and open-with settings', () => {
+  const settings = normalizeAppSettings({
+    shortcuts: {
+      newChat: ' ctrl+alt+n ',
+      toggleSearch: 'ctrl+shift+f',
+      toggleDebug: null,
+      composerSend: 'modEnter',
+    },
+    openWith: {
+      target: 'custom',
+      customCommand: ' C:\\Tools\\editor.exe ',
+      customArgs: ' --reuse-window ',
+    },
+  });
+
+  assert.deepEqual(settings.shortcuts, {
+    newChat: 'ctrl+alt+n',
+    toggleSearch: 'ctrl+shift+f',
+    toggleDebug: null,
+    composerSend: 'modEnter',
+  });
+  assert.deepEqual(settings.openWith, {
+    target: 'custom',
+    customCommand: 'C:\\Tools\\editor.exe',
+    customArgs: '--reuse-window',
+  });
+});
+
+test('normalizeAppSettings falls back for invalid shortcuts and open-with settings', () => {
+  const settings = normalizeAppSettings({
+    shortcuts: {
+      newChat: 'n',
+      toggleSearch: 3,
+      toggleDebug: 'shift',
+      composerSend: 'bad',
+    },
+    openWith: {
+      target: 'missing',
+      customCommand: 'x'.repeat(301),
+      customArgs: 'y'.repeat(601),
+    },
+  });
+
+  assert.deepEqual(settings.shortcuts, defaultAppSettings.shortcuts);
+  assert.deepEqual(settings.openWith, defaultAppSettings.openWith);
+});
+
+test('updateShortcutSettings and updateOpenWithSettings write formatted JSON and can read it back', () => {
+  withTemporaryDirectory((directory) => {
+    const store = createSettingsStore(directory);
+
+    store.updateShortcutSettings({
+      newChat: 'ctrl+alt+n',
+      toggleSearch: null,
+      composerSend: 'modEnter',
+    });
+    const settings = store.updateOpenWithSettings({
+      target: 'cursor',
+      customCommand: 'ignored',
+    });
+
+    const expected = {
+      appearance: defaultAppSettings.appearance,
+      models: defaultAppSettings.models,
+      shortcuts: {
+        ...defaultAppSettings.shortcuts,
+        newChat: 'ctrl+alt+n',
+        toggleSearch: null,
+        composerSend: 'modEnter',
+      },
+      openWith: {
+        target: 'cursor',
+        customCommand: '',
+        customArgs: '',
+      },
+    };
+    const serialized = readFileSync(path.join(directory, 'settings.json'), 'utf8');
+
+    assert.deepEqual(settings, expected);
+    assert.equal(serialized, `${JSON.stringify(expected, null, 2)}\n`);
+    assert.deepEqual(store.getAppSettings(), expected);
   });
 });
 
@@ -143,6 +229,8 @@ test('updateModelSettings writes formatted JSON and can read it back', () => {
         customModels: [{ id: 'custom/model' }],
         defaultModelId: 'custom/model',
       },
+      shortcuts: defaultAppSettings.shortcuts,
+      openWith: defaultAppSettings.openWith,
     };
     const serialized = readFileSync(path.join(directory, 'settings.json'), 'utf8');
 
@@ -309,6 +397,8 @@ test('getAppSettings fills defaults for missing appearance fields', () => {
         uiFontSize: 15,
       },
       models: defaultAppSettings.models,
+      shortcuts: defaultAppSettings.shortcuts,
+      openWith: defaultAppSettings.openWith,
     });
   });
 });
@@ -334,6 +424,8 @@ test('updateAppearanceSettings writes formatted JSON and can read it back', () =
         sidebarWidth: 'narrow',
       },
       models: defaultAppSettings.models,
+      shortcuts: defaultAppSettings.shortcuts,
+      openWith: defaultAppSettings.openWith,
     };
     const serialized = readFileSync(path.join(directory, 'settings.json'), 'utf8');
 

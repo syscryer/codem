@@ -3,12 +3,25 @@ import {
   defaultAppSettings,
   defaultAppearanceSettings,
   defaultModelSettings,
+  defaultOpenWithSettings,
+  defaultShortcutSettings,
   fetchAppSettings,
+  normalizeOpenWithSettings,
   normalizeModelSettings,
+  normalizeShortcutSettings,
   saveAppearanceSettings,
   saveModelSettings,
+  saveOpenWithSettings,
+  saveShortcutSettings,
 } from '../lib/settings-api';
-import type { AppSettings, AppearanceSettings, ModelSettings, ToastState } from '../types';
+import type {
+  AppSettings,
+  AppearanceSettings,
+  ModelSettings,
+  OpenWithSettings,
+  ShortcutSettings,
+  ToastState,
+} from '../types';
 
 type ToastTone = ToastState['tone'];
 type ShowToast = (message: string, tone?: ToastTone) => void;
@@ -18,6 +31,12 @@ export type AppearanceSettingsUpdate =
 export type ModelSettingsUpdate =
   | Partial<ModelSettings>
   | ((current: ModelSettings) => Partial<ModelSettings> | ModelSettings);
+export type ShortcutSettingsUpdate =
+  | Partial<ShortcutSettings>
+  | ((current: ShortcutSettings) => Partial<ShortcutSettings> | ShortcutSettings);
+export type OpenWithSettingsUpdate =
+  | Partial<OpenWithSettings>
+  | ((current: OpenWithSettings) => Partial<OpenWithSettings> | OpenWithSettings);
 
 type AppearanceSaveQueueOptions = {
   save: (appearance: AppearanceSettings) => Promise<AppSettings>;
@@ -31,7 +50,7 @@ type AppearanceSaveQueue = {
 };
 
 export { defaultAppSettings, defaultAppearanceSettings };
-export { defaultModelSettings };
+export { defaultModelSettings, defaultOpenWithSettings, defaultShortcutSettings };
 
 export function useAppSettings(showToast?: ShowToast) {
   const [settings, setSettings] = useState<AppSettings>(defaultAppSettings);
@@ -143,13 +162,63 @@ export function useAppSettings(showToast?: ShowToast) {
     [applySettings],
   );
 
+  const updateShortcuts = useCallback(
+    async (update: ShortcutSettingsUpdate) => {
+      ++requestVersionRef.current;
+      const currentSettings = latestSettingsRef.current;
+      const nextShortcuts = resolveShortcutSettingsUpdate(currentSettings.shortcuts, update);
+      const optimisticSettings = mergeAppSettings({
+        ...currentSettings,
+        shortcuts: nextShortcuts,
+      });
+
+      applySettings(optimisticSettings);
+      setLoading(false);
+
+      try {
+        const savedSettings = await saveShortcutSettings(optimisticSettings.shortcuts);
+        applySettings(savedSettings);
+      } catch (error) {
+        toastRef.current?.(error instanceof Error ? error.message : '保存快捷键设置失败', 'error');
+      }
+    },
+    [applySettings],
+  );
+
+  const updateOpenWith = useCallback(
+    async (update: OpenWithSettingsUpdate) => {
+      ++requestVersionRef.current;
+      const currentSettings = latestSettingsRef.current;
+      const nextOpenWith = resolveOpenWithSettingsUpdate(currentSettings.openWith, update);
+      const optimisticSettings = mergeAppSettings({
+        ...currentSettings,
+        openWith: nextOpenWith,
+      });
+
+      applySettings(optimisticSettings);
+      setLoading(false);
+
+      try {
+        const savedSettings = await saveOpenWithSettings(optimisticSettings.openWith);
+        applySettings(savedSettings);
+      } catch (error) {
+        toastRef.current?.(error instanceof Error ? error.message : '保存打开方式失败', 'error');
+      }
+    },
+    [applySettings],
+  );
+
   return {
     settings,
     appearance: settings.appearance,
     models: settings.models,
+    shortcuts: settings.shortcuts,
+    openWith: settings.openWith,
     loading,
     updateAppearance,
     updateModels,
+    updateShortcuts,
+    updateOpenWith,
   };
 }
 
@@ -170,6 +239,28 @@ export function resolveModelSettingsUpdate(
 ): ModelSettings {
   const patch = typeof update === 'function' ? update(current) : update;
   return normalizeModelSettings({
+    ...current,
+    ...patch,
+  });
+}
+
+export function resolveShortcutSettingsUpdate(
+  current: ShortcutSettings,
+  update: ShortcutSettingsUpdate,
+): ShortcutSettings {
+  const patch = typeof update === 'function' ? update(current) : update;
+  return normalizeShortcutSettings({
+    ...current,
+    ...patch,
+  });
+}
+
+export function resolveOpenWithSettingsUpdate(
+  current: OpenWithSettings,
+  update: OpenWithSettingsUpdate,
+): OpenWithSettings {
+  const patch = typeof update === 'function' ? update(current) : update;
+  return normalizeOpenWithSettings({
     ...current,
     ...patch,
   });
@@ -221,6 +312,8 @@ function mergeAppSettings(settings: Partial<AppSettings> | null | undefined): Ap
   return {
     appearance: mergeAppearanceSettings(settings?.appearance),
     models: normalizeModelSettings(settings?.models),
+    shortcuts: normalizeShortcutSettings(settings?.shortcuts),
+    openWith: normalizeOpenWithSettings(settings?.openWith),
   };
 }
 

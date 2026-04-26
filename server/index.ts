@@ -42,6 +42,8 @@ import {
   getAppSettings,
   updateAppearanceSettings,
   updateModelSettings,
+  updateOpenWithSettings,
+  updateShortcutSettings,
 } from './lib/settings-store.js';
 import {
   readClaudeGlobalPrompt,
@@ -115,6 +117,24 @@ app.put('/api/settings/models', (request, response) => {
   } catch (error) {
     console.error('保存模型设置失败', error);
     response.status(500).json({ error: '保存模型设置失败' });
+  }
+});
+
+app.put('/api/settings/shortcuts', (request, response) => {
+  try {
+    response.json(updateShortcutSettings(request.body));
+  } catch (error) {
+    console.error('保存快捷键设置失败', error);
+    response.status(500).json({ error: '保存快捷键设置失败' });
+  }
+});
+
+app.put('/api/settings/open-with', (request, response) => {
+  try {
+    response.json(updateOpenWithSettings(request.body));
+  } catch (error) {
+    console.error('保存打开方式失败', error);
+    response.status(500).json({ error: '保存打开方式失败' });
   }
 });
 

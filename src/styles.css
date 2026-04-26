@@ -3064,6 +3064,27 @@ svg {
   gap: 8px;
 }
 
+.settings-shortcut-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-shortcut-input {
+  width: 128px;
+  flex: 0 0 128px;
+  text-align: center;
+  cursor: text;
+}
+
+.settings-open-with-form {
+  width: 100%;
+}
+
+.settings-open-with-form .settings-input {
+  min-width: 0;
+}
+
 .settings-action-button,
 .settings-icon-button {
   border: 1px solid #dedede;

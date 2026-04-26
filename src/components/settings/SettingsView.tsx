@@ -1,22 +1,40 @@
 import { useMemo } from 'react';
-import type { AppearanceSettings, ClaudeModelInfo, ModelSettings, SettingsSection } from '../../types';
-import type { AppearanceSettingsUpdate, ModelSettingsUpdate } from '../../hooks/useAppSettings';
+import type {
+  AppearanceSettings,
+  ClaudeModelInfo,
+  ModelSettings,
+  OpenWithSettings,
+  SettingsSection,
+  ShortcutSettings,
+} from '../../types';
+import type {
+  AppearanceSettingsUpdate,
+  ModelSettingsUpdate,
+  OpenWithSettingsUpdate,
+  ShortcutSettingsUpdate,
+} from '../../hooks/useAppSettings';
 import { AppearanceSettingsSection } from './AppearanceSettings';
 import { GlobalPromptSettingsSection } from './GlobalPromptSettings';
 import { McpSettingsSection } from './McpSettings';
 import { ModelSettingsSection } from './ModelSettings';
+import { OpenWithSettingsSection } from './OpenWithSettings';
 import { SettingsEmptySection } from './SettingsEmptySection';
 import { SettingsSidebar } from './SettingsSidebar';
 import { SkillsSettingsSection } from './SkillsSettings';
+import { ShortcutsSettingsSection } from './ShortcutsSettings';
 
 type SettingsViewProps = {
   activeSection: SettingsSection;
   appearance: AppearanceSettings;
   models: ModelSettings;
+  shortcuts: ShortcutSettings;
+  openWith: OpenWithSettings;
   claudeModels: ClaudeModelInfo;
   onSelectSection: (section: SettingsSection) => void;
   onUpdateAppearance: (update: AppearanceSettingsUpdate) => void;
   onUpdateModels: (update: ModelSettingsUpdate) => void | Promise<void>;
+  onUpdateShortcuts: (update: ShortcutSettingsUpdate) => void | Promise<void>;
+  onUpdateOpenWith: (update: OpenWithSettingsUpdate) => void | Promise<void>;
   onReturnWorkspace: () => void;
 };
 
@@ -37,10 +55,14 @@ export function SettingsView({
   activeSection,
   appearance,
   models,
+  shortcuts,
+  openWith,
   claudeModels,
   onSelectSection,
   onUpdateAppearance,
   onUpdateModels,
+  onUpdateShortcuts,
+  onUpdateOpenWith,
   onReturnWorkspace,
 }: SettingsViewProps) {
   const content = useMemo(() => {
@@ -63,6 +85,24 @@ export function SettingsView({
       );
     }
 
+    if (activeSection === 'shortcuts') {
+      return (
+        <ShortcutsSettingsSection
+          shortcuts={shortcuts}
+          onUpdateShortcuts={onUpdateShortcuts}
+        />
+      );
+    }
+
+    if (activeSection === 'openWith') {
+      return (
+        <OpenWithSettingsSection
+          openWith={openWith}
+          onUpdateOpenWith={onUpdateOpenWith}
+        />
+      );
+    }
+
     if (activeSection === 'globalPrompts') {
       return <GlobalPromptSettingsSection />;
     }
@@ -76,7 +116,18 @@ export function SettingsView({
     }
 
     return <SettingsEmptySection title={sectionTitles[activeSection]} />;
-  }, [activeSection, appearance, claudeModels, models, onUpdateAppearance, onUpdateModels]);
+  }, [
+    activeSection,
+    appearance,
+    claudeModels,
+    models,
+    openWith,
+    shortcuts,
+    onUpdateAppearance,
+    onUpdateModels,
+    onUpdateOpenWith,
+    onUpdateShortcuts,
+  ]);
 
   return (
     <main className="settings-view">

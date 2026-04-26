@@ -19,6 +19,7 @@ import { WorkspaceStatus } from './components/WorkspaceStatus';
 import { useClaudeRun } from './hooks/useClaudeRun';
 import { useAppSettings } from './hooks/useAppSettings';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
+import { matchesShortcut } from './lib/shortcuts';
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -85,7 +86,16 @@ export default function App() {
   const [appView, setAppView] = useState<{ kind: 'workspace' } | { kind: 'settings'; section: SettingsSection }>({
     kind: 'workspace',
   });
-  const { appearance, models: appModelSettings, updateAppearance, updateModels } = useAppSettings(showToast);
+  const {
+    appearance,
+    models: appModelSettings,
+    shortcuts,
+    openWith,
+    updateAppearance,
+    updateModels,
+    updateShortcuts,
+    updateOpenWith,
+  } = useAppSettings(showToast);
   const wasRunningRef = useRef(false);
   const {
     permissionMode,
@@ -143,17 +153,33 @@ export default function App() {
 
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
-      if (!event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'g') {
+      if (isEditableShortcutTarget(event.target)) {
         return;
       }
 
-      event.preventDefault();
-      setSearchOpen(true);
+      if (matchesShortcut(event, shortcuts.newChat)) {
+        event.preventDefault();
+        if (appView.kind === 'workspace') {
+          void handleCreatePrimaryChat();
+        }
+        return;
+      }
+
+      if (matchesShortcut(event, shortcuts.toggleSearch)) {
+        event.preventDefault();
+        setSearchOpen(true);
+        return;
+      }
+
+      if (matchesShortcut(event, shortcuts.toggleDebug)) {
+        event.preventDefault();
+        setDebugOpen((value) => !value);
+      }
     }
 
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [setSearchOpen]);
+  }, [appView.kind, handleCreatePrimaryChat, setDebugOpen, setSearchOpen, shortcuts]);
 
   const latestApprovalDialog = useMemo(
     () => getLatestPendingApprovalDialog(activeThread),
@@ -166,6 +192,14 @@ export default function App() {
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
+      return;
+    }
+
+    const shouldSubmit =
+      shortcuts.composerSend === 'enter'
+        ? !event.ctrlKey && !event.metaKey && !event.altKey
+        : (event.ctrlKey || event.metaKey) && !event.altKey;
+    if (!shouldSubmit) {
       return;
     }
 
@@ -259,10 +293,14 @@ export default function App() {
           activeSection={appView.section}
           appearance={appearance}
           models={appModelSettings}
+          shortcuts={shortcuts}
+          openWith={openWith}
           claudeModels={claudeModels}
           onSelectSection={(section) => setAppView({ kind: 'settings', section })}
           onUpdateAppearance={updateAppearance}
           onUpdateModels={updateModels}
+          onUpdateShortcuts={updateShortcuts}
+          onUpdateOpenWith={updateOpenWith}
           onReturnWorkspace={returnWorkspace}
         />
       ) : (
@@ -378,6 +416,15 @@ export default function App() {
       <DebugDrawer activeThread={activeThread} open={debugOpen} onClose={() => setDebugOpen(false)} />
     </div>
   );
+}
+
+function isEditableShortcutTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const tagName = target.tagName.toLowerCase();
+  return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.isContentEditable;
 }
 
 function CurrentTaskDock({ activeThread }: { activeThread: ThreadDetail | null }) {

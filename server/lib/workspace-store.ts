@@ -4,6 +4,8 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
+import { createEditorLaunchRequest } from './open-with.js';
+import { getAppSettings } from './settings-store.js';
 
 type OrganizeBy = 'project' | 'timeline' | 'chat-first';
 type SortBy = 'created' | 'updated';
@@ -792,14 +794,14 @@ export function openProjectInExplorer(projectId: string) {
 
 export function openProjectInEditor(projectId: string) {
   const projectPath = readProjectPath(projectId);
-  const editorCommand = resolveEditorCommand();
-  if (!editorCommand) {
-    throw new Error('未找到可用编辑器，请安装 Cursor 或 VS Code，或设置 CODEM_EDITOR。');
+  const editorCommand = resolveEditorLaunchConfig();
+  if (!editorCommand.command) {
+    throw new Error('未找到可用编辑器，请安装 Cursor 或 VS Code，或在设置中配置打开方式。');
   }
 
-  const opened = startEditorProcess(editorCommand, projectPath);
+  const opened = startEditorProcess(editorCommand.command, projectPath, editorCommand.args);
   if (!opened) {
-    throw new Error(`编辑器启动失败：${editorCommand}`);
+    throw new Error(`编辑器启动失败：${editorCommand.command}`);
   }
 }
 
@@ -2111,20 +2113,23 @@ function normalizeGitCommandError(result: GitCommandResult, fallbackMessage: str
   return fallbackMessage;
 }
 
-function resolveEditorCommand() {
-  const configuredCommand = [process.env.CODEM_EDITOR, process.env.VISUAL, process.env.EDITOR].find(
-    (value) => value?.trim(),
-  );
-  const candidates = [configuredCommand, 'cursor', 'code'].filter(Boolean) as string[];
+function resolveEditorLaunchConfig() {
+  const request = createEditorLaunchRequest(getAppSettings().openWith, process.env);
 
-  for (const candidate of candidates) {
+  for (const candidate of request.candidates) {
     const command = resolveCommandPath(candidate);
     if (command) {
-      return command;
+      return {
+        command,
+        args: request.args,
+      };
     }
   }
 
-  return '';
+  return {
+    command: '',
+    args: request.args,
+  };
 }
 
 function resolveCommandPath(command: string) {
@@ -2148,10 +2153,13 @@ function resolveCommandPath(command: string) {
   return paths.find((item) => /\.(cmd|exe|bat)$/i.test(item)) ?? paths[0] ?? '';
 }
 
-function startEditorProcess(command: string, projectPath: string) {
+function startEditorProcess(command: string, projectPath: string, args: string[] = []) {
+  const argumentList = [...args, projectPath]
+    .map((argument) => `'${escapePowerShellString(argument)}'`)
+    .join(', ');
   const script = `
 $ErrorActionPreference = 'Stop'
-Start-Process -FilePath '${escapePowerShellString(command)}' -ArgumentList @('${escapePowerShellString(projectPath)}')
+Start-Process -FilePath '${escapePowerShellString(command)}' -ArgumentList @(${argumentList})
 `.trim();
   const result = spawnSync(
     'powershell.exe',

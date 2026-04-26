@@ -1,4 +1,12 @@
-import type { AppSettings, AppearanceSettings, CustomModel, ModelSettings } from '../types';
+import { normalizeShortcutValue } from './shortcuts';
+import type {
+  AppSettings,
+  AppearanceSettings,
+  CustomModel,
+  ModelSettings,
+  OpenWithSettings,
+  ShortcutSettings,
+} from '../types';
 
 export const defaultAppearanceSettings: AppearanceSettings = {
   themeMode: 'system',
@@ -13,9 +21,24 @@ export const defaultModelSettings: ModelSettings = {
   defaultModelId: '__default',
 };
 
+export const defaultShortcutSettings: ShortcutSettings = {
+  newChat: 'ctrl+n',
+  toggleSearch: 'ctrl+g',
+  toggleDebug: 'ctrl+shift+d',
+  composerSend: 'enter',
+};
+
+export const defaultOpenWithSettings: OpenWithSettings = {
+  target: 'auto',
+  customCommand: '',
+  customArgs: '',
+};
+
 export const defaultAppSettings: AppSettings = {
   appearance: defaultAppearanceSettings,
   models: defaultModelSettings,
+  shortcuts: defaultShortcutSettings,
+  openWith: defaultOpenWithSettings,
 };
 
 export async function fetchAppSettings(): Promise<AppSettings> {
@@ -53,6 +76,32 @@ export async function saveModelSettings(models: ModelSettings): Promise<AppSetti
   }
 }
 
+export async function saveShortcutSettings(shortcuts: ShortcutSettings): Promise<AppSettings> {
+  try {
+    const response = await fetch('/api/settings/shortcuts', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(normalizeShortcutSettings(shortcuts)),
+    });
+    return await readSettingsResponse(response, '保存快捷键设置失败');
+  } catch {
+    throw new Error('保存快捷键设置失败');
+  }
+}
+
+export async function saveOpenWithSettings(openWith: OpenWithSettings): Promise<AppSettings> {
+  try {
+    const response = await fetch('/api/settings/open-with', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(normalizeOpenWithSettings(openWith)),
+    });
+    return await readSettingsResponse(response, '保存打开方式失败');
+  } catch {
+    throw new Error('保存打开方式失败');
+  }
+}
+
 async function readSettingsResponse(response: Response, failureMessage: string): Promise<AppSettings> {
   if (!response.ok) {
     throw new Error(failureMessage);
@@ -70,6 +119,8 @@ function normalizeAppSettings(settings: unknown): AppSettings {
   return {
     appearance: normalizeAppearanceSettings(record.appearance),
     models: normalizeModelSettings(record.models),
+    shortcuts: normalizeShortcutSettings(record.shortcuts),
+    openWith: normalizeOpenWithSettings(record.openWith),
   };
 }
 
@@ -93,6 +144,26 @@ export function normalizeModelSettings(models: unknown): ModelSettings {
   return {
     customModels,
     defaultModelId,
+  };
+}
+
+export function normalizeShortcutSettings(shortcuts: unknown): ShortcutSettings {
+  const record = isRecord(shortcuts) ? shortcuts : {};
+  return {
+    newChat: normalizeShortcutValueWithFallback(record.newChat, defaultShortcutSettings.newChat),
+    toggleSearch: normalizeShortcutValueWithFallback(record.toggleSearch, defaultShortcutSettings.toggleSearch),
+    toggleDebug: normalizeShortcutValueWithFallback(record.toggleDebug, defaultShortcutSettings.toggleDebug),
+    composerSend: normalizeOneOf(record.composerSend, ['enter', 'modEnter'], defaultShortcutSettings.composerSend),
+  };
+}
+
+export function normalizeOpenWithSettings(openWith: unknown): OpenWithSettings {
+  const record = isRecord(openWith) ? openWith : {};
+  const target = normalizeOneOf(record.target, ['auto', 'cursor', 'vscode', 'custom'], defaultOpenWithSettings.target);
+  return {
+    target,
+    customCommand: target === 'custom' ? normalizeLimitedString(record.customCommand, 300) : '',
+    customArgs: target === 'custom' ? normalizeLimitedString(record.customArgs, 600) : '',
   };
 }
 
@@ -154,6 +225,22 @@ function normalizeModelId(value: unknown) {
 
 function normalizeOptionalString(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeShortcutValueWithFallback(value: unknown, fallback: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  return normalizeShortcutValue(value) ?? fallback;
+}
+
+function normalizeLimitedString(value: unknown, maxLength: number) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length <= maxLength ? trimmed : '';
 }
 
 function normalizeOneOf<T extends string | number>(value: unknown, allowed: readonly T[], fallback: T): T {

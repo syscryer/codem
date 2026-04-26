@@ -26,9 +26,28 @@ export type ModelSettings = {
   defaultModelId: string;
 };
 
+export type ComposerSendShortcut = 'enter' | 'modEnter';
+
+export type ShortcutSettings = {
+  newChat: string | null;
+  toggleSearch: string | null;
+  toggleDebug: string | null;
+  composerSend: ComposerSendShortcut;
+};
+
+export type OpenWithTarget = 'auto' | 'cursor' | 'vscode' | 'custom';
+
+export type OpenWithSettings = {
+  target: OpenWithTarget;
+  customCommand: string;
+  customArgs: string;
+};
+
 export type AppSettings = {
   appearance: AppearanceSettings;
   models: ModelSettings;
+  shortcuts: ShortcutSettings;
+  openWith: OpenWithSettings;
 };
 
 const SETTINGS_FILE_NAME = 'settings.json';
@@ -58,9 +77,24 @@ export const defaultModelSettings: ModelSettings = {
   defaultModelId: '__default',
 };
 
+export const defaultShortcutSettings: ShortcutSettings = {
+  newChat: 'ctrl+n',
+  toggleSearch: 'ctrl+g',
+  toggleDebug: 'ctrl+shift+d',
+  composerSend: 'enter',
+};
+
+export const defaultOpenWithSettings: OpenWithSettings = {
+  target: 'auto',
+  customCommand: '',
+  customArgs: '',
+};
+
 export const defaultAppSettings: AppSettings = {
   appearance: defaultAppearanceSettings,
   models: defaultModelSettings,
+  shortcuts: defaultShortcutSettings,
+  openWith: defaultOpenWithSettings,
 };
 
 let defaultSettingsStore: ReturnType<typeof createSettingsStore> | undefined;
@@ -75,6 +109,14 @@ export function updateAppearanceSettings(nextAppearance: unknown): AppSettings {
 
 export function updateModelSettings(nextModels: unknown): AppSettings {
   return getDefaultSettingsStore().updateModelSettings(nextModels);
+}
+
+export function updateShortcutSettings(nextShortcuts: unknown): AppSettings {
+  return getDefaultSettingsStore().updateShortcutSettings(nextShortcuts);
+}
+
+export function updateOpenWithSettings(nextOpenWith: unknown): AppSettings {
+  return getDefaultSettingsStore().updateOpenWithSettings(nextOpenWith);
 }
 
 function getDefaultSettingsStore() {
@@ -117,10 +159,38 @@ export function createSettingsStore(
     return next;
   }
 
+  function updateStoreShortcutSettings(nextShortcuts: unknown): AppSettings {
+    const current = getStoreAppSettings();
+    const next = normalizeAppSettings({
+      ...current,
+      shortcuts: {
+        ...current.shortcuts,
+        ...(isRecord(nextShortcuts) ? nextShortcuts : {}),
+      },
+    });
+    writeSettingsFile(directory, settingsPath, next, fileSystem);
+    return next;
+  }
+
+  function updateStoreOpenWithSettings(nextOpenWith: unknown): AppSettings {
+    const current = getStoreAppSettings();
+    const next = normalizeAppSettings({
+      ...current,
+      openWith: {
+        ...current.openWith,
+        ...(isRecord(nextOpenWith) ? nextOpenWith : {}),
+      },
+    });
+    writeSettingsFile(directory, settingsPath, next, fileSystem);
+    return next;
+  }
+
   return {
     getAppSettings: getStoreAppSettings,
     updateAppearanceSettings: updateStoreAppearanceSettings,
     updateModelSettings: updateStoreModelSettings,
+    updateShortcutSettings: updateStoreShortcutSettings,
+    updateOpenWithSettings: updateStoreOpenWithSettings,
   };
 }
 
@@ -129,6 +199,8 @@ export function normalizeAppSettings(value: unknown): AppSettings {
   return {
     appearance: normalizeAppearanceSettings(record.appearance),
     models: normalizeModelSettings(record.models),
+    shortcuts: normalizeShortcutSettings(record.shortcuts),
+    openWith: normalizeOpenWithSettings(record.openWith),
   };
 }
 
@@ -151,6 +223,26 @@ function normalizeModelSettings(value: unknown): ModelSettings {
   return {
     customModels,
     defaultModelId,
+  };
+}
+
+function normalizeShortcutSettings(value: unknown): ShortcutSettings {
+  const record = isRecord(value) ? value : {};
+  return {
+    newChat: normalizeShortcutValue(record.newChat, defaultShortcutSettings.newChat),
+    toggleSearch: normalizeShortcutValue(record.toggleSearch, defaultShortcutSettings.toggleSearch),
+    toggleDebug: normalizeShortcutValue(record.toggleDebug, defaultShortcutSettings.toggleDebug),
+    composerSend: normalizeEnum(record.composerSend, ['enter', 'modEnter'], defaultShortcutSettings.composerSend),
+  };
+}
+
+function normalizeOpenWithSettings(value: unknown): OpenWithSettings {
+  const record = isRecord(value) ? value : {};
+  const target = normalizeEnum(record.target, ['auto', 'cursor', 'vscode', 'custom'], defaultOpenWithSettings.target);
+  return {
+    target,
+    customCommand: target === 'custom' ? normalizeLimitedString(record.customCommand, 300) : '',
+    customArgs: target === 'custom' ? normalizeLimitedString(record.customArgs, 600) : '',
   };
 }
 
@@ -216,6 +308,72 @@ function normalizeOptionalString(value: unknown) {
   }
 
   return value.trim();
+}
+
+function normalizeShortcutValue(value: unknown, fallback: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  const parts = value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .split('+')
+    .map((part) => normalizeShortcutPart(part))
+    .filter(Boolean);
+  if (parts.length < 2) {
+    return fallback;
+  }
+
+  const key = parts.at(-1);
+  if (!key || isShortcutModifier(key)) {
+    return fallback;
+  }
+
+  const modifiers = parts.slice(0, -1);
+  if (!modifiers.some((part) => part === 'cmd' || part === 'ctrl' || part === 'alt')) {
+    return fallback;
+  }
+
+  const normalizedModifiers = ['cmd', 'ctrl', 'alt', 'shift'].filter((modifier) => modifiers.includes(modifier));
+  return [...normalizedModifiers, key].join('+');
+}
+
+function normalizeShortcutPart(value: string) {
+  if (value === 'control') {
+    return 'ctrl';
+  }
+  if (value === 'meta' || value === 'command') {
+    return 'cmd';
+  }
+  if (value === ' ') {
+    return 'space';
+  }
+  if (value === 'esc') {
+    return 'escape';
+  }
+  if (value === 'return') {
+    return 'enter';
+  }
+  return value;
+}
+
+function isShortcutModifier(value: string) {
+  return ['shift', 'control', 'ctrl', 'alt', 'meta', 'cmd', 'command'].includes(value);
+}
+
+function normalizeLimitedString(value: unknown, maxLength: number) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length <= maxLength ? trimmed : '';
 }
 
 function readSettingsFile(settingsPath: string): unknown {

@@ -196,9 +196,28 @@ export type ModelSettings = {
   defaultModelId: string;
 };
 
+export type ComposerSendShortcut = 'enter' | 'modEnter';
+
+export type ShortcutSettings = {
+  newChat: string | null;
+  toggleSearch: string | null;
+  toggleDebug: string | null;
+  composerSend: ComposerSendShortcut;
+};
+
+export type OpenWithTarget = 'auto' | 'cursor' | 'vscode' | 'custom';
+
+export type OpenWithSettings = {
+  target: OpenWithTarget;
+  customCommand: string;
+  customArgs: string;
+};
+
 export type AppSettings = {
   appearance: AppearanceSettings;
   models: ModelSettings;
+  shortcuts: ShortcutSettings;
+  openWith: OpenWithSettings;
 };
 
 export type ThreadSummary = {
