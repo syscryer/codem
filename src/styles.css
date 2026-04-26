@@ -3248,7 +3248,12 @@ svg {
   color: var(--app-text-strong);
 }
 
-.codex-desktop :where(.tool-title, .tool-subtitle, .tool-details summary, .tool-details h4, .tool-details pre, .thinking-message, .thinking-message pre, .debug-item pre, .raw-pre, .assistant-runtime-code, .assistant-runtime-code code, .markdown-body code, .markdown-body .code-block-shell pre code) {
+.codex-desktop .status-branch-trigger[aria-expanded="true"] {
+  background: var(--app-hover);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop :where(.tool-title, .tool-subtitle, .tool-details summary, .tool-details h4, .tool-details pre, .thinking-message, .thinking-message pre, .agent-preview-title, .agent-preview-meta, .agent-preview-section h4, .agent-preview-file-list code, .agent-preview-section pre, .structured-preview-title, .structured-preview-meta, .structured-preview-row, .structured-preview-card > pre, .read-group-title, .read-group-meta, .debug-item pre, .raw-pre, .assistant-runtime-code, .assistant-runtime-code code, .markdown-body code, .markdown-body .code-block-shell pre code) {
   font-size: var(--app-code-font-size, 12px);
 }
 
