@@ -1,6 +1,6 @@
-import { Code2, Columns3, Monitor, Moon, Rows3, Sun, Type } from 'lucide-react';
+import { Code2, Columns3, Monitor, Moon, RotateCcw, Rows3, Sun, Type } from 'lucide-react';
 import type { AppearanceSettings, InterfaceDensity, SidebarWidthMode, ThemeMode } from '../../types';
-import type { AppearanceSettingsUpdate } from '../../hooks/useAppSettings';
+import { defaultAppearanceSettings, type AppearanceSettingsUpdate } from '../../hooks/useAppSettings';
 import { SegmentedControl, SettingsRow, Stepper } from './SettingsControls';
 
 type AppearanceSettingsSectionProps = {
@@ -72,6 +72,19 @@ export function AppearanceSettingsSection({
             values={[12, 13, 14]}
             onChange={(codeFontSize) => update({ codeFontSize })}
           />
+        </SettingsRow>
+        <SettingsRow icon={RotateCcw} title="重置字号" description="恢复 UI 和代码字号默认值">
+          <button
+            type="button"
+            className="settings-action-button"
+            onClick={() => update({
+              uiFontSize: defaultAppearanceSettings.uiFontSize,
+              codeFontSize: defaultAppearanceSettings.codeFontSize,
+            })}
+          >
+            <RotateCcw size={14} />
+            <span>重置</span>
+          </button>
         </SettingsRow>
         <SettingsRow icon={Columns3} title="侧边栏宽度" description="调整项目侧栏宽度">
           <SegmentedControl<SidebarWidthMode>

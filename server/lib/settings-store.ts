@@ -48,7 +48,7 @@ const nodeSettingsStoreFileSystem: SettingsStoreFileSystem = {
 export const defaultAppearanceSettings: AppearanceSettings = {
   themeMode: 'system',
   density: 'comfortable',
-  uiFontSize: 13,
+  uiFontSize: 12,
   codeFontSize: 12,
   sidebarWidth: 'default',
 };
