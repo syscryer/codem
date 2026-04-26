@@ -10,5 +10,6 @@ pnpm-debug.log*
 logs/
 output/
 .playwright-cli/
+.codex-dev*.log
 *.tsbuildinfo
 .idea/
