@@ -43,6 +43,7 @@ type SidebarProjectsProps = {
   onOpenRenameThreadDialog: (thread: ThreadSummary) => void;
   onCopySessionId: (thread: ThreadSummary) => void | Promise<void>;
   onOpenRemoveThreadDialog: (thread: ThreadSummary) => void;
+  onOpenSettings: () => void;
 };
 
 export function SidebarProjects({
@@ -69,6 +70,7 @@ export function SidebarProjects({
   onOpenRenameThreadDialog,
   onCopySessionId,
   onOpenRemoveThreadDialog,
+  onOpenSettings,
 }: SidebarProjectsProps) {
   const [panelMenuOpen, setPanelMenuOpen] = useState(false);
   const [projectMenuProjectId, setProjectMenuProjectId] = useState<string | null>(null);
@@ -302,7 +304,7 @@ export function SidebarProjects({
       </section>
 
       <div className="sidebar-footer">
-        <button type="button"><span><Settings size={14} /></span> 设置</button>
+        <button type="button" onClick={onOpenSettings}><span><Settings size={14} /></span> 设置</button>
       </div>
     </aside>
   );

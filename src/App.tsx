@@ -1,4 +1,4 @@
-import { KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
@@ -14,8 +14,10 @@ import { ConversationPane } from './components/ConversationPane';
 import { DebugDrawer } from './components/DebugDrawer';
 import { Dialogs } from './components/Dialogs';
 import { SidebarProjects } from './components/SidebarProjects';
+import { SettingsView } from './components/settings/SettingsView';
 import { WorkspaceStatus } from './components/WorkspaceStatus';
 import { useClaudeRun } from './hooks/useClaudeRun';
+import { useAppSettings } from './hooks/useAppSettings';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
 import type {
   ApprovalDecision,
@@ -23,6 +25,7 @@ import type {
   ConversationTurn,
   RequestUserInputRequest,
   RuntimeSuggestedAction,
+  SettingsSection,
   ThreadDetail,
   ThreadSummary,
   ToolStep,
@@ -79,6 +82,10 @@ export default function App() {
     appendRawEvent,
     schedulePersistThreadHistory,
   } = workspaceState;
+  const [appView, setAppView] = useState<{ kind: 'workspace' } | { kind: 'settings'; section: SettingsSection }>({
+    kind: 'workspace',
+  });
+  const { appearance, updateAppearance } = useAppSettings(showToast);
   const wasRunningRef = useRef(false);
   const {
     permissionMode,
@@ -206,8 +213,25 @@ export default function App() {
     await handleCreateThread(activeProjectId);
   }
 
+  function openSettings(section: SettingsSection = 'appearance') {
+    setAppView({ kind: 'settings', section });
+  }
+
+  function returnWorkspace() {
+    setAppView({ kind: 'workspace' });
+  }
+
   return (
-    <div className="codex-desktop">
+    <div
+      className="codex-desktop"
+      data-theme-mode={appearance.themeMode}
+      data-density={appearance.density}
+      data-sidebar-width={appearance.sidebarWidth}
+      style={{
+        '--app-ui-font-size': `${appearance.uiFontSize}px`,
+        '--app-code-font-size': `${appearance.codeFontSize}px`,
+      } as CSSProperties}
+    >
       <header className="desktop-menubar">
         <div className="window-nav">
           <button type="button" aria-label="侧边栏"><PanelLeft size={13} /></button>
@@ -228,88 +252,99 @@ export default function App() {
         </div>
       </header>
 
-      <div className="codex-shell">
-        <SidebarProjects
-          activeProjectId={activeProjectId}
-          activeThreadId={activeThreadId}
-          runningThreadIds={runningThreadIds}
-          filteredProjects={filteredProjects}
-          collapsedProjects={collapsedProjects}
-          searchOpen={searchOpen}
-          searchQuery={searchQuery}
-          panelState={panelState}
-          onCreatePrimaryChat={() => void handleCreatePrimaryChat()}
-          onToggleSearch={() => setSearchOpen((value) => !value)}
-          onSearchQueryChange={setSearchQuery}
-          onToggleAllProjects={toggleAllProjects}
-          onPanelStateChange={handlePanelStateChange}
-          onPickProjectDirectory={handlePickProjectDirectory}
-          onCreateThread={handleCreateThread}
-          onOpenProject={handleOpenProject}
-          onOpenRenameProjectDialog={openRenameProjectDialog}
-          onOpenRemoveProjectDialog={openRemoveProjectDialog}
-          onToggleProjectCollapse={toggleProjectCollapse}
-          onSelectThread={handleSelectThread}
-          onOpenRenameThreadDialog={openRenameThreadDialog}
-          onCopySessionId={handleCopySessionId}
-          onOpenRemoveThreadDialog={handleOpenRemoveThreadDialog}
+      {appView.kind === 'settings' ? (
+        <SettingsView
+          activeSection={appView.section}
+          appearance={appearance}
+          onSelectSection={(section) => setAppView({ kind: 'settings', section })}
+          onUpdateAppearance={updateAppearance}
+          onReturnWorkspace={returnWorkspace}
         />
-
-        <main className="chat-shell">
-          <ChatHeader
-            activeProject={activeProject}
-            activeThread={activeThread}
-            onToggleDebug={() => setDebugOpen((value) => !value)}
-            onOpenEditor={() => activeProject ? void handleOpenProjectInEditor(activeProject) : showToast('请先选择项目。', 'info')}
-            onRefreshGitDiff={() => activeProjectId ? void refreshProjectGitSummary(activeProjectId) : undefined}
-            onUseProjectWorkspace={() => setWorkspace(activeProject?.path ?? '')}
+      ) : (
+        <div className="codex-shell">
+          <SidebarProjects
+            activeProjectId={activeProjectId}
+            activeThreadId={activeThreadId}
+            runningThreadIds={runningThreadIds}
+            filteredProjects={filteredProjects}
+            collapsedProjects={collapsedProjects}
+            searchOpen={searchOpen}
+            searchQuery={searchQuery}
+            panelState={panelState}
+            onCreatePrimaryChat={() => void handleCreatePrimaryChat()}
+            onToggleSearch={() => setSearchOpen((value) => !value)}
+            onSearchQueryChange={setSearchQuery}
+            onToggleAllProjects={toggleAllProjects}
+            onPanelStateChange={handlePanelStateChange}
+            onPickProjectDirectory={handlePickProjectDirectory}
+            onCreateThread={handleCreateThread}
+            onOpenProject={handleOpenProject}
+            onOpenRenameProjectDialog={openRenameProjectDialog}
+            onOpenRemoveProjectDialog={openRemoveProjectDialog}
+            onToggleProjectCollapse={toggleProjectCollapse}
+            onSelectThread={handleSelectThread}
+            onOpenRenameThreadDialog={openRenameThreadDialog}
+            onCopySessionId={handleCopySessionId}
+            onOpenRemoveThreadDialog={handleOpenRemoveThreadDialog}
+            onOpenSettings={() => openSettings('appearance')}
           />
 
-          <ConversationPane
-            activeThread={activeThread}
-            clockNowMs={clockNowMs}
-            isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
-            activeTurnId={activeThreadId ? activeTurnIdsByThreadId[activeThreadId] ?? '' : ''}
-            transcriptRef={transcriptRef}
-            bottomRef={conversationBottomRef}
-            onSubmitRequestUserInput={(
-              turn: ConversationTurn,
-              request: RequestUserInputRequest,
-              answers: Record<string, string>,
-            ) => submitRequestUserInput(turn, request, answers)}
-            onSubmitRuntimeRecoveryAction={(turn: ConversationTurn, action: RuntimeSuggestedAction) =>
-              submitRuntimeRecoveryAction(turn, action)}
-            onSubmitApprovalDecision={(
-              turn: ConversationTurn,
-              request: ApprovalRequest,
-              decision: ApprovalDecision,
-            ) => submitApprovalDecision(turn, request, decision)}
-          />
+          <main className="chat-shell">
+            <ChatHeader
+              activeProject={activeProject}
+              activeThread={activeThread}
+              onToggleDebug={() => setDebugOpen((value) => !value)}
+              onOpenEditor={() => activeProject ? void handleOpenProjectInEditor(activeProject) : showToast('请先选择项目。', 'info')}
+              onRefreshGitDiff={() => activeProjectId ? void refreshProjectGitSummary(activeProjectId) : undefined}
+              onUseProjectWorkspace={() => setWorkspace(activeProject?.path ?? '')}
+            />
 
-          <CurrentTaskDock activeThread={activeThread} />
+            <ConversationPane
+              activeThread={activeThread}
+              clockNowMs={clockNowMs}
+              isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
+              activeTurnId={activeThreadId ? activeTurnIdsByThreadId[activeThreadId] ?? '' : ''}
+              transcriptRef={transcriptRef}
+              bottomRef={conversationBottomRef}
+              onSubmitRequestUserInput={(
+                turn: ConversationTurn,
+                request: RequestUserInputRequest,
+                answers: Record<string, string>,
+              ) => submitRequestUserInput(turn, request, answers)}
+              onSubmitRuntimeRecoveryAction={(turn: ConversationTurn, action: RuntimeSuggestedAction) =>
+                submitRuntimeRecoveryAction(turn, action)}
+              onSubmitApprovalDecision={(
+                turn: ConversationTurn,
+                request: ApprovalRequest,
+                decision: ApprovalDecision,
+              ) => submitApprovalDecision(turn, request, decision)}
+            />
 
-          <Composer
-            permissionMode={permissionMode}
-            model={model}
-            models={models}
-            isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
-            queuedPrompts={queuedPrompts}
-            onSubmitPrompt={submitPrompt}
-            onRemoveQueuedPrompt={removeQueuedPrompt}
-            onKeyDown={handleComposerKeyDown}
-            onSelectPermissionMode={handlePermissionModeSelect}
-            onSelectModel={setModel}
-            onStopRun={() => stopRun(activeThreadId ?? undefined)}
-          />
+            <CurrentTaskDock activeThread={activeThread} />
 
-          <WorkspaceStatus
-            activeProject={activeProject}
-            activeThread={activeThread}
-            onLoadBranches={loadProjectGitBranches}
-            onSelectBranch={switchProjectGitBranch}
-          />
-        </main>
-      </div>
+            <Composer
+              permissionMode={permissionMode}
+              model={model}
+              models={models}
+              isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
+              queuedPrompts={queuedPrompts}
+              onSubmitPrompt={submitPrompt}
+              onRemoveQueuedPrompt={removeQueuedPrompt}
+              onKeyDown={handleComposerKeyDown}
+              onSelectPermissionMode={handlePermissionModeSelect}
+              onSelectModel={setModel}
+              onStopRun={() => stopRun(activeThreadId ?? undefined)}
+            />
+
+            <WorkspaceStatus
+              activeProject={activeProject}
+              activeThread={activeThread}
+              onLoadBranches={loadProjectGitBranches}
+              onSelectBranch={switchProjectGitBranch}
+            />
+          </main>
+        </div>
+      )}
 
       <Dialogs
         approvalDialog={
