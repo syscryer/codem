@@ -7,6 +7,12 @@ export type ThemeMode = 'system' | 'light' | 'dark';
 export type InterfaceDensity = 'comfortable' | 'compact';
 export type SidebarWidthMode = 'narrow' | 'default' | 'wide';
 
+export type GeneralSettings = {
+  restoreLastSelectionOnLaunch: boolean;
+  autoRefreshGitStatus: boolean;
+  showDebugButton: boolean;
+};
+
 export type AppearanceSettings = {
   themeMode: ThemeMode;
   density: InterfaceDensity;
@@ -51,6 +57,7 @@ export type OpenWithSettings = {
 };
 
 export type AppSettings = {
+  general: GeneralSettings;
   appearance: AppearanceSettings;
   models: ModelSettings;
   shortcuts: ShortcutSettings;
@@ -79,6 +86,12 @@ export const defaultAppearanceSettings: AppearanceSettings = {
   sidebarWidth: 'default',
 };
 
+export const defaultGeneralSettings: GeneralSettings = {
+  restoreLastSelectionOnLaunch: true,
+  autoRefreshGitStatus: true,
+  showDebugButton: true,
+};
+
 export const defaultModelSettings: ModelSettings = {
   customModels: [],
   defaultModelId: '__default',
@@ -97,6 +110,7 @@ export const defaultOpenWithSettings: OpenWithSettings = {
 };
 
 export const defaultAppSettings: AppSettings = {
+  general: defaultGeneralSettings,
   appearance: defaultAppearanceSettings,
   models: defaultModelSettings,
   shortcuts: defaultShortcutSettings,
@@ -111,6 +125,10 @@ export function getAppSettings(): AppSettings {
 
 export function updateAppearanceSettings(nextAppearance: unknown): AppSettings {
   return getDefaultSettingsStore().updateAppearanceSettings(nextAppearance);
+}
+
+export function updateGeneralSettings(nextGeneral: unknown): AppSettings {
+  return getDefaultSettingsStore().updateGeneralSettings(nextGeneral);
 }
 
 export function updateModelSettings(nextModels: unknown): AppSettings {
@@ -155,6 +173,19 @@ export function createSettingsStore(
     return next;
   }
 
+  function updateStoreGeneralSettings(nextGeneral: unknown): AppSettings {
+    const current = getStoreAppSettings();
+    const next = normalizeAppSettings({
+      ...current,
+      general: {
+        ...current.general,
+        ...(isRecord(nextGeneral) ? nextGeneral : {}),
+      },
+    });
+    writeSettingsFile(directory, settingsPath, next, fileSystem);
+    return next;
+  }
+
   function updateStoreModelSettings(nextModels: unknown): AppSettings {
     const current = getStoreAppSettings();
     const next = normalizeAppSettings({
@@ -193,6 +224,7 @@ export function createSettingsStore(
 
   return {
     getAppSettings: getStoreAppSettings,
+    updateGeneralSettings: updateStoreGeneralSettings,
     updateAppearanceSettings: updateStoreAppearanceSettings,
     updateModelSettings: updateStoreModelSettings,
     updateShortcutSettings: updateStoreShortcutSettings,
@@ -203,10 +235,23 @@ export function createSettingsStore(
 export function normalizeAppSettings(value: unknown): AppSettings {
   const record = isRecord(value) ? value : {};
   return {
+    general: normalizeGeneralSettings(record.general),
     appearance: normalizeAppearanceSettings(record.appearance),
     models: normalizeModelSettings(record.models),
     shortcuts: normalizeShortcutSettings(record.shortcuts),
     openWith: normalizeOpenWithSettings(record.openWith),
+  };
+}
+
+function normalizeGeneralSettings(value: unknown): GeneralSettings {
+  const record = isRecord(value) ? value : {};
+  return {
+    restoreLastSelectionOnLaunch: normalizeBoolean(
+      record.restoreLastSelectionOnLaunch,
+      defaultGeneralSettings.restoreLastSelectionOnLaunch,
+    ),
+    autoRefreshGitStatus: normalizeBoolean(record.autoRefreshGitStatus, defaultGeneralSettings.autoRefreshGitStatus),
+    showDebugButton: normalizeBoolean(record.showDebugButton, defaultGeneralSettings.showDebugButton),
   };
 }
 
@@ -563,6 +608,10 @@ function normalizeEnum<T extends string>(value: unknown, allowed: readonly T[], 
 
 function normalizeNumber<T extends number>(value: unknown, allowed: readonly T[], fallback: T): T {
   return typeof value === 'number' && allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+function normalizeBoolean(value: unknown, fallback: boolean) {
+  return typeof value === 'boolean' ? value : fallback;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

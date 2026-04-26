@@ -24,6 +24,7 @@ import {
   createThread,
   getProjectGitSummary,
   getThreadHistory,
+  getUsageStats,
   getWorkspaceBootstrap,
   listOpenTargets,
   listProjectGitBranches,
@@ -42,6 +43,7 @@ import {
 import {
   getAppSettings,
   updateAppearanceSettings,
+  updateGeneralSettings,
   updateModelSettings,
   updateOpenWithSettings,
   updateShortcutSettings,
@@ -112,6 +114,15 @@ app.put('/api/settings/appearance', (request, response) => {
   }
 });
 
+app.put('/api/settings/general', (request, response) => {
+  try {
+    response.json(updateGeneralSettings(request.body));
+  } catch (error) {
+    console.error('保存基础设置失败', error);
+    response.status(500).json({ error: '保存基础设置失败' });
+  }
+});
+
 app.put('/api/settings/models', (request, response) => {
   try {
     response.json(updateModelSettings(request.body));
@@ -149,6 +160,15 @@ app.get('/api/open-with/targets', (_request, response) => {
   } catch (error) {
     console.error('读取打开工具失败', error);
     response.status(500).json({ error: '读取打开工具失败' });
+  }
+});
+
+app.get('/api/usage', (_request, response) => {
+  try {
+    response.json(getUsageStats());
+  } catch (error) {
+    console.error('读取使用情况失败', error);
+    response.status(500).json({ error: '读取使用情况失败' });
   }
 });
 

@@ -177,6 +177,12 @@ export type ThemeMode = 'system' | 'light' | 'dark';
 export type InterfaceDensity = 'comfortable' | 'compact';
 export type SidebarWidthMode = 'narrow' | 'default' | 'wide';
 
+export type GeneralSettings = {
+  restoreLastSelectionOnLaunch: boolean;
+  autoRefreshGitStatus: boolean;
+  showDebugButton: boolean;
+};
+
 export type AppearanceSettings = {
   themeMode: ThemeMode;
   density: InterfaceDensity;
@@ -226,10 +232,45 @@ export type OpenWithTargetsResponse = {
 };
 
 export type AppSettings = {
+  general: GeneralSettings;
   appearance: AppearanceSettings;
   models: ModelSettings;
   shortcuts: ShortcutSettings;
   openWith: OpenWithSettings;
+};
+
+export type UsageTotals = {
+  projects: number;
+  threads: number;
+  messages: number;
+  toolCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  totalTokens: number;
+  durationMs: number;
+  totalCostUsd: number;
+};
+
+export type UsageProviderRow = UsageTotals & {
+  provider: string;
+  model: string;
+  lastUsedAt: string | null;
+};
+
+export type UsageProjectRow = UsageTotals & {
+  projectId: string;
+  projectName: string;
+  projectPath: string;
+  lastUsedAt: string | null;
+};
+
+export type UsageStatsResponse = {
+  generatedAt: string;
+  totals: UsageTotals;
+  byProvider: UsageProviderRow[];
+  byProject: UsageProjectRow[];
 };
 
 export type ThreadSummary = {

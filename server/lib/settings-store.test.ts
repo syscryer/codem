@@ -57,6 +57,11 @@ function assertDefaultStoreWritesToPath(
 
 test('normalizeAppSettings preserves valid appearance values', () => {
   const settings = normalizeAppSettings({
+    general: {
+      restoreLastSelectionOnLaunch: false,
+      autoRefreshGitStatus: false,
+      showDebugButton: false,
+    },
     appearance: {
       themeMode: 'dark',
       density: 'compact',
@@ -67,6 +72,11 @@ test('normalizeAppSettings preserves valid appearance values', () => {
   });
 
   assert.deepEqual(settings, {
+    general: {
+      restoreLastSelectionOnLaunch: false,
+      autoRefreshGitStatus: false,
+      showDebugButton: false,
+    },
     appearance: {
       themeMode: 'dark',
       density: 'compact',
@@ -194,6 +204,7 @@ test('updateShortcutSettings and updateOpenWithSettings write formatted JSON and
     });
 
     const expected = {
+      general: defaultAppSettings.general,
       appearance: defaultAppSettings.appearance,
       models: defaultAppSettings.models,
       shortcuts: {
@@ -214,6 +225,35 @@ test('updateShortcutSettings and updateOpenWithSettings write formatted JSON and
           },
         ],
       },
+    };
+    const serialized = readFileSync(path.join(directory, 'settings.json'), 'utf8');
+
+    assert.deepEqual(settings, expected);
+    assert.equal(serialized, `${JSON.stringify(expected, null, 2)}\n`);
+    assert.deepEqual(store.getAppSettings(), expected);
+  });
+});
+
+test('updateGeneralSettings writes formatted JSON and can read it back', () => {
+  withTemporaryDirectory((directory) => {
+    const store = createSettingsStore(directory);
+
+    const settings = store.updateGeneralSettings({
+      restoreLastSelectionOnLaunch: false,
+      autoRefreshGitStatus: false,
+      showDebugButton: false,
+    });
+
+    const expected = {
+      general: {
+        restoreLastSelectionOnLaunch: false,
+        autoRefreshGitStatus: false,
+        showDebugButton: false,
+      },
+      appearance: defaultAppSettings.appearance,
+      models: defaultAppSettings.models,
+      shortcuts: defaultAppSettings.shortcuts,
+      openWith: defaultAppSettings.openWith,
     };
     const serialized = readFileSync(path.join(directory, 'settings.json'), 'utf8');
 
@@ -295,6 +335,7 @@ test('updateModelSettings writes formatted JSON and can read it back', () => {
     });
 
     const expected = {
+      general: defaultAppSettings.general,
       appearance: defaultAppSettings.appearance,
       models: {
         customModels: [{ id: 'custom/model' }],
@@ -462,6 +503,7 @@ test('getAppSettings fills defaults for missing appearance fields', () => {
     const store = createSettingsStore(directory);
 
     assert.deepEqual(store.getAppSettings(), {
+      general: defaultAppSettings.general,
       appearance: {
         ...defaultAppSettings.appearance,
         themeMode: 'dark',
@@ -487,6 +529,7 @@ test('updateAppearanceSettings writes formatted JSON and can read it back', () =
     });
 
     const expected = {
+      general: defaultAppSettings.general,
       appearance: {
         themeMode: 'light',
         density: 'compact',

@@ -10,6 +10,7 @@ import {
   findOpenTarget,
 } from './open-with.js';
 import { getAppSettings } from './settings-store.js';
+import { collectUsageStats } from './usage-stats.js';
 
 type OrganizeBy = 'project' | 'timeline' | 'chat-first';
 type SortBy = 'created' | 'updated';
@@ -288,6 +289,7 @@ export function getWorkspaceBootstrap(): WorkspaceBootstrap {
   importClaudeSessions();
 
   const panelState = readPanelState();
+  const settings = getAppSettings();
   const projectRows = db
     .prepare(`
       SELECT id, path, name, custom_name, created_at, updated_at
@@ -338,8 +340,8 @@ export function getWorkspaceBootstrap(): WorkspaceBootstrap {
     } satisfies ProjectSummary;
   });
 
-  let activeProjectId = readStateValue('activeProjectId');
-  let activeThreadId = readStateValue('activeThreadId');
+  let activeProjectId = settings.general.restoreLastSelectionOnLaunch ? readStateValue('activeProjectId') : null;
+  let activeThreadId = settings.general.restoreLastSelectionOnLaunch ? readStateValue('activeThreadId') : null;
 
   if (!activeProjectId || !projects.some((project) => project.id === activeProjectId)) {
     activeProjectId = projects[0]?.id ?? null;
@@ -363,6 +365,10 @@ export function getWorkspaceBootstrap(): WorkspaceBootstrap {
     activeThreadId,
     panelState,
   };
+}
+
+export function getUsageStats() {
+  return collectUsageStats(db);
 }
 
 export function createProject(projectPath: string) {

@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import type {
   AppearanceSettings,
   ClaudeModelInfo,
+  GeneralSettings,
   ModelSettings,
   OpenAppTarget,
   OpenWithSettings,
@@ -10,11 +11,13 @@ import type {
 } from '../../types';
 import type {
   AppearanceSettingsUpdate,
+  GeneralSettingsUpdate,
   ModelSettingsUpdate,
   OpenWithSettingsUpdate,
   ShortcutSettingsUpdate,
 } from '../../hooks/useAppSettings';
 import { AppearanceSettingsSection } from './AppearanceSettings';
+import { BasicSettingsSection } from './BasicSettings';
 import { GlobalPromptSettingsSection } from './GlobalPromptSettings';
 import { McpSettingsSection } from './McpSettings';
 import { ModelSettingsSection } from './ModelSettings';
@@ -23,9 +26,11 @@ import { SettingsEmptySection } from './SettingsEmptySection';
 import { SettingsSidebar } from './SettingsSidebar';
 import { SkillsSettingsSection } from './SkillsSettings';
 import { ShortcutsSettingsSection } from './ShortcutsSettings';
+import { UsageSettingsSection } from './UsageSettings';
 
 type SettingsViewProps = {
   activeSection: SettingsSection;
+  general: GeneralSettings;
   appearance: AppearanceSettings;
   models: ModelSettings;
   shortcuts: ShortcutSettings;
@@ -33,6 +38,7 @@ type SettingsViewProps = {
   openTargets: OpenAppTarget[];
   claudeModels: ClaudeModelInfo;
   onSelectSection: (section: SettingsSection) => void;
+  onUpdateGeneral: (update: GeneralSettingsUpdate) => void | Promise<void>;
   onUpdateAppearance: (update: AppearanceSettingsUpdate) => void;
   onUpdateModels: (update: ModelSettingsUpdate) => void | Promise<void>;
   onUpdateShortcuts: (update: ShortcutSettingsUpdate) => void | Promise<void>;
@@ -55,6 +61,7 @@ const sectionTitles: Record<SettingsSection, string> = {
 
 export function SettingsView({
   activeSection,
+  general,
   appearance,
   models,
   shortcuts,
@@ -62,6 +69,7 @@ export function SettingsView({
   openTargets,
   claudeModels,
   onSelectSection,
+  onUpdateGeneral,
   onUpdateAppearance,
   onUpdateModels,
   onUpdateShortcuts,
@@ -69,6 +77,15 @@ export function SettingsView({
   onReturnWorkspace,
 }: SettingsViewProps) {
   const content = useMemo(() => {
+    if (activeSection === 'basic') {
+      return (
+        <BasicSettingsSection
+          general={general}
+          onUpdateGeneral={onUpdateGeneral}
+        />
+      );
+    }
+
     if (activeSection === 'appearance') {
       return (
         <AppearanceSettingsSection
@@ -111,6 +128,10 @@ export function SettingsView({
       return <GlobalPromptSettingsSection />;
     }
 
+    if (activeSection === 'usage') {
+      return <UsageSettingsSection />;
+    }
+
     if (activeSection === 'mcp') {
       return <McpSettingsSection />;
     }
@@ -124,10 +145,12 @@ export function SettingsView({
     activeSection,
     appearance,
     claudeModels,
+    general,
     models,
     openWith,
     openTargets,
     shortcuts,
+    onUpdateGeneral,
     onUpdateAppearance,
     onUpdateModels,
     onUpdateOpenWith,

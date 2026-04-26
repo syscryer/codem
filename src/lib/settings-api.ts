@@ -3,12 +3,20 @@ import type {
   AppSettings,
   AppearanceSettings,
   CustomModel,
+  GeneralSettings,
   ModelSettings,
   OpenAppTarget,
   OpenWithSettings,
   OpenWithTargetsResponse,
   ShortcutSettings,
+  UsageStatsResponse,
 } from '../types';
+
+export const defaultGeneralSettings: GeneralSettings = {
+  restoreLastSelectionOnLaunch: true,
+  autoRefreshGitStatus: true,
+  showDebugButton: true,
+};
 
 export const defaultAppearanceSettings: AppearanceSettings = {
   themeMode: 'system',
@@ -36,6 +44,7 @@ export const defaultOpenWithSettings: OpenWithSettings = {
 };
 
 export const defaultAppSettings: AppSettings = {
+  general: defaultGeneralSettings,
   appearance: defaultAppearanceSettings,
   models: defaultModelSettings,
   shortcuts: defaultShortcutSettings,
@@ -61,6 +70,19 @@ export async function saveAppearanceSettings(appearance: AppearanceSettings): Pr
     return await readSettingsResponse(response, '保存外观设置失败');
   } catch {
     throw new Error('保存外观设置失败');
+  }
+}
+
+export async function saveGeneralSettings(general: GeneralSettings): Promise<AppSettings> {
+  try {
+    const response = await fetch('/api/settings/general', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(normalizeGeneralSettings(general)),
+    });
+    return await readSettingsResponse(response, '保存基础设置失败');
+  } catch {
+    throw new Error('保存基础设置失败');
   }
 }
 
@@ -115,6 +137,18 @@ export async function fetchOpenWithTargets(): Promise<OpenWithTargetsResponse> {
   }
 }
 
+export async function fetchUsageStats(): Promise<UsageStatsResponse> {
+  try {
+    const response = await fetch('/api/usage');
+    if (!response.ok) {
+      throw new Error('读取使用情况失败');
+    }
+    return normalizeUsageStats(await response.json());
+  } catch {
+    throw new Error('读取使用情况失败');
+  }
+}
+
 async function readSettingsResponse(response: Response, failureMessage: string): Promise<AppSettings> {
   if (!response.ok) {
     throw new Error(failureMessage);
@@ -130,10 +164,23 @@ async function readSettingsResponse(response: Response, failureMessage: string):
 function normalizeAppSettings(settings: unknown): AppSettings {
   const record = isRecord(settings) ? settings : {};
   return {
+    general: normalizeGeneralSettings(record.general),
     appearance: normalizeAppearanceSettings(record.appearance),
     models: normalizeModelSettings(record.models),
     shortcuts: normalizeShortcutSettings(record.shortcuts),
     openWith: normalizeOpenWithSettings(record.openWith),
+  };
+}
+
+export function normalizeGeneralSettings(general: unknown): GeneralSettings {
+  const record = isRecord(general) ? general : {};
+  return {
+    restoreLastSelectionOnLaunch: normalizeBoolean(
+      record.restoreLastSelectionOnLaunch,
+      defaultGeneralSettings.restoreLastSelectionOnLaunch,
+    ),
+    autoRefreshGitStatus: normalizeBoolean(record.autoRefreshGitStatus, defaultGeneralSettings.autoRefreshGitStatus),
+    showDebugButton: normalizeBoolean(record.showDebugButton, defaultGeneralSettings.showDebugButton),
   };
 }
 
@@ -146,6 +193,72 @@ function normalizeAppearanceSettings(appearance: unknown): AppearanceSettings {
     uiFontSize: normalizeOneOf(record.uiFontSize, [12, 13, 14, 15], defaultAppearanceSettings.uiFontSize),
     codeFontSize: normalizeOneOf(record.codeFontSize, [12, 13, 14], defaultAppearanceSettings.codeFontSize),
     sidebarWidth: normalizeOneOf(record.sidebarWidth, ['narrow', 'default', 'wide'], defaultAppearanceSettings.sidebarWidth),
+  };
+}
+
+function normalizeUsageStats(value: unknown): UsageStatsResponse {
+  const record = isRecord(value) ? value : {};
+  return {
+    generatedAt: normalizeOptionalString(record.generatedAt) || new Date(0).toISOString(),
+    totals: normalizeUsageTotals(record.totals),
+    byProvider: normalizeUsageProviderRows(record.byProvider),
+    byProject: normalizeUsageProjectRows(record.byProject),
+  };
+}
+
+function normalizeUsageProviderRows(value: unknown): UsageStatsResponse['byProvider'] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!isRecord(item)) {
+      return [];
+    }
+    const totals = normalizeUsageTotals(item);
+    return [{
+      ...totals,
+      provider: normalizeOptionalString(item.provider) || 'unknown',
+      model: normalizeOptionalString(item.model) || '未配置',
+      lastUsedAt: normalizeNullableString(item.lastUsedAt),
+    }];
+  });
+}
+
+function normalizeUsageProjectRows(value: unknown): UsageStatsResponse['byProject'] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!isRecord(item)) {
+      return [];
+    }
+    const totals = normalizeUsageTotals(item);
+    return [{
+      ...totals,
+      projectId: normalizeOptionalString(item.projectId),
+      projectName: normalizeOptionalString(item.projectName) || '未命名项目',
+      projectPath: normalizeOptionalString(item.projectPath),
+      lastUsedAt: normalizeNullableString(item.lastUsedAt),
+    }];
+  });
+}
+
+function normalizeUsageTotals(value: unknown) {
+  const record = isRecord(value) ? value : {};
+  return {
+    projects: normalizeNonNegativeNumber(record.projects),
+    threads: normalizeNonNegativeNumber(record.threads),
+    messages: normalizeNonNegativeNumber(record.messages),
+    toolCalls: normalizeNonNegativeNumber(record.toolCalls),
+    inputTokens: normalizeNonNegativeNumber(record.inputTokens),
+    outputTokens: normalizeNonNegativeNumber(record.outputTokens),
+    cacheCreationInputTokens: normalizeNonNegativeNumber(record.cacheCreationInputTokens),
+    cacheReadInputTokens: normalizeNonNegativeNumber(record.cacheReadInputTokens),
+    totalTokens: normalizeNonNegativeNumber(record.totalTokens),
+    durationMs: normalizeNonNegativeNumber(record.durationMs),
+    totalCostUsd: normalizeNonNegativeNumber(record.totalCostUsd),
   };
 }
 
@@ -327,6 +440,11 @@ function normalizeOptionalString(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function normalizeNullableString(value: unknown) {
+  const normalized = normalizeOptionalString(value);
+  return normalized || null;
+}
+
 function normalizeShortcutValueWithFallback(value: unknown, fallback: string | null): string | null {
   if (value === null) {
     return null;
@@ -400,6 +518,14 @@ function parseOpenWithArgs(value: string): string[] {
 
 function normalizeOneOf<T extends string | number>(value: unknown, allowed: readonly T[], fallback: T): T {
   return allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+function normalizeBoolean(value: unknown, fallback: boolean) {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function normalizeNonNegativeNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

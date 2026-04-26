@@ -4,14 +4,30 @@ import type { AppSettings, AppearanceSettings, ModelSettings } from '../src/type
 import {
   createLatestAppearanceSaveQueue,
   defaultAppearanceSettings,
+  defaultGeneralSettings,
   defaultModelSettings,
   defaultOpenWithSettings,
   defaultShortcutSettings,
   resolveAppearanceUpdate,
+  resolveGeneralSettingsUpdate,
   resolveModelSettingsUpdate,
   resolveOpenWithSettingsUpdate,
   resolveShortcutSettingsUpdate,
 } from '../src/hooks/useAppSettings';
+
+test('resolveGeneralSettingsUpdate normalizes basic settings toggles', () => {
+  const next = resolveGeneralSettingsUpdate(defaultGeneralSettings, {
+    restoreLastSelectionOnLaunch: false,
+    autoRefreshGitStatus: false,
+    showDebugButton: false,
+  });
+
+  assert.deepEqual(next, {
+    restoreLastSelectionOnLaunch: false,
+    autoRefreshGitStatus: false,
+    showDebugButton: false,
+  });
+});
 
 test('resolveAppearanceUpdate merges patches against the latest appearance', () => {
   const first = resolveAppearanceUpdate(defaultAppearanceSettings, { themeMode: 'dark' });

@@ -2988,6 +2988,13 @@ svg {
   text-align: center;
 }
 
+.settings-section-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  text-align: left;
+}
+
 .settings-section-head h1 {
   margin: 0;
   color: #202020;
@@ -3263,6 +3270,53 @@ svg {
   background: #f6f6f6;
 }
 
+.settings-toggle {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.settings-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.settings-toggle span {
+  width: 42px;
+  height: 24px;
+  display: inline-block;
+  border: 1px solid #d8d8d8;
+  border-radius: 999px;
+  background: #eeeeee;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.settings-toggle span::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  transition: transform 0.15s ease;
+}
+
+.settings-toggle input:checked + span {
+  border-color: #f0a000;
+  background: #f6b42c;
+}
+
+.settings-toggle input:checked + span::after {
+  transform: translateX(18px);
+}
+
 .settings-list {
   display: grid;
   gap: 6px;
@@ -3418,6 +3472,137 @@ svg {
 
 .settings-editor-status.error {
   color: #b42318;
+}
+
+.settings-usage-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-usage-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-usage-card {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid #ededed;
+  border-radius: 8px;
+  background: #fbfbfb;
+}
+
+.settings-usage-card svg {
+  color: #737373;
+}
+
+.settings-usage-card span,
+.settings-usage-card small,
+.settings-usage-row small,
+.settings-usage-row-meta {
+  color: #858585;
+  font-size: 12px;
+}
+
+.settings-usage-card strong {
+  overflow: hidden;
+  color: #202020;
+  font-size: 18px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-usage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.settings-usage-group {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.settings-usage-group h2 {
+  margin: 0;
+  color: #303030;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.settings-usage-list {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-usage-row {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid #ededed;
+  border-radius: 8px;
+  background: #fbfbfb;
+}
+
+.settings-usage-row-head {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-usage-row-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.settings-usage-row strong,
+.settings-usage-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-usage-row strong {
+  color: #282828;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.settings-usage-row-head > span {
+  flex: 0 0 auto;
+  color: #303030;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-usage-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #eeeeee;
+}
+
+.settings-usage-track span {
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: #f0a000;
+}
+
+.settings-usage-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .settings-segmented,

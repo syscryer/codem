@@ -2,15 +2,18 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   defaultAppSettings,
   defaultAppearanceSettings,
+  defaultGeneralSettings,
   defaultModelSettings,
   defaultOpenWithSettings,
   defaultShortcutSettings,
   fetchAppSettings,
   fetchOpenWithTargets,
   normalizeOpenWithSettings,
+  normalizeGeneralSettings,
   normalizeModelSettings,
   normalizeShortcutSettings,
   saveAppearanceSettings,
+  saveGeneralSettings,
   saveModelSettings,
   saveOpenWithSettings,
   saveShortcutSettings,
@@ -18,6 +21,7 @@ import {
 import type {
   AppSettings,
   AppearanceSettings,
+  GeneralSettings,
   ModelSettings,
   OpenAppTarget,
   OpenWithSettings,
@@ -30,6 +34,9 @@ type ShowToast = (message: string, tone?: ToastTone) => void;
 export type AppearanceSettingsUpdate =
   | Partial<AppearanceSettings>
   | ((current: AppearanceSettings) => Partial<AppearanceSettings> | AppearanceSettings);
+export type GeneralSettingsUpdate =
+  | Partial<GeneralSettings>
+  | ((current: GeneralSettings) => Partial<GeneralSettings> | GeneralSettings);
 export type ModelSettingsUpdate =
   | Partial<ModelSettings>
   | ((current: ModelSettings) => Partial<ModelSettings> | ModelSettings);
@@ -51,7 +58,7 @@ type AppearanceSaveQueue = {
   dispose: () => void;
 };
 
-export { defaultAppSettings, defaultAppearanceSettings };
+export { defaultAppSettings, defaultAppearanceSettings, defaultGeneralSettings };
 export { defaultModelSettings, defaultOpenWithSettings, defaultShortcutSettings };
 
 export function useAppSettings(showToast?: ShowToast) {
@@ -159,6 +166,29 @@ export function useAppSettings(showToast?: ShowToast) {
     [applySettings, getSaveQueue],
   );
 
+  const updateGeneral = useCallback(
+    async (update: GeneralSettingsUpdate) => {
+      ++requestVersionRef.current;
+      const currentSettings = latestSettingsRef.current;
+      const nextGeneral = resolveGeneralSettingsUpdate(currentSettings.general, update);
+      const optimisticSettings = mergeAppSettings({
+        ...currentSettings,
+        general: nextGeneral,
+      });
+
+      applySettings(optimisticSettings);
+      setLoading(false);
+
+      try {
+        const savedSettings = await saveGeneralSettings(optimisticSettings.general);
+        applySettings(savedSettings);
+      } catch (error) {
+        toastRef.current?.(error instanceof Error ? error.message : '保存基础设置失败', 'error');
+      }
+    },
+    [applySettings],
+  );
+
   const updateModels = useCallback(
     async (update: ModelSettingsUpdate) => {
       ++requestVersionRef.current;
@@ -231,6 +261,7 @@ export function useAppSettings(showToast?: ShowToast) {
 
   return {
     settings,
+    general: settings.general,
     appearance: settings.appearance,
     models: settings.models,
     shortcuts: settings.shortcuts,
@@ -238,11 +269,23 @@ export function useAppSettings(showToast?: ShowToast) {
     openTargets,
     loading,
     updateAppearance,
+    updateGeneral,
     updateModels,
     updateShortcuts,
     updateOpenWith,
     refreshOpenTargets,
   };
+}
+
+export function resolveGeneralSettingsUpdate(
+  current: GeneralSettings,
+  update: GeneralSettingsUpdate,
+): GeneralSettings {
+  const patch = typeof update === 'function' ? update(current) : update;
+  return normalizeGeneralSettings({
+    ...current,
+    ...patch,
+  });
 }
 
 export function resolveAppearanceUpdate(
@@ -333,6 +376,7 @@ export function createLatestAppearanceSaveQueue(options: AppearanceSaveQueueOpti
 
 function mergeAppSettings(settings: Partial<AppSettings> | null | undefined): AppSettings {
   return {
+    general: normalizeGeneralSettings(settings?.general),
     appearance: mergeAppearanceSettings(settings?.appearance),
     models: normalizeModelSettings(settings?.models),
     shortcuts: normalizeShortcutSettings(settings?.shortcuts),

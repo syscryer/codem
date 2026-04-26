@@ -9,6 +9,7 @@ type ChatHeaderProps = {
   activeThread: ThreadDetail | null;
   openTargets: OpenAppTarget[];
   selectedOpenTargetId: string;
+  showDebugButton: boolean;
   onToggleDebug: () => void;
   onOpenTarget: (targetId?: string) => void;
   onSelectOpenTarget: (targetId: string) => void;
@@ -21,6 +22,7 @@ export function ChatHeader({
   activeThread,
   openTargets,
   selectedOpenTargetId,
+  showDebugButton,
   onToggleDebug,
   onOpenTarget,
   onSelectOpenTarget,
@@ -58,9 +60,11 @@ export function ChatHeader({
           提交
           <span className="header-chevron" aria-hidden="true" />
         </button>
-        <button type="button" className="icon-button" onClick={onToggleDebug}>
-          <TerminalSquare size={14} />
-        </button>
+        {showDebugButton ? (
+          <button type="button" className="icon-button" onClick={onToggleDebug}>
+            <TerminalSquare size={14} />
+          </button>
+        ) : null}
         <button
           type="button"
           className="icon-button"

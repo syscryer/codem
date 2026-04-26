@@ -87,12 +87,14 @@ export default function App() {
     kind: 'workspace',
   });
   const {
+    general,
     appearance,
     models: appModelSettings,
     shortcuts,
     openWith,
     openTargets,
     updateAppearance,
+    updateGeneral,
     updateModels,
     updateShortcuts,
     updateOpenWith,
@@ -136,21 +138,21 @@ export default function App() {
   });
 
   useEffect(() => {
-    if (!activeProjectId) {
+    if (!general.autoRefreshGitStatus || !activeProjectId) {
       return;
     }
 
     void refreshProjectGitSummary(activeProjectId);
-  }, [activeProjectId]);
+  }, [activeProjectId, general.autoRefreshGitStatus]);
 
   useEffect(() => {
     const wasRunning = wasRunningRef.current;
     wasRunningRef.current = isRunning;
 
-    if (activeProjectId && wasRunning && !isRunning) {
+    if (general.autoRefreshGitStatus && activeProjectId && wasRunning && !isRunning) {
       void refreshProjectGitSummary(activeProjectId);
     }
-  }, [activeProjectId, isRunning]);
+  }, [activeProjectId, general.autoRefreshGitStatus, isRunning]);
 
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
@@ -292,6 +294,7 @@ export default function App() {
       {appView.kind === 'settings' ? (
         <SettingsView
           activeSection={appView.section}
+          general={general}
           appearance={appearance}
           models={appModelSettings}
           shortcuts={shortcuts}
@@ -299,6 +302,7 @@ export default function App() {
           openTargets={openTargets}
           claudeModels={claudeModels}
           onSelectSection={(section) => setAppView({ kind: 'settings', section })}
+          onUpdateGeneral={updateGeneral}
           onUpdateAppearance={updateAppearance}
           onUpdateModels={updateModels}
           onUpdateShortcuts={updateShortcuts}
@@ -340,6 +344,7 @@ export default function App() {
               activeThread={activeThread}
               openTargets={openTargets}
               selectedOpenTargetId={openWith.selectedTargetId}
+              showDebugButton={general.showDebugButton}
               onToggleDebug={() => setDebugOpen((value) => !value)}
               onOpenTarget={(targetId) => activeProject ? void handleOpenProjectInEditor(activeProject, targetId) : showToast('请先选择项目。', 'info')}
               onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
