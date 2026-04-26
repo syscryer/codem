@@ -163,6 +163,7 @@ function ConversationTurnViewComponent({
               key={request.requestId ?? `${turn.id}-approval-${index}`}
               request={request}
               turn={turn}
+              interactive={isLatest && request.historical !== true}
               onSubmitApprovalDecision={onSubmitApprovalDecision}
             />
           ))}
@@ -810,10 +811,12 @@ function RequestUserInputQuestionBlock({
 function ApprovalRequestCard({
   request,
   turn,
+  interactive,
   onSubmitApprovalDecision,
 }: {
   request: ApprovalRequest;
   turn: ConversationTurn;
+  interactive: boolean;
   onSubmitApprovalDecision: (
     turn: ConversationTurn,
     request: ApprovalRequest,
@@ -842,7 +845,9 @@ function ApprovalRequestCard({
   return (
     <section className={`assistant-runtime-card approval-request-card${planApproval ? ' plan-approval-card' : ''}`}>
       <header className="assistant-runtime-card-head">
-        <span className="assistant-runtime-badge caution">{planApproval ? '计划确认' : '等待批准'}</span>
+        <span className="assistant-runtime-badge caution">
+          {interactive ? (planApproval ? '计划确认' : '等待批准') : '历史审批'}
+        </span>
         <div className="assistant-runtime-card-heading">
           <strong>{request.title}</strong>
           {request.description && !planApproval ? <p>{request.description}</p> : null}
@@ -859,30 +864,34 @@ function ApprovalRequestCard({
 
       <div className="assistant-runtime-card-foot">
         <span className="assistant-runtime-footnote">
-          {planApproval
+          {!interactive
+            ? '这是历史审批记录，不会自动弹窗或继续旧运行。'
+            : planApproval
             ? '批准后继续执行计划；拒绝后会让 Claude 重新调整。'
             : request.danger === 'high'
             ? '该操作风险较高，批准前请确认目标范围。'
             : '该操作需要确认后才能继续。'}
         </span>
-        <div className="assistant-runtime-action-list">
-          <button
-            type="button"
-            className="assistant-runtime-submit-button danger"
-            disabled={Boolean(submittingDecision)}
-            onClick={() => void handleDecision('reject')}
-          >
-            {submittingDecision === 'reject' ? '处理中...' : '拒绝'}
-          </button>
-          <button
-            type="button"
-            className="assistant-runtime-submit-button"
-            disabled={Boolean(submittingDecision)}
-            onClick={() => void handleDecision('approve')}
-          >
-            {submittingDecision === 'approve' ? '处理中...' : '批准并继续'}
-          </button>
-        </div>
+        {interactive ? (
+          <div className="assistant-runtime-action-list">
+            <button
+              type="button"
+              className="assistant-runtime-submit-button danger"
+              disabled={Boolean(submittingDecision)}
+              onClick={() => void handleDecision('reject')}
+            >
+              {submittingDecision === 'reject' ? '处理中...' : '拒绝'}
+            </button>
+            <button
+              type="button"
+              className="assistant-runtime-submit-button"
+              disabled={Boolean(submittingDecision)}
+              onClick={() => void handleDecision('approve')}
+            >
+              {submittingDecision === 'approve' ? '处理中...' : '批准并继续'}
+            </button>
+          </div>
+        ) : null}
       </div>
       {submitError ? <div className="assistant-runtime-error">{submitError}</div> : null}
     </section>

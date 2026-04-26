@@ -226,6 +226,7 @@ type RunState = {
   emittedRequestUserInputKeys: Set<string>;
   emittedApprovalRequestKeys: Set<string>;
   emittedRecoveryHintKeys: Set<string>;
+  sidechainTextDeltaParents: Set<string>;
   pausedForUserInput: boolean;
 };
 
@@ -492,6 +493,7 @@ export function getActiveRunForThread(threadId: string) {
 export async function* reconnectClaudeRunEvents(
   runId: string,
   afterEventIndex = 0,
+  options?: { signal?: AbortSignal },
 ): AsyncGenerator<StreamEvent> {
   const activeRun = activeRuns.get(runId);
   if (!activeRun) {
@@ -501,19 +503,17 @@ export async function* reconnectClaudeRunEvents(
   const { state } = activeRun;
   let index = Math.max(0, Math.floor(afterEventIndex));
 
-  while (true) {
+  while (!options?.signal?.aborted) {
     while (index < state.eventLog.length) {
       yield state.eventLog[index];
       index += 1;
     }
 
-    if (state.finished) {
+    if (state.finished || options?.signal?.aborted) {
       return;
     }
 
-    await new Promise<void>((resolve) => {
-      state.eventWaiters.add(resolve);
-    });
+    await waitForRunEvent(state, options?.signal);
   }
 }
 
@@ -616,6 +616,7 @@ function createRunState(runId: string, input: StreamInput, sessionId?: string): 
     emittedRequestUserInputKeys: new Set(),
     emittedApprovalRequestKeys: new Set(),
     emittedRecoveryHintKeys: new Set(),
+    sidechainTextDeltaParents: new Set(),
     pausedForUserInput: false,
   };
 }
@@ -652,6 +653,34 @@ function pushRunEvent(state: RunState, event: StreamEvent) {
     wake();
   }
   state.eventWaiters.clear();
+}
+
+function waitForRunEvent(state: RunState, signal?: AbortSignal) {
+  if (signal?.aborted) {
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const cleanup = () => {
+      state.eventWaiters.delete(wake);
+      signal?.removeEventListener('abort', abort);
+    };
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    const wake = () => finish();
+    const abort = () => finish();
+
+    state.eventWaiters.add(wake);
+    signal?.addEventListener('abort', abort, { once: true });
+  });
 }
 
 function finishRuntimeRun(runtime: ClaudeRuntime, state: RunState) {
@@ -1166,6 +1195,9 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
     }
 
     if (isSidechain) {
+      if (parentToolUseId) {
+        state.sidechainTextDeltaParents.add(parentToolUseId);
+      }
       enqueue({
         type: 'subagent-delta',
         runId,
@@ -1334,12 +1366,14 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
 
     if (assistantText) {
       if (isSidechain) {
-        enqueue({
-          type: 'subagent-delta',
-          runId,
-          parentToolUseId,
-          text: assistantText,
-        });
+        if (parentToolUseId && !state.sidechainTextDeltaParents.has(parentToolUseId)) {
+          enqueue({
+            type: 'subagent-delta',
+            runId,
+            parentToolUseId,
+            text: assistantText,
+          });
+        }
       } else {
         state.finalResult = assistantText;
       }

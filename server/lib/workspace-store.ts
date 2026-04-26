@@ -35,6 +35,15 @@ type RequestUserInputRequest = {
   submittedAtMs?: number;
 };
 
+type ApprovalRequest = {
+  requestId?: string;
+  title: string;
+  description?: string;
+  command?: string[];
+  danger?: 'low' | 'medium' | 'high';
+  historical?: boolean;
+};
+
 type ThreadTool = {
   id: string;
   name: string;
@@ -96,6 +105,7 @@ export type ThreadTurn = {
   >;
   tools: ThreadTool[];
   pendingUserInputRequests?: RequestUserInputRequest[];
+  pendingApprovalRequests?: ApprovalRequest[];
 };
 
 export type ThreadSummary = {
@@ -206,6 +216,7 @@ type StoredMessageRow = {
   cache_creation_input_tokens: number | null;
   cache_read_input_tokens: number | null;
   total_cost_usd: number | null;
+  pending_approval_requests_json: string | null;
   created_at: string;
 };
 
@@ -649,9 +660,9 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
     INSERT INTO messages (
       id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics, session_id,
       phase, started_at_ms, duration_ms, input_tokens, output_tokens, cache_creation_input_tokens,
-      cache_read_input_tokens, total_cost_usd, created_at
+      cache_read_input_tokens, total_cost_usd, pending_approval_requests_json, created_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertToolCall = db.prepare(`
     INSERT INTO tool_calls (
@@ -688,6 +699,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
         turn.cacheCreationInputTokens ?? null,
         turn.cacheReadInputTokens ?? null,
         turn.totalCostUsd ?? null,
+        serializePendingApprovalRequests(turn.pendingApprovalRequests),
         baseCreatedAt,
       );
 
@@ -721,6 +733,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
             turn.cacheCreationInputTokens ?? null,
             turn.cacheReadInputTokens ?? null,
             turn.totalCostUsd ?? null,
+            serializePendingApprovalRequests(turn.pendingApprovalRequests),
             baseCreatedAt,
           );
           return;
@@ -868,6 +881,7 @@ function initializeDatabase() {
       cache_creation_input_tokens INTEGER,
       cache_read_input_tokens INTEGER,
       total_cost_usd REAL,
+      pending_approval_requests_json TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -912,6 +926,7 @@ function initializeDatabase() {
   ensureColumn('messages', 'cache_creation_input_tokens', 'INTEGER');
   ensureColumn('messages', 'cache_read_input_tokens', 'INTEGER');
   ensureColumn('messages', 'total_cost_usd', 'REAL');
+  ensureColumn('messages', 'pending_approval_requests_json', 'TEXT');
 }
 
 function resolveAppDirectory() {
@@ -1405,6 +1420,10 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
           if (requestUserInput) {
             upsertRequestUserInput(currentTurn, requestUserInput);
           }
+          const approvalRequest = parseApprovalRequestEvent(block.name, block.input, block.id);
+          if (approvalRequest) {
+            upsertApprovalRequest(currentTurn, markApprovalRequestHistorical(approvalRequest));
+          }
         }
       }
     }
@@ -1447,6 +1466,12 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
       tool.isError = isError;
       tool.status = isError ? 'error' : 'done';
       markRequestUserInputSubmitted(turn, toolUseId, resultText);
+      const approvalRequest = createApprovalRequestFromToolResult(tool, resultText, isError);
+      if (approvalRequest) {
+        upsertApprovalRequest(turn, markApprovalRequestHistorical(approvalRequest));
+      } else {
+        removePendingApprovalRequest(turn, toolUseId);
+      }
     }
   }
 
@@ -1537,7 +1562,7 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
   const messageRows = db
     .prepare(`
       SELECT id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics, session_id, created_at
-      , phase, started_at_ms, duration_ms, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_cost_usd
+      , phase, started_at_ms, duration_ms, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_cost_usd, pending_approval_requests_json
       FROM messages
       WHERE thread_id = ?
       ORDER BY turn_sort ASC, item_sort ASC, CASE role WHEN 'user' THEN 0 ELSE 1 END ASC
@@ -1601,6 +1626,8 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
     turn.cacheCreationInputTokens = row.cache_creation_input_tokens ?? turn.cacheCreationInputTokens;
     turn.cacheReadInputTokens = row.cache_read_input_tokens ?? turn.cacheReadInputTokens;
     turn.totalCostUsd = row.total_cost_usd ?? turn.totalCostUsd;
+    turn.pendingApprovalRequests =
+      parseStoredApprovalRequests(row.pending_approval_requests_json) ?? turn.pendingApprovalRequests;
 
     if (row.role === 'user') {
       turn.userText = row.content;
@@ -1660,6 +1687,15 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
         markRequestUserInputSubmitted(turn, requestUserInput.requestId ?? tool.toolUseId, tool.resultText);
       }
     }
+    const approvalRequest =
+      parseApprovalRequestEvent(tool.name, parseJsonObject(tool.inputText), tool.toolUseId) ??
+      createApprovalRequestFromToolResult(tool, tool.resultText ?? '', tool.isError);
+    if (approvalRequest) {
+      upsertApprovalRequest(turn, markApprovalRequestHistorical(approvalRequest));
+      if (tool.resultText && !isApprovalRequiredToolResult(tool.resultText)) {
+        removePendingApprovalRequest(turn, approvalRequest.requestId ?? tool.toolUseId);
+      }
+    }
 
     turnMap.set(row.turn_id, turn);
   }
@@ -1691,7 +1727,15 @@ function shouldReparseStoredHistory(turns: ThreadTurn[]) {
 }
 
 function shouldRefreshStoredHistory(threadId: string, transcriptPath: string, turns: ThreadTurn[]) {
+  if (turns.some(hasPendingHumanRequest)) {
+    return false;
+  }
+
   return shouldReparseStoredHistory(turns) || isStoredHistoryOutdated(threadId, transcriptPath);
+}
+
+function hasPendingHumanRequest(turn: ThreadTurn) {
+  return Boolean(turn.pendingUserInputRequests?.length) || Boolean(turn.pendingApprovalRequests?.length);
 }
 
 function isStoredHistoryOutdated(threadId: string, transcriptPath: string) {
@@ -2280,6 +2324,36 @@ function hasRequestUserInputShape(value: unknown) {
   return Array.isArray(question.options);
 }
 
+function parseApprovalRequestEvent(
+  toolName: string,
+  input: unknown,
+  toolUseId?: string,
+): ApprovalRequest | null {
+  const normalizedToolName = normalizeToolName(toolName);
+  const payload = asRecord(input) ?? {};
+
+  if (normalizedToolName === 'exitplanmode') {
+    return {
+      requestId: firstNonEmptyString(payload, ['requestId', 'request_id', 'toolUseId', 'tool_use_id']) ?? toolUseId,
+      title: '计划待确认',
+      description: firstNonEmptyString(payload, ['plan', 'description', 'reason', 'message']),
+      danger: 'low',
+    };
+  }
+
+  if (normalizedToolName !== 'approvalrequest') {
+    return null;
+  }
+
+  return {
+    requestId: firstNonEmptyString(payload, ['requestId', 'request_id', 'toolUseId', 'tool_use_id']) ?? toolUseId,
+    title: firstNonEmptyString(payload, ['title', 'message', 'question']) ?? '等待批准',
+    description: firstNonEmptyString(payload, ['description', 'reason']),
+    command: normalizeApprovalCommandInput(payload.command ?? payload.argv ?? payload.args),
+    danger: normalizeApprovalDanger(firstNonEmptyString(payload, ['danger', 'risk'])),
+  };
+}
+
 function upsertRequestUserInput(turn: ThreadTurn, request: RequestUserInputRequest) {
   const current = turn.pendingUserInputRequests ?? [];
   if (!request.requestId) {
@@ -2300,6 +2374,44 @@ function upsertRequestUserInput(turn: ThreadTurn, request: RequestUserInputReque
     submittedAtMs: current[index].submittedAtMs,
   };
   turn.pendingUserInputRequests = next;
+}
+
+function upsertApprovalRequest(turn: ThreadTurn, request: ApprovalRequest) {
+  const current = turn.pendingApprovalRequests ?? [];
+  const signature = getApprovalRequestSignature(request);
+  const index = current.findIndex(
+    (item) =>
+      (request.requestId && item.requestId === request.requestId) ||
+      getApprovalRequestSignature(item) === signature,
+  );
+
+  if (index === -1) {
+    turn.pendingApprovalRequests = [...current, request];
+    return;
+  }
+
+  const next = [...current];
+  next[index] = {
+    ...next[index],
+    ...request,
+  };
+  turn.pendingApprovalRequests = next;
+}
+
+function removePendingApprovalRequest(turn: ThreadTurn, requestId: string | undefined) {
+  if (!requestId || !turn.pendingApprovalRequests?.length) {
+    return;
+  }
+
+  const next = turn.pendingApprovalRequests.filter((request) => request.requestId !== requestId);
+  turn.pendingApprovalRequests = next.length > 0 ? next : undefined;
+}
+
+function markApprovalRequestHistorical(request: ApprovalRequest): ApprovalRequest {
+  return {
+    ...request,
+    historical: true,
+  };
 }
 
 function markRequestUserInputSubmitted(
@@ -2329,6 +2441,176 @@ function markRequestUserInputSubmitted(
     submittedAtMs: request.submittedAtMs ?? 1,
   };
   turn.pendingUserInputRequests = next;
+}
+
+function createApprovalRequestFromToolResult(
+  tool: ThreadTool | undefined,
+  resultText: string,
+  isError?: boolean,
+): ApprovalRequest | null {
+  if (!isError || !isApprovalRequiredToolResult(resultText)) {
+    return null;
+  }
+
+  const command = extractApprovalCommandFromTool(tool);
+  const blockedBySecurityPolicy = isSecurityPolicyBlockedToolResult(resultText);
+
+  return {
+    requestId: tool?.toolUseId ?? tool?.id,
+    title: blockedBySecurityPolicy ? '访问被安全策略拦截' : '工具调用需要你确认',
+    description: blockedBySecurityPolicy
+      ? '当前会话的访问范围不足。批准后会以完全访问模式继续执行。'
+      : command?.length
+        ? '当前会话未放行这一步。批准后会以完全访问模式继续执行该命令。'
+        : 'Claude 返回该操作需要批准后才能继续。批准后会以完全访问模式继续执行。',
+    command,
+    danger: tool?.name === 'Bash' || command?.length ? 'medium' : 'low',
+  };
+}
+
+function isApprovalRequiredToolResult(content: string) {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes('this command requires approval') ||
+    normalized.includes('requires approval') ||
+    normalized.includes('requires your approval') ||
+    normalized.includes('approval required') ||
+    isSecurityPolicyBlockedToolResult(normalized)
+  );
+}
+
+function isSecurityPolicyBlockedToolResult(content: string) {
+  const normalized = content.trim().toLowerCase();
+  return Boolean(
+    normalized &&
+      normalized.includes('was blocked') &&
+      normalized.includes('for security') &&
+      normalized.includes('claude code'),
+  );
+}
+
+function extractApprovalCommandFromTool(tool?: ThreadTool) {
+  if (!tool?.inputText?.trim()) {
+    return undefined;
+  }
+
+  const parsed = parseJsonObject(tool.inputText);
+  const command = normalizeApprovalCommandInput(
+    parsed?.command ?? parsed?.cmd ?? parsed?.cmdString ?? parsed?.argv ?? parsed?.args,
+  );
+  if (command?.length) {
+    return command;
+  }
+
+  const bashMatch = tool.title.match(/^Bash\(([\s\S]+)\)$/);
+  return bashMatch?.[1]?.trim() ? [bashMatch[1].trim()] : undefined;
+}
+
+function getApprovalRequestSignature(request: ApprovalRequest) {
+  return JSON.stringify({
+    title: request.title,
+    description: request.description,
+    command: request.command ?? [],
+    danger: request.danger,
+  });
+}
+
+function normalizeApprovalCommandInput(value: unknown) {
+  if (typeof value === 'string' && value.trim()) {
+    return [value.trim()];
+  }
+
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const command = value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean);
+  return command.length > 0 ? command : undefined;
+}
+
+function normalizeApprovalDanger(value?: string): ApprovalRequest['danger'] | undefined {
+  if (value === 'low' || value === 'medium' || value === 'high') {
+    return value;
+  }
+
+  return undefined;
+}
+
+function serializePendingApprovalRequests(requests: ApprovalRequest[] | undefined) {
+  if (!requests?.length) {
+    return null;
+  }
+
+  const normalized = requests
+    .map((request) => normalizeStoredApprovalRequest(request))
+    .filter((request): request is ApprovalRequest => Boolean(request));
+  return normalized.length > 0 ? JSON.stringify(normalized) : null;
+}
+
+function parseStoredApprovalRequests(value: string | null): ApprovalRequest[] | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return undefined;
+    }
+
+    const requests = parsed
+      .map((item) => normalizeStoredApprovalRequest(item))
+      .filter((item): item is ApprovalRequest => Boolean(item));
+    return requests.length > 0 ? requests : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeStoredApprovalRequest(value: unknown): ApprovalRequest | null {
+  const item = asRecord(value);
+  if (!item) {
+    return null;
+  }
+
+  const title = firstNonEmptyString(item, ['title', 'message', 'question']);
+  if (!title) {
+    return null;
+  }
+
+  return {
+    requestId: firstNonEmptyString(item, ['requestId', 'request_id']),
+    title,
+    description: firstNonEmptyString(item, ['description', 'reason']),
+    command: normalizeStoredApprovalCommand(item.command),
+    danger: normalizeStoredApprovalDanger(firstNonEmptyString(item, ['danger', 'risk'])),
+    historical: item.historical === true ? true : undefined,
+  };
+}
+
+function normalizeStoredApprovalCommand(value: unknown) {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const command = value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean);
+  return command.length > 0 ? command : undefined;
+}
+
+function normalizeStoredApprovalDanger(value?: string): ApprovalRequest['danger'] | undefined {
+  if (value === 'low' || value === 'medium' || value === 'high') {
+    return value;
+  }
+
+  return undefined;
 }
 
 function parseSubmittedRequestUserInputAnswers(

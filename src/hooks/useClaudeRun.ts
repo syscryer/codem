@@ -457,7 +457,7 @@ export function useClaudeRun({
     window.setTimeout(() => {
       void startRun(thread, nextPrompt.text, {
         workingDirectory: thread.workingDirectory,
-        sessionId: thread.sessionId.trim() ? thread.sessionId.trim() : undefined,
+        sessionId: normalizeSessionId(thread.sessionId),
       }).then((started) => {
         if (started) {
           showToast('已发送排队提示。', 'success');
@@ -963,6 +963,7 @@ export function useClaudeRun({
         activity: event.request.title || '等待补充输入',
         pendingUserInputRequests: upsertRequestUserInput(turn.pendingUserInputRequests, event.request),
       }));
+      schedulePersistThreadHistory(context.threadId);
       appendRunningDebug(context, {
         title: '请求用户输入',
         content: formatJson(event.request),
@@ -977,6 +978,7 @@ export function useClaudeRun({
         activity: event.request.title || '等待批准',
         pendingApprovalRequests: upsertApprovalRequest(turn.pendingApprovalRequests, event.request),
       }));
+      schedulePersistThreadHistory(context.threadId);
       appendRunningDebug(context, {
         title: '批准请求',
         content: formatJson(event.request),
@@ -1109,6 +1111,7 @@ export function useClaudeRun({
             : turn.pendingApprovalRequests,
         };
       });
+      schedulePersistThreadHistory(context.threadId);
       return;
     }
 
@@ -1231,7 +1234,7 @@ export function useClaudeRun({
 
     return startRun(thread, trimmedPrompt, {
       workingDirectory: workspace.trim() || thread.workingDirectory,
-      sessionId: thread.sessionId.trim() ? thread.sessionId.trim() : undefined,
+      sessionId: normalizeSessionId(thread.sessionId),
     });
   }
 
@@ -1349,7 +1352,7 @@ export function useClaudeRun({
 
     const started = await startRun(activeThreadSummary, promptText, {
       workingDirectory: turn.workspace.trim() || activeThreadSummary.workingDirectory,
-      sessionId: turn.sessionId?.trim() || activeThreadSummary.sessionId.trim() || undefined,
+      sessionId: normalizeSessionId(turn.sessionId) || normalizeSessionId(activeThreadSummary.sessionId),
     });
 
     if (!started) {
@@ -1395,7 +1398,7 @@ export function useClaudeRun({
 
     const sessionId =
       action === 'retry'
-        ? turn.sessionId?.trim() || activeThreadSummary.sessionId.trim() || undefined
+        ? normalizeSessionId(turn.sessionId) || normalizeSessionId(activeThreadSummary.sessionId)
         : undefined;
     const started = await startRun(activeThreadSummary, promptText, {
       workingDirectory: turn.workspace.trim() || activeThreadSummary.workingDirectory,
@@ -1487,7 +1490,7 @@ export function useClaudeRun({
 
     void startRun(activeThreadSummary, promptText, {
       workingDirectory: turn.workspace.trim() || activeThreadSummary.workingDirectory,
-      sessionId: turn.sessionId?.trim() || activeThreadSummary.sessionId.trim() || undefined,
+      sessionId: normalizeSessionId(turn.sessionId) || normalizeSessionId(activeThreadSummary.sessionId),
       permissionModeOverride: decision === 'approve' && !isPlanApprovalRequest(request) ? 'bypassPermissions' : undefined,
       toolResult: request.requestId
         ? {
@@ -1968,6 +1971,10 @@ function isPlanApprovalRequest(request: ApprovalRequest) {
 
 function isVisiblePermissionMode(value: unknown): value is (typeof permissionMenuModes)[number] {
   return isPermissionMode(value) && permissionMenuModes.includes(value as (typeof permissionMenuModes)[number]);
+}
+
+function normalizeSessionId(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 async function readErrorResponseText(response: Response) {

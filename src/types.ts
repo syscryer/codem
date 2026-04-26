@@ -78,6 +78,7 @@ export type ApprovalRequest = {
   description?: string;
   command?: string[];
   danger?: 'low' | 'medium' | 'high';
+  historical?: boolean;
 };
 
 export type ApprovalDecision = 'approve' | 'reject';

@@ -450,9 +450,15 @@ app.get('/api/claude/run/:runId/events', async (request, response) => {
   response.setHeader('Connection', 'keep-alive');
   response.flushHeaders();
 
+  const abortController = new AbortController();
+  response.on('close', () => {
+    abortController.abort();
+  });
+
   for await (const message of reconnectClaudeRunEvents(
     request.params.runId,
     Number.isFinite(after) ? after : 0,
+    { signal: abortController.signal },
   )) {
     if (response.writableEnded || response.destroyed) {
       break;

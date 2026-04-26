@@ -370,23 +370,23 @@ function getLatestPendingApprovalDialog(activeThread: ThreadDetail | null) {
     return null;
   }
 
-  for (let turnIndex = activeThread.turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
-    const turn = activeThread.turns[turnIndex];
-    const requests = turn.pendingApprovalRequests ?? [];
-    if (!requests.length) {
-      continue;
-    }
-
-    const requestIndex = requests.length - 1;
-    const request = requests[requestIndex];
-    return {
-      key: buildApprovalDialogKey(activeThread.id, turn.id, request, requestIndex),
-      turn,
-      request,
-    };
+  const turn = activeThread.turns.at(-1);
+  const requests = (turn?.pendingApprovalRequests ?? []).filter(isActionableApprovalRequest);
+  if (!turn || !requests.length) {
+    return null;
   }
 
-  return null;
+  const requestIndex = requests.length - 1;
+  const request = requests[requestIndex];
+  return {
+    key: buildApprovalDialogKey(activeThread.id, turn.id, request, requestIndex),
+    turn,
+    request,
+  };
+}
+
+function isActionableApprovalRequest(request: ApprovalRequest) {
+  return request.historical !== true;
 }
 
 function buildApprovalDialogKey(

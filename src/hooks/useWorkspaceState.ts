@@ -292,10 +292,24 @@ export function useWorkspaceState() {
         return current;
       }
 
-      return {
+      const nextThread = updater(existing);
+      const next = {
         ...current,
-        [threadId]: updater(existing),
+        [threadId]: nextThread,
       };
+      threadDetailsRef.current = next;
+      if (hasPendingHumanRequests(nextThread)) {
+        window.setTimeout(() => {
+          void persistThreadHistory(threadId, nextThread.turns);
+        }, 0);
+      }
+      window.setTimeout(() => {
+        const latestThread = threadDetailsRef.current[threadId];
+        if (latestThread && hasPendingHumanRequests(latestThread)) {
+          void persistThreadHistory(threadId, latestThread.turns);
+        }
+      }, 250);
+      return next;
     });
   }
 
@@ -312,6 +326,12 @@ export function useWorkspaceState() {
         turns: thread.turns.map((turn) => (turn.id === turnId ? repairConversationTurn(updater(turn)) : turn)),
       }),
       fallbackSummary,
+    );
+  }
+
+  function hasPendingHumanRequests(thread: ThreadDetail) {
+    return thread.turns.some(
+      (turn) => Boolean(turn.pendingUserInputRequests?.length) || Boolean(turn.pendingApprovalRequests?.length),
     );
   }
 
