@@ -61,11 +61,77 @@ svg {
   --sidebar-width: 332px;
   --workspace-footer-height: 20px;
   --workspace-footer-content-height: 18px;
+  --app-bg: #ffffff;
+  --app-surface: #ffffff;
+  --app-surface-muted: #f6f6f5;
+  --app-surface-subtle: #fbfbfa;
+  --app-text: #242424;
+  --app-text-strong: #1f1f1f;
+  --app-muted: #77736c;
+  --app-border: #ece9e2;
+  --app-border-strong: #dedbd3;
+  --app-hover: rgba(255, 255, 255, 0.65);
+  --settings-sidebar-bg: #f4f2f2;
+  color-scheme: light;
+  color: var(--app-text);
+  background: var(--app-bg);
   height: 100vh;
   display: grid;
   grid-template-rows: 30px minmax(0, 1fr);
   overflow: hidden;
   font-size: var(--app-ui-font-size, 13px);
+}
+
+.codex-desktop[data-theme-mode="dark"] {
+  --app-chrome: #171717;
+  --sidebar-bg: #202020;
+  --sidebar-active: #343434;
+  --text-muted: #a1a1aa;
+  --line: #303030;
+  --line-strong: #404040;
+  --panel: #1f1f1f;
+  --soft: #262626;
+  --tool-bg: #2e2e2e;
+  --accent: #73b7ff;
+  --app-bg: #151515;
+  --app-surface: #1d1d1d;
+  --app-surface-muted: #252525;
+  --app-surface-subtle: #202020;
+  --app-text: #eeeeee;
+  --app-text-strong: #ffffff;
+  --app-muted: #a1a1aa;
+  --app-border: #303030;
+  --app-border-strong: #3f3f46;
+  --app-hover: rgba(255, 255, 255, 0.08);
+  --settings-sidebar-bg: #202020;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  .codex-desktop[data-theme-mode="system"] {
+    --app-chrome: #171717;
+    --sidebar-bg: #202020;
+    --sidebar-active: #343434;
+    --text-muted: #a1a1aa;
+    --line: #303030;
+    --line-strong: #404040;
+    --panel: #1f1f1f;
+    --soft: #262626;
+    --tool-bg: #2e2e2e;
+    --accent: #73b7ff;
+    --app-bg: #151515;
+    --app-surface: #1d1d1d;
+    --app-surface-muted: #252525;
+    --app-surface-subtle: #202020;
+    --app-text: #eeeeee;
+    --app-text-strong: #ffffff;
+    --app-muted: #a1a1aa;
+    --app-border: #303030;
+    --app-border-strong: #3f3f46;
+    --app-hover: rgba(255, 255, 255, 0.08);
+    --settings-sidebar-bg: #202020;
+    color-scheme: dark;
+  }
 }
 
 .codex-desktop[data-sidebar-width="narrow"] {
@@ -3025,6 +3091,140 @@ svg {
 
 .settings-empty-panel strong {
   color: #333333;
+}
+
+.codex-desktop .desktop-menubar,
+.codex-desktop .codex-shell,
+.codex-desktop .chat-shell,
+.codex-desktop .chat-header,
+.codex-desktop .conversation,
+.codex-desktop .composer,
+.codex-desktop .composer-card,
+.codex-desktop .composer-toolbar,
+.codex-desktop .workspace-status,
+.codex-desktop .settings-view,
+.codex-desktop .settings-content,
+.codex-desktop .dialog-card,
+.codex-desktop .workspace-menu,
+.codex-desktop .model-menu,
+.codex-desktop .permission-menu,
+.codex-desktop .debug-drawer {
+  background: var(--app-surface);
+  color: var(--app-text);
+}
+
+.codex-desktop .app-sidebar {
+  background: var(--sidebar-bg);
+  border-right-color: var(--app-border-strong);
+  color: var(--app-text);
+}
+
+.codex-desktop .settings-sidebar {
+  background: var(--settings-sidebar-bg);
+  border-right-color: var(--app-border);
+}
+
+.codex-desktop .settings-panel,
+.codex-desktop .settings-empty-panel,
+.codex-desktop .appearance-preview,
+.codex-desktop .assistant-runtime-card,
+.codex-desktop .tool-preview-card,
+.codex-desktop .composer-input,
+.codex-desktop .dialog-input,
+.codex-desktop .assistant-runtime-textarea {
+  border-color: var(--app-border);
+  background: var(--app-surface);
+  color: var(--app-text);
+}
+
+.codex-desktop .appearance-preview-sidebar,
+.codex-desktop .settings-segmented,
+.codex-desktop .settings-stepper,
+.codex-desktop .sidebar-search,
+.codex-desktop .assistant-runtime-question,
+.codex-desktop .composer-queued-prompt,
+.codex-desktop .message-body,
+.codex-desktop .tool-details pre,
+.codex-desktop .thinking-message pre,
+.codex-desktop .debug-item pre,
+.codex-desktop .raw-pre,
+.codex-desktop .markdown-body .code-block-shell pre {
+  background: var(--app-surface-muted);
+  color: var(--app-text);
+  border-color: var(--app-border);
+}
+
+.codex-desktop .user-message .message-body,
+.codex-desktop .appearance-preview-composer {
+  background: var(--app-surface-subtle);
+  border-color: var(--app-border);
+}
+
+.codex-desktop .settings-row,
+.codex-desktop .chat-header,
+.codex-desktop .desktop-menubar {
+  border-color: var(--app-border);
+}
+
+.codex-desktop .settings-segmented button.active,
+.codex-desktop .settings-nav-item.active,
+.codex-desktop .sidebar-thread.active,
+.codex-desktop .sidebar-thread-row.active .sidebar-thread {
+  background: var(--sidebar-active);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .settings-return:hover,
+.codex-desktop .settings-nav-item:hover,
+.codex-desktop .sidebar-toolbar-icon:hover,
+.codex-desktop .sidebar-row-action:hover,
+.codex-desktop .workspace-menu-item:hover,
+.codex-desktop .model-menu-item:hover,
+.codex-desktop .permission-menu-item:hover,
+.codex-desktop .plain-icon:hover,
+.codex-desktop .toolbar-select:hover,
+.codex-desktop .model-trigger:hover,
+.codex-desktop .permission-trigger:hover,
+.codex-desktop .status-branch-trigger:hover {
+  background: var(--app-hover);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .settings-section-head h1,
+.codex-desktop .settings-row-label strong,
+.codex-desktop .settings-empty-panel strong,
+.codex-desktop .thread-title h2,
+.codex-desktop .empty-state h3,
+.codex-desktop .dialog-head h3,
+.codex-desktop .assistant-runtime-card-heading strong {
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .settings-return,
+.codex-desktop .settings-nav-item,
+.codex-desktop .settings-row-label small,
+.codex-desktop .sidebar-section-head,
+.codex-desktop .sidebar-thread small,
+.codex-desktop .thread-project,
+.codex-desktop .turn-time,
+.codex-desktop .turn-status,
+.codex-desktop .assistant-runtime-footnote,
+.codex-desktop .assistant-runtime-question-hint,
+.codex-desktop .dialog-head p,
+.codex-desktop .muted {
+  color: var(--app-muted);
+}
+
+.codex-desktop :where(.sidebar-primary button, .sidebar-footer button, .sidebar-project-title, .sidebar-thread, .workspace-menu-item, .model-menu-item, .permission-menu-item, .composer-input, .toolbar-select, .permission-trigger, .model-trigger, .message-body, .assistant-runtime-card-heading strong, .assistant-runtime-question-text, .assistant-runtime-submit-button, .workspace-status, .settings-return, .settings-nav-item, .settings-row-label strong, .settings-segmented button, .settings-stepper span, .settings-empty-panel, .dialog-input, .dialog-button, .ghost-button) {
+  font-size: var(--app-ui-font-size, 13px);
+}
+
+.codex-desktop :where(.desktop-menubar, .sidebar-section-head, .sidebar-search input, .workspace-menu-group-title, .sidebar-thread small, .sidebar-branch, .turn-time, .turn-status, .settings-row-label small, .assistant-runtime-footnote, .assistant-runtime-question-hint, .dialog-head p, .status-branch-menu-meta) {
+  font-size: max(11px, calc(var(--app-ui-font-size, 13px) - 1px));
+}
+
+.codex-desktop :where(.settings-section-head h1, .dialog-head h3, .debug-head h2) {
+  font-size: calc(var(--app-ui-font-size, 13px) + 5px);
 }
 
 .debug-drawer {
