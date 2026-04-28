@@ -25,7 +25,7 @@
 - `npm run typecheck` 已通过。
 - 本地启动后，`GET /api/health` 返回：
   - `available: true`
-  - `command: C:\\Users\\csm\\.local\\bin\\claude.exe`
+  - `command: 已检测到可用的 claude.exe 命令路径`
 - 当浏览器连接关闭时，后端现在会主动取消对应 Claude 进程，避免残留后台任务。
 - 当前 UI 可以展示 Claude CLI 暴露出来的完整运行事件，包括工具调用和工具结果。
 - 模型内部隐藏思考链不属于 CLI 暴露内容，不能也不应在 UI 中伪造展示；可以展示可见状态和事件。

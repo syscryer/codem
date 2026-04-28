@@ -11,5 +11,9 @@ logs/
 output/
 .playwright-cli/
 .codex-dev*.log
+.codem-*.log
+.codem-*.err.log
 *.tsbuildinfo
 .idea/
+.learnings/
+hello.txt

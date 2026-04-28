@@ -3,7 +3,7 @@
 ## 2026-04-22
 
 ### 会话记录
-- 确认 `D:\cursor_project\codem` 目前为空目录。
+- 确认当前工作目录目前为空目录。
 - 验证本机存在 `claude`、`node`、`npm`。
 - 验证 Claude CLI 可返回 `stream-json` 流式输出。
 - 确定实现方向为本地 Web UI 包装器。
@@ -39,7 +39,7 @@
 - 底部状态栏增加 `本地工作` 与 `main` 占位，不读取真实分支。
 - 进一步按 Codex 桌面截图校准视觉：增加顶部菜单栏，压缩 header/sidebar/composer 密度，隐藏对话 label，用户消息右对齐。
 - 使用 Playwright 打开本地页面、截图比对 2048x1119 视口，并用真实 Enter 发送检查短对话渲染。
-- 再次通过 `npm run typecheck`；`D:\cursor_project\codem` 不是 git 仓库，因此没有执行 `git add`。
+- 再次通过 `npm run typecheck`；当时工作目录不是 git 仓库，因此没有执行 `git add`。
 - 将 permission mode 从原生 select 改为 Codex 风格自定义浮层：底部橙色权限按钮，上方白色弹出菜单，支持默认权限/完全访问权限切换和选中勾。
 - 修复 permission 浮层被 composer 裁切的问题，并用 Playwright 点开菜单截图确认。
 - 继续细化 permission 浮层：减小字号、行高、宽度、阴影和圆角，改为 CSS 绘制轻量图标，避免 Unicode 图标显粗。
@@ -52,8 +52,8 @@
 - 将模型选择从原生 select 改为 Codex 风格自定义浮层：默认收起态为轻量文本 + 下箭头，展开态为右对齐白色菜单，包含“模型”标题和选中勾。
 - 根据用户提供的 Codex 默认态截图，去掉模型默认灰色 pill 背景，仅在展开/hover 时显示浅灰底；已用 Playwright 打开模型菜单截图确认。
 - 统一 composer 内权限和模型按钮的下拉箭头：移除字符 `⌄`，改用 CSS 绘制 chevron，解决字体 baseline 导致的上下不齐。
-- 模型列表收窄为两项：第一项 `默认`，第二项读取 `~/.claude/settings.json` 中 `env.ANTHROPIC_MODEL`，当前为 `MiniMax-M2.7`。
-- 默认项选中时发送请求不传 `--model`，但 composer 收起态展示当前实际配置模型 `MiniMax-M2.7`。
+- 模型列表收窄为两项：第一项 `默认`，第二项读取 `~/.claude/settings.json` 中 `env.ANTHROPIC_MODEL` 的当前配置值。
+- 默认项选中时发送请求不传 `--model`，但 composer 收起态展示当前实际配置模型。
 - 引入 `lucide-react` 作为统一 SVG 图标库，替换 header、sidebar、composer、footer 中的 Unicode 字符图标，减少 Windows 字体导致的粗细和 baseline 偏移。
 - 为 SVG 图标补充统一 CSS：固定 stroke、居中布局、header/footer chevron 继续用 CSS 绘制；已通过 Playwright 截图检查默认态与权限菜单展开态。
 - 去掉“续聊”显式开关，当前线程默认续聊；新建聊天改为创建新线程并保留旧线程，行为更接近 Codex Desktop。
@@ -101,7 +101,7 @@
 
 ### AI 返回信息解析补齐
 
-- 对照 `D:\cursor_project\Any-code` 的消息解析范围，确认 CodeM 不迁移工具注册体系，继续扩展现有 `ToolStep` 模型。
+- 对照另一套参考项目的消息解析范围，确认 CodeM 不迁移工具注册体系，继续扩展现有 `ToolStep` 模型。
 - 前后端事件增加 `parentToolUseId`、`isSidechain` 和 `subagent-delta`，用于保留子代理消息。
 - 实时流不再直接丢弃 `isSidechain`，改为将子代理文本和子工具挂到父 `Agent/Task` 工具详情中。
 - transcript 历史解析同步支持 sidechain 归组；SQLite `tool_calls` 增加子工具和子消息 JSON 字段。
