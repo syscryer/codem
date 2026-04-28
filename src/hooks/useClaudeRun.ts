@@ -112,6 +112,7 @@ type UseClaudeRunArgs = {
   activeThreadId: string | null;
   activeThreadSummary: ThreadSummary | null;
   appModelSettings: ModelSettings;
+  defaultPermissionMode: PermissionMode;
   createThread: (projectId: string) => Promise<ThreadSummary | null>;
   handlePickProjectDirectory: () => Promise<void>;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
@@ -139,6 +140,7 @@ export function useClaudeRun({
   activeThreadId,
   activeThreadSummary,
   appModelSettings,
+  defaultPermissionMode,
   createThread,
   handlePickProjectDirectory,
   showToast,
@@ -151,7 +153,7 @@ export function useClaudeRun({
   clearActiveTurnSelection,
 }: UseClaudeRunArgs) {
   const [workspace, setWorkspace] = useState('');
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('bypassPermissions');
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode);
   const [model, setModel] = useState(DEFAULT_MODEL_VALUE);
   const [claudeModels, setClaudeModels] = useState<ClaudeModelInfo>({ available: false, models: [] });
   const [, setHealth] = useState<{ available: boolean; command?: string; error?: string }>({
@@ -167,6 +169,7 @@ export function useClaudeRun({
   const threadSummariesByIdRef = useRef(new Map<string, ThreadSummary>());
   const queuedPromptsByThreadIdRef = useRef<Record<string, QueuedPrompt[]>>({});
   const activeTurnIdRef = useRef('');
+  const modelSelectionResetKeyRef = useRef('');
 
   const runningThreadIds = Object.keys(activeRunsByThreadId);
   const isRunning = runningThreadIds.length > 0;
@@ -188,6 +191,16 @@ export function useClaudeRun({
   }, []);
 
   useEffect(() => {
+    const resetKey = [
+      activeThreadSummary?.id ?? '',
+      activeThreadSummary?.model ?? '',
+      appModelSettings.defaultModelId,
+    ].join('\n');
+    if (modelSelectionResetKeyRef.current === resetKey) {
+      return;
+    }
+
+    modelSelectionResetKeyRef.current = resetKey;
     setModel(resolveInitialModelId(activeThreadSummary?.model, models, appModelSettings.defaultModelId));
   }, [activeThreadSummary?.id, activeThreadSummary?.model, appModelSettings.defaultModelId, models]);
 
@@ -214,9 +227,9 @@ export function useClaudeRun({
     setPermissionMode(
       isVisiblePermissionMode(activeThreadSummary?.permissionMode)
         ? activeThreadSummary.permissionMode
-        : 'bypassPermissions',
+        : defaultPermissionMode,
     );
-  }, [activeThreadSummary?.id, activeThreadSummary?.permissionMode]);
+  }, [activeThreadSummary?.id, activeThreadSummary?.permissionMode, defaultPermissionMode]);
 
   useEffect(() => {
     if (runningThreadIds.length === 0) {

@@ -17,6 +17,7 @@ export const defaultGeneralSettings: GeneralSettings = {
   restoreLastSelectionOnLaunch: true,
   autoRefreshGitStatus: true,
   showDebugButton: true,
+  defaultPermissionMode: 'default',
 };
 
 export const defaultAppearanceSettings: AppearanceSettings = {
@@ -182,6 +183,11 @@ export function normalizeGeneralSettings(general: unknown): GeneralSettings {
     ),
     autoRefreshGitStatus: normalizeBoolean(record.autoRefreshGitStatus, defaultGeneralSettings.autoRefreshGitStatus),
     showDebugButton: normalizeBoolean(record.showDebugButton, defaultGeneralSettings.showDebugButton),
+    defaultPermissionMode: normalizeOneOf(
+      record.defaultPermissionMode,
+      ['default', 'auto', 'bypassPermissions'],
+      defaultGeneralSettings.defaultPermissionMode,
+    ),
   };
 }
 

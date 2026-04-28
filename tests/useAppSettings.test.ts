@@ -20,12 +20,14 @@ test('resolveGeneralSettingsUpdate normalizes basic settings toggles', () => {
     restoreLastSelectionOnLaunch: false,
     autoRefreshGitStatus: false,
     showDebugButton: false,
+    defaultPermissionMode: 'auto',
   });
 
   assert.deepEqual(next, {
     restoreLastSelectionOnLaunch: false,
     autoRefreshGitStatus: false,
     showDebugButton: false,
+    defaultPermissionMode: 'auto',
   });
 });
 

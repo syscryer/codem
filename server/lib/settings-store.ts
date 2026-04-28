@@ -11,7 +11,10 @@ export type GeneralSettings = {
   restoreLastSelectionOnLaunch: boolean;
   autoRefreshGitStatus: boolean;
   showDebugButton: boolean;
+  defaultPermissionMode: PermissionMode;
 };
+
+export type PermissionMode = 'default' | 'plan' | 'acceptEdits' | 'auto' | 'dontAsk' | 'bypassPermissions';
 
 export type AppearanceSettings = {
   themeMode: ThemeMode;
@@ -90,6 +93,7 @@ export const defaultGeneralSettings: GeneralSettings = {
   restoreLastSelectionOnLaunch: true,
   autoRefreshGitStatus: true,
   showDebugButton: true,
+  defaultPermissionMode: 'default',
 };
 
 export const defaultModelSettings: ModelSettings = {
@@ -253,6 +257,11 @@ function normalizeGeneralSettings(value: unknown): GeneralSettings {
     ),
     autoRefreshGitStatus: normalizeBoolean(record.autoRefreshGitStatus, defaultGeneralSettings.autoRefreshGitStatus),
     showDebugButton: normalizeBoolean(record.showDebugButton, defaultGeneralSettings.showDebugButton),
+    defaultPermissionMode: normalizeEnum(
+      record.defaultPermissionMode,
+      ['default', 'auto', 'bypassPermissions'],
+      defaultGeneralSettings.defaultPermissionMode,
+    ),
   };
 }
 

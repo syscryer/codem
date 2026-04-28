@@ -190,6 +190,7 @@ export type GeneralSettings = {
   restoreLastSelectionOnLaunch: boolean;
   autoRefreshGitStatus: boolean;
   showDebugButton: boolean;
+  defaultPermissionMode: PermissionMode;
 };
 
 export type AppearanceSettings = {

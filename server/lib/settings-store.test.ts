@@ -61,6 +61,7 @@ test('normalizeAppSettings preserves valid appearance values', () => {
       restoreLastSelectionOnLaunch: false,
       autoRefreshGitStatus: false,
       showDebugButton: false,
+      defaultPermissionMode: 'auto',
     },
     appearance: {
       themeMode: 'dark',
@@ -76,6 +77,7 @@ test('normalizeAppSettings preserves valid appearance values', () => {
       restoreLastSelectionOnLaunch: false,
       autoRefreshGitStatus: false,
       showDebugButton: false,
+      defaultPermissionMode: 'auto',
     },
     appearance: {
       themeMode: 'dark',
@@ -242,6 +244,7 @@ test('updateGeneralSettings writes formatted JSON and can read it back', () => {
       restoreLastSelectionOnLaunch: false,
       autoRefreshGitStatus: false,
       showDebugButton: false,
+      defaultPermissionMode: 'bypassPermissions',
     });
 
     const expected = {
@@ -249,6 +252,7 @@ test('updateGeneralSettings writes formatted JSON and can read it back', () => {
         restoreLastSelectionOnLaunch: false,
         autoRefreshGitStatus: false,
         showDebugButton: false,
+        defaultPermissionMode: 'bypassPermissions',
       },
       appearance: defaultAppSettings.appearance,
       models: defaultAppSettings.models,

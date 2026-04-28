@@ -1,6 +1,7 @@
 import express, { type ErrorRequestHandler } from 'express';
 import path from 'node:path';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import {
   acknowledgeRunEvents,
@@ -322,10 +323,10 @@ app.post('/api/system/attachments/image', async (request, response) => {
   try {
     const parsedImage = parseImageDataUrl(dataUrl, mimeType);
     const attachmentsDirectory = path.join(resolvedDirectory, '.codem-attachments');
-    mkdirSync(attachmentsDirectory, { recursive: true });
+    await mkdir(attachmentsDirectory, { recursive: true });
 
     const filePath = path.join(attachmentsDirectory, buildAttachmentFileName(parsedImage.extension));
-    writeFileSync(filePath, parsedImage.buffer);
+    await writeFile(filePath, parsedImage.buffer);
 
     response.json({
       path: filePath,
@@ -570,9 +571,7 @@ app.post('/api/claude/run', async (request, response) => {
     typeof request.body?.sessionId === 'string' && request.body.sessionId.trim()
       ? request.body.sessionId.trim()
       : undefined;
-  const permissionMode = (
-    typeof request.body?.permissionMode === 'string' ? request.body.permissionMode : 'bypassPermissions'
-  ) as ClaudePermissionMode;
+  const permissionMode = normalizeClaudePermissionMode(request.body?.permissionMode);
   const model =
     typeof request.body?.model === 'string' && request.body.model.trim()
       ? request.body.model.trim()
@@ -810,6 +809,25 @@ function isPayloadTooLargeError(error: unknown) {
 
   const candidate = error as { status?: unknown; statusCode?: unknown; type?: unknown };
   return candidate.status === 413 || candidate.statusCode === 413 || candidate.type === 'entity.too.large';
+}
+
+function normalizeClaudePermissionMode(value: unknown): ClaudePermissionMode {
+  const configuredDefault = getAppSettings().general.defaultPermissionMode;
+  if (typeof value !== 'string' || !value.trim()) {
+    return configuredDefault;
+  }
+
+  const trimmed = value.trim();
+  return isClaudePermissionMode(trimmed) ? trimmed : configuredDefault;
+}
+
+function isClaudePermissionMode(value: string): value is ClaudePermissionMode {
+  return value === 'default' ||
+    value === 'plan' ||
+    value === 'acceptEdits' ||
+    value === 'auto' ||
+    value === 'dontAsk' ||
+    value === 'bypassPermissions';
 }
 
 function parseImageDataUrl(dataUrl: string, requestedMimeType: string) {

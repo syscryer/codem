@@ -126,6 +126,7 @@ export default function App() {
     activeThreadId,
     activeThreadSummary,
     appModelSettings,
+    defaultPermissionMode: general.defaultPermissionMode,
     createThread,
     handlePickProjectDirectory,
     showToast,

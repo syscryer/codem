@@ -343,7 +343,9 @@ export function getWorkspaceBootstrap(): WorkspaceBootstrap {
   }
 
   const projects = projectRows.map((row) => {
-    const gitInfo = readGitInfo(row.path, row.id === activeProjectId);
+    const gitInfo = row.id === activeProjectId
+      ? readGitInfo(row.path, true)
+      : { isGitRepo: false, branch: undefined, diff: EMPTY_GIT_DIFF };
     return {
       id: row.id,
       name: row.name,

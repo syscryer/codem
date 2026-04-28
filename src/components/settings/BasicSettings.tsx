@@ -1,6 +1,8 @@
-import { Bug, GitBranch, History, RotateCcw } from 'lucide-react';
+import { Bug, GitBranch, History, RotateCcw, Shield } from 'lucide-react';
+import { permissionMenuModes } from '../../constants';
 import type { GeneralSettings } from '../../types';
 import type { GeneralSettingsUpdate } from '../../hooks/useAppSettings';
+import { permissionLabel } from '../../lib/ui-labels';
 import { defaultGeneralSettings } from '../../hooks/useAppSettings';
 import { SettingsRow } from './SettingsControls';
 
@@ -39,6 +41,21 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
             onChange={(showDebugButton) => void onUpdateGeneral({ showDebugButton })}
             label="显示调试入口"
           />
+        </SettingsRow>
+
+        <SettingsRow icon={Shield} title="默认权限模式" description="新聊天和未指定权限时使用的 Claude Code 权限模式">
+          <select
+            className="settings-select"
+            value={general.defaultPermissionMode}
+            onChange={(event) =>
+              void onUpdateGeneral({
+                defaultPermissionMode: event.currentTarget.value as GeneralSettings['defaultPermissionMode'],
+              })}
+          >
+            {permissionMenuModes.map((mode) => (
+              <option key={mode} value={mode}>{permissionLabel(mode)}</option>
+            ))}
+          </select>
         </SettingsRow>
 
         <SettingsRow icon={RotateCcw} title="重置基础设置" description="恢复基础设置默认值">

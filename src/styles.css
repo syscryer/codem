@@ -387,16 +387,6 @@ svg {
   padding-right: 4px;
 }
 
-.sidebar-branch {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  color: #9a948c;
-  font-size: 11px;
-  font-weight: 400;
-}
-
 .sidebar-thread-list {
   display: grid;
   gap: 2px;
@@ -4153,7 +4143,7 @@ svg {
   font-size: var(--app-ui-font-size, 13px);
 }
 
-.codex-desktop :where(.desktop-menubar, .sidebar-section-head, .sidebar-search input, .workspace-menu-group-title, .sidebar-thread small, .sidebar-branch, .turn-time, .turn-status, .settings-row-label small, .assistant-runtime-footnote, .assistant-runtime-question-hint, .dialog-head p, .status-branch-menu-meta, .status-run-head span) {
+.codex-desktop :where(.desktop-menubar, .sidebar-section-head, .sidebar-search input, .workspace-menu-group-title, .sidebar-thread small, .turn-time, .turn-status, .settings-row-label small, .assistant-runtime-footnote, .assistant-runtime-question-hint, .dialog-head p, .status-branch-menu-meta, .status-run-head span) {
   font-size: max(11px, calc(var(--app-ui-font-size, 13px) - 1px));
 }
 
