@@ -101,6 +101,7 @@ export default function App() {
   } = useAppSettings(showToast);
   const wasRunningRef = useRef(false);
   const {
+    workspace,
     permissionMode,
     model,
     models,
@@ -376,6 +377,7 @@ export default function App() {
             <CurrentTaskDock activeThread={activeThread} />
 
             <Composer
+              workspace={workspace}
               permissionMode={permissionMode}
               model={model}
               models={models}
@@ -383,6 +385,7 @@ export default function App() {
               queuedPrompts={queuedPrompts}
               onSubmitPrompt={submitPrompt}
               onRemoveQueuedPrompt={removeQueuedPrompt}
+              showToast={showToast}
               onKeyDown={handleComposerKeyDown}
               onSelectPermissionMode={handlePermissionModeSelect}
               onSelectModel={setModel}

@@ -123,6 +123,14 @@ export type ToolStep = {
   subMessages?: string[];
 };
 
+export type UserImageAttachment = {
+  id: string;
+  path: string;
+  name: string;
+  mimeType?: string;
+  size?: number;
+};
+
 export type AssistantItem =
   | { id: string; type: 'text'; text: string }
   | { id: string; type: 'thinking'; text: string }
@@ -132,6 +140,7 @@ export type ConversationTurn = {
   id: string;
   backendRunId?: string;
   userText: string;
+  userAttachments?: UserImageAttachment[];
   workspace: string;
   assistantText: string;
   tools: ToolStep[];
@@ -340,8 +349,16 @@ export type ThreadDetail = ThreadSummary & {
 
 export type ClaudeModelInfo = {
   available: boolean;
-  models: string[];
+  models: ClaudeModelOption[];
   error?: string;
+};
+
+export type ClaudeModelOption = {
+  id: string;
+  label: string;
+  description?: string;
+  model?: string;
+  kind?: 'default' | 'slot' | 'custom';
 };
 
 export type ClaudeGlobalPrompt = {

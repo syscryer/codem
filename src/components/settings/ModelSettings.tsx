@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { DEFAULT_MODEL_VALUE } from '../../constants';
 import type { ClaudeModelInfo, ModelSettings } from '../../types';
 import type { ModelSettingsUpdate } from '../../hooks/useAppSettings';
+import { modelLabel } from '../../lib/ui-labels';
 import { SettingsRow } from './SettingsControls';
 
 type ModelSettingsSectionProps = {
@@ -17,9 +18,12 @@ export function ModelSettingsSection({
   onUpdateModels,
 }: ModelSettingsSectionProps) {
   const [modelId, setModelId] = useState('');
-  const configuredModel = claudeModels.models.find((item) => item !== DEFAULT_MODEL_VALUE) ?? '';
+  const defaultModel = claudeModels.models.find((item) => item.id === DEFAULT_MODEL_VALUE);
   const defaultChoices = [
-    { id: DEFAULT_MODEL_VALUE, label: configuredModel ? `默认 (${configuredModel})` : '默认' },
+    { id: DEFAULT_MODEL_VALUE, label: defaultModel?.description ? `默认 (${defaultModel.description.replace(/^使用当前 Claude Code 默认模型：/, '')})` : '默认' },
+    ...claudeModels.models
+      .filter((model) => model.id !== DEFAULT_MODEL_VALUE)
+      .map((model) => ({ id: model.id, label: model.description ? `${modelLabel(model)} · ${model.description.split('·')[0].trim()}` : modelLabel(model) })),
     ...models.customModels.map((model) => ({ id: model.id, label: model.label || model.id })),
   ];
 
@@ -52,7 +56,7 @@ export function ModelSettingsSection({
 
       <div className="settings-panel">
         <SettingsRow icon={Box} title="当前 Claude 默认模型" description="来自 Claude Code 当前配置，供应商仍由 cc-switch 管理">
-          <span className="settings-inline-value">{configuredModel || '未配置'}</span>
+          <span className="settings-inline-value">{defaultModel?.description?.replace(/^使用当前 Claude Code 默认模型：/, '') || '未配置'}</span>
         </SettingsRow>
         <SettingsRow icon={CircleDot} title="新聊天默认选择" description="仅影响 CodeM Composer 初始模型，不切换供应商">
           <select

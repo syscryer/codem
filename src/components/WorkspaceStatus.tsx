@@ -1,4 +1,4 @@
-import { Check, GitFork, LayoutPanelLeft } from 'lucide-react';
+import { Activity, Check, GitFork, LayoutPanelLeft, RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import type { GitBranchSummary, ProjectSummary, ThreadDetail } from '../types';
@@ -10,6 +10,35 @@ type WorkspaceStatusProps = {
   onSelectBranch: (projectId: string, branchName: string) => Promise<void>;
 };
 
+type ActiveRunPayload =
+  | {
+      active: false;
+    }
+  | {
+      active: true;
+      runId: string;
+      threadId: string;
+      turnId?: string;
+      prompt: string;
+      workingDirectory: string;
+      sessionId?: string;
+      permissionMode: string;
+      model?: string;
+      startedAtMs: number;
+      lastActivityAtMs?: number;
+      lastStdoutAtMs?: number;
+      lastStderrAtMs?: number;
+      lastOutputAtMs?: number;
+      lastEventType?: string;
+      lastTraceName?: string;
+      lastToolName?: string;
+      toolCallCount?: number;
+      currentPhase?: string;
+      currentActivity?: string;
+      eventCount: number;
+      finished: boolean;
+    };
+
 export function WorkspaceStatus({
   activeProject,
   activeThread,
@@ -17,14 +46,22 @@ export function WorkspaceStatus({
   onSelectBranch,
 }: WorkspaceStatusProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [runStatusOpen, setRunStatusOpen] = useState(false);
+  const [runStatus, setRunStatus] = useState<ActiveRunPayload | null>(null);
+  const [runStatusLoading, setRunStatusLoading] = useState(false);
+  const [runStatusError, setRunStatusError] = useState<string | null>(null);
   const [branches, setBranches] = useState<GitBranchSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [switchingBranch, setSwitchingBranch] = useState<string | null>(null);
   const branchMenuRef = useRef<HTMLDivElement | null>(null);
+  const runStatusRef = useRef<HTMLDivElement | null>(null);
 
   useOutsideDismiss({
-    refs: [{ ref: branchMenuRef, onDismiss: () => setMenuOpen(false) }],
+    refs: [
+      { ref: branchMenuRef, onDismiss: () => setMenuOpen(false) },
+      { ref: runStatusRef, onDismiss: () => setRunStatusOpen(false) },
+    ],
   });
 
   useEffect(() => {
@@ -34,6 +71,13 @@ export function WorkspaceStatus({
     setLoadError(null);
     setSwitchingBranch(null);
   }, [activeProject?.id]);
+
+  useEffect(() => {
+    setRunStatusOpen(false);
+    setRunStatus(null);
+    setRunStatusError(null);
+    setRunStatusLoading(false);
+  }, [activeThread?.id]);
 
   const canSelectBranch = Boolean(activeProject?.isGitRepo && activeProject?.id);
 
@@ -89,6 +133,42 @@ export function WorkspaceStatus({
       setLoadError(error instanceof Error ? error.message : '切换分支失败');
     } finally {
       setSwitchingBranch(null);
+    }
+  }
+
+  async function loadRunStatus() {
+    if (!activeThread?.id) {
+      setRunStatus({ active: false });
+      return;
+    }
+
+    setRunStatusLoading(true);
+    setRunStatusError(null);
+    try {
+      const response = await fetch(`/api/claude/runs/active/${encodeURIComponent(activeThread.id)}`);
+      if (response.status === 404) {
+        setRunStatus({ active: false });
+        return;
+      }
+
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || '读取运行状态失败');
+      }
+
+      setRunStatus((await response.json()) as ActiveRunPayload);
+    } catch (error) {
+      setRunStatusError(error instanceof Error ? error.message : '读取运行状态失败');
+    } finally {
+      setRunStatusLoading(false);
+    }
+  }
+
+  function handleRunStatusTriggerClick() {
+    const nextOpen = !runStatusOpen;
+    setRunStatusOpen(nextOpen);
+    if (nextOpen) {
+      void loadRunStatus();
     }
   }
 
@@ -156,7 +236,41 @@ export function WorkspaceStatus({
         </button>
       </div>
       <span className="status-spacer" />
-      <span>{activeThread?.sessionId ? 'session 已连接' : '新会话'}</span>
+      <div className="status-run-picker" ref={runStatusRef}>
+        {runStatusOpen ? (
+          <div className="status-run-menu" role="dialog" aria-label="Claude 运行状态">
+            <div className="status-run-head">
+              <div>
+                <strong>运行状态接口</strong>
+                <span>/api/claude/runs/active/{activeThread?.id ?? ':threadId'}</span>
+              </div>
+              <button
+                type="button"
+                className="status-run-refresh"
+                title="刷新"
+                onClick={() => void loadRunStatus()}
+              >
+                <RefreshCw size={13} />
+              </button>
+            </div>
+            {runStatusLoading ? <div className="status-run-state">正在读取...</div> : null}
+            {!runStatusLoading && runStatusError ? <div className="status-run-error">{runStatusError}</div> : null}
+            {!runStatusLoading && !runStatusError ? (
+              <pre className="status-run-json">{JSON.stringify(runStatus ?? { active: false }, null, 2)}</pre>
+            ) : null}
+          </div>
+        ) : null}
+        <button
+          type="button"
+          className="status-item status-run-trigger"
+          aria-expanded={runStatusOpen}
+          onClick={handleRunStatusTriggerClick}
+        >
+          <Activity size={12} />
+          <span>{activeThread?.sessionId ? 'session 已连接' : '新会话'}</span>
+          <span className="footer-chevron" aria-hidden="true" />
+        </button>
+      </div>
     </footer>
   );
 }

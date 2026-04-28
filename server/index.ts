@@ -1,6 +1,6 @@
 import express, { type ErrorRequestHandler } from 'express';
 import path from 'node:path';
-import { readFileSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   acknowledgeRunEvents,
@@ -292,6 +292,87 @@ app.post('/api/projects/:projectId/open', (request, response) => {
     response.json({ ok: true });
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '打开目录失败');
+  }
+});
+
+app.post('/api/system/attachments/image', async (request, response) => {
+  const workingDirectory =
+    typeof request.body?.workingDirectory === 'string' ? request.body.workingDirectory.trim() : '';
+  const fileName = typeof request.body?.fileName === 'string' ? request.body.fileName.trim() : '';
+  const mimeType = typeof request.body?.mimeType === 'string' ? request.body.mimeType.trim() : '';
+  const dataUrl = typeof request.body?.dataUrl === 'string' ? request.body.dataUrl.trim() : '';
+
+  if (!workingDirectory) {
+    response.status(400).send('workingDirectory 不能为空');
+    return;
+  }
+
+  if (!dataUrl) {
+    response.status(400).send('dataUrl 不能为空');
+    return;
+  }
+
+  const resolvedDirectory = path.resolve(workingDirectory);
+  const accessible = await isDirectoryAccessible(resolvedDirectory);
+  if (!accessible) {
+    response.status(400).send(`目录不存在或不可访问：${resolvedDirectory}`);
+    return;
+  }
+
+  try {
+    const parsedImage = parseImageDataUrl(dataUrl, mimeType);
+    const attachmentsDirectory = path.join(resolvedDirectory, '.codem-attachments');
+    mkdirSync(attachmentsDirectory, { recursive: true });
+
+    const filePath = path.join(attachmentsDirectory, buildAttachmentFileName(parsedImage.extension));
+    writeFileSync(filePath, parsedImage.buffer);
+
+    response.json({
+      path: filePath,
+      mimeType: parsedImage.mimeType,
+      size: parsedImage.buffer.length,
+      name: fileName || path.basename(filePath),
+    });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '图片保存失败');
+  }
+});
+
+app.get('/api/system/image-preview', (request, response) => {
+  const filePath =
+    typeof request.query.path === 'string' && request.query.path.trim()
+      ? path.resolve(request.query.path.trim())
+      : '';
+
+  if (!filePath) {
+    response.status(400).send('path 不能为空');
+    return;
+  }
+
+  if (!canPreviewWorkspaceFile(filePath)) {
+    response.status(403).send('无权访问该路径');
+    return;
+  }
+
+  try {
+    const stats = statSync(filePath);
+    if (!stats.isFile()) {
+      response.status(400).send('目标不是文件');
+      return;
+    }
+    if (stats.size > 15 * 1024 * 1024) {
+      response.status(400).send('图片过大，暂不预览');
+      return;
+    }
+    if (!isSupportedImageFilePath(filePath)) {
+      response.status(400).send('仅支持图片预览');
+      return;
+    }
+
+    response.setHeader('Cache-Control', 'no-store');
+    response.sendFile(path.basename(filePath), { root: path.dirname(filePath) });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '图片预览失败');
   }
 });
 
@@ -729,4 +810,54 @@ function isPayloadTooLargeError(error: unknown) {
 
   const candidate = error as { status?: unknown; statusCode?: unknown; type?: unknown };
   return candidate.status === 413 || candidate.statusCode === 413 || candidate.type === 'entity.too.large';
+}
+
+function parseImageDataUrl(dataUrl: string, requestedMimeType: string) {
+  const matched = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  if (!matched) {
+    throw new Error('仅支持粘贴常见图片格式。');
+  }
+
+  const mimeType = requestedMimeType || matched[1];
+  const extension = extensionFromImageMimeType(mimeType);
+  const buffer = Buffer.from(matched[2], 'base64');
+  if (buffer.length === 0) {
+    throw new Error('图片内容为空。');
+  }
+  if (buffer.length > 10 * 1024 * 1024) {
+    throw new Error('图片过大，请控制在 10MB 以内。');
+  }
+
+  return {
+    mimeType,
+    extension,
+    buffer,
+  };
+}
+
+function extensionFromImageMimeType(mimeType: string) {
+  if (mimeType === 'image/png') {
+    return 'png';
+  }
+  if (mimeType === 'image/jpeg') {
+    return 'jpg';
+  }
+  if (mimeType === 'image/webp') {
+    return 'webp';
+  }
+  if (mimeType === 'image/gif') {
+    return 'gif';
+  }
+
+  throw new Error(`暂不支持的图片格式：${mimeType}`);
+}
+
+function buildAttachmentFileName(extension: string) {
+  const timestamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+  return `pasted-${timestamp}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+}
+
+function isSupportedImageFilePath(filePath: string) {
+  const extension = path.extname(filePath).toLowerCase();
+  return extension === '.png' || extension === '.jpg' || extension === '.jpeg' || extension === '.webp' || extension === '.gif';
 }

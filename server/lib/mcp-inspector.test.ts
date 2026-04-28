@@ -57,3 +57,73 @@ test('listMcpServers returns per-source errors for malformed config', () => {
     assert.match(result.errors[0].message, /解析 MCP 配置失败/);
   });
 });
+
+test('listMcpServers reads Claude global, Desktop, Codex, and project configs', () => {
+  withTemporaryDirectory((homeDirectory) => {
+    const appDataDirectory = path.join(homeDirectory, 'AppData', 'Roaming');
+    const projectDirectory = path.join(homeDirectory, 'project');
+    mkdirSync(path.join(appDataDirectory, 'Claude'), { recursive: true });
+    mkdirSync(path.join(homeDirectory, '.codex'), { recursive: true });
+    mkdirSync(projectDirectory, { recursive: true });
+
+    writeFileSync(
+      path.join(homeDirectory, '.claude.json'),
+      JSON.stringify({
+        mcpServers: {
+          database: {
+            command: 'python',
+            args: ['server.py'],
+          },
+        },
+      }),
+      'utf8',
+    );
+    writeFileSync(
+      path.join(appDataDirectory, 'Claude', 'claude_desktop_config.json'),
+      JSON.stringify({
+        mcpServers: {
+          brave: {
+            command: 'npx',
+            args: ['-y', '@brave/brave-search-mcp-server', '--brave-api-key', 'secret-key'],
+          },
+        },
+      }),
+      'utf8',
+    );
+    writeFileSync(
+      path.join(homeDirectory, '.codex', 'config.toml'),
+      [
+        '[mcp_servers.fetch]',
+        'command = "uvx"',
+        'args = ["mcp-server-fetch"]',
+        '[mcp_servers.fetch.env]',
+        'TOKEN = "hidden"',
+      ].join('\n'),
+      'utf8',
+    );
+    writeFileSync(
+      path.join(projectDirectory, '.mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          project: {
+            command: 'node',
+            args: ['server.js', '--token=hidden'],
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    const result = listMcpServers({ homeDirectory, appDataDirectory, projectDirectory });
+
+    assert.deepEqual(
+      result.servers.map((server) => server.name).sort(),
+      ['brave', 'database', 'fetch', 'project'],
+    );
+    assert.equal(JSON.stringify(result).includes('secret-key'), false);
+    assert.equal(JSON.stringify(result).includes('TOKEN'), false);
+    assert.equal(JSON.stringify(result).includes('--token=hidden'), false);
+    assert.equal(result.servers.find((server) => server.name === 'brave')?.args?.at(-1), '<redacted>');
+    assert.equal(result.servers.find((server) => server.name === 'project')?.args?.at(-1), '--token=<redacted>');
+  });
+});

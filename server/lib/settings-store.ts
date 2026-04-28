@@ -96,6 +96,7 @@ export const defaultModelSettings: ModelSettings = {
   customModels: [],
   defaultModelId: '__default',
 };
+const CLAUDE_MODEL_SLOT_VALUES = ['sonnet', 'opus', 'opus-1m', 'haiku'] as const;
 
 export const defaultShortcutSettings: ShortcutSettings = {
   newChat: 'ctrl+n',
@@ -420,7 +421,9 @@ function normalizeDefaultModelId(value: unknown, customModels: CustomModel[]) {
     return defaultModelSettings.defaultModelId;
   }
 
-  return customModels.some((model) => model.id === id) ? id : defaultModelSettings.defaultModelId;
+  return customModels.some((model) => model.id === id) || (CLAUDE_MODEL_SLOT_VALUES as readonly string[]).includes(id)
+    ? id
+    : defaultModelSettings.defaultModelId;
 }
 
 function normalizeModelId(value: unknown) {

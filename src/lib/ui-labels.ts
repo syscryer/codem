@@ -1,5 +1,5 @@
 import { DEFAULT_MODEL_VALUE } from '../constants';
-import type { PermissionMode } from '../types';
+import type { ClaudeModelOption, PermissionMode } from '../types';
 
 export function permissionLabel(mode: PermissionMode) {
   const labels: Record<PermissionMode, string> = {
@@ -14,14 +14,19 @@ export function permissionLabel(mode: PermissionMode) {
   return labels[mode];
 }
 
-export function modelLabel(model: string) {
-  return model === DEFAULT_MODEL_VALUE ? '默认' : model;
-}
-
-export function modelTriggerLabel(model: string, models: string[]) {
-  if (model !== DEFAULT_MODEL_VALUE) {
-    return modelLabel(model);
+export function modelLabel(model: ClaudeModelOption | string) {
+  if (typeof model === 'string') {
+    return model === DEFAULT_MODEL_VALUE ? '默认' : model;
   }
 
-  return models.find((item) => item !== DEFAULT_MODEL_VALUE) ?? '默认';
+  return model.label || model.model || model.id;
+}
+
+export function modelTriggerLabel(modelId: string, models: ClaudeModelOption[]) {
+  const selected = models.find((item) => item.id === modelId);
+  if (selected) {
+    return modelLabel(selected);
+  }
+
+  return modelId === DEFAULT_MODEL_VALUE ? '默认' : modelId;
 }

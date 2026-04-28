@@ -1,4 +1,5 @@
 import { normalizeShortcutValue } from './shortcuts';
+import { CLAUDE_MODEL_SLOT_VALUES } from '../constants';
 import type {
   AppSettings,
   AppearanceSettings,
@@ -407,7 +408,9 @@ function normalizeDefaultModelId(value: unknown, customModels: CustomModel[]) {
     return defaultModelSettings.defaultModelId;
   }
 
-  return customModels.some((model) => model.id === id) ? id : defaultModelSettings.defaultModelId;
+  return customModels.some((model) => model.id === id) || (CLAUDE_MODEL_SLOT_VALUES as readonly string[]).includes(id)
+    ? id
+    : defaultModelSettings.defaultModelId;
 }
 
 function normalizeModelId(value: unknown) {

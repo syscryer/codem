@@ -511,10 +511,6 @@ svg {
   z-index: 40;
   min-width: 194px;
   padding: 8px 0;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 14px;
-  background: #ffffff;
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.05);
 }
 
 .panel-menu-anchor {
@@ -719,18 +715,18 @@ svg {
 }
 
 .open-app-trigger {
-  height: 28px;
+  height: 30px;
   display: inline-flex;
   align-items: stretch;
   overflow: hidden;
   border: 1px solid #e8e8e8;
-  border-radius: 8px;
+  border-radius: 9px;
   background: #ffffff;
 }
 
 .open-app-main,
 .open-app-toggle {
-  height: 26px;
+  height: 28px;
   border: 0;
   background: transparent;
   color: #717171;
@@ -738,16 +734,16 @@ svg {
 }
 
 .open-app-main {
-  min-width: 30px;
-  padding: 0 6px;
+  min-width: 34px;
+  padding: 0 7px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
 .open-app-toggle {
-  min-width: 21px;
-  padding: 0 4px;
+  min-width: 24px;
+  padding: 0 5px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -766,9 +762,9 @@ svg {
 }
 
 .open-app-icon {
-  width: 17px;
-  height: 17px;
-  border-radius: 3px;
+  width: 19px;
+  height: 19px;
+  border-radius: 4px;
   object-fit: contain;
 }
 
@@ -777,30 +773,26 @@ svg {
   top: calc(100% + 8px);
   right: 0;
   z-index: 40;
-  width: 190px;
+  width: 210px;
   display: grid;
   gap: 2px;
-  padding: 6px;
-  border: 1px solid #ececec;
-  border-radius: 10px;
-  background: #ffffff;
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.16);
+  padding: 7px;
 }
 
 .open-app-option {
-  height: 32px;
+  height: 36px;
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) 14px;
+  grid-template-columns: 22px minmax(0, 1fr) 15px;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 9px;
   background: transparent;
   color: #282828;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
   text-align: left;
-  padding: 0 8px;
+  padding: 0 9px;
 }
 
 .open-app-option:hover,
@@ -809,8 +801,8 @@ svg {
 }
 
 .open-app-option-icon {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   border-radius: 4px;
   object-fit: contain;
 }
@@ -929,6 +921,43 @@ svg {
   justify-items: end;
   gap: 4px;
   max-width: min(74%, 620px);
+}
+
+.user-message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.user-message-attachment {
+  width: 132px;
+  margin: 0;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #ececec;
+  border-radius: 14px;
+  background: #fbfbfb;
+}
+
+.user-message-attachment-preview {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  display: block;
+  object-fit: cover;
+  border-radius: 10px;
+  background: #f1f1f1;
+}
+
+.user-message-attachment-name {
+  color: #666666;
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .user-message .message-body {
@@ -2345,6 +2374,81 @@ svg {
   color: #b7b7b7;
 }
 
+.composer-file-input {
+  display: none;
+}
+
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px 0;
+}
+
+.composer-attachment {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid #e7e7e7;
+  border-radius: 12px;
+  background: #fafafa;
+}
+
+.composer-attachment-preview {
+  width: 44px;
+  height: 44px;
+  display: block;
+  border-radius: 8px;
+  object-fit: cover;
+  background: #f0f0f0;
+}
+
+.composer-attachment-meta {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.composer-attachment-name,
+.composer-attachment-size {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-attachment-name {
+  color: #2f2f2f;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.composer-attachment-size {
+  color: #8a8a8a;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.composer-attachment-remove {
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #8a8a8a;
+  cursor: pointer;
+}
+
+.composer-attachment-remove:hover {
+  background: #efefef;
+  color: #282828;
+}
+
 .composer-toolbar {
   display: flex;
   align-items: center;
@@ -2438,17 +2542,13 @@ svg {
   right: 0;
   bottom: calc(100% + 9px);
   z-index: 32;
-  width: 254px;
+  width: min(330px, calc(100vw - 40px));
   overflow: hidden;
-  padding: 12px 0;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 14px;
-  background: #ffffff;
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.12), 0 2px 7px rgba(0, 0, 0, 0.04);
+  padding: 10px 0;
 }
 
 .model-menu-title {
-  padding: 0 20px 9px;
+  padding: 0 18px 8px;
   color: #969696;
   font-size: 13px;
   line-height: 1.2;
@@ -2456,24 +2556,49 @@ svg {
 
 .model-menu-item {
   width: 100%;
-  height: 34px;
+  min-height: 56px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 18px;
+  grid-template-columns: minmax(0, 1fr) 22px;
   align-items: center;
-  gap: 14px;
-  padding: 0 20px;
+  gap: 16px;
+  padding: 8px 18px;
   border: 0;
   background: transparent;
   color: #27272a;
   cursor: pointer;
   font-size: 15px;
   font-weight: 400;
-  line-height: 1;
+  line-height: 1.25;
   text-align: left;
 }
 
+.model-menu-item-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.model-menu-item-copy span {
+  line-height: 1.35;
+}
+
+.model-menu-item-copy span,
+.model-menu-item-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-menu-item-copy small {
+  color: #898989;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
 .model-menu-item:hover {
-  background: #f6f6f6;
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .model-check {
@@ -2525,10 +2650,6 @@ svg {
   width: 176px;
   overflow: hidden;
   padding: 6px;
-  border: 1px solid rgba(0, 0, 0, 0.07);
-  border-radius: 10px;
-  background: #ffffff;
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.1), 0 2px 7px rgba(0, 0, 0, 0.04);
 }
 
 .permission-menu-item {
@@ -2612,6 +2733,7 @@ svg {
 
 .workspace-status > .status-item,
 .workspace-status > .status-branch-picker,
+.workspace-status > .status-run-picker,
 .workspace-status > span:not(.status-spacer) {
   height: var(--workspace-footer-content-height);
   display: inline-flex;
@@ -2786,6 +2908,10 @@ svg {
   position: relative;
 }
 
+.status-run-picker {
+  position: relative;
+}
+
 .status-branch-trigger {
   height: var(--workspace-footer-content-height);
   padding: 0 4px;
@@ -2797,7 +2923,9 @@ svg {
 }
 
 .status-branch-trigger:hover,
-.status-branch-trigger[aria-expanded="true"] {
+.status-branch-trigger[aria-expanded="true"],
+.status-run-trigger:hover,
+.status-run-trigger[aria-expanded="true"] {
   background: #f5f5f4;
   color: #565656;
 }
@@ -2805,6 +2933,17 @@ svg {
 .status-branch-trigger:disabled {
   cursor: default;
   opacity: 0.75;
+}
+
+.status-run-trigger {
+  height: var(--workspace-footer-content-height);
+  gap: 5px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
 }
 
 .status-branch-menu {
@@ -2816,10 +2955,6 @@ svg {
   max-width: 280px;
   overflow: hidden;
   padding: 8px 0;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 12px;
-  background: #ffffff;
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.05);
 }
 
 .status-branch-menu-title,
@@ -3693,12 +3828,34 @@ svg {
 .codex-desktop .settings-view,
 .codex-desktop .settings-content,
 .codex-desktop .dialog-card,
-.codex-desktop .workspace-menu,
-.codex-desktop .model-menu,
-.codex-desktop .permission-menu,
 .codex-desktop .debug-drawer {
   background: var(--app-surface);
   color: var(--app-text);
+}
+
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu) {
+  border-color: color-mix(in srgb, var(--app-border) 68%, transparent);
+  background: color-mix(in srgb, var(--app-surface) 8%, transparent);
+  color: var(--app-text);
+  box-shadow:
+    0 26px 58px rgba(15, 23, 42, 0.18),
+    0 10px 24px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 color-mix(in srgb, var(--app-surface) 95%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--app-border) 20%, transparent);
+  backdrop-filter: blur(18px) saturate(1.55);
+  -webkit-backdrop-filter: blur(18px) saturate(1.55);
+}
+
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu)::before {
+  background:
+    radial-gradient(ellipse at 22% 0%, color-mix(in srgb, var(--app-surface) 34%, transparent), transparent 38%),
+    linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 10%, transparent), color-mix(in srgb, var(--app-surface-muted) 4%, transparent));
+}
+
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu)::after {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 18%, transparent), transparent 32%),
+    linear-gradient(90deg, color-mix(in srgb, var(--app-surface) 12%, transparent), transparent 24%, transparent 76%, color-mix(in srgb, var(--app-surface) 6%, transparent));
 }
 
 .codex-desktop .app-sidebar {
@@ -3736,6 +3893,7 @@ svg {
 .codex-desktop .thinking-message pre,
 .codex-desktop .debug-item pre,
 .codex-desktop .raw-pre,
+.codex-desktop .status-run-json,
 .codex-desktop .markdown-body .code-block-shell pre {
   background: var(--app-surface-muted);
   color: var(--app-text);
@@ -3744,6 +3902,150 @@ svg {
 
 .codex-desktop .user-message .message-body,
 .codex-desktop .appearance-preview-composer {
+  background: var(--app-surface-subtle);
+  border-color: var(--app-border);
+}
+
+.status-run-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 20;
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(420px, calc(100vh - 140px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu) {
+  overflow: hidden;
+  isolation: isolate;
+  border: 1px solid rgba(214, 218, 224, 0.68);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 26px 58px rgba(15, 23, 42, 0.18),
+    0 10px 24px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -1px 0 rgba(148, 163, 184, 0.2);
+  backdrop-filter: blur(18px) saturate(1.65);
+  -webkit-backdrop-filter: blur(18px) saturate(1.65);
+}
+
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu)::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse at 22% 0%, rgba(255, 255, 255, 0.34), transparent 38%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.1), rgba(241, 247, 255, 0.04));
+  pointer-events: none;
+}
+
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu)::after {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  z-index: -1;
+  border-radius: 17px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 32%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.12), transparent 24%, transparent 76%, rgba(255, 255, 255, 0.06));
+  pointer-events: none;
+}
+
+:is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .status-branch-menu-item):hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.open-app-option.active {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.status-run-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.status-run-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.status-run-head strong {
+  color: #242424;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.status-run-head span {
+  min-width: 0;
+  overflow: hidden;
+  color: #8a8a8a;
+  font-size: 11px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-run-refresh {
+  width: 26px;
+  height: 26px;
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #6f6f6f;
+  cursor: pointer;
+}
+
+.status-run-refresh:hover {
+  background: #f5f5f4;
+  color: #242424;
+}
+
+.status-run-state,
+.status-run-error {
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.status-run-state {
+  color: #666666;
+}
+
+.status-run-error {
+  color: #b42318;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.status-run-json {
+  min-height: 0;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  background: #fafafa;
+  color: #2d2d2d;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.codex-desktop .user-message-attachment {
   background: var(--app-surface-subtle);
   border-color: var(--app-border);
 }
@@ -3778,9 +4080,19 @@ svg {
 .codex-desktop .toolbar-select:hover,
 .codex-desktop .model-trigger:hover,
 .codex-desktop .permission-trigger:hover,
-.codex-desktop .status-branch-trigger:hover {
+.codex-desktop .status-branch-trigger:hover,
+.codex-desktop .status-run-trigger:hover {
   background: var(--app-hover);
   color: var(--app-text-strong);
+}
+
+.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .status-branch-menu-item):hover {
+  background: color-mix(in srgb, var(--app-surface-muted) 28%, transparent);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .open-app-option.active {
+  background: color-mix(in srgb, var(--app-surface-muted) 32%, transparent);
 }
 
 .codex-desktop .settings-section-head h1,
@@ -3804,6 +4116,8 @@ svg {
 .codex-desktop .assistant-runtime-footnote,
 .codex-desktop .assistant-runtime-question-hint,
 .codex-desktop .dialog-head p,
+.codex-desktop .status-run-head span,
+.codex-desktop .status-run-state,
 .codex-desktop .muted {
   color: var(--app-muted);
 }
@@ -3812,7 +4126,7 @@ svg {
   font-size: var(--app-ui-font-size, 13px);
 }
 
-.codex-desktop :where(.desktop-menubar, .sidebar-section-head, .sidebar-search input, .workspace-menu-group-title, .sidebar-thread small, .sidebar-branch, .turn-time, .turn-status, .settings-row-label small, .assistant-runtime-footnote, .assistant-runtime-question-hint, .dialog-head p, .status-branch-menu-meta) {
+.codex-desktop :where(.desktop-menubar, .sidebar-section-head, .sidebar-search input, .workspace-menu-group-title, .sidebar-thread small, .sidebar-branch, .turn-time, .turn-status, .settings-row-label small, .assistant-runtime-footnote, .assistant-runtime-question-hint, .dialog-head p, .status-branch-menu-meta, .status-run-head span) {
   font-size: max(11px, calc(var(--app-ui-font-size, 13px) - 1px));
 }
 
@@ -3820,15 +4134,16 @@ svg {
   font-size: calc(var(--app-ui-font-size, 13px) + 5px);
 }
 
-.codex-desktop .status-branch-menu {
-  border-color: var(--app-border);
-  background: var(--app-surface);
+.codex-desktop .status-branch-menu,
+.codex-desktop .status-run-menu {
   color: var(--app-text);
 }
 
 .codex-desktop .status-branch-menu-title,
 .codex-desktop .status-branch-menu-state,
-.codex-desktop .status-branch-menu-meta {
+.codex-desktop .status-branch-menu-meta,
+.codex-desktop .status-run-head span,
+.codex-desktop .status-run-state {
   color: var(--app-muted);
 }
 
@@ -3836,12 +4151,14 @@ svg {
   color: var(--app-text);
 }
 
-.codex-desktop .status-branch-menu-item:hover {
-  background: var(--app-hover);
+.codex-desktop .status-branch-menu-item:hover,
+.codex-desktop .status-run-refresh:hover {
+  background: color-mix(in srgb, var(--app-surface-muted) 28%, transparent);
   color: var(--app-text-strong);
 }
 
-.codex-desktop .status-branch-trigger[aria-expanded="true"] {
+.codex-desktop .status-branch-trigger[aria-expanded="true"],
+.codex-desktop .status-run-trigger[aria-expanded="true"] {
   background: var(--app-hover);
   color: var(--app-text-strong);
 }

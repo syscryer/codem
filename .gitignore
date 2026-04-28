@@ -13,6 +13,7 @@ output/
 .codex-dev*.log
 .codem-*.log
 .codem-*.err.log
+.codem-attachments/
 *.tsbuildinfo
 .idea/
 .learnings/

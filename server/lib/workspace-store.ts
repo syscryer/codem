@@ -51,6 +51,14 @@ type ApprovalRequest = {
   historical?: boolean;
 };
 
+type UserImageAttachment = {
+  id: string;
+  path: string;
+  name: string;
+  mimeType?: string;
+  size?: number;
+};
+
 type ThreadTool = {
   id: string;
   name: string;
@@ -111,6 +119,7 @@ export type ThreadTurn = {
       }
   >;
   tools: ThreadTool[];
+  userAttachments?: UserImageAttachment[];
   pendingUserInputRequests?: RequestUserInputRequest[];
   pendingApprovalRequests?: ApprovalRequest[];
 };
@@ -230,6 +239,7 @@ type StoredMessageRow = {
   cache_read_input_tokens: number | null;
   total_cost_usd: number | null;
   pending_approval_requests_json: string | null;
+  user_attachments_json: string | null;
   created_at: string;
 };
 
@@ -607,7 +617,15 @@ export function getThreadHistory(threadId: string) {
     throw new Error('聊天不存在');
   }
 
+  const storedTurns = readStoredThreadHistory(threadId);
   if (thread.session_id) {
+    if (storedTurns.some(hasUserAttachments)) {
+      return {
+        threadId,
+        turns: storedTurns,
+      };
+    }
+
     const turns = hasUsableTranscript(thread)
       ? parseClaudeTranscript(thread.transcript_path ?? '', thread.session_id)
       : [];
@@ -618,11 +636,10 @@ export function getThreadHistory(threadId: string) {
 
     return {
       threadId,
-      turns,
+      turns: turns.length > 0 ? turns : storedTurns,
     };
   }
 
-  const storedTurns = readStoredThreadHistory(threadId);
   if (storedTurns.length > 0) {
     if (
       thread.transcript_path &&
@@ -678,9 +695,9 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
     INSERT INTO messages (
       id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics, session_id,
       phase, started_at_ms, duration_ms, input_tokens, output_tokens, cache_creation_input_tokens,
-      cache_read_input_tokens, total_cost_usd, pending_approval_requests_json, created_at
+      cache_read_input_tokens, total_cost_usd, pending_approval_requests_json, user_attachments_json, created_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertToolCall = db.prepare(`
     INSERT INTO tool_calls (
@@ -718,6 +735,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
         turn.cacheReadInputTokens ?? null,
         turn.totalCostUsd ?? null,
         serializePendingApprovalRequests(turn.pendingApprovalRequests),
+        serializeUserAttachments(turn.userAttachments),
         baseCreatedAt,
       );
 
@@ -752,6 +770,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
             turn.cacheReadInputTokens ?? null,
             turn.totalCostUsd ?? null,
             serializePendingApprovalRequests(turn.pendingApprovalRequests),
+            null,
             baseCreatedAt,
           );
           return;
@@ -979,6 +998,7 @@ function initializeDatabase() {
       cache_read_input_tokens INTEGER,
       total_cost_usd REAL,
       pending_approval_requests_json TEXT,
+      user_attachments_json TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -1024,6 +1044,7 @@ function initializeDatabase() {
   ensureColumn('messages', 'cache_read_input_tokens', 'INTEGER');
   ensureColumn('messages', 'total_cost_usd', 'REAL');
   ensureColumn('messages', 'pending_approval_requests_json', 'TEXT');
+  ensureColumn('messages', 'user_attachments_json', 'TEXT');
 }
 
 function resolveAppDirectory() {
@@ -1659,7 +1680,7 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
   const messageRows = db
     .prepare(`
       SELECT id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics, session_id, created_at
-      , phase, started_at_ms, duration_ms, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_cost_usd, pending_approval_requests_json
+      , phase, started_at_ms, duration_ms, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_cost_usd, pending_approval_requests_json, user_attachments_json
       FROM messages
       WHERE thread_id = ?
       ORDER BY turn_sort ASC, item_sort ASC, CASE role WHEN 'user' THEN 0 ELSE 1 END ASC
@@ -1728,6 +1749,7 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
 
     if (row.role === 'user') {
       turn.userText = row.content;
+      turn.userAttachments = parseStoredUserAttachments(row.user_attachments_json) ?? turn.userAttachments;
     } else if (row.content.trim()) {
       turn.assistantText += row.content;
       turn.itemBuckets.push({
@@ -1828,11 +1850,19 @@ function shouldRefreshStoredHistory(threadId: string, transcriptPath: string, tu
     return false;
   }
 
+  if (turns.some(hasUserAttachments)) {
+    return false;
+  }
+
   return shouldReparseStoredHistory(turns) || isStoredHistoryOutdated(threadId, transcriptPath);
 }
 
 function hasPendingHumanRequest(turn: ThreadTurn) {
   return Boolean(turn.pendingUserInputRequests?.length) || Boolean(turn.pendingApprovalRequests?.length);
+}
+
+function hasUserAttachments(turn: ThreadTurn) {
+  return Boolean(turn.userAttachments?.length);
 }
 
 function isStoredHistoryOutdated(threadId: string, transcriptPath: string) {
@@ -2688,6 +2718,60 @@ function parseStoredApprovalRequests(value: string | null): ApprovalRequest[] | 
   } catch {
     return undefined;
   }
+}
+
+function serializeUserAttachments(attachments: UserImageAttachment[] | undefined) {
+  if (!attachments?.length) {
+    return null;
+  }
+
+  const normalized = attachments
+    .map((attachment) => normalizeStoredUserAttachment(attachment))
+    .filter((attachment): attachment is UserImageAttachment => Boolean(attachment));
+  return normalized.length > 0 ? JSON.stringify(normalized) : null;
+}
+
+function parseStoredUserAttachments(value: string | null): UserImageAttachment[] | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return undefined;
+    }
+
+    const attachments = parsed
+      .map((item) => normalizeStoredUserAttachment(item))
+      .filter((item): item is UserImageAttachment => Boolean(item));
+    return attachments.length > 0 ? attachments : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeStoredUserAttachment(value: unknown): UserImageAttachment | null {
+  const item = asRecord(value);
+  if (!item) {
+    return null;
+  }
+
+  const pathValue = firstNonEmptyString(item, ['path']);
+  const name = firstNonEmptyString(item, ['name']);
+  if (!pathValue || !name) {
+    return null;
+  }
+
+  const size = typeof item.size === 'number' && Number.isFinite(item.size) ? item.size : undefined;
+
+  return {
+    id: firstNonEmptyString(item, ['id']) ?? randomUUID(),
+    path: pathValue,
+    name,
+    mimeType: firstNonEmptyString(item, ['mimeType', 'mime_type']),
+    size,
+  };
 }
 
 function normalizeStoredApprovalRequest(value: unknown): ApprovalRequest | null {

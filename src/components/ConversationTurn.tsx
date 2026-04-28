@@ -17,6 +17,7 @@ import type {
   RuntimeRecoveryHint,
   RuntimeSuggestedAction,
   ToolStep,
+  UserImageAttachment,
 } from '../types';
 
 function ConversationTurnViewComponent({
@@ -86,17 +87,22 @@ function ConversationTurnViewComponent({
 
   const assistantCopyText = getAssistantCopyText(turn);
   const messageTime = formatMessageTime(turn.startedAtMs);
+  const hasUserText = Boolean(turn.userText.trim());
+  const hasUserAttachments = Boolean(turn.userAttachments?.length);
 
   return (
     <article className={`turn ${isLatest ? 'latest-turn' : ''}`}>
       <section className="message user-message">
         <div className="message-label">You</div>
         <div className="user-message-content">
-          <div className="message-body preserve-format">{turn.userText}</div>
-          <div className="turn-actions user-turn-actions" aria-label="用户消息操作">
-            <InlineCopyButton text={turn.userText} title="复制消息" />
-            {messageTime ? <span className="turn-time">{messageTime}</span> : null}
-          </div>
+          {hasUserAttachments ? <UserAttachmentGallery attachments={turn.userAttachments ?? []} /> : null}
+          {hasUserText ? <div className="message-body preserve-format">{turn.userText}</div> : null}
+          {hasUserText || messageTime ? (
+            <div className="turn-actions user-turn-actions" aria-label="用户消息操作">
+              {hasUserText ? <InlineCopyButton text={turn.userText} title="复制消息" /> : null}
+              {messageTime ? <span className="turn-time">{messageTime}</span> : null}
+            </div>
+          ) : null}
         </div>
       </section>
 
@@ -253,6 +259,26 @@ function ThinkingMessage({ content }: { content: string }) {
 }
 
 export const ConversationTurnView = memo(ConversationTurnViewComponent);
+
+function UserAttachmentGallery({ attachments }: { attachments: UserImageAttachment[] }) {
+  return (
+    <div className="user-message-attachments" aria-label="用户图片附件">
+      {attachments.map((attachment) => (
+        <figure key={attachment.id} className="user-message-attachment">
+          <img
+            src={buildUserAttachmentPreviewUrl(attachment.path)}
+            alt={attachment.name || '图片附件'}
+            className="user-message-attachment-preview"
+            loading="lazy"
+          />
+          <figcaption className="user-message-attachment-name" title={attachment.name}>
+            {attachment.name}
+          </figcaption>
+        </figure>
+      ))}
+    </div>
+  );
+}
 
 type DisplayAssistantItem =
   | ConversationTurn['items'][number]
@@ -2294,6 +2320,10 @@ function getDiffSign(type: 'context' | 'add' | 'remove') {
 function getFileName(filePath: string) {
   const segments = filePath.split(/[\\/]/);
   return segments[segments.length - 1] || filePath;
+}
+
+function buildUserAttachmentPreviewUrl(filePath: string) {
+  return `/api/system/image-preview?path=${encodeURIComponent(filePath)}`;
 }
 
 function InlineCopyButton({

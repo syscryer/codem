@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_MODEL_VALUE, permissionMenuModes } from '../constants';
 import {
   appendThinkingItem,
@@ -32,6 +32,7 @@ import type {
   ApprovalRequest,
   ClaudeEvent,
   ClaudeModelInfo,
+  ClaudeModelOption,
   ConversationTurn,
   DebugEvent,
   ModelSettings,
@@ -44,6 +45,7 @@ import type {
   ToolStep,
   ThreadDetail,
   ThreadSummary,
+  UserImageAttachment,
 } from '../types';
 
 type ThreadMetadataPatch = {
@@ -92,8 +94,16 @@ type RunContext = {
 
 type QueuedPrompt = {
   id: string;
-  text: string;
+  prompt: string;
+  displayText: string;
+  attachments?: UserImageAttachment[];
   createdAtMs: number;
+};
+
+type PromptSubmission = {
+  prompt: string;
+  displayText: string;
+  attachments?: UserImageAttachment[];
 };
 
 type UseClaudeRunArgs = {
@@ -167,7 +177,10 @@ export function useClaudeRun({
     Object.entries(activeRunsByThreadId).map(([threadId, run]) => [threadId, run.turnId]),
   );
   const queuedPrompts = activeThreadId ? queuedPromptsByThreadId[activeThreadId] ?? [] : [];
-  const models = mergeModelOptions(claudeModels.models, appModelSettings.customModels.map((item) => item.id));
+  const models = useMemo(
+    () => mergeModelOptions(claudeModels.models, appModelSettings.customModels),
+    [claudeModels.models, appModelSettings.customModels],
+  );
 
   useEffect(() => {
     void loadHealth();
@@ -175,8 +188,8 @@ export function useClaudeRun({
   }, []);
 
   useEffect(() => {
-    setModel(activeThreadSummary?.model?.trim() || appModelSettings.defaultModelId || DEFAULT_MODEL_VALUE);
-  }, [activeThreadSummary?.id, activeThreadSummary?.model, appModelSettings.defaultModelId]);
+    setModel(resolveInitialModelId(activeThreadSummary?.model, models, appModelSettings.defaultModelId));
+  }, [activeThreadSummary?.id, activeThreadSummary?.model, appModelSettings.defaultModelId, models]);
 
   useEffect(() => {
     if (!activeThreadSummary || activeThreadIsRunning) {
@@ -255,7 +268,7 @@ export function useClaudeRun({
       const payload = (await response.json()) as ClaudeModelInfo;
       setClaudeModels({
         available: payload.available === true,
-        models: Array.isArray(payload.models) ? payload.models.filter(Boolean) : [],
+        models: normalizeClaudeModelOptions(payload.models),
         error: typeof payload.error === 'string' ? payload.error : undefined,
       });
       setModel((current) => current || appModelSettings.defaultModelId || DEFAULT_MODEL_VALUE);
@@ -376,10 +389,12 @@ export function useClaudeRun({
     return next;
   }
 
-  function enqueuePrompt(thread: ThreadSummary, text: string) {
+  function enqueuePrompt(thread: ThreadSummary, submission: PromptSubmission) {
     const queuedPrompt: QueuedPrompt = {
       id: crypto.randomUUID(),
-      text,
+      prompt: submission.prompt,
+      displayText: submission.displayText,
+      attachments: submission.attachments,
       createdAtMs: Date.now(),
     };
     threadSummariesByIdRef.current.set(thread.id, thread);
@@ -389,7 +404,7 @@ export function useClaudeRun({
     }));
     appendDebug(thread.id, {
       title: '已排队下一轮提示',
-      content: text,
+      content: submission.prompt,
     });
     return queuedPrompt;
   }
@@ -462,9 +477,11 @@ export function useClaudeRun({
     }
 
     window.setTimeout(() => {
-      void startRun(thread, nextPrompt.text, {
+      void startRun(thread, nextPrompt.prompt, {
         workingDirectory: thread.workingDirectory,
         sessionId: normalizeSessionId(thread.sessionId),
+        displayText: nextPrompt.displayText,
+        attachments: nextPrompt.attachments,
       }).then((started) => {
         if (started) {
           showToast('已发送排队提示。', 'success');
@@ -550,6 +567,8 @@ export function useClaudeRun({
     options?: {
       workingDirectory?: string;
       sessionId?: string;
+      displayText?: string;
+      attachments?: UserImageAttachment[];
       permissionModeOverride?: PermissionMode;
       toolResult?: {
         requestId: string;
@@ -570,8 +589,10 @@ export function useClaudeRun({
       options?.sessionId && options.sessionId.trim() ? options.sessionId.trim() : undefined;
     const runPermissionMode = options?.permissionModeOverride ?? permissionMode;
     const runModel = model;
+    const requestModel = resolveRequestModel(findModelOption(models, runModel), runModel);
     const submitAtMs = Date.now();
     const turnId = crypto.randomUUID();
+    const turnDisplayText = normalizeDisplayText(options?.displayText, trimmedPrompt);
     const context: RunContext = {
       threadId: thread.id,
       turnId,
@@ -597,7 +618,8 @@ export function useClaudeRun({
           ...closeDanglingTurns(existing.turns),
           {
             id: turnId,
-            userText: trimmedPrompt,
+            userText: turnDisplayText,
+            userAttachments: options?.attachments,
             workspace: runWorkingDirectory,
             assistantText: '',
             tools: [],
@@ -631,7 +653,7 @@ export function useClaudeRun({
           prompt: trimmedPrompt,
           workingDirectory: runWorkingDirectory,
           permissionMode: runPermissionMode,
-          model: runModel === DEFAULT_MODEL_VALUE ? undefined : runModel,
+          model: requestModel,
           sessionId: runSessionId,
           toolResult: options?.toolResult,
           clientSubmitAtMs: submitAtMs,
@@ -720,7 +742,7 @@ export function useClaudeRun({
         traceStartedAtMs: startedAtMs,
         firstClientDeltaAtMs: 0,
         firstTextApplyAtMs: 0,
-        model: activeRun.model || model,
+        model: resolveInitialModelId(activeRun.model, models, model),
         permissionMode: activeRun.permissionMode || permissionMode,
       };
       registerRunContext(context);
@@ -1222,8 +1244,8 @@ export function useClaudeRun({
     }
   }
 
-  async function submitPrompt(promptText: string) {
-    const trimmedPrompt = promptText.trim();
+  async function submitPrompt(submission: PromptSubmission) {
+    const trimmedPrompt = submission.prompt.trim();
     if (!trimmedPrompt) {
       return false;
     }
@@ -1234,7 +1256,11 @@ export function useClaudeRun({
     }
 
     if (isThreadRunning(thread.id)) {
-      enqueuePrompt(thread, trimmedPrompt);
+      enqueuePrompt(thread, {
+        prompt: trimmedPrompt,
+        displayText: normalizeDisplayText(submission.displayText, ''),
+        attachments: submission.attachments,
+      });
       showToast('已排队，当前运行完成后会继续发送。', 'success');
       return true;
     }
@@ -1242,6 +1268,8 @@ export function useClaudeRun({
     return startRun(thread, trimmedPrompt, {
       workingDirectory: workspace.trim() || thread.workingDirectory,
       sessionId: normalizeSessionId(thread.sessionId),
+      displayText: submission.displayText,
+      attachments: submission.attachments,
     });
   }
 
@@ -1985,15 +2013,142 @@ function normalizeSessionId(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function mergeModelOptions(configuredModels: string[], customModels: string[]) {
-  const result: string[] = [];
-  for (const item of [DEFAULT_MODEL_VALUE, ...configuredModels, ...customModels]) {
-    const model = item.trim();
-    if (model && !result.includes(model)) {
-      result.push(model);
-    }
+function normalizeDisplayText(displayText: string | undefined, fallback: string) {
+  const normalized = typeof displayText === 'string' ? displayText.trim() : '';
+  if (normalized) {
+    return normalized;
   }
+
+  return fallback.trim();
+}
+
+function mergeModelOptions(configuredModels: ClaudeModelOption[], customModels: ModelSettings['customModels']) {
+  const result: ClaudeModelOption[] = [];
+  const seenIds = new Set<string>();
+  const push = (option: ClaudeModelOption) => {
+    const id = option.id.trim();
+    if (!id || seenIds.has(id)) {
+      return;
+    }
+
+    seenIds.add(id);
+    result.push({ ...option, id });
+  };
+
+  if (!configuredModels.some((option) => option.id === DEFAULT_MODEL_VALUE)) {
+    push({
+      id: DEFAULT_MODEL_VALUE,
+      label: '默认',
+      description: '使用当前 Claude Code 默认模型，不传 --model',
+      kind: 'default',
+    });
+  }
+
+  configuredModels.forEach(push);
+  customModels.forEach((item) => {
+    push({
+      id: item.id,
+      label: item.label || item.id,
+      description: item.description || '自定义模型',
+      model: item.id,
+      kind: 'custom',
+    });
+  });
+
   return result;
+}
+
+function normalizeClaudeModelOptions(value: unknown): ClaudeModelOption[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => {
+      if (typeof item === 'string') {
+        const id = item.trim();
+        if (!id) {
+          return null;
+        }
+        return {
+          id,
+          label: id === DEFAULT_MODEL_VALUE ? '默认' : id,
+          model: id === DEFAULT_MODEL_VALUE ? undefined : id,
+          kind: id === DEFAULT_MODEL_VALUE ? 'default' : 'custom',
+        } satisfies ClaudeModelOption;
+      }
+
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+
+      const record = item as Record<string, unknown>;
+      const id = typeof record.id === 'string' ? record.id.trim() : '';
+      if (!id) {
+        return null;
+      }
+
+      const model = typeof record.model === 'string' && record.model.trim() ? record.model.trim() : undefined;
+      const label =
+        typeof record.label === 'string' && record.label.trim()
+          ? record.label.trim()
+          : model || (id === DEFAULT_MODEL_VALUE ? '默认' : id);
+      const description =
+        typeof record.description === 'string' && record.description.trim()
+          ? record.description.trim()
+          : undefined;
+      const kind =
+        record.kind === 'default' || record.kind === 'slot' || record.kind === 'custom' ? record.kind : undefined;
+
+      return {
+        id,
+        label,
+        description,
+        model,
+        kind,
+      } satisfies ClaudeModelOption;
+    })
+    .filter((item): item is ClaudeModelOption => Boolean(item));
+}
+
+function findModelOption(models: ClaudeModelOption[], modelId: string) {
+  return models.find((option) => option.id === modelId);
+}
+
+function resolveRequestModel(option: ClaudeModelOption | undefined, modelId: string) {
+  if (!option) {
+    return modelId === DEFAULT_MODEL_VALUE ? undefined : modelId;
+  }
+
+  if (option.id === DEFAULT_MODEL_VALUE || option.kind === 'default') {
+    return undefined;
+  }
+
+  return option.model || option.id;
+}
+
+function resolveInitialModelId(
+  savedModel: string | undefined,
+  models: ClaudeModelOption[],
+  fallbackModelId: string,
+) {
+  const normalized = savedModel?.trim();
+  if (normalized) {
+    const exact = models.find((option) => option.id === normalized);
+    if (exact) {
+      return exact.id;
+    }
+
+    const byModel = models.find((option) => option.model === normalized);
+    if (byModel) {
+      return byModel.id;
+    }
+
+    return normalized;
+  }
+
+  const fallback = fallbackModelId?.trim() || DEFAULT_MODEL_VALUE;
+  return models.some((option) => option.id === fallback) ? fallback : DEFAULT_MODEL_VALUE;
 }
 
 async function readErrorResponseText(response: Response) {

@@ -1,6 +1,12 @@
 import { RotateCcw, Server } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { McpServersResponse } from '../../types';
+import type { McpServerSummary, McpServersResponse } from '../../types';
+
+const mcpStatusLabels: Record<McpServerSummary['status'], string> = {
+  available: '可用',
+  unknown: '已配置',
+  error: '异常',
+};
 
 export function McpSettingsSection() {
   const [payload, setPayload] = useState<McpServersResponse>({ servers: [], errors: [] });
@@ -63,7 +69,7 @@ export function McpSettingsSection() {
                   <small>{[server.command, ...(server.args ?? [])].join(' ')}</small>
                 ) : null}
               </div>
-              <span className={`settings-badge ${server.status}`}>{server.status}</span>
+              <span className={`settings-badge ${server.status}`}>{mcpStatusLabels[server.status]}</span>
             </div>
           ))}
           {payload.errors.map((item) => (
