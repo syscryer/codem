@@ -49,7 +49,7 @@ export function ChatHeader({
       </div>
       <div className="header-actions">
         <button type="button" className="icon-button" title="运行">
-          <Play size={14} />
+          <Play size={15} />
         </button>
         <OpenAppMenu
           disabled={!activeProject}
@@ -64,7 +64,7 @@ export function ChatHeader({
         </button>
         {showDebugButton ? (
           <button type="button" className="icon-button" onClick={onToggleDebug}>
-            <TerminalSquare size={14} />
+            <TerminalSquare size={15} />
           </button>
         ) : null}
         <button
@@ -73,7 +73,7 @@ export function ChatHeader({
           title="使用当前项目目录"
           onClick={onUseProjectWorkspace}
         >
-          <Home size={14} />
+          <Home size={15} />
         </button>
         <button
           type="button"
@@ -86,7 +86,7 @@ export function ChatHeader({
           <span className="diff-label">{gitDiffLabels.secondary}</span>
         </button>
         <button type="button" className="icon-button" title="布局">
-          <SquareSplitHorizontal size={14} />
+          <SquareSplitHorizontal size={15} />
         </button>
       </div>
     </header>
@@ -131,7 +131,9 @@ function OpenAppMenu({
           disabled={disabled || !selectedTarget}
           onClick={() => onOpenTarget(selectedTarget?.id)}
         >
-          <img className="open-app-icon" src={selectedIcon} alt="" aria-hidden="true" />
+          <span className="open-app-icon-frame" aria-hidden="true">
+            <img className="open-app-icon" data-open-app-id={selectedTarget?.id} src={selectedIcon} alt="" />
+          </span>
         </button>
         <button
           type="button"
@@ -143,7 +145,7 @@ function OpenAppMenu({
           disabled={disabled || targets.length === 0}
           onClick={() => setOpen((value) => !value)}
         >
-          <ChevronDown size={14} />
+          <ChevronDown size={15} />
         </button>
       </div>
       {open ? (
@@ -160,9 +162,11 @@ function OpenAppMenu({
                 onOpenTarget(target.id);
               }}
             >
-              <img className="open-app-option-icon" src={getOpenAppIcon(target.id)} alt="" aria-hidden="true" />
+              <span className="open-app-option-icon-frame" aria-hidden="true">
+                <img className="open-app-option-icon" data-open-app-id={target.id} src={getOpenAppIcon(target.id)} alt="" />
+              </span>
               <span>{target.label}</span>
-              {target.id === selectedTarget?.id ? <Check className="open-app-check" size={14} /> : null}
+              {target.id === selectedTarget?.id ? <Check className="open-app-check" size={15} /> : null}
             </button>
           ))}
         </div>

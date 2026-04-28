@@ -643,6 +643,7 @@ svg {
 }
 
 .header-actions {
+  --header-control-height: 32px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -659,8 +660,8 @@ svg {
 }
 
 .icon-button {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   display: inline-grid;
   place-items: center;
   color: #717171;
@@ -668,14 +669,15 @@ svg {
 }
 
 .pill-button {
-  height: 30px;
+  height: var(--header-control-height);
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 0 9px;
+  padding: 0 12px;
   border: 1px solid #eeeeee;
+  border-radius: 9px;
   background: #ffffff;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .icon-button:disabled,
@@ -715,7 +717,7 @@ svg {
 }
 
 .open-app-trigger {
-  height: 30px;
+  height: var(--header-control-height);
   display: inline-flex;
   align-items: stretch;
   overflow: hidden;
@@ -726,7 +728,7 @@ svg {
 
 .open-app-main,
 .open-app-toggle {
-  height: 28px;
+  height: 100%;
   border: 0;
   background: transparent;
   color: #717171;
@@ -734,7 +736,7 @@ svg {
 }
 
 .open-app-main {
-  min-width: 34px;
+  min-width: 42px;
   padding: 0 7px;
   display: inline-flex;
   align-items: center;
@@ -742,8 +744,8 @@ svg {
 }
 
 .open-app-toggle {
-  min-width: 24px;
-  padding: 0 5px;
+  min-width: 30px;
+  padding: 0 6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -761,11 +763,23 @@ svg {
   background: #f8f8f8;
 }
 
+.open-app-icon-frame {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+}
+
 .open-app-icon {
-  width: 19px;
-  height: 19px;
+  width: 24px;
+  height: 24px;
   border-radius: 4px;
   object-fit: contain;
+}
+
+.open-app-icon[data-open-app-id="vscode"] {
+  width: 27px;
+  height: 27px;
 }
 
 .open-app-dropdown {
@@ -773,24 +787,24 @@ svg {
   top: calc(100% + 8px);
   right: 0;
   z-index: 40;
-  width: 210px;
+  width: 230px;
   display: grid;
   gap: 2px;
-  padding: 7px;
+  padding: 8px;
 }
 
 .open-app-option {
-  height: 36px;
+  height: 42px;
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) 15px;
+  grid-template-columns: 30px minmax(0, 1fr) 16px;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   border: 0;
   border-radius: 9px;
   background: transparent;
   color: #282828;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
   text-align: left;
   padding: 0 9px;
 }
@@ -800,11 +814,24 @@ svg {
   background: #f5f5f5;
 }
 
+.open-app-option-icon-frame {
+  width: 30px;
+  height: 30px;
+  display: inline-grid;
+  place-items: center;
+  justify-self: center;
+}
+
 .open-app-option-icon {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   border-radius: 4px;
   object-fit: contain;
+}
+
+.open-app-option-icon[data-open-app-id="vscode"] {
+  width: 28px;
+  height: 28px;
 }
 
 .open-app-check {
