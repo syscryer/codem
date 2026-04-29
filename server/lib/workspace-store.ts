@@ -1439,6 +1439,7 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
       continue;
     }
 
+    const payloadTimestampMs = parseIsoTimestampMs(readString(payload, ['timestamp']));
     const message = payload.message;
     if (payload.isSidechain) {
       const parentToolUseId = readString(payload, ['parent_tool_use_id']);
@@ -1474,6 +1475,7 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
           status: 'stopped',
           activity: '运行结束但没有返回正文',
           sessionId,
+          startedAtMs: payloadTimestampMs,
           items: [],
           tools: [],
         };
@@ -1499,12 +1501,14 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
           assistantText: '',
           status: 'done',
           sessionId,
+          startedAtMs: payloadTimestampMs,
           items: [],
           tools: [],
         };
         turns.push(currentTurn);
       }
 
+      currentTurn.startedAtMs = currentTurn.startedAtMs ?? payloadTimestampMs;
       applyTranscriptMetrics(currentTurn, payload, message as Record<string, unknown>);
       const contentBlocks = extractContentBlocks((message as Record<string, unknown>).content);
       for (const block of contentBlocks) {
@@ -1549,6 +1553,7 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
     }
 
     if (payload.type === 'result' && currentTurn) {
+      currentTurn.startedAtMs = currentTurn.startedAtMs ?? payloadTimestampMs;
       applyTranscriptMetrics(currentTurn, payload);
     }
   }
@@ -3113,6 +3118,15 @@ function resolveClaudeTranscriptPath(workingDirectory: string, sessionId: string
 
 function sanitizeProjectPath(projectPath: string) {
   return path.resolve(projectPath).replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+function parseIsoTimestampMs(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? undefined : timestamp;
 }
 
 function formatRelativeTime(value: string) {

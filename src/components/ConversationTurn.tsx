@@ -87,6 +87,7 @@ function ConversationTurnViewComponent({
 
   const assistantCopyText = getAssistantCopyText(turn);
   const messageTime = formatMessageTime(turn.startedAtMs);
+  const showAssistantActions = Boolean(assistantCopyText || messageTime);
   const hasUserText = Boolean(turn.userText.trim());
   const hasUserAttachments = Boolean(turn.userAttachments?.length);
 
@@ -186,10 +187,12 @@ function ConversationTurnViewComponent({
             <div className={`turn-status ${turn.status}`}>{turn.activity}</div>
           ) : null}
 
-          <div className="turn-actions" aria-label="消息操作">
-            <InlineCopyButton text={assistantCopyText} title="复制回复" />
-            {messageTime ? <span className="turn-time">{messageTime}</span> : null}
-          </div>
+          {showAssistantActions ? (
+            <div className="turn-actions" aria-label="消息操作">
+              {assistantCopyText ? <InlineCopyButton text={assistantCopyText} title="复制回复" /> : null}
+              {messageTime ? <span className="turn-time">{messageTime}</span> : null}
+            </div>
+          ) : null}
         </div>
       </section>
     </article>
@@ -1429,7 +1432,7 @@ function getStructuredToolPreview(tool: ToolStep): StructuredToolPreviewData | n
   if (tool.name.startsWith('mcp__') && resultText) {
     return {
       title: tool.title,
-      summary: summarizePlainText(resultText, 90),
+      summary: tool.status === 'error' ? '调用失败，展开查看详情' : '已返回结果，展开查看详情',
       rows,
       content: resultText,
     };
