@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEventHandler 
 import { ArrowUp, Check, Mic, Plus, Shield, Square, Unlock, X, Zap } from 'lucide-react';
 import { permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
+import { PopoverPortal } from './PopoverPortal';
 import { buildPromptWithImageAttachments } from '../lib/composer-attachments';
 import { modelLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
 import type { ClaudeModelOption, PermissionMode, UserImageAttachment } from '../types';
@@ -57,9 +58,9 @@ export function Composer({
   const attachmentsRef = useRef<PendingImageAttachment[]>([]);
 
   useOutsideDismiss({
-    refs: [
-      { ref: permissionMenuRef, onDismiss: () => setPermissionMenuOpen(false) },
-      { ref: modelMenuRef, onDismiss: () => setModelMenuOpen(false) },
+    selectors: [
+      { selector: '.permission-menu', onDismiss: () => setPermissionMenuOpen(false), anchorRefs: [permissionMenuRef] },
+      { selector: '.model-menu', onDismiss: () => setModelMenuOpen(false), anchorRefs: [modelMenuRef] },
     ],
   });
   const hasDraft = Boolean(draft.trim());
@@ -234,7 +235,7 @@ export function Composer({
               <Plus size={16} />
             </button>
             <div className="permission-picker" ref={permissionMenuRef}>
-              {permissionMenuOpen ? (
+              <PopoverPortal open={permissionMenuOpen} anchorRef={permissionMenuRef} placement="top-end">
                 <div className="permission-menu" role="menu">
                   {permissionMenuModes.map((mode) => (
                     <button
@@ -254,7 +255,7 @@ export function Composer({
                     </button>
                   ))}
                 </div>
-              ) : null}
+              </PopoverPortal>
 
               <button
                 type="button"
@@ -271,7 +272,7 @@ export function Composer({
 
           <div className="composer-right-tools">
             <div className="model-picker" ref={modelMenuRef}>
-              {modelMenuOpen ? (
+              <PopoverPortal open={modelMenuOpen} anchorRef={modelMenuRef} placement="top-end">
                 <div className="model-menu" role="menu">
                   <div className="model-menu-title">模型</div>
                   {models.map((item) => (
@@ -294,7 +295,7 @@ export function Composer({
                     </button>
                   ))}
                 </div>
-              ) : null}
+              </PopoverPortal>
 
               <button
                 type="button"

@@ -295,7 +295,7 @@ svg {
   padding: 8px;
   border: 1px solid rgba(214, 218, 224, 0.74);
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.38);
   box-shadow:
     0 20px 52px rgba(15, 23, 42, 0.16),
     0 8px 18px rgba(15, 23, 42, 0.08);
@@ -4100,10 +4100,10 @@ svg {
   background:
     linear-gradient(
       145deg,
-      color-mix(in srgb, var(--app-surface) 84%, transparent),
-      color-mix(in srgb, var(--app-surface-muted) 68%, transparent)
+      color-mix(in srgb, var(--app-surface) 32%, transparent),
+      color-mix(in srgb, var(--app-surface-muted) 28%, transparent)
     ),
-    color-mix(in srgb, var(--app-surface) 76%, transparent);
+    color-mix(in srgb, var(--app-surface) 26%, transparent);
   color: var(--app-text);
   box-shadow:
     0 24px 52px rgba(15, 23, 42, 0.15),
@@ -4116,21 +4116,21 @@ svg {
 
 .codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu)::before {
   background:
-    radial-gradient(ellipse at 22% 0%, color-mix(in srgb, var(--app-surface) 62%, transparent), transparent 40%),
-    linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 18%, transparent), color-mix(in srgb, var(--app-surface-muted) 10%, transparent));
+    radial-gradient(ellipse at 22% 0%, color-mix(in srgb, var(--app-surface) 12%, transparent), transparent 40%),
+    linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 8%, transparent), color-mix(in srgb, var(--app-surface-muted) 4%, transparent));
 }
 
 .codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu)::after {
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 30%, transparent), transparent 34%),
-    linear-gradient(90deg, color-mix(in srgb, var(--app-surface) 16%, transparent), transparent 24%, transparent 76%, color-mix(in srgb, var(--app-surface) 10%, transparent));
+    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 10%, transparent), transparent 34%),
+    linear-gradient(90deg, color-mix(in srgb, var(--app-surface) 6%, transparent), transparent 24%, transparent 76%, color-mix(in srgb, var(--app-surface) 4%, transparent));
 }
 
 .codex-desktop .open-app-dropdown {
   border-color: color-mix(in srgb, var(--app-border) 88%, transparent);
   background:
-    linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 70%, transparent), color-mix(in srgb, var(--app-surface-muted) 54%, transparent)),
-    color-mix(in srgb, var(--app-surface) 58%, transparent);
+    linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 28%, transparent), color-mix(in srgb, var(--app-surface-muted) 22%, transparent)),
+    color-mix(in srgb, var(--app-surface) 24%, transparent);
   box-shadow:
     0 24px 58px rgba(15, 23, 42, 0.17),
     0 8px 22px rgba(15, 23, 42, 0.08),
@@ -4144,18 +4144,16 @@ svg {
   z-index: 0;
   background-color: transparent;
   background:
-    radial-gradient(ellipse at 20% 0%, color-mix(in srgb, var(--app-surface) 62%, transparent), transparent 42%),
-    radial-gradient(ellipse at 80% 100%, color-mix(in srgb, var(--app-border) 14%, transparent), transparent 48%),
-    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 16%, transparent), transparent 46%);
-  backdrop-filter: blur(28px) saturate(1.34);
-  -webkit-backdrop-filter: blur(28px) saturate(1.34);
+    radial-gradient(ellipse at 20% 0%, color-mix(in srgb, var(--app-surface) 12%, transparent), transparent 42%),
+    radial-gradient(ellipse at 80% 100%, color-mix(in srgb, var(--app-border) 6%, transparent), transparent 48%),
+    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 8%, transparent), transparent 46%);
 }
 
 .codex-desktop .open-app-dropdown::after {
   z-index: 0;
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 28%, transparent), transparent 34%),
-    linear-gradient(110deg, color-mix(in srgb, var(--app-surface) 20%, transparent), transparent 30%, transparent 72%, color-mix(in srgb, var(--app-border) 8%, transparent)),
+    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 10%, transparent), transparent 34%),
+    linear-gradient(110deg, color-mix(in srgb, var(--app-surface) 6%, transparent), transparent 30%, transparent 72%, color-mix(in srgb, var(--app-border) 4%, transparent)),
     repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 5px);
   opacity: 0.54;
 }
@@ -4169,8 +4167,8 @@ svg {
   background: var(--app-material-fill);
   border-right-color: transparent;
   color: var(--app-text);
-  backdrop-filter: blur(4px) saturate(1.06);
-  -webkit-backdrop-filter: blur(4px) saturate(1.06);
+  backdrop-filter: blur(8px) saturate(1.12);
+  -webkit-backdrop-filter: blur(8px) saturate(1.12);
 }
 
 .codex-desktop .settings-sidebar {
@@ -4233,8 +4231,8 @@ svg {
   border: 1px solid rgba(214, 218, 224, 0.78);
   border-radius: 18px;
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.82), rgba(246, 248, 250, 0.7)),
-    rgba(248, 250, 252, 0.74);
+    linear-gradient(145deg, rgba(255, 255, 255, 0.42), rgba(246, 248, 250, 0.36)),
+    rgba(248, 250, 252, 0.38);
   box-shadow:
     0 24px 52px rgba(15, 23, 42, 0.16),
     0 8px 22px rgba(15, 23, 42, 0.07),
@@ -4250,8 +4248,8 @@ svg {
   inset: 0;
   z-index: -1;
   background:
-    radial-gradient(ellipse at 22% 0%, rgba(255, 255, 255, 0.54), transparent 40%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.16), rgba(241, 247, 255, 0.08));
+    radial-gradient(ellipse at 22% 0%, rgba(255, 255, 255, 0.12), transparent 40%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.08), rgba(241, 247, 255, 0.04));
   pointer-events: none;
 }
 
@@ -4262,15 +4260,15 @@ svg {
   z-index: -1;
   border-radius: 17px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.28), transparent 34%),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.14), transparent 24%, transparent 76%, rgba(255, 255, 255, 0.08));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), transparent 34%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.06), transparent 24%, transparent 76%, rgba(255, 255, 255, 0.04));
   pointer-events: none;
 }
 
 .open-app-dropdown {
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.7), rgba(246, 248, 250, 0.54)),
-    rgba(248, 250, 252, 0.58);
+    linear-gradient(145deg, rgba(255, 255, 255, 0.38), rgba(246, 248, 250, 0.32)),
+    rgba(248, 250, 252, 0.34);
   backdrop-filter: blur(28px) saturate(1.25);
   -webkit-backdrop-filter: blur(28px) saturate(1.25);
 }
@@ -4283,11 +4281,9 @@ svg {
 .open-app-dropdown::before {
   background-color: transparent;
   background:
-    radial-gradient(ellipse at 20% 0%, rgba(255, 255, 255, 0.62), transparent 42%),
-    radial-gradient(ellipse at 80% 100%, rgba(148, 163, 184, 0.09), transparent 48%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.16), transparent 46%);
-  backdrop-filter: blur(28px) saturate(1.34);
-  -webkit-backdrop-filter: blur(28px) saturate(1.34);
+    radial-gradient(ellipse at 20% 0%, rgba(255, 255, 255, 0.1), transparent 42%),
+    radial-gradient(ellipse at 80% 100%, rgba(148, 163, 184, 0.04), transparent 48%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 46%);
 }
 
 .open-app-option:hover,
@@ -4829,4 +4825,13 @@ svg {
   .header-actions .pill-button {
     display: none;
   }
+}
+
+/* Portal 内菜单重置：定位统一由 PopoverPortal 控制 */
+div[data-popover-portal] > * {
+  position: static !important;
+  top: auto !important;
+  left: auto !important;
+  right: auto !important;
+  bottom: auto !important;
 }

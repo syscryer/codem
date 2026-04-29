@@ -1,6 +1,7 @@
 import { Check, ChevronDown, Home, MoreHorizontal, Play, SquareSplitHorizontal, TerminalSquare } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
+import { PopoverPortal } from './PopoverPortal';
 import { getGitDiffBadgeLabels } from '../lib/git-diff';
 import { getOpenAppIcon } from '../lib/open-app-icons';
 import type { OpenAppTarget, ProjectSummary, ThreadDetail } from '../types';
@@ -114,7 +115,9 @@ function OpenAppMenu({
   );
 
   useOutsideDismiss({
-    refs: [{ ref: menuRef, onDismiss: () => setOpen(false) }],
+    selectors: [
+      { selector: '.open-app-dropdown', onDismiss: () => setOpen(false), anchorRefs: [menuRef] },
+    ],
   });
 
   const selectedIcon = getOpenAppIcon(selectedTarget?.id ?? 'vscode');
@@ -148,7 +151,7 @@ function OpenAppMenu({
           <ChevronDown size={15} />
         </button>
       </div>
-      {open ? (
+      <PopoverPortal open={open} anchorRef={menuRef} placement="bottom-end">
         <div className="open-app-dropdown" role="menu">
           {targets.map((target) => (
             <button
@@ -170,7 +173,7 @@ function OpenAppMenu({
             </button>
           ))}
         </div>
-      ) : null}
+      </PopoverPortal>
     </div>
   );
 }

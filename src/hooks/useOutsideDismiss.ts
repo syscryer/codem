@@ -8,6 +8,7 @@ type OutsideRefEntry = {
 type OutsideSelectorEntry = {
   selector: string;
   onDismiss: () => void;
+  anchorRefs?: RefObject<HTMLElement | null>[];
 };
 
 type UseOutsideDismissArgs = {
@@ -32,7 +33,9 @@ export function useOutsideDismiss({ refs = [], selectors = [] }: UseOutsideDismi
 
       for (const entry of currentSelectors) {
         const element = document.querySelector(entry.selector);
-        if (element && !element.contains(target)) {
+        const isInsidePopover = element?.contains(target);
+        const isInsideAnchor = entry.anchorRefs?.some((ref) => ref.current?.contains(target));
+        if (element && !isInsidePopover && !isInsideAnchor) {
           entry.onDismiss();
         }
       }

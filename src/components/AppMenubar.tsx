@@ -1,6 +1,7 @@
 import { ArrowLeft, ArrowRight, Minus, PanelLeft, Square, X } from 'lucide-react';
 import { useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
+import { PopoverPortal } from './PopoverPortal';
 
 type AppMenuId = 'file' | 'edit' | 'view' | 'window' | 'help';
 
@@ -41,9 +42,10 @@ export function AppMenubar({
 }: AppMenubarProps) {
   const [openMenu, setOpenMenu] = useState<AppMenuId | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
 
   useOutsideDismiss({
-    refs: [{ ref: menuRef, onDismiss: () => setOpenMenu(null) }],
+    selectors: [{ selector: '.desktop-menu-popover', onDismiss: () => setOpenMenu(null), anchorRefs: [triggerRef] }],
   });
 
   function runAction(action: () => void | Promise<void>) {
@@ -140,11 +142,13 @@ export function AppMenubar({
               className={`desktop-menu-trigger${openMenu === menuId ? ' active' : ''}`}
               aria-haspopup="menu"
               aria-expanded={openMenu === menuId}
+              ref={openMenu === menuId ? triggerRef : undefined}
               onClick={() => setOpenMenu((current) => current === menuId ? null : menuId)}
             >
               {menuLabels[menuId]}
             </button>
             {openMenu === menuId ? (
+              <PopoverPortal open anchorRef={triggerRef} placement="bottom-start" offset={6}>
               <div className="desktop-menu-popover" role="menu">
                 {menuId === 'file' ? (
                   <>
@@ -202,6 +206,7 @@ export function AppMenubar({
                   </>
                 ) : null}
               </div>
+              </PopoverPortal>
             ) : null}
           </div>
         ))}

@@ -1,6 +1,7 @@
 import { Activity, Check, GitFork, LayoutPanelLeft, RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
+import { PopoverPortal } from './PopoverPortal';
 import type { GitBranchSummary, ProjectSummary, ThreadDetail } from '../types';
 
 type WorkspaceStatusProps = {
@@ -58,9 +59,9 @@ export function WorkspaceStatus({
   const runStatusRef = useRef<HTMLDivElement | null>(null);
 
   useOutsideDismiss({
-    refs: [
-      { ref: branchMenuRef, onDismiss: () => setMenuOpen(false) },
-      { ref: runStatusRef, onDismiss: () => setRunStatusOpen(false) },
+    selectors: [
+      { selector: '.status-branch-menu', onDismiss: () => setMenuOpen(false), anchorRefs: [branchMenuRef] },
+      { selector: '.status-run-menu', onDismiss: () => setRunStatusOpen(false), anchorRefs: [runStatusRef] },
     ],
   });
 
@@ -179,7 +180,7 @@ export function WorkspaceStatus({
         <span>本地工作</span>
       </span>
       <div className="status-branch-picker" ref={branchMenuRef}>
-        {menuOpen ? (
+        <PopoverPortal open={menuOpen} anchorRef={branchMenuRef} placement="top-start">
           <div className="status-branch-menu" role="menu" aria-label="Git 分支">
             <div className="status-branch-menu-title">切换分支</div>
             {loading ? <div className="status-branch-menu-state">正在读取分支...</div> : null}
@@ -221,7 +222,7 @@ export function WorkspaceStatus({
               </button>
             ) : null}
           </div>
-        ) : null}
+        </PopoverPortal>
 
         <button
           type="button"
@@ -237,7 +238,7 @@ export function WorkspaceStatus({
       </div>
       <span className="status-spacer" />
       <div className="status-run-picker" ref={runStatusRef}>
-        {runStatusOpen ? (
+        <PopoverPortal open={runStatusOpen} anchorRef={runStatusRef} placement="top-end">
           <div className="status-run-menu" role="dialog" aria-label="Claude 运行状态">
             <div className="status-run-head">
               <div>
@@ -259,7 +260,7 @@ export function WorkspaceStatus({
               <pre className="status-run-json">{JSON.stringify(runStatus ?? { active: false }, null, 2)}</pre>
             ) : null}
           </div>
-        ) : null}
+        </PopoverPortal>
         <button
           type="button"
           className="status-item status-run-trigger"

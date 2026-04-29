@@ -14,6 +14,7 @@ import {
   SquareSplitHorizontal,
 } from 'lucide-react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
+import { PopoverPortal } from './PopoverPortal';
 import type { PanelState, ProjectSummary, ThreadSummary } from '../types';
 
 const VISIBLE_THREAD_PREVIEW_LIMIT = 5;
@@ -76,12 +77,14 @@ export function SidebarProjects({
   const [threadMenuThreadId, setThreadMenuThreadId] = useState<string | null>(null);
   const [expandedThreadProjects, setExpandedThreadProjects] = useState<Record<string, boolean>>({});
   const panelMenuRef = useRef<HTMLDivElement | null>(null);
+  const projectMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const threadMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useOutsideDismiss({
-    refs: [{ ref: panelMenuRef, onDismiss: () => setPanelMenuOpen(false) }],
     selectors: [
-      { selector: '.project-menu-popover', onDismiss: () => setProjectMenuProjectId(null) },
-      { selector: '.thread-menu-popover', onDismiss: () => setThreadMenuThreadId(null) },
+      { selector: '.panel-menu-popover', onDismiss: () => setPanelMenuOpen(false), anchorRefs: [panelMenuRef] },
+      { selector: '.project-menu-popover', onDismiss: () => setProjectMenuProjectId(null), anchorRefs: [projectMenuTriggerRef] },
+      { selector: '.thread-menu-popover', onDismiss: () => setThreadMenuThreadId(null), anchorRefs: [threadMenuTriggerRef] },
     ],
   });
   const runningThreadIdSet = new Set(runningThreadIds);
@@ -116,7 +119,7 @@ export function SidebarProjects({
                 >
                 <AlignJustify size={13} />
               </button>
-              {panelMenuOpen ? (
+              <PopoverPortal open={panelMenuOpen} anchorRef={panelMenuRef} placement="bottom-end">
                 <div className="workspace-menu panel-menu-popover">
                   <div className="workspace-menu-group-title">整理</div>
                   <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ organizeBy: 'project' }); }}>
@@ -152,7 +155,7 @@ export function SidebarProjects({
                     {panelState.visibility === 'relevant' ? <Check size={14} /> : null}
                   </button>
                 </div>
-              ) : null}
+              </PopoverPortal>
             </div>
             <button type="button" className="sidebar-toolbar-icon" title="新增项目" onClick={() => void onPickProjectDirectory()}>
               <FolderPlus size={13} />
@@ -204,6 +207,7 @@ export function SidebarProjects({
                       type="button"
                       className="sidebar-row-action"
                       title="项目菜单"
+                      ref={projectMenuProjectId === project.id ? projectMenuTriggerRef : undefined}
                       onClick={() => setProjectMenuProjectId((value) => value === project.id ? null : project.id)}
                     >
                       <MoreHorizontal size={14} />
@@ -216,7 +220,7 @@ export function SidebarProjects({
                     >
                       <SquarePen size={14} />
                     </button>
-                    {projectMenuProjectId === project.id ? (
+                    <PopoverPortal open={projectMenuProjectId === project.id} anchorRef={projectMenuTriggerRef} placement="bottom-end">
                       <div className="workspace-menu project-menu-popover">
                         <button type="button" className="workspace-menu-item" onClick={() => { setProjectMenuProjectId(null); void onOpenProject(project); }}>
                           <span>在资源管理器中打开</span>
@@ -228,7 +232,7 @@ export function SidebarProjects({
                           <span>移除</span>
                         </button>
                       </div>
-                    ) : null}
+                    </PopoverPortal>
                   </div>
                 </div>
 
@@ -253,11 +257,12 @@ export function SidebarProjects({
                             type="button"
                             className="sidebar-row-action thread-row-action"
                             title="聊天菜单"
+                            ref={threadMenuThreadId === thread.id ? threadMenuTriggerRef : undefined}
                             onClick={() => setThreadMenuThreadId((value) => value === thread.id ? null : thread.id)}
                           >
                             <MoreHorizontal size={13} />
                           </button>
-                          {threadMenuThreadId === thread.id ? (
+                          <PopoverPortal open={threadMenuThreadId === thread.id} anchorRef={threadMenuTriggerRef} placement="bottom-end">
                             <div className="workspace-menu thread-menu-popover">
                               <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); onOpenRenameThreadDialog(thread); }}>
                                 <span>重命名聊天</span>
@@ -269,7 +274,7 @@ export function SidebarProjects({
                                 <span>删除聊天</span>
                               </button>
                             </div>
-                          ) : null}
+                          </PopoverPortal>
                         </div>
                       );
                     })}
