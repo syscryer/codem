@@ -72,8 +72,8 @@ svg {
   --app-border: #ece9e2;
   --app-border-strong: #dedbd3;
   --app-hover: rgba(255, 255, 255, 0.65);
-  --menu-item-hover-bg: rgba(15, 23, 42, 0.1);
-  --menu-item-hover-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+  --menu-item-hover-bg: rgba(15, 23, 42, 0.045);
+  --menu-item-hover-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.045);
   --app-material-fill: rgba(255, 255, 255, 0.02);
   --app-material-line: rgba(176, 183, 192, 0.2);
   --app-material-glow: rgba(255, 255, 255, 0.18);
@@ -288,7 +288,7 @@ svg {
 .desktop-menu-trigger.active,
 .window-nav button:hover,
 .window-controls button:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: rgba(15, 23, 42, 0.04);
   color: #1f1f1f;
 }
 
@@ -301,7 +301,7 @@ svg {
   padding: 8px;
   border: 1px solid rgba(214, 218, 224, 0.74);
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.38);
+  background: rgba(255, 255, 255, 0.52) !important;
   box-shadow:
     0 20px 52px rgba(15, 23, 42, 0.16),
     0 8px 18px rgba(15, 23, 42, 0.08);
@@ -327,8 +327,8 @@ svg {
 }
 
 .desktop-menu-item:hover {
-  background: linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.08)),
-    rgba(142, 142, 147, 0.18);
+  background: var(--menu-item-hover-bg);
+  box-shadow: var(--menu-item-hover-shadow);
   border-radius: 9px;
 }
 
@@ -4144,18 +4144,18 @@ svg {
   background:
     linear-gradient(
       145deg,
-      color-mix(in srgb, var(--app-surface) 32%, transparent),
-      color-mix(in srgb, var(--app-surface-muted) 28%, transparent)
+      color-mix(in srgb, var(--app-surface) 82%, transparent),
+      color-mix(in srgb, var(--app-surface-muted) 76%, transparent)
     ),
-    color-mix(in srgb, var(--app-surface) 26%, transparent);
+    color-mix(in srgb, var(--app-surface) 72%, transparent) !important;
   color: var(--app-text);
   box-shadow:
     0 24px 52px rgba(15, 23, 42, 0.15),
     0 8px 22px rgba(15, 23, 42, 0.07),
     inset 0 1px 0 color-mix(in srgb, var(--app-surface) 95%, transparent),
     inset 0 -1px 0 color-mix(in srgb, var(--app-border) 20%, transparent);
-  backdrop-filter: blur(30px) saturate(1.28);
-  -webkit-backdrop-filter: blur(30px) saturate(1.28);
+  backdrop-filter: blur(24px) saturate(1.18);
+  -webkit-backdrop-filter: blur(24px) saturate(1.18);
 }
 
 .codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu)::before {
@@ -4173,15 +4173,15 @@ svg {
 .codex-desktop .open-app-dropdown {
   border-color: color-mix(in srgb, var(--app-border) 88%, transparent);
   background:
-    linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 28%, transparent), color-mix(in srgb, var(--app-surface-muted) 22%, transparent)),
-    color-mix(in srgb, var(--app-surface) 24%, transparent);
+    linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 84%, transparent), color-mix(in srgb, var(--app-surface-muted) 78%, transparent)),
+    color-mix(in srgb, var(--app-surface) 74%, transparent);
   box-shadow:
     0 24px 58px rgba(15, 23, 42, 0.17),
     0 8px 22px rgba(15, 23, 42, 0.08),
     inset 0 1px 0 color-mix(in srgb, var(--app-surface) 100%, transparent),
     inset 0 -1px 0 color-mix(in srgb, var(--app-border) 36%, transparent);
-  backdrop-filter: blur(28px) saturate(1.25);
-  -webkit-backdrop-filter: blur(28px) saturate(1.25);
+  backdrop-filter: blur(22px) saturate(1.16);
+  -webkit-backdrop-filter: blur(22px) saturate(1.16);
 }
 
 .codex-desktop .open-app-dropdown::before {

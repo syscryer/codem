@@ -98,10 +98,12 @@ export function PopoverPortal({
 
   if (!open) return null;
 
+  const container = document.querySelector('.codex-desktop') ?? document.body;
+
   return createPortal(
     <div ref={portalRef} data-popover-portal="" style={{ position: 'fixed', zIndex: 9999 }}>
       {children}
     </div>,
-    document.body,
+    container,
   );
 }

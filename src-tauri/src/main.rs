@@ -10,7 +10,7 @@ use std::{
 };
 use tauri::{Manager, PhysicalPosition, PhysicalSize, WindowEvent};
 
-const DEFAULT_WINDOW_MATERIAL_ID: i32 = 3;
+const DEFAULT_WINDOW_MATERIAL_ID: i32 = 2;
 const WINDOW_STATE_FILE_NAME: &str = "window-state.json";
 const MIN_WINDOW_WIDTH: u32 = 720;
 const MIN_WINDOW_HEIGHT: u32 = 480;

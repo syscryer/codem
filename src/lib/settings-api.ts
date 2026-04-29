@@ -26,7 +26,7 @@ export const defaultAppearanceSettings: AppearanceSettings = {
   uiFontSize: 13,
   codeFontSize: 12,
   sidebarWidth: 'default',
-  windowMaterial: 'acrylic',
+  windowMaterial: 'mica',
 };
 
 export const defaultModelSettings: ModelSettings = {
