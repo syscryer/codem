@@ -24,7 +24,7 @@ type GitDialogProps = {
   mode: GitDialogMode;
   project: ProjectSummary;
   onClose: () => void;
-  onChanged: () => void;
+  onChanged: () => void | Promise<void>;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
 };
 
@@ -134,14 +134,16 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
     try {
       await commitGitChanges(project.id, selectedFiles.map((file) => file.path), message);
       if (thenPush) {
-        const preview = pushPreview ?? await fetchGitPushPreview(project.id);
+        const preview = await fetchGitPushPreview(project.id);
         await pushGitBranch(project.id, preview.remote, preview.targetBranch);
-        showToast('已提交并推送');
+        await onChanged();
+        onClose();
+        showToast('提交并推送完成');
       } else {
-        showToast('已提交');
+        await onChanged();
+        onClose();
+        showToast('提交完成');
       }
-      onChanged();
-      onClose();
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : '提交失败');
     } finally {
@@ -158,9 +160,9 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
     setError('');
     try {
       await pushGitBranch(project.id, pushPreview.remote, pushPreview.targetBranch);
-      showToast('已推送');
-      onChanged();
+      await onChanged();
       onClose();
+      showToast('推送完成');
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : '推送失败');
     } finally {
@@ -180,7 +182,7 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
           <div className="git-dialog-head-actions">
             <button
               type="button"
-              className="ghost-button"
+              className="git-refresh-button"
               disabled={loading || working}
               onClick={() => void loadData(activeMode)}
             >
@@ -327,7 +329,7 @@ function CommitPanel({
           <strong>{activePath || '未选择文件'}</strong>
           {diffLoading ? <span>读取中...</span> : null}
         </div>
-        <pre className="git-diff-content">{diff || '选择左侧文件查看差异。'}</pre>
+        <DiffPreview content={diff || '选择左侧文件查看差异。'} />
       </main>
 
       <footer className="git-commit-footer">
@@ -348,6 +350,39 @@ function CommitPanel({
       </footer>
     </div>
   );
+}
+
+function DiffPreview({ content }: { content: string }) {
+  return (
+    <div className="git-diff-content" role="region" aria-label="文件差异预览">
+      {content.split('\n').map((line, index) => (
+        <div key={`${index}-${line}`} className={`git-diff-line ${getDiffLineClass(line)}`}>
+          <span className="git-diff-line-no">{index + 1}</span>
+          <span className="git-diff-line-text">{line || ' '}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function getDiffLineClass(line: string) {
+  if (line.startsWith('+') && !line.startsWith('+++')) {
+    return 'added';
+  }
+
+  if (line.startsWith('-') && !line.startsWith('---')) {
+    return 'removed';
+  }
+
+  if (line.startsWith('@@')) {
+    return 'hunk';
+  }
+
+  if (line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('+++') || line.startsWith('---')) {
+    return 'meta';
+  }
+
+  return '';
 }
 
 function PushPanel({

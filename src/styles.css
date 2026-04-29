@@ -3156,6 +3156,21 @@ svg {
   color: #ffffff;
 }
 
+.dialog-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.dialog-button.primary:disabled {
+  background: #d1d5db;
+  color: #ffffff;
+}
+
+.dialog-button.secondary:disabled {
+  background: #f3f4f6;
+  color: #a0a5ae;
+}
+
 .git-dialog-backdrop {
   place-items: center;
 }
@@ -3207,6 +3222,30 @@ svg {
 
 .git-dialog-head-actions {
   gap: 8px;
+}
+
+.git-refresh-button {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #4b5563;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.git-refresh-button:hover:not(:disabled) {
+  background: rgba(156, 163, 175, 0.12);
+  color: #202020;
+}
+
+.git-refresh-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 .git-dialog-tabs {
@@ -3369,14 +3408,52 @@ svg {
 
 .git-diff-content {
   height: calc(100% - 42px);
-  margin: 0;
-  padding: 13px;
   overflow: auto;
   color: #2f3742;
   font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 1.58;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.git-diff-line {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  min-height: 20px;
+  padding-right: 12px;
   white-space: pre-wrap;
+}
+
+.git-diff-line-no {
+  padding: 0 10px 0 8px;
+  color: #a0a5ae;
+  text-align: right;
+  user-select: none;
+}
+
+.git-diff-line-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.git-diff-line.added {
+  background: rgba(34, 197, 94, 0.12);
+  color: #166534;
+}
+
+.git-diff-line.removed {
+  background: rgba(239, 68, 68, 0.12);
+  color: #991b1b;
+}
+
+.git-diff-line.hunk {
+  background: rgba(59, 130, 246, 0.1);
+  color: #1d4ed8;
+}
+
+.git-diff-line.meta {
+  color: #64748b;
+  background: rgba(148, 163, 184, 0.08);
 }
 
 .git-commit-footer {

@@ -460,7 +460,7 @@ export default function App() {
           mode={gitDialogMode}
           project={activeProject}
           onClose={() => setGitDialogMode(null)}
-          onChanged={() => activeProjectId ? void refreshProjectGitSummary(activeProjectId) : undefined}
+          onChanged={() => activeProjectId ? refreshProjectGitSummary(activeProjectId) : undefined}
           showToast={showToast}
         />
       ) : null}
