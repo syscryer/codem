@@ -2425,8 +2425,8 @@ async function resolveGitPushTarget(
   const remotes = await readGitRemotes(projectPath);
   const upstreamRemote = upstream?.includes('/') ? upstream.split('/')[0] : undefined;
   const upstreamBranch = upstream?.includes('/') ? upstream.split('/').slice(1).join('/') : undefined;
-  const remote = requestedRemote?.trim() || upstreamRemote || (remotes.includes('gitee') ? 'gitee' : remotes[0]);
-  const targetBranch = requestedTargetBranch?.trim() || upstreamBranch || branch;
+  const remote = requestedRemote?.trim() || (remotes.includes('gitee') ? 'gitee' : upstreamRemote) || remotes[0];
+  const targetBranch = requestedTargetBranch?.trim() || (remote === upstreamRemote ? upstreamBranch : undefined) || branch;
 
   if (!remote) {
     throw new Error('当前仓库没有可用远端');
@@ -2440,7 +2440,7 @@ async function resolveGitPushTarget(
     branch,
     remote,
     targetBranch,
-    upstream,
+    upstream: await resolveRemoteTrackingRef(projectPath, remote, targetBranch, upstream),
   };
 }
 
@@ -2470,6 +2470,21 @@ async function readGitPushCommits(projectPath: string, upstream?: string) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+async function resolveRemoteTrackingRef(
+  projectPath: string,
+  remote: string,
+  targetBranch: string,
+  upstream?: string,
+) {
+  const remoteRef = `${remote}/${targetBranch}`;
+  const result = await runGitCommand(projectPath, ['rev-parse', '--verify', '--quiet', remoteRef]);
+  if (result.status === 0) {
+    return remoteRef;
+  }
+
+  return upstream;
 }
 
 function runGitCommand(projectPath: string, args: string[]): Promise<GitCommandResult> {

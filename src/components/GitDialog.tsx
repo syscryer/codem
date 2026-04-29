@@ -136,13 +136,9 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
       if (thenPush) {
         const preview = await fetchGitPushPreview(project.id);
         await pushGitBranch(project.id, preview.remote, preview.targetBranch);
-        await onChanged();
-        onClose();
-        showToast('提交并推送完成');
+        finishSuccessfulOperation('提交并推送完成');
       } else {
-        await onChanged();
-        onClose();
-        showToast('提交完成');
+        finishSuccessfulOperation('提交完成');
       }
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : '提交失败');
@@ -160,14 +156,20 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
     setError('');
     try {
       await pushGitBranch(project.id, pushPreview.remote, pushPreview.targetBranch);
-      onClose();
-      showToast('推送完成');
-      await onChanged();
+      finishSuccessfulOperation('推送完成');
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : '推送失败');
     } finally {
       setWorking(false);
     }
+  }
+
+  function finishSuccessfulOperation(messageText: string) {
+    onClose();
+    showToast(messageText);
+    void Promise.resolve(onChanged()).catch((caughtError: unknown) => {
+      showToast(caughtError instanceof Error ? caughtError.message : '刷新 Git 状态失败', 'error');
+    });
   }
 
   return (
