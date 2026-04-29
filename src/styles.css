@@ -684,6 +684,16 @@ svg {
   right: 0;
 }
 
+.thread-menu-popover {
+  width: 146px;
+  min-width: 146px;
+  max-width: 146px;
+}
+
+.thread-menu-popover .workspace-menu-item {
+  padding-inline: 14px;
+}
+
 .workspace-menu-group-title {
   padding: 4px 16px 8px;
   color: #979089;
@@ -4086,28 +4096,34 @@ svg {
 }
 
 .codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu) {
-  border-color: color-mix(in srgb, var(--app-border) 68%, transparent);
-  background: color-mix(in srgb, var(--app-surface) 8%, transparent);
+  border-color: color-mix(in srgb, var(--app-border) 82%, transparent);
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--app-surface) 84%, transparent),
+      color-mix(in srgb, var(--app-surface-muted) 68%, transparent)
+    ),
+    color-mix(in srgb, var(--app-surface) 76%, transparent);
   color: var(--app-text);
   box-shadow:
-    0 26px 58px rgba(15, 23, 42, 0.18),
-    0 10px 24px rgba(15, 23, 42, 0.08),
+    0 24px 52px rgba(15, 23, 42, 0.15),
+    0 8px 22px rgba(15, 23, 42, 0.07),
     inset 0 1px 0 color-mix(in srgb, var(--app-surface) 95%, transparent),
     inset 0 -1px 0 color-mix(in srgb, var(--app-border) 20%, transparent);
-  backdrop-filter: blur(18px) saturate(1.55);
-  -webkit-backdrop-filter: blur(18px) saturate(1.55);
+  backdrop-filter: blur(30px) saturate(1.28);
+  -webkit-backdrop-filter: blur(30px) saturate(1.28);
 }
 
 .codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu)::before {
   background:
-    radial-gradient(ellipse at 22% 0%, color-mix(in srgb, var(--app-surface) 34%, transparent), transparent 38%),
-    linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 10%, transparent), color-mix(in srgb, var(--app-surface-muted) 4%, transparent));
+    radial-gradient(ellipse at 22% 0%, color-mix(in srgb, var(--app-surface) 62%, transparent), transparent 40%),
+    linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 18%, transparent), color-mix(in srgb, var(--app-surface-muted) 10%, transparent));
 }
 
 .codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu)::after {
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 18%, transparent), transparent 32%),
-    linear-gradient(90deg, color-mix(in srgb, var(--app-surface) 12%, transparent), transparent 24%, transparent 76%, color-mix(in srgb, var(--app-surface) 6%, transparent));
+    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 30%, transparent), transparent 34%),
+    linear-gradient(90deg, color-mix(in srgb, var(--app-surface) 16%, transparent), transparent 24%, transparent 76%, color-mix(in srgb, var(--app-surface) 10%, transparent));
 }
 
 .codex-desktop .open-app-dropdown {
@@ -4214,16 +4230,18 @@ svg {
 :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu) {
   overflow: hidden;
   isolation: isolate;
-  border: 1px solid rgba(214, 218, 224, 0.68);
+  border: 1px solid rgba(214, 218, 224, 0.78);
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.82), rgba(246, 248, 250, 0.7)),
+    rgba(248, 250, 252, 0.74);
   box-shadow:
-    0 26px 58px rgba(15, 23, 42, 0.18),
-    0 10px 24px rgba(15, 23, 42, 0.08),
+    0 24px 52px rgba(15, 23, 42, 0.16),
+    0 8px 22px rgba(15, 23, 42, 0.07),
     inset 0 1px 0 rgba(255, 255, 255, 0.95),
-    inset 0 -1px 0 rgba(148, 163, 184, 0.2);
-  backdrop-filter: blur(18px) saturate(1.65);
-  -webkit-backdrop-filter: blur(18px) saturate(1.65);
+    inset 0 -1px 0 rgba(148, 163, 184, 0.18);
+  backdrop-filter: blur(30px) saturate(1.32);
+  -webkit-backdrop-filter: blur(30px) saturate(1.32);
 }
 
 :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu)::before {
@@ -4232,8 +4250,8 @@ svg {
   inset: 0;
   z-index: -1;
   background:
-    radial-gradient(ellipse at 22% 0%, rgba(255, 255, 255, 0.34), transparent 38%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.1), rgba(241, 247, 255, 0.04));
+    radial-gradient(ellipse at 22% 0%, rgba(255, 255, 255, 0.54), transparent 40%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.16), rgba(241, 247, 255, 0.08));
   pointer-events: none;
 }
 
@@ -4244,8 +4262,8 @@ svg {
   z-index: -1;
   border-radius: 17px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 32%),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.12), transparent 24%, transparent 76%, rgba(255, 255, 255, 0.06));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28), transparent 34%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.14), transparent 24%, transparent 76%, rgba(255, 255, 255, 0.08));
   pointer-events: none;
 }
 
