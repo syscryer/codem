@@ -1,4 +1,16 @@
-import { Check, ChevronDown, Home, MoreHorizontal, Play, SquareSplitHorizontal, TerminalSquare } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  CloudUpload,
+  GitBranchPlus,
+  GitCommitHorizontal,
+  GitPullRequest,
+  Home,
+  MoreHorizontal,
+  Play,
+  SquareSplitHorizontal,
+  TerminalSquare,
+} from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { PopoverPortal } from './PopoverPortal';
@@ -17,6 +29,8 @@ type ChatHeaderProps = {
   onSelectOpenTarget: (targetId: string) => void;
   onRefreshGitDiff: () => void;
   onUseProjectWorkspace: () => void;
+  onOpenGitCommit: () => void;
+  onOpenGitPush: () => void;
 };
 
 export function ChatHeader({
@@ -30,6 +44,8 @@ export function ChatHeader({
   onSelectOpenTarget,
   onRefreshGitDiff,
   onUseProjectWorkspace,
+  onOpenGitCommit,
+  onOpenGitPush,
 }: ChatHeaderProps) {
   const gitDiff = activeProject?.gitDiff ?? { additions: 0, deletions: 0, filesChanged: 0 };
   const gitDiffLabels = getGitDiffBadgeLabels(gitDiff);
@@ -59,10 +75,11 @@ export function ChatHeader({
           onOpenTarget={onOpenTarget}
           onSelectOpenTarget={onSelectOpenTarget}
         />
-        <button type="button" className="pill-button">
-          提交
-          <span className="header-chevron" aria-hidden="true" />
-        </button>
+        <GitActionMenu
+          disabled={!activeProject}
+          onOpenCommit={onOpenGitCommit}
+          onOpenPush={onOpenGitPush}
+        />
         {showDebugButton ? (
           <button type="button" className="icon-button" onClick={onToggleDebug}>
             <TerminalSquare size={15} />
@@ -91,6 +108,67 @@ export function ChatHeader({
         </button>
       </div>
     </header>
+  );
+}
+
+function GitActionMenu({
+  disabled,
+  onOpenCommit,
+  onOpenPush,
+}: {
+  disabled: boolean;
+  onOpenCommit: () => void;
+  onOpenPush: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useOutsideDismiss({
+    selectors: [
+      { selector: '.git-action-dropdown', onDismiss: () => setOpen(false), anchorRefs: [menuRef] },
+    ],
+  });
+
+  function select(action: () => void) {
+    setOpen(false);
+    action();
+  }
+
+  return (
+    <div className="git-action-menu" ref={menuRef}>
+      <button
+        type="button"
+        className="pill-button"
+        disabled={disabled}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        提交
+        <span className="header-chevron" aria-hidden="true" />
+      </button>
+      <PopoverPortal open={open} anchorRef={menuRef} placement="bottom-end">
+        <div className="git-action-dropdown workspace-menu" role="menu">
+          <span className="workspace-menu-group-title">Git 操作</span>
+          <button type="button" className="workspace-menu-item" role="menuitem" onClick={() => select(onOpenCommit)}>
+            <GitCommitHorizontal size={17} />
+            <span>提交</span>
+          </button>
+          <button type="button" className="workspace-menu-item" role="menuitem" onClick={() => select(onOpenPush)}>
+            <CloudUpload size={17} />
+            <span>推送</span>
+          </button>
+          <button type="button" className="workspace-menu-item" role="menuitem" disabled>
+            <GitPullRequest size={17} />
+            <span>创建拉取请求</span>
+          </button>
+          <button type="button" className="workspace-menu-item" role="menuitem" disabled>
+            <GitBranchPlus size={17} />
+            <span>创建分支</span>
+          </button>
+        </div>
+      </PopoverPortal>
+    </div>
   );
 }
 

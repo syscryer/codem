@@ -161,6 +161,35 @@ export type GitBranchSummary = {
   current: boolean;
 };
 
+export type GitFileStatus = {
+  path: string;
+  originalPath?: string;
+  status: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+  deleted: boolean;
+};
+
+export type GitStatusSnapshot = {
+  branch?: string;
+  upstream?: string;
+  remote?: string;
+  ahead: number;
+  behind: number;
+  files: GitFileStatus[];
+};
+
+export type GitPushPreview = {
+  branch: string;
+  remote: string;
+  targetBranch: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  commits: string[];
+};
+
 type GitInfo = {
   isGitRepo: boolean;
   branch?: string;
@@ -937,6 +966,118 @@ export async function switchProjectGitBranch(projectId: string, branchName: stri
   }
 
   return getProjectGitSummary(projectId);
+}
+
+export async function getProjectGitStatus(projectId: string): Promise<GitStatusSnapshot> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+
+  const result = await runGitCommand(projectPath, ['status', '--porcelain=v1', '-b', '-uall']);
+  if (result.status !== 0) {
+    throw new Error(normalizeGitCommandError(result, '读取 Git 状态失败'));
+  }
+
+  return parseGitStatus(result.stdout);
+}
+
+export async function getProjectGitFileDiff(projectId: string, filePath: string) {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const safePath = normalizeProjectRelativePath(projectPath, filePath);
+  const status = await getProjectGitStatus(projectId);
+  const fileStatus = status.files.find((file) => file.path === safePath);
+
+  if (fileStatus?.untracked) {
+    const content = readWorkspaceTextFile(projectPath, safePath);
+    return [
+      `未跟踪文件：${safePath}`,
+      '',
+      content,
+    ].join('\n');
+  }
+
+  const worktreeDiff = await runGitCommand(projectPath, ['diff', '--', safePath]);
+  if (worktreeDiff.status !== 0) {
+    throw new Error(normalizeGitCommandError(worktreeDiff, '读取文件差异失败'));
+  }
+
+  const stagedDiff = await runGitCommand(projectPath, ['diff', '--cached', '--', safePath]);
+  if (stagedDiff.status !== 0) {
+    throw new Error(normalizeGitCommandError(stagedDiff, '读取暂存差异失败'));
+  }
+
+  const diff = [stagedDiff.stdout.trimEnd(), worktreeDiff.stdout.trimEnd()].filter(Boolean).join('\n');
+  return diff || '当前文件没有可显示的差异。';
+}
+
+export async function commitProjectGitChanges(projectId: string, filePaths: string[], message: string) {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+
+  const commitMessage = message.trim();
+  if (!commitMessage) {
+    throw new Error('提交信息不能为空');
+  }
+
+  const safePaths = normalizeProjectRelativePaths(projectPath, filePaths);
+  if (safePaths.length === 0) {
+    throw new Error('请选择要提交的文件');
+  }
+
+  const addResult = await runGitCommand(projectPath, ['add', '--', ...safePaths]);
+  if (addResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(addResult, '暂存文件失败'));
+  }
+
+  const commitResult = await runGitCommand(projectPath, ['commit', '-m', commitMessage]);
+  if (commitResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(commitResult, '提交失败'));
+  }
+
+  return {
+    output: commitResult.stdout.trim() || commitResult.stderr.trim(),
+    summary: await getProjectGitSummary(projectId),
+  };
+}
+
+export async function getProjectGitPushPreview(projectId: string): Promise<GitPushPreview> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const status = await getProjectGitStatus(projectId);
+  const target = await resolveGitPushTarget(projectPath, status.branch, undefined, undefined);
+  const commits = await readGitPushCommits(projectPath, target.upstream);
+
+  return {
+    ...target,
+    ahead: status.ahead,
+    behind: status.behind,
+    commits,
+  };
+}
+
+export async function pushProjectGitBranch(
+  projectId: string,
+  remote?: string,
+  targetBranch?: string,
+): Promise<{ output: string; summary: Awaited<ReturnType<typeof getProjectGitSummary>> }> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const status = await getProjectGitStatus(projectId);
+  const target = await resolveGitPushTarget(projectPath, status.branch, remote, targetBranch);
+  const pushResult = await runGitCommand(projectPath, [
+    'push',
+    target.remote,
+    `${target.branch}:${target.targetBranch}`,
+  ]);
+
+  if (pushResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(pushResult, '推送失败'));
+  }
+
+  return {
+    output: pushResult.stdout.trim() || pushResult.stderr.trim(),
+    summary: await getProjectGitSummary(projectId),
+  };
 }
 
 function initializeDatabase() {
@@ -2105,6 +2246,230 @@ async function readUntrackedFilesAsync(projectPath: string) {
   }
 
   return result.stdout.split('\0').filter(Boolean);
+}
+
+async function ensureGitRepository(projectPath: string) {
+  const gitInfo = await readGitInfoAsync(projectPath, false);
+  if (!gitInfo.isGitRepo) {
+    throw new Error('当前项目不是 Git 仓库');
+  }
+}
+
+function parseGitStatus(output: string): GitStatusSnapshot {
+  const lines = output.split(/\r?\n/).filter(Boolean);
+  const header = lines.find((line) => line.startsWith('## '));
+  const branchInfo = parseGitStatusHeader(header);
+  const files = lines
+    .filter((line) => !line.startsWith('## '))
+    .map(parseGitStatusLine)
+    .filter((file): file is GitFileStatus => Boolean(file));
+
+  return {
+    ...branchInfo,
+    files,
+  };
+}
+
+function parseGitStatusHeader(header?: string): Omit<GitStatusSnapshot, 'files'> {
+  if (!header) {
+    return {
+      ahead: 0,
+      behind: 0,
+    };
+  }
+
+  const value = header.slice(3).trim();
+  if (value.startsWith('No commits yet on ')) {
+    return {
+      branch: value.replace('No commits yet on ', '').trim(),
+      ahead: 0,
+      behind: 0,
+    };
+  }
+
+  const [branchPart, trackingPart] = value.split('...');
+  const upstream = trackingPart?.replace(/\s+\[.*\]$/, '').trim();
+  const remote = upstream?.includes('/') ? upstream.split('/')[0] : undefined;
+  const flags = value.match(/\[(.+)\]/)?.[1] ?? '';
+
+  return {
+    branch: branchPart.trim(),
+    upstream,
+    remote,
+    ahead: parseGitStatusCounter(flags, 'ahead'),
+    behind: parseGitStatusCounter(flags, 'behind'),
+  };
+}
+
+function parseGitStatusCounter(flags: string, key: 'ahead' | 'behind') {
+  const match = flags.match(new RegExp(`${key} (\\d+)`));
+  return match ? Number(match[1]) : 0;
+}
+
+function parseGitStatusLine(line: string): GitFileStatus | null {
+  if (line.length < 4) {
+    return null;
+  }
+
+  const indexStatus = line[0];
+  const worktreeStatus = line[1];
+  const rawPath = line.slice(3);
+  const renameParts = rawPath.split(' -> ');
+  const filePath = normalizeGitRelativePath(renameParts[renameParts.length - 1] ?? rawPath);
+  const originalPath = renameParts.length > 1 ? normalizeGitRelativePath(renameParts[0]) : undefined;
+
+  return {
+    path: filePath,
+    originalPath,
+    status: buildGitStatusLabel(indexStatus, worktreeStatus),
+    staged: indexStatus !== ' ' && indexStatus !== '?',
+    unstaged: worktreeStatus !== ' ' && worktreeStatus !== '?',
+    untracked: indexStatus === '?' && worktreeStatus === '?',
+    deleted: indexStatus === 'D' || worktreeStatus === 'D',
+  };
+}
+
+function buildGitStatusLabel(indexStatus: string, worktreeStatus: string) {
+  if (indexStatus === '?' && worktreeStatus === '?') {
+    return '未跟踪';
+  }
+
+  if (indexStatus === 'A' || worktreeStatus === 'A') {
+    return '新增';
+  }
+
+  if (indexStatus === 'D' || worktreeStatus === 'D') {
+    return '删除';
+  }
+
+  if (indexStatus === 'R' || worktreeStatus === 'R') {
+    return '重命名';
+  }
+
+  if (indexStatus === 'M' || worktreeStatus === 'M') {
+    return '修改';
+  }
+
+  return '变更';
+}
+
+function normalizeGitRelativePath(filePath: string) {
+  return filePath.replace(/^"|"$/g, '').replace(/\\/g, '/').trim();
+}
+
+function normalizeProjectRelativePaths(projectPath: string, filePaths: string[]) {
+  const seen = new Set<string>();
+  const paths: string[] = [];
+
+  for (const filePath of filePaths) {
+    const safePath = normalizeProjectRelativePath(projectPath, filePath);
+    if (!seen.has(safePath)) {
+      seen.add(safePath);
+      paths.push(safePath);
+    }
+  }
+
+  return paths;
+}
+
+function normalizeProjectRelativePath(projectPath: string, filePath: string) {
+  const normalizedPath = normalizeGitRelativePath(filePath);
+  if (!normalizedPath || path.isAbsolute(normalizedPath)) {
+    throw new Error('文件路径必须是项目内的相对路径');
+  }
+
+  const resolvedPath = path.resolve(projectPath, normalizedPath);
+  if (!isPathInsideRoot(resolvedPath, projectPath)) {
+    throw new Error(`文件不在项目目录内：${normalizedPath}`);
+  }
+
+  return normalizedPath;
+}
+
+function readWorkspaceTextFile(projectPath: string, filePath: string) {
+  const resolvedPath = path.resolve(projectPath, filePath);
+  const stats = statSync(resolvedPath);
+  if (!stats.isFile()) {
+    throw new Error('目标不是文件');
+  }
+
+  if (stats.size > 200 * 1024) {
+    return '文件过大，暂不预览内容。';
+  }
+
+  const buffer = readFileSync(resolvedPath);
+  if (buffer.includes(0)) {
+    return '二进制文件暂不预览内容。';
+  }
+
+  return buffer.toString('utf8');
+}
+
+async function resolveGitPushTarget(
+  projectPath: string,
+  branch: string | undefined,
+  requestedRemote: string | undefined,
+  requestedTargetBranch: string | undefined,
+) {
+  if (!branch || branch === 'HEAD') {
+    throw new Error('当前不是可推送的本地分支');
+  }
+
+  const upstreamResult = await runGitCommand(projectPath, [
+    'rev-parse',
+    '--abbrev-ref',
+    '--symbolic-full-name',
+    '@{u}',
+  ]);
+  const upstream = upstreamResult.status === 0 ? upstreamResult.stdout.trim() : undefined;
+  const remotes = await readGitRemotes(projectPath);
+  const upstreamRemote = upstream?.includes('/') ? upstream.split('/')[0] : undefined;
+  const upstreamBranch = upstream?.includes('/') ? upstream.split('/').slice(1).join('/') : undefined;
+  const remote = requestedRemote?.trim() || upstreamRemote || (remotes.includes('gitee') ? 'gitee' : remotes[0]);
+  const targetBranch = requestedTargetBranch?.trim() || upstreamBranch || branch;
+
+  if (!remote) {
+    throw new Error('当前仓库没有可用远端');
+  }
+
+  if (!remotes.includes(remote)) {
+    throw new Error(`远端不存在：${remote}`);
+  }
+
+  return {
+    branch,
+    remote,
+    targetBranch,
+    upstream,
+  };
+}
+
+async function readGitRemotes(projectPath: string) {
+  const result = await runGitCommand(projectPath, ['remote']);
+  if (result.status !== 0) {
+    throw new Error(normalizeGitCommandError(result, '读取 Git 远端失败'));
+  }
+
+  return result.stdout
+    .split(/\r?\n/)
+    .map((remote) => remote.trim())
+    .filter(Boolean);
+}
+
+async function readGitPushCommits(projectPath: string, upstream?: string) {
+  if (!upstream) {
+    return [];
+  }
+
+  const result = await runGitCommand(projectPath, ['log', '--oneline', `${upstream}..HEAD`]);
+  if (result.status !== 0) {
+    throw new Error(normalizeGitCommandError(result, '读取待推送提交失败'));
+  }
+
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
 function runGitCommand(projectPath: string, args: string[]): Promise<GitCommandResult> {

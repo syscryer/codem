@@ -6,6 +6,7 @@ import { Composer } from './components/Composer';
 import { ConversationPane } from './components/ConversationPane';
 import { DebugDrawer } from './components/DebugDrawer';
 import { Dialogs } from './components/Dialogs';
+import { GitDialog } from './components/GitDialog';
 import { SidebarProjects } from './components/SidebarProjects';
 import { SettingsView } from './components/settings/SettingsView';
 import { WorkspaceStatus } from './components/WorkspaceStatus';
@@ -82,6 +83,7 @@ export default function App() {
   const [appView, setAppView] = useState<{ kind: 'workspace' } | { kind: 'settings'; section: SettingsSection }>({
     kind: 'workspace',
   });
+  const [gitDialogMode, setGitDialogMode] = useState<'commit' | 'push' | null>(null);
   const {
     general,
     appearance,
@@ -376,6 +378,8 @@ export default function App() {
               onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
               onRefreshGitDiff={() => activeProjectId ? void refreshProjectGitSummary(activeProjectId) : undefined}
               onUseProjectWorkspace={() => setWorkspace(activeProject?.path ?? '')}
+              onOpenGitCommit={() => activeProject ? setGitDialogMode('commit') : showToast('请先选择项目。', 'info')}
+              onOpenGitPush={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
             />
 
             <ConversationPane
@@ -451,6 +455,15 @@ export default function App() {
         onCloseConfirmDialog={() => setConfirmDialog(null)}
         onConfirmRemoveDialog={confirmRemoveDialog}
       />
+      {gitDialogMode && activeProject ? (
+        <GitDialog
+          mode={gitDialogMode}
+          project={activeProject}
+          onClose={() => setGitDialogMode(null)}
+          onChanged={() => activeProjectId ? void refreshProjectGitSummary(activeProjectId) : undefined}
+          showToast={showToast}
+        />
+      ) : null}
       <DebugDrawer activeThread={activeThread} open={debugOpen} onClose={() => setDebugOpen(false)} />
     </div>
   );

@@ -23,7 +23,11 @@ import {
   canPreviewWorkspaceFile,
   createProject,
   createThread,
+  commitProjectGitChanges,
+  getProjectGitFileDiff,
+  getProjectGitPushPreview,
   getProjectGitSummary,
+  getProjectGitStatus,
   getThreadHistory,
   getUsageStats,
   getWorkspaceBootstrap,
@@ -37,6 +41,7 @@ import {
   renameThread,
   saveThreadHistory,
   setActiveSelection,
+  pushProjectGitBranch,
   switchProjectGitBranch,
   updatePanelState,
   updateThreadMetadata,
@@ -446,6 +451,63 @@ app.get('/api/projects/:projectId/git/branches', async (request, response) => {
     response.json(await listProjectGitBranches(request.params.projectId));
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '读取 Git 分支失败');
+  }
+});
+
+app.get('/api/projects/:projectId/git/status', async (request, response) => {
+  try {
+    response.json(await getProjectGitStatus(request.params.projectId));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '读取 Git 状态失败');
+  }
+});
+
+app.get('/api/projects/:projectId/git/diff', async (request, response) => {
+  const filePath = typeof request.query.path === 'string' ? request.query.path.trim() : '';
+  if (!filePath) {
+    response.status(400).send('path 不能为空');
+    return;
+  }
+
+  try {
+    response.json({
+      path: filePath,
+      content: await getProjectGitFileDiff(request.params.projectId, filePath),
+    });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '读取 Git 差异失败');
+  }
+});
+
+app.get('/api/projects/:projectId/git/push-preview', async (request, response) => {
+  try {
+    response.json(await getProjectGitPushPreview(request.params.projectId));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '读取推送预览失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/commit', async (request, response) => {
+  const message = typeof request.body?.message === 'string' ? request.body.message : '';
+  const files = Array.isArray(request.body?.files)
+    ? request.body.files.filter((filePath: unknown): filePath is string => typeof filePath === 'string')
+    : [];
+
+  try {
+    response.json(await commitProjectGitChanges(request.params.projectId, files, message));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : 'Git 提交失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/push', async (request, response) => {
+  const remote = typeof request.body?.remote === 'string' ? request.body.remote.trim() : undefined;
+  const branch = typeof request.body?.branch === 'string' ? request.body.branch.trim() : undefined;
+
+  try {
+    response.json(await pushProjectGitBranch(request.params.projectId, remote, branch));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : 'Git 推送失败');
   }
 });
 

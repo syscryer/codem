@@ -324,6 +324,45 @@ export type GitBranchSummary = {
 
 export type ProjectGitSummary = Pick<ProjectSummary, 'gitBranch' | 'gitDiff' | 'isGitRepo'>;
 
+export type GitFileStatus = {
+  path: string;
+  originalPath?: string;
+  status: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+  deleted: boolean;
+};
+
+export type GitStatusSnapshot = {
+  branch?: string;
+  upstream?: string;
+  remote?: string;
+  ahead: number;
+  behind: number;
+  files: GitFileStatus[];
+};
+
+export type GitPushPreview = {
+  branch: string;
+  remote: string;
+  targetBranch: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  commits: string[];
+};
+
+export type GitCommitResult = {
+  output: string;
+  summary: ProjectGitSummary;
+};
+
+export type GitPushResult = {
+  output: string;
+  summary: ProjectGitSummary;
+};
+
 export type PanelState = {
   organizeBy: 'project' | 'timeline' | 'chat-first';
   sortBy: 'created' | 'updated';
