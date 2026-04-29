@@ -160,9 +160,9 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
     setError('');
     try {
       await pushGitBranch(project.id, pushPreview.remote, pushPreview.targetBranch);
-      await onChanged();
       onClose();
       showToast('推送完成');
+      await onChanged();
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : '推送失败');
     } finally {
