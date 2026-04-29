@@ -6,6 +6,7 @@ import path from 'node:path';
 export type ThemeMode = 'system' | 'light' | 'dark';
 export type InterfaceDensity = 'comfortable' | 'compact';
 export type SidebarWidthMode = 'narrow' | 'default' | 'wide';
+export type WindowMaterialMode = 'auto' | 'none' | 'mica' | 'acrylic' | 'micaAlt';
 
 export type GeneralSettings = {
   restoreLastSelectionOnLaunch: boolean;
@@ -22,6 +23,7 @@ export type AppearanceSettings = {
   uiFontSize: 12 | 13 | 14 | 15;
   codeFontSize: 12 | 13 | 14;
   sidebarWidth: SidebarWidthMode;
+  windowMaterial: WindowMaterialMode;
 };
 
 export type CustomModel = {
@@ -87,6 +89,7 @@ export const defaultAppearanceSettings: AppearanceSettings = {
   uiFontSize: 13,
   codeFontSize: 12,
   sidebarWidth: 'default',
+  windowMaterial: 'acrylic',
 };
 
 export const defaultGeneralSettings: GeneralSettings = {
@@ -273,6 +276,11 @@ function normalizeAppearanceSettings(value: unknown): AppearanceSettings {
     uiFontSize: normalizeNumber(record.uiFontSize, [12, 13, 14, 15], defaultAppearanceSettings.uiFontSize),
     codeFontSize: normalizeNumber(record.codeFontSize, [12, 13, 14], defaultAppearanceSettings.codeFontSize),
     sidebarWidth: normalizeEnum(record.sidebarWidth, ['narrow', 'default', 'wide'], defaultAppearanceSettings.sidebarWidth),
+    windowMaterial: normalizeEnum(
+      record.windowMaterial,
+      ['auto', 'none', 'mica', 'acrylic', 'micaAlt'],
+      defaultAppearanceSettings.windowMaterial,
+    ),
   };
 }
 

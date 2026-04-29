@@ -1,5 +1,5 @@
-import { Code2, Columns3, Monitor, Moon, RotateCcw, Rows3, Sun, Type } from 'lucide-react';
-import type { AppearanceSettings, InterfaceDensity, SidebarWidthMode, ThemeMode } from '../../types';
+import { Code2, Columns3, Monitor, Moon, RotateCcw, Rows3, Sparkles, Sun, Type } from 'lucide-react';
+import type { AppearanceSettings, InterfaceDensity, SidebarWidthMode, ThemeMode, WindowMaterialMode } from '../../types';
 import { defaultAppearanceSettings, type AppearanceSettingsUpdate } from '../../hooks/useAppSettings';
 import { SegmentedControl, SettingsRow, Stepper } from './SettingsControls';
 
@@ -47,6 +47,19 @@ export function AppearanceSettingsSection({
               { value: 'dark', label: '深色', icon: Moon },
             ]}
             onChange={(themeMode) => update({ themeMode })}
+          />
+        </SettingsRow>
+        <SettingsRow icon={Sparkles} title="窗口材质" description="设置桌面版启动后的默认 Windows 背景材质">
+          <SegmentedControl<WindowMaterialMode>
+            value={appearance.windowMaterial}
+            options={[
+              { value: 'auto', label: '自动' },
+              { value: 'none', label: '无' },
+              { value: 'mica', label: 'Mica' },
+              { value: 'acrylic', label: 'Acrylic' },
+              { value: 'micaAlt', label: 'Mica Alt' },
+            ]}
+            onChange={(windowMaterial) => update({ windowMaterial })}
           />
         </SettingsRow>
         <SettingsRow icon={Rows3} title="界面密度" description="控制列表、消息和底部状态栏间距">

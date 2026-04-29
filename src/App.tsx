@@ -13,6 +13,7 @@ import { useClaudeRun } from './hooks/useClaudeRun';
 import { useAppSettings } from './hooks/useAppSettings';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
 import { matchesShortcut } from './lib/shortcuts';
+import { isTauriRuntime, setWindowMaterial } from './lib/window-material';
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -58,6 +59,7 @@ export default function App() {
     confirmRemoveDialog,
     handleOpenProject,
     handleOpenProjectInEditor,
+    handleCopyProjectPath,
     refreshProjectGitSummary,
     loadProjectGitBranches,
     switchProjectGitBranch,
@@ -87,6 +89,7 @@ export default function App() {
     shortcuts,
     openWith,
     openTargets,
+    loading: settingsLoading,
     updateAppearance,
     updateGeneral,
     updateModels,
@@ -94,6 +97,7 @@ export default function App() {
     updateOpenWith,
   } = useAppSettings(showToast);
   const wasRunningRef = useRef(false);
+  const materialErrorShownRef = useRef(false);
   const {
     workspace,
     permissionMode,
@@ -132,6 +136,24 @@ export default function App() {
     persistThreadMetadata,
     clearActiveTurnSelection: () => undefined,
   });
+
+  useEffect(() => {
+    if (settingsLoading || !isTauriRuntime()) {
+      return;
+    }
+
+    let cancelled = false;
+    void setWindowMaterial(appearance.windowMaterial).then((handled) => {
+      if (!handled && !cancelled && !materialErrorShownRef.current) {
+        materialErrorShownRef.current = true;
+        showToast('窗口材质应用失败，请确认当前 Windows 版本支持该材质。', 'error');
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [appearance.windowMaterial, settingsLoading, showToast]);
 
   useEffect(() => {
     if (!general.autoRefreshGitStatus || !activeProjectId) {
@@ -330,6 +352,7 @@ export default function App() {
               onPickProjectDirectory={handlePickProjectDirectory}
               onCreateThread={handleCreateThread}
               onOpenProject={handleOpenProject}
+              onCopyProjectPath={handleCopyProjectPath}
               onOpenRenameProjectDialog={openRenameProjectDialog}
               onOpenRemoveProjectDialog={openRemoveProjectDialog}
               onToggleProjectCollapse={toggleProjectCollapse}

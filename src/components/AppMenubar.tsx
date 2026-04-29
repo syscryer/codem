@@ -1,6 +1,7 @@
 import { ArrowLeft, ArrowRight, Minus, PanelLeft, Square, X } from 'lucide-react';
 import { useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
+import { isTauriRuntime, setWindowMaterial } from '../lib/window-material';
 import { PopoverPortal } from './PopoverPortal';
 
 type AppMenuId = 'file' | 'edit' | 'view' | 'window' | 'help';
@@ -302,19 +303,5 @@ async function runTauriWindowAction(action: 'minimize' | 'toggleMaximize' | 'clo
 }
 
 async function runTauriMaterialAction(material: number) {
-  if (!isTauriRuntime()) {
-    return false;
-  }
-
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('set_window_material', { material });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function isTauriRuntime() {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  return setWindowMaterial(material);
 }

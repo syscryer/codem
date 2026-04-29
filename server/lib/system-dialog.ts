@@ -67,7 +67,16 @@ if ('${escapedPath}') {
     $dialog.InitialDirectory = $initialPath
   }
 }
-$result = $dialog.ShowDialog()
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$owner.StartPosition = 'Manual'
+$owner.Size = New-Object System.Drawing.Size(1, 1)
+$owner.Location = New-Object System.Drawing.Point(-32000, -32000)
+$owner.ShowInTaskbar = $false
+$owner.Show()
+$owner.Activate()
+$result = $dialog.ShowDialog($owner)
+$owner.Close()
 if ($result -eq [System.Windows.Forms.DialogResult]::OK -and $dialog.FileName) {
   $selectedPath = $dialog.FileName
   if (-not [System.IO.Directory]::Exists($selectedPath)) {

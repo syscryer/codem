@@ -817,10 +817,11 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
 
 export function openProjectInExplorer(projectId: string) {
   const projectPath = readProjectPath(projectId);
+  const error = openDirectoryInExplorer(projectPath);
 
-  spawnSync('explorer.exe', [projectPath], {
-    windowsHide: true,
-  });
+  if (error) {
+    throw new Error(`资源管理器启动失败：${error}`);
+  }
 }
 
 export function listOpenTargets() {
@@ -2193,6 +2194,22 @@ function resolveCommandPath(command: string) {
 }
 
 function startEditorProcess(command: string, args: string[] = []) {
+  return !startDetachedProcess(command, args);
+}
+
+function openDirectoryInExplorer(directoryPath: string) {
+  const child = spawn('explorer.exe', [directoryPath], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+
+  child.unref();
+
+  return null;
+}
+
+function startDetachedProcess(command: string, args: string[] = []) {
   const argumentList = args
     .map((argument) => `'${escapePowerShellString(argument)}'`)
     .join(', ');
@@ -2209,7 +2226,11 @@ Start-Process -FilePath '${escapePowerShellString(command)}' -ArgumentList @(${a
     },
   );
 
-  return result.status === 0;
+  if (result.status === 0) {
+    return null;
+  }
+
+  return result.stderr?.trim() || result.stdout?.trim() || `退出码 ${result.status ?? 'unknown'}`;
 }
 
 function escapePowerShellString(value: string) {

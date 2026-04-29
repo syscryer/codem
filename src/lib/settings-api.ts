@@ -26,6 +26,7 @@ export const defaultAppearanceSettings: AppearanceSettings = {
   uiFontSize: 13,
   codeFontSize: 12,
   sidebarWidth: 'default',
+  windowMaterial: 'acrylic',
 };
 
 export const defaultModelSettings: ModelSettings = {
@@ -200,6 +201,11 @@ function normalizeAppearanceSettings(appearance: unknown): AppearanceSettings {
     uiFontSize: normalizeOneOf(record.uiFontSize, [12, 13, 14, 15], defaultAppearanceSettings.uiFontSize),
     codeFontSize: normalizeOneOf(record.codeFontSize, [12, 13, 14], defaultAppearanceSettings.codeFontSize),
     sidebarWidth: normalizeOneOf(record.sidebarWidth, ['narrow', 'default', 'wide'], defaultAppearanceSettings.sidebarWidth),
+    windowMaterial: normalizeOneOf(
+      record.windowMaterial,
+      ['auto', 'none', 'mica', 'acrylic', 'micaAlt'],
+      defaultAppearanceSettings.windowMaterial,
+    ),
   };
 }
 

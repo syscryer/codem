@@ -630,6 +630,8 @@ export function useWorkspaceState() {
       showToast(await response.text(), 'error');
       return;
     }
+
+    showToast('已请求资源管理器打开项目');
   }
 
   async function handleOpenProjectInEditor(project: ProjectSummary, targetId?: string) {
@@ -714,6 +716,15 @@ export function useWorkspaceState() {
       showToast('会话 ID 已复制');
     } catch {
       showToast(`复制失败，请手动复制：${thread.sessionId}`, 'error');
+    }
+  }
+
+  async function handleCopyProjectPath(project: ProjectSummary) {
+    try {
+      await navigator.clipboard.writeText(project.path);
+      showToast('项目路径已复制');
+    } catch {
+      showToast(`复制失败，请手动复制：${project.path}`, 'error');
     }
   }
 
@@ -868,6 +879,7 @@ export function useWorkspaceState() {
     confirmRemoveDialog,
     handleOpenProject,
     handleOpenProjectInEditor,
+    handleCopyProjectPath,
     refreshProjectGitSummary,
     loadProjectGitBranches,
     switchProjectGitBranch,

@@ -4,12 +4,16 @@ import {
   Blocks,
   Check,
   Clock3,
+  Copy,
   Folder,
+  FolderOpen,
   FolderPlus,
   MoreHorizontal,
   Plus,
+  Pencil,
   Search,
   Settings,
+  Trash2,
   SquarePen,
   SquareSplitHorizontal,
 } from 'lucide-react';
@@ -36,6 +40,7 @@ type SidebarProjectsProps = {
   onPickProjectDirectory: () => void | Promise<void>;
   onCreateThread: (projectId: string) => void | Promise<unknown>;
   onOpenProject: (project: ProjectSummary) => void | Promise<void>;
+  onCopyProjectPath: (project: ProjectSummary) => void | Promise<void>;
   onOpenRenameProjectDialog: (project: ProjectSummary) => void;
   onOpenRemoveProjectDialog: (project: ProjectSummary) => void;
   onToggleProjectCollapse: (projectId: string) => void;
@@ -63,6 +68,7 @@ export function SidebarProjects({
   onPickProjectDirectory,
   onCreateThread,
   onOpenProject,
+  onCopyProjectPath,
   onOpenRenameProjectDialog,
   onOpenRemoveProjectDialog,
   onToggleProjectCollapse,
@@ -74,6 +80,7 @@ export function SidebarProjects({
 }: SidebarProjectsProps) {
   const [panelMenuOpen, setPanelMenuOpen] = useState(false);
   const [projectMenuProjectId, setProjectMenuProjectId] = useState<string | null>(null);
+  const [projectMenuAnchor, setProjectMenuAnchor] = useState<{ x: number; y: number } | null>(null);
   const [threadMenuThreadId, setThreadMenuThreadId] = useState<string | null>(null);
   const [expandedThreadProjects, setExpandedThreadProjects] = useState<Record<string, boolean>>({});
   const panelMenuRef = useRef<HTMLDivElement | null>(null);
@@ -88,6 +95,12 @@ export function SidebarProjects({
     ],
   });
   const runningThreadIdSet = new Set(runningThreadIds);
+
+  function openProjectMenu(projectId: string, anchor?: { x: number; y: number }) {
+    setThreadMenuThreadId(null);
+    setProjectMenuAnchor(anchor ?? null);
+    setProjectMenuProjectId(projectId);
+  }
 
   return (
     <aside className="app-sidebar">
@@ -192,7 +205,14 @@ export function SidebarProjects({
               : mergeVisibleThreads(previewThreads, runningThreads);
 
             return (
-              <div key={project.id} className={`sidebar-project ${project.id === activeProjectId ? 'active' : ''}`}>
+              <div
+                key={project.id}
+                className={`sidebar-project ${project.id === activeProjectId ? 'active' : ''}`}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  openProjectMenu(project.id, { x: event.clientX, y: event.clientY });
+                }}
+              >
                 <div className="sidebar-project-row">
                   <button
                     type="button"
@@ -208,7 +228,15 @@ export function SidebarProjects({
                       className="sidebar-row-action"
                       title="项目菜单"
                       ref={projectMenuProjectId === project.id ? projectMenuTriggerRef : undefined}
-                      onClick={() => setProjectMenuProjectId((value) => value === project.id ? null : project.id)}
+                      onClick={() => {
+                        setProjectMenuProjectId((value) => {
+                          if (value === project.id && !projectMenuAnchor) {
+                            return null;
+                          }
+                          setProjectMenuAnchor(null);
+                          return project.id;
+                        });
+                      }}
                     >
                       <MoreHorizontal size={14} />
                     </button>
@@ -220,15 +248,27 @@ export function SidebarProjects({
                     >
                       <SquarePen size={14} />
                     </button>
-                    <PopoverPortal open={projectMenuProjectId === project.id} anchorRef={projectMenuTriggerRef} placement="bottom-end">
+                    <PopoverPortal
+                      open={projectMenuProjectId === project.id}
+                      anchorRef={projectMenuTriggerRef}
+                      virtualAnchor={projectMenuProjectId === project.id ? projectMenuAnchor : null}
+                      placement="bottom-end"
+                    >
                       <div className="workspace-menu project-menu-popover">
                         <button type="button" className="workspace-menu-item" onClick={() => { setProjectMenuProjectId(null); void onOpenProject(project); }}>
+                          <FolderOpen size={14} />
                           <span>在资源管理器中打开</span>
                         </button>
+                        <button type="button" className="workspace-menu-item" onClick={() => { setProjectMenuProjectId(null); void onCopyProjectPath(project); }}>
+                          <Copy size={14} />
+                          <span>复制路径</span>
+                        </button>
                         <button type="button" className="workspace-menu-item" onClick={() => { setProjectMenuProjectId(null); onOpenRenameProjectDialog(project); }}>
+                          <Pencil size={14} />
                           <span>修改项目名称</span>
                         </button>
                         <button type="button" className="workspace-menu-item danger" onClick={() => { setProjectMenuProjectId(null); onOpenRemoveProjectDialog(project); }}>
+                          <Trash2 size={14} />
                           <span>移除</span>
                         </button>
                       </div>
@@ -265,12 +305,15 @@ export function SidebarProjects({
                           <PopoverPortal open={threadMenuThreadId === thread.id} anchorRef={threadMenuTriggerRef} placement="bottom-end">
                             <div className="workspace-menu thread-menu-popover">
                               <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); onOpenRenameThreadDialog(thread); }}>
+                                <Pencil size={14} />
                                 <span>重命名聊天</span>
                               </button>
                               <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); void onCopySessionId(thread); }}>
+                                <Copy size={14} />
                                 <span>复制会话 ID</span>
                               </button>
                               <button type="button" className="workspace-menu-item danger" onClick={() => { setThreadMenuThreadId(null); onOpenRemoveThreadDialog(thread); }}>
+                                <Trash2 size={14} />
                                 <span>删除聊天</span>
                               </button>
                             </div>

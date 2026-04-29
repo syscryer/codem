@@ -185,6 +185,7 @@ export type SettingsSection =
 export type ThemeMode = 'system' | 'light' | 'dark';
 export type InterfaceDensity = 'comfortable' | 'compact';
 export type SidebarWidthMode = 'narrow' | 'default' | 'wide';
+export type WindowMaterialMode = 'auto' | 'none' | 'mica' | 'acrylic' | 'micaAlt';
 
 export type GeneralSettings = {
   restoreLastSelectionOnLaunch: boolean;
@@ -199,6 +200,7 @@ export type AppearanceSettings = {
   uiFontSize: 12 | 13 | 14 | 15;
   codeFontSize: 12 | 13 | 14;
   sidebarWidth: SidebarWidthMode;
+  windowMaterial: WindowMaterialMode;
 };
 
 export type CustomModel = {

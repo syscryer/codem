@@ -69,6 +69,7 @@ test('normalizeAppSettings preserves valid appearance values', () => {
       uiFontSize: 15,
       codeFontSize: 14,
       sidebarWidth: 'wide',
+      windowMaterial: 'micaAlt',
     },
   });
 
@@ -85,6 +86,7 @@ test('normalizeAppSettings preserves valid appearance values', () => {
       uiFontSize: 15,
       codeFontSize: 14,
       sidebarWidth: 'wide',
+      windowMaterial: 'micaAlt',
     },
     models: defaultAppSettings.models,
     shortcuts: defaultAppSettings.shortcuts,
@@ -364,6 +366,7 @@ test('normalizeAppSettings falls back to defaults for invalid appearance values'
       uiFontSize: 16,
       codeFontSize: 11,
       sidebarWidth: 'extra-wide',
+      windowMaterial: 'glass',
     },
   });
 
@@ -530,6 +533,7 @@ test('updateAppearanceSettings writes formatted JSON and can read it back', () =
       uiFontSize: 14,
       codeFontSize: 13,
       sidebarWidth: 'narrow',
+      windowMaterial: 'mica',
     });
 
     const expected = {
@@ -540,6 +544,7 @@ test('updateAppearanceSettings writes formatted JSON and can read it back', () =
         uiFontSize: 14,
         codeFontSize: 13,
         sidebarWidth: 'narrow',
+        windowMaterial: 'mica',
       },
       models: defaultAppSettings.models,
       shortcuts: defaultAppSettings.shortcuts,
