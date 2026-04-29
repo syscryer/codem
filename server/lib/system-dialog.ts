@@ -10,7 +10,7 @@ export async function selectDirectory(initialPath?: string) {
       'powershell.exe',
       ['-NoProfile', '-Sta', '-ExecutionPolicy', 'Bypass', '-Command', script],
       {
-        windowsHide: false,
+        windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
@@ -49,15 +49,33 @@ function buildFolderPickerScript(initialPath: string) {
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = '选择要添加的项目目录'
-$dialog.ShowNewFolderButton = $false
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = '选择要添加的项目目录'
+$dialog.Filter = '文件夹|*.folder'
+$dialog.CheckFileExists = $false
+$dialog.CheckPathExists = $true
+$dialog.ValidateNames = $false
+$dialog.DereferenceLinks = $true
+$dialog.Multiselect = $false
+$dialog.FileName = '选择当前文件夹'
 if ('${escapedPath}') {
-  $dialog.SelectedPath = '${escapedPath}'
+  $initialPath = '${escapedPath}'
+  if ([System.IO.File]::Exists($initialPath)) {
+    $initialPath = [System.IO.Path]::GetDirectoryName($initialPath)
+  }
+  if ([System.IO.Directory]::Exists($initialPath)) {
+    $dialog.InitialDirectory = $initialPath
+  }
 }
 $result = $dialog.ShowDialog()
-if ($result -eq [System.Windows.Forms.DialogResult]::OK -and $dialog.SelectedPath) {
-  Write-Output $dialog.SelectedPath
+if ($result -eq [System.Windows.Forms.DialogResult]::OK -and $dialog.FileName) {
+  $selectedPath = $dialog.FileName
+  if (-not [System.IO.Directory]::Exists($selectedPath)) {
+    $selectedPath = [System.IO.Path]::GetDirectoryName($selectedPath)
+  }
+  if ($selectedPath) {
+    Write-Output $selectedPath
+  }
 }
 `.trim();
 }

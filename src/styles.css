@@ -1,15 +1,15 @@
 :root {
   font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
   color: #242424;
-  background: #ffffff;
+  background: transparent;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   color-scheme: light;
   --app-chrome: #f3eddf;
-  --sidebar-bg: #f8f1e6;
-  --sidebar-active: #e9e3da;
+  --sidebar-bg: #f7f7f5;
+  --sidebar-active: #e8e8e6;
   --text-muted: #77736c;
   --line: #ece9e2;
   --line-strong: #dedbd3;
@@ -37,7 +37,7 @@ body,
 
 body {
   height: 100vh;
-  background: var(--app-chrome);
+  background: transparent;
 }
 
 button,
@@ -58,6 +58,7 @@ svg {
 }
 
 .codex-desktop {
+  --desktop-menubar-height: 36px;
   --sidebar-width: 332px;
   --workspace-footer-height: 20px;
   --workspace-footer-content-height: 18px;
@@ -71,15 +72,41 @@ svg {
   --app-border: #ece9e2;
   --app-border-strong: #dedbd3;
   --app-hover: rgba(255, 255, 255, 0.65);
+  --app-material-fill: rgba(255, 255, 255, 0.02);
+  --app-material-line: rgba(176, 183, 192, 0.2);
+  --app-material-glow: rgba(255, 255, 255, 0.18);
   --settings-sidebar-bg: #f4f2f2;
   color-scheme: light;
   color: var(--app-text);
-  background: var(--app-bg);
+  background: transparent;
   height: 100vh;
+  position: relative;
   display: grid;
-  grid-template-rows: 30px minmax(0, 1fr);
+  grid-template-rows: var(--desktop-menubar-height) minmax(0, 1fr);
   overflow: hidden;
+  isolation: isolate;
   font-size: var(--app-ui-font-size, 13px);
+}
+
+.codex-desktop::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 42%);
+  opacity: 0.34;
+  pointer-events: none;
+}
+
+.codex-desktop::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.06), transparent 42%);
+  mix-blend-mode: soft-light;
+  opacity: 0.28;
+  pointer-events: none;
 }
 
 .codex-desktop[data-theme-mode="dark"] {
@@ -103,6 +130,9 @@ svg {
   --app-border: #303030;
   --app-border-strong: #3f3f46;
   --app-hover: rgba(255, 255, 255, 0.08);
+  --app-material-fill: rgba(30, 30, 30, 0.08);
+  --app-material-line: rgba(255, 255, 255, 0.08);
+  --app-material-glow: rgba(255, 255, 255, 0.08);
   --settings-sidebar-bg: #202020;
   color-scheme: dark;
 }
@@ -129,6 +159,9 @@ svg {
     --app-border: #303030;
     --app-border-strong: #3f3f46;
     --app-hover: rgba(255, 255, 255, 0.08);
+    --app-material-fill: rgba(30, 30, 30, 0.08);
+    --app-material-line: rgba(255, 255, 255, 0.08);
+    --app-material-glow: rgba(255, 255, 255, 0.08);
     --settings-sidebar-bg: #202020;
     color-scheme: dark;
   }
@@ -157,16 +190,44 @@ svg {
 }
 
 .desktop-menubar {
+  position: relative;
+  z-index: 80;
+  overflow: visible;
+  isolation: isolate;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: center;
-  height: 30px;
-  padding: 0 8px;
-  background: var(--app-chrome);
-  border-bottom: 1px solid #e7dfd1;
+  height: var(--desktop-menubar-height);
+  padding: 0 8px 0 16px;
+  background: transparent;
+  border-bottom: 0;
+  backdrop-filter: blur(12px) saturate(1.18);
+  -webkit-backdrop-filter: blur(12px) saturate(1.18);
   color: #5f5a53;
   font-size: 12px;
   user-select: none;
+}
+
+.desktop-menubar::before {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1;
+  height: 1px;
+  background: transparent;
+  pointer-events: none;
+}
+
+.desktop-menubar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.2), transparent 82%);
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 .window-nav,
@@ -177,53 +238,158 @@ svg {
 }
 
 .window-nav {
-  gap: 10px;
+  gap: 9px;
 }
 
 .window-nav button {
-  width: 18px;
-  height: 20px;
+  width: 22px;
+  height: 24px;
   display: inline-grid;
   place-items: center;
   padding: 0;
   border: 0;
+  border-radius: 7px;
   background: transparent;
   color: #7a756d;
   font-size: 13px;
 }
 
 .desktop-menu {
-  gap: 26px;
-  margin-left: 18px;
+  gap: 8px;
+  margin-left: 22px;
+}
+
+.desktop-menu-group {
+  position: relative;
+}
+
+.desktop-menu-trigger,
+.window-controls button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.desktop-menu-trigger {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.desktop-menu-trigger:hover,
+.desktop-menu-trigger.active,
+.window-nav button:hover,
+.window-controls button:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #1f1f1f;
+}
+
+.desktop-menu-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 300;
+  min-width: 218px;
+  padding: 8px;
+  border: 1px solid rgba(214, 218, 224, 0.74);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow:
+    0 20px 52px rgba(15, 23, 42, 0.16),
+    0 8px 18px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(18px) saturate(1.35);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+}
+
+.desktop-menu-item {
+  width: 100%;
+  height: 34px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #1f2937;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.desktop-menu-item:hover {
+  background: rgba(31, 41, 55, 0.07);
+}
+
+.desktop-menu-item kbd {
+  color: #6b7280;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.desktop-menu-separator {
+  height: 1px;
+  margin: 7px -8px;
+  background: rgba(209, 213, 219, 0.78);
 }
 
 .window-controls {
-  gap: 22px;
-  padding-right: 5px;
+  align-self: stretch;
+  gap: 12px;
+  padding-right: 0;
   color: #171717;
 }
 
-.window-controls span {
+.window-controls button {
+  width: 32px;
+  height: 100%;
   display: inline-grid;
   place-items: center;
+  padding: 0;
+  border-radius: 0;
+}
+
+.window-controls button:last-child:hover {
+  background: #d83b3b;
+  color: #ffffff;
+}
+
+.window-title-spacer {
+  align-self: stretch;
+  min-width: 80px;
 }
 
 .codex-shell {
+  position: relative;
+  z-index: 1;
   min-height: 0;
   display: grid;
   grid-template-columns: var(--sidebar-width, 332px) minmax(0, 1fr);
-  background: #ffffff;
+  background: transparent;
   overflow: hidden;
 }
 
+.codex-shell.sidebar-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .app-sidebar {
+  position: relative;
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   background: var(--sidebar-bg);
-  border-right: 1px solid #e5dece;
-  color: #4a4640;
+  border-right: 1px solid #dedede;
+  color: #4b4f56;
   overflow: hidden;
+}
+
+.app-sidebar > * {
+  position: relative;
+  z-index: 1;
 }
 
 .sidebar-primary {
@@ -250,7 +416,7 @@ svg {
   gap: 10px;
   justify-content: flex-start;
   padding: 7px 12px;
-  color: #3f3b35;
+  color: #50545a;
   font-size: 13px;
 }
 
@@ -259,16 +425,16 @@ svg {
   width: 14px;
   display: inline-grid;
   place-items: center;
-  color: #6f6a62;
+  color: #85898f;
 }
 
 .sidebar-primary button kbd {
   margin-left: auto;
   padding: 2px 8px;
-  border: 1px solid #e1dbd0;
+  border: 1px solid #dddddc;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.65);
-  color: #6f6a62;
+  background: rgba(255, 255, 255, 0.55);
+  color: #7d8288;
   font-size: 11px;
   font-family: inherit;
   opacity: 0;
@@ -289,17 +455,17 @@ svg {
 .sidebar-projects {
   min-height: 0;
   overflow: auto;
-  padding: 0 10px 12px 8px;
+  padding: 0 12px 12px 10px;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
-  scrollbar-color: rgba(148, 139, 127, 0.38) transparent;
+  scrollbar-color: rgba(143, 147, 153, 0.34) transparent;
 }
 
 .sidebar-section-head {
   display: flex;
   justify-content: space-between;
   padding: 9px 10px 8px;
-  color: #969087;
+  color: #8b9096;
   font-size: 12px;
 }
 
@@ -323,14 +489,14 @@ svg {
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: #888177;
+  color: #8a8f96;
   cursor: pointer;
 }
 
 .sidebar-toolbar-icon:hover,
 .sidebar-row-action:hover {
-  background: rgba(255, 255, 255, 0.65);
-  color: #5f5a53;
+  background: rgba(0, 0, 0, 0.045);
+  color: #595f66;
 }
 
 .sidebar-project {
@@ -340,7 +506,7 @@ svg {
 }
 
 .sidebar-project.active {
-  background: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.62);
   border-radius: 12px;
 }
 
@@ -360,7 +526,7 @@ svg {
   border: 0;
   background: transparent;
   border-radius: 8px;
-  color: #68625a;
+  color: #6e737a;
   font-size: 13px;
   cursor: pointer;
 }
@@ -368,7 +534,7 @@ svg {
 .sidebar-project-title span {
   display: inline-grid;
   place-items: center;
-  color: #68625a;
+  color: #8b9096;
 }
 
 .sidebar-project-title strong {
@@ -376,7 +542,7 @@ svg {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 500;
+  font-weight: 480;
 }
 
 .sidebar-project-actions {
@@ -405,7 +571,7 @@ svg {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
-  padding: 8px 11px;
+  padding: 8px 12px;
   font-size: 13px;
 }
 
@@ -440,7 +606,7 @@ svg {
 }
 
 .sidebar-thread small {
-  color: #9a948c;
+  color: #8f949a;
 }
 
 .sidebar-thread.active {
@@ -566,19 +732,37 @@ svg {
 
 .chat-shell {
   --composer-max-width: 820px;
+  --chat-header-height: 44px;
+  min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: 44px minmax(0, 1fr) auto auto var(--workspace-footer-height);
+  grid-template-rows: minmax(0, 1fr) auto auto var(--workspace-footer-height);
   overflow: hidden;
   background: #ffffff;
+  border-top-left-radius: 12px;
+  border-top: 1px solid rgba(176, 183, 192, 0.12);
+  border-left: 1px solid rgba(176, 183, 192, 0.12);
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .conversation-shell {
+  grid-row: 1;
+  grid-column: 1;
   position: relative;
+  min-width: 0;
   min-height: 0;
 }
 
 .chat-header {
+  grid-row: 1;
+  grid-column: 1;
+  align-self: start;
+  position: relative;
+  z-index: 12;
+  overflow: visible;
+  isolation: isolate;
+  height: var(--chat-header-height);
+  min-height: var(--chat-header-height);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -839,10 +1023,12 @@ svg {
 }
 
 .conversation {
+  min-width: 0;
   min-height: 0;
   height: 100%;
-  overflow: auto;
-  padding: 30px 0 24px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: calc(var(--chat-header-height) + 30px) 0 24px;
   overscroll-behavior: contain;
   background: #ffffff;
   scrollbar-gutter: stable;
@@ -908,10 +1094,12 @@ svg {
 
 .turn {
   width: min(100% - 48px, 820px);
+  min-width: 0;
   margin: 0 auto 30px;
 }
 
 .message {
+  min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   margin: 18px 0;
@@ -922,10 +1110,13 @@ svg {
 }
 
 .message-body {
+  min-width: 0;
+  max-width: 100%;
   color: #242424;
   font-size: 14px;
   line-height: 1.72;
   word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .preserve-format {
@@ -934,6 +1125,7 @@ svg {
 
 .user-message-content {
   justify-self: end;
+  min-width: 0;
   display: grid;
   justify-items: end;
   gap: 4px;
@@ -988,12 +1180,18 @@ svg {
 
 .assistant-content {
   min-width: 0;
+  max-width: 100%;
   display: grid;
   gap: 8px;
 }
 
 .assistant-message .message-body {
   grid-column: auto;
+}
+
+.markdown-body {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .markdown-body > :first-child {
@@ -1036,6 +1234,7 @@ svg {
 .markdown-body a {
   color: var(--accent);
   text-decoration: none;
+  overflow-wrap: anywhere;
 }
 
 .markdown-body a:hover {
@@ -1067,11 +1266,16 @@ svg {
   background: #eeeeee;
   font-family: "Cascadia Code", Consolas, monospace;
   font-size: 0.9em;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .code-block-shell {
   position: relative;
+  min-width: 0;
+  max-width: 100%;
   margin: 12px 0 16px;
+  overflow: hidden;
 }
 
 .markdown-body .code-block-shell pre {
@@ -1079,7 +1283,8 @@ svg {
   padding: 12px 14px;
   border-radius: 7px;
   background: #eeeeef;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .markdown-body .code-block-shell pre code {
@@ -1088,6 +1293,7 @@ svg {
   font-size: var(--app-code-font-size, 12px);
   line-height: 1.6;
   white-space: pre;
+  overflow-wrap: normal;
 }
 
 .code-copy-button {
@@ -1106,8 +1312,11 @@ svg {
 }
 
 .markdown-body table {
-  width: 100%;
+  display: block;
+  width: max-content;
+  max-width: 100%;
   margin: 12px 0 16px;
+  overflow-x: auto;
   border-collapse: collapse;
   font-size: 14px;
 }
@@ -1199,9 +1408,11 @@ svg {
 
 .tool-step {
   width: auto;
+  min-width: 0;
   max-width: 100%;
   background: transparent;
   padding: 2px 0 6px;
+  overflow-wrap: anywhere;
 }
 
 .tool-preview-step {
@@ -1210,10 +1421,16 @@ svg {
 }
 
 .tool-step-main {
-  display: inline-grid;
-  grid-template-columns: 10px minmax(0, auto);
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
   gap: 8px;
   align-items: start;
+  width: 100%;
+  max-width: 100%;
+}
+
+.tool-step-main > div {
+  min-width: 0;
   max-width: 100%;
 }
 
@@ -1236,7 +1453,10 @@ svg {
   font-family: "Cascadia Code", Consolas, monospace;
   font-size: 12px;
   font-weight: 600;
+  line-height: 1.45;
   letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .tool-subtitle {
@@ -1245,9 +1465,14 @@ svg {
   font-family: "Cascadia Code", Consolas, monospace;
   font-size: 12px;
   line-height: 1.45;
-  white-space: nowrap;
+  display: -webkit-box;
+  white-space: normal;
   overflow: hidden;
   text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .tool-error .tool-title,
@@ -3833,8 +4058,6 @@ svg {
   color: #333333;
 }
 
-.codex-desktop .desktop-menubar,
-.codex-desktop .codex-shell,
 .codex-desktop .chat-shell,
 .codex-desktop .chat-header,
 .codex-desktop .conversation,
@@ -3847,6 +4070,15 @@ svg {
 .codex-desktop .dialog-card,
 .codex-desktop .debug-drawer {
   background: var(--app-surface);
+  color: var(--app-text);
+}
+
+.codex-desktop .codex-shell {
+  background: transparent;
+}
+
+.codex-desktop .desktop-menubar {
+  background: transparent;
   color: var(--app-text);
 }
 
@@ -3875,10 +4107,51 @@ svg {
     linear-gradient(90deg, color-mix(in srgb, var(--app-surface) 12%, transparent), transparent 24%, transparent 76%, color-mix(in srgb, var(--app-surface) 6%, transparent));
 }
 
+.codex-desktop .open-app-dropdown {
+  border-color: color-mix(in srgb, var(--app-border) 88%, transparent);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 70%, transparent), color-mix(in srgb, var(--app-surface-muted) 54%, transparent)),
+    color-mix(in srgb, var(--app-surface) 58%, transparent);
+  box-shadow:
+    0 24px 58px rgba(15, 23, 42, 0.17),
+    0 8px 22px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 color-mix(in srgb, var(--app-surface) 100%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--app-border) 36%, transparent);
+  backdrop-filter: blur(28px) saturate(1.25);
+  -webkit-backdrop-filter: blur(28px) saturate(1.25);
+}
+
+.codex-desktop .open-app-dropdown::before {
+  z-index: 0;
+  background-color: transparent;
+  background:
+    radial-gradient(ellipse at 20% 0%, color-mix(in srgb, var(--app-surface) 62%, transparent), transparent 42%),
+    radial-gradient(ellipse at 80% 100%, color-mix(in srgb, var(--app-border) 14%, transparent), transparent 48%),
+    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 16%, transparent), transparent 46%);
+  backdrop-filter: blur(28px) saturate(1.34);
+  -webkit-backdrop-filter: blur(28px) saturate(1.34);
+}
+
+.codex-desktop .open-app-dropdown::after {
+  z-index: 0;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 28%, transparent), transparent 34%),
+    linear-gradient(110deg, color-mix(in srgb, var(--app-surface) 20%, transparent), transparent 30%, transparent 72%, color-mix(in srgb, var(--app-border) 8%, transparent)),
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 5px);
+  opacity: 0.54;
+}
+
+.codex-desktop .open-app-dropdown > * {
+  position: relative;
+  z-index: 1;
+}
+
 .codex-desktop .app-sidebar {
-  background: var(--sidebar-bg);
-  border-right-color: var(--app-border-strong);
+  background: var(--app-material-fill);
+  border-right-color: transparent;
   color: var(--app-text);
+  backdrop-filter: blur(4px) saturate(1.06);
+  -webkit-backdrop-filter: blur(4px) saturate(1.06);
 }
 
 .codex-desktop .settings-sidebar {
@@ -3971,6 +4244,41 @@ svg {
     linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 32%),
     linear-gradient(90deg, rgba(255, 255, 255, 0.12), transparent 24%, transparent 76%, rgba(255, 255, 255, 0.06));
   pointer-events: none;
+}
+
+.open-app-dropdown {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.7), rgba(246, 248, 250, 0.54)),
+    rgba(248, 250, 252, 0.58);
+  backdrop-filter: blur(28px) saturate(1.25);
+  -webkit-backdrop-filter: blur(28px) saturate(1.25);
+}
+
+.open-app-dropdown::before,
+.open-app-dropdown::after {
+  z-index: 0;
+}
+
+.open-app-dropdown::before {
+  background-color: transparent;
+  background:
+    radial-gradient(ellipse at 20% 0%, rgba(255, 255, 255, 0.62), transparent 42%),
+    radial-gradient(ellipse at 80% 100%, rgba(148, 163, 184, 0.09), transparent 48%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16), transparent 46%);
+  backdrop-filter: blur(28px) saturate(1.34);
+  -webkit-backdrop-filter: blur(28px) saturate(1.34);
+}
+
+.open-app-option:hover,
+.open-app-option.active,
+.codex-desktop .open-app-option:hover,
+.codex-desktop .open-app-option.active {
+  background: rgba(224, 226, 228, 0.58);
+}
+
+.open-app-dropdown > * {
+  position: relative;
+  z-index: 1;
 }
 
 :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .status-branch-menu-item):hover {
@@ -4078,6 +4386,30 @@ svg {
   border-color: var(--app-border);
 }
 
+.codex-desktop .chat-header {
+  border-bottom-color: transparent;
+  background: color-mix(in srgb, var(--app-surface) 34%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--app-surface) 58%, transparent);
+  backdrop-filter: blur(10px) saturate(1.18);
+  -webkit-backdrop-filter: blur(10px) saturate(1.18);
+}
+
+.codex-desktop .chat-header::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 26%, transparent), color-mix(in srgb, var(--app-surface) 13%, transparent) 54%, transparent);
+  pointer-events: none;
+}
+
+.codex-desktop .chat-header::after {
+  content: none;
+  pointer-events: none;
+}
+
 .codex-desktop .settings-segmented button.active,
 .codex-desktop .settings-nav-item.active,
 .codex-desktop .sidebar-thread.active,
@@ -4101,6 +4433,59 @@ svg {
 .codex-desktop .status-run-trigger:hover {
   background: var(--app-hover);
   color: var(--app-text-strong);
+}
+
+.codex-desktop .app-sidebar {
+  background: var(--app-material-fill);
+  border-right-color: transparent;
+}
+
+.codex-desktop .app-sidebar::before,
+.codex-desktop .app-sidebar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.codex-desktop .app-sidebar::before {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 52%);
+  opacity: 0.74;
+}
+
+.codex-desktop .app-sidebar::after {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.1), transparent 42%, rgba(80, 86, 94, 0.02));
+  opacity: 0.32;
+}
+
+.codex-desktop .sidebar-primary button:hover,
+.codex-desktop .sidebar-footer button:hover,
+.codex-desktop .sidebar-project-title:hover,
+.codex-desktop .sidebar-collapse-toggle:hover {
+  background: color-mix(in srgb, var(--app-text) 6%, transparent);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .sidebar-toolbar-icon:hover,
+.codex-desktop .sidebar-row-action:hover {
+  background: color-mix(in srgb, var(--app-text) 6%, transparent);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .sidebar-thread:hover {
+  background: color-mix(in srgb, var(--app-text) 5%, transparent);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .sidebar-thread.active,
+.codex-desktop .sidebar-thread-row.active .sidebar-thread {
+  background: rgba(224, 226, 228, 0.62);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .sidebar-project.active {
+  background: rgba(238, 239, 240, 0.54);
 }
 
 .codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .status-branch-menu-item):hover {
@@ -4217,7 +4602,7 @@ svg {
 }
 
 .codex-desktop[data-density="compact"] .conversation {
-  padding: 20px 0 16px;
+  padding: calc(var(--chat-header-height) + 20px) 0 16px;
 }
 
 .codex-desktop[data-density="compact"] .turn {

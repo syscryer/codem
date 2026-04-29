@@ -888,6 +888,7 @@ function spawnClaudeRuntime(command: string, input: StreamInput, inputMode: Clau
   const child = spawn(command, args, {
     cwd: input.workingDirectory,
     env: process.env,
+    windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
@@ -1530,6 +1531,7 @@ function resolveClaudeCommand() {
   const lookupCommand = process.platform === 'win32' ? 'where.exe' : 'which';
   const lookup = spawnSync(lookupCommand, ['claude'], {
     encoding: 'utf8',
+    windowsHide: true,
   });
 
   if (lookup.status !== 0) {

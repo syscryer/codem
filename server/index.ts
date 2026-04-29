@@ -1,4 +1,4 @@
-import express, { type ErrorRequestHandler } from 'express';
+import express, { type ErrorRequestHandler, type RequestHandler } from 'express';
 import path from 'node:path';
 import { readFileSync, statSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -66,6 +66,7 @@ const jsonBodyLimit = process.env.CODEM_JSON_BODY_LIMIT ?? '25mb';
 
 const app = express();
 
+app.use(createLocalCorsHandler());
 app.use(express.json({ limit: jsonBodyLimit }));
 app.use(createJsonBodyErrorHandler());
 
@@ -800,6 +801,40 @@ function createJsonBodyErrorHandler(): ErrorRequestHandler {
 
     next(error);
   };
+}
+
+function createLocalCorsHandler(): RequestHandler {
+  return (request, response, next) => {
+    const origin = request.get('origin');
+    if (origin && isAllowedLocalOrigin(origin)) {
+      response.setHeader('Access-Control-Allow-Origin', origin);
+      response.setHeader('Vary', 'Origin');
+    }
+
+    response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (request.method === 'OPTIONS') {
+      response.sendStatus(204);
+      return;
+    }
+
+    next();
+  };
+}
+
+function isAllowedLocalOrigin(origin: string) {
+  if (origin === 'http://tauri.localhost' || origin === 'https://tauri.localhost') {
+    return true;
+  }
+
+  try {
+    const url = new URL(origin);
+    return (url.hostname === '127.0.0.1' || url.hostname === 'localhost') &&
+      (url.protocol === 'http:' || url.protocol === 'https:');
+  } catch {
+    return false;
+  }
 }
 
 function isPayloadTooLargeError(error: unknown) {

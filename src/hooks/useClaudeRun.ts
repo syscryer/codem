@@ -2076,52 +2076,55 @@ function normalizeClaudeModelOptions(value: unknown): ClaudeModelOption[] {
     return [];
   }
 
-  return value
-    .map((item) => {
-      if (typeof item === 'string') {
-        const id = item.trim();
-        if (!id) {
-          return null;
-        }
-        return {
-          id,
-          label: id === DEFAULT_MODEL_VALUE ? '默认' : id,
-          model: id === DEFAULT_MODEL_VALUE ? undefined : id,
-          kind: id === DEFAULT_MODEL_VALUE ? 'default' : 'custom',
-        } satisfies ClaudeModelOption;
-      }
-
-      if (!item || typeof item !== 'object') {
-        return null;
-      }
-
-      const record = item as Record<string, unknown>;
-      const id = typeof record.id === 'string' ? record.id.trim() : '';
+  const result: ClaudeModelOption[] = [];
+  for (const item of value) {
+    if (typeof item === 'string') {
+      const id = item.trim();
       if (!id) {
-        return null;
+        continue;
       }
 
-      const model = typeof record.model === 'string' && record.model.trim() ? record.model.trim() : undefined;
-      const label =
-        typeof record.label === 'string' && record.label.trim()
-          ? record.label.trim()
-          : model || (id === DEFAULT_MODEL_VALUE ? '默认' : id);
-      const description =
-        typeof record.description === 'string' && record.description.trim()
-          ? record.description.trim()
-          : undefined;
-      const kind =
-        record.kind === 'default' || record.kind === 'slot' || record.kind === 'custom' ? record.kind : undefined;
-
-      return {
+      result.push({
         id,
-        label,
-        description,
-        model,
-        kind,
-      } satisfies ClaudeModelOption;
-    })
-    .filter((item): item is ClaudeModelOption => Boolean(item));
+        label: id === DEFAULT_MODEL_VALUE ? '默认' : id,
+        model: id === DEFAULT_MODEL_VALUE ? undefined : id,
+        kind: id === DEFAULT_MODEL_VALUE ? 'default' : 'custom',
+      });
+      continue;
+    }
+
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+
+    const record = item as Record<string, unknown>;
+    const id = typeof record.id === 'string' ? record.id.trim() : '';
+    if (!id) {
+      continue;
+    }
+
+    const model = typeof record.model === 'string' && record.model.trim() ? record.model.trim() : undefined;
+    const label =
+      typeof record.label === 'string' && record.label.trim()
+        ? record.label.trim()
+        : model || (id === DEFAULT_MODEL_VALUE ? '默认' : id);
+    const description =
+      typeof record.description === 'string' && record.description.trim()
+        ? record.description.trim()
+        : undefined;
+    const kind =
+      record.kind === 'default' || record.kind === 'slot' || record.kind === 'custom' ? record.kind : undefined;
+
+    result.push({
+      id,
+      label,
+      description,
+      model,
+      kind,
+    });
+  }
+
+  return result;
 }
 
 function findModelOption(models: ClaudeModelOption[], modelId: string) {

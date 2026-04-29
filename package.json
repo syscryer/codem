@@ -7,10 +7,15 @@
     "dev": "concurrently \"npm:dev:server\" \"npm:dev:web\"",
     "dev:web": "vite",
     "dev:server": "tsx watch server/index.ts",
+    "desktop:dev": "node scripts/desktop-dev.mjs",
+    "desktop:shell": "tauri dev",
+    "desktop:build": "tauri build",
+    "tauri": "tauri",
     "typecheck": "tsc -b",
-    "build": "tsc -b && vite build"
+    "build": "tsc -b && vite build && node scripts/build-server.mjs"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
     "express": "^5.1.0",
     "lucide-react": "^1.8.0",
     "react": "^19.2.0",
@@ -19,12 +24,14 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.9.6",
     "@types/express": "^5.0.3",
     "@types/node": "^24.7.2",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^5.1.0",
     "concurrently": "^9.2.1",
+    "esbuild": "^0.27.7",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vite": "^7.1.10"
