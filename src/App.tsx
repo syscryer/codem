@@ -529,6 +529,10 @@ function getLatestTodoWritePreview(activeThread: ThreadDetail | null): TodoDockP
 
   for (let turnIndex = activeThread.turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
     const turn = activeThread.turns[turnIndex];
+    if (!isActiveTaskDockTurn(turn)) {
+      continue;
+    }
+
     for (let toolIndex = turn.tools.length - 1; toolIndex >= 0; toolIndex -= 1) {
       const preview = getTodoWritePreviewFromTool(turn.tools[toolIndex]);
       if (preview) {
@@ -538,6 +542,10 @@ function getLatestTodoWritePreview(activeThread: ThreadDetail | null): TodoDockP
   }
 
   return null;
+}
+
+function isActiveTaskDockTurn(turn: ConversationTurn) {
+  return turn.status === 'pending' || turn.status === 'running';
 }
 
 function getTodoWritePreviewFromTool(tool: ToolStep): TodoDockPreview | null {
