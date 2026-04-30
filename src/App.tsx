@@ -602,7 +602,7 @@ function getLatestPendingApprovalDialog(activeThread: ThreadDetail | null) {
 }
 
 function isActionableApprovalRequest(request: ApprovalRequest) {
-  return request.historical !== true;
+  return request.historical !== true && request.kind !== 'plan-exit';
 }
 
 function buildApprovalDialogKey(

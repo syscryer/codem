@@ -224,5 +224,5 @@ function ApprovalRequestDialog({
 }
 
 function isPlanApprovalRequest(request: ApprovalRequest) {
-  return request.title === '计划待确认';
+  return request.kind === 'plan-exit' || request.title === '计划待确认';
 }

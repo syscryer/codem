@@ -108,6 +108,7 @@ type RequestUserInputRequest = {
 
 type ApprovalRequest = {
   requestId?: string;
+  kind?: 'permission' | 'plan-exit';
   title: string;
   description?: string;
   command?: string[];
@@ -366,6 +367,13 @@ export function submitRunRequestUserInput(runId: string, requestId: string, answ
     return {
       submitted: false,
       error: '当前 Claude 运行不支持运行中回答，请等待结束后再继续。',
+    };
+  }
+
+  if (!activeRun.state.pausedForUserInput) {
+    return {
+      submitted: false,
+      error: 'Claude 还没有完成提问，请稍后再提交答案。',
     };
   }
 
@@ -2086,6 +2094,7 @@ function parseApprovalRequestEvent(
     const payload = asRecord(input);
     return {
       requestId: firstNonEmptyString(payload, ['requestId', 'request_id', 'toolUseId', 'tool_use_id']) ?? toolUseId,
+      kind: 'plan-exit',
       title: '计划待确认',
       description: firstNonEmptyString(payload, ['plan', 'description', 'reason', 'message']),
       danger: 'low',
@@ -2102,6 +2111,7 @@ function parseApprovalRequestEvent(
 
   return {
     requestId: firstNonEmptyString(payload, ['requestId', 'request_id', 'toolUseId', 'tool_use_id']) ?? toolUseId,
+    kind: 'permission',
     title,
     description: firstNonEmptyString(payload, ['description', 'reason']),
     command,

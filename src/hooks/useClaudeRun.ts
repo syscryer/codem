@@ -922,6 +922,15 @@ export function useClaudeRun({
     }
 
     if (event.type === 'trace') {
+      if (event.name === 'paused_for_user_input') {
+        updateRunningTurn(context, (turn) => ({
+          ...turn,
+          activity: turn.activity || '等待补充输入',
+          pendingUserInputRequests: markLatestPendingUserInputRequestReady(turn.pendingUserInputRequests, event.atMs),
+        }));
+        schedulePersistThreadHistory(context.threadId);
+      }
+
       appendRunningDebug(context, {
         title: `Trace: ${event.name}`,
         content: event.detail ? `+${event.elapsedMs}ms\n${event.detail}` : `+${event.elapsedMs}ms`,
@@ -1488,7 +1497,7 @@ export function useClaudeRun({
     const promptText = buildApprovalDecisionPrompt(request, decision);
     const toolResultContent = buildApprovalDecisionToolResultContent(request, decision);
 
-    if (isThreadRunning(activeThreadId)) {
+    if (isThreadRunning(activeThreadId) && !isPlanApprovalRequest(request)) {
       const runId =
         runContextsByThreadIdRef.current.get(activeThreadId)?.runId ||
         turn.backendRunId ||
@@ -1616,6 +1625,31 @@ function upsertRequestUserInput(
     ...request,
     submittedAnswers: current[index].submittedAnswers,
     submittedAtMs: current[index].submittedAtMs,
+    readyAtMs: current[index].readyAtMs,
+  };
+  return next;
+}
+
+function markLatestPendingUserInputRequestReady(
+  requests: RequestUserInputRequest[] | undefined,
+  readyAtMs: number,
+) {
+  const current = requests ?? [];
+  let index = -1;
+  for (let requestIndex = current.length - 1; requestIndex >= 0; requestIndex -= 1) {
+    if (!current[requestIndex].submittedAnswers) {
+      index = requestIndex;
+      break;
+    }
+  }
+  if (index === -1) {
+    return current;
+  }
+
+  const next = [...current];
+  next[index] = {
+    ...next[index],
+    readyAtMs,
   };
   return next;
 }
@@ -1717,6 +1751,7 @@ function hasRunningTool(turn: ConversationTurn) {
 
 function getApprovalRequestSignature(request: ApprovalRequest) {
   return JSON.stringify({
+    kind: request.kind,
     title: request.title,
     description: request.description,
     command: request.command ?? [],
@@ -2015,7 +2050,7 @@ function buildApprovalDecisionToolResultContent(request: ApprovalRequest, decisi
 }
 
 function isPlanApprovalRequest(request: ApprovalRequest) {
-  return request.title === '计划待确认';
+  return request.kind === 'plan-exit' || request.title === '计划待确认';
 }
 
 function isVisiblePermissionMode(value: unknown): value is (typeof permissionMenuModes)[number] {

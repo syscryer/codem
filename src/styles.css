@@ -2159,6 +2159,7 @@ svg {
 .markdown-body {
   min-width: 0;
   max-width: 100%;
+  font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
 }
 
 .markdown-body > :first-child {
@@ -2314,6 +2315,14 @@ svg {
   line-height: 1.35;
 }
 
+.assistant-content > .working-line.compact {
+  display: flex;
+  width: 100%;
+  padding-bottom: 6px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid #efefef;
+}
+
 .working-line.compact {
   margin: 1px 0 4px;
 }
@@ -2329,14 +2338,6 @@ svg {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-
-.tui-progress-text::after {
-  content: "›";
-  color: #8a9099;
-  font-size: 16px;
-  line-height: 1;
-  transform: translateY(-1px);
 }
 
 .tui-progress.running .tui-progress-text {
@@ -2355,20 +2356,14 @@ svg {
   animation: progress-flow 3s linear infinite;
 }
 
-.tui-progress.running .tui-progress-text::after {
-  color: #8a9099;
-}
-
-.activity-dot,
-.tool-status-dot {
+.activity-dot {
   width: 8px;
   height: 8px;
   border-radius: 999px;
   background: #a1a1aa;
 }
 
-.activity-dot.pulse,
-.tool-running .tool-status-dot {
+.activity-dot.pulse {
   background: #71717a;
   animation: pulse 1.1s ease-in-out infinite;
 }
@@ -2389,8 +2384,7 @@ svg {
 
 .tool-step-main {
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   width: 100%;
   max-width: 100%;
@@ -2402,35 +2396,26 @@ svg {
 }
 
 .tool-status-dot {
-  width: 6px;
-  height: 6px;
-  margin-top: 8px;
-}
-
-.tool-done .tool-status-dot {
-  background: #16a34a;
-}
-
-.tool-error .tool-status-dot {
-  background: #dc2626;
+  display: none;
 }
 
 .tool-title {
-  color: #4b5563;
-  font-family: "Cascadia Code", Consolas, monospace;
+  color: #6f7680;
+  font-family: inherit;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 520;
   line-height: 1.45;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 
 .tool-subtitle {
   margin-top: 2px;
-  color: #6b7280;
-  font-family: "Cascadia Code", Consolas, monospace;
+  color: #7b8088;
+  font-family: inherit;
   font-size: 12px;
+  font-weight: 400;
   line-height: 1.45;
   display: -webkit-box;
   white-space: normal;
@@ -2452,25 +2437,71 @@ svg {
   color: #747474;
 }
 
+.tool-details-inline {
+  margin: 0;
+}
+
 .tool-details summary {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 7px;
   cursor: pointer;
   font-size: 12px;
+  font-weight: 400;
   color: #8b9097;
+  list-style: none;
 }
 
-.tool-details summary::before {
-  content: ">";
-  line-height: 1;
-  transform: translateY(-1px);
+.tool-inline-summary {
+  max-width: 100%;
+  min-height: 26px;
+}
+
+.tool-inline-summary .tool-title,
+.tool-inline-summary .tool-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-inline-summary .tool-title {
+  flex: 0 1 auto;
+}
+
+.tool-inline-summary .tool-subtitle {
+  flex: 1 1 auto;
+  margin-top: 0;
+}
+
+.tool-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-details summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.4px solid #a0a6af;
+  border-bottom: 1.4px solid #a0a6af;
+  transform: rotate(-45deg);
+  transform-origin: center;
+  transition: transform 140ms ease, border-color 140ms ease;
+}
+
+.tool-details summary:hover::after {
+  border-color: #737b86;
+}
+
+.tool-details[open] summary::after {
+  transform: rotate(45deg) translateY(-1px);
 }
 
 .tool-details h4 {
   margin: 12px 0 6px;
-  color: #242424;
+  color: #52525b;
   font-size: 12px;
+  font-weight: 500;
 }
 
 .tool-details pre,
@@ -2494,8 +2525,9 @@ svg {
 .thinking-message {
   margin: 3px 0;
   color: #6b7280;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: inherit;
   font-size: 12px;
+  font-weight: 400;
 }
 
 .thinking-message summary {
@@ -2556,12 +2588,11 @@ svg {
 }
 
 .agent-preview-summary {
-  gap: 8px;
+  gap: 3px;
 }
 
 .agent-preview-summary .tool-status-dot {
-  flex: 0 0 auto;
-  margin-top: 0;
+  display: none;
 }
 
 .agent-preview-summary-main {
@@ -2573,16 +2604,17 @@ svg {
   max-width: 360px;
   overflow: hidden;
   color: #4b5563;
-  font-family: "Cascadia Code", Consolas, monospace;
-  font-weight: 650;
+  font-family: inherit;
+  font-weight: 520;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .agent-preview-meta {
   flex: 0 0 auto;
-  color: #6b7280;
-  font-family: "Cascadia Code", Consolas, monospace;
+  color: #7b8088;
+  font-family: inherit;
+  font-weight: 400;
 }
 
 .agent-preview-card {
@@ -2647,12 +2679,11 @@ svg {
 }
 
 .structured-preview-summary {
-  gap: 8px;
+  gap: 3px;
 }
 
 .structured-preview-summary .tool-status-dot {
-  flex: 0 0 auto;
-  margin-top: 0;
+  display: none;
 }
 
 .structured-preview-summary-main {
@@ -2667,8 +2698,8 @@ svg {
   max-width: 360px;
   overflow: hidden;
   color: #4b5563;
-  font-family: "Cascadia Code", Consolas, monospace;
-  font-weight: 650;
+  font-family: inherit;
+  font-weight: 520;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2676,8 +2707,9 @@ svg {
 .structured-preview-meta {
   min-width: 0;
   overflow: hidden;
-  color: #6b7280;
-  font-family: "Cascadia Code", Consolas, monospace;
+  color: #7b8088;
+  font-family: inherit;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2713,7 +2745,7 @@ svg {
 }
 
 .structured-preview-row .tool-status-dot {
-  margin-top: 6px;
+  display: none;
 }
 
 .structured-preview-label {
@@ -2751,12 +2783,11 @@ svg {
 }
 
 .read-group-summary {
-  gap: 8px;
+  gap: 3px;
 }
 
 .read-group-summary .tool-status-dot {
-  flex: 0 0 auto;
-  margin-top: 0;
+  display: none;
 }
 
 .read-group-summary-main {
@@ -2767,8 +2798,8 @@ svg {
   min-width: 0;
   overflow: hidden;
   color: #4b5563;
-  font-family: "Cascadia Code", Consolas, monospace;
-  font-weight: 650;
+  font-family: inherit;
+  font-weight: 520;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2776,8 +2807,9 @@ svg {
 .read-group-meta {
   min-width: 0;
   overflow: hidden;
-  color: #6b7280;
-  font-family: "Cascadia Code", Consolas, monospace;
+  color: #7b8088;
+  font-family: inherit;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3012,9 +3044,9 @@ svg {
   align-items: center;
   justify-content: flex-start;
   max-width: 100%;
-  gap: 8px;
+  gap: 3px;
   margin-bottom: 0;
-  min-height: 28px;
+  min-height: 26px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -3026,7 +3058,7 @@ svg {
 .tool-preview-summary-main {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   min-width: auto;
   max-width: 100%;
   flex-wrap: nowrap;
@@ -3049,12 +3081,26 @@ svg {
 
 .tool-preview-chevron {
   color: #9ca3af;
-  font-size: 12px;
+  width: 10px;
+  height: 14px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 0;
   line-height: 1;
-  opacity: 0;
-  transform: translateX(-4px);
+  opacity: 0.66;
+  transform: translateX(-1px);
   transition: opacity 140ms ease, transform 140ms ease;
   flex: 0 0 auto;
+}
+
+.tool-preview-chevron::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-right: 1.25px solid currentColor;
+  border-bottom: 1.25px solid currentColor;
+  transform: rotate(-45deg);
+  transform-origin: center;
 }
 
 .tool-preview-step:hover .tool-preview-chevron,
@@ -3086,7 +3132,7 @@ svg {
   color: #5f6368;
   font-family: "Cascadia Code", Consolas, monospace;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 520;
 }
 
 .tool-preview-stats {
@@ -3095,7 +3141,7 @@ svg {
   gap: 8px;
   font-family: "Cascadia Code", Consolas, monospace;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 520;
 }
 
 .tool-preview-add {
@@ -3267,6 +3313,69 @@ svg {
   overflow: auto;
   background: #f7f7f7;
   font-size: 13px;
+}
+
+.plan-ready-card {
+  width: min(100%, 870px);
+  margin: 12px auto 14px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border-color: #e8e5df;
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+
+.plan-ready-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.plan-ready-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+
+.plan-ready-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  background: #f3f4f6;
+  color: #374151;
+}
+
+.plan-ready-title strong {
+  display: block;
+  color: #242424;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.plan-ready-title p {
+  margin: 3px 0 0;
+  color: #7a7f87;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.plan-ready-code {
+  max-height: 300px;
+  overflow: auto;
+  margin: 0 0 12px;
+  background: #f8f8f7;
+  border-color: #eeece8;
+  color: #333333;
+}
+
+.plan-ready-foot {
+  align-items: center;
 }
 
 .assistant-runtime-badge.recovery {
@@ -3832,7 +3941,7 @@ svg {
   color: #303030;
   cursor: pointer;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .permission-trigger:hover,
@@ -5895,6 +6004,11 @@ svg {
 
 .codex-desktop :where(.sidebar-primary button, .sidebar-footer button, .sidebar-project-title, .sidebar-thread, .workspace-menu-item, .model-menu-item, .permission-menu-item, .composer-input, .toolbar-select, .permission-trigger, .model-trigger, .message-body, .assistant-runtime-card-heading strong, .assistant-runtime-question-text, .assistant-runtime-submit-button, .workspace-status, .settings-return, .settings-nav-item, .settings-row-label strong, .settings-segmented button, .settings-stepper span, .settings-empty-panel, .dialog-input, .dialog-button, .ghost-button) {
   font-size: var(--app-ui-font-size, 13px);
+}
+
+.codex-desktop .permission-trigger {
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .codex-desktop :where(.desktop-menubar, .sidebar-section-head, .sidebar-search input, .workspace-menu-group-title, .sidebar-thread small, .turn-time, .turn-status, .settings-row-label small, .assistant-runtime-footnote, .assistant-runtime-question-hint, .dialog-head p, .status-branch-menu-meta, .status-run-head span) {

@@ -390,17 +390,12 @@ function ToolStepRow({ tool }: { tool: ToolStep }) {
 
   return (
     <div className={`tool-step tool-${tool.status}`}>
-      <div className="tool-step-main">
-        <span className="tool-status-dot" />
-        <div>
-          <div className="tool-title">{displayTitle}</div>
-          {summary ? <div className="tool-subtitle">{summary}</div> : null}
-        </div>
-      </div>
-
       {hasDetails ? (
-        <details className="tool-details" onToggle={(event) => setDetailsOpen((event.target as HTMLDetailsElement).open)}>
-          <summary>查看详情</summary>
+        <details className="tool-details tool-details-inline" onToggle={(event) => setDetailsOpen((event.target as HTMLDetailsElement).open)}>
+          <summary className="tool-inline-summary">
+            <span className="tool-title">{displayTitle}</span>
+            {summary ? <span className="tool-subtitle">{summary}</span> : null}
+          </summary>
           {tool.inputText?.trim() ? (
             <>
               <h4>参数</h4>
@@ -415,7 +410,15 @@ function ToolStepRow({ tool }: { tool: ToolStep }) {
           ) : null}
           {detailsOpen && preview ? <ToolPreviewPanel preview={preview} /> : null}
         </details>
-      ) : null}
+      ) : (
+        <div className="tool-step-main">
+          <span className="tool-status-dot" />
+          <div>
+            <div className="tool-title">{displayTitle}</div>
+            {summary ? <div className="tool-subtitle">{summary}</div> : null}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -671,6 +674,7 @@ function RequestUserInputCard({
   );
   const [submitError, setSubmitError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const readyToSubmit = !turnInFlight || Boolean(request.readyAtMs);
 
   useEffect(() => {
     if (!request.submittedAnswers) {
@@ -687,7 +691,7 @@ function RequestUserInputCard({
   });
 
   async function handleSubmit() {
-    if (submitted || turnInFlight) {
+    if (submitted || !readyToSubmit) {
       return;
     }
 
@@ -758,6 +762,8 @@ function RequestUserInputCard({
         <span className="assistant-runtime-footnote">
           {submitted
             ? '答案已提交，卡片保留为上下文记录。'
+            : !readyToSubmit
+              ? '等待 Claude 完成提问后再提交。'
             : turnInFlight
               ? '填写后会直接回答当前运行中的提问。'
               : '填写后会作为续聊消息继续当前任务。'}
@@ -765,7 +771,7 @@ function RequestUserInputCard({
         <button
           type="button"
           className="assistant-runtime-submit-button"
-          disabled={submitted || !canSubmit || submitting}
+          disabled={submitted || !readyToSubmit || !canSubmit || submitting}
           onClick={() => void handleSubmit()}
         >
           {submitted
@@ -869,6 +875,56 @@ function ApprovalRequestCard({
     } finally {
       setSubmittingDecision(null);
     }
+  }
+
+  if (planApproval) {
+    return (
+      <section className="assistant-runtime-card plan-ready-card">
+        <header className="plan-ready-head">
+          <div className="plan-ready-title">
+            <span className="plan-ready-icon" aria-hidden="true">
+              <ListChecks size={17} />
+            </span>
+            <div>
+              <strong>{interactive ? '执行计划已就绪' : '计划确认记录'}</strong>
+              <p>{interactive ? '确认后会退出 Plan mode 并开始执行。' : '这是历史计划确认记录。'}</p>
+            </div>
+          </div>
+          {request.description ? <InlineCopyButton text={request.description} title="复制计划" /> : null}
+        </header>
+
+        {request.description ? (
+          <pre className="assistant-runtime-code plan-ready-code">{request.description}</pre>
+        ) : null}
+
+        <div className="assistant-runtime-card-foot plan-ready-foot">
+          <span className="assistant-runtime-footnote">
+            {interactive ? '如果计划还不对，可以让 Claude 继续调整。' : '历史记录不会自动继续旧运行。'}
+          </span>
+          {interactive ? (
+            <div className="assistant-runtime-action-list">
+              <button
+                type="button"
+                className="assistant-runtime-submit-button secondary"
+                disabled={Boolean(submittingDecision)}
+                onClick={() => void handleDecision('reject')}
+              >
+                {submittingDecision === 'reject' ? '处理中...' : '继续修改计划'}
+              </button>
+              <button
+                type="button"
+                className="assistant-runtime-submit-button"
+                disabled={Boolean(submittingDecision)}
+                onClick={() => void handleDecision('approve')}
+              >
+                {submittingDecision === 'approve' ? '处理中...' : '退出 Plan mode 并执行'}
+              </button>
+            </div>
+          ) : null}
+        </div>
+        {submitError ? <p className="assistant-runtime-error">{submitError}</p> : null}
+      </section>
+    );
   }
 
   return (
@@ -1004,6 +1060,7 @@ function formatTurnProgress(turn: ConversationTurn, nowMs?: number, isLiveRunnin
   const parts: string[] = [];
   const durationMs =
     turn.durationMs ??
+    getDurationMsFromMetrics(turn.metrics) ??
     (running && nowMs && turn.startedAtMs ? Math.max(0, nowMs - turn.startedAtMs) : undefined);
   const duration = typeof durationMs === 'number' ? formatDuration(durationMs) : undefined;
   if (duration) {
@@ -1029,11 +1086,21 @@ function formatTurnProgress(turn: ConversationTurn, nowMs?: number, isLiveRunnin
       ? getCompletedTurnLabel(turn)
       : getRunningTurnLabel(turn);
 
-  if (!running && prefix === '已处理' && duration) {
-    return `${prefix} ${duration}`;
+  return parts.length > 0 ? `${prefix} ${parts.join(' · ')}` : prefix;
+}
+
+function getDurationMsFromMetrics(metrics?: string) {
+  const match = metrics?.match(/耗时\s*([\d.]+)s/);
+  if (!match) {
+    return undefined;
   }
 
-  return parts.length > 0 ? `${prefix} ${parts.join(' · ')}` : prefix;
+  const seconds = Number(match[1]);
+  if (!Number.isFinite(seconds)) {
+    return undefined;
+  }
+
+  return Math.max(0, Math.round(seconds * 1000));
 }
 
 function getRunningTurnLabel(turn: ConversationTurn) {
@@ -1432,7 +1499,7 @@ function getStructuredToolPreview(tool: ToolStep): StructuredToolPreviewData | n
   if (tool.name.startsWith('mcp__') && resultText) {
     return {
       title: tool.title,
-      summary: tool.status === 'error' ? '调用失败，展开查看详情' : '已返回结果，展开查看详情',
+      summary: tool.status === 'error' ? '调用失败' : '已返回结果',
       rows,
       content: resultText,
     };
@@ -1966,7 +2033,7 @@ function normalizeRuntimeToolName(value: string) {
 }
 
 function isPlanApprovalRequest(request: ApprovalRequest) {
-  return request.title === '计划待确认';
+  return request.kind === 'plan-exit' || request.title === '计划待确认';
 }
 
 function isApprovalRequiredToolError(resultText?: string) {

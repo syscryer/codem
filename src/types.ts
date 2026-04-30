@@ -68,12 +68,14 @@ export type RequestUserInputRequest = {
   title?: string;
   description?: string;
   questions: RequestUserInputQuestion[];
+  readyAtMs?: number;
   submittedAnswers?: Record<string, string>;
   submittedAtMs?: number;
 };
 
 export type ApprovalRequest = {
   requestId?: string;
+  kind?: 'permission' | 'plan-exit';
   title: string;
   description?: string;
   command?: string[];

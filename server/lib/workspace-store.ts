@@ -44,6 +44,7 @@ type RequestUserInputRequest = {
 
 type ApprovalRequest = {
   requestId?: string;
+  kind?: 'permission' | 'plan-exit';
   title: string;
   description?: string;
   command?: string[];
@@ -3001,6 +3002,7 @@ function parseApprovalRequestEvent(
   if (normalizedToolName === 'exitplanmode') {
     return {
       requestId: firstNonEmptyString(payload, ['requestId', 'request_id', 'toolUseId', 'tool_use_id']) ?? toolUseId,
+      kind: 'plan-exit',
       title: '计划待确认',
       description: firstNonEmptyString(payload, ['plan', 'description', 'reason', 'message']),
       danger: 'low',
@@ -3013,6 +3015,7 @@ function parseApprovalRequestEvent(
 
   return {
     requestId: firstNonEmptyString(payload, ['requestId', 'request_id', 'toolUseId', 'tool_use_id']) ?? toolUseId,
+    kind: 'permission',
     title: firstNonEmptyString(payload, ['title', 'message', 'question']) ?? '等待批准',
     description: firstNonEmptyString(payload, ['description', 'reason']),
     command: normalizeApprovalCommandInput(payload.command ?? payload.argv ?? payload.args),
@@ -3069,7 +3072,9 @@ function removePendingApprovalRequest(turn: ThreadTurn, requestId: string | unde
     return;
   }
 
-  const next = turn.pendingApprovalRequests.filter((request) => request.requestId !== requestId);
+  const next = turn.pendingApprovalRequests.filter(
+    (request) => request.kind === 'plan-exit' || request.requestId !== requestId,
+  );
   turn.pendingApprovalRequests = next.length > 0 ? next : undefined;
 }
 
@@ -3178,6 +3183,7 @@ function extractApprovalCommandFromTool(tool?: ThreadTool) {
 
 function getApprovalRequestSignature(request: ApprovalRequest) {
   return JSON.stringify({
+    kind: request.kind,
     title: request.title,
     description: request.description,
     command: request.command ?? [],

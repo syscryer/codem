@@ -89,6 +89,10 @@ export function Composer({
       }
       return;
     }
+    if (isRunning) {
+      showToast('请等待当前回复完成后再发送。', 'info');
+      return;
+    }
 
     let finalPrompt = submittedDraft;
     let uploadedAttachments: UserImageAttachment[] | undefined;
@@ -219,7 +223,7 @@ export function Composer({
           onChange={(event) => setDraft(event.target.value)}
           onPaste={(event) => void handlePaste(event)}
           onKeyDown={onKeyDown}
-          placeholder={isRunning ? '追加下一轮提示' : '要求后续变更'}
+          placeholder={isRunning ? '等待当前回复完成' : '要求后续变更'}
         />
         <div className="composer-toolbar">
           <div className="composer-left-tools">
@@ -315,7 +319,7 @@ export function Composer({
                 <Square size={13} fill="currentColor" />
               </button>
             ) : (
-              <button type="submit" className="send-button" disabled={!hasPendingContent} title={isRunning ? '排队下一轮提示' : '发送'}>
+              <button type="submit" className="send-button" disabled={!hasPendingContent || isRunning} title={isRunning ? '等待当前回复完成' : '发送'}>
                 <ArrowUp size={18} />
               </button>
             )}

@@ -118,6 +118,7 @@ test('human input requests pause the run before Claude Code auto-answers the too
   assert.match(source, /function emitApprovalRequestEvent/);
   assert.match(source, /emittedApprovalRequestKeys/);
   assert.match(parseApprovalBody, /normalizedToolName\s*===\s*['"]exitplanmode['"]/);
+  assert.match(parseApprovalBody, /kind:\s*['"]plan-exit['"]/);
   assert.match(pauseBody, /enqueueTrace\(state,\s*traceName,\s*Date\.now\(\)\)/);
   assert.match(pauseBody, /type:\s*['"]done['"]/);
   assert.match(pauseBody, /runtime\.child\.kill\(\)/);
