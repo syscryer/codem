@@ -34,7 +34,8 @@ export function closeDanglingTurns(turns: ConversationTurn[]) {
 
 export function repairConversationTurn(turn: ConversationTurn): ConversationTurn {
   const repairedItems = repairTurnItems(turn.items);
-  if (repairedItems === turn.items) {
+  const assistantText = sanitizeVisibleAssistantText(turn.assistantText);
+  if (repairedItems === turn.items && assistantText === turn.assistantText) {
     return turn;
   }
 
@@ -76,6 +77,7 @@ export function repairConversationTurn(turn: ConversationTurn): ConversationTurn
 
   return {
     ...turn,
+    assistantText,
     items: repairedItems,
     tools: toolsChanged ? repairedTools : turn.tools,
   };
@@ -245,18 +247,34 @@ export function appendTextItem(items: AssistantItem[], text: string): AssistantI
     return items;
   }
 
+  const inlineSegments = splitAssistantInlineThinking(text);
+  if (inlineSegments.length > 1 || inlineSegments.some((segment) => segment.type === 'thinking')) {
+    return inlineSegments.reduce(
+      (currentItems, segment) =>
+        segment.type === 'thinking'
+          ? appendThinkingItem(currentItems, segment.text)
+          : appendTextItem(currentItems, segment.text),
+      items,
+    );
+  }
+
+  const sanitizedText = sanitizeVisibleAssistantText(text);
+  if (!sanitizedText) {
+    return items;
+  }
+
   const last = items.at(-1);
   if (last?.type === 'text') {
     return [
       ...items.slice(0, -1),
       {
         ...last,
-        text: `${last.text}${text}`,
+        text: `${last.text}${sanitizedText}`,
       },
     ];
   }
 
-  return [...items, { id: crypto.randomUUID(), type: 'text', text }];
+  return [...items, { id: crypto.randomUUID(), type: 'text', text: sanitizedText }];
 }
 
 export function appendThinkingItem(items: AssistantItem[], text: string): AssistantItem[] {
@@ -816,7 +834,8 @@ type ToolInputChunk = {
 };
 
 function repairTurnItems(items: AssistantItem[]) {
-  const mergedItems = mergeOrphanToolResultItems(items);
+  const normalizedItems = normalizeInlineThinkingItems(items);
+  const mergedItems = mergeOrphanToolResultItems(normalizedItems);
   const mergedToolEntries = mergedItems
     .map((item, index) =>
       item.type === 'tool'
@@ -868,6 +887,76 @@ function repairTurnItems(items: AssistantItem[]) {
   });
 
   return changed ? repairedItems : mergedItems;
+}
+
+function normalizeInlineThinkingItems(items: AssistantItem[]) {
+  let changed = false;
+  const normalized: AssistantItem[] = [];
+
+  for (const item of items) {
+    if (item.type !== 'text') {
+      normalized.push(item);
+      continue;
+    }
+
+    const segments = splitAssistantInlineThinking(item.text);
+    if (segments.length === 1 && segments[0]?.type === 'text' && segments[0].text === item.text) {
+      normalized.push(item);
+      continue;
+    }
+
+    changed = true;
+    for (const segment of segments) {
+      if (segment.type === 'thinking') {
+        normalized.push({ id: crypto.randomUUID(), type: 'thinking', text: segment.text });
+      } else {
+        normalized.push({ ...item, id: crypto.randomUUID(), text: segment.text });
+      }
+    }
+  }
+
+  return changed ? normalized : items;
+}
+
+function splitAssistantInlineThinking(text: string): Array<{ type: 'text' | 'thinking'; text: string }> {
+  const segments: Array<{ type: 'text' | 'thinking'; text: string }> = [];
+  const pattern = /<thinking>([\s\S]*?)<\/thinking>/gi;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text))) {
+    const before = sanitizeVisibleAssistantText(text.slice(cursor, match.index));
+    if (before) {
+      segments.push({ type: 'text', text: before });
+    }
+
+    const thinking = match[1]?.trim();
+    if (thinking) {
+      segments.push({ type: 'thinking', text: thinking });
+    }
+
+    cursor = match.index + match[0].length;
+  }
+
+  const after = sanitizeVisibleAssistantText(text.slice(cursor));
+  if (after) {
+    segments.push({ type: 'text', text: after });
+  }
+
+  if (segments.length === 0 && text && !pattern.test(text)) {
+    const sanitized = sanitizeVisibleAssistantText(text);
+    return sanitized ? [{ type: 'text', text: sanitized }] : [];
+  }
+
+  return segments;
+}
+
+export function sanitizeVisibleAssistantText(text: string) {
+  return text
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/(^|\n)[ \t]*answer for user question[ \t]*(?=\n|$)/gi, '$1')
+    .replace(/^\n+/, '')
+    .replace(/\n{3,}/g, '\n\n');
 }
 
 function mergeOrphanToolResultItems(items: AssistantItem[]) {

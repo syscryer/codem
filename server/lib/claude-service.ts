@@ -486,6 +486,12 @@ export function getActiveRunForThread(threadId: string) {
     return null;
   }
 
+  if (!isRuntimeProcessAlive(activeRun.runtime)) {
+    activeRuns.delete(runId);
+    threadActiveRuns.delete(normalizedThreadId);
+    return null;
+  }
+
   const { state } = activeRun;
   if (state.finished && !state.detached) {
     return null;
@@ -801,7 +807,7 @@ function pauseRuntimeRunForHumanInput(
   state.pausedForUserInput = true;
   enqueueTrace(state, traceName, Date.now());
 
-  if (options?.closeRuntime) {
+  if (options?.closeRuntime && runtime.inputMode !== 'stdin') {
     state.seenDoneEvent = true;
     enqueueRunEvent(state, {
       type: 'done',
@@ -872,6 +878,7 @@ function isRuntimeCompatible(runtime: ClaudeRuntime, input: StreamInput) {
   const requestedSessionId = input.sessionId?.trim();
 
   return (
+    isRuntimeProcessAlive(runtime) &&
     !runtime.closed &&
     runtime.reusable &&
     runtime.inputMode === 'stdin' &&
@@ -880,6 +887,10 @@ function isRuntimeCompatible(runtime: ClaudeRuntime, input: StreamInput) {
     runtime.model === input.model &&
     (!requestedSessionId || !runtime.sessionId || runtime.sessionId === requestedSessionId)
   );
+}
+
+function isRuntimeProcessAlive(runtime: ClaudeRuntime) {
+  return !runtime.closed && runtime.child.exitCode === null && runtime.child.signalCode === null && !runtime.child.killed;
 }
 
 function spawnClaudeRuntime(command: string, input: StreamInput, inputMode: ClaudeRuntime['inputMode']): ClaudeRuntime {
@@ -1181,7 +1192,7 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
           accumulator.emittedRequestUserInput = true;
         }
         if (emitRequestUserInputEvent(state, runId, requestUserInput, enqueue)) {
-          pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input');
+          pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input', { closeRuntime: true });
         }
         return;
       }
@@ -1294,7 +1305,7 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
         accumulator.inputText += payload.event.delta.partial_json;
         const emittedHumanInput = emitStructuredToolEventsFromAccumulator(state, runId, accumulator, enqueue);
         if (emittedHumanInput === 'request-user-input') {
-          pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input');
+          pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input', { closeRuntime: true });
           return;
         }
         if (emittedHumanInput === 'approval-request') {
@@ -1337,7 +1348,7 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
             : emitStructuredToolEventsFromAccumulator(state, runId, accumulator, enqueue);
         state.toolInputByIndex.delete(payload.event.index);
         if (emittedHumanInput === 'request-user-input') {
-          pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input');
+          pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input', { closeRuntime: true });
           return;
         }
         if (emittedHumanInput === 'approval-request') {
@@ -1383,7 +1394,7 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
       const requestUserInput = parseRequestUserInputEvent(block.name, block.input, block.id);
       if (requestUserInput) {
         if (emitRequestUserInputEvent(state, runId, requestUserInput, enqueue)) {
-          pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input');
+          pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input', { closeRuntime: true });
         }
         return;
       }

@@ -17,6 +17,7 @@ import {
   hasTurnVisibleOutput,
   isPermissionMode,
   mergeUsageSnapshot,
+  sanitizeVisibleAssistantText,
   settleRunningToolSteps,
   settleToolStopDeep,
   summarizeToolResult,
@@ -154,7 +155,7 @@ export function useClaudeRun({
 }: UseClaudeRunArgs) {
   const [workspace, setWorkspace] = useState('');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode);
-  const [model, setModel] = useState(DEFAULT_MODEL_VALUE);
+  const [model, setModelState] = useState(DEFAULT_MODEL_VALUE);
   const [claudeModels, setClaudeModels] = useState<ClaudeModelInfo>({ available: false, models: [] });
   const [, setHealth] = useState<{ available: boolean; command?: string; error?: string }>({
     available: false,
@@ -170,6 +171,7 @@ export function useClaudeRun({
   const queuedPromptsByThreadIdRef = useRef<Record<string, QueuedPrompt[]>>({});
   const activeTurnIdRef = useRef('');
   const modelSelectionResetKeyRef = useRef('');
+  const modelRef = useRef(DEFAULT_MODEL_VALUE);
 
   const runningThreadIds = Object.keys(activeRunsByThreadId);
   const isRunning = runningThreadIds.length > 0;
@@ -201,7 +203,9 @@ export function useClaudeRun({
     }
 
     modelSelectionResetKeyRef.current = resetKey;
-    setModel(resolveInitialModelId(activeThreadSummary?.model, models, appModelSettings.defaultModelId));
+    const nextModel = resolveInitialModelId(activeThreadSummary?.model, models, appModelSettings.defaultModelId);
+    modelRef.current = nextModel;
+    setModelState(nextModel);
   }, [activeThreadSummary?.id, activeThreadSummary?.model, appModelSettings.defaultModelId, models]);
 
   useEffect(() => {
@@ -284,7 +288,11 @@ export function useClaudeRun({
         models: normalizeClaudeModelOptions(payload.models),
         error: typeof payload.error === 'string' ? payload.error : undefined,
       });
-      setModel((current) => current || appModelSettings.defaultModelId || DEFAULT_MODEL_VALUE);
+      setModelState((current) => {
+        const nextModel = current || appModelSettings.defaultModelId || DEFAULT_MODEL_VALUE;
+        modelRef.current = nextModel;
+        return nextModel;
+      });
     } catch (error) {
       const targetThreadId = activeThreadId;
       if (!targetThreadId) {
@@ -531,13 +539,14 @@ export function useClaudeRun({
   }
 
   function applyAssistantTextDelta(context: RunContext, text: string) {
+    const visibleText = sanitizeVisibleAssistantText(text);
     updateRunningTurn(context, (turn) => ({
       ...turn,
       status: 'running',
-      assistantText: `${turn.assistantText}${text}`,
+      assistantText: `${turn.assistantText}${visibleText}`,
       items: appendTextItem(turn.items, text),
-      activity: '生成回复中',
-      phase: 'computing',
+      activity: visibleText ? '生成回复中' : '思考中',
+      phase: visibleText ? 'computing' : 'thinking',
     }));
   }
 
@@ -601,7 +610,7 @@ export function useClaudeRun({
     const runSessionId =
       options?.sessionId && options.sessionId.trim() ? options.sessionId.trim() : undefined;
     const runPermissionMode = options?.permissionModeOverride ?? permissionMode;
-    const runModel = model;
+    const runModel = modelRef.current;
     const requestModel = resolveRequestModel(findModelOption(models, runModel), runModel);
     const submitAtMs = Date.now();
     const turnId = crypto.randomUUID();
@@ -1221,10 +1230,11 @@ export function useClaudeRun({
           return turn;
         }
 
+        const resultText = sanitizeVisibleAssistantText(event.result);
         const assistantText = turn.assistantText.trim()
           ? turn.assistantText
-          : event.result.trim()
-            ? event.result
+          : resultText.trim()
+            ? resultText
             : turn.assistantText;
         const nextTurn = {
           ...turn,
@@ -1300,6 +1310,17 @@ export function useClaudeRun({
 
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, { permissionMode: mode });
+    }
+  }
+
+  function handleModelSelect(nextModel: string) {
+    modelRef.current = nextModel;
+    setModelState(nextModel);
+
+    if (activeThreadId) {
+      void persistThreadMetadata(activeThreadId, {
+        model: nextModel === DEFAULT_MODEL_VALUE ? undefined : nextModel,
+      });
     }
   }
 
@@ -1612,7 +1633,7 @@ export function useClaudeRun({
     activeTurnIdRef,
     setWorkspace,
     setPermissionMode,
-    setModel,
+    setModel: handleModelSelect,
     handlePermissionModeSelect,
     submitPrompt,
     removeQueuedPrompt,

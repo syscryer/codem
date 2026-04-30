@@ -116,7 +116,7 @@ test('human input requests pause the run before Claude Code auto-answers the too
   assert.match(handleBody, /payload\.type\s*===\s*['"]control_request['"]/);
   assert.match(handleBody, /parseControlApprovalRequestEvent\(payload\)/);
   assert.match(handleBody, /controlApprovalToolUseIds\.set/);
-  assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_user_input['"]\)/);
+  assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_user_input['"],\s*\{\s*closeRuntime:\s*true\s*\}\)/);
   assert.match(handleBody, /['"]paused_for_approval_request['"]/);
   assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_approval_result['"],\s*\{\s*closeRuntime:\s*true\s*\}\)/);
   assert.match(handleBody, /isHumanApprovalToolResultContent\(content\)/);
