@@ -153,6 +153,8 @@ type ClaudeJsonLine = {
   isMeta?: boolean;
   parent_tool_use_id?: string;
   session_id?: string;
+  request_id?: string;
+  request?: Record<string, unknown>;
   is_error?: boolean;
   result?: string;
   errors?: string[];
@@ -227,6 +229,7 @@ type RunState = {
   emittedRequestUserInputKeys: Set<string>;
   emittedApprovalRequestKeys: Set<string>;
   emittedRecoveryHintKeys: Set<string>;
+  controlApprovalToolUseIds: Map<string, string | undefined>;
   sidechainTextDeltaParents: Set<string>;
   pausedForUserInput: boolean;
 };
@@ -435,7 +438,11 @@ export function submitRunApprovalDecision(
     };
   }
 
-  const payload = `${JSON.stringify(buildClaudeToolResultMessage(requestId, content, decision === 'reject'))}\n`;
+  const controlToolUseId = activeRun.state.controlApprovalToolUseIds.get(requestId);
+  const message = activeRun.state.controlApprovalToolUseIds.has(requestId)
+    ? buildClaudeControlResponseMessage(requestId, decision, controlToolUseId)
+    : buildClaudeToolResultMessage(requestId, content, decision === 'reject');
+  const payload = `${JSON.stringify(message)}\n`;
   activeRun.runtime.child.stdin.write(payload, (error) => {
     if (error) {
       const message = `写入 Claude Code 批准结果失败：${error.message}`;
@@ -457,6 +464,7 @@ export function submitRunApprovalDecision(
     }
 
     activeRun.state.pausedForUserInput = false;
+    activeRun.state.controlApprovalToolUseIds.delete(requestId);
     enqueueTrace(activeRun.state, 'stdin_approval_result_written', Date.now(), requestId);
   });
 
@@ -624,6 +632,7 @@ function createRunState(runId: string, input: StreamInput, sessionId?: string): 
     emittedRequestUserInputKeys: new Set(),
     emittedApprovalRequestKeys: new Set(),
     emittedRecoveryHintKeys: new Set(),
+    controlApprovalToolUseIds: new Map(),
     sidechainTextDeltaParents: new Set(),
     pausedForUserInput: false,
   };
@@ -877,7 +886,14 @@ function spawnClaudeRuntime(command: string, input: StreamInput, inputMode: Clau
   const resumeSessionId = input.sessionId?.trim();
   const args = inputMode === 'stdin' ? ['-p', '', '--input-format', 'stream-json'] : ['-p', input.prompt];
 
-  args.push('--verbose', '--output-format', 'stream-json', '--include-partial-messages');
+  args.push(
+    '--verbose',
+    '--output-format',
+    'stream-json',
+    '--include-partial-messages',
+    '--permission-prompt-tool',
+    'stdio',
+  );
 
   if (input.permissionMode === 'bypassPermissions') {
     args.push('--dangerously-skip-permissions');
@@ -1069,6 +1085,19 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
   const isSidechain = Boolean(payload.isSidechain);
   const parentToolUseId = payload.parent_tool_use_id;
 
+  if (payload.type === 'control_request') {
+    const approvalRequest = parseControlApprovalRequestEvent(payload);
+    if (approvalRequest) {
+      if (approvalRequest.requestId) {
+        state.controlApprovalToolUseIds.set(approvalRequest.requestId, getControlRequestToolUseId(payload));
+      }
+      if (emitApprovalRequestEvent(state, runId, approvalRequest, enqueue)) {
+        pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_approval_request');
+      }
+      return;
+    }
+  }
+
   if (payload.type === 'system' && !isSidechain) {
     enqueue({
       type: 'claude-event',
@@ -1157,7 +1186,7 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
         return;
       }
 
-      const approvalRequest = parseApprovalRequestEvent(block.name, block.input, block.id);
+      const approvalRequest = parseRuntimeApprovalRequestEvent(block.name, block.input, block.id);
       if (approvalRequest) {
         const accumulator =
           typeof payload.event.index === 'number' ? state.toolInputByIndex.get(payload.event.index) : undefined;
@@ -1359,7 +1388,7 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
         return;
       }
 
-      const approvalRequest = parseApprovalRequestEvent(block.name, block.input, block.id);
+      const approvalRequest = parseRuntimeApprovalRequestEvent(block.name, block.input, block.id);
       if (approvalRequest) {
         if (emitApprovalRequestEvent(state, runId, approvalRequest, enqueue)) {
           pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_approval_request');
@@ -1606,6 +1635,34 @@ function buildClaudeToolResultMessage(requestId: string, content: string, isErro
           is_error: isError,
         },
       ],
+    },
+  };
+}
+
+function buildClaudeControlResponseMessage(
+  requestId: string,
+  decision: 'approve' | 'reject',
+  toolUseId?: string,
+) {
+  return {
+    type: 'control_response',
+    response: {
+      subtype: 'success',
+      request_id: requestId,
+      response:
+        decision === 'approve'
+          ? {
+              behavior: 'allow',
+              updatedInput: {},
+              toolUseID: toolUseId,
+              decisionClassification: 'user_temporary',
+            }
+          : {
+              behavior: 'deny',
+              message: 'Permission denied by user.',
+              toolUseID: toolUseId,
+              decisionClassification: 'user_reject',
+            },
     },
   };
 }
@@ -1899,7 +1956,7 @@ function emitStructuredToolEventsFromAccumulator(
   }
 
   if (!accumulator.emittedApprovalRequest) {
-    const request = parseApprovalRequestEvent(accumulator.name, input, accumulator.toolUseId);
+    const request = parseRuntimeApprovalRequestEvent(accumulator.name, input, accumulator.toolUseId);
     if (request) {
       accumulator.emittedApprovalRequest = true;
       return emitApprovalRequestEvent(state, runId, request, enqueue) ? 'approval-request' : null;
@@ -2082,6 +2139,61 @@ function parseRequestUserInputOption(value: unknown): RequestUserInputOption | n
     label,
     description: firstNonEmptyString(option, ['description']),
   };
+}
+
+function parseControlApprovalRequestEvent(payload: ClaudeJsonLine): ApprovalRequest | null {
+  const request = asRecord(payload.request);
+  if (request.subtype !== 'can_use_tool') {
+    return null;
+  }
+
+  const requestId = typeof payload.request_id === 'string' && payload.request_id.trim()
+    ? payload.request_id.trim()
+    : undefined;
+  if (!requestId) {
+    return null;
+  }
+
+  const toolName = firstNonEmptyString(request, ['tool_name', 'toolName', 'name']) ?? 'tool';
+  const input = asRecord(request.input);
+  if (normalizeToolName(toolName) === 'exitplanmode') {
+    return {
+      requestId,
+      kind: 'plan-exit',
+      title: '计划待确认',
+      description: firstNonEmptyString(input, ['plan', 'description', 'reason', 'message']),
+      danger: 'low',
+    };
+  }
+
+  return {
+    requestId,
+    kind: 'permission',
+    title:
+      firstNonEmptyString(request, ['title', 'display_name', 'displayName', 'message', 'question']) ??
+      `等待批准：${toolName}`,
+    description: firstNonEmptyString(request, ['description', 'decision_reason', 'decisionReason']),
+    command: normalizeCommand(input.command ?? input.argv ?? input.args),
+    danger: normalizeDangerLevel(firstNonEmptyString(request, ['danger', 'risk'])),
+  };
+}
+
+function getControlRequestToolUseId(payload: ClaudeJsonLine) {
+  const request = asRecord(payload.request);
+  const value = request.tool_use_id ?? request.toolUseId;
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function parseRuntimeApprovalRequestEvent(
+  toolName: string,
+  input: unknown,
+  toolUseId?: string,
+): ApprovalRequest | null {
+  if (normalizeToolName(toolName) === 'exitplanmode') {
+    return null;
+  }
+
+  return parseApprovalRequestEvent(toolName, input, toolUseId);
 }
 
 function parseApprovalRequestEvent(

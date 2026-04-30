@@ -45,6 +45,7 @@ test('continuing a Claude thread reuses a managed runtime before spawning a new 
   assert.match(isRuntimeCompatibleBody, /runtime\.reusable/);
   assert.match(spawnClaudeRuntimeBody, /inputMode\s*===\s*['"]stdin['"]/);
   assert.match(spawnClaudeRuntimeBody, /\[\s*['"]-p['"],\s*['"]['"],\s*['"]--input-format['"],\s*['"]stream-json['"]\s*\]/);
+  assert.match(spawnClaudeRuntimeBody, /['"]--permission-prompt-tool['"][\s\S]*['"]stdio['"]/);
   assert.match(spawnClaudeRuntimeBody, /if\s*\(\s*resumeSessionId\s*\)\s*{\s*args\.push\(['"]--resume['"],\s*resumeSessionId\)/s);
   assert.match(spawnClaudeRuntimeBody, /spawn\(command,\s*args,\s*{/);
 });
@@ -109,12 +110,25 @@ test('human input requests pause the run before Claude Code auto-answers the too
   const handleBody = extractFunctionBody('handleClaudePayload');
   const pauseBody = extractFunctionBody('pauseRuntimeRunForHumanInput');
   const parseApprovalBody = extractFunctionBody('parseApprovalRequestEvent');
+  const submitApprovalBody = extractFunctionBody('submitRunApprovalDecision');
+  const controlResponseBody = extractFunctionBody('buildClaudeControlResponseMessage');
 
+  assert.match(handleBody, /payload\.type\s*===\s*['"]control_request['"]/);
+  assert.match(handleBody, /parseControlApprovalRequestEvent\(payload\)/);
+  assert.match(handleBody, /controlApprovalToolUseIds\.set/);
   assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_user_input['"]\)/);
-  assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_approval_request['"]\)/);
+  assert.match(handleBody, /['"]paused_for_approval_request['"]/);
   assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_approval_result['"],\s*\{\s*closeRuntime:\s*true\s*\}\)/);
   assert.match(handleBody, /isHumanApprovalToolResultContent\(content\)/);
   assert.match(handleBody, /isInternalHumanInputToolResult\(state,\s*block,\s*content\)/);
+  assert.match(submitApprovalBody, /controlApprovalToolUseIds\.has\(requestId\)/);
+  assert.match(submitApprovalBody, /buildClaudeControlResponseMessage\(requestId,\s*decision,\s*controlToolUseId\)/);
+  assert.match(controlResponseBody, /type:\s*['"]control_response['"]/);
+  assert.match(controlResponseBody, /behavior:\s*['"]allow['"]/);
+  assert.match(controlResponseBody, /decisionClassification:\s*['"]user_temporary['"]/);
+  assert.match(source, /function parseControlApprovalRequestEvent/);
+  assert.match(source, /function parseRuntimeApprovalRequestEvent/);
+  assert.match(source, /normalizeToolName\(toolName\)\s*===\s*['"]exitplanmode['"][\s\S]*return null/);
   assert.match(source, /function emitApprovalRequestEvent/);
   assert.match(source, /emittedApprovalRequestKeys/);
   assert.match(parseApprovalBody, /normalizedToolName\s*===\s*['"]exitplanmode['"]/);

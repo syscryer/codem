@@ -1497,7 +1497,9 @@ export function useClaudeRun({
     const promptText = buildApprovalDecisionPrompt(request, decision);
     const toolResultContent = buildApprovalDecisionToolResultContent(request, decision);
 
-    if (isThreadRunning(activeThreadId) && !isPlanApprovalRequest(request)) {
+    const planApproval = isPlanApprovalRequest(request);
+
+    if (isThreadRunning(activeThreadId)) {
       const runId =
         runContextsByThreadIdRef.current.get(activeThreadId)?.runId ||
         turn.backendRunId ||
@@ -1545,10 +1547,25 @@ export function useClaudeRun({
       return true;
     }
 
+    if (planApproval && !request.requestId) {
+      showToast('这个计划确认缺少 tool_use_id，不能安全地从历史冷启动继续。请让 Claude 重新提交计划后再批准。', 'error');
+      return false;
+    }
+
     void startRun(activeThreadSummary, promptText, {
       workingDirectory: turn.workspace.trim() || activeThreadSummary.workingDirectory,
       sessionId: normalizeSessionId(turn.sessionId) || normalizeSessionId(activeThreadSummary.sessionId),
-      permissionModeOverride: decision === 'approve' && !isPlanApprovalRequest(request) ? 'bypassPermissions' : undefined,
+      displayText: planApproval
+        ? decision === 'approve'
+          ? '已批准计划，继续执行'
+          : '请继续修改计划'
+        : undefined,
+      permissionModeOverride:
+        decision === 'approve'
+          ? planApproval
+            ? 'default'
+            : 'bypassPermissions'
+          : undefined,
       toolResult: request.requestId
         ? {
             requestId: request.requestId,
