@@ -571,6 +571,15 @@ svg {
   align-items: center;
   gap: 2px;
   padding-right: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.sidebar-project:hover .sidebar-project-actions,
+.sidebar-project:focus-within .sidebar-project-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .sidebar-thread-list {
@@ -2482,8 +2491,8 @@ svg {
   content: "";
   width: 6px;
   height: 6px;
-  border-right: 1.4px solid #a0a6af;
-  border-bottom: 1.4px solid #a0a6af;
+  border-right: 1px solid #a0a6af;
+  border-bottom: 1px solid #a0a6af;
   transform: rotate(-45deg);
   transform-origin: center;
   transition: transform 140ms ease, border-color 140ms ease;
@@ -2549,15 +2558,22 @@ svg {
 }
 
 .thinking-message summary::after {
-  content: ">";
-  color: #a0a6af;
-  font-size: 11px;
-  line-height: 1;
-  transition: transform 140ms ease;
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1px solid #a0a6af;
+  border-bottom: 1px solid #a0a6af;
+  transform: rotate(-45deg);
+  transform-origin: center;
+  transition: transform 140ms ease, border-color 140ms ease;
+}
+
+.thinking-message summary:hover::after {
+  border-color: #737b86;
 }
 
 .thinking-message[open] summary::after {
-  transform: rotate(90deg);
+  transform: rotate(45deg) translateY(-1px);
 }
 
 .thinking-count {
@@ -3078,24 +3094,24 @@ svg {
 
 .tool-preview-chevron {
   color: #9ca3af;
-  width: 10px;
+  width: 12px;
   height: 14px;
   display: inline-grid;
   place-items: center;
   font-size: 0;
   line-height: 1;
-  opacity: 0.66;
-  transform: translateX(-1px);
-  transition: opacity 140ms ease, transform 140ms ease;
+  opacity: 1;
+  transform: none;
+  transition: transform 140ms ease;
   flex: 0 0 auto;
 }
 
 .tool-preview-chevron::before {
   content: "";
-  width: 5px;
-  height: 5px;
-  border-right: 1.25px solid currentColor;
-  border-bottom: 1.25px solid currentColor;
+  width: 6px;
+  height: 6px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
   transform: rotate(-45deg);
   transform-origin: center;
 }
@@ -3103,8 +3119,7 @@ svg {
 .tool-preview-step:hover .tool-preview-chevron,
 .tool-preview-summary:focus-visible .tool-preview-chevron,
 .tool-preview-chevron.expanded {
-  opacity: 1;
-  transform: translateX(0);
+  transform: none;
 }
 
 .tool-preview-chevron.expanded {
