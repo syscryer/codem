@@ -1,4 +1,4 @@
-import { CSSProperties, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { ListChecks } from 'lucide-react';
 import { AppMenubar } from './components/AppMenubar';
 import { ChatHeader } from './components/ChatHeader';
@@ -7,6 +7,7 @@ import { ConversationPane } from './components/ConversationPane';
 import { DebugDrawer } from './components/DebugDrawer';
 import { Dialogs } from './components/Dialogs';
 import { GitDialog } from './components/GitDialog';
+import { RightWorkbench } from './components/RightWorkbench';
 import { SidebarProjects } from './components/SidebarProjects';
 import { SettingsView } from './components/settings/SettingsView';
 import { WorkspaceStatus } from './components/WorkspaceStatus';
@@ -21,6 +22,8 @@ import type {
   ConversationTurn,
   RequestUserInputRequest,
   RuntimeSuggestedAction,
+  RightWorkbenchTab,
+  WorkbenchFileScope,
   SettingsSection,
   ThreadDetail,
   ThreadSummary,
@@ -30,6 +33,7 @@ import type {
 export default function App() {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
+  const chatWorkspaceRef = useRef<HTMLDivElement | null>(null);
   const [dismissedApprovalDialogKey, setDismissedApprovalDialogKey] = useState<string | null>(null);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const workspaceState = useWorkspaceState();
@@ -84,6 +88,10 @@ export default function App() {
     kind: 'workspace',
   });
   const [gitDialogMode, setGitDialogMode] = useState<'commit' | 'push' | null>(null);
+  const [rightWorkbenchOpen, setRightWorkbenchOpen] = useState(false);
+  const [rightWorkbenchTab, setRightWorkbenchTab] = useState<RightWorkbenchTab>('overview');
+  const [rightWorkbenchFileScope, setRightWorkbenchFileScope] = useState<WorkbenchFileScope>('all');
+  const [rightWorkbenchWidth, setRightWorkbenchWidth] = useState(420);
   const {
     general,
     appearance,
@@ -112,7 +120,6 @@ export default function App() {
     queuedPrompts,
     removeQueuedPrompt,
     clockNowMs,
-    setWorkspace,
     setModel,
     handlePermissionModeSelect,
     submitPrompt,
@@ -292,6 +299,46 @@ export default function App() {
     showToast(`${action} 会在接入 Tauri 窗口 API 后启用。`, 'info');
   }
 
+  function openReviewWorkbench() {
+    setRightWorkbenchOpen(true);
+    setRightWorkbenchTab('files');
+    setRightWorkbenchFileScope('changed');
+    if (activeProjectId) {
+      void refreshProjectGitSummary(activeProjectId);
+    }
+  }
+
+  function openFilesWorkbench() {
+    setRightWorkbenchOpen(true);
+    setRightWorkbenchTab('files');
+    setRightWorkbenchFileScope('all');
+  }
+
+  function handleRightWorkbenchResizeStart(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = rightWorkbenchWidth;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    function handlePointerMove(pointerEvent: PointerEvent) {
+      const nextWidth = startWidth - (pointerEvent.clientX - startX);
+      const workspaceWidth = chatWorkspaceRef.current?.getBoundingClientRect().width ?? window.innerWidth;
+      const maxWidth = Math.max(300, workspaceWidth - 360);
+      setRightWorkbenchWidth(Math.min(maxWidth, Math.max(240, nextWidth)));
+    }
+
+    function handlePointerUp() {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    }
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp, { once: true });
+  }
+
   return (
     <div
       className="codex-desktop"
@@ -366,68 +413,92 @@ export default function App() {
             />
           ) : null}
 
-          <main className="chat-shell">
-            <ChatHeader
-              activeProject={activeProject}
-              activeThread={activeThread}
-              openTargets={openTargets}
-              selectedOpenTargetId={openWith.selectedTargetId}
-              showDebugButton={general.showDebugButton}
-              onToggleDebug={() => setDebugOpen((value) => !value)}
-              onOpenTarget={(targetId) => activeProject ? void handleOpenProjectInEditor(activeProject, targetId) : showToast('请先选择项目。', 'info')}
-              onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
-              onRefreshGitDiff={() => activeProjectId ? void refreshProjectGitSummary(activeProjectId) : undefined}
-              onUseProjectWorkspace={() => setWorkspace(activeProject?.path ?? '')}
-              onOpenGitCommit={() => activeProject ? setGitDialogMode('commit') : showToast('请先选择项目。', 'info')}
-              onOpenGitPush={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
-            />
+          <div
+            ref={chatWorkspaceRef}
+            className={`chat-workspace${rightWorkbenchOpen ? ' workbench-open' : ''}`}
+            style={{
+              '--right-workbench-width': `${rightWorkbenchWidth}px`,
+            } as CSSProperties}
+          >
+            <main className="chat-shell">
+              <ChatHeader
+                activeProject={activeProject}
+                activeThread={activeThread}
+                openTargets={openTargets}
+                selectedOpenTargetId={openWith.selectedTargetId}
+                showDebugButton={general.showDebugButton}
+                onToggleDebug={() => setDebugOpen((value) => !value)}
+                onOpenTarget={(targetId) => activeProject ? void handleOpenProjectInEditor(activeProject, targetId) : showToast('请先选择项目。', 'info')}
+                onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
+                onOpenFilesWorkbench={openFilesWorkbench}
+                onOpenGitCommit={() => activeProject ? setGitDialogMode('commit') : showToast('请先选择项目。', 'info')}
+                onOpenGitPush={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
+                rightWorkbenchOpen={rightWorkbenchOpen}
+                onToggleRightWorkbench={() => setRightWorkbenchOpen((value) => !value)}
+                onOpenReviewWorkbench={openReviewWorkbench}
+              />
 
-            <ConversationPane
-              activeThread={activeThread}
-              clockNowMs={clockNowMs}
-              isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
-              activeTurnId={activeThreadId ? activeTurnIdsByThreadId[activeThreadId] ?? '' : ''}
-              transcriptRef={transcriptRef}
-              bottomRef={conversationBottomRef}
-              onSubmitRequestUserInput={(
-                turn: ConversationTurn,
-                request: RequestUserInputRequest,
-                answers: Record<string, string>,
-              ) => submitRequestUserInput(turn, request, answers)}
-              onSubmitRuntimeRecoveryAction={(turn: ConversationTurn, action: RuntimeSuggestedAction) =>
-                submitRuntimeRecoveryAction(turn, action)}
-              onSubmitApprovalDecision={(
-                turn: ConversationTurn,
-                request: ApprovalRequest,
-                decision: ApprovalDecision,
-              ) => submitApprovalDecision(turn, request, decision)}
-            />
+              <ConversationPane
+                activeThread={activeThread}
+                clockNowMs={clockNowMs}
+                isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
+                activeTurnId={activeThreadId ? activeTurnIdsByThreadId[activeThreadId] ?? '' : ''}
+                transcriptRef={transcriptRef}
+                bottomRef={conversationBottomRef}
+                onSubmitRequestUserInput={(
+                  turn: ConversationTurn,
+                  request: RequestUserInputRequest,
+                  answers: Record<string, string>,
+                ) => submitRequestUserInput(turn, request, answers)}
+                onSubmitRuntimeRecoveryAction={(turn: ConversationTurn, action: RuntimeSuggestedAction) =>
+                  submitRuntimeRecoveryAction(turn, action)}
+                onSubmitApprovalDecision={(
+                  turn: ConversationTurn,
+                  request: ApprovalRequest,
+                  decision: ApprovalDecision,
+                ) => submitApprovalDecision(turn, request, decision)}
+              />
 
-            <CurrentTaskDock activeThread={activeThread} />
+              <CurrentTaskDock activeThread={activeThread} />
 
-            <Composer
-              workspace={workspace}
-              permissionMode={permissionMode}
-              model={model}
-              models={models}
-              isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
-              queuedPrompts={queuedPrompts}
-              onSubmitPrompt={submitPrompt}
-              onRemoveQueuedPrompt={removeQueuedPrompt}
-              showToast={showToast}
-              onKeyDown={handleComposerKeyDown}
-              onSelectPermissionMode={handlePermissionModeSelect}
-              onSelectModel={setModel}
-              onStopRun={() => stopRun(activeThreadId ?? undefined)}
-            />
+              <Composer
+                workspace={workspace}
+                permissionMode={permissionMode}
+                model={model}
+                models={models}
+                isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
+                queuedPrompts={queuedPrompts}
+                onSubmitPrompt={submitPrompt}
+                onRemoveQueuedPrompt={removeQueuedPrompt}
+                showToast={showToast}
+                onKeyDown={handleComposerKeyDown}
+                onSelectPermissionMode={handlePermissionModeSelect}
+                onSelectModel={setModel}
+                onStopRun={() => stopRun(activeThreadId ?? undefined)}
+              />
 
-            <WorkspaceStatus
-              activeProject={activeProject}
-              activeThread={activeThread}
-              onLoadBranches={loadProjectGitBranches}
-              onSelectBranch={switchProjectGitBranch}
-            />
-          </main>
+              <WorkspaceStatus
+                activeProject={activeProject}
+                activeThread={activeThread}
+                onLoadBranches={loadProjectGitBranches}
+                onSelectBranch={switchProjectGitBranch}
+              />
+            </main>
+            {rightWorkbenchOpen ? (
+              <RightWorkbench
+                activeTab={rightWorkbenchTab}
+                activeProject={activeProject}
+                activeThread={activeThread}
+                fileScope={rightWorkbenchFileScope}
+                isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
+                files={[]}
+                onSelectTab={setRightWorkbenchTab}
+                onSelectFileScope={setRightWorkbenchFileScope}
+                onResizeStart={handleRightWorkbenchResizeStart}
+                onClose={() => setRightWorkbenchOpen(false)}
+              />
+            ) : null}
+          </div>
         </div>
       )}
 

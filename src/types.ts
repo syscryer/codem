@@ -324,6 +324,22 @@ export type GitBranchSummary = {
 
 export type ProjectGitSummary = Pick<ProjectSummary, 'gitBranch' | 'gitDiff' | 'isGitRepo'>;
 
+export type RightWorkbenchTab = 'overview' | 'files' | 'browser' | `file:${string}`;
+
+export type WorkbenchFileScope = 'all' | 'changed';
+
+export type WorkbenchFileTab = {
+  path: string;
+  name: string;
+  language?: string;
+};
+
+export type ProjectFileEntry = {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+};
+
 export type GitFileStatus = {
   path: string;
   originalPath?: string;

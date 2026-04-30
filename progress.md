@@ -112,3 +112,65 @@
 - 已验证 `/api/health` 和 `/api/workspace/bootstrap` 正常，浏览器打开 `CodeM` 无 console error。
 - 增加连续 `Read` 工具的批量折叠展示：多个连续读取默认合并为“批量读取 N 个文件”，展开后可查看每个 Read 的原始详情。
 - 已再次运行 `npm run typecheck`，结果通过；浏览器页面可正常加载。
+
+## 2026-04-30
+
+### 右侧工作台规划
+
+- 使用 `planning-with-files-zh` 文件规划方式记录“右侧工作台”需求。
+- 读取了 `.trellis/workflow.md`、frontend/backend/guides 入口规范，确认该任务属于跨组件前端结构改动，后续实现应优先拆出独立组件，避免继续膨胀 `App.tsx`。
+- 确认用户需求：最右侧分栏按钮控制整个右侧工作台收缩；文件夹图标保持单按钮，不控制工作台。
+- 确认右侧工作台是可扩展容器，第一版包含 `概览`、`审查`、`浏览器`，其中浏览器先做 UI 占位。
+- 已更新 `task_plan.md`：新增“当前规划：右侧工作台（可收缩工具面板）”阶段表、范围边界、交互草图、风险。
+- 已更新 `findings.md`：记录右侧工作台的产品语义、入口关系、第一版范围和布局注意事项。
+- 已新增 `.trellis/tasks/right-workbench.md`：沉淀右侧工作台的 PRD、状态设计、组件契约、布局方案、实现阶段和验证 checklist。
+- 已在 `task_plan.md` 中标注后续开工前优先读取 `.trellis/tasks/right-workbench.md`。
+- 根据用户补充截图，追加“写入文件预览”能力：AI 写入/修改文件卡片可在右侧工作台中打开动态文件 tab。
+- 更新 `.trellis/tasks/right-workbench.md`：补充 `File Preview Tabs` 章节、状态设计、Header/File card 入口、实现阶段和验证清单。
+- 更新 `task_plan.md` 和 `findings.md`：明确 Markdown 渲染预览、普通文本只读预览、文件预览不做保存。
+
+### 下一步
+
+- 实现前先重新读取 `task_plan.md` 中“右侧工作台”段落。
+- 实现前读取 `.trellis/tasks/right-workbench.md`，按 Skeleton、Layout、Header wiring、Review tab、File preview tabs、Browser shell、Polish、Validation 顺序推进。
+- 第一版优先新增 `RightWorkbench` 组件和轻量状态，不修改桌面壳，不构建桌面版。
+
+### 右侧工作台骨架实现
+
+- 新增 `src/components/RightWorkbench.tsx`，包含 `概览`、`审查`、`浏览器` 和未来文件 tab 的工作台空壳。
+- `App.tsx` 新增 `rightWorkbenchOpen`、`rightWorkbenchTab` 状态，并用 `chat-workspace` 包裹聊天区和右侧工作台。
+- `ChatHeader.tsx` 中最右分栏按钮改为工作台开关，`+N -N` Git chip 改为打开工作台并切到 `审查`。
+- `src/styles.css` 新增右侧工作台、tab、概览卡片、浏览器空壳和两栏布局样式。
+- 已运行 `npm run typecheck`，结果通过。
+- 本轮没有构建桌面版；该改动属于 Web/前端结构改动。
+
+### 右侧工作台文件视图
+
+- 根据用户补充截图，将文件夹按钮调整为右侧工作台的 `文件 / 所有文件` 入口。
+- `+N -N` Git diff chip 调整为打开 `文件 / 已更改文件`，仍可查看变更文件列表和 diff 预览。
+- 新增 `/api/projects/:projectId/files?path=...`，按目录懒加载一级文件，避免一次性递归扫描完整项目。
+- 新增 `src/lib/project-files-api.ts`，前端文件页可读取项目根目录和展开文件夹。
+- `RightWorkbench` 新增 `所有文件 / 已更改文件` 切换、所有文件树、已更改文件 diff 预览和刷新按钮。
+- 已运行 `npm run typecheck`，结果通过。
+- 本轮没有构建桌面版；该改动属于 Web/前端结构改动。
+
+### 文件树与预览 tab
+
+- 已更改文件从分组列表改为虚拟目录树，路径如 `src/components/ChatHeader.tsx` 会展示为 `src > components > ChatHeader.tsx`。
+- 所有文件和已更改文件都补充了轻量文件类型图标，覆盖目录、TS/JS、React、CSS、Markdown、JSON 和普通文件。
+- 所有文件中的普通文件点击后会在左侧预览区打开 tab。
+- Markdown 文件默认使用 `react-markdown + remark-gfm` 渲染阅读视图，其他文本文件显示只读代码预览。
+- 已更改文件点击后会在左侧打开 diff tab，同一文件重复点击只激活已有 tab。
+- 新增 `tests/workbench-files.test.ts`，覆盖变更路径树形构建和 Markdown 默认预览模式。
+- 已运行 `node --import tsx --test tests\workbench-files.test.ts`，结果通过。
+- 已运行 `npm run typecheck`，结果通过。
+- 根据截图反馈收敛文件工作台视觉：Git 状态改为 `M/A/D/R` 小 badge，文件 tab 不再被压扁，文件树行高和缩进更紧凑，diff 背景和行号更轻。
+- 根据后续反馈调整已更改文件树：保留原文件类型图标，只用文件名颜色区分状态，修改为蓝色、新增为绿色、删除为红色、重命名为橙色。
+- 右侧工作台新增左边缘拖拽手柄，可自由调整面板宽度；工作台内滚动条改为更窄、更浅。
+- 代码预览新增轻量语法高亮，覆盖 TS/JS/TSX、CSS 和 JSON 的关键词、字符串、数字、属性、注释等基础 token。
+- 右侧文件树滚动改为外层容器控制，避免滚动条被内层列表裁掉。
+- 右侧工作台最大拖拽宽度改为按中间工作区真实宽度计算，避免拉到最宽时文件树被外层裁掉。
+- 文件树显示/隐藏入口改为预览区顶部常驻按钮，隐藏后预览区会吃满整个右侧工作台。
+- 文件树标题栏的刷新和隐藏按钮合并为右侧工具组，避免刷新按钮单独悬在标题区域。
+- 移除预览 tab 区的 `+` 和“隐藏文件树”按钮，避免按钮挤在文件 tab 后面；文件树隐藏后仅保留右上角小恢复按钮。
+- 右侧文件树标题栏高度和字号下调，`已更改文件` 与刷新/隐藏按钮的垂直对齐更贴近左侧 tab 行。

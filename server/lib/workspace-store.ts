@@ -190,6 +190,12 @@ export type GitPushPreview = {
   commits: string[];
 };
 
+export type ProjectFileEntry = {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+};
+
 type GitInfo = {
   isGitRepo: boolean;
   branch?: string;
@@ -887,6 +893,28 @@ export function canPreviewWorkspaceFile(filePath: string) {
     .all() as Array<{ path: string }>;
 
   return projectRows.some((row) => isPathInsideRoot(resolvedPath, row.path));
+}
+
+export function listProjectFiles(projectId: string, relativeDirectory = ''): ProjectFileEntry[] {
+  const projectPath = readProjectPath(projectId);
+  const safeDirectory = normalizeProjectDirectoryPath(projectPath, relativeDirectory);
+  const directoryPath = path.resolve(projectPath, safeDirectory);
+  const stats = statSync(directoryPath);
+  if (!stats.isDirectory()) {
+    throw new Error('目标不是目录');
+  }
+
+  return readdirSync(directoryPath, { withFileTypes: true })
+    .filter((entry) => shouldShowProjectFileEntry(entry.name))
+    .map((entry) => {
+      const entryPath = safeDirectory ? `${safeDirectory}/${entry.name}` : entry.name;
+      return {
+        name: entry.name,
+        path: entryPath.replace(/\\/g, '/'),
+        type: entry.isDirectory() ? 'directory' as const : 'file' as const,
+      };
+    })
+    .sort(compareProjectFileEntries);
 }
 
 export async function getProjectGitSummary(projectId: string) {
@@ -2386,6 +2414,36 @@ function normalizeProjectRelativePath(projectPath: string, filePath: string) {
   return normalizedPath;
 }
 
+function normalizeProjectDirectoryPath(projectPath: string, directoryPath: string) {
+  const normalizedPath = normalizeGitRelativePath(directoryPath);
+  if (!normalizedPath) {
+    return '';
+  }
+
+  if (path.isAbsolute(normalizedPath)) {
+    throw new Error('目录路径必须是项目内的相对路径');
+  }
+
+  const resolvedPath = path.resolve(projectPath, normalizedPath);
+  if (!isPathInsideRoot(resolvedPath, projectPath)) {
+    throw new Error(`目录不在项目目录内：${normalizedPath}`);
+  }
+
+  return normalizedPath;
+}
+
+function shouldShowProjectFileEntry(name: string) {
+  return name !== '.git' && name !== '.codem-attachments';
+}
+
+function compareProjectFileEntries(left: ProjectFileEntry, right: ProjectFileEntry) {
+  if (left.type !== right.type) {
+    return left.type === 'directory' ? -1 : 1;
+  }
+
+  return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
+}
+
 function readWorkspaceTextFile(projectPath: string, filePath: string) {
   const resolvedPath = path.resolve(projectPath, filePath);
   const stats = statSync(resolvedPath);
@@ -2540,16 +2598,69 @@ function shouldFallbackToGitCheckout(result: GitCommandResult) {
 
 function normalizeGitCommandError(result: GitCommandResult, fallbackMessage: string) {
   const stderr = result.stderr.trim();
-  if (stderr) {
-    return stderr;
-  }
-
   const stdout = result.stdout.trim();
-  if (stdout) {
-    return stdout;
+  const detail = stderr || stdout;
+  const hint = classifyGitCommandError(detail);
+
+  if (!detail) {
+    return hint || fallbackMessage;
   }
 
-  return fallbackMessage;
+  return hint ? `${hint}\n\n${detail}` : detail;
+}
+
+function classifyGitCommandError(message: string) {
+  const lowerMessage = message.toLowerCase();
+  if (!lowerMessage) {
+    return '';
+  }
+
+  if (
+    lowerMessage.includes('authentication failed') ||
+    lowerMessage.includes('permission denied') ||
+    lowerMessage.includes('could not read username') ||
+    lowerMessage.includes('could not read from remote repository') ||
+    lowerMessage.includes('access denied')
+  ) {
+    return '认证或权限失败，请检查远端账号、Token、SSH Key 或仓库权限。';
+  }
+
+  if (
+    lowerMessage.includes('failed to connect') ||
+    lowerMessage.includes('could not resolve host') ||
+    lowerMessage.includes('connection timed out') ||
+    lowerMessage.includes('network is unreachable') ||
+    lowerMessage.includes('unable to access')
+  ) {
+    return '网络连接失败，请检查网络、代理或远端地址是否可访问。';
+  }
+
+  if (
+    lowerMessage.includes('non-fast-forward') ||
+    lowerMessage.includes('fetch first') ||
+    lowerMessage.includes('rejected') ||
+    lowerMessage.includes('stale info')
+  ) {
+    return '远端有更新，当前推送被拒绝。请先拉取或处理分支差异后再推送。';
+  }
+
+  if (
+    lowerMessage.includes('merge conflict') ||
+    lowerMessage.includes('you have unmerged paths') ||
+    lowerMessage.includes('fix conflicts')
+  ) {
+    return '当前存在冲突，需要先解决冲突后再继续 Git 操作。';
+  }
+
+  if (lowerMessage.includes('nothing to commit')) {
+    return '当前没有可提交的变更。';
+  }
+
+  if (lowerMessage.includes('not a git repository')) {
+    return '当前项目不是 Git 仓库。';
+  }
+
+  return '';
 }
 
 function resolveCommandPath(command: string) {

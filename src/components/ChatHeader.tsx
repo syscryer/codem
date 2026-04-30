@@ -5,7 +5,7 @@ import {
   GitBranchPlus,
   GitCommitHorizontal,
   GitPullRequest,
-  Home,
+  FolderOpen,
   MoreHorizontal,
   Play,
   SquareSplitHorizontal,
@@ -27,10 +27,12 @@ type ChatHeaderProps = {
   onToggleDebug: () => void;
   onOpenTarget: (targetId?: string) => void;
   onSelectOpenTarget: (targetId: string) => void;
-  onRefreshGitDiff: () => void;
-  onUseProjectWorkspace: () => void;
+  onOpenFilesWorkbench: () => void;
   onOpenGitCommit: () => void;
   onOpenGitPush: () => void;
+  rightWorkbenchOpen: boolean;
+  onToggleRightWorkbench: () => void;
+  onOpenReviewWorkbench: () => void;
 };
 
 export function ChatHeader({
@@ -42,10 +44,12 @@ export function ChatHeader({
   onToggleDebug,
   onOpenTarget,
   onSelectOpenTarget,
-  onRefreshGitDiff,
-  onUseProjectWorkspace,
+  onOpenFilesWorkbench,
   onOpenGitCommit,
   onOpenGitPush,
+  rightWorkbenchOpen,
+  onToggleRightWorkbench,
+  onOpenReviewWorkbench,
 }: ChatHeaderProps) {
   const gitDiff = activeProject?.gitDiff ?? { additions: 0, deletions: 0, filesChanged: 0 };
   const gitDiffLabels = getGitDiffBadgeLabels(gitDiff);
@@ -88,22 +92,29 @@ export function ChatHeader({
         <button
           type="button"
           className="icon-button"
-          title="使用当前项目目录"
-          onClick={onUseProjectWorkspace}
+          title="打开文件视图"
+          onClick={onOpenFilesWorkbench}
+          disabled={!activeProject}
         >
-          <Home size={15} />
+          <FolderOpen size={15} />
         </button>
         <button
           type="button"
           className="diff-chip"
           title={diffTitle}
-          disabled={!activeProject?.isGitRepo}
-          onClick={onRefreshGitDiff}
+          disabled={!activeProject}
+          onClick={onOpenReviewWorkbench}
         >
           <span className="diff-count">{gitDiffLabels.primary}</span>
           <span className="diff-label">{gitDiffLabels.secondary}</span>
         </button>
-        <button type="button" className="icon-button" title="布局">
+        <button
+          type="button"
+          className={`icon-button${rightWorkbenchOpen ? ' active' : ''}`}
+          title={rightWorkbenchOpen ? '收起右侧工作台' : '展开右侧工作台'}
+          aria-pressed={rightWorkbenchOpen}
+          onClick={onToggleRightWorkbench}
+        >
           <SquareSplitHorizontal size={15} />
         </button>
       </div>
@@ -144,6 +155,7 @@ function GitActionMenu({
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
+        <CloudUpload size={15} />
         提交
         <span className="header-chevron" aria-hidden="true" />
       </button>

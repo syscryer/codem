@@ -31,6 +31,7 @@ import {
   getThreadHistory,
   getUsageStats,
   getWorkspaceBootstrap,
+  listProjectFiles,
   listOpenTargets,
   listProjectGitBranches,
   openProjectInEditor,
@@ -443,6 +444,16 @@ app.get('/api/projects/:projectId/git', async (request, response) => {
     response.json(await getProjectGitSummary(request.params.projectId));
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '读取 Git 状态失败');
+  }
+});
+
+app.get('/api/projects/:projectId/files', (request, response) => {
+  const directory = typeof request.query.path === 'string' ? request.query.path.trim() : '';
+
+  try {
+    response.json(listProjectFiles(request.params.projectId, directory));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '读取项目文件失败');
   }
 });
 
