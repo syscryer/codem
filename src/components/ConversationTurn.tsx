@@ -252,7 +252,6 @@ function ThinkingMessage({ content }: { content: string }) {
   return (
     <details className="thinking-message">
       <summary>
-        <span className="thinking-dot" />
         <span>Thinking</span>
         <span className="thinking-count">{formatThinkingLength(cleanContent)}</span>
       </summary>

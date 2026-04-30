@@ -2544,6 +2544,10 @@ svg {
   display: none;
 }
 
+.thinking-message summary::marker {
+  content: "";
+}
+
 .thinking-message summary::after {
   content: ">";
   color: #a0a6af;
@@ -2554,13 +2558,6 @@ svg {
 
 .thinking-message[open] summary::after {
   transform: rotate(90deg);
-}
-
-.thinking-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: #9ca3af;
 }
 
 .thinking-count {

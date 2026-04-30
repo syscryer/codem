@@ -780,13 +780,17 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
       let nextToolSort = 0;
       const assistantItems =
         turn.items.length > 0
-          ? turn.items.filter((item) => item.type === 'tool' || (item.type === 'text' && item.text.trim()))
+          ? turn.items.filter(
+              (item) =>
+                item.type === 'tool' ||
+                ((item.type === 'text' || item.type === 'thinking') && item.text.trim()),
+            )
           : turn.assistantText.trim()
             ? [{ id: randomUUID(), type: 'text' as const, text: turn.assistantText || '' }]
             : [];
 
       assistantItems.forEach((item, itemIndex) => {
-        if (item.type === 'text') {
+        if (item.type === 'text' || item.type === 'thinking') {
           insertMessage.run(
             randomUUID(),
             threadId,
@@ -794,7 +798,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
             turnIndex,
             itemIndex,
             'assistant',
-            item.text,
+            item.type === 'thinking' ? serializeThinkingContent(item.text) : item.text,
             turnStatus,
             turn.activity ?? null,
             turn.metrics ?? null,
@@ -1683,6 +1687,11 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
       applyTranscriptMetrics(currentTurn, payload, message as Record<string, unknown>);
       const contentBlocks = extractContentBlocks((message as Record<string, unknown>).content);
       for (const block of contentBlocks) {
+        if (block.type === 'thinking' && block.text) {
+          pushThinkingItem(currentTurn, block.text);
+          continue;
+        }
+
         if (block.type === 'text' && block.text) {
           currentTurn.status = 'done';
           currentTurn.activity = undefined;
@@ -2857,10 +2866,6 @@ function extractContentBlocks(content: unknown) {
     .filter((item) => item && typeof item === 'object')
     .map((item) => item as Record<string, unknown>)
     .filter((item) => {
-      const type = typeof item.type === 'string' ? item.type : '';
-      return type !== 'thinking' && type !== 'redacted_thinking';
-    })
-    .filter((item) => {
       if (item.type !== 'text' || typeof item.text !== 'string') {
         return true;
       }
@@ -2869,7 +2874,12 @@ function extractContentBlocks(content: unknown) {
     })
     .map((item) => ({
       type: typeof item.type === 'string' ? item.type : undefined,
-      text: typeof item.text === 'string' ? item.text : undefined,
+      text:
+        typeof item.text === 'string'
+          ? item.text
+          : typeof item.thinking === 'string'
+            ? item.thinking
+            : undefined,
       id: typeof item.id === 'string' ? item.id : undefined,
       name: typeof item.name === 'string' ? item.name : undefined,
       input: item.input,
@@ -2888,6 +2898,29 @@ function pushTextItem(turn: ThreadTurn, text: string) {
     type: 'text',
     text,
   });
+}
+
+function pushThinkingItem(turn: ThreadTurn, text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return;
+  }
+
+  const last = turn.items.at(-1);
+  if (last?.type === 'thinking') {
+    last.text += trimmed;
+    return;
+  }
+
+  turn.items.push({
+    id: randomUUID(),
+    type: 'thinking',
+    text: trimmed,
+  });
+}
+
+function serializeThinkingContent(text: string) {
+  return `<thinking>${text.trim()}</thinking>`;
 }
 
 function parseRequestUserInputEvent(
