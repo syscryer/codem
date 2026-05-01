@@ -89,10 +89,6 @@ export function Composer({
       }
       return;
     }
-    if (isRunning) {
-      showToast('请等待当前回复完成后再发送。', 'info');
-      return;
-    }
 
     let finalPrompt = submittedDraft;
     let uploadedAttachments: UserImageAttachment[] | undefined;
@@ -319,7 +315,12 @@ export function Composer({
                 <Square size={13} fill="currentColor" />
               </button>
             ) : (
-              <button type="submit" className="send-button" disabled={!hasPendingContent || isRunning} title={isRunning ? '等待当前回复完成' : '发送'}>
+              <button
+                type="submit"
+                className="send-button"
+                disabled={!hasPendingContent}
+                title={isRunning ? '发送到队列' : '发送'}
+              >
                 <ArrowUp size={18} />
               </button>
             )}

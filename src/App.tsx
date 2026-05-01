@@ -352,12 +352,14 @@ export default function App() {
     >
       <AppMenubar
         sidebarVisible={sidebarVisible}
+        windowMaterial={appearance.windowMaterial}
         onToggleSidebar={() => setSidebarVisible((value) => !value)}
         onNewChat={() => void handleCreatePrimaryChat()}
         onOpenFolder={() => void handlePickProjectDirectory()}
         onOpenSettings={() => openSettings('appearance')}
         onOpenSearch={() => setSearchOpen(true)}
         onToggleDebug={() => setDebugOpen((value) => !value)}
+        onSelectWindowMaterial={(windowMaterial) => updateAppearance({ windowMaterial })}
         onShowAbout={showAbout}
         onShowShortcuts={showShortcuts}
         onUnsupportedWindowAction={handleUnsupportedWindowAction}

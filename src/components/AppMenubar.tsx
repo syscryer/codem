@@ -1,19 +1,22 @@
-import { ArrowLeft, ArrowRight, Minus, PanelLeft, Square, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Minus, PanelLeft, Square, X } from 'lucide-react';
 import { useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
-import { isTauriRuntime, setWindowMaterial } from '../lib/window-material';
+import { isTauriRuntime } from '../lib/window-material';
 import { PopoverPortal } from './PopoverPortal';
+import type { WindowMaterialMode } from '../types';
 
 type AppMenuId = 'file' | 'edit' | 'view' | 'window' | 'help';
 
 type AppMenubarProps = {
   sidebarVisible: boolean;
+  windowMaterial: WindowMaterialMode;
   onToggleSidebar: () => void;
   onNewChat: () => void | Promise<void>;
   onOpenFolder: () => void | Promise<void>;
   onOpenSettings: () => void;
   onOpenSearch: () => void;
   onToggleDebug: () => void;
+  onSelectWindowMaterial: (material: WindowMaterialMode) => void;
   onShowAbout: () => void;
   onShowShortcuts: () => void;
   onUnsupportedWindowAction: (action: string) => void;
@@ -31,12 +34,14 @@ const WINDOW_DRAG_THRESHOLD_PX = 4;
 
 export function AppMenubar({
   sidebarVisible,
+  windowMaterial,
   onToggleSidebar,
   onNewChat,
   onOpenFolder,
   onOpenSettings,
   onOpenSearch,
   onToggleDebug,
+  onSelectWindowMaterial,
   onShowAbout,
   onShowShortcuts,
   onUnsupportedWindowAction,
@@ -108,13 +113,8 @@ export function AppMenubar({
     onUnsupportedWindowAction(label);
   }
 
-  async function handleMaterialAction(material: number, label: string) {
-    const handled = await runTauriMaterialAction(material);
-    if (handled) {
-      return;
-    }
-
-    onUnsupportedWindowAction(`${label} 材质切换`);
+  function handleMaterialAction(material: WindowMaterialMode) {
+    onSelectWindowMaterial(material);
   }
 
   return (
@@ -189,10 +189,26 @@ export function AppMenubar({
 
                 {menuId === 'window' ? (
                   <>
-                    <MenuItem label="自动材质" onSelect={() => runAction(() => handleMaterialAction(0, '自动材质'))} />
-                    <MenuItem label="Mica" onSelect={() => runAction(() => handleMaterialAction(2, 'Mica'))} />
-                    <MenuItem label="Acrylic" onSelect={() => runAction(() => handleMaterialAction(3, 'Acrylic'))} />
-                    <MenuItem label="Mica Alt" onSelect={() => runAction(() => handleMaterialAction(4, 'Mica Alt'))} />
+                    <MenuItem
+                      label="自动材质"
+                      selected={windowMaterial === 'auto'}
+                      onSelect={() => runAction(() => handleMaterialAction('auto'))}
+                    />
+                    <MenuItem
+                      label="Mica"
+                      selected={windowMaterial === 'mica'}
+                      onSelect={() => runAction(() => handleMaterialAction('mica'))}
+                    />
+                    <MenuItem
+                      label="Acrylic"
+                      selected={windowMaterial === 'acrylic'}
+                      onSelect={() => runAction(() => handleMaterialAction('acrylic'))}
+                    />
+                    <MenuItem
+                      label="Mica Alt"
+                      selected={windowMaterial === 'micaAlt'}
+                      onSelect={() => runAction(() => handleMaterialAction('micaAlt'))}
+                    />
                     <MenuSeparator />
                     <MenuItem label="最小化" onSelect={() => runAction(() => handleWindowAction('minimize'))} />
                     <MenuItem label="最大化/还原" onSelect={() => runAction(() => handleWindowAction('toggleMaximize'))} />
@@ -233,15 +249,18 @@ export function AppMenubar({
 function MenuItem({
   label,
   shortcut,
+  selected = false,
   onSelect,
 }: {
   label: string;
   shortcut?: string;
+  selected?: boolean;
   onSelect: () => void;
 }) {
   return (
     <button type="button" className="desktop-menu-item" role="menuitem" onClick={onSelect}>
       <span>{label}</span>
+      {selected ? <Check size={14} /> : null}
       {shortcut ? <kbd>{shortcut}</kbd> : null}
     </button>
   );
@@ -302,6 +321,3 @@ async function runTauriWindowAction(action: 'minimize' | 'toggleMaximize' | 'clo
   }
 }
 
-async function runTauriMaterialAction(material: number) {
-  return setWindowMaterial(material);
-}

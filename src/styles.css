@@ -101,14 +101,7 @@ svg {
 }
 
 .codex-desktop::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.06), transparent 42%);
-  mix-blend-mode: soft-light;
-  opacity: 0.28;
-  pointer-events: none;
+  content: none;
 }
 
 .codex-desktop[data-theme-mode="dark"] {
@@ -5936,8 +5929,7 @@ svg {
 }
 
 .codex-desktop .app-sidebar::after {
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.1), transparent 42%, rgba(80, 86, 94, 0.02));
-  opacity: 0.32;
+  content: none;
 }
 
 .codex-desktop .sidebar-primary button:hover,
