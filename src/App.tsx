@@ -2,6 +2,7 @@ import { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent, useEff
 import { ListChecks } from 'lucide-react';
 import { AppMenubar } from './components/AppMenubar';
 import { ChatHeader } from './components/ChatHeader';
+import { CloneRepositoryDialog } from './components/CloneRepositoryDialog';
 import { Composer } from './components/Composer';
 import { ConversationPane } from './components/ConversationPane';
 import { DebugDrawer } from './components/DebugDrawer';
@@ -36,6 +37,7 @@ export default function App() {
   const chatWorkspaceRef = useRef<HTMLDivElement | null>(null);
   const [dismissedApprovalDialogKey, setDismissedApprovalDialogKey] = useState<string | null>(null);
   const [sidebarVisible, setSidebarVisible] = useState(true);
+  const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
   const workspaceState = useWorkspaceState();
   const {
     panelState,
@@ -45,6 +47,7 @@ export default function App() {
     searchOpen,
     searchQuery,
     collapsedProjects,
+    cloneTasks,
     inputDialog,
     confirmDialog,
     toast,
@@ -59,6 +62,10 @@ export default function App() {
     setConfirmDialog,
     showToast,
     createThread,
+    selectDirectoryPath,
+    cloneRepositoryAndAttach,
+    retryCloneTask,
+    removeCloneTask,
     handlePickProjectDirectory,
     submitInputDialog,
     confirmRemoveDialog,
@@ -295,6 +302,14 @@ export default function App() {
     showToast('CodeM 0.1.0 · Tauri 桌面壳预览版', 'info');
   }
 
+  async function handleCloneRepository(payload: {
+    repoUrl: string;
+    baseDirectory: string;
+    folderName: string;
+  }) {
+    await cloneRepositoryAndAttach(payload);
+  }
+
   function handleUnsupportedWindowAction(action: string) {
     showToast(`${action} 会在接入 Tauri 窗口 API 后启用。`, 'info');
   }
@@ -356,6 +371,7 @@ export default function App() {
         onToggleSidebar={() => setSidebarVisible((value) => !value)}
         onNewChat={() => void handleCreatePrimaryChat()}
         onOpenFolder={() => void handlePickProjectDirectory()}
+        onOpenCloneDialog={() => setCloneDialogOpen(true)}
         onOpenSettings={() => openSettings('appearance')}
         onOpenSearch={() => setSearchOpen(true)}
         onToggleDebug={() => setDebugOpen((value) => !value)}
@@ -390,6 +406,7 @@ export default function App() {
               activeProjectId={activeProjectId}
               activeThreadId={activeThreadId}
               runningThreadIds={runningThreadIds}
+              cloneTasks={cloneTasks}
               filteredProjects={filteredProjects}
               collapsedProjects={collapsedProjects}
               searchOpen={searchOpen}
@@ -401,6 +418,9 @@ export default function App() {
               onToggleAllProjects={toggleAllProjects}
               onPanelStateChange={handlePanelStateChange}
               onPickProjectDirectory={handlePickProjectDirectory}
+              onOpenCloneDialog={() => setCloneDialogOpen(true)}
+              onRetryCloneTask={retryCloneTask}
+              onRemoveCloneTask={removeCloneTask}
               onCreateThread={handleCreateThread}
               onOpenProject={handleOpenProject}
               onCopyProjectPath={handleCopyProjectPath}
@@ -537,6 +557,13 @@ export default function App() {
           showToast={showToast}
         />
       ) : null}
+      <CloneRepositoryDialog
+        open={cloneDialogOpen}
+        initialBaseDirectory={activeProject?.path}
+        onClose={() => setCloneDialogOpen(false)}
+        onPickBaseDirectory={(currentBaseDirectory) => selectDirectoryPath(currentBaseDirectory || activeProject?.path)}
+        onSubmit={handleCloneRepository}
+      />
       <DebugDrawer activeThread={activeThread} open={debugOpen} onClose={() => setDebugOpen(false)} />
     </div>
   );

@@ -469,6 +469,24 @@ export type SkillsResponse = {
   errors: SkillScanError[];
 };
 
+export type CloneTaskStatus = 'cloning' | 'attaching' | 'failed';
+
+export type CloneTaskPhase = 'clone' | 'attach';
+
+export type CloneTask = {
+  id: string;
+  repoUrl: string;
+  projectName: string;
+  baseDirectory: string;
+  folderName: string;
+  targetPath: string;
+  status: CloneTaskStatus;
+  phase: CloneTaskPhase;
+  detail: string;
+  errorMessage?: string;
+  createdAt: string;
+};
+
 export type InputDialogState =
   | {
       kind: 'rename-project';

@@ -5,21 +5,25 @@ import {
   Check,
   Clock3,
   Copy,
+  LoaderCircle,
   Folder,
   FolderOpen,
   FolderPlus,
+  GitBranchPlus,
   MoreHorizontal,
   Plus,
   Pencil,
+  RefreshCw,
   Search,
   Settings,
   Trash2,
+  X,
   SquarePen,
   SquareSplitHorizontal,
 } from 'lucide-react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { PopoverPortal } from './PopoverPortal';
-import type { PanelState, ProjectSummary, ThreadSummary } from '../types';
+import type { CloneTask, PanelState, ProjectSummary, ThreadSummary } from '../types';
 
 const VISIBLE_THREAD_PREVIEW_LIMIT = 5;
 
@@ -27,6 +31,7 @@ type SidebarProjectsProps = {
   activeProjectId: string | null;
   activeThreadId: string | null;
   runningThreadIds: string[];
+  cloneTasks: CloneTask[];
   filteredProjects: ProjectSummary[];
   collapsedProjects: Record<string, boolean>;
   searchOpen: boolean;
@@ -38,6 +43,9 @@ type SidebarProjectsProps = {
   onToggleAllProjects: () => void;
   onPanelStateChange: (nextState: Partial<PanelState>) => void | Promise<void>;
   onPickProjectDirectory: () => void | Promise<void>;
+  onOpenCloneDialog: () => void;
+  onRetryCloneTask: (taskId: string) => void;
+  onRemoveCloneTask: (taskId: string) => void;
   onCreateThread: (projectId: string) => void | Promise<unknown>;
   onOpenProject: (project: ProjectSummary) => void | Promise<void>;
   onCopyProjectPath: (project: ProjectSummary) => void | Promise<void>;
@@ -55,6 +63,7 @@ export function SidebarProjects({
   activeProjectId,
   activeThreadId,
   runningThreadIds,
+  cloneTasks,
   filteredProjects,
   collapsedProjects,
   searchOpen,
@@ -66,6 +75,9 @@ export function SidebarProjects({
   onToggleAllProjects,
   onPanelStateChange,
   onPickProjectDirectory,
+  onOpenCloneDialog,
+  onRetryCloneTask,
+  onRemoveCloneTask,
   onCreateThread,
   onOpenProject,
   onCopyProjectPath,
@@ -79,17 +91,20 @@ export function SidebarProjects({
   onOpenSettings,
 }: SidebarProjectsProps) {
   const [panelMenuOpen, setPanelMenuOpen] = useState(false);
+  const [addProjectMenuOpen, setAddProjectMenuOpen] = useState(false);
   const [projectMenuProjectId, setProjectMenuProjectId] = useState<string | null>(null);
   const [projectMenuAnchor, setProjectMenuAnchor] = useState<{ x: number; y: number } | null>(null);
   const [threadMenuThreadId, setThreadMenuThreadId] = useState<string | null>(null);
   const [expandedThreadProjects, setExpandedThreadProjects] = useState<Record<string, boolean>>({});
   const panelMenuRef = useRef<HTMLDivElement | null>(null);
+  const addProjectMenuRef = useRef<HTMLDivElement | null>(null);
   const projectMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const threadMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useOutsideDismiss({
     selectors: [
       { selector: '.panel-menu-popover', onDismiss: () => setPanelMenuOpen(false), anchorRefs: [panelMenuRef] },
+      { selector: '.add-project-menu-popover', onDismiss: () => setAddProjectMenuOpen(false), anchorRefs: [addProjectMenuRef] },
       { selector: '.project-menu-popover', onDismiss: () => setProjectMenuProjectId(null), anchorRefs: [projectMenuTriggerRef] },
       { selector: '.thread-menu-popover', onDismiss: () => setThreadMenuThreadId(null), anchorRefs: [threadMenuTriggerRef] },
     ],
@@ -170,9 +185,24 @@ export function SidebarProjects({
                 </div>
               </PopoverPortal>
             </div>
-            <button type="button" className="sidebar-toolbar-icon" title="新增项目" onClick={() => void onPickProjectDirectory()}>
-              <FolderPlus size={13} />
-            </button>
+            <div className="panel-menu-anchor" ref={addProjectMenuRef}>
+              <button type="button" className="sidebar-toolbar-icon" title="新增项目" onClick={() => setAddProjectMenuOpen((value) => !value)}>
+                <FolderPlus size={13} />
+              </button>
+              <PopoverPortal open={addProjectMenuOpen} anchorRef={addProjectMenuRef} placement="bottom-end">
+                <div className="workspace-menu add-project-menu-popover">
+                  <div className="workspace-menu-group-title">新增项目</div>
+                  <button type="button" className="workspace-menu-item" onClick={() => { setAddProjectMenuOpen(false); void onPickProjectDirectory(); }}>
+                    <FolderOpen size={14} />
+                    <span>选择本地文件夹...</span>
+                  </button>
+                  <button type="button" className="workspace-menu-item" onClick={() => { setAddProjectMenuOpen(false); onOpenCloneDialog(); }}>
+                    <GitBranchPlus size={14} />
+                    <span>克隆 Git 仓库...</span>
+                  </button>
+                </div>
+              </PopoverPortal>
+            </div>
           </div>
         </div>
 
@@ -188,13 +218,42 @@ export function SidebarProjects({
           </div>
         ) : null}
 
-        {filteredProjects.length === 0 ? (
+        {cloneTasks.length === 0 && filteredProjects.length === 0 ? (
           <div className="sidebar-empty">
             <p>当前还没有项目。</p>
             <p>点击右上角新增项目，或从 Claude Code 本地 session 自动导入。</p>
           </div>
         ) : (
-          filteredProjects.map((project) => {
+          <>
+            {cloneTasks.map((task) => (
+              <div key={task.id} className={`sidebar-project clone-task ${task.status}`}>
+                <div className="sidebar-project-row clone-task-row">
+                  <div className="sidebar-project-title clone-task-title">
+                    <span>{task.status === 'failed' ? <GitBranchPlus size={14} /> : <LoaderCircle className="spin" size={14} />}</span>
+                    <strong>{task.projectName}</strong>
+                    <small className={`sidebar-project-status-badge ${task.status}`}>
+                      {task.status === 'cloning' ? '克隆中' : task.status === 'attaching' ? '处理中' : '失败'}
+                    </small>
+                  </div>
+                </div>
+                <div className="sidebar-project-task-body">
+                  <p className="sidebar-project-substatus">{task.errorMessage || task.detail}</p>
+                  {task.status === 'failed' ? (
+                    <div className="sidebar-project-task-actions">
+                      <button type="button" className="sidebar-task-button" onClick={() => onRetryCloneTask(task.id)}>
+                        <RefreshCw size={12} />
+                        重试
+                      </button>
+                      <button type="button" className="sidebar-task-button danger" onClick={() => onRemoveCloneTask(task.id)}>
+                        <X size={12} />
+                        移除
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+            {filteredProjects.map((project) => {
             const collapsed = Boolean(collapsedProjects[project.id]);
             const threadExpanded = Boolean(expandedThreadProjects[project.id]);
             const hasMoreThreads = project.threads.length > VISIBLE_THREAD_PREVIEW_LIMIT;
@@ -340,7 +399,8 @@ export function SidebarProjects({
                 ) : null}
               </div>
             );
-          })
+          })}
+          </>
         )}
       </section>
 

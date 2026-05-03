@@ -13,6 +13,7 @@ type AppMenubarProps = {
   onToggleSidebar: () => void;
   onNewChat: () => void | Promise<void>;
   onOpenFolder: () => void | Promise<void>;
+  onOpenCloneDialog: () => void;
   onOpenSettings: () => void;
   onOpenSearch: () => void;
   onToggleDebug: () => void;
@@ -38,6 +39,7 @@ export function AppMenubar({
   onToggleSidebar,
   onNewChat,
   onOpenFolder,
+  onOpenCloneDialog,
   onOpenSettings,
   onOpenSearch,
   onToggleDebug,
@@ -155,6 +157,7 @@ export function AppMenubar({
                   <>
                     <MenuItem label="新建聊天" shortcut="Ctrl+N" onSelect={() => runAction(onNewChat)} />
                     <MenuItem label="打开项目文件夹..." shortcut="Ctrl+O" onSelect={() => runAction(onOpenFolder)} />
+                    <MenuItem label="克隆仓库..." onSelect={() => runAction(onOpenCloneDialog)} />
                     <MenuSeparator />
                     <MenuItem label="设置..." onSelect={() => runAction(onOpenSettings)} />
                     <MenuSeparator />

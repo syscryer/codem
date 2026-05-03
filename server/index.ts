@@ -62,6 +62,7 @@ import {
 import { listMcpServers } from './lib/mcp-inspector.js';
 import { listSkills } from './lib/skills-scanner.js';
 import { selectDirectory } from './lib/system-dialog.js';
+import { cloneRepository } from './lib/git-clone.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -239,6 +240,34 @@ app.post('/api/system/select-directory', async (request, response) => {
     });
   } catch (error) {
     response.status(500).send(error instanceof Error ? error.message : '目录选择失败');
+  }
+});
+
+app.post('/api/git/clone', async (request, response) => {
+  const repoUrl =
+    typeof request.body?.repoUrl === 'string' && request.body.repoUrl.trim()
+      ? request.body.repoUrl.trim()
+      : '';
+  const baseDirectory =
+    typeof request.body?.baseDirectory === 'string' && request.body.baseDirectory.trim()
+      ? request.body.baseDirectory.trim()
+      : '';
+  const folderName =
+    typeof request.body?.folderName === 'string' && request.body.folderName.trim()
+      ? request.body.folderName.trim()
+      : '';
+
+  try {
+    response.json({
+      ok: true,
+      ...(await cloneRepository({
+        repoUrl,
+        baseDirectory,
+        folderName,
+      })),
+    });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '克隆仓库失败');
   }
 });
 

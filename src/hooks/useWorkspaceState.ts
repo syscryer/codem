@@ -2,6 +2,7 @@ import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { EMPTY_PANEL_STATE } from '../constants';
 import { createThreadDetail, metricsFromTurn, normalizeTurnsForPersist, repairConversationTurn } from '../lib/conversation';
 import type {
+  CloneTask,
   ConfirmDialogState,
   ConversationTurn,
   DebugEvent,
@@ -24,6 +25,14 @@ type ThreadMetadataPatch = {
   permissionMode?: string;
 };
 
+type CreateProjectOptions = {
+  successMessage?: string | null;
+};
+
+type CreateThreadOptions = {
+  showToast?: boolean;
+};
+
 function isLiveTurn(turn: ConversationTurn) {
   return turn.status === 'pending' || turn.status === 'running';
 }
@@ -42,6 +51,7 @@ export function useWorkspaceState() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
+  const [cloneTasks, setCloneTasks] = useState<CloneTask[]>([]);
   const [inputDialog, setInputDialog] = useState<InputDialogState | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -432,13 +442,13 @@ export function useWorkspaceState() {
     });
   }
 
-  async function createThread(projectId: string) {
+  async function createThread(projectId: string, title?: string, options?: CreateThreadOptions) {
     const response = await fetch(`/api/projects/${projectId}/threads`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify(title?.trim() ? { title: title.trim() } : {}),
     });
 
     if (!response.ok) {
@@ -455,11 +465,23 @@ export function useWorkspaceState() {
     setActiveProjectId(projectId);
     setActiveThreadId(payload.threadId);
     await persistSelection(projectId, payload.threadId);
-    showToast('已新建聊天');
+    if (options?.showToast !== false) {
+      showToast('已新建聊天');
+    }
     return createdThread;
   }
 
-  async function createProjectFromPath(projectPath: string) {
+  function updateCloneTask(taskId: string, patch: Partial<CloneTask>) {
+    setCloneTasks((current) =>
+      current.map((task) => (task.id === taskId ? { ...task, ...patch } : task)),
+    );
+  }
+
+  function removeCloneTask(taskId: string) {
+    setCloneTasks((current) => current.filter((task) => task.id !== taskId));
+  }
+
+  async function createProjectFromPath(projectPath: string, options?: CreateProjectOptions) {
     const response = await fetch('/api/projects', {
       method: 'POST',
       headers: {
@@ -472,34 +494,173 @@ export function useWorkspaceState() {
       throw new Error(await response.text());
     }
 
-    const payload = (await response.json()) as { workspace: WorkspaceBootstrap };
+    const payload = (await response.json()) as { projectId: string; workspace: WorkspaceBootstrap };
     syncWorkspace(payload.workspace);
-    showToast('项目已添加');
+    if (options?.successMessage !== null) {
+      showToast(options?.successMessage ?? '项目已添加');
+    }
+    return payload;
   }
 
-  async function handlePickProjectDirectory() {
+  async function selectDirectoryPath(initialPath?: string) {
+    const response = await fetch('/api/system/select-directory', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        initialPath: initialPath || undefined,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+
+    const payload = (await response.json()) as { ok: true; path: string | null };
+    return payload.path;
+  }
+
+  function cloneRepositoryAndAttach(payload: {
+    repoUrl: string;
+    baseDirectory: string;
+    folderName: string;
+  }) {
+    const repoUrl = payload.repoUrl.trim();
+    const baseDirectory = payload.baseDirectory.trim();
+    const folderName = payload.folderName.trim();
+    const targetPath = `${baseDirectory}${baseDirectory.endsWith('\\') || baseDirectory.endsWith('/') ? '' : '\\'}${folderName}`;
+    const taskId = crypto.randomUUID();
+
+    setCloneTasks((current) => [
+      {
+        id: taskId,
+        repoUrl,
+        projectName: folderName,
+        baseDirectory,
+        folderName,
+        targetPath,
+        status: 'cloning',
+        phase: 'clone',
+        detail: '正在克隆仓库...',
+        createdAt: new Date().toISOString(),
+      },
+      ...current,
+    ]);
+
+    void runCloneTask(taskId, {
+      repoUrl,
+      baseDirectory,
+      folderName,
+      targetPath,
+    });
+  }
+
+  async function runCloneTask(
+    taskId: string,
+    payload: {
+      repoUrl: string;
+      baseDirectory: string;
+      folderName: string;
+      targetPath: string;
+    },
+  ) {
+    updateCloneTask(taskId, {
+      status: 'cloning',
+      phase: 'clone',
+      detail: '正在克隆仓库...',
+      errorMessage: undefined,
+    });
+
     try {
-      const response = await fetch('/api/system/select-directory', {
+      const response = await fetch('/api/git/clone', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          initialPath: activeProject?.path || undefined,
+          repoUrl: payload.repoUrl,
+          baseDirectory: payload.baseDirectory,
+          folderName: payload.folderName,
         }),
       });
 
       if (!response.ok) {
-        showToast(await response.text(), 'error');
+        throw new Error(await response.text());
+      }
+
+      const clonePayload = (await response.json()) as { ok: true; projectPath: string };
+      await attachClonedProject(taskId, clonePayload.projectPath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '克隆仓库失败';
+      updateCloneTask(taskId, {
+        status: 'failed',
+        phase: 'clone',
+        detail: '克隆失败',
+        errorMessage: message,
+      });
+      showToast(message, 'error');
+    }
+  }
+
+  async function attachClonedProject(taskId: string, projectPath: string) {
+    updateCloneTask(taskId, {
+      status: 'attaching',
+      phase: 'attach',
+      detail: '正在加入工作区...',
+      errorMessage: undefined,
+      targetPath: projectPath,
+    });
+
+    try {
+      const projectPayload = await createProjectFromPath(projectPath, {
+        successMessage: null,
+      });
+      const project = projectPayload.workspace.projects.find((item) => item.id === projectPayload.projectId) ?? null;
+      if (project && project.threads.length === 0) {
+        await createThread(projectPayload.projectId, undefined, { showToast: false });
+      }
+      removeCloneTask(taskId);
+      showToast('仓库已克隆并添加到工作区');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '加入工作区失败';
+      updateCloneTask(taskId, {
+        status: 'failed',
+        phase: 'attach',
+        detail: '加入工作区失败',
+        errorMessage: message,
+      });
+      showToast(`仓库已克隆，但加入工作区失败：${message}`, 'error');
+    }
+  }
+
+  function retryCloneTask(taskId: string) {
+    const task = cloneTasks.find((item) => item.id === taskId);
+    if (!task) {
+      return;
+    }
+
+    if (task.phase === 'attach') {
+      void attachClonedProject(taskId, task.targetPath);
+      return;
+    }
+
+    void runCloneTask(taskId, {
+      repoUrl: task.repoUrl,
+      baseDirectory: task.baseDirectory,
+      folderName: task.folderName,
+      targetPath: task.targetPath,
+    });
+  }
+
+  async function handlePickProjectDirectory() {
+    try {
+      const selectedPath = await selectDirectoryPath(activeProject?.path);
+      if (!selectedPath) {
         return;
       }
 
-      const payload = (await response.json()) as { ok: true; path: string | null };
-      if (!payload.path) {
-        return;
-      }
-
-      await createProjectFromPath(payload.path);
+      await createProjectFromPath(selectedPath);
     } catch (error) {
       showToast(error instanceof Error ? error.message : '新增项目失败', 'error');
     }
@@ -856,6 +1017,7 @@ export function useWorkspaceState() {
     searchOpen,
     searchQuery,
     collapsedProjects,
+    cloneTasks,
     inputDialog,
     confirmDialog,
     toast,
@@ -874,6 +1036,11 @@ export function useWorkspaceState() {
     syncWorkspace,
     loadWorkspace,
     createThread,
+    createProjectFromPath,
+    selectDirectoryPath,
+    cloneRepositoryAndAttach,
+    retryCloneTask,
+    removeCloneTask,
     handlePickProjectDirectory,
     submitInputDialog,
     confirmRemoveDialog,

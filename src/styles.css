@@ -523,6 +523,19 @@ svg {
   border-radius: 12px;
 }
 
+.sidebar-project.clone-task {
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.sidebar-project.clone-task.failed {
+  border-color: rgba(180, 35, 24, 0.14);
+  background: rgba(253, 236, 236, 0.54);
+}
+
 .sidebar-project-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -556,6 +569,79 @@ svg {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 480;
+}
+
+.clone-task-title {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  cursor: default;
+}
+
+.sidebar-project-status-badge {
+  min-width: 0;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(142, 142, 147, 0.15);
+  color: #666666;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.sidebar-project-status-badge.cloning,
+.sidebar-project-status-badge.attaching {
+  background: rgba(148, 163, 184, 0.18);
+  color: #5f6368;
+}
+
+.sidebar-project-status-badge.failed {
+  background: rgba(180, 35, 24, 0.12);
+  color: #b42318;
+}
+
+.sidebar-project-task-body {
+  display: grid;
+  gap: 8px;
+  padding-left: 24px;
+}
+
+.sidebar-project-substatus {
+  margin: 0;
+  color: #7a7f87;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.sidebar-project-task-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-task-button {
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.05);
+  color: #565d66;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sidebar-task-button:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.sidebar-task-button.danger {
+  color: #9f2d24;
 }
 
 .sidebar-project-actions {
@@ -4215,6 +4301,78 @@ svg {
   grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 14px;
   padding: 18px;
+}
+
+.clone-dialog-card {
+  width: min(560px, calc(100vw - 36px));
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.clone-dialog-head {
+  gap: 12px;
+}
+
+.clone-dialog-form {
+  display: grid;
+  gap: 14px;
+}
+
+.clone-dialog-field {
+  display: grid;
+  gap: 7px;
+}
+
+.clone-dialog-field > span {
+  color: #202020;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.clone-dialog-field small {
+  color: #8a8a8a;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.clone-dialog-path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.clone-dialog-pick-button {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.clone-dialog-target {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  background: rgba(250, 250, 250, 0.9);
+  color: #50565f;
+  font-size: 13px;
+}
+
+.clone-dialog-target span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clone-dialog-actions .dialog-button.primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .git-dialog-head,
