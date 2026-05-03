@@ -484,6 +484,7 @@ export type CloneTask = {
   phase: CloneTaskPhase;
   detail: string;
   errorMessage?: string;
+  rawLog?: string;
   createdAt: string;
 };
 

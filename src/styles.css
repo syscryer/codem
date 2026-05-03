@@ -644,6 +644,25 @@ svg {
   color: #9f2d24;
 }
 
+.sidebar-task-log-card {
+  max-height: 132px;
+  overflow: auto;
+  padding: 9px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  border-radius: 9px;
+  background: rgba(248, 248, 248, 0.92);
+}
+
+.sidebar-task-log-card pre {
+  margin: 0;
+  color: #4f5560;
+  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .sidebar-project-actions {
   position: relative;
   display: inline-flex;

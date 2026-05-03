@@ -543,6 +543,7 @@ export function useWorkspaceState() {
         status: 'cloning',
         phase: 'clone',
         detail: '正在克隆仓库...',
+        rawLog: undefined,
         createdAt: new Date().toISOString(),
       },
       ...current,
@@ -570,6 +571,7 @@ export function useWorkspaceState() {
       phase: 'clone',
       detail: '正在克隆仓库...',
       errorMessage: undefined,
+      rawLog: undefined,
     });
 
     try {
@@ -586,18 +588,20 @@ export function useWorkspaceState() {
       });
 
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw await readCloneError(response);
       }
 
       const clonePayload = (await response.json()) as { ok: true; projectPath: string };
       await attachClonedProject(taskId, clonePayload.projectPath);
     } catch (error) {
       const message = error instanceof Error ? error.message : '克隆仓库失败';
+      const rawLog = isCloneFailure(error) ? error.rawLog : undefined;
       updateCloneTask(taskId, {
         status: 'failed',
         phase: 'clone',
         detail: '克隆失败',
         errorMessage: message,
+        rawLog,
       });
       showToast(message, 'error');
     }
@@ -609,6 +613,7 @@ export function useWorkspaceState() {
       phase: 'attach',
       detail: '正在加入工作区...',
       errorMessage: undefined,
+      rawLog: undefined,
       targetPath: projectPath,
     });
 
@@ -629,6 +634,7 @@ export function useWorkspaceState() {
         phase: 'attach',
         detail: '加入工作区失败',
         errorMessage: message,
+        rawLog: undefined,
       });
       showToast(`仓库已克隆，但加入工作区失败：${message}`, 'error');
     }
@@ -1067,4 +1073,22 @@ export function useWorkspaceState() {
     appendRawEvent,
     schedulePersistThreadHistory,
   };
+}
+
+type CloneFailure = Error & { rawLog?: string };
+
+async function readCloneError(response: Response): Promise<CloneFailure> {
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json')) {
+    const payload = (await response.json()) as { error?: string; rawLog?: string };
+    const error = new Error(payload.error || '克隆仓库失败') as CloneFailure;
+    error.rawLog = typeof payload.rawLog === 'string' && payload.rawLog.trim() ? payload.rawLog.trim() : undefined;
+    return error;
+  }
+
+  return new Error(await response.text()) as CloneFailure;
+}
+
+function isCloneFailure(error: unknown): error is CloneFailure {
+  return error instanceof Error;
 }

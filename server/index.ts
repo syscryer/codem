@@ -62,7 +62,7 @@ import {
 import { listMcpServers } from './lib/mcp-inspector.js';
 import { listSkills } from './lib/skills-scanner.js';
 import { selectDirectory } from './lib/system-dialog.js';
-import { cloneRepository } from './lib/git-clone.js';
+import { cloneRepository, CloneRepositoryError } from './lib/git-clone.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -267,7 +267,17 @@ app.post('/api/git/clone', async (request, response) => {
       })),
     });
   } catch (error) {
-    response.status(400).send(error instanceof Error ? error.message : '克隆仓库失败');
+    if (error instanceof CloneRepositoryError) {
+      response.status(400).json({
+        error: error.message,
+        rawLog: error.rawLog,
+      });
+      return;
+    }
+
+    response.status(400).json({
+      error: error instanceof Error ? error.message : '克隆仓库失败',
+    });
   }
 });
 

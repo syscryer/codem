@@ -14,6 +14,16 @@ type CloneRepositoryResult = {
 
 const INVALID_FOLDER_NAME_PATTERN = /[<>:"/\\|?*\x00-\x1f]/;
 
+export class CloneRepositoryError extends Error {
+  rawLog?: string;
+
+  constructor(message: string, rawLog?: string) {
+    super(message);
+    this.name = 'CloneRepositoryError';
+    this.rawLog = rawLog;
+  }
+}
+
 export async function cloneRepository(input: CloneRepositoryInput): Promise<CloneRepositoryResult> {
   const repoUrl = input.repoUrl.trim();
   const baseDirectory = path.resolve(input.baseDirectory.trim());
@@ -101,7 +111,7 @@ async function runGitClone(repoUrl: string, projectPath: string, baseDirectory: 
 
     child.on('error', (error) => {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        reject(new Error('未检测到 Git，请先确认本机已安装并可在终端执行 git。'));
+        reject(new CloneRepositoryError('未检测到 Git，请先确认本机已安装并可在终端执行 git。'));
         return;
       }
 
@@ -114,10 +124,35 @@ async function runGitClone(repoUrl: string, projectPath: string, baseDirectory: 
         return;
       }
 
-      const message = [stderr.trim(), stdout.trim()].filter(Boolean)[0] ?? 'git clone 执行失败';
-      reject(new Error(message));
+      const rawLog = buildGitCloneRawLog(stderr, stdout);
+      const message = formatGitCloneError(stderr, stdout);
+      reject(new CloneRepositoryError(message, rawLog));
     });
   });
+}
+
+function buildGitCloneRawLog(stderr: string, stdout: string) {
+  return [stderr.trim(), stdout.trim()].filter(Boolean).join('\n').trim();
+}
+
+function formatGitCloneError(stderr: string, stdout: string) {
+  const lines = `${stderr}\n${stdout}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !line.toLowerCase().startsWith('cloning into'));
+
+  const fatalLine = [...lines].reverse().find((line: string) => line.toLowerCase().startsWith('fatal:'));
+  if (fatalLine) {
+    return fatalLine.replace(/^fatal:\s*/i, '').trim();
+  }
+
+  const remoteLine = [...lines].reverse().find((line: string) => line.toLowerCase().startsWith('remote:'));
+  if (remoteLine) {
+    return remoteLine.replace(/^remote:\s*/i, '').trim();
+  }
+
+  return lines.at(-1) ?? 'git clone 执行失败';
 }
 
 async function cleanupFailedClone(targetPath: string) {

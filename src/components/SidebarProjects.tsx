@@ -92,6 +92,7 @@ export function SidebarProjects({
 }: SidebarProjectsProps) {
   const [panelMenuOpen, setPanelMenuOpen] = useState(false);
   const [addProjectMenuOpen, setAddProjectMenuOpen] = useState(false);
+  const [expandedCloneLogs, setExpandedCloneLogs] = useState<Record<string, boolean>>({});
   const [projectMenuProjectId, setProjectMenuProjectId] = useState<string | null>(null);
   const [projectMenuAnchor, setProjectMenuAnchor] = useState<{ x: number; y: number } | null>(null);
   const [threadMenuThreadId, setThreadMenuThreadId] = useState<string | null>(null);
@@ -115,6 +116,13 @@ export function SidebarProjects({
     setThreadMenuThreadId(null);
     setProjectMenuAnchor(anchor ?? null);
     setProjectMenuProjectId(projectId);
+  }
+
+  function toggleCloneLog(taskId: string) {
+    setExpandedCloneLogs((current) => ({
+      ...current,
+      [taskId]: !current[taskId],
+    }));
   }
 
   return (
@@ -240,6 +248,11 @@ export function SidebarProjects({
                   <p className="sidebar-project-substatus">{task.errorMessage || task.detail}</p>
                   {task.status === 'failed' ? (
                     <div className="sidebar-project-task-actions">
+                      {task.rawLog ? (
+                        <button type="button" className="sidebar-task-button" onClick={() => toggleCloneLog(task.id)}>
+                          {expandedCloneLogs[task.id] ? '收起' : '日志'}
+                        </button>
+                      ) : null}
                       <button type="button" className="sidebar-task-button" onClick={() => onRetryCloneTask(task.id)}>
                         <RefreshCw size={12} />
                         重试
@@ -248,6 +261,11 @@ export function SidebarProjects({
                         <X size={12} />
                         移除
                       </button>
+                    </div>
+                  ) : null}
+                  {task.status === 'failed' && task.rawLog && expandedCloneLogs[task.id] ? (
+                    <div className="sidebar-task-log-card">
+                      <pre>{task.rawLog}</pre>
                     </div>
                   ) : null}
                 </div>
