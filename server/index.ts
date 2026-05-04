@@ -61,6 +61,7 @@ import {
 } from './lib/claude-global-prompt.js';
 import { listMcpServers } from './lib/mcp-inspector.js';
 import { listSkills } from './lib/skills-scanner.js';
+import { listSlashCommands } from './lib/slash-commands.js';
 import { selectDirectory } from './lib/system-dialog.js';
 import { cloneRepository, CloneRepositoryError } from './lib/git-clone.js';
 
@@ -196,6 +197,24 @@ app.get('/api/skills', (_request, response) => {
   } catch (error) {
     console.error('读取 Skills 失败', error);
     response.status(500).json({ error: '读取 Skills 失败' });
+  }
+});
+
+app.get('/api/slash-commands', (request, response) => {
+  try {
+    const projectPath =
+      typeof request.query.projectPath === 'string' && request.query.projectPath.trim()
+        ? path.resolve(request.query.projectPath.trim())
+        : projectRoot;
+
+    response.json({
+      commands: listSlashCommands({
+        projectDirectory: projectPath,
+      }),
+    });
+  } catch (error) {
+    console.error('读取 Slash Commands 失败', error);
+    response.status(500).json({ error: '读取 Slash Commands 失败' });
   }
 });
 

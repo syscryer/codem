@@ -459,6 +459,48 @@ export type SkillSummary = {
   source: 'user' | 'plugin' | 'project' | 'system' | 'unknown';
 };
 
+export type SlashCommandSource =
+  | 'builtin'
+  | 'project'
+  | 'user'
+  | 'plugin'
+  | 'skill'
+  | 'mcp'
+  | 'app';
+
+export type SlashCommandAction = 'passthrough' | 'insert-template' | 'local-action';
+
+export type SlashCommandCategory =
+  | 'session'
+  | 'context'
+  | 'system'
+  | 'git'
+  | 'config'
+  | 'workflow'
+  | 'tooling'
+  | 'custom'
+  | 'plugin';
+
+export type SlashCommand = {
+  id: string;
+  name: string;
+  slash: string;
+  title: string;
+  description?: string;
+  source: SlashCommandSource;
+  action: SlashCommandAction;
+  template?: string;
+  argumentHint?: string;
+  sourceLabel?: string;
+  localActionId?: string;
+  category?: SlashCommandCategory;
+  supportsNonInteractive?: boolean;
+};
+
+export type SlashCommandsResponse = {
+  commands: SlashCommand[];
+};
+
 export type SkillScanError = {
   path: string;
   message: string;

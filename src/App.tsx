@@ -496,6 +496,7 @@ export default function App() {
                 onKeyDown={handleComposerKeyDown}
                 onSelectPermissionMode={handlePermissionModeSelect}
                 onSelectModel={setModel}
+                onCreateNewChat={() => void handleCreatePrimaryChat()}
                 onStopRun={() => stopRun(activeThreadId ?? undefined)}
               />
 

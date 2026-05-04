@@ -11,6 +11,7 @@ type PopoverPortalProps = {
   virtualAnchor?: VirtualAnchor | null;
   placement?: Placement;
   offset?: number;
+  matchAnchorWidth?: boolean;
 };
 
 export function PopoverPortal({
@@ -20,6 +21,7 @@ export function PopoverPortal({
   virtualAnchor,
   placement = 'bottom-end',
   offset = 8,
+  matchAnchorWidth = false,
 }: PopoverPortalProps) {
   const portalRef = useRef<HTMLDivElement>(null);
 
@@ -48,6 +50,7 @@ export function PopoverPortal({
 
       const rect = anchor.getBoundingClientRect();
       const style = portal.style;
+      style.width = matchAnchorWidth ? `${rect.width}px` : '';
       const mw = portal.offsetWidth;
       const mh = portal.offsetHeight;
       const vw = window.innerWidth;
@@ -94,7 +97,7 @@ export function PopoverPortal({
       window.removeEventListener('scroll', applyPosition, true);
       window.removeEventListener('resize', applyPosition);
     };
-  }, [open, anchorRef, virtualAnchor, placement, offset]);
+  }, [open, anchorRef, virtualAnchor, placement, offset, matchAnchorWidth]);
 
   if (!open) return null;
 

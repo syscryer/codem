@@ -6,13 +6,13 @@ Scope: CodeM Web frontend (`src/**`) and backend bridge (`server/**`)
 
 ## Summary
 
-CodeM will add a unified slash command surface in the composer so users can type `/` at the start of the current line and discover practical commands from multiple sources in one menu. The first version will support built-in commands, project and user Claude custom commands, plugin and skill-derived commands, MCP commands, and CodeM local UI commands.
+CodeM will add a unified slash command surface in the composer so users can type `/` at the start of the current line and discover practical commands from multiple sources in one panel. The first version will support built-in commands, project and user Claude custom commands, plugin and skill-derived commands, MCP commands, and CodeM local UI commands.
 
-The product should feel like Claude Code's slash command entry while still fitting CodeM's existing workspace and thread model. The design keeps command discovery and command execution separate: the UI presents a unified menu, while execution is routed according to each command's declared action mode.
+The product should feel like a command palette instead of a raw list. The design keeps command discovery and command execution separate: the UI presents one coherent panel, while execution is routed according to each command's declared action mode.
 
 ## Goals
 
-- Provide one practical `/` menu in the composer instead of separate command entry paths.
+- Provide one practical `/` command panel in the composer instead of separate command entry paths.
 - Support useful command sources in a single registry:
   - built-in commands
   - project `.claude/commands`
@@ -39,7 +39,7 @@ The product should feel like Claude Code's slash command entry while still fitti
 
 ### User Experience
 
-When the user types `/` at the start of the current line in the composer, CodeM opens a lightweight command menu above the input. The menu supports keyboard and mouse navigation, shows a short description for each command, and groups commands by source.
+When the user types `/` at the start of the current line in the composer, CodeM opens a lightweight command panel above the input. The panel uses a single scrollable column, with one row per command, a left icon, a primary label, and a muted description or hint on the same line when space allows.
 
 The user flow depends on command type:
 
@@ -239,15 +239,13 @@ Later candidates:
 
 ## Information Architecture
 
-The menu groups commands by source to keep the list legible without turning grouping into the main focus.
+The panel keeps grouping subtle and secondary. The primary reading order is by action relevance, not raw source:
 
-Initial group order:
-
-1. Built-in
-2. Project and user commands
-3. Plugins and skills
-4. MCP
-5. CodeM
+1. CodeM local actions
+2. Built-in Claude passthrough commands
+3. Project and user commands
+4. Templates from skills and plugins
+5. MCP passthrough entries
 
 Within each group, commands sort alphabetically. A future version may add recent or pinned commands, but the first version keeps ordering deterministic.
 
@@ -283,6 +281,13 @@ type SlashMenuState = {
 - `Enter` selects
 - `Escape` closes
 - Mouse click selects
+- The panel should look like a command palette:
+  - rounded floating container
+  - single scrollable list
+  - icon on the left of each row
+  - bold primary label with muted description
+  - selected row highlighted with a soft background
+  - no nested cards or heavy chrome
 
 Selection behavior:
 
@@ -431,6 +436,7 @@ The menu should never fail closed just because one source is malformed.
   - insert-template
   - local-action
 - standalone spike script
+- command-palette style presentation with icons, descriptions, and scrolling
 
 ### Explicitly excluded
 
@@ -448,7 +454,7 @@ Mitigation: require all sources to normalize into one schema before the frontend
 
 ### Risk: Composer behavior becomes cluttered
 
-Mitigation: keep detection and presentation in the composer, but keep execution routing outside the menu component.
+Mitigation: keep detection and presentation in the composer, but keep execution routing outside the menu component. Keep the panel visually thin and avoid nested interaction modes.
 
 ### Risk: Plugin and skill commands are too loose to trust
 

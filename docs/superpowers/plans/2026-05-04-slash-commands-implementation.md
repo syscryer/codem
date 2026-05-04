@@ -36,7 +36,7 @@
 **Files:**
 - Create: `scripts/slash-commands-spike.mjs`
 
-- [ ] **Step 1: Define the normalized command shape in the spike**
+- [x] **Step 1: Define the normalized command shape in the spike**
 
 Create a small internal schema that matches the approved design:
 
@@ -46,7 +46,7 @@ Create a small internal schema that matches the approved design:
 
 The spike should not import app code yet. Keep it independent so it can validate feasibility without app coupling.
 
-- [ ] **Step 2: Load all first-version command sources in the spike**
+- [x] **Step 2: Load all first-version command sources in the spike**
 
 The spike must inspect:
 
@@ -59,7 +59,7 @@ The spike must inspect:
 
 Expected: command groups print even when one source is missing.
 
-- [ ] **Step 3: Print grouped output and sample templates**
+- [x] **Step 3: Print grouped output and sample templates**
 
 Add grouped console output by source plus a short preview for any `insert-template` command.
 
@@ -69,7 +69,7 @@ Suggested run:
 node scripts/slash-commands-spike.mjs --project D:\project\codem
 ```
 
-- [ ] **Step 4: Validate spike behavior manually**
+- [x] **Step 4: Validate spike behavior manually**
 
 Confirm at least these sample mappings:
 
@@ -85,7 +85,7 @@ Expected: grouped normalized output with no fatal crash if optional sources are 
 - Create: `server/lib/slash-commands.ts`
 - Test: `server/lib/slash-commands.test.ts`
 
-- [ ] **Step 1: Write failing backend tests for source aggregation**
+- [x] **Step 1: Write failing backend tests for source aggregation**
 
 Add tests that prove:
 
@@ -103,7 +103,7 @@ node --test --import tsx server/lib/slash-commands.test.ts
 
 Expected: FAIL because the registry does not exist yet.
 
-- [ ] **Step 2: Implement `listBuiltinSlashCommands()`**
+- [x] **Step 2: Implement `listBuiltinSlashCommands()`**
 
 Start with deterministic built-ins such as:
 
@@ -112,7 +112,7 @@ Start with deterministic built-ins such as:
 
 Keep built-ins as plain normalized records, not hard-coded directly in the route.
 
-- [ ] **Step 3: Implement Claude custom command discovery**
+- [x] **Step 3: Implement Claude custom command discovery**
 
 Read:
 
@@ -121,7 +121,7 @@ Read:
 
 Normalize command names from file structure and frontmatter where available. Default these commands to `passthrough`.
 
-- [ ] **Step 4: Implement skill/plugin-derived command discovery**
+- [x] **Step 4: Implement skill/plugin-derived command discovery**
 
 Adapt existing skill scanning data into slash commands. Only emit commands that can map to a valid insertion template in v1.
 
@@ -129,11 +129,11 @@ Expected example:
 
 - `brainstorming` -> `/brainstorming` -> `insert-template`
 
-- [ ] **Step 5: Implement MCP and app/local command discovery**
+- [x] **Step 5: Implement MCP and app/local command discovery**
 
 Expose stable MCP entries for menu visibility and mark them `passthrough`. Add CodeM-local actions such as `/clear` and `/help` as `local-action`.
 
-- [ ] **Step 6: Implement `listSlashCommands(context)`**
+- [x] **Step 6: Implement `listSlashCommands(context)`**
 
 Aggregate all sources, normalize, dedupe by slash name, and keep deterministic ordering.
 
@@ -143,7 +143,7 @@ Registry rules:
 - incomplete skill entries are skipped
 - source and action stay explicitly separated
 
-- [ ] **Step 7: Verify backend registry tests pass**
+- [x] **Step 7: Verify backend registry tests pass**
 
 Run:
 
@@ -158,7 +158,7 @@ Expected: PASS.
 **Files:**
 - Modify: `server/index.ts`
 
-- [ ] **Step 1: Add `GET /api/slash-commands`**
+- [x] **Step 1: Add `GET /api/slash-commands`**
 
 Accept an optional `projectPath` query string so project-level `.claude/commands` can be resolved in the active workspace context.
 
@@ -170,7 +170,7 @@ Response:
 }
 ```
 
-- [ ] **Step 2: Keep route failure isolated**
+- [x] **Step 2: Keep route failure isolated**
 
 If source scanning partially fails, still return successful command results where possible. Only return a hard 500 when the registry itself cannot produce any usable result due to a true internal error.
 
@@ -191,7 +191,7 @@ Expected: command payload includes built-in and local entries even if optional s
 - Create: `src/lib/slash-command-editor.ts`
 - Test: `tests/slash-command-editor.test.ts`
 
-- [ ] **Step 1: Add shared slash command types**
+- [x] **Step 1: Add shared slash command types**
 
 Add frontend types for:
 
@@ -200,7 +200,7 @@ Add frontend types for:
 - `SlashCommand`
 - `SlashCommandResponse`
 
-- [ ] **Step 2: Write failing editor helper tests**
+- [x] **Step 2: Write failing editor helper tests**
 
 Test helpers for:
 
@@ -217,7 +217,7 @@ node --test --import tsx tests/slash-command-editor.test.ts
 
 Expected: FAIL because helpers do not exist yet.
 
-- [ ] **Step 3: Implement editor helpers**
+- [x] **Step 3: Implement editor helpers**
 
 Create small pure helpers for:
 
@@ -227,7 +227,7 @@ Create small pure helpers for:
 
 These helpers should stay DOM-agnostic so they are easy to test.
 
-- [ ] **Step 4: Verify helper tests pass**
+- [x] **Step 4: Verify helper tests pass**
 
 Run:
 
@@ -243,7 +243,7 @@ Expected: PASS.
 - Create: `src/hooks/useSlashCommands.ts`
 - Test: `tests/useSlashCommands.test.ts`
 
-- [ ] **Step 1: Write failing hook tests**
+- [x] **Step 1: Write failing hook tests**
 
 Cover:
 
@@ -260,7 +260,7 @@ node --test --import tsx tests/useSlashCommands.test.ts
 
 Expected: FAIL because the hook does not exist.
 
-- [ ] **Step 2: Implement command loading and local filtering**
+- [x] **Step 2: Implement command loading and local filtering**
 
 The hook should:
 
@@ -285,7 +285,7 @@ Expected: PASS.
 - Create: `src/components/SlashCommandMenu.tsx`
 - Modify: `src/styles.css`
 
-- [ ] **Step 1: Build the lightweight grouped menu**
+- [x] **Step 1: Build the lightweight grouped menu**
 
 Render grouped commands with:
 
@@ -296,7 +296,7 @@ Render grouped commands with:
 
 Keep it visually aligned with existing composer popover language, not a separate command center.
 
-- [ ] **Step 2: Add source grouping and stable item sizing**
+- [x] **Step 2: Add source grouping and stable item sizing**
 
 Groups:
 
@@ -308,7 +308,7 @@ Groups:
 
 Keep rows compact and keyboard-friendly.
 
-- [ ] **Step 3: Add minimal CSS**
+- [x] **Step 3: Add minimal CSS**
 
 Include only the menu container, group label, item row, selected state, and description text. Avoid heavyweight panel styling.
 
@@ -318,7 +318,7 @@ Include only the menu container, group label, item row, selected state, and desc
 - Modify: `src/components/Composer.tsx`
 - Modify: `src/App.tsx`
 
-- [ ] **Step 1: Wire line-start trigger detection into `Composer`**
+- [x] **Step 1: Wire line-start trigger detection into `Composer`**
 
 Use current text and caret position to decide whether slash mode is active.
 
@@ -327,7 +327,7 @@ Rule:
 - only the current line matters
 - `/` must be first non-whitespace token on that line
 
-- [ ] **Step 2: Mount `SlashCommandMenu` above the composer**
+- [x] **Step 2: Mount `SlashCommandMenu` above the composer**
 
 Integrate with keyboard navigation:
 
@@ -342,7 +342,7 @@ Selection behavior:
 - `passthrough` inserts the command text
 - `local-action` marks the draft as a pending local action or dispatches immediately depending on handler shape
 
-- [ ] **Step 3: Preserve existing composer behavior**
+- [x] **Step 3: Preserve existing composer behavior**
 
 Do not break:
 
@@ -357,7 +357,7 @@ Do not break:
 - Create: `src/lib/slash-command-submit.ts`
 - Modify: `src/hooks/useClaudeRun.ts`
 
-- [ ] **Step 1: Create a thin slash submission resolver**
+- [x] **Step 1: Create a thin slash submission resolver**
 
 Handle:
 
@@ -366,7 +366,7 @@ Handle:
 
 For v1, `insert-template` is resolved before send, so submission only needs to handle local actions and normal passthrough text.
 
-- [ ] **Step 2: Add initial local-action handlers**
+- [x] **Step 2: Add initial local-action handlers**
 
 Support at least:
 
@@ -375,7 +375,7 @@ Support at least:
 
 These should not go through `/api/claude/run`.
 
-- [ ] **Step 3: Preserve normal Claude run flow**
+- [x] **Step 3: Preserve normal Claude run flow**
 
 Commands such as `/compact` must continue through the same `useClaudeRun` submission path as any other message text, unless later intentionally specialized.
 
@@ -414,7 +414,7 @@ Assert:
 - backend tests
 - frontend tests
 
-- [ ] **Step 1: Run spike validation**
+- [x] **Step 1: Run spike validation**
 
 ```bash
 node scripts/slash-commands-spike.mjs --project D:\project\codem
@@ -422,7 +422,7 @@ node scripts/slash-commands-spike.mjs --project D:\project\codem
 
 Expected: grouped normalized command output.
 
-- [ ] **Step 2: Run backend tests**
+- [x] **Step 2: Run backend tests**
 
 ```bash
 node --test --import tsx server/lib/slash-commands.test.ts

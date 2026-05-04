@@ -2,10 +2,14 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEventHandler 
 import { ArrowUp, Check, Mic, Plus, Shield, Square, Unlock, X, Zap } from 'lucide-react';
 import { permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
+import { useSlashCommands } from '../hooks/useSlashCommands';
 import { PopoverPortal } from './PopoverPortal';
+import { SlashCommandMenu } from './SlashCommandMenu';
 import { buildPromptWithImageAttachments } from '../lib/composer-attachments';
+import { applySlashCommandSelection, getNextSlashCommandIndex } from '../lib/slash-command-editor';
+import { getSlashDismissResetKey, resolveSlashCommandSubmission } from '../lib/slash-command-submit';
 import { modelLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
-import type { ClaudeModelOption, PermissionMode, UserImageAttachment } from '../types';
+import type { ClaudeModelOption, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingImageAttachment = {
   id: string;
@@ -30,6 +34,7 @@ type ComposerProps = {
   onKeyDown: KeyboardEventHandler<HTMLTextAreaElement>;
   onSelectPermissionMode: (mode: PermissionMode) => void;
   onSelectModel: (model: string) => void;
+  onCreateNewChat: () => Promise<void> | void;
   onStopRun: () => void | Promise<void>;
 };
 
@@ -46,6 +51,7 @@ export function Composer({
   onKeyDown,
   onSelectPermissionMode,
   onSelectModel,
+  onCreateNewChat,
   onStopRun,
 }: ComposerProps) {
   const [draft, setDraft] = useState('');
@@ -55,7 +61,27 @@ export function Composer({
   const permissionMenuRef = useRef<HTMLDivElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerCardRef = useRef<HTMLDivElement | null>(null);
   const attachmentsRef = useRef<PendingImageAttachment[]>([]);
+  const [selectionStart, setSelectionStart] = useState(0);
+  const [selectionEnd, setSelectionEnd] = useState(0);
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
+  const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
+
+  const {
+    commands: slashCommands,
+    filteredCommands,
+    open: slashMenuOpen,
+    loading: slashCommandsLoading,
+    query: slashQuery,
+    context: slashContext,
+  } = useSlashCommands({
+    projectPath: workspace.trim() || undefined,
+    draft,
+    selectionStart,
+    showToast,
+  });
 
   useOutsideDismiss({
     selectors: [
@@ -72,6 +98,14 @@ export function Composer({
   }, [attachments]);
 
   useEffect(() => {
+    setSlashSelectedIndex(0);
+  }, [draft, selectionStart, filteredCommands.length]);
+
+  useEffect(() => {
+    setSlashMenuDismissed(false);
+  }, [getSlashDismissResetKey(slashContext)]);
+
+  useEffect(() => {
     return () => {
       for (const attachment of attachmentsRef.current) {
         URL.revokeObjectURL(attachment.previewUrl);
@@ -83,6 +117,25 @@ export function Composer({
     event.preventDefault();
     const submittedDraft = draft;
     const submittedAttachments = attachments;
+    const localActionResolution = resolveSlashCommandSubmission(submittedDraft, slashCommands);
+
+    if (localActionResolution) {
+      if (localActionResolution.kind === 'clear-thread') {
+        setDraft('');
+        setAttachments([]);
+        setSelectionStart(0);
+        setSelectionEnd(0);
+        await onCreateNewChat();
+        return;
+      }
+
+      if (localActionResolution.kind === 'slash-help') {
+        setDraft('');
+        showToast('Slash 命令支持内建、项目、自定义命令、Skill、MCP 和本地动作。', 'info');
+        return;
+      }
+    }
+
     if (!submittedDraft.trim() && submittedAttachments.length === 0) {
       if (isRunning) {
         await onStopRun();
@@ -169,9 +222,112 @@ export function Composer({
     showToast(`已添加 ${nextAttachments.length} 张图片。`, 'success');
   }
 
+  function updateDraftSelection(nextSelectionStart: number, nextSelectionEnd = nextSelectionStart) {
+    setSelectionStart(nextSelectionStart);
+    setSelectionEnd(nextSelectionEnd);
+
+    window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) {
+        return;
+      }
+
+      textarea.focus();
+      textarea.setSelectionRange(nextSelectionStart, nextSelectionEnd);
+    });
+  }
+
+  function handleDraftChange(nextDraft: string, nextSelectionStartValue?: number, nextSelectionEndValue?: number) {
+    setDraft(nextDraft);
+    setSelectionStart(nextSelectionStartValue ?? nextDraft.length);
+    setSelectionEnd(nextSelectionEndValue ?? nextSelectionStartValue ?? nextDraft.length);
+  }
+
+  async function executeLocalSlashCommand(command: SlashCommand) {
+    setSlashMenuDismissed(true);
+    setDraft('');
+    setSelectionStart(0);
+    setSelectionEnd(0);
+
+    if (command.localActionId === 'clear-thread') {
+      setAttachments([]);
+      await onCreateNewChat();
+      return;
+    }
+
+    if (command.localActionId === 'slash-help') {
+      showToast('Slash 命令支持内建、项目、自定义命令、Skill、MCP 和本地动作。', 'info');
+    }
+  }
+
+  function applySelectedSlashCommand(command = filteredCommands[slashSelectedIndex]) {
+    if (!command || !textareaRef.current) {
+      return;
+    }
+
+    if (command.action === 'local-action') {
+      void executeLocalSlashCommand(command);
+      return;
+    }
+
+    setSlashMenuDismissed(false);
+    const result = applySlashCommandSelection(draft, selectionStart, selectionEnd, command);
+    handleDraftChange(result.text, result.selectionStart, result.selectionEnd);
+    updateDraftSelection(result.selectionStart, result.selectionEnd);
+  }
+
+  function handleComposerInputKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    const slashMenuVisible = slashMenuOpen && !slashMenuDismissed;
+
+    if (slashMenuVisible && filteredCommands.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setSlashSelectedIndex((current) => getNextSlashCommandIndex(current, 'next', filteredCommands.length));
+        return;
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setSlashSelectedIndex((current) => getNextSlashCommandIndex(current, 'previous', filteredCommands.length));
+        return;
+      }
+
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        applySelectedSlashCommand();
+        return;
+      }
+    }
+
+    if (slashMenuVisible && event.key === 'Escape') {
+      event.preventDefault();
+      setSlashMenuDismissed(true);
+      return;
+    }
+
+    onKeyDown(event);
+  }
+
   return (
     <form className="composer" onSubmit={(event) => void handleSubmit(event)}>
-      <div className="composer-card">
+      <div ref={composerCardRef} className="composer-card">
+        <PopoverPortal
+          open={slashMenuOpen && !slashMenuDismissed}
+          anchorRef={composerCardRef}
+          placement="top-start"
+          offset={10}
+          matchAnchorWidth
+        >
+          <SlashCommandMenu
+            commands={filteredCommands}
+            selectedIndex={slashSelectedIndex}
+            loading={slashCommandsLoading}
+            query={slashQuery}
+            onSelect={(command) => {
+              void applySelectedSlashCommand(command);
+            }}
+          />
+        </PopoverPortal>
         {queuedPrompts.length > 0 ? (
           <div className="composer-queued-prompts" aria-label="已排队提示">
             {queuedPrompts.map((prompt, index) => (
@@ -214,11 +370,22 @@ export function Composer({
           </div>
         ) : null}
         <textarea
+          ref={textareaRef}
           className="composer-input"
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) =>
+            handleDraftChange(event.target.value, event.target.selectionStart ?? event.target.value.length, event.target.selectionEnd ?? event.target.value.length)
+          }
+          onClick={(event) => {
+            setSelectionStart(event.currentTarget.selectionStart ?? 0);
+            setSelectionEnd(event.currentTarget.selectionEnd ?? 0);
+          }}
+          onSelect={(event) => {
+            setSelectionStart(event.currentTarget.selectionStart ?? 0);
+            setSelectionEnd(event.currentTarget.selectionEnd ?? 0);
+          }}
           onPaste={(event) => void handlePaste(event)}
-          onKeyDown={onKeyDown}
+          onKeyDown={handleComposerInputKeyDown}
           placeholder={isRunning ? '等待当前回复完成' : '要求后续变更'}
         />
         <div className="composer-toolbar">

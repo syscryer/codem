@@ -1,0 +1,49 @@
+
+> codem@0.1.0 dev
+> concurrently "npm:dev:server" "npm:dev:web"
+
+[dev:server] 
+[dev:server] > codem@0.1.0 dev:server
+[dev:server] > tsx watch server/index.ts
+[dev:server] 
+[dev:web] 
+[dev:web] > codem@0.1.0 dev:web
+[dev:web] > vite
+[dev:web] 
+[dev:web] 
+[dev:web]   [32m[1mVITE[22m v7.3.2[39m  [2mready in [0m[1m267[22m[2m[0m ms[22m
+[dev:web] 
+[dev:web]   [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5173[22m/[39m
+[dev:server] CodeM bridge listening at http://127.0.0.1:3001
+[dev:server] 16:33:26 [tsx] change in ./server\lib\slash-commands.ts Restarting...
+[dev:server] cCodeM bridge listening at http://127.0.0.1:3001
+[dev:web] [2m16:48:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.tsx[22m
+[dev:web] [2m16:48:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/Composer.tsx[22m
+[dev:web] [2m16:48:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles.css[22m
+[dev:server] 16:48:33 [tsx] unlink in ./server\index.ts Restarting...
+[dev:server] cCodeM bridge listening at http://127.0.0.1:3001
+[dev:web] [2m16:53:40[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc-tauri/target/release/build/codem-10f39ae4bb87dbda/out/tauri-codegen-assets/18dd104b89366a9a04587ba9e48f33e1c53d5166204ae01ef4a7bcde285d00d0.html[22m
+[dev:web] [2m17:55:09[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/lib/slash-command-editor.ts[22m
+[dev:web] [2m17:56:01[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/Composer.tsx[22m
+[dev:web] [2m17:56:32[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/Composer.tsx[22m
+[dev:web] [2m17:56:55[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles.css[22m
+[dev:server] 17:59:01 [tsx] change in ./server\index.ts Restarting...
+[dev:server] cCodeM bridge listening at http://127.0.0.1:3001
+[dev:web] [2m18:15:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/Composer.tsx[22m
+[dev:web] [2m18:15:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/Composer.tsx[22m
+[dev:web] [2m18:15:41[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.tsx[22m
+[dev:web] [2m18:27:43[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/Composer.tsx[22m
+[dev:web] [2m18:31:13[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/SlashCommandMenu.tsx[22m
+[dev:web] [2m18:32:14[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/PopoverPortal.tsx[22m
+[dev:web] [2m18:32:21[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/Composer.tsx[22m
+[dev:web] [2m18:32:26[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles.css[22m
+[dev:server] 22:34:02 [tsx] change in ./server\lib\slash-commands.ts Restarting...
+[dev:server] cCodeM bridge listening at http://127.0.0.1:3001
+[dev:server] 22:41:15 [tsx] change in ./server\lib\slash-commands.ts Rerunning...
+[dev:server] cCodeM bridge listening at http://127.0.0.1:3001
+[dev:server] 22:42:56 [tsx] change in ./server\lib\slash-commands.ts Restarting...
+[dev:server] cCodeM bridge listening at http://127.0.0.1:3001
+[dev:server] 01:13:45 [tsx] change in ./server\lib\slash-commands.ts Rerunning...
+[dev:server] cCodeM bridge listening at http://127.0.0.1:3001
+[dev:server] 01:15:02 [tsx] change in ./server\lib\slash-commands.ts Restarting...
+[dev:server] cCodeM bridge listening at http://127.0.0.1:3001
