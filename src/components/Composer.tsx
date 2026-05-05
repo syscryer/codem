@@ -3,13 +3,15 @@ import { ArrowUp, Check, Mic, Plus, Shield, Square, Unlock, X, Zap } from 'lucid
 import { permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
+import { buildComposerContextUsage } from '../lib/composer-context-usage';
 import { PopoverPortal } from './PopoverPortal';
+import { ComposerContextIndicator } from './ComposerContextIndicator';
 import { SlashCommandMenu } from './SlashCommandMenu';
 import { buildPromptWithImageAttachments } from '../lib/composer-attachments';
 import { applySlashCommandSelection, getNextSlashCommandIndex } from '../lib/slash-command-editor';
 import { getSlashDismissResetKey, resolveSlashCommandSubmission } from '../lib/slash-command-submit';
 import { modelLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
-import type { ClaudeModelOption, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
+import type { AgentType, ClaudeModelOption, ConversationTurn, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingImageAttachment = {
   id: string;
@@ -18,10 +20,12 @@ type PendingImageAttachment = {
 };
 
 type ComposerProps = {
+  agent: AgentType;
   workspace: string;
   permissionMode: PermissionMode;
   model: string;
   models: ClaudeModelOption[];
+  turns: ConversationTurn[];
   isRunning: boolean;
   queuedPrompts: Array<{ id: string; displayText: string; createdAtMs: number }>;
   onSubmitPrompt: (submission: {
@@ -36,14 +40,16 @@ type ComposerProps = {
   onSelectModel: (model: string) => void;
   onCreateNewChat: () => Promise<void> | void;
   onStopRun: () => void | Promise<void>;
-  onShowStatus: () => void;
+  onRunSlashSystemCommand: (command: SlashCommand, submittedText: string) => Promise<void> | void;
 };
 
 export function Composer({
+  agent,
   workspace,
   permissionMode,
   model,
   models,
+  turns,
   isRunning,
   queuedPrompts,
   onSubmitPrompt,
@@ -54,7 +60,7 @@ export function Composer({
   onSelectModel,
   onCreateNewChat,
   onStopRun,
-  onShowStatus,
+  onRunSlashSystemCommand,
 }: ComposerProps) {
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<PendingImageAttachment[]>([]);
@@ -80,6 +86,7 @@ export function Composer({
     context: slashContext,
   } = useSlashCommands({
     projectPath: workspace.trim() || undefined,
+    activeAgent: agent,
     draft,
     selectionStart,
     showToast,
@@ -94,6 +101,7 @@ export function Composer({
   const hasDraft = Boolean(draft.trim());
   const hasPendingContent = hasDraft || attachments.length > 0;
   const showStopButton = isRunning && !hasPendingContent;
+  const contextUsage = buildComposerContextUsage({ agent, model, turns });
 
   useEffect(() => {
     attachmentsRef.current = attachments;
@@ -122,32 +130,19 @@ export function Composer({
     const localActionResolution = resolveSlashCommandSubmission(submittedDraft, slashCommands);
 
     if (localActionResolution) {
+      disposeAttachmentPreviews(submittedAttachments);
+      setDraft('');
+      setAttachments([]);
+      setSelectionStart(0);
+      setSelectionEnd(0);
+
       if (localActionResolution.kind === 'clear-thread') {
-        setDraft('');
-        setAttachments([]);
-        setSelectionStart(0);
-        setSelectionEnd(0);
         await onCreateNewChat();
         return;
       }
 
-      if (localActionResolution.kind === 'slash-help') {
-        setDraft('');
-        showToast('Slash 命令支持内建、项目、自定义命令、Skill、MCP 和本地动作。', 'info');
-        return;
-      }
-
-      if (localActionResolution.kind === 'show-status') {
-        setDraft('');
-        onShowStatus();
-        return;
-      }
-
-      if (localActionResolution.kind === 'not-implemented') {
-        setDraft('');
-        showToast(`${localActionResolution.command.slash} 暂未实现,后续版本将提供本地行为。`, 'info');
-        return;
-      }
+      await onRunSlashSystemCommand(localActionResolution.command, submittedDraft.trim());
+      return;
     }
 
     if (!submittedDraft.trim() && submittedAttachments.length === 0) {
@@ -190,9 +185,7 @@ export function Composer({
       return;
     }
 
-    for (const attachment of submittedAttachments) {
-      URL.revokeObjectURL(attachment.previewUrl);
-    }
+    disposeAttachmentPreviews(submittedAttachments);
   }
 
   function removeAttachment(attachmentId: string) {
@@ -259,29 +252,18 @@ export function Composer({
 
   async function executeLocalSlashCommand(command: SlashCommand) {
     setSlashMenuDismissed(true);
+    disposeAttachmentPreviews(attachmentsRef.current);
     setDraft('');
+    setAttachments([]);
     setSelectionStart(0);
     setSelectionEnd(0);
 
     if (command.localActionId === 'clear-thread') {
-      setAttachments([]);
       await onCreateNewChat();
       return;
     }
 
-    if (command.localActionId === 'slash-help') {
-      showToast('Slash 命令支持内建、项目、自定义命令、Skill、MCP 和本地动作。', 'info');
-      return;
-    }
-
-    if (command.localActionId === 'show-status') {
-      onShowStatus();
-      return;
-    }
-
-    if (command.localActionId === 'not-implemented') {
-      showToast(`${command.slash} 暂未实现,后续版本将提供本地行为。`, 'info');
-    }
+    await onRunSlashSystemCommand(command, command.slash);
   }
 
   function applySelectedSlashCommand(command = filteredCommands[slashSelectedIndex]) {
@@ -500,6 +482,7 @@ export function Composer({
                 <span className="model-trigger-chevron" aria-hidden="true" />
               </button>
             </div>
+            <ComposerContextIndicator usage={contextUsage} />
             <button type="button" className="plain-icon"><Mic size={15} /></button>
             {showStopButton ? (
               <button type="button" className="send-button stop" onClick={() => void onStopRun()} title="停止">
@@ -600,6 +583,12 @@ function formatAttachmentSize(size: number) {
     return `${(size / 1024).toFixed(1)} KB`;
   }
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function disposeAttachmentPreviews(attachments: PendingImageAttachment[]) {
+  for (const attachment of attachments) {
+    URL.revokeObjectURL(attachment.previewUrl);
+  }
 }
 
 function PermissionModeIcon({ mode, size }: { mode: PermissionMode; size: number }) {

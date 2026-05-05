@@ -15,7 +15,14 @@ import { WorkspaceStatus } from './components/WorkspaceStatus';
 import { useClaudeRun } from './hooks/useClaudeRun';
 import { useAppSettings } from './hooks/useAppSettings';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
+import {
+  buildCompactSlashCommandSubmission,
+  buildContextSlashCardResult,
+  buildCostSlashCardResult,
+  buildStatusSlashCardResult,
+} from './lib/claude-slash-system-commands';
 import { matchesShortcut } from './lib/shortcuts';
+import { createSystemCommandItem, settleSystemCommandItem } from './lib/system-command-items';
 import { modelLabel, permissionLabel } from './lib/ui-labels';
 import { isTauriRuntime, setWindowMaterial } from './lib/window-material';
 import type {
@@ -25,8 +32,10 @@ import type {
   RequestUserInputRequest,
   RuntimeSuggestedAction,
   RightWorkbenchTab,
+  SlashCommand,
   WorkbenchFileScope,
   SettingsSection,
+  SystemCommandItem,
   ThreadDetail,
   ThreadSummary,
   ToolStep,
@@ -132,6 +141,7 @@ export default function App() {
     setModel,
     handlePermissionModeSelect,
     submitPrompt,
+    submitPromptToThread,
     submitRequestUserInput,
     submitRuntimeRecoveryAction,
     submitApprovalDecision,
@@ -288,24 +298,128 @@ export default function App() {
     await handleCreateThread(activeProjectId);
   }
 
-  function handleShowStatus() {
-    // /status 本地实现:汇总当前 workspace / 项目 / 线程 / 模型 / 权限 / 会话 / 运行状态,
-    // 用 toast 多行展示;不消耗 Claude token,不依赖 CLI 行为
-    const lines: string[] = [];
-    lines.push(`项目: ${activeProject?.name ?? '(未选择)'}`);
-    lines.push(`目录: ${workspace || '(未设置)'}`);
-    lines.push(`线程: ${activeThread?.title ?? '(未选择)'}`);
-    lines.push(`模型: ${modelLabel(model)}`);
-    lines.push(`权限: ${permissionLabel(permissionMode)}`);
-    if (activeThread?.sessionId) {
-      lines.push(`Session: ${activeThread.sessionId}`);
+  async function ensureSlashCommandThread() {
+    if (activeThreadSummary) {
+      return activeThreadSummary;
     }
-    const running = Boolean(activeThreadId && runningThreadIds.includes(activeThreadId));
-    lines.push(`运行中: ${running ? '是' : '否'}`);
-    lines.push(
-      `Claude CLI: ${health.available ? `就绪 (${health.command ?? 'unknown'})` : `不可用${health.error ? ` - ${health.error}` : ''}`}`,
+
+    if (!activeProjectId) {
+      await handlePickProjectDirectory();
+      showToast('先添加一个项目目录，再开始新聊天。', 'info');
+      return null;
+    }
+
+    try {
+      return await createThread(activeProjectId, undefined, { showToast: false });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '新建聊天失败', 'error');
+      return null;
+    }
+  }
+
+  function appendSystemCommandTurn(
+    thread: ThreadSummary,
+    submittedText: string,
+    item: SystemCommandItem,
+  ) {
+    const turnId = crypto.randomUUID();
+    updateThreadDetail(
+      thread.id,
+      (existing) => ({
+        ...existing,
+        turns: [
+          ...existing.turns,
+          {
+            id: turnId,
+            userText: submittedText,
+            workspace: thread.workingDirectory || workspace,
+            assistantText: '',
+            tools: [],
+            items: [item],
+            status: item.state === 'error' ? 'error' : item.state === 'running' ? 'running' : 'done',
+            activity: item.state === 'error' ? (item.errorMessage || '命令执行失败') : '命令已完成',
+            startedAtMs: Date.now(),
+            pendingUserInputRequests: [],
+            pendingApprovalRequests: [],
+          },
+        ],
+      }),
+      thread,
     );
-    showToast(lines.join('\n'), 'info', 8000);
+    schedulePersistThreadHistory(thread.id);
+    return turnId;
+  }
+
+  async function handleRunSlashSystemCommand(command: SlashCommand, submittedText: string) {
+    const thread = await ensureSlashCommandThread();
+    if (!thread) {
+      return;
+    }
+
+    const threadDetail = activeThread?.id === thread.id ? activeThread : null;
+    const turns = threadDetail?.turns ?? [];
+
+    if (command.localActionId === 'show-status') {
+      const result = buildStatusSlashCardResult({
+        projectName: activeProject?.name,
+        threadTitle: threadDetail?.title ?? thread.title,
+        workspace: workspace || thread.workingDirectory,
+        modelLabel: modelLabel(models.find((item) => item.id === model) ?? model),
+        permissionLabel: permissionLabel(permissionMode),
+        sessionId: threadDetail?.sessionId ?? thread.sessionId,
+        isRunning: Boolean(activeThreadId && runningThreadIds.includes(activeThreadId) && thread.id === activeThreadId),
+        cliHealth: health,
+        turns,
+      });
+      appendSystemCommandTurn(
+        thread,
+        submittedText,
+        settleSystemCommandItem(createSystemCommandItem(submittedText, result.title, result.cardType), {
+          state: 'done',
+          summary: result.summary,
+          details: result.details,
+          errorMessage: undefined,
+        }),
+      );
+      return;
+    }
+
+    if (command.localActionId === 'show-context') {
+      const result = buildContextSlashCardResult({ turns });
+      appendSystemCommandTurn(
+        thread,
+        submittedText,
+        settleSystemCommandItem(createSystemCommandItem(submittedText, result.title, result.cardType), {
+          state: 'done',
+          summary: result.summary,
+          details: result.details,
+          errorMessage: undefined,
+        }),
+      );
+      return;
+    }
+
+    if (command.localActionId === 'show-cost') {
+      const result = buildCostSlashCardResult({ turns });
+      appendSystemCommandTurn(
+        thread,
+        submittedText,
+        settleSystemCommandItem(createSystemCommandItem(submittedText, result.title, result.cardType), {
+          state: 'done',
+          summary: result.summary,
+          details: result.details,
+          errorMessage: undefined,
+        }),
+      );
+      return;
+    }
+
+    if (command.localActionId === 'compact-thread') {
+      await submitPromptToThread(thread, buildCompactSlashCommandSubmission(submittedText));
+      return;
+    }
+
+    showToast(`不支持的命令：${command.slash}`, 'error');
   }
 
   function openSettings(section: SettingsSection = 'appearance') {
@@ -506,10 +620,12 @@ export default function App() {
               <CurrentTaskDock activeThread={activeThread} />
 
               <Composer
+                agent="claude"
                 workspace={workspace}
                 permissionMode={permissionMode}
                 model={model}
                 models={models}
+                turns={activeThread?.turns ?? []}
                 isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
                 queuedPrompts={queuedPrompts}
                 onSubmitPrompt={submitPrompt}
@@ -520,7 +636,7 @@ export default function App() {
                 onSelectModel={setModel}
                 onCreateNewChat={() => void handleCreatePrimaryChat()}
                 onStopRun={() => stopRun(activeThreadId ?? undefined)}
-                onShowStatus={handleShowStatus}
+                onRunSlashSystemCommand={handleRunSlashSystemCommand}
               />
 
               <WorkspaceStatus
