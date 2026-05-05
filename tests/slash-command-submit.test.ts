@@ -70,6 +70,53 @@ test('resolveSlashCommandSubmission maps slash-help to a dedicated local action 
   });
 });
 
+test('resolveSlashCommandSubmission maps show-status to a dedicated local action kind', () => {
+  const commands: SlashCommand[] = [
+    ...sampleCommands,
+    {
+      id: 'builtin:/status',
+      name: 'status',
+      slash: '/status',
+      title: 'Status',
+      description: '显示当前项目、模型、权限模式和会话信息。',
+      source: 'builtin',
+      action: 'local-action',
+      sourceLabel: 'CodeM',
+      localActionId: 'show-status',
+    },
+  ];
+
+  const resolution = resolveSlashCommandSubmission('/status', commands);
+
+  assert.deepEqual(resolution, {
+    kind: 'show-status',
+    command: commands[2],
+  });
+});
+
+test('resolveSlashCommandSubmission falls back to not-implemented for unknown localActionId', () => {
+  const commands: SlashCommand[] = [
+    {
+      id: 'builtin:/cost',
+      name: 'cost',
+      slash: '/cost',
+      title: 'Token Cost',
+      description: '查看 Token 使用统计。',
+      source: 'builtin',
+      action: 'local-action',
+      sourceLabel: 'Claude Code',
+      localActionId: 'not-implemented',
+    },
+  ];
+
+  const resolution = resolveSlashCommandSubmission('/cost', commands);
+
+  assert.deepEqual(resolution, {
+    kind: 'not-implemented',
+    command: commands[0],
+  });
+});
+
 test('getSlashDismissResetKey depends on the slash command identity, not the current line end', () => {
   assert.equal(getSlashDismissResetKey({ lineStart: 12, commandText: '/brain' }), '12:/brain');
   assert.equal(getSlashDismissResetKey(null), '');

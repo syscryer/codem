@@ -569,4 +569,5 @@ export type ToastState = {
   id: string;
   message: string;
   tone: 'success' | 'error' | 'info';
+  durationMs?: number;
 };

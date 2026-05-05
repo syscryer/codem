@@ -92,7 +92,7 @@ export function useWorkspaceState() {
 
     const timer = window.setTimeout(() => {
       setToast((current) => (current?.id === toast.id ? null : current));
-    }, 2200);
+    }, toast.durationMs ?? 2200);
 
     return () => window.clearTimeout(timer);
   }, [toast]);
@@ -137,11 +137,12 @@ export function useWorkspaceState() {
     });
   }
 
-  function showToast(message: string, tone: ToastState['tone'] = 'success') {
+  function showToast(message: string, tone: ToastState['tone'] = 'success', durationMs?: number) {
     setToast({
       id: crypto.randomUUID(),
       message,
       tone,
+      durationMs,
     });
   }
 

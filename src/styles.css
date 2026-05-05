@@ -4848,6 +4848,7 @@ svg {
   color: #ffffff;
   font-size: 13px;
   line-height: 1.5;
+  white-space: pre-line;
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.18);
 }
 

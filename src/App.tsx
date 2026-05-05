@@ -16,6 +16,7 @@ import { useClaudeRun } from './hooks/useClaudeRun';
 import { useAppSettings } from './hooks/useAppSettings';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
 import { matchesShortcut } from './lib/shortcuts';
+import { modelLabel, permissionLabel } from './lib/ui-labels';
 import { isTauriRuntime, setWindowMaterial } from './lib/window-material';
 import type {
   ApprovalDecision,
@@ -121,6 +122,7 @@ export default function App() {
     model,
     models,
     claudeModels,
+    health,
     isRunning,
     runningThreadIds,
     activeTurnIdsByThreadId,
@@ -284,6 +286,26 @@ export default function App() {
     }
 
     await handleCreateThread(activeProjectId);
+  }
+
+  function handleShowStatus() {
+    // /status 本地实现:汇总当前 workspace / 项目 / 线程 / 模型 / 权限 / 会话 / 运行状态,
+    // 用 toast 多行展示;不消耗 Claude token,不依赖 CLI 行为
+    const lines: string[] = [];
+    lines.push(`项目: ${activeProject?.name ?? '(未选择)'}`);
+    lines.push(`目录: ${workspace || '(未设置)'}`);
+    lines.push(`线程: ${activeThread?.title ?? '(未选择)'}`);
+    lines.push(`模型: ${modelLabel(model)}`);
+    lines.push(`权限: ${permissionLabel(permissionMode)}`);
+    if (activeThread?.sessionId) {
+      lines.push(`Session: ${activeThread.sessionId}`);
+    }
+    const running = Boolean(activeThreadId && runningThreadIds.includes(activeThreadId));
+    lines.push(`运行中: ${running ? '是' : '否'}`);
+    lines.push(
+      `Claude CLI: ${health.available ? `就绪 (${health.command ?? 'unknown'})` : `不可用${health.error ? ` - ${health.error}` : ''}`}`,
+    );
+    showToast(lines.join('\n'), 'info', 8000);
   }
 
   function openSettings(section: SettingsSection = 'appearance') {
@@ -498,6 +520,7 @@ export default function App() {
                 onSelectModel={setModel}
                 onCreateNewChat={() => void handleCreatePrimaryChat()}
                 onStopRun={() => stopRun(activeThreadId ?? undefined)}
+                onShowStatus={handleShowStatus}
               />
 
               <WorkspaceStatus

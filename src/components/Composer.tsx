@@ -36,6 +36,7 @@ type ComposerProps = {
   onSelectModel: (model: string) => void;
   onCreateNewChat: () => Promise<void> | void;
   onStopRun: () => void | Promise<void>;
+  onShowStatus: () => void;
 };
 
 export function Composer({
@@ -53,6 +54,7 @@ export function Composer({
   onSelectModel,
   onCreateNewChat,
   onStopRun,
+  onShowStatus,
 }: ComposerProps) {
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<PendingImageAttachment[]>([]);
@@ -132,6 +134,12 @@ export function Composer({
       if (localActionResolution.kind === 'slash-help') {
         setDraft('');
         showToast('Slash 命令支持内建、项目、自定义命令、Skill、MCP 和本地动作。', 'info');
+        return;
+      }
+
+      if (localActionResolution.kind === 'show-status') {
+        setDraft('');
+        onShowStatus();
         return;
       }
 
@@ -263,6 +271,11 @@ export function Composer({
 
     if (command.localActionId === 'slash-help') {
       showToast('Slash 命令支持内建、项目、自定义命令、Skill、MCP 和本地动作。', 'info');
+      return;
+    }
+
+    if (command.localActionId === 'show-status') {
+      onShowStatus();
       return;
     }
 

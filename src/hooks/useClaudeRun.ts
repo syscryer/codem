@@ -157,7 +157,7 @@ export function useClaudeRun({
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode);
   const [model, setModelState] = useState(DEFAULT_MODEL_VALUE);
   const [claudeModels, setClaudeModels] = useState<ClaudeModelInfo>({ available: false, models: [] });
-  const [, setHealth] = useState<{ available: boolean; command?: string; error?: string }>({
+  const [health, setHealth] = useState<{ available: boolean; command?: string; error?: string }>({
     available: false,
   });
   const [activeRunsByThreadId, setActiveRunsByThreadId] = useState<Record<string, ActiveRunView>>({});
@@ -1622,6 +1622,7 @@ export function useClaudeRun({
     model,
     models,
     claudeModels,
+    health,
     backendRunId,
     isRunning,
     runningThreadId,

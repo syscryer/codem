@@ -3,7 +3,7 @@ import type { SlashLineContext } from './slash-command-editor';
 
 export type SlashSubmissionResolution =
   | {
-      kind: 'clear-thread' | 'slash-help' | 'not-implemented';
+      kind: 'clear-thread' | 'slash-help' | 'show-status' | 'not-implemented';
       command: SlashCommand;
     }
   | null;
@@ -30,6 +30,9 @@ export function resolveSlashCommandSubmission(
   }
   if (command.localActionId === 'slash-help') {
     return { kind: 'slash-help', command };
+  }
+  if (command.localActionId === 'show-status') {
+    return { kind: 'show-status', command };
   }
   return { kind: 'not-implemented', command };
 }
