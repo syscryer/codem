@@ -19,10 +19,24 @@ test('listSlashCommands always returns built-in and app commands', () => {
   withTemporaryDirectory((homeDirectory) => {
     const commands = listSlashCommands({ homeDirectory });
 
-    assert.ok(commands.some((command) => command.slash === '/compact' && command.source === 'builtin'));
-    assert.ok(commands.some((command) => command.slash === '/review' && command.source === 'builtin'));
+    assert.ok(commands.some((command) => command.slash === '/status' && command.source === 'builtin'));
     assert.ok(commands.some((command) => command.slash === '/clear' && command.source === 'app'));
     assert.ok(commands.some((command) => command.slash === '/help' && command.source === 'app'));
+  });
+});
+
+test('listSlashCommands does not expose unimplemented builtin commands', () => {
+  withTemporaryDirectory((homeDirectory) => {
+    const commands = listSlashCommands({ homeDirectory });
+
+    assert.equal(
+      commands.some(
+        (command) => command.source === 'builtin' && command.action === 'local-action' && command.localActionId === 'not-implemented',
+      ),
+      false,
+    );
+    assert.equal(commands.some((command) => command.slash === '/compact'), false);
+    assert.equal(commands.some((command) => command.slash === '/review'), false);
   });
 });
 
@@ -130,7 +144,7 @@ test('listSlashCommands exposes MCP passthrough prefixes', () => {
   });
 });
 
-test('listSlashCommands keeps reserved commands when custom sources collide', () => {
+test('listSlashCommands allows custom sources to use builtin names that are not locally implemented', () => {
   withTemporaryDirectory((homeDirectory) => {
     mkdirSync(path.join(homeDirectory, '.claude', 'commands'), { recursive: true });
     writeFileSync(
@@ -143,8 +157,8 @@ test('listSlashCommands keeps reserved commands when custom sources collide', ()
     const compact = commands.find((command) => command.slash === '/compact');
 
     assert.ok(compact);
-    assert.equal(compact?.source, 'builtin');
-    assert.equal(compact?.description, '把当前 Claude 会话压缩成更短的上下文。');
+    assert.equal(compact?.source, 'user');
+    assert.equal(compact?.description, 'Custom compact');
   });
 });
 
