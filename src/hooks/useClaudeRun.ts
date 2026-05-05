@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_MODEL_VALUE, permissionMenuModes } from '../constants';
+import { normalizeSessionId, resolvePromptSubmissionSessionId } from '../lib/claude-run-session';
 import {
   appendThinkingItem,
   appendTextItem,
@@ -29,6 +30,7 @@ import {
   upsertToolStepDeep,
 } from '../lib/conversation';
 import type {
+  AssistantItem,
   ApprovalDecision,
   ApprovalRequest,
   ClaudeEvent,
@@ -98,6 +100,9 @@ type QueuedPrompt = {
   prompt: string;
   displayText: string;
   attachments?: UserImageAttachment[];
+  initialAssistantItems?: AssistantItem[];
+  initialActivity?: string;
+  reuseSession?: boolean;
   createdAtMs: number;
 };
 
@@ -105,6 +110,9 @@ type PromptSubmission = {
   prompt: string;
   displayText: string;
   attachments?: UserImageAttachment[];
+  initialAssistantItems?: AssistantItem[];
+  initialActivity?: string;
+  reuseSession?: boolean;
 };
 
 type UseClaudeRunArgs = {
@@ -416,6 +424,9 @@ export function useClaudeRun({
       prompt: submission.prompt,
       displayText: submission.displayText,
       attachments: submission.attachments,
+      initialAssistantItems: submission.initialAssistantItems,
+      initialActivity: submission.initialActivity,
+      reuseSession: submission.reuseSession,
       createdAtMs: Date.now(),
     };
     threadSummariesByIdRef.current.set(thread.id, thread);
@@ -500,9 +511,11 @@ export function useClaudeRun({
     window.setTimeout(() => {
       void startRun(thread, nextPrompt.prompt, {
         workingDirectory: thread.workingDirectory,
-        sessionId: normalizeSessionId(thread.sessionId),
+        sessionId: resolvePromptSubmissionSessionId(thread.sessionId, nextPrompt.reuseSession !== false),
         displayText: nextPrompt.displayText,
         attachments: nextPrompt.attachments,
+        initialAssistantItems: nextPrompt.initialAssistantItems,
+        initialActivity: nextPrompt.initialActivity,
       }).then((started) => {
         if (started) {
           showToast('已发送排队提示。', 'success');
@@ -591,6 +604,8 @@ export function useClaudeRun({
       sessionId?: string;
       displayText?: string;
       attachments?: UserImageAttachment[];
+      initialAssistantItems?: AssistantItem[];
+      initialActivity?: string;
       permissionModeOverride?: PermissionMode;
       toolResult?: {
         requestId: string;
@@ -645,9 +660,9 @@ export function useClaudeRun({
             workspace: runWorkingDirectory,
             assistantText: '',
             tools: [],
-            items: [],
+            items: options?.initialAssistantItems ?? [],
             status: 'pending',
-            activity: '等待 Claude 响应',
+            activity: options?.initialActivity ?? '等待 Claude 响应',
             phase: 'requesting',
             startedAtMs: Date.now(),
             pendingUserInputRequests: [],
@@ -688,6 +703,7 @@ export function useClaudeRun({
         const message = await response.text();
         updateRunningTurn(context, (turn) => ({
           ...turn,
+          items: settleRunningSystemCommandItems(turn.items, 'error', message || '后端没有返回可读流。'),
           status: 'error',
           durationMs: turn.durationMs ?? getElapsedDuration(turn),
           activity: message || '后端没有返回可读流。',
@@ -708,6 +724,15 @@ export function useClaudeRun({
       updateRunningTurn(context, (turn) => ({
         ...turn,
         ...settleRunningToolSteps(turn, error instanceof DOMException && error.name === 'AbortError' ? 'done' : 'error'),
+        items: settleRunningSystemCommandItems(
+          turn.items,
+          'error',
+          error instanceof DOMException && error.name === 'AbortError'
+            ? '上下文压缩已停止。'
+            : error instanceof Error
+              ? error.message
+              : '未知错误',
+        ),
         status: error instanceof DOMException && error.name === 'AbortError' ? 'stopped' : 'error',
         durationMs: turn.durationMs ?? getElapsedDuration(turn),
         activity:
@@ -1210,6 +1235,7 @@ export function useClaudeRun({
       updateRunningTurn(context, (turn) => ({
         ...turn,
         ...settleRunningToolSteps(turn, 'error'),
+        items: settleRunningSystemCommandItems(turn.items, 'error', event.message),
         status: 'error',
         durationMs: turn.durationMs ?? getElapsedDuration(turn),
         activity: formatRuntimeErrorActivity(event.message, turn.recoveryHint),
@@ -1240,7 +1266,10 @@ export function useClaudeRun({
           ...turn,
           ...settleRunningToolSteps(turn, 'done'),
           assistantText,
-          items: turn.items.length > 0 || !event.result.trim() ? turn.items : appendTextItem(turn.items, event.result),
+          items:
+            turn.items.length > 0 || !event.result.trim()
+              ? settleRunningSystemCommandItems(turn.items, 'done')
+              : appendTextItem(settleRunningSystemCommandItems(turn.items, 'done'), event.result),
           activity: '运行完成',
           phase: undefined,
           metrics: formatMetrics(event, turn.tools.length),
@@ -1276,22 +1305,20 @@ export function useClaudeRun({
     }
   }
 
-  async function submitPrompt(submission: PromptSubmission) {
+  async function submitPromptToThread(thread: ThreadSummary, submission: PromptSubmission) {
     const trimmedPrompt = submission.prompt.trim();
     if (!trimmedPrompt) {
       return false;
     }
-
-    const thread = await ensureActiveThread();
-    if (!thread) {
-      return false;
-    }
+    threadSummariesByIdRef.current.set(thread.id, thread);
 
     if (isThreadRunning(thread.id)) {
       enqueuePrompt(thread, {
         prompt: trimmedPrompt,
         displayText: normalizeDisplayText(submission.displayText, ''),
         attachments: submission.attachments,
+        initialAssistantItems: submission.initialAssistantItems,
+        initialActivity: submission.initialActivity,
       });
       showToast('已排队，当前运行完成后会继续发送。', 'success');
       return true;
@@ -1299,10 +1326,21 @@ export function useClaudeRun({
 
     return startRun(thread, trimmedPrompt, {
       workingDirectory: workspace.trim() || thread.workingDirectory,
-      sessionId: normalizeSessionId(thread.sessionId),
+      sessionId: resolvePromptSubmissionSessionId(thread.sessionId, submission.reuseSession !== false),
       displayText: submission.displayText,
       attachments: submission.attachments,
+      initialAssistantItems: submission.initialAssistantItems,
+      initialActivity: submission.initialActivity,
     });
+  }
+
+  async function submitPrompt(submission: PromptSubmission) {
+    const thread = await ensureActiveThread();
+    if (!thread) {
+      return false;
+    }
+
+    return submitPromptToThread(thread, submission);
   }
 
   function handlePermissionModeSelect(mode: PermissionMode) {
@@ -1336,7 +1374,10 @@ export function useClaudeRun({
 
     if (!currentRunId) {
       flushQueuedAssistantTextNow(context);
-      updateRunningTurn(context, closeTurnWithoutTerminalEvent);
+      updateRunningTurn(context, (turn) => ({
+        ...closeTurnWithoutTerminalEvent(turn),
+        items: settleRunningSystemCommandItems(turn.items, 'error', '上下文压缩已停止。'),
+      }));
       schedulePersistThreadHistory(context.threadId);
       removeRunContext(context);
       return;
@@ -1358,6 +1399,7 @@ export function useClaudeRun({
         updateRunningTurn(context, (turn) => ({
           ...turn,
           ...settleRunningToolSteps(turn, 'done'),
+          items: settleRunningSystemCommandItems(turn.items, 'error', '上下文压缩已停止。'),
           status: 'stopped',
           phase: undefined,
           durationMs: turn.durationMs ?? getElapsedDuration(turn),
@@ -1401,6 +1443,7 @@ export function useClaudeRun({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           requestId: request.requestId,
+          questions: request.questions,
           answers,
         }),
       });
@@ -1637,6 +1680,7 @@ export function useClaudeRun({
     setModel: handleModelSelect,
     handlePermissionModeSelect,
     submitPrompt,
+    submitPromptToThread,
     removeQueuedPrompt,
     submitRequestUserInput,
     submitRuntimeRecoveryAction,
@@ -1899,6 +1943,36 @@ function normalizeApprovalDanger(
   return 'low';
 }
 
+function settleRunningSystemCommandItems(
+  items: AssistantItem[],
+  nextState: 'done' | 'error',
+  errorMessage?: string,
+): AssistantItem[] {
+  return items.map<AssistantItem>((item) => {
+    if (item.type !== 'system-command' || item.state !== 'running') {
+      return item;
+    }
+
+    if (nextState === 'done') {
+      return {
+        ...item,
+        state: 'done' as const,
+        summary:
+          item.cardType === 'compact'
+            ? item.summary || '上下文压缩已完成，可以继续当前会话。'
+            : item.summary,
+        errorMessage: undefined,
+      };
+    }
+
+    return {
+      ...item,
+      state: 'error' as const,
+      errorMessage: errorMessage || item.errorMessage || '命令执行失败。',
+    };
+  });
+}
+
 function createRuntimeRecoveryHint(
   message: string,
   source: RuntimeEventSource,
@@ -1967,6 +2041,7 @@ function closeTurnAfterUnexpectedStreamEnd(turn: ConversationTurn): Conversation
   return {
     ...turn,
     ...settleRunningToolSteps(turn, 'error'),
+    items: settleRunningSystemCommandItems(turn.items, 'error', '连接中断，压缩命令未完成。'),
     status: 'error',
     phase: undefined,
     durationMs: turn.durationMs ?? getElapsedDuration(turn),
@@ -2094,10 +2169,6 @@ function isPlanApprovalRequest(request: ApprovalRequest) {
 
 function isVisiblePermissionMode(value: unknown): value is (typeof permissionMenuModes)[number] {
   return isPermissionMode(value) && permissionMenuModes.includes(value as (typeof permissionMenuModes)[number]);
-}
-
-function normalizeSessionId(value: unknown) {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function normalizeDisplayText(displayText: string | undefined, fallback: string) {

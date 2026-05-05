@@ -109,7 +109,13 @@ export function normalizeTurnsForPersist(turns: ConversationTurn[]) {
 export function hasTurnVisibleOutput(turn: ConversationTurn) {
   return Boolean(
     turn.assistantText.trim() ||
-      turn.items.some((item) => (item.type === 'text' ? item.text.trim() : item.type === 'tool')) ||
+      turn.items.some((item) =>
+        item.type === 'text'
+          ? item.text.trim()
+          : item.type === 'tool'
+            ? true
+            : item.type === 'system-command',
+      ) ||
       turn.tools.length > 0 ||
       Boolean(turn.pendingUserInputRequests?.length) ||
       Boolean(turn.pendingApprovalRequests?.length),

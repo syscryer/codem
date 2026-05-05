@@ -3266,6 +3266,12 @@ svg {
   cursor: pointer;
 }
 
+.tool-preview-summary-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .tool-preview-summary-main {
   display: inline-flex;
   align-items: center;
@@ -3345,6 +3351,12 @@ svg {
   font-weight: 520;
 }
 
+.tool-preview-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .tool-preview-stats {
   display: inline-flex;
   align-items: center;
@@ -3360,6 +3372,27 @@ svg {
 
 .tool-preview-del {
   color: #dc2626;
+}
+
+.tool-preview-open-button,
+.tool-preview-link-button {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid #d8dce2;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #3b4a61;
+  font-size: 12px;
+  font-weight: 560;
+  cursor: pointer;
+}
+
+.tool-preview-open-button:hover,
+.tool-preview-link-button:hover {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
 }
 
 .tool-preview-code {
@@ -3448,6 +3481,75 @@ svg {
   border: 1px solid #e7e5e4;
   border-radius: 14px;
   background: #fbfbfa;
+}
+
+.changed-files-summary-card {
+  margin: 0 0 10px;
+  border: 1px solid #ece8e1;
+  border-radius: 12px;
+  background: #fcfbf8;
+  overflow: hidden;
+}
+
+.changed-files-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #ece8e1;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.changed-files-summary-head strong {
+  color: #3f3f46;
+  font-size: 13px;
+}
+
+.changed-files-summary-list {
+  display: grid;
+}
+
+.changed-files-summary-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  padding: 10px 12px;
+  border: 0;
+  border-top: 1px solid rgba(236, 232, 225, 0.85);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.changed-files-summary-row:first-child {
+  border-top: 0;
+}
+
+.changed-files-summary-row:hover {
+  background: rgba(37, 99, 235, 0.05);
+}
+
+.changed-files-summary-name {
+  min-width: 0;
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 560;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.changed-files-summary-path {
+  min-width: 0;
+  color: #7c8591;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .assistant-runtime-card-head {

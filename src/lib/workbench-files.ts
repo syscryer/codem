@@ -1,6 +1,4 @@
-import type { GitFileStatus, ProjectFileEntry } from '../types';
-
-export type WorkbenchPreviewKind = 'code' | 'markdown';
+import type { GitFileStatus, ProjectFileEntry, WorkbenchPreviewKind } from '../types';
 
 export type CodeHighlightSegment = {
   text: string;

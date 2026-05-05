@@ -21,7 +21,9 @@ test('listSlashCommands always returns built-in and app commands', () => {
 
     assert.ok(commands.some((command) => command.slash === '/status' && command.source === 'builtin'));
     assert.ok(commands.some((command) => command.slash === '/clear' && command.source === 'app'));
-    assert.ok(commands.some((command) => command.slash === '/help' && command.source === 'app'));
+    assert.ok(commands.some((command) => command.slash === '/context' && command.source === 'builtin'));
+    assert.ok(commands.some((command) => command.slash === '/cost' && command.source === 'builtin'));
+    assert.ok(commands.some((command) => command.slash === '/compact' && command.source === 'builtin'));
   });
 });
 
@@ -35,8 +37,22 @@ test('listSlashCommands does not expose unimplemented builtin commands', () => {
       ),
       false,
     );
-    assert.equal(commands.some((command) => command.slash === '/compact'), false);
     assert.equal(commands.some((command) => command.slash === '/review'), false);
+    assert.equal(commands.some((command) => command.slash === '/help'), false);
+  });
+});
+
+test('listSlashCommands annotates all visible commands with explicit agent scope', () => {
+  withTemporaryDirectory((homeDirectory) => {
+    const commands = listSlashCommands({ homeDirectory });
+
+    assert.equal(commands.every((command) => Array.isArray(command.agentScope) && command.agentScope.length > 0), true);
+    assert.equal(
+      commands
+        .filter((command) => ['/status', '/compact', '/context', '/cost', '/clear'].includes(command.slash))
+        .every((command) => command.agentScope.includes('claude')),
+      true,
+    );
   });
 });
 
@@ -144,7 +160,7 @@ test('listSlashCommands exposes MCP passthrough prefixes', () => {
   });
 });
 
-test('listSlashCommands allows custom sources to use builtin names that are not locally implemented', () => {
+test('listSlashCommands keeps implemented builtin names reserved against custom collisions', () => {
   withTemporaryDirectory((homeDirectory) => {
     mkdirSync(path.join(homeDirectory, '.claude', 'commands'), { recursive: true });
     writeFileSync(
@@ -157,8 +173,8 @@ test('listSlashCommands allows custom sources to use builtin names that are not 
     const compact = commands.find((command) => command.slash === '/compact');
 
     assert.ok(compact);
-    assert.equal(compact?.source, 'user');
-    assert.equal(compact?.description, 'Custom compact');
+    assert.equal(compact?.source, 'builtin');
+    assert.equal(compact?.localActionId, 'compact-thread');
   });
 });
 

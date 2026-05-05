@@ -19,6 +19,7 @@ const brainstormingCommand: SlashCommand = {
   action: 'insert-template',
   sourceLabel: 'user skill',
   template: '我们先做一轮结构化 brainstorming，再进入实现。',
+  agentScope: ['codex'],
 };
 
 const compactCommand: SlashCommand = {
@@ -30,6 +31,7 @@ const compactCommand: SlashCommand = {
   source: 'builtin',
   action: 'passthrough',
   sourceLabel: 'Claude Code',
+  agentScope: ['claude'],
 };
 
 const clearCommand: SlashCommand = {
@@ -42,6 +44,7 @@ const clearCommand: SlashCommand = {
   action: 'local-action',
   sourceLabel: 'CodeM',
   localActionId: 'clear-thread',
+  agentScope: ['claude'],
 };
 
 const helpCommand: SlashCommand = {
@@ -54,6 +57,7 @@ const helpCommand: SlashCommand = {
   action: 'local-action',
   sourceLabel: 'CodeM',
   localActionId: 'slash-help',
+  agentScope: ['claude'],
 };
 
 test('getCurrentLineSlashContext matches slash commands at current-line start', () => {

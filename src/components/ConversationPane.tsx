@@ -8,6 +8,7 @@ import type {
   RequestUserInputRequest,
   RuntimeSuggestedAction,
   ThreadDetail,
+  WorkbenchPreviewRequest,
 } from '../types';
 
 const BOTTOM_ANCHOR_THRESHOLD_PX = 96;
@@ -19,6 +20,7 @@ type ConversationPaneProps = {
   activeTurnId: string;
   transcriptRef: RefObject<HTMLDivElement | null>;
   bottomRef: RefObject<HTMLDivElement | null>;
+  onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onSubmitRequestUserInput: (
     turn: ConversationTurn,
     request: RequestUserInputRequest,
@@ -42,6 +44,7 @@ export function ConversationPane({
   activeTurnId,
   transcriptRef,
   bottomRef,
+  onOpenWorkbenchPreview,
   onSubmitRequestUserInput,
   onSubmitRuntimeRecoveryAction,
   onSubmitApprovalDecision,
@@ -152,6 +155,7 @@ export function ConversationPane({
               nowMs={clockNowMs}
               isLiveRunning={isRunning && turn.id === activeTurnId}
               isLatest={index === activeThread.turns.length - 1}
+              onOpenWorkbenchPreview={onOpenWorkbenchPreview}
               onSubmitRequestUserInput={onSubmitRequestUserInput}
               onSubmitRuntimeRecoveryAction={onSubmitRuntimeRecoveryAction}
               onSubmitApprovalDecision={onSubmitApprovalDecision}

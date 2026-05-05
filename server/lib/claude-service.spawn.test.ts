@@ -96,14 +96,19 @@ test('client disconnect detaches a run instead of cancelling the Claude process'
 test('request user input answers are sent back as stream-json tool results', () => {
   const submitBody = extractFunctionBody('submitRunRequestUserInput');
   const buildToolResultBody = extractFunctionBody('buildClaudeToolResultMessage');
+  const buildRequestUserInputBody = extractFunctionBody('buildRequestUserInputToolResultContent');
+  const buildRequestAnswersBody = extractFunctionBody('buildRequestUserInputResponseAnswers');
 
   assert.match(serverSource, /\/api\/claude\/run\/:runId\/request-user-input/);
-  assert.match(serverSource, /submitRunRequestUserInput\(request\.params\.runId,\s*requestId,\s*answers\)/);
+  assert.match(serverSource, /submitRunRequestUserInput\(request\.params\.runId,\s*requestId,\s*questions,\s*answers\)/);
   assert.match(submitBody, /runtime\.inputMode\s*!==\s*['"]stdin['"]/);
   assert.match(submitBody, /runtime\.child\.stdin\.write\(payload,/);
   assert.match(submitBody, /pausedForUserInput\s*=\s*false/);
   assert.match(buildToolResultBody, /type:\s*['"]tool_result['"]/);
   assert.match(buildToolResultBody, /tool_use_id:\s*requestId/);
+  assert.match(buildRequestUserInputBody, /questions,/);
+  assert.match(buildRequestUserInputBody, /answers:\s*buildRequestUserInputResponseAnswers\(questions,\s*answers\)/);
+  assert.match(buildRequestAnswersBody, /responseAnswers\[question\.question\]/);
 });
 
 test('human input requests pause the run before Claude Code auto-answers the tool call', () => {

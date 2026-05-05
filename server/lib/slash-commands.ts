@@ -15,6 +15,7 @@ export type SlashCommandSource =
   | 'app';
 
 export type SlashCommandAction = 'passthrough' | 'insert-template' | 'local-action';
+export type SlashAgent = 'claude' | 'codex' | 'gemini' | 'opencode';
 
 // 业务分类:菜单分组与图标按 category 走;source 仅用于来源去重和 UI 标签
 export type SlashCommandCategory =
@@ -41,6 +42,7 @@ export type SlashCommand = {
   sourceLabel?: string;
   localActionId?: string;
   category?: SlashCommandCategory;
+  agentScope: SlashAgent[];
   // 是否支持 -p / stream-json 非交互模式;false 的内置命令暂不暴露,避免假 passthrough
   supportsNonInteractive?: boolean;
 };
@@ -87,6 +89,46 @@ export function listBuiltinSlashCommands(): SlashCommand[] {
       localActionId: 'show-status',
       sourceLabel: 'CodeM',
       category: 'system',
+      agentScope: ['claude'],
+    },
+    {
+      id: 'builtin:/compact',
+      name: 'compact',
+      slash: '/compact',
+      title: 'Compact Context',
+      description: '把当前 Claude 会话压缩成更短的上下文。',
+      source: 'builtin',
+      action: 'local-action',
+      localActionId: 'compact-thread',
+      sourceLabel: 'CodeM',
+      category: 'session',
+      agentScope: ['claude'],
+    },
+    {
+      id: 'builtin:/context',
+      name: 'context',
+      slash: '/context',
+      title: 'Context Usage',
+      description: '查看当前会话的上下文使用情况。',
+      source: 'builtin',
+      action: 'local-action',
+      localActionId: 'show-context',
+      sourceLabel: 'CodeM',
+      category: 'context',
+      agentScope: ['claude'],
+    },
+    {
+      id: 'builtin:/cost',
+      name: 'cost',
+      slash: '/cost',
+      title: 'Token Cost',
+      description: '查看 Token 使用统计。',
+      source: 'builtin',
+      action: 'local-action',
+      localActionId: 'show-cost',
+      sourceLabel: 'CodeM',
+      category: 'context',
+      agentScope: ['claude'],
     },
   ];
 }
@@ -103,17 +145,7 @@ export function listAppSlashCommands(): SlashCommand[] {
       action: 'local-action',
       localActionId: 'clear-thread',
       sourceLabel: 'CodeM',
-    },
-    {
-      id: 'app:/help',
-      name: 'help',
-      slash: '/help',
-      title: 'Slash Help',
-      description: '显示 slash 命令的简短帮助提示。',
-      source: 'app',
-      action: 'local-action',
-      localActionId: 'slash-help',
-      sourceLabel: 'CodeM',
+      agentScope: ['claude'],
     },
   ];
 }
@@ -159,7 +191,7 @@ export function listMcpSlashCommands(context: SlashCommandContext = {}) {
     projectDirectory: context.projectDirectory,
   });
 
-  return servers.servers.map((server) => {
+  return servers.servers.map<SlashCommand>((server) => {
     const segment = sanitizeMcpSegment(server.name);
     return {
       id: `mcp:${server.id}`,
@@ -170,6 +202,7 @@ export function listMcpSlashCommands(context: SlashCommandContext = {}) {
       source: 'mcp' as const,
       action: 'passthrough' as const,
       sourceLabel: server.name,
+      agentScope: ['claude'],
     };
   });
 }
@@ -338,6 +371,7 @@ function scanMarkdownCommandsDirectory(source: MarkdownCommandSource) {
       source: source.source,
       action: 'passthrough',
       sourceLabel: source.sourceLabel,
+      agentScope: ['claude'],
     });
   }
 
@@ -440,6 +474,7 @@ function buildDeprecatedSkillAliasCommand(
     action: 'insert-template',
     template,
     sourceLabel: source.sourceLabel || 'Superpowers alias',
+    agentScope: ['claude'],
   };
 }
 
@@ -504,6 +539,7 @@ function buildSkillSlashCommand(skill: SkillSummary): SlashCommand | null {
     action: 'insert-template',
     template,
     sourceLabel: `${skill.source} skill`,
+    agentScope: ['claude'],
   };
 }
 

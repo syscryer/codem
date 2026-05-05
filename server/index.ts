@@ -847,13 +847,44 @@ app.post('/api/claude/run/:runId/ack', (request, response) => {
 
 app.post('/api/claude/run/:runId/request-user-input', (request, response) => {
   const requestId = typeof request.body?.requestId === 'string' ? request.body.requestId.trim() : '';
+  const rawQuestions = Array.isArray(request.body?.questions)
+    ? (request.body.questions as Record<string, unknown>[])
+    : [];
+  const questions = rawQuestions
+    .filter((item) => Boolean(item && typeof item === 'object'))
+    .map((item) => ({
+      id: typeof item.id === 'string' ? item.id.trim() : undefined,
+      header: typeof item.header === 'string' ? item.header.trim() : undefined,
+      question: typeof item.question === 'string' ? item.question.trim() : '',
+      options: Array.isArray(item.options)
+        ? item.options
+            .filter((option) => Boolean(option && typeof option === 'object'))
+            .map((option) => ({
+              label:
+                typeof (option as Record<string, unknown>).label === 'string'
+                  ? ((option as Record<string, unknown>).label as string).trim()
+                  : '',
+              description:
+                typeof (option as Record<string, unknown>).description === 'string'
+                  ? ((option as Record<string, unknown>).description as string).trim()
+                  : undefined,
+            }))
+            .filter((option) => option.label)
+        : undefined,
+      multiSelect: Boolean(item.multiSelect),
+      required: Boolean(item.required),
+      secret: Boolean(item.secret),
+      isOther: Boolean(item.isOther),
+      placeholder: typeof item.placeholder === 'string' ? item.placeholder.trim() : undefined,
+    }))
+    .filter((item) => item.question);
   const rawAnswers = request.body?.answers;
   const answers =
     rawAnswers && typeof rawAnswers === 'object' && !Array.isArray(rawAnswers)
       ? Object.fromEntries(
           Object.entries(rawAnswers)
             .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : ''])
-            .filter(([key, value]) => key.trim() && value),
+            .filter(([key, value]) => key.trim() && typeof value === 'string' && value),
         )
       : {};
 
@@ -867,7 +898,12 @@ app.post('/api/claude/run/:runId/request-user-input', (request, response) => {
     return;
   }
 
-  const result = submitRunRequestUserInput(request.params.runId, requestId, answers);
+  if (questions.length === 0) {
+    response.status(400).json({ submitted: false, error: '缺少提问问题定义。' });
+    return;
+  }
+
+  const result = submitRunRequestUserInput(request.params.runId, requestId, questions, answers);
   if (!result.submitted) {
     response.status(409).json(result);
     return;

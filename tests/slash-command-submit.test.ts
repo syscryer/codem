@@ -17,6 +17,7 @@ const sampleCommands: SlashCommand[] = [
     source: 'builtin',
     action: 'passthrough',
     sourceLabel: 'Claude Code',
+    agentScope: ['claude'],
   },
   {
     id: 'app:/clear',
@@ -28,6 +29,7 @@ const sampleCommands: SlashCommand[] = [
     action: 'local-action',
     sourceLabel: 'CodeM',
     localActionId: 'clear-thread',
+    agentScope: ['claude'],
   },
 ];
 
@@ -46,26 +48,27 @@ test('resolveSlashCommandSubmission ignores non-local or partial slash commands'
   assert.equal(resolveSlashCommandSubmission('/clear later', sampleCommands), null);
 });
 
-test('resolveSlashCommandSubmission maps slash-help to a dedicated local action kind', () => {
+test('resolveSlashCommandSubmission maps show-context to a dedicated local action kind', () => {
   const commands: SlashCommand[] = [
     ...sampleCommands,
     {
-      id: 'app:/help',
-      name: 'help',
-      slash: '/help',
-      title: 'Slash Help',
-      description: '显示 slash 命令的简短帮助提示。',
-      source: 'app',
+      id: 'builtin:/context',
+      name: 'context',
+      slash: '/context',
+      title: 'Context Usage',
+      description: '查看当前会话的上下文使用情况。',
+      source: 'builtin',
       action: 'local-action',
       sourceLabel: 'CodeM',
-      localActionId: 'slash-help',
+      localActionId: 'show-context',
+      agentScope: ['claude'],
     },
   ];
 
-  const resolution = resolveSlashCommandSubmission('/help', commands);
+  const resolution = resolveSlashCommandSubmission('/context', commands);
 
   assert.deepEqual(resolution, {
-    kind: 'slash-help',
+    kind: 'show-context',
     command: commands[2],
   });
 });
@@ -83,6 +86,7 @@ test('resolveSlashCommandSubmission maps show-status to a dedicated local action
       action: 'local-action',
       sourceLabel: 'CodeM',
       localActionId: 'show-status',
+      agentScope: ['claude'],
     },
   ];
 
@@ -94,7 +98,7 @@ test('resolveSlashCommandSubmission maps show-status to a dedicated local action
   });
 });
 
-test('resolveSlashCommandSubmission falls back to not-implemented for unknown localActionId', () => {
+test('resolveSlashCommandSubmission maps show-cost to a dedicated local action kind', () => {
   const commands: SlashCommand[] = [
     {
       id: 'builtin:/cost',
@@ -104,15 +108,40 @@ test('resolveSlashCommandSubmission falls back to not-implemented for unknown lo
       description: '查看 Token 使用统计。',
       source: 'builtin',
       action: 'local-action',
-      sourceLabel: 'Claude Code',
-      localActionId: 'not-implemented',
+      sourceLabel: 'CodeM',
+      localActionId: 'show-cost',
+      agentScope: ['claude'],
     },
   ];
 
   const resolution = resolveSlashCommandSubmission('/cost', commands);
 
   assert.deepEqual(resolution, {
-    kind: 'not-implemented',
+    kind: 'show-cost',
+    command: commands[0],
+  });
+});
+
+test('resolveSlashCommandSubmission maps compact-thread to a dedicated local action kind', () => {
+  const commands: SlashCommand[] = [
+    {
+      id: 'builtin:/compact',
+      name: 'compact',
+      slash: '/compact',
+      title: 'Compact Context',
+      description: '把当前 Claude 会话压缩成更短的上下文。',
+      source: 'builtin',
+      action: 'local-action',
+      sourceLabel: 'CodeM',
+      localActionId: 'compact-thread',
+      agentScope: ['claude'],
+    },
+  ];
+
+  const resolution = resolveSlashCommandSubmission('/compact', commands);
+
+  assert.deepEqual(resolution, {
+    kind: 'compact-thread',
     command: commands[0],
   });
 });

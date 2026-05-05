@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import { filterSlashCommandsForAgent } from '../lib/agent-slash-capabilities';
 import { getCurrentLineSlashContext } from '../lib/slash-command-editor';
-import type { SlashCommand, SlashCommandsResponse } from '../types';
+import type { AgentType, SlashCommand, SlashCommandsResponse } from '../types';
 
 type UseSlashCommandsArgs = {
   projectPath?: string;
+  activeAgent: AgentType;
   draft: string;
   selectionStart: number;
   showToast?: (message: string, tone?: 'success' | 'error' | 'info') => void;
@@ -12,6 +14,7 @@ type UseSlashCommandsArgs = {
 
 export function useSlashCommands({
   projectPath,
+  activeAgent,
   draft,
   selectionStart,
   showToast,
@@ -56,20 +59,28 @@ export function useSlashCommands({
     [draft, selectionStart],
   );
   const query = context?.query.trim().toLowerCase() ?? '';
+  const visibleCommands = useMemo(
+    () => filterSlashCommandsForAgent(commands, activeAgent),
+    [activeAgent, commands],
+  );
   const filteredCommands = useMemo(
-    () => filterSlashCommands(commands, query),
-    [commands, query],
+    () => getVisibleSlashCommands(commands, query, activeAgent),
+    [activeAgent, commands, query],
   );
   const open = Boolean(context);
 
   return {
-    commands,
+    commands: visibleCommands,
     filteredCommands,
     open,
     loading,
     query,
     context,
   };
+}
+
+export function getVisibleSlashCommands(commands: SlashCommand[], query: string, activeAgent: AgentType) {
+  return filterSlashCommands(filterSlashCommandsForAgent(commands, activeAgent), query);
 }
 
 export function filterSlashCommands(commands: SlashCommand[], query: string) {

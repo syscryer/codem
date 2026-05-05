@@ -3,7 +3,7 @@ import type { SlashLineContext } from './slash-command-editor';
 
 export type SlashSubmissionResolution =
   | {
-      kind: 'clear-thread' | 'slash-help' | 'show-status' | 'not-implemented';
+      kind: 'clear-thread' | 'show-status' | 'show-context' | 'show-cost' | 'compact-thread';
       command: SlashCommand;
     }
   | null;
@@ -28,13 +28,19 @@ export function resolveSlashCommandSubmission(
   if (command.localActionId === 'clear-thread') {
     return { kind: 'clear-thread', command };
   }
-  if (command.localActionId === 'slash-help') {
-    return { kind: 'slash-help', command };
-  }
   if (command.localActionId === 'show-status') {
     return { kind: 'show-status', command };
   }
-  return { kind: 'not-implemented', command };
+  if (command.localActionId === 'show-context') {
+    return { kind: 'show-context', command };
+  }
+  if (command.localActionId === 'show-cost') {
+    return { kind: 'show-cost', command };
+  }
+  if (command.localActionId === 'compact-thread') {
+    return { kind: 'compact-thread', command };
+  }
+  return null;
 }
 
 export function getSlashDismissResetKey(context: Pick<SlashLineContext, 'lineStart' | 'commandText'> | null) {

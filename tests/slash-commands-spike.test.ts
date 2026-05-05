@@ -71,14 +71,16 @@ test('slash command spike prints JSON payload when --json is provided', () => {
 
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.projectDirectory, path.resolve(workspace.projectDirectory));
-    assert.equal(payload.summary.total, 4);
-    assert.equal(payload.summary.bySource.builtin, 1);
-    assert.equal(payload.summary.bySource.app, 2);
+    assert.equal(payload.summary.total, 6);
+    assert.equal(payload.summary.bySource.builtin, 4);
+    assert.equal(payload.summary.bySource.app, 1);
     assert.equal(payload.summary.bySource.skill, 1);
     assert.ok(payload.commands.some((command: { slash: string }) => command.slash === '/status'));
     assert.ok(payload.commands.some((command: { slash: string }) => command.slash === '/clear'));
     assert.ok(payload.commands.some((command: { slash: string }) => command.slash === '/brainstorming'));
-    assert.equal(payload.commands.some((command: { slash: string }) => command.slash === '/compact'), false);
+    assert.ok(payload.commands.some((command: { slash: string }) => command.slash === '/compact'));
+    assert.ok(payload.commands.some((command: { slash: string }) => command.slash === '/context'));
+    assert.ok(payload.commands.some((command: { slash: string }) => command.slash === '/cost'));
   });
 });
 
@@ -88,17 +90,31 @@ test('slash command spike keeps human-readable grouped output by default', () =>
 
     assert.equal(result.status, 0);
     assert.match(result.stdout, /Slash command spike for:/);
-    assert.match(result.stdout, /\[builtin\]\s+1/);
-    assert.match(result.stdout, /\[app\]\s+2/);
+    assert.match(result.stdout, /\[builtin\]\s+4/);
+    assert.match(result.stdout, /\[app\]\s+1/);
+    assert.match(result.stdout, /\/compact \| action=local-action/);
+    assert.match(result.stdout, /\/context \| action=local-action/);
+    assert.match(result.stdout, /\/cost \| action=local-action/);
     assert.match(result.stdout, /\/status \| action=local-action/);
     assert.match(result.stdout, /\/clear \| action=local-action/);
-    assert.doesNotMatch(result.stdout, /\/compact \| action=local-action/);
   });
 });
 
 test('slash command spike succeeds in --assert mode for required commands', () => {
   withTemporaryWorkspace((workspace) => {
-    const result = runSpike(workspace, ['--assert', '--require', '/help']);
+    const result = runSpike(workspace, [
+      '--assert',
+      '--require',
+      '/status',
+      '--require',
+      '/context',
+      '--require',
+      '/cost',
+      '--require',
+      '/compact',
+      '--require',
+      '/clear',
+    ]);
 
     assert.equal(result.status, 0);
     assert.match(result.stderr, /Slash command assertions passed\./);

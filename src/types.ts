@@ -133,10 +133,27 @@ export type UserImageAttachment = {
   size?: number;
 };
 
+export type AgentType = 'claude' | 'codex' | 'gemini' | 'opencode';
+
+export type SlashCardType = 'status' | 'context' | 'cost' | 'compact';
+
+export type SystemCommandItem = {
+  id: string;
+  type: 'system-command';
+  command: string;
+  title: string;
+  cardType: SlashCardType;
+  state: 'running' | 'done' | 'error';
+  summary?: string;
+  details?: Record<string, unknown>;
+  errorMessage?: string;
+};
+
 export type AssistantItem =
   | { id: string; type: 'text'; text: string }
   | { id: string; type: 'thinking'; text: string }
-  | { id: string; type: 'tool'; tool: ToolStep };
+  | { id: string; type: 'tool'; tool: ToolStep }
+  | SystemCommandItem;
 
 export type ConversationTurn = {
   id: string;
@@ -326,7 +343,7 @@ export type GitBranchSummary = {
 
 export type ProjectGitSummary = Pick<ProjectSummary, 'gitBranch' | 'gitDiff' | 'isGitRepo'>;
 
-export type RightWorkbenchTab = 'overview' | 'files' | 'browser' | `file:${string}`;
+export type RightWorkbenchTab = 'overview' | 'files' | 'browser';
 
 export type WorkbenchFileScope = 'all' | 'changed';
 
@@ -334,6 +351,27 @@ export type WorkbenchFileTab = {
   path: string;
   name: string;
   language?: string;
+};
+
+export type WorkbenchPreviewSource = 'project-file' | 'changed-file' | 'conversation-card';
+
+export type WorkbenchPreviewKind = 'code' | 'markdown';
+
+export type WorkbenchPreviewRequest = {
+  key: string;
+  path: string;
+  name: string;
+  kind: WorkbenchPreviewKind;
+  source: WorkbenchPreviewSource;
+  status?: string;
+};
+
+export type WorkbenchPreviewTab = WorkbenchPreviewRequest;
+
+export type WorkbenchPreviewContentState = {
+  loading: boolean;
+  content: string;
+  error?: string;
 };
 
 export type ProjectFileEntry = {
@@ -494,6 +532,7 @@ export type SlashCommand = {
   sourceLabel?: string;
   localActionId?: string;
   category?: SlashCommandCategory;
+  agentScope: AgentType[];
   supportsNonInteractive?: boolean;
 };
 

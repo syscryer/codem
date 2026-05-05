@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { getCurrentLineSlashContext } from '../src/lib/slash-command-editor';
-import { filterSlashCommands } from '../src/hooks/useSlashCommands';
+import { filterSlashCommands, getVisibleSlashCommands } from '../src/hooks/useSlashCommands';
 import type { SlashCommand } from '../src/types';
 
 const sampleCommands: SlashCommand[] = [
@@ -15,6 +15,7 @@ const sampleCommands: SlashCommand[] = [
     source: 'builtin',
     action: 'passthrough',
     sourceLabel: 'Claude Code',
+    agentScope: ['claude'],
   },
   {
     id: 'skill:/brainstorming',
@@ -26,6 +27,7 @@ const sampleCommands: SlashCommand[] = [
     action: 'insert-template',
     sourceLabel: 'plugin skill',
     template: '我们先做一轮结构化 brainstorming，再进入实现。',
+    agentScope: ['codex'],
   },
   {
     id: 'app:/clear',
@@ -37,6 +39,7 @@ const sampleCommands: SlashCommand[] = [
     action: 'local-action',
     sourceLabel: 'CodeM',
     localActionId: 'clear-thread',
+    agentScope: ['claude'],
   },
 ];
 
@@ -48,6 +51,22 @@ test('filterSlashCommands matches slash, title, description, and source label', 
   assert.deepEqual(filterSlashCommands(sampleCommands, 'brain').map((command) => command.slash), ['/brainstorming']);
   assert.deepEqual(filterSlashCommands(sampleCommands, 'claude code').map((command) => command.slash), ['/compact']);
   assert.deepEqual(filterSlashCommands(sampleCommands, '新建').map((command) => command.slash), ['/clear']);
+});
+
+test('filterSlashCommands can operate after agent scoping removes out-of-scope entries', () => {
+  const claudeCommands = sampleCommands.filter((command) => command.agentScope.includes('claude'));
+  assert.deepEqual(filterSlashCommands(claudeCommands, '').map((command) => command.slash), ['/compact', '/clear']);
+});
+
+test('getVisibleSlashCommands hides out-of-scope commands before text matching', () => {
+  assert.deepEqual(
+    getVisibleSlashCommands(sampleCommands, 'brain', 'claude').map((command) => command.slash),
+    [],
+  );
+  assert.deepEqual(
+    getVisibleSlashCommands(sampleCommands, '', 'claude').map((command) => command.slash),
+    ['/compact', '/clear'],
+  );
 });
 
 test('current-line slash mode only opens when slash is the first non-whitespace token on the active line', () => {

@@ -664,6 +664,29 @@ export function getThreadHistory(threadId: string) {
       };
     }
 
+    if (storedTurns.length > 0) {
+      if (
+        thread.transcript_path &&
+        existsSync(thread.transcript_path) &&
+        shouldRefreshStoredHistory(threadId, thread.transcript_path, storedTurns)
+      ) {
+        const reparsedTurns = parseClaudeTranscript(thread.transcript_path, thread.session_id);
+        if (reparsedTurns.length > 0) {
+          const mergedTurns = mergeStoredTurnMetrics(storedTurns, reparsedTurns);
+          saveThreadHistory(threadId, mergedTurns);
+          return {
+            threadId,
+            turns: mergedTurns,
+          };
+        }
+      }
+
+      return {
+        threadId,
+        turns: storedTurns,
+      };
+    }
+
     const turns = hasUsableTranscript(thread)
       ? parseClaudeTranscript(thread.transcript_path ?? '', thread.session_id)
       : [];
@@ -2044,6 +2067,39 @@ function shouldRefreshStoredHistory(threadId: string, transcriptPath: string, tu
   return shouldReparseStoredHistory(turns) || isStoredHistoryOutdated(threadId, transcriptPath);
 }
 
+function mergeStoredTurnMetrics(storedTurns: ThreadTurn[], reparsedTurns: ThreadTurn[]) {
+  const storedByIdentity = new Map<string, ThreadTurn>();
+  storedTurns.forEach((turn, index) => {
+    storedByIdentity.set(buildTurnMergeKey(turn, index), turn);
+  });
+
+  return reparsedTurns.map((turn, index) => {
+    const stored = storedByIdentity.get(buildTurnMergeKey(turn, index));
+    if (!stored) {
+      return turn;
+    }
+
+    return {
+      ...turn,
+      inputTokens: turn.inputTokens ?? stored.inputTokens,
+      outputTokens: turn.outputTokens ?? stored.outputTokens,
+      cacheCreationInputTokens: turn.cacheCreationInputTokens ?? stored.cacheCreationInputTokens,
+      cacheReadInputTokens: turn.cacheReadInputTokens ?? stored.cacheReadInputTokens,
+      totalCostUsd: turn.totalCostUsd ?? stored.totalCostUsd,
+      durationMs: turn.durationMs ?? stored.durationMs,
+    };
+  });
+}
+
+function buildTurnMergeKey(turn: ThreadTurn, index: number) {
+  const normalizedUserText = turn.userText.trim();
+  if (normalizedUserText) {
+    return `user:${normalizedUserText}`;
+  }
+
+  return `index:${index}`;
+}
+
 function hasPendingHumanRequest(turn: ThreadTurn) {
   return Boolean(turn.pendingUserInputRequests?.length) || Boolean(turn.pendingApprovalRequests?.length);
 }
@@ -3376,10 +3432,15 @@ function parseSubmittedRequestUserInputAnswers(
   const answers: Record<string, string> = {};
   const parsed = parseJsonObject(trimmed);
   if (parsed) {
+    const parsedAnswers = asRecord(parsed.answers) ?? parsed;
     request.questions.forEach((question, index) => {
       const key = question.id ?? `question-${index}`;
-      const value = parsed[key] ?? parsed[question.question];
-      const text = formatSubmittedAnswer(value);
+      const value =
+        parsedAnswers[question.question] ??
+        parsedAnswers[key] ??
+        parsed[key] ??
+        parsed[question.question];
+      const text = formatSubmittedRequestAnswer(question, value);
       if (text) {
         answers[key] = text;
       }
@@ -3392,6 +3453,32 @@ function parseSubmittedRequestUserInputAnswers(
   }
 
   return answers;
+}
+
+function formatSubmittedRequestAnswer(
+  question: RequestUserInputQuestion,
+  value: unknown,
+) {
+  const text = formatSubmittedAnswer(value);
+  if (!text) {
+    return '';
+  }
+
+  if (!question.multiSelect || !question.options?.length) {
+    return text;
+  }
+
+  const labels = new Set(question.options.map((option) => option.label));
+  const parts = text
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length > 1 && parts.every((part) => labels.has(part))) {
+    return parts.join('\n');
+  }
+
+  return text;
 }
 
 function formatSubmittedAnswer(value: unknown) {

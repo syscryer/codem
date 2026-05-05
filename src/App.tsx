@@ -21,6 +21,7 @@ import {
   buildCostSlashCardResult,
   buildStatusSlashCardResult,
 } from './lib/claude-slash-system-commands';
+import { closeWorkbenchPreviewTab, openWorkbenchPreviewTab } from './lib/workbench-preview';
 import { matchesShortcut } from './lib/shortcuts';
 import { createSystemCommandItem, settleSystemCommandItem } from './lib/system-command-items';
 import { modelLabel, permissionLabel } from './lib/ui-labels';
@@ -34,6 +35,9 @@ import type {
   RightWorkbenchTab,
   SlashCommand,
   WorkbenchFileScope,
+  WorkbenchPreviewContentState,
+  WorkbenchPreviewRequest,
+  WorkbenchPreviewTab,
   SettingsSection,
   SystemCommandItem,
   ThreadDetail,
@@ -109,6 +113,9 @@ export default function App() {
   const [rightWorkbenchTab, setRightWorkbenchTab] = useState<RightWorkbenchTab>('overview');
   const [rightWorkbenchFileScope, setRightWorkbenchFileScope] = useState<WorkbenchFileScope>('all');
   const [rightWorkbenchWidth, setRightWorkbenchWidth] = useState(420);
+  const [previewTabs, setPreviewTabs] = useState<WorkbenchPreviewTab[]>([]);
+  const [activePreviewKey, setActivePreviewKey] = useState('');
+  const [previewContentByKey, setPreviewContentByKey] = useState<Record<string, WorkbenchPreviewContentState>>({});
   const {
     general,
     appearance,
@@ -199,6 +206,12 @@ export default function App() {
       void refreshProjectGitSummary(activeProjectId);
     }
   }, [activeProjectId, general.autoRefreshGitStatus, isRunning]);
+
+  useEffect(() => {
+    setPreviewTabs([]);
+    setActivePreviewKey('');
+    setPreviewContentByKey({});
+  }, [activeProject?.id]);
 
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
@@ -465,6 +478,46 @@ export default function App() {
     setRightWorkbenchFileScope('all');
   }
 
+  function openWorkbenchPreview(request: WorkbenchPreviewRequest) {
+    if (!activeProject) {
+      showToast('请先选择项目。', 'info');
+      return;
+    }
+
+    setPreviewTabs((currentTabs) => openWorkbenchPreviewTab(currentTabs, request).tabs);
+    setActivePreviewKey(request.key);
+    setPreviewContentByKey((current) => {
+      const next = { ...current };
+      delete next[request.key];
+      return next;
+    });
+    setRightWorkbenchOpen(true);
+    setRightWorkbenchTab('files');
+  }
+
+  function closeWorkbenchPreview(tabKey: string) {
+    setPreviewTabs((currentTabs) => {
+      const next = closeWorkbenchPreviewTab(currentTabs, activePreviewKey, tabKey);
+      setActivePreviewKey(next.activeKey);
+      setPreviewContentByKey((current) => {
+        if (!(tabKey in current)) {
+          return current;
+        }
+        const updated = { ...current };
+        delete updated[tabKey];
+        return updated;
+      });
+      return next.tabs;
+    });
+  }
+
+  function resolveWorkbenchPreviewContent(key: string, state: WorkbenchPreviewContentState) {
+    setPreviewContentByKey((current) => ({
+      ...current,
+      [key]: state,
+    }));
+  }
+
   function handleRightWorkbenchResizeStart(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
     const startX = event.clientX;
@@ -603,6 +656,7 @@ export default function App() {
                 activeTurnId={activeThreadId ? activeTurnIdsByThreadId[activeThreadId] ?? '' : ''}
                 transcriptRef={transcriptRef}
                 bottomRef={conversationBottomRef}
+                onOpenWorkbenchPreview={openWorkbenchPreview}
                 onSubmitRequestUserInput={(
                   turn: ConversationTurn,
                   request: RequestUserInputRequest,
@@ -653,9 +707,15 @@ export default function App() {
                 activeThread={activeThread}
                 fileScope={rightWorkbenchFileScope}
                 isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
-                files={[]}
+                previewTabs={previewTabs}
+                activePreviewKey={activePreviewKey}
+                previewContentByKey={previewContentByKey}
                 onSelectTab={setRightWorkbenchTab}
                 onSelectFileScope={setRightWorkbenchFileScope}
+                onOpenWorkbenchPreview={openWorkbenchPreview}
+                onSelectPreviewTab={setActivePreviewKey}
+                onClosePreviewTab={closeWorkbenchPreview}
+                onResolvePreviewContent={resolveWorkbenchPreviewContent}
                 onResizeStart={handleRightWorkbenchResizeStart}
                 onClose={() => setRightWorkbenchOpen(false)}
               />

@@ -15,17 +15,16 @@ import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent, t
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { fetchWorkspaceFilePreview } from '../lib/file-preview-api';
-import { fetchGitFileDiff, fetchGitStatus } from '../lib/git-api';
+import { fetchGitStatus } from '../lib/git-api';
 import { fetchProjectFiles } from '../lib/project-files-api';
 import {
   buildWorkbenchFileTree,
   combineProjectFilePath,
   getWorkbenchFileIconKind,
-  getWorkbenchPreviewKind,
   highlightWorkbenchCodeLine,
   type WorkbenchFileTreeNode,
-  type WorkbenchPreviewKind,
 } from '../lib/workbench-files';
+import { buildChangedFilePreviewRequest, buildProjectFilePreviewRequest } from '../lib/workbench-preview';
 import type {
   GitFileStatus,
   GitStatusSnapshot,
@@ -34,7 +33,9 @@ import type {
   RightWorkbenchTab,
   ThreadDetail,
   WorkbenchFileScope,
-  WorkbenchFileTab,
+  WorkbenchPreviewContentState,
+  WorkbenchPreviewRequest,
+  WorkbenchPreviewTab,
 } from '../types';
 
 type RightWorkbenchProps = {
@@ -43,9 +44,15 @@ type RightWorkbenchProps = {
   activeThread: ThreadDetail | null;
   fileScope: WorkbenchFileScope;
   isRunning: boolean;
-  files: WorkbenchFileTab[];
+  previewTabs: WorkbenchPreviewTab[];
+  activePreviewKey: string;
+  previewContentByKey: Record<string, WorkbenchPreviewContentState>;
   onSelectTab: (tab: RightWorkbenchTab) => void;
   onSelectFileScope: (scope: WorkbenchFileScope) => void;
+  onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
+  onSelectPreviewTab: (key: string) => void;
+  onClosePreviewTab: (key: string) => void;
+  onResolvePreviewContent: (key: string, state: WorkbenchPreviewContentState) => void;
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onClose: () => void;
 };
@@ -56,9 +63,15 @@ export function RightWorkbench({
   activeThread,
   fileScope,
   isRunning,
-  files,
+  previewTabs,
+  activePreviewKey,
+  previewContentByKey,
   onSelectTab,
   onSelectFileScope,
+  onOpenWorkbenchPreview,
+  onSelectPreviewTab,
+  onClosePreviewTab,
+  onResolvePreviewContent,
   onResizeStart,
   onClose,
 }: RightWorkbenchProps) {
@@ -84,15 +97,6 @@ export function RightWorkbench({
           label="浏览器"
           onClick={() => onSelectTab('browser')}
         />
-        {files.map((file) => (
-          <WorkbenchTab
-            key={file.path}
-            active={activeTab === `file:${file.path}`}
-            icon={<FileText size={15} />}
-            label={file.name}
-            onClick={() => onSelectTab(`file:${file.path}`)}
-          />
-        ))}
         <button type="button" className="right-workbench-tab ghost" title="稍后添加工具">
           <Plus size={16} />
         </button>
@@ -109,13 +113,17 @@ export function RightWorkbench({
           <WorkbenchFiles
             activeProject={activeProject}
             scope={fileScope}
+            previewTabs={previewTabs}
+            activePreviewKey={activePreviewKey}
+            previewContentByKey={previewContentByKey}
             onSelectScope={onSelectFileScope}
+            onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+            onSelectPreviewTab={onSelectPreviewTab}
+            onClosePreviewTab={onClosePreviewTab}
+            onResolvePreviewContent={onResolvePreviewContent}
           />
         ) : null}
         {activeTab === 'browser' ? <WorkbenchBrowserShell /> : null}
-        {activeTab.startsWith('file:') ? (
-          <WorkbenchFilePlaceholder file={files.find((item) => activeTab === `file:${item.path}`)} />
-        ) : null}
       </div>
     </aside>
   );
@@ -177,11 +185,25 @@ function WorkbenchOverview({
 function WorkbenchFiles({
   activeProject,
   scope,
+  previewTabs,
+  activePreviewKey,
+  previewContentByKey,
   onSelectScope,
+  onOpenWorkbenchPreview,
+  onSelectPreviewTab,
+  onClosePreviewTab,
+  onResolvePreviewContent,
 }: {
   activeProject: ProjectSummary | null;
   scope: WorkbenchFileScope;
+  previewTabs: WorkbenchPreviewTab[];
+  activePreviewKey: string;
+  previewContentByKey: Record<string, WorkbenchPreviewContentState>;
   onSelectScope: (scope: WorkbenchFileScope) => void;
+  onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
+  onSelectPreviewTab: (key: string) => void;
+  onClosePreviewTab: (key: string) => void;
+  onResolvePreviewContent: (key: string, state: WorkbenchPreviewContentState) => void;
 }) {
   const [projectFiles, setProjectFiles] = useState<ProjectFileEntry[]>([]);
   const [directoryFiles, setDirectoryFiles] = useState<Record<string, ProjectFileEntry[]>>({});
@@ -189,9 +211,6 @@ function WorkbenchFiles({
   const [expandedChangedDirectories, setExpandedChangedDirectories] = useState<string[]>([]);
   const [loadingDirectory, setLoadingDirectory] = useState('');
   const [gitStatus, setGitStatus] = useState<GitStatusSnapshot | null>(null);
-  const [previewTabs, setPreviewTabs] = useState<WorkbenchPreviewTab[]>([]);
-  const [activePreviewKey, setActivePreviewKey] = useState('');
-  const [previewContentByKey, setPreviewContentByKey] = useState<Record<string, PreviewContentState>>({});
   const [fileFilter, setFileFilter] = useState('');
   const [navigatorVisible, setNavigatorVisible] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -209,9 +228,6 @@ function WorkbenchFiles({
     if (!activeProject) {
       setProjectFiles([]);
       setGitStatus(null);
-      setPreviewTabs([]);
-      setActivePreviewKey('');
-      setPreviewContentByKey({});
       setError('');
       return;
     }
@@ -225,42 +241,30 @@ function WorkbenchFiles({
     }
 
     let cancelled = false;
-    setPreviewContentByKey((current) => ({
-      ...current,
-      [activePreviewTab.key]: { loading: true, content: '' },
-    }));
+    onResolvePreviewContent(activePreviewTab.key, { loading: true, content: '' });
 
-    const request =
-      activePreviewTab.kind === 'diff'
-        ? fetchGitFileDiff(activeProject.id, activePreviewTab.path)
-        : fetchWorkspaceFilePreview(combineProjectFilePath(activeProject.path, activePreviewTab.path));
+    const request = fetchWorkspaceFilePreview(combineProjectFilePath(activeProject.path, activePreviewTab.path));
 
     request
       .then((payload) => {
         if (!cancelled) {
-          setPreviewContentByKey((current) => ({
-            ...current,
-            [activePreviewTab.key]: { loading: false, content: payload.content },
-          }));
+          onResolvePreviewContent(activePreviewTab.key, { loading: false, content: payload.content });
         }
       })
       .catch((caughtError: unknown) => {
         if (!cancelled) {
-          setPreviewContentByKey((current) => ({
-            ...current,
-            [activePreviewTab.key]: {
-              loading: false,
-              content: '',
-              error: caughtError instanceof Error ? caughtError.message : '读取文件失败',
-            },
-          }));
+          onResolvePreviewContent(activePreviewTab.key, {
+            loading: false,
+            content: '',
+            error: caughtError instanceof Error ? caughtError.message : '读取文件失败',
+          });
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [activePreviewTab?.key, activeProject?.id]);
+  }, [activePreviewTab?.key, activeProject?.id, onResolvePreviewContent, previewContentByKey]);
 
   async function loadScope(nextScope = scope) {
     if (!activeProject) {
@@ -280,11 +284,6 @@ function WorkbenchFiles({
         setGitStatus(nextStatus);
         const nextTree = buildWorkbenchFileTree(nextStatus.files);
         setExpandedChangedDirectories(collectDirectoryPaths(nextTree));
-        const activeDiffPath = activePreviewKey.startsWith('diff:') ? activePreviewKey.slice('diff:'.length) : '';
-        const activeDiffStillExists = nextStatus.files.some((file) => file.path === activeDiffPath);
-        if (nextStatus.files[0] && !activeDiffStillExists) {
-          openChangedPreview(nextStatus.files[0]);
-        }
       }
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : '读取文件失败');
@@ -298,47 +297,11 @@ function WorkbenchFiles({
       return;
     }
 
-    const tab: WorkbenchPreviewTab = {
-      key: `file:${file.path}`,
-      path: file.path,
-      name: file.name,
-      kind: getWorkbenchPreviewKind(file.path),
-    };
-    openPreviewTab(tab);
+    onOpenWorkbenchPreview(buildProjectFilePreviewRequest(file));
   }
 
   function openChangedPreview(file: GitFileStatus) {
-    const tab: WorkbenchPreviewTab = {
-      key: `diff:${file.path}`,
-      path: file.path,
-      name: getFileName(file.path),
-      kind: 'diff',
-      status: file.status,
-    };
-    openPreviewTab(tab);
-  }
-
-  function openPreviewTab(tab: WorkbenchPreviewTab) {
-    setPreviewTabs((currentTabs) => {
-      if (currentTabs.some((item) => item.key === tab.key)) {
-        return currentTabs;
-      }
-
-      return [...currentTabs, tab];
-    });
-    setActivePreviewKey(tab.key);
-  }
-
-  function closePreviewTab(tabKey: string) {
-    setPreviewTabs((currentTabs) => {
-      const tabIndex = currentTabs.findIndex((tab) => tab.key === tabKey);
-      const nextTabs = currentTabs.filter((tab) => tab.key !== tabKey);
-      if (activePreviewKey === tabKey) {
-        setActivePreviewKey(nextTabs[Math.max(0, tabIndex - 1)]?.key ?? '');
-      }
-
-      return nextTabs;
-    });
+    onOpenWorkbenchPreview(buildChangedFilePreviewRequest(file));
   }
 
   async function toggleDirectory(directoryPath: string) {
@@ -389,8 +352,8 @@ function WorkbenchFiles({
             tabs={previewTabs}
             activeKey={activePreviewKey}
             content={activePreviewKey ? previewContentByKey[activePreviewKey] : undefined}
-            onSelectTab={setActivePreviewKey}
-            onCloseTab={closePreviewTab}
+            onSelectTab={onSelectPreviewTab}
+            onCloseTab={onClosePreviewTab}
           />
           {navigatorVisible ? (
             <FileNavigator
@@ -431,20 +394,6 @@ function WorkbenchFiles({
   );
 }
 
-type WorkbenchPreviewTab = {
-  key: string;
-  path: string;
-  name: string;
-  kind: WorkbenchPreviewKind | 'diff';
-  status?: string;
-};
-
-type PreviewContentState = {
-  loading: boolean;
-  content: string;
-  error?: string;
-};
-
 function PreviewPane({
   tabs,
   activeKey,
@@ -454,7 +403,7 @@ function PreviewPane({
 }: {
   tabs: WorkbenchPreviewTab[];
   activeKey: string;
-  content?: PreviewContentState;
+  content?: WorkbenchPreviewContentState;
   onSelectTab: (key: string) => void;
   onCloseTab: (key: string) => void;
 }) {
@@ -490,8 +439,6 @@ function PreviewPane({
           <WorkbenchEmpty icon={<RefreshCw className="spin" size={24} />} title="正在读取文件" description={activeTab.path} />
         ) : content?.error ? (
           <WorkbenchEmpty icon={<FileText size={24} />} title="预览失败" description={content.error} />
-        ) : activeTab.kind === 'diff' ? (
-          <DiffPreview content={content?.content || '正在准备差异预览。'} />
         ) : activeTab.kind === 'markdown' ? (
           <MarkdownPreview content={content?.content ?? ''} />
         ) : (
@@ -765,19 +712,6 @@ function ChangedFileTree({
   );
 }
 
-function DiffPreview({ content }: { content: string }) {
-  return (
-    <div className="git-diff-content workbench-diff-content" role="region" aria-label="文件差异预览">
-      {content.split('\n').map((line, index) => (
-        <div key={`${index}-${line}`} className={`git-diff-line ${getDiffLineClass(line)}`}>
-          <span className="git-diff-line-no">{index + 1}</span>
-          <span className="git-diff-line-text">{line || ' '}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function MarkdownPreview({ content }: { content: string }) {
   return (
     <div className="workbench-markdown-preview">
@@ -832,7 +766,7 @@ function renderChangedFileTreeRows({
       <button
         key={node.path}
         type="button"
-        className={`workbench-tree-row${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === `diff:${node.path}` ? ' active' : ''}`}
+        className={`workbench-tree-row${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === `file:${node.path}` ? ' active' : ''}`}
         style={{ paddingLeft: `${10 + depth * 18}px` }}
         onClick={() => {
           if (node.type === 'directory') {
@@ -955,31 +889,6 @@ function collectDirectoryPaths(nodes: WorkbenchFileTreeNode[]) {
   });
 }
 
-function getDiffLineClass(line: string) {
-  if (line.startsWith('+') && !line.startsWith('+++')) {
-    return 'added';
-  }
-
-  if (line.startsWith('-') && !line.startsWith('---')) {
-    return 'removed';
-  }
-
-  if (line.startsWith('@@')) {
-    return 'hunk';
-  }
-
-  if (line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('+++') || line.startsWith('---')) {
-    return 'meta';
-  }
-
-  return '';
-}
-
-function getFileName(filePath: string) {
-  const normalizedPath = filePath.replace(/\\/g, '/');
-  return normalizedPath.split('/').pop() || normalizedPath;
-}
-
 function WorkbenchEmpty({
   icon,
   title,
@@ -1009,27 +918,6 @@ function WorkbenchBrowserShell() {
         <button type="button" disabled>↗</button>
       </div>
       <div className="workbench-browser-empty">空白页</div>
-    </section>
-  );
-}
-
-function WorkbenchFilePlaceholder({ file }: { file?: WorkbenchFileTab }) {
-  return (
-    <section className="workbench-panel">
-      <div className="workbench-section-head with-action">
-        <div>
-          <h3>{file?.name ?? '文件预览'}</h3>
-          <p>{file?.path ?? '文件预览会在下一阶段接入。'}</p>
-        </div>
-        <button type="button" className="workbench-icon-button" title="关闭文件预览">
-          <X size={15} />
-        </button>
-      </div>
-      <div className="workbench-placeholder">
-        <FileText size={24} />
-        <strong>文件预览骨架已就绪</strong>
-        <span>下一步接入 Markdown 渲染和只读文本预览。</span>
-      </div>
     </section>
   );
 }

@@ -350,7 +350,12 @@ export function acknowledgeRunEvents(runId: string) {
   return true;
 }
 
-export function submitRunRequestUserInput(runId: string, requestId: string, answers: Record<string, string>) {
+export function submitRunRequestUserInput(
+  runId: string,
+  requestId: string,
+  questions: RequestUserInputQuestion[],
+  answers: Record<string, string>,
+) {
   const activeRun = activeRuns.get(runId);
   if (!activeRun || activeRun.state.finished) {
     return {
@@ -380,7 +385,9 @@ export function submitRunRequestUserInput(runId: string, requestId: string, answ
     };
   }
 
-  const payload = `${JSON.stringify(buildClaudeToolResultMessage(requestId, JSON.stringify(answers)))}\n`;
+  const payload = `${JSON.stringify(
+    buildClaudeToolResultMessage(requestId, buildRequestUserInputToolResultContent(questions, answers)),
+  )}\n`;
   activeRun.runtime.child.stdin.write(payload, (error) => {
     if (error) {
       const message = `写入 Claude Code 提问答案失败：${error.message}`;
@@ -887,6 +894,66 @@ function isRuntimeCompatible(runtime: ClaudeRuntime, input: StreamInput) {
     runtime.model === input.model &&
     (!requestedSessionId || !runtime.sessionId || runtime.sessionId === requestedSessionId)
   );
+}
+
+function buildRequestUserInputToolResultContent(
+  questions: RequestUserInputQuestion[],
+  answers: Record<string, string>,
+) {
+  return JSON.stringify({
+    questions,
+    answers: buildRequestUserInputResponseAnswers(questions, answers),
+  });
+}
+
+function buildRequestUserInputResponseAnswers(
+  questions: RequestUserInputQuestion[],
+  answers: Record<string, string>,
+) {
+  const responseAnswers: Record<string, string> = {};
+
+  questions.forEach((question, index) => {
+    const key = question.id ?? `question-${index}`;
+    const answer = answers[key]?.trim();
+    if (!answer) {
+      return;
+    }
+
+    responseAnswers[question.question] = normalizeRequestUserInputAnswerValue(question, answer);
+  });
+
+  return responseAnswers;
+}
+
+function normalizeRequestUserInputAnswerValue(
+  question: RequestUserInputQuestion,
+  answer: string,
+) {
+  if (!question.options?.length) {
+    return answer;
+  }
+
+  const optionLabels = new Set(question.options.map((option) => option.label));
+  const parts = answer
+    .split('\n')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const selectedLabels = parts.filter((part) => optionLabels.has(part));
+  const freeText = parts.filter((part) => !optionLabels.has(part)).join('\n').trim();
+
+  if (question.isOther && freeText) {
+    return freeText;
+  }
+
+  if (question.multiSelect) {
+    return selectedLabels.join(', ');
+  }
+
+  if (selectedLabels[0]) {
+    return selectedLabels[0];
+  }
+
+  return freeText || answer;
 }
 
 function isRuntimeProcessAlive(runtime: ClaudeRuntime) {

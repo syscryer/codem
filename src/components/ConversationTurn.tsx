@@ -8,6 +8,10 @@ import {
   shouldHideToolStep,
   summarizeToolRow,
 } from '../lib/conversation';
+import {
+  buildConversationPreviewRequest,
+  collectConversationChangedFiles,
+} from '../lib/conversation-preview-shortcuts';
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -16,8 +20,10 @@ import type {
   RequestUserInputRequest,
   RuntimeRecoveryHint,
   RuntimeSuggestedAction,
+  SystemCommandItem,
   ToolStep,
   UserImageAttachment,
+  WorkbenchPreviewRequest,
 } from '../types';
 
 function ConversationTurnViewComponent({
@@ -25,6 +31,7 @@ function ConversationTurnViewComponent({
   nowMs,
   isLiveRunning,
   isLatest,
+  onOpenWorkbenchPreview,
   onSubmitRequestUserInput,
   onSubmitRuntimeRecoveryAction,
   onSubmitApprovalDecision,
@@ -33,6 +40,7 @@ function ConversationTurnViewComponent({
   nowMs: number;
   isLiveRunning: boolean;
   isLatest: boolean;
+  onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onSubmitRequestUserInput: (
     turn: ConversationTurn,
     request: RequestUserInputRequest,
@@ -70,13 +78,14 @@ function ConversationTurnViewComponent({
     return ids;
   }, [requestCardsByToolId, turn.items]);
   const visibleItems = turn.items.filter((item) => {
-    if (item.type === 'text' || item.type === 'thinking') {
+    if (item.type === 'text' || item.type === 'thinking' || item.type === 'system-command') {
       return true;
     }
 
     return !shouldHideTurnToolStep(turn, item.tool) || Boolean(getToolAnchoredRequest(item.tool, requestCardsByToolId));
   });
   const groupedVisibleItems = useMemo(() => groupReadToolItems(visibleItems), [visibleItems]);
+  const changedFiles = useMemo(() => collectConversationChangedFiles(turn.tools), [turn.tools]);
   const showProgressLine =
     running ||
     turn.status === 'stopped' ||
@@ -114,6 +123,13 @@ function ConversationTurnViewComponent({
             <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
           ) : null}
 
+          {changedFiles.length > 0 ? (
+            <ChangedFilesSummaryCard
+              files={changedFiles}
+              onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+            />
+          ) : null}
+
           {groupedVisibleItems.length > 0 ? (
             groupedVisibleItems.map((item) => {
               if (item.type === 'text') {
@@ -122,6 +138,10 @@ function ConversationTurnViewComponent({
 
               if (item.type === 'thinking') {
                 return <ThinkingMessage key={item.id} content={item.text} />;
+              }
+
+              if (item.type === 'system-command') {
+                return <SystemCommandCard key={item.id} item={item} />;
               }
 
               if (item.type === 'read-group') {
@@ -135,6 +155,7 @@ function ConversationTurnViewComponent({
                   turn={turn}
                   turnInFlight={running}
                   requestCardsByToolId={requestCardsByToolId}
+                  onOpenWorkbenchPreview={onOpenWorkbenchPreview}
                   onSubmitRequestUserInput={onSubmitRequestUserInput}
                 />
               );
@@ -260,6 +281,30 @@ function ThinkingMessage({ content }: { content: string }) {
   );
 }
 
+function SystemCommandCard({ item }: { item: SystemCommandItem }) {
+  const detailText = formatSystemCommandDetails(item.details);
+
+  return (
+    <section className={`system-command-card is-${item.state}`}>
+      <div className="system-command-card-head">
+        <div className="system-command-card-heading">
+          <strong>{item.title}</strong>
+          <code>{item.command}</code>
+        </div>
+        <span className="system-command-card-state">{formatSystemCommandState(item.state)}</span>
+      </div>
+      {item.summary ? <div className="system-command-card-summary preserve-format">{item.summary}</div> : null}
+      {item.errorMessage ? <div className="system-command-card-error preserve-format">{item.errorMessage}</div> : null}
+      {detailText ? (
+        <details className="system-command-card-details">
+          <summary>详情</summary>
+          <pre>{detailText}</pre>
+        </details>
+      ) : null}
+    </section>
+  );
+}
+
 export const ConversationTurnView = memo(ConversationTurnViewComponent);
 
 function UserAttachmentGallery({ attachments }: { attachments: UserImageAttachment[] }) {
@@ -332,12 +377,14 @@ function ToolItemWithAnchoredCards({
   turn,
   turnInFlight,
   requestCardsByToolId,
+  onOpenWorkbenchPreview,
   onSubmitRequestUserInput,
 }: {
   tool: ToolStep;
   turn: ConversationTurn;
   turnInFlight: boolean;
   requestCardsByToolId: Map<string, RequestUserInputRequest>;
+  onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onSubmitRequestUserInput: (
     turn: ConversationTurn,
     request: RequestUserInputRequest,
@@ -348,7 +395,9 @@ function ToolItemWithAnchoredCards({
 
   return (
     <>
-      {!shouldHideTurnToolStep(turn, tool) ? <ToolStepRow tool={tool} /> : null}
+      {!shouldHideTurnToolStep(turn, tool) ? (
+        <ToolStepRow tool={tool} onOpenWorkbenchPreview={onOpenWorkbenchPreview} />
+      ) : null}
       {request ? (
         <RequestUserInputCard
           request={request}
@@ -361,7 +410,13 @@ function ToolItemWithAnchoredCards({
   );
 }
 
-function ToolStepRow({ tool }: { tool: ToolStep }) {
+function ToolStepRow({
+  tool,
+  onOpenWorkbenchPreview,
+}: {
+  tool: ToolStep;
+  onOpenWorkbenchPreview?: (request: WorkbenchPreviewRequest) => void;
+}) {
   const preview = useMemo(() => getToolPreview(tool), [tool]);
   const todoPreview = useMemo(() => getTodoWritePreview(tool), [tool]);
   const agentPreview = useMemo(() => getAgentTaskPreview(tool), [tool]);
@@ -376,7 +431,13 @@ function ToolStepRow({ tool }: { tool: ToolStep }) {
   }
 
   if (preview) {
-    return <CompactToolPreview tool={tool} preview={preview} />;
+    return (
+      <CompactToolPreview
+        tool={tool}
+        preview={preview}
+        onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+      />
+    );
   }
 
   if (structuredPreview) {
@@ -407,7 +468,12 @@ function ToolStepRow({ tool }: { tool: ToolStep }) {
               <pre>{tool.resultText}</pre>
             </>
           ) : null}
-          {detailsOpen && preview ? <ToolPreviewPanel preview={preview} /> : null}
+          {detailsOpen && preview ? (
+            <ToolPreviewPanel
+              preview={preview}
+              onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+            />
+          ) : null}
         </details>
       ) : (
         <div className="tool-step-main">
@@ -425,40 +491,78 @@ function ToolStepRow({ tool }: { tool: ToolStep }) {
 function CompactToolPreview({
   tool,
   preview,
+  onOpenWorkbenchPreview,
 }: {
   tool: ToolStep;
   preview: ToolPreview;
+  onOpenWorkbenchPreview?: (request: WorkbenchPreviewRequest) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const request = buildConversationPreviewRequest(preview);
 
   return (
     <div className={`tool-step tool-preview-step tool-${tool.status}`}>
-      <button
-        type="button"
-        className="tool-preview-summary"
-        onClick={() => setExpanded((current) => !current)}
-      >
-        <div className="tool-preview-summary-main">
-          <span className="tool-preview-kind">{getToolPreviewTitle(preview)}</span>
-          {preview.additions > 0 ? <span className="tool-preview-add">+{preview.additions}</span> : null}
-          {preview.deletions > 0 ? <span className="tool-preview-del">-{preview.deletions}</span> : null}
-          <span className="tool-preview-name">{preview.fileName}</span>
-        </div>
-        <span className={`tool-preview-chevron ${expanded ? 'expanded' : ''}`}>{'>'}</span>
-      </button>
-      {expanded ? <ToolPreviewPanel preview={preview} /> : null}
+      <div className="tool-preview-summary-row">
+        <button
+          type="button"
+          className="tool-preview-summary"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <div className="tool-preview-summary-main">
+            <span className="tool-preview-kind">{getToolPreviewTitle(preview)}</span>
+            {preview.additions > 0 ? <span className="tool-preview-add">+{preview.additions}</span> : null}
+            {preview.deletions > 0 ? <span className="tool-preview-del">-{preview.deletions}</span> : null}
+            <span className="tool-preview-name">{preview.fileName}</span>
+          </div>
+          <span className={`tool-preview-chevron ${expanded ? 'expanded' : ''}`}>{'>'}</span>
+        </button>
+        {request && onOpenWorkbenchPreview ? (
+          <button
+            type="button"
+            className="tool-preview-open-button"
+            onClick={() => onOpenWorkbenchPreview(request)}
+          >
+            打开
+          </button>
+        ) : null}
+      </div>
+      {expanded ? (
+        <ToolPreviewPanel
+          preview={preview}
+          onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+        />
+      ) : null}
     </div>
   );
 }
 
-function ToolPreviewPanel({ preview }: { preview: ToolPreview }) {
+function ToolPreviewPanel({
+  preview,
+  onOpenWorkbenchPreview,
+}: {
+  preview: ToolPreview;
+  onOpenWorkbenchPreview?: (request: WorkbenchPreviewRequest) => void;
+}) {
+  const request = buildConversationPreviewRequest(preview);
+
   return (
     <div className="tool-preview-card">
       <div className="tool-preview-card-head">
         <span className="tool-preview-file">{preview.fileName}</span>
-        <div className="tool-preview-stats">
-          {preview.additions > 0 ? <span className="tool-preview-add">+{preview.additions}</span> : null}
-          {preview.deletions > 0 ? <span className="tool-preview-del">-{preview.deletions}</span> : null}
+        <div className="tool-preview-card-actions">
+          <div className="tool-preview-stats">
+            {preview.additions > 0 ? <span className="tool-preview-add">+{preview.additions}</span> : null}
+            {preview.deletions > 0 ? <span className="tool-preview-del">-{preview.deletions}</span> : null}
+          </div>
+          {request && onOpenWorkbenchPreview ? (
+            <button
+              type="button"
+              className="tool-preview-link-button"
+              onClick={() => onOpenWorkbenchPreview(request)}
+            >
+              在右侧预览
+            </button>
+          ) : null}
         </div>
       </div>
       {preview.kind === 'write' ? (
@@ -474,6 +578,44 @@ function ToolPreviewPanel({ preview }: { preview: ToolPreview }) {
         </div>
       )}
     </div>
+  );
+}
+
+function ChangedFilesSummaryCard({
+  files,
+  onOpenWorkbenchPreview,
+}: {
+  files: Array<{ path: string; name: string }>;
+  onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
+}) {
+  return (
+    <section className="changed-files-summary-card">
+      <header className="changed-files-summary-head">
+        <strong>文件修改汇总</strong>
+        <span>{files.length} 个文件</span>
+      </header>
+      <div className="changed-files-summary-list">
+        {files.map((file) => (
+          <button
+            key={file.path}
+            type="button"
+            className="changed-files-summary-row"
+            onClick={() => {
+              const request = buildConversationPreviewRequest({
+                filePath: file.path,
+                fileName: file.name,
+              });
+              if (request) {
+                onOpenWorkbenchPreview(request);
+              }
+            }}
+          >
+            <span className="changed-files-summary-name">{file.name}</span>
+            <code className="changed-files-summary-path">{file.path}</code>
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -1204,12 +1346,87 @@ function getCompletedTurnLabel(turn: ConversationTurn) {
 
 function getAssistantCopyText(turn: ConversationTurn) {
   const visibleText = turn.items
-    .map((item) => (item.type === 'text' ? item.text : ''))
+    .map((item) => {
+      if (item.type === 'text') {
+        return item.text;
+      }
+      if (item.type === 'system-command') {
+        return [item.command, item.summary, item.errorMessage].filter(Boolean).join('\n');
+      }
+      return '';
+    })
     .filter(Boolean)
     .join('\n\n')
     .trim();
 
   return visibleText || turn.assistantText.trim();
+}
+
+function formatSystemCommandState(state: SystemCommandItem['state']) {
+  if (state === 'running') {
+    return '运行中';
+  }
+
+  if (state === 'error') {
+    return '失败';
+  }
+
+  return '已完成';
+}
+
+function formatSystemCommandDetails(details?: Record<string, unknown>) {
+  if (!details || Object.keys(details).length === 0) {
+    return '';
+  }
+
+  return Object.entries(details)
+    .map(([key, value]) => `${getSystemCommandDetailLabel(key)}: ${formatSystemCommandDetailValue(value)}`)
+    .join('\n');
+}
+
+function getSystemCommandDetailLabel(key: string) {
+  switch (key) {
+    case 'workspace':
+      return '工作目录';
+    case 'sessionId':
+      return 'Session';
+    case 'cli':
+      return 'Claude CLI';
+    case 'turnCount':
+      return '回合数';
+    case 'inputTokens':
+      return '输入 tokens';
+    case 'outputTokens':
+      return '输出 tokens';
+    case 'cacheCreationInputTokens':
+      return '缓存创建 tokens';
+    case 'cacheReadInputTokens':
+      return '缓存读取 tokens';
+    case 'totalTokens':
+      return '总 tokens';
+    case 'totalCostUsd':
+      return '总成本';
+    case 'runningTurnCount':
+      return '运行中回合';
+    default:
+      return key;
+  }
+}
+
+function formatSystemCommandDetailValue(value: unknown) {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? `${value}` : value.toFixed(4);
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (value == null) {
+    return '-';
+  }
+
+  return JSON.stringify(value, null, 2);
 }
 
 function formatThinkingLength(content: string) {
