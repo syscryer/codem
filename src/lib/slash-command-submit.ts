@@ -3,7 +3,7 @@ import type { SlashLineContext } from './slash-command-editor';
 
 export type SlashSubmissionResolution =
   | {
-      kind: 'clear-thread' | 'slash-help';
+      kind: 'clear-thread' | 'slash-help' | 'not-implemented';
       command: SlashCommand;
     }
   | null;
@@ -24,10 +24,14 @@ export function resolveSlashCommandSubmission(
     return null;
   }
 
-  return {
-    kind: command.localActionId === 'clear-thread' ? 'clear-thread' : 'slash-help',
-    command,
-  };
+  // 派发优先级:已实现的 kind 显式匹配,其它 local-action 一律按"待实现"提示
+  if (command.localActionId === 'clear-thread') {
+    return { kind: 'clear-thread', command };
+  }
+  if (command.localActionId === 'slash-help') {
+    return { kind: 'slash-help', command };
+  }
+  return { kind: 'not-implemented', command };
 }
 
 export function getSlashDismissResetKey(context: Pick<SlashLineContext, 'lineStart' | 'commandText'> | null) {

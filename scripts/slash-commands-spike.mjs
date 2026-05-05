@@ -124,7 +124,7 @@ function runAssertions(resolvedCommands, additionalRequiredSlashValues) {
   const brainstorming = findCommand(resolvedCommands, '/brainstorming');
 
   invariant(compact, 'Missing required slash command: /compact');
-  invariant(compact.action === 'passthrough', 'Expected /compact to use passthrough action');
+  invariant(compact.action === 'local-action', 'Expected /compact to use local-action');
   invariant(clear, 'Missing required slash command: /clear');
   invariant(clear.action === 'local-action', 'Expected /clear to use local-action');
   invariant(brainstorming, 'Missing required slash command: /brainstorming');

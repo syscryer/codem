@@ -21,13 +21,14 @@ test('openProjectInExplorer surfaces launcher failures', () => {
         '--input-type=module',
         '-e',
         `
-          const childProcess = await import('node:child_process');
-          const { mock } = await import('node:test');
-          mock.method(childProcess, 'spawnSync', () => ({
+          const { createRequire } = await import('node:module');
+          const require = createRequire(import.meta.url);
+          const childProcess = require('node:child_process');
+          childProcess.spawnSync = () => ({
             status: 1,
             stdout: '',
             stderr: 'explorer unavailable',
-          }));
+          });
 
           const { createProject, openProjectInExplorer } = await import('./server/lib/workspace-store.ts');
           const projectId = createProject(${JSON.stringify(repo)});

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import * as childProcess from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import {
   buildOpenTargetLaunch,
@@ -2119,7 +2119,7 @@ function readGitInfo(projectPath: string, includeDiff = false): GitInfo {
     };
   }
 
-  const workTreeCheck = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
+  const workTreeCheck = childProcess.spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
     cwd: projectPath,
     encoding: 'utf8',
     timeout: GIT_COMMAND_TIMEOUT_MS,
@@ -2134,7 +2134,7 @@ function readGitInfo(projectPath: string, includeDiff = false): GitInfo {
     };
   }
 
-  const branchResult = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+  const branchResult = childProcess.spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
     cwd: projectPath,
     encoding: 'utf8',
     timeout: GIT_COMMAND_TIMEOUT_MS,
@@ -2154,7 +2154,7 @@ function readGitDiff(projectPath: string): GitDiffSummary {
   let deletions = 0;
   let filesChanged = 0;
 
-  const diffResult = spawnSync('git', ['diff', '--numstat', 'HEAD', '--'], {
+  const diffResult = childProcess.spawnSync('git', ['diff', '--numstat', 'HEAD', '--'], {
     cwd: projectPath,
     encoding: 'utf8',
     timeout: GIT_COMMAND_TIMEOUT_MS,
@@ -2163,7 +2163,7 @@ function readGitDiff(projectPath: string): GitDiffSummary {
   const diffOutput =
     diffResult.status === 0
       ? diffResult.stdout
-      : spawnSync('git', ['diff', '--numstat', '--'], {
+      : childProcess.spawnSync('git', ['diff', '--numstat', '--'], {
           cwd: projectPath,
           encoding: 'utf8',
           timeout: GIT_COMMAND_TIMEOUT_MS,
@@ -2201,7 +2201,7 @@ function parseGitNumstatValue(value: string | undefined) {
 }
 
 function readUntrackedFiles(projectPath: string) {
-  const result = spawnSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
+  const result = childProcess.spawnSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
     cwd: projectPath,
     encoding: 'utf8',
     timeout: GIT_COMMAND_TIMEOUT_MS,
@@ -2557,7 +2557,7 @@ async function resolveRemoteTrackingRef(
 
 function runGitCommand(projectPath: string, args: string[]): Promise<GitCommandResult> {
   return new Promise((resolve) => {
-    const child = spawn('git', args, {
+    const child = childProcess.spawn('git', args, {
       cwd: projectPath,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -2678,7 +2678,7 @@ function resolveCommandPath(command: string) {
     return command;
   }
 
-  const result = spawnSync('where.exe', [command], {
+  const result = childProcess.spawnSync('where.exe', [command], {
     encoding: 'utf8',
     windowsHide: true,
   });
@@ -2699,15 +2699,7 @@ function startEditorProcess(command: string, args: string[] = []) {
 }
 
 function openDirectoryInExplorer(directoryPath: string) {
-  const child = spawn('explorer.exe', [directoryPath], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-
-  child.unref();
-
-  return null;
+  return startDetachedProcess('explorer.exe', [directoryPath]);
 }
 
 function startDetachedProcess(command: string, args: string[] = []) {
@@ -2718,7 +2710,7 @@ function startDetachedProcess(command: string, args: string[] = []) {
 $ErrorActionPreference = 'Stop'
 Start-Process -FilePath '${escapePowerShellString(command)}' -ArgumentList @(${argumentList})
 `.trim();
-  const result = spawnSync(
+  const result = childProcess.spawnSync(
     'powershell.exe',
     ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
     {

@@ -89,7 +89,7 @@ test('slash command spike keeps human-readable grouped output by default', () =>
     assert.match(result.stdout, /Slash command spike for:/);
     assert.match(result.stdout, /\[builtin\]\s+13/);
     assert.match(result.stdout, /\[app\]\s+2/);
-    assert.match(result.stdout, /\/compact \| action=passthrough/);
+    assert.match(result.stdout, /\/compact \| action=local-action/);
     assert.match(result.stdout, /\/clear \| action=local-action/);
   });
 });

@@ -798,7 +798,7 @@ export function useWorkspaceState() {
       return;
     }
 
-    showToast('已请求资源管理器打开项目');
+    showToast('已在资源管理器中打开项目');
   }
 
   async function handleOpenProjectInEditor(project: ProjectSummary, targetId?: string) {

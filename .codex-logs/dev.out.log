@@ -47,3 +47,6 @@
 [dev:server] cCodeM bridge listening at http://127.0.0.1:3001
 [dev:server] 01:15:02 [tsx] change in ./server\lib\slash-commands.ts Restarting...
 [dev:server] cCodeM bridge listening at http://127.0.0.1:3001
+[dev:server] 01:47:56 [tsx] change in ./server\lib\workspace-store.ts Rerunning...
+[dev:server] cCodeM bridge listening at http://127.0.0.1:3001
+[dev:web] [2m01:48:17[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.tsx[22m

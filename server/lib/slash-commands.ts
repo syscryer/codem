@@ -71,8 +71,9 @@ type ParsedMarkdownCommand = {
 
 const COMMAND_SCAN_DEPTH = 10;
 
-// Claude Code 官方内置命令,只列入支持非交互模式(-p / stream-json)的子集;
-// 其余 REPL-only 命令(如 /login /vim /add-dir)等待 local-action 改造后再补
+// Claude Code 官方内置命令清单。CLI 在 -p / stream-json 路径下不解析任何 slash 命令
+// (实测会被静默吞或当文本喂给模型),所以这些命令都标记为 local-action + 'not-implemented';
+// 后续逐个改造为 CodeM 自实现的 local-action,改造完毕的命令再切换 localActionId
 export function listBuiltinSlashCommands(): SlashCommand[] {
   return [
     {
@@ -82,10 +83,10 @@ export function listBuiltinSlashCommands(): SlashCommand[] {
       title: 'Compact Context',
       description: '把当前 Claude 会话压缩成更短的上下文。',
       source: 'builtin',
-      action: 'passthrough',
+      action: 'local-action',
+      localActionId: 'not-implemented',
       sourceLabel: 'Claude Code',
       category: 'session',
-      supportsNonInteractive: true,
       argumentHint: '[instructions]',
     },
     {
@@ -95,10 +96,10 @@ export function listBuiltinSlashCommands(): SlashCommand[] {
       title: 'Context Usage',
       description: '查看当前会话的上下文使用情况。',
       source: 'builtin',
-      action: 'passthrough',
+      action: 'local-action',
+      localActionId: 'not-implemented',
       sourceLabel: 'Claude Code',
       category: 'context',
-      supportsNonInteractive: true,
     },
     {
       id: 'builtin:/cost',
@@ -107,10 +108,10 @@ export function listBuiltinSlashCommands(): SlashCommand[] {
       title: 'Token Cost',
       description: '查看 Token 使用统计。',
       source: 'builtin',
-      action: 'passthrough',
+      action: 'local-action',
+      localActionId: 'not-implemented',
       sourceLabel: 'Claude Code',
       category: 'context',
-      supportsNonInteractive: true,
     },
     {
       id: 'builtin:/usage',
@@ -119,10 +120,10 @@ export function listBuiltinSlashCommands(): SlashCommand[] {
       title: 'Plan Usage',
       description: '查看订阅计划的用量限制。',
       source: 'builtin',
-      action: 'passthrough',
+      action: 'local-action',
+      localActionId: 'not-implemented',
       sourceLabel: 'Claude Code',
       category: 'context',
-      supportsNonInteractive: true,
     },
     {
       id: 'builtin:/stats',
@@ -131,10 +132,10 @@ export function listBuiltinSlashCommands(): SlashCommand[] {
       title: 'Usage Stats',
       description: '查看使用统计与历史。',
       source: 'builtin',
-      action: 'passthrough',
+      action: 'local-action',
+      localActionId: 'not-implemented',
       sourceLabel: 'Claude Code',
       category: 'context',
-      supportsNonInteractive: true,
     },
     {
       id: 'builtin:/status',
@@ -143,10 +144,10 @@ export function listBuiltinSlashCommands(): SlashCommand[] {
       title: 'Status',
       description: '显示版本和连接状态。',
       source: 'builtin',
-      action: 'passthrough',
+      action: 'local-action',
+      localActionId: 'not-implemented',
       sourceLabel: 'Claude Code',
       category: 'system',
-      supportsNonInteractive: true,
     },
     {
       id: 'builtin:/doctor',
@@ -155,10 +156,10 @@ export function listBuiltinSlashCommands(): SlashCommand[] {
       title: 'Doctor',
       description: '检查安装健康状态。',
       source: 'builtin',
-      action: 'passthrough',
+      action: 'local-action',
+      localActionId: 'not-implemented',
       sourceLabel: 'Claude Code',
       category: 'system',
-      supportsNonInteractive: true,
     },
     {
       id: 'builtin:/init',
@@ -167,10 +168,10 @@ export function listBuiltinSlashCommands(): SlashCommand[] {
       title: 'Init Project',
       description: '为当前项目生成 / 初始化 CLAUDE.md。',
       source: 'builtin',
-      action: 'passthrough',
+      action: 'local-action',
+      localActionId: 'not-implemented',
       sourceLabel: 'Claude Code',
       category: 'system',
-      supportsNonInteractive: true,
     },
     {
       id: 'builtin:/review',
@@ -179,10 +180,10 @@ export function listBuiltinSlashCommands(): SlashCommand[] {
       title: 'Review',
       description: '让 Claude 进入代码审查或审阅工作流。',
       source: 'builtin',
-      action: 'passthrough',
+      action: 'local-action',
+      localActionId: 'not-implemented',
       sourceLabel: 'Claude Code',
       category: 'git',
-      supportsNonInteractive: true,
     },
     {
       id: 'builtin:/security-review',
@@ -191,10 +192,10 @@ export function listBuiltinSlashCommands(): SlashCommand[] {
       title: 'Security Review',
       description: '执行安全审查。',
       source: 'builtin',
-      action: 'passthrough',
+      action: 'local-action',
+      localActionId: 'not-implemented',
       sourceLabel: 'Claude Code',
       category: 'git',
-      supportsNonInteractive: true,
     },
     {
       id: 'builtin:/pr-comments',
@@ -203,10 +204,10 @@ export function listBuiltinSlashCommands(): SlashCommand[] {
       title: 'PR Comments',
       description: '查看 PR 评论。',
       source: 'builtin',
-      action: 'passthrough',
+      action: 'local-action',
+      localActionId: 'not-implemented',
       sourceLabel: 'Claude Code',
       category: 'git',
-      supportsNonInteractive: true,
     },
     {
       id: 'builtin:/todos',
@@ -215,10 +216,10 @@ export function listBuiltinSlashCommands(): SlashCommand[] {
       title: 'Todos',
       description: '列出当前 TODO 项。',
       source: 'builtin',
-      action: 'passthrough',
+      action: 'local-action',
+      localActionId: 'not-implemented',
       sourceLabel: 'Claude Code',
       category: 'system',
-      supportsNonInteractive: true,
     },
     {
       id: 'builtin:/bashes',
@@ -227,10 +228,10 @@ export function listBuiltinSlashCommands(): SlashCommand[] {
       title: 'Background Tasks',
       description: '列出后台任务。',
       source: 'builtin',
-      action: 'passthrough',
+      action: 'local-action',
+      localActionId: 'not-implemented',
       sourceLabel: 'Claude Code',
       category: 'system',
-      supportsNonInteractive: true,
     },
   ];
 }

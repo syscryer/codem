@@ -134,6 +134,12 @@ export function Composer({
         showToast('Slash 命令支持内建、项目、自定义命令、Skill、MCP 和本地动作。', 'info');
         return;
       }
+
+      if (localActionResolution.kind === 'not-implemented') {
+        setDraft('');
+        showToast(`${localActionResolution.command.slash} 暂未实现,后续版本将提供本地行为。`, 'info');
+        return;
+      }
     }
 
     if (!submittedDraft.trim() && submittedAttachments.length === 0) {
@@ -257,6 +263,11 @@ export function Composer({
 
     if (command.localActionId === 'slash-help') {
       showToast('Slash 命令支持内建、项目、自定义命令、Skill、MCP 和本地动作。', 'info');
+      return;
+    }
+
+    if (command.localActionId === 'not-implemented') {
+      showToast(`${command.slash} 暂未实现,后续版本将提供本地行为。`, 'info');
     }
   }
 
