@@ -544,6 +544,7 @@ svg {
 }
 
 .sidebar-project-title {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -555,6 +556,36 @@ svg {
   color: #6e737a;
   font-size: 13px;
   cursor: pointer;
+}
+
+.sidebar-project-title[data-project-path]:hover::after,
+.sidebar-project-title[data-project-path]:focus-visible::after {
+  content: attr(data-project-path);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 30px;
+  z-index: 30;
+  width: max-content;
+  max-width: min(260px, calc(100vw - 72px));
+  padding: 7px 9px;
+  border: 1px solid rgba(214, 218, 224, 0.74);
+  border-radius: 8px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(246, 248, 250, 0.54)),
+    rgba(248, 250, 252, 0.88);
+  box-shadow:
+    0 12px 28px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  color: #5f6368;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
 }
 
 .sidebar-project-title span {
@@ -2465,10 +2496,21 @@ svg {
 }
 
 .system-command-card-heading strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
   color: var(--app-text-strong);
   font-size: 13px;
   font-weight: 600;
   line-height: 1.35;
+}
+
+.system-command-card-heading strong > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .system-command-card-heading code {
@@ -2547,6 +2589,14 @@ svg {
   gap: 6px;
 }
 
+.tui-progress .progress-type-icon {
+  color: #9aa1ab;
+}
+
+.tui-progress.running .progress-type-icon {
+  color: #397ec5;
+}
+
 .tui-progress.running .tui-progress-text {
   background: linear-gradient(
     90deg,
@@ -2591,7 +2641,8 @@ svg {
 
 .tool-step-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: 16px minmax(0, 1fr);
+  column-gap: 7px;
   align-items: start;
   width: 100%;
   max-width: 100%;
@@ -2604,6 +2655,28 @@ svg {
 
 .tool-status-dot {
   display: none;
+}
+
+.execution-type-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 16px;
+  color: #9aa1ab;
+}
+
+.tool-running .execution-type-icon {
+  color: #7a828d;
+}
+
+.tool-error .execution-type-icon,
+.system-command-card.is-error .execution-type-icon {
+  color: #b35a5f;
+}
+
+.system-command-card.is-running .execution-type-icon {
+  color: #397ec5;
 }
 
 .tool-title {
@@ -4201,8 +4274,8 @@ svg {
 }
 
 .composer-context-trigger {
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   display: inline-grid;
   place-items: center;
   padding: 0;
@@ -4218,16 +4291,16 @@ svg {
 }
 
 .composer-context-ring {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   display: inline-grid;
   place-items: center;
   border-radius: 999px;
 }
 
 .composer-context-ring-core {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   border-radius: 999px;
   background: #ffffff;
   box-shadow: inset 0 0 0 1px rgba(229, 231, 235, 0.92);

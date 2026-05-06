@@ -1,7 +1,25 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Check, Copy, ListChecks, Maximize2 } from 'lucide-react';
+import {
+  Bot,
+  Check,
+  CircleDollarSign,
+  CircleGauge,
+  ClipboardList,
+  Copy,
+  FilePenLine,
+  FileText,
+  Folder,
+  Globe2,
+  Image,
+  ListChecks,
+  Maximize2,
+  Search,
+  Sparkles,
+  SquareTerminal,
+  Wrench,
+} from 'lucide-react';
 import {
   formatDuration,
   hasTurnVisibleOutput,
@@ -236,8 +254,28 @@ function TurnProgressLine({
 
   return (
     <div className={`working-line tui-progress ${compact ? 'compact' : ''} ${running ? 'running' : ''}`}>
+      <TurnProgressIcon turn={turn} running={running} />
       <span className="tui-progress-text">{text}</span>
     </div>
+  );
+}
+
+function TurnProgressIcon({ turn, running }: { turn: ConversationTurn; running: boolean }) {
+  const Icon =
+    turn.status === 'error'
+      ? Wrench
+      : turn.phase === 'tool'
+        ? SquareTerminal
+        : turn.phase === 'thinking'
+          ? Sparkles
+          : running
+            ? CircleGauge
+            : Check;
+
+  return (
+    <span className="execution-type-icon progress-type-icon" aria-hidden="true">
+      <Icon size={13} />
+    </span>
   );
 }
 
@@ -283,12 +321,18 @@ function ThinkingMessage({ content }: { content: string }) {
 
 function SystemCommandCard({ item }: { item: SystemCommandItem }) {
   const detailText = formatSystemCommandDetails(item.details);
+  const Icon = getSystemCommandIcon(item.cardType);
 
   return (
     <section className={`system-command-card is-${item.state}`}>
       <div className="system-command-card-head">
         <div className="system-command-card-heading">
-          <strong>{item.title}</strong>
+          <strong>
+            <span className="execution-type-icon system-command-icon" aria-hidden="true">
+              <Icon size={13} />
+            </span>
+            <span>{item.title}</span>
+          </strong>
           <code>{item.command}</code>
         </div>
         <span className="system-command-card-state">{formatSystemCommandState(item.state)}</span>
@@ -353,7 +397,7 @@ function ReadToolsGroup({ tools }: { tools: ToolStep[] }) {
         className="tool-preview-summary read-group-summary"
         onClick={() => setExpanded((current) => !current)}
       >
-        <span className="tool-status-dot" />
+        <ToolTypeIcon toolName="Read" />
         <div className="tool-preview-summary-main read-group-summary-main">
           <span className="read-group-title">批量读取 {tools.length} 个文件</span>
           <span className="read-group-meta">{summary}</span>
@@ -453,6 +497,7 @@ function ToolStepRow({
       {hasDetails ? (
         <details className="tool-details tool-details-inline" onToggle={(event) => setDetailsOpen((event.target as HTMLDetailsElement).open)}>
           <summary className="tool-inline-summary">
+            <ToolTypeIcon toolName={tool.name} />
             <span className="tool-title">{displayTitle}</span>
             {summary ? <span className="tool-subtitle">{summary}</span> : null}
           </summary>
@@ -477,7 +522,7 @@ function ToolStepRow({
         </details>
       ) : (
         <div className="tool-step-main">
-          <span className="tool-status-dot" />
+          <ToolTypeIcon toolName={tool.name} />
           <div>
             <div className="tool-title">{displayTitle}</div>
             {summary ? <div className="tool-subtitle">{summary}</div> : null}
@@ -508,6 +553,7 @@ function CompactToolPreview({
           className="tool-preview-summary"
           onClick={() => setExpanded((current) => !current)}
         >
+          <ToolTypeIcon toolName={tool.name} />
           <div className="tool-preview-summary-main">
             <span className="tool-preview-kind">{getToolPreviewTitle(preview)}</span>
             {preview.additions > 0 ? <span className="tool-preview-add">+{preview.additions}</span> : null}
@@ -635,7 +681,7 @@ function AgentTaskPreview({
         className="tool-preview-summary agent-preview-summary"
         onClick={() => setExpanded((current) => !current)}
       >
-        <span className="tool-status-dot" />
+        <ToolTypeIcon toolName={tool.name} />
         <div className="tool-preview-summary-main agent-preview-summary-main">
           <span className="agent-preview-title">{tool.title}</span>
           <span className="agent-preview-meta">{preview.summary}</span>
@@ -706,7 +752,7 @@ function StructuredToolPreview({
         className="tool-preview-summary structured-preview-summary"
         onClick={() => setExpanded((current) => !current)}
       >
-        <span className="tool-status-dot" />
+        <ToolTypeIcon toolName={tool.name} />
         <div className="tool-preview-summary-main structured-preview-summary-main">
           <span className="structured-preview-title">{preview.title}</span>
           <span className="structured-preview-meta">{preview.summary}</span>
@@ -1360,6 +1406,76 @@ function getAssistantCopyText(turn: ConversationTurn) {
     .trim();
 
   return visibleText || turn.assistantText.trim();
+}
+
+function ToolTypeIcon({ toolName }: { toolName: string }) {
+  const Icon = getToolTypeIcon(toolName);
+  return (
+    <span className="execution-type-icon tool-type-icon" aria-hidden="true">
+      <Icon size={13} />
+    </span>
+  );
+}
+
+function getSystemCommandIcon(cardType: SystemCommandItem['cardType']) {
+  if (cardType === 'status') {
+    return CircleGauge;
+  }
+  if (cardType === 'context') {
+    return ClipboardList;
+  }
+  if (cardType === 'cost') {
+    return CircleDollarSign;
+  }
+  if (cardType === 'compact') {
+    return Sparkles;
+  }
+
+  return SquareTerminal;
+}
+
+function getToolTypeIcon(toolName: string) {
+  const normalized = toolName.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+
+  if (normalized === 'bash' || normalized === 'bashoutput' || normalized === 'killshell') {
+    return SquareTerminal;
+  }
+  if (normalized === 'read' || normalized === 'fileread' || normalized === 'notebookread') {
+    return FileText;
+  }
+  if (normalized === 'grep' || normalized === 'glob' || normalized === 'websearch') {
+    return Search;
+  }
+  if (normalized === 'ls' || normalized === 'listmcpresources' || normalized === 'readmcpresource') {
+    return Folder;
+  }
+  if (
+    normalized === 'edit' ||
+    normalized === 'multiedit' ||
+    normalized === 'write' ||
+    normalized === 'notebookedit' ||
+    normalized === 'fileedit' ||
+    normalized === 'filewrite'
+  ) {
+    return FilePenLine;
+  }
+  if (normalized === 'webfetch' || normalized === 'mcp') {
+    return Globe2;
+  }
+  if (normalized === 'viewimage') {
+    return Image;
+  }
+  if (normalized === 'todowrite' || normalized === 'todoread' || normalized === 'updateplan') {
+    return ListChecks;
+  }
+  if (normalized === 'agent' || normalized === 'task' || normalized === 'taskoutput') {
+    return Bot;
+  }
+  if (toolName.startsWith('mcp__')) {
+    return Wrench;
+  }
+
+  return Wrench;
 }
 
 function formatSystemCommandState(state: SystemCommandItem['state']) {

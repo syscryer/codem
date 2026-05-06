@@ -96,6 +96,7 @@ export function SidebarProjects({
   const [projectMenuProjectId, setProjectMenuProjectId] = useState<string | null>(null);
   const [projectMenuAnchor, setProjectMenuAnchor] = useState<{ x: number; y: number } | null>(null);
   const [threadMenuThreadId, setThreadMenuThreadId] = useState<string | null>(null);
+  const [threadMenuAnchor, setThreadMenuAnchor] = useState<{ x: number; y: number } | null>(null);
   const [expandedThreadProjects, setExpandedThreadProjects] = useState<Record<string, boolean>>({});
   const panelMenuRef = useRef<HTMLDivElement | null>(null);
   const addProjectMenuRef = useRef<HTMLDivElement | null>(null);
@@ -114,8 +115,16 @@ export function SidebarProjects({
 
   function openProjectMenu(projectId: string, anchor?: { x: number; y: number }) {
     setThreadMenuThreadId(null);
+    setThreadMenuAnchor(null);
     setProjectMenuAnchor(anchor ?? null);
     setProjectMenuProjectId(projectId);
+  }
+
+  function openThreadMenu(threadId: string, anchor?: { x: number; y: number }) {
+    setProjectMenuProjectId(null);
+    setProjectMenuAnchor(null);
+    setThreadMenuAnchor(anchor ?? null);
+    setThreadMenuThreadId(threadId);
   }
 
   function toggleCloneLog(taskId: string) {
@@ -294,6 +303,7 @@ export function SidebarProjects({
                   <button
                     type="button"
                     className="sidebar-project-title"
+                    data-project-path={project.path}
                     onClick={() => onToggleProjectCollapse(project.id)}
                   >
                     <span><Folder size={14} /></span>
@@ -362,6 +372,11 @@ export function SidebarProjects({
                         <div
                           key={thread.id}
                           className={`sidebar-thread-row ${thread.id === activeThreadId ? 'active' : ''}${isRunningThread ? ' running' : ''}`}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            openThreadMenu(thread.id, { x: event.clientX, y: event.clientY });
+                          }}
                         >
                           <button type="button" className="sidebar-thread" onClick={() => void onSelectThread(project.id, thread.id)}>
                             <span className="sidebar-thread-title">
@@ -375,11 +390,26 @@ export function SidebarProjects({
                             className="sidebar-row-action thread-row-action"
                             title="聊天菜单"
                             ref={threadMenuThreadId === thread.id ? threadMenuTriggerRef : undefined}
-                            onClick={() => setThreadMenuThreadId((value) => value === thread.id ? null : thread.id)}
+                            onClick={() => {
+                              setThreadMenuThreadId((value) => {
+                                if (value === thread.id && !threadMenuAnchor) {
+                                  return null;
+                                }
+                                setThreadMenuAnchor(null);
+                                setProjectMenuProjectId(null);
+                                setProjectMenuAnchor(null);
+                                return thread.id;
+                              });
+                            }}
                           >
                             <MoreHorizontal size={13} />
                           </button>
-                          <PopoverPortal open={threadMenuThreadId === thread.id} anchorRef={threadMenuTriggerRef} placement="bottom-end">
+                          <PopoverPortal
+                            open={threadMenuThreadId === thread.id}
+                            anchorRef={threadMenuTriggerRef}
+                            virtualAnchor={threadMenuThreadId === thread.id ? threadMenuAnchor : null}
+                            placement="bottom-end"
+                          >
                             <div className="workspace-menu thread-menu-popover">
                               <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); onOpenRenameThreadDialog(thread); }}>
                                 <Pencil size={14} />
