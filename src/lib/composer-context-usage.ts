@@ -67,11 +67,12 @@ export function buildComposerContextUsage(input: {
 function resolveLatestUsageBreakdown(turns: ConversationTurn[], totalTokens: number) {
   for (let index = turns.length - 1; index >= 0; index -= 1) {
     const turn = turns[index];
+    const source = turn.contextUsage ?? turn;
     const breakdown = {
-      inputTokens: turn.inputTokens ?? 0,
-      cacheCreationInputTokens: turn.cacheCreationInputTokens ?? 0,
-      cacheReadInputTokens: turn.cacheReadInputTokens ?? 0,
-      outputTokens: turn.outputTokens ?? 0,
+      inputTokens: source.inputTokens ?? 0,
+      cacheCreationInputTokens: source.cacheCreationInputTokens ?? 0,
+      cacheReadInputTokens: source.cacheReadInputTokens ?? 0,
+      outputTokens: source.outputTokens ?? 0,
     };
     const currentTokens = breakdown.inputTokens + breakdown.cacheCreationInputTokens + breakdown.cacheReadInputTokens;
 

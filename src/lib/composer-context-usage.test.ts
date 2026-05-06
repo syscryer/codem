@@ -57,3 +57,27 @@ const onlyImplausibleUsage = buildComposerContextUsage({
 
 assert.equal(onlyImplausibleUsage.hasUsage, false);
 assert.equal(onlyImplausibleUsage.usedTokens, 0);
+
+const usageWithResultStats = buildComposerContextUsage({
+  agent: 'claude',
+  model: '__default',
+  turns: [
+    turn({
+      id: 'turn-with-result-stats',
+      inputTokens: 17_994,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 1_418_240,
+      outputTokens: 4_353,
+      contextUsage: {
+        inputTokens: 1,
+        cacheCreationInputTokens: 128_461,
+        cacheReadInputTokens: 0,
+        outputTokens: 1_589,
+        usageSource: 'message',
+      },
+    }),
+  ],
+});
+
+assert.equal(usageWithResultStats.usedTokens, 128_462);
+assert.equal(usageWithResultStats.breakdown.outputTokens, 1_589);

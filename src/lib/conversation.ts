@@ -441,12 +441,29 @@ export function settleRunningToolSteps(
 }
 
 export function mergeUsageSnapshot(turn: ConversationTurn, snapshot: UsageSnapshot): Partial<ConversationTurn> {
+  const nextContextUsage =
+    snapshot.usageSource === 'result'
+      ? turn.contextUsage
+      : hasUsageTokenSnapshot(snapshot)
+        ? snapshot
+        : turn.contextUsage;
+
   return {
     inputTokens: snapshot.inputTokens ?? turn.inputTokens,
     outputTokens: snapshot.outputTokens ?? turn.outputTokens,
     cacheCreationInputTokens: snapshot.cacheCreationInputTokens ?? turn.cacheCreationInputTokens,
     cacheReadInputTokens: snapshot.cacheReadInputTokens ?? turn.cacheReadInputTokens,
+    contextUsage: nextContextUsage,
   };
+}
+
+function hasUsageTokenSnapshot(snapshot: UsageSnapshot) {
+  return (
+    snapshot.inputTokens !== undefined ||
+    snapshot.outputTokens !== undefined ||
+    snapshot.cacheCreationInputTokens !== undefined ||
+    snapshot.cacheReadInputTokens !== undefined
+  );
 }
 
 export function getElapsedDuration(turn: ConversationTurn) {

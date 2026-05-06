@@ -24,6 +24,7 @@ export type UsageSnapshot = {
   outputTokens?: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
+  usageSource?: 'context' | 'message' | 'result';
 };
 
 export type RuntimeReconnectReason =
@@ -175,6 +176,7 @@ export type ConversationTurn = {
   outputTokens?: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
+  contextUsage?: UsageSnapshot;
   totalCostUsd?: number;
   thoughtCount?: number;
   pendingUserInputRequests?: RequestUserInputRequest[];

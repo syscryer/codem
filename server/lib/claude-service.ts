@@ -60,6 +60,7 @@ type ClaudeUsage = {
   outputTokens?: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
+  usageSource?: 'context' | 'message' | 'result';
 };
 
 type RuntimeReconnectReason =
@@ -161,6 +162,10 @@ type ClaudeJsonLine = {
   duration_ms?: number;
   total_cost_usd?: number;
   usage?: ClaudeRawUsage;
+  context_window?: {
+    current_usage?: ClaudeRawUsage;
+    context_window_size?: number;
+  };
   message?: {
     role?: string;
     model?: string;
@@ -1639,7 +1644,7 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
   }
 
   if (payload.type === 'result') {
-    const usage = normalizeUsage(payload.usage);
+    const usage = normalizeUsage(payload.usage, 'result');
     if (usage) {
       enqueue({
         type: 'usage',
@@ -1715,18 +1720,22 @@ function closeClaudeRuntime(runtime: ClaudeRuntime) {
 
 function extractUsage(payload: ClaudeJsonLine) {
   return (
-    normalizeUsage(payload.event?.usage) ??
-    normalizeUsage(payload.event?.message?.usage) ??
-    normalizeUsage(payload.message?.usage)
+    normalizeUsage(payload.context_window?.current_usage, 'context') ??
+    normalizeUsage(payload.event?.usage, 'message') ??
+    normalizeUsage(payload.event?.message?.usage, 'message') ??
+    normalizeUsage(payload.message?.usage, 'message')
   );
 }
 
-function normalizeUsage(usage?: ClaudeRawUsage) {
+function normalizeUsage(usage?: ClaudeRawUsage, usageSource?: ClaudeUsage['usageSource']) {
   if (!usage) {
     return undefined;
   }
 
   const next: ClaudeUsage = {};
+  if (usageSource) {
+    next.usageSource = usageSource;
+  }
   if (typeof usage.input_tokens === 'number') {
     next.inputTokens = usage.input_tokens;
   }
@@ -1740,7 +1749,12 @@ function normalizeUsage(usage?: ClaudeRawUsage) {
     next.cacheReadInputTokens = usage.cache_read_input_tokens;
   }
 
-  return Object.keys(next).length > 0 ? next : undefined;
+  return next.inputTokens !== undefined ||
+    next.outputTokens !== undefined ||
+    next.cacheCreationInputTokens !== undefined ||
+    next.cacheReadInputTokens !== undefined
+    ? next
+    : undefined;
 }
 
 function resolveClaudeCommand() {

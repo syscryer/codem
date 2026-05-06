@@ -102,6 +102,13 @@ export type ThreadTurn = {
   outputTokens?: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
+  contextUsage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheCreationInputTokens?: number;
+    cacheReadInputTokens?: number;
+    usageSource?: 'context' | 'message' | 'result';
+  };
   totalCostUsd?: number;
   items: Array<
     | { id: string; type: 'text'; text: string }
@@ -279,6 +286,7 @@ type StoredMessageRow = {
   output_tokens: number | null;
   cache_creation_input_tokens: number | null;
   cache_read_input_tokens: number | null;
+  context_usage_json: string | null;
   total_cost_usd: number | null;
   pending_approval_requests_json: string | null;
   user_attachments_json: string | null;
@@ -762,9 +770,9 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
     INSERT INTO messages (
       id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics, session_id,
       phase, started_at_ms, duration_ms, input_tokens, output_tokens, cache_creation_input_tokens,
-      cache_read_input_tokens, total_cost_usd, pending_approval_requests_json, user_attachments_json, created_at
+      cache_read_input_tokens, context_usage_json, total_cost_usd, pending_approval_requests_json, user_attachments_json, created_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertToolCall = db.prepare(`
     INSERT INTO tool_calls (
@@ -800,6 +808,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
         turn.outputTokens ?? null,
         turn.cacheCreationInputTokens ?? null,
         turn.cacheReadInputTokens ?? null,
+        serializeContextUsage(turn.contextUsage),
         turn.totalCostUsd ?? null,
         serializePendingApprovalRequests(turn.pendingApprovalRequests),
         serializeUserAttachments(turn.userAttachments),
@@ -1202,6 +1211,7 @@ function initializeDatabase() {
       output_tokens INTEGER,
       cache_creation_input_tokens INTEGER,
       cache_read_input_tokens INTEGER,
+      context_usage_json TEXT,
       total_cost_usd REAL,
       pending_approval_requests_json TEXT,
       user_attachments_json TEXT,
@@ -1248,6 +1258,7 @@ function initializeDatabase() {
   ensureColumn('messages', 'output_tokens', 'INTEGER');
   ensureColumn('messages', 'cache_creation_input_tokens', 'INTEGER');
   ensureColumn('messages', 'cache_read_input_tokens', 'INTEGER');
+  ensureColumn('messages', 'context_usage_json', 'TEXT');
   ensureColumn('messages', 'total_cost_usd', 'REAL');
   ensureColumn('messages', 'pending_approval_requests_json', 'TEXT');
   ensureColumn('messages', 'user_attachments_json', 'TEXT');
@@ -1850,16 +1861,38 @@ function applyTranscriptMetrics(
   payload: Record<string, unknown>,
   message?: Record<string, unknown>,
 ) {
+  const contextWindow = asRecord(payload.context_window);
+  const currentUsage = asRecord(contextWindow?.current_usage);
+  if (currentUsage) {
+    turn.contextUsage = readContextUsageFromRaw(currentUsage, 'context') ?? turn.contextUsage;
+  }
+
   const usage = asRecord(payload.usage) ?? asRecord(message?.usage);
   if (usage) {
     turn.inputTokens = readNumber(usage, ['input_tokens']) ?? turn.inputTokens;
     turn.outputTokens = readNumber(usage, ['output_tokens']) ?? turn.outputTokens;
     turn.cacheCreationInputTokens = readNumber(usage, ['cache_creation_input_tokens']) ?? turn.cacheCreationInputTokens;
     turn.cacheReadInputTokens = readNumber(usage, ['cache_read_input_tokens']) ?? turn.cacheReadInputTokens;
+    if (payload.type !== 'result' && !currentUsage) {
+      turn.contextUsage = readContextUsageFromRaw(usage, 'message') ?? turn.contextUsage;
+    }
   }
 
   turn.durationMs = readNumber(payload, ['duration_ms']) ?? turn.durationMs;
   turn.totalCostUsd = readNumber(payload, ['total_cost_usd']) ?? turn.totalCostUsd;
+}
+
+function readContextUsageFromRaw(
+  usage: Record<string, unknown>,
+  usageSource: NonNullable<ThreadTurn['contextUsage']>['usageSource'],
+): ThreadTurn['contextUsage'] | undefined {
+  return normalizeContextUsage({
+    inputTokens: readNumber(usage, ['input_tokens']),
+    outputTokens: readNumber(usage, ['output_tokens']),
+    cacheCreationInputTokens: readNumber(usage, ['cache_creation_input_tokens']),
+    cacheReadInputTokens: readNumber(usage, ['cache_read_input_tokens']),
+    usageSource,
+  });
 }
 
 function findTurnByToolUseId(turns: ThreadTurn[], toolUseId: string) {
@@ -1896,7 +1929,7 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
   const messageRows = db
     .prepare(`
       SELECT id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics, session_id, created_at
-      , phase, started_at_ms, duration_ms, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_cost_usd, pending_approval_requests_json, user_attachments_json
+      , phase, started_at_ms, duration_ms, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, context_usage_json, total_cost_usd, pending_approval_requests_json, user_attachments_json
       FROM messages
       WHERE thread_id = ?
       ORDER BY turn_sort ASC, item_sort ASC, CASE role WHEN 'user' THEN 0 ELSE 1 END ASC
@@ -1936,6 +1969,7 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
         outputTokens: row.output_tokens ?? undefined,
         cacheCreationInputTokens: row.cache_creation_input_tokens ?? undefined,
         cacheReadInputTokens: row.cache_read_input_tokens ?? undefined,
+        contextUsage: parseContextUsage(row.context_usage_json),
         totalCostUsd: row.total_cost_usd ?? undefined,
         items: [],
         tools: [],
@@ -1959,6 +1993,7 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
     turn.outputTokens = row.output_tokens ?? turn.outputTokens;
     turn.cacheCreationInputTokens = row.cache_creation_input_tokens ?? turn.cacheCreationInputTokens;
     turn.cacheReadInputTokens = row.cache_read_input_tokens ?? turn.cacheReadInputTokens;
+    turn.contextUsage = parseContextUsage(row.context_usage_json) ?? turn.contextUsage;
     turn.totalCostUsd = row.total_cost_usd ?? turn.totalCostUsd;
     turn.pendingApprovalRequests =
       parseStoredApprovalRequests(row.pending_approval_requests_json) ?? turn.pendingApprovalRequests;
@@ -2091,6 +2126,7 @@ function mergeStoredTurnMetrics(storedTurns: ThreadTurn[], reparsedTurns: Thread
       outputTokens: turn.outputTokens ?? stored.outputTokens,
       cacheCreationInputTokens: turn.cacheCreationInputTokens ?? stored.cacheCreationInputTokens,
       cacheReadInputTokens: turn.cacheReadInputTokens ?? stored.cacheReadInputTokens,
+      contextUsage: turn.contextUsage ?? stored.contextUsage,
       totalCostUsd: turn.totalCostUsd ?? stored.totalCostUsd,
       durationMs: turn.durationMs ?? stored.durationMs,
     };
@@ -3330,6 +3366,50 @@ function parseStoredApprovalRequests(value: string | null): ApprovalRequest[] | 
   } catch {
     return undefined;
   }
+}
+
+function serializeContextUsage(usage: ThreadTurn['contextUsage']) {
+  const normalized = normalizeContextUsage(usage);
+  return normalized ? JSON.stringify(normalized) : null;
+}
+
+function parseContextUsage(value: string | null): ThreadTurn['contextUsage'] | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  try {
+    return normalizeContextUsage(JSON.parse(value));
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeContextUsage(value: unknown): ThreadTurn['contextUsage'] | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const usage: NonNullable<ThreadTurn['contextUsage']> = {};
+  const inputTokens = readNumber(record, ['inputTokens']);
+  const outputTokens = readNumber(record, ['outputTokens']);
+  const cacheCreationInputTokens = readNumber(record, ['cacheCreationInputTokens']);
+  const cacheReadInputTokens = readNumber(record, ['cacheReadInputTokens']);
+  if (inputTokens !== undefined) usage.inputTokens = inputTokens;
+  if (outputTokens !== undefined) usage.outputTokens = outputTokens;
+  if (cacheCreationInputTokens !== undefined) usage.cacheCreationInputTokens = cacheCreationInputTokens;
+  if (cacheReadInputTokens !== undefined) usage.cacheReadInputTokens = cacheReadInputTokens;
+  if (record.usageSource === 'context' || record.usageSource === 'message') {
+    usage.usageSource = record.usageSource;
+  }
+
+  return usage.inputTokens !== undefined ||
+    usage.outputTokens !== undefined ||
+    usage.cacheCreationInputTokens !== undefined ||
+    usage.cacheReadInputTokens !== undefined
+    ? usage
+    : undefined;
 }
 
 function serializeUserAttachments(attachments: UserImageAttachment[] | undefined) {
