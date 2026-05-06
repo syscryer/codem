@@ -2,8 +2,10 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
+  ArrowUpRight,
   Bot,
   Check,
+  ChevronDown,
   CircleDollarSign,
   CircleGauge,
   ClipboardList,
@@ -15,6 +17,7 @@ import {
   Image,
   ListChecks,
   Maximize2,
+  RotateCcw,
   Search,
   Sparkles,
   SquareTerminal,
@@ -28,7 +31,6 @@ import {
 } from '../lib/conversation';
 import {
   buildConversationPreviewRequest,
-  collectConversationChangedFiles,
 } from '../lib/conversation-preview-shortcuts';
 import type {
   ApprovalDecision,
@@ -103,7 +105,7 @@ function ConversationTurnViewComponent({
     return !shouldHideTurnToolStep(turn, item.tool) || Boolean(getToolAnchoredRequest(item.tool, requestCardsByToolId));
   });
   const groupedVisibleItems = useMemo(() => groupReadToolItems(visibleItems), [visibleItems]);
-  const changedFiles = useMemo(() => collectConversationChangedFiles(turn.tools), [turn.tools]);
+  const changedFileGroups = useMemo(() => collectConversationChangedFileGroups(turn.tools), [turn.tools]);
   const showProgressLine =
     running ||
     turn.status === 'stopped' ||
@@ -139,13 +141,6 @@ function ConversationTurnViewComponent({
         <div className="assistant-content">
           {showLeadingProgressLine ? (
             <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
-          ) : null}
-
-          {changedFiles.length > 0 ? (
-            <ChangedFilesSummaryCard
-              files={changedFiles}
-              onOpenWorkbenchPreview={onOpenWorkbenchPreview}
-            />
           ) : null}
 
           {groupedVisibleItems.length > 0 ? (
@@ -186,6 +181,10 @@ function ConversationTurnViewComponent({
 
           {showTrailingProgressLine ? (
             <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
+          ) : null}
+
+          {changedFileGroups.length > 0 ? (
+            <ChangedFilesSummaryCard files={changedFileGroups} />
           ) : null}
 
           {turn.pendingUserInputRequests?.map((request, index) => {
@@ -630,41 +629,110 @@ function ToolPreviewPanel({
   );
 }
 
-function ChangedFilesSummaryCard({
-  files,
-  onOpenWorkbenchPreview,
-}: {
-  files: Array<{ path: string; name: string }>;
-  onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
-}) {
+function ChangedFilesSummaryCard({ files }: { files: ChangedFilePreviewGroup[] }) {
+  const [expandedFilePaths, setExpandedFilePaths] = useState<string[]>([]);
+  const totals = useMemo(
+    () =>
+      files.reduce(
+        (summary, file) => ({
+          additions: summary.additions + file.additions,
+          deletions: summary.deletions + file.deletions,
+        }),
+        { additions: 0, deletions: 0 },
+      ),
+    [files],
+  );
+
+  useEffect(() => {
+    setExpandedFilePaths((current) => {
+      const validPaths = new Set(files.map((file) => file.path));
+      const nextExpanded = current.filter((filePath) => validPaths.has(filePath));
+      if (nextExpanded.length > 0 || !files[0]) {
+        return nextExpanded;
+      }
+
+      return [files[0].path];
+    });
+  }, [files]);
+
+  function toggleFile(filePath: string) {
+    setExpandedFilePaths((current) =>
+      current.includes(filePath)
+        ? current.filter((item) => item !== filePath)
+        : [...current, filePath],
+    );
+  }
+
   return (
     <section className="changed-files-summary-card">
       <header className="changed-files-summary-head">
-        <strong>文件修改汇总</strong>
-        <span>{files.length} 个文件</span>
+        <div className="changed-files-summary-title">
+          <strong>{files.length} 个文件已更改</strong>
+          {totals.additions > 0 ? <span className="tool-preview-add">+{totals.additions}</span> : null}
+          {totals.deletions > 0 ? <span className="tool-preview-del">-{totals.deletions}</span> : null}
+        </div>
+        <div className="changed-files-summary-actions" aria-label="文件汇总操作">
+          <span><RotateCcw size={14} />撤销</span>
+          <span>审核<ArrowUpRight size={14} /></span>
+          <span aria-label="展开视图"><Maximize2 size={14} /></span>
+        </div>
       </header>
       <div className="changed-files-summary-list">
-        {files.map((file) => (
-          <button
-            key={file.path}
-            type="button"
-            className="changed-files-summary-row"
-            onClick={() => {
-              const request = buildConversationPreviewRequest({
-                filePath: file.path,
-                fileName: file.name,
-              });
-              if (request) {
-                onOpenWorkbenchPreview(request);
-              }
-            }}
-          >
-            <span className="changed-files-summary-name">{file.name}</span>
-            <code className="changed-files-summary-path">{file.path}</code>
-          </button>
-        ))}
+        {files.map((file) => {
+          const expanded = expandedFilePaths.includes(file.path);
+
+          return (
+            <article key={file.path} className={`changed-file-block${expanded ? ' expanded' : ''}`}>
+              <button
+                type="button"
+                className="changed-files-summary-row"
+                aria-expanded={expanded}
+                onClick={() => toggleFile(file.path)}
+              >
+                <span className="changed-files-summary-path">{formatChangedFilePath(file.path)}</span>
+                <span className="changed-files-summary-stats">
+                  {file.additions > 0 ? <span className="tool-preview-add">+{file.additions}</span> : null}
+                  {file.deletions > 0 ? <span className="tool-preview-del">-{file.deletions}</span> : null}
+                </span>
+                <ChevronDown className="changed-file-chevron" size={16} aria-hidden="true" />
+              </button>
+              {expanded ? <ChangedFileInlineDiff file={file} /> : null}
+            </article>
+          );
+        })}
       </div>
     </section>
+  );
+}
+
+function ChangedFileInlineDiff({ file }: { file: ChangedFilePreviewGroup }) {
+  return (
+    <div className="changed-file-diff-body">
+      {file.previews.map((preview, index) => (
+        <div key={`${preview.kind}-${index}`} className="changed-file-diff-fragment">
+          {file.previews.length > 1 ? (
+            <div className="changed-file-diff-fragment-head">
+              <span>{getToolPreviewTitle(preview)} {index + 1}</span>
+              <span>
+                {preview.additions > 0 ? `+${preview.additions}` : ''}
+                {preview.additions > 0 && preview.deletions > 0 ? ' ' : ''}
+                {preview.deletions > 0 ? `-${preview.deletions}` : ''}
+              </span>
+            </div>
+          ) : null}
+          <div className="changed-file-diff-code">
+            {buildNumberedDiffRows(preview).map((row, rowIndex) => (
+              <div key={`${row.type}-${rowIndex}`} className={`changed-file-diff-line ${row.type}`}>
+                <span className="changed-file-diff-line-no">
+                  {row.afterLine ?? row.beforeLine ?? ''}
+                </span>
+                <code>{row.text || ' '}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -1597,6 +1665,21 @@ type ToolPreview = {
   rows: Array<{ type: 'context' | 'add' | 'remove'; text: string }>;
 };
 
+type ChangedFilePreviewGroup = {
+  path: string;
+  name: string;
+  additions: number;
+  deletions: number;
+  previews: ToolPreview[];
+};
+
+type NumberedDiffRow = {
+  type: 'context' | 'add' | 'remove';
+  text: string;
+  beforeLine?: number;
+  afterLine?: number;
+};
+
 type TodoWritePreviewData = {
   todos: Array<{
     content: string;
@@ -1623,6 +1706,34 @@ type StructuredToolPreviewData = {
 type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'unknown';
 
 const TOOL_DIFF_CONTEXT_LINE_COUNT = 2;
+
+function collectConversationChangedFileGroups(tools: ToolStep[]) {
+  const grouped = new Map<string, ChangedFilePreviewGroup>();
+
+  for (const tool of tools) {
+    const preview = getToolPreview(tool);
+    if (!preview) {
+      continue;
+    }
+
+    const current =
+      grouped.get(preview.filePath) ??
+      {
+        path: preview.filePath,
+        name: preview.fileName,
+        additions: 0,
+        deletions: 0,
+        previews: [],
+      };
+
+    current.additions += preview.additions;
+    current.deletions += preview.deletions;
+    current.previews.push(preview);
+    grouped.set(preview.filePath, current);
+  }
+
+  return [...grouped.values()];
+}
 
 function getToolPreview(tool: ToolStep): ToolPreview | null {
   if (tool.name !== 'Edit' && tool.name !== 'Write' && tool.name !== 'NotebookEdit') {
@@ -1692,6 +1803,129 @@ function getToolPreview(tool: ToolStep): ToolPreview | null {
 
 function getToolPreviewTitle(preview: ToolPreview) {
   return preview.kind === 'write' ? '已新增' : '已编辑';
+}
+
+function buildNumberedDiffRows(preview: ToolPreview): NumberedDiffRow[] {
+  const beforeLines = splitPreviewLines(preview.beforeText);
+  const afterLines = splitPreviewLines(preview.afterText);
+
+  if (preview.kind === 'write') {
+    return afterLines.map<NumberedDiffRow>((text, index) => ({
+      type: 'add' as const,
+      text,
+      afterLine: index + 1,
+    }));
+  }
+
+  let prefix = 0;
+  while (
+    prefix < beforeLines.length &&
+    prefix < afterLines.length &&
+    beforeLines[prefix] === afterLines[prefix]
+  ) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < beforeLines.length - prefix &&
+    suffix < afterLines.length - prefix &&
+    beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  const contextStart = Math.max(0, prefix - TOOL_DIFF_CONTEXT_LINE_COUNT);
+  const beforeChangedEnd = Math.max(prefix, beforeLines.length - suffix);
+  const afterChangedEnd = Math.max(prefix, afterLines.length - suffix);
+  const rows: NumberedDiffRow[] = [];
+
+  if (contextStart > 0) {
+    rows.push({ type: 'context', text: '...', beforeLine: undefined, afterLine: undefined });
+  }
+
+  for (let index = contextStart; index < prefix; index += 1) {
+    rows.push({
+      type: 'context',
+      text: afterLines[index] ?? '',
+      beforeLine: index + 1,
+      afterLine: index + 1,
+    });
+  }
+
+  for (let index = prefix; index < beforeChangedEnd; index += 1) {
+    rows.push({
+      type: 'remove',
+      text: beforeLines[index] ?? '',
+      beforeLine: index + 1,
+    });
+  }
+
+  for (let index = prefix; index < afterChangedEnd; index += 1) {
+    rows.push({
+      type: 'add',
+      text: afterLines[index] ?? '',
+      afterLine: index + 1,
+    });
+  }
+
+  const trailingContext = afterLines.slice(
+    afterChangedEnd,
+    Math.min(afterChangedEnd + TOOL_DIFF_CONTEXT_LINE_COUNT, afterLines.length),
+  );
+  trailingContext.forEach((text, offset) => {
+    const lineIndex = afterChangedEnd + offset;
+    rows.push({
+      type: 'context',
+      text,
+      beforeLine: lineIndex + 1,
+      afterLine: lineIndex + 1,
+    });
+  });
+
+  if (afterChangedEnd + trailingContext.length < afterLines.length) {
+    rows.push({ type: 'context', text: '...' });
+  }
+
+  if (rows.length === 0) {
+    return [
+      {
+        type: 'context' as const,
+        text: afterLines[0] ?? '',
+        afterLine: afterLines[0] ? 1 : undefined,
+        beforeLine: beforeLines[0] ? 1 : undefined,
+      },
+    ];
+  }
+
+  return rows;
+}
+
+function formatChangedFilePath(filePath: string) {
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const projectPathMarkers = [
+    'src/',
+    'server/',
+    'scripts/',
+    'public/',
+    '.trellis/',
+    '.codex-logs/',
+    'openspec/',
+  ];
+
+  for (const marker of projectPathMarkers) {
+    const markerIndex = normalizedPath.indexOf(marker);
+    if (markerIndex >= 0) {
+      return normalizedPath.slice(markerIndex);
+    }
+  }
+
+  const segments = normalizedPath.split('/').filter(Boolean);
+  if (segments.length <= 2) {
+    return normalizedPath;
+  }
+
+  return segments.slice(-3).join('/');
 }
 
 function getAgentTaskPreview(tool: ToolStep): AgentTaskPreviewData | null {
