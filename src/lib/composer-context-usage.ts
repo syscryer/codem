@@ -40,7 +40,7 @@ export function buildComposerContextUsage(input: {
     });
   }
 
-  const breakdown = resolveLatestUsageBreakdown(input.turns);
+  const breakdown = resolveLatestUsageBreakdown(input.turns, totalTokens);
 
   const usedTokens =
     breakdown.inputTokens +
@@ -64,7 +64,7 @@ export function buildComposerContextUsage(input: {
   };
 }
 
-function resolveLatestUsageBreakdown(turns: ConversationTurn[]) {
+function resolveLatestUsageBreakdown(turns: ConversationTurn[], totalTokens: number) {
   for (let index = turns.length - 1; index >= 0; index -= 1) {
     const turn = turns[index];
     const breakdown = {
@@ -73,12 +73,16 @@ function resolveLatestUsageBreakdown(turns: ConversationTurn[]) {
       cacheReadInputTokens: turn.cacheReadInputTokens ?? 0,
       outputTokens: turn.outputTokens ?? 0,
     };
+    const currentTokens = breakdown.inputTokens + breakdown.cacheCreationInputTokens + breakdown.cacheReadInputTokens;
 
     if (
       breakdown.inputTokens > 0 ||
       breakdown.cacheCreationInputTokens > 0 ||
       breakdown.cacheReadInputTokens > 0
     ) {
+      if (!isPlausibleContextSnapshot(currentTokens, totalTokens)) {
+        continue;
+      }
       return breakdown;
     }
   }
@@ -89,6 +93,17 @@ function resolveLatestUsageBreakdown(turns: ConversationTurn[]) {
     cacheReadInputTokens: 0,
     outputTokens: 0,
   };
+}
+
+function isPlausibleContextSnapshot(currentTokens: number, totalTokens: number) {
+  if (currentTokens <= 0) {
+    return false;
+  }
+  if (totalTokens <= 0) {
+    return true;
+  }
+
+  return currentTokens <= totalTokens * 2;
 }
 
 function createContextUsageResult(input: {
