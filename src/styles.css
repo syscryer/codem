@@ -4340,7 +4340,15 @@ svg {
 }
 
 .composer-context-card-head strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-weight: 650;
+}
+
+.composer-context-card-head strong svg,
+.composer-context-card-compact-head strong svg {
+  color: #8b93a1;
 }
 
 .composer-context-card-head span {
@@ -4350,7 +4358,7 @@ svg {
 
 .composer-context-card-summary {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
   margin-top: 10px;
   color: #1f2937;
@@ -4359,13 +4367,24 @@ svg {
   letter-spacing: -0.03em;
 }
 
-.composer-context-card-summary span:nth-child(2) {
+.composer-context-card-summary-icon {
+  width: 26px;
+  height: 26px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 26px;
+  border-radius: 9px;
+  background: rgba(148, 163, 184, 0.13);
+  color: #7d8794;
+}
+
+.composer-context-card-summary-divider {
   color: #9ca3af;
   font-size: 18px;
   font-weight: 500;
 }
 
-.composer-context-card-summary span:last-child {
+.composer-context-card-summary-total {
   color: #7c828d;
   font-size: 18px;
   font-weight: 560;
@@ -4410,6 +4429,9 @@ svg {
 }
 
 .composer-context-card-compact-head strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: #2f2f2f;
   font-weight: 650;
 }
@@ -4438,7 +4460,15 @@ svg {
 }
 
 .composer-context-card-compact-grid dt {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: #7c828d;
+}
+
+.composer-context-card-compact-grid dt svg,
+.composer-context-card-breakdown dt svg {
+  color: #9aa1ab;
 }
 
 .composer-context-card-compact-grid dd {
@@ -4470,6 +4500,9 @@ svg {
 }
 
 .composer-context-card-breakdown dt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: #7c828d;
 }
 

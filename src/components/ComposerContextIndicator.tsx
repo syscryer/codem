@@ -1,3 +1,4 @@
+import { Activity, Clock3, CloudUpload, FileText, RefreshCw, Send, Sparkles } from 'lucide-react';
 import { useRef, useState, type CSSProperties } from 'react';
 
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
@@ -48,8 +49,8 @@ export function ComposerContextIndicator({ usage }: ComposerContextIndicatorProp
         type="button"
         className={`composer-context-trigger${open ? ' is-open' : ''}`}
         aria-expanded={open}
-        aria-label={`Context Usage ${percentLabel}`}
-        title={`Context Usage ${percentLabel}`}
+        aria-label={`上下文用量 ${percentLabel}`}
+        title={`上下文用量 ${percentLabel}`}
         onClick={() => setOpen((value) => !value)}
       >
         <span className="composer-context-ring" style={ringStyle}>
@@ -58,15 +59,21 @@ export function ComposerContextIndicator({ usage }: ComposerContextIndicatorProp
       </button>
 
       <PopoverPortal open={open} anchorRef={triggerRef} placement="top-end" offset={10}>
-        <section className="composer-context-card" aria-label="Context Usage">
+        <section className="composer-context-card" aria-label="上下文用量">
           <header className="composer-context-card-head">
-            <strong>Context Usage</strong>
+            <strong>
+              <Activity size={14} />
+              上下文用量
+            </strong>
             <span>{percentLabel}</span>
           </header>
           <div className="composer-context-card-summary">
-            <span>{formatCompactTokens(usage.usedTokens)}</span>
-            <span>/</span>
-            <span>{formatCompactTokens(usage.totalTokens)}</span>
+            <span className="composer-context-card-summary-icon" aria-hidden="true">
+              <Activity size={18} />
+            </span>
+            <span className="composer-context-card-summary-used">{formatCompactTokens(usage.usedTokens)}</span>
+            <span className="composer-context-card-summary-divider">/</span>
+            <span className="composer-context-card-summary-total">{formatCompactTokens(usage.totalTokens)}</span>
           </div>
           {usage.hasUsage ? null : <p className="composer-context-card-empty">当前线程还没有上下文数据</p>}
           <div
@@ -75,37 +82,58 @@ export function ComposerContextIndicator({ usage }: ComposerContextIndicatorProp
             }`}
           >
             <div className="composer-context-card-compact-head">
-              <strong>Auto-compact</strong>
+              <strong>
+                <Sparkles size={13} />
+                自动压缩
+              </strong>
               <span>
-                {usage.compact.reachedThreshold ? 'Ready to compact' : usage.compact.nearThreshold ? 'Near compact' : 'Healthy'}
+                {usage.compact.reachedThreshold ? '可压缩' : usage.compact.nearThreshold ? '接近阈值' : '状态健康'}
               </span>
             </div>
             <dl className="composer-context-card-compact-grid">
               <div>
-                <dt>Threshold</dt>
+                <dt>
+                  <Activity size={12} />
+                  阈值
+                </dt>
                 <dd>{formatTokenNumber(usage.compact.thresholdTokens)}</dd>
               </div>
               <div>
-                <dt>Remaining</dt>
+                <dt>
+                  <Clock3 size={12} />
+                  剩余
+                </dt>
                 <dd>{formatTokenNumber(usage.compact.remainingTokens)}</dd>
               </div>
             </dl>
           </div>
           <dl className="composer-context-card-breakdown">
             <div>
-              <dt>Input</dt>
+              <dt>
+                <FileText size={13} />
+                输入
+              </dt>
               <dd>{formatTokenNumber(usage.breakdown.inputTokens)}</dd>
             </div>
             <div>
-              <dt>Cache Write</dt>
+              <dt>
+                <CloudUpload size={13} />
+                缓存写入
+              </dt>
               <dd>{formatTokenNumber(usage.breakdown.cacheCreationInputTokens)}</dd>
             </div>
             <div>
-              <dt>Cache Read</dt>
+              <dt>
+                <RefreshCw size={13} />
+                缓存读取
+              </dt>
               <dd>{formatTokenNumber(usage.breakdown.cacheReadInputTokens)}</dd>
             </div>
             <div>
-              <dt>Output</dt>
+              <dt>
+                <Send size={13} />
+                输出
+              </dt>
               <dd>{formatTokenNumber(usage.breakdown.outputTokens)}</dd>
             </div>
           </dl>
