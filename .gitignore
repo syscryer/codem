@@ -4,6 +4,7 @@ dist-server/
 src-tauri/target/
 src-tauri/gen/
 .logs/
+.codex-logs/
 .vite/
 coverage/
 .DS_Store
