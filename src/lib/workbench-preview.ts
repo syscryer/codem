@@ -46,6 +46,44 @@ export function openWorkbenchPreviewTab(
   };
 }
 
+export function normalizeWorkbenchPreviewRequest(
+  request: WorkbenchPreviewRequest,
+  projectPath: string,
+): WorkbenchPreviewRequest {
+  const normalizedProjectPath = normalizeWindowsPath(projectPath);
+  const normalizedRequestPath = normalizeWindowsPath(request.path);
+
+  if (
+    normalizedProjectPath &&
+    normalizedRequestPath &&
+    normalizedRequestPath.toLowerCase().startsWith(`${normalizedProjectPath.toLowerCase()}/`)
+  ) {
+    const relativePath = normalizedRequestPath.slice(normalizedProjectPath.length + 1);
+    return {
+      ...request,
+      key: `file:${relativePath}`,
+      path: relativePath,
+      kind: getWorkbenchPreviewKind(relativePath),
+    };
+  }
+
+  return request;
+}
+
+export function resolveWorkbenchPreviewFilePath(projectPath: string, previewPath: string) {
+  if (isAbsoluteWorkbenchPath(previewPath)) {
+    return previewPath;
+  }
+
+  const normalizedProjectPath = projectPath.replace(/[\\/]+$/, '');
+  const normalizedRelativePath = previewPath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+  if (!normalizedRelativePath) {
+    return normalizedProjectPath;
+  }
+
+  return `${normalizedProjectPath}\\${normalizedRelativePath.replace(/\//g, '\\')}`;
+}
+
 export function closeWorkbenchPreviewTab(
   currentTabs: WorkbenchPreviewTab[],
   activeKey: string,
@@ -67,4 +105,12 @@ export function closeWorkbenchPreviewTab(
 function getFileName(filePath: string) {
   const normalizedPath = filePath.replace(/\\/g, '/');
   return normalizedPath.split('/').pop() || normalizedPath;
+}
+
+function normalizeWindowsPath(filePath: string) {
+  return filePath.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function isAbsoluteWorkbenchPath(filePath: string) {
+  return /^[a-zA-Z]:[\\/]/.test(filePath) || /^\\\\/.test(filePath) || filePath.startsWith('/');
 }

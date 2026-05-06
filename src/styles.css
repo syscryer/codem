@@ -386,7 +386,7 @@ svg {
 }
 
 .chat-workspace.workbench-open {
-  grid-template-columns: minmax(360px, 1fr) var(--right-workbench-width, 420px);
+  grid-template-columns: minmax(360px, 1fr) var(--right-workbench-width, 520px);
 }
 
 .app-sidebar {

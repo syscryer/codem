@@ -22,6 +22,7 @@ import {
   buildStatusSlashCardResult,
 } from './lib/claude-slash-system-commands';
 import { closeWorkbenchPreviewTab, openWorkbenchPreviewTab } from './lib/workbench-preview';
+import { normalizeWorkbenchPreviewRequest } from './lib/workbench-preview';
 import { matchesShortcut } from './lib/shortcuts';
 import { createSystemCommandItem, settleSystemCommandItem } from './lib/system-command-items';
 import { modelLabel, permissionLabel } from './lib/ui-labels';
@@ -112,7 +113,7 @@ export default function App() {
   const [rightWorkbenchOpen, setRightWorkbenchOpen] = useState(false);
   const [rightWorkbenchTab, setRightWorkbenchTab] = useState<RightWorkbenchTab>('overview');
   const [rightWorkbenchFileScope, setRightWorkbenchFileScope] = useState<WorkbenchFileScope>('all');
-  const [rightWorkbenchWidth, setRightWorkbenchWidth] = useState(420);
+  const [rightWorkbenchWidth, setRightWorkbenchWidth] = useState(520);
   const [previewTabs, setPreviewTabs] = useState<WorkbenchPreviewTab[]>([]);
   const [activePreviewKey, setActivePreviewKey] = useState('');
   const [previewContentByKey, setPreviewContentByKey] = useState<Record<string, WorkbenchPreviewContentState>>({});
@@ -484,11 +485,12 @@ export default function App() {
       return;
     }
 
-    setPreviewTabs((currentTabs) => openWorkbenchPreviewTab(currentTabs, request).tabs);
-    setActivePreviewKey(request.key);
+    const normalizedRequest = normalizeWorkbenchPreviewRequest(request, activeProject.path);
+    setPreviewTabs((currentTabs) => openWorkbenchPreviewTab(currentTabs, normalizedRequest).tabs);
+    setActivePreviewKey(normalizedRequest.key);
     setPreviewContentByKey((current) => {
       const next = { ...current };
-      delete next[request.key];
+      delete next[normalizedRequest.key];
       return next;
     });
     setRightWorkbenchOpen(true);
@@ -529,7 +531,7 @@ export default function App() {
       const nextWidth = startWidth - (pointerEvent.clientX - startX);
       const workspaceWidth = chatWorkspaceRef.current?.getBoundingClientRect().width ?? window.innerWidth;
       const maxWidth = Math.max(300, workspaceWidth - 360);
-      setRightWorkbenchWidth(Math.min(maxWidth, Math.max(240, nextWidth)));
+      setRightWorkbenchWidth(Math.min(maxWidth, Math.max(320, nextWidth)));
     }
 
     function handlePointerUp() {

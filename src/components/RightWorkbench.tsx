@@ -19,12 +19,15 @@ import { fetchGitStatus } from '../lib/git-api';
 import { fetchProjectFiles } from '../lib/project-files-api';
 import {
   buildWorkbenchFileTree,
-  combineProjectFilePath,
   getWorkbenchFileIconKind,
   highlightWorkbenchCodeLine,
   type WorkbenchFileTreeNode,
 } from '../lib/workbench-files';
-import { buildChangedFilePreviewRequest, buildProjectFilePreviewRequest } from '../lib/workbench-preview';
+import {
+  buildChangedFilePreviewRequest,
+  buildProjectFilePreviewRequest,
+  resolveWorkbenchPreviewFilePath,
+} from '../lib/workbench-preview';
 import type {
   GitFileStatus,
   GitStatusSnapshot,
@@ -243,7 +246,7 @@ function WorkbenchFiles({
     let cancelled = false;
     onResolvePreviewContent(activePreviewTab.key, { loading: true, content: '' });
 
-    const request = fetchWorkspaceFilePreview(combineProjectFilePath(activeProject.path, activePreviewTab.path));
+    const request = fetchWorkspaceFilePreview(resolveWorkbenchPreviewFilePath(activeProject.path, activePreviewTab.path));
 
     request
       .then((payload) => {
