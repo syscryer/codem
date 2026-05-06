@@ -2820,6 +2820,10 @@ svg {
   list-style: none;
 }
 
+.thinking-message .thinking-type-icon {
+  color: #9aa1ab;
+}
+
 .thinking-message summary::-webkit-details-marker {
   display: none;
 }

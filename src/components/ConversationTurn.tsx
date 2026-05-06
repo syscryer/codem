@@ -311,6 +311,9 @@ function ThinkingMessage({ content }: { content: string }) {
   return (
     <details className="thinking-message">
       <summary>
+        <span className="execution-type-icon thinking-type-icon" aria-hidden="true">
+          <Sparkles size={13} />
+        </span>
         <span>Thinking</span>
         <span className="thinking-count">{formatThinkingLength(cleanContent)}</span>
       </summary>
