@@ -9,6 +9,12 @@ import type {
   UsageSnapshot,
 } from '../types';
 
+const SIDECHAIN_TOOL_TEXT_MAX_CHARS = 6_000;
+const SUBAGENT_MESSAGE_MAX_COUNT = 8;
+const SUBAGENT_MESSAGE_MAX_CHARS = 4_000;
+const SUBAGENT_MESSAGES_MAX_TOTAL_CHARS = 24_000;
+const TRUNCATION_MARKER = '\n...[已截断]...\n';
+
 export function createThreadDetail(summary: ThreadSummary): ThreadDetail {
   return {
     ...summary,
@@ -123,7 +129,7 @@ export function hasTurnVisibleOutput(turn: ConversationTurn) {
 }
 
 export function createToolStep(event: Extract<ClaudeEvent, { type: 'tool-start' }>): ToolStep {
-  const inputText = formatInitialToolInput(event.input);
+  const inputText = truncateSidechainToolText(formatInitialToolInput(event.input), event.isSidechain);
   const id = event.toolUseId ?? `${event.runId}-${event.blockIndex}`;
 
   return {
@@ -179,7 +185,7 @@ export function upsertSubagentText(steps: ToolStep[], parentToolUseId: string | 
 
     return {
       ...parent,
-      subMessages,
+      subMessages: normalizeSubagentMessages(subMessages),
     };
   });
 
@@ -327,14 +333,14 @@ export function upsertToolDelta(steps: ToolStep[], event: Extract<ClaudeEvent, {
         toolUseId: event.toolUseId,
         parentToolUseId: event.parentToolUseId,
         isSidechain: event.isSidechain,
-        inputText: event.text,
+        inputText: truncateSidechainToolText(event.text, event.isSidechain),
       },
     ];
   }
 
   const next = [...steps];
   const item = next[index];
-  const inputText = `${item.inputText ?? ''}${event.text}`;
+  const inputText = truncateSidechainToolText(`${item.inputText ?? ''}${event.text}`, item.isSidechain ?? event.isSidechain);
   next[index] = {
     ...item,
     inputText,
@@ -356,7 +362,7 @@ export function attachToolResult(steps: ToolStep[], event: Extract<ClaudeEvent, 
         toolUseId: event.toolUseId,
         parentToolUseId: event.parentToolUseId,
         isSidechain: event.isSidechain,
-        resultText: event.content,
+        resultText: truncateSidechainToolText(event.content, event.isSidechain),
         isError: event.isError,
       },
     ];
@@ -366,7 +372,7 @@ export function attachToolResult(steps: ToolStep[], event: Extract<ClaudeEvent, 
   next[index] = {
     ...next[index],
     status: event.isError ? 'error' : 'done',
-    resultText: event.content,
+    resultText: truncateSidechainToolText(event.content, next[index].isSidechain ?? event.isSidechain),
     isError: event.isError,
   };
   return next;
@@ -1052,6 +1058,68 @@ function findPreviousToolWithoutResult(items: AssistantItem[]) {
   }
 
   return -1;
+}
+
+export function normalizeSubagentMessages(messages: string[] | undefined) {
+  if (!messages?.length) {
+    return undefined;
+  }
+
+  const trimmed = messages
+    .map((message) => truncateRetainedText(message, SUBAGENT_MESSAGE_MAX_CHARS))
+    .filter((message) => Boolean(message.trim()))
+    .slice(-SUBAGENT_MESSAGE_MAX_COUNT);
+
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+
+  let remaining = SUBAGENT_MESSAGES_MAX_TOTAL_CHARS;
+  const kept: string[] = [];
+  for (let index = trimmed.length - 1; index >= 0; index -= 1) {
+    const message = trimmed[index];
+    if (remaining <= 0) {
+      break;
+    }
+
+    if (message.length <= remaining) {
+      kept.push(message);
+      remaining -= message.length;
+      continue;
+    }
+
+    const truncated = truncateRetainedText(message, remaining);
+    if (truncated.trim()) {
+      kept.push(truncated);
+    }
+    break;
+  }
+
+  const normalized = kept.reverse();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function truncateSidechainToolText(text: string | undefined, isSidechain?: boolean) {
+  if (!text || !isSidechain) {
+    return text;
+  }
+
+  return truncateRetainedText(text, SIDECHAIN_TOOL_TEXT_MAX_CHARS);
+}
+
+function truncateRetainedText(text: string, maxChars: number) {
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  const markerLength = TRUNCATION_MARKER.length;
+  if (maxChars <= markerLength + 32) {
+    return `${TRUNCATION_MARKER.trim()}${text.slice(-(maxChars - markerLength))}`;
+  }
+
+  const headLength = Math.floor((maxChars - markerLength) * 0.55);
+  const tailLength = Math.max(0, maxChars - markerLength - headLength);
+  return `${text.slice(0, headLength)}${TRUNCATION_MARKER}${text.slice(-tailLength)}`;
 }
 
 function splitToolInputChunks(inputText?: string) {

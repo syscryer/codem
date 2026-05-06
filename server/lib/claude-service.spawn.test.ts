@@ -74,14 +74,19 @@ test('run events are buffered for reconnect instead of being tied to one respons
   const createRunStateBody = extractFunctionBody('createRunState');
   const pushRunEventBody = extractFunctionBody('pushRunEvent');
   const reconnectBody = extractFunctionBody('reconnectClaudeRunEvents');
+  const bufferedEventBody = extractFunctionBody('createBufferedRunEventForReconnect');
 
   assert.match(createRunStateBody, /eventLog:\s*\[\]/);
   assert.match(createRunStateBody, /eventWaiters:\s*new Set/);
-  assert.match(pushRunEventBody, /state\.eventLog\.push\(event\)/);
+  assert.match(pushRunEventBody, /createBufferedRunEventForReconnect\(event\)/);
+  assert.match(pushRunEventBody, /state\.eventLog\.push\(bufferedEvent\)/);
   assert.match(pushRunEventBody, /state\.eventWaiters/);
   assert.match(reconnectBody, /afterEventIndex/);
   assert.match(reconnectBody, /state\.eventLog\.length/);
   assert.match(reconnectBody, /yield state\.eventLog\[index\]/);
+  assert.match(bufferedEventBody, /event\.type === ['"]assistant-snapshot['"]/);
+  assert.match(bufferedEventBody, /event\.type === ['"]raw['"]/);
+  assert.match(bufferedEventBody, /return null/);
 });
 
 test('client disconnect detaches a run instead of cancelling the Claude process', () => {
@@ -93,35 +98,46 @@ test('client disconnect detaches a run instead of cancelling the Claude process'
   assert.match(serverSource, /\/api\/claude\/run\/:runId\/events/);
 });
 
-test('request user input answers are sent back as stream-json tool results', () => {
+test('request user input answers prefer control responses and keep tool-result fallback', () => {
   const submitBody = extractFunctionBody('submitRunRequestUserInput');
   const buildToolResultBody = extractFunctionBody('buildClaudeToolResultMessage');
+  const buildControlResponseBody = extractFunctionBody('buildAskUserQuestionControlResponse');
   const buildRequestUserInputBody = extractFunctionBody('buildRequestUserInputToolResultContent');
   const buildRequestAnswersBody = extractFunctionBody('buildRequestUserInputResponseAnswers');
 
   assert.match(serverSource, /\/api\/claude\/run\/:runId\/request-user-input/);
   assert.match(serverSource, /submitRunRequestUserInput\(request\.params\.runId,\s*requestId,\s*questions,\s*answers\)/);
   assert.match(submitBody, /runtime\.inputMode\s*!==\s*['"]stdin['"]/);
+  assert.match(submitBody, /for \(const \[cReqId, toolUseId\] of activeRun\.state\.controlApprovalToolUseIds\)/);
+  assert.match(submitBody, /buildAskUserQuestionControlResponse\(controlRequestId,\s*requestId,\s*questions,\s*answers\)/);
+  assert.match(submitBody, /buildClaudeToolResultMessage\(requestId,\s*buildRequestUserInputToolResultContent\(questions,\s*answers\)\)/);
   assert.match(submitBody, /runtime\.child\.stdin\.write\(payload,/);
   assert.match(submitBody, /pausedForUserInput\s*=\s*false/);
   assert.match(buildToolResultBody, /type:\s*['"]tool_result['"]/);
   assert.match(buildToolResultBody, /tool_use_id:\s*requestId/);
+  assert.match(buildControlResponseBody, /type:\s*['"]control_response['"]/);
+  assert.match(buildControlResponseBody, /updatedInput:/);
+  assert.match(buildControlResponseBody, /toolUseID:\s*toolUseId/);
   assert.match(buildRequestUserInputBody, /questions,/);
   assert.match(buildRequestUserInputBody, /answers:\s*buildRequestUserInputResponseAnswers\(questions,\s*answers\)/);
+  assert.match(buildRequestAnswersBody, /responseAnswers\[key\]\s*=\s*normalizedAnswer/);
   assert.match(buildRequestAnswersBody, /responseAnswers\[question\.question\]/);
 });
 
 test('human input requests pause the run before Claude Code auto-answers the tool call', () => {
   const handleBody = extractFunctionBody('handleClaudePayload');
   const pauseBody = extractFunctionBody('pauseRuntimeRunForHumanInput');
+  const parseControlRequestUserInputBody = extractFunctionBody('parseControlRequestUserInputEvent');
   const parseApprovalBody = extractFunctionBody('parseApprovalRequestEvent');
   const submitApprovalBody = extractFunctionBody('submitRunApprovalDecision');
   const controlResponseBody = extractFunctionBody('buildClaudeControlResponseMessage');
 
   assert.match(handleBody, /payload\.type\s*===\s*['"]control_request['"]/);
+  assert.match(handleBody, /parseControlRequestUserInputEvent\(payload\)/);
+  assert.match(handleBody, /emitRequestUserInputEvent\(state,\s*runId,\s*requestUserInput,\s*enqueue\)/);
+  assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_user_input['"]\)/);
   assert.match(handleBody, /parseControlApprovalRequestEvent\(payload\)/);
   assert.match(handleBody, /controlApprovalToolUseIds\.set/);
-  assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_user_input['"],\s*\{\s*closeRuntime:\s*true\s*\}\)/);
   assert.match(handleBody, /['"]paused_for_approval_request['"]/);
   assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_approval_result['"],\s*\{\s*closeRuntime:\s*true\s*\}\)/);
   assert.match(handleBody, /isHumanApprovalToolResultContent\(content\)/);
@@ -131,7 +147,10 @@ test('human input requests pause the run before Claude Code auto-answers the too
   assert.match(controlResponseBody, /type:\s*['"]control_response['"]/);
   assert.match(controlResponseBody, /behavior:\s*['"]allow['"]/);
   assert.match(controlResponseBody, /decisionClassification:\s*['"]user_temporary['"]/);
+  assert.match(parseControlRequestUserInputBody, /request\.subtype\s*!==\s*['"]can_use_tool['"]/);
+  assert.match(parseControlRequestUserInputBody, /parseRequestUserInputEvent\(toolName,\s*request\.input,\s*getControlRequestToolUseId\(payload\)\)/);
   assert.match(source, /function parseControlApprovalRequestEvent/);
+  assert.match(source, /function parseControlRequestUserInputEvent/);
   assert.match(source, /function parseRuntimeApprovalRequestEvent/);
   assert.match(source, /normalizeToolName\(toolName\)\s*===\s*['"]exitplanmode['"][\s\S]*return null/);
   assert.match(source, /function emitApprovalRequestEvent/);

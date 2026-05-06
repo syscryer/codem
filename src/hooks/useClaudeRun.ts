@@ -1627,7 +1627,7 @@ export function useClaudeRun({
       permissionModeOverride:
         decision === 'approve'
           ? planApproval
-            ? 'default'
+            ? permissionMode
             : 'bypassPermissions'
           : undefined,
       toolResult: request.requestId

@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import { EMPTY_PANEL_STATE } from '../constants';
 import { createThreadDetail, metricsFromTurn, normalizeTurnsForPersist, repairConversationTurn } from '../lib/conversation';
 import type {
@@ -33,6 +33,15 @@ type CreateThreadOptions = {
   showToast?: boolean;
 };
 
+const MAX_DEBUG_EVENTS = 220;
+const MAX_RAW_EVENTS = 220;
+const MAX_DEBUG_CONTENT_CHARS = 12_000;
+const MAX_RAW_EVENT_CHARS = 16_000;
+const LOG_TRUNCATION_MARKER = '\n...[已截断]...\n';
+const PERSIST_HISTORY_DEBOUNCE_MS = 150;
+const PERSIST_HISTORY_RETRY_DELAY_MS = 500;
+const PERSIST_HISTORY_MAX_RETRIES = 2;
+
 function isLiveTurn(turn: ConversationTurn) {
   return turn.status === 'pending' || turn.status === 'running';
 }
@@ -56,6 +65,18 @@ export function useWorkspaceState() {
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const threadDetailsRef = useRef<Record<string, ThreadDetail>>({});
+  const persistHistoryStateRef = useRef<
+    Map<
+      string,
+      {
+        timerId: number | null;
+        retryTimerId: number | null;
+        inFlight: boolean;
+        pending: boolean;
+        retryCount: number;
+      }
+    >
+  >(new Map());
 
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   const activeThreadSummary = useMemo(
@@ -270,13 +291,17 @@ export function useWorkspaceState() {
   }
 
   async function persistThreadHistory(threadId: string, turns: ConversationTurn[]) {
-    await fetch(`/api/threads/${threadId}/history`, {
+    const response = await fetch(`/api/threads/${threadId}/history`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ turns: normalizeTurnsForPersist(turns) }),
     });
+
+    if (!response.ok) {
+      throw new Error(`persist history failed with HTTP ${response.status}`);
+    }
   }
 
   function schedulePersistThreadHistory(threadId: string | null) {
@@ -284,14 +309,23 @@ export function useWorkspaceState() {
       return;
     }
 
-    window.setTimeout(() => {
-      const thread = threadDetailsRef.current[threadId];
-      if (!thread) {
-        return;
-      }
+    const state = getPersistHistoryState(persistHistoryStateRef, threadId);
+    state.pending = true;
+    state.retryCount = 0;
 
-      void persistThreadHistory(threadId, thread.turns);
-    }, 80);
+    if (state.retryTimerId !== null) {
+      window.clearTimeout(state.retryTimerId);
+      state.retryTimerId = null;
+    }
+
+    if (state.timerId !== null) {
+      window.clearTimeout(state.timerId);
+    }
+
+    state.timerId = window.setTimeout(() => {
+      state.timerId = null;
+      void flushPersistThreadHistory(threadId, threadDetailsRef, persistHistoryStateRef, persistThreadHistory);
+    }, PERSIST_HISTORY_DEBOUNCE_MS);
   }
 
   function updateThreadDetail(
@@ -312,16 +346,8 @@ export function useWorkspaceState() {
       };
       threadDetailsRef.current = next;
       if (hasPendingHumanRequests(nextThread)) {
-        window.setTimeout(() => {
-          void persistThreadHistory(threadId, nextThread.turns);
-        }, 0);
+        schedulePersistThreadHistory(threadId);
       }
-      window.setTimeout(() => {
-        const latestThread = threadDetailsRef.current[threadId];
-        if (latestThread && hasPendingHumanRequests(latestThread)) {
-          void persistThreadHistory(threadId, latestThread.turns);
-        }
-      }, 250);
       return next;
     });
   }
@@ -349,6 +375,10 @@ export function useWorkspaceState() {
   }
 
   function appendDebug(threadId: string, event: Omit<DebugEvent, 'id'>) {
+    const normalizedEvent = {
+      ...event,
+      content: truncateWorkspaceLogText(event.content, MAX_DEBUG_CONTENT_CHARS),
+    };
     startTransition(() => {
       setThreadDetails((current) => {
         const existing = current[threadId];
@@ -360,7 +390,9 @@ export function useWorkspaceState() {
           ...current,
           [threadId]: {
             ...existing,
-            debugEvents: [...existing.debugEvents, { ...event, id: crypto.randomUUID() }].slice(-220),
+            debugEvents: [...existing.debugEvents, { ...normalizedEvent, id: crypto.randomUUID() }].slice(
+              -MAX_DEBUG_EVENTS,
+            ),
           },
         };
       });
@@ -368,6 +400,7 @@ export function useWorkspaceState() {
   }
 
   function appendRawEvent(threadId: string, line: string) {
+    const normalizedLine = truncateWorkspaceLogText(line, MAX_RAW_EVENT_CHARS);
     startTransition(() => {
       setThreadDetails((current) => {
         const existing = current[threadId];
@@ -379,7 +412,7 @@ export function useWorkspaceState() {
           ...current,
           [threadId]: {
             ...existing,
-            rawEvents: [...existing.rawEvents, line].slice(-220),
+            rawEvents: [...existing.rawEvents, normalizedLine].slice(-MAX_RAW_EVENTS),
           },
         };
       });
@@ -1076,6 +1109,124 @@ export function useWorkspaceState() {
   };
 }
 
+function getPersistHistoryState(
+  persistHistoryStateRef: MutableRefObject<
+    Map<
+      string,
+      {
+        timerId: number | null;
+        retryTimerId: number | null;
+        inFlight: boolean;
+        pending: boolean;
+        retryCount: number;
+      }
+    >
+  >,
+  threadId: string,
+) {
+  const current = persistHistoryStateRef.current.get(threadId);
+  if (current) {
+    return current;
+  }
+
+  const next = {
+    timerId: null,
+    retryTimerId: null,
+    inFlight: false,
+    pending: false,
+    retryCount: 0,
+  };
+  persistHistoryStateRef.current.set(threadId, next);
+  return next;
+}
+
+function isTransientPersistError(error: unknown) {
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return true;
+  }
+
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return /failed to fetch|networkerror|fetch failed|HTTP (408|429|5\d\d)/i.test(error.message);
+}
+
+function flushPersistThreadHistory(
+  threadId: string,
+  threadDetailsRef: MutableRefObject<Record<string, ThreadDetail>>,
+  persistHistoryStateRef: MutableRefObject<
+    Map<
+      string,
+      {
+        timerId: number | null;
+        retryTimerId: number | null;
+        inFlight: boolean;
+        pending: boolean;
+        retryCount: number;
+      }
+    >
+  >,
+  persistThreadHistory: (threadId: string, turns: ConversationTurn[]) => Promise<void>,
+) {
+  const state = getPersistHistoryState(persistHistoryStateRef, threadId);
+  if (state.inFlight) {
+    return;
+  }
+
+  const thread = threadDetailsRef.current[threadId];
+  if (!thread) {
+    state.pending = false;
+    return;
+  }
+
+  state.inFlight = true;
+  state.pending = false;
+
+  void persistThreadHistory(threadId, thread.turns)
+    .then(() => {
+      state.retryCount = 0;
+    })
+    .catch((error) => {
+      if (isTransientPersistError(error) && state.retryCount < PERSIST_HISTORY_MAX_RETRIES) {
+        state.pending = true;
+        state.retryCount += 1;
+        if (state.retryTimerId !== null) {
+          window.clearTimeout(state.retryTimerId);
+        }
+        state.retryTimerId = window.setTimeout(() => {
+          state.retryTimerId = null;
+          void flushPersistThreadHistory(threadId, threadDetailsRef, persistHistoryStateRef, persistThreadHistory);
+        }, PERSIST_HISTORY_RETRY_DELAY_MS);
+        return;
+      }
+
+      console.warn('[codem:persist-history] failed', {
+        threadId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    })
+    .finally(() => {
+      state.inFlight = false;
+      if (state.pending && state.retryTimerId === null) {
+        const scheduledState = getPersistHistoryState(persistHistoryStateRef, threadId);
+        if (scheduledState.timerId !== null) {
+          window.clearTimeout(scheduledState.timerId);
+        }
+
+        scheduledState.timerId = window.setTimeout(() => {
+          scheduledState.timerId = null;
+          void flushPersistThreadHistory(
+            threadId,
+            threadDetailsRef,
+            persistHistoryStateRef,
+            persistThreadHistory,
+          );
+        }, PERSIST_HISTORY_DEBOUNCE_MS);
+      }
+    });
+}
+
 type CloneFailure = Error & { rawLog?: string };
 
 async function readCloneError(response: Response): Promise<CloneFailure> {
@@ -1092,4 +1243,19 @@ async function readCloneError(response: Response): Promise<CloneFailure> {
 
 function isCloneFailure(error: unknown): error is CloneFailure {
   return error instanceof Error;
+}
+
+function truncateWorkspaceLogText(value: string, maxChars: number) {
+  if (value.length <= maxChars) {
+    return value;
+  }
+
+  const markerLength = LOG_TRUNCATION_MARKER.length;
+  if (maxChars <= markerLength + 32) {
+    return `${LOG_TRUNCATION_MARKER.trim()}${value.slice(-(maxChars - markerLength))}`;
+  }
+
+  const headLength = Math.floor((maxChars - markerLength) * 0.5);
+  const tailLength = Math.max(0, maxChars - markerLength - headLength);
+  return `${value.slice(0, headLength)}${LOG_TRUNCATION_MARKER}${value.slice(-tailLength)}`;
 }

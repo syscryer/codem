@@ -260,6 +260,9 @@ const threadActiveRuns = new Map<string, string>();
 const threadRuntimes = new Map<string, ClaudeRuntime>();
 const TEXT_DELTA_COALESCE_MS = process.platform === 'win32' ? 32 : 0;
 const RUN_RECONNECT_RETENTION_MS = 10 * 60 * 1000;
+const RUN_RECONNECT_BUFFER_TEXT_MAX_CHARS = 16_000;
+const RUN_RECONNECT_BUFFER_MESSAGE_MAX_CHARS = 8_000;
+const RUN_RECONNECT_BUFFER_TRUNCATION_MARKER = '\n...[已截断]...\n';
 let cachedClaudeCommand: string | null | undefined;
 
 export async function isDirectoryAccessible(directory: string) {
@@ -385,11 +388,38 @@ export function submitRunRequestUserInput(
     };
   }
 
-  const payload = `${JSON.stringify(
-    buildClaudeToolResultMessage(requestId, buildRequestUserInputToolResultContent(questions, answers)),
-  )}\n`;
+  let controlRequestId: string | undefined;
+  for (const [cReqId, toolUseId] of activeRun.state.controlApprovalToolUseIds) {
+    if (toolUseId === requestId) {
+      controlRequestId = cReqId;
+      break;
+    }
+  }
+  const message = controlRequestId
+    ? buildAskUserQuestionControlResponse(controlRequestId, requestId, questions, answers)
+    : buildClaudeToolResultMessage(requestId, buildRequestUserInputToolResultContent(questions, answers));
+  const payload = `${JSON.stringify(message)}\n`;
+  console.warn('[codem:human-input] submitRunRequestUserInput.write_begin', {
+    runId,
+    requestId,
+    threadId: activeRun.state.input.threadId,
+    inputMode: activeRun.runtime.inputMode,
+    runtimeClosed: activeRun.runtime.closed,
+    pausedForUserInput: activeRun.state.pausedForUserInput,
+    finished: activeRun.state.finished,
+    controlRequestId: controlRequestId ?? null,
+  });
   activeRun.runtime.child.stdin.write(payload, (error) => {
     if (error) {
+      console.warn('[codem:human-input] submitRunRequestUserInput.write_error', {
+        runId,
+        requestId,
+        threadId: activeRun.state.input.threadId,
+        error: error.message,
+        runtimeClosed: activeRun.runtime.closed,
+        childKilled: activeRun.runtime.child.killed,
+        childExitCode: activeRun.runtime.child.exitCode,
+      });
       const message = `写入 Claude Code 提问答案失败：${error.message}`;
       enqueueRetryableRuntimeError(
         activeRun.state.runId,
@@ -409,7 +439,15 @@ export function submitRunRequestUserInput(
     }
 
     activeRun.state.pausedForUserInput = false;
+    if (controlRequestId) {
+      activeRun.state.controlApprovalToolUseIds.delete(controlRequestId);
+    }
     enqueueTrace(activeRun.state, 'stdin_tool_result_written', Date.now(), requestId);
+    console.warn('[codem:human-input] submitRunRequestUserInput.write_ok', {
+      runId,
+      requestId,
+      threadId: activeRun.state.input.threadId,
+    });
   });
 
   return {
@@ -675,7 +713,10 @@ function enqueueTrace(state: RunState, name: string, atMs = Date.now(), detail?:
 }
 
 function pushRunEvent(state: RunState, event: StreamEvent) {
-  state.eventLog.push(event);
+  const bufferedEvent = createBufferedRunEventForReconnect(event);
+  if (bufferedEvent) {
+    state.eventLog.push(bufferedEvent);
+  }
   state.queue.push(event);
   state.wakeQueue?.();
   state.wakeQueue = null;
@@ -683,6 +724,57 @@ function pushRunEvent(state: RunState, event: StreamEvent) {
     wake();
   }
   state.eventWaiters.clear();
+}
+
+function createBufferedRunEventForReconnect(event: StreamEvent) {
+  if (
+    event.type === 'trace' ||
+    event.type === 'claude-event' ||
+    event.type === 'assistant-snapshot' ||
+    event.type === 'raw'
+  ) {
+    return null;
+  }
+
+  switch (event.type) {
+    case 'delta':
+    case 'thinking-delta':
+    case 'tool-input-delta':
+    case 'subagent-delta':
+    case 'stderr':
+      return {
+        ...event,
+        text: truncateBufferedRunText(event.text, RUN_RECONNECT_BUFFER_TEXT_MAX_CHARS),
+      };
+    case 'tool-result':
+      return {
+        ...event,
+        content: truncateBufferedRunText(event.content, RUN_RECONNECT_BUFFER_TEXT_MAX_CHARS),
+      };
+    case 'status':
+    case 'error':
+      return {
+        ...event,
+        message: truncateBufferedRunText(event.message, RUN_RECONNECT_BUFFER_MESSAGE_MAX_CHARS),
+      };
+    default:
+      return event;
+  }
+}
+
+function truncateBufferedRunText(text: string, maxChars: number) {
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  const markerLength = RUN_RECONNECT_BUFFER_TRUNCATION_MARKER.length;
+  if (maxChars <= markerLength + 32) {
+    return `${RUN_RECONNECT_BUFFER_TRUNCATION_MARKER.trim()}${text.slice(-(maxChars - markerLength))}`;
+  }
+
+  const headLength = Math.floor((maxChars - markerLength) * 0.5);
+  const tailLength = Math.max(0, maxChars - markerLength - headLength);
+  return `${text.slice(0, headLength)}${RUN_RECONNECT_BUFFER_TRUNCATION_MARKER}${text.slice(-tailLength)}`;
 }
 
 function waitForRunEvent(state: RunState, signal?: AbortSignal) {
@@ -919,7 +1011,9 @@ function buildRequestUserInputResponseAnswers(
       return;
     }
 
-    responseAnswers[question.question] = normalizeRequestUserInputAnswerValue(question, answer);
+    const normalizedAnswer = normalizeRequestUserInputAnswerValue(question, answer);
+    responseAnswers[key] = normalizedAnswer;
+    responseAnswers[question.question] = normalizedAnswer;
   });
 
   return responseAnswers;
@@ -1164,6 +1258,17 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
   const parentToolUseId = payload.parent_tool_use_id;
 
   if (payload.type === 'control_request') {
+    const requestUserInput = parseControlRequestUserInputEvent(payload);
+    if (requestUserInput) {
+      if (typeof payload.request_id === 'string' && payload.request_id.trim()) {
+        state.controlApprovalToolUseIds.set(payload.request_id.trim(), getControlRequestToolUseId(payload));
+      }
+      if (emitRequestUserInputEvent(state, runId, requestUserInput, enqueue)) {
+        pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input');
+      }
+      return;
+    }
+
     const approvalRequest = parseControlApprovalRequestEvent(payload);
     if (approvalRequest) {
       if (approvalRequest.requestId) {
@@ -1745,6 +1850,30 @@ function buildClaudeControlResponseMessage(
   };
 }
 
+function buildAskUserQuestionControlResponse(
+  requestId: string,
+  toolUseId: string,
+  questions: RequestUserInputQuestion[],
+  answers: Record<string, string>,
+) {
+  return {
+    type: 'control_response',
+    response: {
+      subtype: 'success',
+      request_id: requestId,
+      response: {
+        behavior: 'allow',
+        updatedInput: {
+          questions,
+          answers: buildRequestUserInputResponseAnswers(questions, answers),
+        },
+        toolUseID: toolUseId,
+        decisionClassification: 'user_temporary',
+      },
+    },
+  };
+}
+
 function writePromptToClaude(runtime: ClaudeRuntime, state: RunState, input: StreamInput) {
   if (runtime.inputMode === 'argv') {
     enqueueTrace(state, 'prompt_sent_as_arg', Date.now(), `${input.prompt.length} chars`);
@@ -2254,6 +2383,20 @@ function parseControlApprovalRequestEvent(payload: ClaudeJsonLine): ApprovalRequ
     command: normalizeCommand(input.command ?? input.argv ?? input.args),
     danger: normalizeDangerLevel(firstNonEmptyString(request, ['danger', 'risk'])),
   };
+}
+
+function parseControlRequestUserInputEvent(payload: ClaudeJsonLine): RequestUserInputRequest | null {
+  const request = asRecord(payload.request);
+  if (request.subtype !== 'can_use_tool') {
+    return null;
+  }
+
+  const toolName = firstNonEmptyString(request, ['tool_name', 'toolName', 'name']);
+  if (!toolName) {
+    return null;
+  }
+
+  return parseRequestUserInputEvent(toolName, request.input, getControlRequestToolUseId(payload));
 }
 
 function getControlRequestToolUseId(payload: ClaudeJsonLine) {

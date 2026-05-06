@@ -81,6 +81,12 @@ export type PanelState = {
   visibility: Visibility;
 };
 
+const SIDECHAIN_TOOL_TEXT_MAX_CHARS = 6_000;
+const SUBAGENT_MESSAGE_MAX_COUNT = 8;
+const SUBAGENT_MESSAGE_MAX_CHARS = 4_000;
+const SUBAGENT_MESSAGES_MAX_TOTAL_CHARS = 24_000;
+const TRUNCATION_MARKER = '\n...[已截断]...\n';
+
 export type ThreadTurn = {
   id: string;
   userText: string;
@@ -1812,7 +1818,7 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
     const contentBlocks = extractContentBlocks(message.content);
     for (const block of contentBlocks) {
       if (block.type === 'text' && block.text?.trim()) {
-        parentTool.subMessages = [...(parentTool.subMessages ?? []), block.text];
+        parentTool.subMessages = normalizeThreadSubMessages([...(parentTool.subMessages ?? []), block.text]);
         continue;
       }
 
@@ -1824,12 +1830,12 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
       const tool = {
         id: block.id || randomUUID(),
         name: block.name,
-        title: describeToolCall(block.name, inputText),
+        title: describeToolCall(block.name, truncateSidechainToolText(inputText, true)),
         status: 'done' as const,
         toolUseId: block.id,
         parentToolUseId,
         isSidechain: true,
-        inputText,
+        inputText: truncateSidechainToolText(inputText, true),
       };
       parentTool.subtools = [...(parentTool.subtools ?? []), tool];
       if (tool.toolUseId) {
@@ -3573,8 +3579,14 @@ function normalizeStoredThreadTool(value: unknown): ThreadTool | null {
     toolUseId: firstNonEmptyString(item, ['toolUseId', 'tool_use_id']),
     parentToolUseId: firstNonEmptyString(item, ['parentToolUseId', 'parent_tool_use_id']),
     isSidechain: Boolean(item.isSidechain ?? item.is_sidechain),
-    inputText: getStringFromUnknown(item.inputText ?? item.input_text),
-    resultText: getStringFromUnknown(item.resultText ?? item.result_text),
+    inputText: truncateSidechainToolText(
+      getStringFromUnknown(item.inputText ?? item.input_text),
+      Boolean(item.isSidechain ?? item.is_sidechain),
+    ),
+    resultText: truncateSidechainToolText(
+      getStringFromUnknown(item.resultText ?? item.result_text),
+      Boolean(item.isSidechain ?? item.is_sidechain),
+    ),
     isError: Boolean(item.isError ?? item.is_error),
     subtools: Array.isArray(item.subtools)
       ? item.subtools
@@ -3582,7 +3594,7 @@ function normalizeStoredThreadTool(value: unknown): ThreadTool | null {
           .filter((child): child is ThreadTool => Boolean(child))
       : undefined,
     subMessages: Array.isArray(item.subMessages)
-      ? item.subMessages.filter((message): message is string => typeof message === 'string')
+      ? normalizeThreadSubMessages(item.subMessages.filter((message): message is string => typeof message === 'string'))
       : undefined,
   };
 }
@@ -3607,6 +3619,68 @@ function parseStoredStringArray(value: string | null): string[] | undefined {
 
 function getStringFromUnknown(value: unknown) {
   return typeof value === 'string' ? value : undefined;
+}
+
+function normalizeThreadSubMessages(messages: string[] | undefined) {
+  if (!messages?.length) {
+    return undefined;
+  }
+
+  const trimmed = messages
+    .map((message) => truncateRetainedText(message, SUBAGENT_MESSAGE_MAX_CHARS))
+    .filter((message) => Boolean(message.trim()))
+    .slice(-SUBAGENT_MESSAGE_MAX_COUNT);
+
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+
+  let remaining = SUBAGENT_MESSAGES_MAX_TOTAL_CHARS;
+  const kept: string[] = [];
+  for (let index = trimmed.length - 1; index >= 0; index -= 1) {
+    const message = trimmed[index];
+    if (remaining <= 0) {
+      break;
+    }
+
+    if (message.length <= remaining) {
+      kept.push(message);
+      remaining -= message.length;
+      continue;
+    }
+
+    const truncated = truncateRetainedText(message, remaining);
+    if (truncated.trim()) {
+      kept.push(truncated);
+    }
+    break;
+  }
+
+  const normalized = kept.reverse();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function truncateSidechainToolText(text: string | undefined, isSidechain?: boolean) {
+  if (!text || !isSidechain) {
+    return text;
+  }
+
+  return truncateRetainedText(text, SIDECHAIN_TOOL_TEXT_MAX_CHARS);
+}
+
+function truncateRetainedText(text: string, maxChars: number) {
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  const markerLength = TRUNCATION_MARKER.length;
+  if (maxChars <= markerLength + 32) {
+    return `${TRUNCATION_MARKER.trim()}${text.slice(-(maxChars - markerLength))}`;
+  }
+
+  const headLength = Math.floor((maxChars - markerLength) * 0.55);
+  const tailLength = Math.max(0, maxChars - markerLength - headLength);
+  return `${text.slice(0, headLength)}${TRUNCATION_MARKER}${text.slice(-tailLength)}`;
 }
 
 function normalizeToolName(value: string) {
