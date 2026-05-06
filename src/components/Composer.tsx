@@ -10,7 +10,7 @@ import { SlashCommandMenu } from './SlashCommandMenu';
 import { buildPromptWithImageAttachments } from '../lib/composer-attachments';
 import { applySlashCommandSelection, getNextSlashCommandIndex } from '../lib/slash-command-editor';
 import { getSlashDismissResetKey, resolveSlashCommandSubmission } from '../lib/slash-command-submit';
-import { modelLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
+import { modelLabel, modelMenuDescriptionLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
 import type { AgentType, ClaudeModelOption, ConversationTurn, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingImageAttachment = {
@@ -448,25 +448,29 @@ export function Composer({
               <PopoverPortal open={modelMenuOpen} anchorRef={modelMenuRef} placement="top-end">
                 <div className="model-menu" role="menu">
                   <div className="model-menu-title">模型</div>
-                  {models.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className="model-menu-item"
-                      role="menuitemradio"
-                      aria-checked={model === item.id}
-                      onClick={() => {
-                        onSelectModel(item.id);
-                        setModelMenuOpen(false);
-                      }}
-                    >
-                      <span className="model-menu-item-copy">
-                        <span>{modelLabel(item)}</span>
-                        {item.description ? <small>{item.description}</small> : null}
-                      </span>
-                      {model === item.id ? <Check className="model-check" size={15} /> : null}
-                    </button>
-                  ))}
+                  {models.map((item) => {
+                    const description = modelMenuDescriptionLabel(item);
+
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className="model-menu-item"
+                        role="menuitemradio"
+                        aria-checked={model === item.id}
+                        onClick={() => {
+                          onSelectModel(item.id);
+                          setModelMenuOpen(false);
+                        }}
+                      >
+                        <span className="model-menu-item-copy">
+                          <span>{modelLabel(item)}</span>
+                          {description ? <small>{description}</small> : null}
+                        </span>
+                        {model === item.id ? <Check className="model-check" size={15} /> : null}
+                      </button>
+                    );
+                  })}
                 </div>
               </PopoverPortal>
 

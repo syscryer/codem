@@ -30,3 +30,11 @@ export function modelTriggerLabel(modelId: string, models: ClaudeModelOption[]) 
 
   return modelId === DEFAULT_MODEL_VALUE ? '默认' : modelId;
 }
+
+export function modelMenuDescriptionLabel(model: ClaudeModelOption) {
+  if (model.id === DEFAULT_MODEL_VALUE || model.kind === 'default') {
+    return '跟随 Claude Code 默认';
+  }
+
+  return model.description || '';
+}
