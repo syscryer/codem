@@ -1,4 +1,4 @@
-import { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ListChecks } from 'lucide-react';
 import { AppMenubar } from './components/AppMenubar';
 import { ChatHeader } from './components/ChatHeader';
@@ -513,12 +513,12 @@ export default function App() {
     });
   }
 
-  function resolveWorkbenchPreviewContent(key: string, state: WorkbenchPreviewContentState) {
+  const resolveWorkbenchPreviewContent = useCallback((key: string, state: WorkbenchPreviewContentState) => {
     setPreviewContentByKey((current) => ({
       ...current,
       [key]: state,
     }));
-  }
+  }, []);
 
   function handleRightWorkbenchResizeStart(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();

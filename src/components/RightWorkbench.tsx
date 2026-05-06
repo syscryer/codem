@@ -11,7 +11,7 @@ import {
   RefreshCw,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { fetchWorkspaceFilePreview } from '../lib/file-preview-api';
@@ -226,6 +226,13 @@ function WorkbenchFiles({
     [changedTree, fileFilter],
   );
   const activePreviewTab = previewTabs.find((tab) => tab.key === activePreviewKey);
+  const activePreviewTabKey = activePreviewTab?.key ?? '';
+  const activePreviewPath = activePreviewTab?.path ?? '';
+  const previewContentRef = useRef(previewContentByKey);
+  const previewRequestKeysRef = useRef(new Set<string>());
+  const activeProjectIdRef = useRef(activeProject?.id ?? '');
+  previewContentRef.current = previewContentByKey;
+  activeProjectIdRef.current = activeProject?.id ?? '';
 
   useEffect(() => {
     if (!activeProject) {
@@ -239,35 +246,45 @@ function WorkbenchFiles({
   }, [activeProject?.id, scope]);
 
   useEffect(() => {
-    if (!activeProject || !activePreviewTab || previewContentByKey[activePreviewTab.key]) {
+    if (!activeProject || !activePreviewTabKey) {
       return;
     }
 
-    let cancelled = false;
-    onResolvePreviewContent(activePreviewTab.key, { loading: true, content: '' });
+    const existingContent = previewContentRef.current[activePreviewTabKey];
+    if (existingContent && !existingContent.loading) {
+      return;
+    }
 
-    const request = fetchWorkspaceFilePreview(resolveWorkbenchPreviewFilePath(activeProject.path, activePreviewTab.path));
+    const projectId = activeProject.id;
+    const requestKey = `${projectId}:${activePreviewTabKey}`;
+    if (previewRequestKeysRef.current.has(requestKey)) {
+      return;
+    }
+
+    previewRequestKeysRef.current.add(requestKey);
+    onResolvePreviewContent(activePreviewTabKey, { loading: true, content: '' });
+
+    const request = fetchWorkspaceFilePreview(resolveWorkbenchPreviewFilePath(activeProject.path, activePreviewPath));
 
     request
       .then((payload) => {
-        if (!cancelled) {
-          onResolvePreviewContent(activePreviewTab.key, { loading: false, content: payload.content });
+        if (activeProjectIdRef.current === projectId) {
+          onResolvePreviewContent(activePreviewTabKey, { loading: false, content: payload.content });
         }
       })
       .catch((caughtError: unknown) => {
-        if (!cancelled) {
-          onResolvePreviewContent(activePreviewTab.key, {
+        if (activeProjectIdRef.current === projectId) {
+          onResolvePreviewContent(activePreviewTabKey, {
             loading: false,
             content: '',
             error: caughtError instanceof Error ? caughtError.message : '读取文件失败',
           });
         }
+      })
+      .finally(() => {
+        previewRequestKeysRef.current.delete(requestKey);
       });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activePreviewTab?.key, activeProject?.id, onResolvePreviewContent, previewContentByKey]);
+  }, [activePreviewTabKey, activePreviewPath, activeProject?.id, activeProject?.path, onResolvePreviewContent]);
 
   async function loadScope(nextScope = scope) {
     if (!activeProject) {
