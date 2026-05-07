@@ -56,7 +56,6 @@ export function useWorkspaceState() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [threadDetails, setThreadDetails] = useState<Record<string, ThreadDetail>>({});
-  const [debugOpen, setDebugOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
@@ -1058,7 +1057,6 @@ export function useWorkspaceState() {
     activeProjectId,
     activeThreadId,
     threadDetails,
-    debugOpen,
     searchOpen,
     searchQuery,
     collapsedProjects,
@@ -1070,7 +1068,6 @@ export function useWorkspaceState() {
     activeThreadSummary,
     activeThread,
     filteredProjects,
-    setDebugOpen,
     setSearchOpen,
     setSearchQuery,
     setInputDialog,

@@ -1044,6 +1044,79 @@ svg {
   color: #202020;
 }
 
+.run-button.configured {
+  color: #16784f;
+}
+
+.launch-script-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.launch-script-popover {
+  width: 320px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(214, 218, 224, 0.82);
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 18px 46px rgba(15, 23, 42, 0.14);
+}
+
+.launch-script-title {
+  color: #242424;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.launch-script-textarea {
+  width: 100%;
+  min-height: 126px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fbfbfa;
+  color: #242424;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  outline: none;
+}
+
+.launch-script-textarea:focus {
+  border-color: #cfd9e4;
+  box-shadow: 0 0 0 3px rgba(35, 116, 198, 0.08);
+}
+
+.launch-script-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.launch-script-secondary,
+.launch-script-primary {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.launch-script-secondary {
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: #4b5563;
+}
+
+.launch-script-primary {
+  border: 0;
+  background: #242424;
+  color: #ffffff;
+}
+
 .pill-button {
   height: var(--header-control-height);
   display: inline-flex;
@@ -2785,9 +2858,7 @@ svg {
 }
 
 .tool-details pre,
-.thinking-message pre,
-.debug-item pre,
-.raw-pre {
+.thinking-message pre {
   margin: 0;
   max-height: 260px;
   overflow: auto;
@@ -6635,8 +6706,7 @@ svg {
 .codex-desktop .workspace-status,
 .codex-desktop .settings-view,
 .codex-desktop .settings-content,
-.codex-desktop .dialog-card,
-.codex-desktop .debug-drawer {
+.codex-desktop .dialog-card {
   background: var(--app-surface);
   color: var(--app-text);
 }
@@ -6755,8 +6825,6 @@ svg {
 .codex-desktop .message-body,
 .codex-desktop .tool-details pre,
 .codex-desktop .thinking-message pre,
-.codex-desktop .debug-item pre,
-.codex-desktop .raw-pre,
 .codex-desktop .status-run-json,
 .codex-desktop .markdown-body .code-block-shell pre {
   background: var(--app-surface-muted);
@@ -7158,7 +7226,7 @@ svg {
   font-size: max(11px, calc(var(--app-ui-font-size, 13px) - 1px));
 }
 
-.codex-desktop :where(.settings-section-head h1, .dialog-head h3, .debug-head h2) {
+.codex-desktop :where(.settings-section-head h1, .dialog-head h3) {
   font-size: calc(var(--app-ui-font-size, 13px) + 5px);
 }
 
@@ -7218,7 +7286,7 @@ svg {
   box-shadow: var(--menu-item-hover-shadow);
 }
 
-.codex-desktop :where(.tool-title, .tool-subtitle, .tool-details summary, .tool-details h4, .tool-details pre, .thinking-message, .thinking-message pre, .agent-preview-title, .agent-preview-meta, .agent-preview-section h4, .agent-preview-file-list code, .agent-preview-section pre, .structured-preview-title, .structured-preview-meta, .structured-preview-row, .structured-preview-card > pre, .read-group-title, .read-group-meta, .debug-item pre, .raw-pre, .assistant-runtime-code, .assistant-runtime-code code, .markdown-body code, .markdown-body .code-block-shell pre code) {
+.codex-desktop :where(.tool-title, .tool-subtitle, .tool-details summary, .tool-details h4, .tool-details pre, .thinking-message, .thinking-message pre, .agent-preview-title, .agent-preview-meta, .agent-preview-section h4, .agent-preview-file-list code, .agent-preview-section pre, .structured-preview-title, .structured-preview-meta, .structured-preview-row, .structured-preview-card > pre, .read-group-title, .read-group-meta, .assistant-runtime-code, .assistant-runtime-code code, .markdown-body code, .markdown-body .code-block-shell pre code) {
   font-size: var(--app-code-font-size, 12px);
 }
 
@@ -7297,40 +7365,19 @@ svg {
   min-height: 26px;
 }
 
-.debug-drawer {
-  position: fixed;
-  top: 76px;
-  right: 18px;
-  bottom: 42px;
-  width: min(520px, calc(100vw - 36px));
-  z-index: 10;
-  overflow: auto;
-  padding: 16px;
-  border: 1px solid #e5e7eb;
-  border-radius: 14px;
-  background: #ffffff;
-  box-shadow: var(--shadow);
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(156, 163, 175, 0.44) transparent;
-}
-
 .sidebar-projects::-webkit-scrollbar,
-.conversation::-webkit-scrollbar,
-.debug-drawer::-webkit-scrollbar {
+.conversation::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 
 .sidebar-projects::-webkit-scrollbar-track,
-.conversation::-webkit-scrollbar-track,
-.debug-drawer::-webkit-scrollbar-track {
+.conversation::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .sidebar-projects::-webkit-scrollbar-thumb,
-.conversation::-webkit-scrollbar-thumb,
-.debug-drawer::-webkit-scrollbar-thumb {
+.conversation::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
   border-radius: 999px;
   background-clip: padding-box;
@@ -7340,8 +7387,7 @@ svg {
   background-color: rgba(148, 139, 127, 0.38);
 }
 
-.conversation::-webkit-scrollbar-thumb,
-.debug-drawer::-webkit-scrollbar-thumb {
+.conversation::-webkit-scrollbar-thumb {
   background-color: rgba(156, 163, 175, 0.42);
 }
 
@@ -7349,45 +7395,8 @@ svg {
   background-color: rgba(124, 114, 101, 0.52);
 }
 
-.conversation:hover::-webkit-scrollbar-thumb,
-.debug-drawer:hover::-webkit-scrollbar-thumb {
+.conversation:hover::-webkit-scrollbar-thumb {
   background-color: rgba(107, 114, 128, 0.54);
-}
-
-.debug-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.debug-head h2 {
-  margin: 0;
-  font-size: 18px;
-}
-
-.debug-section {
-  margin-top: 12px;
-  border-top: 1px solid #e5e7eb;
-  padding-top: 12px;
-}
-
-.debug-section summary {
-  cursor: pointer;
-  font-weight: 600;
-}
-
-.debug-item {
-  margin-top: 12px;
-}
-
-.debug-item h3 {
-  margin: 0 0 6px;
-  font-size: 13px;
-}
-
-.debug-error h3 {
-  color: #dc2626;
 }
 
 .ghost-button {

@@ -5,13 +5,12 @@ import { ChatHeader } from './components/ChatHeader';
 import { CloneRepositoryDialog } from './components/CloneRepositoryDialog';
 import { Composer } from './components/Composer';
 import { ConversationPane } from './components/ConversationPane';
-import { DebugDrawer } from './components/DebugDrawer';
 import { Dialogs } from './components/Dialogs';
 import { GitDialog } from './components/GitDialog';
 import { RightWorkbench } from './components/RightWorkbench';
 import { SidebarProjects } from './components/SidebarProjects';
 import { SettingsView } from './components/settings/SettingsView';
-import { TerminalDock, useTerminalDockState } from './components/TerminalDock';
+import { TerminalDock, useTerminalDockState, type TerminalRunRequest } from './components/TerminalDock';
 import { WorkspaceStatus } from './components/WorkspaceStatus';
 import { useClaudeRun } from './hooks/useClaudeRun';
 import { useAppSettings } from './hooks/useAppSettings';
@@ -59,7 +58,6 @@ export default function App() {
     panelState,
     activeProjectId,
     activeThreadId,
-    debugOpen,
     searchOpen,
     searchQuery,
     collapsedProjects,
@@ -71,7 +69,6 @@ export default function App() {
     activeThreadSummary,
     activeThread,
     filteredProjects,
-    setDebugOpen,
     setSearchOpen,
     setSearchQuery,
     setInputDialog,
@@ -120,6 +117,7 @@ export default function App() {
   const [previewContentByKey, setPreviewContentByKey] = useState<Record<string, WorkbenchPreviewContentState>>({});
   const terminalDock = useTerminalDockState();
   const terminalDockAvailable = isTauriRuntime();
+  const [terminalRunRequest, setTerminalRunRequest] = useState<TerminalRunRequest | null>(null);
   const {
     general,
     appearance,
@@ -239,13 +237,12 @@ export default function App() {
 
       if (matchesShortcut(event, shortcuts.toggleDebug)) {
         event.preventDefault();
-        setDebugOpen((value) => !value);
       }
     }
 
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [appView.kind, handleCreatePrimaryChat, setDebugOpen, setSearchOpen, shortcuts]);
+  }, [appView.kind, handleCreatePrimaryChat, setSearchOpen, shortcuts]);
 
   const latestApprovalDialog = useMemo(
     () => getLatestPendingApprovalDialog(activeThread),
@@ -568,7 +565,6 @@ export default function App() {
         onOpenCloneDialog={() => setCloneDialogOpen(true)}
         onOpenSettings={() => openSettings('appearance')}
         onOpenSearch={() => setSearchOpen(true)}
-        onToggleDebug={() => setDebugOpen((value) => !value)}
         onSelectWindowMaterial={(windowMaterial) => updateAppearance({ windowMaterial })}
         onShowAbout={showAbout}
         onShowShortcuts={showShortcuts}
@@ -642,8 +638,8 @@ export default function App() {
                 activeThread={activeThread}
                 openTargets={openTargets}
                 selectedOpenTargetId={openWith.selectedTargetId}
-                showDebugButton={general.showDebugButton}
-                onToggleDebug={() => setDebugOpen((value) => !value)}
+                runAvailable={terminalDockAvailable}
+                onRunLaunchScript={handleRunLaunchScript}
                 onOpenTarget={(targetId) => activeProject ? void handleOpenProjectInEditor(activeProject, targetId) : showToast('请先选择项目。', 'info')}
                 onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
                 onOpenFilesWorkbench={openFilesWorkbench}
@@ -713,6 +709,7 @@ export default function App() {
                   isOpen={terminalDock.open}
                   onToggleOpen={terminalDock.toggle}
                   defaultWorkspace={activeProject}
+                  runRequest={terminalRunRequest}
                 />
               ) : null}
             </main>
@@ -780,9 +777,26 @@ export default function App() {
         onPickBaseDirectory={(currentBaseDirectory) => selectDirectoryPath(currentBaseDirectory || activeProject?.path)}
         onSubmit={handleCloneRepository}
       />
-      <DebugDrawer activeThread={activeThread} open={debugOpen} onClose={() => setDebugOpen(false)} />
     </div>
   );
+
+  function handleRunLaunchScript(command: string) {
+    if (!activeProject) {
+      showToast('请先选择项目。', 'info');
+      return;
+    }
+    if (!terminalDockAvailable) {
+      showToast('启动脚本仅在桌面版可用。', 'info');
+      return;
+    }
+    terminalDock.openDock();
+    setTerminalRunRequest({
+      id: Date.now(),
+      command,
+      cwd: activeProject.path,
+      title: activeProject.path,
+    });
+  }
 }
 
 function isEditableShortcutTarget(target: EventTarget | null) {

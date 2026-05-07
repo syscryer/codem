@@ -40,6 +40,13 @@ type TerminalWorkspace = {
   path: string;
 };
 
+export type TerminalRunRequest = {
+  id: number;
+  command: string;
+  cwd: string | null;
+  title?: string;
+};
+
 function createTerminalId() {
   return `codem-terminal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -110,12 +117,16 @@ function XtermSurface({
   terminalTabId,
   cwd,
   initialContent,
+  commandRequest,
   onData,
+  onCommandHandled,
 }: {
   terminalTabId: string;
   cwd: string | null;
   initialContent: string;
+  commandRequest: TerminalRunRequest | null;
   onData: (tabId: string, data: string) => void;
+  onCommandHandled: (requestId: number) => void;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<XtermTerminal | null>(null);
@@ -210,6 +221,22 @@ function XtermSurface({
     };
   }, [onData, terminalTabId]);
 
+  useEffect(() => {
+    if (!commandRequest) {
+      return;
+    }
+
+    const timerId = window.setTimeout(() => {
+      void writePtyInput({
+        terminalTabId,
+        data: `${commandRequest.command}\r`,
+      });
+      onCommandHandled(commandRequest.id);
+    }, 140);
+
+    return () => window.clearTimeout(timerId);
+  }, [commandRequest, onCommandHandled, terminalTabId]);
+
   return <div ref={hostRef} className="terminal-xterm-host" />;
 }
 
@@ -217,10 +244,12 @@ export function TerminalDock({
   isOpen,
   onToggleOpen,
   defaultWorkspace,
+  runRequest,
 }: {
   isOpen: boolean;
   onToggleOpen: () => void;
   defaultWorkspace: TerminalWorkspace | null;
+  runRequest: TerminalRunRequest | null;
 }) {
   const [height, setHeight] = useState<number>(() => {
     if (typeof window === 'undefined') {
@@ -237,6 +266,8 @@ export function TerminalDock({
   const outputBuffersRef = useRef<Record<string, string>>({});
   const previousTabIdsRef = useRef<string[]>([]);
   const wasOpenRef = useRef(false);
+  const handledRunRequestIdRef = useRef<number | null>(null);
+  const [commandRequestsByTabId, setCommandRequestsByTabId] = useState<Record<string, TerminalRunRequest>>({});
 
   const activeTab = useMemo(
     () => terminalTabs.find((tab) => tab.id === activeTerminalTabId) ?? null,
@@ -290,6 +321,32 @@ export function TerminalDock({
     });
     previousTabIdsRef.current = current;
   }, [terminalTabs]);
+
+  useEffect(() => {
+    if (!isOpen || !runRequest || handledRunRequestIdRef.current === runRequest.id) {
+      return;
+    }
+
+    handledRunRequestIdRef.current = runRequest.id;
+    const targetTab =
+      terminalTabs.find((tab) => tab.cwd === runRequest.cwd) ??
+      activeTab ??
+      null;
+
+    if (targetTab) {
+      setActiveTerminalTabId(targetTab.id);
+      setCommandRequestsByTabId((current) => ({ ...current, [targetTab.id]: runRequest }));
+      return;
+    }
+
+    const nextTab = createTab({
+      title: runRequest.title ?? terminalTitleFromWorkspace(defaultWorkspace, '终端 1'),
+      cwd: runRequest.cwd,
+    });
+    setTerminalTabs((current) => [...current, nextTab]);
+    setActiveTerminalTabId(nextTab.id);
+    setCommandRequestsByTabId((current) => ({ ...current, [nextTab.id]: runRequest }));
+  }, [activeTab, defaultWorkspace, isOpen, runRequest, terminalTabs]);
 
   function persistHeight(next: number) {
     setHeight(next);
@@ -367,6 +424,17 @@ export function TerminalDock({
     outputBuffersRef.current[tabId] = trimBuffer(`${outputBuffersRef.current[tabId] ?? ''}${data}`);
   }
 
+  function handleCommandRequestHandled(tabId: string, requestId: number) {
+    setCommandRequestsByTabId((current) => {
+      if (current[tabId]?.id !== requestId) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[tabId];
+      return next;
+    });
+  }
+
   if (!isOpen) {
     return null;
   }
@@ -404,7 +472,9 @@ export function TerminalDock({
               terminalTabId={activeTab.id}
               cwd={activeTab.cwd}
               initialContent={outputBuffersRef.current[activeTab.id] ?? ''}
+              commandRequest={commandRequestsByTabId[activeTab.id] ?? null}
               onData={handleBufferData}
+              onCommandHandled={(requestId) => handleCommandRequestHandled(activeTab.id, requestId)}
             />
           ) : (
             <div className="terminal-empty">点击 + 创建一个终端。</div>
@@ -506,5 +576,12 @@ export function useTerminalDockState() {
     });
   }
 
-  return { open, toggle };
+  function openDock() {
+    setOpen(true);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(OPEN_STORAGE_KEY, 'true');
+    }
+  }
+
+  return { open, toggle, openDock };
 }

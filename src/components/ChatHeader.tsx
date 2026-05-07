@@ -11,20 +11,22 @@ import {
   SquareSplitHorizontal,
   TerminalSquare,
 } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { PopoverPortal } from './PopoverPortal';
 import { getGitDiffBadgeLabels } from '../lib/git-diff';
 import { getOpenAppIcon } from '../lib/open-app-icons';
 import type { OpenAppTarget, ProjectSummary, ThreadDetail } from '../types';
 
+const LAUNCH_SCRIPTS_STORAGE_KEY = 'codem::project-launch-scripts';
+
 type ChatHeaderProps = {
   activeProject: ProjectSummary | null;
   activeThread: ThreadDetail | null;
   openTargets: OpenAppTarget[];
   selectedOpenTargetId: string;
-  showDebugButton: boolean;
-  onToggleDebug: () => void;
+  runAvailable: boolean;
+  onRunLaunchScript: (command: string) => void;
   onOpenTarget: (targetId?: string) => void;
   onSelectOpenTarget: (targetId: string) => void;
   onOpenFilesWorkbench: () => void;
@@ -43,8 +45,8 @@ export function ChatHeader({
   activeThread,
   openTargets,
   selectedOpenTargetId,
-  showDebugButton,
-  onToggleDebug,
+  runAvailable,
+  onRunLaunchScript,
   onOpenTarget,
   onSelectOpenTarget,
   onOpenFilesWorkbench,
@@ -75,9 +77,11 @@ export function ChatHeader({
         </button>
       </div>
       <div className="header-actions">
-        <button type="button" className="icon-button" title="运行">
-          <Play size={15} />
-        </button>
+        <LaunchScriptButton
+          activeProject={activeProject}
+          disabled={!runAvailable}
+          onRunLaunchScript={onRunLaunchScript}
+        />
         <OpenAppMenu
           disabled={!activeProject}
           targets={openTargets}
@@ -90,11 +94,6 @@ export function ChatHeader({
           onOpenCommit={onOpenGitCommit}
           onOpenPush={onOpenGitPush}
         />
-        {showDebugButton ? (
-          <button type="button" className="icon-button" onClick={onToggleDebug}>
-            <TerminalSquare size={15} />
-          </button>
-        ) : null}
         {terminalDockAvailable ? (
           <button
             type="button"
@@ -137,6 +136,135 @@ export function ChatHeader({
       </div>
     </header>
   );
+}
+
+function LaunchScriptButton({
+  activeProject,
+  disabled,
+  onRunLaunchScript,
+}: {
+  activeProject: ProjectSummary | null;
+  disabled: boolean;
+  onRunLaunchScript: (command: string) => void;
+}) {
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [draftScript, setDraftScript] = useState('');
+  const [storedScripts, setStoredScripts] = useState<Record<string, string>>(() => readLaunchScripts());
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const projectKey = activeProject?.path ?? null;
+  const launchScript = projectKey ? storedScripts[projectKey]?.trim() ?? '' : '';
+  const hasLaunchScript = Boolean(launchScript);
+
+  useOutsideDismiss({
+    selectors: [
+      { selector: '.launch-script-popover', onDismiss: () => setEditorOpen(false), anchorRefs: [menuRef] },
+    ],
+  });
+
+  useEffect(() => {
+    setEditorOpen(false);
+    setDraftScript(launchScript);
+  }, [launchScript, projectKey]);
+
+  function openEditor() {
+    setDraftScript(launchScript);
+    setEditorOpen(true);
+  }
+
+  function handleRun() {
+    if (disabled || !activeProject) {
+      return;
+    }
+    if (!launchScript) {
+      openEditor();
+      return;
+    }
+    onRunLaunchScript(launchScript);
+  }
+
+  function handleContextMenu(event: ReactMouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    if (!disabled && activeProject) {
+      openEditor();
+    }
+  }
+
+  function handleSave() {
+    if (!projectKey) {
+      return;
+    }
+    const next = { ...readLaunchScripts() };
+    const trimmed = draftScript.trim();
+    if (trimmed) {
+      next[projectKey] = draftScript;
+    } else {
+      delete next[projectKey];
+    }
+    writeLaunchScripts(next);
+    setStoredScripts(next);
+    setEditorOpen(false);
+  }
+
+  return (
+    <div className="launch-script-menu" ref={menuRef}>
+      <button
+        type="button"
+        className={`icon-button run-button${hasLaunchScript ? ' configured' : ''}`}
+        title={hasLaunchScript ? '运行启动脚本，右键编辑' : '设置启动脚本'}
+        aria-label={hasLaunchScript ? '运行启动脚本' : '设置启动脚本'}
+        disabled={disabled || !activeProject}
+        onClick={handleRun}
+        onContextMenu={handleContextMenu}
+      >
+        <Play size={15} />
+      </button>
+      <PopoverPortal open={editorOpen} anchorRef={menuRef} placement="bottom-start" offset={8}>
+        <div className="launch-script-popover" role="dialog" aria-label="启动脚本">
+          <div className="launch-script-title">启动脚本</div>
+          <textarea
+            className="launch-script-textarea"
+            placeholder="例如 npm run dev"
+            value={draftScript}
+            onChange={(event) => setDraftScript(event.currentTarget.value)}
+            rows={6}
+          />
+          <div className="launch-script-actions">
+            <button type="button" className="launch-script-secondary" onClick={() => setEditorOpen(false)}>
+              取消
+            </button>
+            <button type="button" className="launch-script-primary" onClick={handleSave}>
+              保存
+            </button>
+          </div>
+        </div>
+      </PopoverPortal>
+    </div>
+  );
+}
+
+function readLaunchScripts() {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+  try {
+    const raw = window.localStorage.getItem(LAUNCH_SCRIPTS_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, string>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeLaunchScripts(scripts: Record<string, string>) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.localStorage.setItem(LAUNCH_SCRIPTS_STORAGE_KEY, JSON.stringify(scripts));
 }
 
 function GitActionMenu({

@@ -1,4 +1,4 @@
-import { Bug, GitBranch, History, RotateCcw, Shield } from 'lucide-react';
+import { GitBranch, History, RotateCcw, Shield } from 'lucide-react';
 import { permissionMenuModes } from '../../constants';
 import type { GeneralSettings } from '../../types';
 import type { GeneralSettingsUpdate } from '../../hooks/useAppSettings';
@@ -32,14 +32,6 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
             checked={general.autoRefreshGitStatus}
             onChange={(autoRefreshGitStatus) => void onUpdateGeneral({ autoRefreshGitStatus })}
             label="自动刷新 Git 状态"
-          />
-        </SettingsRow>
-
-        <SettingsRow icon={Bug} title="显示调试入口" description="在顶部工具栏显示调试日志按钮">
-          <Toggle
-            checked={general.showDebugButton}
-            onChange={(showDebugButton) => void onUpdateGeneral({ showDebugButton })}
-            label="显示调试入口"
           />
         </SettingsRow>
 

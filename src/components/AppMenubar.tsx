@@ -16,7 +16,6 @@ type AppMenubarProps = {
   onOpenCloneDialog: () => void;
   onOpenSettings: () => void;
   onOpenSearch: () => void;
-  onToggleDebug: () => void;
   onSelectWindowMaterial: (material: WindowMaterialMode) => void;
   onShowAbout: () => void;
   onShowShortcuts: () => void;
@@ -42,7 +41,6 @@ export function AppMenubar({
   onOpenCloneDialog,
   onOpenSettings,
   onOpenSearch,
-  onToggleDebug,
   onSelectWindowMaterial,
   onShowAbout,
   onShowShortcuts,
@@ -183,7 +181,6 @@ export function AppMenubar({
                   <>
                     <MenuItem label={sidebarVisible ? '隐藏侧边栏' : '显示侧边栏'} shortcut="Ctrl+B" onSelect={() => runAction(onToggleSidebar)} />
                     <MenuItem label="搜索" shortcut="Ctrl+G" onSelect={() => runAction(onOpenSearch)} />
-                    <MenuItem label="调试面板" onSelect={() => runAction(onToggleDebug)} />
                     <MenuSeparator />
                     <MenuItem label="重新加载页面" shortcut="Ctrl+R" onSelect={() => runAction(() => window.location.reload())} />
                     <MenuItem label="切换全屏" shortcut="F11" onSelect={() => runAction(toggleFullscreen)} />
