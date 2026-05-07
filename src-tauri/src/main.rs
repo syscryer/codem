@@ -2,18 +2,27 @@
 
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
+    collections::HashMap,
+    fs::{self, OpenOptions},
+    io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::Duration,
+    sync::{Arc, Mutex},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri::{Manager, PhysicalPosition, PhysicalSize, WindowEvent};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WindowEvent};
 
 const DEFAULT_WINDOW_MATERIAL_ID: i32 = 2;
 const WINDOW_STATE_FILE_NAME: &str = "window-state.json";
-const MIN_WINDOW_WIDTH: u32 = 720;
-const MIN_WINDOW_HEIGHT: u32 = 480;
+const DESKTOP_LOG_FILE_NAME: &str = "desktop.log";
+const BACKEND_LOG_FILE_NAME: &str = "backend.log";
+const MIN_WINDOW_WIDTH: u32 = 960;
+const MIN_WINDOW_HEIGHT: u32 = 640;
+#[cfg(target_os = "windows")]
+const POWERSHELL_7_PATH: &str = r"C:\Program Files\PowerShell\7\pwsh.exe";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +40,51 @@ struct WindowState {
     height: u32,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PtyEnsureRequest {
+    terminal_tab_id: String,
+    cwd: Option<String>,
+    cols: u16,
+    rows: u16,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PtyInputRequest {
+    terminal_tab_id: String,
+    data: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PtyResizeRequest {
+    terminal_tab_id: String,
+    cols: u16,
+    rows: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PtyOutputEvent {
+    terminal_tab_id: String,
+    data: String,
+    stream: String,
+}
+
+type SharedPtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
+struct PtySession {
+    writer: SharedPtyWriter,
+    master: Box<dyn MasterPty + Send>,
+    child: Box<dyn portable_pty::Child + Send>,
+}
+
+#[derive(Default)]
+struct PtySessions {
+    sessions: Mutex<HashMap<String, PtySession>>,
+}
+
 #[tauri::command]
 fn get_supported_window_materials() -> Vec<WindowMaterial> {
     platform::supported_window_materials()
@@ -46,13 +100,130 @@ fn set_window_material(app: tauri::AppHandle, material: i32) -> Result<WindowMat
     platform::set_window_material(&app, material)
 }
 
+#[tauri::command]
+fn ensure_pty_session(
+    app: AppHandle,
+    store: State<'_, PtySessions>,
+    request: PtyEnsureRequest,
+) -> Result<(), String> {
+    let mut sessions = store.sessions.lock().map_err(|error| error.to_string())?;
+    if let Some(existing) = sessions.get_mut(&request.terminal_tab_id) {
+        existing
+            .master
+            .resize(pty_size(request.cols, request.rows))
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(pty_size(request.cols, request.rows))
+        .map_err(|error| error.to_string())?;
+
+    let mut command = terminal_command();
+    if let Some(cwd) = request.cwd.as_ref().and_then(valid_directory) {
+        command.cwd(cwd);
+    }
+
+    let child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|error| error.to_string())?;
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|error| error.to_string())?;
+    let writer = pair.master.take_writer().map_err(|error| error.to_string())?;
+    let terminal_tab_id = request.terminal_tab_id.clone();
+    let app_handle = app.clone();
+
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => {
+                    emit_pty_output(
+                        &app_handle,
+                        &terminal_tab_id,
+                        "\r\n[process exited]\r\n".to_string(),
+                        "exit",
+                    );
+                    break;
+                }
+                Ok(read) => {
+                    let data = String::from_utf8_lossy(&buffer[..read]).to_string();
+                    emit_pty_output(&app_handle, &terminal_tab_id, data, "stdout");
+                }
+                Err(error) => {
+                    emit_pty_output(
+                        &app_handle,
+                        &terminal_tab_id,
+                        format!("\r\n[pty read error: {error}]\r\n"),
+                        "stderr",
+                    );
+                    break;
+                }
+            }
+        }
+    });
+
+    sessions.insert(
+        request.terminal_tab_id,
+        PtySession {
+            writer: Arc::new(Mutex::new(writer)),
+            master: pair.master,
+            child,
+        },
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn write_pty_input(store: State<'_, PtySessions>, request: PtyInputRequest) -> Result<(), String> {
+    let sessions = store.sessions.lock().map_err(|error| error.to_string())?;
+    let session = sessions
+        .get(&request.terminal_tab_id)
+        .ok_or_else(|| "PTY session not found".to_string())?;
+    let mut writer = session.writer.lock().map_err(|error| error.to_string())?;
+    writer
+        .write_all(request.data.as_bytes())
+        .and_then(|_| writer.flush())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn resize_pty_session(store: State<'_, PtySessions>, request: PtyResizeRequest) -> Result<(), String> {
+    let mut sessions = store.sessions.lock().map_err(|error| error.to_string())?;
+    let session = sessions
+        .get_mut(&request.terminal_tab_id)
+        .ok_or_else(|| "PTY session not found".to_string())?;
+    session
+        .master
+        .resize(pty_size(request.cols, request.rows))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn close_pty_session(store: State<'_, PtySessions>, terminal_tab_id: String) -> Result<(), String> {
+    let mut sessions = store.sessions.lock().map_err(|error| error.to_string())?;
+    if let Some(mut session) = sessions.remove(&terminal_tab_id) {
+        let _ = session.child.kill();
+        let _ = session.child.wait();
+    }
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
+        .manage(PtySessions::default())
         .setup(|app| {
             let app_handle = app.handle().clone();
             restore_main_window_state(&app_handle);
             let _ = platform::set_window_material(&app_handle, DEFAULT_WINDOW_MATERIAL_ID);
-            let _ = ensure_backend_started(&app_handle);
+            match ensure_backend_started(&app_handle) {
+                Ok(()) => log_desktop_event(&app_handle, "backend start check completed"),
+                Err(error) => log_desktop_event(&app_handle, &format!("backend start failed: {error}")),
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -63,10 +234,100 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_supported_window_materials,
             get_current_window_material,
-            set_window_material
+            set_window_material,
+            ensure_pty_session,
+            write_pty_input,
+            resize_pty_session,
+            close_pty_session
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CodeM desktop shell");
+}
+
+fn pty_size(cols: u16, rows: u16) -> PtySize {
+    PtySize {
+        rows: rows.max(1),
+        cols: cols.max(1),
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
+
+fn terminal_command() -> CommandBuilder {
+    let shell = terminal_shell_path();
+    let mut command = CommandBuilder::new(shell.clone());
+    for arg in interactive_terminal_args(&shell) {
+        command.arg(arg);
+    }
+    command
+}
+
+fn terminal_shell_path() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        if Path::new(POWERSHELL_7_PATH).exists() {
+            return POWERSHELL_7_PATH.to_string();
+        }
+        "powershell.exe".to_string()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(shell) = std::env::var("SHELL") {
+            if Path::new(&shell).exists() {
+                return shell;
+            }
+        }
+        if Path::new("/bin/bash").exists() {
+            "/bin/bash".to_string()
+        } else {
+            "/bin/sh".to_string()
+        }
+    }
+}
+
+fn interactive_terminal_args(shell_path: &str) -> Vec<String> {
+    let shell_name = Path::new(shell_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(shell_path)
+        .to_ascii_lowercase();
+
+    #[cfg(target_os = "windows")]
+    {
+        if shell_name == "cmd.exe" || shell_name == "cmd" {
+            return Vec::new();
+        }
+        vec!["-NoLogo".to_string(), "-NoProfile".to_string()]
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        match shell_name.as_str() {
+            "bash" | "zsh" => vec!["-l".to_string()],
+            _ => Vec::new(),
+        }
+    }
+}
+
+fn valid_directory(value: &String) -> Option<PathBuf> {
+    let path = PathBuf::from(value);
+    path.is_dir().then_some(path)
+}
+
+fn emit_pty_output(app: &AppHandle, terminal_tab_id: &str, data: String, stream: &str) {
+    if data.is_empty() {
+        return;
+    }
+
+    let _ = app.emit(
+        "pty-output",
+        PtyOutputEvent {
+            terminal_tab_id: terminal_tab_id.to_string(),
+            data,
+            stream: stream.to_string(),
+        },
+    );
 }
 
 fn restore_main_window_state(app: &tauri::AppHandle) {
@@ -176,19 +437,20 @@ fn rects_intersect(
 
 fn ensure_backend_started(app: &tauri::AppHandle) -> Result<(), String> {
     if is_backend_ready() {
+        log_desktop_event(app, "backend port is ready, skip start");
         return Ok(());
     }
 
     if let Some(server_entry) = find_packaged_backend_entry(app) {
-        return start_node_backend_process(&server_entry);
+        return start_node_backend_process(app, &server_entry);
     }
 
     if let Some(server_entry) = find_development_backend_entry() {
-        return start_node_backend_process(&server_entry);
+        return start_node_backend_process(app, &server_entry);
     }
 
-    let project_root = find_project_root().ok_or_else(|| "未找到 CodeM 项目目录".to_string())?;
-    start_development_backend_process(&project_root)
+    let project_root = find_project_root().ok_or_else(|| "CodeM project directory not found".to_string())?;
+    start_development_backend_process(app, &project_root)
 }
 
 fn is_backend_ready() -> bool {
@@ -229,11 +491,28 @@ fn has_project_manifest(path: &Path) -> bool {
 }
 
 fn find_packaged_backend_entry(app: &tauri::AppHandle) -> Option<PathBuf> {
-    app.path()
-        .resource_dir()
-        .ok()
-        .map(|directory| directory.join("dist-server").join("index.mjs"))
-        .filter(|entry| fs::metadata(entry).is_ok())
+    let resource_dir = match app.path().resource_dir() {
+        Ok(directory) => directory,
+        Err(error) => {
+            log_desktop_event(app, &format!("resource_dir error: {error}"));
+            return None;
+        }
+    };
+
+    let candidates = [
+        resource_dir.join("dist-server").join("index.mjs"),
+        resource_dir.join("_up_").join("dist-server").join("index.mjs"),
+    ];
+
+    for entry in candidates {
+        log_desktop_event(app, &format!("check packaged backend: {}", entry.display()));
+        if fs::metadata(&entry).is_ok() {
+            log_desktop_event(app, &format!("packaged backend found: {}", entry.display()));
+            return Some(entry);
+        }
+    }
+
+    None
 }
 
 fn find_development_backend_entry() -> Option<PathBuf> {
@@ -242,47 +521,172 @@ fn find_development_backend_entry() -> Option<PathBuf> {
         .filter(|entry| fs::metadata(entry).is_ok())
 }
 
-fn start_node_backend_process(server_entry: &Path) -> Result<(), String> {
-    let cwd = server_entry
-        .parent()
-        .and_then(Path::parent)
-        .unwrap_or_else(|| Path::new("."));
-    let mut command = node_backend_command(server_entry);
+fn start_node_backend_process(app: &tauri::AppHandle, server_entry: &Path) -> Result<(), String> {
+    let cwd = normalize_process_path(
+        &server_entry
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or_else(|| Path::new(".")),
+    );
+    let server_entry = normalize_process_path(server_entry);
+    let node_runtime = node_backend_executable(&server_entry);
+    log_desktop_event(
+        app,
+        &format!(
+            "start node backend: node={}, entry={}, cwd={}",
+            node_runtime.display(),
+            server_entry.display(),
+            cwd.display()
+        ),
+    );
+    let mut command = node_backend_command(&server_entry);
+    let (stdout, stderr) = backend_log_stdio(app);
     command
-        .current_dir(cwd)
+        .current_dir(&cwd)
         .env("NODE_ENV", "production")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(stdout)
+        .stderr(stderr);
 
     platform::prepare_hidden_background_command(&mut command);
 
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("启动 CodeM 后端失败: {error}"))
+    match command.spawn() {
+        Ok(child) => {
+            log_desktop_event(app, &format!("node backend spawned: pid={}", child.id()));
+            Ok(())
+        }
+        Err(error) => {
+            log_desktop_event(app, &format!("node backend spawn error: {error}"));
+            Err(format!("启动 CodeM 后端失败: {error}"))
+        }
+    }
 }
 
-fn start_development_backend_process(project_root: &Path) -> Result<(), String> {
+fn normalize_process_path(path: &Path) -> PathBuf {
+    let value = path.to_string_lossy();
+
+    #[cfg(windows)]
+    {
+        if let Some(stripped) = value.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{stripped}"));
+        }
+
+        if let Some(stripped) = value.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+
+    PathBuf::from(value.as_ref())
+}
+
+fn start_development_backend_process(app: &tauri::AppHandle, project_root: &Path) -> Result<(), String> {
+    let project_root = normalize_process_path(project_root);
+    log_desktop_event(
+        app,
+        &format!("start development backend: cwd={}", project_root.display()),
+    );
     let mut command = development_backend_command();
+    let (stdout, stderr) = backend_log_stdio(app);
     command
-        .current_dir(project_root)
+        .current_dir(&project_root)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(stdout)
+        .stderr(stderr);
 
     platform::prepare_hidden_background_command(&mut command);
 
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("启动 CodeM 后端失败: {error}"))
+    match command.spawn() {
+        Ok(child) => {
+            log_desktop_event(app, &format!("development backend spawned: pid={}", child.id()));
+            Ok(())
+        }
+        Err(error) => {
+            log_desktop_event(app, &format!("development backend spawn error: {error}"));
+            Err(format!("启动 CodeM 后端失败: {error}"))
+        }
+    }
 }
 
 fn node_backend_command(server_entry: &Path) -> Command {
-    let mut command = Command::new("node");
+    let mut command = Command::new(node_backend_executable(server_entry));
     command.arg("--experimental-sqlite").arg(server_entry);
     command
+}
+
+fn node_backend_executable(server_entry: &Path) -> PathBuf {
+    find_packaged_node_runtime(server_entry).unwrap_or_else(|| PathBuf::from("node"))
+}
+
+fn find_packaged_node_runtime(server_entry: &Path) -> Option<PathBuf> {
+    let dist_server_dir = server_entry.parent()?;
+    let runtime_dir = dist_server_dir.join("runtime");
+
+    #[cfg(windows)]
+    let runtime = runtime_dir.join("node.exe");
+
+    #[cfg(not(windows))]
+    let runtime = runtime_dir.join("node");
+
+    fs::metadata(&runtime).is_ok().then_some(runtime)
+}
+
+fn app_logs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|directory| directory.join("logs"))
+        .map_err(|error| format!("读取日志目录失败: {error}"))
+}
+
+fn desktop_log_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app_logs_dir(app).map(|directory| directory.join(DESKTOP_LOG_FILE_NAME))
+}
+
+fn backend_log_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app_logs_dir(app).map(|directory| directory.join(BACKEND_LOG_FILE_NAME))
+}
+
+fn log_desktop_event(app: &tauri::AppHandle, message: &str) {
+    if let Ok(path) = desktop_log_path(app) {
+        append_log_line(&path, message);
+    }
+}
+
+fn backend_log_stdio(app: &tauri::AppHandle) -> (Stdio, Stdio) {
+    let Ok(path) = backend_log_path(app) else {
+        return (Stdio::null(), Stdio::null());
+    };
+
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(file) => match file.try_clone() {
+            Ok(stderr_file) => (Stdio::from(file), Stdio::from(stderr_file)),
+            Err(error) => {
+                append_log_line(&path, &format!("复制后端日志句柄失败: {error}"));
+                (Stdio::from(file), Stdio::null())
+            }
+        },
+        Err(_) => (Stdio::null(), Stdio::null()),
+    }
+}
+
+fn append_log_line(path: &Path, message: &str) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "[{}] {}", current_timestamp_ms(), message);
+    }
+}
+
+fn current_timestamp_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
 }
 
 #[cfg(windows)]

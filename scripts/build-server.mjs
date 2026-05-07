@@ -31,3 +31,10 @@ await copyFile(
   path.join(projectRoot, 'package.json'),
   path.join(outputDirectory, 'package.json'),
 );
+
+const runtimeDirectory = path.join(outputDirectory, 'runtime');
+await mkdir(runtimeDirectory, { recursive: true });
+await copyFile(
+  process.execPath,
+  path.join(runtimeDirectory, process.platform === 'win32' ? 'node.exe' : 'node'),
+);

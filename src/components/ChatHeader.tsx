@@ -30,6 +30,9 @@ type ChatHeaderProps = {
   onOpenFilesWorkbench: () => void;
   onOpenGitCommit: () => void;
   onOpenGitPush: () => void;
+  terminalDockOpen: boolean;
+  onToggleTerminalDock: () => void;
+  terminalDockAvailable: boolean;
   rightWorkbenchOpen: boolean;
   onToggleRightWorkbench: () => void;
   onOpenReviewWorkbench: () => void;
@@ -47,6 +50,9 @@ export function ChatHeader({
   onOpenFilesWorkbench,
   onOpenGitCommit,
   onOpenGitPush,
+  terminalDockOpen,
+  onToggleTerminalDock,
+  terminalDockAvailable,
   rightWorkbenchOpen,
   onToggleRightWorkbench,
   onOpenReviewWorkbench,
@@ -86,6 +92,17 @@ export function ChatHeader({
         />
         {showDebugButton ? (
           <button type="button" className="icon-button" onClick={onToggleDebug}>
+            <TerminalSquare size={15} />
+          </button>
+        ) : null}
+        {terminalDockAvailable ? (
+          <button
+            type="button"
+            className={`icon-button${terminalDockOpen ? ' active' : ''}`}
+            title={terminalDockOpen ? '隐藏终端' : '显示终端'}
+            aria-pressed={terminalDockOpen}
+            onClick={onToggleTerminalDock}
+          >
             <TerminalSquare size={15} />
           </button>
         ) : null}

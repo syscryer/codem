@@ -12,8 +12,8 @@
     "windows": [
       {
         "title": "CodeM",
-        "width": 1240,
-        "height": 820,
+        "width": 1440,
+        "height": 900,
         "minWidth": 960,
         "minHeight": 640,
         "center": true,

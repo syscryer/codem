@@ -3231,6 +3231,8 @@ svg {
 }
 
 .task-dock {
+  grid-row: 2;
+  grid-column: 1;
   position: relative;
   z-index: 4;
   display: flex;
@@ -3325,6 +3327,168 @@ svg {
   min-width: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.codex-desktop .chat-shell {
+  grid-template-rows: minmax(0, 1fr) auto auto var(--workspace-footer-height) auto;
+}
+
+.terminal-panel {
+  grid-row: 5;
+  grid-column: 1;
+  position: relative;
+  z-index: 7;
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid rgba(17, 24, 39, 0.1);
+  background: #ffffff;
+  color: #30343b;
+  box-shadow: none;
+}
+
+.terminal-panel-resizer {
+  height: 3px;
+  cursor: row-resize;
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.terminal-panel-resizer::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 50%;
+  width: 52px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(107, 114, 128, 0.28);
+  transform: translateX(-50%);
+}
+
+.terminal-header {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 22px 4px;
+  background: #ffffff;
+}
+
+.terminal-tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.5) transparent;
+}
+
+.terminal-tab,
+.terminal-tab-add,
+.terminal-dock-toggle {
+  border: 0;
+  background: transparent;
+  color: #8a8f98;
+  cursor: pointer;
+}
+
+.terminal-tab {
+  min-width: 0;
+  max-width: 236px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.terminal-tab.active {
+  background: #f3f4f6;
+  color: #202124;
+}
+
+.terminal-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.terminal-tab-close {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  color: #9aa0a6;
+}
+
+.terminal-tab-close:hover,
+.terminal-tab:hover,
+.terminal-tab-add:hover,
+.terminal-dock-toggle:hover {
+  color: #202124;
+}
+
+.terminal-tab-add,
+.terminal-dock-toggle {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 10px;
+  flex: 0 0 auto;
+}
+
+.terminal-tab-add:hover,
+.terminal-dock-toggle:hover {
+  background: #f3f4f6;
+}
+
+.terminal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.terminal-surface {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.terminal-xterm-host {
+  width: 100%;
+  height: 100%;
+}
+
+.terminal-xterm-host .xterm {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 10px 46px 18px;
+}
+
+.terminal-xterm-host .xterm-viewport,
+.terminal-xterm-host .xterm-screen {
+  background: #ffffff !important;
+}
+
+.terminal-empty {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: #9aa0a6;
+  font-size: 13px;
 }
 
 .tool-preview-summary {
@@ -4130,6 +4294,8 @@ svg {
 }
 
 .composer {
+  grid-row: 3;
+  grid-column: 1;
   position: relative;
   z-index: 5;
   display: flex;
@@ -4907,6 +5073,8 @@ svg {
 }
 
 .workspace-status {
+  grid-row: 4;
+  grid-column: 1;
   width: min(calc(100% - 40px), var(--composer-max-width));
   margin: 0 auto;
   display: flex;

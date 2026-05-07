@@ -11,6 +11,7 @@ import { GitDialog } from './components/GitDialog';
 import { RightWorkbench } from './components/RightWorkbench';
 import { SidebarProjects } from './components/SidebarProjects';
 import { SettingsView } from './components/settings/SettingsView';
+import { TerminalDock, useTerminalDockState } from './components/TerminalDock';
 import { WorkspaceStatus } from './components/WorkspaceStatus';
 import { useClaudeRun } from './hooks/useClaudeRun';
 import { useAppSettings } from './hooks/useAppSettings';
@@ -117,6 +118,8 @@ export default function App() {
   const [previewTabs, setPreviewTabs] = useState<WorkbenchPreviewTab[]>([]);
   const [activePreviewKey, setActivePreviewKey] = useState('');
   const [previewContentByKey, setPreviewContentByKey] = useState<Record<string, WorkbenchPreviewContentState>>({});
+  const terminalDock = useTerminalDockState();
+  const terminalDockAvailable = isTauriRuntime();
   const {
     general,
     appearance,
@@ -646,6 +649,9 @@ export default function App() {
                 onOpenFilesWorkbench={openFilesWorkbench}
                 onOpenGitCommit={() => activeProject ? setGitDialogMode('commit') : showToast('请先选择项目。', 'info')}
                 onOpenGitPush={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
+                terminalDockOpen={terminalDock.open}
+                onToggleTerminalDock={terminalDock.toggle}
+                terminalDockAvailable={terminalDockAvailable}
                 rightWorkbenchOpen={rightWorkbenchOpen}
                 onToggleRightWorkbench={() => setRightWorkbenchOpen((value) => !value)}
                 onOpenReviewWorkbench={openReviewWorkbench}
@@ -701,6 +707,14 @@ export default function App() {
                 onLoadBranches={loadProjectGitBranches}
                 onSelectBranch={switchProjectGitBranch}
               />
+
+              {terminalDockAvailable ? (
+                <TerminalDock
+                  isOpen={terminalDock.open}
+                  onToggleOpen={terminalDock.toggle}
+                  defaultWorkspace={activeProject}
+                />
+              ) : null}
             </main>
             {rightWorkbenchOpen ? (
               <RightWorkbench
