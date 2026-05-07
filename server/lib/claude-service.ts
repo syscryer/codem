@@ -488,12 +488,7 @@ export function submitRunApprovalDecision(
     };
   }
 
-  const controlToolUseId = activeRun.state.controlApprovalToolUseIds.get(requestId);
-  const message = activeRun.state.controlApprovalToolUseIds.has(requestId)
-    ? buildClaudeControlResponseMessage(requestId, decision, controlToolUseId)
-    : buildClaudeToolResultMessage(requestId, content, decision === 'reject');
-  const payload = `${JSON.stringify(message)}\n`;
-  activeRun.runtime.child.stdin.write(payload, (error) => {
+  writeApprovalDecisionToRuntime(activeRun.runtime, activeRun.state, requestId, decision, content, (error) => {
     if (error) {
       const message = `写入 Claude Code 批准结果失败：${error.message}`;
       enqueueRetryableRuntimeError(
@@ -514,13 +509,34 @@ export function submitRunApprovalDecision(
     }
 
     activeRun.state.pausedForUserInput = false;
-    activeRun.state.controlApprovalToolUseIds.delete(requestId);
     enqueueTrace(activeRun.state, 'stdin_approval_result_written', Date.now(), requestId);
   });
 
   return {
     submitted: true,
   };
+}
+
+function writeApprovalDecisionToRuntime(
+  runtime: ClaudeRuntime,
+  state: RunState,
+  requestId: string,
+  decision: 'approve' | 'reject',
+  content: string,
+  callback: (error?: Error | null) => void,
+) {
+  const controlToolUseId = state.controlApprovalToolUseIds.get(requestId);
+  const message = state.controlApprovalToolUseIds.has(requestId)
+    ? buildClaudeControlResponseMessage(requestId, decision, controlToolUseId)
+    : buildClaudeToolResultMessage(requestId, content, decision === 'reject');
+  const payload = `${JSON.stringify(message)}\n`;
+
+  runtime.child.stdin.write(payload, (error) => {
+    if (!error) {
+      state.controlApprovalToolUseIds.delete(requestId);
+    }
+    callback(error);
+  });
 }
 
 export function getActiveRunForThread(threadId: string) {
@@ -1279,7 +1295,7 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
       if (approvalRequest.requestId) {
         state.controlApprovalToolUseIds.set(approvalRequest.requestId, getControlRequestToolUseId(payload));
       }
-      if (emitApprovalRequestEvent(state, runId, approvalRequest, enqueue)) {
+      if (emitOrAutoApproveApprovalRequestEvent(runtime, state, runId, approvalRequest, enqueue) === 'approval-request') {
         pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_approval_request');
       }
       return;
@@ -1381,7 +1397,7 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
         if (accumulator) {
           accumulator.emittedApprovalRequest = true;
         }
-        if (emitApprovalRequestEvent(state, runId, approvalRequest, enqueue)) {
+        if (emitOrAutoApproveApprovalRequestEvent(runtime, state, runId, approvalRequest, enqueue) === 'approval-request') {
           pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_approval_request');
         }
         return;
@@ -1480,7 +1496,7 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
         }
 
         accumulator.inputText += payload.event.delta.partial_json;
-        const emittedHumanInput = emitStructuredToolEventsFromAccumulator(state, runId, accumulator, enqueue);
+        const emittedHumanInput = emitStructuredToolEventsFromAccumulator(runtime, state, runId, accumulator, enqueue);
         if (emittedHumanInput === 'request-user-input') {
           pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input', { closeRuntime: true });
           return;
@@ -1522,7 +1538,7 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
         const emittedHumanInput =
           accumulator.emittedRequestUserInput || accumulator.emittedApprovalRequest
             ? null
-            : emitStructuredToolEventsFromAccumulator(state, runId, accumulator, enqueue);
+            : emitStructuredToolEventsFromAccumulator(runtime, state, runId, accumulator, enqueue);
         state.toolInputByIndex.delete(payload.event.index);
         if (emittedHumanInput === 'request-user-input') {
           pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_user_input', { closeRuntime: true });
@@ -1578,7 +1594,7 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
 
       const approvalRequest = parseRuntimeApprovalRequestEvent(block.name, block.input, block.id);
       if (approvalRequest) {
-        if (emitApprovalRequestEvent(state, runId, approvalRequest, enqueue)) {
+        if (emitOrAutoApproveApprovalRequestEvent(runtime, state, runId, approvalRequest, enqueue) === 'approval-request') {
           pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_approval_request');
         }
         return;
@@ -2158,6 +2174,7 @@ function parseRequestUserInputEvent(
 }
 
 function emitStructuredToolEventsFromAccumulator(
+  runtime: ClaudeRuntime,
   state: RunState,
   runId: string,
   accumulator: ToolInputAccumulator,
@@ -2180,7 +2197,7 @@ function emitStructuredToolEventsFromAccumulator(
     const request = parseRuntimeApprovalRequestEvent(accumulator.name, input, accumulator.toolUseId);
     if (request) {
       accumulator.emittedApprovalRequest = true;
-      return emitApprovalRequestEvent(state, runId, request, enqueue) ? 'approval-request' : null;
+      return emitOrAutoApproveApprovalRequestEvent(runtime, state, runId, request, enqueue);
     }
   }
 
@@ -2207,7 +2224,8 @@ function emitRequestUserInputEvent(
   return true;
 }
 
-function emitApprovalRequestEvent(
+function emitOrAutoApproveApprovalRequestEvent(
+  runtime: ClaudeRuntime,
   state: RunState,
   runId: string,
   request: ApprovalRequest,
@@ -2215,16 +2233,59 @@ function emitApprovalRequestEvent(
 ) {
   const key = getApprovalRequestKey(request);
   if (state.emittedApprovalRequestKeys.has(key)) {
-    return false;
+    return null;
   }
 
   state.emittedApprovalRequestKeys.add(key);
+  if (shouldAutoApproveBypassPermissionRequest(runtime, state, request)) {
+    const requestId = request.requestId?.trim();
+    if (requestId) {
+      writeApprovalDecisionToRuntime(
+        runtime,
+        state,
+        requestId,
+        'approve',
+        'The user approved this request. Continue the original task.',
+        (error) => {
+          if (error) {
+            enqueue({
+              type: 'approval-request',
+              runId,
+              request,
+            });
+            pauseRuntimeRunForHumanInput(runtime, state, 'paused_for_approval_request');
+            return;
+          }
+
+          state.pausedForUserInput = false;
+          enqueueTrace(state, 'auto_approved_bypass_permission', Date.now(), requestId);
+        },
+      );
+      return 'auto-approved';
+    }
+  }
+
   enqueue({
     type: 'approval-request',
     runId,
     request,
   });
-  return true;
+  return 'approval-request';
+}
+
+function shouldAutoApproveBypassPermissionRequest(
+  runtime: ClaudeRuntime,
+  state: RunState,
+  request: ApprovalRequest,
+) {
+  return (
+    state.input.permissionMode === 'bypassPermissions' &&
+    runtime.inputMode === 'stdin' &&
+    !runtime.closed &&
+    !state.finished &&
+    request.kind === 'permission' &&
+    Boolean(request.requestId?.trim())
+  );
 }
 
 function getRequestUserInputKey(request: RequestUserInputRequest) {

@@ -130,6 +130,8 @@ test('human input requests pause the run before Claude Code auto-answers the too
   const parseControlRequestUserInputBody = extractFunctionBody('parseControlRequestUserInputEvent');
   const parseApprovalBody = extractFunctionBody('parseApprovalRequestEvent');
   const submitApprovalBody = extractFunctionBody('submitRunApprovalDecision');
+  const writeApprovalBody = extractFunctionBody('writeApprovalDecisionToRuntime');
+  const autoApprovalBody = extractFunctionBody('shouldAutoApproveBypassPermissionRequest');
   const controlResponseBody = extractFunctionBody('buildClaudeControlResponseMessage');
 
   assert.match(handleBody, /payload\.type\s*===\s*['"]control_request['"]/);
@@ -142,8 +144,11 @@ test('human input requests pause the run before Claude Code auto-answers the too
   assert.match(handleBody, /pauseRuntimeRunForHumanInput\(runtime,\s*state,\s*['"]paused_for_approval_result['"],\s*\{\s*closeRuntime:\s*true\s*\}\)/);
   assert.match(handleBody, /isHumanApprovalToolResultContent\(content\)/);
   assert.match(handleBody, /isInternalHumanInputToolResult\(state,\s*block,\s*content\)/);
-  assert.match(submitApprovalBody, /controlApprovalToolUseIds\.has\(requestId\)/);
-  assert.match(submitApprovalBody, /buildClaudeControlResponseMessage\(requestId,\s*decision,\s*controlToolUseId\)/);
+  assert.match(submitApprovalBody, /writeApprovalDecisionToRuntime\(activeRun\.runtime,\s*activeRun\.state,\s*requestId,\s*decision,\s*content/);
+  assert.match(writeApprovalBody, /controlApprovalToolUseIds\.has\(requestId\)/);
+  assert.match(writeApprovalBody, /buildClaudeControlResponseMessage\(requestId,\s*decision,\s*controlToolUseId\)/);
+  assert.match(autoApprovalBody, /state\.input\.permissionMode\s*===\s*['"]bypassPermissions['"]/);
+  assert.match(autoApprovalBody, /request\.kind\s*===\s*['"]permission['"]/);
   assert.match(controlResponseBody, /type:\s*['"]control_response['"]/);
   assert.match(controlResponseBody, /behavior:\s*['"]allow['"]/);
   assert.match(controlResponseBody, /decisionClassification:\s*['"]user_temporary['"]/);
@@ -153,7 +158,8 @@ test('human input requests pause the run before Claude Code auto-answers the too
   assert.match(source, /function parseControlRequestUserInputEvent/);
   assert.match(source, /function parseRuntimeApprovalRequestEvent/);
   assert.match(source, /normalizeToolName\(toolName\)\s*===\s*['"]exitplanmode['"][\s\S]*return null/);
-  assert.match(source, /function emitApprovalRequestEvent/);
+  assert.match(source, /function emitOrAutoApproveApprovalRequestEvent/);
+  assert.match(source, /auto_approved_bypass_permission/);
   assert.match(source, /emittedApprovalRequestKeys/);
   assert.match(parseApprovalBody, /normalizedToolName\s*===\s*['"]exitplanmode['"]/);
   assert.match(parseApprovalBody, /kind:\s*['"]plan-exit['"]/);
