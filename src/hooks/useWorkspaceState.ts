@@ -192,9 +192,9 @@ export function useWorkspaceState() {
   function openRemoveProjectDialog(project: ProjectSummary) {
     setConfirmDialog({
       kind: 'remove-project',
-      title: '移除项目',
-      description: `移除项目“${project.name}”后，只会删除 CodeM 的索引与聊天记录，不会删除磁盘目录。`,
-      confirmLabel: '移除项目',
+      title: '删除项目',
+      description: `删除项目“${project.name}”后，会删除 CodeM 的索引、聊天记录，以及关联的 Claude Code 原始 session 文件，不会删除磁盘目录。`,
+      confirmLabel: '删除项目',
       projectId: project.id,
     });
   }
@@ -792,7 +792,7 @@ export function useWorkspaceState() {
       const payload = (await response.json()) as { workspace: WorkspaceBootstrap };
       syncWorkspace(payload.workspace);
       setConfirmDialog(null);
-      showToast('项目已移除');
+      showToast('项目已删除');
       return;
     }
 

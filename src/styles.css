@@ -59,7 +59,7 @@ svg {
 
 .codex-desktop {
   --desktop-menubar-height: 36px;
-  --sidebar-width: 332px;
+  --sidebar-width: 320px;
   --workspace-footer-height: 20px;
   --workspace-footer-content-height: 18px;
   --app-bg: #ffffff;
@@ -171,7 +171,7 @@ svg {
 }
 
 .codex-desktop[data-sidebar-width="default"] {
-  --sidebar-width: 332px;
+  --sidebar-width: 320px;
 }
 
 .codex-desktop[data-sidebar-width="wide"] {
@@ -368,7 +368,7 @@ svg {
   z-index: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: var(--sidebar-width, 332px) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width, 320px) minmax(0, 1fr);
   background: transparent;
   overflow: hidden;
 }
@@ -468,7 +468,7 @@ svg {
 .sidebar-projects {
   min-height: 0;
   overflow: auto;
-  padding: 0 12px 12px 10px;
+  padding: 0 8px 12px 10px;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: rgba(143, 147, 153, 0.34) transparent;

@@ -646,12 +646,7 @@ function ChangedFilesSummaryCard({ files }: { files: ChangedFilePreviewGroup[] }
   useEffect(() => {
     setExpandedFilePaths((current) => {
       const validPaths = new Set(files.map((file) => file.path));
-      const nextExpanded = current.filter((filePath) => validPaths.has(filePath));
-      if (nextExpanded.length > 0 || !files[0]) {
-        return nextExpanded;
-      }
-
-      return [files[0].path];
+      return current.filter((filePath) => validPaths.has(filePath));
     });
   }, [files]);
 

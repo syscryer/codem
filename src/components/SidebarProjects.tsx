@@ -356,7 +356,7 @@ export function SidebarProjects({
                         </button>
                         <button type="button" className="workspace-menu-item danger" onClick={() => { setProjectMenuProjectId(null); onOpenRemoveProjectDialog(project); }}>
                           <Trash2 size={14} />
-                          <span>移除</span>
+                          <span>删除</span>
                         </button>
                       </div>
                     </PopoverPortal>

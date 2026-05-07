@@ -474,8 +474,39 @@ export function renameProject(projectId: string, name: string) {
 }
 
 export function removeProject(projectId: string) {
-  db.prepare(`DELETE FROM threads WHERE project_id = ?`).run(projectId);
-  db.prepare(`DELETE FROM projects WHERE id = ?`).run(projectId);
+  const rows = db
+    .prepare(`
+      SELECT session_id, transcript_path
+      FROM threads
+      WHERE project_id = ?
+    `)
+    .all(projectId) as Array<{ session_id: string | null; transcript_path: string | null }>;
+  const now = new Date().toISOString();
+
+  try {
+    db.exec('BEGIN');
+    for (const row of rows) {
+      if (!row.session_id) {
+        continue;
+      }
+
+      ignoreImportedSession(row.session_id, row.transcript_path, now);
+    }
+    db.prepare(`DELETE FROM threads WHERE project_id = ?`).run(projectId);
+    db.prepare(`DELETE FROM projects WHERE id = ?`).run(projectId);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+
+  for (const transcriptPath of new Set(rows.map((row) => row.transcript_path).filter((value): value is string => Boolean(value)))) {
+    try {
+      deleteClaudeTranscriptFile(transcriptPath);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : 'Claude Code session 文件删除失败');
+    }
+  }
 
   if (readStateValue('activeProjectId') === projectId) {
     deleteStateValue('activeProjectId');
