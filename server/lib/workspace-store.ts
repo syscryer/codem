@@ -879,6 +879,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
             turn.outputTokens ?? null,
             turn.cacheCreationInputTokens ?? null,
             turn.cacheReadInputTokens ?? null,
+            serializeContextUsage(turn.contextUsage),
             turn.totalCostUsd ?? null,
             serializePendingApprovalRequests(turn.pendingApprovalRequests),
             null,

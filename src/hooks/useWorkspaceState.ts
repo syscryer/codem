@@ -231,9 +231,27 @@ export function useWorkspaceState() {
       return;
     }
 
+    function stopThreadHistoryLoading(targetThreadId: string) {
+      setThreadDetails((current) => {
+        const existing = current[targetThreadId];
+        if (!existing) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [targetThreadId]: {
+            ...existing,
+            historyLoading: false,
+          },
+        };
+      });
+    }
+
     try {
       const response = await fetch(`/api/threads/${threadId}/history`);
       if (!response.ok) {
+        stopThreadHistoryLoading(threadId);
         return;
       }
 
@@ -273,20 +291,7 @@ export function useWorkspaceState() {
         };
       });
     } catch {
-      setThreadDetails((current) => {
-        const existing = current[threadId];
-        if (!existing) {
-          return current;
-        }
-
-        return {
-          ...current,
-          [threadId]: {
-            ...existing,
-            historyLoading: false,
-          },
-        };
-      });
+      stopThreadHistoryLoading(threadId);
     }
   }
 

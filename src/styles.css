@@ -179,13 +179,13 @@ svg {
 }
 
 .codex-desktop[data-density="compact"] {
-  --workspace-footer-height: 18px;
-  --workspace-footer-content-height: 16px;
+  --workspace-footer-height: 20px;
+  --workspace-footer-content-height: 15px;
 }
 
 .codex-desktop[data-density="comfortable"] {
-  --workspace-footer-height: 20px;
-  --workspace-footer-content-height: 18px;
+  --workspace-footer-height: 22px;
+  --workspace-footer-content-height: 17px;
 }
 
 .desktop-menubar {
@@ -6950,6 +6950,40 @@ svg {
 .codex-desktop .permission-trigger {
   font-size: 12px;
   font-weight: 500;
+  color: color-mix(in srgb, var(--app-muted) 94%, var(--app-text) 6%);
+}
+
+.codex-desktop .permission-lucide-icon,
+.codex-desktop .permission-trigger-chevron {
+  color: color-mix(in srgb, var(--app-muted) 95%, var(--app-text) 5%);
+}
+
+.codex-desktop .permission-trigger-chevron {
+  border-right-color: color-mix(in srgb, var(--app-muted) 95%, var(--app-text) 5%);
+  border-bottom-color: color-mix(in srgb, var(--app-muted) 95%, var(--app-text) 5%);
+}
+
+.codex-desktop .composer-toolbar {
+  padding: 6px 9px 13px;
+}
+
+.codex-desktop .workspace-status {
+  padding-bottom: 4px;
+  color: color-mix(in srgb, var(--app-muted) 94%, var(--app-text) 6%);
+  font-size: 12px;
+}
+
+.codex-desktop .status-item,
+.codex-desktop .status-branch-trigger,
+.codex-desktop .status-run-trigger {
+  color: inherit;
+}
+
+.codex-desktop .status-item svg,
+.codex-desktop .status-branch-trigger svg,
+.codex-desktop .status-run-trigger svg,
+.codex-desktop .footer-chevron {
+  color: color-mix(in srgb, var(--app-muted) 95%, var(--app-text) 5%);
 }
 
 .codex-desktop :where(.desktop-menubar, .sidebar-section-head, .sidebar-search input, .workspace-menu-group-title, .sidebar-thread small, .turn-time, .turn-status, .settings-row-label small, .assistant-runtime-footnote, .assistant-runtime-question-hint, .dialog-head p, .status-branch-menu-meta, .status-run-head span) {
