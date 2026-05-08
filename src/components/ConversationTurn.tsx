@@ -104,7 +104,7 @@ function ConversationTurnViewComponent({
 
     return !shouldHideTurnToolStep(turn, item.tool) || Boolean(getToolAnchoredRequest(item.tool, requestCardsByToolId));
   });
-  const groupedVisibleItems = useMemo(() => groupReadToolItems(visibleItems), [visibleItems]);
+  const groupedVisibleItems = useMemo(() => groupToolItems(visibleItems), [visibleItems]);
   const changedFileGroups = useMemo(() => collectConversationChangedFileGroups(turn.tools), [turn.tools]);
   const showProgressLine =
     running ||
@@ -157,8 +157,8 @@ function ConversationTurnViewComponent({
                 return <SystemCommandCard key={item.id} item={item} />;
               }
 
-              if (item.type === 'read-group') {
-                return <ReadToolsGroup key={item.id} tools={item.tools} />;
+              if (item.type === 'tool-group') {
+                return <ToolStepsGroup key={item.id} tools={item.tools} variant={item.variant} />;
               }
 
               return (
@@ -375,22 +375,17 @@ function UserAttachmentGallery({ attachments }: { attachments: UserImageAttachme
 
 type DisplayAssistantItem =
   | ConversationTurn['items'][number]
-  | { id: string; type: 'read-group'; tools: ToolStep[] };
+  | { id: string; type: 'tool-group'; variant: 'read' | 'generic'; tools: ToolStep[] };
 
-function ReadToolsGroup({ tools }: { tools: ToolStep[] }) {
+function ToolStepsGroup({ tools, variant }: { tools: ToolStep[]; variant: 'read' | 'generic' }) {
   const [expanded, setExpanded] = useState(false);
   const status = tools.some((tool) => tool.status === 'error')
     ? 'error'
     : tools.some((tool) => tool.status === 'running')
       ? 'running'
       : 'done';
-  const fileNames = tools
-    .map((tool) => getReadToolPath(tool))
-    .filter((filePath): filePath is string => Boolean(filePath))
-    .map((filePath) => getFileName(filePath));
-  const summary = fileNames.length
-    ? fileNames.slice(0, 3).join('、') + (fileNames.length > 3 ? ` 等 ${fileNames.length} 个文件` : '')
-    : `${tools.length} 个文件`;
+  const summary = variant === 'read' ? getReadGroupSummary(tools) : getGenericToolGroupSummary(tools);
+  const title = variant === 'read' ? `批量读取 ${tools.length} 个文件` : `批量工具调用 ${tools.length} 项`;
 
   return (
     <div className={`tool-step read-group-step tool-${status}`}>
@@ -399,9 +394,9 @@ function ReadToolsGroup({ tools }: { tools: ToolStep[] }) {
         className="tool-preview-summary read-group-summary"
         onClick={() => setExpanded((current) => !current)}
       >
-        <ToolTypeIcon toolName="Read" />
+        <ToolTypeIcon toolName={variant === 'read' ? 'Read' : 'Bash'} />
         <div className="tool-preview-summary-main read-group-summary-main">
-          <span className="read-group-title">批量读取 {tools.length} 个文件</span>
+          <span className="read-group-title">{title}</span>
           <span className="read-group-meta">{summary}</span>
         </div>
         <span className={`tool-preview-chevron ${expanded ? 'expanded' : ''}`}>{'>'}</span>
@@ -416,6 +411,28 @@ function ReadToolsGroup({ tools }: { tools: ToolStep[] }) {
       ) : null}
     </div>
   );
+}
+
+function getReadGroupSummary(tools: ToolStep[]) {
+  const fileNames = tools
+    .map((tool) => getReadToolPath(tool))
+    .filter((filePath): filePath is string => Boolean(filePath))
+    .map((filePath) => getFileName(filePath));
+  return fileNames.length
+    ? fileNames.slice(0, 3).join('、') + (fileNames.length > 3 ? ` 等 ${fileNames.length} 个文件` : '')
+    : `${tools.length} 个文件`;
+}
+
+function getGenericToolGroupSummary(tools: ToolStep[]) {
+  const names = tools.map((tool) => getReadableToolGroupName(tool.name));
+  const counts = new Map<string, number>();
+  for (const name of names) {
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([name, count]) => (count > 1 ? `${name} x${count}` : name))
+    .slice(0, 4)
+    .join('、') || `${tools.length} 项`;
 }
 
 function ToolItemWithAnchoredCards({
@@ -2216,6 +2233,33 @@ function getReadableStructuredToolTitle(name: string) {
   }
 }
 
+function getReadableToolGroupName(name: string) {
+  switch (normalizeRuntimeToolName(name)) {
+    case 'bash':
+      return 'Bash';
+    case 'bashoutput':
+      return 'BashOutput';
+    case 'read':
+      return 'Read';
+    case 'grep':
+      return 'Grep';
+    case 'glob':
+      return 'Glob';
+    case 'ls':
+      return 'LS';
+    case 'edit':
+      return 'Edit';
+    case 'multiedit':
+      return 'MultiEdit';
+    case 'write':
+      return 'Write';
+    case 'toolresult':
+      return '工具结果';
+    default:
+      return name.startsWith('mcp__') ? name.split('__').filter(Boolean).at(-1) ?? name : name;
+  }
+}
+
 function extractAgentResultFiles(resultText: string) {
   const files: string[] = [];
   const seen = new Set<string>();
@@ -2498,45 +2542,74 @@ function getToolAnchoredRequest(
   return requestCardsByToolId.get(requestId) ?? null;
 }
 
-function groupReadToolItems(items: ConversationTurn['items']): DisplayAssistantItem[] {
+function groupToolItems(items: ConversationTurn['items']): DisplayAssistantItem[] {
   const result: DisplayAssistantItem[] = [];
-  let pendingReadTools: ToolStep[] = [];
+  let pendingTools: ToolStep[] = [];
 
-  const flushReadTools = () => {
-    if (pendingReadTools.length === 0) {
+  const flushTools = () => {
+    if (pendingTools.length === 0) {
       return;
     }
 
-    if (pendingReadTools.length === 1) {
-      const tool = pendingReadTools[0];
+    const allReadTools = pendingTools.every(isReadTool);
+    const variant = allReadTools ? 'read' : 'generic';
+    const groupThreshold = allReadTools ? 2 : 3;
+    if (pendingTools.length >= groupThreshold) {
       result.push({
-        id: tool.id,
-        type: 'tool',
-        tool,
+        id: `${variant}-tool-group-${pendingTools.map((tool) => tool.id).join('-')}`,
+        type: 'tool-group',
+        variant,
+        tools: pendingTools,
       });
     } else {
-      result.push({
-        id: `read-group-${pendingReadTools.map((tool) => tool.id).join('-')}`,
-        type: 'read-group',
-        tools: pendingReadTools,
-      });
+      for (const tool of pendingTools) {
+        result.push({
+          id: tool.id,
+          type: 'tool',
+          tool,
+        });
+      }
     }
 
-    pendingReadTools = [];
+    pendingTools = [];
   };
 
   for (const item of items) {
-    if (item.type === 'tool' && isReadTool(item.tool)) {
-      pendingReadTools.push(item.tool);
+    if (item.type === 'tool' && isBatchGroupableTool(item.tool)) {
+      pendingTools.push(item.tool);
       continue;
     }
 
-    flushReadTools();
+    flushTools();
     result.push(item);
   }
 
-  flushReadTools();
+  flushTools();
   return result;
+}
+
+function isBatchGroupableTool(tool: ToolStep) {
+  if (tool.status === 'running') {
+    return false;
+  }
+
+  const normalizedName = normalizeRuntimeToolName(tool.name);
+  if (normalizedName === 'read') {
+    return true;
+  }
+
+  if (
+    normalizedName === 'todowrite' ||
+    normalizedName === 'enterplanmode' ||
+    normalizedName === 'askuserquestion' ||
+    normalizedName === 'requestuserinput' ||
+    normalizedName === 'approvalrequest' ||
+    normalizedName === 'exitplanmode'
+  ) {
+    return false;
+  }
+
+  return !getTodoWritePreview(tool) && !getAgentTaskPreview(tool);
 }
 
 function isReadTool(tool: ToolStep) {
