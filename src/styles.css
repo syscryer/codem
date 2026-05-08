@@ -134,6 +134,22 @@ svg {
   color-scheme: dark;
 }
 
+.codex-desktop[data-window-material="auto"],
+.codex-desktop[data-window-material="none"],
+.codex-desktop[data-window-material="mica"] {
+  --app-material-fill: rgba(248, 247, 244, 0.72);
+  --app-material-line: rgba(148, 163, 184, 0.26);
+  --app-material-glow: rgba(255, 255, 255, 0.28);
+}
+
+.codex-desktop[data-theme-mode="dark"][data-window-material="auto"],
+.codex-desktop[data-theme-mode="dark"][data-window-material="none"],
+.codex-desktop[data-theme-mode="dark"][data-window-material="mica"] {
+  --app-material-fill: rgba(32, 32, 34, 0.72);
+  --app-material-line: rgba(255, 255, 255, 0.1);
+  --app-material-glow: rgba(255, 255, 255, 0.08);
+}
+
 @media (prefers-color-scheme: dark) {
   .codex-desktop[data-theme-mode="system"] {
     --app-chrome: #171717;
@@ -163,6 +179,14 @@ svg {
     --app-material-glow: rgba(255, 255, 255, 0.08);
     --settings-sidebar-bg: #202020;
     color-scheme: dark;
+  }
+
+  .codex-desktop[data-theme-mode="system"][data-window-material="auto"],
+  .codex-desktop[data-theme-mode="system"][data-window-material="none"],
+  .codex-desktop[data-theme-mode="system"][data-window-material="mica"] {
+    --app-material-fill: rgba(32, 32, 34, 0.72);
+    --app-material-line: rgba(255, 255, 255, 0.1);
+    --app-material-glow: rgba(255, 255, 255, 0.08);
   }
 }
 
@@ -6794,6 +6818,24 @@ svg {
   color: var(--app-text);
   backdrop-filter: blur(8px) saturate(1.12);
   -webkit-backdrop-filter: blur(8px) saturate(1.12);
+}
+
+.codex-desktop[data-window-material="auto"] .app-sidebar,
+.codex-desktop[data-window-material="none"] .app-sidebar,
+.codex-desktop[data-window-material="mica"] .app-sidebar,
+.codex-desktop[data-window-material="auto"] .desktop-menubar,
+.codex-desktop[data-window-material="none"] .desktop-menubar,
+.codex-desktop[data-window-material="mica"] .desktop-menubar {
+  background:
+    linear-gradient(180deg, var(--app-material-glow), transparent 58%),
+    var(--app-material-fill);
+  backdrop-filter: blur(48px) saturate(1.35);
+  -webkit-backdrop-filter: blur(48px) saturate(1.35);
+}
+
+.codex-desktop .chat-shell {
+  border-top-left-radius: 8px;
+  box-shadow: none;
 }
 
 .codex-desktop .settings-sidebar {

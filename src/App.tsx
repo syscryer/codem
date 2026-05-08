@@ -549,6 +549,7 @@ export default function App() {
     <div
       className="codex-desktop"
       data-theme-mode={appearance.themeMode}
+      data-window-material={appearance.windowMaterial}
       data-density={appearance.density}
       data-sidebar-width={appearance.sidebarWidth}
       style={{
