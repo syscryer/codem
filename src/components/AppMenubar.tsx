@@ -195,6 +195,11 @@ export function AppMenubar({
                       onSelect={() => runAction(() => handleMaterialAction('auto'))}
                     />
                     <MenuItem
+                      label="无"
+                      selected={windowMaterial === 'none'}
+                      onSelect={() => runAction(() => handleMaterialAction('none'))}
+                    />
+                    <MenuItem
                       label="Mica"
                       selected={windowMaterial === 'mica'}
                       onSelect={() => runAction(() => handleMaterialAction('mica'))}

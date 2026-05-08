@@ -140,6 +140,13 @@ svg {
   --app-material-fill: rgba(248, 247, 244, 0.72);
   --app-material-line: rgba(148, 163, 184, 0.26);
   --app-material-glow: rgba(255, 255, 255, 0.28);
+  --app-material-blur: 48px;
+}
+
+.codex-desktop[data-window-material="none"] {
+  --app-material-fill: rgba(248, 247, 244, 0.9);
+  --app-material-glow: rgba(255, 255, 255, 0.18);
+  --app-material-blur: 72px;
 }
 
 .codex-desktop[data-theme-mode="dark"][data-window-material="auto"],
@@ -148,6 +155,13 @@ svg {
   --app-material-fill: rgba(32, 32, 34, 0.72);
   --app-material-line: rgba(255, 255, 255, 0.1);
   --app-material-glow: rgba(255, 255, 255, 0.08);
+  --app-material-blur: 48px;
+}
+
+.codex-desktop[data-theme-mode="dark"][data-window-material="none"] {
+  --app-material-fill: rgba(32, 32, 34, 0.9);
+  --app-material-glow: rgba(255, 255, 255, 0.06);
+  --app-material-blur: 72px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -187,6 +201,13 @@ svg {
     --app-material-fill: rgba(32, 32, 34, 0.72);
     --app-material-line: rgba(255, 255, 255, 0.1);
     --app-material-glow: rgba(255, 255, 255, 0.08);
+    --app-material-blur: 48px;
+  }
+
+  .codex-desktop[data-theme-mode="system"][data-window-material="none"] {
+    --app-material-fill: rgba(32, 32, 34, 0.9);
+    --app-material-glow: rgba(255, 255, 255, 0.06);
+    --app-material-blur: 72px;
   }
 }
 
@@ -6837,8 +6858,8 @@ svg {
   background:
     linear-gradient(180deg, var(--app-material-glow), transparent 58%),
     var(--app-material-fill);
-  backdrop-filter: blur(48px) saturate(1.35);
-  -webkit-backdrop-filter: blur(48px) saturate(1.35);
+  backdrop-filter: blur(var(--app-material-blur, 48px)) saturate(1.35);
+  -webkit-backdrop-filter: blur(var(--app-material-blur, 48px)) saturate(1.35);
 }
 
 .codex-desktop .chat-shell {
