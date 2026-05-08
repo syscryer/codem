@@ -68,9 +68,6 @@ export function ComposerContextIndicator({ usage }: ComposerContextIndicatorProp
             <span>{percentLabel}</span>
           </header>
           <div className="composer-context-card-summary">
-            <span className="composer-context-card-summary-icon" aria-hidden="true">
-              <Activity size={18} />
-            </span>
             <span className="composer-context-card-summary-used">{formatCompactTokens(usage.usedTokens)}</span>
             <span className="composer-context-card-summary-divider">/</span>
             <span className="composer-context-card-summary-total">{formatCompactTokens(usage.totalTokens)}</span>

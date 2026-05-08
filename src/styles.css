@@ -402,6 +402,7 @@ svg {
 }
 
 .chat-workspace {
+  position: relative;
   min-width: 0;
   min-height: 0;
   display: grid;
@@ -411,6 +412,23 @@ svg {
 
 .chat-workspace.workbench-open {
   grid-template-columns: minmax(360px, 1fr) var(--right-workbench-width, 520px);
+}
+
+.chat-workspace.workbench-open .chat-shell {
+  position: relative;
+  z-index: 1;
+}
+
+.chat-workspace.workbench-open .chat-shell::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: -1px;
+  bottom: 0;
+  z-index: 20;
+  width: 10px;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(15, 23, 42, 0), rgba(15, 23, 42, 0.026));
 }
 
 .app-sidebar {
@@ -1324,13 +1342,14 @@ svg {
 
 .right-workbench {
   position: relative;
+  z-index: 2;
   min-width: 0;
   min-height: 0;
   display: grid;
   grid-template-rows: 44px minmax(0, 1fr);
   overflow: hidden;
   border-top: 1px solid rgba(176, 183, 192, 0.12);
-  border-left: 1px solid #ececec;
+  border-left: 1px solid rgba(226, 232, 240, 0.82);
   background: #ffffff;
 }
 
@@ -4763,22 +4782,11 @@ svg {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 10px;
+  margin-top: 12px;
   color: #1f2937;
   font-size: 24px;
   font-weight: 650;
-  letter-spacing: -0.03em;
-}
-
-.composer-context-card-summary-icon {
-  width: 26px;
-  height: 26px;
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 26px;
-  border-radius: 9px;
-  background: rgba(148, 163, 184, 0.13);
-  color: #7d8794;
+  letter-spacing: 0;
 }
 
 .composer-context-card-summary-divider {
