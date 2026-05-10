@@ -74,6 +74,7 @@ export default function App() {
     setInputDialog,
     setConfirmDialog,
     showToast,
+    loadWorkspace,
     createThread,
     selectDirectoryPath,
     cloneRepositoryAndAttach,
@@ -115,6 +116,8 @@ export default function App() {
   const [previewTabs, setPreviewTabs] = useState<WorkbenchPreviewTab[]>([]);
   const [activePreviewKey, setActivePreviewKey] = useState('');
   const [previewContentByKey, setPreviewContentByKey] = useState<Record<string, WorkbenchPreviewContentState>>({});
+  const [composerDraftsByKey, setComposerDraftsByKey] = useState<Record<string, string>>({});
+  const [projectsRefreshing, setProjectsRefreshing] = useState(false);
   const terminalDock = useTerminalDockState();
   const terminalDockAvailable = isTauriRuntime();
   const [terminalRunRequest, setTerminalRunRequest] = useState<TerminalRunRequest | null>(null);
@@ -252,6 +255,23 @@ export default function App() {
     latestApprovalDialog && latestApprovalDialog.key !== dismissedApprovalDialogKey
       ? latestApprovalDialog
       : null;
+  const composerDraftKey = activeThreadId ?? (activeProjectId ? `project:${activeProjectId}` : 'global');
+  const composerDraft = composerDraftsByKey[composerDraftKey] ?? '';
+  const handleComposerDraftChange = useCallback(
+    (value: string) => {
+      setComposerDraftsByKey((current) => {
+        if (value) {
+          return { ...current, [composerDraftKey]: value };
+        }
+        if (!(composerDraftKey in current)) {
+          return current;
+        }
+        const { [composerDraftKey]: _removed, ...next } = current;
+        return next;
+      });
+    },
+    [composerDraftKey],
+  );
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
@@ -272,6 +292,22 @@ export default function App() {
 
   async function handleSelectThread(projectId: string, threadId: string) {
     await selectThread(projectId, threadId);
+  }
+
+  async function handleRefreshProjects() {
+    if (projectsRefreshing) {
+      return;
+    }
+
+    setProjectsRefreshing(true);
+    try {
+      await loadWorkspace();
+      showToast('项目已刷新');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '刷新项目失败', 'error');
+    } finally {
+      setProjectsRefreshing(false);
+    }
   }
 
   function handleOpenRemoveThreadDialog(thread: ThreadSummary) {
@@ -607,6 +643,8 @@ export default function App() {
               onToggleSearch={() => setSearchOpen((value) => !value)}
               onSearchQueryChange={setSearchQuery}
               onToggleAllProjects={toggleAllProjects}
+              onRefreshProjects={handleRefreshProjects}
+              refreshingProjects={projectsRefreshing}
               onPanelStateChange={handlePanelStateChange}
               onPickProjectDirectory={handlePickProjectDirectory}
               onOpenCloneDialog={() => setCloneDialogOpen(true)}
@@ -686,7 +724,10 @@ export default function App() {
                 models={models}
                 turns={activeThread?.turns ?? []}
                 isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
+                draftScopeKey={composerDraftKey}
+                draft={composerDraft}
                 queuedPrompts={queuedPrompts}
+                onDraftChange={handleComposerDraftChange}
                 onSubmitPrompt={submitPrompt}
                 onRemoveQueuedPrompt={removeQueuedPrompt}
                 showToast={showToast}

@@ -27,7 +27,10 @@ type ComposerProps = {
   models: ClaudeModelOption[];
   turns: ConversationTurn[];
   isRunning: boolean;
+  draftScopeKey: string;
+  draft: string;
   queuedPrompts: Array<{ id: string; displayText: string; createdAtMs: number }>;
+  onDraftChange: (value: string) => void;
   onSubmitPrompt: (submission: {
     prompt: string;
     displayText: string;
@@ -51,7 +54,10 @@ export function Composer({
   models,
   turns,
   isRunning,
+  draftScopeKey,
+  draft,
   queuedPrompts,
+  onDraftChange,
   onSubmitPrompt,
   onRemoveQueuedPrompt,
   showToast,
@@ -62,7 +68,6 @@ export function Composer({
   onStopRun,
   onRunSlashSystemCommand,
 }: ComposerProps) {
-  const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<PendingImageAttachment[]>([]);
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -108,6 +113,15 @@ export function Composer({
   }, [attachments]);
 
   useEffect(() => {
+    disposeAttachmentPreviews(attachmentsRef.current);
+    attachmentsRef.current = [];
+    setAttachments([]);
+    setSelectionStart(draft.length);
+    setSelectionEnd(draft.length);
+    setSlashMenuDismissed(false);
+  }, [draftScopeKey]);
+
+  useEffect(() => {
     setSlashSelectedIndex(0);
   }, [draft, selectionStart, filteredCommands.length]);
 
@@ -122,6 +136,10 @@ export function Composer({
       }
     };
   }, []);
+
+  function setDraft(nextDraft: string) {
+    onDraftChange(nextDraft);
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

@@ -41,6 +41,8 @@ type SidebarProjectsProps = {
   onToggleSearch: () => void;
   onSearchQueryChange: (value: string) => void;
   onToggleAllProjects: () => void;
+  onRefreshProjects: () => void | Promise<void>;
+  refreshingProjects: boolean;
   onPanelStateChange: (nextState: Partial<PanelState>) => void | Promise<void>;
   onPickProjectDirectory: () => void | Promise<void>;
   onOpenCloneDialog: () => void;
@@ -73,6 +75,8 @@ export function SidebarProjects({
   onToggleSearch,
   onSearchQueryChange,
   onToggleAllProjects,
+  onRefreshProjects,
+  refreshingProjects,
   onPanelStateChange,
   onPickProjectDirectory,
   onOpenCloneDialog,
@@ -154,6 +158,15 @@ export function SidebarProjects({
           <div className="sidebar-section-actions">
             <button type="button" className="sidebar-toolbar-icon" title="展开或折叠项目" onClick={onToggleAllProjects}>
               <SquareSplitHorizontal size={13} />
+            </button>
+            <button
+              type="button"
+              className="sidebar-toolbar-icon"
+              title="刷新项目"
+              disabled={refreshingProjects}
+              onClick={() => void onRefreshProjects()}
+            >
+              <RefreshCw size={13} className={refreshingProjects ? 'spin' : undefined} />
             </button>
             <div className="panel-menu-anchor" ref={panelMenuRef}>
                 <button
