@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { filterSlashCommandsForAgent } from '../lib/agent-slash-capabilities';
+import { PLUGINS_CHANGED_EVENT } from '../lib/plugins';
 import { getCurrentLineSlashContext } from '../lib/slash-command-editor';
 import type { AgentType, SlashCommand, SlashCommandsResponse } from '../types';
 
@@ -21,6 +22,16 @@ export function useSlashCommands({
 }: UseSlashCommandsArgs) {
   const [commands, setCommands] = useState<SlashCommand[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshToken, setRefreshToken] = useState(0);
+
+  useEffect(() => {
+    function handlePluginsChanged() {
+      setRefreshToken((current) => current + 1);
+    }
+
+    window.addEventListener(PLUGINS_CHANGED_EVENT, handlePluginsChanged);
+    return () => window.removeEventListener(PLUGINS_CHANGED_EVENT, handlePluginsChanged);
+  }, []);
 
   useEffect(() => {
     const abortController = new AbortController();
@@ -52,7 +63,7 @@ export function useSlashCommands({
 
     void loadSlashCommands();
     return () => abortController.abort();
-  }, [projectPath, showToast]);
+  }, [projectPath, refreshToken, showToast]);
 
   const context = useMemo(
     () => getCurrentLineSlashContext(draft, selectionStart),

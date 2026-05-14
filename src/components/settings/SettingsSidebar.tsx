@@ -10,7 +10,7 @@ import {
   RotateCcw,
   Server,
   Settings,
-  Sparkles,
+  Puzzle,
 } from 'lucide-react';
 import type { SettingsSection } from '../../types';
 
@@ -28,7 +28,7 @@ const settingsSections: Array<{ id: SettingsSection; label: string; icon: typeof
   { id: 'usage', label: '使用情况', icon: BarChart3 },
   { id: 'sessions', label: '会话管理', icon: MessageSquareText },
   { id: 'mcp', label: 'MCP 管理', icon: Server },
-  { id: 'skills', label: 'Skills', icon: Sparkles },
+  { id: 'plugins', label: '插件管理', icon: Puzzle },
   { id: 'globalPrompts', label: '全局提示词', icon: Braces },
   { id: 'openWith', label: '打开方式', icon: AppWindow },
 ];

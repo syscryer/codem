@@ -199,9 +199,12 @@ export type SettingsSection =
   | 'usage'
   | 'sessions'
   | 'mcp'
-  | 'skills'
+  | 'plugins'
   | 'globalPrompts'
   | 'openWith';
+
+export type PluginTab = 'plugins' | 'skills';
+export type PluginSubTab = 'installed' | 'discover' | 'marketplaces';
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 export type InterfaceDensity = 'comfortable' | 'compact';
@@ -257,6 +260,45 @@ export type OpenAppTarget = {
 export type OpenWithSettings = {
   selectedTargetId: string;
   customTargets: OpenAppTarget[];
+};
+
+export type InstalledPlugin = {
+  id: string;
+  name: string;
+  marketplace: string;
+  scope: string;
+  version?: string;
+  installPath?: string;
+  projectPath?: string;
+  installedAt?: string;
+  lastUpdated?: string;
+  description?: string;
+  author?: string;
+  homepage?: string;
+  category?: string;
+};
+
+export type Marketplace = {
+  name: string;
+  source?: string;
+  installLocation?: string;
+  lastUpdated?: string;
+  plugins: Array<{
+    name: string;
+    description?: string;
+    author?: string;
+    homepage?: string;
+    category?: string;
+  }>;
+};
+
+export type Skill = {
+  name: string;
+  description?: string;
+  source: 'user' | 'project' | `plugin:${string}`;
+  path: string;
+  disableModelInvocation: boolean;
+  userInvocable: boolean;
 };
 
 export type OpenWithTargetsResponse = {

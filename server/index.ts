@@ -59,6 +59,14 @@ import {
   readClaudeGlobalPrompt,
   saveClaudeGlobalPrompt,
 } from './lib/claude-global-prompt.js';
+import {
+  installBuiltinSkill,
+  installSkillFromPath,
+  listInstalledPlugins,
+  listMarketplaces,
+  listSkills as listPluginSkills,
+  runPluginCommand,
+} from './lib/plugins.js';
 import { listMcpServers } from './lib/mcp-inspector.js';
 import { listSkills } from './lib/skills-scanner.js';
 import { listSlashCommands } from './lib/slash-commands.js';
@@ -197,6 +205,64 @@ app.get('/api/skills', (_request, response) => {
   } catch (error) {
     console.error('读取 Skills 失败', error);
     response.status(500).json({ error: '读取 Skills 失败' });
+  }
+});
+
+app.get('/api/plugins/installed', async (_request, response) => {
+  try {
+    response.json(await listInstalledPlugins());
+  } catch (error) {
+    console.error('读取已安装插件失败', error);
+    response.status(500).json({ error: '读取已安装插件失败' });
+  }
+});
+
+app.get('/api/plugins/marketplaces', async (_request, response) => {
+  try {
+    response.json(await listMarketplaces());
+  } catch (error) {
+    console.error('读取插件市场失败', error);
+    response.status(500).json({ error: '读取插件市场失败' });
+  }
+});
+
+app.get('/api/plugins/skills', async (request, response) => {
+  try {
+    const projectPath =
+      typeof request.query.projectPath === 'string' && request.query.projectPath.trim()
+        ? path.resolve(request.query.projectPath.trim())
+        : null;
+    response.json(await listPluginSkills(projectPath));
+  } catch (error) {
+    console.error('读取插件 Skills 失败', error);
+    response.status(500).json({ error: '读取插件 Skills 失败' });
+  }
+});
+
+app.post('/api/plugins/skills/install-from-path', async (request, response) => {
+  try {
+    response.json(await installSkillFromPath(request.body));
+  } catch (error) {
+    console.error('导入 Skill 失败', error);
+    response.status(500).json({ error: '导入 Skill 失败' });
+  }
+});
+
+app.post('/api/plugins/skills/install-builtin', async (request, response) => {
+  try {
+    response.json(await installBuiltinSkill(request.body));
+  } catch (error) {
+    console.error('安装内置 Skill 失败', error);
+    response.status(500).json({ error: '安装内置 Skill 失败' });
+  }
+});
+
+app.post('/api/plugins/command', async (request, response) => {
+  try {
+    response.json(await runPluginCommand(request.body));
+  } catch (error) {
+    console.error('执行插件命令失败', error);
+    response.status(500).json({ error: '执行插件命令失败' });
   }
 });
 

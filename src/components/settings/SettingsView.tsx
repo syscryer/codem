@@ -24,7 +24,7 @@ import { ModelSettingsSection } from './ModelSettings';
 import { OpenWithSettingsSection } from './OpenWithSettings';
 import { SettingsEmptySection } from './SettingsEmptySection';
 import { SettingsSidebar } from './SettingsSidebar';
-import { SkillsSettingsSection } from './SkillsSettings';
+import { PluginsSettingsSection } from './PluginsSettings';
 import { ShortcutsSettingsSection } from './ShortcutsSettings';
 import { UsageSettingsSection } from './UsageSettings';
 
@@ -54,7 +54,7 @@ const sectionTitles: Record<SettingsSection, string> = {
   usage: '使用情况',
   sessions: '会话管理',
   mcp: 'MCP 管理',
-  skills: 'Skills',
+  plugins: '插件管理',
   globalPrompts: '全局提示词',
   openWith: '打开方式',
 };
@@ -136,8 +136,8 @@ export function SettingsView({
       return <McpSettingsSection />;
     }
 
-    if (activeSection === 'skills') {
-      return <SkillsSettingsSection />;
+    if (activeSection === 'plugins') {
+      return <PluginsSettingsSection />;
     }
 
     return <SettingsEmptySection title={sectionTitles[activeSection]} />;

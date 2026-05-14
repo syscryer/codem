@@ -6430,6 +6430,102 @@ svg {
   gap: 8px;
 }
 
+.plugins-suite-panel {
+  gap: 14px;
+}
+
+.plugins-toolbar,
+.plugins-skill-actions {
+  display: grid;
+  gap: 12px;
+}
+
+.plugins-input-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.plugins-skill-actions .plugins-input-grid {
+  grid-template-columns: minmax(0, 1fr) 120px auto auto;
+}
+
+.plugins-inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.plugins-inline-select {
+  align-items: center;
+  gap: 8px;
+}
+
+.plugins-builtin-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.plugins-builtin-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--soft);
+}
+
+.plugins-builtin-card > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.plugins-builtin-card strong {
+  font-size: 13px;
+}
+
+.plugins-builtin-card small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.settings-text-input {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: inherit;
+}
+
+.settings-action-button.danger {
+  color: var(--danger);
+}
+
+.settings-action-button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.settings-action-button.primary:hover {
+  filter: brightness(0.98);
+}
+
+@media (max-width: 960px) {
+  .plugins-input-grid,
+  .plugins-skill-actions .plugins-input-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .settings-list-row strong {
   overflow: hidden;
   color: #303030;
