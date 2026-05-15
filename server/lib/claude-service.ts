@@ -460,6 +460,71 @@ export function submitRunRequestUserInput(
   };
 }
 
+export function submitRunGuidePrompt(runId: string, prompt: string) {
+  const activeRun = activeRuns.get(runId);
+  if (!activeRun || activeRun.state.finished) {
+    return {
+      submitted: false,
+      error: '当前运行不存在或已经结束。',
+    };
+  }
+
+  const trimmedPrompt = prompt.trim();
+  if (!trimmedPrompt) {
+    return {
+      submitted: false,
+      error: '缺少有效引导内容。',
+    };
+  }
+
+  if (activeRun.runtime.inputMode !== 'stdin' || activeRun.runtime.closed) {
+    return {
+      submitted: false,
+      error: '当前 Claude 运行不支持运行中引导，请等待结束后再继续。',
+    };
+  }
+
+  if (activeRun.state.pausedForUserInput) {
+    return {
+      submitted: false,
+      error: '当前运行正在等待问答或审批，请先处理卡片后再引导。',
+    };
+  }
+
+  const message = buildClaudeInputMessage({
+    ...activeRun.state.input,
+    prompt: trimmedPrompt,
+    clientSubmitAtMs: Date.now(),
+  });
+  const payload = `${JSON.stringify(message)}\n`;
+  activeRun.runtime.child.stdin.write(payload, (error) => {
+    if (error) {
+      const messageText = `写入 Claude Code 引导消息失败：${error.message}`;
+      enqueueRetryableRuntimeError(
+        activeRun.state.runId,
+        messageText,
+        'process',
+        activeRun.state.emittedRecoveryHintKeys,
+        (event) => enqueueRunEvent(activeRun.state, event),
+      );
+      enqueueRunEvent(activeRun.state, {
+        type: 'error',
+        runId: activeRun.state.runId,
+        message: messageText,
+      });
+      finishRuntimeRun(activeRun.runtime, activeRun.state);
+      closeClaudeRuntime(activeRun.runtime);
+      return;
+    }
+
+    enqueueTrace(activeRun.state, 'stdin_guide_prompt_written', Date.now(), `${trimmedPrompt.length} chars`);
+  });
+
+  return {
+    submitted: true,
+  };
+}
+
 export function submitRunApprovalDecision(
   runId: string,
   requestId: string,

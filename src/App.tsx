@@ -27,6 +27,7 @@ import { matchesShortcut } from './lib/shortcuts';
 import { createSystemCommandItem, settleSystemCommandItem } from './lib/system-command-items';
 import { modelLabel, permissionLabel } from './lib/ui-labels';
 import { isTauriRuntime, setWindowMaterial } from './lib/window-material';
+import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -144,11 +145,14 @@ export default function App() {
     models,
     claudeModels,
     health,
+    backendRunId,
     isRunning,
     runningThreadIds,
     activeTurnIdsByThreadId,
     queuedPrompts,
     removeQueuedPrompt,
+    recallQueuedPrompt,
+    guideQueuedPrompt,
     clockNowMs,
     setModel,
     handlePermissionModeSelect,
@@ -257,6 +261,19 @@ export default function App() {
       : null;
   const composerDraftKey = activeThreadId ?? (activeProjectId ? `project:${activeProjectId}` : 'global');
   const composerDraft = composerDraftsByKey[composerDraftKey] ?? '';
+  const activeRunTurnId = activeThreadId ? activeTurnIdsByThreadId[activeThreadId] : undefined;
+  const activeRunTurn = activeRunTurnId
+    ? activeThread?.turns.find((turn) => turn.id === activeRunTurnId)
+    : undefined;
+  const queuedPromptGuideAvailability = getQueuedPromptGuideAvailability({
+    isRunning: Boolean(activeThreadId && runningThreadIds.includes(activeThreadId)),
+    runId: backendRunId,
+    hasPendingHumanInput: Boolean(
+      activeRunTurn?.pendingUserInputRequests?.length ||
+      activeRunTurn?.pendingApprovalRequests?.length,
+    ),
+    queueLength: queuedPrompts.length,
+  });
   const handleComposerDraftChange = useCallback(
     (value: string) => {
       setComposerDraftsByKey((current) => {
@@ -272,6 +289,15 @@ export default function App() {
     },
     [composerDraftKey],
   );
+
+  function handleRecallQueuedPrompt(promptId: string) {
+    const recalledText = recallQueuedPrompt(promptId);
+    if (!recalledText) {
+      return;
+    }
+
+    handleComposerDraftChange(recalledText);
+  }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
@@ -645,6 +671,7 @@ export default function App() {
               onToggleAllProjects={toggleAllProjects}
               onRefreshProjects={handleRefreshProjects}
               refreshingProjects={projectsRefreshing}
+              onOpenPlugins={() => openSettings('plugins')}
               onPanelStateChange={handlePanelStateChange}
               onPickProjectDirectory={handlePickProjectDirectory}
               onOpenCloneDialog={() => setCloneDialogOpen(true)}
@@ -727,13 +754,17 @@ export default function App() {
                 draftScopeKey={composerDraftKey}
                 draft={composerDraft}
                 queuedPrompts={queuedPrompts}
+                queuedPromptGuideAvailability={queuedPromptGuideAvailability}
                 onDraftChange={handleComposerDraftChange}
                 onSubmitPrompt={submitPrompt}
                 onRemoveQueuedPrompt={removeQueuedPrompt}
+                onRecallQueuedPrompt={handleRecallQueuedPrompt}
+                onGuideQueuedPrompt={guideQueuedPrompt}
                 showToast={showToast}
                 onKeyDown={handleComposerKeyDown}
                 onSelectPermissionMode={handlePermissionModeSelect}
                 onSelectModel={setModel}
+                onOpenPlugins={() => openSettings('plugins')}
                 onCreateNewChat={() => void handleCreatePrimaryChat()}
                 onStopRun={() => stopRun(activeThreadId ?? undefined)}
                 onRunSlashSystemCommand={handleRunSlashSystemCommand}

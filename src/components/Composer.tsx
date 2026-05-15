@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
-import { ArrowUp, Check, Mic, Plus, Shield, Square, Unlock, X, Zap } from 'lucide-react';
+import { ArrowUp, Check, CornerDownRight, Image, Mic, Pencil, Plus, Puzzle, Shield, Square, Unlock, X, Zap } from 'lucide-react';
 import { permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
@@ -30,6 +30,7 @@ type ComposerProps = {
   draftScopeKey: string;
   draft: string;
   queuedPrompts: Array<{ id: string; displayText: string; createdAtMs: number }>;
+  queuedPromptGuideAvailability: { available: boolean; reason?: string };
   onDraftChange: (value: string) => void;
   onSubmitPrompt: (submission: {
     prompt: string;
@@ -37,10 +38,13 @@ type ComposerProps = {
     attachments?: UserImageAttachment[];
   }) => Promise<boolean> | boolean;
   onRemoveQueuedPrompt: (promptId: string) => void;
+  onRecallQueuedPrompt: (promptId: string) => void;
+  onGuideQueuedPrompt: (promptId: string) => Promise<boolean> | boolean;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
   onKeyDown: KeyboardEventHandler<HTMLTextAreaElement>;
   onSelectPermissionMode: (mode: PermissionMode) => void;
   onSelectModel: (model: string) => void;
+  onOpenPlugins: () => void;
   onCreateNewChat: () => Promise<void> | void;
   onStopRun: () => void | Promise<void>;
   onRunSlashSystemCommand: (command: SlashCommand, submittedText: string) => Promise<void> | void;
@@ -57,22 +61,28 @@ export function Composer({
   draftScopeKey,
   draft,
   queuedPrompts,
+  queuedPromptGuideAvailability,
   onDraftChange,
   onSubmitPrompt,
   onRemoveQueuedPrompt,
+  onRecallQueuedPrompt,
+  onGuideQueuedPrompt,
   showToast,
   onKeyDown,
   onSelectPermissionMode,
   onSelectModel,
+  onOpenPlugins,
   onCreateNewChat,
   onStopRun,
   onRunSlashSystemCommand,
 }: ComposerProps) {
   const [attachments, setAttachments] = useState<PendingImageAttachment[]>([]);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const permissionMenuRef = useRef<HTMLDivElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
+  const addMenuRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const composerCardRef = useRef<HTMLDivElement | null>(null);
@@ -99,6 +109,7 @@ export function Composer({
 
   useOutsideDismiss({
     selectors: [
+      { selector: '.composer-add-menu', onDismiss: () => setAddMenuOpen(false), anchorRefs: [addMenuRef] },
       { selector: '.permission-menu', onDismiss: () => setPermissionMenuOpen(false), anchorRefs: [permissionMenuRef] },
       { selector: '.model-menu', onDismiss: () => setModelMenuOpen(false), anchorRefs: [modelMenuRef] },
     ],
@@ -354,19 +365,46 @@ export function Composer({
         </PopoverPortal>
         {queuedPrompts.length > 0 ? (
           <div className="composer-queued-prompts" aria-label="已排队提示">
+            <div className="composer-queued-head">
+              <span>排队中，当前回复完成后发送</span>
+              {!queuedPromptGuideAvailability.available && queuedPromptGuideAvailability.reason ? (
+                <small>{queuedPromptGuideAvailability.reason}</small>
+              ) : null}
+            </div>
             {queuedPrompts.map((prompt, index) => (
               <div key={prompt.id} className="composer-queued-prompt">
                 <span className="composer-queued-index">{index + 1}</span>
                 <span className="composer-queued-text">{prompt.displayText || '图片消息'}</span>
-                <button
-                  type="button"
-                  className="composer-queued-remove"
-                  aria-label="取消排队提示"
-                  title="取消排队"
-                  onClick={() => onRemoveQueuedPrompt(prompt.id)}
-                >
-                  <X size={13} />
-                </button>
+                <div className="composer-queued-actions">
+                  <button
+                    type="button"
+                    className="composer-queued-action"
+                    aria-label="立即引导当前运行"
+                    title={queuedPromptGuideAvailability.available ? '立即引导当前运行' : queuedPromptGuideAvailability.reason ?? '暂不能引导'}
+                    disabled={!queuedPromptGuideAvailability.available}
+                    onClick={() => void onGuideQueuedPrompt(prompt.id)}
+                  >
+                    <CornerDownRight size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    className="composer-queued-action"
+                    aria-label="编辑排队提示"
+                    title="编辑消息"
+                    onClick={() => onRecallQueuedPrompt(prompt.id)}
+                  >
+                    <Pencil size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    className="composer-queued-action"
+                    aria-label="取消排队提示"
+                    title="取消排队"
+                    onClick={() => onRemoveQueuedPrompt(prompt.id)}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -422,9 +460,45 @@ export function Composer({
               className="composer-file-input"
               onChange={(event) => void handleFileSelection(event)}
             />
-            <button type="button" className="plain-icon" title="添加图片" onClick={() => fileInputRef.current?.click()}>
-              <Plus size={16} />
-            </button>
+            <div className="composer-add-anchor" ref={addMenuRef}>
+              <PopoverPortal open={addMenuOpen} anchorRef={addMenuRef} placement="top-start">
+                <div className="composer-add-menu" role="menu">
+                  <button
+                    type="button"
+                    className="composer-add-menu-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setAddMenuOpen(false);
+                      fileInputRef.current?.click();
+                    }}
+                  >
+                    <Image size={15} />
+                    <span>添加图片</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="composer-add-menu-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setAddMenuOpen(false);
+                      onOpenPlugins();
+                    }}
+                  >
+                    <Puzzle size={15} />
+                    <span>插件管理</span>
+                  </button>
+                </div>
+              </PopoverPortal>
+              <button
+                type="button"
+                className="plain-icon"
+                title="添加附件和插件"
+                aria-expanded={addMenuOpen}
+                onClick={() => setAddMenuOpen((value) => !value)}
+              >
+                <Plus size={16} />
+              </button>
+            </div>
             <div className="permission-picker" ref={permissionMenuRef}>
               <PopoverPortal open={permissionMenuOpen} anchorRef={permissionMenuRef} placement="top-end">
                 <div className="permission-menu" role="menu">

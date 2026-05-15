@@ -16,6 +16,7 @@ import {
   markThreadRunDetached,
   reconnectClaudeRunEvents,
   submitRunApprovalDecision,
+  submitRunGuidePrompt,
   submitRunRequestUserInput,
   type ClaudePermissionMode,
 } from './lib/claude-service.js';
@@ -970,6 +971,17 @@ app.post('/api/claude/run/:runId/request-user-input', (request, response) => {
   }
 
   const result = submitRunRequestUserInput(request.params.runId, requestId, questions, answers);
+  if (!result.submitted) {
+    response.status(409).json(result);
+    return;
+  }
+
+  response.json(result);
+});
+
+app.post('/api/claude/run/:runId/guide', (request, response) => {
+  const prompt = typeof request.body?.prompt === 'string' ? request.body.prompt.trim() : '';
+  const result = submitRunGuidePrompt(request.params.runId, prompt);
   if (!result.submitted) {
     response.status(409).json(result);
     return;

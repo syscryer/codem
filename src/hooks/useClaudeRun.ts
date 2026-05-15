@@ -29,6 +29,7 @@ import {
   upsertToolStep,
   upsertToolStepDeep,
 } from '../lib/conversation';
+import { resolveQueuedPromptRunOptions } from '../lib/queued-prompts';
 import type {
   AssistantItem,
   ApprovalDecision,
@@ -91,6 +92,7 @@ type RunContext = {
   traceStartedAtMs: number;
   firstClientDeltaAtMs: number;
   firstTextApplyAtMs: number;
+  latestSessionId?: string;
   model: string;
   permissionMode: PermissionMode;
 };
@@ -493,25 +495,131 @@ export function useClaudeRun({
     });
   }
 
-  function maybeStartQueuedPrompt(threadId: string) {
-    const nextPrompt = shiftQueuedPrompt(threadId);
+  function recallQueuedPrompt(promptId: string) {
+    const targetThreadId = activeThreadId;
+    if (!targetThreadId || !promptId) {
+      return null;
+    }
+
+    const currentQueue = queuedPromptsByThreadIdRef.current[targetThreadId] ?? [];
+    const targetPrompt = currentQueue.find((prompt) => prompt.id === promptId);
+    if (!targetPrompt) {
+      return null;
+    }
+
+    updateQueuedPrompts((current) => {
+      const nextQueue = (current[targetThreadId] ?? []).filter((prompt) => prompt.id !== promptId);
+      const next = { ...current };
+      if (nextQueue.length) {
+        next[targetThreadId] = nextQueue;
+      } else {
+        delete next[targetThreadId];
+      }
+      return next;
+    });
+    appendDebug(targetThreadId, {
+      title: '已召回排队提示',
+      content: promptId,
+    });
+    return targetPrompt.displayText || targetPrompt.prompt;
+  }
+
+  async function guideQueuedPrompt(promptId: string) {
+    const targetThreadId = activeThreadId;
+    const context = targetThreadId ? runContextsByThreadIdRef.current.get(targetThreadId) : undefined;
+    if (!targetThreadId || !context?.runId) {
+      showToast('当前没有可引导的运行。', 'info');
+      return false;
+    }
+
+    const currentQueue = queuedPromptsByThreadIdRef.current[targetThreadId] ?? [];
+    const targetPrompt = currentQueue.find((prompt) => prompt.id === promptId);
+    if (!targetPrompt) {
+      showToast('排队消息不存在。', 'error');
+      return false;
+    }
+
+    try {
+      const response = await fetch(`/api/claude/run/${encodeURIComponent(context.runId)}/guide`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt: targetPrompt.prompt,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorResponseText(response) || '发送引导消息失败');
+      }
+
+      updateQueuedPrompts((current) => {
+        const nextQueue = (current[targetThreadId] ?? []).filter((prompt) => prompt.id !== promptId);
+        const next = { ...current };
+        if (nextQueue.length) {
+          next[targetThreadId] = nextQueue;
+        } else {
+          delete next[targetThreadId];
+        }
+        return next;
+      });
+      updateRunningTurn(context, (turn) => ({
+        ...turn,
+        items: [
+          ...turn.items,
+          createGuideSystemItem(targetPrompt.displayText || targetPrompt.prompt),
+        ],
+        activity: '已发送引导消息，等待 Claude 接收',
+      }));
+      appendDebug(targetThreadId, {
+        title: '已引导当前运行',
+        content: targetPrompt.prompt,
+      });
+      showToast('已发送引导消息。', 'success');
+      return true;
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '发送引导消息失败', 'error');
+      return false;
+    }
+  }
+
+  function maybeStartQueuedPrompt(context: RunContext) {
+    const nextPrompt = shiftQueuedPrompt(context.threadId);
     if (!nextPrompt) {
       return;
     }
 
-    const thread = threadSummariesByIdRef.current.get(threadId);
+    const thread = threadSummariesByIdRef.current.get(context.threadId);
     if (!thread) {
       updateQueuedPrompts((current) => ({
         ...current,
-        [threadId]: [nextPrompt, ...(current[threadId] ?? [])],
+        [context.threadId]: [nextPrompt, ...(current[context.threadId] ?? [])],
       }));
       return;
     }
 
+    const runOptions = resolveQueuedPromptRunOptions(
+      {
+        sessionId: thread.sessionId,
+        workingDirectory: thread.workingDirectory,
+        permissionMode: isVisiblePermissionMode(thread.permissionMode) ? thread.permissionMode : defaultPermissionMode,
+        model: thread.model,
+      },
+      {
+        latestSessionId: context.latestSessionId,
+        workingDirectory: context.workingDirectory,
+        permissionMode: context.permissionMode,
+        model: context.model,
+      },
+      nextPrompt.reuseSession !== false,
+    );
+
     window.setTimeout(() => {
       void startRun(thread, nextPrompt.prompt, {
-        workingDirectory: thread.workingDirectory,
-        sessionId: resolvePromptSubmissionSessionId(thread.sessionId, nextPrompt.reuseSession !== false),
+        workingDirectory: runOptions.workingDirectory,
+        sessionId: runOptions.sessionId,
+        permissionModeOverride: runOptions.permissionModeOverride,
+        modelOverride: runOptions.modelOverride,
         displayText: nextPrompt.displayText,
         attachments: nextPrompt.attachments,
         initialAssistantItems: nextPrompt.initialAssistantItems,
@@ -524,10 +632,18 @@ export function useClaudeRun({
 
         updateQueuedPrompts((current) => ({
           ...current,
-          [threadId]: [nextPrompt, ...(current[threadId] ?? [])],
+          [context.threadId]: [nextPrompt, ...(current[context.threadId] ?? [])],
         }));
       });
     }, 0);
+  }
+
+  function notifyQueuedPromptsRetained(threadId: string) {
+    if ((queuedPromptsByThreadIdRef.current[threadId] ?? []).length === 0) {
+      return;
+    }
+
+    showToast('当前运行未正常完成，队列已保留。', 'info');
   }
 
   function markRunStreamProgress() {
@@ -607,6 +723,7 @@ export function useClaudeRun({
       initialAssistantItems?: AssistantItem[];
       initialActivity?: string;
       permissionModeOverride?: PermissionMode;
+      modelOverride?: string;
       toolResult?: {
         requestId: string;
         content: string;
@@ -625,7 +742,7 @@ export function useClaudeRun({
     const runSessionId =
       options?.sessionId && options.sessionId.trim() ? options.sessionId.trim() : undefined;
     const runPermissionMode = options?.permissionModeOverride ?? permissionMode;
-    const runModel = modelRef.current;
+    const runModel = options?.modelOverride ?? modelRef.current;
     const requestModel = resolveRequestModel(findModelOption(models, runModel), runModel);
     const submitAtMs = Date.now();
     const turnId = crypto.randomUUID();
@@ -642,6 +759,7 @@ export function useClaudeRun({
       traceStartedAtMs: submitAtMs,
       firstClientDeltaAtMs: 0,
       firstTextApplyAtMs: 0,
+      latestSessionId: runSessionId,
       model: runModel,
       permissionMode: runPermissionMode,
     };
@@ -746,6 +864,7 @@ export function useClaudeRun({
               ),
       }));
       schedulePersistThreadHistory(context.threadId);
+      notifyQueuedPromptsRetained(context.threadId);
     } finally {
       context.abortController = null;
       removeRunContext(context);
@@ -789,6 +908,7 @@ export function useClaudeRun({
         traceStartedAtMs: startedAtMs,
         firstClientDeltaAtMs: 0,
         firstTextApplyAtMs: 0,
+        latestSessionId: activeRun.sessionId,
         model: resolveInitialModelId(activeRun.model, models, model),
         permissionMode: activeRun.permissionMode || permissionMode,
       };
@@ -896,7 +1016,9 @@ export function useClaudeRun({
     }
 
     if (completedSuccessfully) {
-      maybeStartQueuedPrompt(context.threadId);
+      maybeStartQueuedPrompt(context);
+    } else if (sawTerminalEvent) {
+      notifyQueuedPromptsRetained(context.threadId);
     }
 
     return sawTerminalEvent;
@@ -1014,6 +1136,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'session') {
+      context.latestSessionId = event.sessionId;
       updateRunningTurn(context, (turn) => ({
         ...turn,
         sessionId: event.sessionId,
@@ -1251,6 +1374,7 @@ export function useClaudeRun({
 
     if (event.type === 'done') {
       context.terminalRunId = event.runId;
+      context.latestSessionId = event.sessionId ?? context.latestSessionId;
       updateRunningTurn(context, (turn) => {
         if (turn.status === 'error' || turn.status === 'stopped') {
           return turn;
@@ -1682,6 +1806,8 @@ export function useClaudeRun({
     submitPrompt,
     submitPromptToThread,
     removeQueuedPrompt,
+    recallQueuedPrompt,
+    guideQueuedPrompt,
     submitRequestUserInput,
     submitRuntimeRecoveryAction,
     submitApprovalDecision,
@@ -2178,6 +2304,18 @@ function normalizeDisplayText(displayText: string | undefined, fallback: string)
   }
 
   return fallback.trim();
+}
+
+function createGuideSystemItem(prompt: string): AssistantItem {
+  return {
+    id: crypto.randomUUID(),
+    type: 'system-command',
+    command: 'guide',
+    title: '已引导当前运行',
+    cardType: 'compact',
+    state: 'done',
+    summary: prompt.trim(),
+  };
 }
 
 function mergeModelOptions(configuredModels: ClaudeModelOption[], customModels: ModelSettings['customModels']) {

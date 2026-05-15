@@ -43,6 +43,7 @@ type SidebarProjectsProps = {
   onToggleAllProjects: () => void;
   onRefreshProjects: () => void | Promise<void>;
   refreshingProjects: boolean;
+  onOpenPlugins: () => void;
   onPanelStateChange: (nextState: Partial<PanelState>) => void | Promise<void>;
   onPickProjectDirectory: () => void | Promise<void>;
   onOpenCloneDialog: () => void;
@@ -77,6 +78,7 @@ export function SidebarProjects({
   onToggleAllProjects,
   onRefreshProjects,
   refreshingProjects,
+  onOpenPlugins,
   onPanelStateChange,
   onPickProjectDirectory,
   onOpenCloneDialog,
@@ -148,7 +150,7 @@ export function SidebarProjects({
           <span><Search size={14} /></span> 搜索
           <kbd>Ctrl+G</kbd>
         </button>
-        <button type="button"><span><Blocks size={14} /></span> 插件</button>
+        <button type="button" onClick={onOpenPlugins}><span><Blocks size={14} /></span> 插件</button>
         <button type="button"><span><Clock3 size={14} /></span> 自动化</button>
       </nav>
 

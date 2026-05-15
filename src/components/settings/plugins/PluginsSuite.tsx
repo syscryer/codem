@@ -15,6 +15,7 @@ import {
   type PluginScope,
   type SkillScope,
 } from '../../../lib/plugins';
+import { analyzePluginError } from '../../../lib/plugin-error-hints';
 import { DiscoverPluginsPanel } from './DiscoverPluginsPanel';
 import { InstalledPluginsPanel } from './InstalledPluginsPanel';
 import { MarketplacesPanel } from './MarketplacesPanel';
@@ -28,6 +29,12 @@ const builtinSkillInstallers = [
   },
 ];
 
+const marketplacePresets = [
+  'anthropics/claude-code',
+  'anthropics/claude-plugins-official',
+  'obra/superpowers-marketplace',
+];
+
 export function PluginsSuite() {
   const [tab, setTab] = useState<PluginTab>('plugins');
   const [subTab, setSubTab] = useState<PluginSubTab>('installed');
@@ -35,6 +42,7 @@ export function PluginsSuite() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [errorDetail, setErrorDetail] = useState('');
   const [installed, setInstalled] = useState<InstalledPlugin[]>([]);
   const [marketplaces, setMarketplaces] = useState<Marketplace[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -43,6 +51,7 @@ export function PluginsSuite() {
   const [skillImportScope, setSkillImportScope] = useState<SkillScope>('user');
   const [skillImportOverwrite, setSkillImportOverwrite] = useState(false);
   const [pluginInstallScope, setPluginInstallScope] = useState<PluginScope>('user');
+  const [pickingSkillDirectory, setPickingSkillDirectory] = useState(false);
 
   useEffect(() => {
     void refreshAll();
@@ -65,6 +74,7 @@ export function PluginsSuite() {
   async function refreshAll() {
     setLoading(true);
     setError('');
+    setErrorDetail('');
     try {
       const [nextInstalled, nextMarketplaces, nextSkills] = await Promise.all([
         fetchInstalledPlugins(),
@@ -76,19 +86,23 @@ export function PluginsSuite() {
       setSkills(nextSkills);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : '读取插件数据失败');
+      setErrorDetail(loadError instanceof Error ? loadError.message : '');
     } finally {
       setLoading(false);
     }
   }
 
-  async function performMutation(task: () => Promise<void>) {
+  async function performMutation(action: string, task: () => Promise<void>) {
     setBusy(true);
     setError('');
+    setErrorDetail('');
     try {
       await task();
       await refreshAll();
     } catch (mutationError) {
-      setError(mutationError instanceof Error ? mutationError.message : '插件操作失败');
+      const analysis = analyzePluginError(action, mutationError);
+      setError(`${analysis.summary}。${analysis.hints[0]?.message ?? analysis.raw}`);
+      setErrorDetail(analysis.raw);
     } finally {
       setBusy(false);
     }
@@ -100,7 +114,7 @@ export function PluginsSuite() {
       return;
     }
 
-    await performMutation(async () => {
+    await performMutation('添加 Marketplace', async () => {
       await addMarketplace(target);
       setMarketplaceInput('');
     });
@@ -112,7 +126,7 @@ export function PluginsSuite() {
       return;
     }
 
-    await performMutation(async () => {
+    await performMutation('导入 Skill', async () => {
       await installSkillFromPath({
         path: targetPath,
         scope: skillImportScope,
@@ -124,10 +138,27 @@ export function PluginsSuite() {
     });
   }
 
+  async function handlePickSkillDirectory() {
+    setPickingSkillDirectory(true);
+    setError('');
+    setErrorDetail('');
+    try {
+      const selectedPath = await selectDirectoryPath(skillImportPath || undefined);
+      if (selectedPath) {
+        setSkillImportPath(selectedPath);
+      }
+    } catch (pickError) {
+      setError(pickError instanceof Error ? pickError.message : '选择目录失败');
+      setErrorDetail(pickError instanceof Error ? pickError.message : '');
+    } finally {
+      setPickingSkillDirectory(false);
+    }
+  }
+
   return (
     <section className="settings-page-section">
       <header className="settings-section-head">
-        <h1>Plugins</h1>
+        <h1>插件管理</h1>
       </header>
 
       <div className="settings-panel settings-editor-panel plugins-suite-panel">
@@ -135,7 +166,7 @@ export function PluginsSuite() {
           <div className="settings-row-label">
             <span>
               <strong>Claude 插件与 Skills</strong>
-              <small>沿用 Claudinal 的信息结构，但保持 CodeM 设置页风格。</small>
+              <small>管理 Claude Code 原生插件、Marketplace 与 Skills。</small>
             </span>
           </div>
           <div className="settings-editor-actions">
@@ -147,7 +178,7 @@ export function PluginsSuite() {
 
         <div className="settings-segmented">
           <button type="button" className={tab === 'plugins' ? 'active' : ''} onClick={() => setTab('plugins')}>
-            Plugins
+            插件
           </button>
           <button type="button" className={tab === 'skills' ? 'active' : ''} onClick={() => setTab('skills')}>
             Skills
@@ -158,13 +189,13 @@ export function PluginsSuite() {
           <>
             <div className="settings-segmented">
               <button type="button" className={subTab === 'installed' ? 'active' : ''} onClick={() => setSubTab('installed')}>
-                Installed
+                已安装
               </button>
               <button type="button" className={subTab === 'discover' ? 'active' : ''} onClick={() => setSubTab('discover')}>
-                Discover
+                发现
               </button>
               <button type="button" className={subTab === 'marketplaces' ? 'active' : ''} onClick={() => setSubTab('marketplaces')}>
-                Marketplaces
+                市场
               </button>
             </div>
 
@@ -189,16 +220,31 @@ export function PluginsSuite() {
             </div>
 
             {subTab === 'marketplaces' ? (
-              <div className="plugins-input-grid">
-                <input
-                  className="settings-text-input"
-                  value={marketplaceInput}
-                  onChange={(event) => setMarketplaceInput(event.target.value)}
-                  placeholder="owner/repo 或 marketplace URL"
-                />
-                <button type="button" className="settings-action-button primary" disabled={busy || !marketplaceInput.trim()} onClick={() => void handleAddMarketplace()}>
-                  添加 Marketplace
-                </button>
+              <div className="plugins-marketplace-actions">
+                <div className="plugins-input-grid">
+                  <input
+                    className="settings-text-input"
+                    value={marketplaceInput}
+                    onChange={(event) => setMarketplaceInput(event.target.value)}
+                    placeholder="owner/repo 或 marketplace URL"
+                  />
+                  <button type="button" className="settings-action-button primary" disabled={busy || !marketplaceInput.trim()} onClick={() => void handleAddMarketplace()}>
+                    添加 Marketplace
+                  </button>
+                </div>
+                <div className="plugins-preset-row" aria-label="常用 Marketplace">
+                  {marketplacePresets.map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      className="plugins-preset-button"
+                      disabled={busy}
+                      onClick={() => setMarketplaceInput(preset)}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : null}
           </>
@@ -222,6 +268,14 @@ export function PluginsSuite() {
                   onChange={(event) => setSkillImportPath(event.target.value)}
                   placeholder="本地技能目录路径"
                 />
+                <button
+                  type="button"
+                  className="settings-action-button"
+                  disabled={busy || pickingSkillDirectory}
+                  onClick={() => void handlePickSkillDirectory()}
+                >
+                  {pickingSkillDirectory ? '选择中' : '浏览'}
+                </button>
                 <select value={skillImportScope} onChange={(event) => setSkillImportScope(event.target.value as SkillScope)}>
                   <option value="user">用户级</option>
                   <option value="project">项目级</option>
@@ -243,6 +297,9 @@ export function PluginsSuite() {
                   导入 Skill
                 </button>
               </div>
+              <div className="plugins-help-panel">
+                用户级写入 <code>~/.claude/skills</code>；项目级写入当前项目的 <code>.claude/skills</code>。
+              </div>
 
               <div className="plugins-builtin-grid">
                 {builtinSkillInstallers.map((item) => (
@@ -255,7 +312,7 @@ export function PluginsSuite() {
                       type="button"
                       className="settings-action-button"
                       disabled={busy}
-                      onClick={() => void performMutation(async () => {
+                      onClick={() => void performMutation('安装内置 Skill', async () => {
                         await installBuiltinSkill({ id: item.id });
                       })}
                     >
@@ -269,13 +326,18 @@ export function PluginsSuite() {
         )}
 
         {loading ? <div className="settings-list-empty">正在读取插件数据</div> : null}
-        {!loading && error ? <div className="settings-list-empty">{error}</div> : null}
+        {!loading && error ? (
+          <div className="plugins-error-panel">
+            <strong>{error}</strong>
+            {errorDetail && errorDetail !== error ? <small>{errorDetail}</small> : null}
+          </div>
+        ) : null}
         {!loading && !error && tab === 'plugins' && subTab === 'installed' ? (
           <InstalledPluginsPanel
             items={filteredInstalled}
             busy={busy}
             onUninstall={(item) => {
-              void performMutation(async () => {
+              void performMutation('卸载插件', async () => {
                 await uninstallPlugin(item.id, normalizePluginScope(item.scope));
               });
             }}
@@ -286,7 +348,7 @@ export function PluginsSuite() {
             items={discoverItems}
             busy={busy}
             onInstall={(item) => {
-              void performMutation(async () => {
+              void performMutation('安装插件', async () => {
                 await installPlugin(`${item.plugin.name}@${item.marketplace}`, pluginInstallScope);
               });
             }}
@@ -297,12 +359,12 @@ export function PluginsSuite() {
             items={filteredMarketplaces}
             busy={busy}
             onRefresh={(marketplace) => {
-              void performMutation(async () => {
+              void performMutation('刷新 Marketplace', async () => {
                 await updateMarketplace(marketplace.name);
               });
             }}
             onRemove={(marketplace) => {
-              void performMutation(async () => {
+              void performMutation('移除 Marketplace', async () => {
                 await removeMarketplace(marketplace.name);
               });
             }}
@@ -403,4 +465,23 @@ function normalizePluginScope(scope: string): PluginScope {
     return scope;
   }
   return 'user';
+}
+
+async function selectDirectoryPath(initialPath?: string) {
+  const response = await fetch('/api/system/select-directory', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      initialPath: initialPath || undefined,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+
+  const payload = (await response.json()) as { ok: true; path: string | null };
+  return payload.path;
 }

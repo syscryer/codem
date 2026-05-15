@@ -4551,7 +4551,7 @@ svg {
 
 .composer-queued-prompt {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 22px;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: start;
   gap: 8px;
   padding: 7px 9px;
@@ -4561,6 +4561,25 @@ svg {
   color: #3d3d3d;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.composer-queued-head {
+  display: grid;
+  gap: 2px;
+  padding: 0 2px 1px;
+  color: #6b7280;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.composer-queued-head span {
+  color: #4b5563;
+  font-weight: 600;
+}
+
+.composer-queued-head small {
+  color: #9a9a9a;
+  font-size: 11px;
 }
 
 .composer-queued-index {
@@ -4583,6 +4602,13 @@ svg {
   word-break: break-word;
 }
 
+.composer-queued-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.composer-queued-action,
 .composer-queued-remove {
   width: 22px;
   height: 22px;
@@ -4597,9 +4623,20 @@ svg {
   cursor: pointer;
 }
 
+.composer-queued-action:hover,
 .composer-queued-remove:hover {
   background: #eeeeee;
   color: #242424;
+}
+
+.composer-queued-action:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.composer-queued-action:disabled:hover {
+  background: transparent;
+  color: #8a8a8a;
 }
 
 .composer-input {
@@ -4712,6 +4749,48 @@ svg {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.composer-add-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.composer-add-menu {
+  position: absolute;
+  left: -4px;
+  bottom: calc(100% + 7px);
+  z-index: 30;
+  width: 148px;
+  overflow: hidden;
+  padding: 6px;
+}
+
+.composer-add-menu-item {
+  width: 100%;
+  height: 32px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #242424;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.composer-add-menu-item svg {
+  color: #5f6368;
+}
+
+.composer-add-menu-item:hover {
+  background: linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.08)),
+    rgba(142, 142, 147, 0.18);
+  border-radius: 8px;
 }
 
 .composer-context-indicator {
@@ -6434,10 +6513,24 @@ svg {
   gap: 14px;
 }
 
+.plugins-suite-panel .settings-editor-head {
+  align-items: flex-start;
+}
+
+.plugins-suite-panel .settings-segmented {
+  width: fit-content;
+  margin-top: 0;
+}
+
 .plugins-toolbar,
 .plugins-skill-actions {
   display: grid;
   gap: 12px;
+}
+
+.plugins-marketplace-actions {
+  display: grid;
+  gap: 8px;
 }
 
 .plugins-input-grid {
@@ -6448,20 +6541,102 @@ svg {
 }
 
 .plugins-skill-actions .plugins-input-grid {
-  grid-template-columns: minmax(0, 1fr) 120px auto auto;
+  grid-template-columns: minmax(0, 1fr) 76px 118px 86px auto;
+}
+
+.plugins-input-grid > select,
+.plugins-inline-select select {
+  width: 100%;
+  height: 34px;
+  padding: 0 30px 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: #333333;
+  font: inherit;
+  font-size: 12px;
 }
 
 .plugins-inline-check {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  height: 34px;
+  justify-content: center;
   color: var(--text-muted);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .plugins-inline-select {
   align-items: center;
   gap: 8px;
+}
+
+.plugins-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.plugins-preset-button {
+  min-width: 0;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f7f7f7;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.plugins-preset-button:hover {
+  background: #efefef;
+  color: #333333;
+}
+
+.plugins-help-panel,
+.plugins-error-panel {
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fafafa;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.plugins-help-panel code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: #eeeeee;
+  color: #4d4d4d;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.plugins-error-panel {
+  display: grid;
+  gap: 3px;
+  border-color: #f2d0d0;
+  background: #fff6f6;
+  color: #8f2a2a;
+}
+
+.plugins-error-panel strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.plugins-error-panel small {
+  overflow: hidden;
+  color: #9f6a6a;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plugins-builtin-grid {
@@ -6478,6 +6653,36 @@ svg {
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--soft);
+}
+
+.plugins-suite-panel .settings-list-row {
+  grid-template-columns: minmax(0, 1fr) 118px;
+  align-items: center;
+  padding: 10px 12px;
+}
+
+.plugins-suite-panel .settings-list-row > div:first-child {
+  gap: 3px;
+}
+
+.plugins-suite-panel .settings-list-actions {
+  width: 118px;
+  display: grid;
+  justify-items: stretch;
+  gap: 6px;
+}
+
+.plugins-suite-panel .settings-list-actions .settings-action-button {
+  width: 100%;
+  justify-content: center;
+}
+
+.plugins-suite-panel .settings-badge {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plugins-builtin-card > div {
@@ -6869,7 +7074,7 @@ svg {
   color: var(--app-text);
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu) {
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu) {
   border-color: color-mix(in srgb, var(--app-border) 82%, transparent);
   background:
     linear-gradient(
@@ -6888,13 +7093,13 @@ svg {
   -webkit-backdrop-filter: blur(24px) saturate(1.18);
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu)::before {
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu)::before {
   background:
     radial-gradient(ellipse at 22% 0%, color-mix(in srgb, var(--app-surface) 12%, transparent), transparent 40%),
     linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 8%, transparent), color-mix(in srgb, var(--app-surface-muted) 4%, transparent));
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu)::after {
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu)::after {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 10%, transparent), transparent 34%),
     linear-gradient(90deg, color-mix(in srgb, var(--app-surface) 6%, transparent), transparent 24%, transparent 76%, color-mix(in srgb, var(--app-surface) 4%, transparent));
@@ -7017,7 +7222,7 @@ svg {
   overflow: hidden;
 }
 
-:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu) {
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu) {
   overflow: hidden;
   isolation: isolate;
   border: 1px solid rgba(214, 218, 224, 0.78);
@@ -7034,7 +7239,7 @@ svg {
   -webkit-backdrop-filter: blur(30px) saturate(1.32);
 }
 
-:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu)::before {
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu)::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -7045,7 +7250,7 @@ svg {
   pointer-events: none;
 }
 
-:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .status-branch-menu, .status-run-menu)::after {
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu)::after {
   content: '';
   position: absolute;
   inset: 1px;
@@ -7091,7 +7296,7 @@ svg {
   z-index: 1;
 }
 
-:is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .status-branch-menu-item):hover {
+:is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item):hover {
   background: linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.08)),
     rgba(142, 142, 147, 0.18);
   border-radius: 8px;
@@ -7302,7 +7507,7 @@ svg {
   background: color-mix(in srgb, var(--app-surface) 18%, transparent);
 }
 
-.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .status-branch-menu-item):hover {
+.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item):hover {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 8px;
   box-shadow: var(--menu-item-hover-shadow);
@@ -7428,7 +7633,7 @@ svg {
   color: var(--app-text-strong);
 }
 
-.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .status-branch-menu-item):hover,
+.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item):hover,
 .codex-desktop :is(.open-app-option.active, .status-branch-menu-item.current) {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 8px;
@@ -7436,11 +7641,11 @@ svg {
   color: var(--app-text-strong);
 }
 
-.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .status-branch-menu-item):hover svg {
+.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item):hover svg {
   color: var(--app-text-strong);
 }
 
-.codex-desktop[data-theme-mode="dark"] :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .status-branch-menu-item):hover,
+.codex-desktop[data-theme-mode="dark"] :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item):hover,
 .codex-desktop[data-theme-mode="dark"] :is(.open-app-option.active, .status-branch-menu-item.current) {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 8px;
