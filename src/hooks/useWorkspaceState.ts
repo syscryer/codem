@@ -1,6 +1,7 @@
 import { startTransition, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import { EMPTY_PANEL_STATE } from '../constants';
 import { createThreadDetail, metricsFromTurn, normalizeTurnsForPersist, repairConversationTurn } from '../lib/conversation';
+import { pickDesktopDirectory } from '../lib/desktop-dialog';
 import type {
   CloneTask,
   ConfirmDialogState,
@@ -64,6 +65,7 @@ export function useWorkspaceState() {
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const threadDetailsRef = useRef<Record<string, ThreadDetail>>({});
+  const directoryPickerPromiseRef = useRef<Promise<string | null> | null>(null);
   const persistHistoryStateRef = useRef<
     Map<
       string,
@@ -541,22 +543,42 @@ export function useWorkspaceState() {
   }
 
   async function selectDirectoryPath(initialPath?: string) {
-    const response = await fetch('/api/system/select-directory', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        initialPath: initialPath || undefined,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(await response.text());
+    if (directoryPickerPromiseRef.current) {
+      return directoryPickerPromiseRef.current;
     }
 
-    const payload = (await response.json()) as { ok: true; path: string | null };
-    return payload.path;
+    const pickerTask = (async () => {
+      const desktopSelectedPath = await pickDesktopDirectory(initialPath);
+      if (desktopSelectedPath !== undefined) {
+        return desktopSelectedPath;
+      }
+
+      const response = await fetch('/api/system/select-directory', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          initialPath: initialPath || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+
+      const payload = (await response.json()) as { ok: true; path: string | null };
+      return payload.path;
+    })();
+
+    directoryPickerPromiseRef.current = pickerTask;
+    try {
+      return await pickerTask;
+    } finally {
+      if (directoryPickerPromiseRef.current === pickerTask) {
+        directoryPickerPromiseRef.current = null;
+      }
+    }
   }
 
   function cloneRepositoryAndAttach(payload: {

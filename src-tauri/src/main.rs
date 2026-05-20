@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -12,7 +13,6 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WindowEvent};
 
 const DEFAULT_WINDOW_MATERIAL_ID: i32 = 2;
@@ -133,7 +133,10 @@ fn ensure_pty_session(
         .master
         .try_clone_reader()
         .map_err(|error| error.to_string())?;
-    let writer = pair.master.take_writer().map_err(|error| error.to_string())?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|error| error.to_string())?;
     let terminal_tab_id = request.terminal_tab_id.clone();
     let app_handle = app.clone();
 
@@ -192,7 +195,10 @@ fn write_pty_input(store: State<'_, PtySessions>, request: PtyInputRequest) -> R
 }
 
 #[tauri::command]
-fn resize_pty_session(store: State<'_, PtySessions>, request: PtyResizeRequest) -> Result<(), String> {
+fn resize_pty_session(
+    store: State<'_, PtySessions>,
+    request: PtyResizeRequest,
+) -> Result<(), String> {
     let mut sessions = store.sessions.lock().map_err(|error| error.to_string())?;
     let session = sessions
         .get_mut(&request.terminal_tab_id)
@@ -213,6 +219,32 @@ fn close_pty_session(store: State<'_, PtySessions>, terminal_tab_id: String) -> 
     Ok(())
 }
 
+#[tauri::command]
+fn pick_directory(initial_path: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new();
+
+    if let Some(initial_path) = initial_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let resolved_path = PathBuf::from(initial_path);
+        let directory = if resolved_path.is_dir() {
+            Some(resolved_path)
+        } else {
+            resolved_path.parent().map(Path::to_path_buf)
+        };
+
+        if let Some(directory) = directory.filter(|value| value.is_dir()) {
+            dialog = dialog.set_directory(directory);
+        }
+    }
+
+    Ok(dialog
+        .pick_folder()
+        .map(|selected_path| selected_path.display().to_string()))
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(PtySessions::default())
@@ -222,7 +254,9 @@ fn main() {
             let _ = platform::set_window_material(&app_handle, DEFAULT_WINDOW_MATERIAL_ID);
             match ensure_backend_started(&app_handle) {
                 Ok(()) => log_desktop_event(&app_handle, "backend start check completed"),
-                Err(error) => log_desktop_event(&app_handle, &format!("backend start failed: {error}")),
+                Err(error) => {
+                    log_desktop_event(&app_handle, &format!("backend start failed: {error}"))
+                }
             }
             Ok(())
         })
@@ -238,7 +272,8 @@ fn main() {
             ensure_pty_session,
             write_pty_input,
             resize_pty_session,
-            close_pty_session
+            close_pty_session,
+            pick_directory
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CodeM desktop shell");
@@ -449,7 +484,8 @@ fn ensure_backend_started(app: &tauri::AppHandle) -> Result<(), String> {
         return start_node_backend_process(app, &server_entry);
     }
 
-    let project_root = find_project_root().ok_or_else(|| "CodeM project directory not found".to_string())?;
+    let project_root =
+        find_project_root().ok_or_else(|| "CodeM project directory not found".to_string())?;
     start_development_backend_process(app, &project_root)
 }
 
@@ -501,7 +537,10 @@ fn find_packaged_backend_entry(app: &tauri::AppHandle) -> Option<PathBuf> {
 
     let candidates = [
         resource_dir.join("dist-server").join("index.mjs"),
-        resource_dir.join("_up_").join("dist-server").join("index.mjs"),
+        resource_dir
+            .join("_up_")
+            .join("dist-server")
+            .join("index.mjs"),
     ];
 
     for entry in candidates {
@@ -579,7 +618,10 @@ fn normalize_process_path(path: &Path) -> PathBuf {
     PathBuf::from(value.as_ref())
 }
 
-fn start_development_backend_process(app: &tauri::AppHandle, project_root: &Path) -> Result<(), String> {
+fn start_development_backend_process(
+    app: &tauri::AppHandle,
+    project_root: &Path,
+) -> Result<(), String> {
     let project_root = normalize_process_path(project_root);
     log_desktop_event(
         app,
@@ -597,7 +639,10 @@ fn start_development_backend_process(app: &tauri::AppHandle, project_root: &Path
 
     match command.spawn() {
         Ok(child) => {
-            log_desktop_event(app, &format!("development backend spawned: pid={}", child.id()));
+            log_desktop_event(
+                app,
+                &format!("development backend spawned: pid={}", child.id()),
+            );
             Ok(())
         }
         Err(error) => {

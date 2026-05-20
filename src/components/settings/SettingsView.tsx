@@ -30,6 +30,7 @@ import { UsageSettingsSection } from './UsageSettings';
 
 type SettingsViewProps = {
   activeSection: SettingsSection;
+  activeProjectPath?: string | null;
   general: GeneralSettings;
   appearance: AppearanceSettings;
   models: ModelSettings;
@@ -61,6 +62,7 @@ const sectionTitles: Record<SettingsSection, string> = {
 
 export function SettingsView({
   activeSection,
+  activeProjectPath,
   general,
   appearance,
   models,
@@ -133,7 +135,7 @@ export function SettingsView({
     }
 
     if (activeSection === 'mcp') {
-      return <McpSettingsSection />;
+      return <McpSettingsSection projectPath={activeProjectPath} />;
     }
 
     if (activeSection === 'plugins') {
@@ -143,6 +145,7 @@ export function SettingsView({
     return <SettingsEmptySection title={sectionTitles[activeSection]} />;
   }, [
     activeSection,
+    activeProjectPath,
     appearance,
     claudeModels,
     general,

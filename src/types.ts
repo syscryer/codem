@@ -533,6 +533,44 @@ export type McpServersResponse = {
   errors: McpSourceError[];
 };
 
+export type McpScope = 'global' | 'project';
+export type McpManagedScope = McpScope | 'claude-json-global' | 'claude-json-project';
+
+export type McpServerConfig = {
+  type?: 'stdio' | 'http' | string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  envPassthrough?: string[];
+  cwd?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  auth?: 'none' | 'bearer' | 'oauth' | string;
+  disabled?: boolean;
+  [key: string]: unknown;
+};
+
+export type McpConfigFile = {
+  mcpServers?: Record<string, McpServerConfig>;
+  [key: string]: unknown;
+};
+
+export type McpManagementResponse = {
+  paths: {
+    global: string;
+    project: string;
+    claudeJson: string;
+  };
+  configs: {
+    global: McpConfigFile;
+    project: McpConfigFile;
+    claudeJsonGlobal: McpConfigFile;
+    claudeJsonProject: McpConfigFile;
+  };
+  hasProject: boolean;
+  overview: McpServersResponse;
+};
+
 export type SkillSummary = {
   id: string;
   name: string;

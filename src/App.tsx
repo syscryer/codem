@@ -637,6 +637,7 @@ export default function App() {
       {appView.kind === 'settings' ? (
         <SettingsView
           activeSection={appView.section}
+          activeProjectPath={activeProject?.path}
           general={general}
           appearance={appearance}
           models={appModelSettings}

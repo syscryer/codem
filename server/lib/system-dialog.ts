@@ -42,6 +42,48 @@ export async function selectDirectory(initialPath?: string) {
   });
 }
 
+export async function openPath(targetPath: string) {
+  const resolvedPath = path.resolve(targetPath);
+  const script = `
+$ErrorActionPreference = 'Stop'
+Start-Process -FilePath '${escapePowerShellString(resolvedPath)}'
+`.trim();
+
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    let stderr = '';
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', (error) => {
+      reject(error);
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `打开路径失败，退出码 ${code}`));
+        return;
+      }
+
+      resolve();
+    });
+  });
+}
+
+function escapePowerShellString(value: string) {
+  return value.replace(/'/g, "''");
+}
+
 function buildFolderPickerScript(initialPath: string) {
   const escapedPath = initialPath.replace(/'/g, "''");
 

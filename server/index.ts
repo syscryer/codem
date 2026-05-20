@@ -69,9 +69,15 @@ import {
   runPluginCommand,
 } from './lib/plugins.js';
 import { listMcpServers } from './lib/mcp-inspector.js';
+import {
+  ensureMcpConfigFile,
+  readMcpConfigSnapshot,
+  writeClaudeJsonMcpConfig,
+  writeMcpConfig,
+} from './lib/mcp-manager.js';
 import { listSkills } from './lib/skills-scanner.js';
 import { listSlashCommands } from './lib/slash-commands.js';
-import { selectDirectory } from './lib/system-dialog.js';
+import { openPath, selectDirectory } from './lib/system-dialog.js';
 import { cloneRepository, CloneRepositoryError } from './lib/git-clone.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -197,6 +203,69 @@ app.get('/api/mcp/servers', (_request, response) => {
   } catch (error) {
     console.error('读取 MCP 配置失败', error);
     response.status(500).json({ error: '读取 MCP 配置失败' });
+  }
+});
+
+app.get('/api/mcp/configs', (request, response) => {
+  try {
+    const projectPath = resolveProjectPathValue(request.query.projectPath);
+    response.json({
+      ...readMcpConfigSnapshot({ projectDirectory: projectPath || undefined }),
+      overview: listMcpServers({ projectDirectory: projectPath || undefined }),
+    });
+  } catch (error) {
+    console.error('读取 MCP 管理配置失败', error);
+    response.status(500).json({ error: '读取 MCP 管理配置失败' });
+  }
+});
+
+app.put('/api/mcp/configs/:scope', (request, response) => {
+  try {
+    const projectPath = resolveProjectPathValue(request.query.projectPath);
+    const scope = typeof request.params.scope === 'string' ? request.params.scope : '';
+    if (scope === 'global' || scope === 'project') {
+      response.json(writeMcpConfig(scope, request.body, { projectDirectory: projectPath || undefined }));
+      return;
+    }
+
+    if (scope === 'claude-json-global' || scope === 'claude-json-project') {
+      response.json(
+        writeClaudeJsonMcpConfig(scope === 'claude-json-project' ? 'project' : 'global', request.body, {
+          projectDirectory: projectPath || undefined,
+        }),
+      );
+      return;
+    }
+
+    response.status(400).json({ error: '不支持的 MCP 配置作用域' });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '保存 MCP 配置失败';
+    console.error('保存 MCP 配置失败', error);
+    response.status(400).json({ error: message });
+  }
+});
+
+app.post('/api/mcp/open', async (request, response) => {
+  try {
+    const scope = typeof request.body?.scope === 'string' ? request.body.scope : '';
+    const projectPath = resolveProjectPathValue(request.body?.projectPath);
+    if (
+      scope !== 'global' &&
+      scope !== 'project' &&
+      scope !== 'claude-json-global' &&
+      scope !== 'claude-json-project'
+    ) {
+      response.status(400).json({ error: '不支持的 MCP 配置作用域' });
+      return;
+    }
+
+    const filePath = ensureMcpConfigFile(scope, { projectDirectory: projectPath || undefined });
+    await openPath(filePath);
+    response.json({ ok: true, path: filePath });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '打开 MCP 配置失败';
+    console.error('打开 MCP 配置失败', error);
+    response.status(400).json({ error: message });
   }
 });
 
@@ -1080,6 +1149,10 @@ function isAllowedLocalOrigin(origin: string) {
   } catch {
     return false;
   }
+}
+
+function resolveProjectPathValue(value: unknown) {
+  return typeof value === 'string' && value.trim() ? path.resolve(value.trim()) : '';
 }
 
 function isPayloadTooLargeError(error: unknown) {

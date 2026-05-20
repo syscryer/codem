@@ -6513,6 +6513,136 @@ svg {
   gap: 14px;
 }
 
+.mcp-suite-panel {
+  gap: 14px;
+}
+
+.mcp-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mcp-list-row {
+  grid-template-columns: minmax(0, 1fr) 180px;
+  align-items: stretch;
+}
+
+.mcp-list-actions {
+  width: 180px;
+  display: grid;
+  justify-items: stretch;
+  gap: 6px;
+}
+
+.mcp-list-actions .settings-action-button {
+  width: 100%;
+  justify-content: center;
+}
+
+.mcp-row-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mcp-row-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.mcp-row-summary {
+  font-family: var(--code-font);
+}
+
+.mcp-warning-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #8a5b12;
+}
+
+.mcp-warning-inline button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.mcp-editor-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.mcp-editor-section {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fbfbfb;
+}
+
+.mcp-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.mcp-form-field {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.mcp-form-field > span {
+  color: #666666;
+  font-size: 12px;
+}
+
+.mcp-span-full {
+  grid-column: 1 / -1;
+}
+
+.mcp-editor-list {
+  display: grid;
+  gap: 8px;
+}
+
+.mcp-editor-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mcp-editor-list-head strong {
+  color: #303030;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mcp-form-list {
+  display: grid;
+  gap: 8px;
+}
+
+.mcp-form-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.mcp-form-list-row.pair {
+  grid-template-columns: minmax(0, 0.45fr) minmax(0, 1fr) auto;
+}
+
 .plugins-suite-panel .settings-editor-head {
   align-items: flex-start;
 }
@@ -6728,6 +6858,26 @@ svg {
   .plugins-input-grid,
   .plugins-skill-actions .plugins-input-grid {
     grid-template-columns: 1fr;
+  }
+
+  .mcp-list-row,
+  .mcp-form-grid,
+  .mcp-form-list-row,
+  .mcp-form-list-row.pair {
+    grid-template-columns: 1fr;
+  }
+
+  .mcp-list-actions {
+    width: 100%;
+  }
+
+  .mcp-row-title {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mcp-row-badges {
+    justify-content: flex-start;
   }
 }
 

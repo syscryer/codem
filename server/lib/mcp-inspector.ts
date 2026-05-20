@@ -38,12 +38,21 @@ export function listMcpServers(options: McpInspectorOptions = {}): McpServersRes
   const errors: McpSourceError[] = [];
 
   readJsonMcpServers('Claude Code settings', path.join(homeDirectory, '.claude', 'settings.json'), servers, errors);
+  readJsonMcpServers('Claude MCP global', path.join(homeDirectory, '.claude', 'mcp.json'), servers, errors);
   readJsonMcpServers('Claude Code global', path.join(homeDirectory, '.claude.json'), servers, errors);
+  readClaudeJsonProjectMcpServers(
+    'Claude CLI project',
+    path.join(homeDirectory, '.claude.json'),
+    projectDirectory,
+    servers,
+    errors,
+  );
   if (appDataDirectory) {
     readJsonMcpServers('Claude Desktop', path.join(appDataDirectory, 'Claude', 'claude_desktop_config.json'), servers, errors);
   }
   readCodexToml(path.join(homeDirectory, '.codex', 'config.toml'), servers, errors);
   readJsonMcpServers('Project MCP', path.join(projectDirectory, '.mcp.json'), servers, errors);
+  readJsonMcpServers('Claude Code project settings', path.join(projectDirectory, '.claude', 'settings.json'), servers, errors);
   readJsonMcpServers('Cursor MCP', path.join(projectDirectory, '.cursor', 'mcp.json'), servers, errors);
 
   return { servers, errors };
@@ -116,6 +125,57 @@ function readCodexToml(settingsPath: string, servers: McpServerSummary[], errors
   } catch (error) {
     errors.push({
       source: 'Codex',
+      path: settingsPath,
+      message: `解析 MCP 配置失败：${error instanceof Error ? error.message : '未知错误'}`,
+    });
+  }
+}
+
+function readClaudeJsonProjectMcpServers(
+  sourceName: string,
+  settingsPath: string,
+  projectDirectory: string,
+  servers: McpServerSummary[],
+  errors: McpSourceError[],
+) {
+  if (!existsSync(settingsPath)) {
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(settingsPath, 'utf8')) as unknown;
+    if (!isRecord(parsed) || !isRecord(parsed.projects)) {
+      return;
+    }
+
+    const projectConfig = findClaudeJsonProjectConfig(parsed.projects, projectDirectory);
+    if (!projectConfig || !isRecord(projectConfig.mcpServers)) {
+      return;
+    }
+
+    for (const [name, rawServer] of Object.entries(projectConfig.mcpServers)) {
+      if (!isRecord(rawServer)) {
+        continue;
+      }
+
+      const command = typeof rawServer.command === 'string' ? rawServer.command : undefined;
+      const args = Array.isArray(rawServer.args)
+        ? rawServer.args.filter((item): item is string => typeof item === 'string')
+        : undefined;
+
+      servers.push({
+        id: `${sourceName}:${name}`,
+        name,
+        source: settingsPath,
+        status: 'unknown',
+        tools: [],
+        command,
+        args: redactArgs(args),
+      });
+    }
+  } catch (error) {
+    errors.push({
+      source: sourceName,
       path: settingsPath,
       message: `解析 MCP 配置失败：${error instanceof Error ? error.message : '未知错误'}`,
     });
@@ -263,6 +323,43 @@ function redactArgs(args: string[] | undefined) {
 
     return arg;
   });
+}
+
+function findClaudeJsonProjectConfig(projects: Record<string, unknown>, projectDirectory: string) {
+  const candidates = buildClaudeProjectKeyCandidates(projectDirectory);
+  for (const candidate of candidates) {
+    const value = projects[candidate];
+    if (isRecord(value)) {
+      return value;
+    }
+  }
+
+  const normalized = normalizeClaudeProjectKey(projectDirectory).toLowerCase();
+  for (const [key, value] of Object.entries(projects)) {
+    if (normalizeClaudeProjectKey(key).toLowerCase() === normalized && isRecord(value)) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function buildClaudeProjectKeyCandidates(projectDirectory: string) {
+  const candidates: string[] = [];
+  pushClaudeProjectKey(candidates, projectDirectory);
+  pushClaudeProjectKey(candidates, path.resolve(projectDirectory));
+  return candidates;
+}
+
+function pushClaudeProjectKey(candidates: string[], projectDirectory: string) {
+  const normalized = normalizeClaudeProjectKey(projectDirectory);
+  if (normalized && !candidates.includes(normalized)) {
+    candidates.push(normalized);
+  }
+}
+
+function normalizeClaudeProjectKey(projectDirectory: string) {
+  return projectDirectory.replace(/\\/g, '/').trim().replace(/\/+$/g, '');
 }
 
 function isSensitiveArgName(value: string) {
