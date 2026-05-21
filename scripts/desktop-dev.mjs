@@ -1,11 +1,14 @@
 import { spawn } from 'node:child_process';
-import net from 'node:net';
+import {
+  DEFAULT_WEB_PORT,
+  buildBackendPortEnv,
+  findAvailablePort,
+  isPortOpen,
+  resolvePreferredBackendPort,
+  waitForPort,
+} from './dev-ports.mjs';
 
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const requiredPorts = [
-  { name: 'backend', port: 3001 },
-  { name: 'web', port: 5173 },
-];
 
 const children = new Set();
 
@@ -16,6 +19,13 @@ main().catch((error) => {
 });
 
 async function main() {
+  const preferredPort = resolvePreferredBackendPort();
+  const backendPort = await findAvailablePort(preferredPort);
+  const childEnv = buildBackendPortEnv(process.env, backendPort);
+  const requiredPorts = [
+    { name: 'backend', port: backendPort },
+    { name: 'web', port: DEFAULT_WEB_PORT },
+  ];
   const portsReady = await Promise.all(requiredPorts.map(({ port }) => isPortOpen(port)));
   const shouldStartDevServer = portsReady.some((ready) => !ready);
 
@@ -25,30 +35,42 @@ async function main() {
       .map(({ name, port }) => `${name}:${port}`)
       .join(', ');
     console.log(`Starting CodeM dev services because these ports are not ready: ${missing}`);
-    spawnChild(npmCommand, ['run', 'dev']);
+    spawnChild(npmCommand, ['run', 'dev'], childEnv);
     await Promise.all(requiredPorts.map(({ port }) => waitForPort(port, 60_000)));
   } else {
-    console.log('Reusing existing CodeM dev services on 3001 and 5173.');
+    console.log(`Reusing existing CodeM dev services on ${backendPort} and ${DEFAULT_WEB_PORT}.`);
   }
 
-  const tauri = spawnChild(npmCommand, ['run', 'desktop:shell']);
+  const tauri = spawnChild(npmCommand, ['run', 'desktop:shell'], childEnv);
   tauri.on('exit', (code) => {
     stopChildren(tauri);
     process.exit(code ?? 0);
   });
 }
 
-function spawnChild(command, args) {
-  const child = spawn(command, args, {
+function spawnChild(command, args, env = process.env) {
+  const child = spawn(resolveSpawnCommand(command), resolveSpawnArgs(command, args), {
     cwd: process.cwd(),
-    env: process.env,
+    env,
     shell: false,
-    stdio: 'inherit',
+    stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
+  child.stdout?.on('data', (chunk) => process.stdout.write(chunk));
+  child.stderr?.on('data', (chunk) => process.stderr.write(chunk));
   children.add(child);
   child.on('exit', () => children.delete(child));
   return child;
+}
+
+function resolveSpawnCommand(command) {
+  return process.platform === 'win32' && command.endsWith('.cmd') ? 'cmd.exe' : command;
+}
+
+function resolveSpawnArgs(command, args) {
+  return process.platform === 'win32' && command.endsWith('.cmd')
+    ? ['/d', '/s', '/c', command, ...args]
+    : args;
 }
 
 function stopChildren(except) {
@@ -58,33 +80,4 @@ function stopChildren(except) {
     }
     child.kill();
   }
-}
-
-function isPortOpen(port) {
-  return new Promise((resolve) => {
-    const socket = net.createConnection({ host: '127.0.0.1', port });
-    socket.once('connect', () => {
-      socket.destroy();
-      resolve(true);
-    });
-    socket.once('error', () => {
-      socket.destroy();
-      resolve(false);
-    });
-  });
-}
-
-async function waitForPort(port, timeoutMs) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    if (await isPortOpen(port)) {
-      return;
-    }
-    await delay(400);
-  }
-  throw new Error(`Timed out waiting for port ${port}.`);
-}
-
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
