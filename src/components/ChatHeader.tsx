@@ -2,12 +2,14 @@ import {
   Check,
   ChevronDown,
   CloudUpload,
+  Download,
   GitBranchPlus,
   GitCommitHorizontal,
   GitPullRequest,
   FolderOpen,
   MoreHorizontal,
   Play,
+  RefreshCw,
   SquareSplitHorizontal,
   TerminalSquare,
 } from 'lucide-react';
@@ -32,6 +34,9 @@ type ChatHeaderProps = {
   onOpenFilesWorkbench: () => void;
   onOpenGitCommit: () => void;
   onOpenGitPush: () => void;
+  onOpenGitBranch: () => void;
+  onGitFetch: () => void;
+  onGitPull: () => void;
   terminalDockOpen: boolean;
   onToggleTerminalDock: () => void;
   terminalDockAvailable: boolean;
@@ -52,6 +57,9 @@ export function ChatHeader({
   onOpenFilesWorkbench,
   onOpenGitCommit,
   onOpenGitPush,
+  onOpenGitBranch,
+  onGitFetch,
+  onGitPull,
   terminalDockOpen,
   onToggleTerminalDock,
   terminalDockAvailable,
@@ -90,9 +98,12 @@ export function ChatHeader({
           onSelectOpenTarget={onSelectOpenTarget}
         />
         <GitActionMenu
-          disabled={!activeProject}
+          disabled={!activeProject?.isGitRepo}
           onOpenCommit={onOpenGitCommit}
           onOpenPush={onOpenGitPush}
+          onOpenBranch={onOpenGitBranch}
+          onFetch={onGitFetch}
+          onPull={onGitPull}
         />
         {terminalDockAvailable ? (
           <button
@@ -271,10 +282,16 @@ function GitActionMenu({
   disabled,
   onOpenCommit,
   onOpenPush,
+  onOpenBranch,
+  onFetch,
+  onPull,
 }: {
   disabled: boolean;
   onOpenCommit: () => void;
   onOpenPush: () => void;
+  onOpenBranch: () => void;
+  onFetch: () => void;
+  onPull: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -300,8 +317,8 @@ function GitActionMenu({
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <CloudUpload size={15} />
-        提交
+        <GitCommitHorizontal size={15} />
+        Git
         <span className="header-chevron" aria-hidden="true" />
       </button>
       <PopoverPortal open={open} anchorRef={menuRef} placement="bottom-end">
@@ -315,11 +332,19 @@ function GitActionMenu({
             <CloudUpload size={17} />
             <span>推送</span>
           </button>
+          <button type="button" className="workspace-menu-item" role="menuitem" onClick={() => select(onPull)}>
+            <Download size={17} />
+            <span>拉取</span>
+          </button>
+          <button type="button" className="workspace-menu-item" role="menuitem" onClick={() => select(onFetch)}>
+            <RefreshCw size={17} />
+            <span>获取远端</span>
+          </button>
           <button type="button" className="workspace-menu-item" role="menuitem" disabled>
             <GitPullRequest size={17} />
             <span>创建拉取请求</span>
           </button>
-          <button type="button" className="workspace-menu-item" role="menuitem" disabled>
+          <button type="button" className="workspace-menu-item" role="menuitem" onClick={() => select(onOpenBranch)}>
             <GitBranchPlus size={17} />
             <span>创建分支</span>
           </button>

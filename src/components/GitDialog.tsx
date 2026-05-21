@@ -2,6 +2,7 @@ import {
   CheckSquare,
   CloudUpload,
   FileText,
+  GitBranchPlus,
   GitCommitHorizontal,
   LoaderCircle,
   RefreshCw,
@@ -10,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import {
+  createGitBranch,
   commitGitChanges,
   fetchGitFileDiff,
   fetchGitPushPreview,
@@ -18,7 +20,7 @@ import {
 } from '../lib/git-api';
 import type { GitFileStatus, GitPushPreview, GitStatusSnapshot, ProjectSummary } from '../types';
 
-type GitDialogMode = 'commit' | 'push';
+type GitDialogMode = 'commit' | 'push' | 'branch';
 
 type GitDialogProps = {
   mode: GitDialogMode;
@@ -36,6 +38,7 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
   const [activePath, setActivePath] = useState('');
   const [diff, setDiff] = useState('');
   const [message, setMessage] = useState('');
+  const [branchName, setBranchName] = useState('');
   const [loading, setLoading] = useState(true);
   const [diffLoading, setDiffLoading] = useState(false);
   const [working, setWorking] = useState(false);
@@ -48,6 +51,7 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
   );
   const allSelected = files.length > 0 && selectedFiles.length === files.length;
   const submitDisabled = working || selectedFiles.length === 0 || !message.trim();
+  const branchSubmitDisabled = working || !branchName.trim();
 
   useEffect(() => {
     setActiveMode(mode);
@@ -164,6 +168,23 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
     }
   }
 
+  async function handleCreateBranch() {
+    if (branchSubmitDisabled) {
+      return;
+    }
+
+    setWorking(true);
+    setError('');
+    try {
+      const result = await createGitBranch(project.id, branchName.trim());
+      finishSuccessfulOperation(`已创建并切换到分支 ${result.branch}`);
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : '创建分支失败');
+    } finally {
+      setWorking(false);
+    }
+  }
+
   function finishSuccessfulOperation(messageText: string) {
     onClose();
     showToast(messageText);
@@ -178,7 +199,7 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
         <header className="git-dialog-head">
           <div>
             <span className="git-dialog-kicker">Git 操作</span>
-            <h3>{activeMode === 'commit' ? '提交变更' : '推送提交'}</h3>
+            <h3>{activeMode === 'commit' ? '提交变更' : activeMode === 'push' ? '推送提交' : '创建分支'}</h3>
             <p>{project.name} · {status?.branch ?? project.gitBranch ?? '未检测到分支'}</p>
           </div>
           <div className="git-dialog-head-actions">
@@ -214,6 +235,14 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
             <CloudUpload size={16} />
             推送
           </button>
+          <button
+            type="button"
+            className={activeMode === 'branch' ? 'active' : ''}
+            onClick={() => setActiveMode('branch')}
+          >
+            <GitBranchPlus size={16} />
+            分支
+          </button>
         </div>
 
         {error ? <div className="dialog-error git-dialog-error">{error}</div> : null}
@@ -240,8 +269,18 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
             onCommit={() => void handleCommit(false)}
             onCommitAndPush={() => void handleCommit(true)}
           />
-        ) : (
+        ) : activeMode === 'push' ? (
           <PushPanel preview={pushPreview} working={working} onPush={() => void handlePush()} />
+        ) : (
+          <BranchPanel
+            project={project}
+            currentBranch={status?.branch ?? project.gitBranch ?? '未检测到分支'}
+            branchName={branchName}
+            working={working}
+            submitDisabled={branchSubmitDisabled}
+            onBranchNameChange={setBranchName}
+            onCreateBranch={() => void handleCreateBranch()}
+          />
         )}
       </section>
     </div>
@@ -419,6 +458,50 @@ function PushPanel({
       <div className="git-commit-actions">
         <button type="button" className="dialog-button primary" disabled={working} onClick={onPush}>
           推送
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BranchPanel({
+  project,
+  currentBranch,
+  branchName,
+  working,
+  submitDisabled,
+  onBranchNameChange,
+  onCreateBranch,
+}: {
+  project: ProjectSummary;
+  currentBranch: string;
+  branchName: string;
+  working: boolean;
+  submitDisabled: boolean;
+  onBranchNameChange: (value: string) => void;
+  onCreateBranch: () => void;
+}) {
+  return (
+    <div className="git-branch-panel">
+      <div className="git-branch-summary">
+        <GitBranchPlus size={20} />
+        <div>
+          <strong>从当前分支创建新分支</strong>
+          <span>{project.name} · 当前分支 {currentBranch}</span>
+        </div>
+      </div>
+      <label className="git-branch-field">
+        <span>分支名</span>
+        <input
+          className="dialog-input git-branch-input"
+          value={branchName}
+          placeholder="例如 feature/login-refactor"
+          onChange={(event) => onBranchNameChange(event.target.value)}
+        />
+      </label>
+      <div className="git-commit-actions">
+        <button type="button" className="dialog-button primary" disabled={submitDisabled || working} onClick={onCreateBranch}>
+          创建并切换
         </button>
       </div>
     </div>

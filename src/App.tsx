@@ -29,6 +29,7 @@ import { createSystemCommandItem, settleSystemCommandItem } from './lib/system-c
 import { modelLabel, permissionLabel } from './lib/ui-labels';
 import { isTauriRuntime, setWindowMaterial } from './lib/window-material';
 import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
+import { fetchGitRemote, pullGitBranch } from './lib/git-api';
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -132,7 +133,7 @@ export default function App() {
     kind: 'workspace',
   });
   const [navigationHistory, setNavigationHistory] = useState<NavigationHistory>({ past: [], future: [] });
-  const [gitDialogMode, setGitDialogMode] = useState<'commit' | 'push' | null>(null);
+  const [gitDialogMode, setGitDialogMode] = useState<'commit' | 'push' | 'branch' | null>(null);
   const [rightWorkbenchOpen, setRightWorkbenchOpen] = useState(false);
   const [rightWorkbenchTab, setRightWorkbenchTab] = useState<RightWorkbenchTab>('overview');
   const [rightWorkbenchFileScope, setRightWorkbenchFileScope] = useState<WorkbenchFileScope>('all');
@@ -654,6 +655,42 @@ export default function App() {
     setRightWorkbenchFileScope('all');
   }
 
+  async function handleGitFetch(project: ProjectSummary | null = activeProject) {
+    if (!project?.isGitRepo) {
+      showToast('当前项目不是 Git 仓库。', 'info');
+      return;
+    }
+
+    try {
+      await fetchGitRemote(project.id);
+      await refreshProjectGitSummary(project.id);
+      showToast(project.id === activeProjectId ? '远端信息已更新' : `“${project.name}”远端信息已更新`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '获取远端失败', 'error');
+    }
+  }
+
+  async function handleGitPull(project: ProjectSummary | null = activeProject) {
+    if (!project?.isGitRepo) {
+      showToast('当前项目不是 Git 仓库。', 'info');
+      return;
+    }
+
+    try {
+      const result = await pullGitBranch(project.id);
+      await refreshProjectGitSummary(project.id);
+      const commitCount = result.commitsPulled ?? 0;
+      const fileCount = result.filesChanged ?? 0;
+      const message =
+        commitCount > 0
+          ? `拉取完成：${commitCount} 个提交，${fileCount} 个文件`
+          : '已经是最新版本';
+      showToast(project.id === activeProjectId ? message : `“${project.name}”${message}`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '拉取失败', 'error');
+    }
+  }
+
   function openWorkbenchPreview(request: WorkbenchPreviewRequest) {
     if (!activeProject) {
       showToast('请先选择项目。', 'info');
@@ -818,6 +855,8 @@ export default function App() {
               onCopySessionId={handleCopySessionId}
               onOpenRemoveThreadDialog={handleOpenRemoveThreadDialog}
               onOpenSettings={() => openSettings('appearance')}
+              onGitFetch={handleGitFetch}
+              onGitPull={handleGitPull}
             />
           ) : null}
 
@@ -841,6 +880,9 @@ export default function App() {
                 onOpenFilesWorkbench={openFilesWorkbench}
                 onOpenGitCommit={() => activeProject ? setGitDialogMode('commit') : showToast('请先选择项目。', 'info')}
                 onOpenGitPush={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
+                onOpenGitBranch={() => activeProject ? setGitDialogMode('branch') : showToast('请先选择项目。', 'info')}
+                onGitFetch={() => void handleGitFetch()}
+                onGitPull={() => void handleGitPull()}
                 terminalDockOpen={terminalDock.open}
                 onToggleTerminalDock={terminalDock.toggle}
                 terminalDockAvailable={terminalDockAvailable}

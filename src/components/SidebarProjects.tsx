@@ -5,11 +5,13 @@ import {
   Check,
   Clock3,
   Copy,
+  Download,
   LoaderCircle,
   Folder,
   FolderOpen,
   FolderPlus,
   GitBranchPlus,
+  GitFork,
   MoreHorizontal,
   Plus,
   Pencil,
@@ -52,6 +54,8 @@ type SidebarProjectsProps = {
   onCreateThread: (projectId: string) => void | Promise<unknown>;
   onOpenProject: (project: ProjectSummary) => void | Promise<void>;
   onCopyProjectPath: (project: ProjectSummary) => void | Promise<void>;
+  onGitFetch: (project: ProjectSummary) => void | Promise<void>;
+  onGitPull: (project: ProjectSummary) => void | Promise<void>;
   onCreateWorktree: (project: ProjectSummary) => void;
   onOpenRenameProjectDialog: (project: ProjectSummary) => void;
   onOpenRemoveProjectDialog: (project: ProjectSummary) => void;
@@ -88,6 +92,8 @@ export function SidebarProjects({
   onCreateThread,
   onOpenProject,
   onCopyProjectPath,
+  onGitFetch,
+  onGitPull,
   onCreateWorktree,
   onOpenRenameProjectDialog,
   onOpenRemoveProjectDialog,
@@ -319,12 +325,17 @@ export function SidebarProjects({
                 <div className="sidebar-project-row">
                   <button
                     type="button"
-                    className="sidebar-project-title"
+                    className={`sidebar-project-title${project.isGitWorktree ? ' has-worktree-badge' : ''}`}
                     data-project-path={project.path}
                     onClick={() => onToggleProjectCollapse(project.id)}
                   >
                     <span><Folder size={14} /></span>
                     <strong>{project.name}</strong>
+                    {project.isGitWorktree ? (
+                      <span className="sidebar-worktree-badge" title="Git 工作树">
+                        <GitFork size={12} />
+                      </span>
+                    ) : null}
                   </button>
                   <div className="sidebar-project-actions">
                     <button
@@ -366,6 +377,30 @@ export function SidebarProjects({
                         <button type="button" className="workspace-menu-item" onClick={() => { setProjectMenuProjectId(null); void onCopyProjectPath(project); }}>
                           <Copy size={14} />
                           <span>复制路径</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="workspace-menu-item"
+                          disabled={!project.isGitRepo}
+                          onClick={() => {
+                            setProjectMenuProjectId(null);
+                            void onGitFetch(project);
+                          }}
+                        >
+                          <RefreshCw size={14} />
+                          <span>获取远端</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="workspace-menu-item"
+                          disabled={!project.isGitRepo}
+                          onClick={() => {
+                            setProjectMenuProjectId(null);
+                            void onGitPull(project);
+                          }}
+                        >
+                          <Download size={14} />
+                          <span>拉取</span>
                         </button>
                         <button
                           type="button"

@@ -1,7 +1,9 @@
 import type {
+  GitBranchCreateResult,
   GitCommitResult,
   GitPushPreview,
   GitPushResult,
+  GitRemoteSyncResult,
   GitStatusSnapshot,
 } from '../types';
 
@@ -65,4 +67,49 @@ export async function pushGitBranch(projectId: string, remote?: string, branch?:
   }
 
   return (await response.json()) as GitPushResult;
+}
+
+export async function fetchGitRemote(projectId: string, remote?: string) {
+  const response = await fetch(`/api/projects/${projectId}/git/fetch`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ remote }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitRemoteSyncResult;
+}
+
+export async function pullGitBranch(projectId: string, remote?: string, branch?: string) {
+  const response = await fetch(`/api/projects/${projectId}/git/pull`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ remote, branch }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitRemoteSyncResult;
+}
+
+export async function createGitBranch(projectId: string, branch: string) {
+  const response = await fetch(`/api/projects/${projectId}/git/branch`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ branch }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitBranchCreateResult;
 }

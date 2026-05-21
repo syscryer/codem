@@ -89,7 +89,36 @@ export function useWorkspaceState() {
     : null;
 
   useEffect(() => {
-    void loadWorkspace();
+    let cancelled = false;
+
+    async function loadWorkspaceWithRetry() {
+      const retryDelaysMs = [0, 300, 900];
+      for (const delayMs of retryDelaysMs) {
+        if (cancelled) {
+          return;
+        }
+        if (delayMs > 0) {
+          await wait(delayMs);
+        }
+        try {
+          await loadWorkspace();
+          return;
+        } catch (error) {
+          if (cancelled) {
+            return;
+          }
+          if (delayMs === retryDelaysMs[retryDelaysMs.length - 1]) {
+            console.error('加载工作区失败', error);
+          }
+        }
+      }
+    }
+
+    void loadWorkspaceWithRetry();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -121,8 +150,17 @@ export function useWorkspaceState() {
 
   async function loadWorkspace() {
     const response = await fetch('/api/workspace/bootstrap');
+    if (!response.ok) {
+      throw new Error((await response.text()) || '加载工作区失败');
+    }
     const payload = (await response.json()) as WorkspaceBootstrap;
     syncWorkspace(payload);
+  }
+
+  function wait(ms: number) {
+    return new Promise<void>((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
   }
 
   function syncWorkspace(payload: WorkspaceBootstrap) {
@@ -949,6 +987,7 @@ export function useWorkspaceState() {
               gitBranch: payload.gitBranch,
               gitDiff: payload.gitDiff,
               isGitRepo: payload.isGitRepo,
+              isGitWorktree: payload.isGitWorktree,
             }
           : project,
       ),

@@ -161,6 +161,7 @@ export type ProjectSummary = {
   gitBranch?: string;
   gitDiff: GitDiffSummary;
   isGitRepo: boolean;
+  isGitWorktree: boolean;
   threads: ThreadSummary[];
 };
 
@@ -437,6 +438,7 @@ export function getWorkspaceBootstrap(): WorkspaceBootstrap {
       gitBranch: gitInfo.branch,
       gitDiff: gitInfo.diff,
       isGitRepo: gitInfo.isGitRepo,
+      isGitWorktree: readGitWorktreeMarker(row.path),
       threads: groupedThreads.get(row.id) ?? [],
     } satisfies ProjectSummary;
   });
@@ -1043,6 +1045,7 @@ export async function getProjectGitSummary(projectId: string) {
     gitBranch: gitInfo.branch,
     gitDiff: gitInfo.diff,
     isGitRepo: gitInfo.isGitRepo,
+    isGitWorktree: readGitWorktreeMarker(projectPath),
   };
 }
 
@@ -1112,6 +1115,31 @@ export async function switchProjectGitBranch(projectId: string, branchName: stri
   }
 
   return getProjectGitSummary(projectId);
+}
+
+export async function createProjectGitBranch(projectId: string, branchName: string) {
+  const projectPath = readProjectPath(projectId);
+  const targetBranch = branchName.trim();
+  if (!targetBranch) {
+    throw new Error('branch 不能为空');
+  }
+
+  await ensureGitRepository(projectPath);
+
+  let createResult = await runGitCommand(projectPath, ['switch', '-c', targetBranch]);
+  if (shouldFallbackToGitCheckout(createResult)) {
+    createResult = await runGitCommand(projectPath, ['checkout', '-b', targetBranch]);
+  }
+
+  if (createResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(createResult, `创建分支“${targetBranch}”失败`));
+  }
+
+  return {
+    output: createResult.stdout.trim() || createResult.stderr.trim() || `已创建并切换到分支 ${targetBranch}`,
+    summary: await getProjectGitSummary(projectId),
+    branch: targetBranch,
+  };
 }
 
 export async function listProjectGitWorktrees(projectId: string): Promise<GitWorktreeList> {
@@ -1318,6 +1346,64 @@ export async function pushProjectGitBranch(
   return {
     output: pushResult.stdout.trim() || pushResult.stderr.trim(),
     summary: await getProjectGitSummary(projectId),
+  };
+}
+
+export async function fetchProjectGitRemote(
+  projectId: string,
+  remote?: string,
+): Promise<{ output: string; summary: Awaited<ReturnType<typeof getProjectGitSummary>> }> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const targetRemote = await resolveGitRemote(projectPath, remote);
+  const fetchArgs = targetRemote ? ['fetch', '--prune', targetRemote] : ['fetch', '--all', '--prune'];
+  const fetchResult = await runGitCommand(projectPath, fetchArgs);
+
+  if (fetchResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(fetchResult, '获取远端失败'));
+  }
+
+  return {
+    output: fetchResult.stdout.trim() || fetchResult.stderr.trim() || '远端信息已更新',
+    summary: await getProjectGitSummary(projectId),
+  };
+}
+
+export async function pullProjectGitBranch(
+  projectId: string,
+  remote?: string,
+  targetBranch?: string,
+): Promise<{
+  output: string;
+  summary: Awaited<ReturnType<typeof getProjectGitSummary>>;
+  commitsPulled: number;
+  filesChanged: number;
+}> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const status = await getProjectGitStatus(projectId);
+  const beforeHead = await readGitHead(projectPath);
+  const target = await resolveGitPullTarget(projectPath, status.branch, remote, targetBranch);
+  const pullResult = await runGitCommand(projectPath, [
+    'pull',
+    '--ff-only',
+    target.remote,
+    target.targetBranch,
+  ]);
+
+  if (pullResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(pullResult, '拉取失败'));
+  }
+
+  const afterHead = await readGitHead(projectPath);
+  const commitsPulled = await countGitCommitsBetween(projectPath, beforeHead, afterHead);
+  const filesChanged = await countGitFilesBetween(projectPath, beforeHead, afterHead);
+
+  return {
+    output: pullResult.stdout.trim() || pullResult.stderr.trim() || '已经是最新版本',
+    summary: await getProjectGitSummary(projectId),
+    commitsPulled,
+    filesChanged,
   };
 }
 
@@ -2459,6 +2545,26 @@ function readGitDiff(projectPath: string): GitDiffSummary {
   };
 }
 
+function readGitWorktreeMarker(projectPath: string) {
+  try {
+    const gitFile = path.join(projectPath, '.git');
+    if (!existsSync(gitFile) || statSync(gitFile).isDirectory()) {
+      return false;
+    }
+
+    const content = readFileSync(gitFile, 'utf8').trim();
+    const gitDir = content.match(/^gitdir:\s*(.+)$/i)?.[1]?.trim();
+    if (!gitDir) {
+      return false;
+    }
+
+    const normalized = gitDir.replace(/\\/g, '/').toLowerCase();
+    return normalized.includes('/.git/worktrees/');
+  } catch {
+    return false;
+  }
+}
+
 function parseGitNumstatValue(value: string | undefined) {
   if (!value || value === '-') {
     return 0;
@@ -2908,6 +3014,55 @@ async function resolveGitPushTarget(
   };
 }
 
+async function resolveGitPullTarget(
+  projectPath: string,
+  branch: string | undefined,
+  requestedRemote: string | undefined,
+  requestedTargetBranch: string | undefined,
+) {
+  if (!branch || branch === 'HEAD') {
+    throw new Error('当前不是可拉取的本地分支');
+  }
+
+  const upstreamResult = await runGitCommand(projectPath, [
+    'rev-parse',
+    '--abbrev-ref',
+    '--symbolic-full-name',
+    '@{u}',
+  ]);
+  const upstream = upstreamResult.status === 0 ? upstreamResult.stdout.trim() : undefined;
+  const remotes = await readGitRemotes(projectPath);
+  const upstreamRemote = upstream?.includes('/') ? upstream.split('/')[0] : undefined;
+  const upstreamBranch = upstream?.includes('/') ? upstream.split('/').slice(1).join('/') : undefined;
+  const remote = requestedRemote?.trim() || upstreamRemote || (remotes.includes('gitee') ? 'gitee' : undefined) || remotes[0];
+  const targetBranch = requestedTargetBranch?.trim() || upstreamBranch || branch;
+
+  if (!remote) {
+    throw new Error('当前仓库没有可用远端');
+  }
+
+  if (!remotes.includes(remote)) {
+    throw new Error(`远端不存在：${remote}`);
+  }
+
+  return {
+    remote,
+    targetBranch,
+  };
+}
+
+async function resolveGitRemote(projectPath: string, requestedRemote?: string) {
+  const remotes = await readGitRemotes(projectPath);
+  const remote = requestedRemote?.trim();
+  if (!remote) {
+    return undefined;
+  }
+  if (!remotes.includes(remote)) {
+    throw new Error(`远端不存在：${remote}`);
+  }
+  return remote;
+}
+
 async function readGitRemotes(projectPath: string) {
   const result = await runGitCommand(projectPath, ['remote']);
   if (result.status !== 0) {
@@ -2934,6 +3089,50 @@ async function readGitPushCommits(projectPath: string, upstream?: string) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+async function readGitHead(projectPath: string) {
+  const result = await runGitCommand(projectPath, ['rev-parse', 'HEAD']);
+  if (result.status !== 0) {
+    throw new Error(normalizeGitCommandError(result, '读取 Git 当前提交失败'));
+  }
+
+  return result.stdout.trim();
+}
+
+async function countGitCommitsBetween(projectPath: string, beforeHead: string, afterHead: string) {
+  if (!beforeHead || !afterHead || beforeHead === afterHead) {
+    return 0;
+  }
+
+  const result = await runGitCommand(projectPath, ['rev-list', '--count', `${beforeHead}..${afterHead}`]);
+  if (result.status !== 0) {
+    return 0;
+  }
+
+  const parsed = Number(result.stdout.trim());
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+async function countGitFilesBetween(projectPath: string, beforeHead: string, afterHead: string) {
+  if (!beforeHead || !afterHead || beforeHead === afterHead) {
+    return 0;
+  }
+
+  const result = await runGitCommand(projectPath, [
+    'diff',
+    '--name-only',
+    '--diff-filter=ACMRT',
+    `${beforeHead}..${afterHead}`,
+  ]);
+  if (result.status !== 0) {
+    return 0;
+  }
+
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean).length;
 }
 
 async function resolveRemoteTrackingRef(

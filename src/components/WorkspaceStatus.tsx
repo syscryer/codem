@@ -322,7 +322,7 @@ export function WorkspaceStatus({
           onClick={() => void handleWorktreeTriggerClick()}
         >
           <LayoutPanelLeft size={12} />
-          <span>本地工作</span>
+          <span>工作区</span>
           {canSelectWorktree ? <span className="footer-chevron" aria-hidden="true" /> : null}
         </button>
       </div>

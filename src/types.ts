@@ -372,6 +372,7 @@ export type ProjectSummary = {
   gitBranch?: string;
   gitDiff: GitDiffSummary;
   isGitRepo: boolean;
+  isGitWorktree: boolean;
   threads: ThreadSummary[];
 };
 
@@ -415,7 +416,7 @@ export type GitCreateWorktreeResult = {
   workspace?: WorkspaceBootstrap;
 };
 
-export type ProjectGitSummary = Pick<ProjectSummary, 'gitBranch' | 'gitDiff' | 'isGitRepo'>;
+export type ProjectGitSummary = Pick<ProjectSummary, 'gitBranch' | 'gitDiff' | 'isGitRepo' | 'isGitWorktree'>;
 
 export type RightWorkbenchTab = 'overview' | 'files' | 'browser';
 
@@ -491,6 +492,19 @@ export type GitCommitResult = {
 export type GitPushResult = {
   output: string;
   summary: ProjectGitSummary;
+};
+
+export type GitRemoteSyncResult = {
+  output: string;
+  summary: ProjectGitSummary;
+  commitsPulled?: number;
+  filesChanged?: number;
+};
+
+export type GitBranchCreateResult = {
+  output: string;
+  summary: ProjectGitSummary;
+  branch: string;
 };
 
 export type PanelState = {

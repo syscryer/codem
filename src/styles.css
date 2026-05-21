@@ -78,6 +78,8 @@ svg {
   --app-material-line: rgba(176, 183, 192, 0.2);
   --app-material-glow: rgba(255, 255, 255, 0.18);
   --settings-sidebar-bg: #f4f2f2;
+  --app-scrollbar-thumb: rgba(82, 82, 82, 0.16);
+  --app-scrollbar-thumb-hover: rgba(82, 82, 82, 0.36);
   color-scheme: light;
   color: var(--app-text);
   background: transparent;
@@ -131,6 +133,8 @@ svg {
   --app-material-line: rgba(255, 255, 255, 0.08);
   --app-material-glow: rgba(255, 255, 255, 0.08);
   --settings-sidebar-bg: #202020;
+  --app-scrollbar-thumb: rgba(255, 255, 255, 0.16);
+  --app-scrollbar-thumb-hover: rgba(255, 255, 255, 0.34);
   color-scheme: dark;
 }
 
@@ -192,6 +196,8 @@ svg {
     --app-material-line: rgba(255, 255, 255, 0.08);
     --app-material-glow: rgba(255, 255, 255, 0.08);
     --settings-sidebar-bg: #202020;
+    --app-scrollbar-thumb: rgba(255, 255, 255, 0.16);
+    --app-scrollbar-thumb-hover: rgba(255, 255, 255, 0.34);
     color-scheme: dark;
   }
 
@@ -622,6 +628,7 @@ svg {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   min-width: 0;
   padding: 7px 10px;
   border: 0;
@@ -674,6 +681,34 @@ svg {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 480;
+}
+
+.sidebar-project-title .sidebar-worktree-badge {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  border: 1px solid rgba(107, 114, 128, 0.14);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.54);
+  color: #9aa0a6;
+}
+
+.sidebar-project-title.has-worktree-badge {
+  padding-right: 36px;
+}
+
+.sidebar-project-title .sidebar-worktree-badge svg {
+  color: inherit;
+}
+
+.sidebar-project.active .sidebar-worktree-badge,
+.sidebar-project-title:hover .sidebar-worktree-badge {
+  border-color: rgba(74, 86, 102, 0.18);
+  background: rgba(255, 255, 255, 0.78);
+  color: #6f7883;
 }
 
 .clone-task-title {
@@ -5900,7 +5935,8 @@ svg {
   margin-top: 10px;
 }
 
-.git-push-panel {
+.git-push-panel,
+.git-branch-panel {
   min-height: 360px;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -5923,6 +5959,44 @@ svg {
 .git-push-target span {
   color: #7b7b7b;
   font-size: 13px;
+}
+
+.git-branch-panel {
+  align-content: start;
+  grid-template-rows: auto auto auto;
+}
+
+.git-branch-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(156, 163, 175, 0.1);
+}
+
+.git-branch-summary div {
+  display: grid;
+  gap: 4px;
+}
+
+.git-branch-summary span {
+  color: #7b7b7b;
+  font-size: 13px;
+}
+
+.git-branch-field {
+  display: grid;
+  gap: 8px;
+}
+
+.git-branch-field span {
+  color: #5f6368;
+  font-size: 13px;
+}
+
+.git-branch-input {
+  width: 100%;
 }
 
 .git-push-commits {
@@ -6063,7 +6137,7 @@ svg {
 .status-branch-menu-state,
 .status-branch-menu-error {
   padding: 6px 14px;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -6093,7 +6167,9 @@ svg {
   background: transparent;
   color: #262626;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 450;
+  line-height: 1.35;
   text-align: left;
 }
 
@@ -6109,7 +6185,7 @@ svg {
 }
 
 .status-branch-menu-item.current {
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .status-branch-menu-item > span:first-child {
@@ -6126,7 +6202,7 @@ svg {
 
 .status-worktree-create-item {
   color: #333333;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .status-branch-check {
@@ -8419,6 +8495,8 @@ svg {
 
 .codex-desktop .status-branch-menu-item {
   color: var(--app-text);
+  font-size: 12px;
+  font-weight: 450;
 }
 
 .codex-desktop .status-branch-menu-item:hover,
@@ -8571,6 +8649,44 @@ svg {
 
 .conversation:hover::-webkit-scrollbar-thumb {
   background-color: rgba(107, 114, 128, 0.54);
+}
+
+.codex-desktop * {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.codex-desktop *:hover {
+  scrollbar-color: var(--app-scrollbar-thumb-hover) transparent;
+}
+
+.codex-desktop *::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.codex-desktop *::-webkit-scrollbar-track,
+.codex-desktop *::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.codex-desktop *::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: transparent;
+}
+
+.codex-desktop *:hover::-webkit-scrollbar-thumb {
+  background-color: var(--app-scrollbar-thumb-hover);
+}
+
+.codex-desktop *::-webkit-scrollbar-thumb:hover {
+  background-color: var(--app-scrollbar-thumb-hover);
+}
+
+.workbench-preview-tabs {
+  scrollbar-width: none;
 }
 
 .ghost-button {

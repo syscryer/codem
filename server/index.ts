@@ -26,6 +26,8 @@ import {
   createThread,
   commitProjectGitChanges,
   createProjectGitWorktree,
+  createProjectGitBranch,
+  fetchProjectGitRemote,
   getProjectGitFileDiff,
   getProjectGitPushPreview,
   getProjectGitSummary,
@@ -47,6 +49,7 @@ import {
   saveThreadHistory,
   setActiveSelection,
   suggestProjectGitWorktreePath,
+  pullProjectGitBranch,
   pushProjectGitBranch,
   switchProjectGitBranch,
   updatePanelState,
@@ -738,6 +741,27 @@ app.post('/api/projects/:projectId/git/push', async (request, response) => {
   }
 });
 
+app.post('/api/projects/:projectId/git/fetch', async (request, response) => {
+  const remote = typeof request.body?.remote === 'string' ? request.body.remote.trim() : undefined;
+
+  try {
+    response.json(await fetchProjectGitRemote(request.params.projectId, remote));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : 'Git 获取远端失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/pull', async (request, response) => {
+  const remote = typeof request.body?.remote === 'string' ? request.body.remote.trim() : undefined;
+  const branch = typeof request.body?.branch === 'string' ? request.body.branch.trim() : undefined;
+
+  try {
+    response.json(await pullProjectGitBranch(request.params.projectId, remote, branch));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : 'Git 拉取失败');
+  }
+});
+
 app.post('/api/projects/:projectId/git/switch', async (request, response) => {
   const branch = typeof request.body?.branch === 'string' ? request.body.branch.trim() : '';
   if (!branch) {
@@ -749,6 +773,20 @@ app.post('/api/projects/:projectId/git/switch', async (request, response) => {
     response.json(await switchProjectGitBranch(request.params.projectId, branch));
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '切换 Git 分支失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/branch', async (request, response) => {
+  const branch = typeof request.body?.branch === 'string' ? request.body.branch.trim() : '';
+  if (!branch) {
+    response.status(400).send('branch 不能为空');
+    return;
+  }
+
+  try {
+    response.json(await createProjectGitBranch(request.params.projectId, branch));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '创建分支失败');
   }
 });
 
