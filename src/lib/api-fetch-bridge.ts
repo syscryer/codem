@@ -1,4 +1,8 @@
-const API_BASE_URL = 'http://127.0.0.1:3001';
+import { isTauriRuntime } from './window-material';
+
+const fallbackApiBaseUrl = 'http://127.0.0.1:3001';
+
+let apiBaseUrl = fallbackApiBaseUrl;
 
 declare global {
   interface Window {
@@ -7,7 +11,7 @@ declare global {
 }
 
 export function installApiFetchBridge() {
-  if (typeof window === 'undefined' || window.__codemApiFetchBridgeInstalled) {
+  if (typeof window === 'undefined' || !isTauriRuntime() || window.__codemApiFetchBridgeInstalled) {
     return;
   }
 
@@ -18,6 +22,22 @@ export function installApiFetchBridge() {
     const nextInput = rewriteApiRequest(input);
     return nativeFetch(nextInput, init);
   };
+}
+
+export async function initializeApiFetchBridge() {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const nextBaseUrl = await invoke<string>('get_backend_base_url');
+    if (typeof nextBaseUrl === 'string' && /^https?:\/\//.test(nextBaseUrl)) {
+      apiBaseUrl = nextBaseUrl.replace(/\/+$/, '');
+    }
+  } catch {
+    apiBaseUrl = fallbackApiBaseUrl;
+  }
 }
 
 function rewriteApiRequest(input: RequestInfo | URL): RequestInfo | URL {
@@ -43,7 +63,7 @@ function rewriteApiRequest(input: RequestInfo | URL): RequestInfo | URL {
 
 function rewriteApiUrlString(input: string) {
   if (isApiPath(input)) {
-    return `${API_BASE_URL}${input}`;
+    return `${apiBaseUrl}${input}`;
   }
 
   try {
@@ -59,7 +79,7 @@ function rewriteApiUrlString(input: string) {
 }
 
 function toApiBaseUrl(url: URL) {
-  return `${API_BASE_URL}${url.pathname}${url.search}${url.hash}`;
+  return `${apiBaseUrl}${url.pathname}${url.search}${url.hash}`;
 }
 
 function isApiPath(value: string) {

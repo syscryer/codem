@@ -798,8 +798,11 @@ export default function App() {
       {appView.kind === 'settings' ? (
         <SettingsView
           activeSection={appView.section}
+          activeProjectId={activeProjectId}
+          activeThreadId={activeThreadId}
           activeProject={activeProject}
           projects={projects}
+          runningThreadIds={runningThreadIds}
           general={general}
           appearance={appearance}
           models={appModelSettings}
@@ -808,6 +811,10 @@ export default function App() {
           openTargets={openTargets}
           claudeModels={claudeModels}
           onSelectSection={(section) => navigateToLocation({ kind: 'settings', section })}
+          onOpenThread={handleSelectThread}
+          onCopySessionId={handleCopySessionId}
+          onRenameThread={openRenameThreadDialog}
+          onRemoveThread={openRemoveThreadDialog}
           onOpenWorktreePath={openWorktreePath}
           onSyncWorkspace={syncWorkspace}
           showToast={showToast}

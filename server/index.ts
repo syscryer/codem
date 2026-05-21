@@ -11,6 +11,7 @@ import {
   detectClaudeCommand,
   getActiveRunForThread,
   getClaudeModels,
+  getThreadRuntimeStatuses,
   isDirectoryAccessible,
   markRunDetached,
   markThreadRunDetached,
@@ -91,7 +92,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 const distRoot = path.join(projectRoot, 'dist');
-const port = Number(process.env.PORT ?? 3001);
+const port = Number(process.env.CODEM_BACKEND_PORT ?? process.env.PORT ?? 3001);
 const jsonBodyLimit = process.env.CODEM_JSON_BODY_LIMIT ?? '25mb';
 
 const app = express();
@@ -1221,6 +1222,10 @@ app.delete('/api/claude/run/:runId', (request, response) => {
 app.post('/api/claude/runtime/:threadId/close', (request, response) => {
   const closed = closeThreadRuntime(request.params.threadId);
   response.json({ closed });
+});
+
+app.get('/api/claude/runtimes', (_request, response) => {
+  response.json(getThreadRuntimeStatuses());
 });
 
 if (await isDirectoryAccessible(distRoot)) {

@@ -333,6 +333,26 @@ export function closeThreadRuntime(threadId: string) {
   return true;
 }
 
+export function getThreadRuntimeStatuses() {
+  const statuses: Record<string, { threadId: string; pid?: number; alive: boolean; activeRun: boolean }> = {};
+
+  for (const [threadId, runtime] of threadRuntimes.entries()) {
+    const alive = isRuntimeProcessAlive(runtime);
+    if (!alive) {
+      continue;
+    }
+
+    statuses[threadId] = {
+      threadId,
+      pid: runtime.child.pid,
+      alive,
+      activeRun: Boolean(runtime.currentRun),
+    };
+  }
+
+  return statuses;
+}
+
 export function markRunDetached(runId: string) {
   const activeRun = activeRuns.get(runId);
   if (!activeRun) {

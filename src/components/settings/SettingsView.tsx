@@ -9,6 +9,7 @@ import type {
   ProjectSummary,
   SettingsSection,
   ShortcutSettings,
+  ThreadSummary,
   ToastState,
   WorkspaceBootstrap,
 } from '../../types';
@@ -27,6 +28,7 @@ import { ModelSettingsSection } from './ModelSettings';
 import { OpenWithSettingsSection } from './OpenWithSettings';
 import { SettingsEmptySection } from './SettingsEmptySection';
 import { SettingsSidebar } from './SettingsSidebar';
+import { SessionManagementSettingsSection } from './SessionManagementSettings';
 import { PluginsSettingsSection } from './PluginsSettings';
 import { ShortcutsSettingsSection } from './ShortcutsSettings';
 import { UsageSettingsSection } from './UsageSettings';
@@ -34,8 +36,11 @@ import { WorktreeSettingsSection } from './WorktreeSettings';
 
 type SettingsViewProps = {
   activeSection: SettingsSection;
+  activeProjectId: string | null;
+  activeThreadId: string | null;
   activeProject: ProjectSummary | null;
   projects: ProjectSummary[];
+  runningThreadIds: string[];
   general: GeneralSettings;
   appearance: AppearanceSettings;
   models: ModelSettings;
@@ -44,6 +49,10 @@ type SettingsViewProps = {
   openTargets: OpenAppTarget[];
   claudeModels: ClaudeModelInfo;
   onSelectSection: (section: SettingsSection) => void;
+  onOpenThread: (projectId: string, threadId: string) => void | Promise<void>;
+  onCopySessionId: (thread: ThreadSummary) => void | Promise<void>;
+  onRenameThread: (thread: ThreadSummary) => void;
+  onRemoveThread: (thread: ThreadSummary) => void;
   onOpenWorktreePath: (worktreePath: string) => Promise<void>;
   onSyncWorkspace: (workspace: WorkspaceBootstrap) => void;
   showToast: (message: string, tone?: ToastState['tone']) => void;
@@ -71,8 +80,11 @@ const sectionTitles: Record<SettingsSection, string> = {
 
 export function SettingsView({
   activeSection,
+  activeProjectId,
+  activeThreadId,
   activeProject,
   projects,
+  runningThreadIds,
   general,
   appearance,
   models,
@@ -81,6 +93,10 @@ export function SettingsView({
   openTargets,
   claudeModels,
   onSelectSection,
+  onOpenThread,
+  onCopySessionId,
+  onRenameThread,
+  onRemoveThread,
   onOpenWorktreePath,
   onSyncWorkspace,
   showToast,
@@ -147,6 +163,23 @@ export function SettingsView({
       return <UsageSettingsSection />;
     }
 
+    if (activeSection === 'sessions') {
+      return (
+        <SessionManagementSettingsSection
+          activeProjectId={activeProjectId}
+          activeThreadId={activeThreadId}
+          projects={projects}
+          runningThreadIds={runningThreadIds}
+          onOpenThread={onOpenThread}
+          onCopySessionId={onCopySessionId}
+          onRenameThread={onRenameThread}
+          onRemoveThread={onRemoveThread}
+          onSyncWorkspace={onSyncWorkspace}
+          showToast={showToast}
+        />
+      );
+    }
+
     if (activeSection === 'mcp') {
       return <McpSettingsSection projectPath={activeProject?.path} />;
     }
@@ -170,6 +203,8 @@ export function SettingsView({
     return <SettingsEmptySection title={sectionTitles[activeSection]} />;
   }, [
     activeSection,
+    activeProjectId,
+    activeThreadId,
     activeProject,
     appearance,
     claudeModels,
@@ -178,7 +213,12 @@ export function SettingsView({
     openWith,
     openTargets,
     projects,
+    runningThreadIds,
     shortcuts,
+    onOpenThread,
+    onCopySessionId,
+    onRenameThread,
+    onRemoveThread,
     onOpenWorktreePath,
     onSyncWorkspace,
     onUpdateGeneral,

@@ -98,6 +98,18 @@ test('client disconnect detaches a run instead of cancelling the Claude process'
   assert.match(serverSource, /\/api\/claude\/run\/:runId\/events/);
 });
 
+test('managed runtime status endpoint reports only CodeM-owned live runtimes', () => {
+  const statusBody = extractFunctionBody('getThreadRuntimeStatuses');
+
+  assert.match(source, /export function getThreadRuntimeStatuses/);
+  assert.match(statusBody, /threadRuntimes\.entries\(\)/);
+  assert.match(statusBody, /isRuntimeProcessAlive\(runtime\)/);
+  assert.match(statusBody, /pid:\s*runtime\.child\.pid/);
+  assert.match(statusBody, /activeRun:\s*Boolean\(runtime\.currentRun\)/);
+  assert.match(serverSource, /getThreadRuntimeStatuses/);
+  assert.match(serverSource, /\/api\/claude\/runtimes/);
+});
+
 test('request user input answers prefer control responses and keep tool-result fallback', () => {
   const submitBody = extractFunctionBody('submitRunRequestUserInput');
   const buildToolResultBody = extractFunctionBody('buildClaudeToolResultMessage');

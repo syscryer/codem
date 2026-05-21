@@ -1,0 +1,419 @@
+import {
+  Copy,
+  ExternalLink,
+  MessageSquareText,
+  Pencil,
+  Power,
+  Search,
+  Trash2,
+} from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  buildSessionProjectSummaries,
+  buildSessionManagementRows,
+  filterSessionManagementRows,
+  getSelectableSessionIds,
+  shortSessionId,
+  type SessionProjectId,
+  type SessionProjectSummary,
+  type SessionManagementRow,
+} from '../../lib/session-management';
+import type { ProjectSummary, ThreadRuntimeStatus, ThreadSummary, ToastState, WorkspaceBootstrap } from '../../types';
+
+type SessionManagementSettingsSectionProps = {
+  activeProjectId: string | null;
+  activeThreadId: string | null;
+  projects: ProjectSummary[];
+  runningThreadIds: string[];
+  onOpenThread: (projectId: string, threadId: string) => void | Promise<void>;
+  onCopySessionId: (thread: ThreadSummary) => void | Promise<void>;
+  onRenameThread: (thread: ThreadSummary) => void;
+  onRemoveThread: (thread: ThreadSummary) => void;
+  onSyncWorkspace: (workspace: WorkspaceBootstrap) => void;
+  showToast: (message: string, tone?: ToastState['tone']) => void;
+};
+
+export function SessionManagementSettingsSection({
+  activeProjectId,
+  activeThreadId,
+  projects,
+  runningThreadIds,
+  onOpenThread,
+  onCopySessionId,
+  onRenameThread,
+  onRemoveThread,
+  onSyncWorkspace,
+  showToast,
+}: SessionManagementSettingsSectionProps) {
+  const [query, setQuery] = useState('');
+  const [selectedProjectId, setSelectedProjectId] = useState<SessionProjectId>(activeProjectId ?? 'all');
+  const [selectedThreadIds, setSelectedThreadIds] = useState<string[]>([]);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [closingThreadId, setClosingThreadId] = useState('');
+  const [runtimeStatuses, setRuntimeStatuses] = useState<Record<string, ThreadRuntimeStatus>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refresh() {
+      const statuses = await fetchThreadRuntimeStatuses();
+      if (!cancelled) {
+        setRuntimeStatuses(statuses);
+      }
+    }
+
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const rows = useMemo(
+    () =>
+      buildSessionManagementRows(projects, {
+        activeProjectId,
+        activeThreadId,
+        runningThreadIds,
+        runtimeStatuses,
+      }),
+    [activeProjectId, activeThreadId, projects, runningThreadIds, runtimeStatuses],
+  );
+  const projectSummaries = useMemo(() => buildSessionProjectSummaries(rows), [rows]);
+  const filteredRows = useMemo(
+    () => filterSessionManagementRows(rows, { query, projectId: selectedProjectId }),
+    [query, rows, selectedProjectId],
+  );
+  const selectableThreadIds = useMemo(() => getSelectableSessionIds(filteredRows), [filteredRows]);
+  const visibleSelectedCount = selectedThreadIds.filter((threadId) => selectableThreadIds.includes(threadId)).length;
+  const allVisibleSelected = selectableThreadIds.length > 0 && visibleSelectedCount === selectableThreadIds.length;
+  const selectedRows = rows.filter((row) => selectedThreadIds.includes(row.thread.id));
+  const selectedRunningCount = selectedRows.filter((row) => row.running).length;
+  const deletableThreadIds = selectedRows
+    .filter((row) => !row.running)
+    .map((row) => row.thread.id);
+  const selectedProject = projectSummaries.find((project) => project.id === selectedProjectId) ?? projectSummaries[0];
+
+  function selectProject(projectId: SessionProjectId) {
+    setSelectedProjectId(projectId);
+    setSelectedThreadIds([]);
+    setConfirmingDelete(false);
+  }
+
+  function toggleThreadSelection(threadId: string, checked: boolean) {
+    setConfirmingDelete(false);
+    setSelectedThreadIds((current) => {
+      if (checked) {
+        return current.includes(threadId) ? current : [...current, threadId];
+      }
+
+      return current.filter((id) => id !== threadId);
+    });
+  }
+
+  function toggleAllVisible(checked: boolean) {
+    setConfirmingDelete(false);
+    setSelectedThreadIds((current) => {
+      const rest = current.filter((threadId) => !selectableThreadIds.includes(threadId));
+      return checked ? [...rest, ...selectableThreadIds] : rest;
+    });
+  }
+
+  async function deleteSelectedSessions() {
+    if (deletableThreadIds.length === 0 || deleting) {
+      return;
+    }
+
+    if (!confirmingDelete) {
+      setConfirmingDelete(true);
+      showToast(`再次点击“删除所选”将删除 ${deletableThreadIds.length} 个会话。`, 'info');
+      return;
+    }
+
+    setDeleting(true);
+    try {
+      for (const threadId of deletableThreadIds) {
+        const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}`, {
+          method: 'DELETE',
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+      }
+
+      const workspaceResponse = await fetch('/api/workspace/bootstrap');
+      if (!workspaceResponse.ok) {
+        throw new Error(await workspaceResponse.text());
+      }
+
+      onSyncWorkspace((await workspaceResponse.json()) as WorkspaceBootstrap);
+      setSelectedThreadIds([]);
+      setConfirmingDelete(false);
+      showToast(`已删除 ${deletableThreadIds.length} 个会话。`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '批量删除会话失败', 'error');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  async function closeRuntime(row: SessionManagementRow) {
+    if (row.running || closingThreadId) {
+      return;
+    }
+
+    setClosingThreadId(row.thread.id);
+    try {
+      const response = await fetch(`/api/claude/runtime/${encodeURIComponent(row.thread.id)}/close`, {
+        method: 'POST',
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const result = (await response.json()) as { closed?: boolean };
+      showToast(result.closed ? '会话连接已重置' : '当前没有可重置的会话连接', result.closed ? 'success' : 'info');
+      setRuntimeStatuses(await fetchThreadRuntimeStatuses());
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '重置会话连接失败', 'error');
+    } finally {
+      setClosingThreadId('');
+    }
+  }
+
+  const selectedDeleteLabel = confirmingDelete ? '确认删除所选' : '删除所选';
+  const selectedDeleteHint = selectedRunningCount > 0
+    ? `已跳过 ${selectedRunningCount} 个运行中的会话`
+    : `${deletableThreadIds.length} 个可删除`;
+
+  return (
+    <section className="settings-page-section settings-page-wide">
+      <header className="settings-section-head settings-section-head-row">
+        <h1>会话管理</h1>
+      </header>
+
+      <div className="settings-panel settings-editor-panel session-suite-panel">
+        <div className="settings-editor-head session-head">
+          <div className="settings-editor-title">
+            <MessageSquareText size={15} />
+            <span>
+              <strong>聊天会话</strong>
+              <small>{rows.length} 个会话，{rows.filter((row) => row.running).length} 个正在运行</small>
+            </span>
+          </div>
+          <label className="settings-search session-search" aria-label="搜索会话">
+            <Search size={14} />
+            <input
+              value={query}
+              placeholder="搜索标题、路径或 session"
+              onChange={(event) => setQuery(event.currentTarget.value)}
+            />
+          </label>
+        </div>
+
+        <div className="session-management-grid">
+          <aside className="session-project-list" aria-label="项目列表">
+            {projectSummaries.map((project) => (
+              <ProjectNavItem
+                key={project.id}
+                project={project}
+                active={selectedProjectId === project.id}
+                onSelect={() => selectProject(project.id)}
+              />
+            ))}
+          </aside>
+
+          <div className="session-detail-panel">
+            <div className="session-detail-toolbar">
+              <div className="session-detail-title">
+                <strong>{selectedProject?.name ?? '全部项目'}</strong>
+                <span>{filteredRows.length} 个会话</span>
+              </div>
+              <div className="session-bulk-actions">
+                <label className="session-select-all">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    disabled={selectableThreadIds.length === 0}
+                    onChange={(event) => toggleAllVisible(event.currentTarget.checked)}
+                  />
+                  <span>全选</span>
+                </label>
+                <button
+                  type="button"
+                  className="settings-action-button danger"
+                  disabled={deletableThreadIds.length === 0 || deleting}
+                  onClick={() => void deleteSelectedSessions()}
+                >
+                  <Trash2 size={14} />
+                  <span>{deleting ? '删除中' : selectedDeleteLabel}</span>
+                </button>
+                {selectedThreadIds.length > 0 ? <small>{selectedDeleteHint}</small> : null}
+              </div>
+            </div>
+
+            <div className="settings-list session-list">
+              {filteredRows.length === 0 ? (
+                <div className="settings-list-empty">没有匹配的会话。</div>
+              ) : null}
+              {filteredRows.map((row) => (
+                <SessionRow
+                  key={row.thread.id}
+                  row={row}
+                  selected={selectedThreadIds.includes(row.thread.id)}
+                  closing={closingThreadId === row.thread.id}
+                  onSelect={(checked) => toggleThreadSelection(row.thread.id, checked)}
+                  onOpen={() => void onOpenThread(row.project.id, row.thread.id)}
+                  onCopy={() => void onCopySessionId(row.thread)}
+                  onRename={() => onRenameThread(row.thread)}
+                  onRemove={() => onRemoveThread(row.thread)}
+                  onCloseRuntime={row.runtimeAlive ? () => void closeRuntime(row) : undefined}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SessionRow({
+  row,
+  selected,
+  closing,
+  onSelect,
+  onOpen,
+  onCopy,
+  onRename,
+  onRemove,
+  onCloseRuntime,
+}: {
+  row: SessionManagementRow;
+  selected: boolean;
+  closing: boolean;
+  onSelect: (checked: boolean) => void;
+  onOpen: () => void;
+  onCopy: () => void;
+  onRename: () => void;
+  onRemove: () => void;
+  onCloseRuntime?: () => void;
+}) {
+  return (
+    <div className="settings-list-row settings-list-row-tall session-list-row">
+      <label className="session-row-check" aria-label={`选择 ${row.thread.title}`}>
+        <input
+          type="checkbox"
+          checked={selected}
+          disabled={row.running}
+          onChange={(event) => onSelect(event.currentTarget.checked)}
+        />
+      </label>
+      <div className="session-row-main">
+        <div className="session-row-title">
+          <strong>{row.thread.title}</strong>
+          {row.active ? <span className="settings-badge available">当前</span> : null}
+          {row.running ? <span className="settings-badge available">运行中</span> : null}
+          {!row.hasSession ? <span className="settings-badge error">无 Session</span> : null}
+        </div>
+        <small className="session-row-path" title={row.thread.workingDirectory}>
+          {row.project.name} · {row.thread.workingDirectory}
+        </small>
+        <div className="session-row-meta">
+          <span title={row.thread.sessionId}>Session: <code>{shortSessionId(row.thread.sessionId)}</code></span>
+          <span>模型: {formatModel(row.thread.model)}</span>
+          <span>权限: {formatPermission(row.thread.permissionMode)}</span>
+          <span>{row.thread.updatedLabel}</span>
+        </div>
+      </div>
+      <div className="settings-list-actions session-list-actions">
+        <button type="button" className="settings-action-button" onClick={onOpen}>
+          <ExternalLink size={14} />
+          <span>打开</span>
+        </button>
+        <button type="button" className="settings-action-button" onClick={onCopy} disabled={!row.hasSession}>
+          <Copy size={14} />
+          <span>复制</span>
+        </button>
+        <button type="button" className="settings-action-button" onClick={onRename}>
+          <Pencil size={14} />
+          <span>重命名</span>
+        </button>
+        {onCloseRuntime ? (
+          <button
+            type="button"
+            className="settings-action-button"
+            onClick={onCloseRuntime}
+            disabled={row.running || closing}
+            title={row.running ? '运行中的会话请先停止当前任务' : `PID ${row.runtimePid ?? '未知'}`}
+          >
+            <Power size={14} />
+            <span>{closing ? '关闭中' : '重置连接'}</span>
+          </button>
+        ) : null}
+        <button type="button" className="settings-action-button danger" onClick={onRemove} disabled={row.running}>
+          <Trash2 size={14} />
+          <span>删除</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ProjectNavItem({
+  project,
+  active,
+  onSelect,
+}: {
+  project: SessionProjectSummary;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`session-project-item${active ? ' active' : ''}`}
+      onClick={onSelect}
+    >
+      <span>
+        <strong>{project.name}</strong>
+        {project.path ? <small>{project.path}</small> : <small>所有项目中的会话</small>}
+      </span>
+      <em>{project.total}</em>
+      {project.running > 0 ? <b>{project.running} 运行中</b> : null}
+      {project.missingSession > 0 ? <b className="warning">{project.missingSession} 未开始</b> : null}
+    </button>
+  );
+}
+
+function formatModel(value: string | undefined) {
+  return value?.trim() || '默认';
+}
+
+function formatPermission(value: string | undefined) {
+  const labels: Record<string, string> = {
+    default: '默认',
+    plan: '计划模式',
+    acceptEdits: '接受编辑',
+    auto: '自动执行',
+    dontAsk: '无需确认',
+    bypassPermissions: '完全访问',
+  };
+
+  const trimmed = value?.trim();
+  return trimmed ? labels[trimmed] ?? trimmed : '默认';
+}
+
+async function fetchThreadRuntimeStatuses() {
+  try {
+    const response = await fetch('/api/claude/runtimes');
+    if (!response.ok) {
+      return {};
+    }
+
+    return (await response.json()) as Record<string, ThreadRuntimeStatus>;
+  } catch {
+    return {};
+  }
+}

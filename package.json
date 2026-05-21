@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm:dev:server\" \"npm:dev:web\"",
+    "dev": "node scripts/dev.mjs",
     "dev:web": "vite",
     "dev:server": "tsx watch server/index.ts",
     "desktop:dev": "node scripts/desktop-dev.mjs",

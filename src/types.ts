@@ -363,6 +363,13 @@ export type ThreadSummary = {
   permissionMode?: string;
 };
 
+export type ThreadRuntimeStatus = {
+  threadId: string;
+  pid?: number;
+  alive: boolean;
+  activeRun: boolean;
+};
+
 export type ProjectSummary = {
   id: string;
   name: string;
