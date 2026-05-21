@@ -6,8 +6,11 @@ import type {
   ModelSettings,
   OpenAppTarget,
   OpenWithSettings,
+  ProjectSummary,
   SettingsSection,
   ShortcutSettings,
+  ToastState,
+  WorkspaceBootstrap,
 } from '../../types';
 import type {
   AppearanceSettingsUpdate,
@@ -27,10 +30,12 @@ import { SettingsSidebar } from './SettingsSidebar';
 import { PluginsSettingsSection } from './PluginsSettings';
 import { ShortcutsSettingsSection } from './ShortcutsSettings';
 import { UsageSettingsSection } from './UsageSettings';
+import { WorktreeSettingsSection } from './WorktreeSettings';
 
 type SettingsViewProps = {
   activeSection: SettingsSection;
-  activeProjectPath?: string | null;
+  activeProject: ProjectSummary | null;
+  projects: ProjectSummary[];
   general: GeneralSettings;
   appearance: AppearanceSettings;
   models: ModelSettings;
@@ -39,6 +44,9 @@ type SettingsViewProps = {
   openTargets: OpenAppTarget[];
   claudeModels: ClaudeModelInfo;
   onSelectSection: (section: SettingsSection) => void;
+  onOpenWorktreePath: (worktreePath: string) => Promise<void>;
+  onSyncWorkspace: (workspace: WorkspaceBootstrap) => void;
+  showToast: (message: string, tone?: ToastState['tone']) => void;
   onUpdateGeneral: (update: GeneralSettingsUpdate) => void | Promise<void>;
   onUpdateAppearance: (update: AppearanceSettingsUpdate) => void;
   onUpdateModels: (update: ModelSettingsUpdate) => void | Promise<void>;
@@ -54,6 +62,7 @@ const sectionTitles: Record<SettingsSection, string> = {
   providers: '模型设置',
   usage: '使用情况',
   sessions: '会话管理',
+  worktree: '工作树',
   mcp: 'MCP 管理',
   plugins: '插件管理',
   globalPrompts: '全局提示词',
@@ -62,7 +71,8 @@ const sectionTitles: Record<SettingsSection, string> = {
 
 export function SettingsView({
   activeSection,
-  activeProjectPath,
+  activeProject,
+  projects,
   general,
   appearance,
   models,
@@ -71,6 +81,9 @@ export function SettingsView({
   openTargets,
   claudeModels,
   onSelectSection,
+  onOpenWorktreePath,
+  onSyncWorkspace,
+  showToast,
   onUpdateGeneral,
   onUpdateAppearance,
   onUpdateModels,
@@ -135,7 +148,19 @@ export function SettingsView({
     }
 
     if (activeSection === 'mcp') {
-      return <McpSettingsSection projectPath={activeProjectPath} />;
+      return <McpSettingsSection projectPath={activeProject?.path} />;
+    }
+
+    if (activeSection === 'worktree') {
+      return (
+        <WorktreeSettingsSection
+          activeProject={activeProject}
+          projects={projects}
+          onOpenWorktreePath={onOpenWorktreePath}
+          onSyncWorkspace={onSyncWorkspace}
+          showToast={showToast}
+        />
+      );
     }
 
     if (activeSection === 'plugins') {
@@ -145,19 +170,23 @@ export function SettingsView({
     return <SettingsEmptySection title={sectionTitles[activeSection]} />;
   }, [
     activeSection,
-    activeProjectPath,
+    activeProject,
     appearance,
     claudeModels,
     general,
     models,
     openWith,
     openTargets,
+    projects,
     shortcuts,
+    onOpenWorktreePath,
+    onSyncWorkspace,
     onUpdateGeneral,
     onUpdateAppearance,
     onUpdateModels,
     onUpdateOpenWith,
     onUpdateShortcuts,
+    showToast,
   ]);
 
   return (

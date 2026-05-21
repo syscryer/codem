@@ -6,6 +6,7 @@ import type {
   McpManagedScope,
   McpManagementResponse,
   McpServerConfig,
+  McpServerSummary,
 } from '../../types';
 
 type EditableServerScope = 'global' | 'project' | 'claude-json-global';
@@ -30,6 +31,7 @@ type ServerRow = {
   sourcePath: string;
   readOnly: boolean;
   overridesGlobal: boolean;
+  summary?: McpServerSummary;
   duplicateOf?: string;
 };
 
@@ -72,7 +74,7 @@ const KNOWN_SERVER_KEYS = new Set([
 const EDIT_SCOPE_OPTIONS: Array<{ value: EditableServerScope; label: string }> = [
   { value: 'global', label: '用户级 mcp.json' },
   { value: 'project', label: '项目级 .mcp.json' },
-  { value: 'claude-json-global', label: 'Claude CLI 全局' },
+  { value: 'claude-json-global', label: 'Claude Code 全局' },
 ];
 
 const AUTH_OPTIONS: Array<{ value: EditorState['auth']; label: string }> = [
@@ -96,20 +98,6 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
   }, [projectPath]);
 
   const rows = useMemo(() => buildManagedRows(payload), [payload]);
-
-  const externalServers = useMemo(() => {
-    if (!payload) {
-      return [];
-    }
-
-    const managedPaths = new Set([
-      payload.paths.global,
-      payload.paths.project,
-      payload.paths.claudeJson,
-    ].filter(Boolean));
-
-    return payload.overview.servers.filter((server) => !managedPaths.has(server.source));
-  }, [payload]);
 
   async function loadManagement(successMessage = '') {
     setLoading(true);
@@ -312,9 +300,7 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
             <Server size={15} />
             <span>
               <strong>{editor ? '编辑 MCP 服务器' : 'MCP 服务器列表'}</strong>
-              <small>
-                参照 claudinal 补齐了用户级、项目级和 Claude CLI 全局配置的管理能力。
-              </small>
+              <small>管理 Claude Code 用户级、项目级和全局 MCP 配置。</small>
             </span>
           </div>
           <div className="settings-editor-actions">
@@ -360,14 +346,14 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
         {error ? (
           <div className="plugins-error-panel">
             <strong>{error}</strong>
-            <small>请先确认本机 Claude / Codex 配置文件可读。</small>
+            <small>请先确认本机 Claude Code 配置文件可读。</small>
           </div>
         ) : null}
 
         <div className="plugins-help-panel">
           <span>
             本页可直接管理 <code>~/.claude/mcp.json</code>、<code>&lt;项目&gt;/.mcp.json</code> 和
-            <code>~/.claude.json</code> 的全局 MCP。<code>Claude CLI 项目</code> 仅做只读展示，便于排查覆盖关系。
+            <code>~/.claude.json</code> 的全局 MCP。<code>Claude Code 项目</code> 仅做只读展示，便于排查覆盖关系。
           </span>
         </div>
 
@@ -397,7 +383,7 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
             disabled={loading || saving}
           >
             <ExternalLink size={14} />
-            <span>打开 Claude CLI 配置</span>
+            <span>打开 Claude Code 配置</span>
           </button>
         </div>
 
@@ -416,7 +402,7 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
           />
         ) : (
           <>
-            <div className="settings-list settings-list-spaced">
+            <div className="settings-list settings-list-spaced mcp-managed-list">
               {loading ? <div className="settings-list-empty">正在读取 MCP 配置</div> : null}
               {!loading && rows.length === 0 ? (
                 <div className="settings-list-empty">还没有可管理的 MCP 服务器，点击右上角开始添加。</div>
@@ -447,26 +433,6 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
                 />
               ))}
             </div>
-
-            {externalServers.length > 0 ? (
-              <div className="settings-list settings-list-spaced">
-                <div className="plugins-help-panel">
-                  <span>以下来源当前仍为只读概览，适合排查 Desktop、Codex、Cursor 或 Claude settings.json 里的额外配置。</span>
-                </div>
-                {externalServers.map((server) => (
-                  <div key={server.id} className="settings-list-row settings-list-row-tall">
-                    <div>
-                      <strong>{server.name}</strong>
-                      <small>{server.source}</small>
-                      <small>{server.command ? [server.command, ...(server.args ?? [])].join(' ') : '未提供命令信息'}</small>
-                    </div>
-                    <span className={`settings-badge ${server.status === 'error' ? 'error' : server.status === 'available' ? 'available' : ''}`}>
-                      {statusText(server.status)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            ) : null}
 
             {payload?.overview.errors.length ? (
               <div className="settings-list settings-list-spaced">
@@ -508,22 +474,22 @@ function ManagedRow({
 }) {
   const type = serverType(row.config);
   const disabled = row.config.disabled === true;
+  const status = disabled ? 'disabled' : normalizeManagedStatus(row.summary?.status);
   return (
     <div className="settings-list-row settings-list-row-tall mcp-list-row">
-      <div>
+      <div className="mcp-row-main">
         <div className="mcp-row-title">
           <strong>{row.name}</strong>
           <div className="mcp-row-badges">
+            <span className={`settings-badge ${mcpStatusClass(status)}`}>{mcpStatusText(status)}</span>
             <span className="settings-badge">{scopeLabel(row.scope)}</span>
             <span className="settings-badge">{type === 'http' ? 'HTTP' : 'STDIO'}</span>
-            {disabled ? <span className="settings-badge">已停用</span> : null}
             {row.readOnly ? <span className="settings-badge">只读</span> : null}
             {row.overridesGlobal ? <span className="settings-badge">覆盖用户级</span> : null}
             {row.duplicateOf ? <span className="settings-badge error">可能重复：{row.duplicateOf}</span> : null}
           </div>
         </div>
-        <small title={row.sourcePath}>{row.sourcePath}</small>
-        <small className="mcp-row-summary">
+        <small className="mcp-row-summary" title={row.sourcePath}>
           {type === 'http'
             ? row.config.url || '未配置 URL'
             : [row.config.command, ...(row.config.args ?? [])].filter(Boolean).join(' ') || '未配置启动命令'}
@@ -536,20 +502,22 @@ function ManagedRow({
         ) : null}
       </div>
       <div className="settings-list-actions mcp-list-actions">
-        <Toggle
-          checked={!disabled}
-          onChange={onToggle}
-          label={`${disabled ? '启用' : '停用'} ${row.name}`}
-          disabled={saving || row.readOnly}
-        />
-        <button type="button" className="settings-action-button" onClick={onEdit} disabled={saving || row.readOnly}>
-          <Settings2 size={14} />
-          <span>编辑</span>
-        </button>
-        <button type="button" className="settings-action-button danger" onClick={onDelete} disabled={saving || row.readOnly}>
-          <Trash2 size={14} />
-          <span>{pendingDelete ? '确认删除' : '删除'}</span>
-        </button>
+        <div className="mcp-action-row">
+          <Toggle
+            checked={!disabled}
+            onChange={onToggle}
+            label={`${disabled ? '启用' : '停用'} ${row.name}`}
+            disabled={saving || row.readOnly}
+          />
+          <button type="button" className="settings-action-button" onClick={onEdit} disabled={saving || row.readOnly}>
+            <Settings2 size={14} />
+            <span>编辑</span>
+          </button>
+          <button type="button" className="settings-action-button danger" onClick={onDelete} disabled={saving || row.readOnly}>
+            <Trash2 size={14} />
+            <span>{pendingDelete ? '确认删除' : '删除'}</span>
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -912,6 +880,7 @@ function buildManagedRows(payload: McpManagementResponse | null) {
 
   const rows: ServerRow[] = [];
   const globalNames = new Set<string>();
+  const summariesByName = new Map(payload.overview.servers.map((server) => [server.name, server]));
 
   for (const [name, config] of Object.entries(payload.configs.global.mcpServers ?? {})) {
     globalNames.add(name);
@@ -923,6 +892,7 @@ function buildManagedRows(payload: McpManagementResponse | null) {
       sourcePath: payload.paths.global,
       readOnly: false,
       overridesGlobal: false,
+      summary: summariesByName.get(name),
     });
   }
 
@@ -936,6 +906,7 @@ function buildManagedRows(payload: McpManagementResponse | null) {
       sourcePath: payload.paths.claudeJson,
       readOnly: false,
       overridesGlobal: false,
+      summary: summariesByName.get(name),
     });
   }
 
@@ -948,6 +919,7 @@ function buildManagedRows(payload: McpManagementResponse | null) {
       sourcePath: payload.paths.project,
       readOnly: false,
       overridesGlobal: globalNames.has(name),
+      summary: summariesByName.get(name),
     });
   }
 
@@ -960,6 +932,7 @@ function buildManagedRows(payload: McpManagementResponse | null) {
       sourcePath: payload.paths.claudeJson,
       readOnly: true,
       overridesGlobal: globalNames.has(name),
+      summary: summariesByName.get(name),
     });
   }
 
@@ -1173,17 +1146,40 @@ function scopeLabel(scope: ServerScope) {
     return '项目级';
   }
   if (scope === 'claude-json-global') {
-    return 'CLI 全局';
+    return 'Claude Code 全局';
   }
-  return 'CLI 项目';
+  return 'Claude Code 项目';
 }
 
-function statusText(status: 'available' | 'unknown' | 'error') {
+function normalizeManagedStatus(status?: McpServerSummary['status']) {
   if (status === 'available') {
+    return 'connected';
+  }
+  if (status === 'error') {
+    return 'error';
+  }
+  return 'unknown';
+}
+
+function mcpStatusText(status: 'connected' | 'unknown' | 'error' | 'disabled') {
+  if (status === 'connected') {
     return '可用';
+  }
+  if (status === 'disabled') {
+    return '已停用';
   }
   if (status === 'error') {
     return '异常';
   }
-  return '已配置';
+  return '未知';
+}
+
+function mcpStatusClass(status: 'connected' | 'unknown' | 'error' | 'disabled') {
+  if (status === 'connected') {
+    return 'available';
+  }
+  if (status === 'error') {
+    return 'error';
+  }
+  return '';
 }

@@ -10,7 +10,11 @@ type AppMenuId = 'file' | 'edit' | 'view' | 'window' | 'help';
 type AppMenubarProps = {
   sidebarVisible: boolean;
   windowMaterial: WindowMaterialMode;
+  canNavigateBack: boolean;
+  canNavigateForward: boolean;
   onToggleSidebar: () => void;
+  onNavigateBack: () => void;
+  onNavigateForward: () => void;
   onNewChat: () => void | Promise<void>;
   onOpenFolder: () => void | Promise<void>;
   onOpenCloneDialog: () => void;
@@ -35,7 +39,11 @@ const WINDOW_DRAG_THRESHOLD_PX = 4;
 export function AppMenubar({
   sidebarVisible,
   windowMaterial,
+  canNavigateBack,
+  canNavigateForward,
   onToggleSidebar,
+  onNavigateBack,
+  onNavigateForward,
   onNewChat,
   onOpenFolder,
   onOpenCloneDialog,
@@ -127,10 +135,10 @@ export function AppMenubar({
         <button type="button" aria-label={sidebarVisible ? '隐藏侧边栏' : '显示侧边栏'} onClick={onToggleSidebar}>
           <PanelLeft size={13} />
         </button>
-        <button type="button" aria-label="后退" onClick={() => window.history.back()}>
+        <button type="button" aria-label="后退" disabled={!canNavigateBack} onClick={onNavigateBack}>
           <ArrowLeft size={13} />
         </button>
-        <button type="button" aria-label="前进" onClick={() => window.history.forward()}>
+        <button type="button" aria-label="前进" disabled={!canNavigateForward} onClick={onNavigateForward}>
           <ArrowRight size={13} />
         </button>
       </div>

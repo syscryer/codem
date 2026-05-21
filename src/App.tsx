@@ -11,6 +11,7 @@ import { RightWorkbench } from './components/RightWorkbench';
 import { SidebarProjects } from './components/SidebarProjects';
 import { SettingsView } from './components/settings/SettingsView';
 import { TerminalDock, useTerminalDockState, type TerminalRunRequest } from './components/TerminalDock';
+import { WorktreeCreateDialog } from './components/WorktreeCreateDialog';
 import { WorkspaceStatus } from './components/WorkspaceStatus';
 import { useClaudeRun } from './hooks/useClaudeRun';
 import { useAppSettings } from './hooks/useAppSettings';
@@ -45,7 +46,22 @@ import type {
   ThreadDetail,
   ThreadSummary,
   ToolStep,
+  ProjectSummary,
+  GitCreateWorktreeResult,
 } from './types';
+
+type AppView = { kind: 'workspace' } | { kind: 'settings'; section: SettingsSection };
+
+type AppLocation =
+  | { kind: 'workspace'; projectId: string | null; threadId: string | null }
+  | { kind: 'settings'; section: SettingsSection };
+
+type NavigationHistory = {
+  past: AppLocation[];
+  future: AppLocation[];
+};
+
+const MAX_NAVIGATION_HISTORY = 60;
 
 export default function App() {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
@@ -56,6 +72,7 @@ export default function App() {
   const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
   const workspaceState = useWorkspaceState();
   const {
+    projects,
     panelState,
     activeProjectId,
     activeThreadId,
@@ -75,8 +92,10 @@ export default function App() {
     setInputDialog,
     setConfirmDialog,
     showToast,
+    syncWorkspace,
     loadWorkspace,
     createThread,
+    openWorktreePath,
     selectDirectoryPath,
     cloneRepositoryAndAttach,
     retryCloneTask,
@@ -92,6 +111,9 @@ export default function App() {
     switchProjectGitBranch,
     handleCopySessionId,
     selectThread,
+    selectProject,
+    setActiveProjectId,
+    setActiveThreadId,
     handlePanelStateChange,
     toggleProjectCollapse,
     toggleAllProjects,
@@ -106,9 +128,10 @@ export default function App() {
     appendRawEvent,
     schedulePersistThreadHistory,
   } = workspaceState;
-  const [appView, setAppView] = useState<{ kind: 'workspace' } | { kind: 'settings'; section: SettingsSection }>({
+  const [appView, setAppView] = useState<AppView>({
     kind: 'workspace',
   });
+  const [navigationHistory, setNavigationHistory] = useState<NavigationHistory>({ past: [], future: [] });
   const [gitDialogMode, setGitDialogMode] = useState<'commit' | 'push' | null>(null);
   const [rightWorkbenchOpen, setRightWorkbenchOpen] = useState(false);
   const [rightWorkbenchTab, setRightWorkbenchTab] = useState<RightWorkbenchTab>('overview');
@@ -119,6 +142,7 @@ export default function App() {
   const [previewContentByKey, setPreviewContentByKey] = useState<Record<string, WorkbenchPreviewContentState>>({});
   const [composerDraftsByKey, setComposerDraftsByKey] = useState<Record<string, string>>({});
   const [projectsRefreshing, setProjectsRefreshing] = useState(false);
+  const [worktreeCreateProject, setWorktreeCreateProject] = useState<ProjectSummary | null>(null);
   const terminalDock = useTerminalDockState();
   const terminalDockAvailable = isTauriRuntime();
   const [terminalRunRequest, setTerminalRunRequest] = useState<TerminalRunRequest | null>(null);
@@ -180,6 +204,13 @@ export default function App() {
     persistThreadMetadata,
     clearActiveTurnSelection: () => undefined,
   });
+
+  const currentAppLocation: AppLocation =
+    appView.kind === 'settings'
+      ? { kind: 'settings', section: appView.section }
+      : { kind: 'workspace', projectId: activeProjectId, threadId: activeThreadId };
+  const canNavigateBack = navigationHistory.past.length > 0;
+  const canNavigateForward = navigationHistory.future.length > 0;
 
   useEffect(() => {
     if (settingsLoading || !isTauriRuntime()) {
@@ -317,6 +348,11 @@ export default function App() {
   }
 
   async function handleSelectThread(projectId: string, threadId: string) {
+    const nextLocation: AppLocation = { kind: 'workspace', projectId, threadId };
+    if (!isSameAppLocation(currentAppLocation, nextLocation)) {
+      rememberCurrentLocation();
+    }
+    setAppView({ kind: 'workspace' });
     await selectThread(projectId, threadId);
   }
 
@@ -359,6 +395,7 @@ export default function App() {
 
   async function handleCreateThread(projectId: string) {
     try {
+      rememberCurrentLocation();
       await createThread(projectId);
     } catch (error) {
       showToast(error instanceof Error ? error.message : '新建聊天失败', 'error');
@@ -499,11 +536,11 @@ export default function App() {
   }
 
   function openSettings(section: SettingsSection = 'appearance') {
-    setAppView({ kind: 'settings', section });
+    navigateToLocation({ kind: 'settings', section });
   }
 
   function returnWorkspace() {
-    setAppView({ kind: 'workspace' });
+    navigateToLocation({ kind: 'workspace', projectId: activeProjectId, threadId: activeThreadId });
   }
 
   function showShortcuts() {
@@ -524,6 +561,82 @@ export default function App() {
 
   function handleUnsupportedWindowAction(action: string) {
     showToast(`${action} 会在接入 Tauri 窗口 API 后启用。`, 'info');
+  }
+
+  function rememberCurrentLocation() {
+    setNavigationHistory((current) => ({
+      past: appendNavigationLocation(current.past, currentAppLocation),
+      future: [],
+    }));
+  }
+
+  function navigateToLocation(location: AppLocation) {
+    if (isSameAppLocation(currentAppLocation, location)) {
+      return;
+    }
+
+    setNavigationHistory((current) => ({
+      past: appendNavigationLocation(current.past, currentAppLocation),
+      future: [],
+    }));
+    applyLocation(location);
+  }
+
+  function navigateBack() {
+    const previous = navigationHistory.past.at(-1);
+    if (!previous) {
+      return;
+    }
+
+    setNavigationHistory({
+      past: navigationHistory.past.slice(0, -1),
+      future: [currentAppLocation, ...navigationHistory.future].slice(0, MAX_NAVIGATION_HISTORY),
+    });
+    applyLocation(previous);
+  }
+
+  function navigateForward() {
+    const next = navigationHistory.future[0];
+    if (!next) {
+      return;
+    }
+
+    setNavigationHistory({
+      past: appendNavigationLocation(navigationHistory.past, currentAppLocation),
+      future: navigationHistory.future.slice(1),
+    });
+    applyLocation(next);
+  }
+
+  function applyLocation(location: AppLocation) {
+    if (location.kind === 'settings') {
+      setAppView({ kind: 'settings', section: location.section });
+      return;
+    }
+
+    setAppView({ kind: 'workspace' });
+    if (!location.projectId) {
+      setActiveProjectId(null);
+      setActiveThreadId(null);
+      return;
+    }
+
+    const project = projects.find((item) => item.id === location.projectId);
+    if (!project) {
+      setActiveProjectId(null);
+      setActiveThreadId(null);
+      return;
+    }
+
+    const targetThreadId = project.threads.some((thread) => thread.id === location.threadId)
+      ? location.threadId
+      : project.threads[0]?.id ?? null;
+    if (targetThreadId) {
+      void selectThread(project.id, targetThreadId);
+      return;
+    }
+
+    void selectProject(project.id);
   }
 
   function openReviewWorkbench() {
@@ -607,6 +720,13 @@ export default function App() {
     window.addEventListener('pointerup', handlePointerUp, { once: true });
   }
 
+  function handleWorktreeCreated(result: GitCreateWorktreeResult) {
+    if (result.workspace) {
+      syncWorkspace(result.workspace);
+    }
+    showToast(result.projectId ? '工作树已创建并切换' : '工作树已创建');
+  }
+
   return (
     <div
       className="codex-desktop"
@@ -622,7 +742,11 @@ export default function App() {
       <AppMenubar
         sidebarVisible={sidebarVisible}
         windowMaterial={appearance.windowMaterial}
+        canNavigateBack={canNavigateBack}
+        canNavigateForward={canNavigateForward}
         onToggleSidebar={() => setSidebarVisible((value) => !value)}
+        onNavigateBack={navigateBack}
+        onNavigateForward={navigateForward}
         onNewChat={() => void handleCreatePrimaryChat()}
         onOpenFolder={() => void handlePickProjectDirectory()}
         onOpenCloneDialog={() => setCloneDialogOpen(true)}
@@ -637,7 +761,8 @@ export default function App() {
       {appView.kind === 'settings' ? (
         <SettingsView
           activeSection={appView.section}
-          activeProjectPath={activeProject?.path}
+          activeProject={activeProject}
+          projects={projects}
           general={general}
           appearance={appearance}
           models={appModelSettings}
@@ -645,7 +770,10 @@ export default function App() {
           openWith={openWith}
           openTargets={openTargets}
           claudeModels={claudeModels}
-          onSelectSection={(section) => setAppView({ kind: 'settings', section })}
+          onSelectSection={(section) => navigateToLocation({ kind: 'settings', section })}
+          onOpenWorktreePath={openWorktreePath}
+          onSyncWorkspace={syncWorkspace}
+          showToast={showToast}
           onUpdateGeneral={updateGeneral}
           onUpdateAppearance={updateAppearance}
           onUpdateModels={updateModels}
@@ -681,6 +809,7 @@ export default function App() {
               onCreateThread={handleCreateThread}
               onOpenProject={handleOpenProject}
               onCopyProjectPath={handleCopyProjectPath}
+              onCreateWorktree={(project) => setWorktreeCreateProject(project)}
               onOpenRenameProjectDialog={openRenameProjectDialog}
               onOpenRemoveProjectDialog={openRemoveProjectDialog}
               onToggleProjectCollapse={toggleProjectCollapse}
@@ -774,8 +903,11 @@ export default function App() {
               <WorkspaceStatus
                 activeProject={activeProject}
                 activeThread={activeThread}
+                projects={projects}
                 onLoadBranches={loadProjectGitBranches}
                 onSelectBranch={switchProjectGitBranch}
+                onOpenWorktreePath={openWorktreePath}
+                onCreateWorktree={(project) => setWorktreeCreateProject(project)}
               />
 
               {terminalDockAvailable ? (
@@ -835,6 +967,14 @@ export default function App() {
         onCloseConfirmDialog={() => setConfirmDialog(null)}
         onConfirmRemoveDialog={confirmRemoveDialog}
       />
+      {worktreeCreateProject ? (
+        <WorktreeCreateDialog
+          project={worktreeCreateProject}
+          onClose={() => setWorktreeCreateProject(null)}
+          onCreated={handleWorktreeCreated}
+          showToast={showToast}
+        />
+      ) : null}
       {gitDialogMode && activeProject ? (
         <GitDialog
           mode={gitDialogMode}
@@ -880,6 +1020,30 @@ function isEditableShortcutTarget(target: EventTarget | null) {
 
   const tagName = target.tagName.toLowerCase();
   return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.isContentEditable;
+}
+
+function appendNavigationLocation(locations: AppLocation[], location: AppLocation) {
+  if (isSameAppLocation(locations.at(-1) ?? null, location)) {
+    return locations;
+  }
+
+  return [...locations, location].slice(-MAX_NAVIGATION_HISTORY);
+}
+
+function isSameAppLocation(left: AppLocation | null, right: AppLocation | null) {
+  if (!left || !right || left.kind !== right.kind) {
+    return false;
+  }
+
+  if (left.kind === 'settings' && right.kind === 'settings') {
+    return left.section === right.section;
+  }
+
+  if (left.kind === 'workspace' && right.kind === 'workspace') {
+    return left.projectId === right.projectId && left.threadId === right.threadId;
+  }
+
+  return false;
 }
 
 function CurrentTaskDock({ activeThread }: { activeThread: ThreadDetail | null }) {

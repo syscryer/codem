@@ -11,6 +11,7 @@ import {
   Server,
   Settings,
   Puzzle,
+  TreePine,
 } from 'lucide-react';
 import type { SettingsSection } from '../../types';
 
@@ -27,6 +28,7 @@ const settingsSections: Array<{ id: SettingsSection; label: string; icon: typeof
   { id: 'providers', label: '模型设置', icon: Box },
   { id: 'usage', label: '使用情况', icon: BarChart3 },
   { id: 'sessions', label: '会话管理', icon: MessageSquareText },
+  { id: 'worktree', label: '工作树', icon: TreePine },
   { id: 'mcp', label: 'MCP 管理', icon: Server },
   { id: 'plugins', label: '插件管理', icon: Puzzle },
   { id: 'globalPrompts', label: '全局提示词', icon: Braces },

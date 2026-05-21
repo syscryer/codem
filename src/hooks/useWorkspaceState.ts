@@ -542,6 +542,29 @@ export function useWorkspaceState() {
     return payload;
   }
 
+  async function openWorktreePath(worktreePath: string) {
+    const payload = await createProjectFromPath(worktreePath, {
+      successMessage: null,
+    });
+    const project = payload.workspace.projects.find((item) => item.id === payload.projectId) ?? null;
+    if (!project) {
+      showToast('工作树已加入项目，但切换失败。', 'error');
+      return;
+    }
+
+    const firstThread = project.threads[0];
+    if (firstThread) {
+      setActiveProjectId(project.id);
+      setActiveThreadId(firstThread.id);
+      await persistSelection(project.id, firstThread.id);
+      showToast('已切换到工作树');
+      return;
+    }
+
+    await createThread(project.id, undefined, { showToast: false });
+    showToast('已切换到工作树');
+  }
+
   async function selectDirectoryPath(initialPath?: string) {
     if (directoryPickerPromiseRef.current) {
       return directoryPickerPromiseRef.current;
@@ -1101,6 +1124,7 @@ export function useWorkspaceState() {
     loadWorkspace,
     createThread,
     createProjectFromPath,
+    openWorktreePath,
     selectDirectoryPath,
     cloneRepositoryAndAttach,
     retryCloneTask,

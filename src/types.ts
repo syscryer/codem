@@ -198,6 +198,7 @@ export type SettingsSection =
   | 'providers'
   | 'usage'
   | 'sessions'
+  | 'worktree'
   | 'mcp'
   | 'plugins'
   | 'globalPrompts'
@@ -383,6 +384,35 @@ export type GitDiffSummary = {
 export type GitBranchSummary = {
   name: string;
   current: boolean;
+};
+
+export type GitWorktreeInfo = {
+  path: string;
+  head: string | null;
+  branch: string | null;
+  detached: boolean;
+  bare: boolean;
+  locked: string | null;
+  prunable: string | null;
+  main: boolean;
+  current: boolean;
+  exists: boolean;
+  changedFiles: number | null;
+  statusError: string | null;
+};
+
+export type GitWorktreeList = {
+  isRepo: boolean;
+  currentRoot: string | null;
+  worktrees: GitWorktreeInfo[];
+};
+
+export type GitCreateWorktreeResult = {
+  ok: true;
+  path: string;
+  branch: string;
+  projectId: string | null;
+  workspace?: WorkspaceBootstrap;
 };
 
 export type ProjectGitSummary = Pick<ProjectSummary, 'gitBranch' | 'gitDiff' | 'isGitRepo'>;

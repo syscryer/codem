@@ -1,3 +1,4 @@
+import { Blocks, Download, FolderOpen, Sparkles, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { InstalledPlugin, Marketplace, PluginSubTab, PluginTab, Skill } from '../../../types';
 import {
@@ -52,6 +53,7 @@ export function PluginsSuite() {
   const [skillImportOverwrite, setSkillImportOverwrite] = useState(false);
   const [pluginInstallScope, setPluginInstallScope] = useState<PluginScope>('user');
   const [pickingSkillDirectory, setPickingSkillDirectory] = useState(false);
+  const [skillImportDialogOpen, setSkillImportDialogOpen] = useState(false);
 
   useEffect(() => {
     void refreshAll();
@@ -99,10 +101,12 @@ export function PluginsSuite() {
     try {
       await task();
       await refreshAll();
+      return true;
     } catch (mutationError) {
       const analysis = analyzePluginError(action, mutationError);
       setError(`${analysis.summary}。${analysis.hints[0]?.message ?? analysis.raw}`);
       setErrorDetail(analysis.raw);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -126,7 +130,7 @@ export function PluginsSuite() {
       return;
     }
 
-    await performMutation('导入 Skill', async () => {
+    const imported = await performMutation('导入 Skill', async () => {
       await installSkillFromPath({
         path: targetPath,
         scope: skillImportScope,
@@ -136,6 +140,9 @@ export function PluginsSuite() {
       setSkillImportOverwrite(false);
       setSkillImportScope('user');
     });
+    if (imported) {
+      setSkillImportDialogOpen(false);
+    }
   }
 
   async function handlePickSkillDirectory() {
@@ -158,16 +165,42 @@ export function PluginsSuite() {
   return (
     <section className="settings-page-section">
       <header className="settings-section-head">
-        <h1>插件管理</h1>
+        <h1>插件 & 技能</h1>
+        <p>管理 Claude Code 原生插件与技能；与 CLI 共用同一份配置。</p>
       </header>
 
       <div className="settings-panel settings-editor-panel plugins-suite-panel">
-        <div className="settings-editor-head">
-          <div className="settings-row-label">
-            <span>
-              <strong>Claude 插件与 Skills</strong>
-              <small>管理 Claude Code 原生插件、Marketplace 与 Skills。</small>
-            </span>
+        <div className="plugins-panel-topbar">
+          <div className="plugins-nav-stack">
+            <div className="plugins-primary-tabs" aria-label="插件与技能">
+              <button type="button" className={tab === 'plugins' ? 'active' : ''} onClick={() => setTab('plugins')}>
+                <Blocks size={15} />
+                <span>插件</span>
+                <TabCount value={installed.length} />
+              </button>
+              <button type="button" className={tab === 'skills' ? 'active' : ''} onClick={() => setTab('skills')}>
+                <Sparkles size={15} />
+                <span>技能</span>
+                <TabCount value={skills.length} />
+              </button>
+            </div>
+
+            {tab === 'plugins' ? (
+              <div className="plugins-secondary-tabs" aria-label="插件分类">
+                <button type="button" className={subTab === 'installed' ? 'active' : ''} onClick={() => setSubTab('installed')}>
+                  <span>已安装</span>
+                  <TabCount value={installed.length} />
+                </button>
+                <button type="button" className={subTab === 'discover' ? 'active' : ''} onClick={() => setSubTab('discover')}>
+                  <span>发现</span>
+                  <TabCount value={discoverItems.length} />
+                </button>
+                <button type="button" className={subTab === 'marketplaces' ? 'active' : ''} onClick={() => setSubTab('marketplaces')}>
+                  <span>Marketplace</span>
+                  <TabCount value={marketplaces.length} />
+                </button>
+              </div>
+            ) : null}
           </div>
           <div className="settings-editor-actions">
             <button type="button" className="settings-action-button" disabled={loading || busy} onClick={() => void refreshAll()}>
@@ -176,29 +209,8 @@ export function PluginsSuite() {
           </div>
         </div>
 
-        <div className="settings-segmented">
-          <button type="button" className={tab === 'plugins' ? 'active' : ''} onClick={() => setTab('plugins')}>
-            插件
-          </button>
-          <button type="button" className={tab === 'skills' ? 'active' : ''} onClick={() => setTab('skills')}>
-            Skills
-          </button>
-        </div>
-
         {tab === 'plugins' ? (
           <>
-            <div className="settings-segmented">
-              <button type="button" className={subTab === 'installed' ? 'active' : ''} onClick={() => setSubTab('installed')}>
-                已安装
-              </button>
-              <button type="button" className={subTab === 'discover' ? 'active' : ''} onClick={() => setSubTab('discover')}>
-                发现
-              </button>
-              <button type="button" className={subTab === 'marketplaces' ? 'active' : ''} onClick={() => setSubTab('marketplaces')}>
-                市场
-              </button>
-            </div>
-
             <div className="plugins-toolbar">
               <label className="settings-search">
                 <input
@@ -258,49 +270,18 @@ export function PluginsSuite() {
                   placeholder="搜索 skill 名称、来源、路径"
                 />
               </label>
+              <button
+                type="button"
+                className="settings-action-button primary plugins-import-trigger"
+                disabled={busy}
+                onClick={() => setSkillImportDialogOpen(true)}
+              >
+                <Download size={14} />
+                导入技能
+              </button>
             </div>
 
             <div className="plugins-skill-actions">
-              <div className="plugins-input-grid">
-                <input
-                  className="settings-text-input"
-                  value={skillImportPath}
-                  onChange={(event) => setSkillImportPath(event.target.value)}
-                  placeholder="本地技能目录路径"
-                />
-                <button
-                  type="button"
-                  className="settings-action-button"
-                  disabled={busy || pickingSkillDirectory}
-                  onClick={() => void handlePickSkillDirectory()}
-                >
-                  {pickingSkillDirectory ? '选择中' : '浏览'}
-                </button>
-                <select value={skillImportScope} onChange={(event) => setSkillImportScope(event.target.value as SkillScope)}>
-                  <option value="user">用户级</option>
-                  <option value="project">项目级</option>
-                </select>
-                <label className="plugins-inline-check">
-                  <input
-                    type="checkbox"
-                    checked={skillImportOverwrite}
-                    onChange={(event) => setSkillImportOverwrite(event.target.checked)}
-                  />
-                  <span>覆盖同名</span>
-                </label>
-                <button
-                  type="button"
-                  className="settings-action-button primary"
-                  disabled={busy || !skillImportPath.trim()}
-                  onClick={() => void handleInstallSkillFromPath()}
-                >
-                  导入 Skill
-                </button>
-              </div>
-              <div className="plugins-help-panel">
-                用户级写入 <code>~/.claude/skills</code>；项目级写入当前项目的 <code>.claude/skills</code>。
-              </div>
-
               <div className="plugins-builtin-grid">
                 {builtinSkillInstallers.map((item) => (
                   <div key={item.id} className="plugins-builtin-card">
@@ -371,16 +352,134 @@ export function PluginsSuite() {
           />
         ) : null}
         {!loading && !error && tab === 'skills' ? (
-          <SkillsPanel
-            items={filteredSkills}
-            onCopyPath={(skill) => {
-              void navigator.clipboard?.writeText(skill.path);
-            }}
-          />
+          <SkillsPanel items={filteredSkills} />
         ) : null}
       </div>
+
+      {skillImportDialogOpen ? (
+        <div
+          className="dialog-backdrop plugins-import-backdrop"
+          role="presentation"
+          onClick={() => {
+            if (!busy && !pickingSkillDirectory) {
+              setSkillImportDialogOpen(false);
+            }
+          }}
+        >
+          <section
+            className="dialog-card plugins-import-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="plugins-import-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="plugins-import-head">
+              <div>
+                <h2 id="plugins-import-title">
+                  <FolderOpen size={20} />
+                  导入技能
+                </h2>
+                <p>选择包含 SKILL.md 的技能目录，或包含多个技能子目录的父目录。</p>
+              </div>
+              <button
+                type="button"
+                className="settings-icon-button plugins-import-close"
+                aria-label="关闭导入技能"
+                disabled={busy || pickingSkillDirectory}
+                onClick={() => setSkillImportDialogOpen(false)}
+              >
+                <X size={18} />
+              </button>
+            </header>
+
+            <div className="plugins-import-body">
+              <label className="plugins-import-field">
+                <span>技能目录</span>
+                <div className="plugins-import-path-row">
+                  <input
+                    className="settings-text-input"
+                    value={skillImportPath}
+                    onChange={(event) => setSkillImportPath(event.target.value)}
+                    placeholder="C:/Users/you/Downloads/my-skill"
+                    disabled={busy}
+                  />
+                  <button
+                    type="button"
+                    className="settings-action-button"
+                    disabled={busy || pickingSkillDirectory}
+                    onClick={() => void handlePickSkillDirectory()}
+                  >
+                    <FolderOpen size={15} />
+                    {pickingSkillDirectory ? '选择中' : '浏览'}
+                  </button>
+                </div>
+              </label>
+
+              <label className="plugins-import-field">
+                <span>安装范围</span>
+                <select
+                  className="plugins-import-select"
+                  value={skillImportScope}
+                  disabled={busy}
+                  onChange={(event) => setSkillImportScope(event.target.value as SkillScope)}
+                >
+                  <option value="user">用户级（所有项目）</option>
+                  <option value="project">项目级（当前项目）</option>
+                </select>
+              </label>
+
+              <label className="plugins-import-option">
+                <span>
+                  <strong>覆盖同名技能</strong>
+                  <small>关闭时遇到同名技能会直接报错，不会替换现有目录。</small>
+                </span>
+                <span className="settings-toggle">
+                  <input
+                    type="checkbox"
+                    checked={skillImportOverwrite}
+                    disabled={busy}
+                    onChange={(event) => setSkillImportOverwrite(event.target.checked)}
+                  />
+                  <span aria-hidden="true" />
+                </span>
+              </label>
+
+              <div className="plugins-import-location">
+                <strong>安装位置</strong>
+                <small>
+                  用户级写入 <code>~/.claude/skills</code>；项目级写入当前项目的 <code>.claude/skills</code>。
+                </small>
+              </div>
+            </div>
+
+            <footer className="plugins-import-actions">
+              <button
+                type="button"
+                className="settings-action-button"
+                disabled={busy || pickingSkillDirectory}
+                onClick={() => setSkillImportDialogOpen(false)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="settings-action-button primary"
+                disabled={busy || pickingSkillDirectory || !skillImportPath.trim()}
+                onClick={() => void handleInstallSkillFromPath()}
+              >
+                <Download size={14} />
+                导入
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
     </section>
   );
+}
+
+function TabCount({ value }: { value: number }) {
+  return <span className="plugins-tab-count">{value}</span>;
 }
 
 function filterInstalledPlugins(items: InstalledPlugin[], query: string) {

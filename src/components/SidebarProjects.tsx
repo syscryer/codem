@@ -52,6 +52,7 @@ type SidebarProjectsProps = {
   onCreateThread: (projectId: string) => void | Promise<unknown>;
   onOpenProject: (project: ProjectSummary) => void | Promise<void>;
   onCopyProjectPath: (project: ProjectSummary) => void | Promise<void>;
+  onCreateWorktree: (project: ProjectSummary) => void;
   onOpenRenameProjectDialog: (project: ProjectSummary) => void;
   onOpenRemoveProjectDialog: (project: ProjectSummary) => void;
   onToggleProjectCollapse: (projectId: string) => void;
@@ -87,6 +88,7 @@ export function SidebarProjects({
   onCreateThread,
   onOpenProject,
   onCopyProjectPath,
+  onCreateWorktree,
   onOpenRenameProjectDialog,
   onOpenRemoveProjectDialog,
   onToggleProjectCollapse,
@@ -364,6 +366,18 @@ export function SidebarProjects({
                         <button type="button" className="workspace-menu-item" onClick={() => { setProjectMenuProjectId(null); void onCopyProjectPath(project); }}>
                           <Copy size={14} />
                           <span>复制路径</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="workspace-menu-item"
+                          disabled={!project.isGitRepo}
+                          onClick={() => {
+                            setProjectMenuProjectId(null);
+                            onCreateWorktree(project);
+                          }}
+                        >
+                          <GitBranchPlus size={14} />
+                          <span>创建永久工作树</span>
                         </button>
                         <button type="button" className="workspace-menu-item" onClick={() => { setProjectMenuProjectId(null); onOpenRenameProjectDialog(project); }}>
                           <Pencil size={14} />

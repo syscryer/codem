@@ -25,6 +25,7 @@ import {
   createProject,
   createThread,
   commitProjectGitChanges,
+  createProjectGitWorktree,
   getProjectGitFileDiff,
   getProjectGitPushPreview,
   getProjectGitSummary,
@@ -33,16 +34,19 @@ import {
   getUsageStats,
   getWorkspaceBootstrap,
   listProjectFiles,
+  listProjectGitWorktrees,
   listOpenTargets,
   listProjectGitBranches,
   openProjectInEditor,
   openProjectInExplorer,
   removeProject,
+  removeProjectGitWorktree,
   removeThread,
   renameProject,
   renameThread,
   saveThreadHistory,
   setActiveSelection,
+  suggestProjectGitWorktreePath,
   pushProjectGitBranch,
   switchProjectGitBranch,
   updatePanelState,
@@ -497,6 +501,24 @@ app.post('/api/projects/:projectId/open', (request, response) => {
   }
 });
 
+app.post('/api/system/open-path', async (request, response) => {
+  const targetPath =
+    typeof request.body?.path === 'string' && request.body.path.trim()
+      ? path.resolve(request.body.path.trim())
+      : '';
+  if (!targetPath) {
+    response.status(400).send('path 不能为空');
+    return;
+  }
+
+  try {
+    await openPath(targetPath);
+    response.json({ ok: true });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '打开路径失败');
+  }
+});
+
 app.post('/api/system/attachments/image', async (request, response) => {
   const workingDirectory =
     typeof request.body?.workingDirectory === 'string' ? request.body.workingDirectory.trim() : '';
@@ -727,6 +749,76 @@ app.post('/api/projects/:projectId/git/switch', async (request, response) => {
     response.json(await switchProjectGitBranch(request.params.projectId, branch));
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '切换 Git 分支失败');
+  }
+});
+
+app.get('/api/projects/:projectId/git/worktrees', async (request, response) => {
+  try {
+    response.json(await listProjectGitWorktrees(request.params.projectId));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '读取工作树失败');
+  }
+});
+
+app.get('/api/projects/:projectId/git/worktrees/suggest-path', async (request, response) => {
+  const branch = typeof request.query.branch === 'string' ? request.query.branch.trim() : '';
+  try {
+    response.json({
+      path: await suggestProjectGitWorktreePath(request.params.projectId, branch),
+    });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '生成工作树路径失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/worktrees', async (request, response) => {
+  const branch = typeof request.body?.branch === 'string' ? request.body.branch.trim() : '';
+  const worktreePath = typeof request.body?.path === 'string' ? request.body.path.trim() : '';
+  const base = typeof request.body?.base === 'string' ? request.body.base.trim() : undefined;
+  const addProject = request.body?.addProject !== false;
+
+  if (!branch) {
+    response.status(400).send('branch 不能为空');
+    return;
+  }
+  if (!worktreePath) {
+    response.status(400).send('path 不能为空');
+    return;
+  }
+
+  try {
+    const result = await createProjectGitWorktree(request.params.projectId, {
+      branch,
+      path: worktreePath,
+      base,
+    });
+    const projectId = addProject ? createProject(result.path) : null;
+    response.json({
+      ok: true,
+      ...result,
+      projectId,
+      workspace: addProject ? getWorkspaceBootstrap() : undefined,
+    });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '创建工作树失败');
+  }
+});
+
+app.delete('/api/projects/:projectId/git/worktrees', async (request, response) => {
+  const worktreePath = typeof request.body?.path === 'string' ? request.body.path.trim() : '';
+  if (!worktreePath) {
+    response.status(400).send('path 不能为空');
+    return;
+  }
+
+  try {
+    await removeProjectGitWorktree(request.params.projectId, worktreePath);
+    response.json({
+      ok: true,
+      workspace: getWorkspaceBootstrap(),
+    });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '删除工作树失败');
   }
 });
 

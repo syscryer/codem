@@ -175,6 +175,38 @@ export type GitBranchSummary = {
   current: boolean;
 };
 
+export type GitWorktreeInfo = {
+  path: string;
+  head: string | null;
+  branch: string | null;
+  detached: boolean;
+  bare: boolean;
+  locked: string | null;
+  prunable: string | null;
+  main: boolean;
+  current: boolean;
+  exists: boolean;
+  changedFiles: number | null;
+  statusError: string | null;
+};
+
+export type GitWorktreeList = {
+  isRepo: boolean;
+  currentRoot: string | null;
+  worktrees: GitWorktreeInfo[];
+};
+
+export type GitCreateWorktreeRequest = {
+  branch: string;
+  path: string;
+  base?: string | null;
+};
+
+export type GitCreateWorktreeResult = {
+  path: string;
+  branch: string;
+};
+
 export type GitFileStatus = {
   path: string;
   originalPath?: string;
@@ -516,6 +548,17 @@ export function removeProject(projectId: string) {
     if (!remainingThread) {
       deleteStateValue('activeThreadId');
     }
+  }
+}
+
+function removeProjectByPath(projectPath: string) {
+  const normalizedPath = path.resolve(projectPath);
+  const project = db
+    .prepare(`SELECT id FROM projects WHERE path = ?`)
+    .get(normalizedPath) as { id: string } | undefined;
+
+  if (project) {
+    removeProject(project.id);
   }
 }
 
@@ -1069,6 +1112,101 @@ export async function switchProjectGitBranch(projectId: string, branchName: stri
   }
 
   return getProjectGitSummary(projectId);
+}
+
+export async function listProjectGitWorktrees(projectId: string): Promise<GitWorktreeList> {
+  const projectPath = readProjectPath(projectId);
+  const gitInfo = await readGitInfoAsync(projectPath, false);
+  if (!gitInfo.isGitRepo) {
+    return {
+      isRepo: false,
+      currentRoot: null,
+      worktrees: [],
+    };
+  }
+
+  const currentRoot = await readGitRepositoryRoot(projectPath);
+  const listResult = await runGitCommand(projectPath, ['worktree', 'list', '--porcelain']);
+  if (listResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(listResult, '读取工作树失败'));
+  }
+
+  const worktrees = await hydrateGitWorktreeEntries(
+    parseGitWorktreePorcelain(listResult.stdout, currentRoot),
+  );
+
+  return {
+    isRepo: true,
+    currentRoot,
+    worktrees,
+  };
+}
+
+export async function suggestProjectGitWorktreePath(projectId: string, branchName: string) {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const root = await readGitRepositoryRoot(projectPath);
+  const repoName = sanitizeWorktreePathPart(path.basename(root) || 'repo');
+  const branchPart = sanitizeWorktreePathPart(branchName || `codex-${timestampSlug()}`);
+  return path.join(homedir(), '.codem', 'worktrees', repoName, branchPart);
+}
+
+export async function createProjectGitWorktree(
+  projectId: string,
+  request: GitCreateWorktreeRequest,
+): Promise<GitCreateWorktreeResult> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+
+  const branch = request.branch.trim();
+  const targetPath = request.path.trim();
+  const base = request.base?.trim() || 'HEAD';
+  if (!branch) {
+    throw new Error('分支名不能为空');
+  }
+  if (!targetPath) {
+    throw new Error('工作树路径不能为空');
+  }
+
+  const resolvedTargetPath = path.resolve(targetPath);
+  mkdirSync(path.dirname(resolvedTargetPath), { recursive: true });
+
+  const result = await runGitCommand(projectPath, ['worktree', 'add', '-b', branch, resolvedTargetPath, base]);
+  if (result.status !== 0) {
+    throw new Error(normalizeGitCommandError(result, '创建工作树失败'));
+  }
+
+  return {
+    path: resolvedTargetPath,
+    branch,
+  };
+}
+
+export async function removeProjectGitWorktree(projectId: string, worktreePath: string) {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+
+  const trimmedPath = worktreePath.trim();
+  if (!trimmedPath) {
+    throw new Error('工作树路径不能为空');
+  }
+  const targetPath = path.resolve(trimmedPath);
+
+  const list = await listProjectGitWorktrees(projectId);
+  const target = list.worktrees.find((worktree) => samePath(worktree.path, targetPath));
+  if (!target) {
+    throw new Error('该路径不属于当前仓库的工作树');
+  }
+  if (target.current) {
+    throw new Error('不能删除当前正在使用的主工作区');
+  }
+
+  const result = await runGitCommand(projectPath, ['worktree', 'remove', target.path]);
+  if (result.status !== 0) {
+    throw new Error(normalizeGitCommandError(result, '删除工作树失败'));
+  }
+
+  removeProjectByPath(target.path);
 }
 
 export async function getProjectGitStatus(projectId: string): Promise<GitStatusSnapshot> {
@@ -2421,6 +2559,134 @@ async function ensureGitRepository(projectPath: string) {
   if (!gitInfo.isGitRepo) {
     throw new Error('当前项目不是 Git 仓库');
   }
+}
+
+async function readGitRepositoryRoot(projectPath: string) {
+  const result = await runGitCommand(projectPath, ['rev-parse', '--show-toplevel']);
+  if (result.status !== 0) {
+    throw new Error(normalizeGitCommandError(result, '读取 Git 仓库根目录失败'));
+  }
+
+  return path.resolve(result.stdout.trim());
+}
+
+async function hydrateGitWorktreeEntries(entries: GitWorktreeInfo[]) {
+  const hydrated: GitWorktreeInfo[] = [];
+  for (const entry of entries) {
+    if (!entry.exists || entry.bare) {
+      hydrated.push(entry);
+      continue;
+    }
+
+    const statusResult = await runGitCommand(entry.path, ['status', '--porcelain=v1', '-uno']);
+    hydrated.push({
+      ...entry,
+      changedFiles: statusResult.status === 0
+        ? statusResult.stdout.split(/\r?\n/).filter(Boolean).length
+        : null,
+      statusError: statusResult.status === 0
+        ? null
+        : normalizeGitCommandError(statusResult, '读取工作树状态失败'),
+    });
+  }
+
+  return hydrated;
+}
+
+function parseGitWorktreePorcelain(output: string, currentRoot: string): GitWorktreeInfo[] {
+  const entries: GitWorktreeInfo[] = [];
+  let current: GitWorktreeInfo | null = null;
+
+  function pushCurrent() {
+    if (current) {
+      entries.push(current);
+      current = null;
+    }
+  }
+
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (!line) {
+      pushCurrent();
+      continue;
+    }
+
+    const [key, ...rest] = line.split(' ');
+    const value = rest.join(' ');
+    if (key === 'worktree') {
+      pushCurrent();
+      const worktreePath = path.resolve(value);
+      current = {
+        path: worktreePath,
+        head: null,
+        branch: null,
+        detached: false,
+        bare: false,
+        locked: null,
+        prunable: null,
+        main: false,
+        current: samePath(worktreePath, currentRoot),
+        exists: existsSync(worktreePath),
+        changedFiles: null,
+        statusError: null,
+      };
+      continue;
+    }
+
+    if (!current) {
+      continue;
+    }
+
+    if (key === 'HEAD') {
+      current.head = value || null;
+    } else if (key === 'branch') {
+      current.branch = value.replace(/^refs\/heads\//, '') || null;
+    } else if (key === 'detached') {
+      current.detached = true;
+    } else if (key === 'bare') {
+      current.bare = true;
+    } else if (key === 'locked') {
+      current.locked = value || '';
+    } else if (key === 'prunable') {
+      current.prunable = value || '';
+    }
+  }
+
+  pushCurrent();
+  if (entries[0]) {
+    entries[0].main = true;
+  }
+  return entries;
+}
+
+function samePath(left: string, right: string) {
+  return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+}
+
+function sanitizeWorktreePathPart(value: string) {
+  const normalized = value
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^refs\/heads\//, '')
+    .replace(/[^a-zA-Z0-9._/-]+/g, '-')
+    .replace(/\.\.+/g, '.')
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/\/+/g, '-');
+  return normalized || 'worktree';
+}
+
+function timestampSlug() {
+  const date = new Date();
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    '-',
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ].join('');
 }
 
 function parseGitStatus(output: string): GitStatusSnapshot {

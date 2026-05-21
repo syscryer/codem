@@ -1,14 +1,18 @@
-import { Activity, Check, GitFork, LayoutPanelLeft, RefreshCw } from 'lucide-react';
+import { Activity, Check, GitBranchPlus, GitFork, LayoutPanelLeft, RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
+import { fetchProjectWorktrees } from '../lib/worktree-api';
 import { PopoverPortal } from './PopoverPortal';
-import type { GitBranchSummary, ProjectSummary, ThreadDetail } from '../types';
+import type { GitBranchSummary, GitWorktreeInfo, GitWorktreeList, ProjectSummary, ThreadDetail } from '../types';
 
 type WorkspaceStatusProps = {
   activeProject: ProjectSummary | null;
   activeThread: ThreadDetail | null;
+  projects: ProjectSummary[];
   onLoadBranches: (projectId: string) => Promise<GitBranchSummary[]>;
   onSelectBranch: (projectId: string, branchName: string) => Promise<void>;
+  onOpenWorktreePath: (worktreePath: string) => Promise<void>;
+  onCreateWorktree: (project: ProjectSummary) => void;
 };
 
 type ActiveRunPayload =
@@ -43,10 +47,14 @@ type ActiveRunPayload =
 export function WorkspaceStatus({
   activeProject,
   activeThread,
+  projects,
   onLoadBranches,
   onSelectBranch,
+  onOpenWorktreePath,
+  onCreateWorktree,
 }: WorkspaceStatusProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
   const [runStatusOpen, setRunStatusOpen] = useState(false);
   const [runStatus, setRunStatus] = useState<ActiveRunPayload | null>(null);
   const [runStatusLoading, setRunStatusLoading] = useState(false);
@@ -55,12 +63,18 @@ export function WorkspaceStatus({
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [switchingBranch, setSwitchingBranch] = useState<string | null>(null);
+  const [worktrees, setWorktrees] = useState<GitWorktreeList | null>(null);
+  const [worktreesLoading, setWorktreesLoading] = useState(false);
+  const [worktreesError, setWorktreesError] = useState<string | null>(null);
+  const [switchingWorktreePath, setSwitchingWorktreePath] = useState<string | null>(null);
   const branchMenuRef = useRef<HTMLDivElement | null>(null);
+  const worktreeMenuRef = useRef<HTMLDivElement | null>(null);
   const runStatusRef = useRef<HTMLDivElement | null>(null);
 
   useOutsideDismiss({
     selectors: [
       { selector: '.status-branch-menu', onDismiss: () => setMenuOpen(false), anchorRefs: [branchMenuRef] },
+      { selector: '.status-worktree-menu', onDismiss: () => setWorktreeMenuOpen(false), anchorRefs: [worktreeMenuRef] },
       { selector: '.status-run-menu', onDismiss: () => setRunStatusOpen(false), anchorRefs: [runStatusRef] },
     ],
   });
@@ -71,6 +85,11 @@ export function WorkspaceStatus({
     setLoading(false);
     setLoadError(null);
     setSwitchingBranch(null);
+    setWorktreeMenuOpen(false);
+    setWorktrees(null);
+    setWorktreesError(null);
+    setWorktreesLoading(false);
+    setSwitchingWorktreePath(null);
   }, [activeProject?.id]);
 
   useEffect(() => {
@@ -81,6 +100,7 @@ export function WorkspaceStatus({
   }, [activeThread?.id]);
 
   const canSelectBranch = Boolean(activeProject?.isGitRepo && activeProject?.id);
+  const canSelectWorktree = Boolean(activeProject?.isGitRepo && activeProject?.id);
 
   async function ensureBranchesLoaded(force = false) {
     if (!activeProject?.id || !canSelectBranch) {
@@ -137,6 +157,68 @@ export function WorkspaceStatus({
     }
   }
 
+  async function ensureWorktreesLoaded(force = false) {
+    if (!activeProject?.id || !canSelectWorktree) {
+      return;
+    }
+
+    if (worktreesLoading || (worktrees && !force)) {
+      return;
+    }
+
+    setWorktreesLoading(true);
+    setWorktreesError(null);
+    try {
+      setWorktrees(await fetchProjectWorktrees(activeProject.id));
+    } catch (error) {
+      setWorktreesError(error instanceof Error ? error.message : '读取工作树失败');
+    } finally {
+      setWorktreesLoading(false);
+    }
+  }
+
+  async function handleWorktreeTriggerClick() {
+    if (!canSelectWorktree) {
+      return;
+    }
+
+    const nextOpen = !worktreeMenuOpen;
+    setWorktreeMenuOpen(nextOpen);
+    if (nextOpen) {
+      await ensureWorktreesLoaded();
+    }
+  }
+
+  async function handleWorktreeSelect(worktree: GitWorktreeInfo) {
+    if (!activeProject) {
+      return;
+    }
+
+    if (samePath(worktree.path, activeProject.path)) {
+      setWorktreeMenuOpen(false);
+      return;
+    }
+
+    setSwitchingWorktreePath(worktree.path);
+    try {
+      await onOpenWorktreePath(worktree.path);
+      setWorktreeMenuOpen(false);
+    } catch (error) {
+      setWorktreesError(error instanceof Error ? error.message : '切换工作树失败');
+    } finally {
+      setSwitchingWorktreePath(null);
+    }
+  }
+
+  function handleCreateWorktreeClick() {
+    if (!activeProject || !canSelectWorktree) {
+      return;
+    }
+
+    setWorktreeMenuOpen(false);
+    onCreateWorktree(activeProject);
+  }
+
   async function loadRunStatus() {
     if (!activeThread?.id) {
       setRunStatus({ active: false });
@@ -175,10 +257,75 @@ export function WorkspaceStatus({
 
   return (
     <footer className="workspace-status">
-      <span className="status-item status-workspace">
-        <LayoutPanelLeft size={12} />
-        <span>本地工作</span>
-      </span>
+      <div className="status-workspace-picker" ref={worktreeMenuRef}>
+        <PopoverPortal open={worktreeMenuOpen} anchorRef={worktreeMenuRef} placement="top-start">
+          <div className="status-branch-menu status-worktree-menu" role="menu" aria-label="Git 工作树">
+            <div className="status-branch-menu-title">切换工作树</div>
+            {worktreesLoading ? <div className="status-branch-menu-state">正在读取工作树...</div> : null}
+            {!worktreesLoading && worktreesError ? <div className="status-branch-menu-error">{worktreesError}</div> : null}
+            {!worktreesLoading && !worktreesError && (worktrees?.worktrees.length ?? 0) <= 1 ? (
+              <div className="status-branch-menu-state">当前只有主工作区，可以新建工作树。</div>
+            ) : null}
+            {!worktreesLoading && !worktreesError
+              ? (worktrees?.worktrees ?? []).map((worktree, index) => {
+                  const isCurrent = activeProject ? samePath(worktree.path, activeProject.path) : false;
+                  const isMain = worktree.main || index === 0;
+                  const isSwitching = switchingWorktreePath === worktree.path;
+                  const project = projects.find((item) => samePath(item.path, worktree.path));
+                  return (
+                    <button
+                      key={worktree.path}
+                      type="button"
+                      className={`status-branch-menu-item${isCurrent ? ' current' : ''}`}
+                      role="menuitemradio"
+                      aria-checked={isCurrent}
+                      disabled={Boolean(switchingWorktreePath) || !worktree.exists}
+                      onClick={() => void handleWorktreeSelect(worktree)}
+                    >
+                      <span>{worktreeMenuLabel(worktree, isMain)}</span>
+                      {isCurrent ? (
+                        <Check className="status-branch-check" size={14} />
+                      ) : isSwitching ? (
+                        <span className="status-branch-menu-meta">切换中...</span>
+                      ) : project ? (
+                        <span className="status-branch-menu-meta">已加入</span>
+                      ) : null}
+                    </button>
+                  );
+                })
+              : null}
+            {!worktreesLoading && worktreesError ? (
+              <button type="button" className="status-branch-menu-item" onClick={() => void ensureWorktreesLoaded(true)}>
+                <span>重新加载</span>
+              </button>
+            ) : null}
+            <div className="status-menu-divider" />
+            <button
+              type="button"
+              className="status-branch-menu-item status-worktree-create-item"
+              role="menuitem"
+              disabled={!canSelectWorktree}
+              onClick={handleCreateWorktreeClick}
+            >
+              <span>新建工作树</span>
+              <GitBranchPlus size={14} />
+            </button>
+          </div>
+        </PopoverPortal>
+
+        <button
+          type="button"
+          className="status-item status-workspace status-branch-trigger"
+          title={activeWorktreeLabel(activeProject, worktrees)}
+          aria-expanded={worktreeMenuOpen}
+          disabled={!canSelectWorktree}
+          onClick={() => void handleWorktreeTriggerClick()}
+        >
+          <LayoutPanelLeft size={12} />
+          <span>本地工作</span>
+          {canSelectWorktree ? <span className="footer-chevron" aria-hidden="true" /> : null}
+        </button>
+      </div>
       <div className="status-branch-picker" ref={branchMenuRef}>
         <PopoverPortal open={menuOpen} anchorRef={branchMenuRef} placement="top-start">
           <div className="status-branch-menu" role="menu" aria-label="Git 分支">
@@ -274,4 +421,36 @@ export function WorkspaceStatus({
       </div>
     </footer>
   );
+}
+
+function activeWorktreeLabel(activeProject: ProjectSummary | null, worktrees: GitWorktreeList | null) {
+  if (!activeProject?.isGitRepo) {
+    return '无工作树';
+  }
+
+  const currentIndex = worktrees?.worktrees.findIndex((worktree) => samePath(worktree.path, activeProject.path)) ?? -1;
+  const current = currentIndex >= 0 ? worktrees?.worktrees[currentIndex] : null;
+  return current ? worktreeMenuLabel(current, current.main || currentIndex === 0) : '当前工作区';
+}
+
+function worktreeMenuLabel(worktree: GitWorktreeInfo, isMain: boolean) {
+  if (isMain) {
+    return '主工作区';
+  }
+  return worktreeLabel(worktree);
+}
+
+function worktreeLabel(worktree: GitWorktreeInfo) {
+  if (worktree.branch) {
+    return worktree.branch;
+  }
+  if (worktree.detached && worktree.head) {
+    return `detached ${worktree.head.slice(0, 8)}`;
+  }
+  return worktree.path.split(/[\\/]/).filter(Boolean).at(-1) ?? '工作树';
+}
+
+function samePath(left: string, right: string) {
+  return left.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() ===
+    right.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
