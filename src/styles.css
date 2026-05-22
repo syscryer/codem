@@ -2496,6 +2496,16 @@ svg {
   z-index: 1;
 }
 
+.git-diff-virtual-spacer {
+  position: relative;
+  min-width: 100%;
+}
+
+.git-diff-virtual-window {
+  min-width: 100%;
+  width: max-content;
+}
+
 .git-diff-split-pane.left {
   padding-left: 0;
 }
@@ -2505,8 +2515,13 @@ svg {
 }
 
 .git-diff-split-banner {
+  min-height: 21px;
+  height: 21px;
+  display: flex;
+  align-items: center;
   min-width: max-content;
-  padding: 3px 14px;
+  padding: 0 14px;
+  line-height: 21px;
   color: #6b7280;
   font-size: 12px;
   white-space: pre;
@@ -2520,9 +2535,11 @@ svg {
 .git-diff-collapsed-row {
   min-width: max-content;
   min-height: 21px;
+  height: 21px;
   display: flex;
   align-items: center;
   padding: 0 14px 0 58px;
+  line-height: 21px;
   color: #7a8089;
   font-size: 12px;
   background: #f7f7f8;
@@ -2530,6 +2547,8 @@ svg {
 
 .git-diff-split-side {
   min-width: max-content;
+  min-height: 21px;
+  height: 21px;
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr);
   align-items: stretch;
@@ -2625,11 +2644,31 @@ svg {
   z-index: 3;
 }
 
-.git-diff-change-marker:hover {
-  background: #98a8ba;
+.git-diff-change-marker.added {
+  background: #86d39a;
 }
 
-.git-diff-change-marker.active {
+.git-diff-change-marker.removed {
+  background: #f0a0a0;
+}
+
+.git-diff-change-marker.modified {
+  background: #9eb6d8;
+}
+
+.git-diff-change-marker:hover {
+  filter: brightness(0.94);
+}
+
+.git-diff-change-marker.added.active {
+  background: #3fa85c;
+}
+
+.git-diff-change-marker.removed.active {
+  background: #d05c5c;
+}
+
+.git-diff-change-marker.modified.active {
   background: #5b7ea5;
 }
 

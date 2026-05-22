@@ -37,10 +37,12 @@ import {
   type WorkbenchFileTreeNode,
 } from '../lib/workbench-files';
 import {
+  buildWorkbenchChangeMarkers,
   buildWorkbenchFullDiffRows,
   buildWorkbenchSplitDiffRows,
   collapseWorkbenchContextRows,
   findWorkbenchChangeBlockIndices,
+  resolveWorkbenchChangeScrollTop,
   type WorkbenchSplitDiffRow,
 } from '../lib/workbench-diff';
 import {
@@ -1853,17 +1855,21 @@ function GitDiffPreview({
   const splitSurfaceRef = useRef<HTMLDivElement | null>(null);
   const leftPaneRef = useRef<HTMLDivElement | null>(null);
   const rightPaneRef = useRef<HTMLDivElement | null>(null);
-  const changeRowRefs = useRef<Array<HTMLDivElement | null>>([]);
   const [splitLeftWidth, setSplitLeftWidth] = useState(50);
   const [collapseUnchanged, setCollapseUnchanged] = useState(viewMode !== 'full');
   const [syncScroll, setSyncScroll] = useState(true);
   const [activeChangeCursor, setActiveChangeCursor] = useState(-1);
-  const [changeMarkers, setChangeMarkers] = useState<Array<{ cursor: number; rowIndex: number; position: number }>>([]);
+  const [leftScrollTop, setLeftScrollTop] = useState(0);
+  const [rightScrollTop, setRightScrollTop] = useState(0);
+  const [leftViewportHeight, setLeftViewportHeight] = useState(420);
+  const [rightViewportHeight, setRightViewportHeight] = useState(420);
   const canUseFullView = beforeContent !== undefined || afterContent !== undefined;
 
   useEffect(() => {
     setSplitLeftWidth(50);
     setActiveChangeCursor(-1);
+    setLeftScrollTop(0);
+    setRightScrollTop(0);
   }, [content]);
 
   useEffect(() => {
@@ -1876,6 +1882,30 @@ function GitDiffPreview({
     [baseRows, collapseUnchanged],
   );
   const changeRowIndices = useMemo(() => findWorkbenchChangeBlockIndices(rows), [rows]);
+  const totalRowsHeight = useMemo(
+    () => Math.max(rows.length * WORKBENCH_CODE_LINE_HEIGHT, WORKBENCH_CODE_LINE_HEIGHT),
+    [rows.length],
+  );
+  const leftVisibleRange = useMemo(
+    () => getWorkbenchVisibleLineRange(rows.length, leftScrollTop, leftViewportHeight),
+    [leftScrollTop, leftViewportHeight, rows.length],
+  );
+  const rightVisibleRange = useMemo(
+    () => getWorkbenchVisibleLineRange(rows.length, rightScrollTop, rightViewportHeight),
+    [rightScrollTop, rightViewportHeight, rows.length],
+  );
+  const leftVisibleRows = useMemo(
+    () => rows.slice(leftVisibleRange.start, leftVisibleRange.end),
+    [leftVisibleRange.end, leftVisibleRange.start, rows],
+  );
+  const rightVisibleRows = useMemo(
+    () => rows.slice(rightVisibleRange.start, rightVisibleRange.end),
+    [rightVisibleRange.end, rightVisibleRange.start, rows],
+  );
+  const changeMarkers = useMemo(
+    () => buildWorkbenchChangeMarkers(changeRowIndices, rows, leftViewportHeight, WORKBENCH_CODE_LINE_HEIGHT),
+    [changeRowIndices, leftViewportHeight, rows],
+  );
 
   useEffect(() => {
     setActiveChangeCursor((current) => {
@@ -1888,37 +1918,25 @@ function GitDiffPreview({
   }, [changeRowIndices]);
 
   useEffect(() => {
-    const pane = leftPaneRef.current;
-    if (!pane || changeRowIndices.length === 0) {
-      setChangeMarkers([]);
+    const leftPane = leftPaneRef.current;
+    const rightPane = rightPaneRef.current;
+    if (!leftPane || !rightPane) {
       return;
     }
 
-    const scrollRange = Math.max(pane.scrollHeight - pane.clientHeight, 1);
-    const nextMarkers = changeRowIndices
-      .map((rowIndex, cursor) => {
-        const rowElement = changeRowRefs.current[rowIndex];
-        if (!rowElement) {
-          return null;
-        }
+    const updateViewportHeights = () => {
+      setLeftViewportHeight(leftPane.clientHeight);
+      setRightViewportHeight(rightPane.clientHeight);
+    };
 
-        const offsetTop = Math.max(rowElement.offsetTop - 48, 0);
-        return {
-          cursor,
-          rowIndex,
-          position: Math.min(offsetTop / scrollRange, 1),
-        };
-      })
-      .filter((marker): marker is { cursor: number; rowIndex: number; position: number } => marker !== null);
-
-    setChangeMarkers(nextMarkers);
-  }, [changeRowIndices, rows]);
+    updateViewportHeights();
+    const observer = new ResizeObserver(updateViewportHeights);
+    observer.observe(leftPane);
+    observer.observe(rightPane);
+    return () => observer.disconnect();
+  }, [viewMode]);
 
   useEffect(() => {
-    if (!syncScroll) {
-      return;
-    }
-
     const leftPaneElement = leftPaneRef.current;
     const rightPaneElement = rightPaneRef.current;
     if (!leftPaneElement || !rightPaneElement) {
@@ -1926,12 +1944,21 @@ function GitDiffPreview({
     }
     const leftPane = leftPaneElement;
     const rightPane = rightPaneElement;
-    rightPane.scrollLeft = leftPane.scrollLeft;
-    rightPane.scrollTop = leftPane.scrollTop;
+    setLeftScrollTop(leftPane.scrollTop);
+    setRightScrollTop(rightPane.scrollTop);
+    if (syncScroll) {
+      rightPane.scrollLeft = leftPane.scrollLeft;
+      rightPane.scrollTop = leftPane.scrollTop;
+      setRightScrollTop(leftPane.scrollTop);
+    }
 
     let syncingSide: 'left' | 'right' | null = null;
 
     function handleLeftScroll() {
+      setLeftScrollTop(leftPane.scrollTop);
+      if (!syncScroll) {
+        return;
+      }
       if (syncingSide === 'right') {
         syncingSide = null;
         return;
@@ -1939,9 +1966,14 @@ function GitDiffPreview({
       syncingSide = 'left';
       rightPane.scrollLeft = leftPane.scrollLeft;
       rightPane.scrollTop = leftPane.scrollTop;
+      setRightScrollTop(leftPane.scrollTop);
     }
 
     function handleRightScroll() {
+      setRightScrollTop(rightPane.scrollTop);
+      if (!syncScroll) {
+        return;
+      }
       if (syncingSide === 'left') {
         syncingSide = null;
         return;
@@ -1949,10 +1981,11 @@ function GitDiffPreview({
       syncingSide = 'right';
       leftPane.scrollLeft = rightPane.scrollLeft;
       leftPane.scrollTop = rightPane.scrollTop;
+      setLeftScrollTop(rightPane.scrollTop);
     }
 
-    leftPane.addEventListener('scroll', handleLeftScroll);
-    rightPane.addEventListener('scroll', handleRightScroll);
+    leftPane.addEventListener('scroll', handleLeftScroll, { passive: true });
+    rightPane.addEventListener('scroll', handleRightScroll, { passive: true });
     return () => {
       leftPane.removeEventListener('scroll', handleLeftScroll);
       rightPane.removeEventListener('scroll', handleRightScroll);
@@ -2005,12 +2038,16 @@ function GitDiffPreview({
     const targetRowIndex = changeRowIndices[cursor];
     const leftPane = leftPaneRef.current;
     const rightPane = rightPaneRef.current;
-    const targetRow = targetRowIndex === undefined ? null : changeRowRefs.current[targetRowIndex];
-    if (!leftPane || !rightPane || !targetRow) {
+    if (!leftPane || !rightPane || targetRowIndex === undefined) {
       return;
     }
 
-    const nextScrollTop = Math.max(targetRow.offsetTop - 48, 0);
+    const nextScrollTop = resolveWorkbenchChangeScrollTop(
+      targetRowIndex,
+      rows.length,
+      leftPane.clientHeight || leftViewportHeight,
+      WORKBENCH_CODE_LINE_HEIGHT,
+    );
     leftPane.scrollTo({ top: nextScrollTop, behavior: 'smooth' });
     if (!syncScroll) {
       rightPane.scrollTo({ top: nextScrollTop, behavior: 'smooth' });
@@ -2101,17 +2138,27 @@ function GitDiffPreview({
           <div className="git-diff-split-grid">
             <div className="git-diff-split-pane-shell left">
               <div ref={leftPaneRef} className="git-diff-split-pane left">
-                {rows.map((row, index) => (
-                  <GitSplitDiffPaneRow
-                    key={`left-${index}-${row.type === 'content' ? `${row.leftLineNumber}-${row.rightLineNumber}` : row.type === 'collapsed' ? `collapsed-${row.hiddenCount}` : row.text}`}
-                    row={row}
-                    side="left"
-                    filePath={filePath}
-                    rowRef={(element) => {
-                      changeRowRefs.current[index] = element;
-                    }}
-                  />
-                ))}
+                <div
+                  className="git-diff-virtual-spacer"
+                  style={{ height: `${totalRowsHeight}px` }}
+                >
+                  <div
+                    className="git-diff-virtual-window"
+                    style={{ transform: `translateY(${leftVisibleRange.start * WORKBENCH_CODE_LINE_HEIGHT}px)` }}
+                  >
+                    {leftVisibleRows.map((row, visibleIndex) => {
+                      const rowIndex = leftVisibleRange.start + visibleIndex;
+                      return (
+                        <GitSplitDiffPaneRow
+                          key={`left-${rowIndex}-${row.type === 'content' ? `${row.leftLineNumber}-${row.rightLineNumber}` : row.type === 'collapsed' ? `collapsed-${row.hiddenCount}` : row.text}`}
+                          row={row}
+                          side="left"
+                          filePath={filePath}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
               {changeMarkers.length ? (
                 <GitDiffChangeMap
@@ -2125,15 +2172,27 @@ function GitDiffPreview({
             <div className="git-diff-split-divider" aria-hidden="true" />
             <div className="git-diff-split-pane-shell right">
               <div ref={rightPaneRef} className="git-diff-split-pane right">
-                {rows.map((row, index) => (
-                  <GitSplitDiffPaneRow
-                    key={`right-${index}-${row.type === 'content' ? `${row.leftLineNumber}-${row.rightLineNumber}` : row.type === 'collapsed' ? `collapsed-${row.hiddenCount}` : row.text}`}
-                    row={row}
-                    side="right"
-                    filePath={filePath}
-                    rowRef={undefined}
-                  />
-                ))}
+                <div
+                  className="git-diff-virtual-spacer"
+                  style={{ height: `${totalRowsHeight}px` }}
+                >
+                  <div
+                    className="git-diff-virtual-window"
+                    style={{ transform: `translateY(${rightVisibleRange.start * WORKBENCH_CODE_LINE_HEIGHT}px)` }}
+                  >
+                    {rightVisibleRows.map((row, visibleIndex) => {
+                      const rowIndex = rightVisibleRange.start + visibleIndex;
+                      return (
+                        <GitSplitDiffPaneRow
+                          key={`right-${rowIndex}-${row.type === 'content' ? `${row.leftLineNumber}-${row.rightLineNumber}` : row.type === 'collapsed' ? `collapsed-${row.hiddenCount}` : row.text}`}
+                          row={row}
+                          side="right"
+                          filePath={filePath}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
               {changeMarkers.length ? (
                 <GitDiffChangeMap
@@ -2178,23 +2237,21 @@ function GitSplitDiffPaneRow({
   row,
   side,
   filePath,
-  rowRef,
 }: {
   row: WorkbenchSplitDiffRow;
   side: 'left' | 'right';
   filePath: string;
-  rowRef?: (element: HTMLDivElement | null) => void;
 }) {
   if (row.type === 'collapsed') {
     return (
-      <div ref={rowRef} className="git-diff-collapsed-row">
+      <div className="git-diff-collapsed-row">
         <span>折叠 {row.hiddenCount} 行未修改</span>
       </div>
     );
   }
 
   if (row.type !== 'content') {
-    return <div ref={rowRef} className={`git-diff-split-banner ${row.type}`}>{row.text}</div>;
+    return <div className={`git-diff-split-banner ${row.type}`}>{row.text}</div>;
   }
 
   const lineNumber = side === 'left' ? row.leftLineNumber : row.rightLineNumber;
@@ -2206,7 +2263,7 @@ function GitSplitDiffPaneRow({
   );
 
   return (
-    <div ref={rowRef} className={`git-diff-split-side ${side} ${kind}`}>
+    <div className={`git-diff-split-side ${side} ${kind}`}>
       <span className="git-diff-split-line-no">{lineNumber ?? ''}</span>
       <span className="git-diff-split-line-text">{kind === 'empty' ? ' ' : renderedLine}</span>
     </div>
@@ -2224,7 +2281,7 @@ function GitDiffChangeMap({
   onSelect,
 }: {
   side: 'left' | 'right';
-  markers: Array<{ cursor: number; rowIndex: number; position: number }>;
+  markers: Array<{ cursor: number; rowIndex: number; position: number; kind: 'added' | 'removed' | 'modified' }>;
   activeChangeCursor: number;
   onSelect: (cursor: number) => void;
 }) {
@@ -2234,7 +2291,7 @@ function GitDiffChangeMap({
         <button
           key={`${side}-marker-${marker.cursor}-${marker.rowIndex}`}
           type="button"
-          className={`git-diff-change-marker${marker.cursor === activeChangeCursor ? ' active' : ''}`}
+          className={`git-diff-change-marker ${marker.kind}${marker.cursor === activeChangeCursor ? ' active' : ''}`}
           style={{ top: `${marker.position * 100}%` }}
           title={`跳转到第 ${marker.cursor + 1} 处变更`}
           aria-label={`跳转到第 ${marker.cursor + 1} 处变更`}

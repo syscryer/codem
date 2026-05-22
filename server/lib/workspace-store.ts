@@ -1304,8 +1304,8 @@ export async function getProjectGitFileDiff(projectId: string, filePath: string)
   return {
     path: safePath,
     content: diff || '当前文件没有可显示的差异。',
-    beforeContent: await readGitRevisionTextFile(projectPath, 'HEAD', safePath),
-    afterContent: fileStatus?.deleted ? '' : readWorkspaceTextFileIfExists(projectPath, safePath),
+    beforeContent: await readGitRevisionTextFileWithOptions(projectPath, 'HEAD', safePath, { allowLarge: true }),
+    afterContent: fileStatus?.deleted ? '' : readWorkspaceTextFileIfExistsWithOptions(projectPath, safePath, { allowLarge: true }),
   };
 }
 
@@ -3200,13 +3200,23 @@ function compareProjectFileEntries(left: ProjectFileEntry, right: ProjectFileEnt
 }
 
 function readWorkspaceTextFile(projectPath: string, filePath: string) {
+  return readWorkspaceTextFileWithOptions(projectPath, filePath);
+}
+
+function readWorkspaceTextFileWithOptions(
+  projectPath: string,
+  filePath: string,
+  options?: {
+    allowLarge?: boolean;
+  },
+) {
   const resolvedPath = path.resolve(projectPath, filePath);
   const stats = statSync(resolvedPath);
   if (!stats.isFile()) {
     throw new Error('目标不是文件');
   }
 
-  if (stats.size > 200 * 1024) {
+  if (!options?.allowLarge && stats.size > 200 * 1024) {
     return '文件过大，暂不预览内容。';
   }
 
@@ -3219,18 +3229,39 @@ function readWorkspaceTextFile(projectPath: string, filePath: string) {
 }
 
 function readWorkspaceTextFileIfExists(projectPath: string, filePath: string) {
+  return readWorkspaceTextFileIfExistsWithOptions(projectPath, filePath);
+}
+
+function readWorkspaceTextFileIfExistsWithOptions(
+  projectPath: string,
+  filePath: string,
+  options?: {
+    allowLarge?: boolean;
+  },
+) {
   const resolvedPath = path.resolve(projectPath, filePath);
-  return existsSync(resolvedPath) ? readWorkspaceTextFile(projectPath, filePath) : '';
+  return existsSync(resolvedPath) ? readWorkspaceTextFileWithOptions(projectPath, filePath, options) : '';
 }
 
 async function readGitRevisionTextFile(projectPath: string, revision: string, filePath: string) {
+  return readGitRevisionTextFileWithOptions(projectPath, revision, filePath);
+}
+
+async function readGitRevisionTextFileWithOptions(
+  projectPath: string,
+  revision: string,
+  filePath: string,
+  options?: {
+    allowLarge?: boolean;
+  },
+) {
   const result = await runGitCommand(projectPath, ['show', `${revision}:${filePath}`]);
   if (result.status !== 0) {
     return '';
   }
 
   const content = result.stdout.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  if (content.length > 200 * 1024) {
+  if (!options?.allowLarge && content.length > 200 * 1024) {
     return '文件过大，暂不预览内容。';
   }
   if (content.includes('\0')) {

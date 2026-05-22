@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildWorkbenchChangeMarkers,
   buildWorkbenchFullDiffRows,
   buildWorkbenchSplitDiffRows,
   collapseWorkbenchContextRows,
   findWorkbenchChangeBlockIndices,
+  resolveWorkbenchChangeScrollTop,
 } from './workbench-diff';
 
 test('buildWorkbenchSplitDiffRows aligns removed and added lines side by side', () => {
@@ -235,4 +237,27 @@ test('findWorkbenchChangeBlockIndices returns block anchors instead of every cha
   ]);
 
   assert.deepEqual(indices, [2, 6]);
+});
+
+test('buildWorkbenchChangeMarkers maps change blocks into scroll positions', () => {
+  const rows = [
+    { type: 'content', leftLineNumber: null, rightLineNumber: 1, leftText: '', rightText: 'added', leftKind: 'empty', rightKind: 'added' },
+    { type: 'content', leftLineNumber: 2, rightLineNumber: 2, leftText: 'same', rightText: 'same', leftKind: 'context', rightKind: 'context' },
+    { type: 'content', leftLineNumber: 3, rightLineNumber: null, leftText: 'removed', rightText: '', leftKind: 'removed', rightKind: 'empty' },
+    { type: 'content', leftLineNumber: 4, rightLineNumber: 4, leftText: 'same', rightText: 'same', leftKind: 'context', rightKind: 'context' },
+    { type: 'content', leftLineNumber: 5, rightLineNumber: 5, leftText: 'old', rightText: 'new', leftKind: 'removed', rightKind: 'added' },
+  ] as const;
+  const markers = buildWorkbenchChangeMarkers([0, 2, 4], rows, 21);
+
+  assert.deepEqual(markers, [
+    { cursor: 0, rowIndex: 0, position: 0, kind: 'added' },
+    { cursor: 1, rowIndex: 2, position: 0.5, kind: 'removed' },
+    { cursor: 2, rowIndex: 4, position: 1, kind: 'modified' },
+  ]);
+});
+
+test('resolveWorkbenchChangeScrollTop clamps to the scrollable range', () => {
+  assert.equal(resolveWorkbenchChangeScrollTop(0, 120, 210), 0);
+  assert.equal(resolveWorkbenchChangeScrollTop(20, 120, 210), 420);
+  assert.equal(resolveWorkbenchChangeScrollTop(200, 120, 210), 2310);
 });

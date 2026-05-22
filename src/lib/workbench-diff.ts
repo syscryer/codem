@@ -238,6 +238,79 @@ export function findWorkbenchChangeBlockIndices(rows: WorkbenchSplitDiffRow[]) {
   return indices;
 }
 
+export function buildWorkbenchChangeMarkers(
+  changeRowIndices: number[],
+  rows: readonly WorkbenchSplitDiffRow[],
+  viewportHeight: number,
+  rowHeight = 21,
+) {
+  if (changeRowIndices.length === 0 || rows.length <= 0) {
+    return [];
+  }
+
+  const totalHeight = rows.length * rowHeight;
+  const scrollRange = Math.max(totalHeight - viewportHeight, 1);
+  return changeRowIndices.map((rowIndex, cursor) => ({
+    cursor,
+    rowIndex,
+    position: Math.min((rowIndex * rowHeight) / scrollRange, 1),
+    kind: resolveWorkbenchChangeMarkerKind(
+      rows.slice(rowIndex, changeRowIndices[cursor + 1] ?? rows.length),
+    ),
+  }));
+}
+
+export function resolveWorkbenchChangeScrollTop(
+  rowIndex: number,
+  rowCount: number,
+  viewportHeight: number,
+  rowHeight = 21,
+) {
+  const totalHeight = rowCount * rowHeight;
+  const scrollRange = Math.max(totalHeight - viewportHeight, 0);
+  return Math.min(Math.max(rowIndex * rowHeight, 0), scrollRange);
+}
+
+function resolveWorkbenchChangeMarkerKind(rows: readonly WorkbenchSplitDiffRow[]) {
+  let hasAdded = false;
+  let hasRemoved = false;
+  let hasModified = false;
+
+  for (const row of rows) {
+    if (row.type !== 'content') {
+      continue;
+    }
+
+    if (row.leftKind === 'removed' && row.rightKind === 'added') {
+      hasModified = true;
+      continue;
+    }
+
+    if (row.leftKind === 'empty' && row.rightKind === 'added') {
+      hasAdded = true;
+      continue;
+    }
+
+    if (row.leftKind === 'removed' && row.rightKind === 'empty') {
+      hasRemoved = true;
+    }
+  }
+
+  if (hasModified || (hasAdded && hasRemoved)) {
+    return 'modified' as const;
+  }
+
+  if (hasAdded) {
+    return 'added' as const;
+  }
+
+  if (hasRemoved) {
+    return 'removed' as const;
+  }
+
+  return 'modified' as const;
+}
+
 function parseDiffHunkHeader(line: string) {
   const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
   if (!match) {
