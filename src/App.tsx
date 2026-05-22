@@ -1044,6 +1044,8 @@ export default function App() {
                 onCloseFilePreviewTabs={(tabKeys) => closeWorkbenchPreviewMany('file', tabKeys)}
                 onCloseReviewPreviewTabs={(tabKeys) => closeWorkbenchPreviewMany('review', tabKeys)}
                 onResolvePreviewContent={resolveWorkbenchPreviewContent}
+                onGitChanged={() => activeProjectId ? refreshProjectGitSummary(activeProjectId) : undefined}
+                showToast={showToast}
                 onResizeStart={handleRightWorkbenchResizeStart}
                 onClose={() => setRightWorkbenchOpen(false)}
               />

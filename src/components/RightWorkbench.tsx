@@ -2,8 +2,10 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
+  CheckSquare,
   ChevronDown,
   ChevronRight,
+  CloudUpload,
   ExternalLink,
   FileText,
   Folder,
@@ -11,11 +13,13 @@ import {
   GitPullRequest,
   LayoutDashboard,
   Link2,
+  LoaderCircle,
   MoreHorizontal,
   Plus,
   RefreshCw,
   RotateCcw,
   Rows3,
+  Square,
   Unlink2,
   X,
 } from 'lucide-react';
@@ -24,7 +28,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
 import { fetchWorkspaceFilePreview } from '../lib/file-preview-api';
-import { fetchGitFileDiff, fetchGitStatus } from '../lib/git-api';
+import { commitGitChanges, fetchGitFileDiff, fetchGitPushPreview, fetchGitStatus, pushGitBranch } from '../lib/git-api';
 import { fetchProjectFiles } from '../lib/project-files-api';
 import {
   buildWorkbenchFileTree,
@@ -96,6 +100,8 @@ type RightWorkbenchProps = {
   onCloseFilePreviewTabs: (keys: string[]) => void;
   onCloseReviewPreviewTabs: (keys: string[]) => void;
   onResolvePreviewContent: (key: string, state: WorkbenchPreviewContentState) => void;
+  onGitChanged?: () => void | Promise<void>;
+  showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onClose: () => void;
 };
@@ -119,6 +125,8 @@ export function RightWorkbench({
   onCloseFilePreviewTabs,
   onCloseReviewPreviewTabs,
   onResolvePreviewContent,
+  onGitChanged,
+  showToast,
   onResizeStart,
   onClose,
 }: RightWorkbenchProps) {
@@ -178,6 +186,8 @@ export function RightWorkbench({
             hideScopeCount
             navigatorEmptyTitle="没有文件"
             onResolvePreviewContent={onResolvePreviewContent}
+            onGitChanged={onGitChanged}
+            showToast={showToast}
           />
         </WorkbenchTabPanel>
         <WorkbenchTabPanel active={activeTab === 'review'}>
@@ -195,6 +205,9 @@ export function RightWorkbench({
             onClosePreviewTabs={onCloseReviewPreviewTabs}
             navigatorEmptyTitle="当前没有可审查的变更"
             onResolvePreviewContent={onResolvePreviewContent}
+            showCommitBar
+            onGitChanged={onGitChanged}
+            showToast={showToast}
           />
         </WorkbenchTabPanel>
         <WorkbenchTabPanel active={activeTab === 'browser'}>
@@ -287,6 +300,9 @@ function WorkbenchFiles({
   hideScopeCount = false,
   navigatorEmptyTitle,
   onResolvePreviewContent,
+  showCommitBar = false,
+  onGitChanged,
+  showToast,
 }: {
   activeProject: ProjectSummary | null;
   scope: 'all' | 'changed';
@@ -302,6 +318,9 @@ function WorkbenchFiles({
   hideScopeCount?: boolean;
   navigatorEmptyTitle: string;
   onResolvePreviewContent: (key: string, state: WorkbenchPreviewContentState) => void;
+  showCommitBar?: boolean;
+  onGitChanged?: () => void | Promise<void>;
+  showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
 }) {
   const [projectFiles, setProjectFiles] = useState<ProjectFileEntry[]>([]);
   const [directoryFiles, setDirectoryFiles] = useState<Record<string, ProjectFileEntry[]>>({});
@@ -315,11 +334,29 @@ function WorkbenchFiles({
   const [navigatorWidth, setNavigatorWidth] = useState(292);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [commitMessage, setCommitMessage] = useState('');
+  const [commitWorking, setCommitWorking] = useState<'commit' | 'push' | null>(null);
+  const [commitError, setCommitError] = useState('');
+  const [selectedCommitPaths, setSelectedCommitPaths] = useState<Set<string>>(new Set());
   const layoutRef = useRef<HTMLDivElement | null>(null);
   const dragNavigatorWidthRef = useRef<number | null>(null);
   const dragFrameRef = useRef<number | null>(null);
 
   const changedFiles = gitStatus?.files ?? [];
+  const trackedCommitPaths = useMemo(
+    () => changedFiles.filter((file) => !file.untracked).map((file) => file.path),
+    [changedFiles],
+  );
+  const untrackedCommitPaths = useMemo(
+    () => changedFiles.filter((file) => file.untracked).map((file) => file.path),
+    [changedFiles],
+  );
+  const commitFilesCount = selectedCommitPaths.size;
+  const trackedCommitAllSelected =
+    trackedCommitPaths.length > 0 && trackedCommitPaths.every((path) => selectedCommitPaths.has(path));
+  const untrackedCommitAllSelected =
+    untrackedCommitPaths.length > 0 && untrackedCommitPaths.every((path) => selectedCommitPaths.has(path));
+  const commitDisabled = !activeProject || commitWorking !== null || commitFilesCount === 0 || !commitMessage.trim();
   const { tracked: comparableChangedFiles, untracked: untrackedChangedFiles } = useMemo(
     () => splitWorkbenchChangedFiles(changedFiles),
     [changedFiles],
@@ -451,6 +488,7 @@ function WorkbenchFiles({
       } else {
         const nextStatus = await fetchGitStatus(activeProject.id);
         setGitStatus(nextStatus);
+        setSelectedCommitPaths(new Set(nextStatus.files.map((file) => file.path)));
         const nextGroups = splitWorkbenchChangedFiles(nextStatus.files);
         setExpandedChangedDirectories(collectDirectoryPaths(buildWorkbenchFileTree(nextGroups.tracked)));
         setExpandedUntrackedDirectories(collectDirectoryPaths(buildWorkbenchFileTree(nextGroups.untracked)));
@@ -472,6 +510,68 @@ function WorkbenchFiles({
 
   function openChangedPreview(file: GitFileStatus) {
     onOpenWorkbenchPreview(buildChangedFilePreviewRequest(file));
+  }
+
+  async function handleSubmitCommit(thenPush: boolean) {
+    if (!activeProject || commitDisabled) {
+      return;
+    }
+
+    setCommitWorking(thenPush ? 'push' : 'commit');
+    setCommitError('');
+    try {
+      await commitGitChanges(activeProject.id, Array.from(selectedCommitPaths), commitMessage.trim());
+      if (thenPush) {
+        const preview = await fetchGitPushPreview(activeProject.id);
+        await pushGitBranch(activeProject.id, preview.remote, preview.targetBranch);
+      }
+      setCommitMessage('');
+      await loadScope('changed');
+      showToast(thenPush ? '提交并推送完成' : '提交完成');
+      void Promise.resolve(onGitChanged?.()).catch((caughtError: unknown) => {
+        showToast(caughtError instanceof Error ? caughtError.message : '刷新 Git 状态失败', 'error');
+      });
+    } catch (caughtError) {
+      setCommitError(caughtError instanceof Error ? caughtError.message : thenPush ? '提交并推送失败' : '提交失败');
+    } finally {
+      setCommitWorking(null);
+    }
+  }
+
+  function toggleCommitPath(path: string) {
+    setSelectedCommitPaths((current) => {
+      const next = new Set(current);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  }
+
+  function toggleTrackedCommitPaths() {
+    setSelectedCommitPaths((current) => {
+      const next = new Set(current);
+      if (trackedCommitAllSelected) {
+        trackedCommitPaths.forEach((path) => next.delete(path));
+      } else {
+        trackedCommitPaths.forEach((path) => next.add(path));
+      }
+      return next;
+    });
+  }
+
+  function toggleUntrackedCommitPaths() {
+    setSelectedCommitPaths((current) => {
+      const next = new Set(current);
+      if (untrackedCommitAllSelected) {
+        untrackedCommitPaths.forEach((path) => next.delete(path));
+      } else {
+        untrackedCommitPaths.forEach((path) => next.add(path));
+      }
+      return next;
+    });
   }
 
   async function toggleDirectory(directoryPath: string) {
@@ -637,6 +737,21 @@ function WorkbenchFiles({
                 onOpenChangedFile={openChangedPreview}
                 hideScopeCount={hideScopeCount}
                 emptyTitle={navigatorEmptyTitle}
+                showCommitBar={showCommitBar}
+                selectedCommitPaths={selectedCommitPaths}
+                onToggleCommitPath={toggleCommitPath}
+                commitFilesCount={commitFilesCount}
+                trackedCommitAllSelected={trackedCommitAllSelected}
+                untrackedCommitAllSelected={untrackedCommitAllSelected}
+                commitMessage={commitMessage}
+                commitError={commitError}
+                commitWorking={commitWorking}
+                commitDisabled={commitDisabled}
+                onToggleTrackedCommitPaths={toggleTrackedCommitPaths}
+                onToggleUntrackedCommitPaths={toggleUntrackedCommitPaths}
+                onCommitMessageChange={setCommitMessage}
+                onSubmitCommit={() => void handleSubmitCommit(false)}
+                onSubmitCommitAndPush={() => void handleSubmitCommit(true)}
               />
             </>
           ) : (
@@ -1142,6 +1257,21 @@ function FileNavigator({
   onOpenChangedFile,
   hideScopeCount = false,
   emptyTitle,
+  showCommitBar = false,
+  selectedCommitPaths,
+  onToggleCommitPath,
+  commitFilesCount = 0,
+  trackedCommitAllSelected = false,
+  untrackedCommitAllSelected = false,
+  commitMessage = '',
+  commitError = '',
+  commitWorking = null,
+  commitDisabled = true,
+  onToggleTrackedCommitPaths,
+  onToggleUntrackedCommitPaths,
+  onCommitMessageChange,
+  onSubmitCommit,
+  onSubmitCommitAndPush,
 }: {
   scope: 'all' | 'changed';
   scopeLocked?: boolean;
@@ -1170,9 +1300,24 @@ function FileNavigator({
   onOpenChangedFile: (file: GitFileStatus) => void;
   hideScopeCount?: boolean;
   emptyTitle: string;
+  showCommitBar?: boolean;
+  selectedCommitPaths?: Set<string>;
+  onToggleCommitPath?: (path: string) => void;
+  commitFilesCount?: number;
+  trackedCommitAllSelected?: boolean;
+  untrackedCommitAllSelected?: boolean;
+  commitMessage?: string;
+  commitError?: string;
+  commitWorking?: 'commit' | 'push' | null;
+  commitDisabled?: boolean;
+  onToggleTrackedCommitPaths?: () => void;
+  onToggleUntrackedCommitPaths?: () => void;
+  onCommitMessageChange?: (message: string) => void;
+  onSubmitCommit?: () => void;
+  onSubmitCommitAndPush?: () => void;
 }) {
   return (
-    <aside className="workbench-file-navigator" aria-label="文件导航">
+    <aside className={`workbench-file-navigator${showCommitBar ? ' with-commit-bar' : ''}`} aria-label="文件导航">
       <div className="workbench-files-head">
         {scopeLocked ? (
           <div className="workbench-scope-label">
@@ -1241,14 +1386,56 @@ function FileNavigator({
             expandedChangedDirectories={expandedChangedDirectories}
             expandedUntrackedDirectories={expandedUntrackedDirectories}
             activePreviewKey={activePreviewKey}
+            selectedCommitPaths={selectedCommitPaths ?? new Set()}
+            allTrackedCommitSelected={trackedCommitAllSelected}
+            allUntrackedCommitSelected={untrackedCommitAllSelected}
             onToggleChangedDirectory={onToggleChangedDirectory}
             onToggleUntrackedDirectory={onToggleUntrackedDirectory}
+            onToggleCommitPath={onToggleCommitPath ?? (() => undefined)}
+            onToggleAllTrackedCommitPaths={onToggleTrackedCommitPaths ?? (() => undefined)}
+            onToggleAllUntrackedCommitPaths={onToggleUntrackedCommitPaths ?? (() => undefined)}
             onOpenFile={onOpenChangedFile}
           />
         ) : (
           <WorkbenchEmpty icon={<GitPullRequest size={24} />} title={emptyTitle} description="工作区很干净，可以继续开发。" />
         )}
       </div>
+      {showCommitBar ? (
+        <div className="workbench-commit-bar">
+          <div className="workbench-commit-bar-head">
+            <strong>提交</strong>
+            <span>{commitFilesCount} 个文件</span>
+          </div>
+          {commitError ? <div className="workbench-commit-bar-error">{commitError}</div> : null}
+          <textarea
+            className="workbench-commit-bar-input"
+            value={commitMessage}
+            onChange={(event) => onCommitMessageChange?.(event.target.value)}
+            placeholder="填写提交消息"
+            rows={3}
+          />
+          <div className="workbench-commit-bar-actions">
+            <button
+              type="button"
+              className="workbench-commit-bar-button"
+              disabled={commitDisabled}
+              onClick={onSubmitCommit}
+            >
+              {commitWorking === 'commit' ? <LoaderCircle className="spin" size={14} /> : null}
+              <span>提交</span>
+            </button>
+            <button
+              type="button"
+              className="workbench-commit-bar-button primary"
+              disabled={commitDisabled}
+              onClick={onSubmitCommitAndPush}
+            >
+              {commitWorking === 'push' ? <LoaderCircle className="spin" size={14} /> : <CloudUpload size={14} />}
+              <span>提交并推送</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
     </aside>
   );
 }
@@ -1380,8 +1567,14 @@ function ChangedFileTree({
   expandedChangedDirectories,
   expandedUntrackedDirectories,
   activePreviewKey,
+  selectedCommitPaths,
+  allTrackedCommitSelected,
+  allUntrackedCommitSelected,
   onToggleChangedDirectory,
   onToggleUntrackedDirectory,
+  onToggleCommitPath,
+  onToggleAllTrackedCommitPaths,
+  onToggleAllUntrackedCommitPaths,
   onOpenFile,
 }: {
   changedNodes: WorkbenchFileTreeNode[];
@@ -1389,8 +1582,14 @@ function ChangedFileTree({
   expandedChangedDirectories: string[];
   expandedUntrackedDirectories: string[];
   activePreviewKey: string;
+  selectedCommitPaths: Set<string>;
+  allTrackedCommitSelected: boolean;
+  allUntrackedCommitSelected: boolean;
   onToggleChangedDirectory: (directoryPath: string) => void;
   onToggleUntrackedDirectory: (directoryPath: string) => void;
+  onToggleCommitPath: (path: string) => void;
+  onToggleAllTrackedCommitPaths: () => void;
+  onToggleAllUntrackedCommitPaths: () => void;
   onOpenFile: (file: GitFileStatus) => void;
 }) {
   return (
@@ -1402,7 +1601,11 @@ function ChangedFileTree({
           nodes={changedNodes}
           expandedDirectories={expandedChangedDirectories}
           activePreviewKey={activePreviewKey}
+          selectedCommitPaths={selectedCommitPaths}
+          allSelected={allTrackedCommitSelected}
           onToggleDirectory={onToggleChangedDirectory}
+          onToggleCommitPath={onToggleCommitPath}
+          onToggleAll={onToggleAllTrackedCommitPaths}
           onOpenFile={onOpenFile}
         />
       ) : null}
@@ -1413,7 +1616,11 @@ function ChangedFileTree({
           nodes={untrackedNodes}
           expandedDirectories={expandedUntrackedDirectories}
           activePreviewKey={activePreviewKey}
+          selectedCommitPaths={selectedCommitPaths}
+          allSelected={allUntrackedCommitSelected}
           onToggleDirectory={onToggleUntrackedDirectory}
+          onToggleCommitPath={onToggleCommitPath}
+          onToggleAll={onToggleAllUntrackedCommitPaths}
           onOpenFile={onOpenFile}
           untracked
         />
@@ -1428,7 +1635,11 @@ function ChangedFileTreeSection({
   nodes,
   expandedDirectories,
   activePreviewKey,
+  selectedCommitPaths,
+  allSelected = false,
   onToggleDirectory,
+  onToggleCommitPath,
+  onToggleAll,
   onOpenFile,
   untracked = false,
 }: {
@@ -1437,22 +1648,33 @@ function ChangedFileTreeSection({
   nodes: WorkbenchFileTreeNode[];
   expandedDirectories: string[];
   activePreviewKey: string;
+  selectedCommitPaths: Set<string>;
+  allSelected?: boolean;
   onToggleDirectory: (directoryPath: string) => void;
+  onToggleCommitPath: (path: string) => void;
+  onToggleAll?: () => void;
   onOpenFile: (file: GitFileStatus) => void;
   untracked?: boolean;
 }) {
   return (
     <section className="workbench-tree-section">
       <div className="workbench-tree-section-head">
-        <strong>{title}</strong>
+        <div className="workbench-tree-section-title">
+          <button type="button" className="workbench-tree-select-all" onClick={onToggleAll}>
+            {allSelected ? <CheckSquare size={15} /> : <Square size={15} />}
+          </button>
+          <strong>{title}</strong>
+        </div>
         <span>{count} 个文件</span>
       </div>
       {renderChangedFileTreeRows({
         nodes,
         expandedDirectories,
         activePreviewKey,
+        selectedCommitPaths,
         depth: 0,
         onToggleDirectory,
+        onToggleCommitPath,
         onOpenFile,
         untracked,
       })}
@@ -1597,27 +1819,32 @@ function renderChangedFileTreeRows({
   nodes,
   expandedDirectories,
   activePreviewKey,
+  selectedCommitPaths,
   depth,
   onToggleDirectory,
+  onToggleCommitPath,
   onOpenFile,
   untracked = false,
 }: {
   nodes: WorkbenchFileTreeNode[];
   expandedDirectories: string[];
   activePreviewKey: string;
+  selectedCommitPaths: Set<string>;
   depth: number;
   onToggleDirectory: (directoryPath: string) => void;
+  onToggleCommitPath: (path: string) => void;
   onOpenFile: (file: GitFileStatus) => void;
   untracked?: boolean;
 }): ReactNode[] {
   return nodes.flatMap((node): ReactNode[] => {
     const expanded = node.type === 'directory' && expandedDirectories.includes(node.path);
     const statusTone = !untracked && node.gitFile ? getGitStatusTone(node.gitFile.status) : '';
+    const checked = node.type === 'file' && selectedCommitPaths.has(node.path);
     const row = (
       <button
         key={node.path}
         type="button"
-        className={`workbench-tree-row${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === buildChangedWorkbenchPreviewKey(node.path) ? ' active' : ''}`}
+        className={`workbench-tree-row selectable ${node.type === 'file' ? 'has-check' : 'no-check'}${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === buildChangedWorkbenchPreviewKey(node.path) ? ' active' : ''}`}
         style={{ paddingLeft: `${10 + depth * 18}px` }}
         onClick={() => {
           if (node.type === 'directory') {
@@ -1632,6 +1859,27 @@ function renderChangedFileTreeRows({
         ) : (
           <span className="workbench-tree-spacer" />
         )}
+        {node.type === 'file' ? (
+          <span
+            className="workbench-tree-check"
+            role="checkbox"
+            aria-checked={checked}
+            tabIndex={0}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleCommitPath(node.path);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                event.stopPropagation();
+                onToggleCommitPath(node.path);
+              }
+            }}
+          >
+            {checked ? <CheckSquare size={15} /> : <Square size={15} />}
+          </span>
+        ) : null}
         <FileIcon path={node.path} type={node.type} expanded={expanded} />
         <span className={statusTone ? `workbench-file-name status-${statusTone}` : 'workbench-file-name'} title={node.path}>
           {node.name}
@@ -1649,8 +1897,10 @@ function renderChangedFileTreeRows({
         nodes: node.children,
         expandedDirectories,
         activePreviewKey,
+        selectedCommitPaths,
         depth: depth + 1,
         onToggleDirectory,
+        onToggleCommitPath,
         onOpenFile,
         untracked,
       }),
