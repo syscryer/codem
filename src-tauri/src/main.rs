@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -90,6 +90,12 @@ struct PtySessions {
 #[derive(Default)]
 struct BackendPortState {
     port: Mutex<u16>,
+}
+
+#[derive(Clone, Copy)]
+struct BackendStartupTarget {
+    port: u16,
+    reuse_existing: bool,
 }
 
 #[cfg(windows)]
@@ -295,6 +301,7 @@ fn main() {
         .setup(|app| {
             let app_handle = app.handle().clone();
             restore_main_window_state(&app_handle);
+            focus_main_window(&app_handle);
             let _ = platform::set_window_material(&app_handle, DEFAULT_WINDOW_MATERIAL_ID);
             #[cfg(windows)]
             let backend_processes = app.state::<BackendPtyProcesses>();
@@ -435,6 +442,16 @@ fn restore_main_window_state(app: &tauri::AppHandle) {
     let _ = window.set_position(PhysicalPosition::new(state.x, state.y));
 }
 
+fn focus_main_window(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+}
+
 fn load_window_state(app: &tauri::AppHandle) -> Option<WindowState> {
     let path = window_state_path(app).ok()?;
     let content = fs::read_to_string(path).ok()?;
@@ -528,16 +545,20 @@ fn ensure_backend_started(
     app: &tauri::AppHandle,
     backend_processes: &BackendPtyProcesses,
 ) -> Result<(), String> {
-    let backend_port = allocate_backend_port()?;
-    set_backend_port(app, backend_port)?;
-    ensure_backend_started_impl(app, Some(backend_processes), backend_port)
+    let target = resolve_backend_startup_target(app)?;
+    if target.reuse_existing {
+        return Ok(());
+    }
+    ensure_backend_started_impl(app, Some(backend_processes), target.port)
 }
 
 #[cfg(not(windows))]
 fn ensure_backend_started(app: &tauri::AppHandle) -> Result<(), String> {
-    let backend_port = allocate_backend_port()?;
-    set_backend_port(app, backend_port)?;
-    ensure_backend_started_impl(app, backend_port)
+    let target = resolve_backend_startup_target(app)?;
+    if target.reuse_existing {
+        return Ok(());
+    }
+    ensure_backend_started_impl(app, target.port)
 }
 
 #[cfg(windows)]
@@ -594,6 +615,47 @@ fn ensure_backend_started_with_launcher(app: &tauri::AppHandle, backend_port: u1
 fn is_backend_ready(port: u16) -> bool {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     TcpStream::connect_timeout(&address, Duration::from_millis(240)).is_ok()
+}
+
+fn resolve_backend_startup_target(app: &tauri::AppHandle) -> Result<BackendStartupTarget, String> {
+    if let Some(port) = configured_backend_port() {
+        set_backend_port(app, port)?;
+        if is_backend_ready(port) {
+            log_desktop_event(app, &format!("reusing existing backend port: {port}"));
+            return Ok(BackendStartupTarget {
+                port,
+                reuse_existing: true,
+            });
+        }
+
+        log_desktop_event(
+            app,
+            &format!("configured backend port not ready, starting backend: {port}"),
+        );
+        return Ok(BackendStartupTarget {
+            port,
+            reuse_existing: false,
+        });
+    }
+
+    let port = allocate_backend_port()?;
+    set_backend_port(app, port)?;
+    Ok(BackendStartupTarget {
+        port,
+        reuse_existing: false,
+    })
+}
+
+fn configured_backend_port() -> Option<u16> {
+    resolve_backend_port_from_value(std::env::var("CODEM_BACKEND_PORT").ok().as_deref())
+}
+
+fn resolve_backend_port_from_value(value: Option<&str>) -> Option<u16> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|port| *port > 0)
 }
 
 fn allocate_backend_port() -> Result<u16, String> {
@@ -1018,6 +1080,24 @@ fn development_backend_command() -> Command {
     let mut command = Command::new("cmd.exe");
     command.args(["/D", "/S", "/C", "npm run dev:server"]);
     command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_backend_port_from_value;
+
+    #[test]
+    fn resolve_backend_port_from_value_accepts_valid_port() {
+        assert_eq!(resolve_backend_port_from_value(Some("3162")), Some(3162));
+    }
+
+    #[test]
+    fn resolve_backend_port_from_value_rejects_empty_or_invalid_values() {
+        assert_eq!(resolve_backend_port_from_value(None), None);
+        assert_eq!(resolve_backend_port_from_value(Some("")), None);
+        assert_eq!(resolve_backend_port_from_value(Some("0")), None);
+        assert_eq!(resolve_backend_port_from_value(Some("not-a-port")), None);
+    }
 }
 
 #[cfg(not(windows))]

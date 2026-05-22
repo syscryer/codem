@@ -5,20 +5,29 @@ import {
   findAvailablePort,
   resolvePreferredBackendPort,
 } from './dev-ports.mjs';
+import { clearDevSessionState, writeDevSessionState } from './dev-session.mjs';
 
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const children = new Set();
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error(error instanceof Error ? error.message : String(error));
-  stopChildren();
+  await stopChildren();
   process.exit(1);
 });
+
+registerSignalHandlers();
 
 async function main() {
   const preferredPort = resolvePreferredBackendPort();
   const backendPort = await findAvailablePort(preferredPort);
   const childEnv = buildBackendPortEnv(process.env, backendPort);
+
+  await writeDevSessionState(process.cwd(), {
+    backendPort,
+    webPort: DEFAULT_WEB_PORT,
+    pid: process.pid,
+  });
 
   if (backendPort !== preferredPort) {
     console.log(`Backend port ${preferredPort} is unavailable; using ${backendPort}.`);
@@ -30,12 +39,12 @@ async function main() {
   const server = spawnChild(npmCommand, ['run', 'dev:server'], childEnv);
   const web = spawnChild(npmCommand, ['run', 'dev:web'], childEnv);
 
-  server.on('exit', (code) => {
-    stopChildren(server);
+  server.on('exit', async (code) => {
+    await stopChildren(server);
     process.exit(code ?? 0);
   });
-  web.on('exit', (code) => {
-    stopChildren(web);
+  web.on('exit', async (code) => {
+    await stopChildren(web);
     process.exit(code ?? 0);
   });
 
@@ -67,11 +76,22 @@ function resolveSpawnArgs(command, args) {
     : args;
 }
 
-function stopChildren(except) {
+async function stopChildren(except) {
   for (const child of children) {
     if (child === except || child.killed) {
       continue;
     }
     child.kill();
   }
+  await clearDevSessionState(process.cwd());
+}
+
+function registerSignalHandlers() {
+  const shutdown = async (exitCode) => {
+    await stopChildren();
+    process.exit(exitCode);
+  };
+
+  process.once('SIGINT', () => void shutdown(130));
+  process.once('SIGTERM', () => void shutdown(143));
 }

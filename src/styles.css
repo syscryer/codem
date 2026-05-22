@@ -6355,7 +6355,7 @@ svg {
 }
 
 .appearance-preview {
-  height: 206px;
+  min-height: 206px;
   display: grid;
   grid-template-columns: 112px minmax(0, 1fr);
   overflow: hidden;
@@ -6396,7 +6396,7 @@ svg {
 
 .appearance-preview-main {
   display: grid;
-  grid-template-rows: 24px auto auto minmax(0, 1fr) 18px;
+  grid-template-rows: 24px auto auto auto 18px;
   gap: 10px;
   padding: 16px 18px 18px;
 }
@@ -6434,7 +6434,9 @@ svg {
   padding: 4px 12px;
   color: #4c4c4c;
   font-family: var(--app-chat-font-family, var(--app-ui-font-family, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif));
-  font-size: 11px;
+  font-size: var(--app-chat-font-size, 14px);
+  line-height: 1.45;
+  background: #f3f3f1;
 }
 
 .appearance-preview-message.short {
@@ -6442,58 +6444,47 @@ svg {
 }
 
 .appearance-preview-code {
-  width: min(94%, 980px);
-  min-height: 64px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 8px;
+  width: min(68%, 620px);
+  min-height: 84px;
+  display: block;
+  justify-self: start;
+  align-self: start;
 }
 
 .appearance-preview-code-pane {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid #e4e4e4;
   border-radius: 10px;
-  background: #fafafa;
+  padding: 8px 0;
+  background: #f1f1ee;
 }
 
-.appearance-preview-code-pane.removed {
-  background: rgba(239, 68, 68, 0.06);
-}
-
-.appearance-preview-code-pane.added {
-  background: rgba(34, 197, 94, 0.06);
+.appearance-preview-code-pane.neutral {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
 }
 
 .appearance-preview-code-line {
   min-width: 0;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 28px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
-  padding: 5px 8px;
-}
-
-.appearance-preview-code-line + .appearance-preview-code-line {
-  border-top: 1px solid rgba(148, 163, 184, 0.14);
-}
-
-.appearance-preview-code-line.highlight {
-  background: rgba(255, 255, 255, 0.42);
+  padding: 6px 12px;
 }
 
 .appearance-preview-code-line span {
-  color: #94a3b8;
-  font-family: var(--code-font);
-  font-size: 10px;
+  color: #9a9a95;
+  font-family: var(--app-code-font-family, var(--code-font));
+  font-size: calc(var(--app-code-font-size, 13px) - 1px);
   text-align: right;
 }
 
 .appearance-preview-code-line code {
   overflow: hidden;
-  color: #334155;
-  font-family: var(--code-font);
-  font-size: 10px;
+  color: #46505d;
+  font-family: var(--app-code-font-family, var(--code-font));
+  font-size: var(--app-code-font-size, 13px);
+  line-height: 1.5;
   white-space: nowrap;
   text-overflow: ellipsis;
 }

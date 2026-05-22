@@ -1,12 +1,10 @@
 import { spawn } from 'node:child_process';
 import {
-  DEFAULT_WEB_PORT,
   buildBackendPortEnv,
-  findAvailablePort,
-  isPortOpen,
   resolvePreferredBackendPort,
   waitForPort,
 } from './dev-ports.mjs';
+import { resolveDesktopDevPorts } from './desktop-dev-runtime.mjs';
 
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
@@ -20,25 +18,23 @@ main().catch((error) => {
 
 async function main() {
   const preferredPort = resolvePreferredBackendPort();
-  const backendPort = await findAvailablePort(preferredPort);
-  const childEnv = buildBackendPortEnv(process.env, backendPort);
+  const resolved = await resolveDesktopDevPorts({ preferredPort });
+  const childEnv = buildBackendPortEnv(process.env, resolved.backendPort);
   const requiredPorts = [
-    { name: 'backend', port: backendPort },
-    { name: 'web', port: DEFAULT_WEB_PORT },
+    { name: 'backend', port: resolved.backendPort },
+    { name: 'web', port: resolved.webPort },
   ];
-  const portsReady = await Promise.all(requiredPorts.map(({ port }) => isPortOpen(port)));
-  const shouldStartDevServer = portsReady.some((ready) => !ready);
 
-  if (shouldStartDevServer) {
-    const missing = requiredPorts
-      .filter((_, index) => !portsReady[index])
-      .map(({ name, port }) => `${name}:${port}`)
-      .join(', ');
-    console.log(`Starting CodeM dev services because these ports are not ready: ${missing}`);
+  if (resolved.shouldStartDevServer) {
+    console.log(
+      `Starting CodeM dev services on backend:${resolved.backendPort} and web:${resolved.webPort}.`,
+    );
     spawnChild(npmCommand, ['run', 'dev'], childEnv);
     await Promise.all(requiredPorts.map(({ port }) => waitForPort(port, 60_000)));
   } else {
-    console.log(`Reusing existing CodeM dev services on ${backendPort} and ${DEFAULT_WEB_PORT}.`);
+    console.log(
+      `Reusing existing CodeM dev services on backend:${resolved.backendPort} and web:${resolved.webPort}.`,
+    );
   }
 
   const tauri = spawnChild(npmCommand, ['run', 'desktop:shell'], childEnv);

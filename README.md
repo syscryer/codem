@@ -69,6 +69,19 @@ npm run dev
 - 后端地址：默认 `http://127.0.0.1:3001`，如果端口不可用会自动切换
 - 本地数据库：`%LOCALAPPDATA%\\CodeM\\codem.sqlite`
 
+## 桌面开发
+
+```bash
+npm run desktop:dev
+```
+
+桌面开发模式会尽量复用当前仓库正在运行的 Web 开发会话：
+
+- `src/**` 改动通过 Vite HMR 即时刷新
+- `server/**` 改动通过 `tsx watch` 自动重启后端
+- `src-tauri/**` 改动通过 `tauri dev` 自动重编译并重启桌面壳
+- 如果当前仓库已经有 `npm run dev` 在运行，`desktop:dev` 会复用同一组 Web / backend 开发服务，而不是再猜一个新的后端端口
+
 ## 使用说明
 
 1. 确保当前机器已经能在终端里执行 `claude --help`

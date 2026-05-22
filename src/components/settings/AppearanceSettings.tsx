@@ -113,32 +113,22 @@ export function AppearanceSettingsSection({
           <div className="appearance-preview-message">聊天正文示例</div>
           <div className="appearance-preview-message short">阅读节奏与字面观感</div>
           <div className="appearance-preview-code">
-            <div className="appearance-preview-code-pane removed">
+            <div className="appearance-preview-code-pane neutral">
               <div className="appearance-preview-code-line">
                 <span>1</span>
-                <code>const themePreview = {'{'} </code>
+                <code>const previewCard = {'{'}</code>
               </div>
-              <div className="appearance-preview-code-line highlight">
-                <span>2</span>
-                <code>accent: &quot;#2563eb&quot;,</code>
-              </div>
-              <div className="appearance-preview-code-line highlight">
-                <span>3</span>
-                <code>contrast: 42,</code>
-              </div>
-            </div>
-            <div className="appearance-preview-code-pane added">
               <div className="appearance-preview-code-line">
-                <span>1</span>
-                <code>const themePreview = {'{'} </code>
-              </div>
-              <div className="appearance-preview-code-line highlight">
                 <span>2</span>
-                <code>accent: &quot;#0ea5e9&quot;,</code>
+                <code>font: &quot;chat / code&quot;,</code>
               </div>
-              <div className="appearance-preview-code-line highlight">
+              <div className="appearance-preview-code-line">
                 <span>3</span>
-                <code>contrast: 68,</code>
+                <code>size: &quot;follow settings&quot;,</code>
+              </div>
+              <div className="appearance-preview-code-line">
+                <span>4</span>
+                <code>{'}'}</code>
               </div>
             </div>
           </div>

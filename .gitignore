@@ -18,6 +18,7 @@ output/
 .codex-dev*.log
 .codem-*.log
 .codem-*.err.log
+.codem-dev-session.json
 .codem-attachments/
 *.tsbuildinfo
 .idea/
