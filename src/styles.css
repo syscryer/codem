@@ -1613,7 +1613,6 @@ svg {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
   overflow: hidden;
 }
 
@@ -1628,10 +1627,37 @@ svg {
   overflow: hidden;
 }
 
+.workbench-files-inner-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: calc(var(--workbench-navigator-width, 360px) - 10px);
+  width: 10px;
+  cursor: col-resize;
+  z-index: 3;
+}
+
+.workbench-files-inner-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+  background: #eeeeee;
+  transition: background 140ms ease, width 140ms ease;
+}
+
+.workbench-files-inner-resizer:hover::after {
+  left: 2px;
+  width: 1px;
+  background: #e5e7eb;
+}
+
 .workbench-preview-pane {
   display: grid;
   grid-template-rows: 44px minmax(0, 1fr);
-  border-right: 1px solid #eeeeee;
+  border-right: 0;
   background: #ffffff;
 }
 
@@ -1687,6 +1713,30 @@ svg {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workbench-preview-tab-label {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.workbench-preview-tab-label > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-preview-review-icon {
+  flex: 0 0 auto;
+  color: #8b929b;
+}
+
+.workbench-preview-tab.active .workbench-preview-review-icon,
+.workbench-preview-tab:hover .workbench-preview-review-icon {
+  color: currentColor;
 }
 
 .workbench-preview-content {
@@ -1928,6 +1978,13 @@ svg {
   height: 14px;
 }
 
+.workbench-file-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+
 .workbench-tree-empty {
   min-width: 0;
   padding: 5px 10px;
@@ -1936,14 +1993,15 @@ svg {
 }
 
 .workbench-file-badge {
-  width: 16px;
+  min-width: 18px;
   height: 16px;
+  padding: 0 3px;
   display: inline-grid;
   place-items: center;
   border-radius: 4px;
   background: #eef2ff;
   color: #2563eb;
-  font-size: 8px;
+  font-size: 7px;
   font-weight: 700;
   line-height: 1;
 }
@@ -1954,15 +2012,19 @@ svg {
   font-size: 12px;
 }
 
-.workbench-file-badge.ts {
-  background: #e0f2fe;
-  color: #0284c7;
+.workbench-file-badge.html {
+  background: #ffedd5;
+  color: #ea580c;
 }
 
-.workbench-file-badge.css {
+.workbench-file-badge.style {
   background: #f3e8ff;
   color: #9333ea;
-  font-size: 6px;
+}
+
+.workbench-file-badge.script {
+  background: #e0f2fe;
+  color: #0284c7;
 }
 
 .workbench-file-badge.md {
@@ -1974,6 +2036,41 @@ svg {
 .workbench-file-badge.json {
   background: #fff7ed;
   color: #ea580c;
+}
+
+.workbench-file-badge.config {
+  background: #ecfccb;
+  color: #4d7c0f;
+}
+
+.workbench-file-badge.database {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.workbench-file-badge.sheet {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.workbench-file-badge.image {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.workbench-file-badge.document {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.workbench-file-badge.archive {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.workbench-file-badge.media {
+  background: #dbeafe;
+  color: #1d4ed8;
 }
 
 .workbench-file-badge.file {
@@ -3925,7 +4022,7 @@ svg {
   border: 1px solid #e5e7eb;
   border-radius: 12px;
   background: #ffffff;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+  box-shadow: none;
   overflow: hidden;
 }
 
@@ -3933,44 +4030,52 @@ svg {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
+  gap: 14px;
   min-height: 46px;
-  padding: 0 18px;
+  padding: 0 16px;
   border-bottom: 1px solid #edf0f2;
   color: #6f7782;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .changed-files-summary-title {
   display: inline-flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-  font-family: var(--code-font);
+  font-family: inherit;
 }
 
 .changed-files-summary-title strong {
   color: #1f2937;
   font-family: inherit;
-  font-size: 15px;
-  font-weight: 520;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .changed-files-summary-actions {
   display: inline-flex;
   align-items: center;
-  gap: 22px;
+  gap: 10px;
   flex: 0 0 auto;
   color: #8b929b;
 }
 
-.changed-files-summary-actions span {
+.changed-files-summary-actions span,
+.changed-files-summary-actions .tool-preview-open-button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 14px;
+  justify-content: center;
+  white-space: nowrap;
+  font-size: 13px;
   line-height: 1;
   user-select: none;
+}
+
+.changed-files-summary-actions .tool-preview-open-button {
+  padding: 0 12px;
+  font-weight: 400;
 }
 
 .changed-files-summary-list {
@@ -3986,28 +4091,33 @@ svg {
   border-top: 0;
 }
 
+.changed-files-summary-row-shell {
+  position: relative;
+}
+
 .changed-files-summary-row {
   width: 100%;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: center;
-  gap: 12px;
-  min-height: 42px;
-  padding: 0 18px;
-  border: 0;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 16px;
   background: transparent;
   text-align: left;
   cursor: pointer;
 }
 
-.changed-files-summary-row:hover {
+.changed-files-summary-row-shell:hover .changed-files-summary-row,
+.changed-files-summary-row-shell:focus-within .changed-files-summary-row,
+.changed-files-summary-row:focus-visible {
   background: #fafafa;
 }
 
 .changed-files-summary-path {
   min-width: 0;
   color: #1f2937;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 430;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4017,15 +4127,47 @@ svg {
 .changed-files-summary-stats {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   font-family: var(--code-font);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 520;
 }
 
 .changed-file-chevron {
   color: #8b929b;
   transition: transform 140ms ease;
+}
+
+.changed-file-review-button {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #8b929b;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 120ms ease,
+    color 120ms ease,
+    background 120ms ease;
+}
+
+.changed-files-summary-row-shell:hover .changed-file-review-button,
+.changed-files-summary-row-shell:focus-within .changed-file-review-button {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.changed-file-review-button:hover,
+.changed-file-review-button:focus-visible {
+  background: #f1f5f9;
+  color: #475569;
 }
 
 .changed-file-block.expanded .changed-file-chevron {
@@ -9329,7 +9471,7 @@ svg {
 }
 
 .codex-desktop .changed-files-summary-card {
-  box-shadow: 0 10px 28px color-mix(in srgb, var(--app-text) 8%, transparent);
+  box-shadow: none;
 }
 
 .codex-desktop .settings-usage-trend-title strong,

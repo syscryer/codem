@@ -5,6 +5,8 @@ import type {
   GitPushResult,
   GitRemoteSyncResult,
   GitStatusSnapshot,
+  UndoConversationChange,
+  UndoConversationChangeResult,
 } from '../types';
 
 async function readError(response: Response) {
@@ -112,4 +114,19 @@ export async function createGitBranch(projectId: string, branch: string) {
   }
 
   return (await response.json()) as GitBranchCreateResult;
+}
+
+export async function undoConversationChanges(projectId: string, changes: UndoConversationChange[]) {
+  const response = await fetch(`/api/projects/${projectId}/git/undo-turn-changes`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ changes }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as UndoConversationChangeResult;
 }

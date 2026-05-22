@@ -30,7 +30,7 @@ import { createSystemCommandItem, settleSystemCommandItem } from './lib/system-c
 import { modelLabel, permissionLabel } from './lib/ui-labels';
 import { isTauriRuntime, setWindowMaterial } from './lib/window-material';
 import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
-import { fetchGitRemote, pullGitBranch } from './lib/git-api';
+import { fetchGitRemote, pullGitBranch, undoConversationChanges } from './lib/git-api';
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -50,6 +50,7 @@ import type {
   ToolStep,
   ProjectSummary,
   GitCreateWorktreeResult,
+  UndoConversationChange,
 } from './types';
 
 type AppView = { kind: 'workspace' } | { kind: 'settings'; section: SettingsSection };
@@ -138,10 +139,11 @@ export default function App() {
   const [rightWorkbenchOpen, setRightWorkbenchOpen] = useState(false);
   const [rightWorkbenchTab, setRightWorkbenchTab] = useState<RightWorkbenchTab>('overview');
   const [rightWorkbenchFileScope, setRightWorkbenchFileScope] = useState<WorkbenchFileScope>('all');
-  const [rightWorkbenchWidth, setRightWorkbenchWidth] = useState(520);
+  const [rightWorkbenchWidth, setRightWorkbenchWidth] = useState(680);
   const [previewTabs, setPreviewTabs] = useState<WorkbenchPreviewTab[]>([]);
   const [activePreviewKey, setActivePreviewKey] = useState('');
   const [previewContentByKey, setPreviewContentByKey] = useState<Record<string, WorkbenchPreviewContentState>>({});
+  const [undoneTurnIds, setUndoneTurnIds] = useState<Record<string, boolean>>({});
   const [composerDraftsByKey, setComposerDraftsByKey] = useState<Record<string, string>>({});
   const [projectsRefreshing, setProjectsRefreshing] = useState(false);
   const [worktreeCreateProject, setWorktreeCreateProject] = useState<ProjectSummary | null>(null);
@@ -707,6 +709,15 @@ export default function App() {
     setActivePreviewKey(normalizedRequest.key);
     setPreviewContentByKey((current) => {
       const next = { ...current };
+      if (normalizedRequest.source === 'conversation-card' && normalizedRequest.reviewDiff?.length) {
+        next[normalizedRequest.key] = {
+          loading: false,
+          content: normalizedRequest.reviewDiff.join('\n'),
+          mode: 'git-diff',
+        };
+        return next;
+      }
+
       delete next[normalizedRequest.key];
       return next;
     });
@@ -915,7 +926,9 @@ export default function App() {
                 activeTurnId={activeThreadId ? activeTurnIdsByThreadId[activeThreadId] ?? '' : ''}
                 transcriptRef={transcriptRef}
                 bottomRef={conversationBottomRef}
+                undoneTurnIds={undoneTurnIds}
                 onOpenWorkbenchPreview={openWorkbenchPreview}
+                onUndoChangedFiles={handleUndoChangedFiles}
                 onSubmitRequestUserInput={(
                   turn: ConversationTurn,
                   request: RequestUserInputRequest,
@@ -1024,7 +1037,7 @@ export default function App() {
         onInputDialogValueChange={handleInputDialogValueChange}
         onSubmitInputDialog={submitInputDialog}
         onCloseConfirmDialog={() => setConfirmDialog(null)}
-        onConfirmRemoveDialog={confirmRemoveDialog}
+        onConfirmRemoveDialog={handleConfirmDialog}
       />
       {worktreeCreateProject ? (
         <WorktreeCreateDialog
@@ -1069,6 +1082,57 @@ export default function App() {
       cwd: activeProject.path,
       title: activeProject.path,
     });
+  }
+
+  function handleUndoChangedFiles(turn: ConversationTurn, changes: UndoConversationChange[]) {
+    if (!activeProject) {
+      showToast('请先选择项目。', 'info');
+      return;
+    }
+    if (changes.length === 0) {
+      showToast('这次改动暂时没有可撤销的文件内容。', 'info');
+      return;
+    }
+
+    setConfirmDialog({
+      kind: 'undo-ai-change',
+      title: '撤销本次 AI 改动',
+      description: `会把这次 AI 修改过的 ${changes.length} 个文件恢复到修改前；本次新建的文件会被删除。`,
+      confirmLabel: '撤销改动',
+      projectId: activeProject.id,
+      turnId: turn.id,
+      changes,
+    });
+  }
+
+  async function handleConfirmDialog() {
+    if (confirmDialog?.kind !== 'undo-ai-change') {
+      await confirmRemoveDialog();
+      return;
+    }
+
+    try {
+      const result = await undoConversationChanges(confirmDialog.projectId, confirmDialog.changes);
+      setConfirmDialog(null);
+      setUndoneTurnIds((current) => ({
+        ...current,
+        [confirmDialog.turnId]: true,
+      }));
+      if (activeProjectId === confirmDialog.projectId) {
+        await refreshProjectGitSummary(confirmDialog.projectId);
+      }
+
+      const parts: string[] = [];
+      if (result.restored.length > 0) {
+        parts.push(`恢复 ${result.restored.length} 个文件`);
+      }
+      if (result.deleted.length > 0) {
+        parts.push(`删除 ${result.deleted.length} 个新文件`);
+      }
+      showToast(parts.length > 0 ? `已撤销本次 AI 改动：${parts.join('，')}` : '已撤销本次 AI 改动');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '撤销失败', 'error');
+    }
   }
 }
 

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import * as childProcess from 'node:child_process';
@@ -235,6 +235,23 @@ export type GitPushPreview = {
   ahead: number;
   behind: number;
   commits: string[];
+};
+
+export type UndoConversationChangeOperation = {
+  kind: 'replace-snippet' | 'delete-file' | 'restore-file';
+  beforeText: string;
+  afterText: string;
+};
+
+export type UndoConversationChange = {
+  path: string;
+  operations: UndoConversationChangeOperation[];
+};
+
+export type UndoConversationChangeResult = {
+  restored: string[];
+  deleted: string[];
+  summary: Awaited<ReturnType<typeof getProjectGitSummary>>;
 };
 
 export type ProjectFileEntry = {
@@ -1280,6 +1297,36 @@ export async function getProjectGitFileDiff(projectId: string, filePath: string)
 
   const diff = [stagedDiff.stdout.trimEnd(), worktreeDiff.stdout.trimEnd()].filter(Boolean).join('\n');
   return diff || '当前文件没有可显示的差异。';
+}
+
+export async function undoProjectAiTurnChanges(
+  projectId: string,
+  changes: UndoConversationChange[],
+): Promise<UndoConversationChangeResult> {
+  const projectPath = readProjectPath(projectId);
+  const safeChanges = normalizeUndoConversationChanges(projectPath, changes);
+  if (safeChanges.length === 0) {
+    throw new Error('没有可撤销的文件改动');
+  }
+
+  const restored: string[] = [];
+  const deleted: string[] = [];
+
+  for (const change of safeChanges) {
+    const outcome = applyUndoConversationChange(projectPath, change);
+    if (outcome === 'restored') {
+      restored.push(change.path);
+    }
+    if (outcome === 'deleted') {
+      deleted.push(change.path);
+    }
+  }
+
+  return {
+    restored,
+    deleted,
+    summary: await getProjectGitSummary(projectId),
+  };
 }
 
 export async function commitProjectGitChanges(projectId: string, filePaths: string[], message: string) {
@@ -2972,6 +3019,117 @@ function normalizeGitRelativePath(filePath: string) {
   return filePath.replace(/^"|"$/g, '').replace(/\\/g, '/').trim();
 }
 
+function normalizeUndoConversationChanges(projectPath: string, changes: UndoConversationChange[]) {
+  const normalized: UndoConversationChange[] = [];
+
+  for (const change of changes) {
+    if (!change || typeof change !== 'object') {
+      continue;
+    }
+
+    const safePath = normalizeProjectRelativePath(projectPath, change.path);
+    const operations = Array.isArray(change.operations)
+      ? change.operations.filter(isUndoConversationChangeOperation)
+      : [];
+    if (operations.length === 0) {
+      continue;
+    }
+
+    normalized.push({
+      path: safePath,
+      operations,
+    });
+  }
+
+  return normalized;
+}
+
+function isUndoConversationChangeOperation(value: unknown): value is UndoConversationChangeOperation {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const candidate = value as Partial<UndoConversationChangeOperation>;
+  return (
+    (candidate.kind === 'replace-snippet' || candidate.kind === 'delete-file' || candidate.kind === 'restore-file') &&
+    typeof candidate.beforeText === 'string' &&
+    typeof candidate.afterText === 'string'
+  );
+}
+
+function applyUndoConversationChange(projectPath: string, change: UndoConversationChange) {
+  const resolvedPath = path.resolve(projectPath, change.path);
+  let currentText = existsSync(resolvedPath) ? readWorkspaceTextFile(projectPath, change.path) : null;
+
+  for (let index = change.operations.length - 1; index >= 0; index -= 1) {
+    const operation = change.operations[index];
+
+    if (operation.kind === 'replace-snippet') {
+      if (currentText === null) {
+        throw new Error(`文件 ${change.path} 不存在，无法安全撤销。`);
+      }
+
+      currentText = reverseSnippetChange(currentText, operation, change.path);
+      continue;
+    }
+
+    if (operation.kind === 'delete-file') {
+      if (currentText === null) {
+        throw new Error(`文件 ${change.path} 已不存在，无法确认是否还能安全撤销。`);
+      }
+      if (normalizePreviewText(currentText) !== normalizePreviewText(operation.afterText)) {
+        throw new Error(`文件 ${change.path} 已经不是上次 AI 修改后的内容，无法安全撤销。`);
+      }
+
+      unlinkSync(resolvedPath);
+      currentText = null;
+      continue;
+    }
+
+    if (currentText !== null && currentText.trim().length > 0) {
+      throw new Error(`文件 ${change.path} 已经不是上次 AI 修改后的内容，无法安全撤销。`);
+    }
+
+    mkdirSync(path.dirname(resolvedPath), { recursive: true });
+    writeFileSync(resolvedPath, operation.beforeText, 'utf8');
+    currentText = operation.beforeText;
+  }
+
+  if (currentText !== null) {
+    writeFileSync(resolvedPath, currentText, 'utf8');
+    return 'restored' as const;
+  }
+
+  return 'deleted' as const;
+}
+
+function reverseSnippetChange(
+  currentText: string,
+  operation: UndoConversationChangeOperation,
+  filePath: string,
+) {
+  if (!operation.afterText) {
+    throw new Error(`文件 ${filePath} 包含删除类片段，当前还不能安全撤销。`);
+  }
+
+  const normalizedCurrent = normalizePreviewText(currentText);
+  const normalizedAfter = normalizePreviewText(operation.afterText);
+  const normalizedBefore = normalizePreviewText(operation.beforeText);
+  const firstIndex = normalizedCurrent.indexOf(normalizedAfter);
+  if (firstIndex === -1) {
+    throw new Error(`文件 ${filePath} 已经不是上次 AI 修改后的内容，无法安全撤销。`);
+  }
+
+  const lastIndex = normalizedCurrent.lastIndexOf(normalizedAfter);
+  if (firstIndex !== lastIndex) {
+    throw new Error(`文件 ${filePath} 存在重复片段，无法安全撤销这次 AI 修改。`);
+  }
+
+  return normalizedCurrent.slice(0, firstIndex) +
+    normalizedBefore +
+    normalizedCurrent.slice(firstIndex + normalizedAfter.length);
+}
+
 function normalizeProjectRelativePaths(projectPath: string, filePaths: string[]) {
   const seen = new Set<string>();
   const paths: string[] = [];
@@ -3048,6 +3206,10 @@ function readWorkspaceTextFile(projectPath: string, filePath: string) {
   }
 
   return buffer.toString('utf8');
+}
+
+function normalizePreviewText(value: string) {
+  return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
 
 async function resolveGitPushTarget(

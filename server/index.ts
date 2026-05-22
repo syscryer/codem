@@ -53,6 +53,7 @@ import {
   pullProjectGitBranch,
   pushProjectGitBranch,
   switchProjectGitBranch,
+  undoProjectAiTurnChanges,
   updatePanelState,
   updateThreadMetadata,
 } from './lib/workspace-store.js';
@@ -793,6 +794,16 @@ app.post('/api/projects/:projectId/git/branch', async (request, response) => {
     response.json(await createProjectGitBranch(request.params.projectId, branch));
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '创建分支失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/undo-turn-changes', async (request, response) => {
+  const changes = Array.isArray(request.body?.changes) ? request.body.changes : [];
+
+  try {
+    response.json(await undoProjectAiTurnChanges(request.params.projectId, changes));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '撤销文件改动失败');
   }
 });
 

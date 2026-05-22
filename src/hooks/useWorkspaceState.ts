@@ -883,6 +883,10 @@ export function useWorkspaceState() {
       return;
     }
 
+    if (confirmDialog.kind !== 'remove-thread') {
+      return;
+    }
+
     const removedThreadId = confirmDialog.threadId;
     const response = await fetch(`/api/threads/${removedThreadId}`, {
       method: 'DELETE',

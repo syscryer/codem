@@ -32,6 +32,12 @@ import {
 import {
   buildConversationPreviewRequest,
 } from '../lib/conversation-preview-shortcuts';
+import {
+  buildChangedFileReviewRequest,
+  buildChangedFilesReviewRequests,
+  buildConversationUndoChanges,
+  type ConversationUndoChange,
+} from '../lib/conversation-changed-files';
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -51,7 +57,9 @@ function ConversationTurnViewComponent({
   nowMs,
   isLiveRunning,
   isLatest,
+  canUndoChangedFiles,
   onOpenWorkbenchPreview,
+  onUndoChangedFiles,
   onSubmitRequestUserInput,
   onSubmitRuntimeRecoveryAction,
   onSubmitApprovalDecision,
@@ -60,7 +68,9 @@ function ConversationTurnViewComponent({
   nowMs: number;
   isLiveRunning: boolean;
   isLatest: boolean;
+  canUndoChangedFiles: boolean;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
+  onUndoChangedFiles: (turn: ConversationTurn, changes: ConversationUndoChange[]) => void;
   onSubmitRequestUserInput: (
     turn: ConversationTurn,
     request: RequestUserInputRequest,
@@ -106,6 +116,7 @@ function ConversationTurnViewComponent({
   });
   const groupedVisibleItems = useMemo(() => groupToolItems(visibleItems), [visibleItems]);
   const changedFileGroups = useMemo(() => collectConversationChangedFileGroups(turn.tools), [turn.tools]);
+  const undoChanges = useMemo(() => buildConversationUndoChanges(turn.tools), [turn.tools]);
   const showProgressLine =
     running ||
     turn.status === 'stopped' ||
@@ -184,7 +195,21 @@ function ConversationTurnViewComponent({
           ) : null}
 
           {changedFileGroups.length > 0 ? (
-            <ChangedFilesSummaryCard files={changedFileGroups} />
+            <ChangedFilesSummaryCard
+              files={changedFileGroups}
+              canUndo={canUndoChangedFiles}
+              onReview={() => {
+                const requests = buildChangedFilesReviewRequests(changedFileGroups);
+                requests.forEach((request) => onOpenWorkbenchPreview(request));
+              }}
+              onReviewFile={(file) => {
+                const request = buildChangedFileReviewRequest(file);
+                if (request) {
+                  onOpenWorkbenchPreview(request);
+                }
+              }}
+              onUndo={() => onUndoChangedFiles(turn, undoChanges)}
+            />
           ) : null}
 
           {turn.pendingUserInputRequests?.map((request, index) => {
@@ -646,7 +671,19 @@ function ToolPreviewPanel({
   );
 }
 
-function ChangedFilesSummaryCard({ files }: { files: ChangedFilePreviewGroup[] }) {
+function ChangedFilesSummaryCard({
+  files,
+  canUndo,
+  onReview,
+  onReviewFile,
+  onUndo,
+}: {
+  files: ChangedFilePreviewGroup[];
+  canUndo: boolean;
+  onReview: () => void;
+  onReviewFile: (file: ChangedFilePreviewGroup) => void;
+  onUndo: () => void;
+}) {
   const [expandedFilePaths, setExpandedFilePaths] = useState<string[]>([]);
   const totals = useMemo(
     () =>
@@ -684,9 +721,16 @@ function ChangedFilesSummaryCard({ files }: { files: ChangedFilePreviewGroup[] }
           {totals.deletions > 0 ? <span className="tool-preview-del">-{totals.deletions}</span> : null}
         </div>
         <div className="changed-files-summary-actions" aria-label="文件汇总操作">
-          <span><RotateCcw size={14} />撤销</span>
-          <span>审核<ArrowUpRight size={14} /></span>
-          <span aria-label="展开视图"><Maximize2 size={14} /></span>
+          {canUndo ? (
+            <button type="button" className="tool-preview-open-button" onClick={onUndo}>
+              <RotateCcw size={14} />
+              撤销
+            </button>
+          ) : null}
+          <button type="button" className="tool-preview-open-button" onClick={onReview}>
+            审核
+            <ArrowUpRight size={14} />
+          </button>
         </div>
       </header>
       <div className="changed-files-summary-list">
@@ -695,19 +739,40 @@ function ChangedFilesSummaryCard({ files }: { files: ChangedFilePreviewGroup[] }
 
           return (
             <article key={file.path} className={`changed-file-block${expanded ? ' expanded' : ''}`}>
-              <button
-                type="button"
-                className="changed-files-summary-row"
-                aria-expanded={expanded}
-                onClick={() => toggleFile(file.path)}
-              >
-                <span className="changed-files-summary-path">{formatChangedFilePath(file.path)}</span>
-                <span className="changed-files-summary-stats">
-                  {file.additions > 0 ? <span className="tool-preview-add">+{file.additions}</span> : null}
-                  {file.deletions > 0 ? <span className="tool-preview-del">-{file.deletions}</span> : null}
-                </span>
-                <ChevronDown className="changed-file-chevron" size={16} aria-hidden="true" />
-              </button>
+              <div className="changed-files-summary-row-shell">
+                <div
+                  className="changed-files-summary-row"
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={expanded}
+                  onClick={() => toggleFile(file.path)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      toggleFile(file.path);
+                    }
+                  }}
+                >
+                  <span className="changed-files-summary-path">{formatChangedFilePath(file.path)}</span>
+                  <button
+                    type="button"
+                    className="changed-file-review-button"
+                    aria-label={`审查文件 ${file.path}`}
+                    title="审查此文件"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onReviewFile(file);
+                    }}
+                  >
+                    <ClipboardList size={14} />
+                  </button>
+                  <span className="changed-files-summary-stats">
+                    {file.additions > 0 ? <span className="tool-preview-add">+{file.additions}</span> : null}
+                    {file.deletions > 0 ? <span className="tool-preview-del">-{file.deletions}</span> : null}
+                  </span>
+                  <ChevronDown className="changed-file-chevron" size={16} aria-hidden="true" />
+                </div>
+              </div>
               {expanded ? <ChangedFileInlineDiff file={file} /> : null}
             </article>
           );

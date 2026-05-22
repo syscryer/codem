@@ -14,7 +14,7 @@ export function buildConversationPreviewRequest(
   }
 
   return {
-    key: `file:${preview.filePath}`,
+    key: `conversation:${preview.filePath}`,
     path: preview.filePath,
     name: preview.fileName,
     kind: getWorkbenchPreviewKind(preview.filePath),

@@ -11,7 +11,7 @@ import {
   RefreshCw,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { fetchWorkspaceFilePreview } from '../lib/file-preview-api';
@@ -20,9 +20,13 @@ import { fetchProjectFiles } from '../lib/project-files-api';
 import {
   buildWorkbenchFileTree,
   getWorkbenchFileIconKind,
+  highlightWorkbenchCode,
   highlightWorkbenchCodeLine,
+  resolveWorkbenchFileIcon,
+  type HighlightedCodeToken,
   type WorkbenchFileTreeNode,
 } from '../lib/workbench-files';
+import { buildWorkbenchFilesLayoutColumns, clampWorkbenchNavigatorWidth } from '../lib/workbench-layout';
 import {
   buildChangedFilePreviewRequest,
   buildProjectFilePreviewRequest,
@@ -216,8 +220,10 @@ function WorkbenchFiles({
   const [gitStatus, setGitStatus] = useState<GitStatusSnapshot | null>(null);
   const [fileFilter, setFileFilter] = useState('');
   const [navigatorVisible, setNavigatorVisible] = useState(true);
+  const [navigatorWidth, setNavigatorWidth] = useState(292);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const layoutRef = useRef<HTMLDivElement | null>(null);
 
   const changedFiles = gitStatus?.files ?? [];
   const changedTree = useMemo(() => buildWorkbenchFileTree(changedFiles), [changedFiles]);
@@ -247,6 +253,10 @@ function WorkbenchFiles({
 
   useEffect(() => {
     if (!activeProject || !activePreviewTabKey) {
+      return;
+    }
+
+    if (activePreviewTab?.source === 'conversation-card') {
       return;
     }
 
@@ -284,7 +294,7 @@ function WorkbenchFiles({
       .finally(() => {
         previewRequestKeysRef.current.delete(requestKey);
       });
-  }, [activePreviewTabKey, activePreviewPath, activeProject?.id, activeProject?.path, onResolvePreviewContent]);
+  }, [activePreviewPath, activePreviewTab?.source, activePreviewTabKey, activeProject?.id, activeProject?.path, onResolvePreviewContent]);
 
   async function loadScope(nextScope = scope) {
     if (!activeProject) {
@@ -362,12 +372,50 @@ function WorkbenchFiles({
     );
   }
 
+  function handleNavigatorResizeStart(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!navigatorVisible) {
+      return;
+    }
+
+    event.preventDefault();
+    const layout = layoutRef.current;
+    if (!layout) {
+      return;
+    }
+
+    const bounds = layout.getBoundingClientRect();
+
+    function handlePointerMove(moveEvent: PointerEvent) {
+      const nextWidth = bounds.right - moveEvent.clientX;
+      setNavigatorWidth(clampWorkbenchNavigatorWidth(nextWidth));
+    }
+
+    function stopResize() {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResize);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResize, { once: true });
+  }
+
   return (
     <section className="workbench-panel workbench-files-panel">
       {!activeProject ? (
         <WorkbenchEmpty icon={<Folder size={24} />} title="未选择项目" description="选择项目后查看项目文件。" />
       ) : (
-        <div className={`workbench-files-layout${navigatorVisible ? '' : ' navigator-hidden'}`}>
+        <div
+          ref={layoutRef}
+          className={`workbench-files-layout${navigatorVisible ? '' : ' navigator-hidden'}`}
+          style={{
+            gridTemplateColumns: buildWorkbenchFilesLayoutColumns(navigatorVisible, navigatorWidth),
+            '--workbench-navigator-width': `${clampWorkbenchNavigatorWidth(navigatorWidth)}px`,
+          } as CSSProperties}
+        >
           <PreviewPane
             tabs={previewTabs}
             activeKey={activePreviewKey}
@@ -376,28 +424,35 @@ function WorkbenchFiles({
             onCloseTab={onClosePreviewTab}
           />
           {navigatorVisible ? (
-            <FileNavigator
-              scope={scope}
-              loading={loading}
-              error={error}
-              filter={fileFilter}
-              changedFilesCount={changedFiles.length}
-              projectFiles={projectFiles}
-              directoryFiles={directoryFiles}
-              expandedDirectories={expandedDirectories}
-              expandedChangedDirectories={expandedChangedDirectories}
-              loadingDirectory={loadingDirectory}
-              changedTree={filteredChangedTree}
-              activePreviewKey={activePreviewKey}
-              onFilterChange={setFileFilter}
-              onSelectScope={onSelectScope}
-              onRefresh={() => void loadScope(scope)}
-              onHide={() => setNavigatorVisible(false)}
-              onToggleDirectory={toggleDirectory}
-              onToggleChangedDirectory={toggleChangedDirectory}
-              onOpenProjectFile={openProjectFilePreview}
-              onOpenChangedFile={openChangedPreview}
-            />
+            <>
+              <div
+                className="workbench-files-inner-resizer"
+                onPointerDown={handleNavigatorResizeStart}
+                aria-hidden="true"
+              />
+              <FileNavigator
+                scope={scope}
+                loading={loading}
+                error={error}
+                filter={fileFilter}
+                changedFilesCount={changedFiles.length}
+                projectFiles={projectFiles}
+                directoryFiles={directoryFiles}
+                expandedDirectories={expandedDirectories}
+                expandedChangedDirectories={expandedChangedDirectories}
+                loadingDirectory={loadingDirectory}
+                changedTree={filteredChangedTree}
+                activePreviewKey={activePreviewKey}
+                onFilterChange={setFileFilter}
+                onSelectScope={onSelectScope}
+                onRefresh={() => void loadScope(scope)}
+                onHide={() => setNavigatorVisible(false)}
+                onToggleDirectory={toggleDirectory}
+                onToggleChangedDirectory={toggleChangedDirectory}
+                onOpenProjectFile={openProjectFilePreview}
+                onOpenChangedFile={openChangedPreview}
+              />
+            </>
           ) : (
             <button
               type="button"
@@ -432,7 +487,6 @@ function PreviewPane({
   return (
     <main className="workbench-preview-pane">
       <div className="workbench-preview-tabs" role="tablist" aria-label="文件预览">
-        <span className="workbench-preview-fixed-tab">审查</span>
         {tabs.map((tab) => (
           <button
             key={tab.key}
@@ -441,7 +495,12 @@ function PreviewPane({
             onClick={() => onSelectTab(tab.key)}
           >
             <FileIcon path={tab.path} type="file" />
-            <span>{tab.name}</span>
+            <span className="workbench-preview-tab-label">
+              {tab.source === 'conversation-card' ? (
+                <GitPullRequest className="workbench-preview-review-icon" size={12} />
+              ) : null}
+              <span>{tab.name}</span>
+            </span>
             <X
               size={13}
               onClick={(event) => {
@@ -459,6 +518,8 @@ function PreviewPane({
           <WorkbenchEmpty icon={<RefreshCw className="spin" size={24} />} title="正在读取文件" description={activeTab.path} />
         ) : content?.error ? (
           <WorkbenchEmpty icon={<FileText size={24} />} title="预览失败" description={content.error} />
+        ) : content?.mode === 'git-diff' ? (
+          <GitDiffPreview content={content.content} />
         ) : activeTab.kind === 'markdown' ? (
           <MarkdownPreview content={content?.content ?? ''} />
         ) : (
@@ -742,6 +803,26 @@ function MarkdownPreview({ content }: { content: string }) {
 
 function CodePreview({ content, filePath }: { content: string; filePath: string }) {
   const lines = content ? content.split('\n') : ['文件为空。'];
+  const [highlightedLines, setHighlightedLines] = useState<HighlightedCodeToken[][] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setHighlightedLines(null);
+
+    if (!content) {
+      return undefined;
+    }
+
+    void highlightWorkbenchCode(content, filePath).then((nextLines) => {
+      if (!cancelled) {
+        setHighlightedLines(nextLines);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [content, filePath]);
 
   return (
     <div className="workbench-code-preview" role="region" aria-label="代码预览">
@@ -749,19 +830,43 @@ function CodePreview({ content, filePath }: { content: string; filePath: string 
         <div key={`${lineIndex}-${line}`} className="workbench-code-line">
           <span className="workbench-code-line-no">{lineIndex + 1}</span>
           <span className="workbench-code-line-text">
-            {highlightWorkbenchCodeLine(line, filePath).map((segment, segmentIndex) => (
-              <span
-                key={`${segmentIndex}-${segment.text}`}
-                className={segment.kind ? `syntax-${segment.kind}` : undefined}
-              >
-                {segment.text || ' '}
-              </span>
-            ))}
+            {renderCodeLineContent(highlightedLines?.[lineIndex], line, filePath)}
           </span>
         </div>
       ))}
     </div>
   );
+}
+
+function renderCodeLineContent(
+  highlightedLine: HighlightedCodeToken[] | undefined,
+  fallbackLine: string,
+  filePath: string,
+) {
+  if (highlightedLine?.length) {
+    return highlightedLine.map((token, index) => (
+      <span
+        key={`${index}-${token.content}`}
+        style={{
+          color: token.color,
+          fontStyle: token.fontStyle && (token.fontStyle & 1) ? 'italic' : undefined,
+          fontWeight: token.fontStyle && (token.fontStyle & 2) ? 600 : undefined,
+          textDecoration: token.fontStyle && (token.fontStyle & 4) ? 'underline' : undefined,
+        }}
+      >
+        {token.content || ' '}
+      </span>
+    ));
+  }
+
+  return highlightWorkbenchCodeLine(fallbackLine, filePath).map((segment, segmentIndex) => (
+    <span
+      key={`${segmentIndex}-${segment.text}`}
+      className={segment.kind ? `syntax-${segment.kind}` : undefined}
+    >
+      {segment.text || ' '}
+    </span>
+  ));
 }
 
 function renderChangedFileTreeRows({
@@ -801,7 +906,7 @@ function renderChangedFileTreeRows({
         ) : (
           <span className="workbench-tree-spacer" />
         )}
-        <FileIcon path={node.path} type={node.type} />
+        <FileIcon path={node.path} type={node.type} expanded={expanded} />
         <span className={statusTone ? `workbench-file-name status-${statusTone}` : 'workbench-file-name'} title={node.path}>
           {node.name}
         </span>
@@ -826,8 +931,30 @@ function renderChangedFileTreeRows({
   });
 }
 
-function FileIcon({ path, type }: { path: string; type: 'directory' | 'file' }) {
+function FileIcon({
+  path,
+  type,
+  expanded = false,
+}: {
+  path: string;
+  type: 'directory' | 'file';
+  expanded?: boolean;
+}) {
+  const [iconFailed, setIconFailed] = useState(false);
+  const iconSrc = resolveWorkbenchFileIcon(path, type, { expanded });
   const iconKind = getWorkbenchFileIconKind(path, type);
+  if (!iconFailed && iconSrc) {
+    return (
+      <img
+        className={`workbench-file-icon ${type === 'directory' ? 'folder' : 'file'}`}
+        src={iconSrc}
+        alt=""
+        aria-hidden="true"
+        onError={() => setIconFailed(true)}
+      />
+    );
+  }
+
   if (iconKind === 'folder') {
     return <Folder size={16} />;
   }
@@ -858,11 +985,11 @@ function getFileBadgeLabel(iconKind: string) {
   if (iconKind === 'react') {
     return '⚛';
   }
-  if (iconKind === 'ts') {
-    return 'TS';
+  if (iconKind === 'html') {
+    return 'HT';
   }
-  if (iconKind === 'css') {
-    return 'CSS';
+  if (iconKind === 'style') {
+    return 'ST';
   }
   if (iconKind === 'md') {
     return 'M';
@@ -870,8 +997,49 @@ function getFileBadgeLabel(iconKind: string) {
   if (iconKind === 'json') {
     return '{}';
   }
+  if (iconKind === 'script') {
+    return '</>';
+  }
+  if (iconKind === 'config') {
+    return 'CFG';
+  }
+  if (iconKind === 'database') {
+    return 'DB';
+  }
+  if (iconKind === 'sheet') {
+    return 'XL';
+  }
+  if (iconKind === 'image') {
+    return 'IMG';
+  }
+  if (iconKind === 'document') {
+    return 'DOC';
+  }
+  if (iconKind === 'archive') {
+    return 'ZIP';
+  }
+  if (iconKind === 'media') {
+    return 'AV';
+  }
 
   return '·';
+}
+
+function getDiffLineClass(line: string) {
+  if (line.startsWith('+++') || line.startsWith('---')) {
+    return 'meta';
+  }
+  if (line.startsWith('@@')) {
+    return 'hunk';
+  }
+  if (line.startsWith('+')) {
+    return 'added';
+  }
+  if (line.startsWith('-')) {
+    return 'removed';
+  }
+
+  return '';
 }
 
 function filterProjectEntries(files: ProjectFileEntry[], filter: string) {
@@ -939,6 +1107,21 @@ function WorkbenchBrowserShell() {
       </div>
       <div className="workbench-browser-empty">空白页</div>
     </section>
+  );
+}
+
+function GitDiffPreview({ content }: { content: string }) {
+  const lines = content ? content.split('\n') : ['当前没有可显示的改动。'];
+
+  return (
+    <div className="workbench-code-preview workbench-diff-content" role="region" aria-label="变更预览">
+      {lines.map((line, index) => (
+        <div key={`${index}-${line}`} className={`git-diff-line ${getDiffLineClass(line)}`}>
+          <span className="git-diff-line-no">{index + 1}</span>
+          <span className="git-diff-line-text">{line || ' '}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 

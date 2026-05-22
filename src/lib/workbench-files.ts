@@ -1,9 +1,20 @@
+import { getIconForFile, getIconForFolder, getIconForOpenFolder } from 'vscode-icons-js';
+import { codeToTokensBase, type BundledLanguage } from 'shiki';
+
 import type { GitFileStatus, ProjectFileEntry, WorkbenchPreviewKind } from '../types';
 
 export type CodeHighlightSegment = {
   text: string;
   kind?: 'comment' | 'keyword' | 'string' | 'number' | 'property' | 'punctuation' | 'tag';
 };
+
+export type HighlightedCodeToken = {
+  content: string;
+  color?: string;
+  fontStyle?: number;
+};
+
+const VSCODE_ICONS_BASE_URL = 'https://cdn.jsdelivr.net/gh/vscode-icons/vscode-icons/icons';
 
 export type WorkbenchFileTreeNode = {
   name: string;
@@ -63,24 +74,135 @@ export function getWorkbenchFileIconKind(filePath: string, type: 'directory' | '
   if (/\.(tsx|jsx)$/.test(normalizedPath)) {
     return 'react';
   }
-  if (/\.(ts|js|mjs|cjs)$/.test(normalizedPath)) {
-    return 'ts';
+  if (/\.(html|htm|vue|svelte|astro)$/.test(normalizedPath)) {
+    return 'html';
   }
-  if (/\.css$/.test(normalizedPath)) {
-    return 'css';
+  if (/\.(css|scss|sass|less|styl|pcss|postcss)$/.test(normalizedPath)) {
+    return 'style';
   }
   if (/\.mdx?$/.test(normalizedPath)) {
     return 'md';
   }
-  if (/\.json$/.test(normalizedPath)) {
+  if (/\.(json|jsonc)$/.test(normalizedPath)) {
     return 'json';
+  }
+  if (/\.(ya?ml|toml|ini|conf|config)$/.test(normalizedPath) || /(^|\/)(dockerfile|\.env(\..+)?)$/i.test(normalizedPath)) {
+    return 'config';
+  }
+  if (/\.(sql|psql|prisma|db)$/.test(normalizedPath)) {
+    return 'database';
+  }
+  if (/\.(csv|tsv|xlsx?|ods)$/.test(normalizedPath)) {
+    return 'sheet';
+  }
+  if (/\.(png|jpe?g|gif|webp|avif|bmp|ico|svg)$/.test(normalizedPath)) {
+    return 'image';
+  }
+  if (/\.(pdf|docx?|rtf|odt|txt)$/.test(normalizedPath)) {
+    return 'document';
+  }
+  if (/\.(zip|tar|gz|tgz|bz2|7z|rar|jar|war)$/.test(normalizedPath)) {
+    return 'archive';
+  }
+  if (/\.(mp3|wav|ogg|flac|mp4|mov|avi|mkv|webm)$/.test(normalizedPath)) {
+    return 'media';
+  }
+  if (/\.(ts|mts|cts|js|mjs|cjs|py|rb|php|go|rs|java|kt|kts|swift|lua|sh|bash|zsh|fish|ps1|psm1|psd1|c|cc|cpp|cxx|h|hpp|cs)$/.test(normalizedPath)) {
+    return 'script';
   }
 
   return 'file';
 }
 
+export function resolveWorkbenchCodeLanguage(filePath: string) {
+  const normalizedPath = filePath.toLowerCase();
+
+  if (/\.(tsx)$/.test(normalizedPath)) return 'tsx';
+  if (/\.(jsx)$/.test(normalizedPath)) return 'jsx';
+  if (/\.(ts|mts|cts)$/.test(normalizedPath)) return 'ts';
+  if (/\.(js|mjs|cjs)$/.test(normalizedPath)) return 'js';
+  if (/\.(html|htm)$/.test(normalizedPath)) return 'html';
+  if (/\.vue$/.test(normalizedPath)) return 'vue';
+  if (/\.svelte$/.test(normalizedPath)) return 'svelte';
+  if (/\.astro$/.test(normalizedPath)) return 'astro';
+  if (/\.css$/.test(normalizedPath)) return 'css';
+  if (/\.scss$/.test(normalizedPath)) return 'scss';
+  if (/\.sass$/.test(normalizedPath)) return 'sass';
+  if (/\.less$/.test(normalizedPath)) return 'less';
+  if (/\.(json|jsonc)$/.test(normalizedPath)) return 'json';
+  if (/\.mdx?$/.test(normalizedPath)) return 'markdown';
+  if (/\.(ya?ml)$/.test(normalizedPath)) return 'yaml';
+  if (/\.toml$/.test(normalizedPath)) return 'toml';
+  if (/\.(xml|svg)$/.test(normalizedPath)) return 'xml';
+  if (/\.(py)$/.test(normalizedPath)) return 'python';
+  if (/\.(rb)$/.test(normalizedPath)) return 'ruby';
+  if (/\.(php)$/.test(normalizedPath)) return 'php';
+  if (/\.(java)$/.test(normalizedPath)) return 'java';
+  if (/\.(kt|kts)$/.test(normalizedPath)) return 'kotlin';
+  if (/\.(go)$/.test(normalizedPath)) return 'go';
+  if (/\.(rs)$/.test(normalizedPath)) return 'rust';
+  if (/\.(c)$/.test(normalizedPath)) return 'c';
+  if (/\.(cc|cpp|cxx|hpp|h)$/.test(normalizedPath)) return 'cpp';
+  if (/\.(cs)$/.test(normalizedPath)) return 'csharp';
+  if (/\.(swift)$/.test(normalizedPath)) return 'swift';
+  if (/\.(sh|bash|zsh|fish)$/.test(normalizedPath) || /(^|\/)(dockerfile)$/i.test(normalizedPath)) return 'bash';
+  if (/\.(ps1|psm1|psd1)$/.test(normalizedPath)) return 'powershell';
+  if (/\.(sql|psql|prisma)$/.test(normalizedPath)) return 'sql';
+  if (/\.(graphql|gql)$/.test(normalizedPath)) return 'graphql';
+
+  return 'text';
+}
+
+export function resolveWorkbenchFileIcon(
+  filePath: string,
+  type: 'directory' | 'file',
+  options?: { expanded?: boolean },
+) {
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const name = normalizedPath.split('/').pop() || normalizedPath;
+
+  const iconFileName =
+    type === 'directory'
+      ? options?.expanded
+        ? getIconForOpenFolder(name)
+        : getIconForFolder(name)
+      : getIconForFile(name);
+
+  if (!iconFileName) {
+    return null;
+  }
+
+  return `${VSCODE_ICONS_BASE_URL}/${iconFileName}`;
+}
+
+export async function highlightWorkbenchCode(content: string, filePath: string) {
+  const language = resolveWorkbenchCodeLanguage(filePath);
+  if (language === 'text') {
+    return null;
+  }
+
+  try {
+    const lines = await codeToTokensBase(content, {
+      lang: language as BundledLanguage,
+      theme: 'github-light',
+    });
+    return lines.map((line) =>
+      line.map((token) => ({
+        content: token.content,
+        color: token.color,
+        fontStyle: token.fontStyle,
+      })),
+    );
+  } catch {
+    return null;
+  }
+}
+
 export function highlightWorkbenchCodeLine(line: string, filePath: string): CodeHighlightSegment[] {
   const normalizedPath = filePath.toLowerCase();
+  if (/\.(html?|vue|svelte|astro|xml|svg)$/.test(normalizedPath)) {
+    return highlightMarkupLine(line);
+  }
   if (/\.(json|jsonc)$/.test(normalizedPath)) {
     return highlightJsonLine(line);
   }
@@ -138,6 +260,18 @@ function highlightJsonLine(line: string): CodeHighlightSegment[] {
     { kind: 'number' as const, pattern: /-?\b\d+(?:\.\d+)?\b/y },
     { kind: 'keyword' as const, pattern: /\b(?:true|false|null)\b/y },
     { kind: 'punctuation' as const, pattern: /[{}[\],:]/y },
+  ];
+
+  return highlightLineWithPatterns(line, patterns);
+}
+
+function highlightMarkupLine(line: string): CodeHighlightSegment[] {
+  const patterns = [
+    { kind: 'comment' as const, pattern: /<!--.*?-->/y },
+    { kind: 'string' as const, pattern: /(['"])(?:\\.|(?!\1).)*\1/y },
+    { kind: 'tag' as const, pattern: /<\/?[A-Za-z][^>\s/]*/y },
+    { kind: 'property' as const, pattern: /[A-Za-z_:][-A-Za-z0-9_:.]*(?==)/y },
+    { kind: 'punctuation' as const, pattern: /[<>/=]+/y },
   ];
 
   return highlightLineWithPatterns(line, patterns);

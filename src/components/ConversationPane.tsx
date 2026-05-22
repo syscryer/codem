@@ -1,6 +1,7 @@
 import { ArrowDown } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { ConversationTurnView } from './ConversationTurn';
+import { findLatestChangedFilesTurnId } from '../lib/conversation-changed-files';
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -8,6 +9,7 @@ import type {
   RequestUserInputRequest,
   RuntimeSuggestedAction,
   ThreadDetail,
+  UndoConversationChange,
   WorkbenchPreviewRequest,
 } from '../types';
 
@@ -20,7 +22,9 @@ type ConversationPaneProps = {
   activeTurnId: string;
   transcriptRef: RefObject<HTMLDivElement | null>;
   bottomRef: RefObject<HTMLDivElement | null>;
+  undoneTurnIds: Record<string, boolean>;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
+  onUndoChangedFiles: (turn: ConversationTurn, changes: UndoConversationChange[]) => void;
   onSubmitRequestUserInput: (
     turn: ConversationTurn,
     request: RequestUserInputRequest,
@@ -44,7 +48,9 @@ export function ConversationPane({
   activeTurnId,
   transcriptRef,
   bottomRef,
+  undoneTurnIds,
   onOpenWorkbenchPreview,
+  onUndoChangedFiles,
   onSubmitRequestUserInput,
   onSubmitRuntimeRecoveryAction,
   onSubmitApprovalDecision,
@@ -52,6 +58,7 @@ export function ConversationPane({
   const [showBottomAnchor, setShowBottomAnchor] = useState(false);
   const shouldAutoFollowRef = useRef(true);
   const previousThreadIdRef = useRef<string | null>(null);
+  const latestChangedFilesTurnId = activeThread ? findLatestChangedFilesTurnId(activeThread.turns) : null;
 
   function syncBottomAnchorVisibility() {
     const transcript = transcriptRef.current;
@@ -155,7 +162,9 @@ export function ConversationPane({
               nowMs={clockNowMs}
               isLiveRunning={isRunning && turn.id === activeTurnId}
               isLatest={index === activeThread.turns.length - 1}
+              canUndoChangedFiles={turn.id === latestChangedFilesTurnId && undoneTurnIds[turn.id] !== true}
               onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+              onUndoChangedFiles={onUndoChangedFiles}
               onSubmitRequestUserInput={onSubmitRequestUserInput}
               onSubmitRuntimeRecoveryAction={onSubmitRuntimeRecoveryAction}
               onSubmitApprovalDecision={onSubmitApprovalDecision}

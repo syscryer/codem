@@ -496,6 +496,7 @@ export type WorkbenchPreviewRequest = {
   kind: WorkbenchPreviewKind;
   source: WorkbenchPreviewSource;
   status?: string;
+  reviewDiff?: string[];
 };
 
 export type WorkbenchPreviewTab = WorkbenchPreviewRequest;
@@ -504,6 +505,7 @@ export type WorkbenchPreviewContentState = {
   loading: boolean;
   content: string;
   error?: string;
+  mode?: 'code' | 'markdown' | 'git-diff';
 };
 
 export type ProjectFileEntry = {
@@ -556,6 +558,23 @@ export type GitRemoteSyncResult = {
   summary: ProjectGitSummary;
   commitsPulled?: number;
   filesChanged?: number;
+};
+
+export type UndoConversationChangeOperation = {
+  kind: 'replace-snippet' | 'delete-file' | 'restore-file';
+  beforeText: string;
+  afterText: string;
+};
+
+export type UndoConversationChange = {
+  path: string;
+  operations: UndoConversationChangeOperation[];
+};
+
+export type UndoConversationChangeResult = {
+  restored: string[];
+  deleted: string[];
+  summary: ProjectGitSummary;
 };
 
 export type GitBranchCreateResult = {
@@ -784,6 +803,15 @@ export type ConfirmDialogState =
       description: string;
       confirmLabel: string;
       threadId: string;
+    }
+  | {
+      kind: 'undo-ai-change';
+      title: string;
+      description: string;
+      confirmLabel: string;
+      projectId: string;
+      turnId: string;
+      changes: UndoConversationChange[];
     }
   | null;
 

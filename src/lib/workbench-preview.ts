@@ -14,7 +14,7 @@ export function buildProjectFilePreviewRequest(
   }
 
   return {
-    key: `file:${file.path}`,
+    key: buildWorkbenchPreviewKey(file.path, 'project-file'),
     path: file.path,
     name: file.name,
     kind: getWorkbenchPreviewKind(file.path),
@@ -26,7 +26,7 @@ export function buildChangedFilePreviewRequest(
   file: Pick<GitFileStatus, 'path' | 'status'>,
 ): WorkbenchPreviewRequest {
   return {
-    key: `file:${file.path}`,
+    key: buildWorkbenchPreviewKey(file.path, 'changed-file'),
     path: file.path,
     name: getFileName(file.path),
     kind: getWorkbenchPreviewKind(file.path),
@@ -61,7 +61,7 @@ export function normalizeWorkbenchPreviewRequest(
     const relativePath = normalizedRequestPath.slice(normalizedProjectPath.length + 1);
     return {
       ...request,
-      key: `file:${relativePath}`,
+      key: buildWorkbenchPreviewKey(relativePath, request.source),
       path: relativePath,
       kind: getWorkbenchPreviewKind(relativePath),
     };
@@ -105,6 +105,10 @@ export function closeWorkbenchPreviewTab(
 function getFileName(filePath: string) {
   const normalizedPath = filePath.replace(/\\/g, '/');
   return normalizedPath.split('/').pop() || normalizedPath;
+}
+
+function buildWorkbenchPreviewKey(path: string, source: WorkbenchPreviewRequest['source']) {
+  return `${source === 'conversation-card' ? 'conversation' : 'file'}:${path}`;
 }
 
 function normalizeWindowsPath(filePath: string) {
