@@ -150,6 +150,13 @@ export function SessionManagementSettingsSection({
     });
     return byThreadId;
   }, [usageStats]);
+  const usageByProjectId = useMemo(() => {
+    const byProjectId = new Map<string, UsageTotals>();
+    usageStats?.byProject.forEach((row) => {
+      byProjectId.set(row.projectId, row);
+    });
+    return byProjectId;
+  }, [usageStats]);
   const selectedProjectUsage = useMemo(() => {
     if (!usageStats) {
       return emptyUsageTotals;
@@ -283,6 +290,7 @@ export function SessionManagementSettingsSection({
                 key={project.id}
                 project={project}
                 active={selectedProjectId === project.id}
+                usage={project.id === 'all' ? usageStats?.totals : usageByProjectId.get(project.id)}
                 onSelect={() => selectProject(project.id)}
               />
             ))}
@@ -293,7 +301,7 @@ export function SessionManagementSettingsSection({
               <div className="session-detail-title">
                 <strong>{selectedProject?.name ?? '全部项目'}</strong>
                 <span>
-                  {filteredRows.length} 个会话 · {formatCompactTokenCount(selectedProjectUsage.totalTokens)} tokens · {formatUsageCost(selectedProjectUsage.totalCostUsd)}
+                  {filteredRows.length} 个会话 · {formatCompactTokenCount(selectedProjectUsage.totalTokens)} tokens · 运行耗时 {formatDurationCompact(selectedProjectUsage.durationMs)} · {formatUsageCost(selectedProjectUsage.totalCostUsd)}
                 </span>
               </div>
               <div className="session-bulk-actions">
@@ -403,6 +411,7 @@ function SessionRow({
             <>
               <span title={usageModel}>{usageModel}</span>
               <span>{formatCompactTokenCount(usage?.totalTokens ?? 0)} tokens</span>
+              <span>运行耗时 {formatDurationCompact(usage?.durationMs ?? 0)}</span>
             </>
           ) : '暂无使用量'}
         </small>
@@ -456,10 +465,12 @@ function SessionRow({
 function ProjectNavItem({
   project,
   active,
+  usage,
   onSelect,
 }: {
   project: SessionProjectSummary;
   active: boolean;
+  usage?: UsageTotals;
   onSelect: () => void;
 }) {
   return (
@@ -473,6 +484,9 @@ function ProjectNavItem({
         {project.path ? <small>{project.path}</small> : <small>所有项目中的会话</small>}
       </span>
       <em>{project.total}</em>
+      <b className="session-project-usage">
+        {formatCompactTokenCount(usage?.totalTokens ?? 0)} tokens · 运行耗时 {formatDurationCompact(usage?.durationMs ?? 0)}
+      </b>
       {project.running > 0 ? <b>{project.running} 运行中</b> : null}
       {project.missingSession > 0 ? <b className="warning">{project.missingSession} 未开始</b> : null}
     </button>
@@ -509,6 +523,7 @@ function buildUsageTooltip(usage?: UsageThreadRow) {
     `缓存写入：${formatTokenCount(usage.cacheCreationInputTokens)} tokens`,
     `缓存读取：${formatTokenCount(usage.cacheReadInputTokens)} tokens`,
     `总计：${formatTokenCount(usage.totalTokens)} tokens`,
+    `运行耗时：${formatDurationVerbose(usage.durationMs)}`,
     `费用：${formatUsageCost(usage.totalCostUsd)}`,
   ].join('\n');
 }
@@ -542,6 +557,51 @@ function formatUsageCost(value: number) {
 
 function trimTrailingZero(value: string) {
   return value.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+}
+
+function formatDurationCompact(value: number) {
+  const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0;
+  if (safeValue < 1000) {
+    return '<1s';
+  }
+
+  const totalSeconds = Math.round(safeValue / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
+function formatDurationVerbose(value: number) {
+  const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0;
+  if (safeValue < 1000) {
+    return '小于 1 秒';
+  }
+
+  const totalSeconds = Math.round(safeValue / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts: string[] = [];
+
+  if (hours > 0) {
+    parts.push(`${hours} 小时`);
+  }
+  if (minutes > 0) {
+    parts.push(`${minutes} 分钟`);
+  }
+  if (seconds > 0 || parts.length === 0) {
+    parts.push(`${seconds} 秒`);
+  }
+
+  return parts.join(' ');
 }
 
 async function fetchThreadRuntimeStatuses() {

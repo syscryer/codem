@@ -355,12 +355,17 @@ export type UsageThreadRow = UsageTotals & {
   lastUsedAt: string | null;
 };
 
+export type UsageTrendPoint = UsageTotals & {
+  date: string;
+};
+
 export type UsageStatsResponse = {
   generatedAt: string;
   totals: UsageTotals;
   byProvider: UsageProviderRow[];
   byProject: UsageProjectRow[];
   byThread: UsageThreadRow[];
+  byDay: UsageTrendPoint[];
 };
 
 export type ThreadSummary = {

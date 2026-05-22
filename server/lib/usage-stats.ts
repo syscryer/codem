@@ -40,12 +40,27 @@ export type UsageThreadRow = UsageTotals & {
   lastUsedAt: string | null;
 };
 
+export type UsageTrendPoint = {
+  date: string;
+  threads: number;
+  messages: number;
+  toolCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  totalTokens: number;
+  durationMs: number;
+  totalCostUsd: number;
+};
+
 export type UsageStatsResponse = {
   generatedAt: string;
   totals: UsageTotals;
   byProvider: UsageProviderRow[];
   byProject: UsageProjectRow[];
   byThread: UsageThreadRow[];
+  byDay: UsageTrendPoint[];
 };
 
 type UsageTotalsRow = {
@@ -87,6 +102,11 @@ type UsageThreadSqlRow = UsageTotalsRow & {
   lastUsedAt: string | null;
 };
 
+type UsageTrendSqlRow = UsageTotalsRow & {
+  date: string;
+  totalTokens: number | null;
+};
+
 const usageCtes = `
   WITH turn_usage AS (
     SELECT
@@ -99,6 +119,31 @@ const usageCtes = `
       MAX(COALESCE(total_cost_usd, 0)) AS totalCostUsd,
       MAX(COALESCE(duration_ms, 0)) AS durationMs
     FROM messages
+    GROUP BY thread_id, turn_id
+  ),
+  turn_dates AS (
+    SELECT
+      thread_id,
+      turn_id,
+      MIN(created_at) AS createdAt,
+      substr(MIN(created_at), 1, 10) AS usageDate
+    FROM messages
+    GROUP BY thread_id, turn_id
+  ),
+  turn_message_counts AS (
+    SELECT
+      thread_id,
+      turn_id,
+      COUNT(*) AS messages
+    FROM messages
+    GROUP BY thread_id, turn_id
+  ),
+  turn_tool_counts AS (
+    SELECT
+      thread_id,
+      turn_id,
+      COUNT(*) AS toolCalls
+    FROM tool_calls
     GROUP BY thread_id, turn_id
   ),
   thread_usage AS (
@@ -236,6 +281,35 @@ export function collectUsageStats(db: DatabaseSync): UsageStatsResponse {
       t.updated_at DESC
   `).all() as UsageThreadSqlRow[];
 
+  const byDayRows = db.prepare(`
+    ${usageCtes}
+    SELECT
+      td.usageDate AS date,
+      COUNT(DISTINCT td.thread_id) AS threads,
+      COALESCE(SUM(tmc.messages), 0) AS messages,
+      COALESCE(SUM(ttc.toolCalls), 0) AS toolCalls,
+      COALESCE(SUM(tu.inputTokens), 0) AS inputTokens,
+      COALESCE(SUM(tu.outputTokens), 0) AS outputTokens,
+      COALESCE(SUM(tu.cacheCreationInputTokens), 0) AS cacheCreationInputTokens,
+      COALESCE(SUM(tu.cacheReadInputTokens), 0) AS cacheReadInputTokens,
+      (
+        COALESCE(SUM(tu.inputTokens), 0) +
+        COALESCE(SUM(tu.outputTokens), 0) +
+        COALESCE(SUM(tu.cacheCreationInputTokens), 0) +
+        COALESCE(SUM(tu.cacheReadInputTokens), 0)
+      ) AS totalTokens,
+      COALESCE(SUM(tu.durationMs), 0) AS durationMs,
+      COALESCE(SUM(tu.totalCostUsd), 0) AS totalCostUsd,
+      0 AS projects
+    FROM turn_dates td
+    LEFT JOIN turn_usage tu ON tu.thread_id = td.thread_id AND tu.turn_id = td.turn_id
+    LEFT JOIN turn_message_counts tmc ON tmc.thread_id = td.thread_id AND tmc.turn_id = td.turn_id
+    LEFT JOIN turn_tool_counts ttc ON ttc.thread_id = td.thread_id AND ttc.turn_id = td.turn_id
+    WHERE td.usageDate IS NOT NULL
+    GROUP BY td.usageDate
+    ORDER BY td.usageDate ASC
+  `).all() as UsageTrendSqlRow[];
+
   return {
     generatedAt: new Date().toISOString(),
     totals: normalizeTotals(totalsRow),
@@ -263,6 +337,10 @@ export function collectUsageStats(db: DatabaseSync): UsageStatsResponse {
       workingDirectory: row.workingDirectory || '',
       updatedAt: row.updatedAt,
       lastUsedAt: row.lastUsedAt,
+      ...normalizeTotals(row),
+    })),
+    byDay: byDayRows.map((row) => ({
+      date: row.date,
       ...normalizeTotals(row),
     })),
   };

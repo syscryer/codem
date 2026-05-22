@@ -11,6 +11,7 @@ import type {
   OpenWithTargetsResponse,
   ShortcutSettings,
   UsageStatsResponse,
+  UsageTrendPoint,
   UsageThreadRow,
 } from '../types';
 
@@ -218,6 +219,7 @@ function normalizeUsageStats(value: unknown): UsageStatsResponse {
     byProvider: normalizeUsageProviderRows(record.byProvider),
     byProject: normalizeUsageProjectRows(record.byProject),
     byThread: normalizeUsageThreadRows(record.byThread),
+    byDay: normalizeUsageTrendRows(record.byDay),
   };
 }
 
@@ -284,6 +286,22 @@ function normalizeUsageThreadRows(value: unknown): UsageThreadRow[] {
       lastUsedAt: normalizeNullableString(item.lastUsedAt),
     }];
   });
+}
+
+function normalizeUsageTrendRows(value: unknown): UsageTrendPoint[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!isRecord(item)) {
+      return [];
+    }
+    return [{
+      date: normalizeOptionalString(item.date),
+      ...normalizeUsageTotals(item),
+    }];
+  }).filter((item) => Boolean(item.date));
 }
 
 function normalizeUsageTotals(value: unknown) {
