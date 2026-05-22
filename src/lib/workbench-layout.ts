@@ -1,5 +1,6 @@
 const MIN_WORKBENCH_NAVIGATOR_WIDTH = 220;
 const MAX_WORKBENCH_NAVIGATOR_WIDTH = 520;
+const MIN_WORKBENCH_SPLIT_PANE_WIDTH = 180;
 const WORKBENCH_LAYOUT_COLUMNS_CSS_VAR = '--workbench-layout-columns';
 const WORKBENCH_LAYOUT_COLUMNS_OVERRIDE_CSS_VAR = '--workbench-layout-columns-override';
 const WORKBENCH_NAVIGATOR_WIDTH_CSS_VAR = '--workbench-navigator-width';
@@ -15,6 +16,22 @@ export function buildWorkbenchFilesLayoutColumns(navigatorVisible: boolean, navi
   }
 
   return `minmax(0, 1fr) ${clampWorkbenchNavigatorWidth(navigatorWidth)}px`;
+}
+
+export function clampWorkbenchSplitPaneWidthPercent(
+  widthPercent: number,
+  containerWidth: number,
+  minimumPaneWidth = MIN_WORKBENCH_SPLIT_PANE_WIDTH,
+  dividerWidth = 1,
+) {
+  if (containerWidth <= minimumPaneWidth * 2 + dividerWidth) {
+    return Math.round(widthPercent);
+  }
+
+  const usableWidth = Math.max(containerWidth - dividerWidth, 1);
+  const minimumPercent = (minimumPaneWidth / usableWidth) * 100;
+  const maximumPercent = 100 - minimumPercent;
+  return Math.round(Math.min(maximumPercent, Math.max(minimumPercent, widthPercent)));
 }
 
 export function applyWorkbenchNavigatorWidthOverride(
@@ -35,6 +52,7 @@ export function clearWorkbenchNavigatorWidthOverride(
 
 export {
   MAX_WORKBENCH_NAVIGATOR_WIDTH,
+  MIN_WORKBENCH_SPLIT_PANE_WIDTH,
   MIN_WORKBENCH_NAVIGATOR_WIDTH,
   WORKBENCH_LAYOUT_COLUMNS_CSS_VAR,
   WORKBENCH_LAYOUT_COLUMNS_OVERRIDE_CSS_VAR,

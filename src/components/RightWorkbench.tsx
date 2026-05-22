@@ -48,6 +48,7 @@ import {
 import {
   applyWorkbenchNavigatorWidthOverride,
   buildWorkbenchFilesLayoutColumns,
+  clampWorkbenchSplitPaneWidthPercent,
   clampWorkbenchNavigatorWidth,
   clearWorkbenchNavigatorWidthOverride,
 } from '../lib/workbench-layout';
@@ -158,11 +159,11 @@ export function RightWorkbench({
       </div>
 
       <div className="right-workbench-content">
-        {activeTab === 'overview' ? (
-          <WorkbenchOverview activeProject={activeProject} activeThread={activeThread} isRunning={isRunning} />
-        ) : null}
-        {activeTab === 'files' ? (
-          <WorkbenchFiles
+        <WorkbenchTabPanel active={activeTab === 'overview'}>
+          <MemoWorkbenchOverview activeProject={activeProject} activeThread={activeThread} isRunning={isRunning} />
+        </WorkbenchTabPanel>
+        <WorkbenchTabPanel active={activeTab === 'files'}>
+          <MemoWorkbenchFiles
             activeProject={activeProject}
             scope="all"
             scopeLocked
@@ -178,9 +179,9 @@ export function RightWorkbench({
             navigatorEmptyTitle="没有文件"
             onResolvePreviewContent={onResolvePreviewContent}
           />
-        ) : null}
-        {activeTab === 'review' ? (
-          <WorkbenchFiles
+        </WorkbenchTabPanel>
+        <WorkbenchTabPanel active={activeTab === 'review'}>
+          <MemoWorkbenchFiles
             activeProject={activeProject}
             scope="changed"
             scopeLocked
@@ -195,10 +196,26 @@ export function RightWorkbench({
             navigatorEmptyTitle="当前没有可审查的变更"
             onResolvePreviewContent={onResolvePreviewContent}
           />
-        ) : null}
-        {activeTab === 'browser' ? <WorkbenchBrowserShell /> : null}
+        </WorkbenchTabPanel>
+        <WorkbenchTabPanel active={activeTab === 'browser'}>
+          <MemoWorkbenchBrowserShell />
+        </WorkbenchTabPanel>
       </div>
     </aside>
+  );
+}
+
+function WorkbenchTabPanel({
+  active,
+  children,
+}: {
+  active: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className={`workbench-tab-panel${active ? ' active' : ''}`} aria-hidden={!active}>
+      {children}
+    </div>
   );
 }
 
@@ -1830,6 +1847,10 @@ function WorkbenchBrowserShell() {
   );
 }
 
+const MemoWorkbenchOverview = memo(WorkbenchOverview);
+const MemoWorkbenchFiles = memo(WorkbenchFiles);
+const MemoWorkbenchBrowserShell = memo(WorkbenchBrowserShell);
+
 function GitDiffPreview({
   content,
   beforeContent,
@@ -2005,7 +2026,7 @@ function GitDiffPreview({
 
     function handlePointerMove(moveEvent: PointerEvent) {
       const rawWidth = ((moveEvent.clientX - bounds.left) / bounds.width) * 100;
-      setSplitLeftWidth(clampSplitDiffWidth(rawWidth));
+      setSplitLeftWidth(clampSplitDiffWidth(rawWidth, bounds.width));
     }
 
     function stopResize() {
@@ -2270,8 +2291,12 @@ function GitSplitDiffPaneRow({
   );
 }
 
-function clampSplitDiffWidth(value: number) {
-  return Math.max(24, Math.min(76, value));
+function clampSplitDiffWidth(value: number, containerWidth = 0) {
+  if (containerWidth <= 0) {
+    return Math.max(18, Math.min(82, value));
+  }
+
+  return clampWorkbenchSplitPaneWidthPercent(value, containerWidth);
 }
 
 function GitDiffChangeMap({

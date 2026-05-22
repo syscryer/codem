@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   applyWorkbenchNavigatorWidthOverride,
   buildWorkbenchFilesLayoutColumns,
+  clampWorkbenchSplitPaneWidthPercent,
   clearWorkbenchNavigatorWidthOverride,
   clampWorkbenchNavigatorWidth,
   MAX_WORKBENCH_NAVIGATOR_WIDTH,
@@ -46,4 +47,11 @@ test('navigator width override writes and clears layout css variables', () => {
   clearWorkbenchNavigatorWidthOverride(style);
   assert.equal(values.has(WORKBENCH_LAYOUT_COLUMNS_OVERRIDE_CSS_VAR), false);
   assert.equal(values.has(WORKBENCH_NAVIGATOR_WIDTH_OVERRIDE_CSS_VAR), false);
+});
+
+test('clampWorkbenchSplitPaneWidthPercent respects container width and pane minimums', () => {
+  assert.equal(clampWorkbenchSplitPaneWidthPercent(10, 1000), 18);
+  assert.equal(clampWorkbenchSplitPaneWidthPercent(50, 1000), 50);
+  assert.equal(clampWorkbenchSplitPaneWidthPercent(90, 1000), 82);
+  assert.equal(clampWorkbenchSplitPaneWidthPercent(50, 300), 50);
 });
