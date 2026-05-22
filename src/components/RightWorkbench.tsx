@@ -1,4 +1,5 @@
 import {
+  Check,
   ChevronDown,
   ChevronRight,
   ExternalLink,
@@ -7,13 +8,15 @@ import {
   Globe2,
   GitPullRequest,
   LayoutDashboard,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { PopoverPortal } from './PopoverPortal';
 import { fetchWorkspaceFilePreview } from '../lib/file-preview-api';
 import { fetchGitStatus } from '../lib/git-api';
 import { fetchProjectFiles } from '../lib/project-files-api';
@@ -26,7 +29,17 @@ import {
   type HighlightedCodeToken,
   type WorkbenchFileTreeNode,
 } from '../lib/workbench-files';
-import { buildWorkbenchFilesLayoutColumns, clampWorkbenchNavigatorWidth } from '../lib/workbench-layout';
+import {
+  applyWorkbenchNavigatorWidthOverride,
+  buildWorkbenchFilesLayoutColumns,
+  clampWorkbenchNavigatorWidth,
+  clearWorkbenchNavigatorWidthOverride,
+} from '../lib/workbench-layout';
+import {
+  getWorkbenchVisibleLineRange,
+  shouldUseLargeFilePreview,
+  WORKBENCH_CODE_LINE_HEIGHT,
+} from '../lib/workbench-code-preview';
 import {
   buildChangedFilePreviewRequest,
   buildProjectFilePreviewRequest,
@@ -59,6 +72,7 @@ type RightWorkbenchProps = {
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onSelectPreviewTab: (key: string) => void;
   onClosePreviewTab: (key: string) => void;
+  onClosePreviewTabs: (keys: string[]) => void;
   onResolvePreviewContent: (key: string, state: WorkbenchPreviewContentState) => void;
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onClose: () => void;
@@ -78,6 +92,7 @@ export function RightWorkbench({
   onOpenWorkbenchPreview,
   onSelectPreviewTab,
   onClosePreviewTab,
+  onClosePreviewTabs,
   onResolvePreviewContent,
   onResizeStart,
   onClose,
@@ -127,6 +142,7 @@ export function RightWorkbench({
             onOpenWorkbenchPreview={onOpenWorkbenchPreview}
             onSelectPreviewTab={onSelectPreviewTab}
             onClosePreviewTab={onClosePreviewTab}
+            onClosePreviewTabs={onClosePreviewTabs}
             onResolvePreviewContent={onResolvePreviewContent}
           />
         ) : null}
@@ -199,6 +215,7 @@ function WorkbenchFiles({
   onOpenWorkbenchPreview,
   onSelectPreviewTab,
   onClosePreviewTab,
+  onClosePreviewTabs,
   onResolvePreviewContent,
 }: {
   activeProject: ProjectSummary | null;
@@ -210,6 +227,7 @@ function WorkbenchFiles({
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onSelectPreviewTab: (key: string) => void;
   onClosePreviewTab: (key: string) => void;
+  onClosePreviewTabs: (keys: string[]) => void;
   onResolvePreviewContent: (key: string, state: WorkbenchPreviewContentState) => void;
 }) {
   const [projectFiles, setProjectFiles] = useState<ProjectFileEntry[]>([]);
@@ -224,6 +242,8 @@ function WorkbenchFiles({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const layoutRef = useRef<HTMLDivElement | null>(null);
+  const dragNavigatorWidthRef = useRef<number | null>(null);
+  const dragFrameRef = useRef<number | null>(null);
 
   const changedFiles = gitStatus?.files ?? [];
   const changedTree = useMemo(() => buildWorkbenchFileTree(changedFiles), [changedFiles]);
@@ -384,10 +404,25 @@ function WorkbenchFiles({
     }
 
     const bounds = layout.getBoundingClientRect();
+    const layoutStyle = layout.style;
+
+    function flushNavigatorWidthOverride() {
+      dragFrameRef.current = null;
+      const nextWidth = dragNavigatorWidthRef.current;
+      if (nextWidth === null) {
+        return;
+      }
+
+      applyWorkbenchNavigatorWidthOverride(layoutStyle, nextWidth);
+    }
 
     function handlePointerMove(moveEvent: PointerEvent) {
       const nextWidth = bounds.right - moveEvent.clientX;
-      setNavigatorWidth(clampWorkbenchNavigatorWidth(nextWidth));
+      const clampedWidth = clampWorkbenchNavigatorWidth(nextWidth);
+      dragNavigatorWidthRef.current = clampedWidth;
+      if (dragFrameRef.current === null) {
+        dragFrameRef.current = window.requestAnimationFrame(flushNavigatorWidthOverride);
+      }
     }
 
     function stopResize() {
@@ -395,6 +430,21 @@ function WorkbenchFiles({
       window.removeEventListener('pointerup', stopResize);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+
+      if (dragFrameRef.current !== null) {
+        window.cancelAnimationFrame(dragFrameRef.current);
+        flushNavigatorWidthOverride();
+      }
+
+      const finalWidth = dragNavigatorWidthRef.current;
+      dragNavigatorWidthRef.current = null;
+      if (finalWidth !== null && finalWidth !== navigatorWidth) {
+        setNavigatorWidth(finalWidth);
+        requestAnimationFrame(() => clearWorkbenchNavigatorWidthOverride(layoutStyle));
+        return;
+      }
+
+      clearWorkbenchNavigatorWidthOverride(layoutStyle);
     }
 
     document.body.style.cursor = 'col-resize';
@@ -412,16 +462,17 @@ function WorkbenchFiles({
           ref={layoutRef}
           className={`workbench-files-layout${navigatorVisible ? '' : ' navigator-hidden'}`}
           style={{
-            gridTemplateColumns: buildWorkbenchFilesLayoutColumns(navigatorVisible, navigatorWidth),
+            '--workbench-layout-columns': buildWorkbenchFilesLayoutColumns(navigatorVisible, navigatorWidth),
             '--workbench-navigator-width': `${clampWorkbenchNavigatorWidth(navigatorWidth)}px`,
           } as CSSProperties}
         >
           <PreviewPane
             tabs={previewTabs}
             activeKey={activePreviewKey}
-            content={activePreviewKey ? previewContentByKey[activePreviewKey] : undefined}
+            contentByKey={previewContentByKey}
             onSelectTab={onSelectPreviewTab}
             onCloseTab={onClosePreviewTab}
+            onCloseTabs={onClosePreviewTabs}
           />
           {navigatorVisible ? (
             <>
@@ -472,58 +523,318 @@ function WorkbenchFiles({
 function PreviewPane({
   tabs,
   activeKey,
-  content,
+  contentByKey,
   onSelectTab,
   onCloseTab,
+  onCloseTabs,
 }: {
   tabs: WorkbenchPreviewTab[];
   activeKey: string;
-  content?: WorkbenchPreviewContentState;
+  contentByKey: Record<string, WorkbenchPreviewContentState>;
   onSelectTab: (key: string) => void;
   onCloseTab: (key: string) => void;
+  onCloseTabs: (keys: string[]) => void;
 }) {
   const activeTab = tabs.find((tab) => tab.key === activeKey);
+  const activeTabRef = useRef<HTMLButtonElement | null>(null);
+  const overflowRef = useRef<HTMLDivElement | null>(null);
+  const contextMenuAnchorRef = useRef<HTMLDivElement | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    key: string;
+    name: string;
+    path: string;
+    index: number;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView({
+      block: 'nearest',
+      inline: 'nearest',
+      behavior: 'smooth',
+    });
+  }, [activeKey, tabs.length]);
+
+  useEffect(() => {
+    setOverflowOpen(false);
+  }, [activeKey, tabs.length]);
+
+  useEffect(() => {
+    if (!overflowOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      if (!overflowRef.current?.contains(event.target as Node)) {
+        setOverflowOpen(false);
+      }
+    }
+
+    window.addEventListener('mousedown', handlePointerDown);
+    return () => window.removeEventListener('mousedown', handlePointerDown);
+  }, [overflowOpen]);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      if (!contextMenuRef.current?.contains(event.target as Node)) {
+        setContextMenu(null);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setContextMenu(null);
+      }
+    }
+
+    function handleResize() {
+      setContextMenu(null);
+    }
+
+    window.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [contextMenu]);
 
   return (
     <main className="workbench-preview-pane">
-      <div className="workbench-preview-tabs" role="tablist" aria-label="文件预览">
-        {tabs.map((tab) => (
-          <button
-            key={tab.key}
-            type="button"
-            className={`workbench-preview-tab${tab.key === activeKey ? ' active' : ''}`}
-            onClick={() => onSelectTab(tab.key)}
-          >
-            <FileIcon path={tab.path} type="file" />
-            <span className="workbench-preview-tab-label">
-              {tab.source === 'conversation-card' ? (
-                <GitPullRequest className="workbench-preview-review-icon" size={12} />
-              ) : null}
-              <span>{tab.name}</span>
-            </span>
-            <X
-              size={13}
-              onClick={(event) => {
-                event.stopPropagation();
-                onCloseTab(tab.key);
-              }}
-            />
-          </button>
-        ))}
+      <div ref={contextMenuAnchorRef} className="workbench-preview-head">
+        <div className="workbench-preview-tabs" role="tablist" aria-label="文件预览">
+          {tabs.map((tab, index) => {
+            const active = tab.key === activeKey;
+
+            return (
+              <div
+                key={tab.key}
+                className={`workbench-preview-tab-shell${active ? ' active' : ''}`}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setContextMenu({
+                    key: tab.key,
+                    name: tab.name,
+                    path: tab.path,
+                    index,
+                    x: event.clientX,
+                    y: event.clientY,
+                  });
+                }}
+                >
+                <button
+                  ref={active ? activeTabRef : null}
+                  type="button"
+                  className={`workbench-preview-tab${active ? ' active' : ''}`}
+                  onClick={() => onSelectTab(tab.key)}
+                  >
+                    <FileIcon path={tab.path} type="file" />
+                    <span className="workbench-preview-tab-label">
+                      {tab.source === 'conversation-card' ? (
+                        <GitPullRequest className="workbench-preview-review-icon" size={12} />
+                    ) : null}
+                    <span>{tab.name}</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="workbench-preview-tab-close"
+                  title={`关闭 ${tab.name}`}
+                  aria-label={`关闭 ${tab.name}`}
+                  onClick={() => onCloseTab(tab.key)}
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        {tabs.length > 1 ? (
+          <div ref={overflowRef} className={`workbench-preview-overflow${overflowOpen ? ' open' : ''}`}>
+            <button
+              type="button"
+              className="workbench-icon-button workbench-preview-overflow-trigger"
+              title="标签列表"
+              aria-label="标签列表"
+              aria-expanded={overflowOpen}
+              onClick={() => setOverflowOpen((current) => !current)}
+            >
+              <MoreHorizontal size={15} />
+            </button>
+            {overflowOpen ? (
+              <div className="workbench-preview-overflow-menu">
+                {tabs.map((tab, index) => {
+                  const active = tab.key === activeKey;
+
+                  return (
+                    <button
+                      key={`overflow-${tab.key}`}
+                      type="button"
+                      className={`workbench-preview-overflow-item${active ? ' active' : ''}`}
+                      onClick={() => onSelectTab(tab.key)}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setContextMenu({
+                          key: tab.key,
+                          name: tab.name,
+                          path: tab.path,
+                          index,
+                          x: event.clientX,
+                          y: event.clientY,
+                        });
+                      }}
+                    >
+                      <FileIcon path={tab.path} type="file" />
+                      <span className="workbench-preview-overflow-label">
+                        {tab.source === 'conversation-card' ? (
+                          <GitPullRequest className="workbench-preview-review-icon" size={12} />
+                        ) : null}
+                        <span title={tab.path}>{tab.name}</span>
+                      </span>
+                      {active ? <Check size={13} /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
+      <PopoverPortal
+        open={Boolean(contextMenu)}
+        anchorRef={contextMenuAnchorRef}
+        virtualAnchor={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        placement="bottom-start"
+        offset={0}
+      >
+        <div ref={contextMenuRef} className="workspace-menu workbench-preview-context-menu" role="menu" aria-label="标签菜单">
+          <button
+            type="button"
+            className="workspace-menu-item"
+            role="menuitem"
+            disabled={tabs.length <= 1}
+            onClick={() => {
+              if (!contextMenu) {
+                return;
+              }
+
+              onCloseTab(contextMenu.key);
+              setContextMenu(null);
+            }}
+          >
+            <span>关闭</span>
+          </button>
+          <button
+            type="button"
+            className="workspace-menu-item"
+            role="menuitem"
+            onClick={() => {
+              if (!contextMenu) {
+                return;
+              }
+
+              onCloseTabs(tabs.filter((tab) => tab.key !== contextMenu.key).map((tab) => tab.key));
+              setContextMenu(null);
+            }}
+          >
+            <span>关闭其他标签页</span>
+          </button>
+          <button
+            type="button"
+            className="workspace-menu-item"
+            role="menuitem"
+            disabled={!contextMenu || contextMenu.index <= 0}
+            onClick={() => {
+              if (!contextMenu) {
+                return;
+              }
+
+              onCloseTabs(tabs.slice(0, contextMenu.index).map((tab) => tab.key));
+              setContextMenu(null);
+            }}
+          >
+            <span>关闭左侧标签页</span>
+          </button>
+          <button
+            type="button"
+            className="workspace-menu-item"
+            role="menuitem"
+            disabled={!contextMenu || contextMenu.index >= tabs.length - 1}
+            onClick={() => {
+              if (!contextMenu) {
+                return;
+              }
+
+              onCloseTabs(tabs.slice(contextMenu.index + 1).map((tab) => tab.key));
+              setContextMenu(null);
+            }}
+          >
+            <span>关闭右侧标签页</span>
+          </button>
+          <button
+            type="button"
+            className="workspace-menu-item"
+            role="menuitem"
+            disabled={tabs.length === 0}
+            onClick={() => {
+              onCloseTabs(tabs.map((tab) => tab.key));
+              setContextMenu(null);
+            }}
+          >
+            <span>关闭所有标签页</span>
+          </button>
+          <div className="workspace-menu-divider" role="separator" />
+          <button
+            type="button"
+            className="workspace-menu-item"
+            role="menuitem"
+            onClick={() => {
+              if (!contextMenu) {
+                return;
+              }
+
+              void navigator.clipboard.writeText(contextMenu.path);
+              setContextMenu(null);
+            }}
+          >
+            <span>复制路径</span>
+          </button>
+        </div>
+      </PopoverPortal>
       <div className="workbench-preview-content">
         {!activeTab ? (
           <WorkbenchEmpty icon={<FileText size={24} />} title="选择文件查看预览" description="从右侧文件树选择代码、Markdown 或变更文件。" />
-        ) : content?.loading ? (
-          <WorkbenchEmpty icon={<RefreshCw className="spin" size={24} />} title="正在读取文件" description={activeTab.path} />
-        ) : content?.error ? (
-          <WorkbenchEmpty icon={<FileText size={24} />} title="预览失败" description={content.error} />
-        ) : content?.mode === 'git-diff' ? (
-          <GitDiffPreview content={content.content} />
-        ) : activeTab.kind === 'markdown' ? (
-          <MarkdownPreview content={content?.content ?? ''} />
         ) : (
-          <CodePreview content={content?.content ?? ''} filePath={activeTab.path} />
+          tabs.map((tab) => {
+            const content = contentByKey[tab.key];
+            const active = tab.key === activeKey;
+
+            return (
+              <div key={tab.key} className={`workbench-preview-panel${active ? ' active' : ''}`} aria-hidden={!active}>
+                {content?.loading ? (
+                  <WorkbenchEmpty icon={<RefreshCw className="spin" size={24} />} title="正在读取文件" description={tab.path} />
+                ) : content?.error ? (
+                  <WorkbenchEmpty icon={<FileText size={24} />} title="预览失败" description={content.error} />
+                ) : content?.mode === 'git-diff' ? (
+                  <MemoGitDiffPreview content={content.content} />
+                ) : tab.kind === 'markdown' ? (
+                  <MemoMarkdownPreview content={content?.content ?? ''} />
+                ) : (
+                  <MemoCodePreview content={content?.content ?? ''} filePath={tab.path} />
+                )}
+              </div>
+            );
+          })
         )}
       </div>
     </main>
@@ -802,14 +1113,28 @@ function MarkdownPreview({ content }: { content: string }) {
 }
 
 function CodePreview({ content, filePath }: { content: string; filePath: string }) {
-  const lines = content ? content.split('\n') : ['文件为空。'];
+  const lines = useMemo(() => (content ? content.split('\n') : ['文件为空。']), [content]);
+  const previewRef = useRef<HTMLDivElement | null>(null);
   const [highlightedLines, setHighlightedLines] = useState<HighlightedCodeToken[][] | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(420);
+  const largeFilePreview = shouldUseLargeFilePreview(content, lines.length);
+
+  const visibleRange = useMemo(
+    () => getWorkbenchVisibleLineRange(lines.length, scrollTop, viewportHeight),
+    [lines.length, scrollTop, viewportHeight],
+  );
+  const visibleLines = useMemo(
+    () => lines.slice(visibleRange.start, visibleRange.end),
+    [lines, visibleRange.end, visibleRange.start],
+  );
+  const totalHeight = lines.length * WORKBENCH_CODE_LINE_HEIGHT;
 
   useEffect(() => {
     let cancelled = false;
     setHighlightedLines(null);
 
-    if (!content) {
+    if (!content || largeFilePreview) {
       return undefined;
     }
 
@@ -822,21 +1147,64 @@ function CodePreview({ content, filePath }: { content: string; filePath: string 
     return () => {
       cancelled = true;
     };
-  }, [content, filePath]);
+  }, [content, filePath, largeFilePreview]);
+
+  useEffect(() => {
+    const preview = previewRef.current;
+    if (!preview) {
+      return undefined;
+    }
+
+    const updateViewportHeight = () => {
+      setViewportHeight(preview.clientHeight);
+    };
+
+    updateViewportHeight();
+    const observer = new ResizeObserver(updateViewportHeight);
+    observer.observe(preview);
+    return () => observer.disconnect();
+  }, []);
 
   return (
-    <div className="workbench-code-preview" role="region" aria-label="代码预览">
-      {lines.map((line, lineIndex) => (
-        <div key={`${lineIndex}-${line}`} className="workbench-code-line">
-          <span className="workbench-code-line-no">{lineIndex + 1}</span>
-          <span className="workbench-code-line-text">
-            {renderCodeLineContent(highlightedLines?.[lineIndex], line, filePath)}
-          </span>
+    <div
+      ref={previewRef}
+      className={`workbench-code-preview${largeFilePreview ? ' large-file' : ''}`}
+      role="region"
+      aria-label="代码预览"
+      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+    >
+      <div
+        className="workbench-code-virtual-spacer"
+        style={{ height: `${Math.max(totalHeight, WORKBENCH_CODE_LINE_HEIGHT)}px` }}
+      >
+        <div
+          className="workbench-code-virtual-window"
+          style={{ transform: `translateY(${visibleRange.start * WORKBENCH_CODE_LINE_HEIGHT}px)` }}
+        >
+          {visibleLines.map((line, visibleIndex) => {
+            const lineIndex = visibleRange.start + visibleIndex;
+
+            return (
+              <div key={`${lineIndex}-${line}`} className="workbench-code-line">
+                <span className="workbench-code-line-no">{lineIndex + 1}</span>
+                <span className="workbench-code-line-text">
+                  {renderCodeLineContent(
+                    largeFilePreview ? undefined : highlightedLines?.[lineIndex],
+                    line,
+                    filePath,
+                  )}
+                </span>
+              </div>
+            );
+          })}
         </div>
-      ))}
+      </div>
     </div>
   );
 }
+
+const MemoMarkdownPreview = memo(MarkdownPreview);
+const MemoCodePreview = memo(CodePreview);
 
 function renderCodeLineContent(
   highlightedLine: HighlightedCodeToken[] | undefined,
@@ -1124,6 +1492,8 @@ function GitDiffPreview({ content }: { content: string }) {
     </div>
   );
 }
+
+const MemoGitDiffPreview = memo(GitDiffPreview);
 
 function InfoTile({ label, value }: { label: string; value: string }) {
   return (

@@ -23,7 +23,7 @@ import {
   buildCostSlashCardResult,
   buildStatusSlashCardResult,
 } from './lib/claude-slash-system-commands';
-import { closeWorkbenchPreviewTab, openWorkbenchPreviewTab } from './lib/workbench-preview';
+import { closeWorkbenchPreviewTab, closeWorkbenchPreviewTabs, openWorkbenchPreviewTab } from './lib/workbench-preview';
 import { normalizeWorkbenchPreviewRequest } from './lib/workbench-preview';
 import { matchesShortcut } from './lib/shortcuts';
 import { createSystemCommandItem, settleSystemCommandItem } from './lib/system-command-items';
@@ -741,6 +741,26 @@ export default function App() {
     });
   }
 
+  function closeWorkbenchPreviewMany(tabKeys: string[]) {
+    setPreviewTabs((currentTabs) => {
+      const next = closeWorkbenchPreviewTabs(currentTabs, activePreviewKey, tabKeys);
+      const closingSet = new Set(tabKeys);
+      setActivePreviewKey(next.activeKey);
+      setPreviewContentByKey((current) => {
+        let changed = false;
+        const updated = { ...current };
+        for (const key of closingSet) {
+          if (key in updated) {
+            delete updated[key];
+            changed = true;
+          }
+        }
+        return changed ? updated : current;
+      });
+      return next.tabs;
+    });
+  }
+
   const resolveWorkbenchPreviewContent = useCallback((key: string, state: WorkbenchPreviewContentState) => {
     setPreviewContentByKey((current) => ({
       ...current,
@@ -1006,6 +1026,7 @@ export default function App() {
                 onOpenWorkbenchPreview={openWorkbenchPreview}
                 onSelectPreviewTab={setActivePreviewKey}
                 onClosePreviewTab={closeWorkbenchPreview}
+                onClosePreviewTabs={closeWorkbenchPreviewMany}
                 onResolvePreviewContent={resolveWorkbenchPreviewContent}
                 onResizeStart={handleRightWorkbenchResizeStart}
                 onClose={() => setRightWorkbenchOpen(false)}

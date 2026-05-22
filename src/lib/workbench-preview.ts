@@ -102,6 +102,56 @@ export function closeWorkbenchPreviewTab(
   };
 }
 
+export function closeWorkbenchPreviewTabs(
+  currentTabs: WorkbenchPreviewTab[],
+  activeKey: string,
+  closingKeys: string[],
+) {
+  if (closingKeys.length === 0) {
+    return {
+      tabs: currentTabs,
+      activeKey,
+    };
+  }
+
+  const closingSet = new Set(closingKeys);
+  const tabs = currentTabs.filter((tab) => !closingSet.has(tab.key));
+
+  if (!closingSet.has(activeKey)) {
+    return {
+      tabs,
+      activeKey,
+    };
+  }
+
+  const activeIndex = currentTabs.findIndex((tab) => tab.key === activeKey);
+
+  for (let index = activeIndex - 1; index >= 0; index -= 1) {
+    const candidate = currentTabs[index];
+    if (!closingSet.has(candidate.key)) {
+      return {
+        tabs,
+        activeKey: candidate.key,
+      };
+    }
+  }
+
+  for (let index = activeIndex + 1; index < currentTabs.length; index += 1) {
+    const candidate = currentTabs[index];
+    if (!closingSet.has(candidate.key)) {
+      return {
+        tabs,
+        activeKey: candidate.key,
+      };
+    }
+  }
+
+  return {
+    tabs,
+    activeKey: '',
+  };
+}
+
 function getFileName(filePath: string) {
   const normalizedPath = filePath.replace(/\\/g, '/');
   return normalizedPath.split('/').pop() || normalizedPath;
