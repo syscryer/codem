@@ -68,6 +68,38 @@ export function buildWorkbenchFileTree(files: GitFileStatus[]) {
   return roots;
 }
 
+export function collectWorkbenchFileTreePaths(node: WorkbenchFileTreeNode): string[] {
+  if (node.type === 'file') {
+    return [node.path];
+  }
+
+  return node.children.flatMap(collectWorkbenchFileTreePaths);
+}
+
+export function isWorkbenchFileTreeNodeSelected(node: WorkbenchFileTreeNode, selectedPaths: Set<string>) {
+  const paths = collectWorkbenchFileTreePaths(node);
+  return paths.length > 0 && paths.every((path) => selectedPaths.has(path));
+}
+
+export function toggleWorkbenchFileTreeNodeSelection(
+  node: WorkbenchFileTreeNode,
+  selectedPaths: Set<string>,
+) {
+  const paths = collectWorkbenchFileTreePaths(node);
+  const next = new Set(selectedPaths);
+  const shouldClear = paths.length > 0 && paths.every((path) => next.has(path));
+
+  paths.forEach((path) => {
+    if (shouldClear) {
+      next.delete(path);
+    } else {
+      next.add(path);
+    }
+  });
+
+  return next;
+}
+
 export function getWorkbenchPreviewKind(filePath: string): WorkbenchPreviewKind {
   return /\.mdx?$/i.test(filePath) ? 'markdown' : 'code';
 }

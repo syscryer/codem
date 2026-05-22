@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildWorkbenchFileTree,
+  isWorkbenchFileTreeNodeSelected,
   splitWorkbenchChangedFiles,
+  toggleWorkbenchFileTreeNodeSelection,
   getWorkbenchFileIconKind,
   resolveWorkbenchFileIcon,
   resolveWorkbenchCodeLanguage,
@@ -75,4 +78,73 @@ test('splitWorkbenchChangedFiles separates untracked files from comparable chang
     grouped.untracked.map((file) => file.path),
     ['CLAUDE.md'],
   );
+});
+
+test('directory selection state follows descendant files', () => {
+  const tree = buildWorkbenchFileTree([
+    {
+      path: 'src/App.tsx',
+      status: 'M',
+      staged: false,
+      unstaged: true,
+      untracked: false,
+      deleted: false,
+    },
+    {
+      path: 'src/components/RightWorkbench.tsx',
+      status: 'M',
+      staged: false,
+      unstaged: true,
+      untracked: false,
+      deleted: false,
+    },
+  ]);
+
+  const srcDirectory = tree[0];
+  assert.equal(srcDirectory?.type, 'directory');
+  assert.equal(isWorkbenchFileTreeNodeSelected(srcDirectory!, new Set()), false);
+  assert.equal(isWorkbenchFileTreeNodeSelected(srcDirectory!, new Set(['src/App.tsx'])), false);
+  assert.equal(
+    isWorkbenchFileTreeNodeSelected(srcDirectory!, new Set(['src/App.tsx', 'src/components/RightWorkbench.tsx'])),
+    true,
+  );
+});
+
+test('toggling a directory selects and clears all descendant files', () => {
+  const tree = buildWorkbenchFileTree([
+    {
+      path: 'src/App.tsx',
+      status: 'M',
+      staged: false,
+      unstaged: true,
+      untracked: false,
+      deleted: false,
+    },
+    {
+      path: 'src/components/RightWorkbench.tsx',
+      status: 'M',
+      staged: false,
+      unstaged: true,
+      untracked: false,
+      deleted: false,
+    },
+    {
+      path: 'src/styles.css',
+      status: 'M',
+      staged: false,
+      unstaged: true,
+      untracked: false,
+      deleted: false,
+    },
+  ]);
+
+  const srcDirectory = tree[0];
+  const selected = toggleWorkbenchFileTreeNodeSelection(srcDirectory!, new Set());
+  assert.deepEqual(
+    [...selected].sort(),
+    ['src/App.tsx', 'src/components/RightWorkbench.tsx', 'src/styles.css'],
+  );
+
+  const cleared = toggleWorkbenchFileTreeNodeSelection(srcDirectory!, selected);
+  assert.deepEqual([...cleared], []);
 });

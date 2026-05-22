@@ -35,8 +35,10 @@ import {
   getWorkbenchFileIconKind,
   highlightWorkbenchCode,
   highlightWorkbenchCodeLine,
+  isWorkbenchFileTreeNodeSelected,
   resolveWorkbenchFileIcon,
   splitWorkbenchChangedFiles,
+  toggleWorkbenchFileTreeNodeSelection,
   type HighlightedCodeToken,
   type WorkbenchFileTreeNode,
 } from '../lib/workbench-files';
@@ -538,16 +540,8 @@ function WorkbenchFiles({
     }
   }
 
-  function toggleCommitPath(path: string) {
-    setSelectedCommitPaths((current) => {
-      const next = new Set(current);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
-      return next;
-    });
+  function toggleCommitNode(node: WorkbenchFileTreeNode) {
+    setSelectedCommitPaths((current) => toggleWorkbenchFileTreeNodeSelection(node, current));
   }
 
   function toggleTrackedCommitPaths() {
@@ -739,7 +733,7 @@ function WorkbenchFiles({
                 emptyTitle={navigatorEmptyTitle}
                 showCommitBar={showCommitBar}
                 selectedCommitPaths={selectedCommitPaths}
-                onToggleCommitPath={toggleCommitPath}
+                onToggleCommitNode={toggleCommitNode}
                 commitFilesCount={commitFilesCount}
                 trackedCommitAllSelected={trackedCommitAllSelected}
                 untrackedCommitAllSelected={untrackedCommitAllSelected}
@@ -1259,7 +1253,7 @@ function FileNavigator({
   emptyTitle,
   showCommitBar = false,
   selectedCommitPaths,
-  onToggleCommitPath,
+  onToggleCommitNode,
   commitFilesCount = 0,
   trackedCommitAllSelected = false,
   untrackedCommitAllSelected = false,
@@ -1302,7 +1296,7 @@ function FileNavigator({
   emptyTitle: string;
   showCommitBar?: boolean;
   selectedCommitPaths?: Set<string>;
-  onToggleCommitPath?: (path: string) => void;
+  onToggleCommitNode?: (node: WorkbenchFileTreeNode) => void;
   commitFilesCount?: number;
   trackedCommitAllSelected?: boolean;
   untrackedCommitAllSelected?: boolean;
@@ -1391,7 +1385,7 @@ function FileNavigator({
             allUntrackedCommitSelected={untrackedCommitAllSelected}
             onToggleChangedDirectory={onToggleChangedDirectory}
             onToggleUntrackedDirectory={onToggleUntrackedDirectory}
-            onToggleCommitPath={onToggleCommitPath ?? (() => undefined)}
+            onToggleCommitNode={onToggleCommitNode ?? (() => undefined)}
             onToggleAllTrackedCommitPaths={onToggleTrackedCommitPaths ?? (() => undefined)}
             onToggleAllUntrackedCommitPaths={onToggleUntrackedCommitPaths ?? (() => undefined)}
             onOpenFile={onOpenChangedFile}
@@ -1572,7 +1566,7 @@ function ChangedFileTree({
   allUntrackedCommitSelected,
   onToggleChangedDirectory,
   onToggleUntrackedDirectory,
-  onToggleCommitPath,
+  onToggleCommitNode,
   onToggleAllTrackedCommitPaths,
   onToggleAllUntrackedCommitPaths,
   onOpenFile,
@@ -1587,7 +1581,7 @@ function ChangedFileTree({
   allUntrackedCommitSelected: boolean;
   onToggleChangedDirectory: (directoryPath: string) => void;
   onToggleUntrackedDirectory: (directoryPath: string) => void;
-  onToggleCommitPath: (path: string) => void;
+  onToggleCommitNode: (node: WorkbenchFileTreeNode) => void;
   onToggleAllTrackedCommitPaths: () => void;
   onToggleAllUntrackedCommitPaths: () => void;
   onOpenFile: (file: GitFileStatus) => void;
@@ -1604,7 +1598,7 @@ function ChangedFileTree({
           selectedCommitPaths={selectedCommitPaths}
           allSelected={allTrackedCommitSelected}
           onToggleDirectory={onToggleChangedDirectory}
-          onToggleCommitPath={onToggleCommitPath}
+          onToggleCommitNode={onToggleCommitNode}
           onToggleAll={onToggleAllTrackedCommitPaths}
           onOpenFile={onOpenFile}
         />
@@ -1619,7 +1613,7 @@ function ChangedFileTree({
           selectedCommitPaths={selectedCommitPaths}
           allSelected={allUntrackedCommitSelected}
           onToggleDirectory={onToggleUntrackedDirectory}
-          onToggleCommitPath={onToggleCommitPath}
+          onToggleCommitNode={onToggleCommitNode}
           onToggleAll={onToggleAllUntrackedCommitPaths}
           onOpenFile={onOpenFile}
           untracked
@@ -1638,7 +1632,7 @@ function ChangedFileTreeSection({
   selectedCommitPaths,
   allSelected = false,
   onToggleDirectory,
-  onToggleCommitPath,
+  onToggleCommitNode,
   onToggleAll,
   onOpenFile,
   untracked = false,
@@ -1651,7 +1645,7 @@ function ChangedFileTreeSection({
   selectedCommitPaths: Set<string>;
   allSelected?: boolean;
   onToggleDirectory: (directoryPath: string) => void;
-  onToggleCommitPath: (path: string) => void;
+  onToggleCommitNode: (node: WorkbenchFileTreeNode) => void;
   onToggleAll?: () => void;
   onOpenFile: (file: GitFileStatus) => void;
   untracked?: boolean;
@@ -1674,7 +1668,7 @@ function ChangedFileTreeSection({
         selectedCommitPaths,
         depth: 0,
         onToggleDirectory,
-        onToggleCommitPath,
+        onToggleCommitNode,
         onOpenFile,
         untracked,
       })}
@@ -1822,7 +1816,7 @@ function renderChangedFileTreeRows({
   selectedCommitPaths,
   depth,
   onToggleDirectory,
-  onToggleCommitPath,
+  onToggleCommitNode,
   onOpenFile,
   untracked = false,
 }: {
@@ -1832,19 +1826,19 @@ function renderChangedFileTreeRows({
   selectedCommitPaths: Set<string>;
   depth: number;
   onToggleDirectory: (directoryPath: string) => void;
-  onToggleCommitPath: (path: string) => void;
+  onToggleCommitNode: (node: WorkbenchFileTreeNode) => void;
   onOpenFile: (file: GitFileStatus) => void;
   untracked?: boolean;
 }): ReactNode[] {
   return nodes.flatMap((node): ReactNode[] => {
     const expanded = node.type === 'directory' && expandedDirectories.includes(node.path);
     const statusTone = !untracked && node.gitFile ? getGitStatusTone(node.gitFile.status) : '';
-    const checked = node.type === 'file' && selectedCommitPaths.has(node.path);
+    const checked = isWorkbenchFileTreeNodeSelected(node, selectedCommitPaths);
     const row = (
       <button
         key={node.path}
         type="button"
-        className={`workbench-tree-row selectable ${node.type === 'file' ? 'has-check' : 'no-check'}${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === buildChangedWorkbenchPreviewKey(node.path) ? ' active' : ''}`}
+        className={`workbench-tree-row selectable has-check${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === buildChangedWorkbenchPreviewKey(node.path) ? ' active' : ''}`}
         style={{ paddingLeft: `${10 + depth * 18}px` }}
         onClick={() => {
           if (node.type === 'directory') {
@@ -1859,27 +1853,25 @@ function renderChangedFileTreeRows({
         ) : (
           <span className="workbench-tree-spacer" />
         )}
-        {node.type === 'file' ? (
-          <span
-            className="workbench-tree-check"
-            role="checkbox"
-            aria-checked={checked}
-            tabIndex={0}
-            onClick={(event) => {
+        <span
+          className="workbench-tree-check"
+          role="checkbox"
+          aria-checked={checked}
+          tabIndex={0}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleCommitNode(node);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
               event.stopPropagation();
-              onToggleCommitPath(node.path);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                event.stopPropagation();
-                onToggleCommitPath(node.path);
-              }
-            }}
-          >
-            {checked ? <CheckSquare size={15} /> : <Square size={15} />}
-          </span>
-        ) : null}
+              onToggleCommitNode(node);
+            }
+          }}
+        >
+          {checked ? <CheckSquare size={15} /> : <Square size={15} />}
+        </span>
         <FileIcon path={node.path} type={node.type} expanded={expanded} />
         <span className={statusTone ? `workbench-file-name status-${statusTone}` : 'workbench-file-name'} title={node.path}>
           {node.name}
@@ -1900,7 +1892,7 @@ function renderChangedFileTreeRows({
         selectedCommitPaths,
         depth: depth + 1,
         onToggleDirectory,
-        onToggleCommitPath,
+        onToggleCommitNode,
         onOpenFile,
         untracked,
       }),
