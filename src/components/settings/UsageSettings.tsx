@@ -20,19 +20,21 @@ const emptyTotals: UsageTotals = {
 
 type TrendMetric = 'tokens' | 'cost' | 'duration';
 type TrendRangeDays = 7 | 30 | 90;
+type UsageSummaryRange = TrendRangeDays | 'all';
 
 export function UsageSettingsSection() {
   const [stats, setStats] = useState<UsageStatsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [summaryRange, setSummaryRange] = useState<UsageSummaryRange>(30);
   const [trendMetric, setTrendMetric] = useState<TrendMetric>('tokens');
   const [trendRangeDays, setTrendRangeDays] = useState<TrendRangeDays>(30);
 
-  async function loadUsage() {
+  async function loadUsage(range: UsageSummaryRange) {
     setLoading(true);
     setError('');
     try {
-      setStats(await fetchUsageStats());
+      setStats(await fetchUsageStats(range));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : '读取使用情况失败');
     } finally {
@@ -41,8 +43,8 @@ export function UsageSettingsSection() {
   }
 
   useEffect(() => {
-    void loadUsage();
-  }, []);
+    void loadUsage(summaryRange);
+  }, [summaryRange]);
 
   const totals = stats?.totals ?? emptyTotals;
   const maxProviderTokens = useMemo(
@@ -70,19 +72,37 @@ export function UsageSettingsSection() {
     <section className="settings-page-section">
       <header className="settings-section-head settings-section-head-row">
         <h1>使用情况</h1>
-        <button type="button" className="settings-action-button" disabled={loading} onClick={() => void loadUsage()}>
-          <RefreshCw size={14} />
-          <span>{loading ? '刷新中' : '刷新'}</span>
-        </button>
+        <div className="settings-usage-head-actions">
+          <div className="settings-usage-range-control" aria-label="统计范围">
+            <span>统计范围</span>
+            <div className="settings-segmented">
+              {([7, 30, 90, 'all'] as UsageSummaryRange[]).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={summaryRange === value ? 'active' : ''}
+                  onClick={() => setSummaryRange(value)}
+                >
+                  {value === 'all' ? '全部' : `${value}天`}
+                </button>
+              ))}
+            </div>
+          </div>
+          <button type="button" className="settings-action-button settings-usage-refresh-button" disabled={loading} onClick={() => void loadUsage(summaryRange)}>
+            <RefreshCw className={loading ? 'spin' : undefined} size={14} />
+            <span>刷新</span>
+          </button>
+        </div>
       </header>
 
       <div className="settings-usage-panel">
+        <div className="settings-usage-scope">当前统计范围：{formatUsageSummaryRange(summaryRange)}</div>
         <div className="settings-usage-summary">
           <UsageCard icon={MessageSquareText} label="会话" value={formatNumber(totals.threads)} hint={`${formatNumber(totals.messages)} 条消息`} />
           <UsageCard icon={BarChart3} label="Token" value={formatTokenValue(totals.totalTokens)} hint={formatTokenBreakdown(totals)} />
           <UsageCard icon={Wrench} label="工具调用" value={formatNumber(totals.toolCalls)} hint={`${formatNumber(totals.projects)} 个项目`} />
-          <UsageCard icon={Clock3} label="耗时" value={formatDuration(totals.durationMs)} hint="按完成轮次累计" />
-          <UsageCard icon={Coins} label="费用" value={formatCost(totals.totalCostUsd)} hint="来自 Claude usage" />
+          <UsageCard icon={Clock3} label="耗时" value={formatDuration(totals.durationMs)} hint={`${formatUsageSummaryRange(summaryRange)}内按完成轮次累计`} />
+          <UsageCard icon={Coins} label="费用" value={formatCost(totals.totalCostUsd)} hint={`来自 Claude usage · ${formatUsageSummaryRange(summaryRange)}`} />
         </div>
 
         <UsageTrendCard
@@ -470,6 +490,10 @@ function formatTrendTooltipDate(dateText: string) {
   }
 
   return `${date.getMonth() + 1}月${date.getDate()}日`;
+}
+
+function formatUsageSummaryRange(range: UsageSummaryRange) {
+  return range === 'all' ? '全部历史' : `最近 ${range} 天`;
 }
 
 function findLatestTrendIndex(points: UsageTrendPoint[]) {

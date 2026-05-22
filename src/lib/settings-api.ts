@@ -142,9 +142,10 @@ export async function fetchOpenWithTargets(): Promise<OpenWithTargetsResponse> {
   }
 }
 
-export async function fetchUsageStats(): Promise<UsageStatsResponse> {
+export async function fetchUsageStats(range?: 7 | 30 | 90 | 'all'): Promise<UsageStatsResponse> {
   try {
-    const response = await fetch('/api/usage');
+    const query = range && range !== 'all' ? `?range=${range}` : '';
+    const response = await fetch(`/api/usage${query}`);
     if (!response.ok) {
       throw new Error('读取使用情况失败');
     }

@@ -8118,6 +8118,36 @@ svg {
   gap: 14px;
 }
 
+.settings-usage-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-usage-refresh-button {
+  width: 68px;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.settings-usage-range-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #7b7b7b;
+  font-size: 12px;
+}
+
+.settings-usage-range-control > span {
+  white-space: nowrap;
+}
+
+.settings-usage-scope {
+  color: #7b7b7b;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .settings-usage-summary {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

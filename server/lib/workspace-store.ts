@@ -10,7 +10,7 @@ import {
   findOpenTarget,
 } from './open-with.js';
 import { getAppSettings } from './settings-store.js';
-import { collectUsageStats } from './usage-stats.js';
+import { collectUsageStats, type UsageStatsRangeDays } from './usage-stats.js';
 
 type OrganizeBy = 'project' | 'timeline' | 'chat-first';
 type SortBy = 'created' | 'updated';
@@ -463,9 +463,9 @@ export function getWorkspaceBootstrap(): WorkspaceBootstrap {
   };
 }
 
-export function getUsageStats() {
+export function getUsageStats(rangeDays?: UsageStatsRangeDays) {
   hydrateThreadHistoryForUsage();
-  return collectUsageStats(db);
+  return collectUsageStats(db, rangeDays ? { rangeDays } : undefined);
 }
 
 export function createProject(projectPath: string) {
