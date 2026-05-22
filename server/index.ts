@@ -707,10 +707,7 @@ app.get('/api/projects/:projectId/git/diff', async (request, response) => {
   }
 
   try {
-    response.json({
-      path: filePath,
-      content: await getProjectGitFileDiff(request.params.projectId, filePath),
-    });
+    response.json(await getProjectGitFileDiff(request.params.projectId, filePath));
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '读取 Git 差异失败');
   }

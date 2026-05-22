@@ -475,7 +475,7 @@ export type GitCreateWorktreeResult = {
 
 export type ProjectGitSummary = Pick<ProjectSummary, 'gitBranch' | 'gitDiff' | 'isGitRepo' | 'isGitWorktree'>;
 
-export type RightWorkbenchTab = 'overview' | 'files' | 'browser';
+export type RightWorkbenchTab = 'overview' | 'files' | 'review' | 'browser';
 
 export type WorkbenchFileScope = 'all' | 'changed';
 
@@ -495,6 +495,7 @@ export type WorkbenchPreviewRequest = {
   name: string;
   kind: WorkbenchPreviewKind;
   source: WorkbenchPreviewSource;
+  previewMode?: 'file' | 'git-diff';
   status?: string;
   reviewDiff?: string[];
 };
@@ -506,6 +507,8 @@ export type WorkbenchPreviewContentState = {
   content: string;
   error?: string;
   mode?: 'code' | 'markdown' | 'git-diff';
+  beforeContent?: string;
+  afterContent?: string;
 };
 
 export type ProjectFileEntry = {
@@ -541,6 +544,13 @@ export type GitPushPreview = {
   ahead: number;
   behind: number;
   commits: string[];
+};
+
+export type GitFileDiffPreview = {
+  path: string;
+  content: string;
+  beforeContent?: string;
+  afterContent?: string;
 };
 
 export type GitCommitResult = {

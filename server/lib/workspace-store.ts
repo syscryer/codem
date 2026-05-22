@@ -1278,11 +1278,16 @@ export async function getProjectGitFileDiff(projectId: string, filePath: string)
 
   if (fileStatus?.untracked) {
     const content = readWorkspaceTextFile(projectPath, safePath);
-    return [
-      `未跟踪文件：${safePath}`,
-      '',
-      content,
-    ].join('\n');
+    return {
+      path: safePath,
+      content: [
+        `未跟踪文件：${safePath}`,
+        '',
+        content,
+      ].join('\n'),
+      beforeContent: '',
+      afterContent: content,
+    };
   }
 
   const worktreeDiff = await runGitCommand(projectPath, ['diff', '--', safePath]);
@@ -1296,7 +1301,12 @@ export async function getProjectGitFileDiff(projectId: string, filePath: string)
   }
 
   const diff = [stagedDiff.stdout.trimEnd(), worktreeDiff.stdout.trimEnd()].filter(Boolean).join('\n');
-  return diff || '当前文件没有可显示的差异。';
+  return {
+    path: safePath,
+    content: diff || '当前文件没有可显示的差异。',
+    beforeContent: await readGitRevisionTextFile(projectPath, 'HEAD', safePath),
+    afterContent: fileStatus?.deleted ? '' : readWorkspaceTextFileIfExists(projectPath, safePath),
+  };
 }
 
 export async function undoProjectAiTurnChanges(
@@ -3206,6 +3216,28 @@ function readWorkspaceTextFile(projectPath: string, filePath: string) {
   }
 
   return buffer.toString('utf8');
+}
+
+function readWorkspaceTextFileIfExists(projectPath: string, filePath: string) {
+  const resolvedPath = path.resolve(projectPath, filePath);
+  return existsSync(resolvedPath) ? readWorkspaceTextFile(projectPath, filePath) : '';
+}
+
+async function readGitRevisionTextFile(projectPath: string, revision: string, filePath: string) {
+  const result = await runGitCommand(projectPath, ['show', `${revision}:${filePath}`]);
+  if (result.status !== 0) {
+    return '';
+  }
+
+  const content = result.stdout.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (content.length > 200 * 1024) {
+    return '文件过大，暂不预览内容。';
+  }
+  if (content.includes('\0')) {
+    return '二进制文件暂不预览内容。';
+  }
+
+  return content;
 }
 
 function normalizePreviewText(value: string) {

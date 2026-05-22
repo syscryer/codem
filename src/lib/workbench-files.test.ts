@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  splitWorkbenchChangedFiles,
   getWorkbenchFileIconKind,
   resolveWorkbenchFileIcon,
   resolveWorkbenchCodeLanguage,
@@ -43,5 +44,35 @@ test('resolveWorkbenchFileIcon returns vscode-style icon assets for files and fo
   assert.match(
     resolveWorkbenchFileIcon('src/components', 'directory') ?? '',
     /folder_type_component.*\.svg$/,
+  );
+});
+
+test('splitWorkbenchChangedFiles separates untracked files from comparable changes', () => {
+  const grouped = splitWorkbenchChangedFiles([
+    {
+      path: 'src/App.tsx',
+      status: 'M',
+      staged: false,
+      unstaged: true,
+      untracked: false,
+      deleted: false,
+    },
+    {
+      path: 'CLAUDE.md',
+      status: '??',
+      staged: false,
+      unstaged: true,
+      untracked: true,
+      deleted: false,
+    },
+  ]);
+
+  assert.deepEqual(
+    grouped.tracked.map((file) => file.path),
+    ['src/App.tsx'],
+  );
+  assert.deepEqual(
+    grouped.untracked.map((file) => file.path),
+    ['CLAUDE.md'],
   );
 });

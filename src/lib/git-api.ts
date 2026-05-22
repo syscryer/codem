@@ -1,4 +1,5 @@
 import type {
+  GitFileDiffPreview,
   GitBranchCreateResult,
   GitCommitResult,
   GitPushPreview,
@@ -29,7 +30,7 @@ export async function fetchGitFileDiff(projectId: string, filePath: string) {
     throw new Error(await readError(response));
   }
 
-  return (await response.json()) as { path: string; content: string };
+  return (await response.json()) as GitFileDiffPreview;
 }
 
 export async function fetchGitPushPreview(projectId: string) {

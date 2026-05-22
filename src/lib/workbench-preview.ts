@@ -23,7 +23,7 @@ export function buildProjectFilePreviewRequest(
 }
 
 export function buildChangedFilePreviewRequest(
-  file: Pick<GitFileStatus, 'path' | 'status'>,
+  file: Pick<GitFileStatus, 'path' | 'status' | 'untracked'>,
 ): WorkbenchPreviewRequest {
   return {
     key: buildWorkbenchPreviewKey(file.path, 'changed-file'),
@@ -31,8 +31,31 @@ export function buildChangedFilePreviewRequest(
     name: getFileName(file.path),
     kind: getWorkbenchPreviewKind(file.path),
     source: 'changed-file',
+    previewMode: file.untracked ? 'file' : 'git-diff',
     status: file.status,
   };
+}
+
+export function isWorkbenchDiffPreviewSource(source: WorkbenchPreviewRequest['source']) {
+  return source === 'conversation-card' || source === 'changed-file';
+}
+
+export function isWorkbenchDiffPreviewRequest(
+  request: Pick<WorkbenchPreviewRequest, 'source' | 'previewMode'>,
+) {
+  if (request.source === 'conversation-card') {
+    return true;
+  }
+
+  return request.source === 'changed-file' && request.previewMode !== 'file';
+}
+
+export function buildProjectWorkbenchPreviewKey(filePath: string) {
+  return buildWorkbenchPreviewKey(filePath, 'project-file');
+}
+
+export function buildChangedWorkbenchPreviewKey(filePath: string) {
+  return buildWorkbenchPreviewKey(filePath, 'changed-file');
 }
 
 export function openWorkbenchPreviewTab(
@@ -158,7 +181,14 @@ function getFileName(filePath: string) {
 }
 
 function buildWorkbenchPreviewKey(path: string, source: WorkbenchPreviewRequest['source']) {
-  return `${source === 'conversation-card' ? 'conversation' : 'file'}:${path}`;
+  if (source === 'conversation-card') {
+    return `conversation:${path}`;
+  }
+  if (source === 'changed-file') {
+    return `review:${path}`;
+  }
+
+  return `file:${path}`;
 }
 
 function normalizeWindowsPath(filePath: string) {

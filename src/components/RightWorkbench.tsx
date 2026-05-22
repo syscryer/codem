@@ -1,4 +1,6 @@
 import {
+  ArrowDown,
+  ArrowUp,
   Check,
   ChevronDown,
   ChevronRight,
@@ -8,17 +10,21 @@ import {
   Globe2,
   GitPullRequest,
   LayoutDashboard,
+  Link2,
   MoreHorizontal,
   Plus,
   RefreshCw,
+  RotateCcw,
+  Rows3,
+  Unlink2,
   X,
 } from 'lucide-react';
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
 import { fetchWorkspaceFilePreview } from '../lib/file-preview-api';
-import { fetchGitStatus } from '../lib/git-api';
+import { fetchGitFileDiff, fetchGitStatus } from '../lib/git-api';
 import { fetchProjectFiles } from '../lib/project-files-api';
 import {
   buildWorkbenchFileTree,
@@ -26,9 +32,17 @@ import {
   highlightWorkbenchCode,
   highlightWorkbenchCodeLine,
   resolveWorkbenchFileIcon,
+  splitWorkbenchChangedFiles,
   type HighlightedCodeToken,
   type WorkbenchFileTreeNode,
 } from '../lib/workbench-files';
+import {
+  buildWorkbenchFullDiffRows,
+  buildWorkbenchSplitDiffRows,
+  collapseWorkbenchContextRows,
+  findWorkbenchChangeBlockIndices,
+  type WorkbenchSplitDiffRow,
+} from '../lib/workbench-diff';
 import {
   applyWorkbenchNavigatorWidthOverride,
   buildWorkbenchFilesLayoutColumns,
@@ -41,8 +55,11 @@ import {
   WORKBENCH_CODE_LINE_HEIGHT,
 } from '../lib/workbench-code-preview';
 import {
+  buildChangedWorkbenchPreviewKey,
+  buildProjectWorkbenchPreviewKey,
   buildChangedFilePreviewRequest,
   buildProjectFilePreviewRequest,
+  isWorkbenchDiffPreviewRequest,
   resolveWorkbenchPreviewFilePath,
 } from '../lib/workbench-preview';
 import type {
@@ -52,7 +69,6 @@ import type {
   ProjectSummary,
   RightWorkbenchTab,
   ThreadDetail,
-  WorkbenchFileScope,
   WorkbenchPreviewContentState,
   WorkbenchPreviewRequest,
   WorkbenchPreviewTab,
@@ -62,17 +78,20 @@ type RightWorkbenchProps = {
   activeTab: RightWorkbenchTab;
   activeProject: ProjectSummary | null;
   activeThread: ThreadDetail | null;
-  fileScope: WorkbenchFileScope;
   isRunning: boolean;
-  previewTabs: WorkbenchPreviewTab[];
-  activePreviewKey: string;
+  filePreviewTabs: WorkbenchPreviewTab[];
+  activeFilePreviewKey: string;
+  reviewPreviewTabs: WorkbenchPreviewTab[];
+  activeReviewPreviewKey: string;
   previewContentByKey: Record<string, WorkbenchPreviewContentState>;
   onSelectTab: (tab: RightWorkbenchTab) => void;
-  onSelectFileScope: (scope: WorkbenchFileScope) => void;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
-  onSelectPreviewTab: (key: string) => void;
-  onClosePreviewTab: (key: string) => void;
-  onClosePreviewTabs: (keys: string[]) => void;
+  onSelectFilePreviewTab: (key: string) => void;
+  onSelectReviewPreviewTab: (key: string) => void;
+  onCloseFilePreviewTab: (key: string) => void;
+  onCloseReviewPreviewTab: (key: string) => void;
+  onCloseFilePreviewTabs: (keys: string[]) => void;
+  onCloseReviewPreviewTabs: (keys: string[]) => void;
   onResolvePreviewContent: (key: string, state: WorkbenchPreviewContentState) => void;
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onClose: () => void;
@@ -82,17 +101,20 @@ export function RightWorkbench({
   activeTab,
   activeProject,
   activeThread,
-  fileScope,
   isRunning,
-  previewTabs,
-  activePreviewKey,
+  filePreviewTabs,
+  activeFilePreviewKey,
+  reviewPreviewTabs,
+  activeReviewPreviewKey,
   previewContentByKey,
   onSelectTab,
-  onSelectFileScope,
   onOpenWorkbenchPreview,
-  onSelectPreviewTab,
-  onClosePreviewTab,
-  onClosePreviewTabs,
+  onSelectFilePreviewTab,
+  onSelectReviewPreviewTab,
+  onCloseFilePreviewTab,
+  onCloseReviewPreviewTab,
+  onCloseFilePreviewTabs,
+  onCloseReviewPreviewTabs,
   onResolvePreviewContent,
   onResizeStart,
   onClose,
@@ -112,6 +134,12 @@ export function RightWorkbench({
           icon={<Folder size={15} />}
           label="文件"
           onClick={() => onSelectTab('files')}
+        />
+        <WorkbenchTab
+          active={activeTab === 'review'}
+          icon={<GitPullRequest size={15} />}
+          label="审查"
+          onClick={() => onSelectTab('review')}
         />
         <WorkbenchTab
           active={activeTab === 'browser'}
@@ -134,15 +162,35 @@ export function RightWorkbench({
         {activeTab === 'files' ? (
           <WorkbenchFiles
             activeProject={activeProject}
-            scope={fileScope}
-            previewTabs={previewTabs}
-            activePreviewKey={activePreviewKey}
+            scope="all"
+            scopeLocked
+            scopeLabel="所有文件"
+            previewTabs={filePreviewTabs}
+            activePreviewKey={activeFilePreviewKey}
             previewContentByKey={previewContentByKey}
-            onSelectScope={onSelectFileScope}
             onOpenWorkbenchPreview={onOpenWorkbenchPreview}
-            onSelectPreviewTab={onSelectPreviewTab}
-            onClosePreviewTab={onClosePreviewTab}
-            onClosePreviewTabs={onClosePreviewTabs}
+            onSelectPreviewTab={onSelectFilePreviewTab}
+            onClosePreviewTab={onCloseFilePreviewTab}
+            onClosePreviewTabs={onCloseFilePreviewTabs}
+            hideScopeCount
+            navigatorEmptyTitle="没有文件"
+            onResolvePreviewContent={onResolvePreviewContent}
+          />
+        ) : null}
+        {activeTab === 'review' ? (
+          <WorkbenchFiles
+            activeProject={activeProject}
+            scope="changed"
+            scopeLocked
+            scopeLabel="审查文件"
+            previewTabs={reviewPreviewTabs}
+            activePreviewKey={activeReviewPreviewKey}
+            previewContentByKey={previewContentByKey}
+            onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+            onSelectPreviewTab={onSelectReviewPreviewTab}
+            onClosePreviewTab={onCloseReviewPreviewTab}
+            onClosePreviewTabs={onCloseReviewPreviewTabs}
+            navigatorEmptyTitle="当前没有可审查的变更"
             onResolvePreviewContent={onResolvePreviewContent}
           />
         ) : null}
@@ -208,32 +256,39 @@ function WorkbenchOverview({
 function WorkbenchFiles({
   activeProject,
   scope,
+  scopeLocked = false,
+  scopeLabel,
   previewTabs,
   activePreviewKey,
   previewContentByKey,
-  onSelectScope,
   onOpenWorkbenchPreview,
   onSelectPreviewTab,
   onClosePreviewTab,
   onClosePreviewTabs,
+  hideScopeCount = false,
+  navigatorEmptyTitle,
   onResolvePreviewContent,
 }: {
   activeProject: ProjectSummary | null;
-  scope: WorkbenchFileScope;
+  scope: 'all' | 'changed';
+  scopeLocked?: boolean;
+  scopeLabel?: string;
   previewTabs: WorkbenchPreviewTab[];
   activePreviewKey: string;
   previewContentByKey: Record<string, WorkbenchPreviewContentState>;
-  onSelectScope: (scope: WorkbenchFileScope) => void;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onSelectPreviewTab: (key: string) => void;
   onClosePreviewTab: (key: string) => void;
   onClosePreviewTabs: (keys: string[]) => void;
+  hideScopeCount?: boolean;
+  navigatorEmptyTitle: string;
   onResolvePreviewContent: (key: string, state: WorkbenchPreviewContentState) => void;
 }) {
   const [projectFiles, setProjectFiles] = useState<ProjectFileEntry[]>([]);
   const [directoryFiles, setDirectoryFiles] = useState<Record<string, ProjectFileEntry[]>>({});
   const [expandedDirectories, setExpandedDirectories] = useState<string[]>([]);
   const [expandedChangedDirectories, setExpandedChangedDirectories] = useState<string[]>([]);
+  const [expandedUntrackedDirectories, setExpandedUntrackedDirectories] = useState<string[]>([]);
   const [loadingDirectory, setLoadingDirectory] = useState('');
   const [gitStatus, setGitStatus] = useState<GitStatusSnapshot | null>(null);
   const [fileFilter, setFileFilter] = useState('');
@@ -246,11 +301,14 @@ function WorkbenchFiles({
   const dragFrameRef = useRef<number | null>(null);
 
   const changedFiles = gitStatus?.files ?? [];
-  const changedTree = useMemo(() => buildWorkbenchFileTree(changedFiles), [changedFiles]);
-  const filteredChangedTree = useMemo(
-    () => filterWorkbenchTree(changedTree, fileFilter),
-    [changedTree, fileFilter],
+  const { tracked: comparableChangedFiles, untracked: untrackedChangedFiles } = useMemo(
+    () => splitWorkbenchChangedFiles(changedFiles),
+    [changedFiles],
   );
+  const changedTree = useMemo(() => buildWorkbenchFileTree(comparableChangedFiles), [comparableChangedFiles]);
+  const untrackedTree = useMemo(() => buildWorkbenchFileTree(untrackedChangedFiles), [untrackedChangedFiles]);
+  const filteredChangedTree = useMemo(() => filterWorkbenchTree(changedTree, fileFilter), [changedTree, fileFilter]);
+  const filteredUntrackedTree = useMemo(() => filterWorkbenchTree(untrackedTree, fileFilter), [untrackedTree, fileFilter]);
   const activePreviewTab = previewTabs.find((tab) => tab.key === activePreviewKey);
   const activePreviewTabKey = activePreviewTab?.key ?? '';
   const activePreviewPath = activePreviewTab?.path ?? '';
@@ -276,7 +334,49 @@ function WorkbenchFiles({
       return;
     }
 
-    if (activePreviewTab?.source === 'conversation-card') {
+    if (activePreviewTab && isWorkbenchDiffPreviewRequest(activePreviewTab)) {
+      if (activePreviewTab.source === 'conversation-card') {
+        return;
+      }
+
+      const existingContent = previewContentRef.current[activePreviewTabKey];
+      if (existingContent && !existingContent.loading) {
+        return;
+      }
+
+      const projectId = activeProject.id;
+      const requestKey = `${projectId}:${activePreviewTabKey}`;
+      if (previewRequestKeysRef.current.has(requestKey)) {
+        return;
+      }
+
+      previewRequestKeysRef.current.add(requestKey);
+      onResolvePreviewContent(activePreviewTabKey, { loading: true, content: '' });
+
+      fetchGitFileDiff(projectId, activePreviewPath)
+        .then((payload) => {
+          if (activeProjectIdRef.current === projectId) {
+            onResolvePreviewContent(activePreviewTabKey, {
+              loading: false,
+              content: payload.content,
+              mode: 'git-diff',
+              beforeContent: payload.beforeContent,
+              afterContent: payload.afterContent,
+            });
+          }
+        })
+        .catch((caughtError: unknown) => {
+          if (activeProjectIdRef.current === projectId) {
+            onResolvePreviewContent(activePreviewTabKey, {
+              loading: false,
+              content: '',
+              error: caughtError instanceof Error ? caughtError.message : '读取文件差异失败',
+            });
+          }
+        })
+        .finally(() => {
+          previewRequestKeysRef.current.delete(requestKey);
+        });
       return;
     }
 
@@ -314,7 +414,7 @@ function WorkbenchFiles({
       .finally(() => {
         previewRequestKeysRef.current.delete(requestKey);
       });
-  }, [activePreviewPath, activePreviewTab?.source, activePreviewTabKey, activeProject?.id, activeProject?.path, onResolvePreviewContent]);
+  }, [activePreviewPath, activePreviewTab, activePreviewTabKey, activeProject?.id, activeProject?.path, onResolvePreviewContent]);
 
   async function loadScope(nextScope = scope) {
     if (!activeProject) {
@@ -332,8 +432,9 @@ function WorkbenchFiles({
       } else {
         const nextStatus = await fetchGitStatus(activeProject.id);
         setGitStatus(nextStatus);
-        const nextTree = buildWorkbenchFileTree(nextStatus.files);
-        setExpandedChangedDirectories(collectDirectoryPaths(nextTree));
+        const nextGroups = splitWorkbenchChangedFiles(nextStatus.files);
+        setExpandedChangedDirectories(collectDirectoryPaths(buildWorkbenchFileTree(nextGroups.tracked)));
+        setExpandedUntrackedDirectories(collectDirectoryPaths(buildWorkbenchFileTree(nextGroups.untracked)));
       }
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : '读取文件失败');
@@ -386,6 +487,14 @@ function WorkbenchFiles({
 
   function toggleChangedDirectory(directoryPath: string) {
     setExpandedChangedDirectories((directories) =>
+      directories.includes(directoryPath)
+        ? directories.filter((item) => item !== directoryPath)
+        : [...directories, directoryPath],
+    );
+  }
+
+  function toggleUntrackedDirectory(directoryPath: string) {
+    setExpandedUntrackedDirectories((directories) =>
       directories.includes(directoryPath)
         ? directories.filter((item) => item !== directoryPath)
         : [...directories, directoryPath],
@@ -483,6 +592,8 @@ function WorkbenchFiles({
               />
               <FileNavigator
                 scope={scope}
+                scopeLocked={scopeLocked}
+                scopeLabel={scopeLabel}
                 loading={loading}
                 error={error}
                 filter={fileFilter}
@@ -491,17 +602,22 @@ function WorkbenchFiles({
                 directoryFiles={directoryFiles}
                 expandedDirectories={expandedDirectories}
                 expandedChangedDirectories={expandedChangedDirectories}
+                expandedUntrackedDirectories={expandedUntrackedDirectories}
                 loadingDirectory={loadingDirectory}
                 changedTree={filteredChangedTree}
+                untrackedTree={filteredUntrackedTree}
                 activePreviewKey={activePreviewKey}
                 onFilterChange={setFileFilter}
-                onSelectScope={onSelectScope}
+                onSelectScope={null}
                 onRefresh={() => void loadScope(scope)}
                 onHide={() => setNavigatorVisible(false)}
                 onToggleDirectory={toggleDirectory}
                 onToggleChangedDirectory={toggleChangedDirectory}
+                onToggleUntrackedDirectory={toggleUntrackedDirectory}
                 onOpenProjectFile={openProjectFilePreview}
                 onOpenChangedFile={openChangedPreview}
+                hideScopeCount={hideScopeCount}
+                emptyTitle={navigatorEmptyTitle}
               />
             </>
           ) : (
@@ -536,11 +652,13 @@ function PreviewPane({
   onCloseTabs: (keys: string[]) => void;
 }) {
   const activeTab = tabs.find((tab) => tab.key === activeKey);
+  const activeContent = activeTab ? contentByKey[activeTab.key] : undefined;
   const activeTabRef = useRef<HTMLButtonElement | null>(null);
   const overflowRef = useRef<HTMLDivElement | null>(null);
   const contextMenuAnchorRef = useRef<HTMLDivElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const [overflowOpen, setOverflowOpen] = useState(false);
+  const [diffViewByKey, setDiffViewByKey] = useState<Record<string, 'unified' | 'split' | 'full'>>({});
   const [contextMenu, setContextMenu] = useState<{
     key: string;
     name: string;
@@ -549,6 +667,18 @@ function PreviewPane({
     x: number;
     y: number;
   } | null>(null);
+  const handleDiffViewChange = useCallback((key: string, nextViewMode: 'unified' | 'split' | 'full') => {
+    setDiffViewByKey((current) => {
+      if (current[key] === nextViewMode) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [key]: nextViewMode,
+      };
+    });
+  }, []);
 
   useEffect(() => {
     activeTabRef.current?.scrollIntoView({
@@ -609,6 +739,30 @@ function PreviewPane({
     };
   }, [contextMenu]);
 
+  useEffect(() => {
+    setDiffViewByKey((current) => {
+      const activeDiffKeys = new Set(
+        tabs
+          .filter((tab) => contentByKey[tab.key]?.mode === 'git-diff')
+          .map((tab) => tab.key),
+      );
+      let changed = false;
+      const next: Record<string, 'unified' | 'split' | 'full'> = {};
+      for (const [key, mode] of Object.entries(current)) {
+        if (activeDiffKeys.has(key)) {
+          next[key] = mode;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [contentByKey, tabs]);
+
+  const activeDiffView = activeTab ? diffViewByKey[activeTab.key] ?? 'split' : 'split';
+  const showDiffViewToggle = Boolean(activeTab && activeContent?.mode === 'git-diff');
+  const showFullDiffToggle = Boolean(activeContent?.beforeContent !== undefined || activeContent?.afterContent !== undefined);
+
   return (
     <main className="workbench-preview-pane">
       <div ref={contextMenuAnchorRef} className="workbench-preview-head">
@@ -631,17 +785,17 @@ function PreviewPane({
                     y: event.clientY,
                   });
                 }}
-                >
+              >
                 <button
                   ref={active ? activeTabRef : null}
                   type="button"
                   className={`workbench-preview-tab${active ? ' active' : ''}`}
                   onClick={() => onSelectTab(tab.key)}
-                  >
-                    <FileIcon path={tab.path} type="file" />
-                    <span className="workbench-preview-tab-label">
-                      {tab.source === 'conversation-card' ? (
-                        <GitPullRequest className="workbench-preview-review-icon" size={12} />
+                >
+                  <FileIcon path={tab.path} type="file" />
+                  <span className="workbench-preview-tab-label">
+                    {isWorkbenchDiffPreviewRequest(tab) ? (
+                      <GitPullRequest className="workbench-preview-review-icon" size={12} />
                     ) : null}
                     <span>{tab.name}</span>
                   </span>
@@ -659,56 +813,115 @@ function PreviewPane({
             );
           })}
         </div>
-        {tabs.length > 1 ? (
-          <div ref={overflowRef} className={`workbench-preview-overflow${overflowOpen ? ' open' : ''}`}>
-            <button
-              type="button"
-              className="workbench-icon-button workbench-preview-overflow-trigger"
-              title="标签列表"
-              aria-label="标签列表"
-              aria-expanded={overflowOpen}
-              onClick={() => setOverflowOpen((current) => !current)}
-            >
-              <MoreHorizontal size={15} />
-            </button>
-            {overflowOpen ? (
-              <div className="workbench-preview-overflow-menu">
-                {tabs.map((tab, index) => {
-                  const active = tab.key === activeKey;
+        <div className="workbench-preview-head-actions">
+          {showDiffViewToggle && activeDiffView === 'unified' ? (
+            <div className="workbench-diff-view-toggle" role="tablist" aria-label="对比视图">
+              <button
+                type="button"
+                className="workbench-diff-view-button"
+                role="tab"
+                aria-selected={false}
+                onClick={() => {
+                  if (!activeTab) {
+                    return;
+                  }
+                  setDiffViewByKey((current) => ({
+                    ...current,
+                    [activeTab.key]: 'split',
+                  }));
+                }}
+              >
+                左右
+              </button>
+              {showFullDiffToggle ? (
+                <button
+                  type="button"
+                  className="workbench-diff-view-button"
+                  role="tab"
+                  aria-selected={false}
+                  onClick={() => {
+                    if (!activeTab) {
+                      return;
+                    }
+                    setDiffViewByKey((current) => ({
+                      ...current,
+                      [activeTab.key]: 'full',
+                    }));
+                  }}
+                >
+                  全文
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className={`workbench-diff-view-button${activeDiffView === 'unified' ? ' active' : ''}`}
+                role="tab"
+                aria-selected={activeDiffView === 'unified'}
+                onClick={() => {
+                  if (!activeTab) {
+                    return;
+                  }
+                  setDiffViewByKey((current) => ({
+                    ...current,
+                    [activeTab.key]: 'unified',
+                  }));
+                }}
+              >
+                统一
+              </button>
+            </div>
+          ) : null}
+          {tabs.length > 1 ? (
+            <div ref={overflowRef} className={`workbench-preview-overflow${overflowOpen ? ' open' : ''}`}>
+              <button
+                type="button"
+                className="workbench-icon-button workbench-preview-overflow-trigger"
+                title="标签列表"
+                aria-label="标签列表"
+                aria-expanded={overflowOpen}
+                onClick={() => setOverflowOpen((current) => !current)}
+              >
+                <MoreHorizontal size={15} />
+              </button>
+              {overflowOpen ? (
+                <div className="workbench-preview-overflow-menu">
+                  {tabs.map((tab, index) => {
+                    const active = tab.key === activeKey;
 
-                  return (
-                    <button
-                      key={`overflow-${tab.key}`}
-                      type="button"
-                      className={`workbench-preview-overflow-item${active ? ' active' : ''}`}
-                      onClick={() => onSelectTab(tab.key)}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        setContextMenu({
-                          key: tab.key,
-                          name: tab.name,
-                          path: tab.path,
-                          index,
-                          x: event.clientX,
-                          y: event.clientY,
-                        });
-                      }}
-                    >
-                      <FileIcon path={tab.path} type="file" />
-                      <span className="workbench-preview-overflow-label">
-                        {tab.source === 'conversation-card' ? (
-                          <GitPullRequest className="workbench-preview-review-icon" size={12} />
-                        ) : null}
-                        <span title={tab.path}>{tab.name}</span>
-                      </span>
-                      {active ? <Check size={13} /> : null}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
+                    return (
+                      <button
+                        key={`overflow-${tab.key}`}
+                        type="button"
+                        className={`workbench-preview-overflow-item${active ? ' active' : ''}`}
+                        onClick={() => onSelectTab(tab.key)}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          setContextMenu({
+                            key: tab.key,
+                            name: tab.name,
+                            path: tab.path,
+                            index,
+                            x: event.clientX,
+                            y: event.clientY,
+                          });
+                        }}
+                      >
+                        <FileIcon path={tab.path} type="file" />
+                        <span className="workbench-preview-overflow-label">
+                          {isWorkbenchDiffPreviewRequest(tab) ? (
+                            <GitPullRequest className="workbench-preview-review-icon" size={12} />
+                          ) : null}
+                          <span title={tab.path}>{tab.name}</span>
+                        </span>
+                        {active ? <Check size={13} /> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           </div>
-        ) : null}
       </div>
       <PopoverPortal
         open={Boolean(contextMenu)}
@@ -820,19 +1033,14 @@ function PreviewPane({
             const active = tab.key === activeKey;
 
             return (
-              <div key={tab.key} className={`workbench-preview-panel${active ? ' active' : ''}`} aria-hidden={!active}>
-                {content?.loading ? (
-                  <WorkbenchEmpty icon={<RefreshCw className="spin" size={24} />} title="正在读取文件" description={tab.path} />
-                ) : content?.error ? (
-                  <WorkbenchEmpty icon={<FileText size={24} />} title="预览失败" description={content.error} />
-                ) : content?.mode === 'git-diff' ? (
-                  <MemoGitDiffPreview content={content.content} />
-                ) : tab.kind === 'markdown' ? (
-                  <MemoMarkdownPreview content={content?.content ?? ''} />
-                ) : (
-                  <MemoCodePreview content={content?.content ?? ''} filePath={tab.path} />
-                )}
-              </div>
+              <MemoPreviewContentPanel
+                key={tab.key}
+                tab={tab}
+                active={active}
+                content={content}
+                diffView={diffViewByKey[tab.key] ?? 'split'}
+                onDiffViewChange={handleDiffViewChange}
+              />
             );
           })
         )}
@@ -841,8 +1049,56 @@ function PreviewPane({
   );
 }
 
+function PreviewContentPanel({
+  tab,
+  active,
+  content,
+  diffView,
+  onDiffViewChange,
+}: {
+  tab: WorkbenchPreviewTab;
+  active: boolean;
+  content: WorkbenchPreviewContentState | undefined;
+  diffView: 'unified' | 'split' | 'full';
+  onDiffViewChange: (key: string, nextViewMode: 'unified' | 'split' | 'full') => void;
+}) {
+  const handleViewModeChange = useCallback(
+    (nextViewMode: 'unified' | 'split' | 'full') => {
+      onDiffViewChange(tab.key, nextViewMode);
+    },
+    [onDiffViewChange, tab.key],
+  );
+
+  return (
+    <div className={`workbench-preview-panel${active ? ' active' : ''}`} aria-hidden={!active}>
+      {content?.loading ? (
+        <WorkbenchEmpty icon={<RefreshCw className="spin" size={24} />} title="正在读取文件" description={tab.path} />
+      ) : content?.error ? (
+        <WorkbenchEmpty icon={<FileText size={24} />} title="预览失败" description={content.error} />
+      ) : content?.mode === 'git-diff' ? (
+        <MemoGitDiffPreview
+          content={content.content}
+          beforeContent={content.beforeContent}
+          afterContent={content.afterContent}
+          filePath={tab.path}
+          viewMode={diffView}
+          onViewModeChange={handleViewModeChange}
+        />
+      ) : tab.kind === 'markdown' ? (
+        <MemoMarkdownPreview content={content?.content ?? ''} />
+      ) : (
+        <MemoCodePreview content={content?.content ?? ''} filePath={tab.path} />
+      )}
+    </div>
+  );
+}
+
+const MemoPreviewContentPanel = memo(PreviewContentPanel);
+
 function FileNavigator({
   scope,
+  scopeLocked = false,
+  scopeLabel,
   loading,
   error,
   filter,
@@ -851,8 +1107,10 @@ function FileNavigator({
   directoryFiles,
   expandedDirectories,
   expandedChangedDirectories,
+  expandedUntrackedDirectories,
   loadingDirectory,
   changedTree,
+  untrackedTree,
   activePreviewKey,
   onFilterChange,
   onSelectScope,
@@ -860,10 +1118,15 @@ function FileNavigator({
   onHide,
   onToggleDirectory,
   onToggleChangedDirectory,
+  onToggleUntrackedDirectory,
   onOpenProjectFile,
   onOpenChangedFile,
+  hideScopeCount = false,
+  emptyTitle,
 }: {
-  scope: WorkbenchFileScope;
+  scope: 'all' | 'changed';
+  scopeLocked?: boolean;
+  scopeLabel?: string;
   loading: boolean;
   error: string;
   filter: string;
@@ -872,30 +1135,42 @@ function FileNavigator({
   directoryFiles: Record<string, ProjectFileEntry[]>;
   expandedDirectories: string[];
   expandedChangedDirectories: string[];
+  expandedUntrackedDirectories: string[];
   loadingDirectory: string;
   changedTree: WorkbenchFileTreeNode[];
+  untrackedTree: WorkbenchFileTreeNode[];
   activePreviewKey: string;
   onFilterChange: (filter: string) => void;
-  onSelectScope: (scope: WorkbenchFileScope) => void;
+  onSelectScope: ((scope: 'all' | 'changed') => void) | null;
   onRefresh: () => void;
   onHide: () => void;
   onToggleDirectory: (directoryPath: string) => void;
   onToggleChangedDirectory: (directoryPath: string) => void;
+  onToggleUntrackedDirectory: (directoryPath: string) => void;
   onOpenProjectFile: (file: ProjectFileEntry) => void;
   onOpenChangedFile: (file: GitFileStatus) => void;
+  hideScopeCount?: boolean;
+  emptyTitle: string;
 }) {
   return (
     <aside className="workbench-file-navigator" aria-label="文件导航">
       <div className="workbench-files-head">
-        <button
-          type="button"
-          className="workbench-scope-trigger"
-          onClick={() => onSelectScope(scope === 'all' ? 'changed' : 'all')}
-        >
-          {scope === 'all' ? '所有文件' : '已更改文件'}
-          {scope === 'changed' ? <span>{changedFilesCount}</span> : null}
-          <ChevronDown size={15} />
-        </button>
+        {scopeLocked ? (
+          <div className="workbench-scope-label">
+            <strong>{scopeLabel ?? (scope === 'all' ? '所有文件' : '已更改文件')}</strong>
+            {scope === 'changed' && !hideScopeCount ? <span>{changedFilesCount}</span> : null}
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="workbench-scope-trigger"
+            onClick={() => onSelectScope?.(scope === 'all' ? 'changed' : 'all')}
+          >
+            {scope === 'all' ? '所有文件' : '已更改文件'}
+            {scope === 'changed' && !hideScopeCount ? <span>{changedFilesCount}</span> : null}
+            <ChevronDown size={15} />
+          </button>
+        )}
         <div className="workbench-files-actions">
           <button
             type="button"
@@ -940,16 +1215,19 @@ function FileNavigator({
             onToggleDirectory={onToggleDirectory}
             onOpenFile={onOpenProjectFile}
           />
-        ) : changedTree.length ? (
+        ) : changedTree.length || untrackedTree.length ? (
           <ChangedFileTree
-            nodes={changedTree}
-            expandedDirectories={expandedChangedDirectories}
+            changedNodes={changedTree}
+            untrackedNodes={untrackedTree}
+            expandedChangedDirectories={expandedChangedDirectories}
+            expandedUntrackedDirectories={expandedUntrackedDirectories}
             activePreviewKey={activePreviewKey}
-            onToggleDirectory={onToggleChangedDirectory}
+            onToggleChangedDirectory={onToggleChangedDirectory}
+            onToggleUntrackedDirectory={onToggleUntrackedDirectory}
             onOpenFile={onOpenChangedFile}
           />
         ) : (
-          <WorkbenchEmpty icon={<GitPullRequest size={24} />} title="当前没有变更" description="工作区很干净，可以继续开发。" />
+          <WorkbenchEmpty icon={<GitPullRequest size={24} />} title={emptyTitle} description="工作区很干净，可以继续开发。" />
         )}
       </div>
     </aside>
@@ -1030,7 +1308,7 @@ function renderProjectFileRows({
       <button
         key={file.path}
         type="button"
-        className={`workbench-tree-row${activePreviewKey === `file:${file.path}` ? ' active' : ''}`}
+        className={`workbench-tree-row${activePreviewKey === buildProjectWorkbenchPreviewKey(file.path) ? ' active' : ''}`}
         style={{ paddingLeft: `${10 + depth * 18}px` }}
         onClick={() => {
           if (isDirectory) {
@@ -1078,20 +1356,78 @@ function renderProjectFileRows({
 }
 
 function ChangedFileTree({
+  changedNodes,
+  untrackedNodes,
+  expandedChangedDirectories,
+  expandedUntrackedDirectories,
+  activePreviewKey,
+  onToggleChangedDirectory,
+  onToggleUntrackedDirectory,
+  onOpenFile,
+}: {
+  changedNodes: WorkbenchFileTreeNode[];
+  untrackedNodes: WorkbenchFileTreeNode[];
+  expandedChangedDirectories: string[];
+  expandedUntrackedDirectories: string[];
+  activePreviewKey: string;
+  onToggleChangedDirectory: (directoryPath: string) => void;
+  onToggleUntrackedDirectory: (directoryPath: string) => void;
+  onOpenFile: (file: GitFileStatus) => void;
+}) {
+  return (
+    <div className="workbench-all-files-list">
+      {changedNodes.length ? (
+        <ChangedFileTreeSection
+          title="变更"
+          count={countWorkbenchFileTreeFiles(changedNodes)}
+          nodes={changedNodes}
+          expandedDirectories={expandedChangedDirectories}
+          activePreviewKey={activePreviewKey}
+          onToggleDirectory={onToggleChangedDirectory}
+          onOpenFile={onOpenFile}
+        />
+      ) : null}
+      {untrackedNodes.length ? (
+        <ChangedFileTreeSection
+          title="未进行版本管理的文件"
+          count={countWorkbenchFileTreeFiles(untrackedNodes)}
+          nodes={untrackedNodes}
+          expandedDirectories={expandedUntrackedDirectories}
+          activePreviewKey={activePreviewKey}
+          onToggleDirectory={onToggleUntrackedDirectory}
+          onOpenFile={onOpenFile}
+          untracked
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function ChangedFileTreeSection({
+  title,
+  count,
   nodes,
   expandedDirectories,
   activePreviewKey,
   onToggleDirectory,
   onOpenFile,
+  untracked = false,
 }: {
+  title: string;
+  count: number;
   nodes: WorkbenchFileTreeNode[];
   expandedDirectories: string[];
   activePreviewKey: string;
   onToggleDirectory: (directoryPath: string) => void;
   onOpenFile: (file: GitFileStatus) => void;
+  untracked?: boolean;
 }) {
   return (
-    <div className="workbench-all-files-list">
+    <section className="workbench-tree-section">
+      <div className="workbench-tree-section-head">
+        <strong>{title}</strong>
+        <span>{count} 个文件</span>
+      </div>
       {renderChangedFileTreeRows({
         nodes,
         expandedDirectories,
@@ -1099,8 +1435,9 @@ function ChangedFileTree({
         depth: 0,
         onToggleDirectory,
         onOpenFile,
+        untracked,
       })}
-    </div>
+    </section>
   );
 }
 
@@ -1244,6 +1581,7 @@ function renderChangedFileTreeRows({
   depth,
   onToggleDirectory,
   onOpenFile,
+  untracked = false,
 }: {
   nodes: WorkbenchFileTreeNode[];
   expandedDirectories: string[];
@@ -1251,15 +1589,16 @@ function renderChangedFileTreeRows({
   depth: number;
   onToggleDirectory: (directoryPath: string) => void;
   onOpenFile: (file: GitFileStatus) => void;
+  untracked?: boolean;
 }): ReactNode[] {
   return nodes.flatMap((node): ReactNode[] => {
     const expanded = node.type === 'directory' && expandedDirectories.includes(node.path);
-    const statusTone = node.gitFile ? getGitStatusTone(node.gitFile.status) : '';
+    const statusTone = !untracked && node.gitFile ? getGitStatusTone(node.gitFile.status) : '';
     const row = (
       <button
         key={node.path}
         type="button"
-        className={`workbench-tree-row${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === `file:${node.path}` ? ' active' : ''}`}
+        className={`workbench-tree-row${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === buildChangedWorkbenchPreviewKey(node.path) ? ' active' : ''}`}
         style={{ paddingLeft: `${10 + depth * 18}px` }}
         onClick={() => {
           if (node.type === 'directory') {
@@ -1294,9 +1633,20 @@ function renderChangedFileTreeRows({
         depth: depth + 1,
         onToggleDirectory,
         onOpenFile,
+        untracked,
       }),
     ];
   });
+}
+
+function countWorkbenchFileTreeFiles(nodes: WorkbenchFileTreeNode[]): number {
+  return nodes.reduce((count, node) => {
+    if (node.type === 'file') {
+      return count + 1;
+    }
+
+    return count + countWorkbenchFileTreeFiles(node.children);
+  }, 0);
 }
 
 function FileIcon({
@@ -1478,15 +1828,344 @@ function WorkbenchBrowserShell() {
   );
 }
 
-function GitDiffPreview({ content }: { content: string }) {
-  const lines = content ? content.split('\n') : ['当前没有可显示的改动。'];
+function GitDiffPreview({
+  content,
+  beforeContent,
+  afterContent,
+  filePath,
+  viewMode,
+  onViewModeChange,
+}: {
+  content: string;
+  beforeContent?: string;
+  afterContent?: string;
+  filePath: string;
+  viewMode: 'unified' | 'split' | 'full';
+  onViewModeChange: (viewMode: 'unified' | 'split' | 'full') => void;
+}) {
+  const normalizedContent = content.trim() ? content : '当前没有可显示的改动。';
+  const lines = normalizedContent.split('\n');
+  const splitRows = useMemo(() => buildWorkbenchSplitDiffRows(content), [content]);
+  const fullRows = useMemo(
+    () => buildWorkbenchFullDiffRows(beforeContent ?? '', afterContent ?? ''),
+    [afterContent, beforeContent],
+  );
+  const splitSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const leftPaneRef = useRef<HTMLDivElement | null>(null);
+  const rightPaneRef = useRef<HTMLDivElement | null>(null);
+  const changeRowRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const [splitLeftWidth, setSplitLeftWidth] = useState(50);
+  const [collapseUnchanged, setCollapseUnchanged] = useState(viewMode !== 'full');
+  const [syncScroll, setSyncScroll] = useState(true);
+  const [activeChangeCursor, setActiveChangeCursor] = useState(-1);
+  const [changeMarkers, setChangeMarkers] = useState<Array<{ cursor: number; rowIndex: number; position: number }>>([]);
+  const canUseFullView = beforeContent !== undefined || afterContent !== undefined;
+
+  useEffect(() => {
+    setSplitLeftWidth(50);
+    setActiveChangeCursor(-1);
+  }, [content]);
+
+  useEffect(() => {
+    setCollapseUnchanged(viewMode !== 'full');
+  }, [viewMode]);
+
+  const baseRows = viewMode === 'full' ? fullRows : splitRows;
+  const rows = useMemo(
+    () => collapseUnchanged ? collapseWorkbenchContextRows(baseRows) : baseRows,
+    [baseRows, collapseUnchanged],
+  );
+  const changeRowIndices = useMemo(() => findWorkbenchChangeBlockIndices(rows), [rows]);
+
+  useEffect(() => {
+    setActiveChangeCursor((current) => {
+      if (changeRowIndices.length === 0) {
+        return -1;
+      }
+
+      return current < 0 ? -1 : Math.min(current, changeRowIndices.length - 1);
+    });
+  }, [changeRowIndices]);
+
+  useEffect(() => {
+    const pane = leftPaneRef.current;
+    if (!pane || changeRowIndices.length === 0) {
+      setChangeMarkers([]);
+      return;
+    }
+
+    const scrollRange = Math.max(pane.scrollHeight - pane.clientHeight, 1);
+    const nextMarkers = changeRowIndices
+      .map((rowIndex, cursor) => {
+        const rowElement = changeRowRefs.current[rowIndex];
+        if (!rowElement) {
+          return null;
+        }
+
+        const offsetTop = Math.max(rowElement.offsetTop - 48, 0);
+        return {
+          cursor,
+          rowIndex,
+          position: Math.min(offsetTop / scrollRange, 1),
+        };
+      })
+      .filter((marker): marker is { cursor: number; rowIndex: number; position: number } => marker !== null);
+
+    setChangeMarkers(nextMarkers);
+  }, [changeRowIndices, rows]);
+
+  useEffect(() => {
+    if (!syncScroll) {
+      return;
+    }
+
+    const leftPaneElement = leftPaneRef.current;
+    const rightPaneElement = rightPaneRef.current;
+    if (!leftPaneElement || !rightPaneElement) {
+      return;
+    }
+    const leftPane = leftPaneElement;
+    const rightPane = rightPaneElement;
+    rightPane.scrollLeft = leftPane.scrollLeft;
+    rightPane.scrollTop = leftPane.scrollTop;
+
+    let syncingSide: 'left' | 'right' | null = null;
+
+    function handleLeftScroll() {
+      if (syncingSide === 'right') {
+        syncingSide = null;
+        return;
+      }
+      syncingSide = 'left';
+      rightPane.scrollLeft = leftPane.scrollLeft;
+      rightPane.scrollTop = leftPane.scrollTop;
+    }
+
+    function handleRightScroll() {
+      if (syncingSide === 'left') {
+        syncingSide = null;
+        return;
+      }
+      syncingSide = 'right';
+      leftPane.scrollLeft = rightPane.scrollLeft;
+      leftPane.scrollTop = rightPane.scrollTop;
+    }
+
+    leftPane.addEventListener('scroll', handleLeftScroll);
+    rightPane.addEventListener('scroll', handleRightScroll);
+    return () => {
+      leftPane.removeEventListener('scroll', handleLeftScroll);
+      rightPane.removeEventListener('scroll', handleRightScroll);
+    };
+  }, [syncScroll, viewMode]);
+
+  function handleSplitResizerPointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const surface = splitSurfaceRef.current;
+    if (!surface) {
+      return;
+    }
+
+    const bounds = surface.getBoundingClientRect();
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    function handlePointerMove(moveEvent: PointerEvent) {
+      const rawWidth = ((moveEvent.clientX - bounds.left) / bounds.width) * 100;
+      setSplitLeftWidth(clampSplitDiffWidth(rawWidth));
+    }
+
+    function stopResize() {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('pointermove', handlePointerMove);
+    }
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResize, { once: true });
+  }
+
+  function moveToChange(direction: -1 | 1) {
+    if (changeRowIndices.length === 0) {
+      return;
+    }
+
+    const nextCursor =
+      activeChangeCursor < 0
+        ? direction > 0
+          ? 0
+          : changeRowIndices.length - 1
+        : direction > 0
+          ? (activeChangeCursor + 1) % changeRowIndices.length
+          : (activeChangeCursor - 1 + changeRowIndices.length) % changeRowIndices.length;
+    scrollToChange(nextCursor);
+  }
+
+  function scrollToChange(cursor: number) {
+    const targetRowIndex = changeRowIndices[cursor];
+    const leftPane = leftPaneRef.current;
+    const rightPane = rightPaneRef.current;
+    const targetRow = targetRowIndex === undefined ? null : changeRowRefs.current[targetRowIndex];
+    if (!leftPane || !rightPane || !targetRow) {
+      return;
+    }
+
+    const nextScrollTop = Math.max(targetRow.offsetTop - 48, 0);
+    leftPane.scrollTo({ top: nextScrollTop, behavior: 'smooth' });
+    if (!syncScroll) {
+      rightPane.scrollTo({ top: nextScrollTop, behavior: 'smooth' });
+    }
+    setActiveChangeCursor(cursor);
+  }
+
+  if ((viewMode === 'split' || viewMode === 'full') && content.trim()) {
+    return (
+      <div className="workbench-code-preview workbench-diff-content split" role="region" aria-label="变更预览">
+        <div
+          ref={splitSurfaceRef}
+          className="git-diff-split-surface"
+          style={{ '--workbench-diff-split-left-width': `${splitLeftWidth}%` } as CSSProperties}
+        >
+          <div className="git-diff-toolbar" role="toolbar" aria-label="对比工具">
+            <div className="git-diff-toolbar-group" role="tablist" aria-label="视图切换">
+              <button
+                type="button"
+                className={`git-diff-toolbar-button${viewMode === 'split' ? ' active' : ''}`}
+                role="tab"
+                aria-selected={viewMode === 'split'}
+                onClick={() => onViewModeChange('split')}
+              >
+                左右
+              </button>
+              <button
+                type="button"
+                className={`git-diff-toolbar-button${viewMode === 'full' ? ' active' : ''}`}
+                role="tab"
+                aria-selected={viewMode === 'full'}
+                disabled={!canUseFullView}
+                onClick={() => onViewModeChange('full')}
+              >
+                全文
+              </button>
+              <button
+                type="button"
+                className="git-diff-toolbar-button"
+                onClick={() => onViewModeChange('unified')}
+              >
+                统一
+              </button>
+            </div>
+            <div className="git-diff-toolbar-group">
+              <button
+                type="button"
+                className="git-diff-toolbar-icon"
+                title="上一处变更"
+                onClick={() => moveToChange(-1)}
+              >
+                <ArrowUp size={14} />
+              </button>
+              <button
+                type="button"
+                className="git-diff-toolbar-icon"
+                title="下一处变更"
+                onClick={() => moveToChange(1)}
+              >
+                <ArrowDown size={14} />
+              </button>
+              <button
+                type="button"
+                className={`git-diff-toolbar-icon${collapseUnchanged ? ' active' : ''}`}
+                title="折叠未修改"
+                onClick={() => setCollapseUnchanged((current) => !current)}
+              >
+                <Rows3 size={14} />
+              </button>
+              <button
+                type="button"
+                className="git-diff-toolbar-icon"
+                title="重置"
+                onClick={() => setSplitLeftWidth(50)}
+              >
+                <RotateCcw size={14} />
+              </button>
+              <button
+                type="button"
+                className={`git-diff-toolbar-icon${syncScroll ? ' active' : ''}`}
+                title={syncScroll ? '关闭同步滚动' : '开启同步滚动'}
+                onClick={() => setSyncScroll((current) => !current)}
+              >
+                {syncScroll ? <Link2 size={14} /> : <Unlink2 size={14} />}
+              </button>
+            </div>
+          </div>
+          <div className="git-diff-split-grid">
+            <div className="git-diff-split-pane-shell left">
+              <div ref={leftPaneRef} className="git-diff-split-pane left">
+                {rows.map((row, index) => (
+                  <GitSplitDiffPaneRow
+                    key={`left-${index}-${row.type === 'content' ? `${row.leftLineNumber}-${row.rightLineNumber}` : row.type === 'collapsed' ? `collapsed-${row.hiddenCount}` : row.text}`}
+                    row={row}
+                    side="left"
+                    filePath={filePath}
+                    rowRef={(element) => {
+                      changeRowRefs.current[index] = element;
+                    }}
+                  />
+                ))}
+              </div>
+              {changeMarkers.length ? (
+                <GitDiffChangeMap
+                  side="left"
+                  markers={changeMarkers}
+                  activeChangeCursor={activeChangeCursor}
+                  onSelect={scrollToChange}
+                />
+              ) : null}
+            </div>
+            <div className="git-diff-split-divider" aria-hidden="true" />
+            <div className="git-diff-split-pane-shell right">
+              <div ref={rightPaneRef} className="git-diff-split-pane right">
+                {rows.map((row, index) => (
+                  <GitSplitDiffPaneRow
+                    key={`right-${index}-${row.type === 'content' ? `${row.leftLineNumber}-${row.rightLineNumber}` : row.type === 'collapsed' ? `collapsed-${row.hiddenCount}` : row.text}`}
+                    row={row}
+                    side="right"
+                    filePath={filePath}
+                    rowRef={undefined}
+                  />
+                ))}
+              </div>
+              {changeMarkers.length ? (
+                <GitDiffChangeMap
+                  side="right"
+                  markers={changeMarkers}
+                  activeChangeCursor={activeChangeCursor}
+                  onSelect={scrollToChange}
+                />
+              ) : null}
+            </div>
+          </div>
+          <div className="git-diff-split-resizer-track" aria-hidden="true">
+            <button
+              type="button"
+              className="git-diff-split-resizer"
+              tabIndex={-1}
+              onPointerDown={handleSplitResizerPointerDown}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="workbench-code-preview workbench-diff-content" role="region" aria-label="变更预览">
       {lines.map((line, index) => (
         <div key={`${index}-${line}`} className={`git-diff-line ${getDiffLineClass(line)}`}>
           <span className="git-diff-line-no">{index + 1}</span>
-          <span className="git-diff-line-text">{line || ' '}</span>
+          <span className="git-diff-line-text">
+            {renderUnifiedDiffLineContent(line, filePath)}
+          </span>
         </div>
       ))}
     </div>
@@ -1494,6 +2173,106 @@ function GitDiffPreview({ content }: { content: string }) {
 }
 
 const MemoGitDiffPreview = memo(GitDiffPreview);
+
+function GitSplitDiffPaneRow({
+  row,
+  side,
+  filePath,
+  rowRef,
+}: {
+  row: WorkbenchSplitDiffRow;
+  side: 'left' | 'right';
+  filePath: string;
+  rowRef?: (element: HTMLDivElement | null) => void;
+}) {
+  if (row.type === 'collapsed') {
+    return (
+      <div ref={rowRef} className="git-diff-collapsed-row">
+        <span>折叠 {row.hiddenCount} 行未修改</span>
+      </div>
+    );
+  }
+
+  if (row.type !== 'content') {
+    return <div ref={rowRef} className={`git-diff-split-banner ${row.type}`}>{row.text}</div>;
+  }
+
+  const lineNumber = side === 'left' ? row.leftLineNumber : row.rightLineNumber;
+  const text = side === 'left' ? row.leftText : row.rightText;
+  const kind = side === 'left' ? row.leftKind : row.rightKind;
+  const renderedLine = useMemo(
+    () => renderDiffCodeLineContent(kind === 'empty' ? '' : text, filePath),
+    [filePath, kind, text],
+  );
+
+  return (
+    <div ref={rowRef} className={`git-diff-split-side ${side} ${kind}`}>
+      <span className="git-diff-split-line-no">{lineNumber ?? ''}</span>
+      <span className="git-diff-split-line-text">{kind === 'empty' ? ' ' : renderedLine}</span>
+    </div>
+  );
+}
+
+function clampSplitDiffWidth(value: number) {
+  return Math.max(24, Math.min(76, value));
+}
+
+function GitDiffChangeMap({
+  side,
+  markers,
+  activeChangeCursor,
+  onSelect,
+}: {
+  side: 'left' | 'right';
+  markers: Array<{ cursor: number; rowIndex: number; position: number }>;
+  activeChangeCursor: number;
+  onSelect: (cursor: number) => void;
+}) {
+  return (
+    <div className={`git-diff-change-map ${side}`} aria-label="变更位置">
+      {markers.map((marker) => (
+        <button
+          key={`${side}-marker-${marker.cursor}-${marker.rowIndex}`}
+          type="button"
+          className={`git-diff-change-marker${marker.cursor === activeChangeCursor ? ' active' : ''}`}
+          style={{ top: `${marker.position * 100}%` }}
+          title={`跳转到第 ${marker.cursor + 1} 处变更`}
+          aria-label={`跳转到第 ${marker.cursor + 1} 处变更`}
+          onClick={() => onSelect(marker.cursor)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function renderUnifiedDiffLineContent(line: string, filePath: string) {
+  if (!line) {
+    return ' ';
+  }
+
+  const firstCharacter = line[0];
+  if (firstCharacter !== '+' && firstCharacter !== '-' && firstCharacter !== ' ') {
+    return line;
+  }
+
+  return (
+    <>
+      <span>{firstCharacter}</span>
+      {renderDiffCodeLineContent(line.slice(1), filePath)}
+    </>
+  );
+}
+
+function renderDiffCodeLineContent(line: string, filePath: string) {
+  return highlightWorkbenchCodeLine(line, filePath).map((segment, segmentIndex) => (
+    <span
+      key={`${segmentIndex}-${segment.text}`}
+      className={segment.kind ? `syntax-${segment.kind}` : undefined}
+    >
+      {segment.text || ' '}
+    </span>
+  ));
+}
 
 function InfoTile({ label, value }: { label: string; value: string }) {
   return (

@@ -39,7 +39,6 @@ import type {
   RuntimeSuggestedAction,
   RightWorkbenchTab,
   SlashCommand,
-  WorkbenchFileScope,
   WorkbenchPreviewContentState,
   WorkbenchPreviewRequest,
   WorkbenchPreviewTab,
@@ -138,10 +137,11 @@ export default function App() {
   const [gitDialogMode, setGitDialogMode] = useState<'commit' | 'push' | 'branch' | null>(null);
   const [rightWorkbenchOpen, setRightWorkbenchOpen] = useState(false);
   const [rightWorkbenchTab, setRightWorkbenchTab] = useState<RightWorkbenchTab>('overview');
-  const [rightWorkbenchFileScope, setRightWorkbenchFileScope] = useState<WorkbenchFileScope>('all');
   const [rightWorkbenchWidth, setRightWorkbenchWidth] = useState(680);
-  const [previewTabs, setPreviewTabs] = useState<WorkbenchPreviewTab[]>([]);
-  const [activePreviewKey, setActivePreviewKey] = useState('');
+  const [filePreviewTabs, setFilePreviewTabs] = useState<WorkbenchPreviewTab[]>([]);
+  const [activeFilePreviewKey, setActiveFilePreviewKey] = useState('');
+  const [reviewPreviewTabs, setReviewPreviewTabs] = useState<WorkbenchPreviewTab[]>([]);
+  const [activeReviewPreviewKey, setActiveReviewPreviewKey] = useState('');
   const [previewContentByKey, setPreviewContentByKey] = useState<Record<string, WorkbenchPreviewContentState>>({});
   const [undoneTurnIds, setUndoneTurnIds] = useState<Record<string, boolean>>({});
   const [composerDraftsByKey, setComposerDraftsByKey] = useState<Record<string, string>>({});
@@ -256,8 +256,10 @@ export default function App() {
   }, [activeProjectId, general.autoRefreshGitStatus, isRunning]);
 
   useEffect(() => {
-    setPreviewTabs([]);
-    setActivePreviewKey('');
+    setFilePreviewTabs([]);
+    setActiveFilePreviewKey('');
+    setReviewPreviewTabs([]);
+    setActiveReviewPreviewKey('');
     setPreviewContentByKey({});
   }, [activeProject?.id]);
 
@@ -649,8 +651,7 @@ export default function App() {
 
   function openReviewWorkbench() {
     setRightWorkbenchOpen(true);
-    setRightWorkbenchTab('files');
-    setRightWorkbenchFileScope('changed');
+    setRightWorkbenchTab('review');
     if (activeProjectId) {
       void refreshProjectGitSummary(activeProjectId);
     }
@@ -659,7 +660,6 @@ export default function App() {
   function openFilesWorkbench() {
     setRightWorkbenchOpen(true);
     setRightWorkbenchTab('files');
-    setRightWorkbenchFileScope('all');
   }
 
   async function handleGitFetch(project: ProjectSummary | null = activeProject) {
@@ -705,8 +705,13 @@ export default function App() {
     }
 
     const normalizedRequest = normalizeWorkbenchPreviewRequest(request, activeProject.path);
-    setPreviewTabs((currentTabs) => openWorkbenchPreviewTab(currentTabs, normalizedRequest).tabs);
-    setActivePreviewKey(normalizedRequest.key);
+    const reviewRequest =
+      normalizedRequest.source === 'conversation-card' || normalizedRequest.source === 'changed-file';
+    const setTabs = reviewRequest ? setReviewPreviewTabs : setFilePreviewTabs;
+    const setActiveKey = reviewRequest ? setActiveReviewPreviewKey : setActiveFilePreviewKey;
+
+    setTabs((currentTabs) => openWorkbenchPreviewTab(currentTabs, normalizedRequest).tabs);
+    setActiveKey(normalizedRequest.key);
     setPreviewContentByKey((current) => {
       const next = { ...current };
       if (normalizedRequest.source === 'conversation-card' && normalizedRequest.reviewDiff?.length) {
@@ -722,13 +727,17 @@ export default function App() {
       return next;
     });
     setRightWorkbenchOpen(true);
-    setRightWorkbenchTab('files');
+    setRightWorkbenchTab(reviewRequest ? 'review' : 'files');
   }
 
-  function closeWorkbenchPreview(tabKey: string) {
-    setPreviewTabs((currentTabs) => {
-      const next = closeWorkbenchPreviewTab(currentTabs, activePreviewKey, tabKey);
-      setActivePreviewKey(next.activeKey);
+  function closeWorkbenchPreview(kind: 'file' | 'review', tabKey: string) {
+    const setTabs = kind === 'review' ? setReviewPreviewTabs : setFilePreviewTabs;
+    const activeKey = kind === 'review' ? activeReviewPreviewKey : activeFilePreviewKey;
+    const setActiveKey = kind === 'review' ? setActiveReviewPreviewKey : setActiveFilePreviewKey;
+
+    setTabs((currentTabs) => {
+      const next = closeWorkbenchPreviewTab(currentTabs, activeKey, tabKey);
+      setActiveKey(next.activeKey);
       setPreviewContentByKey((current) => {
         if (!(tabKey in current)) {
           return current;
@@ -741,11 +750,15 @@ export default function App() {
     });
   }
 
-  function closeWorkbenchPreviewMany(tabKeys: string[]) {
-    setPreviewTabs((currentTabs) => {
-      const next = closeWorkbenchPreviewTabs(currentTabs, activePreviewKey, tabKeys);
+  function closeWorkbenchPreviewMany(kind: 'file' | 'review', tabKeys: string[]) {
+    const setTabs = kind === 'review' ? setReviewPreviewTabs : setFilePreviewTabs;
+    const activeKey = kind === 'review' ? activeReviewPreviewKey : activeFilePreviewKey;
+    const setActiveKey = kind === 'review' ? setActiveReviewPreviewKey : setActiveFilePreviewKey;
+
+    setTabs((currentTabs) => {
+      const next = closeWorkbenchPreviewTabs(currentTabs, activeKey, tabKeys);
       const closingSet = new Set(tabKeys);
-      setActivePreviewKey(next.activeKey);
+      setActiveKey(next.activeKey);
       setPreviewContentByKey((current) => {
         let changed = false;
         const updated = { ...current };
@@ -1016,17 +1029,20 @@ export default function App() {
                 activeTab={rightWorkbenchTab}
                 activeProject={activeProject}
                 activeThread={activeThread}
-                fileScope={rightWorkbenchFileScope}
                 isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
-                previewTabs={previewTabs}
-                activePreviewKey={activePreviewKey}
+                filePreviewTabs={filePreviewTabs}
+                activeFilePreviewKey={activeFilePreviewKey}
+                reviewPreviewTabs={reviewPreviewTabs}
+                activeReviewPreviewKey={activeReviewPreviewKey}
                 previewContentByKey={previewContentByKey}
                 onSelectTab={setRightWorkbenchTab}
-                onSelectFileScope={setRightWorkbenchFileScope}
                 onOpenWorkbenchPreview={openWorkbenchPreview}
-                onSelectPreviewTab={setActivePreviewKey}
-                onClosePreviewTab={closeWorkbenchPreview}
-                onClosePreviewTabs={closeWorkbenchPreviewMany}
+                onSelectFilePreviewTab={setActiveFilePreviewKey}
+                onSelectReviewPreviewTab={setActiveReviewPreviewKey}
+                onCloseFilePreviewTab={(tabKey) => closeWorkbenchPreview('file', tabKey)}
+                onCloseReviewPreviewTab={(tabKey) => closeWorkbenchPreview('review', tabKey)}
+                onCloseFilePreviewTabs={(tabKeys) => closeWorkbenchPreviewMany('file', tabKeys)}
+                onCloseReviewPreviewTabs={(tabKeys) => closeWorkbenchPreviewMany('review', tabKeys)}
                 onResolvePreviewContent={resolveWorkbenchPreviewContent}
                 onResizeStart={handleRightWorkbenchResizeStart}
                 onClose={() => setRightWorkbenchOpen(false)}

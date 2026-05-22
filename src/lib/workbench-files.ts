@@ -25,6 +25,13 @@ export type WorkbenchFileTreeNode = {
   projectFile?: ProjectFileEntry;
 };
 
+export function splitWorkbenchChangedFiles(files: GitFileStatus[]) {
+  return {
+    tracked: files.filter((file) => !file.untracked),
+    untracked: files.filter((file) => file.untracked),
+  };
+}
+
 export function buildWorkbenchFileTree(files: GitFileStatus[]) {
   const roots: WorkbenchFileTreeNode[] = [];
 
