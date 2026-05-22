@@ -7113,7 +7113,7 @@ svg {
 }
 
 .session-list-row {
-  grid-template-columns: 30px minmax(0, 1fr) 420px;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
@@ -7182,20 +7182,30 @@ svg {
 }
 
 .settings-list-row > .session-list-actions {
-  width: 420px;
+  width: auto;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   justify-self: end;
   gap: 8px;
 }
 
-.settings-list-row > .session-list-actions .settings-action-button {
-  height: 30px;
+.settings-list-row > .session-list-actions .settings-icon-button {
+  width: 32px;
+  height: 32px;
   flex: 0 0 auto;
-  justify-content: center;
-  background: #ffffff;
-  font-size: 12px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.settings-list-row > .session-list-actions .settings-icon-button.danger {
+  color: #c35151;
+  border-color: #e8c0c0;
+}
+
+.settings-list-row > .session-list-actions .settings-icon-button.danger:hover:not(:disabled) {
+  background: #fff4f4;
+  border-color: #dfa5a5;
 }
 
 .mcp-editor-grid {

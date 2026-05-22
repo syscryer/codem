@@ -1,5 +1,4 @@
 import {
-  Copy,
   ExternalLink,
   MessageSquareText,
   Pencil,
@@ -26,7 +25,6 @@ type SessionManagementSettingsSectionProps = {
   projects: ProjectSummary[];
   runningThreadIds: string[];
   onOpenThread: (projectId: string, threadId: string) => void | Promise<void>;
-  onCopySessionId: (thread: ThreadSummary) => void | Promise<void>;
   onRenameThread: (thread: ThreadSummary) => void;
   onRemoveThread: (thread: ThreadSummary) => void;
   onSyncWorkspace: (workspace: WorkspaceBootstrap) => void;
@@ -39,7 +37,6 @@ export function SessionManagementSettingsSection({
   projects,
   runningThreadIds,
   onOpenThread,
-  onCopySessionId,
   onRenameThread,
   onRemoveThread,
   onSyncWorkspace,
@@ -265,7 +262,6 @@ export function SessionManagementSettingsSection({
                   closing={closingThreadId === row.thread.id}
                   onSelect={(checked) => toggleThreadSelection(row.thread.id, checked)}
                   onOpen={() => void onOpenThread(row.project.id, row.thread.id)}
-                  onCopy={() => void onCopySessionId(row.thread)}
                   onRename={() => onRenameThread(row.thread)}
                   onRemove={() => onRemoveThread(row.thread)}
                   onCloseRuntime={row.runtimeAlive ? () => void closeRuntime(row) : undefined}
@@ -285,7 +281,6 @@ function SessionRow({
   closing,
   onSelect,
   onOpen,
-  onCopy,
   onRename,
   onRemove,
   onCloseRuntime,
@@ -295,7 +290,6 @@ function SessionRow({
   closing: boolean;
   onSelect: (checked: boolean) => void;
   onOpen: () => void;
-  onCopy: () => void;
   onRename: () => void;
   onRemove: () => void;
   onCloseRuntime?: () => void;
@@ -328,33 +322,45 @@ function SessionRow({
         </div>
       </div>
       <div className="settings-list-actions session-list-actions">
-        <button type="button" className="settings-action-button" onClick={onOpen}>
+        <button
+          type="button"
+          className="settings-icon-button"
+          onClick={onOpen}
+          title="打开会话"
+          aria-label="打开会话"
+        >
           <ExternalLink size={14} />
-          <span>打开</span>
         </button>
-        <button type="button" className="settings-action-button" onClick={onCopy} disabled={!row.hasSession}>
-          <Copy size={14} />
-          <span>复制</span>
-        </button>
-        <button type="button" className="settings-action-button" onClick={onRename}>
+        <button
+          type="button"
+          className="settings-icon-button"
+          onClick={onRename}
+          title="重命名会话"
+          aria-label="重命名会话"
+        >
           <Pencil size={14} />
-          <span>重命名</span>
         </button>
         {onCloseRuntime ? (
           <button
             type="button"
-            className="settings-action-button"
+            className="settings-icon-button"
             onClick={onCloseRuntime}
             disabled={row.running || closing}
-            title={row.running ? '运行中的会话请先停止当前任务' : `PID ${row.runtimePid ?? '未知'}`}
+            title={row.running ? '运行中的会话请先停止当前任务' : closing ? '正在重置连接' : `重置连接 · PID ${row.runtimePid ?? '未知'}`}
+            aria-label="重置连接"
           >
             <Power size={14} />
-            <span>{closing ? '关闭中' : '重置连接'}</span>
           </button>
         ) : null}
-        <button type="button" className="settings-action-button danger" onClick={onRemove} disabled={row.running}>
+        <button
+          type="button"
+          className="settings-icon-button danger"
+          onClick={onRemove}
+          disabled={row.running}
+          title={row.running ? '运行中的会话无法删除' : '删除会话'}
+          aria-label="删除会话"
+        >
           <Trash2 size={14} />
-          <span>删除</span>
         </button>
       </div>
     </div>

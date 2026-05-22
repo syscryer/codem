@@ -50,7 +50,6 @@ type SettingsViewProps = {
   claudeModels: ClaudeModelInfo;
   onSelectSection: (section: SettingsSection) => void;
   onOpenThread: (projectId: string, threadId: string) => void | Promise<void>;
-  onCopySessionId: (thread: ThreadSummary) => void | Promise<void>;
   onRenameThread: (thread: ThreadSummary) => void;
   onRemoveThread: (thread: ThreadSummary) => void;
   onOpenWorktreePath: (worktreePath: string) => Promise<void>;
@@ -94,7 +93,6 @@ export function SettingsView({
   claudeModels,
   onSelectSection,
   onOpenThread,
-  onCopySessionId,
   onRenameThread,
   onRemoveThread,
   onOpenWorktreePath,
@@ -171,7 +169,6 @@ export function SettingsView({
           projects={projects}
           runningThreadIds={runningThreadIds}
           onOpenThread={onOpenThread}
-          onCopySessionId={onCopySessionId}
           onRenameThread={onRenameThread}
           onRemoveThread={onRemoveThread}
           onSyncWorkspace={onSyncWorkspace}
@@ -216,7 +213,6 @@ export function SettingsView({
     runningThreadIds,
     shortcuts,
     onOpenThread,
-    onCopySessionId,
     onRenameThread,
     onRemoveThread,
     onOpenWorktreePath,
