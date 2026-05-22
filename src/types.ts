@@ -342,11 +342,25 @@ export type UsageProjectRow = UsageTotals & {
   lastUsedAt: string | null;
 };
 
+export type UsageThreadRow = UsageTotals & {
+  threadId: string;
+  projectId: string;
+  projectName: string;
+  title: string;
+  sessionId: string;
+  provider: string;
+  model: string;
+  workingDirectory: string;
+  updatedAt: string | null;
+  lastUsedAt: string | null;
+};
+
 export type UsageStatsResponse = {
   generatedAt: string;
   totals: UsageTotals;
   byProvider: UsageProviderRow[];
   byProject: UsageProjectRow[];
+  byThread: UsageThreadRow[];
 };
 
 export type ThreadSummary = {

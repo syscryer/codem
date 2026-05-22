@@ -464,6 +464,7 @@ export function getWorkspaceBootstrap(): WorkspaceBootstrap {
 }
 
 export function getUsageStats() {
+  hydrateThreadHistoryForUsage();
   return collectUsageStats(db);
 }
 
@@ -828,7 +829,7 @@ export function getThreadHistory(threadId: string) {
   };
 }
 
-export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
+export function saveThreadHistory(threadId: string, turns: ThreadTurn[], options?: { touchUpdatedAt?: boolean }) {
   const thread = db
     .prepare(`
       SELECT id, project_id, provider, title, custom_title, session_id, transcript_path, working_directory, model, permission_mode, imported, created_at, updated_at
@@ -961,8 +962,10 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[]) {
       });
     });
 
-    db.prepare(`UPDATE threads SET updated_at = ? WHERE id = ?`).run(now, threadId);
-    db.prepare(`UPDATE projects SET updated_at = ? WHERE id = ?`).run(now, thread.project_id);
+    if (options?.touchUpdatedAt !== false) {
+      db.prepare(`UPDATE threads SET updated_at = ? WHERE id = ?`).run(now, threadId);
+      db.prepare(`UPDATE projects SET updated_at = ? WHERE id = ?`).run(now, thread.project_id);
+    }
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
@@ -1731,7 +1734,7 @@ function upsertImportedThread(projectId: string, metadata: ClaudeSessionMetadata
       UPDATE threads
       SET transcript_path = ?,
           working_directory = ?,
-          model = COALESCE(?, model),
+          model = COALESCE(NULLIF(?, ''), NULLIF(model, ''), model),
           permission_mode = COALESCE(permission_mode, ?),
           updated_at = ?,
           title = CASE WHEN custom_title = 0 THEN ? ELSE title END
@@ -1767,6 +1770,78 @@ function upsertImportedThread(projectId: string, metadata: ClaudeSessionMetadata
     metadata.updatedAt,
   );
   return id;
+}
+
+function hydrateThreadHistoryForUsage() {
+  const rows = db
+    .prepare(`
+      SELECT id, session_id, transcript_path, model
+      FROM threads
+      WHERE transcript_path IS NOT NULL
+        AND transcript_path != ''
+        AND (
+          model IS NULL
+          OR model = ''
+          OR NOT EXISTS (
+            SELECT 1
+            FROM messages
+            WHERE messages.thread_id = threads.id
+          )
+        )
+    `)
+    .all() as Array<{ id: string; session_id: string | null; transcript_path: string | null; model: string | null }>;
+
+  rows.forEach((row) => {
+    const transcriptPath = row.transcript_path;
+    if (!transcriptPath || !existsSync(transcriptPath)) {
+      return;
+    }
+
+    const hasModel = Boolean(row.model?.trim());
+    if (!hasModel) {
+      const model = readClaudeTranscriptModel(transcriptPath);
+      if (model) {
+        db.prepare(`UPDATE threads SET model = ? WHERE id = ?`).run(model, row.id);
+      }
+    }
+
+    const hasMessages = db
+      .prepare(`SELECT 1 FROM messages WHERE thread_id = ? LIMIT 1`)
+      .get(row.id) as { 1: number } | undefined;
+    if (hasMessages) {
+      return;
+    }
+
+    const turns = parseClaudeTranscript(transcriptPath, row.session_id ?? undefined);
+    if (turns.length > 0) {
+      saveThreadHistory(row.id, turns, { touchUpdatedAt: false });
+    }
+  });
+}
+
+function readClaudeTranscriptModel(transcriptPath: string) {
+  const lines = readFileSync(transcriptPath, 'utf8').split(/\r?\n/).filter(Boolean);
+  for (const line of lines) {
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+
+    const directModel = readString(payload, ['model']);
+    if (directModel) {
+      return directModel;
+    }
+
+    const message = asRecord(payload.message);
+    const messageModel = message ? readString(message, ['model']) : '';
+    if (messageModel) {
+      return messageModel;
+    }
+  }
+
+  return '';
 }
 
 function readClaudeSessionMetadata(transcriptPath: string): ClaudeSessionMetadata | null {

@@ -17,7 +17,17 @@ import {
   type SessionProjectSummary,
   type SessionManagementRow,
 } from '../../lib/session-management';
-import type { ProjectSummary, ThreadRuntimeStatus, ThreadSummary, ToastState, WorkspaceBootstrap } from '../../types';
+import { fetchUsageStats } from '../../lib/settings-api';
+import type {
+  ProjectSummary,
+  ThreadRuntimeStatus,
+  ThreadSummary,
+  ToastState,
+  UsageStatsResponse,
+  UsageThreadRow,
+  UsageTotals,
+  WorkspaceBootstrap,
+} from '../../types';
 
 type SessionManagementSettingsSectionProps = {
   activeProjectId: string | null;
@@ -29,6 +39,20 @@ type SessionManagementSettingsSectionProps = {
   onRemoveThread: (thread: ThreadSummary) => void;
   onSyncWorkspace: (workspace: WorkspaceBootstrap) => void;
   showToast: (message: string, tone?: ToastState['tone']) => void;
+};
+
+const emptyUsageTotals: UsageTotals = {
+  projects: 0,
+  threads: 0,
+  messages: 0,
+  toolCalls: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheCreationInputTokens: 0,
+  cacheReadInputTokens: 0,
+  totalTokens: 0,
+  durationMs: 0,
+  totalCostUsd: 0,
 };
 
 export function SessionManagementSettingsSection({
@@ -49,6 +73,7 @@ export function SessionManagementSettingsSection({
   const [deleting, setDeleting] = useState(false);
   const [closingThreadId, setClosingThreadId] = useState('');
   const [runtimeStatuses, setRuntimeStatuses] = useState<Record<string, ThreadRuntimeStatus>>({});
+  const [usageStats, setUsageStats] = useState<UsageStatsResponse | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -62,6 +87,30 @@ export function SessionManagementSettingsSection({
 
     void refresh();
     const timer = window.setInterval(() => void refresh(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refreshUsage() {
+      try {
+        const stats = await fetchUsageStats();
+        if (!cancelled) {
+          setUsageStats(stats);
+        }
+      } catch {
+        if (!cancelled) {
+          setUsageStats(null);
+        }
+      }
+    }
+
+    void refreshUsage();
+    const timer = window.setInterval(() => void refreshUsage(), 15000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -92,6 +141,24 @@ export function SessionManagementSettingsSection({
     .filter((row) => !row.running)
     .map((row) => row.thread.id);
   const selectedProject = projectSummaries.find((project) => project.id === selectedProjectId) ?? projectSummaries[0];
+  const usageByThreadId = useMemo(() => {
+    const byThreadId = new Map<string, UsageThreadRow>();
+    usageStats?.byThread.forEach((row) => {
+      if (row.threadId) {
+        byThreadId.set(row.threadId, row);
+      }
+    });
+    return byThreadId;
+  }, [usageStats]);
+  const selectedProjectUsage = useMemo(() => {
+    if (!usageStats) {
+      return emptyUsageTotals;
+    }
+    if (selectedProjectId === 'all') {
+      return usageStats.totals;
+    }
+    return usageStats.byProject.find((row) => row.projectId === selectedProjectId) ?? emptyUsageTotals;
+  }, [selectedProjectId, usageStats]);
 
   function selectProject(projectId: SessionProjectId) {
     setSelectedProjectId(projectId);
@@ -225,7 +292,9 @@ export function SessionManagementSettingsSection({
             <div className="session-detail-toolbar">
               <div className="session-detail-title">
                 <strong>{selectedProject?.name ?? '全部项目'}</strong>
-                <span>{filteredRows.length} 个会话</span>
+                <span>
+                  {filteredRows.length} 个会话 · {formatCompactTokenCount(selectedProjectUsage.totalTokens)} tokens · {formatUsageCost(selectedProjectUsage.totalCostUsd)}
+                </span>
               </div>
               <div className="session-bulk-actions">
                 <label className="session-select-all">
@@ -265,6 +334,7 @@ export function SessionManagementSettingsSection({
                   onRename={() => onRenameThread(row.thread)}
                   onRemove={() => onRemoveThread(row.thread)}
                   onCloseRuntime={row.runtimeAlive ? () => void closeRuntime(row) : undefined}
+                  usage={usageByThreadId.get(row.thread.id)}
                 />
               ))}
             </div>
@@ -284,6 +354,7 @@ function SessionRow({
   onRename,
   onRemove,
   onCloseRuntime,
+  usage,
 }: {
   row: SessionManagementRow;
   selected: boolean;
@@ -293,7 +364,11 @@ function SessionRow({
   onRename: () => void;
   onRemove: () => void;
   onCloseRuntime?: () => void;
+  usage?: UsageThreadRow;
 }) {
+  const hasUsage = Boolean(usage && (usage.totalTokens > 0 || usage.totalCostUsd > 0 || usage.messages > 0));
+  const usageModel = formatModel(usage?.model || row.thread.model);
+
   return (
     <div className="settings-list-row settings-list-row-tall session-list-row">
       <label className="session-row-check" aria-label={`选择 ${row.thread.title}`}>
@@ -320,6 +395,17 @@ function SessionRow({
           <span>权限: {formatPermission(row.thread.permissionMode)}</span>
           <span>{row.thread.updatedLabel}</span>
         </div>
+      </div>
+      <div className={`session-row-usage${hasUsage ? ' has-value' : ' is-empty'}`} title={buildUsageTooltip(usage)}>
+        <strong>{hasUsage ? formatUsageCost(usage?.totalCostUsd ?? 0) : '--'}</strong>
+        <small>
+          {hasUsage ? (
+            <>
+              <span title={usageModel}>{usageModel}</span>
+              <span>{formatCompactTokenCount(usage?.totalTokens ?? 0)} tokens</span>
+            </>
+          ) : '暂无使用量'}
+        </small>
       </div>
       <div className="settings-list-actions session-list-actions">
         <button
@@ -409,6 +495,53 @@ function formatPermission(value: string | undefined) {
 
   const trimmed = value?.trim();
   return trimmed ? labels[trimmed] ?? trimmed : '默认';
+}
+
+function buildUsageTooltip(usage?: UsageThreadRow) {
+  if (!usage || (usage.totalTokens <= 0 && usage.totalCostUsd <= 0 && usage.messages <= 0)) {
+    return '暂无使用量';
+  }
+
+  return [
+    `模型：${formatModel(usage.model)}`,
+    `输入：${formatTokenCount(usage.inputTokens)} tokens`,
+    `输出：${formatTokenCount(usage.outputTokens)} tokens`,
+    `缓存写入：${formatTokenCount(usage.cacheCreationInputTokens)} tokens`,
+    `缓存读取：${formatTokenCount(usage.cacheReadInputTokens)} tokens`,
+    `总计：${formatTokenCount(usage.totalTokens)} tokens`,
+    `费用：${formatUsageCost(usage.totalCostUsd)}`,
+  ].join('\n');
+}
+
+function formatCompactTokenCount(value: number) {
+  const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0;
+  if (safeValue >= 1_000_000) {
+    return `${trimTrailingZero((safeValue / 1_000_000).toFixed(1))}M`;
+  }
+  if (safeValue >= 1_000) {
+    return `${trimTrailingZero((safeValue / 1_000).toFixed(1))}K`;
+  }
+  return `${Math.round(safeValue)}`;
+}
+
+function formatTokenCount(value: number) {
+  const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0;
+  return Math.round(safeValue).toLocaleString('zh-CN');
+}
+
+function formatUsageCost(value: number) {
+  const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0;
+  if (safeValue === 0) {
+    return '$0';
+  }
+  if (safeValue < 0.01) {
+    return `$${trimTrailingZero(safeValue.toFixed(4))}`;
+  }
+  return `$${trimTrailingZero(safeValue.toFixed(2))}`;
+}
+
+function trimTrailingZero(value: string) {
+  return value.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
 }
 
 async function fetchThreadRuntimeStatuses() {

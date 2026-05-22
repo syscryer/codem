@@ -11,6 +11,7 @@ import type {
   OpenWithTargetsResponse,
   ShortcutSettings,
   UsageStatsResponse,
+  UsageThreadRow,
 } from '../types';
 
 export const defaultGeneralSettings: GeneralSettings = {
@@ -216,6 +217,7 @@ function normalizeUsageStats(value: unknown): UsageStatsResponse {
     totals: normalizeUsageTotals(record.totals),
     byProvider: normalizeUsageProviderRows(record.byProvider),
     byProject: normalizeUsageProjectRows(record.byProject),
+    byThread: normalizeUsageThreadRows(record.byThread),
   };
 }
 
@@ -253,6 +255,32 @@ function normalizeUsageProjectRows(value: unknown): UsageStatsResponse['byProjec
       projectId: normalizeOptionalString(item.projectId),
       projectName: normalizeOptionalString(item.projectName) || '未命名项目',
       projectPath: normalizeOptionalString(item.projectPath),
+      lastUsedAt: normalizeNullableString(item.lastUsedAt),
+    }];
+  });
+}
+
+function normalizeUsageThreadRows(value: unknown): UsageThreadRow[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!isRecord(item)) {
+      return [];
+    }
+    const totals = normalizeUsageTotals(item);
+    return [{
+      ...totals,
+      threadId: normalizeOptionalString(item.threadId),
+      projectId: normalizeOptionalString(item.projectId),
+      projectName: normalizeOptionalString(item.projectName) || '未命名项目',
+      title: normalizeOptionalString(item.title) || '未命名会话',
+      sessionId: normalizeOptionalString(item.sessionId),
+      provider: normalizeOptionalString(item.provider) || 'unknown',
+      model: normalizeOptionalString(item.model) || '未配置',
+      workingDirectory: normalizeOptionalString(item.workingDirectory),
+      updatedAt: normalizeNullableString(item.updatedAt),
       lastUsedAt: normalizeNullableString(item.lastUsedAt),
     }];
   });

@@ -27,11 +27,25 @@ export type UsageProjectRow = UsageTotals & {
   lastUsedAt: string | null;
 };
 
+export type UsageThreadRow = UsageTotals & {
+  threadId: string;
+  projectId: string;
+  projectName: string;
+  title: string;
+  sessionId: string;
+  provider: string;
+  model: string;
+  workingDirectory: string;
+  updatedAt: string | null;
+  lastUsedAt: string | null;
+};
+
 export type UsageStatsResponse = {
   generatedAt: string;
   totals: UsageTotals;
   byProvider: UsageProviderRow[];
   byProject: UsageProjectRow[];
+  byThread: UsageThreadRow[];
 };
 
 type UsageTotalsRow = {
@@ -57,6 +71,19 @@ type UsageProjectSqlRow = UsageTotalsRow & {
   projectId: string;
   projectName: string;
   projectPath: string;
+  lastUsedAt: string | null;
+};
+
+type UsageThreadSqlRow = UsageTotalsRow & {
+  threadId: string;
+  projectId: string;
+  projectName: string;
+  title: string | null;
+  sessionId: string | null;
+  provider: string | null;
+  model: string | null;
+  workingDirectory: string | null;
+  updatedAt: string | null;
   lastUsedAt: string | null;
 };
 
@@ -176,6 +203,39 @@ export function collectUsageStats(db: DatabaseSync): UsageStatsResponse {
       p.updated_at DESC
   `).all() as UsageProjectSqlRow[];
 
+  const byThreadRows = db.prepare(`
+    ${usageCtes}
+    SELECT
+      t.id AS threadId,
+      t.project_id AS projectId,
+      p.name AS projectName,
+      COALESCE(NULLIF(t.custom_title, ''), NULLIF(t.title, ''), NULLIF(t.session_id, ''), t.id) AS title,
+      COALESCE(t.session_id, '') AS sessionId,
+      COALESCE(t.provider, 'unknown') AS provider,
+      COALESCE(t.model, '未配置') AS model,
+      COALESCE(t.working_directory, '') AS workingDirectory,
+      t.updated_at AS updatedAt,
+      t.updated_at AS lastUsedAt,
+      0 AS projects,
+      1 AS threads,
+      COALESCE(mc.messages, 0) AS messages,
+      COALESCE(tc.toolCalls, 0) AS toolCalls,
+      COALESCE(tu.inputTokens, 0) AS inputTokens,
+      COALESCE(tu.outputTokens, 0) AS outputTokens,
+      COALESCE(tu.cacheCreationInputTokens, 0) AS cacheCreationInputTokens,
+      COALESCE(tu.cacheReadInputTokens, 0) AS cacheReadInputTokens,
+      COALESCE(tu.totalCostUsd, 0) AS totalCostUsd,
+      COALESCE(tu.durationMs, 0) AS durationMs
+    FROM threads t
+    INNER JOIN projects p ON p.id = t.project_id
+    LEFT JOIN thread_usage tu ON tu.thread_id = t.id
+    LEFT JOIN message_counts mc ON mc.thread_id = t.id
+    LEFT JOIN tool_counts tc ON tc.thread_id = t.id
+    ORDER BY COALESCE(tu.totalCostUsd, 0) DESC,
+      (COALESCE(tu.inputTokens, 0) + COALESCE(tu.outputTokens, 0) + COALESCE(tu.cacheCreationInputTokens, 0) + COALESCE(tu.cacheReadInputTokens, 0)) DESC,
+      t.updated_at DESC
+  `).all() as UsageThreadSqlRow[];
+
   return {
     generatedAt: new Date().toISOString(),
     totals: normalizeTotals(totalsRow),
@@ -189,6 +249,19 @@ export function collectUsageStats(db: DatabaseSync): UsageStatsResponse {
       projectId: row.projectId,
       projectName: row.projectName,
       projectPath: row.projectPath,
+      lastUsedAt: row.lastUsedAt,
+      ...normalizeTotals(row),
+    })),
+    byThread: byThreadRows.map((row) => ({
+      threadId: row.threadId,
+      projectId: row.projectId,
+      projectName: row.projectName,
+      title: row.title || row.threadId,
+      sessionId: row.sessionId || '',
+      provider: row.provider || 'unknown',
+      model: row.model || '未配置',
+      workingDirectory: row.workingDirectory || '',
+      updatedAt: row.updatedAt,
       lastUsedAt: row.lastUsedAt,
       ...normalizeTotals(row),
     })),
