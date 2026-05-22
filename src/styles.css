@@ -6992,17 +6992,15 @@ svg {
 }
 
 .session-project-item {
+  width: 100%;
   min-width: 0;
-  min-height: 68px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-content: center;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  display: block;
+  padding: 0;
   border: 0;
   border-radius: 8px;
   background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
   color: #333333;
   cursor: pointer;
   text-align: left;
@@ -7017,7 +7015,16 @@ svg {
   box-shadow: 0 0 0 1px #e5e5e5;
 }
 
-.session-project-item > span {
+.session-project-card {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px 8px;
+  padding: 10px;
+}
+
+.session-project-card > span:first-child {
   min-width: 0;
   display: grid;
   gap: 3px;
@@ -7043,6 +7050,7 @@ svg {
 }
 
 .session-project-item em {
+  align-self: start;
   min-width: 26px;
   height: 22px;
   display: inline-grid;
@@ -7055,18 +7063,39 @@ svg {
   font-size: 12px;
 }
 
-.session-project-item b {
+.session-project-usage,
+.session-project-flags {
   grid-column: 1 / -1;
+}
+
+.session-project-usage {
+  color: #5f6672;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.session-project-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.session-project-flag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(32, 122, 59, 0.12);
   color: #207a3b;
   font-size: 11px;
   font-weight: 600;
+  line-height: 1;
 }
 
-.session-project-item b.session-project-usage {
-  color: #5f6672;
-}
-
-.session-project-item b.warning {
+.session-project-flag.warning {
+  background: rgba(138, 91, 18, 0.12);
   color: #8a5b12;
 }
 

@@ -479,16 +479,22 @@ function ProjectNavItem({
       className={`session-project-item${active ? ' active' : ''}`}
       onClick={onSelect}
     >
-      <span>
-        <strong>{project.name}</strong>
-        {project.path ? <small>{project.path}</small> : <small>所有项目中的会话</small>}
+      <span className="session-project-card">
+        <span>
+          <strong>{project.name}</strong>
+          {project.path ? <small>{project.path}</small> : <small>所有项目中的会话</small>}
+        </span>
+        <em>{project.total}</em>
+        <span className="session-project-usage">
+          {formatCompactTokenCount(usage?.totalTokens ?? 0)} tokens · 运行耗时 {formatDurationCompact(usage?.durationMs ?? 0)}
+        </span>
+        {project.running > 0 || project.missingSession > 0 ? (
+          <span className="session-project-flags">
+            {project.running > 0 ? <span className="session-project-flag running">{project.running} 运行中</span> : null}
+            {project.missingSession > 0 ? <span className="session-project-flag warning">{project.missingSession} 未开始</span> : null}
+          </span>
+        ) : null}
       </span>
-      <em>{project.total}</em>
-      <b className="session-project-usage">
-        {formatCompactTokenCount(usage?.totalTokens ?? 0)} tokens · 运行耗时 {formatDurationCompact(usage?.durationMs ?? 0)}
-      </b>
-      {project.running > 0 ? <b>{project.running} 运行中</b> : null}
-      {project.missingSession > 0 ? <b className="warning">{project.missingSession} 未开始</b> : null}
     </button>
   );
 }
