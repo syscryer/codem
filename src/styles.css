@@ -62,6 +62,8 @@ svg {
   --sidebar-width: 320px;
   --workspace-footer-height: 20px;
   --workspace-footer-content-height: 18px;
+  --accent: var(--app-accent-light, #2374c6);
+  --code-font: var(--app-code-font-family, "Cascadia Code", "Cascadia Mono", Consolas, monospace);
   --app-bg: #ffffff;
   --app-surface: #ffffff;
   --app-surface-muted: #f6f6f5;
@@ -89,6 +91,7 @@ svg {
   grid-template-rows: var(--desktop-menubar-height) minmax(0, 1fr);
   overflow: hidden;
   isolation: isolate;
+  font-family: var(--app-ui-font-family, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
   font-size: var(--app-ui-font-size, 13px);
 }
 
@@ -116,7 +119,7 @@ svg {
   --panel: #1f1f1f;
   --soft: #262626;
   --tool-bg: #2e2e2e;
-  --accent: #73b7ff;
+  --accent: var(--app-accent-dark, #73b7ff);
   --app-bg: #151515;
   --app-surface: #1d1d1d;
   --app-surface-muted: #252525;
@@ -179,7 +182,7 @@ svg {
     --panel: #1f1f1f;
     --soft: #262626;
     --tool-bg: #2e2e2e;
-    --accent: #73b7ff;
+    --accent: var(--app-accent-dark, #73b7ff);
     --app-bg: #151515;
     --app-surface: #1d1d1d;
     --app-surface-muted: #252525;
@@ -796,7 +799,7 @@ svg {
 .sidebar-task-log-card pre {
   margin: 0;
   color: #4f5560;
-  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 11px;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -1197,7 +1200,7 @@ svg {
   border-radius: 10px;
   background: #fbfbfa;
   color: #242424;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 12px;
   line-height: 1.55;
   outline: none;
@@ -2068,7 +2071,7 @@ svg {
   overflow: auto;
   background: #ffffff;
   color: #24292f;
-  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 12.5px;
   line-height: 1.62;
 }
@@ -2410,7 +2413,8 @@ svg {
   min-width: 0;
   max-width: 100%;
   color: #242424;
-  font-size: 14px;
+  font-family: var(--app-chat-font-family, var(--app-ui-font-family, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif));
+  font-size: var(--app-chat-font-size, 14px);
   line-height: 1.72;
   word-break: break-word;
   overflow-wrap: anywhere;
@@ -2489,7 +2493,8 @@ svg {
 .markdown-body {
   min-width: 0;
   max-width: 100%;
-  font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  font-family: var(--app-chat-font-family, var(--app-ui-font-family, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif));
+  font-size: var(--app-chat-font-size, 14px);
 }
 
 .markdown-body > :first-child {
@@ -2562,7 +2567,7 @@ svg {
   padding: 2px 5px;
   border-radius: 5px;
   background: #eeeeee;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 0.9em;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -2712,7 +2717,7 @@ svg {
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.12);
   color: var(--app-muted);
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 11px;
   overflow-wrap: anywhere;
 }
@@ -2757,7 +2762,7 @@ svg {
   border-radius: 10px;
   background: rgba(148, 163, 184, 0.08);
   color: var(--app-text);
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -2769,7 +2774,7 @@ svg {
 }
 
 .tui-progress {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  font-family: var(--app-ui-font-family, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
   font-style: normal;
   font-weight: 400;
   letter-spacing: 0;
@@ -2985,7 +2990,7 @@ svg {
   border-radius: 8px;
   background: #f8f8f8;
   color: #242424;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -3133,7 +3138,7 @@ svg {
   border-radius: 999px;
   background: #f8fafc;
   color: #2563eb;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3144,7 +3149,7 @@ svg {
   max-height: 300px;
   overflow: auto;
   color: #3f3f46;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -3244,7 +3249,7 @@ svg {
   padding: 10px 12px;
   border-top: 1px solid #efede9;
   color: #3f3f46;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -3777,7 +3782,7 @@ svg {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: #5f6368;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 12px;
   font-weight: 520;
 }
@@ -3792,7 +3797,7 @@ svg {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 12px;
   font-weight: 520;
 }
@@ -3833,7 +3838,7 @@ svg {
   padding: 12px;
   background: #fbfbfb;
   color: #242424;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -3852,7 +3857,7 @@ svg {
   gap: 8px;
   align-items: start;
   padding: 0 12px;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -3941,7 +3946,7 @@ svg {
   align-items: baseline;
   gap: 8px;
   min-width: 0;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
 }
 
 .changed-files-summary-title strong {
@@ -4013,7 +4018,7 @@ svg {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 14px;
   font-weight: 520;
 }
@@ -4066,7 +4071,7 @@ svg {
   background: #fafafa;
   color: #6b7280;
   font-size: 12px;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
 }
 
 .changed-file-diff-code {
@@ -4078,7 +4083,7 @@ svg {
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);
   min-height: 26px;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 13px;
   line-height: 26px;
   color: #374151;
@@ -4364,7 +4369,7 @@ svg {
   border-radius: 11px;
   background: #f5f5f4;
   color: #2f2f2f;
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -5860,7 +5865,7 @@ svg {
   height: calc(100% - 42px);
   overflow: auto;
   color: #2f3742;
-  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 12px;
   line-height: 1.58;
   background: rgba(255, 255, 255, 0.5);
@@ -6350,11 +6355,13 @@ svg {
 }
 
 .appearance-preview {
-  height: 144px;
+  height: 206px;
   display: grid;
   grid-template-columns: 112px minmax(0, 1fr);
   overflow: hidden;
-  margin-bottom: 14px;
+  margin-bottom: 22px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 10%, #ffffff), #ffffff 72%);
 }
 
 .appearance-preview-sidebar {
@@ -6362,56 +6369,140 @@ svg {
   align-content: start;
   gap: 8px;
   padding: 16px 12px;
-  background: #f4f2f2;
+  background: color-mix(in srgb, var(--accent) 8%, #f4f2f2);
   border-right: 1px solid #ececec;
 }
 
-.appearance-preview-sidebar span {
+.appearance-preview-sidebar-accent {
+  width: 38px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.appearance-preview-sidebar-line {
   height: 10px;
   border-radius: 999px;
   background: #e1dfdc;
 }
 
-.appearance-preview-sidebar span:nth-child(2) {
+.appearance-preview-sidebar-line {
   width: 72%;
 }
 
-.appearance-preview-sidebar span:nth-child(3) {
+.appearance-preview-sidebar-line.short {
   width: 58%;
 }
 
 .appearance-preview-main {
   display: grid;
-  grid-template-rows: 24px 1fr 1fr 30px 18px;
-  gap: 8px;
-  padding: 10px 12px;
+  grid-template-rows: 24px auto auto minmax(0, 1fr) 18px;
+  gap: 10px;
+  padding: 16px 18px 18px;
 }
 
-.appearance-preview-header,
 .appearance-preview-message,
-.appearance-preview-composer,
 .appearance-preview-footer {
   border-radius: 999px;
   background: #ededed;
 }
 
+.appearance-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #313131;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.appearance-preview-header i {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 24%, #ffffff);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, #ececec);
+}
+
 .appearance-preview-message {
-  width: 72%;
+  width: min(76%, 680px);
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 12px;
+  color: #4c4c4c;
+  font-family: var(--app-chat-font-family, var(--app-ui-font-family, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif));
+  font-size: 11px;
 }
 
 .appearance-preview-message.short {
-  width: 48%;
+  width: min(52%, 420px);
 }
 
-.appearance-preview-composer {
+.appearance-preview-code {
+  width: min(94%, 980px);
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.appearance-preview-code-pane {
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid #e4e4e4;
   border-radius: 10px;
-  background: #f7f7f7;
+  background: #fafafa;
+}
+
+.appearance-preview-code-pane.removed {
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.appearance-preview-code-pane.added {
+  background: rgba(34, 197, 94, 0.06);
+}
+
+.appearance-preview-code-line {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+}
+
+.appearance-preview-code-line + .appearance-preview-code-line {
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.appearance-preview-code-line.highlight {
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.appearance-preview-code-line span {
+  color: #94a3b8;
+  font-family: var(--code-font);
+  font-size: 10px;
+  text-align: right;
+}
+
+.appearance-preview-code-line code {
+  overflow: hidden;
+  color: #334155;
+  font-family: var(--code-font);
+  font-size: 10px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .appearance-preview-footer {
   height: 12px;
   align-self: center;
+  width: min(94%, 980px);
+  background: color-mix(in srgb, var(--accent) 18%, #ededed);
 }
 
 .settings-panel {
@@ -6467,6 +6558,7 @@ svg {
 .settings-row-control {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 .settings-row-stack {
@@ -6495,13 +6587,48 @@ svg {
 
 .settings-select {
   min-width: 180px;
-  padding: 0 8px;
+  padding: 0 34px 0 10px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image:
+    linear-gradient(180deg, #fbfbfa, #fbfbfa),
+    linear-gradient(45deg, transparent 50%, #8a8f98 50%),
+    linear-gradient(135deg, #8a8f98 50%, transparent 50%);
+  background-position:
+    0 0,
+    calc(100% - 16px) 12px,
+    calc(100% - 11px) 12px;
+  background-size: 100% 100%, 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    background-color 140ms ease;
+}
+
+.settings-select:hover {
+  border-color: #d3d8e0;
+  background-color: #f7f7f5;
 }
 
 .settings-input {
   min-width: 0;
   flex: 1;
   padding: 0 10px;
+}
+
+.settings-select:focus,
+.settings-select:focus-visible,
+.settings-input:focus,
+.settings-input:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 42%, #d5d9e0);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.settings-select::-ms-expand {
+  display: none;
 }
 
 .settings-inline-form {
@@ -6647,8 +6774,8 @@ svg {
 }
 
 .settings-toggle input:checked + span {
-  border-color: #f0a000;
-  background: #f6b42c;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 82%, #ffffff 18%);
 }
 
 .settings-toggle input:checked + span::after {
@@ -7635,7 +7762,7 @@ svg {
   border-radius: 5px;
   background: #eeeeee;
   color: #4b5563;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 13px;
 }
 
@@ -7727,7 +7854,7 @@ svg {
   background: #f7f7f7;
   color: var(--text-muted);
   cursor: pointer;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 11px;
 }
 
@@ -7752,7 +7879,7 @@ svg {
   border-radius: 4px;
   background: #eeeeee;
   color: #4d4d4d;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--code-font);
   font-size: 11px;
 }
 
@@ -8107,8 +8234,8 @@ svg {
 }
 
 .settings-action-button.primary {
-  border-color: #222222;
-  background: #222222;
+  border-color: var(--accent);
+  background: var(--accent);
   color: #ffffff;
 }
 
@@ -8305,18 +8432,18 @@ svg {
   min-height: 0;
   display: block;
   border-radius: 4px 4px 2px 2px;
-  background: linear-gradient(180deg, #f8c15a 0%, #f0a000 100%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 68%, #ffffff 32%) 0%, var(--accent) 100%);
 }
 
 .settings-usage-chart-column.active .settings-usage-chart-bar {
-  background: linear-gradient(180deg, #ffc965 0%, #e38f00 100%);
-  box-shadow: 0 0 0 1px rgba(227, 143, 0, 0.16);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 78%, #ffffff 22%) 0%, color-mix(in srgb, var(--accent) 92%, #000000 8%) 100%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .settings-usage-chart-column:focus-visible .settings-usage-chart-bar {
   box-shadow:
-    0 0 0 1px rgba(227, 143, 0, 0.2),
-    0 0 0 4px rgba(240, 160, 0, 0.12);
+    0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .settings-usage-chart-column small {
@@ -8437,7 +8564,7 @@ svg {
   height: 100%;
   display: block;
   border-radius: inherit;
-  background: #f0a000;
+  background: var(--accent);
 }
 
 .settings-usage-row-meta {
@@ -8451,6 +8578,7 @@ svg {
   min-height: 28px;
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   padding: 2px;
   border-radius: 8px;
   background: #f3f3f3;
@@ -8480,6 +8608,223 @@ svg {
   background: #ffffff;
   color: #202020;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.settings-accent-picker {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-accent-picker button {
+  min-width: 74px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid #e3e3e3;
+  border-radius: 9px;
+  background: #fbfbfb;
+  color: #3d3d3d;
+  cursor: pointer;
+}
+
+.settings-accent-picker button:hover {
+  background: #f6f6f6;
+}
+
+.settings-accent-picker button.active {
+  border-color: color-mix(in srgb, var(--accent) 40%, #d7d7d7);
+  background: color-mix(in srgb, var(--accent) 10%, #ffffff);
+  color: #202020;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.settings-accent-swatch {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--accent-swatch-light);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+}
+
+.settings-accent-custom {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid #e3e3e3;
+  border-radius: 9px;
+  background: #fbfbfb;
+}
+
+.settings-accent-custom.active {
+  border-color: color-mix(in srgb, var(--accent) 40%, #d7d7d7);
+  background: color-mix(in srgb, var(--accent) 10%, #ffffff);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.settings-accent-custom-trigger {
+  position: relative;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #3d3d3d;
+  cursor: pointer;
+}
+
+.settings-accent-native-picker {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.settings-accent-value-input {
+  width: 96px;
+  min-width: 96px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 7px;
+  text-transform: uppercase;
+}
+
+.settings-font-control {
+  width: min(560px, 100%);
+  min-width: 0;
+}
+
+.settings-font-main {
+  display: grid;
+  grid-template-columns: 136px minmax(220px, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.settings-select-anchor {
+  position: relative;
+  min-width: 0;
+}
+
+.settings-select-trigger {
+  width: 100%;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px 0 12px;
+  border: 1px solid #e1e1e1;
+  border-radius: 9px;
+  background: #fbfbfa;
+  color: #303030;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    background-color 140ms ease;
+}
+
+.settings-select-trigger:hover,
+.settings-select-trigger.open {
+  border-color: #d3d8e0;
+  background: #f7f7f5;
+}
+
+.settings-select-trigger:focus,
+.settings-select-trigger:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 42%, #d5d9e0);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.settings-select-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.settings-select-chevron {
+  flex: 0 0 auto;
+  color: #8a8f98;
+}
+
+.settings-select-menu {
+  min-width: max(180px, var(--popover-anchor-width, 180px));
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+}
+
+.settings-select-menu-item {
+  min-width: 0;
+  height: 40px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #303030;
+  cursor: pointer;
+  text-align: left;
+}
+
+.settings-select-menu-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-select-menu-item.current {
+  color: #202020;
+}
+
+.settings-select-menu-item svg {
+  color: var(--accent);
+}
+
+.settings-select-menu-item:hover {
+  background: var(--menu-item-hover-bg);
+  box-shadow: var(--menu-item-hover-shadow);
+}
+
+.settings-font-control .settings-select,
+.settings-font-control .settings-input {
+  width: 100%;
+  min-width: 0;
+}
+
+.settings-font-control .settings-select {
+  min-width: 0;
+}
+
+.settings-font-follow-text {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid #e7e7e7;
+  border-radius: 7px;
+  background: #f7f7f7;
+  color: #777777;
+  font-size: 12px;
+}
+
+.settings-font-control .settings-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .settings-stepper {
@@ -8538,7 +8883,7 @@ svg {
   color: var(--app-text);
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu) {
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu) {
   border-color: color-mix(in srgb, var(--app-border) 82%, transparent);
   background:
     linear-gradient(
@@ -8557,13 +8902,13 @@ svg {
   -webkit-backdrop-filter: blur(24px) saturate(1.18);
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu)::before {
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::before {
   background:
     radial-gradient(ellipse at 22% 0%, color-mix(in srgb, var(--app-surface) 12%, transparent), transparent 40%),
     linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 8%, transparent), color-mix(in srgb, var(--app-surface-muted) 4%, transparent));
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu)::after {
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::after {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 10%, transparent), transparent 34%),
     linear-gradient(90deg, color-mix(in srgb, var(--app-surface) 6%, transparent), transparent 24%, transparent 76%, color-mix(in srgb, var(--app-surface) 4%, transparent));
@@ -8653,7 +8998,10 @@ svg {
 
 .codex-desktop .appearance-preview-sidebar,
 .codex-desktop .settings-segmented,
+.codex-desktop .settings-accent-picker button,
 .codex-desktop .settings-stepper,
+.codex-desktop .settings-input,
+.codex-desktop .settings-select-trigger,
 .codex-desktop .sidebar-search,
 .codex-desktop .assistant-runtime-question,
 .codex-desktop .composer-queued-prompt,
@@ -8666,6 +9014,29 @@ svg {
   background: var(--app-surface-muted);
   color: var(--app-text);
   border-color: var(--app-border);
+}
+
+.codex-desktop .settings-select {
+  color: var(--app-text);
+  border-color: var(--app-border);
+  background-color: var(--app-surface-muted);
+}
+
+.codex-desktop .settings-select-trigger {
+  color: var(--app-text);
+  border-color: var(--app-border);
+  background: var(--app-surface-muted);
+}
+
+.codex-desktop .settings-select-trigger:hover,
+.codex-desktop .settings-select-trigger.open {
+  border-color: color-mix(in srgb, var(--app-border) 78%, var(--accent) 22%);
+  background: color-mix(in srgb, var(--app-surface) 86%, var(--app-surface-muted) 14%);
+}
+
+.codex-desktop .settings-select:hover {
+  border-color: color-mix(in srgb, var(--app-border) 78%, var(--accent) 22%);
+  background-color: color-mix(in srgb, var(--app-surface) 86%, var(--app-surface-muted) 14%);
 }
 
 .codex-desktop .user-message .message-body,
@@ -8686,7 +9057,7 @@ svg {
   overflow: hidden;
 }
 
-:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu) {
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu) {
   overflow: hidden;
   isolation: isolate;
   border: 1px solid rgba(214, 218, 224, 0.78);
@@ -8703,7 +9074,7 @@ svg {
   -webkit-backdrop-filter: blur(30px) saturate(1.32);
 }
 
-:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu)::before {
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -8714,7 +9085,7 @@ svg {
   pointer-events: none;
 }
 
-:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu)::after {
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::after {
   content: '';
   position: absolute;
   inset: 1px;
@@ -8760,7 +9131,7 @@ svg {
   z-index: 1;
 }
 
-:is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item):hover {
+:is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover {
   background: linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.08)),
     rgba(142, 142, 147, 0.18);
   border-radius: 8px;
@@ -8844,7 +9215,7 @@ svg {
   overflow: auto;
   background: #fafafa;
   color: #2d2d2d;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--code-font);
   font-size: 11px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -8897,6 +9268,127 @@ svg {
 .codex-desktop .sidebar-thread-row.active .sidebar-thread {
   background: var(--sidebar-active);
   color: var(--app-text-strong);
+}
+
+.codex-desktop .settings-accent-picker button.active {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--app-border));
+  background: color-mix(in srgb, var(--accent) 14%, var(--app-surface));
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .settings-accent-custom {
+  border-color: var(--app-border);
+  background: var(--app-surface-muted);
+}
+
+.codex-desktop .settings-accent-custom-trigger {
+  color: var(--app-text);
+}
+
+.codex-desktop .settings-accent-custom.active {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--app-border));
+  background: color-mix(in srgb, var(--accent) 14%, var(--app-surface));
+}
+
+.codex-desktop .settings-action-button:hover,
+.codex-desktop .settings-icon-button:hover {
+  background: var(--app-hover);
+}
+
+.codex-desktop .settings-toggle span {
+  border-color: color-mix(in srgb, var(--app-border) 88%, transparent);
+  background: color-mix(in srgb, var(--app-border) 74%, var(--app-surface-muted) 26%);
+}
+
+.codex-desktop .settings-toggle span::after {
+  background: var(--app-surface);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--app-text) 14%, transparent);
+}
+
+.codex-desktop .settings-toggle input:checked + span {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--app-border) 28%);
+  background: color-mix(in srgb, var(--accent) 82%, var(--app-surface) 18%);
+}
+
+.codex-desktop .settings-usage-range-control,
+.codex-desktop .settings-usage-scope,
+.codex-desktop .settings-usage-card span,
+.codex-desktop .settings-usage-card small,
+.codex-desktop .settings-usage-row small,
+.codex-desktop .settings-usage-row-meta,
+.codex-desktop .settings-usage-trend-title small,
+.codex-desktop .settings-usage-trend-summary small,
+.codex-desktop .settings-usage-chart-column small,
+.codex-desktop .settings-usage-trend-tooltip-head span,
+.codex-desktop .settings-usage-trend-tooltip-grid span {
+  color: var(--app-muted);
+}
+
+.codex-desktop .settings-usage-trend,
+.codex-desktop .settings-usage-card,
+.codex-desktop .settings-usage-row,
+.codex-desktop .settings-usage-trend-tooltip,
+.codex-desktop .changed-files-summary-card,
+.codex-desktop .session-list-row,
+.codex-desktop .plugins-suite-panel .settings-list-row,
+.codex-desktop .mcp-editor-section {
+  border-color: var(--app-border);
+  background: var(--app-surface-subtle);
+  color: var(--app-text);
+}
+
+.codex-desktop .changed-files-summary-card {
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--app-text) 8%, transparent);
+}
+
+.codex-desktop .settings-usage-trend-title strong,
+.codex-desktop .settings-usage-trend-summary strong,
+.codex-desktop .settings-usage-card strong,
+.codex-desktop .settings-usage-group h2,
+.codex-desktop .settings-usage-row strong,
+.codex-desktop .settings-usage-row-head > span,
+.codex-desktop .session-row-title strong,
+.codex-desktop .changed-files-summary-title strong,
+.codex-desktop .changed-files-summary-path {
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .settings-usage-card svg,
+.codex-desktop .changed-file-chevron,
+.codex-desktop .session-row-meta,
+.codex-desktop .session-row-path,
+.codex-desktop .session-bulk-actions small,
+.codex-desktop .session-select-all,
+.codex-desktop .mcp-form-field > span {
+  color: var(--app-muted);
+}
+
+.codex-desktop .settings-usage-track {
+  background: color-mix(in srgb, var(--app-border) 78%, var(--app-surface-muted) 22%);
+}
+
+.codex-desktop .settings-usage-chart-column.active .settings-usage-chart-bar {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.codex-desktop .changed-files-summary-head,
+.codex-desktop .changed-file-block,
+.codex-desktop .agent-preview-section {
+  border-color: var(--app-border);
+}
+
+.codex-desktop .changed-files-summary-head,
+.codex-desktop .changed-files-summary-actions {
+  color: var(--app-muted);
+}
+
+.codex-desktop .changed-files-summary-row:hover {
+  background: color-mix(in srgb, var(--app-text) 4%, transparent);
+}
+
+.codex-desktop .session-row-check input,
+.codex-desktop .session-select-all input {
+  accent-color: var(--accent);
 }
 
 .codex-desktop .settings-return:hover,
@@ -8971,7 +9463,7 @@ svg {
   background: color-mix(in srgb, var(--app-surface) 18%, transparent);
 }
 
-.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item):hover {
+.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 8px;
   box-shadow: var(--menu-item-hover-shadow);
@@ -9015,7 +9507,7 @@ svg {
   color: var(--app-muted);
 }
 
-.codex-desktop :where(.sidebar-primary button, .sidebar-footer button, .sidebar-project-title, .sidebar-thread, .workspace-menu-item, .model-menu-item, .permission-menu-item, .composer-input, .toolbar-select, .permission-trigger, .model-trigger, .message-body, .assistant-runtime-card-heading strong, .assistant-runtime-question-text, .assistant-runtime-submit-button, .workspace-status, .settings-return, .settings-nav-item, .settings-row-label strong, .settings-segmented button, .settings-stepper span, .settings-empty-panel, .dialog-input, .dialog-button, .ghost-button) {
+.codex-desktop :where(.sidebar-primary button, .sidebar-footer button, .sidebar-project-title, .sidebar-thread, .workspace-menu-item, .model-menu-item, .permission-menu-item, .settings-select-menu-item, .composer-input, .toolbar-select, .permission-trigger, .model-trigger, .assistant-runtime-card-heading strong, .assistant-runtime-question-text, .assistant-runtime-submit-button, .workspace-status, .settings-return, .settings-nav-item, .settings-row-label strong, .settings-segmented button, .settings-accent-picker button, .settings-stepper span, .settings-empty-panel, .dialog-input, .dialog-button, .ghost-button) {
   font-size: var(--app-ui-font-size, 13px);
 }
 
@@ -9099,7 +9591,7 @@ svg {
   color: var(--app-text-strong);
 }
 
-.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item):hover,
+.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover,
 .codex-desktop :is(.open-app-option.active, .status-branch-menu-item.current) {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 8px;
@@ -9107,11 +9599,11 @@ svg {
   color: var(--app-text-strong);
 }
 
-.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item):hover svg {
+.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover svg {
   color: var(--app-text-strong);
 }
 
-.codex-desktop[data-theme-mode="dark"] :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item):hover,
+.codex-desktop[data-theme-mode="dark"] :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover,
 .codex-desktop[data-theme-mode="dark"] :is(.open-app-option.active, .status-branch-menu-item.current) {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 8px;
@@ -9126,6 +9618,21 @@ svg {
 
 .codex-desktop :where(.tool-title, .tool-subtitle, .tool-details summary, .tool-details h4, .tool-details pre, .thinking-message, .thinking-message pre, .agent-preview-title, .agent-preview-meta, .agent-preview-section h4, .agent-preview-file-list code, .agent-preview-section pre, .structured-preview-title, .structured-preview-meta, .structured-preview-row, .structured-preview-card > pre, .read-group-title, .read-group-meta, .assistant-runtime-code, .assistant-runtime-code code, .markdown-body code, .markdown-body .code-block-shell pre code) {
   font-size: var(--app-code-font-size, 12px);
+}
+
+.codex-desktop .message-body,
+.codex-desktop .markdown-body {
+  font-size: var(--app-chat-font-size, 14px);
+}
+
+.codex-desktop[data-theme-mode="dark"] .settings-accent-swatch {
+  background: var(--accent-swatch-dark);
+}
+
+@media (prefers-color-scheme: dark) {
+  .codex-desktop[data-theme-mode="system"] .settings-accent-swatch {
+    background: var(--accent-swatch-dark);
+  }
 }
 
 .codex-desktop[data-density="compact"] .sidebar-primary {

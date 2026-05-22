@@ -1,5 +1,5 @@
 import { normalizeShortcutValue } from './shortcuts';
-import { CLAUDE_MODEL_SLOT_VALUES } from '../constants';
+import { CLAUDE_MODEL_SLOT_VALUES, DEFAULT_CUSTOM_ACCENT_COLOR, normalizeAccentHexColor } from '../constants';
 import type {
   AppSettings,
   AppearanceSettings,
@@ -25,7 +25,19 @@ export const defaultGeneralSettings: GeneralSettings = {
 export const defaultAppearanceSettings: AppearanceSettings = {
   themeMode: 'system',
   density: 'comfortable',
+  accentColor: 'blue',
+  accentColorCustom: DEFAULT_CUSTOM_ACCENT_COLOR,
+  uiFontMode: 'preset',
+  uiFontPreset: 'system',
+  uiFontCustom: '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif',
+  chatFontMode: 'followUi',
+  chatFontPreset: 'system',
+  chatFontCustom: '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif',
+  codeFontMode: 'preset',
+  codeFontPreset: 'cascadia',
+  codeFontCustom: '"Cascadia Code", "Cascadia Mono", Consolas, monospace',
   uiFontSize: 13,
+  chatFontSize: 14,
   codeFontSize: 12,
   sidebarWidth: 'default',
   windowMaterial: 'mica',
@@ -197,11 +209,49 @@ export function normalizeGeneralSettings(general: unknown): GeneralSettings {
 
 function normalizeAppearanceSettings(appearance: unknown): AppearanceSettings {
   const record = isRecord(appearance) ? appearance : {};
+  const legacyUiFontPreset = normalizeOneOf(
+    record.uiFontFamily,
+    ['system', 'yahei', 'dengxian', 'song'],
+    defaultAppearanceSettings.uiFontPreset,
+  );
+  const legacyCodeFontPreset = normalizeOneOf(
+    record.codeFontFamily,
+    ['cascadia', 'jetbrains', 'consolas'],
+    defaultAppearanceSettings.codeFontPreset,
+  );
 
   return {
     themeMode: normalizeOneOf(record.themeMode, ['system', 'light', 'dark'], defaultAppearanceSettings.themeMode),
     density: normalizeOneOf(record.density, ['comfortable', 'compact'], defaultAppearanceSettings.density),
+    accentColor: normalizeOneOf(
+      record.accentColor,
+      ['blue', 'emerald', 'amber', 'rose', 'violet', 'custom'],
+      defaultAppearanceSettings.accentColor,
+    ),
+    accentColorCustom: normalizeAccentHexColor(record.accentColorCustom, defaultAppearanceSettings.accentColorCustom),
+    uiFontMode: normalizeOneOf(record.uiFontMode, ['preset', 'custom'], 'uiFontFamily' in record ? 'preset' : defaultAppearanceSettings.uiFontMode),
+    uiFontPreset: normalizeOneOf(
+      record.uiFontPreset,
+      ['system', 'segoe', 'yahei', 'dengxian', 'song', 'sourceHanSans', 'misans', 'harmony'],
+      legacyUiFontPreset,
+    ),
+    uiFontCustom: normalizeFontFamilyValue(record.uiFontCustom, defaultAppearanceSettings.uiFontCustom),
+    chatFontMode: normalizeOneOf(record.chatFontMode, ['followUi', 'preset', 'custom'], defaultAppearanceSettings.chatFontMode),
+    chatFontPreset: normalizeOneOf(
+      record.chatFontPreset,
+      ['system', 'segoe', 'yahei', 'dengxian', 'song', 'sourceHanSans', 'misans', 'harmony'],
+      defaultAppearanceSettings.chatFontPreset,
+    ),
+    chatFontCustom: normalizeFontFamilyValue(record.chatFontCustom, defaultAppearanceSettings.chatFontCustom),
+    codeFontMode: normalizeOneOf(record.codeFontMode, ['preset', 'custom'], 'codeFontFamily' in record ? 'preset' : defaultAppearanceSettings.codeFontMode),
+    codeFontPreset: normalizeOneOf(
+      record.codeFontPreset,
+      ['cascadia', 'jetbrains', 'consolas', 'firaCode', 'sourceCodePro'],
+      legacyCodeFontPreset,
+    ),
+    codeFontCustom: normalizeFontFamilyValue(record.codeFontCustom, defaultAppearanceSettings.codeFontCustom),
     uiFontSize: normalizeOneOf(record.uiFontSize, [12, 13, 14, 15], defaultAppearanceSettings.uiFontSize),
+    chatFontSize: normalizeOneOf(record.chatFontSize, [13, 14, 15, 16], defaultAppearanceSettings.chatFontSize),
     codeFontSize: normalizeOneOf(record.codeFontSize, [12, 13, 14], defaultAppearanceSettings.codeFontSize),
     sidebarWidth: normalizeOneOf(record.sidebarWidth, ['narrow', 'default', 'wide'], defaultAppearanceSettings.sidebarWidth),
     windowMaterial: normalizeOneOf(
@@ -521,6 +571,19 @@ function normalizeLimitedString(value: unknown, maxLength: number) {
 
   const trimmed = value.trim();
   return trimmed.length <= maxLength ? trimmed : '';
+}
+
+function normalizeFontFamilyValue(value: unknown, fallback: string) {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 320 || /[\r\n\t]/.test(trimmed)) {
+    return fallback;
+  }
+
+  return trimmed;
 }
 
 function normalizeStringArray(value: unknown, maxItemLength: number) {

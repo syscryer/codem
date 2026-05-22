@@ -20,7 +20,19 @@ export type PermissionMode = 'default' | 'plan' | 'acceptEdits' | 'auto' | 'dont
 export type AppearanceSettings = {
   themeMode: ThemeMode;
   density: InterfaceDensity;
+  accentColor: 'blue' | 'emerald' | 'amber' | 'rose' | 'violet' | 'custom';
+  accentColorCustom: string;
+  uiFontMode: 'preset' | 'custom';
+  uiFontPreset: 'system' | 'segoe' | 'yahei' | 'dengxian' | 'song' | 'sourceHanSans' | 'misans' | 'harmony';
+  uiFontCustom: string;
+  chatFontMode: 'followUi' | 'preset' | 'custom';
+  chatFontPreset: 'system' | 'segoe' | 'yahei' | 'dengxian' | 'song' | 'sourceHanSans' | 'misans' | 'harmony';
+  chatFontCustom: string;
+  codeFontMode: 'preset' | 'custom';
+  codeFontPreset: 'cascadia' | 'jetbrains' | 'consolas' | 'firaCode' | 'sourceCodePro';
+  codeFontCustom: string;
   uiFontSize: 12 | 13 | 14 | 15;
+  chatFontSize: 13 | 14 | 15 | 16;
   codeFontSize: 12 | 13 | 14;
   sidebarWidth: SidebarWidthMode;
   windowMaterial: WindowMaterialMode;
@@ -86,7 +98,19 @@ const nodeSettingsStoreFileSystem: SettingsStoreFileSystem = {
 export const defaultAppearanceSettings: AppearanceSettings = {
   themeMode: 'system',
   density: 'comfortable',
+  accentColor: 'blue',
+  accentColorCustom: '#2374C6',
+  uiFontMode: 'preset',
+  uiFontPreset: 'system',
+  uiFontCustom: '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif',
+  chatFontMode: 'followUi',
+  chatFontPreset: 'system',
+  chatFontCustom: '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif',
+  codeFontMode: 'preset',
+  codeFontPreset: 'cascadia',
+  codeFontCustom: '"Cascadia Code", "Cascadia Mono", Consolas, monospace',
   uiFontSize: 13,
+  chatFontSize: 14,
   codeFontSize: 12,
   sidebarWidth: 'default',
   windowMaterial: 'mica',
@@ -270,10 +294,48 @@ function normalizeGeneralSettings(value: unknown): GeneralSettings {
 
 function normalizeAppearanceSettings(value: unknown): AppearanceSettings {
   const record = isRecord(value) ? value : {};
+  const legacyUiFontPreset = normalizeEnum(
+    record.uiFontFamily,
+    ['system', 'yahei', 'dengxian', 'song'],
+    defaultAppearanceSettings.uiFontPreset,
+  );
+  const legacyCodeFontPreset = normalizeEnum(
+    record.codeFontFamily,
+    ['cascadia', 'jetbrains', 'consolas'],
+    defaultAppearanceSettings.codeFontPreset,
+  );
   return {
     themeMode: normalizeEnum(record.themeMode, ['system', 'light', 'dark'], defaultAppearanceSettings.themeMode),
     density: normalizeEnum(record.density, ['comfortable', 'compact'], defaultAppearanceSettings.density),
+    accentColor: normalizeEnum(
+      record.accentColor,
+      ['blue', 'emerald', 'amber', 'rose', 'violet', 'custom'],
+      defaultAppearanceSettings.accentColor,
+    ),
+    accentColorCustom: normalizeAccentHexColor(record.accentColorCustom, defaultAppearanceSettings.accentColorCustom),
+    uiFontMode: normalizeEnum(record.uiFontMode, ['preset', 'custom'], 'uiFontFamily' in record ? 'preset' : defaultAppearanceSettings.uiFontMode),
+    uiFontPreset: normalizeEnum(
+      record.uiFontPreset,
+      ['system', 'segoe', 'yahei', 'dengxian', 'song', 'sourceHanSans', 'misans', 'harmony'],
+      legacyUiFontPreset,
+    ),
+    uiFontCustom: normalizeFontFamilyValue(record.uiFontCustom, defaultAppearanceSettings.uiFontCustom),
+    chatFontMode: normalizeEnum(record.chatFontMode, ['followUi', 'preset', 'custom'], defaultAppearanceSettings.chatFontMode),
+    chatFontPreset: normalizeEnum(
+      record.chatFontPreset,
+      ['system', 'segoe', 'yahei', 'dengxian', 'song', 'sourceHanSans', 'misans', 'harmony'],
+      defaultAppearanceSettings.chatFontPreset,
+    ),
+    chatFontCustom: normalizeFontFamilyValue(record.chatFontCustom, defaultAppearanceSettings.chatFontCustom),
+    codeFontMode: normalizeEnum(record.codeFontMode, ['preset', 'custom'], 'codeFontFamily' in record ? 'preset' : defaultAppearanceSettings.codeFontMode),
+    codeFontPreset: normalizeEnum(
+      record.codeFontPreset,
+      ['cascadia', 'jetbrains', 'consolas', 'firaCode', 'sourceCodePro'],
+      legacyCodeFontPreset,
+    ),
+    codeFontCustom: normalizeFontFamilyValue(record.codeFontCustom, defaultAppearanceSettings.codeFontCustom),
     uiFontSize: normalizeNumber(record.uiFontSize, [12, 13, 14, 15], defaultAppearanceSettings.uiFontSize),
+    chatFontSize: normalizeNumber(record.chatFontSize, [13, 14, 15, 16], defaultAppearanceSettings.chatFontSize),
     codeFontSize: normalizeNumber(record.codeFontSize, [12, 13, 14], defaultAppearanceSettings.codeFontSize),
     sidebarWidth: normalizeEnum(record.sidebarWidth, ['narrow', 'default', 'wide'], defaultAppearanceSettings.sidebarWidth),
     windowMaterial: normalizeEnum(
@@ -632,6 +694,39 @@ function normalizeNumber<T extends number>(value: unknown, allowed: readonly T[]
 
 function normalizeBoolean(value: unknown, fallback: boolean) {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+function normalizeFontFamilyValue(value: unknown, fallback: string) {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 320 || /[\r\n\t]/.test(trimmed)) {
+    return fallback;
+  }
+
+  return trimmed;
+}
+
+function normalizeAccentHexColor(value: unknown, fallback: string) {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  const shortMatch = /^#([0-9a-fA-F]{3})$/.exec(trimmed);
+  if (shortMatch) {
+    const [r, g, b] = shortMatch[1].split('');
+    return `#${r}${r}${g}${g}${b}${b}`.toUpperCase();
+  }
+
+  const fullMatch = /^#([0-9a-fA-F]{6})$/.exec(trimmed);
+  if (fullMatch) {
+    return `#${fullMatch[1].toUpperCase()}`;
+  }
+
+  return fallback;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

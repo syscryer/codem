@@ -66,7 +66,19 @@ test('normalizeAppSettings preserves valid appearance values', () => {
     appearance: {
       themeMode: 'dark',
       density: 'compact',
+      accentColor: 'violet',
+      accentColorCustom: defaultAppSettings.appearance.accentColorCustom,
+      uiFontMode: 'custom',
+      uiFontPreset: 'misans',
+      uiFontCustom: '"MiSans", "Microsoft YaHei UI", sans-serif',
+      chatFontMode: 'preset',
+      chatFontPreset: 'sourceHanSans',
+      chatFontCustom: '"Source Han Sans SC", "Noto Sans CJK SC", sans-serif',
+      codeFontMode: 'custom',
+      codeFontPreset: 'sourceCodePro',
+      codeFontCustom: '"Fira Code", "Cascadia Code", Consolas, monospace',
       uiFontSize: 15,
+      chatFontSize: 16,
       codeFontSize: 14,
       sidebarWidth: 'wide',
       windowMaterial: 'micaAlt',
@@ -83,7 +95,19 @@ test('normalizeAppSettings preserves valid appearance values', () => {
     appearance: {
       themeMode: 'dark',
       density: 'compact',
+      accentColor: 'violet',
+      accentColorCustom: defaultAppSettings.appearance.accentColorCustom,
+      uiFontMode: 'custom',
+      uiFontPreset: 'misans',
+      uiFontCustom: '"MiSans", "Microsoft YaHei UI", sans-serif',
+      chatFontMode: 'preset',
+      chatFontPreset: 'sourceHanSans',
+      chatFontCustom: '"Source Han Sans SC", "Noto Sans CJK SC", sans-serif',
+      codeFontMode: 'custom',
+      codeFontPreset: 'sourceCodePro',
+      codeFontCustom: '"Fira Code", "Cascadia Code", Consolas, monospace',
       uiFontSize: 15,
+      chatFontSize: 16,
       codeFontSize: 14,
       sidebarWidth: 'wide',
       windowMaterial: 'micaAlt',
@@ -363,7 +387,18 @@ test('normalizeAppSettings falls back to defaults for invalid appearance values'
     appearance: {
       themeMode: 'sepia',
       density: 'spacious',
+      accentColor: 'cyan',
+      uiFontMode: 'hybrid',
+      uiFontPreset: 'heiti',
+      uiFontCustom: '',
+      chatFontMode: 'inherit-ui',
+      chatFontPreset: 'rounded',
+      chatFontCustom: '\n',
+      codeFontMode: 'flex',
+      codeFontPreset: 'fira',
+      codeFontCustom: '\t',
       uiFontSize: 16,
+      chatFontSize: 12,
       codeFontSize: 11,
       sidebarWidth: 'extra-wide',
       windowMaterial: 'glass',
@@ -371,6 +406,21 @@ test('normalizeAppSettings falls back to defaults for invalid appearance values'
   });
 
   assert.deepEqual(settings, defaultAppSettings);
+});
+
+test('normalizeAppSettings preserves custom accent color values', () => {
+  const settings = normalizeAppSettings({
+    appearance: {
+      accentColor: 'custom',
+      accentColorCustom: '#1a2b3c',
+    },
+  });
+
+  assert.deepEqual(settings.appearance, {
+    ...defaultAppSettings.appearance,
+    accentColor: 'custom',
+    accentColorCustom: '#1A2B3C',
+  });
 });
 
 test('normalizeAppSettings falls back to defaults for non-object and array input', () => {
@@ -502,6 +552,7 @@ test('getAppSettings fills defaults for missing appearance fields', () => {
       JSON.stringify({
         appearance: {
           themeMode: 'dark',
+          accentColor: 'rose',
           uiFontSize: 15,
         },
       }),
@@ -514,12 +565,30 @@ test('getAppSettings fills defaults for missing appearance fields', () => {
       appearance: {
         ...defaultAppSettings.appearance,
         themeMode: 'dark',
+        accentColor: 'rose',
         uiFontSize: 15,
       },
       models: defaultAppSettings.models,
       shortcuts: defaultAppSettings.shortcuts,
       openWith: defaultAppSettings.openWith,
     });
+  });
+});
+
+test('normalizeAppSettings migrates legacy font preset fields', () => {
+  const settings = normalizeAppSettings({
+    appearance: {
+      uiFontFamily: 'yahei',
+      codeFontFamily: 'jetbrains',
+    },
+  });
+
+  assert.deepEqual(settings.appearance, {
+    ...defaultAppSettings.appearance,
+    uiFontMode: 'preset',
+    uiFontPreset: 'yahei',
+    codeFontMode: 'preset',
+    codeFontPreset: 'jetbrains',
   });
 });
 
@@ -530,7 +599,19 @@ test('updateAppearanceSettings writes formatted JSON and can read it back', () =
     const settings = store.updateAppearanceSettings({
       themeMode: 'light',
       density: 'compact',
+      accentColor: 'emerald',
+      accentColorCustom: defaultAppSettings.appearance.accentColorCustom,
+      uiFontMode: 'preset',
+      uiFontPreset: 'yahei',
+      uiFontCustom: '"Microsoft YaHei UI", "Segoe UI", sans-serif',
+      chatFontMode: 'custom',
+      chatFontPreset: 'system',
+      chatFontCustom: '"Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei UI", sans-serif',
+      codeFontMode: 'custom',
+      codeFontPreset: 'consolas',
+      codeFontCustom: '"JetBrains Mono", "Cascadia Code", Consolas, monospace',
       uiFontSize: 14,
+      chatFontSize: 15,
       codeFontSize: 13,
       sidebarWidth: 'narrow',
       windowMaterial: 'mica',
@@ -541,7 +622,19 @@ test('updateAppearanceSettings writes formatted JSON and can read it back', () =
       appearance: {
         themeMode: 'light',
         density: 'compact',
+        accentColor: 'emerald',
+        accentColorCustom: defaultAppSettings.appearance.accentColorCustom,
+        uiFontMode: 'preset',
+        uiFontPreset: 'yahei',
+        uiFontCustom: '"Microsoft YaHei UI", "Segoe UI", sans-serif',
+        chatFontMode: 'custom',
+        chatFontPreset: 'system',
+        chatFontCustom: '"Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei UI", sans-serif',
+        codeFontMode: 'custom',
+        codeFontPreset: 'consolas',
+        codeFontCustom: '"JetBrains Mono", "Cascadia Code", Consolas, monospace',
         uiFontSize: 14,
+        chatFontSize: 15,
         codeFontSize: 13,
         sidebarWidth: 'narrow',
         windowMaterial: 'mica',
@@ -555,6 +648,23 @@ test('updateAppearanceSettings writes formatted JSON and can read it back', () =
     assert.deepEqual(settings, expected);
     assert.equal(serialized, `${JSON.stringify(expected, null, 2)}\n`);
     assert.deepEqual(store.getAppSettings(), expected);
+  });
+});
+
+test('updateAppearanceSettings writes custom accent color values', () => {
+  withTemporaryDirectory((directory) => {
+    const store = createSettingsStore(directory);
+
+    const settings = store.updateAppearanceSettings({
+      accentColor: 'custom',
+      accentColorCustom: '#0ea5e9',
+    });
+
+    assert.deepEqual(settings.appearance, {
+      ...defaultAppSettings.appearance,
+      accentColor: 'custom',
+      accentColorCustom: '#0EA5E9',
+    });
   });
 });
 

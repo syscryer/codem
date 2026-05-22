@@ -211,6 +211,25 @@ export type ThemeMode = 'system' | 'light' | 'dark';
 export type InterfaceDensity = 'comfortable' | 'compact';
 export type SidebarWidthMode = 'narrow' | 'default' | 'wide';
 export type WindowMaterialMode = 'auto' | 'none' | 'mica' | 'acrylic' | 'micaAlt';
+export type AccentColorPreset = 'blue' | 'emerald' | 'amber' | 'rose' | 'violet';
+export type AccentColorValue = AccentColorPreset | 'custom';
+export type UiFontFamilyPreset =
+  | 'system'
+  | 'segoe'
+  | 'yahei'
+  | 'dengxian'
+  | 'song'
+  | 'sourceHanSans'
+  | 'misans'
+  | 'harmony';
+export type CodeFontFamilyPreset =
+  | 'cascadia'
+  | 'jetbrains'
+  | 'consolas'
+  | 'firaCode'
+  | 'sourceCodePro';
+export type FontSettingMode = 'preset' | 'custom';
+export type ChatFontSettingMode = 'followUi' | 'preset' | 'custom';
 
 export type GeneralSettings = {
   restoreLastSelectionOnLaunch: boolean;
@@ -222,7 +241,19 @@ export type GeneralSettings = {
 export type AppearanceSettings = {
   themeMode: ThemeMode;
   density: InterfaceDensity;
+  accentColor: AccentColorValue;
+  accentColorCustom: string;
+  uiFontMode: FontSettingMode;
+  uiFontPreset: UiFontFamilyPreset;
+  uiFontCustom: string;
+  chatFontMode: ChatFontSettingMode;
+  chatFontPreset: UiFontFamilyPreset;
+  chatFontCustom: string;
+  codeFontMode: FontSettingMode;
+  codeFontPreset: CodeFontFamilyPreset;
+  codeFontCustom: string;
   uiFontSize: 12 | 13 | 14 | 15;
+  chatFontSize: 13 | 14 | 15 | 16;
   codeFontSize: 12 | 13 | 14;
   sidebarWidth: SidebarWidthMode;
   windowMaterial: WindowMaterialMode;

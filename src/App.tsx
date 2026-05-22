@@ -16,6 +16,7 @@ import { WorkspaceStatus } from './components/WorkspaceStatus';
 import { useClaudeRun } from './hooks/useClaudeRun';
 import { useAppSettings } from './hooks/useAppSettings';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
+import { resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
 import {
   buildCompactSlashCommandSubmission,
   buildContextSlashCardResult,
@@ -212,6 +213,10 @@ export default function App() {
       : { kind: 'workspace', projectId: activeProjectId, threadId: activeThreadId };
   const canNavigateBack = navigationHistory.past.length > 0;
   const canNavigateForward = navigationHistory.future.length > 0;
+  const accentColors = resolveAccentColors(appearance);
+  const uiFontStack = resolveUiFontStack(appearance);
+  const chatFontStack = resolveChatFontStack(appearance);
+  const codeFontStack = resolveCodeFontStack(appearance);
 
   useEffect(() => {
     if (settingsLoading || !isTauriRuntime()) {
@@ -772,7 +777,13 @@ export default function App() {
       data-density={appearance.density}
       data-sidebar-width={appearance.sidebarWidth}
       style={{
+        '--app-accent-light': accentColors.light,
+        '--app-accent-dark': accentColors.dark,
+        '--app-ui-font-family': uiFontStack,
+        '--app-chat-font-family': chatFontStack,
+        '--app-code-font-family': codeFontStack,
         '--app-ui-font-size': `${appearance.uiFontSize}px`,
+        '--app-chat-font-size': `${appearance.chatFontSize}px`,
         '--app-code-font-size': `${appearance.codeFontSize}px`,
       } as CSSProperties}
     >
