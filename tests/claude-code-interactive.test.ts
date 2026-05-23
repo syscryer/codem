@@ -61,6 +61,7 @@ test('交互运行中的人工决策会回写到同一个 Claude Code 会话', (
   const handleClaudePayloadBody = extractFunctionBody(serviceSource, 'handleClaudePayload');
   const submitRequestUserInputBody = extractFunctionBody(serviceSource, 'submitRunRequestUserInput');
   const submitApprovalDecisionBody = extractFunctionBody(serviceSource, 'submitRunApprovalDecision');
+  const writeApprovalDecisionBody = extractFunctionBody(serviceSource, 'writeApprovalDecisionToRuntime');
   const buildToolResultMessageBody = extractFunctionBody(serviceSource, 'buildClaudeToolResultMessage');
 
   assert.match(serverSource, /\/api\/claude\/run\/:runId\/request-user-input/);
@@ -72,7 +73,9 @@ test('交互运行中的人工决策会回写到同一个 Claude Code 会话', (
   assert.match(submitRequestUserInputBody, /stdin_tool_result_written/);
 
   assert.match(submitApprovalDecisionBody, /runtime\.inputMode\s*!==\s*['"]stdin['"]/);
-  assert.match(submitApprovalDecisionBody, /runtime\.child\.stdin\.write\(payload,/);
+  assert.match(submitApprovalDecisionBody, /writeApprovalDecisionToRuntime\(/);
+  assert.match(writeApprovalDecisionBody, /runtime\.child\.stdin\.write\(payload,/);
+  assert.match(writeApprovalDecisionBody, /buildClaudeToolResultMessage\(requestId,\s*content,\s*decision\s*===\s*['"]reject['"]\)/);
   assert.match(submitApprovalDecisionBody, /pausedForUserInput\s*=\s*false/);
   assert.match(submitApprovalDecisionBody, /stdin_approval_result_written/);
 

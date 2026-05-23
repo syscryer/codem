@@ -12,6 +12,7 @@ import { RightWorkbench } from './components/RightWorkbench';
 import { SidebarProjects } from './components/SidebarProjects';
 import { SettingsView } from './components/settings/SettingsView';
 import { TerminalDock, useTerminalDockState, type TerminalRunRequest } from './components/TerminalDock';
+import { TooltipLayer } from './components/TooltipLayer';
 import { WorktreeCreateDialog } from './components/WorktreeCreateDialog';
 import { WorkspaceStatus } from './components/WorkspaceStatus';
 import { useClaudeRun } from './hooks/useClaudeRun';
@@ -1154,6 +1155,7 @@ export default function App() {
         onPickBaseDirectory={(currentBaseDirectory) => selectDirectoryPath(currentBaseDirectory || activeProject?.path)}
         onSubmit={handleCloneRepository}
       />
+      <TooltipLayer />
     </div>
   );
 

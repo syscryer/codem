@@ -57,6 +57,31 @@ svg {
   stroke-width: 1.75;
 }
 
+.app-tooltip {
+  position: fixed;
+  z-index: 12000;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--app-border-strong, #dedbd3) 78%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--app-surface, #ffffff) 94%, var(--app-text, #242424) 6%);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+  color: var(--app-text, #242424);
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.app-tooltip[data-placement="top"] {
+  transform-origin: bottom center;
+}
+
+.app-tooltip[data-placement="bottom"] {
+  transform-origin: top center;
+}
+
 .codex-desktop {
   --desktop-menubar-height: 36px;
   --sidebar-width: 320px;
@@ -82,6 +107,9 @@ svg {
   --settings-sidebar-bg: #f4f2f2;
   --app-scrollbar-thumb: rgba(82, 82, 82, 0.16);
   --app-scrollbar-thumb-hover: rgba(82, 82, 82, 0.36);
+  --app-focus-border: color-mix(in srgb, var(--accent) 44%, var(--app-border));
+  --app-focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+  --app-focus-outline: color-mix(in srgb, var(--accent) 58%, transparent);
   color-scheme: light;
   color: var(--app-text);
   background: transparent;
@@ -11407,6 +11435,104 @@ body.git-history-resizing {
 .codex-desktop .settings-select:hover {
   border-color: color-mix(in srgb, var(--app-border) 78%, var(--accent) 22%);
   background-color: color-mix(in srgb, var(--app-surface) 86%, var(--app-surface-muted) 14%);
+}
+
+.codex-desktop :is(
+  input,
+  select,
+  textarea,
+  button,
+  [contenteditable="true"],
+  [role="button"],
+  [role="tab"],
+  [role="menuitem"],
+  [role="menuitemradio"],
+  [tabindex]:not([tabindex="-1"])
+):focus {
+  outline: none;
+}
+
+.codex-desktop :is(
+  input:where(:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"])),
+  select,
+  textarea:where(:not(.composer-input)),
+  [contenteditable="true"],
+  .git-history-searchable-select-trigger,
+  .settings-select-trigger
+):focus,
+.codex-desktop :is(
+  input:where(:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"])),
+  select,
+  textarea:where(:not(.composer-input)),
+  [contenteditable="true"],
+  .git-history-searchable-select-trigger,
+  .settings-select-trigger
+):focus-visible {
+  outline: none;
+  border-color: var(--app-focus-border);
+  box-shadow: var(--app-focus-ring);
+}
+
+.codex-desktop :is(
+  .sidebar-search,
+  .workbench-file-filter,
+  .git-history-toolbar-search,
+  .git-history-branch-search,
+  .git-history-filter-menu-search,
+  .settings-search
+):focus-within {
+  border-color: var(--app-focus-border);
+  box-shadow: var(--app-focus-ring);
+}
+
+.codex-desktop :is(
+  .sidebar-search input,
+  .workbench-file-filter input,
+  .git-history-toolbar-search input,
+  .git-history-branch-search input,
+  .git-history-filter-menu-search input,
+  .settings-search input
+):focus,
+.codex-desktop :is(
+  .sidebar-search input,
+  .workbench-file-filter input,
+  .git-history-toolbar-search input,
+  .git-history-branch-search input,
+  .git-history-filter-menu-search input,
+  .settings-search input
+):focus-visible {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.codex-desktop .settings-select-trigger:focus,
+.codex-desktop .settings-select-trigger:focus-visible,
+.codex-desktop .git-history-searchable-select-trigger:focus,
+.codex-desktop .git-history-searchable-select-trigger:focus-visible,
+.codex-desktop .toolbar-select:focus,
+.codex-desktop .toolbar-select:focus-visible {
+  outline: none;
+  border-color: var(--app-focus-border);
+  box-shadow: var(--app-focus-ring);
+}
+
+.codex-desktop :is(
+  button:where(:not(.settings-select-trigger):not(.git-history-searchable-select-trigger)),
+  input[type="checkbox"],
+  input[type="radio"],
+  [role="button"],
+  [role="tab"],
+  [role="menuitem"],
+  [role="menuitemradio"],
+  [tabindex]:not([tabindex="-1"])
+):focus-visible {
+  outline: 2px solid var(--app-focus-outline);
+  outline-offset: 2px;
+}
+
+.codex-desktop .settings-toggle input:focus-visible + span {
+  border-color: var(--app-focus-border);
+  box-shadow: var(--app-focus-ring);
 }
 
 .codex-desktop .user-message .message-body,

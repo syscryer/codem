@@ -42,9 +42,10 @@ test('buildChangedFilePreviewRequest keeps changed files on file-preview tabs', 
     deleted: false,
   });
 
-  assert.equal(preview.key, 'file:src/App.tsx');
+  assert.equal(preview.key, 'review:src/App.tsx');
   assert.equal(preview.kind, 'code');
   assert.equal(preview.source, 'changed-file');
+  assert.equal(preview.previewMode, 'git-diff');
 });
 
 test('closeWorkbenchPreviewTab moves focus to the previous surviving tab', () => {

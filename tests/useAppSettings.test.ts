@@ -24,6 +24,7 @@ test('resolveGeneralSettingsUpdate normalizes basic settings toggles', () => {
   });
 
   assert.deepEqual(next, {
+    ...defaultGeneralSettings,
     restoreLastSelectionOnLaunch: false,
     autoRefreshGitStatus: false,
     showDebugButton: false,

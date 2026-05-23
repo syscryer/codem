@@ -6,7 +6,7 @@ import {
 } from '../src/lib/conversation-preview-shortcuts';
 import type { ToolStep } from '../src/types';
 
-test('buildConversationPreviewRequest turns a write preview into a file preview request', () => {
+test('buildConversationPreviewRequest turns a write preview into a conversation preview request', () => {
   const preview = {
     kind: 'write',
     filePath: 'docs/notes.md',
@@ -20,9 +20,10 @@ test('buildConversationPreviewRequest turns a write preview into a file preview 
 
   const request = buildConversationPreviewRequest(preview);
 
-  assert.equal(request?.key, 'file:docs/notes.md');
+  assert.equal(request?.key, 'conversation:docs/notes.md');
   assert.equal(request?.kind, 'markdown');
   assert.equal(request?.name, 'notes.md');
+  assert.equal(request?.source, 'conversation-card');
 });
 
 test('buildConversationPreviewRequest returns null for previews without a file path', () => {
