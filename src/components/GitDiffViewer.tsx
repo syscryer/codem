@@ -17,6 +17,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   buildWorkbenchChangeMarkers,
   buildWorkbenchFullDiffRows,
@@ -40,6 +41,7 @@ type GitDiffViewerProps = {
   viewMode: GitDiffViewerMode;
   onViewModeChange: (viewMode: GitDiffViewerMode) => void;
   className?: string;
+  toolbarContainer?: HTMLElement | null;
   toolbarExtras?: ReactNode;
 };
 
@@ -51,6 +53,7 @@ export function GitDiffViewer({
   viewMode,
   onViewModeChange,
   className = '',
+  toolbarContainer = null,
   toolbarExtras = null,
 }: GitDiffViewerProps) {
   const normalizedContent = content.trim() ? content : '当前没有可显示的改动。';
@@ -114,6 +117,48 @@ export function GitDiffViewer({
     () => buildWorkbenchChangeMarkers(changeRowIndices, rows, leftViewportHeight, WORKBENCH_CODE_LINE_HEIGHT),
     [changeRowIndices, leftViewportHeight, rows],
   );
+  const isSplitView = viewMode === 'split' || viewMode === 'full';
+  const toolbar = (
+    <div className={`git-diff-toolbar${toolbarContainer ? ' docked' : ''}`} role="toolbar" aria-label="对比工具">
+      <div className="git-diff-toolbar-group" role="tablist" aria-label="视图切换">
+        <ToolbarButton active={viewMode === 'split'} ariaSelected={viewMode === 'split'} onClick={() => onViewModeChange('split')}>
+          左右
+        </ToolbarButton>
+        <ToolbarButton
+          active={viewMode === 'full'}
+          ariaSelected={viewMode === 'full'}
+          disabled={!canUseFullView}
+          onClick={() => onViewModeChange('full')}
+        >
+          全文
+        </ToolbarButton>
+        <ToolbarButton active={viewMode === 'unified'} ariaSelected={viewMode === 'unified'} onClick={() => onViewModeChange('unified')}>
+          统一
+        </ToolbarButton>
+      </div>
+      <div className="git-diff-toolbar-group">
+        <ToolbarIcon icon={ArrowUp} title="上一处变更" disabled={!isSplitView || changeRowIndices.length === 0} onClick={() => moveToChange(-1)} />
+        <ToolbarIcon icon={ArrowDown} title="下一处变更" disabled={!isSplitView || changeRowIndices.length === 0} onClick={() => moveToChange(1)} />
+        <ToolbarIcon
+          icon={Rows3}
+          active={collapseUnchanged}
+          disabled={!isSplitView}
+          title="折叠未修改"
+          onClick={() => setCollapseUnchanged((current) => !current)}
+        />
+        <ToolbarIcon icon={RotateCcw} title="重置" disabled={!isSplitView} onClick={() => setSplitLeftWidth(50)} />
+        <ToolbarIcon
+          icon={syncScroll ? Link2 : Unlink2}
+          active={syncScroll}
+          disabled={!isSplitView}
+          title={syncScroll ? '关闭同步滚动' : '开启同步滚动'}
+          onClick={() => setSyncScroll((current) => !current)}
+        />
+      </div>
+      {toolbarExtras ? <div className="git-diff-toolbar-group">{toolbarExtras}</div> : null}
+    </div>
+  );
+  const toolbarPortal = toolbarContainer ? createPortal(toolbar, toolbarContainer) : null;
 
   useEffect(() => {
     setActiveChangeCursor((current) => {
@@ -272,50 +317,7 @@ export function GitDiffViewer({
           className="git-diff-split-surface"
           style={{ '--workbench-diff-split-left-width': `${splitLeftWidth}%` } as CSSProperties}
         >
-          <div className="git-diff-toolbar" role="toolbar" aria-label="对比工具">
-            <div className="git-diff-toolbar-group" role="tablist" aria-label="视图切换">
-              <ToolbarButton
-                active={viewMode === 'split'}
-                ariaSelected={viewMode === 'split'}
-                onClick={() => onViewModeChange('split')}
-              >
-                左右
-              </ToolbarButton>
-              <ToolbarButton
-                active={viewMode === 'full'}
-                ariaSelected={viewMode === 'full'}
-                disabled={!canUseFullView}
-                onClick={() => onViewModeChange('full')}
-              >
-                全文
-              </ToolbarButton>
-              <ToolbarButton
-                active={false}
-                ariaSelected={false}
-                onClick={() => onViewModeChange('unified')}
-              >
-                统一
-              </ToolbarButton>
-            </div>
-            <div className="git-diff-toolbar-group">
-              <ToolbarIcon icon={ArrowUp} title="上一处变更" onClick={() => moveToChange(-1)} />
-              <ToolbarIcon icon={ArrowDown} title="下一处变更" onClick={() => moveToChange(1)} />
-              <ToolbarIcon
-                icon={Rows3}
-                active={collapseUnchanged}
-                title="折叠未修改"
-                onClick={() => setCollapseUnchanged((current) => !current)}
-              />
-              <ToolbarIcon icon={RotateCcw} title="重置" onClick={() => setSplitLeftWidth(50)} />
-              <ToolbarIcon
-                icon={syncScroll ? Link2 : Unlink2}
-                active={syncScroll}
-                title={syncScroll ? '关闭同步滚动' : '开启同步滚动'}
-                onClick={() => setSyncScroll((current) => !current)}
-              />
-            </div>
-            {toolbarExtras ? <div className="git-diff-toolbar-group">{toolbarExtras}</div> : null}
-          </div>
+          {toolbarPortal ?? toolbar}
           <div className="git-diff-split-grid">
             <div className="git-diff-split-pane-shell left">
               <div ref={leftPaneRef} className="git-diff-split-pane left">
@@ -394,6 +396,7 @@ export function GitDiffViewer({
 
   return (
     <div className={`workbench-code-preview workbench-diff-content ${className}`.trim()} role="region" aria-label="变更预览">
+      {toolbarPortal}
       {lines.map((line, index) => (
         <div key={`${index}-${line}`} className={`git-diff-line ${getDiffLineClass(line)}`}>
           <span className="git-diff-line-no">{index + 1}</span>
@@ -435,11 +438,13 @@ function ToolbarIcon({
   icon: Icon,
   title,
   active = false,
+  disabled = false,
   onClick,
 }: {
   icon: LucideIcon;
   title: string;
   active?: boolean;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -447,6 +452,7 @@ function ToolbarIcon({
       type="button"
       className={`git-diff-toolbar-icon${active ? ' active' : ''}`}
       title={title}
+      disabled={disabled}
       onClick={onClick}
     >
       <Icon size={14} />

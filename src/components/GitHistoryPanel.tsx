@@ -134,6 +134,7 @@ export function GitHistoryPanel({
   const [previewError, setPreviewError] = useState('');
   const [previewMode, setPreviewMode] = useState<'diff' | 'before' | 'after'>('diff');
   const [previewDiffMode, setPreviewDiffMode] = useState<GitDiffViewerMode>('split');
+  const [previewDiffToolbarElement, setPreviewDiffToolbarElement] = useState<HTMLDivElement | null>(null);
   const [leftPaneWidth, setLeftPaneWidth] = useState(DEFAULT_LEFT_PANE_WIDTH);
   const [rightPaneWidth, setRightPaneWidth] = useState(DEFAULT_RIGHT_PANE_WIDTH);
   const contextMenuAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -1255,11 +1256,14 @@ export function GitHistoryPanel({
               </div>
             </header>
             <div className="git-history-preview-meta">
-              <code>{previewState.commitSha.slice(0, 7)}</code>
-              <span>{selectedPreviewFile?.status}</span>
-              {selectedPreviewFile?.originalPath && selectedPreviewFile.originalPath !== selectedPreviewFile.path ? (
-                <span>{selectedPreviewFile.originalPath} → {selectedPreviewFile.path}</span>
-              ) : null}
+              <div className="git-history-preview-meta-main">
+                <code>{previewState.commitSha.slice(0, 7)}</code>
+                <span>{selectedPreviewFile?.status}</span>
+                {selectedPreviewFile?.originalPath && selectedPreviewFile.originalPath !== selectedPreviewFile.path ? (
+                  <span>{selectedPreviewFile.originalPath} → {selectedPreviewFile.path}</span>
+                ) : null}
+              </div>
+              <div className="git-history-preview-meta-tools" ref={setPreviewDiffToolbarElement} />
             </div>
             <div className="git-history-preview-body">
               {previewLoading ? (
@@ -1276,6 +1280,8 @@ export function GitHistoryPanel({
                   filePath={previewData.path}
                   viewMode={previewDiffMode}
                   onViewModeChange={setPreviewDiffMode}
+                  className="git-history-preview-diff-viewer"
+                  toolbarContainer={previewDiffToolbarElement}
                 />
               ) : (
                 <CodeSnapshotViewer
