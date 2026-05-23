@@ -604,12 +604,6 @@ export function GitHistoryPanel({
           }
         }}
       >
-        <div className="git-history-log-header">
-          <span>图</span>
-          <span>提交</span>
-          <span>作者</span>
-          <span>时间</span>
-        </div>
         <div
           className="git-history-log-body"
           style={{ '--git-history-log-body-height': `${historyCommits.length * GIT_HISTORY_LOG_ROW_HEIGHT}px` } as CSSProperties}

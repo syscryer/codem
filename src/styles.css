@@ -4929,6 +4929,8 @@ svg {
 }
 
 .git-history-layout {
+  --git-history-toolbar-height: 44px;
+  --git-history-toolbar-line-y: 43px;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -4964,6 +4966,15 @@ svg {
   padding: 0;
   background:
     linear-gradient(
+      180deg,
+      transparent 0,
+      transparent var(--git-history-toolbar-line-y),
+      color-mix(in srgb, var(--app-border, #ece9e2) 90%, transparent) var(--git-history-toolbar-line-y),
+      color-mix(in srgb, var(--app-border, #ece9e2) 90%, transparent) calc(var(--git-history-toolbar-line-y) + 1px),
+      transparent calc(var(--git-history-toolbar-line-y) + 1px),
+      transparent 100%
+    ),
+    linear-gradient(
       90deg,
       transparent 0,
       transparent 3.5px,
@@ -4978,12 +4989,21 @@ svg {
 .git-history-splitter:hover {
   background:
     linear-gradient(
+      180deg,
+      transparent 0,
+      transparent var(--git-history-toolbar-line-y),
+      color-mix(in srgb, var(--app-border, #ece9e2) 90%, transparent) var(--git-history-toolbar-line-y),
+      color-mix(in srgb, var(--app-border, #ece9e2) 90%, transparent) calc(var(--git-history-toolbar-line-y) + 1px),
+      transparent calc(var(--git-history-toolbar-line-y) + 1px),
+      transparent 100%
+    ),
+    linear-gradient(
       90deg,
       transparent 0,
-      transparent 2px,
-      color-mix(in srgb, var(--accent, #2374c6) 35%, var(--app-border, #ece9e2)) 2px,
-      color-mix(in srgb, var(--accent, #2374c6) 35%, var(--app-border, #ece9e2)) 6px,
-      transparent 6px,
+      transparent 3.5px,
+      color-mix(in srgb, var(--accent, #2374c6) 35%, var(--app-border, #ece9e2)) 3.5px,
+      color-mix(in srgb, var(--accent, #2374c6) 35%, var(--app-border, #ece9e2)) 4.5px,
+      transparent 4.5px,
       transparent 100%
     );
 }
@@ -4995,6 +5015,8 @@ body.git-history-resizing {
 
 .git-history-pane-toolbar {
   min-width: 0;
+  height: var(--git-history-toolbar-height);
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -5278,21 +5300,6 @@ body.git-history-resizing {
   min-height: var(--git-history-log-body-height, 0px);
   display: grid;
   align-content: start;
-}
-
-.git-history-log-header {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: grid;
-  grid-template-columns: 96px minmax(0, 1fr) 104px 134px;
-  align-items: center;
-  gap: 12px;
-  padding: 0 12px 8px;
-  background: color-mix(in srgb, var(--app-surface, #ffffff) 94%, transparent);
-  color: var(--app-muted, #77736c);
-  font-size: 12px;
-  font-weight: 500;
 }
 
 .git-history-log-row {
