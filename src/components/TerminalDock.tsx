@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from 'react';
 import {
   closePtySession,
@@ -18,6 +19,7 @@ import {
   resizePtySession,
   writePtyInput,
 } from '../lib/terminal-bridge';
+import { resolveTerminalDockBodyKind } from '../lib/terminal-dock-state';
 
 const OPEN_STORAGE_KEY = 'codem::terminal-dock-open';
 const HEIGHT_STORAGE_KEY = 'codem::terminal-dock-height';
@@ -38,6 +40,13 @@ type TerminalWorkspace = {
   id: string;
   name: string;
   path: string;
+};
+
+export type DockExtraPanel = {
+  id: string;
+  title: string;
+  icon?: ReactNode;
+  content: ReactNode;
 };
 
 export type TerminalRunRequest = {
@@ -245,11 +254,17 @@ export function TerminalDock({
   onToggleOpen,
   defaultWorkspace,
   runRequest,
+  extraPanels = [],
+  activePanelId = 'terminal',
+  onActivePanelChange,
 }: {
   isOpen: boolean;
   onToggleOpen: () => void;
   defaultWorkspace: TerminalWorkspace | null;
   runRequest: TerminalRunRequest | null;
+  extraPanels?: DockExtraPanel[];
+  activePanelId?: string | null;
+  onActivePanelChange?: (panelId: string) => void;
 }) {
   const [height, setHeight] = useState<number>(() => {
     if (typeof window === 'undefined') {
@@ -268,11 +283,21 @@ export function TerminalDock({
   const wasOpenRef = useRef(false);
   const handledRunRequestIdRef = useRef<number | null>(null);
   const [commandRequestsByTabId, setCommandRequestsByTabId] = useState<Record<string, TerminalRunRequest>>({});
+  const terminalAvailable = isTerminalBridgeAvailable();
 
   const activeTab = useMemo(
     () => terminalTabs.find((tab) => tab.id === activeTerminalTabId) ?? null,
     [activeTerminalTabId, terminalTabs],
   );
+  const activeExtraPanel = useMemo(
+    () => extraPanels.find((panel) => panel.id === activePanelId) ?? null,
+    [activePanelId, extraPanels],
+  );
+  const bodyKind = resolveTerminalDockBodyKind({
+    terminalAvailable,
+    activePanelId,
+    extraPanelIds: extraPanels.map((panel) => panel.id),
+  });
 
   useEffect(() => {
     return () => {
@@ -299,7 +324,7 @@ export function TerminalDock({
   useEffect(() => {
     const openedNow = isOpen && !wasOpenRef.current;
     wasOpenRef.current = isOpen;
-    if (!isOpen || terminalTabs.length > 0 || !openedNow) {
+    if (!isOpen || !terminalAvailable || terminalTabs.length > 0 || !openedNow) {
       return;
     }
 
@@ -323,7 +348,7 @@ export function TerminalDock({
   }, [terminalTabs]);
 
   useEffect(() => {
-    if (!isOpen || !runRequest || handledRunRequestIdRef.current === runRequest.id) {
+    if (!isOpen || !terminalAvailable || !runRequest || handledRunRequestIdRef.current === runRequest.id) {
       return;
     }
 
@@ -396,6 +421,10 @@ export function TerminalDock({
   }
 
   function handleNewTerminal() {
+    if (!terminalAvailable) {
+      return;
+    }
+    onActivePanelChange?.('terminal');
     const nextTab = createTab({
       title: nextTerminalTitle(terminalTabs),
       cwd: defaultWorkspace?.path ?? activeTab?.cwd ?? null,
@@ -439,15 +468,6 @@ export function TerminalDock({
     return null;
   }
 
-  if (!isTerminalBridgeAvailable()) {
-    return (
-      <section className="terminal-panel" style={{ height }}>
-        <TerminalDockHeader onNewTerminal={handleNewTerminal} onToggleOpen={onToggleOpen} tabs={[]} />
-        <div className="terminal-empty">终端仅在桌面版可用。</div>
-      </section>
-    );
-  }
-
   return (
     <section className="terminal-panel" style={{ height }}>
       <div
@@ -458,44 +478,65 @@ export function TerminalDock({
         onMouseDown={handleResizeStart}
       />
       <TerminalDockHeader
+        activePanelId={activePanelId}
+        extraPanels={extraPanels}
         activeTerminalTabId={activeTerminalTabId}
+        terminalAvailable={terminalAvailable}
         onCloseTab={handleCloseTab}
         onNewTerminal={handleNewTerminal}
-        onSelectTab={setActiveTerminalTabId}
+        onSelectExtraPanel={onActivePanelChange}
+        onSelectTab={(tabId) => {
+          onActivePanelChange?.('terminal');
+          setActiveTerminalTabId(tabId);
+        }}
         onToggleOpen={onToggleOpen}
         tabs={terminalTabs}
       />
       <div className="terminal-body">
-        <div className="terminal-surface">
-          {activeTab ? (
-            <XtermSurface
-              terminalTabId={activeTab.id}
-              cwd={activeTab.cwd}
-              initialContent={outputBuffersRef.current[activeTab.id] ?? ''}
-              commandRequest={commandRequestsByTabId[activeTab.id] ?? null}
-              onData={handleBufferData}
-              onCommandHandled={(requestId) => handleCommandRequestHandled(activeTab.id, requestId)}
-            />
-          ) : (
-            <div className="terminal-empty">点击 + 创建一个终端。</div>
-          )}
-        </div>
+        {bodyKind === 'extra' && activeExtraPanel ? (
+          <div className="terminal-extra-panel">{activeExtraPanel.content}</div>
+        ) : bodyKind === 'unavailable' ? (
+          <div className="terminal-empty">终端仅在桌面版可用。</div>
+        ) : (
+          <div className="terminal-surface">
+            {activeTab ? (
+              <XtermSurface
+                terminalTabId={activeTab.id}
+                cwd={activeTab.cwd}
+                initialContent={outputBuffersRef.current[activeTab.id] ?? ''}
+                commandRequest={commandRequestsByTabId[activeTab.id] ?? null}
+                onData={handleBufferData}
+                onCommandHandled={(requestId) => handleCommandRequestHandled(activeTab.id, requestId)}
+              />
+            ) : (
+              <div className="terminal-empty">点击 + 创建一个终端。</div>
+            )}
+          </div>
+        )}
       </div>
     </section>
   );
 }
 
 function TerminalDockHeader({
+  activePanelId,
+  extraPanels,
   activeTerminalTabId,
+  terminalAvailable,
   tabs,
   onSelectTab,
+  onSelectExtraPanel,
   onCloseTab,
   onNewTerminal,
   onToggleOpen,
 }: {
+  activePanelId?: string | null;
+  extraPanels?: DockExtraPanel[];
   activeTerminalTabId?: string | null;
+  terminalAvailable?: boolean;
   tabs: DockTerminalTab[];
   onSelectTab?: (tabId: string) => void;
+  onSelectExtraPanel?: (panelId: string) => void;
   onCloseTab?: (tabId: string) => void;
   onNewTerminal: () => void;
   onToggleOpen: () => void;
@@ -503,8 +544,25 @@ function TerminalDockHeader({
   return (
     <div className="terminal-header">
       <div className="terminal-tabs" role="tablist" aria-label="终端标签">
+        {(extraPanels ?? []).map((panel) => {
+          const isActive = activePanelId === panel.id;
+          return (
+            <button
+              key={panel.id}
+              className={`terminal-tab dock-panel-tab${isActive ? ' active' : ''}`}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              onClick={() => onSelectExtraPanel?.(panel.id)}
+              title={panel.title}
+            >
+              {panel.icon}
+              <span className="terminal-tab-label">{panel.title}</span>
+            </button>
+          );
+        })}
         {tabs.map((tab) => {
-          const isActive = tab.id === activeTerminalTabId;
+          const isActive = (activePanelId ?? 'terminal') === 'terminal' && tab.id === activeTerminalTabId;
           return (
             <button
               key={tab.id}
@@ -531,15 +589,17 @@ function TerminalDockHeader({
             </button>
           );
         })}
-        <button
-          className="terminal-tab-add"
-          type="button"
-          onClick={onNewTerminal}
-          aria-label="新建终端"
-          title="新建终端"
-        >
-          <Plus size={17} />
-        </button>
+        {terminalAvailable ? (
+          <button
+            className="terminal-tab-add"
+            type="button"
+            onClick={onNewTerminal}
+            aria-label="新建终端"
+            title="新建终端"
+          >
+            <Plus size={17} />
+          </button>
+        ) : null}
       </div>
       <button
         type="button"

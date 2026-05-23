@@ -447,6 +447,84 @@ export type GitDiffSummary = {
 export type GitBranchSummary = {
   name: string;
   current: boolean;
+  kind?: 'local' | 'remote' | 'tag';
+  isRemote?: boolean;
+  remoteName?: string | null;
+  localName?: string | null;
+  upstream?: string | null;
+};
+
+export type GitHistoryCommit = {
+  sha: string;
+  shortSha: string;
+  summary: string;
+  author: string;
+  commitTime: number;
+  message?: string;
+  authorEmail?: string;
+  parents?: string[];
+  refs?: string[];
+  graph?: GitHistoryGraphRow;
+};
+
+export type GitHistoryGraphLaneSegment = {
+  lane: number;
+  fromLane?: number;
+  colorIndex: number;
+  kind: 'vertical' | 'start' | 'end' | 'merge-left' | 'merge-right' | 'shift-left' | 'shift-right';
+};
+
+export type GitHistoryGraphRow = {
+  lane: number;
+  colorIndex: number;
+  segmentsBefore: GitHistoryGraphLaneSegment[];
+  segmentsAfter: GitHistoryGraphLaneSegment[];
+};
+
+export type GitHistoryLogCommit = {
+  sha: string;
+  shortSha: string;
+  summary: string;
+  message: string;
+  author: string;
+  authorEmail: string;
+  commitTime: number;
+  parents: string[];
+  refs: string[];
+  graphText: string;
+  graph: GitHistoryGraphRow;
+};
+
+export type GitHistoryLogResponse = {
+  commits: GitHistoryLogCommit[];
+  limit: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+  availableAuthors: string[];
+  activeRefs: string[];
+};
+
+export type GitHistoryCommitFile = {
+  path: string;
+  originalPath?: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+};
+
+export type GitHistoryCommitDetails = GitHistoryCommit & {
+  message: string;
+  files: GitHistoryCommitFile[];
+  totalAdditions: number;
+  totalDeletions: number;
+};
+
+export type GitBranchCompareResult = {
+  branch: string;
+  compareBranch: string;
+  targetOnlyCommits: GitHistoryCommit[];
+  currentOnlyCommits: GitHistoryCommit[];
 };
 
 export type GitWorktreeInfo = {
@@ -556,6 +634,19 @@ export type GitFileDiffPreview = {
   content: string;
   beforeContent?: string;
   afterContent?: string;
+};
+
+export type GitCommitFilePreview = {
+  sha: string;
+  path: string;
+  originalPath?: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  content: string;
+  beforeContent: string;
+  afterContent: string;
 };
 
 export type GitCommitResult = {

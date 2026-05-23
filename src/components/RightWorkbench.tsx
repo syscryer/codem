@@ -27,6 +27,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProper
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
+import { MemoGitDiffViewer } from './GitDiffViewer';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { fetchWorkspaceFilePreview } from '../lib/file-preview-api';
 import { commitGitChanges, fetchGitFileDiff, fetchGitPushPreview, fetchGitStatus, pushGitBranch } from '../lib/git-api';
@@ -995,6 +996,10 @@ function PreviewPane({
   const activeDiffView = activeTab ? diffViewByKey[activeTab.key] ?? 'split' : 'split';
   const showDiffViewToggle = Boolean(activeTab && activeContent?.mode === 'git-diff');
   const showFullDiffToggle = Boolean(activeContent?.beforeContent !== undefined || activeContent?.afterContent !== undefined);
+  const activeDiffStats = useMemo(
+    () => activeContent?.mode === 'git-diff' ? readGitDiffStats(activeContent.content) : null,
+    [activeContent],
+  );
 
   return (
     <main className="workbench-preview-pane">
@@ -1047,6 +1052,13 @@ function PreviewPane({
           })}
         </div>
         <div className="workbench-preview-head-actions">
+          {activeDiffStats ? (
+            <span className="git-history-diff-stats workbench-diff-stats">
+              <span className="git-diff-add">+{activeDiffStats.additions}</span>
+              <span className="git-history-diff-sep">/</span>
+              <span className="git-diff-del">-{activeDiffStats.deletions}</span>
+            </span>
+          ) : null}
           {showDiffViewToggle && activeDiffView === 'unified' ? (
             <div className="workbench-diff-view-toggle" role="tablist" aria-label="对比视图">
               <button
@@ -1309,7 +1321,7 @@ function PreviewContentPanel({
       ) : content?.error ? (
         <WorkbenchEmpty icon={<FileText size={24} />} title="预览失败" description={content.error} />
       ) : content?.mode === 'git-diff' ? (
-        <MemoGitDiffPreview
+        <MemoGitDiffViewer
           content={content.content}
           beforeContent={content.beforeContent}
           afterContent={content.afterContent}
@@ -2385,7 +2397,7 @@ const MemoWorkbenchOverview = memo(WorkbenchOverview);
 const MemoWorkbenchFiles = memo(WorkbenchFiles);
 const MemoWorkbenchBrowserShell = memo(WorkbenchBrowserShell);
 
-function GitDiffPreview({
+export function GitDiffPreview({
   content,
   beforeContent,
   afterContent,
@@ -2786,8 +2798,6 @@ function GitDiffPreview({
   );
 }
 
-const MemoGitDiffPreview = memo(GitDiffPreview);
-
 function GitSplitDiffPaneRow({
   row,
   side,
@@ -2888,6 +2898,22 @@ function renderDiffCodeLineContent(line: string, filePath: string) {
       {segment.text || ' '}
     </span>
   ));
+}
+
+function readGitDiffStats(content: string) {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of content.split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) {
+      continue;
+    }
+    if (line.startsWith('+')) {
+      additions += 1;
+    } else if (line.startsWith('-')) {
+      deletions += 1;
+    }
+  }
+  return { additions, deletions };
 }
 
 function InfoTile({ label, value }: { label: string; value: string }) {

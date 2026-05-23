@@ -1,5 +1,5 @@
 import { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ListChecks } from 'lucide-react';
+import { GitCommitHorizontal, ListChecks } from 'lucide-react';
 import { AppMenubar } from './components/AppMenubar';
 import { ChatHeader } from './components/ChatHeader';
 import { CloneRepositoryDialog } from './components/CloneRepositoryDialog';
@@ -7,6 +7,7 @@ import { Composer } from './components/Composer';
 import { ConversationPane } from './components/ConversationPane';
 import { Dialogs } from './components/Dialogs';
 import { GitDialog } from './components/GitDialog';
+import { GitHistoryPanel } from './components/GitHistoryPanel';
 import { RightWorkbench } from './components/RightWorkbench';
 import { SidebarProjects } from './components/SidebarProjects';
 import { SettingsView } from './components/settings/SettingsView';
@@ -31,6 +32,7 @@ import { modelLabel, permissionLabel } from './lib/ui-labels';
 import { isTauriRuntime, setWindowMaterial } from './lib/window-material';
 import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
 import { fetchGitRemote, pullGitBranch, undoConversationChanges } from './lib/git-api';
+import { shouldRenderTerminalDock } from './lib/terminal-dock-state';
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -150,6 +152,34 @@ export default function App() {
   const terminalDock = useTerminalDockState();
   const terminalDockAvailable = isTauriRuntime();
   const [terminalRunRequest, setTerminalRunRequest] = useState<TerminalRunRequest | null>(null);
+  const [dockActivePanelId, setDockActivePanelId] = useState<'terminal' | 'git-history'>('terminal');
+  const dockExtraPanels = useMemo(
+    () => (activeProject?.isGitRepo
+      ? [
+          {
+            id: 'git-history' as const,
+            title: 'Git 日志',
+            icon: <GitCommitHorizontal size={14} />,
+            content: (
+              <GitHistoryPanel
+                project={activeProject}
+                onClose={terminalDock.toggle}
+                onLoadBranches={loadProjectGitBranches}
+                onSwitchBranch={switchProjectGitBranch}
+                onWorkspaceChanged={() => loadWorkspace()}
+                showToast={showToast}
+              />
+            ),
+          },
+        ]
+      : []),
+    [activeProject, loadProjectGitBranches, loadWorkspace, showToast, switchProjectGitBranch, terminalDock.toggle],
+  );
+  const shouldShowDock = shouldRenderTerminalDock({
+    isOpen: terminalDock.open,
+    terminalAvailable: terminalDockAvailable,
+    extraPanelIds: dockExtraPanels.map((panel) => panel.id),
+  });
   const {
     general,
     appearance,
@@ -164,6 +194,12 @@ export default function App() {
     updateShortcuts,
     updateOpenWith,
   } = useAppSettings(showToast);
+
+  useEffect(() => {
+    if (!activeProject?.isGitRepo && dockActivePanelId === 'git-history') {
+      setDockActivePanelId('terminal');
+    }
+  }, [activeProject?.isGitRepo, dockActivePanelId]);
   const wasRunningRef = useRef(false);
   const materialErrorShownRef = useRef(false);
   const {
@@ -657,6 +693,15 @@ export default function App() {
     }
   }
 
+  function openGitHistoryDock() {
+    if (!activeProject?.isGitRepo) {
+      showToast('请先选择 Git 项目。', 'info');
+      return;
+    }
+    terminalDock.openDock();
+    setDockActivePanelId('git-history');
+  }
+
   function openFilesWorkbench() {
     setRightWorkbenchOpen(true);
     setRightWorkbenchTab('files');
@@ -942,6 +987,7 @@ export default function App() {
                 onOpenGitCommit={() => activeProject ? setGitDialogMode('commit') : showToast('请先选择项目。', 'info')}
                 onOpenGitPush={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
                 onOpenGitBranch={() => activeProject ? setGitDialogMode('branch') : showToast('请先选择项目。', 'info')}
+                onOpenGitHistory={openGitHistoryDock}
                 onGitFetch={() => void handleGitFetch()}
                 onGitPull={() => void handleGitPull()}
                 terminalDockOpen={terminalDock.open}
@@ -1015,12 +1061,15 @@ export default function App() {
                 onCreateWorktree={(project) => setWorktreeCreateProject(project)}
               />
 
-              {terminalDockAvailable ? (
+              {shouldShowDock ? (
                 <TerminalDock
                   isOpen={terminalDock.open}
                   onToggleOpen={terminalDock.toggle}
                   defaultWorkspace={activeProject}
                   runRequest={terminalRunRequest}
+                  activePanelId={dockActivePanelId}
+                  onActivePanelChange={(panelId) => setDockActivePanelId(panelId === 'git-history' ? 'git-history' : 'terminal')}
+                  extraPanels={dockExtraPanels}
                 />
               ) : null}
             </main>

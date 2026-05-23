@@ -35,6 +35,7 @@ type ChatHeaderProps = {
   onOpenGitCommit: () => void;
   onOpenGitPush: () => void;
   onOpenGitBranch: () => void;
+  onOpenGitHistory: () => void;
   onGitFetch: () => void;
   onGitPull: () => void;
   terminalDockOpen: boolean;
@@ -58,6 +59,7 @@ export function ChatHeader({
   onOpenGitCommit,
   onOpenGitPush,
   onOpenGitBranch,
+  onOpenGitHistory,
   onGitFetch,
   onGitPull,
   terminalDockOpen,
@@ -102,6 +104,7 @@ export function ChatHeader({
           onOpenCommit={onOpenGitCommit}
           onOpenPush={onOpenGitPush}
           onOpenBranch={onOpenGitBranch}
+          onOpenHistory={onOpenGitHistory}
           onFetch={onGitFetch}
           onPull={onGitPull}
         />
@@ -283,6 +286,7 @@ function GitActionMenu({
   onOpenCommit,
   onOpenPush,
   onOpenBranch,
+  onOpenHistory,
   onFetch,
   onPull,
 }: {
@@ -290,6 +294,7 @@ function GitActionMenu({
   onOpenCommit: () => void;
   onOpenPush: () => void;
   onOpenBranch: () => void;
+  onOpenHistory: () => void;
   onFetch: () => void;
   onPull: () => void;
 }) {
@@ -347,6 +352,10 @@ function GitActionMenu({
           <button type="button" className="workspace-menu-item" role="menuitem" onClick={() => select(onOpenBranch)}>
             <GitBranchPlus size={17} />
             <span>创建分支</span>
+          </button>
+          <button type="button" className="workspace-menu-item" role="menuitem" onClick={() => select(onOpenHistory)}>
+            <GitPullRequest size={17} />
+            <span>Git 日志</span>
           </button>
         </div>
       </PopoverPortal>

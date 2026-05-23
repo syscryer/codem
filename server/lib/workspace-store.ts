@@ -174,6 +174,97 @@ export type GitDiffSummary = {
 export type GitBranchSummary = {
   name: string;
   current: boolean;
+  kind?: 'local' | 'remote' | 'tag';
+  isRemote?: boolean;
+  remoteName?: string | null;
+  localName?: string | null;
+  upstream?: string | null;
+};
+
+export type GitHistoryCommit = {
+  sha: string;
+  shortSha: string;
+  summary: string;
+  author: string;
+  commitTime: number;
+  message?: string;
+  authorEmail?: string;
+  parents?: string[];
+  refs?: string[];
+  graph?: GitHistoryGraphRow;
+};
+
+export type GitHistoryGraphLaneSegment = {
+  lane: number;
+  fromLane?: number;
+  colorIndex: number;
+  kind: 'vertical' | 'start' | 'end' | 'merge-left' | 'merge-right' | 'shift-left' | 'shift-right';
+};
+
+export type GitHistoryGraphRow = {
+  lane: number;
+  colorIndex: number;
+  segmentsBefore: GitHistoryGraphLaneSegment[];
+  segmentsAfter: GitHistoryGraphLaneSegment[];
+};
+
+export type GitHistoryLogCommit = {
+  sha: string;
+  shortSha: string;
+  summary: string;
+  message: string;
+  author: string;
+  authorEmail: string;
+  commitTime: number;
+  parents: string[];
+  refs: string[];
+  graphText: string;
+  graph: GitHistoryGraphRow;
+};
+
+export type GitHistoryLogResponse = {
+  commits: GitHistoryLogCommit[];
+  limit: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+  availableAuthors: string[];
+  activeRefs: string[];
+};
+
+export type GitHistoryCommitFile = {
+  path: string;
+  originalPath?: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+};
+
+export type GitHistoryCommitDetails = GitHistoryCommit & {
+  message: string;
+  files: GitHistoryCommitFile[];
+  totalAdditions: number;
+  totalDeletions: number;
+};
+
+export type GitBranchCompareResult = {
+  branch: string;
+  compareBranch: string;
+  targetOnlyCommits: GitHistoryCommit[];
+  currentOnlyCommits: GitHistoryCommit[];
+};
+
+export type GitCommitFilePreview = {
+  sha: string;
+  path: string;
+  originalPath?: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  content: string;
+  beforeContent: string;
+  afterContent: string;
 };
 
 export type GitWorktreeInfo = {
@@ -1076,33 +1167,74 @@ export async function listProjectGitBranches(projectId: string): Promise<GitBran
     return [];
   }
 
-  const result = await runGitCommand(projectPath, ['branch', '--list', '--format=%(refname:short)']);
-  if (result.status !== 0) {
-    throw new Error(normalizeGitCommandError(result, '读取分支列表失败'));
-  }
-
   const currentBranch = gitInfo.branch?.trim();
-  const listedBranches = result.stdout
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+  const localBranches = await readGitBranchRefs(projectPath, 'refs/heads');
+  const remoteBranches = await readGitBranchRefs(projectPath, 'refs/remotes');
+  const tagBranches = await readGitTagRefs(projectPath);
   const seen = new Set<string>();
   const branches: GitBranchSummary[] = [];
 
-  if (currentBranch && !listedBranches.includes(currentBranch)) {
-    branches.push({ name: currentBranch, current: true });
+  if (currentBranch && !localBranches.some((branch) => branch.name === currentBranch)) {
+    branches.push({
+      name: currentBranch,
+      current: true,
+      kind: 'local',
+      isRemote: false,
+      remoteName: null,
+      localName: currentBranch,
+      upstream: null,
+    });
     seen.add(currentBranch);
   }
 
-  for (const branchName of listedBranches) {
-    if (seen.has(branchName)) {
+  for (const branch of localBranches) {
+    if (seen.has(branch.name)) {
       continue;
     }
 
-    seen.add(branchName);
+    seen.add(branch.name);
     branches.push({
-      name: branchName,
-      current: branchName === currentBranch,
+      name: branch.name,
+      current: branch.name === currentBranch,
+      kind: 'local',
+      isRemote: false,
+      remoteName: null,
+      localName: branch.name,
+      upstream: branch.upstream,
+    });
+  }
+
+  for (const branch of remoteBranches) {
+    if (branch.name.endsWith('/HEAD') || seen.has(branch.name)) {
+      continue;
+    }
+
+    seen.add(branch.name);
+    branches.push({
+      name: branch.name,
+      current: false,
+      kind: 'remote',
+      isRemote: true,
+      remoteName: branch.remoteName,
+      localName: branch.localName,
+      upstream: branch.upstream,
+    });
+  }
+
+  for (const branch of tagBranches) {
+    if (seen.has(branch.name)) {
+      continue;
+    }
+
+    seen.add(branch.name);
+    branches.push({
+      name: branch.name,
+      current: false,
+      kind: 'tag',
+      isRemote: false,
+      remoteName: null,
+      localName: null,
+      upstream: null,
     });
   }
 
@@ -1125,9 +1257,35 @@ export async function switchProjectGitBranch(projectId: string, branchName: stri
     return getProjectGitSummary(projectId);
   }
 
-  let switchResult = await runGitCommand(projectPath, ['switch', targetBranch]);
-  if (shouldFallbackToGitCheckout(switchResult)) {
-    switchResult = await runGitCommand(projectPath, ['checkout', targetBranch]);
+  const localBranches = await readGitLocalBranchNames(projectPath);
+  const remoteBranches = await readGitRemoteBranchNames(projectPath);
+  const trackingLocalName = deriveTrackingLocalBranchName(targetBranch);
+  let switchResult: GitCommandResult;
+
+  if (localBranches.includes(targetBranch)) {
+    switchResult = await runGitCommand(projectPath, ['switch', targetBranch]);
+  } else if (remoteBranches.includes(targetBranch)) {
+    if (trackingLocalName && localBranches.includes(trackingLocalName)) {
+      switchResult = await runGitCommand(projectPath, ['switch', trackingLocalName]);
+    } else if (trackingLocalName) {
+      switchResult = await runGitCommand(projectPath, ['switch', '--track', '-c', trackingLocalName, targetBranch]);
+    } else {
+      switchResult = await runGitCommand(projectPath, ['switch', '--detach', targetBranch]);
+    }
+  } else {
+    switchResult = await runGitCommand(projectPath, ['switch', targetBranch]);
+  }
+
+  if (switchResult.status !== 0 && shouldFallbackToGitCheckout(switchResult)) {
+    if (localBranches.includes(targetBranch)) {
+      switchResult = await runGitCommand(projectPath, ['checkout', targetBranch]);
+    } else if (remoteBranches.includes(targetBranch) && trackingLocalName) {
+      switchResult = localBranches.includes(trackingLocalName)
+        ? await runGitCommand(projectPath, ['checkout', trackingLocalName])
+        : await runGitCommand(projectPath, ['checkout', '-b', trackingLocalName, '--track', targetBranch]);
+    } else {
+      switchResult = await runGitCommand(projectPath, ['checkout', targetBranch]);
+    }
   }
 
   if (switchResult.status !== 0) {
@@ -1137,18 +1295,19 @@ export async function switchProjectGitBranch(projectId: string, branchName: stri
   return getProjectGitSummary(projectId);
 }
 
-export async function createProjectGitBranch(projectId: string, branchName: string) {
+export async function createProjectGitBranch(projectId: string, branchName: string, sourceRef?: string) {
   const projectPath = readProjectPath(projectId);
   const targetBranch = branchName.trim();
+  const targetSourceRef = sourceRef?.trim() || 'HEAD';
   if (!targetBranch) {
     throw new Error('branch 不能为空');
   }
 
   await ensureGitRepository(projectPath);
 
-  let createResult = await runGitCommand(projectPath, ['switch', '-c', targetBranch]);
+  let createResult = await runGitCommand(projectPath, ['switch', '-c', targetBranch, targetSourceRef]);
   if (shouldFallbackToGitCheckout(createResult)) {
-    createResult = await runGitCommand(projectPath, ['checkout', '-b', targetBranch]);
+    createResult = await runGitCommand(projectPath, ['checkout', '-b', targetBranch, targetSourceRef]);
   }
 
   if (createResult.status !== 0) {
@@ -1307,6 +1466,173 @@ export async function getProjectGitFileDiff(projectId: string, filePath: string)
     content: diff || '当前文件没有可显示的差异。',
     beforeContent: await readGitRevisionTextFileWithOptions(projectPath, 'HEAD', safePath, { allowLarge: true }),
     afterContent: fileStatus?.deleted ? '' : readWorkspaceTextFileIfExistsWithOptions(projectPath, safePath, { allowLarge: true }),
+  };
+}
+
+export async function listProjectGitHistory(
+  projectId: string,
+  options?: {
+    ref?: string;
+    limit?: number;
+  },
+): Promise<GitHistoryCommit[]> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const targetRef = options?.ref?.trim() || 'HEAD';
+  const limit = Math.max(1, Math.min(200, options?.limit ?? 120));
+  return readGitHistoryCommits(projectPath, [targetRef], limit);
+}
+
+export async function listProjectGitHistoryLog(
+  projectId: string,
+  options?: {
+    refs?: string[];
+    authors?: string[];
+    dateFrom?: string;
+    dateTo?: string;
+    paths?: string[];
+    search?: string;
+    limit?: number;
+    cursor?: string | null;
+  },
+): Promise<GitHistoryLogResponse> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+
+  const refs = normalizeLogFilterList(options?.refs);
+  const authors = normalizeLogFilterList(options?.authors);
+  const paths = normalizeLogFilterList(options?.paths);
+  const limit = Math.max(1, Math.min(200, options?.limit ?? 80));
+  const skip = decodeGitHistoryCursor(options?.cursor);
+  const entries = await readGitHistoryLogEntries(projectPath, {
+    refs,
+    authors,
+    dateFrom: normalizeOptionalText(options?.dateFrom),
+    dateTo: normalizeOptionalText(options?.dateTo),
+    paths,
+    search: normalizeOptionalText(options?.search),
+    limit: limit + 1,
+    skip,
+  });
+  const hasMore = entries.length > limit;
+  const pageEntries = hasMore ? entries.slice(0, limit) : entries;
+  const commits = buildGitHistoryGraphRows(pageEntries);
+
+  return {
+    commits,
+    limit,
+    hasMore,
+    nextCursor: hasMore ? encodeGitHistoryCursor(skip + limit) : null,
+    availableAuthors: Array.from(new Set(commits.map((commit) => commit.author).filter(Boolean))),
+    activeRefs: refs,
+  };
+}
+
+export async function compareProjectGitBranches(
+  projectId: string,
+  branchName: string,
+  compareBranchName: string,
+): Promise<GitBranchCompareResult> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const branch = branchName.trim();
+  const compareBranch = compareBranchName.trim();
+  if (!branch) {
+    throw new Error('targetBranch 不能为空');
+  }
+  if (!compareBranch) {
+    throw new Error('compareBranch 不能为空');
+  }
+
+  return {
+    branch,
+    compareBranch,
+    targetOnlyCommits: await readGitHistoryCommits(projectPath, [`${compareBranch}..${branch}`], 120),
+    currentOnlyCommits: await readGitHistoryCommits(projectPath, [`${branch}..${compareBranch}`], 120),
+  };
+}
+
+export async function getProjectGitCommitDetails(projectId: string, commitSha: string): Promise<GitHistoryCommitDetails> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const sha = commitSha.trim();
+  if (!sha) {
+    throw new Error('commitSha 不能为空');
+  }
+
+  const summaryResult = await runGitCommand(projectPath, [
+    'show',
+    '-s',
+    '--format=%H%x1f%h%x1f%an%x1f%at%x1f%s%x1f%B%x1e',
+    sha,
+  ]);
+  if (summaryResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(summaryResult, '读取提交详情失败'));
+  }
+
+  const commit = parseGitHistoryCommitDetails(summaryResult.stdout);
+  if (!commit) {
+    throw new Error('提交详情为空');
+  }
+
+  const fileEntries = await readGitCommitFiles(projectPath, sha);
+  return {
+    ...commit,
+    files: fileEntries,
+    totalAdditions: fileEntries.reduce((sum, file) => sum + file.additions, 0),
+    totalDeletions: fileEntries.reduce((sum, file) => sum + file.deletions, 0),
+  };
+}
+
+export async function getProjectGitCommitFilePreview(
+  projectId: string,
+  commitSha: string,
+  filePath: string,
+): Promise<GitCommitFilePreview> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const sha = commitSha.trim();
+  const safePath = normalizeProjectRelativePath(projectPath, filePath);
+  if (!sha) {
+    throw new Error('commitSha 不能为空');
+  }
+
+  const details = await getProjectGitCommitDetails(projectId, sha);
+  const file = details.files.find((entry) => entry.path === safePath);
+  if (!file) {
+    throw new Error(`提交 ${sha} 中不存在文件：${safePath}`);
+  }
+
+  const parentSha = await readGitFirstParent(projectPath, sha);
+  const beforePath = file.originalPath ?? file.path;
+  const diffResult = await runGitCommand(
+    projectPath,
+    parentSha
+      ? ['diff', '--find-renames', parentSha, sha, '--', ...buildGitPreviewPathspecs(file)]
+      : ['show', '--format=', '--find-renames', sha, '--', ...buildGitPreviewPathspecs(file)],
+  );
+  if (diffResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(diffResult, '读取提交文件预览失败'));
+  }
+
+  const beforeContent = parentSha
+    ? await readGitRevisionTextFileWithOptions(projectPath, parentSha, beforePath, { allowLarge: true })
+    : '';
+  const afterContent = file.status === '删除'
+    ? ''
+    : await readGitRevisionTextFileWithOptions(projectPath, sha, file.path, { allowLarge: true });
+
+  return {
+    sha,
+    path: file.path,
+    originalPath: file.originalPath,
+    status: file.status,
+    additions: file.additions,
+    deletions: file.deletions,
+    binary: file.binary,
+    content: diffResult.stdout.trimEnd() || '当前没有可显示的改动。',
+    beforeContent,
+    afterContent,
   };
 }
 
@@ -2944,6 +3270,71 @@ function parseGitStatus(output: string, projectPath: string, repositoryRoot: str
   };
 }
 
+async function readGitBranchRefs(projectPath: string, refPrefix: 'refs/heads' | 'refs/remotes') {
+  const result = await runGitCommand(projectPath, [
+    'for-each-ref',
+    refPrefix,
+    '--format=%(refname:short)\t%(upstream:short)\t%(HEAD)',
+  ]);
+  if (result.status !== 0) {
+    throw new Error(normalizeGitCommandError(result, '读取分支列表失败'));
+  }
+
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [name = '', upstream = '', head = ''] = line.split('\t');
+      const remoteName = refPrefix === 'refs/remotes' && name.includes('/') ? name.split('/')[0] : null;
+      const localName = refPrefix === 'refs/remotes' && name.includes('/') ? name.split('/').slice(1).join('/') : name;
+      return {
+        name,
+        upstream: upstream || null,
+        current: head.trim() === '*',
+        remoteName,
+        localName,
+      };
+    });
+}
+
+async function readGitTagRefs(projectPath: string) {
+  const result = await runGitCommand(projectPath, [
+    'for-each-ref',
+    'refs/tags',
+    '--format=%(refname:short)',
+  ]);
+  if (result.status !== 0) {
+    throw new Error(normalizeGitCommandError(result, '读取标签列表失败'));
+  }
+
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((name) => ({ name }));
+}
+
+async function readGitLocalBranchNames(projectPath: string) {
+  const branches = await readGitBranchRefs(projectPath, 'refs/heads');
+  return branches.map((branch) => branch.name);
+}
+
+async function readGitRemoteBranchNames(projectPath: string) {
+  const branches = await readGitBranchRefs(projectPath, 'refs/remotes');
+  return branches.map((branch) => branch.name);
+}
+
+function deriveTrackingLocalBranchName(branchName: string) {
+  const trimmed = branchName.trim();
+  if (!trimmed.includes('/')) {
+    return trimmed;
+  }
+
+  const segments = trimmed.split('/').filter(Boolean);
+  return segments.length > 1 ? segments.slice(1).join('/') : trimmed;
+}
+
 function normalizeGitStatusFilePath(
   file: GitFileStatus | null,
   projectPath: string,
@@ -3061,6 +3452,24 @@ function normalizeGitRelativePath(filePath: string) {
       : trimmedPath;
 
   return decodedPath.replace(/\\/g, '/').trim();
+}
+
+function buildGitNameStatusLabel(rawStatus: string) {
+  const statusCode = rawStatus.trim()[0] ?? '';
+  switch (statusCode) {
+    case 'A':
+      return '新增';
+    case 'D':
+      return '删除';
+    case 'R':
+      return '重命名';
+    case 'M':
+      return '修改';
+    case 'C':
+      return '复制';
+    default:
+      return '变更';
+  }
 }
 
 function relativizeGitPathToProject(projectPath: string, repositoryRoot: string, filePath: string) {
@@ -3375,6 +3784,470 @@ async function readGitRevisionTextFileWithOptions(
 
 function normalizePreviewText(value: string) {
   return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+async function readGitHistoryCommits(projectPath: string, refs: string[], limit: number) {
+  const result = await runGitCommand(projectPath, [
+    'log',
+    '--topo-order',
+    `-n${limit}`,
+    '--format=%H%x1f%h%x1f%an%x1f%at%x1f%s%x1e',
+    ...refs,
+  ]);
+  if (result.status !== 0) {
+    const message = normalizeGitCommandError(result, '读取 Git 历史失败');
+    if (/does not have any commits yet|unknown revision|bad revision/i.test(message)) {
+      return [];
+    }
+    throw new Error(message);
+  }
+
+  return parseGitHistoryCommits(result.stdout);
+}
+
+type ReadGitHistoryLogEntriesOptions = {
+  refs: string[];
+  authors: string[];
+  dateFrom?: string;
+  dateTo?: string;
+  paths: string[];
+  search?: string;
+  limit: number;
+  skip: number;
+};
+
+type RawGitHistoryLogEntry = {
+  sha: string;
+  shortSha: string;
+  summary: string;
+  message: string;
+  author: string;
+  authorEmail: string;
+  commitTime: number;
+  parents: string[];
+  refs: string[];
+  graphText: string;
+};
+
+async function readGitHistoryLogEntries(projectPath: string, options: ReadGitHistoryLogEntriesOptions): Promise<RawGitHistoryLogEntry[]> {
+  const refs = options.refs.length > 0 ? options.refs : ['HEAD'];
+  const args = [
+    'log',
+    '--graph',
+    '--topo-order',
+    '--decorate=short',
+    `--skip=${options.skip}`,
+    `-n${Math.max(options.limit, 1)}`,
+    '--format=%x1f%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%s%x1f%s%x1f%P%x1f%D%x1e',
+  ];
+
+  if (options.dateFrom) {
+    args.push(`--since=${options.dateFrom}`);
+  }
+  if (options.dateTo) {
+    args.push(`--until=${options.dateTo}`);
+  }
+  if (options.authors.length > 0) {
+    args.push(`--author=${options.authors.map(escapeGitLogRegex).join('|')}`);
+  }
+  if (options.search && !looksLikeGitSha(options.search)) {
+    args.push(`--grep=${options.search}`);
+  }
+
+  args.push(...refs);
+  if (options.paths.length > 0) {
+    args.push('--', ...options.paths);
+  }
+
+  const result = await runGitCommand(projectPath, args);
+  if (result.status !== 0) {
+    const message = normalizeGitCommandError(result, '读取 Git 日志失败');
+    if (/does not have any commits yet|unknown revision|bad revision/i.test(message)) {
+      return [];
+    }
+    throw new Error(message);
+  }
+
+  return parseGitHistoryLogEntries(result.stdout).filter((entry) => matchesGitHistorySearch(entry, options.search));
+}
+
+function parseGitHistoryCommits(output: string): GitHistoryCommit[] {
+  return output
+    .split('\x1e')
+    .map((record) => record.trim())
+    .filter(Boolean)
+    .map((record) => {
+      const [sha = '', shortSha = '', author = '', commitTime = '0', summary = ''] = record.split('\x1f');
+      return {
+        sha,
+        shortSha,
+        author,
+        commitTime: Number.parseInt(commitTime, 10) || 0,
+        summary,
+      } satisfies GitHistoryCommit;
+    })
+    .filter((commit) => Boolean(commit.sha));
+}
+
+function parseGitHistoryLogEntries(output: string): RawGitHistoryLogEntry[] {
+  return output
+    .split('\x1e')
+    .map((record) => record.replace(/^\r?\n/, '').replace(/\r?\n$/, ''))
+    .filter(Boolean)
+    .map((record) => {
+      const firstSeparatorIndex = record.indexOf('\x1f');
+      const graphText = firstSeparatorIndex >= 0
+        ? normalizeGitGraphText(record.slice(0, firstSeparatorIndex))
+        : '';
+      const payload = firstSeparatorIndex >= 0 ? record.slice(firstSeparatorIndex + 1) : record;
+      const [
+        sha = '',
+        shortSha = '',
+        author = '',
+        authorEmail = '',
+        commitTime = '0',
+        summary = '',
+        message = '',
+        parents = '',
+        refs = '',
+      ] = payload.split('\x1f');
+      return {
+        sha,
+        shortSha,
+        summary,
+        message: message.trim() || summary,
+        author,
+        authorEmail,
+        commitTime: Number.parseInt(commitTime, 10) || 0,
+        parents: parents.split(/\s+/).filter(Boolean),
+        refs: refs
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean),
+        graphText,
+      } satisfies RawGitHistoryLogEntry;
+    })
+    .filter((commit) => Boolean(commit.sha));
+}
+
+function normalizeGitGraphText(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0)
+    .join('\n');
+}
+
+function normalizeLogFilterList(values: string[] | undefined) {
+  return (values ?? []).map((value) => value.trim()).filter(Boolean);
+}
+
+function normalizeOptionalText(value: string | undefined) {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+}
+
+function encodeGitHistoryCursor(skip: number) {
+  return Buffer.from(String(Math.max(skip, 0)), 'utf8').toString('base64url');
+}
+
+function decodeGitHistoryCursor(cursor: string | null | undefined) {
+  if (!cursor) {
+    return 0;
+  }
+  try {
+    const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+    const parsed = Number.parseInt(decoded, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function looksLikeGitSha(value: string) {
+  const trimmed = value.trim();
+  return /^[0-9a-f]{6,40}$/i.test(trimmed);
+}
+
+function escapeGitLogRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function matchesGitHistorySearch(entry: RawGitHistoryLogEntry, search: string | undefined) {
+  const keyword = search?.trim().toLowerCase();
+  if (!keyword) {
+    return true;
+  }
+
+  return [
+    entry.sha,
+    entry.shortSha,
+    entry.summary,
+    entry.message,
+    entry.author,
+    entry.authorEmail,
+    ...entry.refs,
+  ].some((value) => value.toLowerCase().includes(keyword));
+}
+
+function buildGitHistoryGraphRows(commits: RawGitHistoryLogEntry[]): GitHistoryLogCommit[] {
+  const activeLanes: Array<string | null> = [];
+  const activeLaneColors: Array<number | null> = [];
+  let nextColorIndex = 0;
+
+  return commits.map((commit) => {
+    const createSegment = (
+      laneIndex: number,
+      kind: GitHistoryGraphLaneSegment['kind'],
+      segmentColorIndex: number,
+      fromLane?: number,
+    ): GitHistoryGraphLaneSegment => ({
+      lane: laneIndex,
+      fromLane,
+      colorIndex: segmentColorIndex,
+      kind,
+    });
+    let lane = activeLanes.indexOf(commit.sha);
+    if (lane < 0) {
+      lane = findReusableGitGraphLane(activeLanes);
+      if (lane < 0) {
+        lane = activeLanes.length;
+        activeLanes.push(null);
+        activeLaneColors.push(null);
+      }
+      activeLanes[lane] = commit.sha;
+      activeLaneColors[lane] = nextColorIndex % 8;
+      nextColorIndex += 1;
+    }
+
+    const lanesBefore = [...activeLanes];
+    const colorsBefore = [...activeLaneColors];
+    const segmentsBefore = lanesBefore.flatMap((sha, laneIndex) =>
+      sha ? [createSegment(laneIndex, 'vertical', colorsBefore[laneIndex] ?? 0)] : [],
+    );
+    const colorIndex = colorsBefore[lane] ?? 0;
+    const lanesAfter = [...lanesBefore];
+    const colorsAfter = [...colorsBefore];
+    const laneBeforeBySha = new Map(
+      lanesBefore.flatMap((sha, laneIndex) => (sha ? [[sha, laneIndex] as const] : [])),
+    );
+    const leadingSegmentsAfter: GitHistoryGraphLaneSegment[] = [];
+    const mergeSegmentsAfter: GitHistoryGraphLaneSegment[] = [];
+
+    if (commit.parents.length === 0) {
+      leadingSegmentsAfter.push(createSegment(lane, 'end', colorIndex, lane));
+      lanesAfter[lane] = null;
+      colorsAfter[lane] = null;
+    } else {
+      const firstParent = commit.parents[0] ?? commit.sha;
+      const existingFirstParentLane = lanesAfter.indexOf(firstParent);
+      if (existingFirstParentLane >= 0 && existingFirstParentLane !== lane) {
+        leadingSegmentsAfter.push(
+          createSegment(
+            existingFirstParentLane,
+            existingFirstParentLane < lane ? 'merge-left' : 'merge-right',
+            colorIndex,
+            lane,
+          ),
+        );
+        lanesAfter[lane] = null;
+        colorsAfter[lane] = null;
+      } else {
+        lanesAfter[lane] = firstParent;
+        colorsAfter[lane] = colorIndex;
+      }
+      for (const parent of commit.parents.slice(1)) {
+        let parentLane = lanesAfter.indexOf(parent);
+        if (parentLane < 0) {
+          parentLane = findReusableGitGraphLane(lanesAfter, lane + 1);
+          if (parentLane < 0) {
+            parentLane = lanesAfter.length;
+            lanesAfter.push(null);
+            colorsAfter.push(null);
+          }
+          lanesAfter[parentLane] = parent;
+          colorsAfter[parentLane] = nextColorIndex % 8;
+          nextColorIndex += 1;
+        }
+        mergeSegmentsAfter.push(
+          createSegment(parentLane, parentLane < lane ? 'merge-left' : 'merge-right', colorsAfter[parentLane] ?? 0, lane),
+        );
+      }
+    }
+
+    const continuitySegmentsAfter: GitHistoryGraphLaneSegment[] = [];
+    for (let laneIndex = 0; laneIndex < lanesAfter.length; laneIndex += 1) {
+      const laneSha = lanesAfter[laneIndex];
+      if (!laneSha) {
+        continue;
+      }
+      const previousLane = laneBeforeBySha.get(laneSha);
+      if (previousLane === undefined) {
+        continue;
+      }
+      const kind = previousLane === laneIndex
+        ? 'vertical'
+        : previousLane < laneIndex
+          ? 'shift-right'
+          : 'shift-left';
+      continuitySegmentsAfter.push(createSegment(laneIndex, kind, colorsAfter[laneIndex] ?? 0, previousLane));
+    }
+    const segmentsAfter = [...leadingSegmentsAfter, ...continuitySegmentsAfter, ...mergeSegmentsAfter];
+
+    trimTrailingGitGraphLaneGaps(lanesAfter, colorsAfter);
+    activeLanes.splice(0, activeLanes.length, ...lanesAfter);
+    activeLaneColors.splice(0, activeLaneColors.length, ...colorsAfter);
+
+    return {
+      sha: commit.sha,
+      shortSha: commit.shortSha,
+      summary: commit.summary,
+      message: commit.message,
+      author: commit.author,
+      authorEmail: commit.authorEmail,
+      commitTime: commit.commitTime,
+      parents: commit.parents,
+      refs: commit.refs,
+      graphText: commit.graphText,
+      graph: {
+        lane,
+        colorIndex,
+        segmentsBefore,
+        segmentsAfter,
+      },
+    };
+  });
+}
+
+function findReusableGitGraphLane(lanes: Array<string | null>, startIndex = 0) {
+  for (let index = Math.max(0, startIndex); index < lanes.length; index += 1) {
+    if (lanes[index] === null) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function trimTrailingGitGraphLaneGaps(lanes: Array<string | null>, colors: Array<number | null>) {
+  while (lanes.length > 0 && lanes[lanes.length - 1] === null) {
+    lanes.pop();
+    colors.pop();
+  }
+}
+
+function parseGitHistoryCommitDetails(output: string): GitHistoryCommitDetails | null {
+  const record = output.split('\x1e').map((value) => value.trim()).find(Boolean);
+  if (!record) {
+    return null;
+  }
+
+  const parts = record.split('\x1f');
+  const [sha = '', shortSha = '', author = '', commitTime = '0', summary = '', ...messageParts] = parts;
+  return {
+    sha,
+    shortSha,
+    author,
+    commitTime: Number.parseInt(commitTime, 10) || 0,
+    summary,
+    message: messageParts.join('\x1f').trim(),
+    files: [],
+    totalAdditions: 0,
+    totalDeletions: 0,
+  };
+}
+
+async function readGitCommitFiles(projectPath: string, commitSha: string): Promise<GitHistoryCommitFile[]> {
+  const [statusResult, numstatResult] = await Promise.all([
+    runGitCommand(projectPath, ['show', '--format=', '--name-status', '--find-renames', '--find-copies', commitSha]),
+    runGitCommand(projectPath, ['show', '--format=', '--numstat', '--find-renames', '--find-copies', commitSha]),
+  ]);
+  if (statusResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(statusResult, '读取提交文件列表失败'));
+  }
+  if (numstatResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(numstatResult, '读取提交文件统计失败'));
+  }
+
+  const statusEntries = statusResult.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map(parseGitCommitNameStatusLine)
+    .filter((entry): entry is ReturnType<typeof parseGitCommitNameStatusLine> extends infer T ? Exclude<T, null> : never => Boolean(entry));
+  const statEntries = numstatResult.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map(parseGitCommitNumstatLine)
+    .filter((entry): entry is ReturnType<typeof parseGitCommitNumstatLine> extends infer T ? Exclude<T, null> : never => Boolean(entry));
+
+  return statusEntries.map((entry, index) => {
+    const statEntry = statEntries[index];
+    return {
+      path: entry.path,
+      originalPath: entry.originalPath,
+      status: entry.status,
+      additions: statEntry?.additions ?? 0,
+      deletions: statEntry?.deletions ?? 0,
+      binary: statEntry?.binary ?? false,
+    };
+  });
+}
+
+function parseGitCommitNameStatusLine(line: string) {
+  const columns = line.split('\t');
+  if (columns.length < 2) {
+    return null;
+  }
+
+  const rawStatus = columns[0] ?? '';
+  const statusCode = rawStatus[0] ?? '';
+  if (statusCode === 'R' || statusCode === 'C') {
+    return {
+      path: normalizeGitRelativePath(columns[2] ?? ''),
+      originalPath: normalizeGitRelativePath(columns[1] ?? ''),
+      status: buildGitNameStatusLabel(rawStatus),
+    };
+  }
+
+  return {
+    path: normalizeGitRelativePath(columns[1] ?? ''),
+    originalPath: undefined,
+    status: buildGitNameStatusLabel(rawStatus),
+  };
+}
+
+function parseGitCommitNumstatLine(line: string) {
+  const columns = line.split('\t');
+  if (columns.length < 3) {
+    return null;
+  }
+
+  const additionsRaw = columns[0] ?? '0';
+  const deletionsRaw = columns[1] ?? '0';
+  const binary = additionsRaw === '-' || deletionsRaw === '-';
+  return {
+    additions: binary ? 0 : Number.parseInt(additionsRaw, 10) || 0,
+    deletions: binary ? 0 : Number.parseInt(deletionsRaw, 10) || 0,
+    binary,
+  };
+}
+
+async function readGitFirstParent(projectPath: string, commitSha: string) {
+  const result = await runGitCommand(projectPath, ['rev-list', '--parents', '-n', '1', commitSha]);
+  if (result.status !== 0) {
+    throw new Error(normalizeGitCommandError(result, '读取提交父节点失败'));
+  }
+
+  const parts = result.stdout.trim().split(/\s+/).filter(Boolean);
+  return parts[1] ?? null;
+}
+
+function buildGitPreviewPathspecs(file: Pick<GitHistoryCommitFile, 'path' | 'originalPath'>) {
+  if (file.originalPath && file.originalPath !== file.path) {
+    return [file.originalPath, file.path];
+  }
+  return [file.path];
 }
 
 async function resolveGitPushTarget(

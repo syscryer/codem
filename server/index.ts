@@ -28,8 +28,13 @@ import {
   commitProjectGitChanges,
   createProjectGitWorktree,
   createProjectGitBranch,
+  compareProjectGitBranches,
   fetchProjectGitRemote,
+  getProjectGitCommitDetails,
+  getProjectGitCommitFilePreview,
   getProjectGitFileDiff,
+  listProjectGitHistory,
+  listProjectGitHistoryLog,
   getProjectGitPushPreview,
   getProjectGitSummary,
   getProjectGitStatus,
@@ -691,6 +696,89 @@ app.get('/api/projects/:projectId/git/branches', async (request, response) => {
   }
 });
 
+app.get('/api/projects/:projectId/git/history', async (request, response) => {
+  const ref = typeof request.query.ref === 'string' ? request.query.ref.trim() : undefined;
+  const limit = typeof request.query.limit === 'string' ? Number(request.query.limit) : undefined;
+
+  try {
+    response.json(await listProjectGitHistory(request.params.projectId, { ref, limit }));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '读取 Git 历史失败');
+  }
+});
+
+app.get('/api/projects/:projectId/git/history/log', async (request, response) => {
+  const refs = readRepeatedQueryValues(request.query.refs);
+  const authors = readRepeatedQueryValues(request.query.authors);
+  const paths = readRepeatedQueryValues(request.query.paths);
+  const dateFrom = typeof request.query.dateFrom === 'string' ? request.query.dateFrom.trim() : undefined;
+  const dateTo = typeof request.query.dateTo === 'string' ? request.query.dateTo.trim() : undefined;
+  const search = typeof request.query.search === 'string' ? request.query.search.trim() : undefined;
+  const cursor = typeof request.query.cursor === 'string' ? request.query.cursor.trim() : undefined;
+  const limit = typeof request.query.limit === 'string' ? Number(request.query.limit) : undefined;
+
+  try {
+    response.json(
+      await listProjectGitHistoryLog(request.params.projectId, {
+        refs,
+        authors,
+        dateFrom,
+        dateTo,
+        paths,
+        search,
+        cursor,
+        limit,
+      }),
+    );
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '读取 Git 日志失败');
+  }
+});
+
+app.get('/api/projects/:projectId/git/history/compare', async (request, response) => {
+  const targetBranch = typeof request.query.targetBranch === 'string' ? request.query.targetBranch.trim() : '';
+  const compareBranch = typeof request.query.compareBranch === 'string' ? request.query.compareBranch.trim() : '';
+  if (!targetBranch || !compareBranch) {
+    response.status(400).send('targetBranch 和 compareBranch 不能为空');
+    return;
+  }
+
+  try {
+    response.json(await compareProjectGitBranches(request.params.projectId, targetBranch, compareBranch));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '读取分支比较失败');
+  }
+});
+
+app.get('/api/projects/:projectId/git/history/commit', async (request, response) => {
+  const sha = typeof request.query.sha === 'string' ? request.query.sha.trim() : '';
+  if (!sha) {
+    response.status(400).send('sha 不能为空');
+    return;
+  }
+
+  try {
+    response.json(await getProjectGitCommitDetails(request.params.projectId, sha));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '读取提交详情失败');
+  }
+});
+
+app.get('/api/projects/:projectId/git/history/file', async (request, response) => {
+  const sha = typeof request.query.sha === 'string' ? request.query.sha.trim() : '';
+  const filePath = typeof request.query.path === 'string' ? request.query.path.trim() : '';
+  if (!sha || !filePath) {
+    response.status(400).send('sha 和 path 不能为空');
+    return;
+  }
+
+  try {
+    response.json(await getProjectGitCommitFilePreview(request.params.projectId, sha, filePath));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '读取历史文件预览失败');
+  }
+});
+
 app.get('/api/projects/:projectId/git/status', async (request, response) => {
   try {
     response.json(await getProjectGitStatus(request.params.projectId));
@@ -782,13 +870,14 @@ app.post('/api/projects/:projectId/git/switch', async (request, response) => {
 
 app.post('/api/projects/:projectId/git/branch', async (request, response) => {
   const branch = typeof request.body?.branch === 'string' ? request.body.branch.trim() : '';
+  const source = typeof request.body?.source === 'string' ? request.body.source.trim() : undefined;
   if (!branch) {
     response.status(400).send('branch 不能为空');
     return;
   }
 
   try {
-    response.json(await createProjectGitBranch(request.params.projectId, branch));
+    response.json(await createProjectGitBranch(request.params.projectId, branch, source));
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '创建分支失败');
   }
@@ -1301,6 +1390,18 @@ function isAllowedLocalOrigin(origin: string) {
 
 function resolveProjectPathValue(value: unknown) {
   return typeof value === 'string' && value.trim() ? path.resolve(value.trim()) : '';
+}
+
+function readRepeatedQueryValues(value: unknown) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => typeof item === 'string' ? item.trim() : '')
+      .filter(Boolean);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    return [value.trim()];
+  }
+  return [];
 }
 
 function resolveUsageRangeDays(value: unknown) {

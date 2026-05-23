@@ -1,7 +1,12 @@
 import type {
+  GitBranchCompareResult,
   GitFileDiffPreview,
   GitBranchCreateResult,
+  GitCommitFilePreview,
   GitCommitResult,
+  GitHistoryCommit,
+  GitHistoryCommitDetails,
+  GitHistoryLogResponse,
   GitPushPreview,
   GitPushResult,
   GitRemoteSyncResult,
@@ -103,18 +108,124 @@ export async function pullGitBranch(projectId: string, remote?: string, branch?:
 }
 
 export async function createGitBranch(projectId: string, branch: string) {
+  return createGitBranchFromSource(projectId, branch);
+}
+
+export async function createGitBranchFromSource(projectId: string, branch: string, source?: string) {
   const response = await fetch(`/api/projects/${projectId}/git/branch`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ branch }),
+    body: JSON.stringify({ branch, source }),
   });
   if (!response.ok) {
     throw new Error(await readError(response));
   }
 
   return (await response.json()) as GitBranchCreateResult;
+}
+
+export async function fetchGitHistory(projectId: string, options?: { ref?: string; limit?: number }) {
+  const params = new URLSearchParams();
+  if (options?.ref) {
+    params.set('ref', options.ref);
+  }
+  if (options?.limit) {
+    params.set('limit', String(options.limit));
+  }
+  const query = params.toString();
+  const response = await fetch(`/api/projects/${projectId}/git/history${query ? `?${query}` : ''}`);
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitHistoryCommit[];
+}
+
+export async function fetchGitHistoryLog(
+  projectId: string,
+  options?: {
+    refs?: string[];
+    authors?: string[];
+    dateFrom?: string;
+    dateTo?: string;
+    paths?: string[];
+    search?: string;
+    limit?: number;
+    cursor?: string | null;
+  },
+) {
+  const params = new URLSearchParams();
+  for (const ref of options?.refs ?? []) {
+    if (ref.trim()) {
+      params.append('refs', ref.trim());
+    }
+  }
+  for (const author of options?.authors ?? []) {
+    if (author.trim()) {
+      params.append('authors', author.trim());
+    }
+  }
+  for (const filePath of options?.paths ?? []) {
+    if (filePath.trim()) {
+      params.append('paths', filePath.trim());
+    }
+  }
+  if (options?.dateFrom) {
+    params.set('dateFrom', options.dateFrom);
+  }
+  if (options?.dateTo) {
+    params.set('dateTo', options.dateTo);
+  }
+  if (options?.search) {
+    params.set('search', options.search);
+  }
+  if (options?.limit) {
+    params.set('limit', String(options.limit));
+  }
+  if (options?.cursor) {
+    params.set('cursor', options.cursor);
+  }
+
+  const query = params.toString();
+  const response = await fetch(`/api/projects/${projectId}/git/history/log${query ? `?${query}` : ''}`);
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitHistoryLogResponse;
+}
+
+export async function compareGitBranches(projectId: string, targetBranch: string, compareBranch: string) {
+  const response = await fetch(
+    `/api/projects/${projectId}/git/history/compare?targetBranch=${encodeURIComponent(targetBranch)}&compareBranch=${encodeURIComponent(compareBranch)}`,
+  );
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitBranchCompareResult;
+}
+
+export async function fetchGitCommitDetails(projectId: string, sha: string) {
+  const response = await fetch(`/api/projects/${projectId}/git/history/commit?sha=${encodeURIComponent(sha)}`);
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitHistoryCommitDetails;
+}
+
+export async function fetchGitCommitFilePreview(projectId: string, sha: string, filePath: string) {
+  const response = await fetch(
+    `/api/projects/${projectId}/git/history/file?sha=${encodeURIComponent(sha)}&path=${encodeURIComponent(filePath)}`,
+  );
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitCommitFilePreview;
 }
 
 export async function undoConversationChanges(projectId: string, changes: UndoConversationChange[]) {
