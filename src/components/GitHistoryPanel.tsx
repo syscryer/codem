@@ -676,7 +676,7 @@ export function GitHistoryPanel({
         </div>
         <div className="git-history-log-subject">
           <div className="git-history-log-summary">
-            <strong>{commit.summary || '无提交信息'}</strong>
+            <strong title={commit.summary || '无提交信息'}>{commit.summary || '无提交信息'}</strong>
             {commit.refs.length > 0 ? (
               <span className="git-history-log-refs" aria-label="提交引用">
                 {commit.refs.map((ref) => (
@@ -688,8 +688,10 @@ export function GitHistoryPanel({
             ) : null}
           </div>
         </div>
-        <div className="git-history-log-author">{commit.author}</div>
-        <div className="git-history-log-time">{formatCommitTime(commit.commitTime, true)}</div>
+        <div className="git-history-log-author" title={commit.author}>{commit.author}</div>
+        <div className="git-history-log-time" title={formatCommitTime(commit.commitTime, true)}>
+          {formatCommitListTime(commit.commitTime)}
+        </div>
       </button>
     );
   }
@@ -1824,6 +1826,18 @@ function formatCommitTime(commitTime: number, full = false) {
   }
   const date = new Date(commitTime * 1000);
   return full ? date.toLocaleString() : date.toLocaleDateString();
+}
+
+function formatCommitListTime(commitTime: number) {
+  if (!commitTime) {
+    return '';
+  }
+  const date = new Date(commitTime * 1000);
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${date.getFullYear()}/${month}/${day} ${hour}:${minute}`;
 }
 
 function buildDefaultExpandedDirs(nodes: GitHistoryFileTreeNode[]) {

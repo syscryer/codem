@@ -5286,7 +5286,7 @@ body.git-history-resizing {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding: 10px 12px 12px;
+  padding: 10px 8px 12px 10px;
 }
 
 .git-history-commit-table {
@@ -5306,9 +5306,9 @@ body.git-history-resizing {
 
 .git-history-log-row {
   display: grid;
-  grid-template-columns: var(--git-history-row-graph-width, 22px) minmax(0, 1fr) 104px 128px;
+  grid-template-columns: var(--git-history-row-graph-width, 22px) minmax(0, 1fr) 92px 104px;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   padding: 0 var(--git-history-row-x-padding);
   border-radius: 6px;
   height: var(--git-history-log-row-height, 34px);
@@ -5405,35 +5405,97 @@ body.git-history-resizing {
   padding: 0;
 }
 
+.git-history-log-time {
+  text-align: right;
+}
+
+@container (max-width: 840px) {
+  .git-history-pane-toolbar.commits {
+    gap: 8px;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .git-history-toolbar-search.wide {
+    width: 156px;
+  }
+
+  .git-history-searchable-select-trigger.branch {
+    width: 148px;
+  }
+
+  .git-history-searchable-select-trigger.author {
+    width: 96px;
+  }
+
+  .git-history-searchable-select-trigger.date {
+    width: 112px;
+  }
+
+  .git-history-log-row {
+    grid-template-columns: var(--git-history-row-graph-width, 22px) minmax(0, 1fr) 84px 100px;
+    gap: 5px;
+  }
+}
+
+@container (max-width: 640px) {
+  .git-history-pane-toolbar.commits {
+    height: auto;
+    min-height: var(--git-history-toolbar-height);
+    align-content: start;
+    flex-wrap: wrap;
+    overflow: visible;
+    padding-top: 7px;
+    padding-bottom: 7px;
+  }
+
+  .git-history-toolbar-search.wide {
+    width: auto;
+    flex: 1 1 168px;
+    order: 1;
+  }
+
+  .git-history-inline-filters {
+    flex: 1 1 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    order: 3;
+  }
+
+  .git-history-pane-toolbar-actions {
+    flex: 0 0 auto;
+    margin-left: 0;
+    order: 2;
+  }
+
+  .git-history-log-row {
+    grid-template-columns: var(--git-history-row-graph-width, 22px) minmax(0, 1fr) 76px 96px;
+  }
+}
+
 @container (max-width: 520px) {
   .git-history-log-header,
   .git-history-log-row {
-    grid-template-columns: var(--git-history-row-graph-width, 22px) minmax(0, 1fr) 88px;
-    gap: 6px;
+    grid-template-columns: var(--git-history-row-graph-width, 22px) minmax(0, 1fr) 64px 92px;
+    gap: 4px;
     padding-left: 4px;
-    padding-right: 6px;
+    padding-right: 4px;
   }
 
   .git-history-log-body {
     --git-history-row-x-padding: 4px;
   }
 
-  .git-history-log-header span:nth-child(3),
-  .git-history-log-author {
-    display: none;
+  .git-history-searchable-select-trigger.branch {
+    width: 136px;
   }
 
-}
-
-@container (max-width: 380px) {
-  .git-history-log-header,
-  .git-history-log-row {
-    grid-template-columns: var(--git-history-row-graph-width, 22px) minmax(0, 1fr);
+  .git-history-searchable-select-trigger.author {
+    width: 88px;
   }
 
-  .git-history-log-header span:nth-child(4),
-  .git-history-log-time {
-    display: none;
+  .git-history-searchable-select-trigger.date {
+    width: 104px;
   }
 }
 
