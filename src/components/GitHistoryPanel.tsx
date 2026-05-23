@@ -31,7 +31,7 @@ import {
 import { buildGitBranchCollections } from '../lib/git-branch-groups';
 import { resolveGitHistoryDatePresetRange, type GitHistoryDatePreset } from '../lib/git-history-date-filter';
 import { buildGitHistoryFileTree, type GitHistoryFileTreeNode } from '../lib/git-history-file-tree';
-import { buildGitGraphTimelineVisual } from '../lib/git-graph-visual';
+import { buildVsCodeGitGraphRowVisuals, type GitGraphVisual } from '../lib/git-graph-visual';
 import {
   filterGitHistorySearchableOptions,
   type GitHistorySearchableOption,
@@ -59,7 +59,7 @@ const DEFAULT_RIGHT_PANE_WIDTH = 380;
 const MIN_LEFT_PANE_WIDTH = 220;
 const MIN_CENTER_PANE_WIDTH = 420;
 const MIN_RIGHT_PANE_WIDTH = 320;
-const GIT_HISTORY_LOG_ROW_HEIGHT = 46;
+const GIT_HISTORY_LOG_ROW_HEIGHT = 34;
 type GitHistoryPanelProps = {
   project: ProjectSummary | null;
   onClose: () => void;
@@ -159,6 +159,17 @@ export function GitHistoryPanel({
   const currentRef = selectedBranchName || currentBranch || 'HEAD';
   const selectedPreviewFile = previewState ? previewState.files[previewState.fileIndex] ?? null : null;
   const historyCommits = historyResponse?.commits ?? [];
+  const historyGraphVisuals = useMemo(
+    () =>
+      buildVsCodeGitGraphRowVisuals(
+        historyCommits.map((commit) => ({
+          id: commit.sha,
+          parentIds: commit.parents,
+        })),
+        { rowHeight: GIT_HISTORY_LOG_ROW_HEIGHT },
+      ),
+    [historyCommits],
+  );
   const branchCollections = useMemo(
     () => buildGitBranchCollections(branches, currentBranch),
     [branches, currentBranch],
@@ -606,10 +617,13 @@ export function GitHistoryPanel({
       >
         <div
           className="git-history-log-body"
-          style={{ '--git-history-log-body-height': `${historyCommits.length * GIT_HISTORY_LOG_ROW_HEIGHT}px` } as CSSProperties}
+          style={
+            {
+              '--git-history-log-body-height': `${historyCommits.length * GIT_HISTORY_LOG_ROW_HEIGHT}px`,
+            } as CSSProperties
+          }
         >
-          <GitGraphTimeline commits={historyCommits} rowHeight={GIT_HISTORY_LOG_ROW_HEIGHT} />
-          {historyCommits.map((commit) => renderLogCommitRow(commit))}
+          {historyCommits.map((commit, index) => renderLogCommitRow(commit, historyGraphVisuals[index]))}
         </div>
         {historyLoadingMore ? (
           <div className="git-history-load-more">
@@ -642,10 +656,11 @@ export function GitHistoryPanel({
     );
   }
 
-  function renderLogCommitRow(commit: GitHistoryLogCommit) {
+  function renderLogCommitRow(commit: GitHistoryLogCommit, graphVisual?: GitGraphVisual) {
     const active = commit.sha === selectedCommitSha;
     const rowStyle = {
       '--git-history-log-row-height': `${GIT_HISTORY_LOG_ROW_HEIGHT}px`,
+      '--git-history-row-graph-width': `${graphVisual?.width ?? 22}px`,
     } as CSSProperties;
 
     return (
@@ -656,7 +671,9 @@ export function GitHistoryPanel({
         style={rowStyle}
         onClick={() => setSelectedCommitSha(commit.sha)}
       >
-        <div className="git-history-log-graph-cell" aria-hidden="true" />
+        <div className="git-history-log-graph-cell" aria-hidden="true">
+          {graphVisual ? <GitGraphVisualSvg visual={graphVisual} /> : null}
+        </div>
         <div className="git-history-log-subject">
           <div className="git-history-log-summary">
             <strong>{commit.summary || '无提交信息'}</strong>
@@ -1286,14 +1303,10 @@ function BranchKindIcon({ branch }: { branch: GitBranchSummary }) {
   return <GitBranch size={14} className={`git-history-branch-kind-icon${branch.kind === 'remote' ? ' remote' : ' local'}`} />;
 }
 
-function GitGraphTimeline({ commits, rowHeight }: { commits: GitHistoryLogCommit[]; rowHeight: number }) {
-  const visual = useMemo(
-    () => buildGitGraphTimelineVisual(commits.map((commit) => commit.graph), { rowHeight }),
-    [commits, rowHeight],
-  );
+function GitGraphVisualSvg({ visual }: { visual: GitGraphVisual }) {
   return (
     <svg
-      className="git-history-graph-visual git-history-graph-timeline"
+      className="git-history-graph-visual git-history-graph-row-visual"
       width={visual.width}
       height={visual.height}
       viewBox={`0 0 ${visual.width} ${visual.height}`}
@@ -1307,8 +1320,8 @@ function GitGraphTimeline({ commits, rowHeight }: { commits: GitHistoryLogCommit
           x2={line.x2}
           y2={line.y2}
           stroke={resolveGitGraphVisualColor(line.colorIndex)}
-          strokeWidth="1"
-          strokeLinecap="butt"
+          strokeWidth="1.5"
+          strokeLinecap="round"
           vectorEffect="non-scaling-stroke"
         />
       ))}
@@ -1318,7 +1331,7 @@ function GitGraphTimeline({ commits, rowHeight }: { commits: GitHistoryLogCommit
           d={curve.d}
           fill="none"
           stroke={resolveGitGraphVisualColor(curve.colorIndex)}
-          strokeWidth="1"
+          strokeWidth="1.5"
           strokeLinecap="round"
           vectorEffect="non-scaling-stroke"
         />
@@ -1328,10 +1341,10 @@ function GitGraphTimeline({ commits, rowHeight }: { commits: GitHistoryLogCommit
           key={node.key}
           cx={node.cx}
           cy={node.cy}
-          r="4.2"
-          fill="var(--app-surface, #ffffff)"
+          r="4.5"
+          fill={resolveGitGraphVisualColor(node.colorIndex)}
           stroke={resolveGitGraphVisualColor(node.colorIndex)}
-          strokeWidth="2"
+          strokeWidth="1"
           vectorEffect="non-scaling-stroke"
         />
       ))}
@@ -1341,13 +1354,13 @@ function GitGraphTimeline({ commits, rowHeight }: { commits: GitHistoryLogCommit
 
 function resolveGitGraphVisualColor(index: number) {
   const palette = [
-    '#a855f7',
-    '#f59e0b',
-    '#ec4899',
-    '#14b8a6',
-    '#f97316',
+    '#0078d4',
+    '#ffb000',
+    '#dc267f',
+    '#994f00',
+    '#40b0a6',
+    '#b66dff',
     '#38bdf8',
-    '#ef4444',
     '#22c55e',
   ];
   return palette[index % palette.length] ?? palette[0];

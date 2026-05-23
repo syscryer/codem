@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildGitGraphTimelineVisual, buildGitGraphVisual } from './git-graph-visual';
+import * as gitGraphVisual from './git-graph-visual';
+
+const { buildGitGraphTimelineVisual, buildGitGraphVisual } = gitGraphVisual;
 
 test('buildGitGraphVisual turns commit markers into nodes', () => {
   const visual = buildGitGraphVisual('*', { cellWidth: 10, height: 40, paddingX: 5 });
@@ -100,4 +102,157 @@ test('buildGitGraphTimelineVisual renders all rows in one continuous coordinate 
   assert.equal(secondRowBefore?.y1, 38.5);
   assert.equal(shift?.d, 'M 10 58.50 C 10 71.84 20 68.16 20 81.50');
   assert.deepEqual(visual.nodes.map((node) => node.cy), [20, 60]);
+});
+
+test('resolveGitGraphTimelineColumnWidth keeps sparse graph lanes compact', () => {
+  assert.equal(typeof gitGraphVisual.resolveGitGraphTimelineColumnWidth, 'function');
+
+  const columnWidth = gitGraphVisual.resolveGitGraphTimelineColumnWidth([
+    {
+      lane: 0,
+      colorIndex: 0,
+      segmentsBefore: [{ lane: 0, colorIndex: 0, kind: 'vertical' }],
+      segmentsAfter: [{ lane: 0, colorIndex: 0, kind: 'vertical' }],
+    },
+    {
+      lane: 1,
+      colorIndex: 1,
+      segmentsBefore: [
+        { lane: 0, colorIndex: 0, kind: 'vertical' },
+        { lane: 1, colorIndex: 1, kind: 'vertical' },
+      ],
+      segmentsAfter: [{ lane: 0, fromLane: 1, colorIndex: 1, kind: 'shift-left' }],
+    },
+  ]);
+
+  assert.equal(columnWidth, 42);
+});
+
+test('buildGitGraphTimelineVisual bridges consecutive before-only lane rows', () => {
+  const visual = buildGitGraphTimelineVisual(
+    [
+      {
+        lane: 0,
+        colorIndex: 0,
+        segmentsBefore: [{ lane: 0, colorIndex: 0, kind: 'vertical' }],
+        segmentsAfter: [],
+      },
+      {
+        lane: 0,
+        colorIndex: 0,
+        segmentsBefore: [{ lane: 0, colorIndex: 0, kind: 'vertical' }],
+        segmentsAfter: [],
+      },
+    ],
+    { cellWidth: 10, paddingX: 5, rowHeight: 40 },
+  );
+
+  const secondRowBefore = visual.lines.find((line) => line.key === 'timeline-before-1-0-0');
+
+  assert.equal(secondRowBefore?.y1, 18.5);
+  assert.equal(secondRowBefore?.y2, 61.5);
+});
+
+test('buildGitGraphTimelineVisual keeps the primary lane continuous like VS Code', () => {
+  const visual = buildGitGraphTimelineVisual(
+    [
+      {
+        lane: 0,
+        colorIndex: 0,
+        segmentsBefore: [{ lane: 0, colorIndex: 0, kind: 'vertical' }],
+        segmentsAfter: [],
+      },
+      {
+        lane: 1,
+        colorIndex: 1,
+        segmentsBefore: [{ lane: 1, colorIndex: 1, kind: 'vertical' }],
+        segmentsAfter: [],
+      },
+      {
+        lane: 0,
+        colorIndex: 0,
+        segmentsBefore: [{ lane: 0, colorIndex: 0, kind: 'vertical' }],
+        segmentsAfter: [],
+      },
+    ],
+    { cellWidth: 10, paddingX: 5, rowHeight: 40 },
+  );
+
+  const primaryLane = visual.lines.find((line) => line.key === 'timeline-primary-lane-0');
+
+  assert.equal(primaryLane?.x1, 10);
+  assert.equal(primaryLane?.x2, 10);
+  assert.equal(primaryLane?.y1, -1.5);
+  assert.equal(primaryLane?.y2, 121.5);
+  assert.equal(primaryLane?.colorIndex, 0);
+});
+
+test('buildVsCodeGitGraphTimelineVisual builds swimlane graph from commit parents', () => {
+  assert.equal(typeof gitGraphVisual.buildVsCodeGitGraphTimelineVisual, 'function');
+
+  const visual = gitGraphVisual.buildVsCodeGitGraphTimelineVisual(
+    [
+      { id: 'merge', parentIds: ['main', 'feature'] },
+      { id: 'main', parentIds: ['base'] },
+      { id: 'feature', parentIds: ['base'] },
+      { id: 'base', parentIds: [] },
+    ],
+    { rowHeight: 34 },
+  );
+
+  assert.equal(visual.height, 136);
+  assert.equal(visual.width, 33);
+  assert.deepEqual(visual.nodes.map((node) => [node.cx, node.cy, node.colorIndex]), [
+    [11, 17, 0],
+    [11, 51, 0],
+    [22, 85, 1],
+    [11, 119, 0],
+  ]);
+  assert.equal(
+    visual.lines.some((line) => line.key === 'vscode-node-before-1' && line.x1 === 11 && line.y1 === 34 && line.y2 === 51),
+    true,
+  );
+  assert.equal(
+    visual.lines.some((line) => line.key === 'vscode-node-after-1' && line.x1 === 11 && line.y1 === 51 && line.y2 === 68),
+    true,
+  );
+  assert.equal(
+    visual.curves.some((curve) => curve.key === 'vscode-merge-0-1' && curve.d.includes('H 11')),
+    true,
+  );
+});
+
+test('buildVsCodeGitGraphTimelineVisual uses VS Code arc direction when a lane shifts left', () => {
+  const visual = gitGraphVisual.buildVsCodeGitGraphTimelineVisual(
+    [
+      { id: 'a', parentIds: ['b', 'c', 'x'] },
+      { id: 'c', parentIds: ['b'] },
+      { id: 'b', parentIds: ['e'] },
+      { id: 'x', parentIds: [] },
+      { id: 'e', parentIds: [] },
+    ],
+    { rowHeight: 34 },
+  );
+
+  const shiftLeft = visual.curves.find((curve) => curve.key === 'vscode-shift-2-2-1');
+
+  assert.equal(shiftLeft?.d, 'M 33 68 V 80 A 5 5 0 0 1 28 85 H 27 A 5 5 0 0 0 22 90 V 102');
+});
+
+test('buildVsCodeGitGraphRowVisuals keeps each row as narrow as VS Code does', () => {
+  assert.equal(typeof gitGraphVisual.buildVsCodeGitGraphRowVisuals, 'function');
+
+  const rows = gitGraphVisual.buildVsCodeGitGraphRowVisuals(
+    [
+      { id: 'a', parentIds: ['b', 'c'] },
+      { id: 'b', parentIds: ['d'] },
+      { id: 'c', parentIds: ['d'] },
+      { id: 'd', parentIds: ['e'] },
+      { id: 'e', parentIds: [] },
+    ],
+    { rowHeight: 34 },
+  );
+
+  assert.deepEqual(rows.map((row) => row.width), [33, 33, 33, 33, 22]);
+  assert.deepEqual(rows[4].nodes.map((node) => [node.cx, node.cy]), [[11, 17]]);
 });

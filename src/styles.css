@@ -5297,6 +5297,8 @@ body.git-history-resizing {
 
 .git-history-log-body {
   position: relative;
+  --git-history-row-x-padding: 6px;
+  --git-history-row-graph-width: 22px;
   min-height: var(--git-history-log-body-height, 0px);
   display: grid;
   align-content: start;
@@ -5304,19 +5306,19 @@ body.git-history-resizing {
 
 .git-history-log-row {
   display: grid;
-  grid-template-columns: 96px minmax(0, 1fr) 104px 134px;
+  grid-template-columns: var(--git-history-row-graph-width, 22px) minmax(0, 1fr) 104px 128px;
   align-items: center;
-  gap: 12px;
-  padding: 0 12px;
-  border-radius: 12px;
-  height: var(--git-history-log-row-height, 46px);
-  min-height: var(--git-history-log-row-height, 46px);
+  gap: 6px;
+  padding: 0 var(--git-history-row-x-padding);
+  border-radius: 6px;
+  height: var(--git-history-log-row-height, 34px);
+  min-height: var(--git-history-log-row-height, 34px);
 }
 
 .git-history-log-graph-cell {
-  width: 100%;
-  height: var(--git-history-log-row-height, 46px);
-  min-height: var(--git-history-log-row-height, 46px);
+  width: var(--git-history-row-graph-width, 22px);
+  height: var(--git-history-log-row-height, 34px);
+  min-height: var(--git-history-log-row-height, 34px);
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -5330,13 +5332,6 @@ body.git-history-resizing {
   overflow: visible;
   pointer-events: none;
   user-select: none;
-}
-
-.git-history-graph-timeline {
-  position: absolute;
-  top: 0;
-  left: 12px;
-  z-index: 2;
 }
 
 .git-history-log-subject {
@@ -5413,10 +5408,14 @@ body.git-history-resizing {
 @container (max-width: 520px) {
   .git-history-log-header,
   .git-history-log-row {
-    grid-template-columns: 64px minmax(0, 1fr) 88px;
-    gap: 8px;
-    padding-left: 8px;
-    padding-right: 8px;
+    grid-template-columns: var(--git-history-row-graph-width, 22px) minmax(0, 1fr) 88px;
+    gap: 6px;
+    padding-left: 4px;
+    padding-right: 6px;
+  }
+
+  .git-history-log-body {
+    --git-history-row-x-padding: 4px;
   }
 
   .git-history-log-header span:nth-child(3),
@@ -5424,15 +5423,12 @@ body.git-history-resizing {
     display: none;
   }
 
-  .git-history-graph-timeline {
-    left: 8px;
-  }
 }
 
 @container (max-width: 380px) {
   .git-history-log-header,
   .git-history-log-row {
-    grid-template-columns: 56px minmax(0, 1fr);
+    grid-template-columns: var(--git-history-row-graph-width, 22px) minmax(0, 1fr);
   }
 
   .git-history-log-header span:nth-child(4),
