@@ -1576,8 +1576,10 @@ export async function getProjectGitCommitDetails(projectId: string, commitSha: s
   }
 
   const fileEntries = await readGitCommitFiles(projectPath, sha);
+  const refs = await readGitCommitContainingRefs(projectPath, sha, commit.sha);
   return {
     ...commit,
+    refs,
     files: fileEntries,
     totalAdditions: fileEntries.reduce((sum, file) => sum + file.additions, 0),
     totalDeletions: fileEntries.reduce((sum, file) => sum + file.deletions, 0),
@@ -4154,6 +4156,29 @@ function parseGitHistoryCommitDetails(output: string): GitHistoryCommitDetails |
     totalAdditions: 0,
     totalDeletions: 0,
   };
+}
+
+async function readGitCommitContainingRefs(projectPath: string, commitSha: string, fullSha: string): Promise<string[]> {
+  const [headResult, branchResult] = await Promise.all([
+    runGitCommand(projectPath, ['rev-parse', 'HEAD']),
+    runGitCommand(projectPath, ['branch', '--contains', commitSha, '--all', '--format=%(refname:short)']),
+  ]);
+  const refs: string[] = [];
+
+  if (headResult.status === 0 && headResult.stdout.trim() === fullSha) {
+    refs.push('HEAD');
+  }
+
+  if (branchResult.status === 0) {
+    refs.push(
+      ...branchResult.stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim().replace(/^remotes\//, ''))
+        .filter((line) => line && line !== 'origin/HEAD'),
+    );
+  }
+
+  return Array.from(new Set(refs));
 }
 
 async function readGitCommitFiles(projectPath: string, commitSha: string): Promise<GitHistoryCommitFile[]> {

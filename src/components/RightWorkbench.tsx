@@ -2194,7 +2194,7 @@ function countWorkbenchFileTreeFiles(nodes: WorkbenchFileTreeNode[]): number {
   }, 0);
 }
 
-function FileIcon({
+export function FileIcon({
   path,
   type,
   expanded = false,

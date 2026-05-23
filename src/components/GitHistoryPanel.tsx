@@ -31,6 +31,7 @@ import {
 import { buildGitBranchCollections } from '../lib/git-branch-groups';
 import { resolveGitHistoryDatePresetRange, type GitHistoryDatePreset } from '../lib/git-history-date-filter';
 import { buildGitHistoryFileTree, type GitHistoryFileTreeNode } from '../lib/git-history-file-tree';
+import { buildGitGraphTimelineVisual } from '../lib/git-graph-visual';
 import {
   filterGitHistorySearchableOptions,
   type GitHistorySearchableOption,
@@ -40,6 +41,7 @@ import { highlightWorkbenchCodeLine } from '../lib/workbench-files';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { MemoGitDiffViewer, type GitDiffViewerMode } from './GitDiffViewer';
 import { PopoverPortal } from './PopoverPortal';
+import { FileIcon } from './RightWorkbench';
 import type {
   GitBranchCompareResult,
   GitBranchCreateResult,
@@ -57,6 +59,7 @@ const DEFAULT_RIGHT_PANE_WIDTH = 380;
 const MIN_LEFT_PANE_WIDTH = 220;
 const MIN_CENTER_PANE_WIDTH = 420;
 const MIN_RIGHT_PANE_WIDTH = 320;
+const GIT_HISTORY_LOG_ROW_HEIGHT = 46;
 type GitHistoryPanelProps = {
   project: ProjectSummary | null;
   onClose: () => void;
@@ -607,7 +610,13 @@ export function GitHistoryPanel({
           <span>作者</span>
           <span>时间</span>
         </div>
-        {historyCommits.map((commit) => renderLogCommitRow(commit))}
+        <div
+          className="git-history-log-body"
+          style={{ '--git-history-log-body-height': `${historyCommits.length * GIT_HISTORY_LOG_ROW_HEIGHT}px` } as CSSProperties}
+        >
+          <GitGraphTimeline commits={historyCommits} rowHeight={GIT_HISTORY_LOG_ROW_HEIGHT} />
+          {historyCommits.map((commit) => renderLogCommitRow(commit))}
+        </div>
         {historyLoadingMore ? (
           <div className="git-history-load-more">
             <LoaderCircle className="spin" size={14} />
@@ -641,30 +650,32 @@ export function GitHistoryPanel({
 
   function renderLogCommitRow(commit: GitHistoryLogCommit) {
     const active = commit.sha === selectedCommitSha;
+    const rowStyle = {
+      '--git-history-log-row-height': `${GIT_HISTORY_LOG_ROW_HEIGHT}px`,
+    } as CSSProperties;
+
     return (
       <button
         key={commit.sha}
         type="button"
         className={`git-history-log-row${active ? ' active' : ''}`}
+        style={rowStyle}
         onClick={() => setSelectedCommitSha(commit.sha)}
       >
-        <div className="git-history-log-graph-cell">
-          <GitGraphText value={commit.graphText} />
-        </div>
+        <div className="git-history-log-graph-cell" aria-hidden="true" />
         <div className="git-history-log-subject">
           <div className="git-history-log-summary">
             <strong>{commit.summary || '无提交信息'}</strong>
-            <code>{commit.shortSha}</code>
+            {commit.refs.length > 0 ? (
+              <span className="git-history-log-refs" aria-label="提交引用">
+                {commit.refs.map((ref) => (
+                  <span key={`${commit.sha}-${ref}`} className={buildRefClassName(ref)}>
+                    {ref}
+                  </span>
+                ))}
+              </span>
+            ) : null}
           </div>
-          {commit.refs.length > 0 ? (
-            <div className="git-history-log-refs">
-              {commit.refs.map((ref) => (
-                <span key={`${commit.sha}-${ref}`} className={buildRefClassName(ref)}>
-                  {ref}
-                </span>
-              ))}
-            </div>
-          ) : null}
         </div>
         <div className="git-history-log-author">{commit.author}</div>
         <div className="git-history-log-time">{formatCommitTime(commit.commitTime, true)}</div>
@@ -827,41 +838,27 @@ export function GitHistoryPanel({
             <span>{commitDetails.author}</span>
             <span>{formatCommitTime(commitDetails.commitTime, true)}</span>
           </div>
+          {commitDetails.refs && commitDetails.refs.length > 0 ? (
+            <div className="git-history-details-refs">
+              <span>在 {commitDetails.refs.length} 个分支中：</span>
+              <strong>{commitDetails.refs.join(', ')}</strong>
+            </div>
+          ) : null}
           {commitDetails.message && commitDetails.message !== commitDetails.summary ? (
             <pre className="git-history-details-message">{commitDetails.message}</pre>
           ) : null}
         </div>
-        <div className="git-history-files-head">
-          <strong>修改文件</strong>
-          <div className="git-history-files-head-actions">
-            <span>{commitDetails.files.length} 个文件</span>
-            <div className="git-history-view-mode">
-              <button
-                type="button"
-                className={`git-history-view-chip${detailsDisplayMode === 'tree' ? ' active' : ''}`}
-                onClick={() => setDetailsDisplayMode('tree')}
-              >
-                目录
-              </button>
-              <button
-                type="button"
-                className={`git-history-view-chip${detailsDisplayMode === 'flat' ? ' active' : ''}`}
-                onClick={() => setDetailsDisplayMode('flat')}
-              >
-                平铺
-              </button>
+        <div className="git-history-files-scroll">
+          {detailsDisplayMode === 'flat' ? (
+            <div className="git-history-files-list">
+              {commitDetails.files.map((file) => renderFileRow(file))}
             </div>
-          </div>
+          ) : (
+            <div className="git-history-file-tree">
+              {detailTree.map((node) => renderTreeNode(node, 0))}
+            </div>
+          )}
         </div>
-        {detailsDisplayMode === 'flat' ? (
-          <div className="git-history-files-list">
-            {commitDetails.files.map((file) => renderFileRow(file))}
-          </div>
-        ) : (
-          <div className="git-history-file-tree">
-            {detailTree.map((node) => renderTreeNode(node, 0))}
-          </div>
-        )}
       </div>
     );
   }
@@ -894,6 +891,12 @@ export function GitHistoryPanel({
   }
 
   function renderFileRow(file: GitHistoryCommitFile, depth = 0, tree = false) {
+    const fileName = getFileName(file.path);
+    const fileDirectory = tree ? '' : getFileDirectory(file.path);
+    const originalFileName = file.originalPath ? getFileName(file.originalPath) : '';
+    const originalDirectory = file.originalPath ? getFileDirectory(file.originalPath) : '';
+    const statusClassName = normalizeStatusClassName(file.status);
+
     return (
       <button
         key={`${file.path}-${file.status}`}
@@ -904,17 +907,26 @@ export function GitHistoryPanel({
         onDoubleClick={() => handleOpenDetailFile(file.path)}
       >
         <div className="git-history-file-main">
-          <span className={`git-history-file-status status-${normalizeStatusClassName(file.status)}`}>{file.status}</span>
-          <strong title={file.path}>{file.path}</strong>
+          <span
+            className={`git-history-file-status status-${statusClassName}`}
+            title={file.status}
+            aria-label={file.status}
+          >
+            {formatFileStatusLabel(file.status)}
+          </span>
+          <FileIcon path={file.path} type="file" />
+          <span className="git-history-file-text">
+            <span className="git-history-file-name-line">
+              <strong title={file.path}>{fileName}</strong>
+              {fileDirectory ? <small title={fileDirectory}>{fileDirectory}</small> : null}
+            </span>
+          </span>
           {file.originalPath && file.originalPath !== file.path ? (
-            <small title={file.originalPath}>{file.originalPath} → {file.path}</small>
+            <small className="git-history-file-rename" title={file.originalPath}>
+              {originalFileName}{originalDirectory ? ` · ${originalDirectory}` : ''}
+            </small>
           ) : null}
         </div>
-        <span className="git-history-file-stats">
-          <span className="git-diff-add">+{file.additions}</span>
-          <span className="git-history-diff-sep">/</span>
-          <span className="git-diff-del">-{file.deletions}</span>
-        </span>
       </button>
     );
   }
@@ -1280,15 +1292,71 @@ function BranchKindIcon({ branch }: { branch: GitBranchSummary }) {
   return <GitBranch size={14} className={`git-history-branch-kind-icon${branch.kind === 'remote' ? ' remote' : ' local'}`} />;
 }
 
-function GitGraphText({ value }: { value: string }) {
-  const lines = value ? value.split('\n') : ['*'];
-  return (
-    <pre className="git-history-graph-text" aria-hidden="true">
-      {lines.map((line, index) => (
-        <span key={`${index}-${line}`}>{line}</span>
-      ))}
-    </pre>
+function GitGraphTimeline({ commits, rowHeight }: { commits: GitHistoryLogCommit[]; rowHeight: number }) {
+  const visual = useMemo(
+    () => buildGitGraphTimelineVisual(commits.map((commit) => commit.graph), { rowHeight }),
+    [commits, rowHeight],
   );
+  return (
+    <svg
+      className="git-history-graph-visual git-history-graph-timeline"
+      width={visual.width}
+      height={visual.height}
+      viewBox={`0 0 ${visual.width} ${visual.height}`}
+      aria-hidden="true"
+    >
+      {visual.lines.map((line) => (
+        <line
+          key={line.key}
+          x1={line.x1}
+          y1={line.y1}
+          x2={line.x2}
+          y2={line.y2}
+          stroke={resolveGitGraphVisualColor(line.colorIndex)}
+          strokeWidth="1"
+          strokeLinecap="butt"
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+      {visual.curves.map((curve) => (
+        <path
+          key={curve.key}
+          d={curve.d}
+          fill="none"
+          stroke={resolveGitGraphVisualColor(curve.colorIndex)}
+          strokeWidth="1"
+          strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+      {visual.nodes.map((node) => (
+        <circle
+          key={node.key}
+          cx={node.cx}
+          cy={node.cy}
+          r="4.2"
+          fill="var(--app-surface, #ffffff)"
+          stroke={resolveGitGraphVisualColor(node.colorIndex)}
+          strokeWidth="2"
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+    </svg>
+  );
+}
+
+function resolveGitGraphVisualColor(index: number) {
+  const palette = [
+    '#a855f7',
+    '#f59e0b',
+    '#ec4899',
+    '#14b8a6',
+    '#f97316',
+    '#38bdf8',
+    '#ef4444',
+    '#22c55e',
+  ];
+  return palette[index % palette.length] ?? palette[0];
 }
 
 function CommitSectionLabel({ label, count }: { label: string; count: number }) {
@@ -1719,6 +1787,28 @@ function normalizeStatusClassName(status: string) {
     return 'renamed';
   }
   return 'modified';
+}
+
+function formatFileStatusLabel(status: string) {
+  if (status.includes('新增')) {
+    return 'A';
+  }
+  if (status.includes('删除')) {
+    return 'D';
+  }
+  if (status.includes('重命名')) {
+    return 'R';
+  }
+  return 'M';
+}
+
+function getFileName(filePath: string) {
+  return filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath;
+}
+
+function getFileDirectory(filePath: string) {
+  const parts = filePath.split(/[\\/]/).filter(Boolean);
+  return parts.length > 1 ? parts.slice(0, -1).join('/') : '';
 }
 
 function formatCommitTime(commitTime: number, full = false) {
