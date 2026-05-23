@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import {
   buildWorkbenchFileTree,
+  filterWorkbenchNoiseFiles,
+  isWorkbenchNoiseFilePath,
   isWorkbenchFileTreeNodeSelected,
   splitWorkbenchChangedFiles,
   toggleWorkbenchFileTreeNodeSelection,
@@ -78,6 +80,66 @@ test('splitWorkbenchChangedFiles separates untracked files from comparable chang
     grouped.untracked.map((file) => file.path),
     ['CLAUDE.md'],
   );
+});
+
+test('filterWorkbenchNoiseFiles hides only untracked noise paths by default', () => {
+  const files = filterWorkbenchNoiseFiles(
+    [
+      {
+        path: 'docs/design/.idea/workspace.xml',
+        status: '??',
+        staged: false,
+        unstaged: true,
+        untracked: true,
+        deleted: false,
+      },
+      {
+        path: 'docs/design/logs/ssh_audit_20260523.log',
+        status: '??',
+        staged: false,
+        unstaged: true,
+        untracked: true,
+        deleted: false,
+      },
+      {
+        path: 'docs/design/类型项目.txt',
+        status: '??',
+        staged: false,
+        unstaged: true,
+        untracked: true,
+        deleted: false,
+      },
+      {
+        path: 'config/.idea/code-style.xml',
+        status: '修改',
+        staged: false,
+        unstaged: true,
+        untracked: false,
+        deleted: false,
+      },
+    ],
+    false,
+  );
+
+  assert.deepEqual(
+    files.map((file) => file.path),
+    ['docs/design/类型项目.txt', 'config/.idea/code-style.xml'],
+  );
+});
+
+test('isWorkbenchNoiseFilePath recognizes common temporary artifacts', () => {
+  assert.equal(isWorkbenchNoiseFilePath('docs/design/.idea/workspace.xml'), true);
+  assert.equal(isWorkbenchNoiseFilePath('logs/ssh_audit_20260523.log'), true);
+  assert.equal(isWorkbenchNoiseFilePath('util/__pycache__/common_config.cpython-38.pyc'), true);
+  assert.equal(isWorkbenchNoiseFilePath('docs/design/类型项目.txt'), false);
+  assert.equal(isWorkbenchNoiseFilePath('.mcp.json'), false);
+});
+
+test('isWorkbenchNoiseFilePath supports custom directory and glob patterns', () => {
+  assert.equal(isWorkbenchNoiseFilePath('cache/build/output.json', ['cache/**']), true);
+  assert.equal(isWorkbenchNoiseFilePath('docs/design/notes.bak', ['*.bak']), true);
+  assert.equal(isWorkbenchNoiseFilePath('tmp/custom-temp/result.txt', ['custom-temp']), true);
+  assert.equal(isWorkbenchNoiseFilePath('docs/design/类型项目.txt', ['cache/**', '*.bak', 'custom-temp']), false);
 });
 
 test('directory selection state follows descendant files', () => {

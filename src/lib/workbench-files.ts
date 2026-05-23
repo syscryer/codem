@@ -2,6 +2,7 @@ import { getIconForFile, getIconForFolder, getIconForOpenFolder } from 'vscode-i
 import { codeToTokensBase, type BundledLanguage } from 'shiki';
 
 import type { GitFileStatus, ProjectFileEntry, WorkbenchPreviewKind } from '../types';
+import { DEFAULT_WORKBENCH_IGNORE_PATTERNS } from './review-ignore-patterns';
 
 export type CodeHighlightSegment = {
   text: string;
@@ -30,6 +31,18 @@ export function splitWorkbenchChangedFiles(files: GitFileStatus[]) {
     tracked: files.filter((file) => !file.untracked),
     untracked: files.filter((file) => file.untracked),
   };
+}
+
+export function filterWorkbenchNoiseFiles(
+  files: GitFileStatus[],
+  showNoiseFiles: boolean,
+  customPatterns: readonly string[] = DEFAULT_WORKBENCH_IGNORE_PATTERNS,
+) {
+  if (showNoiseFiles) {
+    return files;
+  }
+
+  return files.filter((file) => !file.untracked || !isWorkbenchNoiseFilePath(file.path, customPatterns));
 }
 
 export function buildWorkbenchFileTree(files: GitFileStatus[]) {
@@ -358,6 +371,74 @@ function mergePlainSegments(segments: CodeHighlightSegment[]) {
 
     return merged;
   }, []);
+}
+
+export function isWorkbenchNoiseFilePath(
+  filePath: string,
+  customPatterns: readonly string[] = DEFAULT_WORKBENCH_IGNORE_PATTERNS,
+) {
+  const normalizedPath = normalizeFilePath(filePath).toLowerCase();
+  if (!normalizedPath) {
+    return false;
+  }
+
+  if (customPatterns.some((pattern) => matchesWorkbenchNoisePattern(normalizedPath, pattern))) {
+    return true;
+  }
+
+  return false;
+}
+
+function matchesWorkbenchNoisePattern(normalizedPath: string, pattern: string) {
+  const normalizedPattern = normalizeFilePath(pattern).toLowerCase();
+  if (!normalizedPattern) {
+    return false;
+  }
+
+  const pathSegments = normalizedPath.split('/').filter(Boolean);
+  const fileName = pathSegments[pathSegments.length - 1] ?? '';
+  const hasWildcard = /[*?]/.test(normalizedPattern);
+
+  if (!hasWildcard && !normalizedPattern.includes('/')) {
+    return pathSegments.includes(normalizedPattern) || fileName === normalizedPattern;
+  }
+
+  const matcher = buildWorkbenchNoisePatternMatcher(normalizedPattern);
+  return matcher.test(normalizedPath) || (!normalizedPattern.includes('/') && matcher.test(fileName));
+}
+
+function buildWorkbenchNoisePatternMatcher(pattern: string) {
+  let expression = '^';
+
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index];
+    const nextCharacter = pattern[index + 1];
+
+    if (character === '*' && nextCharacter === '*') {
+      expression += '.*';
+      index += 1;
+      continue;
+    }
+
+    if (character === '*') {
+      expression += '[^/]*';
+      continue;
+    }
+
+    if (character === '?') {
+      expression += '[^/]';
+      continue;
+    }
+
+    expression += escapeWorkbenchNoisePatternCharacter(character);
+  }
+
+  expression += '$';
+  return new RegExp(expression);
+}
+
+function escapeWorkbenchNoisePatternCharacter(character: string) {
+  return /[\\^$+?.()|[\]{}]/.test(character) ? `\\${character}` : character;
 }
 
 function normalizeFilePath(filePath: string) {

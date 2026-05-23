@@ -213,6 +213,7 @@ export type SidebarWidthMode = 'narrow' | 'default' | 'wide';
 export type WindowMaterialMode = 'auto' | 'none' | 'mica' | 'acrylic' | 'micaAlt';
 export type AccentColorPreset = 'blue' | 'emerald' | 'amber' | 'rose' | 'violet';
 export type AccentColorValue = AccentColorPreset | 'custom';
+export type ReviewDisplayMode = 'tree' | 'flat';
 export type UiFontFamilyPreset =
   | 'system'
   | 'segoe'
@@ -236,6 +237,10 @@ export type GeneralSettings = {
   autoRefreshGitStatus: boolean;
   showDebugButton: boolean;
   defaultPermissionMode: PermissionMode;
+  reviewHideNoiseFilesByDefault: boolean;
+  reviewDefaultDisplayMode: ReviewDisplayMode;
+  reviewNoisePatterns: string[];
+  reviewIgnorePatternsCustomized: boolean;
 };
 
 export type AppearanceSettings = {

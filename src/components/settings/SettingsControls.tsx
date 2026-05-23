@@ -6,11 +6,12 @@ type SettingsRowProps = {
   title: string;
   description: string;
   children: ReactNode;
+  stack?: boolean;
 };
 
-export function SettingsRow({ icon: Icon, title, description, children }: SettingsRowProps) {
+export function SettingsRow({ icon: Icon, title, description, children, stack = false }: SettingsRowProps) {
   return (
-    <div className="settings-row">
+    <div className={`settings-row${stack ? ' settings-row-stack' : ''}`}>
       <div className="settings-row-label">
         <Icon size={15} />
         <span>

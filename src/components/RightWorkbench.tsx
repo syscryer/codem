@@ -23,15 +23,17 @@ import {
   Unlink2,
   X,
 } from 'lucide-react';
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
+import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { fetchWorkspaceFilePreview } from '../lib/file-preview-api';
 import { commitGitChanges, fetchGitFileDiff, fetchGitPushPreview, fetchGitStatus, pushGitBranch } from '../lib/git-api';
 import { fetchProjectFiles } from '../lib/project-files-api';
 import {
   buildWorkbenchFileTree,
+  filterWorkbenchNoiseFiles,
   getWorkbenchFileIconKind,
   highlightWorkbenchCode,
   highlightWorkbenchCodeLine,
@@ -76,6 +78,7 @@ import type {
   GitStatusSnapshot,
   ProjectFileEntry,
   ProjectSummary,
+  ReviewDisplayMode,
   RightWorkbenchTab,
   ThreadDetail,
   WorkbenchPreviewContentState,
@@ -103,6 +106,9 @@ type RightWorkbenchProps = {
   onCloseReviewPreviewTabs: (keys: string[]) => void;
   onResolvePreviewContent: (key: string, state: WorkbenchPreviewContentState) => void;
   onGitChanged?: () => void | Promise<void>;
+  reviewHideNoiseFilesByDefault: boolean;
+  reviewDefaultDisplayMode: ReviewDisplayMode;
+  reviewNoisePatterns: string[];
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onClose: () => void;
@@ -128,6 +134,9 @@ export function RightWorkbench({
   onCloseReviewPreviewTabs,
   onResolvePreviewContent,
   onGitChanged,
+  reviewHideNoiseFilesByDefault,
+  reviewDefaultDisplayMode,
+  reviewNoisePatterns,
   showToast,
   onResizeStart,
   onClose,
@@ -209,6 +218,9 @@ export function RightWorkbench({
             onResolvePreviewContent={onResolvePreviewContent}
             showCommitBar
             onGitChanged={onGitChanged}
+            reviewHideNoiseFilesByDefault={reviewHideNoiseFilesByDefault}
+            reviewDefaultDisplayMode={reviewDefaultDisplayMode}
+            reviewNoisePatterns={reviewNoisePatterns}
             showToast={showToast}
           />
         </WorkbenchTabPanel>
@@ -304,6 +316,9 @@ function WorkbenchFiles({
   onResolvePreviewContent,
   showCommitBar = false,
   onGitChanged,
+  reviewHideNoiseFilesByDefault = true,
+  reviewDefaultDisplayMode = 'tree',
+  reviewNoisePatterns = [],
   showToast,
 }: {
   activeProject: ProjectSummary | null;
@@ -322,6 +337,9 @@ function WorkbenchFiles({
   onResolvePreviewContent: (key: string, state: WorkbenchPreviewContentState) => void;
   showCommitBar?: boolean;
   onGitChanged?: () => void | Promise<void>;
+  reviewHideNoiseFilesByDefault?: boolean;
+  reviewDefaultDisplayMode?: ReviewDisplayMode;
+  reviewNoisePatterns?: string[];
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
 }) {
   const [projectFiles, setProjectFiles] = useState<ProjectFileEntry[]>([]);
@@ -340,18 +358,26 @@ function WorkbenchFiles({
   const [commitWorking, setCommitWorking] = useState<'commit' | 'push' | null>(null);
   const [commitError, setCommitError] = useState('');
   const [selectedCommitPaths, setSelectedCommitPaths] = useState<Set<string>>(new Set());
+  const [showNoiseFiles, setShowNoiseFiles] = useState(() => !reviewHideNoiseFilesByDefault);
+  const [changedDisplayMode, setChangedDisplayMode] = useState<ReviewDisplayMode>(reviewDefaultDisplayMode);
+  const [reviewOptionsOpen, setReviewOptionsOpen] = useState(false);
   const layoutRef = useRef<HTMLDivElement | null>(null);
+  const reviewOptionsRef = useRef<HTMLDivElement | null>(null);
   const dragNavigatorWidthRef = useRef<number | null>(null);
   const dragFrameRef = useRef<number | null>(null);
 
   const changedFiles = gitStatus?.files ?? [];
+  const visibleChangedFiles = useMemo(
+    () => filterWorkbenchNoiseFiles(changedFiles, showNoiseFiles, reviewNoisePatterns),
+    [changedFiles, reviewNoisePatterns, showNoiseFiles],
+  );
   const trackedCommitPaths = useMemo(
-    () => changedFiles.filter((file) => !file.untracked).map((file) => file.path),
-    [changedFiles],
+    () => visibleChangedFiles.filter((file) => !file.untracked).map((file) => file.path),
+    [visibleChangedFiles],
   );
   const untrackedCommitPaths = useMemo(
-    () => changedFiles.filter((file) => file.untracked).map((file) => file.path),
-    [changedFiles],
+    () => visibleChangedFiles.filter((file) => file.untracked).map((file) => file.path),
+    [visibleChangedFiles],
   );
   const commitFilesCount = selectedCommitPaths.size;
   const trackedCommitAllSelected =
@@ -360,13 +386,21 @@ function WorkbenchFiles({
     untrackedCommitPaths.length > 0 && untrackedCommitPaths.every((path) => selectedCommitPaths.has(path));
   const commitDisabled = !activeProject || commitWorking !== null || commitFilesCount === 0 || !commitMessage.trim();
   const { tracked: comparableChangedFiles, untracked: untrackedChangedFiles } = useMemo(
-    () => splitWorkbenchChangedFiles(changedFiles),
-    [changedFiles],
+    () => splitWorkbenchChangedFiles(visibleChangedFiles),
+    [visibleChangedFiles],
   );
   const changedTree = useMemo(() => buildWorkbenchFileTree(comparableChangedFiles), [comparableChangedFiles]);
   const untrackedTree = useMemo(() => buildWorkbenchFileTree(untrackedChangedFiles), [untrackedChangedFiles]);
   const filteredChangedTree = useMemo(() => filterWorkbenchTree(changedTree, fileFilter), [changedTree, fileFilter]);
   const filteredUntrackedTree = useMemo(() => filterWorkbenchTree(untrackedTree, fileFilter), [untrackedTree, fileFilter]);
+  const filteredComparableChangedFiles = useMemo(
+    () => filterChangedFiles(comparableChangedFiles, fileFilter),
+    [comparableChangedFiles, fileFilter],
+  );
+  const filteredUntrackedChangedFiles = useMemo(
+    () => filterChangedFiles(untrackedChangedFiles, fileFilter),
+    [untrackedChangedFiles, fileFilter],
+  );
   const activePreviewTab = previewTabs.find((tab) => tab.key === activePreviewKey);
   const activePreviewTabKey = activePreviewTab?.key ?? '';
   const activePreviewPath = activePreviewTab?.path ?? '';
@@ -375,6 +409,12 @@ function WorkbenchFiles({
   const activeProjectIdRef = useRef(activeProject?.id ?? '');
   previewContentRef.current = previewContentByKey;
   activeProjectIdRef.current = activeProject?.id ?? '';
+
+  useOutsideDismiss({
+    selectors: [
+      { selector: '.workbench-review-options-menu', onDismiss: () => setReviewOptionsOpen(false), anchorRefs: [reviewOptionsRef] },
+    ],
+  });
 
   useEffect(() => {
     if (!activeProject) {
@@ -386,6 +426,38 @@ function WorkbenchFiles({
 
     void loadScope(scope);
   }, [activeProject?.id, scope]);
+
+  useEffect(() => {
+    setReviewOptionsOpen(false);
+  }, [activeProject?.id, scope]);
+
+  useEffect(() => {
+    setShowNoiseFiles(!reviewHideNoiseFilesByDefault);
+  }, [reviewHideNoiseFilesByDefault]);
+
+  useEffect(() => {
+    setChangedDisplayMode(reviewDefaultDisplayMode);
+  }, [reviewDefaultDisplayMode]);
+
+  useEffect(() => {
+    if (showNoiseFiles) {
+      return;
+    }
+
+    const visiblePaths = new Set(visibleChangedFiles.map((file) => file.path));
+    setSelectedCommitPaths((current) => {
+      let changed = false;
+      const next = new Set<string>();
+      current.forEach((path) => {
+        if (visiblePaths.has(path)) {
+          next.add(path);
+        } else {
+          changed = true;
+        }
+      });
+      return changed ? next : current;
+    });
+  }, [showNoiseFiles, visibleChangedFiles]);
 
   useEffect(() => {
     if (!activeProject || !activePreviewTabKey) {
@@ -490,8 +562,9 @@ function WorkbenchFiles({
       } else {
         const nextStatus = await fetchGitStatus(activeProject.id);
         setGitStatus(nextStatus);
-        setSelectedCommitPaths(new Set(nextStatus.files.map((file) => file.path)));
-        const nextGroups = splitWorkbenchChangedFiles(nextStatus.files);
+        const visibleStatusFiles = filterWorkbenchNoiseFiles(nextStatus.files, showNoiseFiles, reviewNoisePatterns);
+        setSelectedCommitPaths(new Set(visibleStatusFiles.map((file) => file.path)));
+        const nextGroups = splitWorkbenchChangedFiles(visibleStatusFiles);
         setExpandedChangedDirectories(collectDirectoryPaths(buildWorkbenchFileTree(nextGroups.tracked)));
         setExpandedUntrackedDirectories(collectDirectoryPaths(buildWorkbenchFileTree(nextGroups.untracked)));
       }
@@ -542,6 +615,18 @@ function WorkbenchFiles({
 
   function toggleCommitNode(node: WorkbenchFileTreeNode) {
     setSelectedCommitPaths((current) => toggleWorkbenchFileTreeNodeSelection(node, current));
+  }
+
+  function toggleCommitFile(file: GitFileStatus) {
+    setSelectedCommitPaths((current) => {
+      const next = new Set(current);
+      if (next.has(file.path)) {
+        next.delete(file.path);
+      } else {
+        next.add(file.path);
+      }
+      return next;
+    });
   }
 
   function toggleTrackedCommitPaths() {
@@ -675,6 +760,16 @@ function WorkbenchFiles({
     window.addEventListener('pointerup', stopResize, { once: true });
   }
 
+  function handleShowNoiseFilesChange() {
+    setReviewOptionsOpen(false);
+    setShowNoiseFiles((current) => !current);
+  }
+
+  function handleChangedDisplayModeChange(nextMode: ReviewDisplayMode) {
+    setChangedDisplayMode(nextMode);
+    setReviewOptionsOpen(false);
+  }
+
   return (
     <section className="workbench-panel workbench-files-panel">
       {!activeProject ? (
@@ -710,15 +805,21 @@ function WorkbenchFiles({
                 loading={loading}
                 error={error}
                 filter={fileFilter}
-                changedFilesCount={changedFiles.length}
+                changedFilesCount={visibleChangedFiles.length}
                 projectFiles={projectFiles}
                 directoryFiles={directoryFiles}
                 expandedDirectories={expandedDirectories}
                 expandedChangedDirectories={expandedChangedDirectories}
                 expandedUntrackedDirectories={expandedUntrackedDirectories}
                 loadingDirectory={loadingDirectory}
+                changedFiles={filteredComparableChangedFiles}
+                untrackedFiles={filteredUntrackedChangedFiles}
                 changedTree={filteredChangedTree}
                 untrackedTree={filteredUntrackedTree}
+                changedDisplayMode={changedDisplayMode}
+                showNoiseFiles={showNoiseFiles}
+                reviewOptionsOpen={reviewOptionsOpen}
+                reviewOptionsRef={reviewOptionsRef}
                 activePreviewKey={activePreviewKey}
                 onFilterChange={setFileFilter}
                 onSelectScope={null}
@@ -729,6 +830,7 @@ function WorkbenchFiles({
                 onToggleUntrackedDirectory={toggleUntrackedDirectory}
                 onOpenProjectFile={openProjectFilePreview}
                 onOpenChangedFile={openChangedPreview}
+                onToggleCommitFile={toggleCommitFile}
                 hideScopeCount={hideScopeCount}
                 emptyTitle={navigatorEmptyTitle}
                 showCommitBar={showCommitBar}
@@ -746,6 +848,9 @@ function WorkbenchFiles({
                 onCommitMessageChange={setCommitMessage}
                 onSubmitCommit={() => void handleSubmitCommit(false)}
                 onSubmitCommitAndPush={() => void handleSubmitCommit(true)}
+                onToggleReviewOptions={() => setReviewOptionsOpen((current) => !current)}
+                onToggleShowNoiseFiles={handleShowNoiseFilesChange}
+                onChangeChangedDisplayMode={handleChangedDisplayModeChange}
               />
             </>
           ) : (
@@ -1237,8 +1342,14 @@ function FileNavigator({
   expandedChangedDirectories,
   expandedUntrackedDirectories,
   loadingDirectory,
+  changedFiles,
+  untrackedFiles,
   changedTree,
   untrackedTree,
+  changedDisplayMode = 'tree',
+  showNoiseFiles = false,
+  reviewOptionsOpen = false,
+  reviewOptionsRef,
   activePreviewKey,
   onFilterChange,
   onSelectScope,
@@ -1249,6 +1360,7 @@ function FileNavigator({
   onToggleUntrackedDirectory,
   onOpenProjectFile,
   onOpenChangedFile,
+  onToggleCommitFile,
   hideScopeCount = false,
   emptyTitle,
   showCommitBar = false,
@@ -1266,6 +1378,9 @@ function FileNavigator({
   onCommitMessageChange,
   onSubmitCommit,
   onSubmitCommitAndPush,
+  onToggleReviewOptions,
+  onToggleShowNoiseFiles,
+  onChangeChangedDisplayMode,
 }: {
   scope: 'all' | 'changed';
   scopeLocked?: boolean;
@@ -1280,8 +1395,14 @@ function FileNavigator({
   expandedChangedDirectories: string[];
   expandedUntrackedDirectories: string[];
   loadingDirectory: string;
+  changedFiles: GitFileStatus[];
+  untrackedFiles: GitFileStatus[];
   changedTree: WorkbenchFileTreeNode[];
   untrackedTree: WorkbenchFileTreeNode[];
+  changedDisplayMode?: ReviewDisplayMode;
+  showNoiseFiles?: boolean;
+  reviewOptionsOpen?: boolean;
+  reviewOptionsRef: RefObject<HTMLDivElement | null>;
   activePreviewKey: string;
   onFilterChange: (filter: string) => void;
   onSelectScope: ((scope: 'all' | 'changed') => void) | null;
@@ -1292,6 +1413,7 @@ function FileNavigator({
   onToggleUntrackedDirectory: (directoryPath: string) => void;
   onOpenProjectFile: (file: ProjectFileEntry) => void;
   onOpenChangedFile: (file: GitFileStatus) => void;
+  onToggleCommitFile?: (file: GitFileStatus) => void;
   hideScopeCount?: boolean;
   emptyTitle: string;
   showCommitBar?: boolean;
@@ -1309,6 +1431,9 @@ function FileNavigator({
   onCommitMessageChange?: (message: string) => void;
   onSubmitCommit?: () => void;
   onSubmitCommitAndPush?: () => void;
+  onToggleReviewOptions?: () => void;
+  onToggleShowNoiseFiles?: () => void;
+  onChangeChangedDisplayMode?: (mode: ReviewDisplayMode) => void;
 }) {
   return (
     <aside className={`workbench-file-navigator${showCommitBar ? ' with-commit-bar' : ''}`} aria-label="文件导航">
@@ -1330,6 +1455,58 @@ function FileNavigator({
           </button>
         )}
         <div className="workbench-files-actions">
+          {scope === 'changed' ? (
+            <div ref={reviewOptionsRef} className="workbench-files-menu-anchor">
+              <button
+                type="button"
+                className={`workbench-icon-button${reviewOptionsOpen ? ' active' : ''}`}
+                title="审查视图选项"
+                aria-label="审查视图选项"
+                aria-haspopup="menu"
+                aria-expanded={reviewOptionsOpen}
+                onClick={onToggleReviewOptions}
+              >
+                <Rows3 size={15} />
+              </button>
+              <PopoverPortal open={reviewOptionsOpen} anchorRef={reviewOptionsRef} placement="bottom-end" offset={8}>
+                <div className="workspace-menu workbench-review-options-menu" role="menu" aria-label="审查视图选项">
+                  <div className="workspace-menu-group-title">分组依据</div>
+                  <button
+                    type="button"
+                    className={`workspace-menu-item${changedDisplayMode === 'tree' ? ' current' : ''}`}
+                    role="menuitemradio"
+                    aria-checked={changedDisplayMode === 'tree'}
+                    onClick={() => onChangeChangedDisplayMode?.('tree')}
+                  >
+                    {changedDisplayMode === 'tree' ? <Check size={16} /> : <Folder size={16} />}
+                    <span>目录</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`workspace-menu-item${changedDisplayMode === 'flat' ? ' current' : ''}`}
+                    role="menuitemradio"
+                    aria-checked={changedDisplayMode === 'flat'}
+                    onClick={() => onChangeChangedDisplayMode?.('flat')}
+                  >
+                    {changedDisplayMode === 'flat' ? <Check size={16} /> : <Rows3 size={16} />}
+                    <span>平铺</span>
+                  </button>
+                  <div className="workspace-menu-divider" role="separator" />
+                  <div className="workspace-menu-group-title">显示</div>
+                  <button
+                    type="button"
+                    className={`workspace-menu-item${showNoiseFiles ? ' current' : ''}`}
+                    role="menuitemcheckbox"
+                    aria-checked={showNoiseFiles}
+                    onClick={onToggleShowNoiseFiles}
+                  >
+                    {showNoiseFiles ? <Check size={16} /> : <Square size={16} />}
+                    <span>显示已忽略文件</span>
+                  </button>
+                </div>
+              </PopoverPortal>
+            </div>
+          ) : null}
           <button
             type="button"
             className="workbench-icon-button"
@@ -1373,8 +1550,11 @@ function FileNavigator({
             onToggleDirectory={onToggleDirectory}
             onOpenFile={onOpenProjectFile}
           />
-        ) : changedTree.length || untrackedTree.length ? (
+        ) : changedTree.length || untrackedTree.length || changedFiles.length || untrackedFiles.length ? (
           <ChangedFileTree
+            displayMode={changedDisplayMode}
+            changedFiles={changedFiles}
+            untrackedFiles={untrackedFiles}
             changedNodes={changedTree}
             untrackedNodes={untrackedTree}
             expandedChangedDirectories={expandedChangedDirectories}
@@ -1386,6 +1566,7 @@ function FileNavigator({
             onToggleChangedDirectory={onToggleChangedDirectory}
             onToggleUntrackedDirectory={onToggleUntrackedDirectory}
             onToggleCommitNode={onToggleCommitNode ?? (() => undefined)}
+            onToggleCommitFile={onToggleCommitFile ?? (() => undefined)}
             onToggleAllTrackedCommitPaths={onToggleTrackedCommitPaths ?? (() => undefined)}
             onToggleAllUntrackedCommitPaths={onToggleUntrackedCommitPaths ?? (() => undefined)}
             onOpenFile={onOpenChangedFile}
@@ -1556,6 +1737,9 @@ function renderProjectFileRows({
 }
 
 function ChangedFileTree({
+  displayMode,
+  changedFiles,
+  untrackedFiles,
   changedNodes,
   untrackedNodes,
   expandedChangedDirectories,
@@ -1567,10 +1751,14 @@ function ChangedFileTree({
   onToggleChangedDirectory,
   onToggleUntrackedDirectory,
   onToggleCommitNode,
+  onToggleCommitFile,
   onToggleAllTrackedCommitPaths,
   onToggleAllUntrackedCommitPaths,
   onOpenFile,
 }: {
+  displayMode: ReviewDisplayMode;
+  changedFiles: GitFileStatus[];
+  untrackedFiles: GitFileStatus[];
   changedNodes: WorkbenchFileTreeNode[];
   untrackedNodes: WorkbenchFileTreeNode[];
   expandedChangedDirectories: string[];
@@ -1582,38 +1770,45 @@ function ChangedFileTree({
   onToggleChangedDirectory: (directoryPath: string) => void;
   onToggleUntrackedDirectory: (directoryPath: string) => void;
   onToggleCommitNode: (node: WorkbenchFileTreeNode) => void;
+  onToggleCommitFile: (file: GitFileStatus) => void;
   onToggleAllTrackedCommitPaths: () => void;
   onToggleAllUntrackedCommitPaths: () => void;
   onOpenFile: (file: GitFileStatus) => void;
 }) {
   return (
     <div className="workbench-all-files-list">
-      {changedNodes.length ? (
+      {changedNodes.length || changedFiles.length ? (
         <ChangedFileTreeSection
           title="变更"
-          count={countWorkbenchFileTreeFiles(changedNodes)}
+          count={displayMode === 'flat' ? changedFiles.length : countWorkbenchFileTreeFiles(changedNodes)}
           nodes={changedNodes}
+          files={changedFiles}
+          displayMode={displayMode}
           expandedDirectories={expandedChangedDirectories}
           activePreviewKey={activePreviewKey}
           selectedCommitPaths={selectedCommitPaths}
           allSelected={allTrackedCommitSelected}
           onToggleDirectory={onToggleChangedDirectory}
           onToggleCommitNode={onToggleCommitNode}
+          onToggleCommitFile={onToggleCommitFile}
           onToggleAll={onToggleAllTrackedCommitPaths}
           onOpenFile={onOpenFile}
         />
       ) : null}
-      {untrackedNodes.length ? (
+      {untrackedNodes.length || untrackedFiles.length ? (
         <ChangedFileTreeSection
           title="未进行版本管理的文件"
-          count={countWorkbenchFileTreeFiles(untrackedNodes)}
+          count={displayMode === 'flat' ? untrackedFiles.length : countWorkbenchFileTreeFiles(untrackedNodes)}
           nodes={untrackedNodes}
+          files={untrackedFiles}
+          displayMode={displayMode}
           expandedDirectories={expandedUntrackedDirectories}
           activePreviewKey={activePreviewKey}
           selectedCommitPaths={selectedCommitPaths}
           allSelected={allUntrackedCommitSelected}
           onToggleDirectory={onToggleUntrackedDirectory}
           onToggleCommitNode={onToggleCommitNode}
+          onToggleCommitFile={onToggleCommitFile}
           onToggleAll={onToggleAllUntrackedCommitPaths}
           onOpenFile={onOpenFile}
           untracked
@@ -1627,12 +1822,15 @@ function ChangedFileTreeSection({
   title,
   count,
   nodes,
+  files,
+  displayMode,
   expandedDirectories,
   activePreviewKey,
   selectedCommitPaths,
   allSelected = false,
   onToggleDirectory,
   onToggleCommitNode,
+  onToggleCommitFile,
   onToggleAll,
   onOpenFile,
   untracked = false,
@@ -1640,12 +1838,15 @@ function ChangedFileTreeSection({
   title: string;
   count: number;
   nodes: WorkbenchFileTreeNode[];
+  files: GitFileStatus[];
+  displayMode: ReviewDisplayMode;
   expandedDirectories: string[];
   activePreviewKey: string;
   selectedCommitPaths: Set<string>;
   allSelected?: boolean;
   onToggleDirectory: (directoryPath: string) => void;
   onToggleCommitNode: (node: WorkbenchFileTreeNode) => void;
+  onToggleCommitFile: (file: GitFileStatus) => void;
   onToggleAll?: () => void;
   onOpenFile: (file: GitFileStatus) => void;
   untracked?: boolean;
@@ -1661,17 +1862,26 @@ function ChangedFileTreeSection({
         </div>
         <span>{count} 个文件</span>
       </div>
-      {renderChangedFileTreeRows({
-        nodes,
-        expandedDirectories,
-        activePreviewKey,
-        selectedCommitPaths,
-        depth: 0,
-        onToggleDirectory,
-        onToggleCommitNode,
-        onOpenFile,
-        untracked,
-      })}
+      {displayMode === 'flat'
+        ? renderChangedFileFlatRows({
+            files,
+            activePreviewKey,
+            selectedCommitPaths,
+            onToggleCommitFile,
+            onOpenFile,
+            untracked,
+          })
+        : renderChangedFileTreeRows({
+            nodes,
+            expandedDirectories,
+            activePreviewKey,
+            selectedCommitPaths,
+            depth: 0,
+            onToggleDirectory,
+            onToggleCommitNode,
+            onOpenFile,
+            untracked,
+          })}
     </section>
   );
 }
@@ -1900,6 +2110,68 @@ function renderChangedFileTreeRows({
   });
 }
 
+function renderChangedFileFlatRows({
+  files,
+  activePreviewKey,
+  selectedCommitPaths,
+  onToggleCommitFile,
+  onOpenFile,
+  untracked = false,
+}: {
+  files: GitFileStatus[];
+  activePreviewKey: string;
+  selectedCommitPaths: Set<string>;
+  onToggleCommitFile: (file: GitFileStatus) => void;
+  onOpenFile: (file: GitFileStatus) => void;
+  untracked?: boolean;
+}): ReactNode[] {
+  return files.map((file) => {
+    const checked = selectedCommitPaths.has(file.path);
+    const statusTone = !untracked ? getGitStatusTone(file.status) : '';
+    const fileName = getFileName(file.path);
+    const directoryPath = getFileDirectoryPath(file.path);
+
+    return (
+      <button
+        key={file.path}
+        type="button"
+        className={`workbench-tree-row selectable has-check flat${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === buildChangedWorkbenchPreviewKey(file.path) ? ' active' : ''}`}
+        onClick={() => onOpenFile(file)}
+      >
+        <span className="workbench-tree-spacer" />
+        <span
+          className="workbench-tree-check"
+          role="checkbox"
+          aria-checked={checked}
+          tabIndex={0}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleCommitFile(file);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              event.stopPropagation();
+              onToggleCommitFile(file);
+            }
+          }}
+        >
+          {checked ? <CheckSquare size={15} /> : <Square size={15} />}
+        </span>
+        <FileIcon path={file.path} type="file" />
+        <span className="workbench-tree-row-main">
+          <span className={statusTone ? `workbench-file-name status-${statusTone}` : 'workbench-file-name'} title={file.path}>
+            {fileName}
+          </span>
+          <span className="workbench-tree-row-meta" title={directoryPath || '项目根目录'}>
+            {directoryPath || '项目根目录'}
+          </span>
+        </span>
+      </button>
+    );
+  });
+}
+
 function countWorkbenchFileTreeFiles(nodes: WorkbenchFileTreeNode[]): number {
   return nodes.reduce((count, node) => {
     if (node.type === 'file') {
@@ -2030,6 +2302,15 @@ function filterProjectEntries(files: ProjectFileEntry[], filter: string) {
   return files.filter((file) => file.path.toLowerCase().includes(normalizedFilter));
 }
 
+function filterChangedFiles(files: GitFileStatus[], filter: string) {
+  const normalizedFilter = filter.trim().toLowerCase();
+  if (!normalizedFilter) {
+    return files;
+  }
+
+  return files.filter((file) => file.path.toLowerCase().includes(normalizedFilter));
+}
+
 function filterWorkbenchTree(nodes: WorkbenchFileTreeNode[], filter: string): WorkbenchFileTreeNode[] {
   const normalizedFilter = filter.trim().toLowerCase();
   if (!normalizedFilter) {
@@ -2054,6 +2335,17 @@ function collectDirectoryPaths(nodes: WorkbenchFileTreeNode[]) {
 
     return [node.path, ...collectDirectoryPaths(node.children)];
   });
+}
+
+function getFileName(filePath: string) {
+  const parts = filePath.replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts[parts.length - 1] ?? filePath;
+}
+
+function getFileDirectoryPath(filePath: string) {
+  const parts = filePath.replace(/\\/g, '/').split('/').filter(Boolean);
+  parts.pop();
+  return parts.join('/');
 }
 
 function WorkbenchEmpty({

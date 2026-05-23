@@ -2,17 +2,23 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { cloneDefaultWorkbenchIgnorePatterns, mergeWorkbenchIgnorePatterns } from '../../src/lib/review-ignore-patterns.js';
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 export type InterfaceDensity = 'comfortable' | 'compact';
 export type SidebarWidthMode = 'narrow' | 'default' | 'wide';
 export type WindowMaterialMode = 'auto' | 'none' | 'mica' | 'acrylic' | 'micaAlt';
+export type ReviewDisplayMode = 'tree' | 'flat';
 
 export type GeneralSettings = {
   restoreLastSelectionOnLaunch: boolean;
   autoRefreshGitStatus: boolean;
   showDebugButton: boolean;
   defaultPermissionMode: PermissionMode;
+  reviewHideNoiseFilesByDefault: boolean;
+  reviewDefaultDisplayMode: ReviewDisplayMode;
+  reviewNoisePatterns: string[];
+  reviewIgnorePatternsCustomized: boolean;
 };
 
 export type PermissionMode = 'default' | 'plan' | 'acceptEdits' | 'auto' | 'dontAsk' | 'bypassPermissions';
@@ -121,6 +127,10 @@ export const defaultGeneralSettings: GeneralSettings = {
   autoRefreshGitStatus: true,
   showDebugButton: true,
   defaultPermissionMode: 'default',
+  reviewHideNoiseFilesByDefault: true,
+  reviewDefaultDisplayMode: 'tree',
+  reviewNoisePatterns: cloneDefaultWorkbenchIgnorePatterns(),
+  reviewIgnorePatternsCustomized: false,
 };
 
 export const defaultModelSettings: ModelSettings = {
@@ -277,6 +287,18 @@ export function normalizeAppSettings(value: unknown): AppSettings {
 
 function normalizeGeneralSettings(value: unknown): GeneralSettings {
   const record = isRecord(value) ? value : {};
+  const normalizedPatterns = normalizeStringArray(record.reviewNoisePatterns, 160);
+  const hasCustomizedFlag = typeof record.reviewIgnorePatternsCustomized === 'boolean';
+  const reviewIgnorePatternsCustomized = normalizeBoolean(record.reviewIgnorePatternsCustomized, false);
+  const reviewNoisePatterns = hasCustomizedFlag
+    ? reviewIgnorePatternsCustomized
+      ? normalizedPatterns
+      : cloneDefaultWorkbenchIgnorePatterns()
+    : mergeWorkbenchIgnorePatterns([
+      ...cloneDefaultWorkbenchIgnorePatterns(),
+      ...normalizedPatterns,
+    ]);
+
   return {
     restoreLastSelectionOnLaunch: normalizeBoolean(
       record.restoreLastSelectionOnLaunch,
@@ -289,6 +311,17 @@ function normalizeGeneralSettings(value: unknown): GeneralSettings {
       ['default', 'auto', 'bypassPermissions'],
       defaultGeneralSettings.defaultPermissionMode,
     ),
+    reviewHideNoiseFilesByDefault: normalizeBoolean(
+      record.reviewHideNoiseFilesByDefault,
+      defaultGeneralSettings.reviewHideNoiseFilesByDefault,
+    ),
+    reviewDefaultDisplayMode: normalizeEnum(
+      record.reviewDefaultDisplayMode,
+      ['tree', 'flat'],
+      defaultGeneralSettings.reviewDefaultDisplayMode,
+    ),
+    reviewNoisePatterns,
+    reviewIgnorePatternsCustomized,
   };
 }
 

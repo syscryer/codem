@@ -2081,6 +2081,25 @@ svg {
   height: 26px;
 }
 
+.workbench-files-menu-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.workbench-files-actions .workbench-icon-button.active {
+  background: rgba(156, 163, 175, 0.16);
+  color: #202020;
+}
+
+.workbench-review-options-menu {
+  min-width: 188px;
+  max-width: 220px;
+}
+
+.workbench-review-options-menu .workspace-menu-item.current {
+  background: rgba(156, 163, 175, 0.12);
+}
+
 .workbench-file-filter {
   min-width: 0;
   display: grid;
@@ -2305,6 +2324,32 @@ svg {
 
 .workbench-tree-row.active {
   background: rgba(156, 163, 175, 0.14);
+}
+
+.workbench-tree-row.flat {
+  height: auto;
+  min-height: 42px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.workbench-tree-row-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workbench-tree-row-main > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-tree-row-meta {
+  color: #8a8f98;
+  font-size: 11px;
 }
 
 .workbench-file-name.status-modified {
@@ -7358,6 +7403,16 @@ svg {
   border-bottom: 0;
 }
 
+.settings-panel-subtitle {
+  padding: 10px 12px 6px;
+  border-bottom: 1px solid #f0f0f0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: color-mix(in srgb, var(--accent) 4%, #ffffff);
+}
+
 .settings-row-label {
   min-width: 0;
   display: flex;
@@ -7399,6 +7454,10 @@ svg {
 .settings-row-stack {
   grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
+}
+
+.settings-row-stack .settings-row-control {
+  justify-content: stretch;
 }
 
 .settings-inline-value {
@@ -9092,6 +9151,56 @@ svg {
   font-family: var(--code-font);
   font-size: var(--app-code-font-size);
   line-height: 1.5;
+}
+
+.settings-ignore-editor {
+  width: 100%;
+  display: grid;
+  gap: 12px;
+}
+
+.settings-ignore-editor-head,
+.settings-ignore-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-ignore-editor-head {
+  flex-wrap: wrap;
+}
+
+.settings-ignore-editor-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, #d8dde6);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, #ffffff);
+  color: color-mix(in srgb, var(--accent) 62%, #5f6b7a);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-ignore-editor-textarea {
+  min-height: 176px;
+  margin-top: 0;
+}
+
+.settings-ignore-editor-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settings-ignore-editor-actions {
+  align-items: flex-end;
+}
+
+.settings-ignore-editor-actions .settings-editor-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .settings-editor-status {

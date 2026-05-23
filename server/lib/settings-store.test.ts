@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { cloneDefaultWorkbenchIgnorePatterns } from '../../src/lib/review-ignore-patterns.js';
 
 import {
   createSettingsStore,
@@ -62,6 +63,10 @@ test('normalizeAppSettings preserves valid appearance values', () => {
       autoRefreshGitStatus: false,
       showDebugButton: false,
       defaultPermissionMode: 'auto',
+      reviewHideNoiseFilesByDefault: false,
+      reviewDefaultDisplayMode: 'flat',
+      reviewNoisePatterns: ['.idea', '*.bak'],
+      reviewIgnorePatternsCustomized: true,
     },
     appearance: {
       themeMode: 'dark',
@@ -91,6 +96,10 @@ test('normalizeAppSettings preserves valid appearance values', () => {
       autoRefreshGitStatus: false,
       showDebugButton: false,
       defaultPermissionMode: 'auto',
+      reviewHideNoiseFilesByDefault: false,
+      reviewDefaultDisplayMode: 'flat',
+      reviewNoisePatterns: ['.idea', '*.bak'],
+      reviewIgnorePatternsCustomized: true,
     },
     appearance: {
       themeMode: 'dark',
@@ -271,6 +280,10 @@ test('updateGeneralSettings writes formatted JSON and can read it back', () => {
       autoRefreshGitStatus: false,
       showDebugButton: false,
       defaultPermissionMode: 'bypassPermissions',
+      reviewHideNoiseFilesByDefault: false,
+      reviewDefaultDisplayMode: 'flat',
+      reviewNoisePatterns: ['cache/**', '*.bak'],
+      reviewIgnorePatternsCustomized: true,
     });
 
     const expected = {
@@ -279,6 +292,10 @@ test('updateGeneralSettings writes formatted JSON and can read it back', () => {
         autoRefreshGitStatus: false,
         showDebugButton: false,
         defaultPermissionMode: 'bypassPermissions',
+        reviewHideNoiseFilesByDefault: false,
+        reviewDefaultDisplayMode: 'flat',
+        reviewNoisePatterns: ['cache/**', '*.bak'],
+        reviewIgnorePatternsCustomized: true,
       },
       appearance: defaultAppSettings.appearance,
       models: defaultAppSettings.models,
@@ -406,6 +423,21 @@ test('normalizeAppSettings falls back to defaults for invalid appearance values'
   });
 
   assert.deepEqual(settings, defaultAppSettings);
+});
+
+test('normalizeAppSettings migrates legacy ignore-rule extras into the recommended defaults', () => {
+  const settings = normalizeAppSettings({
+    general: {
+      reviewNoisePatterns: ['cache/**', '*.bak'],
+    },
+  });
+
+  assert.deepEqual(settings.general.reviewNoisePatterns, [
+    ...cloneDefaultWorkbenchIgnorePatterns(),
+    'cache/**',
+    '*.bak',
+  ]);
+  assert.equal(settings.general.reviewIgnorePatternsCustomized, false);
 });
 
 test('normalizeAppSettings preserves custom accent color values', () => {

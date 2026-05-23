@@ -1,5 +1,6 @@
 import { normalizeShortcutValue } from './shortcuts';
 import { CLAUDE_MODEL_SLOT_VALUES, DEFAULT_CUSTOM_ACCENT_COLOR, normalizeAccentHexColor } from '../constants';
+import { cloneDefaultWorkbenchIgnorePatterns, mergeWorkbenchIgnorePatterns } from './review-ignore-patterns';
 import type {
   AppSettings,
   AppearanceSettings,
@@ -20,6 +21,10 @@ export const defaultGeneralSettings: GeneralSettings = {
   autoRefreshGitStatus: true,
   showDebugButton: true,
   defaultPermissionMode: 'default',
+  reviewHideNoiseFilesByDefault: true,
+  reviewDefaultDisplayMode: 'tree',
+  reviewNoisePatterns: cloneDefaultWorkbenchIgnorePatterns(),
+  reviewIgnorePatternsCustomized: false,
 };
 
 export const defaultAppearanceSettings: AppearanceSettings = {
@@ -192,6 +197,18 @@ function normalizeAppSettings(settings: unknown): AppSettings {
 
 export function normalizeGeneralSettings(general: unknown): GeneralSettings {
   const record = isRecord(general) ? general : {};
+  const normalizedPatterns = normalizeStringArray(record.reviewNoisePatterns, 160);
+  const hasCustomizedFlag = typeof record.reviewIgnorePatternsCustomized === 'boolean';
+  const reviewIgnorePatternsCustomized = normalizeBoolean(record.reviewIgnorePatternsCustomized, false);
+  const reviewNoisePatterns = hasCustomizedFlag
+    ? reviewIgnorePatternsCustomized
+      ? normalizedPatterns
+      : cloneDefaultWorkbenchIgnorePatterns()
+    : mergeWorkbenchIgnorePatterns([
+      ...cloneDefaultWorkbenchIgnorePatterns(),
+      ...normalizedPatterns,
+    ]);
+
   return {
     restoreLastSelectionOnLaunch: normalizeBoolean(
       record.restoreLastSelectionOnLaunch,
@@ -204,6 +221,17 @@ export function normalizeGeneralSettings(general: unknown): GeneralSettings {
       ['default', 'auto', 'bypassPermissions'],
       defaultGeneralSettings.defaultPermissionMode,
     ),
+    reviewHideNoiseFilesByDefault: normalizeBoolean(
+      record.reviewHideNoiseFilesByDefault,
+      defaultGeneralSettings.reviewHideNoiseFilesByDefault,
+    ),
+    reviewDefaultDisplayMode: normalizeOneOf(
+      record.reviewDefaultDisplayMode,
+      ['tree', 'flat'],
+      defaultGeneralSettings.reviewDefaultDisplayMode,
+    ),
+    reviewNoisePatterns,
+    reviewIgnorePatternsCustomized,
   };
 }
 

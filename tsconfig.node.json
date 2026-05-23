@@ -13,5 +13,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["server", "vite.config.ts"]
+  "include": ["server", "src/lib/review-ignore-patterns.ts", "vite.config.ts"]
 }

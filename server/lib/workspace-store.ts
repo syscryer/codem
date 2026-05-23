@@ -1260,13 +1260,14 @@ export async function removeProjectGitWorktree(projectId: string, worktreePath: 
 export async function getProjectGitStatus(projectId: string): Promise<GitStatusSnapshot> {
   const projectPath = readProjectPath(projectId);
   await ensureGitRepository(projectPath);
+  const repositoryRoot = await readGitRepositoryRoot(projectPath);
 
-  const result = await runGitCommand(projectPath, ['status', '--porcelain=v1', '-b', '-uall']);
+  const result = await runGitCommand(projectPath, ['-c', 'core.quotepath=false', 'status', '--porcelain=v1', '-b', '-uall']);
   if (result.status !== 0) {
     throw new Error(normalizeGitCommandError(result, '读取 Git 状态失败'));
   }
 
-  return parseGitStatus(result.stdout);
+  return parseGitStatus(result.stdout, projectPath, repositoryRoot);
 }
 
 export async function getProjectGitFileDiff(projectId: string, filePath: string) {
@@ -2927,18 +2928,45 @@ function timestampSlug() {
   ].join('');
 }
 
-function parseGitStatus(output: string): GitStatusSnapshot {
+function parseGitStatus(output: string, projectPath: string, repositoryRoot: string): GitStatusSnapshot {
   const lines = output.split(/\r?\n/).filter(Boolean);
   const header = lines.find((line) => line.startsWith('## '));
   const branchInfo = parseGitStatusHeader(header);
   const files = lines
     .filter((line) => !line.startsWith('## '))
     .map(parseGitStatusLine)
+    .map((file) => normalizeGitStatusFilePath(file, projectPath, repositoryRoot))
     .filter((file): file is GitFileStatus => Boolean(file));
 
   return {
     ...branchInfo,
     files,
+  };
+}
+
+function normalizeGitStatusFilePath(
+  file: GitFileStatus | null,
+  projectPath: string,
+  repositoryRoot: string,
+): GitFileStatus | null {
+  if (!file) {
+    return null;
+  }
+
+  const normalizedPath = relativizeGitPathToProject(projectPath, repositoryRoot, file.path);
+  if (normalizedPath === null) {
+    return null;
+  }
+
+  const normalizedOriginalPath =
+    file.originalPath === undefined
+      ? undefined
+      : relativizeGitPathToProject(projectPath, repositoryRoot, file.originalPath);
+
+  return {
+    ...file,
+    path: normalizedPath,
+    originalPath: normalizedOriginalPath ?? undefined,
   };
 }
 
@@ -3026,7 +3054,81 @@ function buildGitStatusLabel(indexStatus: string, worktreeStatus: string) {
 }
 
 function normalizeGitRelativePath(filePath: string) {
-  return filePath.replace(/^"|"$/g, '').replace(/\\/g, '/').trim();
+  const trimmedPath = filePath.trim();
+  const decodedPath =
+    trimmedPath.startsWith('"') && trimmedPath.endsWith('"')
+      ? decodeGitQuotedPath(trimmedPath.slice(1, -1))
+      : trimmedPath;
+
+  return decodedPath.replace(/\\/g, '/').trim();
+}
+
+function relativizeGitPathToProject(projectPath: string, repositoryRoot: string, filePath: string) {
+  const absolutePath = path.resolve(repositoryRoot, filePath.replace(/\//g, path.sep));
+  if (!isPathInsideRoot(absolutePath, projectPath)) {
+    return null;
+  }
+
+  return normalizeGitRelativePath(path.relative(projectPath, absolutePath));
+}
+
+function decodeGitQuotedPath(filePath: string) {
+  const bytes: number[] = [];
+
+  for (let index = 0; index < filePath.length; index += 1) {
+    const current = filePath[index];
+    if (current !== '\\') {
+      bytes.push(...Buffer.from(current));
+      continue;
+    }
+
+    const next = filePath[index + 1];
+    if (!next) {
+      bytes.push(92);
+      continue;
+    }
+
+    if (/[0-7]/.test(next) && /[0-7]/.test(filePath[index + 2] ?? '') && /[0-7]/.test(filePath[index + 3] ?? '')) {
+      bytes.push(Number.parseInt(filePath.slice(index + 1, index + 4), 8));
+      index += 3;
+      continue;
+    }
+
+    const escaped = decodeGitQuotedEscape(next);
+    if (escaped === null) {
+      bytes.push(...Buffer.from(next));
+    } else {
+      bytes.push(escaped);
+    }
+    index += 1;
+  }
+
+  return Buffer.from(bytes).toString('utf8');
+}
+
+function decodeGitQuotedEscape(value: string) {
+  switch (value) {
+    case 'a':
+      return 7;
+    case 'b':
+      return 8;
+    case 'f':
+      return 12;
+    case 'n':
+      return 10;
+    case 'r':
+      return 13;
+    case 't':
+      return 9;
+    case 'v':
+      return 11;
+    case '"':
+      return 34;
+    case '\\':
+      return 92;
+    default:
+      return null;
+  }
 }
 
 function normalizeUndoConversationChanges(projectPath: string, changes: UndoConversationChange[]) {

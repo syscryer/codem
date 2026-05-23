@@ -1045,6 +1045,9 @@ export default function App() {
                 onCloseReviewPreviewTabs={(tabKeys) => closeWorkbenchPreviewMany('review', tabKeys)}
                 onResolvePreviewContent={resolveWorkbenchPreviewContent}
                 onGitChanged={() => activeProjectId ? refreshProjectGitSummary(activeProjectId) : undefined}
+                reviewHideNoiseFilesByDefault={general.reviewHideNoiseFilesByDefault}
+                reviewDefaultDisplayMode={general.reviewDefaultDisplayMode}
+                reviewNoisePatterns={general.reviewNoisePatterns}
                 showToast={showToast}
                 onResizeStart={handleRightWorkbenchResizeStart}
                 onClose={() => setRightWorkbenchOpen(false)}
