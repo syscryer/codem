@@ -1452,12 +1452,22 @@ function getRunningTurnLabel(turn: ConversationTurn) {
   }
 
   if (turn.phase === 'requesting') {
+    const activity = turn.activity?.trim();
     if (turn.activity === '继续执行中') {
       return '继续执行中';
     }
 
     if (turn.activity === '等待 Claude 调整计划') {
       return '等待调整计划';
+    }
+
+    if (
+      activity &&
+      activity !== '等待 Claude 响应' &&
+      activity !== 'Claude Code 已启动' &&
+      activity !== 'Claude Code 已接收用户消息'
+    ) {
+      return activity;
     }
 
     return '等待响应';

@@ -101,6 +101,30 @@ test('run events are buffered for reconnect instead of being tied to one respons
   assert.match(bufferedEventBody, /return null/);
 });
 
+test('Claude retry progress from stderr is surfaced as a running phase update', () => {
+  const stderrBody = extractFunctionBody('flushRuntimeStderrLine');
+  const bindRuntimeBody = extractFunctionBody('bindClaudeRuntime');
+
+  assert.match(source, /parseClaudeRetryStatus/);
+  assert.match(source, /splitClaudeStderrBuffer/);
+  assert.match(bindRuntimeBody, /splitClaudeStderrBuffer\(runtime\.stderrBuffer\)/);
+  assert.match(bindRuntimeBody, /parseClaudeRetryStatus\(runtime\.stderrBuffer\)/);
+  assert.match(stderrBody, /parseClaudeRetryStatus\(trimmed\)/);
+  assert.match(stderrBody, /type:\s*['"]phase['"]/);
+  assert.match(stderrBody, /phase:\s*['"]requesting['"]/);
+  assert.match(stderrBody, /label:\s*retryStatus\.message/);
+});
+
+test('Claude stream api_retry events are surfaced as retry phase updates', () => {
+  const handleBody = extractFunctionBody('handleClaudePayload');
+
+  assert.match(handleBody, /payload\.subtype === ['"]api_retry['"]/);
+  assert.match(handleBody, /parseClaudeApiRetryStatus\(payload\)/);
+  assert.match(handleBody, /type:\s*['"]phase['"]/);
+  assert.match(handleBody, /phase:\s*['"]requesting['"]/);
+  assert.match(handleBody, /label:\s*retryStatus\.message/);
+});
+
 test('client disconnect detaches a run instead of cancelling the Claude process', () => {
   assert.match(serverSource, /response\.on\(['"]close['"]/);
   assert.match(serverSource, /markRunDetached\(currentRunId\)/);

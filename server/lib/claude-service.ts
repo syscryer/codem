@@ -3,6 +3,7 @@ import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type { Readable, Writable } from 'node:stream';
 import { getConfiguredModelOptions } from './claude-models.js';
+import { parseClaudeApiRetryStatus, parseClaudeRetryStatus, splitClaudeStderrBuffer } from './claude-stderr.js';
 
 export type ClaudePermissionMode =
   | 'default'
@@ -1238,11 +1239,16 @@ function bindClaudeRuntime(runtime: ClaudeRuntime) {
 
   runtime.child.stderr.on('data', (chunk: Buffer | string) => {
     runtime.stderrBuffer += chunk.toString();
-    const lines = runtime.stderrBuffer.split(/\r?\n/);
-    runtime.stderrBuffer = lines.pop() ?? '';
+    const { lines, rest } = splitClaudeStderrBuffer(runtime.stderrBuffer);
+    runtime.stderrBuffer = rest;
 
     for (const line of lines) {
       flushRuntimeStderrLine(runtime, line);
+    }
+
+    if (parseClaudeRetryStatus(runtime.stderrBuffer)) {
+      flushRuntimeStderrLine(runtime, runtime.stderrBuffer);
+      runtime.stderrBuffer = '';
     }
   });
 
@@ -1408,6 +1414,18 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
       subtype: payload.subtype,
       raw: payload,
     });
+  }
+
+  if (payload.type === 'system' && payload.subtype === 'api_retry' && !isSidechain) {
+    const retryStatus = parseClaudeApiRetryStatus(payload);
+    if (retryStatus) {
+      enqueue({
+        type: 'phase',
+        runId,
+        phase: 'requesting',
+        label: retryStatus.message,
+      });
+    }
   }
 
   if (payload.type === 'system' && payload.subtype === 'status' && !isSidechain) {
@@ -1799,6 +1817,16 @@ function flushRuntimeStderrLine(runtime: ClaudeRuntime, line: string) {
   const trimmed = line.trim();
   if (!state || !trimmed) {
     return;
+  }
+
+  const retryStatus = parseClaudeRetryStatus(trimmed);
+  if (retryStatus) {
+    enqueueRunEvent(state, {
+      type: 'phase',
+      runId: state.runId,
+      phase: 'requesting',
+      label: retryStatus.message,
+    });
   }
 
   enqueueRunEvent(state, {
