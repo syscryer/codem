@@ -35,6 +35,8 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   ClaudeEvent,
+  ClaudeEffortLevel,
+  ClaudeEffortSelection,
   ClaudeModelInfo,
   ClaudeModelOption,
   ConversationTurn,
@@ -69,6 +71,7 @@ type ActiveRunInfo = {
   sessionId?: string;
   permissionMode: PermissionMode;
   model?: string;
+  effort?: ClaudeEffortLevel;
   startedAtMs: number;
   eventCount: number;
   finished: boolean;
@@ -94,6 +97,7 @@ type RunContext = {
   firstTextApplyAtMs: number;
   latestSessionId?: string;
   model: string;
+  effort: ClaudeEffortSelection;
   permissionMode: PermissionMode;
 };
 
@@ -166,6 +170,7 @@ export function useClaudeRun({
   const [workspace, setWorkspace] = useState('');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode);
   const [model, setModelState] = useState(DEFAULT_MODEL_VALUE);
+  const [effort, setEffortState] = useState<ClaudeEffortSelection>('default');
   const [claudeModels, setClaudeModels] = useState<ClaudeModelInfo>({ available: false, models: [] });
   const [health, setHealth] = useState<{ available: boolean; command?: string; error?: string }>({
     available: false,
@@ -182,6 +187,7 @@ export function useClaudeRun({
   const activeTurnIdRef = useRef('');
   const modelSelectionResetKeyRef = useRef('');
   const modelRef = useRef(DEFAULT_MODEL_VALUE);
+  const effortRef = useRef<ClaudeEffortSelection>('default');
 
   const runningThreadIds = Object.keys(activeRunsByThreadId);
   const isRunning = runningThreadIds.length > 0;
@@ -604,12 +610,14 @@ export function useClaudeRun({
         workingDirectory: thread.workingDirectory,
         permissionMode: isVisiblePermissionMode(thread.permissionMode) ? thread.permissionMode : defaultPermissionMode,
         model: thread.model,
+        effort: context.effort,
       },
       {
         latestSessionId: context.latestSessionId,
         workingDirectory: context.workingDirectory,
         permissionMode: context.permissionMode,
         model: context.model,
+        effort: context.effort,
       },
       nextPrompt.reuseSession !== false,
     );
@@ -620,6 +628,7 @@ export function useClaudeRun({
         sessionId: runOptions.sessionId,
         permissionModeOverride: runOptions.permissionModeOverride,
         modelOverride: runOptions.modelOverride,
+        effortOverride: runOptions.effortOverride,
         displayText: nextPrompt.displayText,
         attachments: nextPrompt.attachments,
         initialAssistantItems: nextPrompt.initialAssistantItems,
@@ -724,6 +733,7 @@ export function useClaudeRun({
       initialActivity?: string;
       permissionModeOverride?: PermissionMode;
       modelOverride?: string;
+      effortOverride?: ClaudeEffortSelection;
       toolResult?: {
         requestId: string;
         content: string;
@@ -743,7 +753,9 @@ export function useClaudeRun({
       options?.sessionId && options.sessionId.trim() ? options.sessionId.trim() : undefined;
     const runPermissionMode = options?.permissionModeOverride ?? permissionMode;
     const runModel = options?.modelOverride ?? modelRef.current;
+    const runEffort = normalizeClaudeEffortSelection(options?.effortOverride ?? effortRef.current);
     const requestModel = resolveRequestModel(findModelOption(models, runModel), runModel);
+    const requestEffort = resolveRequestEffort(runEffort);
     const submitAtMs = Date.now();
     const turnId = crypto.randomUUID();
     const turnDisplayText = normalizeDisplayText(options?.displayText, trimmedPrompt);
@@ -761,6 +773,7 @@ export function useClaudeRun({
       firstTextApplyAtMs: 0,
       latestSessionId: runSessionId,
       model: runModel,
+      effort: runEffort,
       permissionMode: runPermissionMode,
     };
     registerRunContext(context);
@@ -809,6 +822,7 @@ export function useClaudeRun({
           workingDirectory: runWorkingDirectory,
           permissionMode: runPermissionMode,
           model: requestModel,
+          effort: requestEffort,
           sessionId: runSessionId,
           toolResult: options?.toolResult,
           clientSubmitAtMs: submitAtMs,
@@ -910,6 +924,7 @@ export function useClaudeRun({
         firstTextApplyAtMs: 0,
         latestSessionId: activeRun.sessionId,
         model: resolveInitialModelId(activeRun.model, models, model),
+        effort: normalizeClaudeEffortSelection(activeRun.effort),
         permissionMode: activeRun.permissionMode || permissionMode,
       };
       registerRunContext(context);
@@ -1486,6 +1501,12 @@ export function useClaudeRun({
     }
   }
 
+  function handleEffortSelect(nextEffort: ClaudeEffortSelection) {
+    const normalizedEffort = normalizeClaudeEffortSelection(nextEffort);
+    effortRef.current = normalizedEffort;
+    setEffortState(normalizedEffort);
+  }
+
   async function stopRun(threadId = activeThreadId ?? undefined) {
     const context = threadId ? runContextsByThreadIdRef.current.get(threadId) : undefined;
     if (!context) {
@@ -1787,6 +1808,7 @@ export function useClaudeRun({
     workspace,
     permissionMode,
     model,
+    effort,
     models,
     claudeModels,
     health,
@@ -1802,6 +1824,7 @@ export function useClaudeRun({
     setWorkspace,
     setPermissionMode,
     setModel: handleModelSelect,
+    setEffort: handleEffortSelect,
     handlePermissionModeSelect,
     submitPrompt,
     submitPromptToThread,
@@ -2397,6 +2420,15 @@ function normalizeClaudeModelOptions(value: unknown): ClaudeModelOption[] {
         : undefined;
     const kind =
       record.kind === 'default' || record.kind === 'slot' || record.kind === 'custom' ? record.kind : undefined;
+    const supportsContext1m = record.supportsContext1m === true;
+    const context1mModel =
+      typeof record.context1mModel === 'string' && record.context1mModel.trim()
+        ? record.context1mModel.trim()
+        : undefined;
+    const contextWindowTokens =
+      typeof record.contextWindowTokens === 'number' && Number.isFinite(record.contextWindowTokens) && record.contextWindowTokens > 0
+        ? record.contextWindowTokens
+        : undefined;
 
     result.push({
       id,
@@ -2404,6 +2436,9 @@ function normalizeClaudeModelOptions(value: unknown): ClaudeModelOption[] {
       description,
       model,
       kind,
+      supportsContext1m,
+      context1mModel,
+      contextWindowTokens,
     });
   }
 
@@ -2426,6 +2461,18 @@ function resolveRequestModel(option: ClaudeModelOption | undefined, modelId: str
   return option.model || option.id;
 }
 
+function normalizeClaudeEffortSelection(value: unknown): ClaudeEffortSelection {
+  if (value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' || value === 'max') {
+    return value;
+  }
+
+  return 'default';
+}
+
+function resolveRequestEffort(effort: ClaudeEffortSelection): ClaudeEffortLevel | undefined {
+  return effort === 'default' ? undefined : effort;
+}
+
 function resolveInitialModelId(
   savedModel: string | undefined,
   models: ClaudeModelOption[],
@@ -2443,11 +2490,18 @@ function resolveInitialModelId(
       return byModel.id;
     }
 
+    const byContext1mModel = models.find((option) => option.context1mModel === normalized);
+    if (byContext1mModel) {
+      return normalized;
+    }
+
     return normalized;
   }
 
   const fallback = fallbackModelId?.trim() || DEFAULT_MODEL_VALUE;
-  return models.some((option) => option.id === fallback) ? fallback : DEFAULT_MODEL_VALUE;
+  return models.some((option) => option.id === fallback || option.context1mModel === fallback)
+    ? fallback
+    : DEFAULT_MODEL_VALUE;
 }
 
 async function readErrorResponseText(response: Response) {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
-import { ArrowUp, Check, CornerDownRight, Image, Mic, Pencil, Plus, Puzzle, Shield, Square, Unlock, X, Zap } from 'lucide-react';
+import { ArrowUp, Brain, Check, CornerDownRight, Image, Mic, Pencil, Plus, Puzzle, Shield, Square, Unlock, X, Zap } from 'lucide-react';
 import { permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
@@ -11,7 +11,7 @@ import { buildPromptWithImageAttachments } from '../lib/composer-attachments';
 import { applySlashCommandSelection, getNextSlashCommandIndex } from '../lib/slash-command-editor';
 import { getSlashDismissResetKey, resolveSlashCommandSubmission } from '../lib/slash-command-submit';
 import { modelLabel, modelMenuDescriptionLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
-import type { AgentType, ClaudeModelOption, ConversationTurn, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
+import type { AgentType, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingImageAttachment = {
   id: string;
@@ -19,11 +19,25 @@ type PendingImageAttachment = {
   previewUrl: string;
 };
 
+const claudeEffortOptions: Array<{
+  value: ClaudeEffortSelection;
+  label: string;
+  description: string;
+}> = [
+  { value: 'default', label: '默认', description: '不传 --effort，跟随 Claude Code' },
+  { value: 'low', label: 'Low', description: '更快，适合简单修改' },
+  { value: 'medium', label: 'Medium', description: '平衡速度和推理' },
+  { value: 'high', label: 'High', description: '复杂代码和排查问题' },
+  { value: 'xhigh', label: 'XHigh', description: '更深入的推理' },
+  { value: 'max', label: 'Max', description: '当前会话最高努力级别' },
+];
+
 type ComposerProps = {
   agent: AgentType;
   workspace: string;
   permissionMode: PermissionMode;
   model: string;
+  effort: ClaudeEffortSelection;
   models: ClaudeModelOption[];
   turns: ConversationTurn[];
   isRunning: boolean;
@@ -44,6 +58,7 @@ type ComposerProps = {
   onKeyDown: KeyboardEventHandler<HTMLTextAreaElement>;
   onSelectPermissionMode: (mode: PermissionMode) => void;
   onSelectModel: (model: string) => void;
+  onSelectEffort: (effort: ClaudeEffortSelection) => void;
   onOpenPlugins: () => void;
   onCreateNewChat: () => Promise<void> | void;
   onStopRun: () => void | Promise<void>;
@@ -55,6 +70,7 @@ export function Composer({
   workspace,
   permissionMode,
   model,
+  effort,
   models,
   turns,
   isRunning,
@@ -71,6 +87,7 @@ export function Composer({
   onKeyDown,
   onSelectPermissionMode,
   onSelectModel,
+  onSelectEffort,
   onOpenPlugins,
   onCreateNewChat,
   onStopRun,
@@ -80,8 +97,10 @@ export function Composer({
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [effortMenuOpen, setEffortMenuOpen] = useState(false);
   const permissionMenuRef = useRef<HTMLDivElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
+  const effortMenuRef = useRef<HTMLDivElement | null>(null);
   const addMenuRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -112,6 +131,7 @@ export function Composer({
       { selector: '.composer-add-menu', onDismiss: () => setAddMenuOpen(false), anchorRefs: [addMenuRef] },
       { selector: '.permission-menu', onDismiss: () => setPermissionMenuOpen(false), anchorRefs: [permissionMenuRef] },
       { selector: '.model-menu', onDismiss: () => setModelMenuOpen(false), anchorRefs: [modelMenuRef] },
+      { selector: '.effort-menu', onDismiss: () => setEffortMenuOpen(false), anchorRefs: [effortMenuRef] },
     ],
   });
   const hasDraft = Boolean(draft.trim());
@@ -542,25 +562,64 @@ export function Composer({
                   <div className="model-menu-title">模型</div>
                   {models.map((item) => {
                     const description = modelMenuDescriptionLabel(item);
+                    const context1mModel = item.context1mModel;
+                    const context1mSelected = Boolean(context1mModel && model === context1mModel);
+                    const rowSelected = model === item.id || context1mSelected;
+                    const selectBaseModel = () => {
+                      onSelectModel(item.id);
+                      setModelMenuOpen(false);
+                    };
+                    const toggleContext1m = () => {
+                      if (!context1mModel) {
+                        return;
+                      }
+
+                      onSelectModel(context1mSelected ? item.id : context1mModel);
+                      setModelMenuOpen(false);
+                    };
 
                     return (
-                      <button
+                      <div
                         key={item.id}
-                        type="button"
-                        className="model-menu-item"
+                        className={`model-menu-item${item.supportsContext1m ? ' model-menu-item-with-toggle' : ''}`}
                         role="menuitemradio"
-                        aria-checked={model === item.id}
-                        onClick={() => {
-                          onSelectModel(item.id);
-                          setModelMenuOpen(false);
+                        aria-checked={rowSelected}
+                        tabIndex={0}
+                        onClick={selectBaseModel}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            selectBaseModel();
+                          }
                         }}
                       >
                         <span className="model-menu-item-copy">
                           <span>{modelLabel(item)}</span>
                           {description ? <small>{description}</small> : null}
                         </span>
-                        {model === item.id ? <Check className="model-check" size={15} /> : null}
-                      </button>
+                        {item.supportsContext1m && context1mModel ? (
+                          <span
+                            className={`model-context-toggle${context1mSelected ? ' active' : ''}`}
+                            role="switch"
+                            aria-checked={context1mSelected}
+                            tabIndex={0}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleContext1m();
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                toggleContext1m();
+                              }
+                            }}
+                          >
+                            1M
+                          </span>
+                        ) : null}
+                        {rowSelected ? <Check className="model-check" size={15} /> : null}
+                      </div>
                     );
                   })}
                 </div>
@@ -575,6 +634,46 @@ export function Composer({
                 onClick={() => setModelMenuOpen((value) => !value)}
               >
                 <span>{modelTriggerLabel(model, models)}</span>
+                <span className="model-trigger-chevron" aria-hidden="true" />
+              </button>
+            </div>
+            <div className="effort-picker" ref={effortMenuRef}>
+              <PopoverPortal open={effortMenuOpen} anchorRef={effortMenuRef} placement="top-end">
+                <div className="effort-menu" role="menu">
+                  <div className="model-menu-title">思考级别</div>
+                  {claudeEffortOptions.map((item) => (
+                    <button
+                      key={item.value}
+                      type="button"
+                      className="effort-menu-item"
+                      role="menuitemradio"
+                      aria-checked={effort === item.value}
+                      onClick={() => {
+                        onSelectEffort(item.value);
+                        setEffortMenuOpen(false);
+                      }}
+                    >
+                      <Brain size={14} />
+                      <span className="model-menu-item-copy">
+                        <span>{item.label}</span>
+                        <small>{item.description}</small>
+                      </span>
+                      {effort === item.value ? <Check className="model-check" size={15} /> : null}
+                    </button>
+                  ))}
+                </div>
+              </PopoverPortal>
+
+              <button
+                type="button"
+                className="effort-trigger"
+                aria-expanded={effortMenuOpen}
+                disabled={isRunning}
+                title="Claude Code effort"
+                onClick={() => setEffortMenuOpen((value) => !value)}
+              >
+                <Brain size={14} />
+                <span>{effortLabel(effort)}</span>
                 <span className="model-trigger-chevron" aria-hidden="true" />
               </button>
             </div>
@@ -679,6 +778,10 @@ function formatAttachmentSize(size: number) {
     return `${(size / 1024).toFixed(1)} KB`;
   }
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function effortLabel(effort: ClaudeEffortSelection) {
+  return claudeEffortOptions.find((item) => item.value === effort)?.label ?? '默认';
 }
 
 function disposeAttachmentPreviews(attachments: PendingImageAttachment[]) {

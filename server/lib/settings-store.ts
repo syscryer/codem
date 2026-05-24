@@ -137,7 +137,7 @@ export const defaultModelSettings: ModelSettings = {
   customModels: [],
   defaultModelId: '__default',
 };
-const CLAUDE_MODEL_SLOT_VALUES = ['sonnet', 'opus', 'opus-1m', 'haiku'] as const;
+const CLAUDE_MODEL_SLOT_VALUES = ['sonnet', 'sonnet[1m]', 'opus', 'opus[1m]', 'opusplan', 'haiku'] as const;
 
 export const defaultShortcutSettings: ShortcutSettings = {
   newChat: 'ctrl+n',
@@ -528,7 +528,7 @@ function normalizeCustomModels(value: unknown): CustomModel[] {
 }
 
 function normalizeDefaultModelId(value: unknown, customModels: CustomModel[]) {
-  const id = normalizeModelId(value);
+  const id = normalizeLegacyModelId(normalizeModelId(value));
   if (!id || id === '__default') {
     return defaultModelSettings.defaultModelId;
   }
@@ -549,6 +549,14 @@ function normalizeModelId(value: unknown) {
   }
 
   return trimmed;
+}
+
+function normalizeLegacyModelId(id: string) {
+  if (id === 'opus-1m') {
+    return 'opus[1m]';
+  }
+
+  return id;
 }
 
 function normalizeOpenTargetId(value: unknown) {

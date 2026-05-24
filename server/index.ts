@@ -19,6 +19,7 @@ import {
   submitRunApprovalDecision,
   submitRunGuidePrompt,
   submitRunRequestUserInput,
+  type ClaudeEffortLevel,
   type ClaudePermissionMode,
 } from './lib/claude-service.js';
 import {
@@ -1077,6 +1078,7 @@ app.post('/api/claude/run', async (request, response) => {
     typeof request.body?.model === 'string' && request.body.model.trim()
       ? request.body.model.trim()
       : undefined;
+  const effort = normalizeClaudeEffort(request.body?.effort);
   const toolResultPayload =
     request.body?.toolResult && typeof request.body.toolResult === 'object' ? request.body.toolResult : undefined;
   const toolResult =
@@ -1130,6 +1132,7 @@ app.post('/api/claude/run', async (request, response) => {
     sessionId,
     permissionMode,
     model,
+    effort,
     toolResult,
     requestReceivedAtMs,
     clientSubmitAtMs,
@@ -1445,6 +1448,23 @@ function isClaudePermissionMode(value: string): value is ClaudePermissionMode {
     value === 'auto' ||
     value === 'dontAsk' ||
     value === 'bypassPermissions';
+}
+
+function normalizeClaudeEffort(value: unknown): ClaudeEffortLevel | undefined {
+  if (typeof value !== 'string' || !value.trim()) {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return isClaudeEffortLevel(trimmed) ? trimmed : undefined;
+}
+
+function isClaudeEffortLevel(value: string): value is ClaudeEffortLevel {
+  return value === 'low' ||
+    value === 'medium' ||
+    value === 'high' ||
+    value === 'xhigh' ||
+    value === 'max';
 }
 
 function parseImageDataUrl(dataUrl: string, requestedMimeType: string) {

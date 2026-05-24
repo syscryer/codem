@@ -372,6 +372,16 @@ test('normalizeAppSettings filters invalid and duplicate custom models', () => {
   });
 });
 
+test('normalizeAppSettings migrates the legacy opus 1M model slot', () => {
+  const settings = normalizeAppSettings({
+    models: {
+      defaultModelId: 'opus-1m',
+    },
+  });
+
+  assert.equal(settings.models.defaultModelId, 'opus[1m]');
+});
+
 test('updateModelSettings writes formatted JSON and can read it back', () => {
   withTemporaryDirectory((directory) => {
     const store = createSettingsStore(directory);

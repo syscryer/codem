@@ -61,6 +61,18 @@ test('reusable runtime prompts are sent through stream-json stdin', () => {
   assert.match(writePromptToClaudeBody, /runtime\.child\.stdin\.write\(payload,/);
 });
 
+test('Claude effort is parsed, passed to the CLI, and included in runtime compatibility', () => {
+  const isRuntimeCompatibleBody = extractFunctionBody('isRuntimeCompatible');
+  const spawnClaudeRuntimeBody = extractFunctionBody('spawnClaudeRuntime');
+
+  assert.match(serverSource, /const effort\s*=[\s\S]*request\.body\?\.effort/);
+  assert.match(serverSource, /effort,/);
+  assert.match(source, /effort\?:\s*ClaudeEffortLevel/);
+  assert.match(isRuntimeCompatibleBody, /runtime\.effort\s*===\s*input\.effort/);
+  assert.match(spawnClaudeRuntimeBody, /args\.push\(['"]--effort['"],\s*input\.effort\)/);
+  assert.match(spawnClaudeRuntimeBody, /effort:\s*input\.effort/);
+});
+
 test('cold resume starts a stream-json runtime so tool results can be sent while running', () => {
   const getOrCreateClaudeRuntimeBody = extractFunctionBody('getOrCreateClaudeRuntime');
   const writePromptToClaudeBody = extractFunctionBody('writePromptToClaude');

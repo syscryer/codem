@@ -30,6 +30,7 @@ function createTurn(overrides: Partial<ConversationTurn> = {}): ConversationTurn
     recoveryHint: overrides.recoveryHint,
     backendRunId: overrides.backendRunId,
     userAttachments: overrides.userAttachments,
+    contextUsage: overrides.contextUsage,
   };
 }
 
@@ -191,4 +192,50 @@ test('buildComposerContextUsage falls back to the default Claude window for unkn
   assert.equal(usage.totalTokens, 200_000);
   assert.equal(usage.hasUsage, false);
   assert.equal(usage.level, 'empty');
+});
+
+test('buildComposerContextUsage uses 1M context for Claude 1M model aliases', () => {
+  const usage = buildComposerContextUsage({
+    agent: 'claude',
+    model: 'sonnet[1m]',
+    turns: [createTurn({ inputTokens: 500_000 })],
+  });
+
+  assert.equal(usage.totalTokens, 1_000_000);
+  assert.equal(usage.usedTokens, 500_000);
+  assert.equal(usage.percent, 50);
+  assert.equal(usage.compact.thresholdTokens, 955_000);
+  assert.equal(usage.compact.remainingTokens, 455_000);
+});
+
+test('buildComposerContextUsage uses 1M context for full Claude model names with a 1M suffix', () => {
+  const usage = buildComposerContextUsage({
+    agent: 'claude',
+    model: 'claude-opus-4-7[1m]',
+    turns: [],
+  });
+
+  assert.equal(usage.totalTokens, 1_000_000);
+  assert.equal(usage.compact.thresholdTokens, 955_000);
+});
+
+test('buildComposerContextUsage prefers the runtime-reported context window when available', () => {
+  const usage = buildComposerContextUsage({
+    agent: 'claude',
+    model: 'sonnet',
+    turns: [
+      createTurn({
+        inputTokens: 300_000,
+        contextUsage: {
+          inputTokens: 300_000,
+          modelContextWindow: 1_000_000,
+          usageSource: 'context',
+        },
+      }),
+    ],
+  });
+
+  assert.equal(usage.totalTokens, 1_000_000);
+  assert.equal(usage.usedTokens, 300_000);
+  assert.equal(usage.percent, 30);
 });

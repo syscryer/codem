@@ -12,12 +12,14 @@ test('resolveQueuedPromptRunOptions prefers the completed run session over stale
       workingDirectory: 'D:/project/old',
       permissionMode: 'default',
       model: 'sonnet',
+      effort: 'low',
     },
     {
       latestSessionId: 'new-session',
       workingDirectory: 'D:/project/current',
       permissionMode: 'bypassPermissions',
       model: 'opus',
+      effort: 'high',
     },
     true,
   );
@@ -27,6 +29,7 @@ test('resolveQueuedPromptRunOptions prefers the completed run session over stale
     workingDirectory: 'D:/project/current',
     permissionModeOverride: 'bypassPermissions',
     modelOverride: 'opus',
+    effortOverride: 'high',
   });
 });
 

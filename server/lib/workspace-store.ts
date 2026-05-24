@@ -107,6 +107,7 @@ export type ThreadTurn = {
     outputTokens?: number;
     cacheCreationInputTokens?: number;
     cacheReadInputTokens?: number;
+    modelContextWindow?: number;
     usageSource?: 'context' | 'message' | 'result';
   };
   totalCostUsd?: number;
@@ -2581,7 +2582,12 @@ function applyTranscriptMetrics(
   const contextWindow = asRecord(payload.context_window);
   const currentUsage = asRecord(contextWindow?.current_usage);
   if (currentUsage) {
-    turn.contextUsage = readContextUsageFromRaw(currentUsage, 'context') ?? turn.contextUsage;
+    turn.contextUsage =
+      readContextUsageFromRaw(
+        currentUsage,
+        'context',
+        contextWindow ? readNumber(contextWindow, ['context_window_size', 'contextWindowSize']) : undefined,
+      ) ?? turn.contextUsage;
   }
 
   const usage = asRecord(payload.usage) ?? asRecord(message?.usage);
@@ -2602,12 +2608,14 @@ function applyTranscriptMetrics(
 function readContextUsageFromRaw(
   usage: Record<string, unknown>,
   usageSource: NonNullable<ThreadTurn['contextUsage']>['usageSource'],
+  modelContextWindow?: number,
 ): ThreadTurn['contextUsage'] | undefined {
   return normalizeContextUsage({
     inputTokens: readNumber(usage, ['input_tokens']),
     outputTokens: readNumber(usage, ['output_tokens']),
     cacheCreationInputTokens: readNumber(usage, ['cache_creation_input_tokens']),
     cacheReadInputTokens: readNumber(usage, ['cache_read_input_tokens']),
+    modelContextWindow: modelContextWindow ?? readNumber(usage, ['model_context_window', 'modelContextWindow']),
     usageSource,
   });
 }
@@ -5193,10 +5201,12 @@ function normalizeContextUsage(value: unknown): ThreadTurn['contextUsage'] | und
   const outputTokens = readNumber(record, ['outputTokens']);
   const cacheCreationInputTokens = readNumber(record, ['cacheCreationInputTokens']);
   const cacheReadInputTokens = readNumber(record, ['cacheReadInputTokens']);
+  const modelContextWindow = readNumber(record, ['modelContextWindow']);
   if (inputTokens !== undefined) usage.inputTokens = inputTokens;
   if (outputTokens !== undefined) usage.outputTokens = outputTokens;
   if (cacheCreationInputTokens !== undefined) usage.cacheCreationInputTokens = cacheCreationInputTokens;
   if (cacheReadInputTokens !== undefined) usage.cacheReadInputTokens = cacheReadInputTokens;
+  if (modelContextWindow !== undefined) usage.modelContextWindow = modelContextWindow;
   if (record.usageSource === 'context' || record.usageSource === 'message') {
     usage.usageSource = record.usageSource;
   }
@@ -5204,7 +5214,8 @@ function normalizeContextUsage(value: unknown): ThreadTurn['contextUsage'] | und
   return usage.inputTokens !== undefined ||
     usage.outputTokens !== undefined ||
     usage.cacheCreationInputTokens !== undefined ||
-    usage.cacheReadInputTokens !== undefined
+    usage.cacheReadInputTokens !== undefined ||
+    usage.modelContextWindow !== undefined
     ? usage
     : undefined;
 }

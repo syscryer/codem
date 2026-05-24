@@ -84,7 +84,7 @@ svg {
 
 .codex-desktop {
   --desktop-menubar-height: 36px;
-  --sidebar-width: 320px;
+  --sidebar-width: 300px;
   --workspace-footer-height: 20px;
   --workspace-footer-content-height: 18px;
   --accent: var(--app-accent-light, #2374c6);
@@ -249,15 +249,15 @@ svg {
 }
 
 .codex-desktop[data-sidebar-width="narrow"] {
-  --sidebar-width: 280px;
+  --sidebar-width: 264px;
 }
 
 .codex-desktop[data-sidebar-width="default"] {
-  --sidebar-width: 320px;
+  --sidebar-width: 300px;
 }
 
 .codex-desktop[data-sidebar-width="wide"] {
-  --sidebar-width: 372px;
+  --sidebar-width: 348px;
 }
 
 .codex-desktop[data-density="compact"] {
@@ -579,7 +579,7 @@ svg {
 .sidebar-projects {
   min-height: 0;
   overflow: auto;
-  padding: 0 8px 12px 10px;
+  padding: 0 6px 12px 8px;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: rgba(143, 147, 153, 0.34) transparent;
@@ -661,7 +661,7 @@ svg {
   gap: 8px;
   width: 100%;
   min-width: 0;
-  padding: 7px 10px;
+  padding: 6px 8px;
   border: 0;
   background: transparent;
   border-radius: 8px;
@@ -854,22 +854,21 @@ svg {
 .sidebar-thread-list {
   display: grid;
   gap: 2px;
-  padding: 0 4px 2px 20px;
+  padding: 0 2px 2px 16px;
 }
 
 .sidebar-thread-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
-  gap: 4px;
 }
 
 .sidebar-thread {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 7px 10px;
   font-size: 13px;
 }
 
@@ -918,7 +917,7 @@ svg {
 }
 
 .sidebar-collapse-toggle {
-  margin: 0 10px 8px 32px;
+  margin: 0 8px 8px 26px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -926,15 +925,6 @@ svg {
   font-size: 11px;
   text-align: left;
   cursor: pointer;
-}
-
-.thread-row-action {
-  opacity: 0;
-}
-
-.sidebar-thread-row:hover .thread-row-action,
-.sidebar-thread-row.active .thread-row-action {
-  opacity: 1;
 }
 
 .sidebar-search {
@@ -7454,12 +7444,14 @@ body.git-history-resizing {
   display: inline-flex;
 }
 
-.model-picker {
+.model-picker,
+.effort-picker {
   position: relative;
   display: inline-flex;
 }
 
-.model-trigger {
+.model-trigger,
+.effort-trigger {
   height: 28px;
   display: inline-flex;
   align-items: center;
@@ -7475,11 +7467,14 @@ body.git-history-resizing {
 }
 
 .model-trigger:hover,
-.model-trigger[aria-expanded="true"] {
+.model-trigger[aria-expanded="true"],
+.effort-trigger:hover,
+.effort-trigger[aria-expanded="true"] {
   background: #f4f4f4;
 }
 
-.model-trigger:disabled {
+.model-trigger:disabled,
+.effort-trigger:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
@@ -7495,7 +7490,8 @@ body.git-history-resizing {
   transform-origin: center;
 }
 
-.model-menu {
+.model-menu,
+.effort-menu {
   position: absolute;
   right: 0;
   bottom: calc(100% + 9px);
@@ -7505,6 +7501,10 @@ body.git-history-resizing {
   padding: 6px;
 }
 
+.effort-menu {
+  width: min(280px, calc(100vw - 40px));
+}
+
 .model-menu-title {
   padding: 0 18px 8px;
   color: #969696;
@@ -7512,7 +7512,8 @@ body.git-history-resizing {
   line-height: 1.2;
 }
 
-.model-menu-item {
+.model-menu-item,
+.effort-menu-item {
   width: 100%;
   min-height: 56px;
   display: grid;
@@ -7528,6 +7529,17 @@ body.git-history-resizing {
   font-weight: 400;
   line-height: 1.25;
   text-align: left;
+  user-select: none;
+}
+
+.effort-menu-item {
+  grid-template-columns: 16px minmax(0, 1fr) 22px;
+  gap: 10px;
+}
+
+.model-menu-item-with-toggle {
+  grid-template-columns: minmax(0, 1fr) auto 18px;
+  gap: 10px;
 }
 
 .model-menu-item-copy {
@@ -7555,10 +7567,33 @@ body.git-history-resizing {
   line-height: 1.35;
 }
 
-.model-menu-item:hover {
+.model-menu-item:hover,
+.effort-menu-item:hover {
   background: linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.08)),
     rgba(142, 142, 147, 0.18);
   border-radius: 8px;
+}
+
+.model-context-toggle {
+  justify-self: end;
+  min-width: 36px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(120, 120, 128, 0.24);
+  border-radius: 999px;
+  background: rgba(120, 120, 128, 0.1);
+  color: #686868;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.model-context-toggle.active {
+  border-color: rgba(35, 116, 198, 0.36);
+  background: rgba(35, 116, 198, 0.14);
+  color: #155f9f;
 }
 
 .model-check {
@@ -11281,7 +11316,7 @@ body.git-history-resizing {
   color: var(--app-text);
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu) {
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu) {
   border-color: color-mix(in srgb, var(--app-border) 82%, transparent);
   background:
     linear-gradient(
@@ -11300,13 +11335,13 @@ body.git-history-resizing {
   -webkit-backdrop-filter: blur(24px) saturate(1.18);
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::before {
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::before {
   background:
     radial-gradient(ellipse at 22% 0%, color-mix(in srgb, var(--app-surface) 12%, transparent), transparent 40%),
     linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 8%, transparent), color-mix(in srgb, var(--app-surface-muted) 4%, transparent));
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::after {
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::after {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 10%, transparent), transparent 34%),
     linear-gradient(90deg, color-mix(in srgb, var(--app-surface) 6%, transparent), transparent 24%, transparent 76%, color-mix(in srgb, var(--app-surface) 4%, transparent));
@@ -11553,7 +11588,7 @@ body.git-history-resizing {
   overflow: hidden;
 }
 
-:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu) {
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu) {
   overflow: hidden;
   isolation: isolate;
   border: 1px solid rgba(214, 218, 224, 0.78);
@@ -11570,7 +11605,14 @@ body.git-history-resizing {
   -webkit-backdrop-filter: blur(30px) saturate(1.32);
 }
 
-:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::before {
+:is(.model-menu, .effort-menu) {
+  max-height: min(420px, calc(100vh - 24px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -11581,7 +11623,7 @@ body.git-history-resizing {
   pointer-events: none;
 }
 
-:is(.workspace-menu, .open-app-dropdown, .model-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::after {
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::after {
   content: '';
   position: absolute;
   inset: 1px;
@@ -11627,7 +11669,7 @@ body.git-history-resizing {
   z-index: 1;
 }
 
-:is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover {
+:is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover {
   background: linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.08)),
     rgba(142, 142, 147, 0.18);
   border-radius: 8px;
@@ -11894,11 +11936,13 @@ body.git-history-resizing {
 .codex-desktop .workspace-menu-item:hover,
 .codex-desktop .model-menu-item:hover,
 .codex-desktop .permission-menu-item:hover,
+.codex-desktop .effort-menu-item:hover,
 .codex-desktop .composer-context-trigger:hover,
 .codex-desktop .composer-context-trigger.is-open,
 .codex-desktop .plain-icon:hover,
 .codex-desktop .toolbar-select:hover,
 .codex-desktop .model-trigger:hover,
+.codex-desktop .effort-trigger:hover,
 .codex-desktop .permission-trigger:hover,
 .codex-desktop .status-branch-trigger:hover,
 .codex-desktop .status-run-trigger:hover {
@@ -11959,7 +12003,7 @@ body.git-history-resizing {
   background: color-mix(in srgb, var(--app-surface) 18%, transparent);
 }
 
-.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover {
+.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 8px;
   box-shadow: var(--menu-item-hover-shadow);
@@ -12003,7 +12047,7 @@ body.git-history-resizing {
   color: var(--app-muted);
 }
 
-.codex-desktop :where(.sidebar-primary button, .sidebar-footer button, .sidebar-project-title, .sidebar-thread, .workspace-menu-item, .model-menu-item, .permission-menu-item, .settings-select-menu-item, .composer-input, .toolbar-select, .permission-trigger, .model-trigger, .assistant-runtime-card-heading strong, .assistant-runtime-question-text, .assistant-runtime-submit-button, .workspace-status, .settings-return, .settings-nav-item, .settings-row-label strong, .settings-segmented button, .settings-accent-picker button, .settings-stepper span, .settings-empty-panel, .dialog-input, .dialog-button, .ghost-button) {
+.codex-desktop :where(.sidebar-primary button, .sidebar-footer button, .sidebar-project-title, .sidebar-thread, .workspace-menu-item, .model-menu-item, .effort-menu-item, .permission-menu-item, .settings-select-menu-item, .composer-input, .toolbar-select, .permission-trigger, .model-trigger, .effort-trigger, .assistant-runtime-card-heading strong, .assistant-runtime-question-text, .assistant-runtime-submit-button, .workspace-status, .settings-return, .settings-nav-item, .settings-row-label strong, .settings-segmented button, .settings-accent-picker button, .settings-stepper span, .settings-empty-panel, .dialog-input, .dialog-button, .ghost-button) {
   font-size: var(--app-ui-font-size, 13px);
 }
 
@@ -12087,7 +12131,7 @@ body.git-history-resizing {
   color: var(--app-text-strong);
 }
 
-.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover,
+.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover,
 .codex-desktop :is(.open-app-option.active, .status-branch-menu-item.current) {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 8px;
@@ -12095,11 +12139,11 @@ body.git-history-resizing {
   color: var(--app-text-strong);
 }
 
-.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover svg {
+.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover svg {
   color: var(--app-text-strong);
 }
 
-.codex-desktop[data-theme-mode="dark"] :is(.workspace-menu-item, .open-app-option, .model-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover,
+.codex-desktop[data-theme-mode="dark"] :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover,
 .codex-desktop[data-theme-mode="dark"] :is(.open-app-option.active, .status-branch-menu-item.current) {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 8px;
@@ -12142,7 +12186,7 @@ body.git-history-resizing {
 }
 
 .codex-desktop[data-density="compact"] .sidebar-projects {
-  padding: 0 8px 8px 6px;
+  padding: 0 6px 8px 4px;
 }
 
 .codex-desktop[data-density="compact"] .sidebar-project {
@@ -12151,7 +12195,7 @@ body.git-history-resizing {
 }
 
 .codex-desktop[data-density="compact"] .sidebar-project-title {
-  padding: 5px 8px;
+  padding: 5px 7px;
 }
 
 .codex-desktop[data-density="compact"] .sidebar-thread-list {
@@ -12160,7 +12204,7 @@ body.git-history-resizing {
 }
 
 .codex-desktop[data-density="compact"] .sidebar-thread {
-  padding: 6px 9px;
+  padding: 6px 8px;
 }
 
 .codex-desktop[data-density="compact"] .conversation {

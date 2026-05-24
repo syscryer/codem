@@ -540,7 +540,7 @@ function normalizeCustomModels(value: unknown): CustomModel[] {
 }
 
 function normalizeDefaultModelId(value: unknown, customModels: CustomModel[]) {
-  const id = normalizeModelId(value);
+  const id = normalizeLegacyModelId(normalizeModelId(value));
   if (!id || id === defaultModelSettings.defaultModelId) {
     return defaultModelSettings.defaultModelId;
   }
@@ -561,6 +561,14 @@ function normalizeModelId(value: unknown) {
   }
 
   return trimmed;
+}
+
+function normalizeLegacyModelId(id: string) {
+  if (id === 'opus-1m') {
+    return 'opus[1m]';
+  }
+
+  return id;
 }
 
 function normalizeOpenTargetId(value: unknown) {

@@ -12,6 +12,8 @@ export type ClaudePermissionMode =
   | 'dontAsk'
   | 'bypassPermissions';
 
+export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 type StreamInput = {
   threadId: string;
   turnId?: string;
@@ -20,6 +22,7 @@ type StreamInput = {
   sessionId?: string;
   permissionMode: ClaudePermissionMode;
   model?: string;
+  effort?: ClaudeEffortLevel;
   toolResult?: {
     requestId: string;
     content: string;
@@ -60,6 +63,7 @@ type ClaudeUsage = {
   outputTokens?: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
+  modelContextWindow?: number;
   usageSource?: 'context' | 'message' | 'result';
 };
 
@@ -246,6 +250,7 @@ type ClaudeRuntime = {
   workingDirectory: string;
   permissionMode: ClaudePermissionMode;
   model?: string;
+  effort?: ClaudeEffortLevel;
   inputMode: 'argv' | 'stdin';
   reusable: boolean;
   stdoutBuffer: string;
@@ -657,6 +662,7 @@ export function getActiveRunForThread(threadId: string) {
     sessionId: state.sessionId,
     permissionMode: state.input.permissionMode,
     model: state.input.model,
+    effort: state.input.effort,
     startedAtMs: state.traceStartedAtMs,
     eventCount: state.eventLog.length,
     finished: state.finished,
@@ -1090,6 +1096,7 @@ function isRuntimeCompatible(runtime: ClaudeRuntime, input: StreamInput) {
     runtime.workingDirectory === input.workingDirectory &&
     runtime.permissionMode === input.permissionMode &&
     runtime.model === input.model &&
+    runtime.effort === input.effort &&
     (!requestedSessionId || !runtime.sessionId || runtime.sessionId === requestedSessionId)
   );
 }
@@ -1183,6 +1190,10 @@ function spawnClaudeRuntime(command: string, input: StreamInput, inputMode: Clau
     args.push('--model', input.model);
   }
 
+  if (input.effort) {
+    args.push('--effort', input.effort);
+  }
+
   if (resumeSessionId) {
     args.push('--resume', resumeSessionId);
   }
@@ -1201,6 +1212,7 @@ function spawnClaudeRuntime(command: string, input: StreamInput, inputMode: Clau
     workingDirectory: input.workingDirectory,
     permissionMode: input.permissionMode,
     model: input.model,
+    effort: input.effort,
     inputMode,
     reusable: inputMode === 'stdin',
     stdoutBuffer: '',
@@ -1820,8 +1832,13 @@ function closeClaudeRuntime(runtime: ClaudeRuntime) {
 }
 
 function extractUsage(payload: ClaudeJsonLine) {
+  const contextUsage = normalizeUsage(payload.context_window?.current_usage, 'context');
+  if (contextUsage && typeof payload.context_window?.context_window_size === 'number') {
+    contextUsage.modelContextWindow = payload.context_window.context_window_size;
+  }
+
   return (
-    normalizeUsage(payload.context_window?.current_usage, 'context') ??
+    contextUsage ??
     normalizeUsage(payload.event?.usage, 'message') ??
     normalizeUsage(payload.event?.message?.usage, 'message') ??
     normalizeUsage(payload.message?.usage, 'message')

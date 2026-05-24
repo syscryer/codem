@@ -28,6 +28,11 @@ export function modelTriggerLabel(modelId: string, models: ClaudeModelOption[]) 
     return modelLabel(selected);
   }
 
+  const context1mBase = models.find((item) => item.context1mModel === modelId);
+  if (context1mBase) {
+    return `${modelLabel(context1mBase)} 1M`;
+  }
+
   return modelId === DEFAULT_MODEL_VALUE ? '默认' : modelId;
 }
 

@@ -449,25 +449,6 @@ export function SidebarProjects({
                             </span>
                             <small>{thread.updatedLabel}</small>
                           </button>
-                          <button
-                            type="button"
-                            className="sidebar-row-action thread-row-action"
-                            title="聊天菜单"
-                            ref={threadMenuThreadId === thread.id ? threadMenuTriggerRef : undefined}
-                            onClick={() => {
-                              setThreadMenuThreadId((value) => {
-                                if (value === thread.id && !threadMenuAnchor) {
-                                  return null;
-                                }
-                                setThreadMenuAnchor(null);
-                                setProjectMenuProjectId(null);
-                                setProjectMenuAnchor(null);
-                                return thread.id;
-                              });
-                            }}
-                          >
-                            <MoreHorizontal size={13} />
-                          </button>
                           <PopoverPortal
                             open={threadMenuThreadId === thread.id}
                             anchorRef={threadMenuTriggerRef}

@@ -453,7 +453,12 @@ export function mergeUsageSnapshot(turn: ConversationTurn, snapshot: UsageSnapsh
     outputTokens: snapshot.outputTokens ?? turn.outputTokens,
     cacheCreationInputTokens: snapshot.cacheCreationInputTokens ?? turn.cacheCreationInputTokens,
     cacheReadInputTokens: snapshot.cacheReadInputTokens ?? turn.cacheReadInputTokens,
-    contextUsage: nextContextUsage,
+    contextUsage: nextContextUsage
+      ? {
+          ...nextContextUsage,
+          modelContextWindow: nextContextUsage.modelContextWindow ?? turn.contextUsage?.modelContextWindow,
+        }
+      : nextContextUsage,
   };
 }
 
@@ -462,7 +467,8 @@ function hasUsageTokenSnapshot(snapshot: UsageSnapshot) {
     snapshot.inputTokens !== undefined ||
     snapshot.outputTokens !== undefined ||
     snapshot.cacheCreationInputTokens !== undefined ||
-    snapshot.cacheReadInputTokens !== undefined
+    snapshot.cacheReadInputTokens !== undefined ||
+    snapshot.modelContextWindow !== undefined
   );
 }
 

@@ -24,6 +24,7 @@ export type UsageSnapshot = {
   outputTokens?: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
+  modelContextWindow?: number;
   usageSource?: 'context' | 'message' | 'result';
 };
 
@@ -727,7 +728,13 @@ export type ClaudeModelOption = {
   description?: string;
   model?: string;
   kind?: 'default' | 'slot' | 'custom';
+  supportsContext1m?: boolean;
+  context1mModel?: string;
+  contextWindowTokens?: number;
 };
+
+export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ClaudeEffortSelection = 'default' | ClaudeEffortLevel;
 
 export type ClaudeGlobalPrompt = {
   path: string;

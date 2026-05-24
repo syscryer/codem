@@ -24,6 +24,7 @@ export type ComposerContextUsage = {
 };
 
 const DEFAULT_CLAUDE_CONTEXT_WINDOW = 200_000;
+const CLAUDE_1M_CONTEXT_WINDOW = 1_000_000;
 const CLAUDE_AUTO_COMPACT_BUFFER = 45_000;
 
 export function buildComposerContextUsage(input: {
@@ -31,7 +32,7 @@ export function buildComposerContextUsage(input: {
   model: string;
   turns: ConversationTurn[];
 }): ComposerContextUsage {
-  const totalTokens = resolveClaudeContextWindow(input.model);
+  const totalTokens = resolveLatestRuntimeContextWindow(input.turns) ?? resolveClaudeContextWindow(input.model);
 
   if (input.agent !== 'claude') {
     return createContextUsageResult({
@@ -160,6 +161,10 @@ function resolveCompactState(usedTokens: number, totalTokens: number) {
 
 function resolveClaudeContextWindow(model: string) {
   const normalized = model.trim().toLowerCase();
+  if (/\[1m\]$/.test(normalized)) {
+    return CLAUDE_1M_CONTEXT_WINDOW;
+  }
+
   if (
     normalized.includes('sonnet') ||
     normalized.includes('opus') ||
@@ -170,4 +175,15 @@ function resolveClaudeContextWindow(model: string) {
   }
 
   return DEFAULT_CLAUDE_CONTEXT_WINDOW;
+}
+
+function resolveLatestRuntimeContextWindow(turns: ConversationTurn[]) {
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const value = turns[index].contextUsage?.modelContextWindow;
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return value;
+    }
+  }
+
+  return undefined;
 }

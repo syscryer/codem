@@ -23,7 +23,14 @@ export function ModelSettingsSection({
     { id: DEFAULT_MODEL_VALUE, label: defaultModel?.description ? `默认 (${defaultModel.description.replace(/^使用当前 Claude Code 默认模型：/, '')})` : '默认' },
     ...claudeModels.models
       .filter((model) => model.id !== DEFAULT_MODEL_VALUE)
-      .map((model) => ({ id: model.id, label: model.description ? `${modelLabel(model)} · ${model.description.split('·')[0].trim()}` : modelLabel(model) })),
+      .flatMap((model) => {
+        const baseLabel = model.description ? `${modelLabel(model)} · ${model.description.split('·')[0].trim()}` : modelLabel(model);
+        const choices = [{ id: model.id, label: baseLabel }];
+        if (model.supportsContext1m && model.context1mModel) {
+          choices.push({ id: model.context1mModel, label: `${modelLabel(model)} 1M · 长上下文` });
+        }
+        return choices;
+      }),
     ...models.customModels.map((model) => ({ id: model.id, label: model.label || model.id })),
   ];
 

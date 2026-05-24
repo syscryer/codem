@@ -1,4 +1,4 @@
-import type { PermissionMode } from '../types';
+import type { ClaudeEffortSelection, PermissionMode } from '../types';
 import { resolvePromptSubmissionSessionId } from './claude-run-session';
 
 type QueuedPromptThreadMetadata = {
@@ -6,6 +6,7 @@ type QueuedPromptThreadMetadata = {
   workingDirectory: string;
   permissionMode: PermissionMode;
   model?: string;
+  effort?: ClaudeEffortSelection;
 };
 
 type CompletedRunMetadata = {
@@ -13,6 +14,7 @@ type CompletedRunMetadata = {
   workingDirectory: string;
   permissionMode: PermissionMode;
   model?: string;
+  effort?: ClaudeEffortSelection;
 };
 
 export type QueuedPromptRunOptions = {
@@ -20,6 +22,7 @@ export type QueuedPromptRunOptions = {
   workingDirectory: string;
   permissionModeOverride: PermissionMode;
   modelOverride?: string;
+  effortOverride?: ClaudeEffortSelection;
 };
 
 export type QueuedPromptGuideAvailability = {
@@ -39,6 +42,7 @@ export function resolveQueuedPromptRunOptions(
     workingDirectory: completedRun.workingDirectory || thread.workingDirectory,
     permissionModeOverride: completedRun.permissionMode,
     modelOverride: completedRun.model || thread.model,
+    effortOverride: completedRun.effort || thread.effort,
   };
 }
 

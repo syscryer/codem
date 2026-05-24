@@ -207,6 +207,7 @@ export default function App() {
     workspace,
     permissionMode,
     model,
+    effort,
     models,
     claudeModels,
     health,
@@ -220,6 +221,7 @@ export default function App() {
     guideQueuedPrompt,
     clockNowMs,
     setModel,
+    setEffort,
     handlePermissionModeSelect,
     submitPrompt,
     submitPromptToThread,
@@ -1030,6 +1032,7 @@ export default function App() {
                 workspace={workspace}
                 permissionMode={permissionMode}
                 model={model}
+                effort={effort}
                 models={models}
                 turns={activeThread?.turns ?? []}
                 isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
@@ -1046,6 +1049,7 @@ export default function App() {
                 onKeyDown={handleComposerKeyDown}
                 onSelectPermissionMode={handlePermissionModeSelect}
                 onSelectModel={setModel}
+                onSelectEffort={setEffort}
                 onOpenPlugins={() => openSettings('plugins')}
                 onCreateNewChat={() => void handleCreatePrimaryChat()}
                 onStopRun={() => stopRun(activeThreadId ?? undefined)}
