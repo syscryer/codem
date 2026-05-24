@@ -22,18 +22,26 @@ export function modelLabel(model: ClaudeModelOption | string) {
   return model.label || model.model || model.id;
 }
 
+export function modelMenuPrimaryLabel(model: ClaudeModelOption) {
+  return model.model || model.label || model.id;
+}
+
 export function modelTriggerLabel(modelId: string, models: ClaudeModelOption[]) {
   const selected = models.find((item) => item.id === modelId);
   if (selected) {
-    return modelLabel(selected);
+    return modelMenuPrimaryLabel(selected);
   }
 
   const context1mBase = models.find((item) => item.context1mModel === modelId);
   if (context1mBase) {
-    return `${modelLabel(context1mBase)} 1M`;
+    return modelId;
   }
 
   return modelId === DEFAULT_MODEL_VALUE ? '默认' : modelId;
+}
+
+export function modelContext1mMenuActionLabel(active: boolean) {
+  return active ? '关闭 1M' : '开启 1M';
 }
 
 export function modelMenuDescriptionLabel(model: ClaudeModelOption) {
@@ -41,5 +49,14 @@ export function modelMenuDescriptionLabel(model: ClaudeModelOption) {
     return '跟随 Claude Code 默认';
   }
 
+  if (model.kind === 'slot') {
+    const summary = stripConfiguredModelPrefix(model.description || '');
+    return [model.label || '', summary].filter(Boolean).join(' · ');
+  }
+
   return model.description || '';
+}
+
+function stripConfiguredModelPrefix(description: string) {
+  return description.replace(/^当前映射：[^·]+(?:\s*·\s*)?/, '').trim();
 }

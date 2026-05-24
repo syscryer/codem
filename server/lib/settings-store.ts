@@ -137,7 +137,7 @@ export const defaultModelSettings: ModelSettings = {
   customModels: [],
   defaultModelId: '__default',
 };
-const CLAUDE_MODEL_SLOT_VALUES = ['sonnet', 'sonnet[1m]', 'opus', 'opus[1m]', 'opusplan', 'haiku'] as const;
+const CLAUDE_MODEL_SLOT_VALUES = ['sonnet', 'sonnet[1m]', 'opus', 'opus[1m]', 'haiku'] as const;
 
 export const defaultShortcutSettings: ShortcutSettings = {
   newChat: 'ctrl+n',

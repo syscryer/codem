@@ -8,9 +8,10 @@ import { PopoverPortal } from './PopoverPortal';
 import { ComposerContextIndicator } from './ComposerContextIndicator';
 import { SlashCommandMenu } from './SlashCommandMenu';
 import { buildPromptWithImageAttachments } from '../lib/composer-attachments';
+import { hasClaudeContext1mOptions } from '../lib/claude-model-selection';
 import { applySlashCommandSelection, getNextSlashCommandIndex } from '../lib/slash-command-editor';
 import { getSlashDismissResetKey, resolveSlashCommandSubmission } from '../lib/slash-command-submit';
-import { modelLabel, modelMenuDescriptionLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
+import { modelContext1mMenuActionLabel, modelMenuDescriptionLabel, modelMenuPrimaryLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
 import type { AgentType, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingImageAttachment = {
@@ -24,7 +25,7 @@ const claudeEffortOptions: Array<{
   label: string;
   description: string;
 }> = [
-  { value: 'default', label: '默认', description: '不传 --effort，跟随 Claude Code' },
+  { value: 'default', label: '默认', description: '使用 Claude Code 默认思考级别' },
   { value: 'low', label: 'Low', description: '更快，适合简单修改' },
   { value: 'medium', label: 'Medium', description: '平衡速度和推理' },
   { value: 'high', label: 'High', description: '复杂代码和排查问题' },
@@ -138,6 +139,7 @@ export function Composer({
   const hasPendingContent = hasDraft || attachments.length > 0;
   const showStopButton = isRunning && !hasPendingContent;
   const contextUsage = buildComposerContextUsage({ agent, model, turns });
+  const modelMenuHasContext1mOptions = hasClaudeContext1mOptions(models);
 
   useEffect(() => {
     attachmentsRef.current = attachments;
@@ -558,7 +560,7 @@ export function Composer({
           <div className="composer-right-tools">
             <div className="model-picker" ref={modelMenuRef}>
               <PopoverPortal open={modelMenuOpen} anchorRef={modelMenuRef} placement="top-end">
-                <div className="model-menu" role="menu">
+                <div className={`model-menu${modelMenuHasContext1mOptions ? '' : ' model-menu-compact'}`} role="menu">
                   <div className="model-menu-title">模型</div>
                   {models.map((item) => {
                     const description = modelMenuDescriptionLabel(item);
@@ -594,7 +596,7 @@ export function Composer({
                         }}
                       >
                         <span className="model-menu-item-copy">
-                          <span>{modelLabel(item)}</span>
+                          <span>{modelMenuPrimaryLabel(item)}</span>
                           {description ? <small>{description}</small> : null}
                         </span>
                         {item.supportsContext1m && context1mModel ? (
@@ -615,7 +617,7 @@ export function Composer({
                               }
                             }}
                           >
-                            1M
+                            {modelContext1mMenuActionLabel(context1mSelected)}
                           </span>
                         ) : null}
                         {rowSelected ? <Check className="model-check" size={15} /> : null}

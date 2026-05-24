@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_MODEL_VALUE, permissionMenuModes } from '../constants';
+import { resolveInitialClaudeModelId } from '../lib/claude-model-selection';
 import { normalizeSessionId, resolvePromptSubmissionSessionId } from '../lib/claude-run-session';
 import {
   appendThinkingItem,
@@ -213,13 +214,14 @@ export function useClaudeRun({
       activeThreadSummary?.id ?? '',
       activeThreadSummary?.model ?? '',
       appModelSettings.defaultModelId,
+      models.map((option) => `${option.id}:${option.model ?? ''}:${option.context1mModel ?? ''}`).join('|'),
     ].join('\n');
     if (modelSelectionResetKeyRef.current === resetKey) {
       return;
     }
 
     modelSelectionResetKeyRef.current = resetKey;
-    const nextModel = resolveInitialModelId(activeThreadSummary?.model, models, appModelSettings.defaultModelId);
+    const nextModel = resolveInitialClaudeModelId(activeThreadSummary?.model, models, appModelSettings.defaultModelId);
     modelRef.current = nextModel;
     setModelState(nextModel);
   }, [activeThreadSummary?.id, activeThreadSummary?.model, appModelSettings.defaultModelId, models]);
@@ -923,7 +925,7 @@ export function useClaudeRun({
         firstClientDeltaAtMs: 0,
         firstTextApplyAtMs: 0,
         latestSessionId: activeRun.sessionId,
-        model: resolveInitialModelId(activeRun.model, models, model),
+        model: resolveInitialClaudeModelId(activeRun.model, models, model),
         effort: normalizeClaudeEffortSelection(activeRun.effort),
         permissionMode: activeRun.permissionMode || permissionMode,
       };
@@ -2473,36 +2475,6 @@ function resolveRequestEffort(effort: ClaudeEffortSelection): ClaudeEffortLevel 
   return effort === 'default' ? undefined : effort;
 }
 
-function resolveInitialModelId(
-  savedModel: string | undefined,
-  models: ClaudeModelOption[],
-  fallbackModelId: string,
-) {
-  const normalized = savedModel?.trim();
-  if (normalized) {
-    const exact = models.find((option) => option.id === normalized);
-    if (exact) {
-      return exact.id;
-    }
-
-    const byModel = models.find((option) => option.model === normalized);
-    if (byModel) {
-      return byModel.id;
-    }
-
-    const byContext1mModel = models.find((option) => option.context1mModel === normalized);
-    if (byContext1mModel) {
-      return normalized;
-    }
-
-    return normalized;
-  }
-
-  const fallback = fallbackModelId?.trim() || DEFAULT_MODEL_VALUE;
-  return models.some((option) => option.id === fallback || option.context1mModel === fallback)
-    ? fallback
-    : DEFAULT_MODEL_VALUE;
-}
 
 async function readErrorResponseText(response: Response) {
   const text = await response.text();

@@ -8,7 +8,7 @@ import type {
 } from './types';
 
 export const DEFAULT_MODEL_VALUE = '__default';
-export const CLAUDE_MODEL_SLOT_VALUES = ['sonnet', 'sonnet[1m]', 'opus', 'opus[1m]', 'opusplan', 'haiku'] as const;
+export const CLAUDE_MODEL_SLOT_VALUES = ['sonnet', 'sonnet[1m]', 'opus', 'opus[1m]', 'haiku'] as const;
 
 export const permissionModes = [
   'default',

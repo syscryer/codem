@@ -20,25 +20,28 @@ export function getConfiguredModelOptions(): ClaudeModelOption[] {
   const sonnetModel = readEnvString(env, 'ANTHROPIC_DEFAULT_SONNET_MODEL');
   const opusModel = readEnvString(env, 'ANTHROPIC_DEFAULT_OPUS_MODEL');
   const haikuModel = readEnvString(env, 'ANTHROPIC_DEFAULT_HAIKU_MODEL');
-  const baseUrl = readEnvString(env, 'ANTHROPIC_BASE_URL');
-  const isThirdParty = Boolean(baseUrl && !/anthropic\.com/i.test(baseUrl));
   const context1mDisabled = readEnvBoolean(env, 'CLAUDE_CODE_DISABLE_1M_CONTEXT');
-  const canUseAnthropicContext1m = !isThirdParty && !context1mDisabled;
+  // Claude Code exposes [1m] model aliases at the CLI layer. Anthropic-compatible
+  // gateways can support them too, so only hide the switch when explicitly disabled.
+  const canUseAnthropicContext1m = !context1mDisabled;
+
+  const defaultOption: ClaudeModelOption = {
+    id: '__default',
+    label: mainModel || '默认',
+    description: mainModel ? `使用当前 Claude Code 默认模型：${mainModel}` : '使用当前 Claude Code 默认模型，不传 --model',
+    ...(mainModel ? { model: mainModel } : {}),
+    kind: 'default',
+  };
 
   const options: ClaudeModelOption[] = [
-    {
-      id: '__default',
-      label: '默认',
-      description: mainModel ? `使用当前 Claude Code 默认模型：${mainModel}` : '使用当前 Claude Code 默认模型，不传 --model',
-      kind: 'default',
-    },
+    defaultOption,
     {
       id: 'sonnet',
-      label: sonnetModel || 'Sonnet',
-      description: 'Sonnet · 默认推荐模型',
+      label: 'Sonnet',
+      description: buildSlotDescription('默认推荐模型', sonnetModel),
       model: sonnetModel || 'sonnet',
       kind: 'slot',
-      ...(canUseAnthropicContext1m
+      ...(canUseAnthropicContext1m && isClaudeFamilyModel(sonnetModel || 'sonnet')
         ? {
             supportsContext1m: true,
             context1mModel: withContext1mSuffix(sonnetModel || 'sonnet'),
@@ -47,30 +50,23 @@ export function getConfiguredModelOptions(): ClaudeModelOption[] {
     },
     {
       id: 'opus',
-      label: opusModel || 'Opus',
-      description: 'Opus · 更强，适合复杂任务',
+      label: 'Opus',
+      description: buildSlotDescription('更强，适合复杂任务', opusModel),
       model: opusModel || 'opus',
       kind: 'slot',
-      ...(canUseAnthropicContext1m
+      ...(canUseAnthropicContext1m && isClaudeFamilyModel(opusModel || 'opus')
         ? {
             supportsContext1m: true,
             context1mModel: withContext1mSuffix(opusModel || 'opus'),
           }
         : {}),
     },
-    {
-      id: 'opusplan',
-      label: 'Opus Plan',
-      description: 'Opus 规划，Sonnet 执行',
-      model: 'opusplan',
-      kind: 'slot',
-    },
   ];
 
   options.push({
     id: 'haiku',
-    label: haikuModel || 'Haiku',
-    description: 'Haiku · 更快，适合简单回复',
+    label: 'Haiku',
+    description: buildSlotDescription('更快，适合简单回复', haikuModel),
     model: haikuModel || 'haiku',
     kind: 'slot',
   });
@@ -116,4 +112,12 @@ function withContext1mSuffix(model: string) {
   }
 
   return `${normalized}[1m]`;
+}
+
+function isClaudeFamilyModel(model: string) {
+  return /\b(claude|sonnet|opus|haiku)\b/i.test(model.trim());
+}
+
+function buildSlotDescription(summary: string, configuredModel?: string) {
+  return configuredModel ? `当前映射：${configuredModel} · ${summary}` : summary;
 }

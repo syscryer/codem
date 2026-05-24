@@ -7505,6 +7505,10 @@ body.git-history-resizing {
   width: min(280px, calc(100vw - 40px));
 }
 
+.model-menu.model-menu-compact {
+  width: min(292px, calc(100vw - 40px));
+}
+
 .model-menu-title {
   padding: 0 18px 8px;
   color: #969696;
@@ -7576,11 +7580,12 @@ body.git-history-resizing {
 
 .model-context-toggle {
   justify-self: end;
-  min-width: 36px;
+  min-width: 58px;
   height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  padding: 0 8px;
   border: 1px solid rgba(120, 120, 128, 0.24);
   border-radius: 999px;
   background: rgba(120, 120, 128, 0.1);

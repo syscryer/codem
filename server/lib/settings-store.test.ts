@@ -382,6 +382,16 @@ test('normalizeAppSettings migrates the legacy opus 1M model slot', () => {
   assert.equal(settings.models.defaultModelId, 'opus[1m]');
 });
 
+test('normalizeAppSettings falls back when opusplan was saved as a default model', () => {
+  const settings = normalizeAppSettings({
+    models: {
+      defaultModelId: 'opusplan',
+    },
+  });
+
+  assert.equal(settings.models.defaultModelId, '__default');
+});
+
 test('updateModelSettings writes formatted JSON and can read it back', () => {
   withTemporaryDirectory((directory) => {
     const store = createSettingsStore(directory);
