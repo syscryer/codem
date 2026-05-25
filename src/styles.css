@@ -3018,6 +3018,31 @@ svg {
   line-height: 1.7;
 }
 
+.workbench-image-preview {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow: auto;
+  background:
+    linear-gradient(135deg, rgba(15, 23, 42, 0.02), rgba(148, 163, 184, 0.08)),
+    #fafaf9;
+}
+
+.workbench-image-preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08);
+  background: #ffffff;
+}
+
 .workbench-markdown-preview h1,
 .workbench-markdown-preview h2,
 .workbench-markdown-preview h3 {
@@ -3030,6 +3055,11 @@ svg {
 .workbench-markdown-preview h2:first-child,
 .workbench-markdown-preview h3:first-child {
   margin-top: 0;
+}
+
+.workbench-markdown-preview .markdown-inline-image {
+  max-width: 100%;
+  max-height: min(60vh, 520px);
 }
 
 .workbench-markdown-preview code {
@@ -3331,6 +3361,16 @@ svg {
   background: #fbfbfb;
 }
 
+.user-message-attachment-button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 10px;
+  cursor: zoom-in;
+}
+
 .user-message-attachment-preview {
   width: 100%;
   aspect-ratio: 1 / 1;
@@ -3422,6 +3462,103 @@ svg {
 
 .markdown-body a:hover {
   text-decoration: underline;
+}
+
+.markdown-inline-image {
+  display: block;
+  max-width: min(100%, 720px);
+  max-height: 460px;
+  width: auto;
+  height: auto;
+  margin: 12px 0 16px;
+  border-radius: 12px;
+  object-fit: contain;
+  background: #f7f8fa;
+}
+
+.markdown-inline-image-button {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 12px;
+  cursor: zoom-in;
+}
+
+.markdown-inline-image-button .markdown-inline-image {
+  margin-bottom: 0;
+}
+
+.image-preview-backdrop {
+  z-index: 120;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.48);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.image-preview-dialog {
+  position: relative;
+  width: min(1100px, calc(100vw - 48px));
+  max-height: min(92vh, 980px);
+  display: grid;
+  gap: 12px;
+  padding: 18px 18px 14px;
+  background: color-mix(in srgb, var(--app-surface, #ffffff) 92%, #0f172a 8%);
+}
+
+.image-preview-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--app-surface, #ffffff) 78%, var(--app-text, #242424) 22%);
+  color: var(--app-text, #242424);
+  cursor: pointer;
+}
+
+.image-preview-stage {
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--app-surface-subtle, #fbfbfa) 88%, transparent), color-mix(in srgb, var(--app-border, #ece9e2) 36%, transparent)),
+    color-mix(in srgb, var(--app-surface, #ffffff) 96%, transparent);
+}
+
+.image-preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: calc(92vh - 140px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 12px;
+}
+
+.image-preview-meta {
+  min-width: 0;
+  color: var(--app-muted, #6b7280);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.image-preview-meta strong {
+  display: block;
+  overflow: hidden;
+  color: var(--app-text-strong, #111827);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .markdown-body ul,
@@ -6211,24 +6348,6 @@ body.git-history-resizing {
   overflow: hidden;
 }
 
-.conversation-output-files-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 44px;
-  padding: 0 16px;
-  border-bottom: 1px solid #edf0f2;
-  color: #6f7782;
-  font-size: 13px;
-}
-
-.conversation-output-files-head strong {
-  color: #1f2937;
-  font-size: 14px;
-  font-weight: 560;
-}
-
 .conversation-output-files-list {
   display: grid;
   gap: 0;
@@ -6237,10 +6356,10 @@ body.git-history-resizing {
 .conversation-output-file-item {
   min-width: 0;
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 14px;
-  padding: 18px 22px;
+  gap: 12px;
+  padding: 14px 22px;
   border-top: 1px solid #edf0f2;
   cursor: pointer;
 }
@@ -6259,11 +6378,11 @@ body.git-history-resizing {
 }
 
 .conversation-output-file-icon {
-  width: 44px;
-  height: 44px;
+  width: 38px;
+  height: 38px;
   display: grid;
   place-items: center;
-  border-radius: 14px;
+  border-radius: 12px;
   background: #f4f6f8;
   color: #6b7280;
 }
@@ -6271,7 +6390,7 @@ body.git-history-resizing {
 .conversation-output-file-main {
   min-width: 0;
   display: grid;
-  gap: 4px;
+  gap: 2px;
 }
 
 .conversation-output-file-name {
@@ -6280,7 +6399,7 @@ body.git-history-resizing {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: #1f2937;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 560;
 }
 
@@ -6290,21 +6409,21 @@ body.git-history-resizing {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: #737c87;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .conversation-output-file-menu-button {
   flex: 0 0 auto;
-  height: 38px;
+  height: 34px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 0 14px;
+  padding: 0 13px;
   border: 1px solid #d8dce2;
   border-radius: 999px;
   background: #ffffff;
   color: #3b4a61;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 560;
   cursor: pointer;
 }
@@ -6332,6 +6451,34 @@ body.git-history-resizing {
 .conversation-output-file-menu .conversation-output-file-menu-item span {
   overflow: visible;
   text-overflow: clip;
+}
+
+.conversation-output-files-toggle {
+  width: 100%;
+  height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-top: 1px solid #edf0f2;
+  background: #ffffff;
+  color: #7b8190;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.conversation-output-files-toggle:hover {
+  background: rgba(156, 163, 175, 0.06);
+  color: #5d6472;
+}
+
+.conversation-output-files-toggle svg {
+  transition: transform 160ms ease;
+}
+
+.conversation-output-files-toggle svg.expanded {
+  transform: rotate(180deg);
 }
 
 .assistant-runtime-card {

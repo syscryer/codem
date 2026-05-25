@@ -114,7 +114,11 @@ export function toggleWorkbenchFileTreeNodeSelection(
 }
 
 export function getWorkbenchPreviewKind(filePath: string): WorkbenchPreviewKind {
-  return /\.mdx?$/i.test(filePath) ? 'markdown' : 'code';
+  if (/\.mdx?$/i.test(filePath)) {
+    return 'markdown';
+  }
+
+  return /\.(png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i.test(filePath) ? 'image' : 'code';
 }
 
 export function getWorkbenchFileIconKind(filePath: string, type: 'directory' | 'file') {

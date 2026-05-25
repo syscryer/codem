@@ -1,7 +1,15 @@
-export type WorkspaceFilePreview = {
-  path: string;
-  content: string;
-};
+export type WorkspaceFilePreview =
+  | {
+      path: string;
+      content: string;
+      mode?: 'code' | 'markdown';
+    }
+  | {
+      path: string;
+      content: string;
+      mode: 'image';
+      previewUrl: string;
+    };
 
 async function readError(response: Response) {
   const message = await response.text();

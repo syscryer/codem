@@ -571,7 +571,7 @@ export type WorkbenchFileTab = {
 
 export type WorkbenchPreviewSource = 'project-file' | 'changed-file' | 'conversation-card' | 'conversation-output-file';
 
-export type WorkbenchPreviewKind = 'code' | 'markdown';
+export type WorkbenchPreviewKind = 'code' | 'markdown' | 'image';
 
 export type WorkbenchPreviewRequest = {
   key: string;
@@ -590,7 +590,8 @@ export type WorkbenchPreviewContentState = {
   loading: boolean;
   content: string;
   error?: string;
-  mode?: 'code' | 'markdown' | 'git-diff';
+  mode?: 'code' | 'markdown' | 'git-diff' | 'image';
+  previewUrl?: string;
   beforeContent?: string;
   afterContent?: string;
 };

@@ -643,6 +643,15 @@ app.get('/api/system/file-preview', (request, response) => {
       response.status(400).send('目标不是文件');
       return;
     }
+    if (isSupportedImageFilePath(filePath)) {
+      response.json({
+        path: filePath,
+        content: '',
+        mode: 'image',
+        previewUrl: `/api/system/image-preview?path=${encodeURIComponent(filePath)}`,
+      });
+      return;
+    }
     if (stats.size > 200 * 1024) {
       response.status(400).send('文件过大，暂不预览');
       return;
@@ -1519,5 +1528,15 @@ function buildAttachmentFileName(extension: string) {
 
 function isSupportedImageFilePath(filePath: string) {
   const extension = path.extname(filePath).toLowerCase();
-  return extension === '.png' || extension === '.jpg' || extension === '.jpeg' || extension === '.webp' || extension === '.gif';
+  return (
+    extension === '.png' ||
+    extension === '.jpg' ||
+    extension === '.jpeg' ||
+    extension === '.webp' ||
+    extension === '.gif' ||
+    extension === '.svg' ||
+    extension === '.ico' ||
+    extension === '.bmp' ||
+    extension === '.avif'
+  );
 }

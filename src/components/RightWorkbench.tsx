@@ -28,9 +28,11 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
 import { MemoGitDiffViewer } from './GitDiffViewer';
+import { ImagePreviewDialog, type ImagePreviewItem } from './ImagePreviewDialog';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { fetchWorkspaceFilePreview } from '../lib/file-preview-api';
 import { commitGitChanges, fetchGitFileDiff, fetchGitPushPreview, fetchGitStatus, pushGitBranch } from '../lib/git-api';
+import { renderMarkdownImage } from '../lib/markdown-image';
 import { fetchProjectFiles } from '../lib/project-files-api';
 import {
   buildWorkbenchFileTree,
@@ -545,7 +547,12 @@ function WorkbenchFiles({
     request
       .then((payload) => {
         if (activeProjectIdRef.current === projectId) {
-          onResolvePreviewContent(activePreviewTabKey, { loading: false, content: payload.content });
+          onResolvePreviewContent(activePreviewTabKey, {
+            loading: false,
+            content: payload.content,
+            mode: payload.mode ?? 'code',
+            previewUrl: payload.mode === 'image' ? payload.previewUrl : undefined,
+          });
         }
       })
       .catch((caughtError: unknown) => {
@@ -1295,7 +1302,7 @@ function PreviewPane({
       </PopoverPortal>
       <div className="workbench-preview-content">
         {!activeTab ? (
-          <WorkbenchEmpty icon={<FileText size={24} />} title="选择文件查看预览" description="从右侧文件树选择代码、Markdown 或变更文件。" />
+          <WorkbenchEmpty icon={<FileText size={24} />} title="选择文件查看预览" description="从右侧文件树选择代码、Markdown、图片或变更文件。" />
         ) : (
           tabs.map((tab) => {
             const content = contentByKey[tab.key];
@@ -1353,6 +1360,8 @@ function PreviewContentPanel({
           viewMode={diffView}
           onViewModeChange={handleViewModeChange}
         />
+      ) : content?.mode === 'image' || tab.kind === 'image' ? (
+        <MemoImagePreview previewUrl={content?.previewUrl ?? ''} fileName={tab.name} />
       ) : tab.kind === 'markdown' ? (
         <MemoMarkdownPreview content={content?.content ?? ''} />
       ) : (
@@ -1363,6 +1372,26 @@ function PreviewContentPanel({
 }
 
 const MemoPreviewContentPanel = memo(PreviewContentPanel);
+
+function ImagePreview({
+  previewUrl,
+  fileName,
+}: {
+  previewUrl: string;
+  fileName: string;
+}) {
+  if (!previewUrl) {
+    return <WorkbenchEmpty icon={<FileText size={24} />} title="预览失败" description="图片预览地址缺失" />;
+  }
+
+  return (
+    <div className="workbench-image-preview">
+      <img src={previewUrl} alt={fileName || '图片预览'} className="workbench-image-preview-image" />
+    </div>
+  );
+}
+
+const MemoImagePreview = memo(ImagePreview);
 
 function FileNavigator({
   scope,
@@ -1923,10 +1952,29 @@ function ChangedFileTreeSection({
 }
 
 function MarkdownPreview({ content }: { content: string }) {
+  const [imagePreview, setImagePreview] = useState<ImagePreviewItem | null>(null);
+
   return (
-    <div className="workbench-markdown-preview">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-    </div>
+    <>
+      <div className="workbench-markdown-preview">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            img({ src, alt, title }) {
+              return renderMarkdownImage({
+                src,
+                alt,
+                title,
+                onPreview: setImagePreview,
+              });
+            },
+          }}
+        >
+          {content}
+        </ReactMarkdown>
+      </div>
+      {imagePreview ? <ImagePreviewDialog preview={imagePreview} onClose={() => setImagePreview(null)} /> : null}
+    </>
   );
 }
 

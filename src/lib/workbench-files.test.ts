@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   buildWorkbenchFileTree,
   filterWorkbenchNoiseFiles,
+  getWorkbenchPreviewKind,
   isWorkbenchNoiseFilePath,
   isWorkbenchFileTreeNodeSelected,
   splitWorkbenchChangedFiles,
@@ -35,6 +36,16 @@ test('resolveWorkbenchCodeLanguage maps common preview files to highlighter lang
   assert.equal(resolveWorkbenchCodeLanguage('db/schema.sql'), 'sql');
   assert.equal(resolveWorkbenchCodeLanguage('README.md'), 'markdown');
   assert.equal(resolveWorkbenchCodeLanguage('unknown.custom'), 'text');
+});
+
+test('getWorkbenchPreviewKind treats common image assets as image previews', () => {
+  assert.equal(getWorkbenchPreviewKind('assets/logo.png'), 'image');
+  assert.equal(getWorkbenchPreviewKind('assets/logo.gif'), 'image');
+  assert.equal(getWorkbenchPreviewKind('assets/logo.webp'), 'image');
+  assert.equal(getWorkbenchPreviewKind('assets/logo.svg'), 'image');
+  assert.equal(getWorkbenchPreviewKind('assets/logo.ico'), 'image');
+  assert.equal(getWorkbenchPreviewKind('assets/logo.bmp'), 'image');
+  assert.equal(getWorkbenchPreviewKind('assets/logo.avif'), 'image');
 });
 
 test('resolveWorkbenchFileIcon returns vscode-style icon assets for files and folders', () => {

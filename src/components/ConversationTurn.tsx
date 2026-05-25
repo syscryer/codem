@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
+import { ImagePreviewDialog, type ImagePreviewItem } from './ImagePreviewDialog';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import {
   ArrowUpRight,
@@ -38,7 +39,9 @@ import {
   type ConversationUndoChange,
 } from '../lib/conversation-changed-files';
 import { collectConversationOutputFiles, type ConversationOutputFile } from '../lib/conversation-output-files';
+import { buildConversationOutputFileListState } from '../lib/conversation-output-file-list';
 import { runConversationOutputFileMenuAction } from '../lib/conversation-output-file-interactions';
+import { renderMarkdownImage, type MarkdownImagePreviewPayload } from '../lib/markdown-image';
 import { buildConversationOutputFilePreviewRequest } from '../lib/workbench-preview';
 import type {
   ApprovalDecision,
@@ -92,6 +95,7 @@ function ConversationTurnViewComponent({
     decision: ApprovalDecision,
   ) => Promise<boolean>;
 }) {
+  const [imagePreview, setImagePreview] = useState<ImagePreviewItem | null>(null);
   const running = isTurnInFlight(turn, isLiveRunning);
   const requestCardsByToolId = useMemo(() => {
     const requests = turn.pendingUserInputRequests ?? [];
@@ -143,7 +147,12 @@ function ConversationTurnViewComponent({
       <section className="message user-message">
         <div className="message-label">You</div>
         <div className="user-message-content">
-          {hasUserAttachments ? <UserAttachmentGallery attachments={turn.userAttachments ?? []} /> : null}
+          {hasUserAttachments ? (
+            <UserAttachmentGallery
+              attachments={turn.userAttachments ?? []}
+              onPreviewImage={setImagePreview}
+            />
+          ) : null}
           {hasUserText ? <div className="message-body preserve-format">{turn.userText}</div> : null}
           {hasUserText || messageTime ? (
             <div className="turn-actions user-turn-actions" aria-label="用户消息操作">
@@ -164,7 +173,13 @@ function ConversationTurnViewComponent({
           {groupedVisibleItems.length > 0 ? (
             groupedVisibleItems.map((item) => {
               if (item.type === 'text') {
-                return <MarkdownMessage key={item.id} content={item.text} />;
+                return (
+                  <MarkdownMessage
+                    key={item.id}
+                    content={item.text}
+                    onPreviewImage={setImagePreview}
+                  />
+                );
               }
 
               if (item.type === 'thinking') {
@@ -274,6 +289,8 @@ function ConversationTurnViewComponent({
           ) : null}
         </div>
       </section>
+
+      {imagePreview ? <ImagePreviewDialog preview={imagePreview} onClose={() => setImagePreview(null)} /> : null}
     </article>
   );
 }
@@ -319,12 +336,21 @@ function TurnProgressIcon({ turn, running }: { turn: ConversationTurn; running: 
   );
 }
 
-function MarkdownMessage({ content }: { content: string }) {
+function MarkdownMessage({
+  content,
+  onPreviewImage,
+}: {
+  content: string;
+  onPreviewImage: (preview: MarkdownImagePreviewPayload) => void;
+}) {
   return (
     <div className="message-body markdown-body">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          img({ src, alt, title }) {
+            return renderMarkdownImage({ src, alt, title, onPreview: onPreviewImage });
+          },
           pre({ children }) {
             const text = extractCodeText(children);
             return (
@@ -394,17 +420,36 @@ function SystemCommandCard({ item }: { item: SystemCommandItem }) {
 
 export const ConversationTurnView = memo(ConversationTurnViewComponent);
 
-function UserAttachmentGallery({ attachments }: { attachments: UserImageAttachment[] }) {
+function UserAttachmentGallery({
+  attachments,
+  onPreviewImage,
+}: {
+  attachments: UserImageAttachment[];
+  onPreviewImage: (preview: ImagePreviewItem) => void;
+}) {
   return (
     <div className="user-message-attachments" aria-label="用户图片附件">
       {attachments.map((attachment) => (
         <figure key={attachment.id} className="user-message-attachment">
-          <img
-            src={buildUserAttachmentPreviewUrl(attachment.path)}
-            alt={attachment.name || '图片附件'}
-            className="user-message-attachment-preview"
-            loading="lazy"
-          />
+          <button
+            type="button"
+            className="user-message-attachment-button"
+            aria-label={`预览图片：${attachment.name || '图片附件'}`}
+            onClick={() =>
+              onPreviewImage({
+                src: buildUserAttachmentPreviewUrl(attachment.path),
+                alt: attachment.name || '图片附件',
+                title: attachment.name || undefined,
+              })
+            }
+          >
+            <img
+              src={buildUserAttachmentPreviewUrl(attachment.path)}
+              alt={attachment.name || '图片附件'}
+              className="user-message-attachment-preview"
+              loading="lazy"
+            />
+          </button>
           <figcaption className="user-message-attachment-name" title={attachment.name}>
             {attachment.name}
           </figcaption>
@@ -688,14 +733,16 @@ function ConversationOutputFilesCard({
   onOpenOutputPath: (path: string) => Promise<void>;
   onRevealOutputPath: (path: string) => Promise<void>;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const listState = useMemo(
+    () => buildConversationOutputFileListState(files, expanded),
+    [expanded, files],
+  );
+
   return (
     <section className="conversation-output-files-card">
-      <header className="conversation-output-files-head">
-        <strong>产出文件</strong>
-        <span>{files.length} 个</span>
-      </header>
       <div className="conversation-output-files-list">
-        {files.map((file) => (
+        {listState.visibleFiles.map((file) => (
           <ConversationOutputFileCard
             key={file.path}
             file={file}
@@ -705,6 +752,16 @@ function ConversationOutputFilesCard({
           />
         ))}
       </div>
+      {listState.showToggle ? (
+        <button
+          type="button"
+          className="conversation-output-files-toggle"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <span>{listState.toggleLabel}</span>
+          <ChevronDown className={expanded ? 'expanded' : ''} size={16} />
+        </button>
+      ) : null}
     </section>
   );
 }
