@@ -112,5 +112,10 @@ test('useClaudeRun stores safe user content block summaries and ConversationTurn
 
   assert.match(conversationTurnSource, /const hasUserContentBlocks = Boolean\(turn\.userContentBlocks\?\.length\);/);
   assert.match(conversationTurnSource, /<UserContentBlocks blocks=\{turn\.userContentBlocks \?\? \[\]\} onPreviewImage=\{setImagePreview\} \/>/);
-  assert.match(conversationTurnSource, /block\.type === 'file_text' \? '已内联' : '仅引用'/);
+  assert.doesNotMatch(conversationTurnSource, /user-message-attachment-kind/);
+  // file_reference 块不渲染附件卡片，避免在用户消息里出现孤立的"路径气泡"
+  assert.match(
+    conversationTurnSource,
+    /blocks\.filter\(\(block\) => block\.type !== 'text' && block\.type !== 'file_reference'\)/,
+  );
 });

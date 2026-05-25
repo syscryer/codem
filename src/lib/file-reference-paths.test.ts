@@ -149,3 +149,38 @@ test('Tauri CSP 允许从 jsdelivr 加载工作台同款 SVG 图标', () => {
   const tauriConfig = readFileSync(tauriConfPath, 'utf8');
   assert.match(tauriConfig, /img-src[^"]*https:\/\/cdn\.jsdelivr\.net/);
 });
+
+test('server exposes a workspace-relative resolve endpoint distinct from fuzzy search', () => {
+  // 修复点：搜索接口受深度/数量截断限制，无法稳定解析“@相对路径”，需要专门的 resolve 接口。
+  assert.match(serverSource, /app\.get\('\/api\/system\/files\/resolve'/);
+  assert.match(serverSource, /resolveWorkspaceRelativePath\(root,\s*rawPath\)/);
+  assert.match(
+    serverSource,
+    /response\.json\(\{\s*path: resolved\.path,\s*rel: resolved\.rel,\s*isDirectory: stats\.isDirectory\(\),\s*\}\)/s,
+  );
+  assert.match(serverSource, /response\.status\(404\)\.send\('path 在 workspace 中不存在'\)/);
+});
+
+test('resolveWorkspaceRelativePath rejects absolute paths and parent traversal', () => {
+  assert.match(serverSource, /if \(path\.isAbsolute\(stripped\)\) \{\s*return null;\s*\}/);
+  assert.match(
+    serverSource,
+    /if \(slashed\.startsWith\('\.\.\/'\) \|\| slashed === '\.\.' \|\| slashed\.includes\('\/\.\.\/'\) \|\| slashed\.endsWith\('\/\.\.'\)\) \{/,
+  );
+  assert.match(serverSource, /if \(!relative \|\| relative\.startsWith\('\.\.'\) \|\| path\.isAbsolute\(relative\)\) \{/);
+});
+
+test('Composer @reference resolution uses the dedicated resolve endpoint instead of fuzzy search', () => {
+  // 修复点：之前 findExistingRelativeFile 走 /files/search 再用完全相等过滤，
+  // 受 ranking 和数量截断影响，深路径或截断后的文件解析不到。
+  assert.match(composerSource, /\/api\/system\/files\/resolve\?\$\{params\.toString\(\)\}/);
+  assert.match(composerSource, /path: reference,/);
+  assert.doesNotMatch(composerSource, /\/api\/system\/files\/search\?\$\{params\.toString\(\)\}\)\s*[\r\n]+\s*if \(!response\.ok\) \{[\r\n]+\s*return null;[\r\n]+\s*\}\s*[\r\n]+\s*const payload = await response\.json\(\) as \{ files\?: FileReferenceSearchResult\[\] \}/);
+});
+
+test('searchWorkspaceFiles normalizes backslashes in user query before matching', () => {
+  // 修复点：Windows 用户粘贴路径时常常带反斜杠（e.g. `@server\lib\workspace-store.ts`），
+  // 而 rel 使用正斜杠存储，需要统一归一化。
+  assert.match(serverSource, /function normalizeWorkspaceSearchQuery\(query: string\) \{\s*return query\.replace\(\/\\\\\/g,\s*'\/'\)\.toLowerCase\(\);\s*\}/s);
+  assert.match(serverSource, /const normalizedQuery = normalizeWorkspaceSearchQuery\(query\);/);
+});

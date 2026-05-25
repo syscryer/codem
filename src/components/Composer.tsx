@@ -5,7 +5,7 @@ import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
 import { buildComposerContextUsage } from '../lib/composer-context-usage';
 import { classifyComposerFile, supportedComposerUploadAccept } from '../lib/composer-input-files';
-import { extractAtFileReferences, normalizePathForComparison, shouldSearchFileReferenceQuery } from '../lib/file-reference-paths';
+import { extractAtFileReferences, shouldSearchFileReferenceQuery } from '../lib/file-reference-paths';
 import { getWorkbenchFileIconKind, resolveWorkbenchFileIcon } from '../lib/workbench-files';
 import { PopoverPortal } from './PopoverPortal';
 import { ComposerContextIndicator } from './ComposerContextIndicator';
@@ -1278,16 +1278,26 @@ async function resolveExistingFileReferenceBlocks(draft: string, workspace: stri
 async function findExistingRelativeFile(workspace: string, reference: string) {
   const params = new URLSearchParams({
     workingDirectory: workspace,
-    query: reference,
+    path: reference,
   });
-  const response = await fetch(`/api/system/files/search?${params.toString()}`);
+  const response = await fetch(`/api/system/files/resolve?${params.toString()}`);
   if (!response.ok) {
     return null;
   }
 
-  const payload = await response.json() as { files?: FileReferenceSearchResult[] };
-  const normalizedReference = normalizePathForComparison(reference);
-  return (payload.files ?? []).find((file) => normalizePathForComparison(file.rel) === normalizedReference) ?? null;
+  try {
+    const payload = (await response.json()) as { path?: string; rel?: string; isDirectory?: boolean };
+    if (!payload.path || !payload.rel) {
+      return null;
+    }
+    return {
+      path: payload.path,
+      rel: payload.rel,
+      isDirectory: Boolean(payload.isDirectory),
+    } satisfies FileReferenceSearchResult;
+  } catch {
+    return null;
+  }
 }
 
 function getPathBasename(filePath: string) {

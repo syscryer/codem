@@ -1,7 +1,7 @@
 import express, { type ErrorRequestHandler, type RequestHandler } from 'express';
 import path from 'node:path';
 import { readFileSync, statSync } from 'node:fs';
-import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { normalizeInputContentBlocks } from '../src/lib/input-content-blocks.js';
 import type { InputContentBlock, InputReferenceReason } from '../src/types.js';
@@ -567,6 +567,46 @@ app.get('/api/system/files/search', async (request, response) => {
   } catch (error) {
     console.error('搜索工作区文件失败', error);
     response.status(500).send(error instanceof Error ? error.message : '搜索工作区文件失败');
+  }
+});
+
+app.get('/api/system/files/resolve', async (request, response) => {
+  const workingDirectory =
+    typeof request.query.workingDirectory === 'string' ? request.query.workingDirectory.trim() : '';
+  const rawPath = typeof request.query.path === 'string' ? request.query.path.trim() : '';
+
+  if (!workingDirectory) {
+    response.status(400).send('workingDirectory 不能为空');
+    return;
+  }
+
+  if (!rawPath) {
+    response.status(400).send('path 不能为空');
+    return;
+  }
+
+  const root = path.resolve(workingDirectory);
+  const accessible = await isDirectoryAccessible(root);
+  if (!accessible) {
+    response.status(400).send(`目录不存在或不可访问：${root}`);
+    return;
+  }
+
+  const resolved = resolveWorkspaceRelativePath(root, rawPath);
+  if (!resolved) {
+    response.status(400).send('path 必须是 workspace 内的相对路径');
+    return;
+  }
+
+  try {
+    const stats = await stat(resolved.path);
+    response.json({
+      path: resolved.path,
+      rel: resolved.rel,
+      isDirectory: stats.isDirectory(),
+    });
+  } catch {
+    response.status(404).send('path 在 workspace 中不存在');
   }
 });
 
@@ -1787,7 +1827,7 @@ function buildAttachmentFileName(extension: string) {
 }
 
 async function searchWorkspaceFiles(root: string, query: string) {
-  const normalizedQuery = query.toLowerCase();
+  const normalizedQuery = normalizeWorkspaceSearchQuery(query);
   if (!normalizedQuery) {
     return [];
   }
@@ -1832,6 +1872,42 @@ async function searchWorkspaceFiles(root: string, query: string) {
   return results
     .sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.rel.length - b.rel.length || a.rel.localeCompare(b.rel))
     .slice(0, MAX_WORKSPACE_FILE_SEARCH_RESULTS);
+}
+
+function normalizeWorkspaceSearchQuery(query: string) {
+  return query.replace(/\\/g, '/').toLowerCase();
+}
+
+function resolveWorkspaceRelativePath(root: string, rawPath: string) {
+  const trimmed = rawPath.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const stripped = trimmed.replace(/^[\s'"`]+|[\s'"`]+$/g, '');
+  if (!stripped) {
+    return null;
+  }
+
+  if (path.isAbsolute(stripped)) {
+    return null;
+  }
+
+  const slashed = stripped.replace(/\\/g, '/').replace(/^\.\//, '');
+  if (slashed.startsWith('../') || slashed === '..' || slashed.includes('/../') || slashed.endsWith('/..')) {
+    return null;
+  }
+
+  const absolute = path.resolve(root, slashed);
+  const relative = path.relative(root, absolute);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    return null;
+  }
+
+  return {
+    path: absolute,
+    rel: relative.replace(/\\/g, '/'),
+  };
 }
 
 function isSupportedImageFilePath(filePath: string) {

@@ -431,7 +431,8 @@ function UserContentBlocks({
   blocks: InputContentBlockSummary[];
   onPreviewImage: (preview: ImagePreviewItem) => void;
 }) {
-  const visibleBlocks = blocks.filter((block) => block.type !== 'text');
+  // file_reference 仅是路径引用，不显示在用户消息上（@文件 已经体现在 prompt 文本里）。
+  const visibleBlocks = blocks.filter((block) => block.type !== 'text' && block.type !== 'file_reference');
   if (visibleBlocks.length === 0) {
     return null;
   }
@@ -471,9 +472,6 @@ function UserContentBlocks({
         return (
           <figure key={`${block.type}-${index}`} className="user-message-attachment user-message-attachment-file-card">
             <div className="user-message-attachment-file">
-              <span className="user-message-attachment-kind">
-                {block.type === 'file_text' ? '已内联' : '仅引用'}
-              </span>
               <strong className="user-message-attachment-file-name" title={'name' in block ? block.name : '附件'}>
                 {'name' in block ? block.name : '附件'}
               </strong>

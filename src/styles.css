@@ -3399,12 +3399,6 @@ svg {
   gap: 4px;
 }
 
-.user-message-attachment-kind {
-  color: #7a7a7a;
-  font-size: 11px;
-  line-height: 1.2;
-}
-
 .user-message-attachment-file-name {
   color: #272727;
   font-size: 12px;
