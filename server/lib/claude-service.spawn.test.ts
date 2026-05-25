@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { buildClaudeInputMessage, summarizeClaudeInputForTrace } from './claude-service';
 
 const source = readFileSync(new URL('./claude-service.ts', import.meta.url), 'utf8');
 const serverSource = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
@@ -59,6 +60,290 @@ test('reusable runtime prompts are sent through stream-json stdin', () => {
   assert.match(spawnClaudeRuntimeBody, /\[\s*['"]-p['"],\s*input\.prompt\s*\]/);
   assert.match(writePromptToClaudeBody, /JSON\.stringify\(buildClaudeInputMessage\(input\)\)/);
   assert.match(writePromptToClaudeBody, /runtime\.child\.stdin\.write\(payload,/);
+});
+
+test('Claude adapter consumes shared neutral block types and helpers', () => {
+  assert.match(source, /import type\s*\{\s*InputContentBlock[\s\S]*\}\s*from ['"]\.\.\/\.\.\/src\/types\.js['"]/);
+  assert.match(
+    source,
+    /import\s*\{\s*normalizeInputContentBlocks,\s*summarizeInputContentBlocksForTrace\s*\}\s*from ['"]\.\.\/\.\.\/src\/lib\/input-content-blocks\.js['"]/,
+  );
+  assert.doesNotMatch(source, /type NeutralInputContentBlock\s*=/);
+  assert.doesNotMatch(source, /function summarizeNeutralInputContentBlocksForTrace/);
+  assert.doesNotMatch(source, /function normalizeProvidedNeutralInputContentBlocks/);
+
+  const normalizeBody = extractFunctionBody('normalizeStreamInputContentBlocks');
+  assert.match(normalizeBody, /normalizeInputContentBlocks\(\{/);
+  assert.match(normalizeBody, /prompt:\s*input\.prompt/);
+  assert.match(normalizeBody, /contentBlocks:\s*input\.contentBlocks/);
+  assert.match(normalizeBody, /imageAttachments:/);
+});
+
+test('Claude input message includes image content blocks after text', () => {
+  const message = buildClaudeInputMessage({
+    threadId: 'thread-a',
+    turnId: 'turn-a',
+    prompt: '请看这张图',
+    workingDirectory: 'D:\\workspace',
+    permissionMode: 'default',
+    imageAttachments: [
+      {
+        mimeType: 'image/png',
+        data: 'iVBORw0KGgo=',
+      },
+    ],
+  });
+
+  assert.deepEqual(message.message.content, [
+    {
+      type: 'text',
+      text: '请看这张图',
+    },
+    {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: 'image/png',
+        data: 'iVBORw0KGgo=',
+      },
+    },
+  ]);
+});
+
+test('Claude input message maps neutral blocks into Claude stdin content', () => {
+  const message = buildClaudeInputMessage({
+    threadId: 'thread-a',
+    turnId: 'turn-a',
+    prompt: 'legacy prompt should be ignored',
+    workingDirectory: 'D:\\workspace',
+    permissionMode: 'default',
+    contentBlocks: [
+      {
+        type: 'text',
+        text: '  请结合这些输入继续  ',
+      },
+      {
+        type: 'image',
+        mimeType: 'image/png',
+        data: 'iVBORw0KGgo=',
+      },
+      {
+        type: 'file_reference',
+        path: 'D:\\workspace\\src\\App.tsx',
+        name: 'App.tsx',
+        reason: 'too_large',
+      },
+      {
+        type: 'file_text',
+        path: 'D:\\workspace\\notes\\todo.md',
+        name: 'todo.md',
+        text: 'console.log("hi")',
+      },
+      {
+        type: 'attachment_metadata',
+        name: 'archive.zip',
+        reason: 'binary',
+      },
+    ],
+  } as Parameters<typeof buildClaudeInputMessage>[0]);
+
+  assert.deepEqual(message.message.content, [
+    {
+      type: 'text',
+      text: '请结合这些输入继续',
+    },
+    {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: 'image/png',
+        data: 'iVBORw0KGgo=',
+      },
+    },
+    {
+      type: 'text',
+      text: '文件已作为路径引用提供：D:\\workspace\\src\\App.tsx\n原因：too_large',
+    },
+    {
+      type: 'text',
+      text: '文件 D:\\workspace\\notes\\todo.md 内容：\n\nconsole.log("hi")',
+    },
+    {
+      type: 'text',
+      text: '附件未直接发送：archive.zip\n原因：binary',
+    },
+  ]);
+});
+
+test('invalid direct content blocks still fall back to legacy prompt and image attachments', () => {
+  const message = buildClaudeInputMessage({
+    threadId: 'thread-a',
+    turnId: 'turn-a',
+    prompt: '  回退到 legacy  ',
+    workingDirectory: 'D:\\workspace',
+    permissionMode: 'default',
+    contentBlocks: [
+      {
+        type: 'text',
+        text: '   ',
+      },
+    ],
+    imageAttachments: [
+      {
+        mimeType: 'image/png',
+        data: 'iVBORw0KGgo=',
+      },
+    ],
+  } as Parameters<typeof buildClaudeInputMessage>[0]);
+
+  assert.deepEqual(message.message.content, [
+    {
+      type: 'text',
+      text: '回退到 legacy',
+    },
+    {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: 'image/png',
+        data: 'iVBORw0KGgo=',
+      },
+    },
+  ]);
+});
+
+test('mixed direct and legacy inputs preserve legacy text and images when some direct blocks are dropped', () => {
+  const input = {
+    threadId: 'thread-a',
+    turnId: 'turn-a',
+    prompt: '  legacy text  ',
+    workingDirectory: 'D:\\workspace',
+    permissionMode: 'default',
+    contentBlocks: [
+      {
+        type: 'text',
+        text: 'direct text',
+      },
+      {
+        type: 'text',
+        text: '   ',
+      },
+    ],
+    imageAttachments: [
+      {
+        mimeType: 'image/png',
+        data: 'iVBORw0KGgo=',
+      },
+    ],
+  } as Parameters<typeof buildClaudeInputMessage>[0];
+
+  const message = buildClaudeInputMessage(input);
+
+  assert.deepEqual(message.message.content, [
+    {
+      type: 'text',
+      text: 'direct text',
+    },
+    {
+      type: 'text',
+      text: 'legacy text',
+    },
+    {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: 'image/png',
+        data: 'iVBORw0KGgo=',
+      },
+    },
+  ]);
+
+  const summary = summarizeClaudeInputForTrace(input);
+  assert.equal(summary, 'text=2, images=1, fileText=0, fileReferences=0, metadata=0, imageBytes=8');
+});
+
+test('Claude input trace summarizes image blocks without exposing base64 data', () => {
+  const summary = summarizeClaudeInputForTrace({
+    threadId: 'thread-a',
+    turnId: 'turn-a',
+    prompt: '请看这张图',
+    workingDirectory: 'D:\\workspace',
+    permissionMode: 'default',
+    imageAttachments: [
+      {
+        mimeType: 'image/png',
+        data: 'SGVsbG8=',
+      },
+    ],
+  });
+
+  assert.equal(summary, 'text=1, images=1, fileText=0, fileReferences=0, metadata=0, imageBytes=5');
+  assert.doesNotMatch(summary, /SGVsbG8=/);
+
+  const writePromptToClaudeBody = extractFunctionBody('writePromptToClaude');
+  assert.match(writePromptToClaudeBody, /summarizeClaudeInputForTrace\(input\)/);
+});
+
+test('Claude input trace summarizes neutral blocks without exposing content', () => {
+  const summary = summarizeClaudeInputForTrace({
+    prompt: 'legacy prompt should be ignored',
+    contentBlocks: [
+      {
+        type: 'text',
+        text: '不要泄露这段文本',
+      },
+      {
+        type: 'image',
+        mimeType: 'image/png',
+        data: 'SGVsbG8=',
+      },
+      {
+        type: 'file_text',
+        path: 'D:\\workspace\\notes\\todo.md',
+        name: 'todo.md',
+        text: '不要泄露这个文件内容',
+      },
+      {
+        type: 'file_reference',
+        path: 'D:\\workspace\\src\\App.tsx',
+        name: 'App.tsx',
+      },
+      {
+        type: 'attachment_metadata',
+        name: 'archive.zip',
+        reason: 'binary',
+      },
+    ],
+  } as Parameters<typeof summarizeClaudeInputForTrace>[0]);
+
+  assert.equal(summary, 'text=1, images=1, fileText=1, fileReferences=1, metadata=1, imageBytes=5');
+  assert.doesNotMatch(summary, /不要泄露这段文本/);
+  assert.doesNotMatch(summary, /不要泄露这个文件内容/);
+  assert.doesNotMatch(summary, /SGVsbG8=/);
+});
+
+test('trace summary uses content block summary instead of raw prompt details', () => {
+  const body = extractFunctionBody('summarizeClaudeInputForTrace');
+  assert.match(body, /summarizeInputContentBlocksForTrace/);
+  assert.doesNotMatch(body, /input\.prompt\.length/);
+});
+
+test('guide prompts keep the 4-argument compatibility signature and still isolate guide content blocks', () => {
+  const submitGuideBody = extractFunctionBody('submitRunGuidePrompt');
+
+  assert.match(
+    source,
+    /export function submitRunGuidePrompt\(\s*runId: string,\s*prompt: string,\s*imageAttachments: ClaudeInputImageAttachment\[\] = \[\],\s*guideContentBlocks: InputContentBlock\[\] = \[\],\s*\)/,
+  );
+  assert.match(submitGuideBody, /if \(!trimmedPrompt && guideContentBlocks\.length === 0\) \{/);
+  assert.match(submitGuideBody, /contentBlocks:\s*guideContentBlocks,/);
+  assert.doesNotMatch(submitGuideBody, /\.\.\.activeRun\.state\.input/);
+  assert.match(serverSource, /guideImageAttachments\s*=\s*normalizeClaudeRunImageAttachments\(request\.body\?\.attachments\)/);
+  assert.match(serverSource, /guideContentBlocks\s*=\s*normalizeClaudeRunContentBlocks\(\{/);
+  assert.match(
+    serverSource,
+    /submitRunGuidePrompt\(request\.params\.runId,\s*prompt,\s*guideImageAttachments,\s*guideContentBlocks\)/,
+  );
 });
 
 test('Claude effort is parsed, passed to the CLI, and included in runtime compatibility', () => {

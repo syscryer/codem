@@ -11,6 +11,7 @@ import {
 } from './open-with.js';
 import { getAppSettings } from './settings-store.js';
 import { collectUsageStats, type UsageStatsRangeDays } from './usage-stats.js';
+import type { InputContentBlockSummary } from '../../src/types.js';
 
 type OrganizeBy = 'project' | 'timeline' | 'chat-first';
 type SortBy = 'created' | 'updated';
@@ -135,6 +136,7 @@ export type ThreadTurn = {
   >;
   tools: ThreadTool[];
   userAttachments?: UserImageAttachment[];
+  userContentBlocks?: InputContentBlockSummary[];
   pendingUserInputRequests?: RequestUserInputRequest[];
   pendingApprovalRequests?: ApprovalRequest[];
 };
@@ -432,6 +434,7 @@ type StoredMessageRow = {
   total_cost_usd: number | null;
   pending_approval_requests_json: string | null;
   user_attachments_json: string | null;
+  user_content_blocks_json: string | null;
   created_at: string;
 };
 
@@ -956,9 +959,9 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[], options
     INSERT INTO messages (
       id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics, session_id,
       phase, started_at_ms, duration_ms, input_tokens, output_tokens, cache_creation_input_tokens,
-      cache_read_input_tokens, context_usage_json, total_cost_usd, pending_approval_requests_json, user_attachments_json, created_at
+      cache_read_input_tokens, context_usage_json, total_cost_usd, pending_approval_requests_json, user_attachments_json, user_content_blocks_json, created_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertToolCall = db.prepare(`
     INSERT INTO tool_calls (
@@ -998,6 +1001,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[], options
         turn.totalCostUsd ?? null,
         serializePendingApprovalRequests(turn.pendingApprovalRequests),
         serializeUserAttachments(turn.userAttachments),
+        serializeUserContentBlocks(turn.userContentBlocks),
         baseCreatedAt,
       );
 
@@ -1037,6 +1041,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[], options
             serializeContextUsage(turn.contextUsage),
             turn.totalCostUsd ?? null,
             serializePendingApprovalRequests(turn.pendingApprovalRequests),
+            null,
             null,
             baseCreatedAt,
           );
@@ -1861,6 +1866,7 @@ function initializeDatabase() {
       total_cost_usd REAL,
       pending_approval_requests_json TEXT,
       user_attachments_json TEXT,
+      user_content_blocks_json TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -1908,6 +1914,7 @@ function initializeDatabase() {
   ensureColumn('messages', 'total_cost_usd', 'REAL');
   ensureColumn('messages', 'pending_approval_requests_json', 'TEXT');
   ensureColumn('messages', 'user_attachments_json', 'TEXT');
+  ensureColumn('messages', 'user_content_blocks_json', 'TEXT');
 }
 
 function resolveAppDirectory() {
@@ -2654,7 +2661,7 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
   const messageRows = db
     .prepare(`
       SELECT id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics, session_id, created_at
-      , phase, started_at_ms, duration_ms, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, context_usage_json, total_cost_usd, pending_approval_requests_json, user_attachments_json
+      , phase, started_at_ms, duration_ms, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, context_usage_json, total_cost_usd, pending_approval_requests_json, user_attachments_json, user_content_blocks_json
       FROM messages
       WHERE thread_id = ?
       ORDER BY turn_sort ASC, item_sort ASC, CASE role WHEN 'user' THEN 0 ELSE 1 END ASC
@@ -2726,6 +2733,7 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
     if (row.role === 'user') {
       turn.userText = row.content;
       turn.userAttachments = parseStoredUserAttachments(row.user_attachments_json) ?? turn.userAttachments;
+      turn.userContentBlocks = parseStoredUserContentBlocks(row.user_content_blocks_json) ?? turn.userContentBlocks;
     } else if (row.content.trim()) {
       turn.assistantText += row.content;
       turn.itemBuckets.push({
@@ -5231,6 +5239,17 @@ function serializeUserAttachments(attachments: UserImageAttachment[] | undefined
   return normalized.length > 0 ? JSON.stringify(normalized) : null;
 }
 
+function serializeUserContentBlocks(blocks: InputContentBlockSummary[] | undefined) {
+  if (!blocks?.length) {
+    return null;
+  }
+
+  const normalized = blocks
+    .map((block) => normalizeStoredUserContentBlock(block))
+    .filter((block): block is InputContentBlockSummary => Boolean(block));
+  return normalized.length > 0 ? JSON.stringify(normalized) : null;
+}
+
 function parseStoredUserAttachments(value: string | null): UserImageAttachment[] | undefined {
   if (!value?.trim()) {
     return undefined;
@@ -5246,6 +5265,26 @@ function parseStoredUserAttachments(value: string | null): UserImageAttachment[]
       .map((item) => normalizeStoredUserAttachment(item))
       .filter((item): item is UserImageAttachment => Boolean(item));
     return attachments.length > 0 ? attachments : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseStoredUserContentBlocks(value: string | null): InputContentBlockSummary[] | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return undefined;
+    }
+
+    const blocks = parsed
+      .map((item) => normalizeStoredUserContentBlock(item))
+      .filter((item): item is InputContentBlockSummary => Boolean(item));
+    return blocks.length > 0 ? blocks : undefined;
   } catch {
     return undefined;
   }
@@ -5272,6 +5311,96 @@ function normalizeStoredUserAttachment(value: unknown): UserImageAttachment | nu
     mimeType: firstNonEmptyString(item, ['mimeType', 'mime_type']),
     size,
   };
+}
+
+function normalizeStoredUserContentBlock(value: unknown): InputContentBlockSummary | null {
+  const item = asRecord(value);
+  if (!item) {
+    return null;
+  }
+
+  const type = firstNonEmptyString(item, ['type']);
+  if (type === 'text') {
+    const text = typeof item.text === 'string' ? item.text : '';
+    return text ? { type: 'text', text } : null;
+  }
+
+  if (type === 'image') {
+    return {
+      type: 'image',
+      ...(firstNonEmptyString(item, ['id']) ? { id: firstNonEmptyString(item, ['id']) } : {}),
+      ...(firstNonEmptyString(item, ['path']) ? { path: firstNonEmptyString(item, ['path']) } : {}),
+      ...(firstNonEmptyString(item, ['name']) ? { name: firstNonEmptyString(item, ['name']) } : {}),
+      ...(firstNonEmptyString(item, ['mimeType', 'mime_type'])
+        ? { mimeType: firstNonEmptyString(item, ['mimeType', 'mime_type']) }
+        : {}),
+      ...(typeof item.size === 'number' && Number.isFinite(item.size) ? { size: item.size } : {}),
+      ...(typeof item.imageBytes === 'number' && Number.isFinite(item.imageBytes) ? { imageBytes: item.imageBytes } : {}),
+    };
+  }
+
+  if (type === 'file_text') {
+    const pathValue = firstNonEmptyString(item, ['path']);
+    const name = firstNonEmptyString(item, ['name']);
+    if (!pathValue || !name) {
+      return null;
+    }
+
+    return {
+      type: 'file_text',
+      ...(firstNonEmptyString(item, ['id']) ? { id: firstNonEmptyString(item, ['id']) } : {}),
+      path: pathValue,
+      name,
+      ...(firstNonEmptyString(item, ['mimeType', 'mime_type'])
+        ? { mimeType: firstNonEmptyString(item, ['mimeType', 'mime_type']) }
+        : {}),
+      ...(typeof item.size === 'number' && Number.isFinite(item.size) ? { size: item.size } : {}),
+      ...(typeof item.textBytes === 'number' && Number.isFinite(item.textBytes) ? { textBytes: item.textBytes } : {}),
+    };
+  }
+
+  if (type === 'file_reference') {
+    const pathValue = firstNonEmptyString(item, ['path']);
+    const name = firstNonEmptyString(item, ['name']);
+    if (!pathValue || !name) {
+      return null;
+    }
+
+    return {
+      type: 'file_reference',
+      ...(firstNonEmptyString(item, ['id']) ? { id: firstNonEmptyString(item, ['id']) } : {}),
+      path: pathValue,
+      name,
+      ...(firstNonEmptyString(item, ['mimeType', 'mime_type'])
+        ? { mimeType: firstNonEmptyString(item, ['mimeType', 'mime_type']) }
+        : {}),
+      ...(typeof item.size === 'number' && Number.isFinite(item.size) ? { size: item.size } : {}),
+      ...(item.reason === 'too_large' || item.reason === 'binary' || item.reason === 'unsupported' || item.reason === 'provider_unsupported'
+        ? { reason: item.reason }
+        : {}),
+    };
+  }
+
+  if (type === 'attachment_metadata') {
+    const name = firstNonEmptyString(item, ['name']);
+    const reason = firstNonEmptyString(item, ['reason']);
+    if (!name || !reason) {
+      return null;
+    }
+
+    return {
+      type: 'attachment_metadata',
+      ...(firstNonEmptyString(item, ['id']) ? { id: firstNonEmptyString(item, ['id']) } : {}),
+      name,
+      ...(firstNonEmptyString(item, ['mimeType', 'mime_type'])
+        ? { mimeType: firstNonEmptyString(item, ['mimeType', 'mime_type']) }
+        : {}),
+      ...(typeof item.size === 'number' && Number.isFinite(item.size) ? { size: item.size } : {}),
+      reason,
+    };
+  }
+
+  return null;
 }
 
 function normalizeStoredApprovalRequest(value: unknown): ApprovalRequest | null {

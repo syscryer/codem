@@ -12,13 +12,10 @@ export function buildPromptWithImageAttachments(prompt: string, imagePaths: stri
   return [
     prefix,
     '',
-    '下面这些路径是本地图片文件，不是文本文件，也不是代码文件：',
+    '图片已经作为消息附件提供。通常直接根据附件内容回答即可。',
+    '如果必须访问本地图片文件，只能使用 ViewImage 查看这些路径：',
     attachmentLines,
     '',
-    '对于以上路径，请严格遵守以下规则：',
-    '1. 只能使用 ViewImage 查看图片',
-    '2. 不要使用 Read 读取图片内容',
-    '3. 不要把图片路径当作普通文本文件处理',
-    '4. 如果 ViewImage 失败，请直接说明失败，不要猜测图片内容',
+    '不要使用 Read、Grep 或文本读取类工具处理图片文件。',
   ].join('\n');
 }

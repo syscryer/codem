@@ -3,6 +3,12 @@ import { DEFAULT_MODEL_VALUE, permissionMenuModes } from '../constants';
 import { resolveInitialClaudeModelId } from '../lib/claude-model-selection';
 import { normalizeSessionId, resolvePromptSubmissionSessionId } from '../lib/claude-run-session';
 import {
+  buildHistoryContentBlocks,
+  buildRunContentBlocks,
+  buildRunImageAttachments,
+  stripTransientAttachmentData,
+} from '../lib/claude-run-attachments';
+import {
   appendThinkingItem,
   appendTextItem,
   attachToolResult,
@@ -42,6 +48,7 @@ import type {
   ClaudeModelOption,
   ConversationTurn,
   DebugEvent,
+  InputContentBlock,
   ModelSettings,
   PermissionMode,
   RequestUserInputRequest,
@@ -107,6 +114,7 @@ type QueuedPrompt = {
   prompt: string;
   displayText: string;
   attachments?: UserImageAttachment[];
+  contentBlocks?: InputContentBlock[];
   initialAssistantItems?: AssistantItem[];
   initialActivity?: string;
   reuseSession?: boolean;
@@ -117,6 +125,7 @@ type PromptSubmission = {
   prompt: string;
   displayText: string;
   attachments?: UserImageAttachment[];
+  contentBlocks?: InputContentBlock[];
   initialAssistantItems?: AssistantItem[];
   initialActivity?: string;
   reuseSession?: boolean;
@@ -434,6 +443,7 @@ export function useClaudeRun({
       prompt: submission.prompt,
       displayText: submission.displayText,
       attachments: submission.attachments,
+      contentBlocks: submission.contentBlocks,
       initialAssistantItems: submission.initialAssistantItems,
       initialActivity: submission.initialActivity,
       reuseSession: submission.reuseSession,
@@ -548,6 +558,7 @@ export function useClaudeRun({
     }
 
     try {
+      const requestImageAttachments = buildRunImageAttachments(targetPrompt.attachments);
       const response = await fetch(`/api/claude/run/${encodeURIComponent(context.runId)}/guide`, {
         method: 'POST',
         headers: {
@@ -555,6 +566,12 @@ export function useClaudeRun({
         },
         body: JSON.stringify({
           prompt: targetPrompt.prompt,
+          contentBlocks: buildRunContentBlocks({
+            prompt: targetPrompt.prompt,
+            attachments: targetPrompt.attachments,
+            contentBlocks: targetPrompt.contentBlocks,
+          }),
+          attachments: requestImageAttachments.length > 0 ? requestImageAttachments : undefined,
         }),
       });
       if (!response.ok) {
@@ -633,6 +650,7 @@ export function useClaudeRun({
         effortOverride: runOptions.effortOverride,
         displayText: nextPrompt.displayText,
         attachments: nextPrompt.attachments,
+        contentBlocks: nextPrompt.contentBlocks,
         initialAssistantItems: nextPrompt.initialAssistantItems,
         initialActivity: nextPrompt.initialActivity,
       }).then((started) => {
@@ -731,6 +749,7 @@ export function useClaudeRun({
       sessionId?: string;
       displayText?: string;
       attachments?: UserImageAttachment[];
+      contentBlocks?: InputContentBlock[];
       initialAssistantItems?: AssistantItem[];
       initialActivity?: string;
       permissionModeOverride?: PermissionMode;
@@ -745,7 +764,12 @@ export function useClaudeRun({
     },
   ) {
     const trimmedPrompt = promptText.trim();
-    if (!trimmedPrompt || isThreadRunning(thread.id)) {
+    const requestContentBlocks = buildRunContentBlocks({
+      prompt: trimmedPrompt,
+      attachments: options?.attachments,
+      contentBlocks: options?.contentBlocks,
+    });
+    if (requestContentBlocks.length === 0 || isThreadRunning(thread.id)) {
       return false;
     }
 
@@ -758,6 +782,13 @@ export function useClaudeRun({
     const runEffort = normalizeClaudeEffortSelection(options?.effortOverride ?? effortRef.current);
     const requestModel = resolveRequestModel(findModelOption(models, runModel), runModel);
     const requestEffort = resolveRequestEffort(runEffort);
+    const turnContentBlocks = buildHistoryContentBlocks({
+      prompt: trimmedPrompt,
+      attachments: options?.attachments,
+      contentBlocks: options?.contentBlocks,
+    });
+    const turnAttachments = stripTransientAttachmentData(options?.attachments);
+    const requestImageAttachments = buildRunImageAttachments(options?.attachments);
     const submitAtMs = Date.now();
     const turnId = crypto.randomUUID();
     const turnDisplayText = normalizeDisplayText(options?.displayText, trimmedPrompt);
@@ -789,7 +820,8 @@ export function useClaudeRun({
           {
             id: turnId,
             userText: turnDisplayText,
-            userAttachments: options?.attachments,
+            userAttachments: turnAttachments,
+            userContentBlocks: turnContentBlocks,
             workspace: runWorkingDirectory,
             assistantText: '',
             tools: [],
@@ -827,6 +859,8 @@ export function useClaudeRun({
           effort: requestEffort,
           sessionId: runSessionId,
           toolResult: options?.toolResult,
+          contentBlocks: requestContentBlocks,
+          attachments: requestImageAttachments.length > 0 ? requestImageAttachments : undefined,
           clientSubmitAtMs: submitAtMs,
         }),
         signal: controller.signal,
@@ -1448,7 +1482,12 @@ export function useClaudeRun({
 
   async function submitPromptToThread(thread: ThreadSummary, submission: PromptSubmission) {
     const trimmedPrompt = submission.prompt.trim();
-    if (!trimmedPrompt) {
+    const submissionContentBlocks = buildRunContentBlocks({
+      prompt: submission.prompt,
+      attachments: submission.attachments,
+      contentBlocks: submission.contentBlocks,
+    });
+    if (submissionContentBlocks.length === 0) {
       return false;
     }
     threadSummariesByIdRef.current.set(thread.id, thread);
@@ -1458,6 +1497,7 @@ export function useClaudeRun({
         prompt: trimmedPrompt,
         displayText: normalizeDisplayText(submission.displayText, ''),
         attachments: submission.attachments,
+        contentBlocks: submission.contentBlocks,
         initialAssistantItems: submission.initialAssistantItems,
         initialActivity: submission.initialActivity,
       });
@@ -1470,6 +1510,7 @@ export function useClaudeRun({
       sessionId: resolvePromptSubmissionSessionId(thread.sessionId, submission.reuseSession !== false),
       displayText: submission.displayText,
       attachments: submission.attachments,
+      contentBlocks: submission.contentBlocks,
       initialAssistantItems: submission.initialAssistantItems,
       initialActivity: submission.initialActivity,
     });
@@ -2474,7 +2515,6 @@ function normalizeClaudeEffortSelection(value: unknown): ClaudeEffortSelection {
 function resolveRequestEffort(effort: ClaudeEffortSelection): ClaudeEffortLevel | undefined {
   return effort === 'default' ? undefined : effort;
 }
-
 
 async function readErrorResponseText(response: Response) {
   const text = await response.text();

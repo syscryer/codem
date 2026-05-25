@@ -1,8 +1,10 @@
 import express, { type ErrorRequestHandler, type RequestHandler } from 'express';
 import path from 'node:path';
 import { readFileSync, statSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { normalizeInputContentBlocks } from '../src/lib/input-content-blocks.js';
+import type { InputContentBlock, InputReferenceReason } from '../src/types.js';
 import {
   acknowledgeRunEvents,
   cancelRun,
@@ -20,6 +22,7 @@ import {
   submitRunGuidePrompt,
   submitRunRequestUserInput,
   type ClaudeEffortLevel,
+  type ClaudeInputImageAttachment,
   type ClaudePermissionMode,
 } from './lib/claude-service.js';
 import {
@@ -101,6 +104,8 @@ const projectRoot = path.resolve(__dirname, '..');
 const distRoot = path.join(projectRoot, 'dist');
 const port = Number(process.env.CODEM_BACKEND_PORT ?? process.env.PORT ?? 3001);
 const jsonBodyLimit = process.env.CODEM_JSON_BODY_LIMIT ?? '25mb';
+const MAX_WORKSPACE_FILE_SEARCH_RESULTS = 80;
+const MAX_WORKSPACE_FILE_SEARCH_CANDIDATES = 500;
 
 const app = express();
 
@@ -537,6 +542,31 @@ app.post('/api/system/open-path', async (request, response) => {
     response.json({ ok: true });
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '打开路径失败');
+  }
+});
+
+app.get('/api/system/files/search', async (request, response) => {
+  const workingDirectory =
+    typeof request.query.workingDirectory === 'string' ? request.query.workingDirectory.trim() : '';
+  const query = typeof request.query.query === 'string' ? request.query.query.trim() : '';
+
+  if (!workingDirectory) {
+    response.status(400).send('workingDirectory 不能为空');
+    return;
+  }
+
+  const root = path.resolve(workingDirectory);
+  const accessible = await isDirectoryAccessible(root);
+  if (!accessible) {
+    response.status(400).send(`目录不存在或不可访问：${root}`);
+    return;
+  }
+
+  try {
+    response.json({ files: await searchWorkspaceFiles(root, query) });
+  } catch (error) {
+    console.error('搜索工作区文件失败', error);
+    response.status(500).send(error instanceof Error ? error.message : '搜索工作区文件失败');
   }
 });
 
@@ -1093,6 +1123,24 @@ app.post('/api/claude/run', async (request, response) => {
       ? request.body.model.trim()
       : undefined;
   const effort = normalizeClaudeEffort(request.body?.effort);
+  let imageAttachments: ClaudeInputImageAttachment[] = [];
+  try {
+    imageAttachments = normalizeClaudeRunImageAttachments(request.body?.attachments);
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '图片附件无效');
+    return;
+  }
+  let contentBlocks: InputContentBlock[] = [];
+  try {
+    contentBlocks = normalizeClaudeRunContentBlocks({
+      prompt,
+      imageAttachments,
+      contentBlocks: request.body?.contentBlocks,
+    });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '输入内容无效');
+    return;
+  }
   const toolResultPayload =
     request.body?.toolResult && typeof request.body.toolResult === 'object' ? request.body.toolResult : undefined;
   const toolResult =
@@ -1111,8 +1159,8 @@ app.post('/api/claude/run', async (request, response) => {
       ? request.body.clientSubmitAtMs
       : undefined;
 
-  if (!prompt) {
-    response.status(400).send('prompt 不能为空');
+  if (!toolResult && contentBlocks.length === 0) {
+    response.status(400).send('发送内容不能为空');
     return;
   }
 
@@ -1142,6 +1190,7 @@ app.post('/api/claude/run', async (request, response) => {
     threadId,
     turnId,
     prompt,
+    contentBlocks,
     workingDirectory: resolvedDirectory,
     sessionId,
     permissionMode,
@@ -1300,7 +1349,24 @@ app.post('/api/claude/run/:runId/request-user-input', (request, response) => {
 
 app.post('/api/claude/run/:runId/guide', (request, response) => {
   const prompt = typeof request.body?.prompt === 'string' ? request.body.prompt.trim() : '';
-  const result = submitRunGuidePrompt(request.params.runId, prompt);
+  let guideImageAttachments: ClaudeInputImageAttachment[] = [];
+  try {
+    guideImageAttachments = normalizeClaudeRunImageAttachments(request.body?.attachments);
+  } catch (error) {
+    response.status(400).json({
+      submitted: false,
+      error: error instanceof Error ? error.message : '图片附件无效',
+    });
+    return;
+  }
+
+  const guideContentBlocks = normalizeClaudeRunContentBlocks({
+    prompt,
+    imageAttachments: guideImageAttachments,
+    contentBlocks: request.body?.contentBlocks,
+  });
+
+  const result = submitRunGuidePrompt(request.params.runId, prompt, guideImageAttachments, guideContentBlocks);
   if (!result.submitted) {
     response.status(409).json(result);
     return;
@@ -1481,6 +1547,200 @@ function isClaudeEffortLevel(value: string): value is ClaudeEffortLevel {
     value === 'max';
 }
 
+function normalizeClaudeRunImageAttachments(value: unknown): ClaudeInputImageAttachment[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => normalizeClaudeRunImageAttachment(item))
+    .filter((item): item is ClaudeInputImageAttachment => Boolean(item));
+}
+
+function normalizeClaudeRunImageAttachment(value: unknown): ClaudeInputImageAttachment | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const item = value as Record<string, unknown>;
+  const data = typeof item.data === 'string' ? item.data.trim() : '';
+  const mimeType =
+    typeof item.mimeType === 'string' && item.mimeType.trim()
+      ? item.mimeType.trim()
+      : typeof item.mime_type === 'string' && item.mime_type.trim()
+        ? item.mime_type.trim()
+        : '';
+  if (!data || !mimeType) {
+    return null;
+  }
+
+  extensionFromImageMimeType(mimeType);
+  if (!/^[A-Za-z0-9+/=]+$/.test(data)) {
+    throw new Error('图片附件不是有效的 base64 内容。');
+  }
+
+  const buffer = Buffer.from(data, 'base64');
+  if (buffer.length === 0) {
+    throw new Error('图片内容为空。');
+  }
+  if (buffer.length > 10 * 1024 * 1024) {
+    throw new Error('图片过大，请控制在 10MB 以内。');
+  }
+
+  return {
+    mimeType,
+    data,
+  };
+}
+
+function normalizeClaudeRunContentBlocks(options: {
+  prompt?: string;
+  imageAttachments?: ClaudeInputImageAttachment[];
+  contentBlocks?: unknown;
+}) {
+  return normalizeInputContentBlocks({
+    prompt: options.prompt,
+    imageAttachments: buildLegacyImageAttachmentsForContentBlocks(options.imageAttachments),
+    contentBlocks: normalizeProvidedClaudeRunContentBlocks(options.contentBlocks),
+  });
+}
+
+function buildLegacyImageAttachmentsForContentBlocks(
+  imageAttachments: ClaudeInputImageAttachment[] | undefined,
+) {
+  return (imageAttachments ?? []).map((attachment, index) => ({
+    id: `request-image-${index}`,
+    path: '',
+    name: '',
+    mimeType: attachment.mimeType,
+    data: attachment.data,
+  }));
+}
+
+function normalizeProvidedClaudeRunContentBlocks(value: unknown): InputContentBlock[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value
+    .map((item) => normalizeProvidedClaudeRunContentBlock(item))
+    .filter((item): item is InputContentBlock => Boolean(item));
+}
+
+function normalizeProvidedClaudeRunContentBlock(value: unknown): InputContentBlock | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const item = value as Record<string, unknown>;
+  const type = normalizeOptionalString(item.type);
+  if (!type) {
+    return null;
+  }
+
+  if (type === 'text') {
+    const text = typeof item.text === 'string' ? item.text : '';
+    return text.trim()
+      ? {
+          type: 'text',
+          text,
+        }
+      : null;
+  }
+
+  if (type === 'image') {
+    const pathValue = normalizeOptionalString(item.path);
+    const dataValue = normalizeOptionalString(item.data);
+    const mimeTypeValue = normalizeOptionalString(item.mimeType);
+    if ((!pathValue && !dataValue) || (!pathValue && dataValue && !mimeTypeValue)) {
+      return null;
+    }
+
+    return {
+      type: 'image',
+      ...(normalizeOptionalString(item.id) ? { id: normalizeOptionalString(item.id) } : {}),
+      ...(pathValue ? { path: pathValue } : {}),
+      ...(normalizeOptionalString(item.name) ? { name: normalizeOptionalString(item.name) } : {}),
+      ...(mimeTypeValue ? { mimeType: mimeTypeValue } : {}),
+      ...(normalizeNonNegativeNumber(item.size) !== undefined ? { size: normalizeNonNegativeNumber(item.size) } : {}),
+      ...(dataValue ? { data: dataValue } : {}),
+    };
+  }
+
+  if (type === 'file_text') {
+    const pathValue = normalizeOptionalString(item.path);
+    const nameValue = normalizeOptionalString(item.name);
+    const text = typeof item.text === 'string' ? item.text : '';
+    if (!pathValue || !nameValue || text.length === 0) {
+      return null;
+    }
+
+    return {
+      type: 'file_text',
+      ...(normalizeOptionalString(item.id) ? { id: normalizeOptionalString(item.id) } : {}),
+      path: pathValue,
+      name: nameValue,
+      ...(normalizeOptionalString(item.mimeType) ? { mimeType: normalizeOptionalString(item.mimeType) } : {}),
+      ...(normalizeNonNegativeNumber(item.size) !== undefined ? { size: normalizeNonNegativeNumber(item.size) } : {}),
+      ...(normalizeNonNegativeNumber(item.textBytes) !== undefined
+        ? { textBytes: normalizeNonNegativeNumber(item.textBytes) }
+        : {}),
+      text,
+    };
+  }
+
+  if (type === 'file_reference') {
+    const pathValue = normalizeOptionalString(item.path);
+    const nameValue = normalizeOptionalString(item.name);
+    if (!pathValue || !nameValue) {
+      return null;
+    }
+
+    return {
+      type: 'file_reference',
+      ...(normalizeOptionalString(item.id) ? { id: normalizeOptionalString(item.id) } : {}),
+      path: pathValue,
+      name: nameValue,
+      ...(normalizeOptionalString(item.mimeType) ? { mimeType: normalizeOptionalString(item.mimeType) } : {}),
+      ...(normalizeNonNegativeNumber(item.size) !== undefined ? { size: normalizeNonNegativeNumber(item.size) } : {}),
+      ...(normalizeInputReferenceReason(item.reason) ? { reason: normalizeInputReferenceReason(item.reason) } : {}),
+    };
+  }
+
+  if (type === 'attachment_metadata') {
+    const nameValue = normalizeOptionalString(item.name);
+    const reasonValue = normalizeOptionalString(item.reason);
+    if (!nameValue || !reasonValue) {
+      return null;
+    }
+
+    return {
+      type: 'attachment_metadata',
+      ...(normalizeOptionalString(item.id) ? { id: normalizeOptionalString(item.id) } : {}),
+      name: nameValue,
+      ...(normalizeOptionalString(item.mimeType) ? { mimeType: normalizeOptionalString(item.mimeType) } : {}),
+      ...(normalizeNonNegativeNumber(item.size) !== undefined ? { size: normalizeNonNegativeNumber(item.size) } : {}),
+      reason: reasonValue,
+    };
+  }
+
+  return null;
+}
+
+function normalizeOptionalString(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeNonNegativeNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function normalizeInputReferenceReason(value: unknown): InputReferenceReason | undefined {
+  return value === 'too_large' || value === 'binary' || value === 'unsupported' || value === 'provider_unsupported'
+    ? value
+    : undefined;
+}
+
 function parseImageDataUrl(dataUrl: string, requestedMimeType: string) {
   const matched = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
   if (!matched) {
@@ -1524,6 +1784,54 @@ function extensionFromImageMimeType(mimeType: string) {
 function buildAttachmentFileName(extension: string) {
   const timestamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
   return `pasted-${timestamp}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+}
+
+async function searchWorkspaceFiles(root: string, query: string) {
+  const normalizedQuery = query.toLowerCase();
+  if (!normalizedQuery) {
+    return [];
+  }
+  const skipDirectories = new Set(['.git', 'node_modules', 'target', 'dist', '.next', '.venv', 'venv', '.codem-attachments']);
+  const results: Array<{ path: string; rel: string; isDirectory: boolean; }> = [];
+  const stack: Array<{ directory: string; depth: number }> = [{ directory: root, depth: 0 }];
+
+  while (stack.length > 0 && results.length < MAX_WORKSPACE_FILE_SEARCH_CANDIDATES) {
+    const current = stack.pop()!;
+    if (current.depth >= 4) {
+      continue;
+    }
+
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await readdir(current.directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (results.length >= MAX_WORKSPACE_FILE_SEARCH_CANDIDATES) {
+        break;
+      }
+      const absolutePath = path.join(current.directory, entry.name);
+      if (entry.isDirectory()) {
+        if (skipDirectories.has(entry.name)) {
+          continue;
+        }
+      }
+      const rel = path.relative(root, absolutePath).replace(/\\/g, '/');
+      if (!normalizedQuery || rel.toLowerCase().includes(normalizedQuery)) {
+        results.push({ path: absolutePath, rel, isDirectory: entry.isDirectory(), });
+      }
+      if (entry.isDirectory()) {
+        stack.push({ directory: absolutePath, depth: current.depth + 1 });
+        continue;
+      }
+    }
+  }
+
+  return results
+    .sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.rel.length - b.rel.length || a.rel.localeCompare(b.rel))
+    .slice(0, MAX_WORKSPACE_FILE_SEARCH_RESULTS);
 }
 
 function isSupportedImageFilePath(filePath: string) {

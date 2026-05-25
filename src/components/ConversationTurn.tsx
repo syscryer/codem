@@ -47,6 +47,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   ConversationTurn,
+  InputContentBlockSummary,
   RequestUserInputQuestion,
   RequestUserInputRequest,
   RuntimeRecoveryHint,
@@ -140,6 +141,7 @@ function ConversationTurnViewComponent({
   const messageTime = formatMessageTime(turn.startedAtMs);
   const showAssistantActions = Boolean(assistantCopyText || messageTime);
   const hasUserText = Boolean(turn.userText.trim());
+  const hasUserContentBlocks = Boolean(turn.userContentBlocks?.length);
   const hasUserAttachments = Boolean(turn.userAttachments?.length);
 
   return (
@@ -147,7 +149,9 @@ function ConversationTurnViewComponent({
       <section className="message user-message">
         <div className="message-label">You</div>
         <div className="user-message-content">
-          {hasUserAttachments ? (
+          {hasUserContentBlocks ? (
+            <UserContentBlocks blocks={turn.userContentBlocks ?? []} onPreviewImage={setImagePreview} />
+          ) : hasUserAttachments ? (
             <UserAttachmentGallery
               attachments={turn.userAttachments ?? []}
               onPreviewImage={setImagePreview}
@@ -419,6 +423,67 @@ function SystemCommandCard({ item }: { item: SystemCommandItem }) {
 }
 
 export const ConversationTurnView = memo(ConversationTurnViewComponent);
+
+function UserContentBlocks({
+  blocks,
+  onPreviewImage,
+}: {
+  blocks: InputContentBlockSummary[];
+  onPreviewImage: (preview: ImagePreviewItem) => void;
+}) {
+  const visibleBlocks = blocks.filter((block) => block.type !== 'text');
+  if (visibleBlocks.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="user-message-attachments" aria-label="用户附件">
+      {visibleBlocks.map((block, index) => {
+        if (block.type === 'image' && block.path) {
+          return (
+            <figure key={`${block.type}-${index}`} className="user-message-attachment">
+              <button
+                type="button"
+                className="user-message-attachment-button"
+                aria-label={`预览图片：${block.name || '图片附件'}`}
+                onClick={() =>
+                  onPreviewImage({
+                    src: buildUserAttachmentPreviewUrl(block.path),
+                    alt: block.name || '图片附件',
+                    title: block.name || undefined,
+                  })
+                }
+              >
+                <img
+                  src={buildUserAttachmentPreviewUrl(block.path)}
+                  alt={block.name || '图片附件'}
+                  className="user-message-attachment-preview"
+                  loading="lazy"
+                />
+              </button>
+              <figcaption className="user-message-attachment-name" title={block.name}>
+                {block.name || '图片附件'}
+              </figcaption>
+            </figure>
+          );
+        }
+
+        return (
+          <figure key={`${block.type}-${index}`} className="user-message-attachment user-message-attachment-file-card">
+            <div className="user-message-attachment-file">
+              <span className="user-message-attachment-kind">
+                {block.type === 'file_text' ? '已内联' : '仅引用'}
+              </span>
+              <strong className="user-message-attachment-file-name" title={'name' in block ? block.name : '附件'}>
+                {'name' in block ? block.name : '附件'}
+              </strong>
+            </div>
+          </figure>
+        );
+      })}
+    </div>
+  );
+}
 
 function UserAttachmentGallery({
   attachments,

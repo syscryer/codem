@@ -271,3 +271,119 @@ test('getThreadHistory restores AskUserQuestion answers from updatedInput-style 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('saveThreadHistory stores only safe user content block summaries', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-history-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+
+  try {
+    mkdirSync(repo, { recursive: true });
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const { createProject, createThread, saveThreadHistory, getThreadHistory } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const threadId = createThread(projectId, 'history-content-blocks');
+          saveThreadHistory(threadId, [{
+            id: 'turn-1',
+            userText: '请参考这些输入',
+            userContentBlocks: [
+              {
+                type: 'text',
+                text: '请参考这些输入',
+              },
+              {
+                type: 'image',
+                path: ${JSON.stringify(path.join(repo, '.codem-attachments', 'image.png'))},
+                name: 'image.png',
+                mimeType: 'image/png',
+                size: 5,
+                imageBytes: 5,
+                data: 'SGVsbG8=',
+              },
+              {
+                type: 'file_text',
+                path: ${JSON.stringify(path.join(repo, 'src', 'note.ts'))},
+                name: 'note.ts',
+                size: 12,
+                text: 'console.log("secret")',
+                textBytes: 21,
+              },
+              {
+                type: 'file_reference',
+                path: ${JSON.stringify(path.join(repo, 'README.md'))},
+                name: 'README.md',
+                reason: 'too_large',
+              },
+              {
+                type: 'attachment_metadata',
+                name: 'archive.zip',
+                reason: 'binary',
+              },
+            ],
+            workspace: ${JSON.stringify(repo)},
+            assistantText: '已收到',
+            status: 'done',
+            items: [],
+            tools: [],
+          }]);
+          const history = getThreadHistory(threadId);
+          console.log(JSON.stringify(history.turns[0]?.userContentBlocks ?? null));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+          USERPROFILE: root,
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    assert.deepEqual(JSON.parse(child.stdout.trim()), [
+      {
+        type: 'text',
+        text: '请参考这些输入',
+      },
+      {
+        type: 'image',
+        path: path.join(repo, '.codem-attachments', 'image.png'),
+        name: 'image.png',
+        mimeType: 'image/png',
+        size: 5,
+        imageBytes: 5,
+      },
+      {
+        type: 'file_text',
+        path: path.join(repo, 'src', 'note.ts'),
+        name: 'note.ts',
+        size: 12,
+        textBytes: 21,
+      },
+      {
+        type: 'file_reference',
+        path: path.join(repo, 'README.md'),
+        name: 'README.md',
+        reason: 'too_large',
+      },
+      {
+        type: 'attachment_metadata',
+        name: 'archive.zip',
+        reason: 'binary',
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

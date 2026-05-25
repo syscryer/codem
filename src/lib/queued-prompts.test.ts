@@ -1,9 +1,13 @@
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   getQueuedPromptGuideAvailability,
   resolveQueuedPromptRunOptions,
 } from './queued-prompts.js';
+
+const useClaudeRunSource = readFileSync(new URL('../hooks/useClaudeRun.ts', import.meta.url), 'utf8');
+const conversationTurnSource = readFileSync(new URL('../components/ConversationTurn.tsx', import.meta.url), 'utf8');
 
 test('resolveQueuedPromptRunOptions prefers the completed run session over stale thread metadata', () => {
   const options = resolveQueuedPromptRunOptions(
@@ -78,4 +82,35 @@ test('getQueuedPromptGuideAvailability allows guide delivery for normal running 
       available: true,
     },
   );
+});
+
+test('useClaudeRun preserves contentBlocks across queue, direct send, and guide payloads', () => {
+  assert.match(useClaudeRunSource, /type QueuedPrompt = \{[\s\S]*contentBlocks\?: InputContentBlock\[\];/);
+  assert.match(useClaudeRunSource, /type PromptSubmission = \{[\s\S]*contentBlocks\?: InputContentBlock\[\];/);
+  assert.match(useClaudeRunSource, /contentBlocks: submission\.contentBlocks,/);
+  assert.match(useClaudeRunSource, /contentBlocks: buildRunContentBlocks\(\{\s*prompt: targetPrompt\.prompt,\s*attachments: targetPrompt\.attachments,\s*contentBlocks: targetPrompt\.contentBlocks,\s*\}\),/);
+  assert.match(useClaudeRunSource, /contentBlocks: nextPrompt\.contentBlocks,/);
+  assert.match(useClaudeRunSource, /contentBlocks: submission\.contentBlocks,/);
+});
+
+test('useClaudeRun accepts contentBlocks-only submissions instead of requiring prompt text', () => {
+  assert.match(
+    useClaudeRunSource,
+    /const submissionContentBlocks = buildRunContentBlocks\(\{\s*prompt: submission\.prompt,\s*attachments: submission\.attachments,\s*contentBlocks: submission\.contentBlocks,\s*\}\);/,
+  );
+  assert.match(useClaudeRunSource, /if \(submissionContentBlocks\.length === 0\) \{/);
+  assert.match(useClaudeRunSource, /if \(requestContentBlocks\.length === 0 \|\| isThreadRunning\(thread\.id\)\) \{/);
+});
+
+test('useClaudeRun stores safe user content block summaries and ConversationTurn renders them', () => {
+  assert.match(useClaudeRunSource, /buildHistoryContentBlocks/);
+  assert.match(
+    useClaudeRunSource,
+    /const turnContentBlocks = buildHistoryContentBlocks\(\{\s*prompt: trimmedPrompt,\s*attachments: options\?\.attachments,\s*contentBlocks: options\?\.contentBlocks,\s*\}\);/,
+  );
+  assert.match(useClaudeRunSource, /userContentBlocks: turnContentBlocks,/);
+
+  assert.match(conversationTurnSource, /const hasUserContentBlocks = Boolean\(turn\.userContentBlocks\?\.length\);/);
+  assert.match(conversationTurnSource, /<UserContentBlocks blocks=\{turn\.userContentBlocks \?\? \[\]\} onPreviewImage=\{setImagePreview\} \/>/);
+  assert.match(conversationTurnSource, /block\.type === 'file_text' \? '已内联' : '仅引用'/);
 });

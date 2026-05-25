@@ -2,6 +2,8 @@ import { access } from 'node:fs/promises';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type { Readable, Writable } from 'node:stream';
+import type { InputContentBlock, UserImageAttachment } from '../../src/types.js';
+import { normalizeInputContentBlocks, summarizeInputContentBlocksForTrace } from '../../src/lib/input-content-blocks.js';
 import { getConfiguredModelOptions } from './claude-models.js';
 import { parseClaudeApiRetryStatus, parseClaudeRetryStatus, splitClaudeStderrBuffer } from './claude-stderr.js';
 
@@ -19,6 +21,8 @@ type StreamInput = {
   threadId: string;
   turnId?: string;
   prompt: string;
+  imageAttachments?: ClaudeInputImageAttachment[];
+  contentBlocks?: InputContentBlock[];
   workingDirectory: string;
   sessionId?: string;
   permissionMode: ClaudePermissionMode;
@@ -146,11 +150,24 @@ type ClaudeInputContentBlock =
       text: string;
     }
   | {
+      type: 'image';
+      source: {
+        type: 'base64';
+        media_type: string;
+        data: string;
+      };
+    }
+  | {
       type: 'tool_result';
       tool_use_id: string;
       content: string;
       is_error?: boolean;
     };
+
+export type ClaudeInputImageAttachment = {
+  mimeType: string;
+  data: string;
+};
 
 type ClaudeJsonLine = {
   type?: string;
@@ -486,7 +503,12 @@ export function submitRunRequestUserInput(
   };
 }
 
-export function submitRunGuidePrompt(runId: string, prompt: string) {
+export function submitRunGuidePrompt(
+  runId: string,
+  prompt: string,
+  imageAttachments: ClaudeInputImageAttachment[] = [],
+  guideContentBlocks: InputContentBlock[] = [],
+) {
   const activeRun = activeRuns.get(runId);
   if (!activeRun || activeRun.state.finished) {
     return {
@@ -496,7 +518,14 @@ export function submitRunGuidePrompt(runId: string, prompt: string) {
   }
 
   const trimmedPrompt = prompt.trim();
-  if (!trimmedPrompt) {
+  if (guideContentBlocks.length === 0 && (trimmedPrompt || imageAttachments.length > 0)) {
+    guideContentBlocks = normalizeInputContentBlocks({
+      prompt: trimmedPrompt,
+      imageAttachments: buildLegacyImageAttachmentsForNormalize(imageAttachments),
+    });
+  }
+
+  if (!trimmedPrompt && guideContentBlocks.length === 0) {
     return {
       submitted: false,
       error: '缺少有效引导内容。',
@@ -517,11 +546,21 @@ export function submitRunGuidePrompt(runId: string, prompt: string) {
     };
   }
 
-  const message = buildClaudeInputMessage({
-    ...activeRun.state.input,
+  const baseInput = activeRun.state.input;
+  const guideInput: StreamInput = {
+    threadId: baseInput.threadId,
+    turnId: baseInput.turnId,
     prompt: trimmedPrompt,
+    contentBlocks: guideContentBlocks,
+    workingDirectory: baseInput.workingDirectory,
+    sessionId: baseInput.sessionId,
+    permissionMode: baseInput.permissionMode,
+    model: baseInput.model,
+    effort: baseInput.effort,
     clientSubmitAtMs: Date.now(),
-  });
+  };
+  const message = buildClaudeInputMessage(guideInput);
+  const traceDetail = summarizeClaudeInputForTrace(guideInput);
   const payload = `${JSON.stringify(message)}\n`;
   activeRun.runtime.child.stdin.write(payload, (error) => {
     if (error) {
@@ -543,7 +582,7 @@ export function submitRunGuidePrompt(runId: string, prompt: string) {
       return;
     }
 
-    enqueueTrace(activeRun.state, 'stdin_guide_prompt_written', Date.now(), `${trimmedPrompt.length} chars`);
+    enqueueTrace(activeRun.state, 'stdin_guide_prompt_written', Date.now(), traceDetail);
   });
 
   return {
@@ -1942,7 +1981,7 @@ function isNoResponseRequestedAssistant(payload: ClaudeJsonLine) {
   return visibleText === 'No response requested.';
 }
 
-function buildClaudeInputMessage(input: StreamInput): ClaudeInputMessage {
+export function buildClaudeInputMessage(input: StreamInput): ClaudeInputMessage {
   if (input.toolResult?.requestId) {
     return buildClaudeToolResultMessage(
       input.toolResult.requestId,
@@ -1951,18 +1990,137 @@ function buildClaudeInputMessage(input: StreamInput): ClaudeInputMessage {
     );
   }
 
+  const content = normalizeStreamInputContentBlocks(input).flatMap((block) => {
+    const mappedBlock = buildClaudeContentBlockFromInputBlock(block);
+    return mappedBlock ? [mappedBlock] : [];
+  });
+
   return {
     type: 'user',
     message: {
       role: 'user',
-      content: [
-        {
-          type: 'text',
-          text: input.prompt,
-        },
-      ],
+      content,
     },
   };
+}
+
+export function summarizeClaudeInputForTrace(
+  input: Pick<StreamInput, 'prompt' | 'imageAttachments' | 'contentBlocks'>,
+) {
+  return summarizeInputContentBlocksForTrace(normalizeStreamInputContentBlocks(input));
+}
+
+function normalizeStreamInputContentBlocks(
+  input: Pick<StreamInput, 'prompt' | 'imageAttachments' | 'contentBlocks'>,
+) {
+  const normalizedContentBlocks = normalizeInputContentBlocks({
+    contentBlocks: input.contentBlocks,
+  });
+  const legacyNormalizedBlocks = normalizeInputContentBlocks({
+    prompt: input.prompt,
+    imageAttachments: buildLegacyImageAttachmentsForNormalize(input.imageAttachments),
+  });
+
+  if (!input.contentBlocks?.length) {
+    return legacyNormalizedBlocks;
+  }
+
+  if (normalizedContentBlocks.length === 0) {
+    return legacyNormalizedBlocks;
+  }
+
+  if (normalizedContentBlocks.length < input.contentBlocks.length && legacyNormalizedBlocks.length > 0) {
+    return [...normalizedContentBlocks, ...legacyNormalizedBlocks];
+  }
+
+  return normalizedContentBlocks;
+}
+
+function buildLegacyImageAttachmentsForNormalize(
+  imageAttachments: ClaudeInputImageAttachment[] | undefined,
+): UserImageAttachment[] {
+  return (imageAttachments ?? []).map((attachment, index) => ({
+    id: `runtime-image-${index}`,
+    path: '',
+    name: '',
+    mimeType: attachment.mimeType,
+    data: attachment.data,
+  }));
+}
+
+function buildClaudeContentBlockFromInputBlock(block: InputContentBlock): ClaudeInputContentBlock | null {
+  switch (block.type) {
+    case 'text':
+      return {
+        type: 'text',
+        text: block.text,
+      };
+    case 'image':
+      if (block.data && block.mimeType) {
+        return {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: block.mimeType,
+            data: block.data,
+          },
+        };
+      }
+      return {
+        type: 'text',
+        text: buildInputImageReferenceText(block),
+      };
+    case 'file_text':
+      return {
+        type: 'text',
+        text: buildInputFileTextBlockText(block),
+      };
+    case 'file_reference':
+      return {
+        type: 'text',
+        text: buildInputFileReferenceText(block),
+      };
+    case 'attachment_metadata':
+      return {
+        type: 'text',
+        text: buildInputAttachmentMetadataText(block),
+      };
+    default:
+      return null;
+  }
+}
+
+function buildInputImageReferenceText(
+  block: Extract<InputContentBlock, { type: 'image' }>,
+) {
+  return [
+    '[图片引用]',
+    block.name ? `名称：${block.name}` : '',
+    block.path ? `路径：${block.path}` : '',
+    block.mimeType ? `类型：${block.mimeType}` : '',
+    typeof block.size === 'number' ? `大小：${block.size} bytes` : '',
+    '请使用 ViewImage 查看这张图片，不要用 Read 或 Grep 读取图片内容。',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function buildInputFileTextBlockText(
+  block: Extract<InputContentBlock, { type: 'file_text' }>,
+) {
+  return `文件 ${block.path} 内容：\n\n${block.text}`;
+}
+
+function buildInputFileReferenceText(
+  block: Extract<InputContentBlock, { type: 'file_reference' }>,
+) {
+  return `文件已作为路径引用提供：${block.path}${block.reason ? `\n原因：${block.reason}` : ''}`;
+}
+
+function buildInputAttachmentMetadataText(
+  block: Extract<InputContentBlock, { type: 'attachment_metadata' }>,
+) {
+  return `附件未直接发送：${block.name}\n原因：${block.reason}`;
 }
 
 function buildClaudeToolResultMessage(requestId: string, content: string, isError?: boolean): ClaudeInputMessage {
@@ -2035,8 +2193,9 @@ function buildAskUserQuestionControlResponse(
 }
 
 function writePromptToClaude(runtime: ClaudeRuntime, state: RunState, input: StreamInput) {
+  const traceDetail = summarizeClaudeInputForTrace(input);
   if (runtime.inputMode === 'argv') {
-    enqueueTrace(state, 'prompt_sent_as_arg', Date.now(), `${input.prompt.length} chars`);
+    enqueueTrace(state, 'prompt_sent_as_arg', Date.now(), traceDetail);
     runtime.child.stdin.end();
     return;
   }
@@ -2058,7 +2217,7 @@ function writePromptToClaude(runtime: ClaudeRuntime, state: RunState, input: Str
       return;
     }
 
-    enqueueTrace(state, 'stdin_prompt_written', Date.now(), `${input.prompt.length} chars`);
+    enqueueTrace(state, 'stdin_prompt_written', Date.now(), traceDetail);
   });
 }
 

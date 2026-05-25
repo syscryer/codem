@@ -133,7 +133,93 @@ export type UserImageAttachment = {
   name: string;
   mimeType?: string;
   size?: number;
+  data?: string;
 };
+
+export type InputReferenceReason = 'too_large' | 'binary' | 'unsupported' | 'provider_unsupported';
+
+export type InputContentBlock =
+  | {
+      type: 'text';
+      text: string;
+    }
+  | {
+      type: 'image';
+      id?: string;
+      path?: string;
+      name?: string;
+      mimeType?: string;
+      size?: number;
+      data?: string;
+    }
+  | {
+      type: 'file_text';
+      id?: string;
+      path: string;
+      name: string;
+      mimeType?: string;
+      size?: number;
+      text: string;
+      textBytes?: number;
+    }
+  | {
+      type: 'file_reference';
+      id?: string;
+      path: string;
+      name: string;
+      mimeType?: string;
+      size?: number;
+      reason?: InputReferenceReason;
+    }
+  | {
+      type: 'attachment_metadata';
+      id?: string;
+      name: string;
+      mimeType?: string;
+      size?: number;
+      reason: string;
+    };
+
+export type InputContentBlockSummary =
+  | {
+      type: 'text';
+      text: string;
+    }
+  | {
+      type: 'image';
+      id?: string;
+      path?: string;
+      name?: string;
+      mimeType?: string;
+      size?: number;
+      imageBytes?: number;
+    }
+  | {
+      type: 'file_text';
+      id?: string;
+      path: string;
+      name: string;
+      mimeType?: string;
+      size?: number;
+      textBytes: number;
+    }
+  | {
+      type: 'file_reference';
+      id?: string;
+      path: string;
+      name: string;
+      mimeType?: string;
+      size?: number;
+      reason?: InputReferenceReason;
+    }
+  | {
+      type: 'attachment_metadata';
+      id?: string;
+      name: string;
+      mimeType?: string;
+      size?: number;
+      reason: string;
+    };
 
 export type AgentType = 'claude' | 'codex' | 'gemini' | 'opencode';
 
@@ -162,6 +248,7 @@ export type ConversationTurn = {
   backendRunId?: string;
   userText: string;
   userAttachments?: UserImageAttachment[];
+  userContentBlocks?: InputContentBlockSummary[];
   workspace: string;
   assistantText: string;
   tools: ToolStep[];
