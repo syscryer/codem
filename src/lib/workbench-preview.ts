@@ -2,6 +2,7 @@ import { getWorkbenchPreviewKind } from './workbench-files';
 import type {
   GitFileStatus,
   ProjectFileEntry,
+  WorkbenchPreviewContentState,
   WorkbenchPreviewRequest,
   WorkbenchPreviewTab,
 } from '../types';
@@ -41,10 +42,10 @@ export function isWorkbenchDiffPreviewSource(source: WorkbenchPreviewRequest['so
 }
 
 export function isWorkbenchDiffPreviewRequest(
-  request: Pick<WorkbenchPreviewRequest, 'source' | 'previewMode'>,
+  request: Pick<WorkbenchPreviewRequest, 'source' | 'previewMode' | 'reviewDiff'>,
 ) {
   if (request.source === 'conversation-card') {
-    return true;
+    return Array.isArray(request.reviewDiff) && request.reviewDiff.length > 0;
   }
 
   return request.source === 'changed-file' && request.previewMode !== 'file';
@@ -67,6 +68,40 @@ export function openWorkbenchPreviewTab(
     tabs: existing ? currentTabs : [...currentTabs, request],
     activeKey: request.key,
   };
+}
+
+export function buildConversationOutputFilePreviewRequest(
+  file: Pick<ProjectFileEntry, 'path' | 'name' | 'type'>,
+): WorkbenchPreviewRequest {
+  if (file.type !== 'file') {
+    throw new Error('Only files can be previewed.');
+  }
+
+  return {
+    key: buildWorkbenchPreviewKey(file.path, 'conversation-output-file'),
+    path: file.path,
+    name: file.name,
+    kind: getWorkbenchPreviewKind(file.path),
+    source: 'conversation-output-file',
+  };
+}
+
+export function resolveWorkbenchPreviewContentOnOpen(
+  current: Record<string, WorkbenchPreviewContentState>,
+  request: WorkbenchPreviewRequest,
+) {
+  if (request.source === 'conversation-card' && request.reviewDiff?.length) {
+    return {
+      ...current,
+      [request.key]: {
+        loading: false,
+        content: request.reviewDiff.join('\n'),
+        mode: 'git-diff' as const,
+      },
+    };
+  }
+
+  return current;
 }
 
 export function normalizeWorkbenchPreviewRequest(

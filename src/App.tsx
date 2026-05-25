@@ -25,8 +25,13 @@ import {
   buildCostSlashCardResult,
   buildStatusSlashCardResult,
 } from './lib/claude-slash-system-commands';
-import { closeWorkbenchPreviewTab, closeWorkbenchPreviewTabs, openWorkbenchPreviewTab } from './lib/workbench-preview';
-import { normalizeWorkbenchPreviewRequest } from './lib/workbench-preview';
+import {
+  closeWorkbenchPreviewTab,
+  closeWorkbenchPreviewTabs,
+  openWorkbenchPreviewTab,
+  normalizeWorkbenchPreviewRequest,
+  resolveWorkbenchPreviewContentOnOpen,
+} from './lib/workbench-preview';
 import { matchesShortcut } from './lib/shortcuts';
 import { createSystemCommandItem, settleSystemCommandItem } from './lib/system-command-items';
 import { modelLabel, permissionLabel } from './lib/ui-labels';
@@ -146,6 +151,7 @@ export default function App() {
   const [reviewPreviewTabs, setReviewPreviewTabs] = useState<WorkbenchPreviewTab[]>([]);
   const [activeReviewPreviewKey, setActiveReviewPreviewKey] = useState('');
   const [previewContentByKey, setPreviewContentByKey] = useState<Record<string, WorkbenchPreviewContentState>>({});
+  const [fileNavigatorManualVisibility, setFileNavigatorManualVisibility] = useState<boolean | null>(null);
   const [undoneTurnIds, setUndoneTurnIds] = useState<Record<string, boolean>>({});
   const [composerDraftsByKey, setComposerDraftsByKey] = useState<Record<string, string>>({});
   const [projectsRefreshing, setProjectsRefreshing] = useState(false);
@@ -760,22 +766,35 @@ export default function App() {
 
     setTabs((currentTabs) => openWorkbenchPreviewTab(currentTabs, normalizedRequest).tabs);
     setActiveKey(normalizedRequest.key);
-    setPreviewContentByKey((current) => {
-      const next = { ...current };
-      if (normalizedRequest.source === 'conversation-card' && normalizedRequest.reviewDiff?.length) {
-        next[normalizedRequest.key] = {
-          loading: false,
-          content: normalizedRequest.reviewDiff.join('\n'),
-          mode: 'git-diff',
-        };
-        return next;
-      }
-
-      delete next[normalizedRequest.key];
-      return next;
-    });
+    setPreviewContentByKey((current) => resolveWorkbenchPreviewContentOnOpen(current, normalizedRequest));
     setRightWorkbenchOpen(true);
     setRightWorkbenchTab(reviewRequest ? 'review' : 'files');
+  }
+
+  async function handleOpenOutputPath(targetPath: string) {
+    const response = await fetch('/api/system/open-path', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ path: targetPath }),
+    });
+    if (!response.ok) {
+      showToast(await response.text(), 'error');
+    }
+  }
+
+  async function handleRevealOutputPath(targetPath: string) {
+    const response = await fetch('/api/system/open-path', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ path: targetPath, mode: 'reveal' }),
+    });
+    if (!response.ok) {
+      showToast(await response.text(), 'error');
+    }
   }
 
   function closeWorkbenchPreview(kind: 'file' | 'review', tabKey: string) {
@@ -1008,9 +1027,11 @@ export default function App() {
                 activeTurnId={activeThreadId ? activeTurnIdsByThreadId[activeThreadId] ?? '' : ''}
                 transcriptRef={transcriptRef}
                 bottomRef={conversationBottomRef}
-                undoneTurnIds={undoneTurnIds}
-                onOpenWorkbenchPreview={openWorkbenchPreview}
-                onUndoChangedFiles={handleUndoChangedFiles}
+              undoneTurnIds={undoneTurnIds}
+              onOpenWorkbenchPreview={openWorkbenchPreview}
+              onOpenOutputPath={handleOpenOutputPath}
+              onRevealOutputPath={handleRevealOutputPath}
+              onUndoChangedFiles={handleUndoChangedFiles}
                 onSubmitRequestUserInput={(
                   turn: ConversationTurn,
                   request: RequestUserInputRequest,
@@ -1089,8 +1110,10 @@ export default function App() {
                 reviewPreviewTabs={reviewPreviewTabs}
                 activeReviewPreviewKey={activeReviewPreviewKey}
                 previewContentByKey={previewContentByKey}
+                fileNavigatorManualVisibility={fileNavigatorManualVisibility}
                 onSelectTab={setRightWorkbenchTab}
                 onOpenWorkbenchPreview={openWorkbenchPreview}
+                onFileNavigatorManualVisibilityChange={setFileNavigatorManualVisibility}
                 onSelectFilePreviewTab={setActiveFilePreviewKey}
                 onSelectReviewPreviewTab={setActiveReviewPreviewKey}
                 onCloseFilePreviewTab={(tabKey) => closeWorkbenchPreview('file', tabKey)}

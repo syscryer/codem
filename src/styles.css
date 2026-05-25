@@ -6202,6 +6202,138 @@ body.git-history-resizing {
   color: #dc2626;
 }
 
+.conversation-output-files-card {
+  width: min(100%, 864px);
+  margin: 6px 0 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.conversation-output-files-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 16px;
+  border-bottom: 1px solid #edf0f2;
+  color: #6f7782;
+  font-size: 13px;
+}
+
+.conversation-output-files-head strong {
+  color: #1f2937;
+  font-size: 14px;
+  font-weight: 560;
+}
+
+.conversation-output-files-list {
+  display: grid;
+  gap: 0;
+}
+
+.conversation-output-file-item {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 22px;
+  border-top: 1px solid #edf0f2;
+  cursor: pointer;
+}
+
+.conversation-output-file-item:first-child {
+  border-top: 0;
+}
+
+.conversation-output-file-item:hover {
+  background: rgba(156, 163, 175, 0.08);
+}
+
+.conversation-output-file-item:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.22);
+  outline-offset: -2px;
+}
+
+.conversation-output-file-icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: #f4f6f8;
+  color: #6b7280;
+}
+
+.conversation-output-file-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.conversation-output-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #1f2937;
+  font-size: 15px;
+  font-weight: 560;
+}
+
+.conversation-output-file-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #737c87;
+  font-size: 13px;
+}
+
+.conversation-output-file-menu-button {
+  flex: 0 0 auto;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: 1px solid #d8dce2;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #3b4a61;
+  font-size: 13px;
+  font-weight: 560;
+  cursor: pointer;
+}
+
+.conversation-output-file-menu-button:hover {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.conversation-output-file-menu {
+  min-width: 212px;
+  max-width: min(248px, calc(100vw - 24px));
+}
+
+.conversation-output-file-menu .conversation-output-file-menu-item {
+  grid-template-columns: 18px minmax(0, 1fr);
+  padding: 9px 12px;
+}
+
+.conversation-output-file-menu .conversation-output-file-menu-item svg {
+  justify-self: center;
+}
+
+.conversation-output-file-menu .conversation-output-file-menu-item span {
+  overflow: visible;
+  text-overflow: clip;
+}
+
 .assistant-runtime-card {
   display: grid;
   gap: 12px;

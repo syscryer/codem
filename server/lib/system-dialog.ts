@@ -80,6 +80,44 @@ Start-Process -FilePath '${escapePowerShellString(resolvedPath)}'
   });
 }
 
+export async function revealPathInExplorer(targetPath: string) {
+  const resolvedPath = path.resolve(targetPath);
+  const script = `
+$ErrorActionPreference = 'Stop'
+Start-Process -FilePath 'explorer.exe' -ArgumentList @('/select,', '${escapePowerShellString(resolvedPath)}')
+`.trim();
+
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    let stderr = '';
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', (error) => {
+      reject(error);
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `在资源管理器中打开失败，退出码 ${code}`));
+        return;
+      }
+
+      resolve();
+    });
+  });
+}
+
 function escapePowerShellString(value: string) {
   return value.replace(/'/g, "''");
 }

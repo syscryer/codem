@@ -74,6 +74,7 @@ import {
   isWorkbenchDiffPreviewRequest,
   resolveWorkbenchPreviewFilePath,
 } from '../lib/workbench-preview';
+import { resolveWorkbenchNavigatorVisibility } from '../lib/workbench-navigator-visibility';
 import type {
   GitFileStatus,
   GitStatusSnapshot,
@@ -97,8 +98,10 @@ type RightWorkbenchProps = {
   reviewPreviewTabs: WorkbenchPreviewTab[];
   activeReviewPreviewKey: string;
   previewContentByKey: Record<string, WorkbenchPreviewContentState>;
+  fileNavigatorManualVisibility: boolean | null;
   onSelectTab: (tab: RightWorkbenchTab) => void;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
+  onFileNavigatorManualVisibilityChange: (visible: boolean | null) => void;
   onSelectFilePreviewTab: (key: string) => void;
   onSelectReviewPreviewTab: (key: string) => void;
   onCloseFilePreviewTab: (key: string) => void;
@@ -125,8 +128,10 @@ export function RightWorkbench({
   reviewPreviewTabs,
   activeReviewPreviewKey,
   previewContentByKey,
+  fileNavigatorManualVisibility,
   onSelectTab,
   onOpenWorkbenchPreview,
+  onFileNavigatorManualVisibilityChange,
   onSelectFilePreviewTab,
   onSelectReviewPreviewTab,
   onCloseFilePreviewTab,
@@ -191,7 +196,9 @@ export function RightWorkbench({
             previewTabs={filePreviewTabs}
             activePreviewKey={activeFilePreviewKey}
             previewContentByKey={previewContentByKey}
+            navigatorManualVisibility={fileNavigatorManualVisibility}
             onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+            onNavigatorManualVisibilityChange={onFileNavigatorManualVisibilityChange}
             onSelectPreviewTab={onSelectFilePreviewTab}
             onClosePreviewTab={onCloseFilePreviewTab}
             onClosePreviewTabs={onCloseFilePreviewTabs}
@@ -308,7 +315,9 @@ function WorkbenchFiles({
   previewTabs,
   activePreviewKey,
   previewContentByKey,
+  navigatorManualVisibility,
   onOpenWorkbenchPreview,
+  onNavigatorManualVisibilityChange,
   onSelectPreviewTab,
   onClosePreviewTab,
   onClosePreviewTabs,
@@ -329,7 +338,9 @@ function WorkbenchFiles({
   previewTabs: WorkbenchPreviewTab[];
   activePreviewKey: string;
   previewContentByKey: Record<string, WorkbenchPreviewContentState>;
+  navigatorManualVisibility?: boolean | null;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
+  onNavigatorManualVisibilityChange?: (visible: boolean | null) => void;
   onSelectPreviewTab: (key: string) => void;
   onClosePreviewTab: (key: string) => void;
   onClosePreviewTabs: (keys: string[]) => void;
@@ -351,7 +362,7 @@ function WorkbenchFiles({
   const [loadingDirectory, setLoadingDirectory] = useState('');
   const [gitStatus, setGitStatus] = useState<GitStatusSnapshot | null>(null);
   const [fileFilter, setFileFilter] = useState('');
-  const [navigatorVisible, setNavigatorVisible] = useState(true);
+  const [fallbackNavigatorVisible, setFallbackNavigatorVisible] = useState(true);
   const [navigatorWidth, setNavigatorWidth] = useState(292);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -405,6 +416,10 @@ function WorkbenchFiles({
   const activePreviewTab = previewTabs.find((tab) => tab.key === activePreviewKey);
   const activePreviewTabKey = activePreviewTab?.key ?? '';
   const activePreviewPath = activePreviewTab?.path ?? '';
+  const navigatorVisible =
+    scope === 'all'
+      ? resolveWorkbenchNavigatorVisibility(navigatorManualVisibility ?? null, activePreviewTab?.source)
+      : fallbackNavigatorVisible;
   const previewContentRef = useRef(previewContentByKey);
   const previewRequestKeysRef = useRef(new Set<string>());
   const activeProjectIdRef = useRef(activeProject?.id ?? '');
@@ -546,6 +561,15 @@ function WorkbenchFiles({
         previewRequestKeysRef.current.delete(requestKey);
       });
   }, [activePreviewPath, activePreviewTab, activePreviewTabKey, activeProject?.id, activeProject?.path, onResolvePreviewContent]);
+
+  function updateNavigatorVisibility(visible: boolean) {
+    if (scope === 'all' && onNavigatorManualVisibilityChange) {
+      onNavigatorManualVisibilityChange(visible);
+      return;
+    }
+
+    setFallbackNavigatorVisible(visible);
+  }
 
   async function loadScope(nextScope = scope) {
     if (!activeProject) {
@@ -825,7 +849,7 @@ function WorkbenchFiles({
                 onFilterChange={setFileFilter}
                 onSelectScope={null}
                 onRefresh={() => void loadScope(scope)}
-                onHide={() => setNavigatorVisible(false)}
+                onHide={() => updateNavigatorVisibility(false)}
                 onToggleDirectory={toggleDirectory}
                 onToggleChangedDirectory={toggleChangedDirectory}
                 onToggleUntrackedDirectory={toggleUntrackedDirectory}
@@ -859,7 +883,7 @@ function WorkbenchFiles({
               type="button"
               className="workbench-file-navigator-rail"
               title="显示文件树"
-              onClick={() => setNavigatorVisible(true)}
+              onClick={() => updateNavigatorVisibility(true)}
             >
               <Folder size={15} />
             </button>

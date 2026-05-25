@@ -569,7 +569,7 @@ export type WorkbenchFileTab = {
   language?: string;
 };
 
-export type WorkbenchPreviewSource = 'project-file' | 'changed-file' | 'conversation-card';
+export type WorkbenchPreviewSource = 'project-file' | 'changed-file' | 'conversation-card' | 'conversation-output-file';
 
 export type WorkbenchPreviewKind = 'code' | 'markdown';
 

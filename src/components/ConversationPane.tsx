@@ -24,6 +24,8 @@ type ConversationPaneProps = {
   bottomRef: RefObject<HTMLDivElement | null>;
   undoneTurnIds: Record<string, boolean>;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
+  onOpenOutputPath: (path: string) => Promise<void>;
+  onRevealOutputPath: (path: string) => Promise<void>;
   onUndoChangedFiles: (turn: ConversationTurn, changes: UndoConversationChange[]) => void;
   onSubmitRequestUserInput: (
     turn: ConversationTurn,
@@ -50,6 +52,8 @@ export function ConversationPane({
   bottomRef,
   undoneTurnIds,
   onOpenWorkbenchPreview,
+  onOpenOutputPath,
+  onRevealOutputPath,
   onUndoChangedFiles,
   onSubmitRequestUserInput,
   onSubmitRuntimeRecoveryAction,
@@ -164,6 +168,8 @@ export function ConversationPane({
               isLatest={index === activeThread.turns.length - 1}
               canUndoChangedFiles={turn.id === latestChangedFilesTurnId && undoneTurnIds[turn.id] !== true}
               onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+              onOpenOutputPath={onOpenOutputPath}
+              onRevealOutputPath={onRevealOutputPath}
               onUndoChangedFiles={onUndoChangedFiles}
               onSubmitRequestUserInput={onSubmitRequestUserInput}
               onSubmitRuntimeRecoveryAction={onSubmitRuntimeRecoveryAction}

@@ -92,7 +92,7 @@ import {
 } from './lib/mcp-manager.js';
 import { listSkills } from './lib/skills-scanner.js';
 import { listSlashCommands } from './lib/slash-commands.js';
-import { openPath, selectDirectory } from './lib/system-dialog.js';
+import { openPath, revealPathInExplorer, selectDirectory } from './lib/system-dialog.js';
 import { cloneRepository, CloneRepositoryError } from './lib/git-clone.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -522,13 +522,18 @@ app.post('/api/system/open-path', async (request, response) => {
     typeof request.body?.path === 'string' && request.body.path.trim()
       ? path.resolve(request.body.path.trim())
       : '';
+  const mode = request.body?.mode === 'reveal' ? 'reveal' : 'open';
   if (!targetPath) {
     response.status(400).send('path 不能为空');
     return;
   }
 
   try {
-    await openPath(targetPath);
+    if (mode === 'reveal') {
+      await revealPathInExplorer(targetPath);
+    } else {
+      await openPath(targetPath);
+    }
     response.json({ ok: true });
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '打开路径失败');

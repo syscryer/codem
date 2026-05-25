@@ -1,6 +1,8 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { PopoverPortal } from './PopoverPortal';
+import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import {
   ArrowUpRight,
   Bot,
@@ -30,14 +32,14 @@ import {
   summarizeToolRow,
 } from '../lib/conversation';
 import {
-  buildConversationPreviewRequest,
-} from '../lib/conversation-preview-shortcuts';
-import {
   buildChangedFileReviewRequest,
   buildChangedFilesReviewRequests,
   buildConversationUndoChanges,
   type ConversationUndoChange,
 } from '../lib/conversation-changed-files';
+import { collectConversationOutputFiles, type ConversationOutputFile } from '../lib/conversation-output-files';
+import { runConversationOutputFileMenuAction } from '../lib/conversation-output-file-interactions';
+import { buildConversationOutputFilePreviewRequest } from '../lib/workbench-preview';
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -59,6 +61,8 @@ function ConversationTurnViewComponent({
   isLatest,
   canUndoChangedFiles,
   onOpenWorkbenchPreview,
+  onOpenOutputPath,
+  onRevealOutputPath,
   onUndoChangedFiles,
   onSubmitRequestUserInput,
   onSubmitRuntimeRecoveryAction,
@@ -70,6 +74,8 @@ function ConversationTurnViewComponent({
   isLatest: boolean;
   canUndoChangedFiles: boolean;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
+  onOpenOutputPath: (path: string) => Promise<void>;
+  onRevealOutputPath: (path: string) => Promise<void>;
   onUndoChangedFiles: (turn: ConversationTurn, changes: ConversationUndoChange[]) => void;
   onSubmitRequestUserInput: (
     turn: ConversationTurn,
@@ -116,6 +122,7 @@ function ConversationTurnViewComponent({
   });
   const groupedVisibleItems = useMemo(() => groupToolItems(visibleItems), [visibleItems]);
   const changedFileGroups = useMemo(() => collectConversationChangedFileGroups(turn.tools), [turn.tools]);
+  const outputFiles = useMemo(() => collectConversationOutputFiles(turn.tools), [turn.tools]);
   const undoChanges = useMemo(() => buildConversationUndoChanges(turn.tools), [turn.tools]);
   const showProgressLine =
     running ||
@@ -192,6 +199,15 @@ function ConversationTurnViewComponent({
 
           {showTrailingProgressLine ? (
             <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
+          ) : null}
+
+          {outputFiles.length > 0 ? (
+            <ConversationOutputFilesCard
+              files={outputFiles}
+              onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+              onOpenOutputPath={onOpenOutputPath}
+              onRevealOutputPath={onRevealOutputPath}
+            />
           ) : null}
 
           {changedFileGroups.length > 0 ? (
@@ -587,7 +603,6 @@ function CompactToolPreview({
   onOpenWorkbenchPreview?: (request: WorkbenchPreviewRequest) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const request = buildConversationPreviewRequest(preview);
 
   return (
     <div className={`tool-step tool-preview-step tool-${tool.status}`}>
@@ -606,15 +621,6 @@ function CompactToolPreview({
           </div>
           <span className={`tool-preview-chevron ${expanded ? 'expanded' : ''}`}>{'>'}</span>
         </button>
-        {request && onOpenWorkbenchPreview ? (
-          <button
-            type="button"
-            className="tool-preview-open-button"
-            onClick={() => onOpenWorkbenchPreview(request)}
-          >
-            打开
-          </button>
-        ) : null}
       </div>
       {expanded ? (
         <ToolPreviewPanel
@@ -633,7 +639,7 @@ function ToolPreviewPanel({
   preview: ToolPreview;
   onOpenWorkbenchPreview?: (request: WorkbenchPreviewRequest) => void;
 }) {
-  const request = buildConversationPreviewRequest(preview);
+  const request = buildConversationToolReviewRequest(preview);
 
   return (
     <div className="tool-preview-card">
@@ -650,7 +656,7 @@ function ToolPreviewPanel({
               className="tool-preview-link-button"
               onClick={() => onOpenWorkbenchPreview(request)}
             >
-              在右侧预览
+              审查
             </button>
           ) : null}
         </div>
@@ -668,6 +674,222 @@ function ToolPreviewPanel({
         </div>
       )}
     </div>
+  );
+}
+
+function ConversationOutputFilesCard({
+  files,
+  onOpenWorkbenchPreview,
+  onOpenOutputPath,
+  onRevealOutputPath,
+}: {
+  files: ConversationOutputFile[];
+  onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
+  onOpenOutputPath: (path: string) => Promise<void>;
+  onRevealOutputPath: (path: string) => Promise<void>;
+}) {
+  return (
+    <section className="conversation-output-files-card">
+      <header className="conversation-output-files-head">
+        <strong>产出文件</strong>
+        <span>{files.length} 个</span>
+      </header>
+      <div className="conversation-output-files-list">
+        {files.map((file) => (
+          <ConversationOutputFileCard
+            key={file.path}
+            file={file}
+            onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+            onOpenOutputPath={onOpenOutputPath}
+            onRevealOutputPath={onRevealOutputPath}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ConversationOutputFileCard({
+  file,
+  onOpenWorkbenchPreview,
+  onOpenOutputPath,
+  onRevealOutputPath,
+}: {
+  file: ConversationOutputFile;
+  onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
+  onOpenOutputPath: (path: string) => Promise<void>;
+  onRevealOutputPath: (path: string) => Promise<void>;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const canPreviewInWorkbench = file.openMode === 'preview';
+
+  useOutsideDismiss({
+    selectors: [
+      {
+        selector: '.conversation-output-file-menu',
+        onDismiss: () => {
+          setMenuOpen(false);
+          setContextMenu(null);
+        },
+        anchorRefs: [menuButtonRef],
+      },
+    ],
+  });
+
+  function closeMenus() {
+    setMenuOpen(false);
+    setContextMenu(null);
+  }
+
+  function openInWorkbenchPreview() {
+    onOpenWorkbenchPreview(buildConversationOutputFilePreviewRequest({
+      path: file.path,
+      name: file.name,
+      type: 'file',
+    }));
+  }
+
+  function handlePrimaryOpen() {
+    if (file.openMode === 'preview') {
+      openInWorkbenchPreview();
+      return;
+    }
+
+    void onOpenOutputPath(file.path);
+  }
+
+  async function handleCopyPath() {
+    try {
+      await navigator.clipboard.writeText(file.path);
+    } finally {
+      closeMenus();
+    }
+  }
+
+  return (
+    <article
+      className="conversation-output-file-item"
+      role="button"
+      tabIndex={0}
+      onClick={handlePrimaryOpen}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          handlePrimaryOpen();
+        }
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setMenuOpen(false);
+        setContextMenu({ x: event.clientX, y: event.clientY });
+      }}
+    >
+      <div className="conversation-output-file-icon" aria-hidden="true">
+        <FileText size={22} />
+      </div>
+      <div className="conversation-output-file-main">
+        <div className="conversation-output-file-name" title={file.name}>{file.name}</div>
+        <div className="conversation-output-file-subtitle">{file.subtitle}</div>
+      </div>
+      <button
+        ref={menuButtonRef}
+        type="button"
+        className="conversation-output-file-menu-button"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen || Boolean(contextMenu)}
+        onClick={(event) => {
+          runConversationOutputFileMenuAction(event, () => {
+            setContextMenu(null);
+            setMenuOpen((current) => !current);
+          });
+        }}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+        }}
+      >
+        <span>打开方式</span>
+        <ChevronDown size={14} />
+      </button>
+      <PopoverPortal
+        open={menuOpen || Boolean(contextMenu)}
+        anchorRef={menuButtonRef}
+        virtualAnchor={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        placement="bottom-end"
+        offset={8}
+      >
+        <div
+          className="workspace-menu conversation-output-file-menu"
+          role="menu"
+          aria-label={`文件操作 ${file.name}`}
+          onClick={(event) => {
+            event.stopPropagation();
+          }}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+          }}
+        >
+          {canPreviewInWorkbench ? (
+            <button
+              type="button"
+              className="workspace-menu-item conversation-output-file-menu-item"
+              role="menuitem"
+              onClick={(event) => {
+                runConversationOutputFileMenuAction(event, () => {
+                  openInWorkbenchPreview();
+                  closeMenus();
+                });
+              }}
+            >
+              <Maximize2 size={14} />
+              <span>在右侧预览</span>
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="workspace-menu-item conversation-output-file-menu-item"
+            role="menuitem"
+            onClick={(event) => {
+              runConversationOutputFileMenuAction(event, () => {
+                void onOpenOutputPath(file.path);
+                closeMenus();
+              });
+            }}
+          >
+            <ArrowUpRight size={14} />
+            <span>用默认应用打开</span>
+          </button>
+          <button
+            type="button"
+            className="workspace-menu-item conversation-output-file-menu-item"
+            role="menuitem"
+            onClick={(event) => {
+              runConversationOutputFileMenuAction(event, () => {
+                void onRevealOutputPath(file.path);
+                closeMenus();
+              });
+            }}
+          >
+            <Folder size={14} />
+            <span>在文件浏览器打开</span>
+          </button>
+          <button
+            type="button"
+            className="workspace-menu-item conversation-output-file-menu-item"
+            role="menuitem"
+            onClick={(event) => {
+              runConversationOutputFileMenuAction(event, () => {
+                void handleCopyPath();
+              });
+            }}
+          >
+            <Copy size={14} />
+            <span>复制路径</span>
+          </button>
+        </div>
+      </PopoverPortal>
+    </article>
   );
 }
 
@@ -728,7 +950,7 @@ function ChangedFilesSummaryCard({
             </button>
           ) : null}
           <button type="button" className="tool-preview-open-button" onClick={onReview}>
-            审核
+            审查
             <ArrowUpRight size={14} />
           </button>
         </div>
@@ -780,6 +1002,49 @@ function ChangedFilesSummaryCard({
       </div>
     </section>
   );
+}
+
+function buildConversationToolReviewRequest(preview: ToolPreview): WorkbenchPreviewRequest {
+  return {
+    key: `conversation:${preview.filePath}`,
+    path: preview.filePath,
+    name: preview.fileName,
+    kind: 'code',
+    source: 'conversation-card',
+    reviewDiff: buildConversationToolReviewDiff(preview),
+  };
+}
+
+function buildConversationToolReviewDiff(preview: ToolPreview) {
+  const beforeLines = splitPreviewLines(preview.beforeText);
+  const afterLines = splitPreviewLines(preview.afterText);
+  const lines = [`--- a/${preview.filePath}`, `+++ b/${preview.filePath}`];
+
+  if (!beforeLines.length && !afterLines.length) {
+    return lines;
+  }
+
+  const maxLength = Math.max(beforeLines.length, afterLines.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const beforeLine = beforeLines[index];
+    const afterLine = afterLines[index];
+
+    if (beforeLine === afterLine) {
+      if (beforeLine !== undefined) {
+        lines.push(` ${beforeLine}`);
+      }
+      continue;
+    }
+
+    if (beforeLine !== undefined) {
+      lines.push(`-${beforeLine}`);
+    }
+    if (afterLine !== undefined) {
+      lines.push(`+${afterLine}`);
+    }
+  }
+
+  return lines;
 }
 
 function ChangedFileInlineDiff({ file }: { file: ChangedFilePreviewGroup }) {
