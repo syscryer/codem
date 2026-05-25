@@ -12427,6 +12427,12 @@ body.git-history-resizing {
   background: color-mix(in srgb, var(--app-surface) 18%, transparent);
 }
 
+.codex-desktop[data-window-material="mica"] .sidebar-thread.active,
+.codex-desktop[data-window-material="mica"] .sidebar-thread-row.active .sidebar-thread {
+  background: rgba(156, 163, 175, 0.12);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+}
+
 .codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 8px;
