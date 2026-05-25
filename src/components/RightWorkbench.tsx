@@ -6,7 +6,6 @@ import {
   ChevronDown,
   ChevronRight,
   CloudUpload,
-  ExternalLink,
   FileText,
   Folder,
   Globe2,
@@ -15,6 +14,7 @@ import {
   Link2,
   LoaderCircle,
   MoreHorizontal,
+  PanelRightClose,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -174,7 +174,7 @@ export function RightWorkbench({
           <Plus size={16} />
         </button>
         <button type="button" className="right-workbench-close" title="收起工作台" onClick={onClose}>
-          <ExternalLink size={15} />
+          <PanelRightClose size={15} />
         </button>
       </div>
 

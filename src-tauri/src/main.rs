@@ -33,13 +33,21 @@ struct WindowMaterial {
     name: &'static str,
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowState {
     x: i32,
     y: i32,
     width: u32,
     height: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MonitorWorkArea {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -434,12 +442,19 @@ fn restore_main_window_state(app: &tauri::AppHandle) {
         return;
     };
 
-    if !is_valid_window_state(&window, state) {
+    let work_areas = read_monitor_work_areas(window.available_monitors());
+    let Some(normalized_state) = normalize_window_state(state, &work_areas) else {
         return;
-    }
+    };
 
-    let _ = window.set_size(PhysicalSize::new(state.width, state.height));
-    let _ = window.set_position(PhysicalPosition::new(state.x, state.y));
+    let _ = window.set_size(PhysicalSize::new(
+        normalized_state.width,
+        normalized_state.height,
+    ));
+    let _ = window.set_position(PhysicalPosition::new(normalized_state.x, normalized_state.y));
+    if normalized_state != state {
+        let _ = persist_window_state(app, normalized_state);
+    }
 }
 
 fn focus_main_window(app: &tauri::AppHandle) {
@@ -467,7 +482,7 @@ fn save_window_state(window: &tauri::Window) -> Result<(), String> {
         .outer_position()
         .map_err(|error| format!("读取窗口位置失败: {error}"))?;
     let size = window
-        .outer_size()
+        .inner_size()
         .map_err(|error| format!("读取窗口尺寸失败: {error}"))?;
 
     let state = WindowState {
@@ -477,11 +492,15 @@ fn save_window_state(window: &tauri::Window) -> Result<(), String> {
         height: size.height,
     };
 
-    if state.width < MIN_WINDOW_WIDTH || state.height < MIN_WINDOW_HEIGHT {
+    let Some(state_to_save) = prepare_window_state_for_save(state) else {
         return Ok(());
-    }
+    };
 
-    let path = window_state_path(window.app_handle())?;
+    persist_window_state(window.app_handle(), state_to_save)
+}
+
+fn persist_window_state(app: &tauri::AppHandle, state: WindowState) -> Result<(), String> {
+    let path = window_state_path(app)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("创建窗口配置目录失败: {error}"))?;
     }
@@ -498,28 +517,72 @@ fn window_state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("读取应用配置目录失败: {error}"))
 }
 
-fn is_valid_window_state(window: &tauri::WebviewWindow, state: WindowState) -> bool {
-    if state.width < MIN_WINDOW_WIDTH || state.height < MIN_WINDOW_HEIGHT {
-        return false;
-    }
-
-    let Ok(monitors) = window.available_monitors() else {
-        return true;
+fn read_monitor_work_areas(
+    monitors_result: Result<Vec<tauri::Monitor>, tauri::Error>,
+) -> Vec<MonitorWorkArea> {
+    let Ok(monitors) = monitors_result else {
+        return Vec::new();
     };
 
-    monitors.iter().any(|monitor| {
-        let area = monitor.work_area();
-        rects_intersect(
-            state.x,
-            state.y,
-            state.width as i32,
-            state.height as i32,
-            area.position.x,
-            area.position.y,
-            area.size.width as i32,
-            area.size.height as i32,
-        )
-    })
+    monitors
+        .into_iter()
+        .map(|monitor| {
+            let area = monitor.work_area();
+            MonitorWorkArea {
+                x: area.position.x,
+                y: area.position.y,
+                width: area.size.width as i32,
+                height: area.size.height as i32,
+            }
+        })
+        .collect()
+}
+
+fn normalize_window_state(state: WindowState, work_areas: &[MonitorWorkArea]) -> Option<WindowState> {
+    if state.width < MIN_WINDOW_WIDTH || state.height < MIN_WINDOW_HEIGHT {
+        return None;
+    }
+
+    if work_areas.is_empty() {
+        return Some(state);
+    }
+
+    work_areas
+        .iter()
+        .find(|area| {
+            rects_intersect(
+                state.x,
+                state.y,
+                state.width as i32,
+                state.height as i32,
+                area.x,
+                area.y,
+                area.width,
+                area.height,
+            )
+        })
+        .map(|area| clamp_window_state_to_area(state, *area))
+}
+
+fn prepare_window_state_for_save(state: WindowState) -> Option<WindowState> {
+    has_minimum_window_size(state).then_some(state)
+}
+
+fn has_minimum_window_size(state: WindowState) -> bool {
+    state.width >= MIN_WINDOW_WIDTH && state.height >= MIN_WINDOW_HEIGHT
+}
+
+fn clamp_window_state_to_area(state: WindowState, area: MonitorWorkArea) -> WindowState {
+    let max_width = area.width.max(MIN_WINDOW_WIDTH as i32) as u32;
+    let max_height = area.height.max(MIN_WINDOW_HEIGHT as i32) as u32;
+    let width = state.width.min(max_width);
+    let height = state.height.min(max_height);
+    let max_x = area.x.saturating_add(area.width.saturating_sub(width as i32));
+    let max_y = area.y.saturating_add(area.height.saturating_sub(height as i32));
+    let x = state.x.clamp(area.x, max_x);
+    let y = state.y.clamp(area.y, max_y);
+
+    WindowState { x, y, width, height }
 }
 
 fn rects_intersect(
@@ -1084,7 +1147,10 @@ fn development_backend_command() -> Command {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_backend_port_from_value;
+    use super::{
+        clamp_window_state_to_area, has_minimum_window_size, normalize_window_state,
+        prepare_window_state_for_save, resolve_backend_port_from_value, MonitorWorkArea, WindowState,
+    };
 
     #[test]
     fn resolve_backend_port_from_value_accepts_valid_port() {
@@ -1097,6 +1163,94 @@ mod tests {
         assert_eq!(resolve_backend_port_from_value(Some("")), None);
         assert_eq!(resolve_backend_port_from_value(Some("0")), None);
         assert_eq!(resolve_backend_port_from_value(Some("not-a-port")), None);
+    }
+
+    #[test]
+    fn normalize_window_state_clamps_oversized_window_to_monitor_bounds() {
+        let state = WindowState {
+            x: -1497,
+            y: 666,
+            width: 4692,
+            height: 2814,
+        };
+        let work_areas = [MonitorWorkArea {
+            x: -1536,
+            y: 0,
+            width: 1536,
+            height: 864,
+        }];
+
+        let normalized = normalize_window_state(state, &work_areas);
+
+        assert_eq!(
+            normalized,
+            Some(WindowState {
+                x: -1536,
+                y: 0,
+                width: 1536,
+                height: 864,
+            })
+        );
+    }
+
+    #[test]
+    fn normalize_window_state_rejects_window_outside_all_monitors() {
+        let state = WindowState {
+            x: 5000,
+            y: 4000,
+            width: 1400,
+            height: 900,
+        };
+        let work_areas = [MonitorWorkArea {
+            x: 0,
+            y: 0,
+            width: 2560,
+            height: 1440,
+        }];
+
+        assert_eq!(normalize_window_state(state, &work_areas), None);
+    }
+
+    #[test]
+    fn clamp_window_state_to_area_keeps_valid_window_unchanged() {
+        let state = WindowState {
+            x: 120,
+            y: 80,
+            width: 1440,
+            height: 900,
+        };
+        let area = MonitorWorkArea {
+            x: 0,
+            y: 0,
+            width: 2560,
+            height: 1440,
+        };
+
+        assert_eq!(clamp_window_state_to_area(state, area), state);
+    }
+
+    #[test]
+    fn prepare_window_state_for_save_keeps_valid_state_unchanged() {
+        let state = WindowState {
+            x: 2498,
+            y: 242,
+            width: 2617,
+            height: 2518,
+        };
+
+        assert_eq!(prepare_window_state_for_save(state), Some(state));
+    }
+
+    #[test]
+    fn has_minimum_window_size_rejects_small_window() {
+        let state = WindowState {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 480,
+        };
+
+        assert!(!has_minimum_window_size(state));
     }
 }
 

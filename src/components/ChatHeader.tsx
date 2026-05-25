@@ -138,15 +138,16 @@ export function ChatHeader({
           <span className="diff-count">{gitDiffLabels.primary}</span>
           <span className="diff-label">{gitDiffLabels.secondary}</span>
         </button>
-        <button
-          type="button"
-          className={`icon-button${rightWorkbenchOpen ? ' active' : ''}`}
-          title={rightWorkbenchOpen ? '收起右侧工作台' : '展开右侧工作台'}
-          aria-pressed={rightWorkbenchOpen}
-          onClick={onToggleRightWorkbench}
-        >
-          <SquareSplitHorizontal size={15} />
-        </button>
+        {!rightWorkbenchOpen ? (
+          <button
+            type="button"
+            className="icon-button"
+            title="展开右侧工作台"
+            onClick={onToggleRightWorkbench}
+          >
+            <SquareSplitHorizontal size={15} />
+          </button>
+        ) : null}
       </div>
     </header>
   );

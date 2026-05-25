@@ -2150,6 +2150,8 @@ svg {
   min-width: 0;
   min-height: 0;
   overflow: auto;
+  overflow-x: auto;
+  overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(156, 163, 175, 0.24) transparent;
 }
@@ -2262,7 +2264,8 @@ svg {
 }
 
 .workbench-all-files-list {
-  min-width: 0;
+  width: max-content;
+  min-width: 100%;
   min-height: 0;
   overflow: visible;
   padding: 8px 8px 18px;
@@ -2308,11 +2311,11 @@ svg {
 }
 
 .workbench-tree-row {
-  width: 100%;
-  min-width: 0;
+  width: max-content;
+  min-width: 100%;
   height: 30px;
   display: grid;
-  grid-template-columns: 14px 16px minmax(0, 1fr) auto;
+  grid-template-columns: 14px 16px max-content auto;
   align-items: center;
   gap: 7px;
   padding: 0 8px;
@@ -2327,12 +2330,12 @@ svg {
 }
 
 .workbench-tree-row.selectable.has-check {
-  grid-template-columns: 12px 16px 16px minmax(0, 1fr) auto;
+  grid-template-columns: 12px 16px 16px max-content auto;
   gap: 4px;
 }
 
 .workbench-tree-row.selectable.no-check {
-  grid-template-columns: 12px 16px minmax(0, 1fr) auto;
+  grid-template-columns: 12px 16px max-content auto;
   gap: 4px;
 }
 
@@ -2352,16 +2355,16 @@ svg {
 }
 
 .workbench-tree-row-main {
-  min-width: 0;
+  min-width: max-content;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
 .workbench-tree-row-main > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: max-content;
+  overflow: visible;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -2387,9 +2390,9 @@ svg {
 }
 
 .workbench-tree-row > span:last-of-type {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: max-content;
+  overflow: visible;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -3441,11 +3444,13 @@ svg {
 }
 
 .markdown-body code {
-  padding: 2px 5px;
+  padding: 1px 4px;
   border-radius: 5px;
   background: #eeeeee;
   font-family: var(--code-font);
-  font-size: 0.9em;
+  font-size: 0.92em;
+  line-height: 1;
+  vertical-align: 0.02em;
   white-space: normal;
   overflow-wrap: anywhere;
 }
@@ -12161,7 +12166,7 @@ body.git-history-resizing {
   box-shadow: var(--menu-item-hover-shadow);
 }
 
-.codex-desktop :where(.tool-title, .tool-subtitle, .tool-details summary, .tool-details h4, .tool-details pre, .thinking-message, .thinking-message pre, .agent-preview-title, .agent-preview-meta, .agent-preview-section h4, .agent-preview-file-list code, .agent-preview-section pre, .structured-preview-title, .structured-preview-meta, .structured-preview-row, .structured-preview-card > pre, .read-group-title, .read-group-meta, .assistant-runtime-code, .assistant-runtime-code code, .markdown-body code, .markdown-body .code-block-shell pre code) {
+.codex-desktop :where(.tool-title, .tool-subtitle, .tool-details summary, .tool-details h4, .tool-details pre, .thinking-message, .thinking-message pre, .agent-preview-title, .agent-preview-meta, .agent-preview-section h4, .agent-preview-file-list code, .agent-preview-section pre, .structured-preview-title, .structured-preview-meta, .structured-preview-row, .structured-preview-card > pre, .read-group-title, .read-group-meta, .assistant-runtime-code, .assistant-runtime-code code, .markdown-body .code-block-shell pre code) {
   font-size: var(--app-code-font-size, 12px);
 }
 
