@@ -345,7 +345,7 @@ export function AppearanceSettingsSection({
               { value: 'default', label: '默认' },
               { value: 'wide', label: '宽' },
             ]}
-            onChange={(sidebarWidth) => update({ sidebarWidth })}
+            onChange={(sidebarWidth) => update({ sidebarWidth, sidebarCustomWidth: undefined })}
           />
         </SettingsRow>
       </div>

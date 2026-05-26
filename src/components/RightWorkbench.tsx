@@ -644,7 +644,6 @@ function WorkbenchFiles({
         showToast(caughtError instanceof Error ? caughtError.message : '刷新 Git 状态失败', 'error');
       });
       if (thenPush) {
-        showToast('提交完成，请在推送预览中确认');
         onOpenGitPushPreview?.();
       } else {
         showToast('提交完成');

@@ -349,6 +349,8 @@ export type AppearanceSettings = {
   chatFontSize: 13 | 14 | 15 | 16;
   codeFontSize: 12 | 13 | 14;
   sidebarWidth: SidebarWidthMode;
+  /** 用户拖拽 sidebar 后的精确像素宽度；非空时优先级高于 sidebarWidth 预设。 */
+  sidebarCustomWidth?: number;
   windowMaterial: WindowMaterialMode;
 };
 

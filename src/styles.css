@@ -105,8 +105,8 @@ svg {
   --app-material-line: rgba(176, 183, 192, 0.2);
   --app-material-glow: rgba(255, 255, 255, 0.18);
   --settings-sidebar-bg: #f4f2f2;
-  --app-scrollbar-thumb: rgba(82, 82, 82, 0.16);
-  --app-scrollbar-thumb-hover: rgba(82, 82, 82, 0.36);
+  --app-scrollbar-thumb: rgba(82, 82, 82, 0.08);
+  --app-scrollbar-thumb-hover: rgba(82, 82, 82, 0.18);
   --app-focus-border: color-mix(in srgb, var(--accent) 44%, var(--app-border));
   --app-focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
   --app-focus-outline: color-mix(in srgb, var(--accent) 58%, transparent);
@@ -164,8 +164,8 @@ svg {
   --app-material-line: rgba(255, 255, 255, 0.08);
   --app-material-glow: rgba(255, 255, 255, 0.08);
   --settings-sidebar-bg: #202020;
-  --app-scrollbar-thumb: rgba(255, 255, 255, 0.16);
-  --app-scrollbar-thumb-hover: rgba(255, 255, 255, 0.34);
+  --app-scrollbar-thumb: rgba(255, 255, 255, 0.08);
+  --app-scrollbar-thumb-hover: rgba(255, 255, 255, 0.18);
   color-scheme: dark;
 }
 
@@ -227,8 +227,8 @@ svg {
     --app-material-line: rgba(255, 255, 255, 0.08);
     --app-material-glow: rgba(255, 255, 255, 0.08);
     --settings-sidebar-bg: #202020;
-    --app-scrollbar-thumb: rgba(255, 255, 255, 0.16);
-    --app-scrollbar-thumb-hover: rgba(255, 255, 255, 0.34);
+    --app-scrollbar-thumb: rgba(255, 255, 255, 0.08);
+    --app-scrollbar-thumb-hover: rgba(255, 255, 255, 0.18);
     color-scheme: dark;
   }
 
@@ -516,6 +516,34 @@ svg {
   z-index: 1;
 }
 
+.app-sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 5px;
+  z-index: 5;
+  cursor: col-resize;
+  background: transparent;
+  user-select: none;
+}
+
+.app-sidebar-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+
+.app-sidebar-resizer:hover::after,
+.app-sidebar-resizer:active::after {
+  background: color-mix(in srgb, var(--accent, #2374c6) 60%, transparent);
+}
+
 .sidebar-primary {
   display: grid;
   gap: 1px;
@@ -656,8 +684,7 @@ svg {
 
 .sidebar-project-title {
   position: relative;
-  display: inline-flex;
-  align-items: center;
+  display: inline-flex;align-items: center;
   gap: 8px;
   width: 100%;
   min-width: 0;
@@ -668,36 +695,6 @@ svg {
   color: #6e737a;
   font-size: 13px;
   cursor: pointer;
-}
-
-.sidebar-project-title[data-project-path]:hover::after,
-.sidebar-project-title[data-project-path]:focus-visible::after {
-  content: attr(data-project-path);
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 30px;
-  z-index: 30;
-  width: max-content;
-  max-width: min(260px, calc(100vw - 72px));
-  padding: 7px 9px;
-  border: 1px solid rgba(214, 218, 224, 0.74);
-  border-radius: 8px;
-  background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(246, 248, 250, 0.54)),
-    rgba(248, 250, 252, 0.88);
-  box-shadow:
-    0 12px 28px rgba(15, 23, 42, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  color: #5f6368;
-  font-size: 11px;
-  font-weight: 400;
-  line-height: 1.35;
-  text-align: left;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  pointer-events: none;
-  backdrop-filter: blur(16px) saturate(1.2);
-  -webkit-backdrop-filter: blur(16px) saturate(1.2);
 }
 
 .sidebar-project-title span {
@@ -851,10 +848,35 @@ svg {
   pointer-events: auto;
 }
 
+.sidebar-thread-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 180ms ease, opacity 160ms ease;
+  opacity: 1;
+}
+
+.sidebar-thread-collapse > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sidebar-thread-collapse.is-collapsed {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .sidebar-thread-list {
   display: grid;
   gap: 2px;
   padding: 0 2px 2px 16px;
+}
+
+.sidebar-thread-empty {
+  padding: 4px 8px 6px;
+  color: #b3b8be;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .sidebar-thread-row {
@@ -1993,7 +2015,7 @@ svg {
 .workbench-code-preview::-webkit-scrollbar-thumb,
 .workbench-markdown-preview::-webkit-scrollbar-thumb {
   border-radius: 999px;
-  background: rgba(156, 163, 175, 0.28);
+  background: var(--app-scrollbar-thumb, rgba(82, 82, 82, 0.08));
 }
 
 .workbench-preview-content::-webkit-scrollbar-track,
@@ -2163,7 +2185,7 @@ svg {
 
 .workbench-file-tree-scroll::-webkit-scrollbar-thumb {
   border-radius: 999px;
-  background: rgba(156, 163, 175, 0.24);
+  background: var(--app-scrollbar-thumb, rgba(82, 82, 82, 0.08));
 }
 
 .workbench-file-tree-scroll::-webkit-scrollbar-track {
@@ -12737,19 +12759,25 @@ body.git-history-resizing {
 }
 
 .sidebar-projects::-webkit-scrollbar-thumb {
-  background-color: rgba(148, 139, 127, 0.38);
+  background-color: var(--app-scrollbar-thumb, rgba(82, 82, 82, 0.08));
+}
+
+.sidebar-projects:hover::-webkit-scrollbar-thumb,
+.codex-desktop .sidebar-projects:hover::-webkit-scrollbar-thumb,
+.codex-desktop .sidebar-projects::-webkit-scrollbar-thumb:hover {
+  background-color: var(--app-scrollbar-thumb-hover, rgba(82, 82, 82, 0.18));
 }
 
 .conversation::-webkit-scrollbar-thumb {
-  background-color: rgba(156, 163, 175, 0.42);
+  background-color: var(--app-scrollbar-thumb, rgba(82, 82, 82, 0.08));
 }
 
 .sidebar-projects:hover::-webkit-scrollbar-thumb {
-  background-color: rgba(124, 114, 101, 0.52);
+  background-color: var(--app-scrollbar-thumb-hover, rgba(82, 82, 82, 0.18));
 }
 
 .conversation:hover::-webkit-scrollbar-thumb {
-  background-color: rgba(107, 114, 128, 0.54);
+  background-color: var(--app-scrollbar-thumb-hover, rgba(82, 82, 82, 0.18));
 }
 
 .codex-desktop * {

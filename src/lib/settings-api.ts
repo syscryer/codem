@@ -248,6 +248,7 @@ function normalizeAppearanceSettings(appearance: unknown): AppearanceSettings {
     defaultAppearanceSettings.codeFontPreset,
   );
 
+  const normalizedSidebarCustomWidth = normalizeSidebarCustomWidth(record.sidebarCustomWidth);
   return {
     themeMode: normalizeOneOf(record.themeMode, ['system', 'light', 'dark'], defaultAppearanceSettings.themeMode),
     density: normalizeOneOf(record.density, ['comfortable', 'compact'], defaultAppearanceSettings.density),
@@ -282,6 +283,7 @@ function normalizeAppearanceSettings(appearance: unknown): AppearanceSettings {
     chatFontSize: normalizeOneOf(record.chatFontSize, [13, 14, 15, 16], defaultAppearanceSettings.chatFontSize),
     codeFontSize: normalizeOneOf(record.codeFontSize, [12, 13, 14], defaultAppearanceSettings.codeFontSize),
     sidebarWidth: normalizeOneOf(record.sidebarWidth, ['narrow', 'default', 'wide'], defaultAppearanceSettings.sidebarWidth),
+    ...(normalizedSidebarCustomWidth !== undefined ? { sidebarCustomWidth: normalizedSidebarCustomWidth } : {}),
     windowMaterial: normalizeOneOf(
       record.windowMaterial,
       ['auto', 'none', 'mica', 'acrylic', 'micaAlt'],
@@ -679,6 +681,13 @@ function parseOpenWithArgs(value: string): string[] {
 
 function normalizeOneOf<T extends string | number>(value: unknown, allowed: readonly T[], fallback: T): T {
   return allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+function normalizeSidebarCustomWidth(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return Math.round(Math.min(480, Math.max(220, value)));
 }
 
 function normalizeBoolean(value: unknown, fallback: boolean) {

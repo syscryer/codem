@@ -41,6 +41,8 @@ export type AppearanceSettings = {
   chatFontSize: 13 | 14 | 15 | 16;
   codeFontSize: 12 | 13 | 14;
   sidebarWidth: SidebarWidthMode;
+  /** 用户拖拽 sidebar 后的精确像素宽度，覆盖 sidebarWidth 预设。 */
+  sidebarCustomWidth?: number;
   windowMaterial: WindowMaterialMode;
 };
 
@@ -337,6 +339,7 @@ function normalizeAppearanceSettings(value: unknown): AppearanceSettings {
     ['cascadia', 'jetbrains', 'consolas'],
     defaultAppearanceSettings.codeFontPreset,
   );
+  const normalizedSidebarCustomWidth = normalizeSidebarCustomWidth(record.sidebarCustomWidth);
   return {
     themeMode: normalizeEnum(record.themeMode, ['system', 'light', 'dark'], defaultAppearanceSettings.themeMode),
     density: normalizeEnum(record.density, ['comfortable', 'compact'], defaultAppearanceSettings.density),
@@ -371,6 +374,7 @@ function normalizeAppearanceSettings(value: unknown): AppearanceSettings {
     chatFontSize: normalizeNumber(record.chatFontSize, [13, 14, 15, 16], defaultAppearanceSettings.chatFontSize),
     codeFontSize: normalizeNumber(record.codeFontSize, [12, 13, 14], defaultAppearanceSettings.codeFontSize),
     sidebarWidth: normalizeEnum(record.sidebarWidth, ['narrow', 'default', 'wide'], defaultAppearanceSettings.sidebarWidth),
+    ...(normalizedSidebarCustomWidth !== undefined ? { sidebarCustomWidth: normalizedSidebarCustomWidth } : {}),
     windowMaterial: normalizeEnum(
       record.windowMaterial,
       ['auto', 'none', 'mica', 'acrylic', 'micaAlt'],
@@ -731,6 +735,13 @@ function normalizeEnum<T extends string>(value: unknown, allowed: readonly T[], 
 
 function normalizeNumber<T extends number>(value: unknown, allowed: readonly T[], fallback: T): T {
   return typeof value === 'number' && allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+function normalizeSidebarCustomWidth(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return Math.round(Math.min(480, Math.max(220, value)));
 }
 
 function normalizeBoolean(value: unknown, fallback: boolean) {

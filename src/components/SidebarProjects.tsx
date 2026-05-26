@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   AlignJustify,
   Blocks,
@@ -65,6 +65,8 @@ type SidebarProjectsProps = {
   onCopySessionId: (thread: ThreadSummary) => void | Promise<void>;
   onOpenRemoveThreadDialog: (thread: ThreadSummary) => void;
   onOpenSettings: () => void;
+  sidebarCustomWidth?: number;
+  onUpdateSidebarCustomWidth?: (width: number | undefined) => void;
 };
 
 export function SidebarProjects({
@@ -103,6 +105,8 @@ export function SidebarProjects({
   onCopySessionId,
   onOpenRemoveThreadDialog,
   onOpenSettings,
+  sidebarCustomWidth,
+  onUpdateSidebarCustomWidth,
 }: SidebarProjectsProps) {
   const [panelMenuOpen, setPanelMenuOpen] = useState(false);
   const [addProjectMenuOpen, setAddProjectMenuOpen] = useState(false);
@@ -146,6 +150,56 @@ export function SidebarProjects({
       ...current,
       [taskId]: !current[taskId],
     }));
+  }
+
+  function handleSidebarResizePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!onUpdateSidebarCustomWidth) {
+      return;
+    }
+    event.preventDefault();
+    const sidebarElement = (event.currentTarget.parentElement as HTMLElement | null) ?? null;
+    const startX = event.clientX;
+    const startWidth = sidebarElement?.getBoundingClientRect().width
+      ?? sidebarCustomWidth
+      ?? 300;
+    const root = document.querySelector<HTMLElement>('.codex-desktop');
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    let latest = startWidth;
+
+    function clampWidth(width: number) {
+      return Math.round(Math.min(480, Math.max(220, width)));
+    }
+
+    function handlePointerMove(moveEvent: PointerEvent) {
+      const next = clampWidth(startWidth + (moveEvent.clientX - startX));
+      latest = next;
+      if (root) {
+        root.style.setProperty('--sidebar-width', `${next}px`);
+      }
+    }
+
+    function handlePointerUp() {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      onUpdateSidebarCustomWidth?.(latest);
+    }
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+  }
+
+  function handleSidebarResizeDoubleClick() {
+    if (!onUpdateSidebarCustomWidth) {
+      return;
+    }
+    const root = document.querySelector<HTMLElement>('.codex-desktop');
+    root?.style.removeProperty('--sidebar-width');
+    onUpdateSidebarCustomWidth(undefined);
   }
 
   return (
@@ -326,7 +380,7 @@ export function SidebarProjects({
                   <button
                     type="button"
                     className={`sidebar-project-title${project.isGitWorktree ? ' has-worktree-badge' : ''}`}
-                    data-project-path={project.path}
+                    title={project.path}
                     onClick={() => onToggleProjectCollapse(project.id)}
                   >
                     <span><Folder size={14} /></span>
@@ -427,8 +481,12 @@ export function SidebarProjects({
                   </div>
                 </div>
 
-                {!collapsed ? (
+                <div className={`sidebar-thread-collapse${collapsed ? ' is-collapsed' : ''}`}>
+                  <div className="sidebar-thread-collapse-inner">
                   <div className="sidebar-thread-list">
+                    {visibleThreads.length === 0 ? (
+                      <div className="sidebar-thread-empty">暂无对话</div>
+                    ) : null}
                     {visibleThreads.map((thread) => {
                       const isRunningThread = runningThreadIdSet.has(thread.id);
 
@@ -474,22 +532,22 @@ export function SidebarProjects({
                       );
                     })}
                   </div>
-                ) : null}
-
-                {!collapsed && hasMoreThreads ? (
-                  <button
-                    type="button"
-                    className="sidebar-collapse-toggle"
-                    onClick={() =>
-                      setExpandedThreadProjects((current) => ({
-                        ...current,
-                        [project.id]: !current[project.id],
-                      }))
-                    }
-                  >
-                    {threadExpanded ? '折叠显示' : '展开显示'}
-                  </button>
-                ) : null}
+                  {hasMoreThreads ? (
+                    <button
+                      type="button"
+                      className="sidebar-collapse-toggle"
+                      onClick={() =>
+                        setExpandedThreadProjects((current) => ({
+                          ...current,
+                          [project.id]: !current[project.id],
+                        }))
+                      }
+                    >
+                      {threadExpanded ? '折叠显示' : '展开显示'}
+                    </button>
+                  ) : null}
+                  </div>
+                </div>
               </div>
             );
           })}
@@ -500,6 +558,17 @@ export function SidebarProjects({
       <div className="sidebar-footer">
         <button type="button" onClick={onOpenSettings}><span><Settings size={14} /></span> 设置</button>
       </div>
+
+      {onUpdateSidebarCustomWidth ? (
+        <div
+          className="app-sidebar-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖拽调整侧边栏宽度，双击恢复默认"
+          onPointerDown={handleSidebarResizePointerDown}
+          onDoubleClick={handleSidebarResizeDoubleClick}
+        />
+      ) : null}
     </aside>
   );
 }

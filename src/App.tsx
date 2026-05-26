@@ -77,6 +77,7 @@ export default function App() {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const chatWorkspaceRef = useRef<HTMLDivElement | null>(null);
+  const appRootRef = useRef<HTMLDivElement | null>(null);
   const [dismissedApprovalDialogKey, setDismissedApprovalDialogKey] = useState<string | null>(null);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
@@ -201,6 +202,18 @@ export default function App() {
     updateShortcuts,
     updateOpenWith,
   } = useAppSettings(showToast);
+
+  useEffect(() => {
+    const root = appRootRef.current;
+    if (!root) {
+      return;
+    }
+    if (appearance.sidebarCustomWidth) {
+      root.style.setProperty('--sidebar-width', `${appearance.sidebarCustomWidth}px`);
+    } else {
+      root.style.removeProperty('--sidebar-width');
+    }
+  }, [appearance.sidebarCustomWidth]);
 
   useEffect(() => {
     if (!activeProject?.isGitRepo && dockActivePanelId === 'git-history') {
@@ -897,6 +910,7 @@ export default function App() {
         '--app-chat-font-size': `${appearance.chatFontSize}px`,
         '--app-code-font-size': `${appearance.codeFontSize}px`,
       } as CSSProperties}
+      ref={appRootRef}
     >
       <AppMenubar
         sidebarVisible={sidebarVisible}
@@ -985,6 +999,8 @@ export default function App() {
               onOpenSettings={() => openSettings('appearance')}
               onGitFetch={handleGitFetch}
               onGitPull={handleGitPull}
+              sidebarCustomWidth={appearance.sidebarCustomWidth}
+              onUpdateSidebarCustomWidth={(width) => updateAppearance({ sidebarCustomWidth: width })}
             />
           ) : null}
 
