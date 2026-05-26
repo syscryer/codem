@@ -1,5 +1,8 @@
 :root {
-  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  /* 与 src/constants.ts 中的 codex 预设保持一致：跨平台 system font stack。
+     macOS 自动用 SF Pro + 苹方，Windows 自动用 Segoe UI Variable + 微软雅黑 UI。 */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-weight: 400;
   color: #242424;
   background: transparent;
   font-synthesis: none;
@@ -119,7 +122,7 @@ svg {
   grid-template-rows: var(--desktop-menubar-height) minmax(0, 1fr);
   overflow: hidden;
   isolation: isolate;
-  font-family: var(--app-ui-font-family, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
+  font-family: var(--app-ui-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
   font-size: var(--app-ui-font-size, 13px);
 }
 
@@ -3438,7 +3441,7 @@ svg {
   min-width: 0;
   max-width: 100%;
   color: #242424;
-  font-family: var(--app-chat-font-family, var(--app-ui-font-family, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif));
+  font-family: var(--app-chat-font-family, var(--app-ui-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif));
   font-size: var(--app-chat-font-size, 14px);
   line-height: 1.72;
   word-break: break-word;
@@ -3544,7 +3547,7 @@ svg {
 .markdown-body {
   min-width: 0;
   max-width: 100%;
-  font-family: var(--app-chat-font-family, var(--app-ui-font-family, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif));
+  font-family: var(--app-chat-font-family, var(--app-ui-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif));
   font-size: var(--app-chat-font-size, 14px);
 }
 
@@ -3924,7 +3927,7 @@ svg {
 }
 
 .tui-progress {
-  font-family: var(--app-ui-font-family, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
+  font-family: var(--app-ui-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
   font-style: normal;
   font-weight: 400;
   letter-spacing: 0;
@@ -9350,7 +9353,7 @@ body.git-history-resizing {
   min-height: 28px;
   padding: 4px 12px;
   color: #4c4c4c;
-  font-family: var(--app-chat-font-family, var(--app-ui-font-family, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif));
+  font-family: var(--app-chat-font-family, var(--app-ui-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif));
   font-size: var(--app-chat-font-size, 14px);
   line-height: 1.45;
   background: #f3f3f1;

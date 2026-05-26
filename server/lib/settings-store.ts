@@ -29,10 +29,10 @@ export type AppearanceSettings = {
   accentColor: 'blue' | 'emerald' | 'amber' | 'rose' | 'violet' | 'custom';
   accentColorCustom: string;
   uiFontMode: 'preset' | 'custom';
-  uiFontPreset: 'system' | 'segoe' | 'yahei' | 'dengxian' | 'song' | 'sourceHanSans' | 'misans' | 'harmony';
+  uiFontPreset: 'codex' | 'system' | 'segoe' | 'yahei' | 'dengxian' | 'song' | 'sourceHanSans' | 'misans' | 'harmony';
   uiFontCustom: string;
   chatFontMode: 'followUi' | 'preset' | 'custom';
-  chatFontPreset: 'system' | 'segoe' | 'yahei' | 'dengxian' | 'song' | 'sourceHanSans' | 'misans' | 'harmony';
+  chatFontPreset: 'codex' | 'system' | 'segoe' | 'yahei' | 'dengxian' | 'song' | 'sourceHanSans' | 'misans' | 'harmony';
   chatFontCustom: string;
   codeFontMode: 'preset' | 'custom';
   codeFontPreset: 'cascadia' | 'jetbrains' | 'consolas' | 'firaCode' | 'sourceCodePro';
@@ -109,11 +109,13 @@ export const defaultAppearanceSettings: AppearanceSettings = {
   accentColor: 'blue',
   accentColorCustom: '#2374C6',
   uiFontMode: 'preset',
-  uiFontPreset: 'system',
-  uiFontCustom: '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif',
+  uiFontPreset: 'codex',
+  uiFontCustom:
+    '-apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
   chatFontMode: 'followUi',
-  chatFontPreset: 'system',
-  chatFontCustom: '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif',
+  chatFontPreset: 'codex',
+  chatFontCustom:
+    '-apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
   codeFontMode: 'preset',
   codeFontPreset: 'cascadia',
   codeFontCustom: '"Cascadia Code", "Cascadia Mono", Consolas, monospace',
@@ -352,14 +354,14 @@ function normalizeAppearanceSettings(value: unknown): AppearanceSettings {
     uiFontMode: normalizeEnum(record.uiFontMode, ['preset', 'custom'], 'uiFontFamily' in record ? 'preset' : defaultAppearanceSettings.uiFontMode),
     uiFontPreset: normalizeEnum(
       record.uiFontPreset,
-      ['system', 'segoe', 'yahei', 'dengxian', 'song', 'sourceHanSans', 'misans', 'harmony'],
+      ['codex', 'system', 'segoe', 'yahei', 'dengxian', 'song', 'sourceHanSans', 'misans', 'harmony'],
       legacyUiFontPreset,
     ),
     uiFontCustom: normalizeFontFamilyValue(record.uiFontCustom, defaultAppearanceSettings.uiFontCustom),
     chatFontMode: normalizeEnum(record.chatFontMode, ['followUi', 'preset', 'custom'], defaultAppearanceSettings.chatFontMode),
     chatFontPreset: normalizeEnum(
       record.chatFontPreset,
-      ['system', 'segoe', 'yahei', 'dengxian', 'song', 'sourceHanSans', 'misans', 'harmony'],
+      ['codex', 'system', 'segoe', 'yahei', 'dengxian', 'song', 'sourceHanSans', 'misans', 'harmony'],
       defaultAppearanceSettings.chatFontPreset,
     ),
     chatFontCustom: normalizeFontFamilyValue(record.chatFontCustom, defaultAppearanceSettings.chatFontCustom),

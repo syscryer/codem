@@ -303,6 +303,7 @@ export type AccentColorPreset = 'blue' | 'emerald' | 'amber' | 'rose' | 'violet'
 export type AccentColorValue = AccentColorPreset | 'custom';
 export type ReviewDisplayMode = 'tree' | 'flat';
 export type UiFontFamilyPreset =
+  | 'codex'
   | 'system'
   | 'segoe'
   | 'yahei'

@@ -47,8 +47,9 @@ export const ACCENT_COLOR_PRESETS = [
 }>;
 
 export const UI_FONT_PRESETS = [
-  { value: 'system', label: '系统' },
-  { value: 'segoe', label: 'Segoe UI' },
+  { value: 'codex', label: '系统默认' },
+  { value: 'system', label: 'Segoe UI（中文雅黑）' },
+  { value: 'segoe', label: 'Segoe UI Variable' },
   { value: 'yahei', label: '微软雅黑' },
   { value: 'dengxian', label: '等线' },
   { value: 'song', label: '宋体' },
@@ -122,6 +123,10 @@ export function resolveAccentColors(appearance: Pick<AppearanceSettings, 'accent
 }
 
 export const UI_FONT_STACKS: Record<UiFontFamilyPreset, string> = {
+  // 跨平台 system font stack：macOS 自动用 SF Pro + 苹方，Windows 自动用 Segoe UI Variable + 微软雅黑 UI。
+  // 中文不显式声明，靠系统 fallback，避免在不同语种系统上产生意外字体。
+  codex:
+    '-apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
   system: '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif',
   segoe: '"Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI", sans-serif',
   yahei: '"Microsoft YaHei UI", "Segoe UI", sans-serif',
