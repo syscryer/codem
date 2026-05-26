@@ -188,7 +188,7 @@ export function ConversationPane({
             title="到底部"
             onClick={handleScrollToBottom}
           >
-            <ArrowDown size={24} />
+            <ArrowDown size={16} />
           </button>
         </div>
       ) : null}

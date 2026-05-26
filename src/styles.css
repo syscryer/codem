@@ -414,7 +414,7 @@ svg {
   padding: 8px;
   border: 1px solid rgba(214, 218, 224, 0.74);
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.52) !important;
+  background: rgba(255, 255, 255, 0.86) !important;
   box-shadow:
     0 20px 52px rgba(15, 23, 42, 0.16),
     0 8px 18px rgba(15, 23, 42, 0.08);
@@ -3366,16 +3366,20 @@ svg {
 }
 
 .conversation-bottom-anchor {
-  width: 48px;
-  height: 48px;
+  width: 32px;
+  height: 32px;
   display: inline-grid;
   place-items: center;
   padding: 0;
-  border: 1px solid rgba(222, 219, 211, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.7);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.96);
+  background: rgba(255, 255, 255, 0.4);
   color: #353535;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+  box-shadow:
+    0 6px 18px rgba(15, 23, 42, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(14px) saturate(1.35);
+  -webkit-backdrop-filter: blur(14px) saturate(1.35);
   cursor: pointer;
   pointer-events: auto;
   transition:
@@ -3386,9 +3390,11 @@ svg {
 }
 
 .conversation-bottom-anchor:hover {
-  border-color: #d7d1c7;
-  background: #ffffff;
-  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.16);
+  border-color: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow:
+    0 10px 24px rgba(15, 23, 42, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
   transform: translateY(-1px);
 }
 
@@ -11864,15 +11870,15 @@ body.git-history-resizing {
   color: color-mix(in srgb, var(--app-muted) 82%, var(--app-text) 18%);
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu) {
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover) {
   border-color: color-mix(in srgb, var(--app-border) 82%, transparent);
   background:
     linear-gradient(
       145deg,
-      color-mix(in srgb, var(--app-surface) 82%, transparent),
-      color-mix(in srgb, var(--app-surface-muted) 76%, transparent)
+      color-mix(in srgb, var(--app-surface) 46%, transparent),
+      color-mix(in srgb, var(--app-surface-muted) 38%, transparent)
     ),
-    color-mix(in srgb, var(--app-surface) 72%, transparent) !important;
+    color-mix(in srgb, var(--app-surface) 28%, transparent) !important;
   color: var(--app-text);
   box-shadow:
     0 24px 52px rgba(15, 23, 42, 0.15),
@@ -11883,16 +11889,24 @@ body.git-history-resizing {
   -webkit-backdrop-filter: blur(24px) saturate(1.18);
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::before {
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover)::before {
   background:
     radial-gradient(ellipse at 22% 0%, color-mix(in srgb, var(--app-surface) 12%, transparent), transparent 40%),
     linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 8%, transparent), color-mix(in srgb, var(--app-surface-muted) 4%, transparent));
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::after {
+.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover)::after {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 10%, transparent), transparent 34%),
     linear-gradient(90deg, color-mix(in srgb, var(--app-surface) 6%, transparent), transparent 24%, transparent 76%, color-mix(in srgb, var(--app-surface) 4%, transparent));
+}
+
+/* 顶部菜单栏的菜单弹出在 sidebar 之上，backdrop-filter 实际透出的是 sidebar 内容；
+   单独提高底色不透明度，避免出现 "看穿到 sidebar 文字" 的情况。 */
+.codex-desktop .desktop-menu-popover {
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 96%, transparent), color-mix(in srgb, var(--app-surface-muted) 92%, transparent)),
+    color-mix(in srgb, var(--app-surface) 90%, transparent) !important;
 }
 
 .codex-desktop .open-app-dropdown {
@@ -12136,7 +12150,7 @@ body.git-history-resizing {
   overflow: hidden;
 }
 
-:is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu) {
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover) {
   overflow: hidden;
   isolation: isolate;
   border: 1px solid rgba(214, 218, 224, 0.78);
@@ -12160,7 +12174,7 @@ body.git-history-resizing {
   scrollbar-width: thin;
 }
 
-:is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::before {
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover)::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -12171,7 +12185,7 @@ body.git-history-resizing {
   pointer-events: none;
 }
 
-:is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu)::after {
+:is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover)::after {
   content: '';
   position: absolute;
   inset: 1px;
