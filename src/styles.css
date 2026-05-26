@@ -184,6 +184,15 @@ svg {
   --app-material-blur: 72px;
 }
 
+/* Win11 Settings 风格的 mica：冷中灰底色 + 极低不透明度,最大化桌面通透 */
+.codex-desktop[data-window-material="auto"],
+.codex-desktop[data-window-material="mica"] {
+  --app-material-fill: rgba(243, 243, 243, 0.10);
+  --app-material-line: rgba(0, 0, 0, 0.08);
+  --app-material-glow: rgba(255, 255, 255, 0.18);
+  --app-material-blur: 60px;
+}
+
 .codex-desktop[data-theme-mode="dark"][data-window-material="auto"],
 .codex-desktop[data-theme-mode="dark"][data-window-material="none"],
 .codex-desktop[data-theme-mode="dark"][data-window-material="mica"] {
@@ -197,6 +206,15 @@ svg {
   --app-material-fill: rgba(32, 32, 34, 0.9);
   --app-material-glow: rgba(255, 255, 255, 0.06);
   --app-material-blur: 72px;
+}
+
+/* Win11 Settings 风格的 mica(暗色):较深中性灰 + 极低不透明度,最大化桌面通透 */
+.codex-desktop[data-theme-mode="dark"][data-window-material="auto"],
+.codex-desktop[data-theme-mode="dark"][data-window-material="mica"] {
+  --app-material-fill: rgba(28, 28, 28, 0.10);
+  --app-material-line: rgba(255, 255, 255, 0.07);
+  --app-material-glow: rgba(255, 255, 255, 0.05);
+  --app-material-blur: 60px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -246,6 +264,15 @@ svg {
     --app-material-glow: rgba(255, 255, 255, 0.06);
     --app-material-blur: 72px;
   }
+
+  /* Win11 Settings 风格的 mica(系统暗色):与显式 dark 模式保持一致 */
+  .codex-desktop[data-theme-mode="system"][data-window-material="auto"],
+  .codex-desktop[data-theme-mode="system"][data-window-material="mica"] {
+    --app-material-fill: rgba(28, 28, 28, 0.10);
+    --app-material-line: rgba(255, 255, 255, 0.07);
+    --app-material-glow: rgba(255, 255, 255, 0.05);
+    --app-material-blur: 60px;
+  }
 }
 
 .codex-desktop[data-sidebar-width="narrow"] {
@@ -284,8 +311,8 @@ svg {
   border-bottom: 0;
   backdrop-filter: blur(12px) saturate(1.18);
   -webkit-backdrop-filter: blur(12px) saturate(1.18);
-  color: #5f5a53;
-  font-size: 12px;
+  color: #9ca0a6;
+  font-size: 13px;
   user-select: none;
 }
 
@@ -331,13 +358,13 @@ svg {
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: #7a756d;
+  color: #b4b8be;
   cursor: pointer;
   font-size: 13px;
 }
 
 .window-nav button:disabled {
-  color: #c9c4bd;
+  color: #d0d3d8;
   cursor: default;
 }
 
@@ -362,7 +389,7 @@ svg {
   height: 24px;
   padding: 0 9px;
   border-radius: 7px;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .desktop-menu-trigger:hover,
@@ -375,7 +402,7 @@ svg {
 
 .window-nav button:disabled:hover {
   background: transparent;
-  color: #c9c4bd;
+  color: #d0d3d8;
 }
 
 .desktop-menu-popover {
@@ -568,7 +595,7 @@ svg {
   gap: 10px;
   justify-content: flex-start;
   padding: 7px 12px;
-  color: #50545a;
+  color: #9ca0a6;
   font-size: 13px;
 }
 
@@ -577,7 +604,7 @@ svg {
   width: 14px;
   display: inline-grid;
   place-items: center;
-  color: #85898f;
+  color: #b4b8be;
 }
 
 .sidebar-primary button kbd {
@@ -12487,10 +12514,20 @@ body.git-history-resizing {
   background: color-mix(in srgb, var(--app-surface) 18%, transparent);
 }
 
+.codex-desktop[data-window-material="auto"] .sidebar-thread.active,
+.codex-desktop[data-window-material="auto"] .sidebar-thread-row.active .sidebar-thread,
 .codex-desktop[data-window-material="mica"] .sidebar-thread.active,
 .codex-desktop[data-window-material="mica"] .sidebar-thread-row.active .sidebar-thread {
-  background: rgba(156, 163, 175, 0.12);
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+  background: rgba(0, 0, 0, 0.06);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+
+.codex-desktop[data-theme-mode="dark"][data-window-material="auto"] .sidebar-thread.active,
+.codex-desktop[data-theme-mode="dark"][data-window-material="auto"] .sidebar-thread-row.active .sidebar-thread,
+.codex-desktop[data-theme-mode="dark"][data-window-material="mica"] .sidebar-thread.active,
+.codex-desktop[data-theme-mode="dark"][data-window-material="mica"] .sidebar-thread-row.active .sidebar-thread {
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 .codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover {
@@ -12580,7 +12617,7 @@ body.git-history-resizing {
   color: color-mix(in srgb, var(--app-muted) 95%, var(--app-text) 5%);
 }
 
-.codex-desktop :where(.desktop-menubar, .sidebar-section-head, .sidebar-search input, .workspace-menu-group-title, .sidebar-thread small, .turn-time, .turn-status, .settings-row-label small, .assistant-runtime-footnote, .assistant-runtime-question-hint, .dialog-head p, .status-branch-menu-meta, .status-run-head span) {
+.codex-desktop :where(.sidebar-section-head, .sidebar-search input, .workspace-menu-group-title, .sidebar-thread small, .turn-time, .turn-status, .settings-row-label small, .assistant-runtime-footnote, .assistant-runtime-question-hint, .dialog-head p, .status-branch-menu-meta, .status-run-head span) {
   font-size: max(11px, calc(var(--app-ui-font-size, 13px) - 1px));
 }
 
