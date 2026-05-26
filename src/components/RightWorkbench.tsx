@@ -32,7 +32,7 @@ import { MemoGitDiffViewer } from './GitDiffViewer';
 import { ImagePreviewDialog, type ImagePreviewItem } from './ImagePreviewDialog';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { fetchWorkspaceFilePreview } from '../lib/file-preview-api';
-import { commitGitChanges, fetchGitFileDiff, fetchGitPushPreview, fetchGitStatus, pushGitBranch } from '../lib/git-api';
+import { commitGitChanges, fetchGitFileDiff, fetchGitStatus } from '../lib/git-api';
 import { renderMarkdownImage } from '../lib/markdown-image';
 import { fetchProjectFiles } from '../lib/project-files-api';
 import {
@@ -144,6 +144,7 @@ export function RightWorkbench({
   onCloseReviewPreviewTabs,
   onResolvePreviewContent,
   onGitChanged,
+  onOpenGitPushPreview,
   reviewHideNoiseFilesByDefault,
   reviewDefaultDisplayMode,
   reviewNoisePatterns,
@@ -230,6 +231,7 @@ export function RightWorkbench({
             onResolvePreviewContent={onResolvePreviewContent}
             showCommitBar
             onGitChanged={onGitChanged}
+            onOpenGitPushPreview={onOpenGitPushPreview}
             reviewHideNoiseFilesByDefault={reviewHideNoiseFilesByDefault}
             reviewDefaultDisplayMode={reviewDefaultDisplayMode}
             reviewNoisePatterns={reviewNoisePatterns}
@@ -330,6 +332,7 @@ function WorkbenchFiles({
   onResolvePreviewContent,
   showCommitBar = false,
   onGitChanged,
+  onOpenGitPushPreview,
   reviewHideNoiseFilesByDefault = true,
   reviewDefaultDisplayMode = 'tree',
   reviewNoisePatterns = [],
@@ -353,6 +356,7 @@ function WorkbenchFiles({
   onResolvePreviewContent: (key: string, state: WorkbenchPreviewContentState) => void;
   showCommitBar?: boolean;
   onGitChanged?: () => void | Promise<void>;
+  onOpenGitPushPreview?: () => void;
   reviewHideNoiseFilesByDefault?: boolean;
   reviewDefaultDisplayMode?: ReviewDisplayMode;
   reviewNoisePatterns?: string[];
@@ -629,22 +633,24 @@ function WorkbenchFiles({
       return;
     }
 
+    // thenPush=true 时只完成提交，再交给上层打开"推送预览"对话框，由用户在预览里确认远端/分支再点推送。
     setCommitWorking(thenPush ? 'push' : 'commit');
     setCommitError('');
     try {
       await commitGitChanges(activeProject.id, Array.from(selectedCommitPaths), commitMessage.trim());
-      if (thenPush) {
-        const preview = await fetchGitPushPreview(activeProject.id);
-        await pushGitBranch(activeProject.id, preview.remote, preview.targetBranch);
-      }
       setCommitMessage('');
       await loadScope('changed');
-      showToast(thenPush ? '提交并推送完成' : '提交完成');
       void Promise.resolve(onGitChanged?.()).catch((caughtError: unknown) => {
         showToast(caughtError instanceof Error ? caughtError.message : '刷新 Git 状态失败', 'error');
       });
+      if (thenPush) {
+        showToast('提交完成，请在推送预览中确认');
+        onOpenGitPushPreview?.();
+      } else {
+        showToast('提交完成');
+      }
     } catch (caughtError) {
-      setCommitError(caughtError instanceof Error ? caughtError.message : thenPush ? '提交并推送失败' : '提交失败');
+      setCommitError(caughtError instanceof Error ? caughtError.message : thenPush ? '提交失败' : '提交失败');
     } finally {
       setCommitWorking(null);
     }

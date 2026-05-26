@@ -1122,6 +1122,7 @@ export default function App() {
                 onCloseReviewPreviewTabs={(tabKeys) => closeWorkbenchPreviewMany('review', tabKeys)}
                 onResolvePreviewContent={resolveWorkbenchPreviewContent}
                 onGitChanged={() => activeProjectId ? refreshProjectGitSummary(activeProjectId) : undefined}
+                onOpenGitPushPreview={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
                 reviewHideNoiseFilesByDefault={general.reviewHideNoiseFilesByDefault}
                 reviewDefaultDisplayMode={general.reviewDefaultDisplayMode}
                 reviewNoisePatterns={general.reviewNoisePatterns}
