@@ -19,6 +19,7 @@ import {
   RefreshCw,
   RotateCcw,
   Rows3,
+  Search,
   Square,
   Unlink2,
   X,
@@ -112,6 +113,7 @@ type RightWorkbenchProps = {
   onCloseReviewPreviewTabs: (keys: string[]) => void;
   onResolvePreviewContent: (key: string, state: WorkbenchPreviewContentState) => void;
   onGitChanged?: () => void | Promise<void>;
+  onOpenGitPushPreview?: () => void;
   reviewHideNoiseFilesByDefault: boolean;
   reviewDefaultDisplayMode: ReviewDisplayMode;
   reviewNoisePatterns: string[];
@@ -595,7 +597,10 @@ function WorkbenchFiles({
         const nextStatus = await fetchGitStatus(activeProject.id);
         setGitStatus(nextStatus);
         const visibleStatusFiles = filterWorkbenchNoiseFiles(nextStatus.files, showNoiseFiles, reviewNoisePatterns);
-        setSelectedCommitPaths(new Set(visibleStatusFiles.map((file) => file.path)));
+        // 默认仅选中已纳入版本管理的变更文件，未跟踪文件需要用户主动勾选才纳入提交。
+        setSelectedCommitPaths(
+          new Set(visibleStatusFiles.filter((file) => !file.untracked).map((file) => file.path)),
+        );
         const nextGroups = splitWorkbenchChangedFiles(visibleStatusFiles);
         setExpandedChangedDirectories(collectDirectoryPaths(buildWorkbenchFileTree(nextGroups.tracked)));
         setExpandedUntrackedDirectories(collectDirectoryPaths(buildWorkbenchFileTree(nextGroups.untracked)));
@@ -1592,7 +1597,7 @@ function FileNavigator({
         </div>
       </div>
       <label className="workbench-file-filter">
-        <span>⌕</span>
+        <Search size={14} aria-hidden="true" />
         <input
           value={filter}
           onChange={(event) => onFilterChange(event.target.value)}
@@ -1916,37 +1921,62 @@ function ChangedFileTreeSection({
   onOpenFile: (file: GitFileStatus) => void;
   untracked?: boolean;
 }) {
+  // 未进行版本管理的文件默认折叠，避免在审查页占用过多视觉空间。
+  const [collapsed, setCollapsed] = useState(untracked);
+
   return (
-    <section className="workbench-tree-section">
+    <section className={`workbench-tree-section${collapsed ? ' is-collapsed' : ''}`}>
       <div className="workbench-tree-section-head">
         <div className="workbench-tree-section-title">
-          <button type="button" className="workbench-tree-select-all" onClick={onToggleAll}>
+          <button
+            type="button"
+            className="workbench-tree-section-chevron"
+            onClick={() => setCollapsed((value) => !value)}
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? `展开${title}` : `折叠${title}`}
+          >
+            {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          </button>
+          <button
+            type="button"
+            className="workbench-tree-select-all"
+            onClick={onToggleAll}
+            aria-label={allSelected ? '取消全选' : '全选'}
+          >
             {allSelected ? <CheckSquare size={15} /> : <Square size={15} />}
           </button>
-          <strong>{title}</strong>
+          <button
+            type="button"
+            className="workbench-tree-section-label"
+            onClick={() => setCollapsed((value) => !value)}
+          >
+            <strong>{title}</strong>
+          </button>
         </div>
         <span>{count} 个文件</span>
       </div>
-      {displayMode === 'flat'
-        ? renderChangedFileFlatRows({
-            files,
-            activePreviewKey,
-            selectedCommitPaths,
-            onToggleCommitFile,
-            onOpenFile,
-            untracked,
-          })
-        : renderChangedFileTreeRows({
-            nodes,
-            expandedDirectories,
-            activePreviewKey,
-            selectedCommitPaths,
-            depth: 0,
-            onToggleDirectory,
-            onToggleCommitNode,
-            onOpenFile,
-            untracked,
-          })}
+      {collapsed
+        ? null
+        : displayMode === 'flat'
+          ? renderChangedFileFlatRows({
+              files,
+              activePreviewKey,
+              selectedCommitPaths,
+              onToggleCommitFile,
+              onOpenFile,
+              untracked,
+            })
+          : renderChangedFileTreeRows({
+              nodes,
+              expandedDirectories,
+              activePreviewKey,
+              selectedCommitPaths,
+              depth: 0,
+              onToggleDirectory,
+              onToggleCommitNode,
+              onOpenFile,
+              untracked,
+            })}
     </section>
   );
 }
@@ -2133,7 +2163,7 @@ function renderChangedFileTreeRows({
         key={node.path}
         type="button"
         className={`workbench-tree-row selectable has-check${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === buildChangedWorkbenchPreviewKey(node.path) ? ' active' : ''}`}
-        style={{ paddingLeft: `${10 + depth * 18}px` }}
+        style={{ paddingLeft: `${16 + depth * 18}px` }}
         onClick={() => {
           if (node.type === 'directory') {
             onToggleDirectory(node.path);
