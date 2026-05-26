@@ -11,6 +11,7 @@ import type {
   ShortcutSettings,
   ThreadSummary,
   ToastState,
+  WindowMaterialMode,
   WorkspaceBootstrap,
 } from '../../types';
 import type {
@@ -43,6 +44,8 @@ type SettingsViewProps = {
   runningThreadIds: string[];
   general: GeneralSettings;
   appearance: AppearanceSettings;
+  effectiveWindowMaterial: WindowMaterialMode;
+  supportedWindowMaterials: WindowMaterialMode[];
   models: ModelSettings;
   shortcuts: ShortcutSettings;
   openWith: OpenWithSettings;
@@ -86,6 +89,8 @@ export function SettingsView({
   runningThreadIds,
   general,
   appearance,
+  effectiveWindowMaterial,
+  supportedWindowMaterials,
   models,
   shortcuts,
   openWith,
@@ -119,6 +124,8 @@ export function SettingsView({
       return (
         <AppearanceSettingsSection
           appearance={appearance}
+          effectiveWindowMaterial={effectiveWindowMaterial}
+          supportedWindowMaterials={supportedWindowMaterials}
           onUpdateAppearance={onUpdateAppearance}
         />
       );
@@ -204,6 +211,7 @@ export function SettingsView({
     activeThreadId,
     activeProject,
     appearance,
+    effectiveWindowMaterial,
     claudeModels,
     general,
     models,
@@ -212,6 +220,7 @@ export function SettingsView({
     projects,
     runningThreadIds,
     shortcuts,
+    supportedWindowMaterials,
     onOpenThread,
     onRenameThread,
     onRemoveThread,

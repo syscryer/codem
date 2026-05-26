@@ -1,0 +1,30 @@
+{
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "title": "CodeM",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 640,
+        "center": true,
+        "resizable": true,
+        "decorations": true,
+        "transparent": true,
+        "hiddenTitle": true,
+        "titleBarStyle": "Overlay",
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 24
+        }
+      }
+    ]
+  },
+  "bundle": {
+    "resources": [
+      "../dist-server/index.mjs",
+      "../dist-server/package.json"
+    ]
+  }
+}

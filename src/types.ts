@@ -298,6 +298,7 @@ export type PluginSubTab = 'installed' | 'discover' | 'marketplaces';
 export type ThemeMode = 'system' | 'light' | 'dark';
 export type InterfaceDensity = 'comfortable' | 'compact';
 export type SidebarWidthMode = 'narrow' | 'default' | 'wide';
+export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'unknown';
 export type WindowMaterialMode = 'auto' | 'none' | 'mica' | 'acrylic' | 'micaAlt';
 export type AccentColorPreset = 'blue' | 'emerald' | 'amber' | 'rose' | 'violet';
 export type AccentColorValue = AccentColorPreset | 'custom';

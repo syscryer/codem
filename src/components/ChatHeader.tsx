@@ -25,6 +25,10 @@ const LAUNCH_SCRIPTS_STORAGE_KEY = 'codem::project-launch-scripts';
 type ChatHeaderProps = {
   activeProject: ProjectSummary | null;
   activeThread: ThreadDetail | null;
+} & ChatHeaderActionsProps;
+
+export type ChatHeaderActionsProps = {
+  activeProject: ProjectSummary | null;
   openTargets: OpenAppTarget[];
   selectedOpenTargetId: string;
   runAvailable: boolean;
@@ -69,14 +73,6 @@ export function ChatHeader({
   onToggleRightWorkbench,
   onOpenReviewWorkbench,
 }: ChatHeaderProps) {
-  const gitDiff = activeProject?.gitDiff ?? { additions: 0, deletions: 0, filesChanged: 0 };
-  const gitDiffLabels = getGitDiffBadgeLabels(gitDiff);
-  const diffTitle = !activeProject
-    ? '未选择项目'
-    : activeProject.isGitRepo
-      ? `${gitDiff.filesChanged} 个文件变更，${gitDiffLabels.detail}（点击刷新）`
-      : '当前目录不是 Git 仓库';
-
   return (
     <header className="chat-header">
       <div className="thread-title">
@@ -86,70 +82,129 @@ export function ChatHeader({
           <MoreHorizontal size={15} />
         </button>
       </div>
-      <div className="header-actions">
-        <LaunchScriptButton
-          activeProject={activeProject}
-          disabled={!runAvailable}
-          onRunLaunchScript={onRunLaunchScript}
-        />
-        <OpenAppMenu
-          disabled={!activeProject}
-          targets={openTargets}
-          selectedTargetId={selectedOpenTargetId}
-          onOpenTarget={onOpenTarget}
-          onSelectOpenTarget={onSelectOpenTarget}
-        />
-        <GitActionMenu
-          disabled={!activeProject?.isGitRepo}
-          onOpenCommit={onOpenGitCommit}
-          onOpenPush={onOpenGitPush}
-          onOpenBranch={onOpenGitBranch}
-          onOpenHistory={onOpenGitHistory}
-          onFetch={onGitFetch}
-          onPull={onGitPull}
-        />
-        {terminalDockAvailable ? (
-          <button
-            type="button"
-            className={`icon-button${terminalDockOpen ? ' active' : ''}`}
-            title={terminalDockOpen ? '隐藏终端' : '显示终端'}
-            aria-pressed={terminalDockOpen}
-            onClick={onToggleTerminalDock}
-          >
-            <TerminalSquare size={15} />
-          </button>
-        ) : null}
+      <ChatHeaderActions
+        activeProject={activeProject}
+        openTargets={openTargets}
+        selectedOpenTargetId={selectedOpenTargetId}
+        runAvailable={runAvailable}
+        onRunLaunchScript={onRunLaunchScript}
+        onOpenTarget={onOpenTarget}
+        onSelectOpenTarget={onSelectOpenTarget}
+        onOpenFilesWorkbench={onOpenFilesWorkbench}
+        onOpenGitCommit={onOpenGitCommit}
+        onOpenGitPush={onOpenGitPush}
+        onOpenGitBranch={onOpenGitBranch}
+        onOpenGitHistory={onOpenGitHistory}
+        onGitFetch={onGitFetch}
+        onGitPull={onGitPull}
+        terminalDockOpen={terminalDockOpen}
+        onToggleTerminalDock={onToggleTerminalDock}
+        terminalDockAvailable={terminalDockAvailable}
+        rightWorkbenchOpen={rightWorkbenchOpen}
+        onToggleRightWorkbench={onToggleRightWorkbench}
+        onOpenReviewWorkbench={onOpenReviewWorkbench}
+      />
+    </header>
+  );
+}
+
+export function ChatHeaderActions({
+  activeProject,
+  openTargets,
+  selectedOpenTargetId,
+  runAvailable,
+  onRunLaunchScript,
+  onOpenTarget,
+  onSelectOpenTarget,
+  onOpenFilesWorkbench,
+  onOpenGitCommit,
+  onOpenGitPush,
+  onOpenGitBranch,
+  onOpenGitHistory,
+  onGitFetch,
+  onGitPull,
+  terminalDockOpen,
+  onToggleTerminalDock,
+  terminalDockAvailable,
+  rightWorkbenchOpen,
+  onToggleRightWorkbench,
+  onOpenReviewWorkbench,
+  compact = false,
+}: ChatHeaderActionsProps & {
+  compact?: boolean;
+}) {
+  const gitDiff = activeProject?.gitDiff ?? { additions: 0, deletions: 0, filesChanged: 0 };
+  const gitDiffLabels = getGitDiffBadgeLabels(gitDiff);
+  const diffTitle = !activeProject
+    ? '未选择项目'
+    : activeProject.isGitRepo
+      ? `${gitDiff.filesChanged} 个文件变更，${gitDiffLabels.detail}（点击刷新）`
+      : '当前目录不是 Git 仓库';
+
+  return (
+    <div className={`header-actions${compact ? ' compact' : ''}`}>
+      <LaunchScriptButton
+        activeProject={activeProject}
+        disabled={!runAvailable}
+        onRunLaunchScript={onRunLaunchScript}
+      />
+      <OpenAppMenu
+        disabled={!activeProject}
+        targets={openTargets}
+        selectedTargetId={selectedOpenTargetId}
+        onOpenTarget={onOpenTarget}
+        onSelectOpenTarget={onSelectOpenTarget}
+      />
+      <GitActionMenu
+        disabled={!activeProject?.isGitRepo}
+        onOpenCommit={onOpenGitCommit}
+        onOpenPush={onOpenGitPush}
+        onOpenBranch={onOpenGitBranch}
+        onOpenHistory={onOpenGitHistory}
+        onFetch={onGitFetch}
+        onPull={onGitPull}
+      />
+      {terminalDockAvailable ? (
+        <button
+          type="button"
+          className={`icon-button${terminalDockOpen ? ' active' : ''}`}
+          title={terminalDockOpen ? '隐藏终端' : '显示终端'}
+          aria-pressed={terminalDockOpen}
+          onClick={onToggleTerminalDock}
+        >
+          <TerminalSquare size={15} />
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className="icon-button"
+        title="打开文件视图"
+        onClick={onOpenFilesWorkbench}
+        disabled={!activeProject}
+      >
+        <FolderOpen size={15} />
+      </button>
+      <button
+        type="button"
+        className="diff-chip"
+        title={diffTitle}
+        disabled={!activeProject}
+        onClick={onOpenReviewWorkbench}
+      >
+        <span className="diff-count">{gitDiffLabels.primary}</span>
+        <span className="diff-label">{gitDiffLabels.secondary}</span>
+      </button>
+      {!rightWorkbenchOpen ? (
         <button
           type="button"
           className="icon-button"
-          title="打开文件视图"
-          onClick={onOpenFilesWorkbench}
-          disabled={!activeProject}
+          title="展开右侧工作台"
+          onClick={onToggleRightWorkbench}
         >
-          <FolderOpen size={15} />
+          <SquareSplitHorizontal size={15} />
         </button>
-        <button
-          type="button"
-          className="diff-chip"
-          title={diffTitle}
-          disabled={!activeProject}
-          onClick={onOpenReviewWorkbench}
-        >
-          <span className="diff-count">{gitDiffLabels.primary}</span>
-          <span className="diff-label">{gitDiffLabels.secondary}</span>
-        </button>
-        {!rightWorkbenchOpen ? (
-          <button
-            type="button"
-            className="icon-button"
-            title="展开右侧工作台"
-            onClick={onToggleRightWorkbench}
-          >
-            <SquareSplitHorizontal size={15} />
-          </button>
-        ) : null}
-      </div>
-    </header>
+      ) : null}
+    </div>
   );
 }
 

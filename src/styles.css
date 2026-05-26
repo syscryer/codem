@@ -84,6 +84,7 @@ svg {
 
 .codex-desktop {
   --desktop-menubar-height: 36px;
+  --desktop-window-radius: 0px;
   --sidebar-width: 300px;
   --workspace-footer-height: 20px;
   --workspace-footer-content-height: 18px;
@@ -104,6 +105,16 @@ svg {
   --app-material-fill: rgba(255, 255, 255, 0.02);
   --app-material-line: rgba(176, 183, 192, 0.2);
   --app-material-glow: rgba(255, 255, 255, 0.18);
+  --sidebar-surface: var(--app-material-fill);
+  --sidebar-border-color: color-mix(in srgb, var(--app-border) 38%, transparent);
+  --sidebar-sheen-top: rgba(255, 255, 255, 0.12);
+  --sidebar-sheen-edge: rgba(255, 255, 255, 0.08);
+  --sidebar-hover-surface: color-mix(in srgb, var(--app-text) 6%, transparent);
+  --sidebar-active-surface: rgba(156, 163, 175, 0.08);
+  --sidebar-project-active-surface: color-mix(in srgb, var(--app-surface) 18%, transparent);
+  --sidebar-elevated-surface: color-mix(in srgb, var(--app-surface-muted) 88%, transparent);
+  --sidebar-elevated-border: color-mix(in srgb, var(--app-border) 78%, transparent);
+  --sidebar-glass-shadow: none;
   --settings-sidebar-bg: #f4f2f2;
   --app-scrollbar-thumb: rgba(82, 82, 82, 0.08);
   --app-scrollbar-thumb-hover: rgba(82, 82, 82, 0.18);
@@ -163,6 +174,16 @@ svg {
   --app-material-fill: rgba(30, 30, 30, 0.08);
   --app-material-line: rgba(255, 255, 255, 0.08);
   --app-material-glow: rgba(255, 255, 255, 0.08);
+  --sidebar-surface: var(--app-material-fill);
+  --sidebar-border-color: color-mix(in srgb, var(--app-border) 40%, transparent);
+  --sidebar-sheen-top: rgba(255, 255, 255, 0.08);
+  --sidebar-sheen-edge: rgba(255, 255, 255, 0.04);
+  --sidebar-hover-surface: color-mix(in srgb, var(--app-text) 7%, transparent);
+  --sidebar-active-surface: rgba(255, 255, 255, 0.07);
+  --sidebar-project-active-surface: color-mix(in srgb, var(--app-surface) 16%, transparent);
+  --sidebar-elevated-surface: color-mix(in srgb, var(--app-surface-muted) 82%, transparent);
+  --sidebar-elevated-border: color-mix(in srgb, var(--app-border) 72%, transparent);
+  --sidebar-glass-shadow: none;
   --settings-sidebar-bg: #202020;
   --app-scrollbar-thumb: rgba(255, 255, 255, 0.08);
   --app-scrollbar-thumb-hover: rgba(255, 255, 255, 0.18);
@@ -193,6 +214,27 @@ svg {
   --app-material-blur: 60px;
 }
 
+.codex-desktop[data-platform="macos"] {
+  --desktop-menubar-height: 52px;
+  --desktop-window-radius: 16px;
+  --sidebar-surface: rgba(246, 247, 250, 0.42);
+  --sidebar-border-color: rgba(255, 255, 255, 0.28);
+  --sidebar-sheen-top: rgba(255, 255, 255, 0.34);
+  --sidebar-sheen-edge: rgba(255, 255, 255, 0.14);
+  --sidebar-hover-surface: rgba(255, 255, 255, 0.16);
+  --sidebar-active-surface: rgba(255, 255, 255, 0.26);
+  --sidebar-project-active-surface: rgba(255, 255, 255, 0.18);
+  --sidebar-elevated-surface: rgba(255, 255, 255, 0.24);
+  --sidebar-elevated-border: rgba(255, 255, 255, 0.24);
+  --sidebar-glass-shadow:
+    inset -1px 0 0 rgba(255, 255, 255, 0.1),
+    10px 0 34px rgba(15, 23, 42, 0.08);
+  border-radius: var(--desktop-window-radius);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    0 0 0 1px rgba(15, 23, 42, 0.08);
+}
+
 .codex-desktop[data-theme-mode="dark"][data-window-material="auto"],
 .codex-desktop[data-theme-mode="dark"][data-window-material="none"],
 .codex-desktop[data-theme-mode="dark"][data-window-material="mica"] {
@@ -215,6 +257,21 @@ svg {
   --app-material-line: rgba(255, 255, 255, 0.07);
   --app-material-glow: rgba(255, 255, 255, 0.05);
   --app-material-blur: 60px;
+}
+
+.codex-desktop[data-theme-mode="dark"][data-platform="macos"] {
+  --sidebar-surface: rgba(32, 34, 38, 0.32);
+  --sidebar-border-color: rgba(255, 255, 255, 0.1);
+  --sidebar-sheen-top: rgba(255, 255, 255, 0.12);
+  --sidebar-sheen-edge: rgba(255, 255, 255, 0.06);
+  --sidebar-hover-surface: rgba(255, 255, 255, 0.1);
+  --sidebar-active-surface: rgba(255, 255, 255, 0.14);
+  --sidebar-project-active-surface: rgba(255, 255, 255, 0.08);
+  --sidebar-elevated-surface: rgba(255, 255, 255, 0.08);
+  --sidebar-elevated-border: rgba(255, 255, 255, 0.1);
+  --sidebar-glass-shadow:
+    inset -1px 0 0 rgba(255, 255, 255, 0.06),
+    12px 0 40px rgba(0, 0, 0, 0.24);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -316,6 +373,12 @@ svg {
   user-select: none;
 }
 
+.desktop-menubar.is-macos {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 16px;
+  padding: 0 18px 0 14px;
+}
+
 .desktop-menubar::before {
   content: '';
   position: absolute;
@@ -336,6 +399,71 @@ svg {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.2), transparent 82%);
   opacity: 0.5;
   pointer-events: none;
+}
+
+.codex-desktop[data-platform="macos"]::before,
+.codex-desktop[data-platform="macos"] .desktop-menubar::after {
+  border-radius: var(--desktop-window-radius) var(--desktop-window-radius) 0 0;
+}
+
+.codex-desktop[data-platform="macos"] .desktop-menubar {
+  border-top-left-radius: var(--desktop-window-radius);
+  border-top-right-radius: var(--desktop-window-radius);
+  color: color-mix(in srgb, #ffffff 78%, var(--app-text) 22%);
+}
+
+.desktop-menubar-leading,
+.desktop-menubar-toolbar {
+  display: flex;
+  align-items: center;
+}
+
+.desktop-menubar-leading {
+  min-width: 0;
+}
+
+.desktop-menubar-title {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.desktop-menubar-title-text,
+.desktop-menubar-subtitle {
+  max-width: min(42vw, 520px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-menubar-title-text {
+  color: #1f1f1f;
+  font-size: 13px;
+  font-weight: 640;
+  line-height: 1.2;
+}
+
+.desktop-menubar-subtitle {
+  color: color-mix(in srgb, var(--app-muted) 82%, transparent);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.codex-desktop[data-theme-mode="dark"][data-platform="macos"] .desktop-menubar-title-text {
+  color: #f5f5f5;
+}
+
+.codex-desktop[data-theme-mode="dark"][data-platform="macos"] .desktop-menubar-subtitle {
+  color: color-mix(in srgb, #ffffff 42%, transparent);
+}
+
+.desktop-menubar-toolbar {
+  justify-self: end;
+  min-width: 0;
 }
 
 .window-nav,
@@ -373,6 +501,10 @@ svg {
   margin-left: 22px;
 }
 
+.desktop-menubar.is-macos .desktop-menu {
+  display: none;
+}
+
 .desktop-menu-group {
   position: relative;
 }
@@ -390,6 +522,17 @@ svg {
   padding: 0 9px;
   border-radius: 7px;
   font-size: 13px;
+}
+
+.desktop-menubar.is-macos .desktop-menu-trigger {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-weight: 500;
+}
+
+.codex-desktop[data-platform="macos"] .desktop-menu-trigger {
+  color: inherit;
 }
 
 .desktop-menu-trigger:hover,
@@ -464,6 +607,10 @@ svg {
   color: #171717;
 }
 
+.desktop-menubar.is-macos .window-controls {
+  display: none;
+}
+
 .window-controls button {
   width: 32px;
   height: 100%;
@@ -473,14 +620,48 @@ svg {
   border-radius: 0;
 }
 
+.desktop-menubar.is-macos .window-controls button {
+  display: none;
+}
+
+.desktop-menubar.is-macos .window-control-dot {
+  display: none;
+}
+
+.desktop-menubar.is-macos .window-control-close {
+  background: none;
+}
+
+.desktop-menubar.is-macos .window-control-minimize {
+  background: none;
+}
+
+.desktop-menubar.is-macos .window-control-maximize {
+  background: none;
+}
+
 .window-controls button:last-child:hover {
   background: #d83b3b;
   color: #ffffff;
 }
 
+.desktop-menubar.is-macos .window-controls button:hover {
+  color: inherit;
+  filter: none;
+}
+
+.desktop-menubar.is-macos .window-controls button:last-child:hover {
+  background: none;
+  color: inherit;
+}
+
 .window-title-spacer {
   align-self: stretch;
   min-width: 80px;
+}
+
+.desktop-menubar.is-macos .window-title-spacer {
+  min-width: 0;
 }
 
 .codex-shell {
@@ -491,6 +672,11 @@ svg {
   grid-template-columns: var(--sidebar-width, 320px) minmax(0, 1fr);
   background: transparent;
   overflow: hidden;
+}
+
+.codex-desktop[data-platform="macos"] .codex-shell {
+  border-bottom-left-radius: var(--desktop-window-radius);
+  border-bottom-right-radius: var(--desktop-window-radius);
 }
 
 .codex-shell.sidebar-hidden {
@@ -11947,16 +12133,24 @@ body.git-history-resizing {
 }
 
 .codex-desktop .app-sidebar {
-  background: var(--app-material-fill);
-  border-right-color: transparent;
+  background: var(--sidebar-surface);
+  border-right-color: var(--sidebar-border-color);
   color: var(--app-text);
+  box-shadow: var(--sidebar-glass-shadow);
   backdrop-filter: blur(8px) saturate(1.12);
   -webkit-backdrop-filter: blur(8px) saturate(1.12);
 }
 
 .codex-desktop[data-window-material="auto"] .app-sidebar,
 .codex-desktop[data-window-material="none"] .app-sidebar,
-.codex-desktop[data-window-material="mica"] .app-sidebar,
+.codex-desktop[data-window-material="mica"] .app-sidebar {
+  background:
+    linear-gradient(180deg, var(--app-material-glow), transparent 58%),
+    var(--sidebar-surface);
+  backdrop-filter: blur(var(--app-material-blur, 48px)) saturate(1.35);
+  -webkit-backdrop-filter: blur(var(--app-material-blur, 48px)) saturate(1.35);
+}
+
 .codex-desktop[data-window-material="auto"] .desktop-menubar,
 .codex-desktop[data-window-material="none"] .desktop-menubar,
 .codex-desktop[data-window-material="mica"] .desktop-menubar {
@@ -11970,6 +12164,17 @@ body.git-history-resizing {
 .codex-desktop .chat-shell {
   border-top-left-radius: 8px;
   box-shadow: none;
+}
+
+.codex-desktop[data-platform="macos"] .chat-shell {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: var(--desktop-window-radius);
+  border-left-color: color-mix(in srgb, var(--app-border) 44%, transparent);
+}
+
+.codex-desktop[data-platform="macos"] .codex-shell.sidebar-hidden .chat-shell {
+  border-bottom-left-radius: var(--desktop-window-radius);
 }
 
 .codex-desktop .settings-sidebar {
@@ -12513,8 +12718,8 @@ body.git-history-resizing {
 }
 
 .codex-desktop .app-sidebar {
-  background: var(--app-material-fill);
-  border-right-color: transparent;
+  background: var(--sidebar-surface);
+  border-right-color: var(--sidebar-border-color);
 }
 
 .codex-desktop .app-sidebar::before,
@@ -12527,7 +12732,7 @@ body.git-history-resizing {
 }
 
 .codex-desktop .app-sidebar::before {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 52%);
+  background: linear-gradient(180deg, var(--sidebar-sheen-top), transparent 52%);
   opacity: 0.74;
 }
 
@@ -12535,34 +12740,119 @@ body.git-history-resizing {
   content: none;
 }
 
+.codex-desktop[data-platform="macos"] .app-sidebar::after {
+  content: '';
+  background:
+    linear-gradient(90deg, var(--sidebar-sheen-edge), transparent 22%),
+    radial-gradient(circle at 18% 8%, rgba(255, 255, 255, 0.18), transparent 28%);
+  opacity: 0.72;
+}
+
+.codex-desktop[data-platform="macos"] .app-sidebar {
+  border-bottom-left-radius: var(--desktop-window-radius);
+}
+
+.codex-desktop[data-platform="macos"] .desktop-menubar .window-nav {
+  gap: 4px;
+  margin-left: 74px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.codex-desktop[data-platform="macos"] .window-nav button {
+  width: 24px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  color: color-mix(in srgb, #ffffff 72%, var(--app-text-strong) 28%);
+}
+
+.codex-desktop[data-platform="macos"] .window-nav button:hover {
+  background: color-mix(in srgb, #ffffff 24%, transparent);
+  color: #1f1f1f;
+}
+
+.codex-desktop[data-platform="macos"] .window-nav button:disabled {
+  background: transparent;
+  color: color-mix(in srgb, var(--app-muted) 34%, transparent);
+}
+
+.codex-desktop[data-platform="macos"] :is(.desktop-menu-trigger:hover, .desktop-menu-trigger.active) {
+  background: color-mix(in srgb, #ffffff 12%, transparent);
+  color: #ffffff;
+}
+
+.codex-desktop[data-platform="macos"] .header-actions.compact {
+  --header-control-height: 28px;
+  gap: 6px;
+}
+
+.codex-desktop[data-platform="macos"] .header-actions.compact .diff-label,
+.codex-desktop[data-platform="macos"] .header-actions.compact .run-button,
+.codex-desktop[data-platform="macos"] .header-actions.compact .thread-more-button {
+  display: none;
+}
+
+.codex-desktop[data-platform="macos"] .header-actions.compact :is(.icon-button, .open-app-main, .open-app-toggle) {
+  width: 28px;
+  height: 28px;
+}
+
+.codex-desktop[data-platform="macos"] .header-actions.compact .pill-button,
+.codex-desktop[data-platform="macos"] .header-actions.compact .diff-chip {
+  height: 28px;
+}
+
+.codex-desktop[data-platform="macos"] .header-actions.compact .pill-button {
+  padding: 0 10px;
+}
+
+.codex-desktop[data-platform="macos"] .header-actions.compact .diff-chip {
+  gap: 6px;
+  padding: 0 10px;
+}
+
 .codex-desktop .sidebar-primary button:hover,
 .codex-desktop .sidebar-footer button:hover,
 .codex-desktop .sidebar-project-title:hover,
 .codex-desktop .sidebar-collapse-toggle:hover {
-  background: color-mix(in srgb, var(--app-text) 6%, transparent);
+  background: var(--sidebar-hover-surface);
   color: var(--app-text-strong);
 }
 
 .codex-desktop .sidebar-toolbar-icon:hover,
 .codex-desktop .sidebar-row-action:hover {
-  background: color-mix(in srgb, var(--app-text) 6%, transparent);
+  background: var(--sidebar-hover-surface);
   color: var(--app-text-strong);
 }
 
 .codex-desktop .sidebar-thread:hover {
-  background: rgba(156, 163, 175, 0.08);
+  background: var(--sidebar-hover-surface);
   color: var(--app-text-strong);
 }
 
 .codex-desktop .sidebar-thread.active,
 .codex-desktop .sidebar-thread-row.active .sidebar-thread {
-  background: rgba(156, 163, 175, 0.08);
+  background: var(--sidebar-active-surface);
   box-shadow: none;
   color: var(--app-text-strong);
 }
 
 .codex-desktop .sidebar-project.active {
-  background: color-mix(in srgb, var(--app-surface) 18%, transparent);
+  background: var(--sidebar-project-active-surface);
+}
+
+.codex-desktop .sidebar-search,
+.codex-desktop .sidebar-project.clone-task,
+.codex-desktop .sidebar-task-log-card,
+.codex-desktop .sidebar-project-title .sidebar-worktree-badge {
+  background: var(--sidebar-elevated-surface);
+  border-color: var(--sidebar-elevated-border);
 }
 
 .codex-desktop[data-window-material="auto"] .sidebar-thread.active,

@@ -17,7 +17,6 @@ use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, 
 #[cfg(not(windows))]
 use std::process::{Command, Stdio};
 
-const DEFAULT_WINDOW_MATERIAL_ID: i32 = 2;
 const WINDOW_STATE_FILE_NAME: &str = "window-state.json";
 const DESKTOP_LOG_FILE_NAME: &str = "desktop.log";
 const BACKEND_LOG_FILE_NAME: &str = "backend.log";
@@ -98,6 +97,11 @@ struct PtySessions {
 #[derive(Default)]
 struct BackendPortState {
     port: Mutex<u16>,
+}
+
+#[derive(Default)]
+struct WindowMaterialState {
+    current: Mutex<i32>,
 }
 
 #[derive(Clone, Copy)]
@@ -301,7 +305,8 @@ fn main() {
         .manage(PtySessions::default())
         .manage(BackendPortState {
             port: Mutex::new(3001),
-        });
+        })
+        .manage(WindowMaterialState::default());
     #[cfg(windows)]
     let builder = builder.manage(BackendPtyProcesses::default());
 
@@ -310,7 +315,7 @@ fn main() {
             let app_handle = app.handle().clone();
             restore_main_window_state(&app_handle);
             focus_main_window(&app_handle);
-            let _ = platform::set_window_material(&app_handle, DEFAULT_WINDOW_MATERIAL_ID);
+            let _ = platform::set_window_material(&app_handle, platform::default_window_material_id());
             #[cfg(windows)]
             let backend_processes = app.state::<BackendPtyProcesses>();
 
@@ -1284,6 +1289,10 @@ mod platform {
         UI::WindowsAndMessaging::GetParent,
     };
 
+    pub fn default_window_material_id() -> i32 {
+        2
+    }
+
     pub fn supported_window_materials() -> Vec<WindowMaterial> {
         let mut materials = vec![material_info(0), material_info(1)];
         let build = windows_version::OsVersion::current().build;
@@ -1362,10 +1371,78 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod platform {
+    use super::{material_info, WindowMaterial, WindowMaterialState};
+    use std::process::Command;
+    use tauri::Manager;
+    use window_vibrancy::{
+        apply_vibrancy,
+        clear_vibrancy,
+        NSVisualEffectMaterial,
+        NSVisualEffectState,
+    };
+
+    pub fn default_window_material_id() -> i32 {
+        0
+    }
+
+    pub fn prepare_hidden_background_command(_command: &mut Command) {}
+
+    pub fn supported_window_materials() -> Vec<WindowMaterial> {
+        vec![material_info(0), material_info(1)]
+    }
+
+    pub fn current_window_material(app: &tauri::AppHandle) -> Result<WindowMaterial, String> {
+        let state = app.state::<WindowMaterialState>();
+        let material = *state.current.lock().map_err(|error| error.to_string())?;
+        Ok(material_info(material))
+    }
+
+    pub fn set_window_material(
+        app: &tauri::AppHandle,
+        material: i32,
+    ) -> Result<WindowMaterial, String> {
+        let window = app
+            .get_webview_window("main")
+            .ok_or_else(|| "未找到主窗口".to_string())?;
+
+        match material {
+            0 => {
+                apply_vibrancy(
+                    &window,
+                    NSVisualEffectMaterial::Sidebar,
+                    Some(NSVisualEffectState::FollowsWindowActiveState),
+                    None,
+                )
+                .map_err(|error| format!("应用 macOS 玻璃效果失败: {error}"))?;
+            }
+            1 => {
+                clear_vibrancy(&window)
+                    .map_err(|error| format!("关闭 macOS 玻璃效果失败: {error}"))?;
+            }
+            _ => {
+                return Err("当前平台仅支持自动和无两种窗口材质".to_string());
+            }
+        }
+
+        let state = app.state::<WindowMaterialState>();
+        if let Ok(mut current) = state.current.lock() {
+            *current = material;
+        }
+
+        Ok(material_info(material))
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 mod platform {
     use super::{material_info, WindowMaterial};
     use std::process::Command;
+
+    pub fn default_window_material_id() -> i32 {
+        0
+    }
 
     pub fn prepare_hidden_background_command(_command: &mut Command) {}
 
