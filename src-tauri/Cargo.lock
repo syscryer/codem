@@ -510,6 +510,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "window-vibrancy",
  "windows",
  "windows-version",
 ]

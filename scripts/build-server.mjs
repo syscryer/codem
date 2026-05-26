@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { copyFile, mkdir, rm } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const projectRoot = process.cwd();
@@ -34,7 +34,23 @@ await copyFile(
 
 const runtimeDirectory = path.join(outputDirectory, 'runtime');
 await mkdir(runtimeDirectory, { recursive: true });
-await copyFile(
-  process.execPath,
-  path.join(runtimeDirectory, process.platform === 'win32' ? 'node.exe' : 'node'),
+const runtimeExecutablePath = path.join(
+  runtimeDirectory,
+  process.platform === 'win32' ? 'node.exe' : 'node',
 );
+
+if (process.platform === 'win32') {
+  // Rebuild the runtime binary from bytes instead of copyFile so the bundled
+  // resource is detached from source-file metadata.
+  await writeFile(runtimeExecutablePath, await readFile(process.execPath));
+} else {
+  // On macOS/Linux, package a tiny launcher instead of copying the host Node
+  // binary into app resources. The desktop backend already supports falling
+  // back to a PATH-visible `node` runtime.
+  await writeFile(
+    runtimeExecutablePath,
+    '#!/bin/sh\nexec /usr/bin/env node "$@"\n',
+    'utf8',
+  );
+  await chmod(runtimeExecutablePath, 0o755);
+}

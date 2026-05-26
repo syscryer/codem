@@ -6,6 +6,7 @@ import {
   normalizeAccentHexColor,
   UI_FONT_PRESETS,
 } from '../../constants';
+import { getWindowMaterialLabel } from '../../lib/window-material';
 import type {
   AppearanceSettings,
   ChatFontSettingMode,
@@ -24,6 +25,8 @@ import { SegmentedControl, SettingsRow, Stepper } from './SettingsControls';
 
 type AppearanceSettingsSectionProps = {
   appearance: AppearanceSettings;
+  effectiveWindowMaterial: WindowMaterialMode;
+  supportedWindowMaterials: WindowMaterialMode[];
   onUpdateAppearance: (update: AppearanceSettingsUpdate) => void;
 };
 
@@ -39,6 +42,8 @@ type FontControlMode<T extends string> = {
 
 export function AppearanceSettingsSection({
   appearance,
+  effectiveWindowMaterial,
+  supportedWindowMaterials,
   onUpdateAppearance,
 }: AppearanceSettingsSectionProps) {
   const [accentDraft, setAccentDraft] = useState(() => appearance.accentColorCustom);
@@ -92,6 +97,10 @@ export function AppearanceSettingsSection({
     }));
     update({ [field]: nextValue } as Pick<AppearanceSettings, typeof field>);
   }
+
+  const windowMaterialDescription = supportedWindowMaterials.length > 1
+    ? '根据当前平台展示可用的桌面窗口材质'
+    : '当前平台不支持切换窗口材质';
 
   return (
     <section className="settings-page-section settings-appearance-section">
@@ -215,16 +224,13 @@ export function AppearanceSettingsSection({
             </div>
           </div>
         </SettingsRow>
-        <SettingsRow icon={Sparkles} title="窗口材质" description="设置桌面版启动后的默认 Windows 背景材质">
+        <SettingsRow icon={Sparkles} title="窗口材质" description={windowMaterialDescription}>
           <SegmentedControl<WindowMaterialMode>
-            value={appearance.windowMaterial}
-            options={[
-              { value: 'auto', label: '自动' },
-              { value: 'none', label: '无' },
-              { value: 'mica', label: 'Mica' },
-              { value: 'acrylic', label: 'Acrylic' },
-              { value: 'micaAlt', label: 'Mica Alt' },
-            ]}
+            value={effectiveWindowMaterial}
+            options={supportedWindowMaterials.map((material) => ({
+              value: material,
+              label: getWindowMaterialLabel(material),
+            }))}
             onChange={(windowMaterial) => update({ windowMaterial })}
           />
         </SettingsRow>

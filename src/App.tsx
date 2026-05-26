@@ -35,7 +35,14 @@ import {
 import { matchesShortcut } from './lib/shortcuts';
 import { createSystemCommandItem, settleSystemCommandItem } from './lib/system-command-items';
 import { modelLabel, permissionLabel } from './lib/ui-labels';
-import { isTauriRuntime, setWindowMaterial } from './lib/window-material';
+import {
+  getPlatformWindowMaterials,
+  getSupportedWindowMaterials,
+  isTauriRuntime,
+  normalizeWindowMaterial,
+  resolveDesktopPlatform,
+  setWindowMaterial,
+} from './lib/window-material';
 import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
 import { fetchGitRemote, pullGitBranch, undoConversationChanges } from './lib/git-api';
 import { shouldRenderTerminalDock } from './lib/terminal-dock-state';
@@ -58,6 +65,7 @@ import type {
   ProjectSummary,
   GitCreateWorktreeResult,
   UndoConversationChange,
+  WindowMaterialMode,
 } from './types';
 
 type AppView = { kind: 'workspace' } | { kind: 'settings'; section: SettingsSection };
@@ -277,10 +285,40 @@ export default function App() {
       : { kind: 'workspace', projectId: activeProjectId, threadId: activeThreadId };
   const canNavigateBack = navigationHistory.past.length > 0;
   const canNavigateForward = navigationHistory.future.length > 0;
+  const runtimePlatform = useMemo(() => resolveDesktopPlatform(), []);
+  const [supportedWindowMaterials, setSupportedWindowMaterials] = useState<WindowMaterialMode[]>(
+    () => getPlatformWindowMaterials(runtimePlatform),
+  );
   const accentColors = resolveAccentColors(appearance);
   const uiFontStack = resolveUiFontStack(appearance);
   const chatFontStack = resolveChatFontStack(appearance);
   const codeFontStack = resolveCodeFontStack(appearance);
+  const effectiveWindowMaterial = normalizeWindowMaterial(appearance.windowMaterial, supportedWindowMaterials);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    let cancelled = false;
+    void getSupportedWindowMaterials().then((materials) => {
+      if (!cancelled) {
+        setSupportedWindowMaterials(materials);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (settingsLoading || appearance.windowMaterial === effectiveWindowMaterial) {
+      return;
+    }
+
+    updateAppearance({ windowMaterial: effectiveWindowMaterial });
+  }, [appearance.windowMaterial, effectiveWindowMaterial, settingsLoading, updateAppearance]);
 
   useEffect(() => {
     if (settingsLoading || !isTauriRuntime()) {
@@ -288,7 +326,7 @@ export default function App() {
     }
 
     let cancelled = false;
-    void setWindowMaterial(appearance.windowMaterial).then((handled) => {
+    void setWindowMaterial(effectiveWindowMaterial).then((handled) => {
       if (!handled && !cancelled && !materialErrorShownRef.current) {
         materialErrorShownRef.current = true;
         showToast('窗口材质应用失败，请确认当前 Windows 版本支持该材质。', 'error');
@@ -298,7 +336,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [appearance.windowMaterial, settingsLoading, showToast]);
+  }, [effectiveWindowMaterial, settingsLoading, showToast]);
 
   useEffect(() => {
     if (!general.autoRefreshGitStatus || !activeProjectId) {
@@ -901,7 +939,8 @@ export default function App() {
     <div
       className="codex-desktop"
       data-theme-mode={appearance.themeMode}
-      data-window-material={appearance.windowMaterial}
+      data-platform={runtimePlatform}
+      data-window-material={effectiveWindowMaterial}
       data-density={appearance.density}
       data-sidebar-width={appearance.sidebarWidth}
       style={{
@@ -917,8 +956,15 @@ export default function App() {
       ref={appRootRef}
     >
       <AppMenubar
+        platform={runtimePlatform}
+        activeProject={activeProject}
+        activeThread={activeThread}
         sidebarVisible={sidebarVisible}
-        windowMaterial={appearance.windowMaterial}
+        windowMaterial={effectiveWindowMaterial}
+        supportedWindowMaterials={supportedWindowMaterials}
+        openTargets={openTargets}
+        selectedOpenTargetId={openWith.selectedTargetId}
+        runAvailable={terminalDockAvailable}
         canNavigateBack={canNavigateBack}
         canNavigateForward={canNavigateForward}
         onToggleSidebar={() => setSidebarVisible((value) => !value)}
@@ -929,6 +975,22 @@ export default function App() {
         onOpenCloneDialog={() => setCloneDialogOpen(true)}
         onOpenSettings={() => openSettings('appearance')}
         onOpenSearch={() => setSearchOpen(true)}
+        onRunLaunchScript={handleRunLaunchScript}
+        onOpenTarget={(targetId) => activeProject ? void handleOpenProjectInEditor(activeProject, targetId) : showToast('请先选择项目。', 'info')}
+        onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
+        onOpenFilesWorkbench={openFilesWorkbench}
+        onOpenGitCommit={() => activeProject ? setGitDialogMode('commit') : showToast('请先选择项目。', 'info')}
+        onOpenGitPush={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
+        onOpenGitBranch={() => activeProject ? setGitDialogMode('branch') : showToast('请先选择项目。', 'info')}
+        onOpenGitHistory={openGitHistoryDock}
+        onGitFetch={() => void handleGitFetch()}
+        onGitPull={() => void handleGitPull()}
+        terminalDockOpen={terminalDock.open}
+        onToggleTerminalDock={terminalDock.toggle}
+        terminalDockAvailable={terminalDockAvailable}
+        rightWorkbenchOpen={rightWorkbenchOpen}
+        onToggleRightWorkbench={() => setRightWorkbenchOpen((value) => !value)}
+        onOpenReviewWorkbench={openReviewWorkbench}
         onSelectWindowMaterial={(windowMaterial) => updateAppearance({ windowMaterial })}
         onShowAbout={showAbout}
         onShowShortcuts={showShortcuts}
@@ -945,6 +1007,8 @@ export default function App() {
           runningThreadIds={runningThreadIds}
           general={general}
           appearance={appearance}
+          effectiveWindowMaterial={effectiveWindowMaterial}
+          supportedWindowMaterials={supportedWindowMaterials}
           models={appModelSettings}
           shortcuts={shortcuts}
           openWith={openWith}
@@ -1020,29 +1084,31 @@ export default function App() {
             } as CSSProperties}
           >
             <main className="chat-shell">
-              <ChatHeader
-                activeProject={activeProject}
-                activeThread={activeThread}
-                openTargets={openTargets}
-                selectedOpenTargetId={openWith.selectedTargetId}
-                runAvailable={terminalDockAvailable}
-                onRunLaunchScript={handleRunLaunchScript}
-                onOpenTarget={(targetId) => activeProject ? void handleOpenProjectInEditor(activeProject, targetId) : showToast('请先选择项目。', 'info')}
-                onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
-                onOpenFilesWorkbench={openFilesWorkbench}
-                onOpenGitCommit={() => activeProject ? setGitDialogMode('commit') : showToast('请先选择项目。', 'info')}
-                onOpenGitPush={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
-                onOpenGitBranch={() => activeProject ? setGitDialogMode('branch') : showToast('请先选择项目。', 'info')}
-                onOpenGitHistory={openGitHistoryDock}
-                onGitFetch={() => void handleGitFetch()}
-                onGitPull={() => void handleGitPull()}
-                terminalDockOpen={terminalDock.open}
-                onToggleTerminalDock={terminalDock.toggle}
-                terminalDockAvailable={terminalDockAvailable}
-                rightWorkbenchOpen={rightWorkbenchOpen}
-                onToggleRightWorkbench={() => setRightWorkbenchOpen((value) => !value)}
-                onOpenReviewWorkbench={openReviewWorkbench}
-              />
+              {runtimePlatform === 'macos' ? null : (
+                <ChatHeader
+                  activeProject={activeProject}
+                  activeThread={activeThread}
+                  openTargets={openTargets}
+                  selectedOpenTargetId={openWith.selectedTargetId}
+                  runAvailable={terminalDockAvailable}
+                  onRunLaunchScript={handleRunLaunchScript}
+                  onOpenTarget={(targetId) => activeProject ? void handleOpenProjectInEditor(activeProject, targetId) : showToast('请先选择项目。', 'info')}
+                  onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
+                  onOpenFilesWorkbench={openFilesWorkbench}
+                  onOpenGitCommit={() => activeProject ? setGitDialogMode('commit') : showToast('请先选择项目。', 'info')}
+                  onOpenGitPush={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
+                  onOpenGitBranch={() => activeProject ? setGitDialogMode('branch') : showToast('请先选择项目。', 'info')}
+                  onOpenGitHistory={openGitHistoryDock}
+                  onGitFetch={() => void handleGitFetch()}
+                  onGitPull={() => void handleGitPull()}
+                  terminalDockOpen={terminalDock.open}
+                  onToggleTerminalDock={terminalDock.toggle}
+                  terminalDockAvailable={terminalDockAvailable}
+                  rightWorkbenchOpen={rightWorkbenchOpen}
+                  onToggleRightWorkbench={() => setRightWorkbenchOpen((value) => !value)}
+                  onOpenReviewWorkbench={openReviewWorkbench}
+                />
+              )}
 
               <ConversationPane
                 activeThread={activeThread}
