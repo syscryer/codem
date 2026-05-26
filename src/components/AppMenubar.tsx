@@ -246,13 +246,13 @@ export function AppMenubar({
 
       <div className="window-controls">
         <button type="button" aria-label="最小化" onClick={() => void handleWindowAction('minimize')}>
-          <Minus size={12} />
+          <Minus size={14} />
         </button>
         <button type="button" aria-label="最大化或还原" onClick={() => void handleWindowAction('toggleMaximize')}>
-          <Square size={11} />
+          <Square size={13} />
         </button>
         <button type="button" aria-label="关闭窗口" onClick={() => void handleWindowAction('close')}>
-          <X size={12} />
+          <X size={16} />
         </button>
       </div>
     </header>

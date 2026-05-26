@@ -82,6 +82,33 @@ npm run desktop:dev
 - `src-tauri/**` 改动通过 `tauri dev` 自动重编译并重启桌面壳
 - 如果当前仓库已经有 `npm run dev` 在运行，`desktop:dev` 会复用同一组 Web / backend 开发服务，而不是再猜一个新的后端端口
 
+## 多平台打包
+
+打包前先检查本机基础环境：
+
+```bash
+npm run package:doctor
+```
+
+常用平台入口：
+
+```bash
+npm run package:win          # Windows x64, NSIS + MSI
+npm run package:mac-arm64    # macOS Apple Silicon, .app + DMG
+npm run package:mac-x64      # macOS Intel, .app + DMG
+npm run package:mac-universal # macOS Universal, .app + DMG
+npm run package:mac          # macOS Universal 的快捷入口
+npm run package:linux        # Linux x64, deb + rpm + AppImage
+npm run package:all          # 当前系统推荐目标
+```
+
+注意事项：
+
+- Tauri 桌面包会先执行 `npm run build`，并把 `dist-server` 作为资源打入包内。
+- Windows、macOS、Linux 通常需要在对应系统或 CI runner 上构建，不建议把这一步当作可靠跨编译。
+- 当前 release workflow 先覆盖多平台产物构建、收集、校验版本和 `SHA256SUMS.txt`，暂不启用自动更新签名、macOS notarize 或代码签名。
+- macOS/Linux 的真实可运行性仍需要在对应系统上验证，重点检查后端服务启动、SQLite 数据目录、CLI 查找和窗口效果降级。
+
 ## 使用说明
 
 1. 确保当前机器已经能在终端里执行 `claude --help`

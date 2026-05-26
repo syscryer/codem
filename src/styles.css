@@ -309,7 +309,8 @@ svg {
   grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: center;
   height: var(--desktop-menubar-height);
-  padding: 0 8px 0 16px;
+  /* 右侧不留 padding，让关闭按钮的 hover 色带能直接贴到窗口右边沿。 */
+  padding: 0 0 0 16px;
   background: transparent;
   border-bottom: 0;
   backdrop-filter: blur(12px) saturate(1.18);
@@ -373,7 +374,7 @@ svg {
 
 .desktop-menu {
   gap: 8px;
-  margin-left: 22px;
+  margin-left: 10px;
 }
 
 .desktop-menu-group {
@@ -462,13 +463,14 @@ svg {
 
 .window-controls {
   align-self: stretch;
-  gap: 12px;
+  /* Win11 风格：按钮之间不留 gap，hover 才能形成完整色带；用按钮自身宽度区分。 */
+  gap: 0;
   padding-right: 0;
   color: #171717;
 }
 
 .window-controls button {
-  width: 32px;
+  width: 46px;
   height: 100%;
   display: inline-grid;
   place-items: center;
@@ -3626,8 +3628,8 @@ svg {
 }
 
 .image-preview-backdrop {
-  z-index: 120;
-  padding: 24px;
+  z-index: 200;
+  padding: 32px;
   background: rgba(15, 23, 42, 0.48);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
@@ -3635,12 +3637,18 @@ svg {
 
 .image-preview-dialog {
   position: relative;
-  width: min(1100px, calc(100vw - 48px));
-  max-height: min(92vh, 980px);
+  /* 预览卡片跟随图片尺寸扩展，不继承通用 dialog 的固定 420px 宽。 */
+  width: fit-content;
+  max-width: calc(100vw - 64px);
+  max-height: calc(100vh - 64px);
   display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 12px;
   padding: 18px 18px 14px;
+  border: 1px solid color-mix(in srgb, var(--app-border, #ece9e2) 58%, transparent);
+  border-radius: 18px;
   background: color-mix(in srgb, var(--app-surface, #ffffff) 92%, #0f172a 8%);
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.12);
 }
 
 .image-preview-close {
@@ -3657,13 +3665,19 @@ svg {
   background: color-mix(in srgb, var(--app-surface, #ffffff) 78%, var(--app-text, #242424) 22%);
   color: var(--app-text, #242424);
   cursor: pointer;
+  z-index: 1;
 }
 
 .image-preview-stage {
+  min-width: 0;
   min-height: 0;
+  width: fit-content;
+  max-width: calc(100vw - 100px);
+  max-height: calc(100vh - 140px);
   display: grid;
   place-items: center;
-  overflow: auto;
+  /* 不允许内部滚动：图片始终完整显示，超出时由 image 自身等比缩放。 */
+  overflow: hidden;
   border-radius: 16px;
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--app-surface-subtle, #fbfbfa) 88%, transparent), color-mix(in srgb, var(--app-border, #ece9e2) 36%, transparent)),
@@ -3672,10 +3686,11 @@ svg {
 
 .image-preview-image {
   display: block;
-  max-width: 100%;
-  max-height: calc(92vh - 140px);
+  /* 默认按真实像素显示；只在父 stage 不够大时按比例缩放，永远不超出 stage。 */
   width: auto;
   height: auto;
+  max-width: calc(100vw - 100px);
+  max-height: calc(100vh - 140px);
   object-fit: contain;
   border-radius: 12px;
 }

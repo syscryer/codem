@@ -5,6 +5,7 @@ src-tauri/target/
 src-tauri/gen/
 .logs/
 .codex-logs/
+.codex/
 .vite/
 coverage/
 .DS_Store
