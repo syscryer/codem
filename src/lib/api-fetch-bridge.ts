@@ -40,6 +40,10 @@ export async function initializeApiFetchBridge() {
   }
 }
 
+export function resolveApiUrl(input: string) {
+  return isTauriRuntime() ? rewriteApiUrlString(input) : input;
+}
+
 function rewriteApiRequest(input: RequestInfo | URL): RequestInfo | URL {
   if (typeof input === 'string') {
     return rewriteApiUrlString(input);

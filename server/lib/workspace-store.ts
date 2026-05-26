@@ -153,6 +153,7 @@ export type ThreadSummary = {
   imported?: boolean;
   model?: string;
   permissionMode?: string;
+  pinnedAt?: string;
 };
 
 export type ProjectSummary = {
@@ -166,6 +167,7 @@ export type ProjectSummary = {
   isGitRepo: boolean;
   isGitWorktree: boolean;
   threads: ThreadSummary[];
+  pinnedAt?: string;
 };
 
 export type GitDiffSummary = {
@@ -393,6 +395,7 @@ type StoredProjectRow = {
   custom_name: number;
   created_at: string;
   updated_at: string;
+  pinned_at: string | null;
 };
 
 type StoredThreadRow = {
@@ -409,6 +412,7 @@ type StoredThreadRow = {
   imported: number;
   created_at: string;
   updated_at: string;
+  pinned_at: string | null;
 };
 
 type StoredMessageRow = {
@@ -497,14 +501,14 @@ export function getWorkspaceBootstrap(): WorkspaceBootstrap {
   const settings = getAppSettings();
   const projectRows = db
     .prepare(`
-      SELECT id, path, name, custom_name, created_at, updated_at
+      SELECT id, path, name, custom_name, created_at, updated_at, pinned_at
       FROM projects
       ORDER BY updated_at DESC, created_at DESC
     `)
     .all() as StoredProjectRow[];
   const threadRows = db
     .prepare(`
-      SELECT id, project_id, provider, title, custom_title, session_id, transcript_path, working_directory, model, permission_mode, imported, created_at, updated_at
+      SELECT id, project_id, provider, title, custom_title, session_id, transcript_path, working_directory, model, permission_mode, imported, created_at, updated_at, pinned_at
       FROM threads
       ORDER BY updated_at DESC, created_at DESC
     `)
@@ -526,6 +530,7 @@ export function getWorkspaceBootstrap(): WorkspaceBootstrap {
       imported: row.imported === 1,
       model: row.model ?? undefined,
       permissionMode: row.permission_mode ?? undefined,
+      pinnedAt: row.pinned_at ?? undefined,
     });
     groupedThreads.set(row.project_id, list);
   }
@@ -552,6 +557,7 @@ export function getWorkspaceBootstrap(): WorkspaceBootstrap {
       isGitRepo: gitInfo.isGitRepo,
       isGitWorktree: readGitWorktreeMarker(row.path),
       threads: groupedThreads.get(row.id) ?? [],
+      pinnedAt: row.pinned_at ?? undefined,
     } satisfies ProjectSummary;
   });
 
@@ -714,6 +720,24 @@ export function renameThread(threadId: string, title: string) {
     SET title = ?, custom_title = 1, updated_at = ?
     WHERE id = ?
   `).run(trimmed, new Date().toISOString(), threadId);
+}
+
+export function setThreadPinned(threadId: string, pinned: boolean) {
+  const row = db.prepare(`SELECT id FROM threads WHERE id = ?`).get(threadId) as { id: string } | undefined;
+  if (!row) {
+    throw new Error('聊天不存在');
+  }
+  const pinnedAt = pinned ? new Date().toISOString() : null;
+  db.prepare(`UPDATE threads SET pinned_at = ? WHERE id = ?`).run(pinnedAt, threadId);
+}
+
+export function setProjectPinned(projectId: string, pinned: boolean) {
+  const row = db.prepare(`SELECT id FROM projects WHERE id = ?`).get(projectId) as { id: string } | undefined;
+  if (!row) {
+    throw new Error('项目不存在');
+  }
+  const pinnedAt = pinned ? new Date().toISOString() : null;
+  db.prepare(`UPDATE projects SET pinned_at = ? WHERE id = ?`).run(pinnedAt, projectId);
 }
 
 export function removeThread(threadId: string) {
@@ -1915,6 +1939,8 @@ function initializeDatabase() {
   ensureColumn('messages', 'pending_approval_requests_json', 'TEXT');
   ensureColumn('messages', 'user_attachments_json', 'TEXT');
   ensureColumn('messages', 'user_content_blocks_json', 'TEXT');
+  ensureColumn('threads', 'pinned_at', 'TEXT');
+  ensureColumn('projects', 'pinned_at', 'TEXT');
 }
 
 function resolveAppDirectory() {

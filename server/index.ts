@@ -56,6 +56,8 @@ import {
   removeThread,
   renameProject,
   renameThread,
+  setProjectPinned,
+  setThreadPinned,
   saveThreadHistory,
   setActiveSelection,
   suggestProjectGitWorktreePath,
@@ -1118,6 +1120,26 @@ app.delete('/api/threads/:threadId', (_request, response) => {
     response.json({ ok: true });
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '聊天删除失败');
+  }
+});
+
+app.post('/api/threads/:threadId/pin', (request, response) => {
+  try {
+    const pinned = request.body?.pinned === true;
+    setThreadPinned(request.params.threadId, pinned);
+    response.json({ ok: true, workspace: getWorkspaceBootstrap() });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '置顶聊天失败');
+  }
+});
+
+app.post('/api/projects/:projectId/pin', (request, response) => {
+  try {
+    const pinned = request.body?.pinned === true;
+    setProjectPinned(request.params.projectId, pinned);
+    response.json({ ok: true, workspace: getWorkspaceBootstrap() });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '置顶项目失败');
   }
 });
 

@@ -97,7 +97,9 @@ export default function App() {
     activeProject,
     activeThreadSummary,
     activeThread,
-    filteredProjects,
+    pinnedThreads,
+    pinnedProjects,
+    unpinnedProjects,
     setSearchOpen,
     setSearchQuery,
     setInputDialog,
@@ -126,6 +128,8 @@ export default function App() {
     setActiveProjectId,
     setActiveThreadId,
     handlePanelStateChange,
+    togglePinThread,
+    togglePinProject,
     toggleProjectCollapse,
     toggleAllProjects,
     openRenameProjectDialog,
@@ -968,7 +972,11 @@ export default function App() {
               activeThreadId={activeThreadId}
               runningThreadIds={runningThreadIds}
               cloneTasks={cloneTasks}
-              filteredProjects={filteredProjects}
+              pinnedThreads={pinnedThreads}
+              pinnedProjects={pinnedProjects}
+              unpinnedProjects={unpinnedProjects}
+              onTogglePinThread={togglePinThread}
+              onTogglePinProject={togglePinProject}
               collapsedProjects={collapsedProjects}
               searchOpen={searchOpen}
               searchQuery={searchQuery}

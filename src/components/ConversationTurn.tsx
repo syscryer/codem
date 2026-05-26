@@ -43,6 +43,7 @@ import { buildConversationOutputFileListState } from '../lib/conversation-output
 import { runConversationOutputFileMenuAction } from '../lib/conversation-output-file-interactions';
 import { renderMarkdownImage, type MarkdownImagePreviewPayload } from '../lib/markdown-image';
 import { buildConversationOutputFilePreviewRequest } from '../lib/workbench-preview';
+import { buildWorkspaceImagePreviewUrl } from '../lib/file-preview-api';
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -463,9 +464,6 @@ function UserContentBlocks({
                   loading="lazy"
                 />
               </button>
-              <figcaption className="user-message-attachment-name" title={block.name}>
-                {block.name || '图片附件'}
-              </figcaption>
             </figure>
           );
         }
@@ -3491,7 +3489,7 @@ function getFileName(filePath: string) {
 }
 
 function buildUserAttachmentPreviewUrl(filePath: string) {
-  return `/api/system/image-preview?path=${encodeURIComponent(filePath)}`;
+  return buildWorkspaceImagePreviewUrl(filePath);
 }
 
 function InlineCopyButton({

@@ -13,6 +13,8 @@ import {
   GitBranchPlus,
   GitFork,
   MoreHorizontal,
+  Pin,
+  PinOff,
   Plus,
   Pencil,
   RefreshCw,
@@ -34,7 +36,6 @@ type SidebarProjectsProps = {
   activeThreadId: string | null;
   runningThreadIds: string[];
   cloneTasks: CloneTask[];
-  filteredProjects: ProjectSummary[];
   collapsedProjects: Record<string, boolean>;
   searchOpen: boolean;
   searchQuery: string;
@@ -65,6 +66,11 @@ type SidebarProjectsProps = {
   onCopySessionId: (thread: ThreadSummary) => void | Promise<void>;
   onOpenRemoveThreadDialog: (thread: ThreadSummary) => void;
   onOpenSettings: () => void;
+  pinnedThreads: ThreadSummary[];
+  pinnedProjects: ProjectSummary[];
+  unpinnedProjects: ProjectSummary[];
+  onTogglePinThread: (threadId: string, pinned: boolean) => void | Promise<void>;
+  onTogglePinProject: (projectId: string, pinned: boolean) => void | Promise<void>;
   sidebarCustomWidth?: number;
   onUpdateSidebarCustomWidth?: (width: number | undefined) => void;
 };
@@ -74,7 +80,6 @@ export function SidebarProjects({
   activeThreadId,
   runningThreadIds,
   cloneTasks,
-  filteredProjects,
   collapsedProjects,
   searchOpen,
   searchQuery,
@@ -105,6 +110,11 @@ export function SidebarProjects({
   onCopySessionId,
   onOpenRemoveThreadDialog,
   onOpenSettings,
+  pinnedThreads,
+  pinnedProjects,
+  unpinnedProjects,
+  onTogglePinThread,
+  onTogglePinProject,
   sidebarCustomWidth,
   onUpdateSidebarCustomWidth,
 }: SidebarProjectsProps) {
@@ -202,6 +212,223 @@ export function SidebarProjects({
     onUpdateSidebarCustomWidth(undefined);
   }
 
+  function renderThreadRow(thread: ThreadSummary, hostProjectId: string) {
+    const isRunningThread = runningThreadIdSet.has(thread.id);
+    const isPinned = Boolean(thread.pinnedAt);
+    return (
+      <div
+        key={thread.id}
+        className={`sidebar-thread-row ${thread.id === activeThreadId ? 'active' : ''}${isRunningThread ? ' running' : ''}${isPinned ? ' pinned' : ''}`}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openThreadMenu(thread.id, { x: event.clientX, y: event.clientY });
+        }}
+      >
+        <button type="button" className="sidebar-thread" onClick={() => void onSelectThread(hostProjectId, thread.id)}>
+          <span className="sidebar-thread-title">
+            {isRunningThread ? <span className="sidebar-thread-running-dot" aria-label="运行中" /> : null}
+            <span className="sidebar-thread-title-text">{thread.title}</span>
+          </span>
+          <small>{thread.updatedLabel}</small>
+        </button>
+        <PopoverPortal
+          open={threadMenuThreadId === thread.id}
+          anchorRef={threadMenuTriggerRef}
+          virtualAnchor={threadMenuThreadId === thread.id ? threadMenuAnchor : null}
+          placement="bottom-end"
+        >
+          <div className="workspace-menu thread-menu-popover">
+            <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); void onTogglePinThread(thread.id, !isPinned); }}>
+              {isPinned ? <PinOff size={14} /> : <Pin size={14} />}
+              <span>{isPinned ? '取消置顶' : '置顶聊天'}</span>
+            </button>
+            <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); onOpenRenameThreadDialog(thread); }}>
+              <Pencil size={14} />
+              <span>重命名聊天</span>
+            </button>
+            <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); void onCopySessionId(thread); }}>
+              <Copy size={14} />
+              <span>复制会话 ID</span>
+            </button>
+            <button type="button" className="workspace-menu-item danger" onClick={() => { setThreadMenuThreadId(null); onOpenRemoveThreadDialog(thread); }}>
+              <Trash2 size={14} />
+              <span>删除聊天</span>
+            </button>
+          </div>
+        </PopoverPortal>
+      </div>
+    );
+  }
+
+  function renderProjectCard(project: ProjectSummary) {
+    const collapsed = Boolean(collapsedProjects[project.id]);
+    const threadExpanded = Boolean(expandedThreadProjects[project.id]);
+    const hasMoreThreads = project.threads.length > VISIBLE_THREAD_PREVIEW_LIMIT;
+    const previewThreads = project.threads.slice(0, VISIBLE_THREAD_PREVIEW_LIMIT);
+    const runningThreads = project.threads.filter((thread) => runningThreadIdSet.has(thread.id));
+    const visibleThreads = threadExpanded
+      ? project.threads
+      : mergeVisibleThreads(previewThreads, runningThreads);
+    const isPinnedProject = Boolean(project.pinnedAt);
+
+    return (
+      <div
+        key={project.id}
+        className={`sidebar-project ${project.id === activeProjectId ? 'active' : ''}${isPinnedProject ? ' pinned' : ''}`}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          openProjectMenu(project.id, { x: event.clientX, y: event.clientY });
+        }}
+      >
+        <div className="sidebar-project-row">
+          <button
+            type="button"
+            className={`sidebar-project-title${project.isGitWorktree ? ' has-worktree-badge' : ''}`}
+            title={project.path}
+            onClick={() => onToggleProjectCollapse(project.id)}
+          >
+            <span><Folder size={14} /></span>
+            <strong>{project.name}</strong>
+            {project.isGitWorktree ? (
+              <span className="sidebar-worktree-badge" title="Git 工作树">
+                <GitFork size={12} />
+              </span>
+            ) : null}
+          </button>
+          <div className="sidebar-project-actions">
+            <button
+              type="button"
+              className="sidebar-row-action"
+              title="项目菜单"
+              ref={projectMenuProjectId === project.id ? projectMenuTriggerRef : undefined}
+              onClick={() => {
+                setProjectMenuProjectId((value) => {
+                  if (value === project.id && !projectMenuAnchor) {
+                    return null;
+                  }
+                  setProjectMenuAnchor(null);
+                  return project.id;
+                });
+              }}
+            >
+              <MoreHorizontal size={14} />
+            </button>
+            <button
+              type="button"
+              className="sidebar-row-action"
+              title="新建该项目聊天"
+              onClick={() => void onCreateThread(project.id)}
+            >
+              <SquarePen size={14} />
+            </button>
+            <PopoverPortal
+              open={projectMenuProjectId === project.id}
+              anchorRef={projectMenuTriggerRef}
+              virtualAnchor={projectMenuProjectId === project.id ? projectMenuAnchor : null}
+              placement="bottom-end"
+            >
+              <div className="workspace-menu project-menu-popover">
+                <button type="button" className="workspace-menu-item" onClick={() => { setProjectMenuProjectId(null); void onTogglePinProject(project.id, !isPinnedProject); }}>
+                  {isPinnedProject ? <PinOff size={14} /> : <Pin size={14} />}
+                  <span>{isPinnedProject ? '取消置顶' : '置顶项目'}</span>
+                </button>
+                <button type="button" className="workspace-menu-item" onClick={() => { setProjectMenuProjectId(null); void onOpenProject(project); }}>
+                  <FolderOpen size={14} />
+                  <span>在资源管理器中打开</span>
+                </button>
+                <button type="button" className="workspace-menu-item" onClick={() => { setProjectMenuProjectId(null); void onCopyProjectPath(project); }}>
+                  <Copy size={14} />
+                  <span>复制路径</span>
+                </button>
+                <button
+                  type="button"
+                  className="workspace-menu-item"
+                  disabled={!project.isGitRepo}
+                  onClick={() => {
+                    setProjectMenuProjectId(null);
+                    void onGitFetch(project);
+                  }}
+                >
+                  <RefreshCw size={14} />
+                  <span>获取远端</span>
+                </button>
+                <button
+                  type="button"
+                  className="workspace-menu-item"
+                  disabled={!project.isGitRepo}
+                  onClick={() => {
+                    setProjectMenuProjectId(null);
+                    void onGitPull(project);
+                  }}
+                >
+                  <Download size={14} />
+                  <span>拉取</span>
+                </button>
+                <button
+                  type="button"
+                  className="workspace-menu-item"
+                  disabled={!project.isGitRepo}
+                  onClick={() => {
+                    setProjectMenuProjectId(null);
+                    onCreateWorktree(project);
+                  }}
+                >
+                  <GitBranchPlus size={14} />
+                  <span>创建永久工作树</span>
+                </button>
+                <button type="button" className="workspace-menu-item" onClick={() => { setProjectMenuProjectId(null); onOpenRenameProjectDialog(project); }}>
+                  <Pencil size={14} />
+                  <span>修改项目名称</span>
+                </button>
+                <button type="button" className="workspace-menu-item danger" onClick={() => { setProjectMenuProjectId(null); onOpenRemoveProjectDialog(project); }}>
+                  <Trash2 size={14} />
+                  <span>删除</span>
+                </button>
+              </div>
+            </PopoverPortal>
+          </div>
+        </div>
+
+        <div className={`sidebar-thread-collapse${collapsed ? ' is-collapsed' : ''}`}>
+          <div className="sidebar-thread-collapse-inner">
+            <div className="sidebar-thread-list">
+              {visibleThreads.length === 0 ? (
+                <div className="sidebar-thread-empty">暂无对话</div>
+              ) : null}
+              {visibleThreads.map((thread) => renderThreadRow(thread, project.id))}
+            </div>
+            {hasMoreThreads ? (
+              <button
+                type="button"
+                className="sidebar-collapse-toggle"
+                onClick={() =>
+                  setExpandedThreadProjects((current) => ({
+                    ...current,
+                    [project.id]: !current[project.id],
+                  }))
+                }
+              >
+                {threadExpanded ? '折叠显示' : '展开显示'}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const PINNED_THREADS_EXPAND_KEY = '__pinned_threads__';
+  const pinnedThreadsExpanded = Boolean(expandedThreadProjects[PINNED_THREADS_EXPAND_KEY]);
+  const hasMorePinnedThreads = pinnedThreads.length > VISIBLE_THREAD_PREVIEW_LIMIT;
+  const visiblePinnedThreads = pinnedThreadsExpanded
+    ? pinnedThreads
+    : mergeVisibleThreads(
+        pinnedThreads.slice(0, VISIBLE_THREAD_PREVIEW_LIMIT),
+        pinnedThreads.filter((thread) => runningThreadIdSet.has(thread.id)),
+      );
+  const hasAnyPinned = pinnedThreads.length > 0 || pinnedProjects.length > 0;
+
   return (
     <aside className="app-sidebar">
       <nav className="sidebar-primary">
@@ -216,344 +443,183 @@ export function SidebarProjects({
         <button type="button"><span><Clock3 size={14} /></span> 自动化</button>
       </nav>
 
-      <section className="sidebar-projects">
-        <div className="sidebar-section-head sidebar-section-toolbar">
-          <span>项目</span>
-          <div className="sidebar-section-actions">
-            <button type="button" className="sidebar-toolbar-icon" title="展开或折叠项目" onClick={onToggleAllProjects}>
-              <SquareSplitHorizontal size={13} />
-            </button>
-            <button
-              type="button"
-              className="sidebar-toolbar-icon"
-              title="刷新项目"
-              disabled={refreshingProjects}
-              onClick={() => void onRefreshProjects()}
-            >
-              <RefreshCw size={13} className={refreshingProjects ? 'spin' : undefined} />
-            </button>
-            <div className="panel-menu-anchor" ref={panelMenuRef}>
-                <button
-                  type="button"
-                  className="sidebar-toolbar-icon"
-                  title="整理和排序"
-                  onClick={() => setPanelMenuOpen((value) => !value)}
-                >
-                <AlignJustify size={13} />
-              </button>
-              <PopoverPortal open={panelMenuOpen} anchorRef={panelMenuRef} placement="bottom-end">
-                <div className="workspace-menu panel-menu-popover">
-                  <div className="workspace-menu-group-title">整理</div>
-                  <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ organizeBy: 'project' }); }}>
-                    <span>按项目</span>
-                    {panelState.organizeBy === 'project' ? <Check size={14} /> : null}
-                  </button>
-                  <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ organizeBy: 'timeline' }); }}>
-                    <span>时间顺序列表</span>
-                    {panelState.organizeBy === 'timeline' ? <Check size={14} /> : null}
-                  </button>
-                  <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ organizeBy: 'chat-first' }); }}>
-                    <span>聊天优先</span>
-                    {panelState.organizeBy === 'chat-first' ? <Check size={14} /> : null}
-                  </button>
-                  <div className="workspace-menu-divider" />
-                  <div className="workspace-menu-group-title">排序条件</div>
-                  <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ sortBy: 'created' }); }}>
-                    <span>已创建</span>
-                    {panelState.sortBy === 'created' ? <Check size={14} /> : null}
-                  </button>
-                  <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ sortBy: 'updated' }); }}>
-                    <span>已更新</span>
-                    {panelState.sortBy === 'updated' ? <Check size={14} /> : null}
-                  </button>
-                  <div className="workspace-menu-divider" />
-                  <div className="workspace-menu-group-title">显示</div>
-                  <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ visibility: 'all' }); }}>
-                    <span>所有聊天</span>
-                    {panelState.visibility === 'all' ? <Check size={14} /> : null}
-                  </button>
-                  <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ visibility: 'relevant' }); }}>
-                    <span>相关</span>
-                    {panelState.visibility === 'relevant' ? <Check size={14} /> : null}
-                  </button>
-                </div>
-              </PopoverPortal>
+      <div className="sidebar-scroll-region">
+        {hasAnyPinned ? (
+          <section className="sidebar-pinned">
+            <div className="sidebar-section-head">
+              <span>置顶</span>
             </div>
-            <div className="panel-menu-anchor" ref={addProjectMenuRef}>
-              <button type="button" className="sidebar-toolbar-icon" title="新增项目" onClick={() => setAddProjectMenuOpen((value) => !value)}>
-                <FolderPlus size={13} />
-              </button>
-              <PopoverPortal open={addProjectMenuOpen} anchorRef={addProjectMenuRef} placement="bottom-end">
-                <div className="workspace-menu add-project-menu-popover">
-                  <div className="workspace-menu-group-title">新增项目</div>
-                  <button type="button" className="workspace-menu-item" onClick={() => { setAddProjectMenuOpen(false); void onPickProjectDirectory(); }}>
-                    <FolderOpen size={14} />
-                    <span>选择本地文件夹...</span>
-                  </button>
-                  <button type="button" className="workspace-menu-item" onClick={() => { setAddProjectMenuOpen(false); onOpenCloneDialog(); }}>
-                    <GitBranchPlus size={14} />
-                    <span>克隆 Git 仓库...</span>
-                  </button>
+            {visiblePinnedThreads.length > 0 ? (
+              <div className="sidebar-pinned-threads">
+                <div className="sidebar-thread-list">
+                  {visiblePinnedThreads.map((thread) => renderThreadRow(thread, thread.projectId))}
                 </div>
-              </PopoverPortal>
-            </div>
-          </div>
-        </div>
-
-        {searchOpen ? (
-          <div className="sidebar-search">
-            <Search size={13} />
-            <input
-              autoFocus
-              value={searchQuery}
-              onChange={(event) => onSearchQueryChange(event.target.value)}
-              placeholder="搜索项目和聊天"
-            />
-          </div>
-        ) : null}
-
-        {cloneTasks.length === 0 && filteredProjects.length === 0 ? (
-          <div className="sidebar-empty">
-            <p>当前还没有项目。</p>
-            <p>点击右上角新增项目，或从 Claude Code 本地 session 自动导入。</p>
-          </div>
-        ) : (
-          <>
-            {cloneTasks.map((task) => (
-              <div key={task.id} className={`sidebar-project clone-task ${task.status}`}>
-                <div className="sidebar-project-row clone-task-row">
-                  <div className="sidebar-project-title clone-task-title">
-                    <span>{task.status === 'failed' ? <GitBranchPlus size={14} /> : <LoaderCircle className="spin" size={14} />}</span>
-                    <strong>{task.projectName}</strong>
-                    <small className={`sidebar-project-status-badge ${task.status}`}>
-                      {task.status === 'cloning' ? '克隆中' : task.status === 'attaching' ? '处理中' : '失败'}
-                    </small>
-                  </div>
-                </div>
-                <div className="sidebar-project-task-body">
-                  <p className="sidebar-project-substatus">{task.errorMessage || task.detail}</p>
-                  {task.status === 'failed' ? (
-                    <div className="sidebar-project-task-actions">
-                      {task.rawLog ? (
-                        <button type="button" className="sidebar-task-button" onClick={() => toggleCloneLog(task.id)}>
-                          {expandedCloneLogs[task.id] ? '收起' : '日志'}
-                        </button>
-                      ) : null}
-                      <button type="button" className="sidebar-task-button" onClick={() => onRetryCloneTask(task.id)}>
-                        <RefreshCw size={12} />
-                        重试
-                      </button>
-                      <button type="button" className="sidebar-task-button danger" onClick={() => onRemoveCloneTask(task.id)}>
-                        <X size={12} />
-                        移除
-                      </button>
-                    </div>
-                  ) : null}
-                  {task.status === 'failed' && task.rawLog && expandedCloneLogs[task.id] ? (
-                    <div className="sidebar-task-log-card">
-                      <pre>{task.rawLog}</pre>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            ))}
-            {filteredProjects.map((project) => {
-            const collapsed = Boolean(collapsedProjects[project.id]);
-            const threadExpanded = Boolean(expandedThreadProjects[project.id]);
-            const hasMoreThreads = project.threads.length > VISIBLE_THREAD_PREVIEW_LIMIT;
-            const previewThreads = project.threads.slice(0, VISIBLE_THREAD_PREVIEW_LIMIT);
-            const runningThreads = project.threads.filter((thread) => runningThreadIdSet.has(thread.id));
-            const visibleThreads = threadExpanded
-              ? project.threads
-              : mergeVisibleThreads(previewThreads, runningThreads);
-
-            return (
-              <div
-                key={project.id}
-                className={`sidebar-project ${project.id === activeProjectId ? 'active' : ''}`}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  openProjectMenu(project.id, { x: event.clientX, y: event.clientY });
-                }}
-              >
-                <div className="sidebar-project-row">
+                {hasMorePinnedThreads ? (
                   <button
                     type="button"
-                    className={`sidebar-project-title${project.isGitWorktree ? ' has-worktree-badge' : ''}`}
-                    title={project.path}
-                    onClick={() => onToggleProjectCollapse(project.id)}
+                    className="sidebar-collapse-toggle"
+                    onClick={() =>
+                      setExpandedThreadProjects((current) => ({
+                        ...current,
+                        [PINNED_THREADS_EXPAND_KEY]: !current[PINNED_THREADS_EXPAND_KEY],
+                      }))
+                    }
                   >
-                    <span><Folder size={14} /></span>
-                    <strong>{project.name}</strong>
-                    {project.isGitWorktree ? (
-                      <span className="sidebar-worktree-badge" title="Git 工作树">
-                        <GitFork size={12} />
-                      </span>
-                    ) : null}
+                    {pinnedThreadsExpanded ? '折叠显示' : '展开显示'}
                   </button>
-                  <div className="sidebar-project-actions">
-                    <button
-                      type="button"
-                      className="sidebar-row-action"
-                      title="项目菜单"
-                      ref={projectMenuProjectId === project.id ? projectMenuTriggerRef : undefined}
-                      onClick={() => {
-                        setProjectMenuProjectId((value) => {
-                          if (value === project.id && !projectMenuAnchor) {
-                            return null;
-                          }
-                          setProjectMenuAnchor(null);
-                          return project.id;
-                        });
-                      }}
-                    >
-                      <MoreHorizontal size={14} />
+                ) : null}
+              </div>
+            ) : null}
+            {pinnedProjects.map((project) => renderProjectCard(project))}
+          </section>
+        ) : null}
+
+        <section className="sidebar-projects">
+          <div className="sidebar-section-head sidebar-section-toolbar">
+            <span>项目</span>
+            <div className="sidebar-section-actions">
+              <button type="button" className="sidebar-toolbar-icon" title="展开或折叠项目" onClick={onToggleAllProjects}>
+                <SquareSplitHorizontal size={13} />
+              </button>
+              <button
+                type="button"
+                className="sidebar-toolbar-icon"
+                title="刷新项目"
+                disabled={refreshingProjects}
+                onClick={() => void onRefreshProjects()}
+              >
+                <RefreshCw size={13} className={refreshingProjects ? 'spin' : undefined} />
+              </button>
+              <div className="panel-menu-anchor" ref={panelMenuRef}>
+                  <button
+                    type="button"
+                    className="sidebar-toolbar-icon"
+                    title="整理和排序"
+                    onClick={() => setPanelMenuOpen((value) => !value)}
+                  >
+                  <AlignJustify size={13} />
+                </button>
+                <PopoverPortal open={panelMenuOpen} anchorRef={panelMenuRef} placement="bottom-end">
+                  <div className="workspace-menu panel-menu-popover">
+                    <div className="workspace-menu-group-title">整理</div>
+                    <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ organizeBy: 'project' }); }}>
+                      <span>按项目</span>
+                      {panelState.organizeBy === 'project' ? <Check size={14} /> : null}
                     </button>
-                    <button
-                      type="button"
-                      className="sidebar-row-action"
-                      title="新建该项目聊天"
-                      onClick={() => void onCreateThread(project.id)}
-                    >
-                      <SquarePen size={14} />
+                    <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ organizeBy: 'timeline' }); }}>
+                      <span>时间顺序列表</span>
+                      {panelState.organizeBy === 'timeline' ? <Check size={14} /> : null}
                     </button>
-                    <PopoverPortal
-                      open={projectMenuProjectId === project.id}
-                      anchorRef={projectMenuTriggerRef}
-                      virtualAnchor={projectMenuProjectId === project.id ? projectMenuAnchor : null}
-                      placement="bottom-end"
-                    >
-                      <div className="workspace-menu project-menu-popover">
-                        <button type="button" className="workspace-menu-item" onClick={() => { setProjectMenuProjectId(null); void onOpenProject(project); }}>
-                          <FolderOpen size={14} />
-                          <span>在资源管理器中打开</span>
+                    <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ organizeBy: 'chat-first' }); }}>
+                      <span>聊天优先</span>
+                      {panelState.organizeBy === 'chat-first' ? <Check size={14} /> : null}
+                    </button>
+                    <div className="workspace-menu-divider" />
+                    <div className="workspace-menu-group-title">排序条件</div>
+                    <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ sortBy: 'created' }); }}>
+                      <span>已创建</span>
+                      {panelState.sortBy === 'created' ? <Check size={14} /> : null}
+                    </button>
+                    <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ sortBy: 'updated' }); }}>
+                      <span>已更新</span>
+                      {panelState.sortBy === 'updated' ? <Check size={14} /> : null}
+                    </button>
+                    <div className="workspace-menu-divider" />
+                    <div className="workspace-menu-group-title">显示</div>
+                    <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ visibility: 'all' }); }}>
+                      <span>所有聊天</span>
+                      {panelState.visibility === 'all' ? <Check size={14} /> : null}
+                    </button>
+                    <button type="button" className="workspace-menu-item" onClick={() => { setPanelMenuOpen(false); void onPanelStateChange({ visibility: 'relevant' }); }}>
+                      <span>相关</span>
+                      {panelState.visibility === 'relevant' ? <Check size={14} /> : null}
+                    </button>
+                  </div>
+                </PopoverPortal>
+              </div>
+              <div className="panel-menu-anchor" ref={addProjectMenuRef}>
+                <button type="button" className="sidebar-toolbar-icon" title="新增项目" onClick={() => setAddProjectMenuOpen((value) => !value)}>
+                  <FolderPlus size={13} />
+                </button>
+                <PopoverPortal open={addProjectMenuOpen} anchorRef={addProjectMenuRef} placement="bottom-end">
+                  <div className="workspace-menu add-project-menu-popover">
+                    <div className="workspace-menu-group-title">新增项目</div>
+                    <button type="button" className="workspace-menu-item" onClick={() => { setAddProjectMenuOpen(false); void onPickProjectDirectory(); }}>
+                      <FolderOpen size={14} />
+                      <span>选择本地文件夹...</span>
+                    </button>
+                    <button type="button" className="workspace-menu-item" onClick={() => { setAddProjectMenuOpen(false); onOpenCloneDialog(); }}>
+                      <GitBranchPlus size={14} />
+                      <span>克隆 Git 仓库...</span>
+                    </button>
+                  </div>
+                </PopoverPortal>
+              </div>
+            </div>
+          </div>
+
+          {searchOpen ? (
+            <div className="sidebar-search">
+              <Search size={13} />
+              <input
+                autoFocus
+                value={searchQuery}
+                onChange={(event) => onSearchQueryChange(event.target.value)}
+                placeholder="搜索项目和聊天"
+              />
+            </div>
+          ) : null}
+
+          {cloneTasks.length === 0 && unpinnedProjects.length === 0 && !hasAnyPinned ? (
+            <div className="sidebar-empty">
+              <p>当前还没有项目。</p>
+              <p>点击右上角新增项目，或从 Claude Code 本地 session 自动导入。</p>
+            </div>
+          ) : (
+            <>
+              {cloneTasks.map((task) => (
+                <div key={task.id} className={`sidebar-project clone-task ${task.status}`}>
+                  <div className="sidebar-project-row clone-task-row">
+                    <div className="sidebar-project-title clone-task-title">
+                      <span>{task.status === 'failed' ? <GitBranchPlus size={14} /> : <LoaderCircle className="spin" size={14} />}</span>
+                      <strong>{task.projectName}</strong>
+                      <small className={`sidebar-project-status-badge ${task.status}`}>
+                        {task.status === 'cloning' ? '克隆中' : task.status === 'attaching' ? '处理中' : '失败'}
+                      </small>
+                    </div>
+                  </div>
+                  <div className="sidebar-project-task-body">
+                    <p className="sidebar-project-substatus">{task.errorMessage || task.detail}</p>
+                    {task.status === 'failed' ? (
+                      <div className="sidebar-project-task-actions">
+                        {task.rawLog ? (
+                          <button type="button" className="sidebar-task-button" onClick={() => toggleCloneLog(task.id)}>
+                            {expandedCloneLogs[task.id] ? '收起' : '日志'}
+                          </button>
+                        ) : null}
+                        <button type="button" className="sidebar-task-button" onClick={() => onRetryCloneTask(task.id)}>
+                          <RefreshCw size={12} />
+                          重试
                         </button>
-                        <button type="button" className="workspace-menu-item" onClick={() => { setProjectMenuProjectId(null); void onCopyProjectPath(project); }}>
-                          <Copy size={14} />
-                          <span>复制路径</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="workspace-menu-item"
-                          disabled={!project.isGitRepo}
-                          onClick={() => {
-                            setProjectMenuProjectId(null);
-                            void onGitFetch(project);
-                          }}
-                        >
-                          <RefreshCw size={14} />
-                          <span>获取远端</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="workspace-menu-item"
-                          disabled={!project.isGitRepo}
-                          onClick={() => {
-                            setProjectMenuProjectId(null);
-                            void onGitPull(project);
-                          }}
-                        >
-                          <Download size={14} />
-                          <span>拉取</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="workspace-menu-item"
-                          disabled={!project.isGitRepo}
-                          onClick={() => {
-                            setProjectMenuProjectId(null);
-                            onCreateWorktree(project);
-                          }}
-                        >
-                          <GitBranchPlus size={14} />
-                          <span>创建永久工作树</span>
-                        </button>
-                        <button type="button" className="workspace-menu-item" onClick={() => { setProjectMenuProjectId(null); onOpenRenameProjectDialog(project); }}>
-                          <Pencil size={14} />
-                          <span>修改项目名称</span>
-                        </button>
-                        <button type="button" className="workspace-menu-item danger" onClick={() => { setProjectMenuProjectId(null); onOpenRemoveProjectDialog(project); }}>
-                          <Trash2 size={14} />
-                          <span>删除</span>
+                        <button type="button" className="sidebar-task-button danger" onClick={() => onRemoveCloneTask(task.id)}>
+                          <X size={12} />
+                          移除
                         </button>
                       </div>
-                    </PopoverPortal>
-                  </div>
-                </div>
-
-                <div className={`sidebar-thread-collapse${collapsed ? ' is-collapsed' : ''}`}>
-                  <div className="sidebar-thread-collapse-inner">
-                  <div className="sidebar-thread-list">
-                    {visibleThreads.length === 0 ? (
-                      <div className="sidebar-thread-empty">暂无对话</div>
                     ) : null}
-                    {visibleThreads.map((thread) => {
-                      const isRunningThread = runningThreadIdSet.has(thread.id);
-
-                      return (
-                        <div
-                          key={thread.id}
-                          className={`sidebar-thread-row ${thread.id === activeThreadId ? 'active' : ''}${isRunningThread ? ' running' : ''}`}
-                          onContextMenu={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            openThreadMenu(thread.id, { x: event.clientX, y: event.clientY });
-                          }}
-                        >
-                          <button type="button" className="sidebar-thread" onClick={() => void onSelectThread(project.id, thread.id)}>
-                            <span className="sidebar-thread-title">
-                              {isRunningThread ? <span className="sidebar-thread-running-dot" aria-label="运行中" /> : null}
-                              <span className="sidebar-thread-title-text">{thread.title}</span>
-                            </span>
-                            <small>{thread.updatedLabel}</small>
-                          </button>
-                          <PopoverPortal
-                            open={threadMenuThreadId === thread.id}
-                            anchorRef={threadMenuTriggerRef}
-                            virtualAnchor={threadMenuThreadId === thread.id ? threadMenuAnchor : null}
-                            placement="bottom-end"
-                          >
-                            <div className="workspace-menu thread-menu-popover">
-                              <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); onOpenRenameThreadDialog(thread); }}>
-                                <Pencil size={14} />
-                                <span>重命名聊天</span>
-                              </button>
-                              <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); void onCopySessionId(thread); }}>
-                                <Copy size={14} />
-                                <span>复制会话 ID</span>
-                              </button>
-                              <button type="button" className="workspace-menu-item danger" onClick={() => { setThreadMenuThreadId(null); onOpenRemoveThreadDialog(thread); }}>
-                                <Trash2 size={14} />
-                                <span>删除聊天</span>
-                              </button>
-                            </div>
-                          </PopoverPortal>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {hasMoreThreads ? (
-                    <button
-                      type="button"
-                      className="sidebar-collapse-toggle"
-                      onClick={() =>
-                        setExpandedThreadProjects((current) => ({
-                          ...current,
-                          [project.id]: !current[project.id],
-                        }))
-                      }
-                    >
-                      {threadExpanded ? '折叠显示' : '展开显示'}
-                    </button>
-                  ) : null}
+                    {task.status === 'failed' && task.rawLog && expandedCloneLogs[task.id] ? (
+                      <div className="sidebar-task-log-card">
+                        <pre>{task.rawLog}</pre>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
-              </div>
-            );
-          })}
-          </>
-        )}
-      </section>
+              ))}
+              {unpinnedProjects.map((project) => renderProjectCard(project))}
+            </>
+          )}
+        </section>
+      </div>
 
       <div className="sidebar-footer">
         <button type="button" onClick={onOpenSettings}><span><Settings size={14} /></span> 设置</button>

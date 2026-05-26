@@ -506,6 +506,7 @@ export type ThreadSummary = {
   imported?: boolean;
   model?: string;
   permissionMode?: string;
+  pinnedAt?: string;
 };
 
 export type ThreadRuntimeStatus = {
@@ -526,6 +527,7 @@ export type ProjectSummary = {
   isGitRepo: boolean;
   isGitWorktree: boolean;
   threads: ThreadSummary[];
+  pinnedAt?: string;
 };
 
 export type GitDiffSummary = {

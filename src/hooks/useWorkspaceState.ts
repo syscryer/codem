@@ -2,6 +2,7 @@ import { startTransition, useEffect, useMemo, useRef, useState, type MutableRefO
 import { EMPTY_PANEL_STATE } from '../constants';
 import { createThreadDetail, metricsFromTurn, normalizeTurnsForPersist, repairConversationTurn } from '../lib/conversation';
 import { pickDesktopDirectory } from '../lib/desktop-dialog';
+import { buildWorkspaceSidebarSections } from '../lib/workspace-pinning';
 import type {
   CloneTask,
   ConfirmDialogState,
@@ -1062,40 +1063,10 @@ export function useWorkspaceState() {
     });
   }
 
-  const filteredProjects = useMemo(() => {
-    const normalizedQuery = searchQuery.trim().toLowerCase();
-    const baseProjects = [...projects].sort((left, right) => {
-      const leftValue = panelState.sortBy === 'created' ? left.createdAt : left.updatedAt;
-      const rightValue = panelState.sortBy === 'created' ? right.createdAt : right.updatedAt;
-      return rightValue.localeCompare(leftValue);
-    });
-
-    if (!normalizedQuery) {
-      return baseProjects;
-    }
-
-    return baseProjects
-      .map((project) => {
-        const matchesProject =
-          project.name.toLowerCase().includes(normalizedQuery) ||
-          project.path.toLowerCase().includes(normalizedQuery) ||
-          (project.gitBranch ?? '').toLowerCase().includes(normalizedQuery);
-        if (matchesProject) {
-          return project;
-        }
-
-        const threads = project.threads.filter((thread) => thread.title.toLowerCase().includes(normalizedQuery));
-        if (threads.length === 0) {
-          return null;
-        }
-
-        return {
-          ...project,
-          threads,
-        };
-      })
-      .filter(Boolean) as ProjectSummary[];
-  }, [panelState.sortBy, projects, searchQuery]);
+  const { filteredProjects, pinnedThreads, pinnedProjects, unpinnedProjects } = useMemo(
+    () => buildWorkspaceSidebarSections(projects, searchQuery, panelState.sortBy),
+    [panelState.sortBy, projects, searchQuery],
+  );
 
   function toggleProjectCollapse(projectId: string) {
     setCollapsedProjects((current) => ({
@@ -1105,14 +1076,50 @@ export function useWorkspaceState() {
   }
 
   function toggleAllProjects() {
-    const shouldCollapse = filteredProjects.some((project) => !collapsedProjects[project.id]);
+    const shouldCollapse = unpinnedProjects.some((project) => !collapsedProjects[project.id]);
     setCollapsedProjects((current) => {
       const next = { ...current };
-      for (const project of filteredProjects) {
+      for (const project of unpinnedProjects) {
         next[project.id] = shouldCollapse;
       }
       return next;
     });
+  }
+
+  async function togglePinThread(threadId: string, pinned: boolean) {
+    try {
+      const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinned }),
+      });
+      if (!response.ok) {
+        showToast(await response.text(), 'error');
+        return;
+      }
+      const payload = (await response.json()) as { workspace: WorkspaceBootstrap };
+      syncWorkspace(payload.workspace);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '置顶失败', 'error');
+    }
+  }
+
+  async function togglePinProject(projectId: string, pinned: boolean) {
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinned }),
+      });
+      if (!response.ok) {
+        showToast(await response.text(), 'error');
+        return;
+      }
+      const payload = (await response.json()) as { workspace: WorkspaceBootstrap };
+      syncWorkspace(payload.workspace);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '置顶失败', 'error');
+    }
   }
 
   function pickNextThreadAfterRemoval(
@@ -1156,6 +1163,9 @@ export function useWorkspaceState() {
     activeThreadSummary,
     activeThread,
     filteredProjects,
+    pinnedThreads,
+    pinnedProjects,
+    unpinnedProjects,
     setSearchOpen,
     setSearchQuery,
     setInputDialog,
@@ -1185,6 +1195,8 @@ export function useWorkspaceState() {
     selectThread,
     selectProject,
     handlePanelStateChange,
+    togglePinThread,
+    togglePinProject,
     toggleProjectCollapse,
     toggleAllProjects,
     openRenameProjectDialog,

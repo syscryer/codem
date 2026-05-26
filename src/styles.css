@@ -530,8 +530,8 @@ svg {
 .app-sidebar {
   position: relative;
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   background: var(--sidebar-bg);
   border-right: 1px solid #dedede;
   color: #4b4f56;
@@ -631,13 +631,34 @@ svg {
   justify-content: flex-start;
 }
 
-.sidebar-projects {
+.sidebar-scroll-region {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 0 6px 12px 8px;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: rgba(143, 147, 153, 0.34) transparent;
+}
+
+.sidebar-projects {
+  min-height: 0;
+}
+
+.sidebar-pinned {
+  padding: 0 6px 6px 8px;
+}
+
+.sidebar-pinned-threads {
+  padding-bottom: 4px;
+}
+
+.sidebar-projects,
+.sidebar-pinned {
+  overflow: visible;
+}
+
+.sidebar-projects {
+  padding: 0 6px 12px 8px;
 }
 
 .sidebar-section-head {
@@ -1112,6 +1133,7 @@ svg {
 }
 
 .sidebar-footer {
+  flex: 0 0 auto;
   padding: 8px 10px 14px;
 }
 
@@ -11825,6 +11847,21 @@ body.git-history-resizing {
 .codex-desktop .desktop-menubar {
   background: transparent;
   color: var(--app-text);
+}
+
+.codex-desktop .desktop-menu-trigger {
+  color: color-mix(in srgb, var(--app-muted) 90%, var(--app-text) 10%);
+}
+
+.codex-desktop .sidebar-primary button,
+.codex-desktop .sidebar-footer button {
+  color: color-mix(in srgb, var(--app-muted) 78%, var(--app-text) 22%);
+  font-size: 14px;
+}
+
+.codex-desktop .sidebar-primary button > span,
+.codex-desktop .sidebar-footer button > span {
+  color: color-mix(in srgb, var(--app-muted) 82%, var(--app-text) 18%);
 }
 
 .codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu) {
