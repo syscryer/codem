@@ -20,6 +20,15 @@ output/
 .codem-*.err.log
 .codem-dev-session.json
 .codem-attachments/
+server-dev.log
+server-dev.err.log
+web-dev.log
+web-dev.err.log
+desktop-dev.log
+desktop-dev.err.log
+test-results/
+.vscode/
+.superpowers/
 *.tsbuildinfo
 .idea/
 .learnings/

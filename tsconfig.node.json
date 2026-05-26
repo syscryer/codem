@@ -13,5 +13,11 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["server", "src/lib/review-ignore-patterns.ts", "vite.config.ts"]
+  "include": [
+    "server",
+    "src/lib/review-ignore-patterns.ts",
+    "src/lib/input-content-blocks.ts",
+    "src/types.ts",
+    "vite.config.ts"
+  ]
 }

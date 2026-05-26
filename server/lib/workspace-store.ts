@@ -5355,7 +5355,7 @@ function normalizeStoredUserContentBlock(value: unknown): InputContentBlockSumma
         ? { mimeType: firstNonEmptyString(item, ['mimeType', 'mime_type']) }
         : {}),
       ...(typeof item.size === 'number' && Number.isFinite(item.size) ? { size: item.size } : {}),
-      ...(typeof item.textBytes === 'number' && Number.isFinite(item.textBytes) ? { textBytes: item.textBytes } : {}),
+      textBytes: typeof item.textBytes === 'number' && Number.isFinite(item.textBytes) ? item.textBytes : 0,
     };
   }
 

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildClaudeInputMessage, summarizeClaudeInputForTrace } from './claude-service';
+import { buildClaudeInputMessage, summarizeClaudeInputForTrace } from './claude-service.js';
 
 const source = readFileSync(new URL('./claude-service.ts', import.meta.url), 'utf8');
 const serverSource = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
@@ -264,11 +264,7 @@ test('mixed direct and legacy inputs preserve legacy text and images when some d
 
 test('Claude input trace summarizes image blocks without exposing base64 data', () => {
   const summary = summarizeClaudeInputForTrace({
-    threadId: 'thread-a',
-    turnId: 'turn-a',
     prompt: '请看这张图',
-    workingDirectory: 'D:\\workspace',
-    permissionMode: 'default',
     imageAttachments: [
       {
         mimeType: 'image/png',

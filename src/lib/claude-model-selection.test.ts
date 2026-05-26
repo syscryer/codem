@@ -19,6 +19,10 @@ test('resolveInitialClaudeModelId avoids arbitrarily picking a duplicated gatewa
   assert.equal(resolveInitialClaudeModelId('glm-5.1', glmModels, '__default'), '__default');
 });
 
+test('resolveInitialClaudeModelId falls back to settings default when a stale Claude model is no longer configured', () => {
+  assert.equal(resolveInitialClaudeModelId('claude-opus-4-7', glmModels, '__default'), '__default');
+});
+
 test('resolveInitialClaudeModelId preserves unknown non-slot model ids', () => {
   assert.equal(resolveInitialClaudeModelId('provider/custom-model', glmModels, '__default'), 'provider/custom-model');
 });

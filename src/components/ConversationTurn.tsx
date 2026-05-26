@@ -441,6 +441,7 @@ function UserContentBlocks({
     <div className="user-message-attachments" aria-label="用户附件">
       {visibleBlocks.map((block, index) => {
         if (block.type === 'image' && block.path) {
+          const imagePath = block.path;
           return (
             <figure key={`${block.type}-${index}`} className="user-message-attachment">
               <button
@@ -449,14 +450,14 @@ function UserContentBlocks({
                 aria-label={`预览图片：${block.name || '图片附件'}`}
                 onClick={() =>
                   onPreviewImage({
-                    src: buildUserAttachmentPreviewUrl(block.path),
+                    src: buildUserAttachmentPreviewUrl(imagePath),
                     alt: block.name || '图片附件',
                     title: block.name || undefined,
                   })
                 }
               >
                 <img
-                  src={buildUserAttachmentPreviewUrl(block.path)}
+                  src={buildUserAttachmentPreviewUrl(imagePath)}
                   alt={block.name || '图片附件'}
                   className="user-message-attachment-preview"
                   loading="lazy"

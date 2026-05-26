@@ -31,7 +31,7 @@ export function resolveInitialClaudeModelId(
       return normalized;
     }
 
-    return isClaudeSlotModelId(normalized) ? DEFAULT_MODEL_VALUE : normalized;
+    return shouldFallBackToDefaultModel(normalized) ? DEFAULT_MODEL_VALUE : normalized;
   }
 
   const fallback = fallbackModelId?.trim() || DEFAULT_MODEL_VALUE;
@@ -43,4 +43,8 @@ export function resolveInitialClaudeModelId(
 function isClaudeSlotModelId(modelId: string) {
   const normalized = modelId.toLowerCase();
   return normalized === 'opusplan' || normalized === 'opus-1m' || (CLAUDE_MODEL_SLOT_VALUES as readonly string[]).includes(normalized);
+}
+
+function shouldFallBackToDefaultModel(modelId: string) {
+  return isClaudeSlotModelId(modelId) || /^claude-/i.test(modelId);
 }

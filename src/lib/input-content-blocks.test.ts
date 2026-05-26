@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import type { InputContentBlock } from '../types.js';
 import {
   normalizeInputContentBlocks,
   stripTransientInputBlockData,
@@ -209,7 +210,7 @@ test('direct contentBlocks keep image blocks when path exists and drop invalid m
       {
         type: 'attachment_metadata',
         name: 'missing-reason.bin',
-      },
+      } as unknown as InputContentBlock,
       {
         type: 'attachment_metadata',
         name: 'unsupported.bin',

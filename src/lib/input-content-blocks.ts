@@ -3,7 +3,7 @@ import type {
   InputContentBlockSummary,
   InputReferenceReason,
   UserImageAttachment,
-} from '../types';
+} from '../types.js';
 
 type NormalizeInputContentBlocksOptions = {
   prompt?: string | null;
