@@ -1080,24 +1080,30 @@ app.patch('/api/threads/:threadId', (request, response) => {
       renameThread(request.params.threadId, nextTitle);
     }
 
-    updateThreadMetadata(request.params.threadId, {
-      sessionId:
-        typeof request.body?.sessionId === 'string' && request.body.sessionId.trim()
-          ? request.body.sessionId.trim()
-          : undefined,
-      workingDirectory:
-        typeof request.body?.workingDirectory === 'string' && request.body.workingDirectory.trim()
-          ? request.body.workingDirectory.trim()
-          : undefined,
-      model:
-        typeof request.body?.model === 'string' && request.body.model.trim()
-          ? request.body.model.trim()
-          : undefined,
-      permissionMode:
-        typeof request.body?.permissionMode === 'string' && request.body.permissionMode.trim()
-          ? request.body.permissionMode.trim()
-          : undefined,
-    });
+    const patchBody = normalizePatchBody(request.body);
+    const metadataPatch: {
+      sessionId?: string | null;
+      workingDirectory?: string;
+      model?: string | null;
+      permissionMode?: string;
+    } = {};
+    const sessionId = readNullablePatchString(patchBody, 'sessionId');
+    const workingDirectory = readPatchString(patchBody, 'workingDirectory');
+    const model = readNullablePatchString(patchBody, 'model');
+    const permissionMode = readPatchString(patchBody, 'permissionMode');
+    if (sessionId !== undefined) {
+      metadataPatch.sessionId = sessionId;
+    }
+    if (workingDirectory !== undefined) {
+      metadataPatch.workingDirectory = workingDirectory;
+    }
+    if (model !== undefined) {
+      metadataPatch.model = model;
+    }
+    if (permissionMode !== undefined) {
+      metadataPatch.permissionMode = permissionMode;
+    }
+    updateThreadMetadata(request.params.threadId, metadataPatch);
 
     if (shouldRefreshWorkspace) {
       response.json({
@@ -1535,6 +1541,35 @@ function isAllowedLocalOrigin(origin: string) {
 
 function resolveProjectPathValue(value: unknown) {
   return typeof value === 'string' && value.trim() ? path.resolve(value.trim()) : '';
+}
+
+function normalizePatchBody(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function hasOwn(value: Record<string, unknown>, key: PropertyKey) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function readPatchString(body: Record<string, unknown>, key: string) {
+  if (!hasOwn(body, key)) {
+    return undefined;
+  }
+
+  const value = body[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function readNullablePatchString(body: Record<string, unknown>, key: string) {
+  if (!hasOwn(body, key)) {
+    return undefined;
+  }
+
+  if (body[key] === null) {
+    return null;
+  }
+
+  return readPatchString(body, key);
 }
 
 function readRepeatedQueryValues(value: unknown) {

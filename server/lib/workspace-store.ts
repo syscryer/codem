@@ -784,9 +784,9 @@ export function removeThread(threadId: string) {
 export function updateThreadMetadata(
   threadId: string,
   payload: {
-    sessionId?: string;
+    sessionId?: string | null;
     workingDirectory?: string;
-    model?: string;
+    model?: string | null;
     permissionMode?: string;
     title?: string;
   },
@@ -804,18 +804,28 @@ export function updateThreadMetadata(
   }
 
   const workingDirectory = payload.workingDirectory?.trim() || row.working_directory;
-  const sessionId = payload.sessionId?.trim() || row.session_id || null;
-  const transcriptPath = sessionId ? resolveClaudeTranscriptPath(workingDirectory, sessionId) : row.transcript_path;
+  const hasSessionIdPayload = hasOwn(payload, 'sessionId');
+  const hasModelPayload = hasOwn(payload, 'model');
+  const sessionId = hasSessionIdPayload ? payload.sessionId?.trim() || null : row.session_id || null;
+  const transcriptPath = sessionId
+    ? resolveClaudeTranscriptPath(workingDirectory, sessionId)
+    : hasSessionIdPayload
+      ? null
+      : row.transcript_path;
+  const model = hasModelPayload ? payload.model?.trim() || null : row.model;
   const title = payload.title?.trim() || row.title;
   const customTitle = payload.title?.trim() ? 1 : row.custom_title;
   const now = new Date().toISOString();
   const sessionChanged = Boolean(row.session_id && sessionId && row.session_id !== sessionId);
+  const sessionCleared = Boolean(hasSessionIdPayload && row.session_id && !sessionId);
 
   try {
     db.exec('BEGIN');
-    if (sessionChanged && row.session_id) {
+    if ((sessionChanged || sessionCleared) && row.session_id) {
       ignoreImportedSession(row.session_id, row.transcript_path, now);
-      deleteDuplicateThreadsBySessionId(row.session_id, threadId);
+      if (sessionChanged) {
+        deleteDuplicateThreadsBySessionId(row.session_id, threadId);
+      }
     }
 
     db.prepare(`
@@ -835,7 +845,7 @@ export function updateThreadMetadata(
       sessionId,
       transcriptPath,
       workingDirectory,
-      payload.model?.trim() || row.model,
+      model,
       payload.permissionMode?.trim() || row.permission_mode,
       now,
       threadId,
@@ -5865,6 +5875,10 @@ function resolveClaudeTranscriptPath(workingDirectory: string, sessionId: string
 
 function sanitizeProjectPath(projectPath: string) {
   return path.resolve(projectPath).replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+function hasOwn<T extends object>(value: T, key: PropertyKey) {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function parseIsoTimestampMs(value?: string) {

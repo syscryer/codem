@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { Readable, Writable } from 'node:stream';
 import type { InputContentBlock, UserImageAttachment } from '../../src/types.js';
 import { normalizeInputContentBlocks, summarizeInputContentBlocksForTrace } from '../../src/lib/input-content-blocks.js';
-import { getConfiguredModelOptions } from './claude-models.js';
+import { getClaudeProviderSnapshot, getConfiguredModelOptions } from './claude-models.js';
 import { parseClaudeApiRetryStatus, parseClaudeRetryStatus, splitClaudeStderrBuffer } from './claude-stderr.js';
 
 export type ClaudePermissionMode =
@@ -28,6 +28,7 @@ type StreamInput = {
   permissionMode: ClaudePermissionMode;
   model?: string;
   effort?: ClaudeEffortLevel;
+  providerFingerprint?: string;
   toolResult?: {
     requestId: string;
     content: string;
@@ -269,6 +270,7 @@ type ClaudeRuntime = {
   permissionMode: ClaudePermissionMode;
   model?: string;
   effort?: ClaudeEffortLevel;
+  providerFingerprint?: string;
   inputMode: 'argv' | 'stdin';
   reusable: boolean;
   stdoutBuffer: string;
@@ -741,7 +743,12 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
   const streamStartedAtMs = Date.now();
   const command = resolveClaudeCommand();
   const commandResolvedAtMs = Date.now();
-  const runtimeKey = getRuntimeKey(input);
+  const providerSnapshot = getClaudeProviderSnapshot();
+  const runtimeInput = {
+    ...input,
+    providerFingerprint: providerSnapshot.fingerprint,
+  };
+  const runtimeKey = getRuntimeKey(runtimeInput);
 
   if (!command) {
     yield {
@@ -753,7 +760,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
   }
 
   const spawnStartedAtMs = Date.now();
-  const { runtime, reused } = getOrCreateClaudeRuntime(command, input);
+  const { runtime, reused } = getOrCreateClaudeRuntime(command, runtimeInput);
   const spawnReturnedAtMs = Date.now();
 
   if (runtime.currentRun) {
@@ -765,14 +772,14 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
     return;
   }
 
-  const state = createRunState(runId, input, runtime.sessionId ?? input.sessionId?.trim());
+  const state = createRunState(runId, runtimeInput, runtime.sessionId ?? runtimeInput.sessionId?.trim());
   runtime.currentRun = state;
   activeRuns.set(runId, {
     runtime,
     state,
     cancel: () => cancelRuntimeRun(runtime, runId),
   });
-  threadActiveRuns.set(getRuntimeKey(input), runId);
+  threadActiveRuns.set(getRuntimeKey(runtimeInput), runId);
 
   if (input.clientSubmitAtMs) {
     enqueueTrace(state, 'client_submit', input.clientSubmitAtMs);
@@ -782,6 +789,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
   }
   enqueueTrace(state, 'create_stream_started', streamStartedAtMs);
   enqueueTrace(state, 'claude_command_resolved', commandResolvedAtMs, command);
+  enqueueTrace(state, 'claude_provider_fingerprint', commandResolvedAtMs, providerSnapshot.fingerprint);
   if (reused) {
     enqueueTrace(state, 'claude_runtime_reused', spawnReturnedAtMs, runtimeKey);
   } else {
@@ -794,7 +802,7 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
     message: reused ? '已复用 Claude Code 会话' : '已启动 Claude Code 会话',
   });
 
-  writePromptToClaude(runtime, state, input);
+  writePromptToClaude(runtime, state, runtimeInput);
 
   while (!state.finished || state.queue.length > 0) {
     const next = state.queue.shift();
@@ -1137,6 +1145,7 @@ function isRuntimeCompatible(runtime: ClaudeRuntime, input: StreamInput) {
     runtime.permissionMode === input.permissionMode &&
     runtime.model === input.model &&
     runtime.effort === input.effort &&
+    runtime.providerFingerprint === input.providerFingerprint &&
     (!requestedSessionId || !runtime.sessionId || runtime.sessionId === requestedSessionId)
   );
 }
@@ -1253,6 +1262,7 @@ function spawnClaudeRuntime(command: string, input: StreamInput, inputMode: Clau
     permissionMode: input.permissionMode,
     model: input.model,
     effort: input.effort,
+    providerFingerprint: input.providerFingerprint,
     inputMode,
     reusable: inputMode === 'stdin',
     stdoutBuffer: '',

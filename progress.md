@@ -174,3 +174,26 @@
 - 文件树标题栏的刷新和隐藏按钮合并为右侧工具组，避免刷新按钮单独悬在标题区域。
 - 移除预览 tab 区的 `+` 和“隐藏文件树”按钮，避免按钮挤在文件 tab 后面；文件树隐藏后仅保留右上角小恢复按钮。
 - 右侧文件树标题栏高度和字号下调，`已更改文件` 与刷新/隐藏按钮的垂直对齐更贴近左侧 tab 行。
+
+## 2026-05-27
+
+### ccswitch provider 与运行时同步规划
+
+- 根据用户反馈，暂停直接修改模型切换逻辑，先进行全面规划。
+- 复核了 `.trellis/spec/frontend/state-management.md`、`.trellis/spec/backend/api-and-streaming.md`、`.trellis/spec/backend/quality-guidelines.md` 和 `openspec/conversation-runtime-upgrade.md` 中关于模型、provider、热 runtime、队列和恢复的约束。
+- 梳理了 `src/hooks/useClaudeRun.ts`、`src/lib/claude-model-selection.ts`、`src/lib/queued-prompts.ts`、`server/lib/claude-models.ts`、`server/lib/claude-service.ts` 的关键链路。
+- 确认当前问题不是单点 UI 选择问题，而是外部 provider 配置变化后，模型快照、thread metadata 和热 runtime 复用缺少统一契约。
+- 新增 `.trellis/tasks/ccswitch-provider-runtime-sync.md`，规划只读 provider 指纹、发送前模型快照刷新、runtime 指纹兼容、队列/审批/恢复边界和验证矩阵。
+- 本轮只写规划文档，没有修改运行时代码，没有启动或编译项目。
+
+### ccswitch provider 与运行时小修复
+
+- 后端新增只读 provider snapshot/fingerprint，基于 Claude Code 当前可见的 provider/model 环境配置计算脱敏指纹。
+- Claude runtime 复用条件加入 provider fingerprint，避免 `ccswitch` 从 GLM 切到 Mimo 后复用旧 GLM 热 runtime。
+- 前端普通发送和队列真正启动前会重新读取 `/api/claude/models`，再基于最新模型列表计算本次请求模型。
+- 旧 provider 默认模型值（例如 `glm-5.1`）在新 provider 模型列表下会回落到 `__default`，默认发送不再显式传旧模型；显式自定义模型继续保留。
+- 运行中审批、问答、guide 等 stdin 写回路径不被这次刷新打断，冷启动 tool-result 路径暂保持原行为。
+- 已运行 `node --import tsx --test server\lib\claude-models.test.ts`、`server\lib\claude-service.spawn.test.ts`、`src\lib\queued-prompts.test.ts`、`src\lib\claude-model-selection.test.ts`，全部通过。
+- 已运行 `npm run typecheck`，结果通过。
+- 已重启 `npm run dev`，后端监听 `http://127.0.0.1:3001`，前端监听 `http://127.0.0.1:5173/`。
+- 已验证 `/api/health`、`/api/claude/models` 和本地页面加载，浏览器 console error 为空。

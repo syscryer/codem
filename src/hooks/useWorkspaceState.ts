@@ -21,9 +21,9 @@ import type {
 } from '../types';
 
 type ThreadMetadataPatch = {
-  sessionId?: string;
+  sessionId?: string | null;
   workingDirectory?: string;
-  model?: string;
+  model?: string | null;
   permissionMode?: string;
 };
 
@@ -491,9 +491,9 @@ export function useWorkspaceState() {
           thread.id === threadId
             ? {
                 ...thread,
-                sessionId: payload.sessionId ?? thread.sessionId,
+                sessionId: hasOwn(payload, 'sessionId') ? payload.sessionId ?? '' : thread.sessionId,
                 workingDirectory: payload.workingDirectory ?? thread.workingDirectory,
-                model: payload.model ?? thread.model,
+                model: hasOwn(payload, 'model') ? payload.model ?? undefined : thread.model,
                 permissionMode: payload.permissionMode ?? thread.permissionMode,
                 updatedAt: new Date().toISOString(),
                 updatedLabel: '现在',
@@ -512,9 +512,9 @@ export function useWorkspaceState() {
         ...current,
         [threadId]: {
           ...existing,
-          sessionId: payload.sessionId ?? existing.sessionId,
+          sessionId: hasOwn(payload, 'sessionId') ? payload.sessionId ?? '' : existing.sessionId,
           workingDirectory: payload.workingDirectory ?? existing.workingDirectory,
-          model: payload.model ?? existing.model,
+          model: hasOwn(payload, 'model') ? payload.model ?? undefined : existing.model,
           permissionMode: payload.permissionMode ?? existing.permissionMode,
         },
       };
@@ -1361,4 +1361,8 @@ function truncateWorkspaceLogText(value: string, maxChars: number) {
   const headLength = Math.floor((maxChars - markerLength) * 0.5);
   const tailLength = Math.max(0, maxChars - markerLength - headLength);
   return `${value.slice(0, headLength)}${LOG_TRUNCATION_MARKER}${value.slice(-tailLength)}`;
+}
+
+function hasOwn<T extends object>(value: T, key: PropertyKey) {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }

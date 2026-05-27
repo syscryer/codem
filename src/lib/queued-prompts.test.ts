@@ -102,6 +102,22 @@ test('useClaudeRun accepts contentBlocks-only submissions instead of requiring p
   assert.match(useClaudeRunSource, /if \(requestContentBlocks\.length === 0 \|\| isThreadRunning\(thread\.id\)\) \{/);
 });
 
+test('useClaudeRun refreshes Claude model options before resolving the run request model', () => {
+  assert.match(useClaudeRunSource, /const previousModels = models;/);
+  assert.match(useClaudeRunSource, /const latestModels = options\?\.toolResult \? previousModels : \(await loadClaudeModels\(\)\) \?\? previousModels;/);
+  assert.match(
+    useClaudeRunSource,
+    /resolveRunModelSelection\(\s*runModelCandidate,\s*latestModels,\s*appModelSettings\.defaultModelId,\s*previousModels,\s*\)/,
+  );
+  assert.match(useClaudeRunSource, /model: requestModel,/);
+});
+
+test('useClaudeRun clears stale provider metadata and starts without the old session', () => {
+  assert.match(useClaudeRunSource, /staleProviderModel/);
+  assert.match(useClaudeRunSource, /const runSessionId = staleProviderModel && !options\?\.toolResult \? undefined : rawRunSessionId;/);
+  assert.match(useClaudeRunSource, /persistThreadMetadata\(thread\.id, \{\s*model: null,\s*sessionId: null,\s*\}\)/);
+});
+
 test('useClaudeRun stores safe user content block summaries and ConversationTurn renders them', () => {
   assert.match(useClaudeRunSource, /buildHistoryContentBlocks/);
   assert.match(

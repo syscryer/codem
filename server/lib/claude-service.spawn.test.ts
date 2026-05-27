@@ -37,7 +37,7 @@ test('continuing a Claude thread reuses a managed runtime before spawning a new 
   const isRuntimeCompatibleBody = extractFunctionBody('isRuntimeCompatible');
   const spawnClaudeRuntimeBody = extractFunctionBody('spawnClaudeRuntime');
 
-  assert.match(createClaudeStreamBody, /getOrCreateClaudeRuntime\(command,\s*input\)/);
+  assert.match(createClaudeStreamBody, /getOrCreateClaudeRuntime\(command,\s*runtimeInput\)/);
   assert.match(getOrCreateClaudeRuntimeBody, /threadRuntimes\.get\(key\)/);
   assert.match(getOrCreateClaudeRuntimeBody, /existing\.currentRun[\s\S]*reused:\s*false/);
   assert.match(getOrCreateClaudeRuntimeBody, /isRuntimeCompatible\(existing,\s*input\)/);
@@ -352,6 +352,18 @@ test('Claude effort is parsed, passed to the CLI, and included in runtime compat
   assert.match(isRuntimeCompatibleBody, /runtime\.effort\s*===\s*input\.effort/);
   assert.match(spawnClaudeRuntimeBody, /args\.push\(['"]--effort['"],\s*input\.effort\)/);
   assert.match(spawnClaudeRuntimeBody, /effort:\s*input\.effort/);
+});
+
+test('managed runtime compatibility includes the Claude provider fingerprint', () => {
+  const isRuntimeCompatibleBody = extractFunctionBody('isRuntimeCompatible');
+  const spawnClaudeRuntimeBody = extractFunctionBody('spawnClaudeRuntime');
+  const createClaudeStreamBody = extractFunctionBody('createClaudeStream');
+
+  assert.match(source, /providerFingerprint\?:\s*string/);
+  assert.match(source, /getClaudeProviderSnapshot/);
+  assert.match(createClaudeStreamBody, /providerFingerprint:\s*providerSnapshot\.fingerprint/);
+  assert.match(isRuntimeCompatibleBody, /runtime\.providerFingerprint\s*===\s*input\.providerFingerprint/);
+  assert.match(spawnClaudeRuntimeBody, /providerFingerprint:\s*input\.providerFingerprint/);
 });
 
 test('cold resume starts a stream-json runtime so tool results can be sent while running', () => {

@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_MODEL_VALUE, permissionMenuModes } from '../constants';
-import { resolveInitialClaudeModelId } from '../lib/claude-model-selection';
+import {
+  resolveInitialClaudeModelId,
+  resolveRunModelSelection,
+} from '../lib/claude-model-selection';
 import { normalizeSessionId, resolvePromptSubmissionSessionId } from '../lib/claude-run-session';
 import {
   buildHistoryContentBlocks,
@@ -63,9 +66,9 @@ import type {
 } from '../types';
 
 type ThreadMetadataPatch = {
-  sessionId?: string;
+  sessionId?: string | null;
   workingDirectory?: string;
-  model?: string;
+  model?: string | null;
   permissionMode?: string;
 };
 
@@ -310,9 +313,10 @@ export function useClaudeRun({
     try {
       const response = await fetch('/api/claude/models');
       const payload = (await response.json()) as ClaudeModelInfo;
+      const latestConfiguredModels = normalizeClaudeModelOptions(payload.models);
       setClaudeModels({
         available: payload.available === true,
-        models: normalizeClaudeModelOptions(payload.models),
+        models: latestConfiguredModels,
         error: typeof payload.error === 'string' ? payload.error : undefined,
       });
       setModelState((current) => {
@@ -320,10 +324,11 @@ export function useClaudeRun({
         modelRef.current = nextModel;
         return nextModel;
       });
+      return mergeModelOptions(latestConfiguredModels, appModelSettings.customModels);
     } catch (error) {
       const targetThreadId = activeThreadId;
       if (!targetThreadId) {
-        return;
+        return null;
       }
 
       appendDebug(targetThreadId, {
@@ -331,6 +336,7 @@ export function useClaudeRun({
         content: error instanceof Error ? error.message : '无法读取 Claude Code 模型列表',
         tone: 'error',
       });
+      return null;
     }
   }
 
@@ -775,12 +781,30 @@ export function useClaudeRun({
 
     const runWorkingDirectory =
       options?.workingDirectory?.trim() || thread.workingDirectory;
-    const runSessionId =
+    const rawRunSessionId =
       options?.sessionId && options.sessionId.trim() ? options.sessionId.trim() : undefined;
     const runPermissionMode = options?.permissionModeOverride ?? permissionMode;
-    const runModel = options?.modelOverride ?? modelRef.current;
+    const previousModels = models;
+    const latestModels = options?.toolResult ? previousModels : (await loadClaudeModels()) ?? previousModels;
+    const runModelCandidate = options?.modelOverride ?? modelRef.current;
+    const { selectedModelId: runModel, requestModel, staleProviderModel } = resolveRunModelSelection(
+      runModelCandidate,
+      latestModels,
+      appModelSettings.defaultModelId,
+      previousModels,
+    );
+    const runSessionId = staleProviderModel && !options?.toolResult ? undefined : rawRunSessionId;
+    if (!options?.modelOverride && !options?.toolResult && runModel !== modelRef.current) {
+      modelRef.current = runModel;
+      setModelState(runModel);
+    }
+    if (staleProviderModel && !options?.toolResult) {
+      void persistThreadMetadata(thread.id, {
+        model: null,
+        sessionId: null,
+      });
+    }
     const runEffort = normalizeClaudeEffortSelection(options?.effortOverride ?? effortRef.current);
-    const requestModel = resolveRequestModel(findModelOption(models, runModel), runModel);
     const requestEffort = resolveRequestEffort(runEffort);
     const turnContentBlocks = buildHistoryContentBlocks({
       prompt: trimmedPrompt,
@@ -1469,12 +1493,15 @@ export function useClaudeRun({
         };
       });
       if (context.threadId) {
-        void persistThreadMetadata(context.threadId, {
-          sessionId: event.sessionId,
-          model: context.model === DEFAULT_MODEL_VALUE ? undefined : context.model,
+        const metadataPatch: ThreadMetadataPatch = {
+          model: context.model === DEFAULT_MODEL_VALUE ? null : context.model,
           permissionMode: context.permissionMode,
           workingDirectory: context.workingDirectory,
-        });
+        };
+        if (event.sessionId) {
+          metadataPatch.sessionId = event.sessionId;
+        }
+        void persistThreadMetadata(context.threadId, metadataPatch);
       }
       schedulePersistThreadHistory(context.threadId);
     }
@@ -1539,7 +1566,7 @@ export function useClaudeRun({
 
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, {
-        model: nextModel === DEFAULT_MODEL_VALUE ? undefined : nextModel,
+        model: nextModel === DEFAULT_MODEL_VALUE ? null : nextModel,
       });
     }
   }
@@ -2486,22 +2513,6 @@ function normalizeClaudeModelOptions(value: unknown): ClaudeModelOption[] {
   }
 
   return result;
-}
-
-function findModelOption(models: ClaudeModelOption[], modelId: string) {
-  return models.find((option) => option.id === modelId);
-}
-
-function resolveRequestModel(option: ClaudeModelOption | undefined, modelId: string) {
-  if (!option) {
-    return modelId === DEFAULT_MODEL_VALUE ? undefined : modelId;
-  }
-
-  if (option.id === DEFAULT_MODEL_VALUE || option.kind === 'default') {
-    return undefined;
-  }
-
-  return option.model || option.id;
 }
 
 function normalizeClaudeEffortSelection(value: unknown): ClaudeEffortSelection {

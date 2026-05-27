@@ -112,6 +112,132 @@ test('getThreadHistory keeps stored cost metrics when transcript lacks total_cos
   }
 });
 
+test('updateThreadMetadata clears a stored model when model is null', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-history-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+
+  try {
+    mkdirSync(repo, { recursive: true });
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const { createProject, createThread, updateThreadMetadata, getWorkspaceBootstrap } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const threadId = createThread(projectId, 'clear-model');
+          updateThreadMetadata(threadId, { model: 'glm-5.1' });
+          updateThreadMetadata(threadId, { model: null });
+          const workspace = getWorkspaceBootstrap();
+          const thread = workspace.projects[0].threads.find((item) => item.id === threadId);
+          console.log(JSON.stringify({ model: thread?.model ?? null }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+          USERPROFILE: root,
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    assert.deepEqual(JSON.parse(child.stdout.trim()), { model: null });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('updateThreadMetadata clears a stored session when sessionId is null', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-history-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+  const sessionId = 'session-old-1';
+  const transcriptPath = path.join(
+    root,
+    '.claude',
+    'projects',
+    path.resolve(repo).replace(/[^a-zA-Z0-9]/g, '-'),
+    `${sessionId}.jsonl`,
+  );
+
+  try {
+    mkdirSync(repo, { recursive: true });
+    mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: 'user',
+          sessionId,
+          cwd: repo,
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'hello' }],
+          },
+          timestamp: '2026-05-05T00:00:00.000Z',
+        }),
+      ].join('\n'),
+      'utf8',
+    );
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const { createProject, createThread, updateThreadMetadata, getWorkspaceBootstrap } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const threadId = createThread(projectId, 'clear-session');
+          updateThreadMetadata(threadId, { sessionId: ${JSON.stringify(sessionId)} });
+          const beforeWorkspace = getWorkspaceBootstrap();
+          const beforeThread = beforeWorkspace.projects[0].threads.find((item) => item.id === threadId);
+          updateThreadMetadata(threadId, { sessionId: null });
+          const afterWorkspace = getWorkspaceBootstrap();
+          const afterThreads = afterWorkspace.projects[0].threads;
+          const afterThread = afterThreads.find((item) => item.id === threadId);
+          console.log(JSON.stringify({
+            beforeSessionId: beforeThread?.sessionId ?? null,
+            afterSessionId: afterThread?.sessionId ?? null,
+            oldSessionThreads: afterThreads.filter((item) => item.sessionId === ${JSON.stringify(sessionId)}).length,
+          }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+          USERPROFILE: root,
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    assert.deepEqual(JSON.parse(child.stdout.trim()), {
+      beforeSessionId: sessionId,
+      afterSessionId: '',
+      oldSessionThreads: 0,
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('getThreadHistory restores AskUserQuestion answers from updatedInput-style tool results', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-history-'));
   const appData = path.join(root, 'appdata');
