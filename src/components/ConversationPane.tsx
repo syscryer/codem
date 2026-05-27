@@ -17,6 +17,8 @@ const BOTTOM_ANCHOR_THRESHOLD_PX = 96;
 
 type ConversationPaneProps = {
   activeThread: ThreadDetail | null;
+  isNewChatDraft: boolean;
+  activeProjectName?: string;
   clockNowMs: number;
   isRunning: boolean;
   activeTurnId: string;
@@ -45,6 +47,8 @@ type ConversationPaneProps = {
 
 export function ConversationPane({
   activeThread,
+  isNewChatDraft,
+  activeProjectName,
   clockNowMs,
   isRunning,
   activeTurnId,
@@ -143,7 +147,12 @@ export function ConversationPane({
   return (
     <div className="conversation-shell">
       <section className="conversation" ref={transcriptRef}>
-        {!activeThread ? (
+        {!activeThread && isNewChatDraft ? (
+          <div className="empty-state">
+            <h3>{activeProjectName ? `在「${activeProjectName}」中创建会话` : '创建新会话'}</h3>
+            <p>第一句话会落进当前项目，新的会话会从这里自然展开。</p>
+          </div>
+        ) : !activeThread ? (
           <div className="empty-state">
             <h3>从左侧选择一个项目或聊天</h3>
             <p>CodeM 会导入 Claude Code 本地 session，并把它们组织到项目工作区下面。</p>

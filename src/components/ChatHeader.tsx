@@ -25,6 +25,7 @@ const LAUNCH_SCRIPTS_STORAGE_KEY = 'codem::project-launch-scripts';
 type ChatHeaderProps = {
   activeProject: ProjectSummary | null;
   activeThread: ThreadDetail | null;
+  isNewChatDraft: boolean;
 } & ChatHeaderActionsProps;
 
 export type ChatHeaderActionsProps = {
@@ -53,6 +54,7 @@ export type ChatHeaderActionsProps = {
 export function ChatHeader({
   activeProject,
   activeThread,
+  isNewChatDraft,
   openTargets,
   selectedOpenTargetId,
   runAvailable,
@@ -76,7 +78,7 @@ export function ChatHeader({
   return (
     <header className="chat-header">
       <div className="thread-title">
-        <h2>{activeThread?.title ?? '选择一个聊天'}</h2>
+        <h2>{activeThread?.title ?? (isNewChatDraft ? '新建聊天' : '选择一个聊天')}</h2>
         <span className="thread-project">{activeProject?.name ?? '未选择项目'}</span>
         <button type="button" className="more-button thread-more-button" aria-label="更多">
           <MoreHorizontal size={15} />

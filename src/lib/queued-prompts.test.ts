@@ -84,6 +84,37 @@ test('getQueuedPromptGuideAvailability allows guide delivery for normal running 
   );
 });
 
+test('getQueuedPromptGuideAvailability waits for the backend run id before enabling guide delivery', () => {
+  assert.deepEqual(
+    getQueuedPromptGuideAvailability({
+      isRunning: true,
+      runId: '',
+      hasPendingHumanInput: false,
+      queueLength: 1,
+    }),
+    {
+      available: false,
+      reason: '当前没有运行中的任务。',
+    },
+  );
+});
+
+test('guideQueuedPrompt sends the queued prompt to the active run without creating a new thread', () => {
+  const guideQueuedPromptSource = extractFunctionBody(useClaudeRunSource, 'guideQueuedPrompt');
+
+  assert.match(
+    guideQueuedPromptSource,
+    /const context = targetThreadId \? runContextsByThreadIdRef\.current\.get\(targetThreadId\) : undefined;/,
+  );
+  assert.match(guideQueuedPromptSource, /if \(!targetThreadId \|\| !context\?\.runId\) \{/);
+  assert.match(
+    guideQueuedPromptSource,
+    /fetch\(`\/api\/claude\/run\/\$\{encodeURIComponent\(context\.runId\)\}\/guide`/,
+  );
+  assert.match(guideQueuedPromptSource, /contentBlocks: targetPrompt\.contentBlocks,/);
+  assert.doesNotMatch(guideQueuedPromptSource, /ensureActiveThread|createThread|startRun\(/);
+});
+
 test('useClaudeRun preserves contentBlocks across queue, direct send, and guide payloads', () => {
   assert.match(useClaudeRunSource, /type QueuedPrompt = \{[\s\S]*contentBlocks\?: InputContentBlock\[\];/);
   assert.match(useClaudeRunSource, /type PromptSubmission = \{[\s\S]*contentBlocks\?: InputContentBlock\[\];/);
@@ -135,3 +166,27 @@ test('useClaudeRun stores safe user content block summaries and ConversationTurn
     /blocks\.filter\(\(block\) => block\.type !== 'text' && block\.type !== 'file_reference'\)/,
   );
 });
+
+function extractFunctionBody(source: string, functionName: string) {
+  const signature = `async function ${functionName}(`;
+  const start = source.indexOf(signature);
+  assert.notEqual(start, -1, `missing ${functionName}`);
+
+  const openBrace = source.indexOf('{', start);
+  assert.notEqual(openBrace, -1, `missing ${functionName} body`);
+
+  let depth = 0;
+  for (let index = openBrace; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(openBrace + 1, index);
+      }
+    }
+  }
+
+  assert.fail(`unterminated ${functionName}`);
+}

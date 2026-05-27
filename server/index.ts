@@ -43,6 +43,7 @@ import {
   getProjectGitSummary,
   getProjectGitStatus,
   getThreadHistory,
+  getThreadSummary,
   getUsageStats,
   getWorkspaceBootstrap,
   listProjectFiles,
@@ -1061,7 +1062,7 @@ app.post('/api/projects/:projectId/threads', (request, response) => {
     response.json({
       ok: true,
       threadId,
-      workspace: getWorkspaceBootstrap(),
+      thread: getThreadSummary(threadId),
     });
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '新建聊天失败');

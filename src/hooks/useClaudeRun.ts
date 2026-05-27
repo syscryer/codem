@@ -40,6 +40,7 @@ import {
   upsertToolStepDeep,
 } from '../lib/conversation';
 import { resolveQueuedPromptRunOptions } from '../lib/queued-prompts';
+import { buildNewChatTitleFromSubmission } from '../lib/new-chat-draft';
 import type {
   AssistantItem,
   ApprovalDecision,
@@ -141,7 +142,7 @@ type UseClaudeRunArgs = {
   activeThreadSummary: ThreadSummary | null;
   appModelSettings: ModelSettings;
   defaultPermissionMode: PermissionMode;
-  createThread: (projectId: string) => Promise<ThreadSummary | null>;
+  createThread: (projectId: string, title?: string, options?: { showToast?: boolean }) => Promise<ThreadSummary | null>;
   handlePickProjectDirectory: () => Promise<void>;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
   updateThreadDetail: (
@@ -340,7 +341,7 @@ export function useClaudeRun({
     }
   }
 
-  async function ensureActiveThread() {
+  async function ensureActiveThread(submission?: PromptSubmission) {
     if (activeThreadSummary) {
       return activeThreadSummary;
     }
@@ -352,7 +353,8 @@ export function useClaudeRun({
     }
 
     try {
-      return await createThread(activeProjectId);
+      const threadTitle = submission ? buildNewChatTitleFromSubmission(submission) : undefined;
+      return await createThread(activeProjectId, threadTitle, { showToast: false });
     } catch (error) {
       showToast(error instanceof Error ? error.message : '新建聊天失败', 'error');
       return null;
@@ -784,28 +786,7 @@ export function useClaudeRun({
     const rawRunSessionId =
       options?.sessionId && options.sessionId.trim() ? options.sessionId.trim() : undefined;
     const runPermissionMode = options?.permissionModeOverride ?? permissionMode;
-    const previousModels = models;
-    const latestModels = options?.toolResult ? previousModels : (await loadClaudeModels()) ?? previousModels;
-    const runModelCandidate = options?.modelOverride ?? modelRef.current;
-    const { selectedModelId: runModel, requestModel, staleProviderModel } = resolveRunModelSelection(
-      runModelCandidate,
-      latestModels,
-      appModelSettings.defaultModelId,
-      previousModels,
-    );
-    const runSessionId = staleProviderModel && !options?.toolResult ? undefined : rawRunSessionId;
-    if (!options?.modelOverride && !options?.toolResult && runModel !== modelRef.current) {
-      modelRef.current = runModel;
-      setModelState(runModel);
-    }
-    if (staleProviderModel && !options?.toolResult) {
-      void persistThreadMetadata(thread.id, {
-        model: null,
-        sessionId: null,
-      });
-    }
     const runEffort = normalizeClaudeEffortSelection(options?.effortOverride ?? effortRef.current);
-    const requestEffort = resolveRequestEffort(runEffort);
     const turnContentBlocks = buildHistoryContentBlocks({
       prompt: trimmedPrompt,
       attachments: options?.attachments,
@@ -828,8 +809,8 @@ export function useClaudeRun({
       traceStartedAtMs: submitAtMs,
       firstClientDeltaAtMs: 0,
       firstTextApplyAtMs: 0,
-      latestSessionId: runSessionId,
-      model: runModel,
+      latestSessionId: rawRunSessionId,
+      model: modelRef.current || DEFAULT_MODEL_VALUE,
       effort: runEffort,
       permissionMode: runPermissionMode,
     };
@@ -862,6 +843,33 @@ export function useClaudeRun({
       thread,
     );
 
+    const previousModels = models;
+    const latestModels = options?.toolResult ? previousModels : (await loadClaudeModels()) ?? previousModels;
+    if (!runContextsByThreadIdRef.current.has(context.threadId)) {
+      return true;
+    }
+
+    const runModelCandidate = options?.modelOverride ?? modelRef.current;
+    const { selectedModelId: runModel, requestModel, staleProviderModel } = resolveRunModelSelection(
+      runModelCandidate,
+      latestModels,
+      appModelSettings.defaultModelId,
+      previousModels,
+    );
+    const runSessionId = staleProviderModel && !options?.toolResult ? undefined : rawRunSessionId;
+    context.latestSessionId = runSessionId;
+    context.model = runModel;
+    if (!options?.modelOverride && !options?.toolResult && runModel !== modelRef.current) {
+      modelRef.current = runModel;
+      setModelState(runModel);
+    }
+    if (staleProviderModel && !options?.toolResult) {
+      void persistThreadMetadata(thread.id, {
+        model: null,
+        sessionId: null,
+      });
+    }
+    const requestEffort = resolveRequestEffort(runEffort);
     const controller = new AbortController();
     context.abortController = controller;
 
@@ -1544,7 +1552,7 @@ export function useClaudeRun({
   }
 
   async function submitPrompt(submission: PromptSubmission) {
-    const thread = await ensureActiveThread();
+    const thread = await ensureActiveThread(submission);
     if (!thread) {
       return false;
     }

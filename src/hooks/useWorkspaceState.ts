@@ -2,6 +2,7 @@ import { startTransition, useEffect, useMemo, useRef, useState, type MutableRefO
 import { EMPTY_PANEL_STATE } from '../constants';
 import { createThreadDetail, metricsFromTurn, normalizeTurnsForPersist, repairConversationTurn } from '../lib/conversation';
 import { pickDesktopDirectory } from '../lib/desktop-dialog';
+import { resolveNewChatDraftProjectId } from '../lib/new-chat-draft';
 import { buildWorkspaceSidebarSections } from '../lib/workspace-pinning';
 import type {
   CloneTask,
@@ -57,6 +58,7 @@ export function useWorkspaceState() {
   const [panelState, setPanelState] = useState<PanelState>(EMPTY_PANEL_STATE);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [isNewChatDraft, setIsNewChatDraft] = useState(false);
   const [threadDetails, setThreadDetails] = useState<Record<string, ThreadDetail>>({});
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -66,6 +68,8 @@ export function useWorkspaceState() {
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const threadDetailsRef = useRef<Record<string, ThreadDetail>>({});
+  const activeProjectIdRef = useRef<string | null>(null);
+  const newChatDraftRef = useRef(false);
   const directoryPickerPromiseRef = useRef<Promise<string | null> | null>(null);
   const persistHistoryStateRef = useRef<
     Map<
@@ -138,6 +142,14 @@ export function useWorkspaceState() {
   }, [threadDetails]);
 
   useEffect(() => {
+    activeProjectIdRef.current = activeProjectId;
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    newChatDraftRef.current = isNewChatDraft;
+  }, [isNewChatDraft]);
+
+  useEffect(() => {
     if (!toast) {
       return undefined;
     }
@@ -164,11 +176,22 @@ export function useWorkspaceState() {
     });
   }
 
-  function syncWorkspace(payload: WorkspaceBootstrap) {
+  function syncWorkspace(payload: WorkspaceBootstrap, options?: { preserveNewChatDraft?: boolean }) {
+    const preserveNewChatDraft = options?.preserveNewChatDraft ?? newChatDraftRef.current;
+    const nextActiveProjectId = preserveNewChatDraft
+      ? resolveNewChatDraftProjectId({
+          currentProjectId: activeProjectIdRef.current,
+          payloadProjectId: payload.activeProjectId,
+          projects: payload.projects,
+        })
+      : payload.activeProjectId;
     setProjects(payload.projects);
     setPanelState(payload.panelState);
-    setActiveProjectId(payload.activeProjectId);
-    setActiveThreadId(payload.activeThreadId);
+    activeProjectIdRef.current = nextActiveProjectId;
+    setActiveProjectId(nextActiveProjectId);
+    setActiveThreadId(preserveNewChatDraft ? null : payload.activeThreadId);
+    newChatDraftRef.current = preserveNewChatDraft;
+    setIsNewChatDraft(preserveNewChatDraft);
     setCollapsedProjects((current) => {
       const next = { ...current };
       for (const project of payload.projects) {
@@ -534,16 +557,32 @@ export function useWorkspaceState() {
       throw new Error(await response.text());
     }
 
-    const payload = (await response.json()) as { threadId: string; workspace: WorkspaceBootstrap };
-    const createdThread =
-      payload.workspace.projects
-        .find((project) => project.id === projectId)
-        ?.threads.find((thread) => thread.id === payload.threadId) ?? null;
+    const payload = (await response.json()) as { threadId: string; thread: ThreadSummary };
+    const createdThread = payload.thread;
 
-    syncWorkspace(payload.workspace);
+    setProjects((current) =>
+      current.map((project) =>
+        project.id === projectId
+          ? {
+              ...project,
+              updatedAt: createdThread.updatedAt,
+              threads: [
+                createdThread,
+                ...project.threads.filter((thread) => thread.id !== createdThread.id),
+              ],
+            }
+          : project,
+      ),
+    );
+    setThreadDetails((current) => ({
+      ...current,
+      [createdThread.id]: current[createdThread.id] ?? createThreadDetail(createdThread),
+    }));
+    activeProjectIdRef.current = projectId;
     setActiveProjectId(projectId);
     setActiveThreadId(payload.threadId);
-    await persistSelection(projectId, payload.threadId);
+    newChatDraftRef.current = false;
+    setIsNewChatDraft(false);
     if (options?.showToast !== false) {
       showToast('已新建聊天');
     }
@@ -593,8 +632,11 @@ export function useWorkspaceState() {
 
     const firstThread = project.threads[0];
     if (firstThread) {
+      activeProjectIdRef.current = project.id;
       setActiveProjectId(project.id);
       setActiveThreadId(firstThread.id);
+      newChatDraftRef.current = false;
+      setIsNewChatDraft(false);
       await persistSelection(project.id, firstThread.id);
       showToast('已切换到工作树');
       return;
@@ -1036,16 +1078,36 @@ export function useWorkspaceState() {
   }
 
   async function selectThread(projectId: string, threadId: string) {
+    activeProjectIdRef.current = projectId;
     setActiveProjectId(projectId);
     setActiveThreadId(threadId);
+    newChatDraftRef.current = false;
+    setIsNewChatDraft(false);
     await persistSelection(projectId, threadId);
   }
 
   async function selectProject(projectId: string) {
     const project = projects.find((item) => item.id === projectId);
+    activeProjectIdRef.current = projectId;
     setActiveProjectId(projectId);
     setActiveThreadId(project?.threads[0]?.id ?? null);
+    newChatDraftRef.current = false;
+    setIsNewChatDraft(false);
     await persistSelection(projectId, project?.threads[0]?.id ?? null);
+  }
+
+  async function enterNewChatDraft(projectId: string | null) {
+    activeProjectIdRef.current = projectId;
+    setActiveProjectId(projectId);
+    setActiveThreadId(null);
+    newChatDraftRef.current = true;
+    setIsNewChatDraft(true);
+    await persistSelection(projectId, null);
+  }
+
+  function clearNewChatDraft() {
+    newChatDraftRef.current = false;
+    setIsNewChatDraft(false);
   }
 
   async function handlePanelStateChange(nextState: Partial<PanelState>) {
@@ -1151,6 +1213,7 @@ export function useWorkspaceState() {
     panelState,
     activeProjectId,
     activeThreadId,
+    isNewChatDraft,
     threadDetails,
     searchOpen,
     searchQuery,
@@ -1172,10 +1235,12 @@ export function useWorkspaceState() {
     setConfirmDialog,
     setActiveProjectId,
     setActiveThreadId,
+    clearNewChatDraft,
     showToast,
     syncWorkspace,
     loadWorkspace,
     createThread,
+    enterNewChatDraft,
     createProjectFromPath,
     openWorktreePath,
     selectDirectoryPath,

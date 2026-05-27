@@ -117,6 +117,17 @@ export type ThreadTurn = {
     | { id: string; type: 'thinking'; text: string }
     | {
         id: string;
+        type: 'system-command';
+        command: string;
+        title: string;
+        cardType: 'status' | 'context' | 'cost' | 'compact';
+        state: 'running' | 'done' | 'error';
+        summary?: string;
+        details?: Record<string, unknown>;
+        errorMessage?: string;
+      }
+    | {
+        id: string;
         type: 'tool';
         tool: {
           id: string;
@@ -421,7 +432,7 @@ type StoredMessageRow = {
   turn_id: string;
   turn_sort: number;
   item_sort: number;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system-command';
   content: string;
   status: string | null;
   activity: string | null;
@@ -467,6 +478,7 @@ type StoredTurnState = ThreadTurn & {
   turnSort: number;
   itemBuckets: Array<
     | { itemSort: number; type: 'text'; text: string }
+    | { itemSort: number; type: 'system-command'; item: Extract<ThreadTurn['items'][number], { type: 'system-command' }> }
     | {
         itemSort: number;
         type: 'tool';
@@ -518,20 +530,7 @@ export function getWorkspaceBootstrap(): WorkspaceBootstrap {
   const groupedThreads = new Map<string, ThreadSummary[]>();
   for (const row of visibleThreadRows) {
     const list = groupedThreads.get(row.project_id) ?? [];
-    list.push({
-      id: row.id,
-      projectId: row.project_id,
-      title: row.title,
-      sessionId: row.session_id ?? '',
-      workingDirectory: row.working_directory,
-      updatedAt: row.updated_at,
-      updatedLabel: formatRelativeTime(row.updated_at),
-      provider: row.provider,
-      imported: row.imported === 1,
-      model: row.model ?? undefined,
-      permissionMode: row.permission_mode ?? undefined,
-      pinnedAt: row.pinned_at ?? undefined,
-    });
+    list.push(toThreadSummary(row));
     groupedThreads.set(row.project_id, list);
   }
 
@@ -707,6 +706,39 @@ export function createThread(projectId: string, title?: string) {
   writeStateValue('activeThreadId', id);
 
   return id;
+}
+
+export function getThreadSummary(threadId: string) {
+  const row = db
+    .prepare(`
+      SELECT id, project_id, provider, title, custom_title, session_id, transcript_path, working_directory, model, permission_mode, imported, created_at, updated_at, pinned_at
+      FROM threads
+      WHERE id = ?
+    `)
+    .get(threadId) as StoredThreadRow | undefined;
+
+  if (!row) {
+    throw new Error('聊天不存在');
+  }
+
+  return toThreadSummary(row);
+}
+
+function toThreadSummary(row: StoredThreadRow): ThreadSummary {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    title: row.title,
+    sessionId: row.session_id ?? '',
+    workingDirectory: row.working_directory,
+    updatedAt: row.updated_at,
+    updatedLabel: formatRelativeTime(row.updated_at),
+    provider: row.provider,
+    imported: row.imported === 1,
+    model: row.model ?? undefined,
+    permissionMode: row.permission_mode ?? undefined,
+    pinnedAt: row.pinned_at ?? undefined,
+  };
 }
 
 export function renameThread(threadId: string, title: string) {
@@ -1045,6 +1077,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[], options
           ? turn.items.filter(
               (item) =>
                 item.type === 'tool' ||
+                item.type === 'system-command' ||
                 ((item.type === 'text' || item.type === 'thinking') && item.text.trim()),
             )
           : turn.assistantText.trim()
@@ -1061,6 +1094,36 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[], options
             itemIndex,
             'assistant',
             item.type === 'thinking' ? serializeThinkingContent(item.text) : item.text,
+            turnStatus,
+            turn.activity ?? null,
+            turn.metrics ?? null,
+            turn.sessionId ?? null,
+            turn.phase ?? null,
+            turn.startedAtMs ?? null,
+            turn.durationMs ?? null,
+            turn.inputTokens ?? null,
+            turn.outputTokens ?? null,
+            turn.cacheCreationInputTokens ?? null,
+            turn.cacheReadInputTokens ?? null,
+            serializeContextUsage(turn.contextUsage),
+            turn.totalCostUsd ?? null,
+            serializePendingApprovalRequests(turn.pendingApprovalRequests),
+            null,
+            null,
+            baseCreatedAt,
+          );
+          return;
+        }
+
+        if (item.type === 'system-command') {
+          insertMessage.run(
+            randomUUID(),
+            threadId,
+            turn.id,
+            turnIndex,
+            itemIndex,
+            'system-command',
+            serializeSystemCommandItem(item),
             turnStatus,
             turn.activity ?? null,
             turn.metrics ?? null,
@@ -2294,6 +2357,9 @@ function readClaudeSessionMetadata(transcriptPath: string): ClaudeSessionMetadat
       if (payload.isSidechain || payload.isMeta) {
         continue;
       }
+      if (isClaudeTaskNotificationPayload(payload)) {
+        continue;
+      }
 
       if (!sessionId) {
         const candidate = readString(payload, ['sessionId', 'session_id']);
@@ -2414,9 +2480,20 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
     if (payload.isMeta) {
       continue;
     }
+    if (isClaudeTaskNotificationPayload(payload)) {
+      continue;
+    }
 
     const payloadTimestampMs = parseIsoTimestampMs(readString(payload, ['timestamp']));
     const message = payload.message;
+    if (payload.type === 'attachment') {
+      const guideText = extractGuideAttachmentText(payload);
+      if (guideText && currentTurn) {
+        currentTurn.items.push(createGuideSystemCommandItem(guideText));
+      }
+      continue;
+    }
+
     if (payload.isSidechain) {
       const parentToolUseId = readString(payload, ['parent_tool_use_id']);
       if (!parentToolUseId || !message || typeof message !== 'object') {
@@ -2770,6 +2847,15 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
       turn.userText = row.content;
       turn.userAttachments = parseStoredUserAttachments(row.user_attachments_json) ?? turn.userAttachments;
       turn.userContentBlocks = parseStoredUserContentBlocks(row.user_content_blocks_json) ?? turn.userContentBlocks;
+    } else if (row.role === 'system-command') {
+      const item = parseStoredSystemCommandItem(row.content);
+      if (item) {
+        turn.itemBuckets.push({
+          itemSort: row.item_sort,
+          type: 'system-command',
+          item,
+        });
+      }
     } else if (row.content.trim()) {
       turn.assistantText += row.content;
       turn.itemBuckets.push({
@@ -2848,13 +2934,16 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
         .map((entry) =>
           entry.type === 'text'
             ? { id: randomUUID(), type: 'text' as const, text: entry.text }
-            : { id: entry.tool.id, type: 'tool' as const, tool: entry.tool },
+            : entry.type === 'system-command'
+              ? entry.item
+              : { id: entry.tool.id, type: 'tool' as const, tool: entry.tool },
         ),
     }));
 }
 
 function shouldReparseStoredHistory(turns: ThreadTurn[]) {
   return turns.some((turn) =>
+    hasStoredTaskNotificationPollution(turn) ||
     turn.tools.some(
       (tool) =>
         tool.name === 'tool_result' ||
@@ -2917,6 +3006,24 @@ function hasPendingHumanRequest(turn: ThreadTurn) {
 
 function hasUserAttachments(turn: ThreadTurn) {
   return Boolean(turn.userAttachments?.length);
+}
+
+function hasStoredTaskNotificationPollution(turn: ThreadTurn) {
+  if (isTaskNotificationText(turn.userText) || isTaskNotificationText(turn.assistantText)) {
+    return true;
+  }
+
+  return turn.items.some((item) => {
+    if (item.type === 'text' || item.type === 'thinking') {
+      return isTaskNotificationText(item.text);
+    }
+
+    if (item.type === 'system-command') {
+      return isTaskNotificationText(item.summary) || isTaskNotificationText(item.errorMessage);
+    }
+
+    return false;
+  });
 }
 
 function isStoredHistoryOutdated(threadId: string, transcriptPath: string) {
@@ -4768,6 +4875,33 @@ function extractUserText(content: unknown) {
     .trim();
 }
 
+function extractGuideAttachmentText(payload: Record<string, unknown>) {
+  const attachment = asRecord(payload.attachment);
+  if (!attachment) {
+    return '';
+  }
+
+  if (readString(attachment, ['type']) !== 'queued_command' || readString(attachment, ['commandMode']) !== 'prompt') {
+    return '';
+  }
+
+  return extractUserText(attachment.prompt);
+}
+
+function createGuideSystemCommandItem(
+  summary: string,
+): Extract<ThreadTurn['items'][number], { type: 'system-command' }> {
+  return {
+    id: randomUUID(),
+    type: 'system-command',
+    command: 'guide',
+    title: '已引导当前运行',
+    cardType: 'compact',
+    state: 'done',
+    summary,
+  };
+}
+
 function normalizeImportedTitleText(value: string) {
   return value
     .split(/\r?\n/)
@@ -4794,6 +4928,51 @@ function normalizeImportedTitleText(value: string) {
 
 function containsToolResult(content: unknown) {
   return Array.isArray(content) && content.some((item) => item && typeof item === 'object' && (item as Record<string, unknown>).type === 'tool_result');
+}
+
+function isClaudeTaskNotificationPayload(payload: Record<string, unknown>) {
+  const origin = asRecord(payload.origin);
+  if (origin && readString(origin, ['kind']) === 'task-notification') {
+    return true;
+  }
+
+  const attachment = asRecord(payload.attachment);
+  if (attachment) {
+    if (readString(attachment, ['commandMode']) === 'task-notification') {
+      return true;
+    }
+
+    if (readString(attachment, ['type']) === 'queued_command' && isTaskNotificationContent(attachment.prompt)) {
+      return true;
+    }
+  }
+
+  const message = asRecord(payload.message);
+  return Boolean(message && isTaskNotificationContent(message.content));
+}
+
+function isTaskNotificationContent(content: unknown) {
+  if (typeof content === 'string') {
+    return isTaskNotificationText(content);
+  }
+
+  if (!Array.isArray(content)) {
+    return false;
+  }
+
+  return content.some((item) => {
+    if (!item || typeof item !== 'object') {
+      return false;
+    }
+
+    const block = item as Record<string, unknown>;
+    return block.type === 'text' && isTaskNotificationText(typeof block.text === 'string' ? block.text : '');
+  });
+}
+
+function isTaskNotificationText(text: string | undefined) {
+  const trimmed = text?.trim() ?? '';
+  return trimmed.startsWith('<task-notification>') && trimmed.includes('</task-notification>');
 }
 
 function extractContentBlocks(content: unknown) {
@@ -5215,6 +5394,79 @@ function parseStoredApprovalRequests(value: string | null): ApprovalRequest[] | 
   } catch {
     return undefined;
   }
+}
+
+function serializeSystemCommandItem(item: Extract<ThreadTurn['items'][number], { type: 'system-command' }>) {
+  const normalized = normalizeStoredSystemCommandItem(item);
+  return JSON.stringify(normalized ?? {
+    id: item.id,
+    type: 'system-command',
+    command: item.command,
+    title: item.title,
+    cardType: item.cardType,
+    state: item.state,
+  });
+}
+
+function parseStoredSystemCommandItem(
+  value: string | null,
+): Extract<ThreadTurn['items'][number], { type: 'system-command' }> | null {
+  if (!value?.trim()) {
+    return null;
+  }
+
+  try {
+    return normalizeStoredSystemCommandItem(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+function normalizeStoredSystemCommandItem(
+  value: unknown,
+): Extract<ThreadTurn['items'][number], { type: 'system-command' }> | null {
+  const item = asRecord(value);
+  if (!item) {
+    return null;
+  }
+
+  const command = firstNonEmptyString(item, ['command']);
+  const title = firstNonEmptyString(item, ['title']);
+  const cardType = normalizeSystemCommandCardType(firstNonEmptyString(item, ['cardType', 'card_type']));
+  const state = normalizeSystemCommandState(firstNonEmptyString(item, ['state', 'status']));
+  if (!command || !title) {
+    return null;
+  }
+
+  return {
+    id: firstNonEmptyString(item, ['id']) ?? randomUUID(),
+    type: 'system-command',
+    command,
+    title,
+    cardType,
+    state,
+    ...(typeof item.summary === 'string' && item.summary.trim() ? { summary: item.summary.trim() } : {}),
+    ...(asRecord(item.details) ? { details: asRecord(item.details) as Record<string, unknown> } : {}),
+    ...(typeof item.errorMessage === 'string' && item.errorMessage.trim()
+      ? { errorMessage: item.errorMessage.trim() }
+      : {}),
+  };
+}
+
+function normalizeSystemCommandCardType(value: string | undefined): Extract<ThreadTurn['items'][number], { type: 'system-command' }>['cardType'] {
+  if (value === 'status' || value === 'context' || value === 'cost' || value === 'compact') {
+    return value;
+  }
+
+  return 'status';
+}
+
+function normalizeSystemCommandState(value: string | undefined): Extract<ThreadTurn['items'][number], { type: 'system-command' }>['state'] {
+  if (value === 'running' || value === 'done' || value === 'error') {
+    return value;
+  }
+
+  return 'done';
 }
 
 function serializeContextUsage(usage: ThreadTurn['contextUsage']) {

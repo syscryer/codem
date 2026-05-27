@@ -398,6 +398,440 @@ test('getThreadHistory restores AskUserQuestion answers from updatedInput-style 
   }
 });
 
+test('getThreadHistory hides Claude task notification user events from visible turns', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-history-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+  const sessionId = 'session-task-notification-1';
+  const transcriptPath = path.join(
+    root,
+    '.claude',
+    'projects',
+    path.resolve(repo).replace(/[^a-zA-Z0-9]/g, '-'),
+    `${sessionId}.jsonl`,
+  );
+  const taskNotification = [
+    '<task-notification>',
+    '<task-id>a9d6d9088adaffeb5</task-id>',
+    '<tool-use-id>call_a07b3ff8454d456db63e970c</tool-use-id>',
+    '<status>completed</status>',
+    '<summary>Agent "Review assistant &amp; coordinator" completed</summary>',
+    '<result>Here is a concise summary of the findings.</result>',
+    '</task-notification>',
+  ].join('\n');
+
+  try {
+    mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: '还在等最后一个子代理。' }],
+          },
+          timestamp: '2026-05-05T00:00:00.000Z',
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: '还在等最后一个（assistant & coordinator）子代理。' }],
+          },
+          timestamp: '2026-05-05T00:00:01.000Z',
+        }),
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: '1245df' }],
+          },
+          timestamp: '2026-05-05T00:00:02.000Z',
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: '收到，看起来像是随手输入。' }],
+          },
+          timestamp: '2026-05-05T00:00:03.000Z',
+        }),
+        JSON.stringify({
+          type: 'queue-operation',
+          operation: 'enqueue',
+          content: taskNotification,
+          timestamp: '2026-05-05T00:00:04.000Z',
+        }),
+        JSON.stringify({
+          type: 'attachment',
+          attachment: {
+            type: 'queued_command',
+            prompt: [{ type: 'text', text: taskNotification }],
+            commandMode: 'prompt',
+          },
+          timestamp: '2026-05-05T00:00:04.500Z',
+        }),
+        JSON.stringify({
+          type: 'user',
+          origin: { kind: 'task-notification' },
+          message: {
+            role: 'user',
+            content: taskNotification,
+          },
+          timestamp: '2026-05-05T00:00:05.000Z',
+        }),
+      ].join('\n'),
+      'utf8',
+    );
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const { createProject, createThread, updateThreadMetadata, getThreadHistory } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const threadId = createThread(projectId, 'history-task-notification');
+          updateThreadMetadata(threadId, {
+            sessionId: ${JSON.stringify(sessionId)},
+            workingDirectory: ${JSON.stringify(repo)},
+          });
+          const history = getThreadHistory(threadId);
+          console.log(JSON.stringify(history.turns.map((turn) => ({
+            userText: turn.userText,
+            assistantText: turn.assistantText,
+            itemSummaries: turn.items.map((item) => item.type === 'system-command' ? item.summary : item.type),
+          }))));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+          USERPROFILE: root,
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    assert.deepEqual(JSON.parse(child.stdout.trim()), [
+      {
+        userText: '还在等最后一个子代理。',
+        assistantText: '还在等最后一个（assistant & coordinator）子代理。',
+        itemSummaries: ['text'],
+      },
+      {
+        userText: '1245df',
+        assistantText: '收到，看起来像是随手输入。',
+        itemSummaries: ['text'],
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('getThreadHistory reparses stored histories already polluted by Claude task notifications', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-history-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+  const sessionId = 'session-stored-task-notification-1';
+  const transcriptPath = path.join(
+    root,
+    '.claude',
+    'projects',
+    path.resolve(repo).replace(/[^a-zA-Z0-9]/g, '-'),
+    `${sessionId}.jsonl`,
+  );
+  const taskNotification = [
+    '<task-notification>',
+    '<task-id>stored-dirty-task</task-id>',
+    '<tool-use-id>call_stored_dirty</tool-use-id>',
+    '<status>completed</status>',
+    '<summary>Agent "Stored dirty task" completed</summary>',
+    '<result>Internal agent output.</result>',
+    '</task-notification>',
+  ].join('\n');
+
+  try {
+    mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: '还在等最后一个子代理。' }],
+          },
+          timestamp: '2026-05-05T00:00:00.000Z',
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: '还在等最后一个（assistant & coordinator）子代理。' }],
+          },
+          timestamp: '2026-05-05T00:00:01.000Z',
+        }),
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: '1245df' }],
+          },
+          timestamp: '2026-05-05T00:00:02.000Z',
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: '收到，看起来像是随手输入。' }],
+          },
+          timestamp: '2026-05-05T00:00:03.000Z',
+        }),
+        JSON.stringify({
+          type: 'user',
+          origin: { kind: 'task-notification' },
+          message: {
+            role: 'user',
+            content: taskNotification,
+          },
+          timestamp: '2026-05-05T00:00:04.000Z',
+        }),
+      ].join('\n'),
+      'utf8',
+    );
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const { createProject, createThread, saveThreadHistory, updateThreadMetadata, getThreadHistory } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const threadId = createThread(projectId, 'history-stored-task-notification');
+          saveThreadHistory(threadId, [
+            {
+              id: 'turn-clean-1',
+              userText: '还在等最后一个子代理。',
+              assistantText: '还在等最后一个（assistant & coordinator）子代理。',
+              status: 'done',
+              items: [{ id: 'item-clean-1', type: 'text', text: '还在等最后一个（assistant & coordinator）子代理。' }],
+              tools: [],
+            },
+            {
+              id: 'turn-dirty-guide',
+              userText: '1245df',
+              assistantText: '收到，看起来像是随手输入。',
+              status: 'done',
+              items: [
+                { id: 'item-clean-2', type: 'text', text: '收到，看起来像是随手输入。' },
+                {
+                  id: 'item-dirty-guide',
+                  type: 'system-command',
+                  command: 'guide',
+                  title: '已引导当前运行',
+                  cardType: 'compact',
+                  state: 'done',
+                  summary: ${JSON.stringify(taskNotification)},
+                },
+              ],
+              tools: [],
+            },
+            {
+              id: 'turn-dirty-user',
+              userText: ${JSON.stringify(taskNotification)},
+              assistantText: '',
+              status: 'stopped',
+              items: [],
+              tools: [],
+            },
+          ]);
+          updateThreadMetadata(threadId, {
+            sessionId: ${JSON.stringify(sessionId)},
+            workingDirectory: ${JSON.stringify(repo)},
+          });
+          const history = getThreadHistory(threadId);
+          console.log(JSON.stringify(history.turns.map((turn) => ({
+            userText: turn.userText,
+            assistantText: turn.assistantText,
+            itemSummaries: turn.items.map((item) => item.type === 'system-command' ? item.summary : item.type),
+          }))));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+          USERPROFILE: root,
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    assert.deepEqual(JSON.parse(child.stdout.trim()), [
+      {
+        userText: '还在等最后一个子代理。',
+        assistantText: '还在等最后一个（assistant & coordinator）子代理。',
+        itemSummaries: ['text'],
+      },
+      {
+        userText: '1245df',
+        assistantText: '收到，看起来像是随手输入。',
+        itemSummaries: ['text'],
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('getThreadHistory restores running guide attachments as guide cards instead of user turns', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-history-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+  const sessionId = 'session-guide-attachment-1';
+  const transcriptPath = path.join(
+    root,
+    '.claude',
+    'projects',
+    path.resolve(repo).replace(/[^a-zA-Z0-9]/g, '-'),
+    `${sessionId}.jsonl`,
+  );
+
+  try {
+    mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: '请等待 25 秒后回复' }],
+          },
+          timestamp: '2026-05-05T00:00:00.000Z',
+        }),
+        JSON.stringify({
+          type: 'attachment',
+          attachment: {
+            type: 'queued_command',
+            prompt: [{ type: 'text', text: '1245df' }],
+            commandMode: 'prompt',
+          },
+          timestamp: '2026-05-05T00:00:01.000Z',
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: '收到，引导内容是 1245df。' }],
+          },
+          timestamp: '2026-05-05T00:00:02.000Z',
+        }),
+        JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          duration_ms: 1200,
+          timestamp: '2026-05-05T00:00:03.000Z',
+        }),
+      ].join('\n'),
+      'utf8',
+    );
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const { createProject, createThread, updateThreadMetadata, getThreadHistory } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const threadId = createThread(projectId, 'history-guide-attachment');
+          updateThreadMetadata(threadId, {
+            sessionId: ${JSON.stringify(sessionId)},
+            workingDirectory: ${JSON.stringify(repo)},
+          });
+          const first = getThreadHistory(threadId).turns;
+          const second = getThreadHistory(threadId).turns;
+          const summarize = (turns) => turns.map((turn) => ({
+            userText: turn.userText,
+            assistantText: turn.assistantText,
+            items: turn.items.map((item) => item.type === 'system-command'
+              ? {
+                  type: item.type,
+                  command: item.command,
+                  title: item.title,
+                  cardType: item.cardType,
+                  state: item.state,
+                  summary: item.summary,
+                }
+              : {
+                  type: item.type,
+                  text: item.text,
+                }),
+          }));
+          console.log(JSON.stringify({ first: summarize(first), second: summarize(second) }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+          USERPROFILE: root,
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    const expected = [
+      {
+        userText: '请等待 25 秒后回复',
+        assistantText: '收到，引导内容是 1245df。',
+        items: [
+          {
+            type: 'system-command',
+            command: 'guide',
+            title: '已引导当前运行',
+            cardType: 'compact',
+            state: 'done',
+            summary: '1245df',
+          },
+          {
+            type: 'text',
+            text: '收到，引导内容是 1245df。',
+          },
+        ],
+      },
+    ];
+    assert.deepEqual(JSON.parse(child.stdout.trim()), {
+      first: expected,
+      second: expected,
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('saveThreadHistory stores only safe user content block summaries', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-history-'));
   const appData = path.join(root, 'appdata');

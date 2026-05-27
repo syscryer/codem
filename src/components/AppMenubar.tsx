@@ -12,6 +12,7 @@ type AppMenubarProps = {
   platform: DesktopPlatform;
   activeProject: ProjectSummary | null;
   activeThread: ThreadDetail | null;
+  isNewChatDraft: boolean;
   sidebarVisible: boolean;
   windowMaterial: WindowMaterialMode;
   supportedWindowMaterials: WindowMaterialMode[];
@@ -96,6 +97,7 @@ export function AppMenubar({
   platform,
   activeProject,
   activeThread,
+  isNewChatDraft,
   sidebarVisible,
   windowMaterial,
   supportedWindowMaterials,
@@ -206,8 +208,15 @@ export function AppMenubar({
   const isMacos = platform === 'macos';
   const showWindowMaterialMenu = supportedWindowMaterials.length > 1;
   const shortcutLabels = isMacos ? macShortcutLabels : defaultShortcutLabels;
-  const title = activeThread?.title ?? activeProject?.name ?? 'CodeM';
-  const subtitle = activeThread && activeProject ? activeProject.name : activeThread ? '当前会话' : activeProject?.path ?? '工作区';
+  const title = activeThread?.title ?? (isNewChatDraft ? '新建聊天' : activeProject?.name ?? 'CodeM');
+  const subtitle =
+    activeThread && activeProject
+      ? activeProject.name
+      : isNewChatDraft
+        ? activeProject?.name ? `在 ${activeProject.name} 中创建会话` : '创建新会话'
+        : activeThread
+          ? '当前会话'
+          : activeProject?.path ?? '工作区';
   const navIconSize = isMacos ? 15 : 13;
 
   const navigation = (

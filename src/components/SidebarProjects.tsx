@@ -34,6 +34,7 @@ const VISIBLE_THREAD_PREVIEW_LIMIT = 5;
 type SidebarProjectsProps = {
   activeProjectId: string | null;
   activeThreadId: string | null;
+  isNewChatDraft: boolean;
   runningThreadIds: string[];
   cloneTasks: CloneTask[];
   collapsedProjects: Record<string, boolean>;
@@ -58,6 +59,7 @@ type SidebarProjectsProps = {
   onOpenRenameProjectDialog: (project: ProjectSummary) => void;
   onOpenRemoveProjectDialog: (project: ProjectSummary) => void;
   onToggleProjectCollapse: (projectId: string) => void;
+  onSelectProject: (projectId: string) => void | Promise<void>;
   onSelectThread: (projectId: string, threadId: string) => void | Promise<void>;
   onOpenRenameThreadDialog: (thread: ThreadSummary) => void;
   onCopySessionId: (thread: ThreadSummary) => void | Promise<void>;
@@ -75,6 +77,7 @@ type SidebarProjectsProps = {
 export function SidebarProjects({
   activeProjectId,
   activeThreadId,
+  isNewChatDraft,
   runningThreadIds,
   cloneTasks,
   collapsedProjects,
@@ -99,6 +102,7 @@ export function SidebarProjects({
   onOpenRenameProjectDialog,
   onOpenRemoveProjectDialog,
   onToggleProjectCollapse,
+  onSelectProject,
   onSelectThread,
   onOpenRenameThreadDialog,
   onCopySessionId,
@@ -280,7 +284,13 @@ export function SidebarProjects({
             type="button"
             className={`sidebar-project-title${project.isGitWorktree ? ' has-worktree-badge' : ''}`}
             title={project.path}
-            onClick={() => onToggleProjectCollapse(project.id)}
+            onClick={() => {
+              if (isNewChatDraft) {
+                void onSelectProject(project.id);
+                return;
+              }
+              onToggleProjectCollapse(project.id);
+            }}
           >
             <span><Folder size={14} /></span>
             <strong>{project.name}</strong>

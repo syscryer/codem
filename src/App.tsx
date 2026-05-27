@@ -45,6 +45,7 @@ import {
   setWindowMaterial,
 } from './lib/window-material';
 import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
+import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
 import { fetchGitRemote, pullGitBranch, undoConversationChanges } from './lib/git-api';
 import { shouldRenderTerminalDock } from './lib/terminal-dock-state';
 import type {
@@ -96,6 +97,7 @@ export default function App() {
     panelState,
     activeProjectId,
     activeThreadId,
+    isNewChatDraft,
     searchOpen,
     searchQuery,
     collapsedProjects,
@@ -134,8 +136,10 @@ export default function App() {
     handleCopySessionId,
     selectThread,
     selectProject,
+    enterNewChatDraft,
     setActiveProjectId,
     setActiveThreadId,
+    clearNewChatDraft,
     handlePanelStateChange,
     togglePinThread,
     togglePinProject,
@@ -283,7 +287,7 @@ export default function App() {
   const currentAppLocation: AppLocation =
     appView.kind === 'settings'
       ? { kind: 'settings', section: appView.section }
-      : { kind: 'workspace', projectId: activeProjectId, threadId: activeThreadId };
+      : { kind: 'workspace', projectId: activeProjectId, threadId: isNewChatDraft ? null : activeThreadId };
   const activeSettingsSection = appView.kind === 'settings' ? appView.section : 'appearance';
   const canNavigateBack = navigationHistory.past.length > 0;
   const canNavigateForward = navigationHistory.future.length > 0;
@@ -412,7 +416,7 @@ export default function App() {
     latestApprovalDialog && latestApprovalDialog.key !== dismissedApprovalDialogKey
       ? latestApprovalDialog
       : null;
-  const composerDraftKey = activeThreadId ?? (activeProjectId ? `project:${activeProjectId}` : 'global');
+  const composerDraftKey = activeThreadId ?? GLOBAL_NEW_CHAT_DRAFT_KEY;
   const composerDraft = composerDraftsByKey[composerDraftKey] ?? '';
   const activeRunTurnId = activeThreadId ? activeTurnIdsByThreadId[activeThreadId] : undefined;
   const activeRunTurn = activeRunTurnId
@@ -478,6 +482,19 @@ export default function App() {
     await selectThread(projectId, threadId);
   }
 
+  async function handleSelectProject(projectId: string) {
+    const nextLocation: AppLocation = { kind: 'workspace', projectId, threadId: null };
+    if (!isSameAppLocation(currentAppLocation, nextLocation)) {
+      rememberCurrentLocation();
+    }
+    setAppView({ kind: 'workspace' });
+    if (isNewChatDraft) {
+      await enterNewChatDraft(projectId);
+      return;
+    }
+    await selectProject(projectId);
+  }
+
   async function handleRefreshProjects() {
     if (projectsRefreshing) {
       return;
@@ -516,12 +533,12 @@ export default function App() {
   }
 
   async function handleCreateThread(projectId: string) {
-    try {
+    const nextLocation: AppLocation = { kind: 'workspace', projectId, threadId: null };
+    if (!isSameAppLocation(currentAppLocation, nextLocation)) {
       rememberCurrentLocation();
-      await createThread(projectId);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : '新建聊天失败', 'error');
     }
+    setAppView({ kind: 'workspace' });
+    await enterNewChatDraft(projectId);
   }
 
   async function handleCreatePrimaryChat() {
@@ -738,6 +755,7 @@ export default function App() {
 
     setAppView({ kind: 'workspace' });
     if (!location.projectId) {
+      clearNewChatDraft();
       setActiveProjectId(null);
       setActiveThreadId(null);
       return;
@@ -745,8 +763,14 @@ export default function App() {
 
     const project = projects.find((item) => item.id === location.projectId);
     if (!project) {
+      clearNewChatDraft();
       setActiveProjectId(null);
       setActiveThreadId(null);
+      return;
+    }
+
+    if (!location.threadId) {
+      void enterNewChatDraft(project.id);
       return;
     }
 
@@ -971,6 +995,7 @@ export default function App() {
         platform={runtimePlatform}
         activeProject={activeProject}
         activeThread={activeThread}
+        isNewChatDraft={isNewChatDraft}
         sidebarVisible={sidebarVisible}
         windowMaterial={effectiveWindowMaterial}
         supportedWindowMaterials={supportedWindowMaterials}
@@ -1049,6 +1074,7 @@ export default function App() {
             <SidebarProjects
               activeProjectId={activeProjectId}
               activeThreadId={activeThreadId}
+              isNewChatDraft={isNewChatDraft}
               runningThreadIds={runningThreadIds}
               cloneTasks={cloneTasks}
               pinnedThreads={pinnedThreads}
@@ -1076,6 +1102,7 @@ export default function App() {
               onOpenRenameProjectDialog={openRenameProjectDialog}
               onOpenRemoveProjectDialog={openRemoveProjectDialog}
               onToggleProjectCollapse={toggleProjectCollapse}
+              onSelectProject={handleSelectProject}
               onSelectThread={handleSelectThread}
               onOpenRenameThreadDialog={openRenameThreadDialog}
               onCopySessionId={handleCopySessionId}
@@ -1100,6 +1127,7 @@ export default function App() {
                 <ChatHeader
                   activeProject={activeProject}
                   activeThread={activeThread}
+                  isNewChatDraft={isNewChatDraft}
                   openTargets={openTargets}
                   selectedOpenTargetId={openWith.selectedTargetId}
                   runAvailable={terminalDockAvailable}
@@ -1124,6 +1152,8 @@ export default function App() {
 
               <ConversationPane
                 activeThread={activeThread}
+                isNewChatDraft={isNewChatDraft}
+                activeProjectName={activeProject?.name}
                 clockNowMs={clockNowMs}
                 isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
                 activeTurnId={activeThreadId ? activeTurnIdsByThreadId[activeThreadId] ?? '' : ''}
