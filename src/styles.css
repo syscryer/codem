@@ -10,14 +10,14 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   color-scheme: light;
-  --app-chrome: #f3eddf;
-  --sidebar-bg: #f7f7f5;
-  --sidebar-active: #e8e8e6;
+  --app-chrome: #eef2f6;
+  --sidebar-bg: #f4f6f8;
+  --sidebar-active: #e7ebf0;
   --text-muted: #77736c;
-  --line: #ece9e2;
-  --line-strong: #dedbd3;
+  --line: #e2e8f0;
+  --line-strong: #d6dee8;
   --panel: #ffffff;
-  --soft: #f6f6f5;
+  --soft: #f5f7fa;
   --tool-bg: #eeeeee;
   --accent: #2374c6;
   --success: #16a34a;
@@ -95,13 +95,13 @@ svg {
   --code-font: var(--app-code-font-family, "Cascadia Code", "Cascadia Mono", Consolas, monospace);
   --app-bg: #ffffff;
   --app-surface: #ffffff;
-  --app-surface-muted: #f6f6f5;
-  --app-surface-subtle: #fbfbfa;
+  --app-surface-muted: #f5f7fa;
+  --app-surface-subtle: #fafbfd;
   --app-text: #242424;
   --app-text-strong: #1f1f1f;
   --app-muted: #77736c;
-  --app-border: #ece9e2;
-  --app-border-strong: #dedbd3;
+  --app-border: #e2e8f0;
+  --app-border-strong: #d6dee8;
   --app-hover: rgba(255, 255, 255, 0.65);
   --menu-item-hover-bg: rgba(15, 23, 42, 0.045);
   --menu-item-hover-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.045);
@@ -118,7 +118,7 @@ svg {
   --sidebar-elevated-surface: color-mix(in srgb, var(--app-surface-muted) 88%, transparent);
   --sidebar-elevated-border: color-mix(in srgb, var(--app-border) 78%, transparent);
   --sidebar-glass-shadow: none;
-  --settings-sidebar-bg: #f4f2f2;
+  --settings-sidebar-bg: #f1f4f8;
   --app-scrollbar-thumb: rgba(82, 82, 82, 0.08);
   --app-scrollbar-thumb-hover: rgba(82, 82, 82, 0.18);
   --app-focus-border: color-mix(in srgb, var(--accent) 44%, var(--app-border));
@@ -134,7 +134,7 @@ svg {
   overflow: hidden;
   isolation: isolate;
   font-family: var(--app-ui-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
-  font-size: var(--app-ui-font-size, 13px);
+  font-size: var(--app-ui-font-size, 14px);
 }
 
 .codex-desktop::before {
@@ -142,8 +142,11 @@ svg {
   position: absolute;
   inset: 0;
   z-index: 0;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 42%);
-  opacity: 0.34;
+  background:
+    linear-gradient(180deg, var(--app-material-glow), transparent 58%),
+    var(--app-material-fill);
+  backdrop-filter: blur(var(--app-material-blur, 48px)) saturate(1.35);
+  -webkit-backdrop-filter: blur(var(--app-material-blur, 48px)) saturate(1.35);
   pointer-events: none;
 }
 
@@ -195,26 +198,42 @@ svg {
 
 .codex-desktop[data-window-material="auto"],
 .codex-desktop[data-window-material="none"],
-.codex-desktop[data-window-material="mica"] {
-  --app-material-fill: rgba(248, 247, 244, 0.72);
+.codex-desktop[data-window-material="mica"],
+.codex-desktop[data-window-material="acrylic"],
+.codex-desktop[data-window-material="micaAlt"] {
+  --app-material-fill: rgba(242, 244, 247, 0.72);
   --app-material-line: rgba(148, 163, 184, 0.26);
   --app-material-glow: rgba(255, 255, 255, 0.28);
   --app-material-blur: 48px;
 }
 
+.codex-desktop[data-window-material="auto"],
 .codex-desktop[data-window-material="none"] {
-  --app-material-fill: rgba(248, 247, 244, 0.9);
+  --app-material-fill: rgba(242, 244, 247, 1);
+  --app-material-glow: rgba(255, 255, 255, 0);
+  --app-material-blur: 0px;
+}
+
+/* Win11 Settings 风格的 mica：冷中灰底色 + 极低不透明度,最大化桌面通透 */
+.codex-desktop[data-window-material="mica"] {
+  --app-material-fill: rgba(236, 240, 246, 0);
+  --app-material-line: rgba(86, 98, 118, 0.10);
+  --app-material-glow: rgba(255, 255, 255, 0.12);
+  --app-material-blur: 60px;
+}
+
+.codex-desktop[data-window-material="acrylic"] {
+  --app-material-fill: rgba(238, 242, 248, 0.62);
+  --app-material-line: rgba(86, 98, 118, 0.14);
   --app-material-glow: rgba(255, 255, 255, 0.18);
   --app-material-blur: 72px;
 }
 
-/* Win11 Settings 风格的 mica：冷中灰底色 + 极低不透明度,最大化桌面通透 */
-.codex-desktop[data-window-material="auto"],
-.codex-desktop[data-window-material="mica"] {
-  --app-material-fill: rgba(243, 243, 243, 0.10);
-  --app-material-line: rgba(0, 0, 0, 0.08);
-  --app-material-glow: rgba(255, 255, 255, 0.18);
-  --app-material-blur: 60px;
+.codex-desktop[data-window-material="micaAlt"] {
+  --app-material-fill: rgba(232, 238, 246, 0.18);
+  --app-material-line: rgba(86, 98, 118, 0.12);
+  --app-material-glow: rgba(255, 255, 255, 0.10);
+  --app-material-blur: 64px;
 }
 
 .codex-desktop[data-platform="macos"] {
@@ -240,26 +259,42 @@ svg {
 
 .codex-desktop[data-theme-mode="dark"][data-window-material="auto"],
 .codex-desktop[data-theme-mode="dark"][data-window-material="none"],
-.codex-desktop[data-theme-mode="dark"][data-window-material="mica"] {
+.codex-desktop[data-theme-mode="dark"][data-window-material="mica"],
+.codex-desktop[data-theme-mode="dark"][data-window-material="acrylic"],
+.codex-desktop[data-theme-mode="dark"][data-window-material="micaAlt"] {
   --app-material-fill: rgba(32, 32, 34, 0.72);
   --app-material-line: rgba(255, 255, 255, 0.1);
   --app-material-glow: rgba(255, 255, 255, 0.08);
   --app-material-blur: 48px;
 }
 
+.codex-desktop[data-theme-mode="dark"][data-window-material="auto"],
 .codex-desktop[data-theme-mode="dark"][data-window-material="none"] {
-  --app-material-fill: rgba(32, 32, 34, 0.9);
+  --app-material-fill: rgba(32, 32, 34, 1);
+  --app-material-glow: rgba(255, 255, 255, 0);
+  --app-material-blur: 0px;
+}
+
+/* Win11 Settings 风格的 mica(暗色):较深中性灰 + 极低不透明度,最大化桌面通透 */
+.codex-desktop[data-theme-mode="dark"][data-window-material="mica"] {
+  --app-material-fill: rgba(28, 28, 28, 0);
+  --app-material-line: rgba(255, 255, 255, 0.07);
+  --app-material-glow: rgba(255, 255, 255, 0.05);
+  --app-material-blur: 60px;
+}
+
+.codex-desktop[data-theme-mode="dark"][data-window-material="acrylic"] {
+  --app-material-fill: rgba(30, 31, 34, 0.64);
+  --app-material-line: rgba(255, 255, 255, 0.08);
   --app-material-glow: rgba(255, 255, 255, 0.06);
   --app-material-blur: 72px;
 }
 
-/* Win11 Settings 风格的 mica(暗色):较深中性灰 + 极低不透明度,最大化桌面通透 */
-.codex-desktop[data-theme-mode="dark"][data-window-material="auto"],
-.codex-desktop[data-theme-mode="dark"][data-window-material="mica"] {
-  --app-material-fill: rgba(28, 28, 28, 0.10);
+.codex-desktop[data-theme-mode="dark"][data-window-material="micaAlt"] {
+  --app-material-fill: rgba(28, 29, 32, 0.20);
   --app-material-line: rgba(255, 255, 255, 0.07);
-  --app-material-glow: rgba(255, 255, 255, 0.05);
-  --app-material-blur: 60px;
+  --app-material-glow: rgba(255, 255, 255, 0.04);
+  --app-material-blur: 64px;
 }
 
 .codex-desktop[data-theme-mode="dark"][data-platform="macos"] {
@@ -312,26 +347,42 @@ svg {
 
   .codex-desktop[data-theme-mode="system"][data-window-material="auto"],
   .codex-desktop[data-theme-mode="system"][data-window-material="none"],
-  .codex-desktop[data-theme-mode="system"][data-window-material="mica"] {
+  .codex-desktop[data-theme-mode="system"][data-window-material="mica"],
+  .codex-desktop[data-theme-mode="system"][data-window-material="acrylic"],
+  .codex-desktop[data-theme-mode="system"][data-window-material="micaAlt"] {
     --app-material-fill: rgba(32, 32, 34, 0.72);
     --app-material-line: rgba(255, 255, 255, 0.1);
     --app-material-glow: rgba(255, 255, 255, 0.08);
     --app-material-blur: 48px;
   }
 
+  .codex-desktop[data-theme-mode="system"][data-window-material="auto"],
   .codex-desktop[data-theme-mode="system"][data-window-material="none"] {
-    --app-material-fill: rgba(32, 32, 34, 0.9);
+    --app-material-fill: rgba(32, 32, 34, 1);
+    --app-material-glow: rgba(255, 255, 255, 0);
+    --app-material-blur: 0px;
+  }
+
+  /* Win11 Settings 风格的 mica(系统暗色):与显式 dark 模式保持一致 */
+  .codex-desktop[data-theme-mode="system"][data-window-material="mica"] {
+    --app-material-fill: rgba(28, 28, 28, 0);
+    --app-material-line: rgba(255, 255, 255, 0.07);
+    --app-material-glow: rgba(255, 255, 255, 0.05);
+    --app-material-blur: 60px;
+  }
+
+  .codex-desktop[data-theme-mode="system"][data-window-material="acrylic"] {
+    --app-material-fill: rgba(30, 31, 34, 0.64);
+    --app-material-line: rgba(255, 255, 255, 0.08);
     --app-material-glow: rgba(255, 255, 255, 0.06);
     --app-material-blur: 72px;
   }
 
-  /* Win11 Settings 风格的 mica(系统暗色):与显式 dark 模式保持一致 */
-  .codex-desktop[data-theme-mode="system"][data-window-material="auto"],
-  .codex-desktop[data-theme-mode="system"][data-window-material="mica"] {
-    --app-material-fill: rgba(28, 28, 28, 0.10);
+  .codex-desktop[data-theme-mode="system"][data-window-material="micaAlt"] {
+    --app-material-fill: rgba(28, 29, 32, 0.20);
     --app-material-line: rgba(255, 255, 255, 0.07);
-    --app-material-glow: rgba(255, 255, 255, 0.05);
-    --app-material-blur: 60px;
+    --app-material-glow: rgba(255, 255, 255, 0.04);
+    --app-material-blur: 64px;
   }
 }
 
@@ -759,7 +810,7 @@ svg {
 
 .app-sidebar-resizer:hover::after,
 .app-sidebar-resizer:active::after {
-  background: color-mix(in srgb, var(--accent, #2374c6) 60%, transparent);
+  background: color-mix(in srgb, var(--app-border, #e2e8f0) 88%, transparent);
 }
 
 .sidebar-primary {
@@ -1384,8 +1435,8 @@ svg {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: #111827;
-  font-size: 13px;
-  font-weight: 650;
+  font-size: 14px;
+  font-weight: 560;
   line-height: 1.15;
 }
 
@@ -8617,6 +8668,144 @@ body.git-history-resizing {
   color: #a0a5ae;
 }
 
+.session-search-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  display: grid;
+  place-items: start center;
+  padding: 112px 24px 24px;
+  background: rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.session-search-dialog {
+  width: min(780px, calc(100vw - 48px));
+  max-height: min(72vh, 680px);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--app-border) 92%, transparent);
+  border-radius: 28px;
+  background: color-mix(in srgb, var(--app-surface) 92%, transparent);
+  box-shadow:
+    0 26px 64px rgba(15, 23, 42, 0.16),
+    0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
+.session-search-input-wrap {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--app-surface-subtle) 92%, transparent);
+  color: var(--app-muted);
+}
+
+.session-search-input-wrap input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--app-text-strong);
+  font: inherit;
+}
+
+.session-search-input-wrap input::placeholder {
+  color: var(--app-muted);
+}
+
+.session-search-section-title {
+  padding: 0 8px;
+  color: var(--app-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.session-search-results {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  overflow: auto;
+}
+
+.session-search-empty {
+  padding: 18px 14px;
+  border-radius: 18px;
+  color: var(--app-muted);
+  font-size: 14px;
+}
+
+.session-search-result {
+  width: 100%;
+  min-height: 25px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--app-text);
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.session-search-result:hover,
+.session-search-result.active {
+  background: color-mix(in srgb, var(--app-surface-muted) 92%, transparent);
+}
+
+.session-search-result.current .session-search-result-title {
+  color: var(--app-text-strong);
+}
+
+.session-search-result-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--app-text);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.05;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-search-result-side {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.session-search-result-meta {
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--app-muted);
+  font-size: 11px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-search-result-shortcut {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--app-surface-muted) 96%, transparent);
+  color: var(--app-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
 .git-dialog-backdrop {
   place-items: center;
 }
@@ -9358,12 +9547,17 @@ body.git-history-resizing {
   overflow: hidden;
 }
 
+.settings-view[hidden],
+.codex-shell[hidden] {
+  display: none !important;
+}
+
 .settings-sidebar {
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: 8px;
-  padding: 10px 8px;
+  gap: 10px;
+  padding: 10px 10px;
   background: #f4f2f2;
   border-right: 1px solid #ebe7e4;
   overflow: hidden;
@@ -9372,16 +9566,16 @@ body.git-history-resizing {
 .settings-return,
 .settings-nav-item {
   width: 100%;
-  min-height: 28px;
+  min-height: 34px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   padding: 0 10px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: #454545;
-  font-size: 13px;
+  font-size: calc(var(--app-ui-font-size, 14px) + 1px);
   text-align: left;
   cursor: pointer;
 }
@@ -9399,7 +9593,7 @@ body.git-history-resizing {
   min-height: 0;
   display: grid;
   align-content: start;
-  gap: 2px;
+  gap: 4px;
   overflow: auto;
 }
 
@@ -9411,6 +9605,7 @@ body.git-history-resizing {
 .settings-nav-item svg,
 .settings-return svg {
   color: #74706b;
+  stroke-width: 1.8;
 }
 
 .settings-sidebar-foot {
@@ -9476,6 +9671,8 @@ body.git-history-resizing {
 }
 
 .appearance-preview {
+  --appearance-preview-side-bg: var(--app-surface-muted, #f5f7fa);
+  --appearance-preview-fill: color-mix(in srgb, var(--appearance-preview-side-bg) 99.5%, #000000 0.5%);
   min-height: 206px;
   display: grid;
   grid-template-columns: 112px minmax(0, 1fr);
@@ -9490,7 +9687,7 @@ body.git-history-resizing {
   align-content: start;
   gap: 8px;
   padding: 16px 12px;
-  background: color-mix(in srgb, var(--accent) 8%, #f4f2f2);
+  background: var(--appearance-preview-side-bg);
   border-right: 1px solid #ececec;
 }
 
@@ -9504,7 +9701,7 @@ body.git-history-resizing {
 .appearance-preview-sidebar-line {
   height: 10px;
   border-radius: 999px;
-  background: #e1dfdc;
+  background: var(--appearance-preview-fill);
 }
 
 .appearance-preview-sidebar-line {
@@ -9557,7 +9754,7 @@ body.git-history-resizing {
   font-family: var(--app-chat-font-family, var(--app-ui-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif));
   font-size: var(--app-chat-font-size, 14px);
   line-height: 1.45;
-  background: #f3f3f1;
+  background: var(--appearance-preview-fill);
 }
 
 .appearance-preview-message.short {
@@ -9577,7 +9774,7 @@ body.git-history-resizing {
   overflow: hidden;
   border-radius: 10px;
   padding: 8px 0;
-  background: #f1f1ee;
+  background: var(--appearance-preview-fill);
 }
 
 .appearance-preview-code-pane.neutral {
@@ -9619,6 +9816,18 @@ body.git-history-resizing {
 
 .settings-panel {
   overflow: hidden;
+}
+
+.settings-panel-spaced {
+  margin-top: 18px;
+}
+
+.settings-group-title {
+  margin: 26px 0 12px;
+  color: #202020;
+  font-size: 14.5px;
+  font-weight: 560;
+  line-height: 1.25;
 }
 
 .settings-row {
@@ -9664,8 +9873,8 @@ body.git-history-resizing {
 
 .settings-row-label strong {
   color: #272727;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 14.5px;
+  font-weight: 540;
 }
 
 .settings-row-label small {
@@ -12054,9 +12263,26 @@ body.git-history-resizing {
   background: transparent;
 }
 
+.codex-desktop .settings-view {
+  position: relative;
+  z-index: 1;
+  grid-template-columns: var(--sidebar-width, 300px) minmax(0, 1fr);
+  background: transparent;
+}
+
+.codex-desktop .chat-workspace {
+  background: transparent;
+}
+
 .codex-desktop .desktop-menubar {
   background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   color: var(--app-text);
+}
+
+.codex-desktop .desktop-menubar::after {
+  content: none;
 }
 
 .codex-desktop .desktop-menu-trigger {
@@ -12151,36 +12377,17 @@ body.git-history-resizing {
 }
 
 .codex-desktop .app-sidebar {
-  background: var(--sidebar-surface);
+  background: transparent;
   border-right-color: var(--sidebar-border-color);
   color: var(--app-text);
   box-shadow: var(--sidebar-glass-shadow);
-  backdrop-filter: blur(8px) saturate(1.12);
-  -webkit-backdrop-filter: blur(8px) saturate(1.12);
-}
-
-.codex-desktop[data-window-material="auto"] .app-sidebar,
-.codex-desktop[data-window-material="none"] .app-sidebar,
-.codex-desktop[data-window-material="mica"] .app-sidebar {
-  background:
-    linear-gradient(180deg, var(--app-material-glow), transparent 58%),
-    var(--sidebar-surface);
-  backdrop-filter: blur(var(--app-material-blur, 48px)) saturate(1.35);
-  -webkit-backdrop-filter: blur(var(--app-material-blur, 48px)) saturate(1.35);
-}
-
-.codex-desktop[data-window-material="auto"] .desktop-menubar,
-.codex-desktop[data-window-material="none"] .desktop-menubar,
-.codex-desktop[data-window-material="mica"] .desktop-menubar {
-  background:
-    linear-gradient(180deg, var(--app-material-glow), transparent 58%),
-    var(--app-material-fill);
-  backdrop-filter: blur(var(--app-material-blur, 48px)) saturate(1.35);
-  -webkit-backdrop-filter: blur(var(--app-material-blur, 48px)) saturate(1.35);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .codex-desktop .chat-shell {
-  border-top-left-radius: 8px;
+  position: relative;
+  border-top-left-radius: 12px;
   box-shadow: none;
 }
 
@@ -12196,8 +12403,21 @@ body.git-history-resizing {
 }
 
 .codex-desktop .settings-sidebar {
-  background: var(--settings-sidebar-bg);
-  border-right-color: var(--app-border);
+  background: transparent;
+  border-right-color: var(--sidebar-border-color);
+  color: var(--app-text);
+  box-shadow: var(--sidebar-glass-shadow);
+}
+
+.codex-desktop .settings-content {
+  position: relative;
+  border-top-left-radius: 12px;
+}
+
+.codex-desktop[data-platform="macos"] .settings-content {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: var(--desktop-window-radius);
 }
 
 .codex-desktop .settings-panel,
@@ -12735,8 +12955,20 @@ body.git-history-resizing {
   color: var(--app-text-strong);
 }
 
+.codex-desktop .settings-return:hover,
+.codex-desktop .settings-nav-item:hover {
+  background: var(--sidebar-hover-surface);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .settings-nav-item.active {
+  background: var(--sidebar-active-surface);
+  box-shadow: none;
+  color: var(--app-text-strong);
+}
+
 .codex-desktop .app-sidebar {
-  background: var(--sidebar-surface);
+  background: transparent;
   border-right-color: var(--sidebar-border-color);
 }
 
@@ -12752,6 +12984,10 @@ body.git-history-resizing {
 .codex-desktop .app-sidebar::before {
   background: linear-gradient(180deg, var(--sidebar-sheen-top), transparent 52%);
   opacity: 0.74;
+}
+
+.codex-desktop[data-platform="windows"] .app-sidebar::before {
+  content: none;
 }
 
 .codex-desktop .app-sidebar::after {
@@ -12933,8 +13169,53 @@ body.git-history-resizing {
   color: var(--app-muted);
 }
 
-.codex-desktop :where(.sidebar-primary button, .sidebar-footer button, .sidebar-project-title, .sidebar-thread, .workspace-menu-item, .model-menu-item, .effort-menu-item, .permission-menu-item, .settings-select-menu-item, .composer-input, .toolbar-select, .permission-trigger, .model-trigger, .effort-trigger, .assistant-runtime-card-heading strong, .assistant-runtime-question-text, .assistant-runtime-submit-button, .workspace-status, .settings-return, .settings-nav-item, .settings-row-label strong, .settings-segmented button, .settings-accent-picker button, .settings-stepper span, .settings-empty-panel, .dialog-input, .dialog-button, .ghost-button) {
-  font-size: var(--app-ui-font-size, 13px);
+.codex-desktop :where(.sidebar-primary button, .sidebar-footer button, .sidebar-project-title, .sidebar-thread, .workspace-menu-item, .model-menu-item, .effort-menu-item, .permission-menu-item, .settings-select-menu-item, .composer-input, .toolbar-select, .permission-trigger, .model-trigger, .effort-trigger, .assistant-runtime-card-heading strong, .assistant-runtime-question-text, .assistant-runtime-submit-button, .workspace-status, .settings-return, .settings-nav-item, .settings-segmented button, .settings-accent-picker button, .settings-stepper span, .settings-empty-panel, .dialog-input, .dialog-button, .ghost-button) {
+  font-size: var(--app-ui-font-size, 14px);
+}
+
+.codex-desktop .settings-sidebar :where(.settings-return, .settings-nav-item) {
+  color: color-mix(in srgb, var(--app-text) 86%, var(--app-muted) 14%);
+  font-size: calc(var(--app-ui-font-size, 14px) + 1px);
+  line-height: 1.15;
+}
+
+.codex-desktop .settings-sidebar :where(.settings-return, .settings-nav-item) svg {
+  color: color-mix(in srgb, var(--app-text) 78%, var(--app-muted) 22%);
+}
+
+.codex-desktop .settings-view :where(
+  .settings-segmented button,
+  .settings-accent-picker button,
+  .settings-accent-custom-trigger,
+  .settings-accent-value-input,
+  .settings-select,
+  .settings-input,
+  .settings-select-trigger,
+  .settings-select-menu-item,
+  .settings-stepper span,
+  .settings-action-button,
+  .settings-inline-value,
+  .settings-open-target-row strong,
+  .settings-usage-row strong,
+  .settings-usage-row-head > span
+) {
+  font-size: var(--app-ui-font-size, 14px);
+}
+
+.codex-desktop .settings-view :where(
+  .settings-section-head p,
+  .settings-panel-subtitle,
+  .settings-row-label small,
+  .settings-sidebar-foot,
+  .settings-open-target-row small,
+  .settings-usage-row small,
+  .settings-font-follow-text
+) {
+  font-size: max(11px, calc(var(--app-ui-font-size, 14px) - 1px));
+}
+
+.codex-desktop .settings-view .settings-section-head h1 {
+  font-size: calc(var(--app-ui-font-size, 14px) + 5px);
 }
 
 .codex-desktop .permission-trigger {
@@ -12977,11 +13258,11 @@ body.git-history-resizing {
 }
 
 .codex-desktop :where(.sidebar-section-head, .sidebar-search input, .workspace-menu-group-title, .sidebar-thread small, .turn-time, .turn-status, .settings-row-label small, .assistant-runtime-footnote, .assistant-runtime-question-hint, .dialog-head p, .status-branch-menu-meta, .status-run-head span) {
-  font-size: max(11px, calc(var(--app-ui-font-size, 13px) - 1px));
+  font-size: max(11px, calc(var(--app-ui-font-size, 14px) - 1px));
 }
 
 .codex-desktop :where(.settings-section-head h1, .dialog-head h3) {
-  font-size: calc(var(--app-ui-font-size, 13px) + 5px);
+  font-size: calc(var(--app-ui-font-size, 14px) + 5px);
 }
 
 .codex-desktop .status-branch-menu,
@@ -13129,11 +13410,6 @@ body.git-history-resizing {
 .codex-desktop[data-density="compact"] .settings-row {
   min-height: 50px;
   padding: 6px 10px;
-}
-
-.codex-desktop[data-density="compact"] .settings-return,
-.codex-desktop[data-density="compact"] .settings-nav-item {
-  min-height: 26px;
 }
 
 .sidebar-projects::-webkit-scrollbar,

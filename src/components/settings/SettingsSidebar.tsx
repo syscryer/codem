@@ -13,11 +13,14 @@ import {
   Puzzle,
   TreePine,
 } from 'lucide-react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { SettingsSection } from '../../types';
 
 type SettingsSidebarProps = {
   activeSection: SettingsSection;
   onSelectSection: (section: SettingsSection) => void;
+  sidebarCustomWidth?: number;
+  onUpdateSidebarCustomWidth?: (width: number | undefined) => void;
   onReturnWorkspace: () => void;
 };
 
@@ -38,12 +41,66 @@ const settingsSections: Array<{ id: SettingsSection; label: string; icon: typeof
 export function SettingsSidebar({
   activeSection,
   onSelectSection,
+  sidebarCustomWidth,
+  onUpdateSidebarCustomWidth,
   onReturnWorkspace,
 }: SettingsSidebarProps) {
+  function handleSidebarResizePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!onUpdateSidebarCustomWidth) {
+      return;
+    }
+
+    event.preventDefault();
+    const sidebarElement = (event.currentTarget.parentElement as HTMLElement | null) ?? null;
+    const startX = event.clientX;
+    const startWidth = sidebarElement?.getBoundingClientRect().width
+      ?? sidebarCustomWidth
+      ?? 300;
+    const root = document.querySelector<HTMLElement>('.codex-desktop');
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    let latest = startWidth;
+
+    function clampWidth(width: number) {
+      return Math.round(Math.min(480, Math.max(220, width)));
+    }
+
+    function handlePointerMove(moveEvent: PointerEvent) {
+      const next = clampWidth(startWidth + (moveEvent.clientX - startX));
+      latest = next;
+      if (root) {
+        root.style.setProperty('--sidebar-width', `${next}px`);
+      }
+    }
+
+    function handlePointerUp() {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      onUpdateSidebarCustomWidth?.(latest);
+    }
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+  }
+
+  function handleSidebarResizeDoubleClick() {
+    if (!onUpdateSidebarCustomWidth) {
+      return;
+    }
+
+    const root = document.querySelector<HTMLElement>('.codex-desktop');
+    root?.style.removeProperty('--sidebar-width');
+    onUpdateSidebarCustomWidth(undefined);
+  }
+
   return (
-    <aside className="settings-sidebar">
+    <aside className="settings-sidebar app-sidebar">
       <button type="button" className="settings-return" onClick={onReturnWorkspace}>
-        <RotateCcw size={14} />
+        <RotateCcw size={16} />
         <span>返回工作区</span>
       </button>
       <nav className="settings-nav" aria-label="设置分类">
@@ -56,7 +113,7 @@ export function SettingsSidebar({
               className={`settings-nav-item${activeSection === section.id ? ' active' : ''}`}
               onClick={() => onSelectSection(section.id)}
             >
-              <Icon size={14} />
+              <Icon size={17} />
               <span>{section.label}</span>
             </button>
           );
@@ -66,6 +123,16 @@ export function SettingsSidebar({
         <Command size={13} />
         <span>CodeM 设置</span>
       </div>
+      {onUpdateSidebarCustomWidth ? (
+        <div
+          className="app-sidebar-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖拽调整侧边栏宽度，双击恢复默认"
+          onPointerDown={handleSidebarResizePointerDown}
+          onDoubleClick={handleSidebarResizeDoubleClick}
+        />
+      ) : null}
     </aside>
   );
 }

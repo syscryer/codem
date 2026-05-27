@@ -36,6 +36,7 @@ import { UsageSettingsSection } from './UsageSettings';
 import { WorktreeSettingsSection } from './WorktreeSettings';
 
 type SettingsViewProps = {
+  hidden?: boolean;
   activeSection: SettingsSection;
   activeProjectId: string | null;
   activeThreadId: string | null;
@@ -60,6 +61,7 @@ type SettingsViewProps = {
   showToast: (message: string, tone?: ToastState['tone']) => void;
   onUpdateGeneral: (update: GeneralSettingsUpdate) => void | Promise<void>;
   onUpdateAppearance: (update: AppearanceSettingsUpdate) => void;
+  onUpdateSidebarCustomWidth: (width: number | undefined) => void;
   onUpdateModels: (update: ModelSettingsUpdate) => void | Promise<void>;
   onUpdateShortcuts: (update: ShortcutSettingsUpdate) => void | Promise<void>;
   onUpdateOpenWith: (update: OpenWithSettingsUpdate) => void | Promise<void>;
@@ -81,6 +83,7 @@ const sectionTitles: Record<SettingsSection, string> = {
 };
 
 export function SettingsView({
+  hidden = false,
   activeSection,
   activeProjectId,
   activeThreadId,
@@ -105,6 +108,7 @@ export function SettingsView({
   showToast,
   onUpdateGeneral,
   onUpdateAppearance,
+  onUpdateSidebarCustomWidth,
   onUpdateModels,
   onUpdateShortcuts,
   onUpdateOpenWith,
@@ -235,10 +239,12 @@ export function SettingsView({
   ]);
 
   return (
-    <main className="settings-view">
+    <main className="settings-view" hidden={hidden}>
       <SettingsSidebar
         activeSection={activeSection}
+        sidebarCustomWidth={appearance.sidebarCustomWidth}
         onSelectSection={onSelectSection}
+        onUpdateSidebarCustomWidth={onUpdateSidebarCustomWidth}
         onReturnWorkspace={onReturnWorkspace}
       />
       <div className="settings-content">

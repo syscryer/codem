@@ -9,6 +9,20 @@ type SettingsRowProps = {
   stack?: boolean;
 };
 
+type SettingsGroupProps = {
+  title: string;
+  children: ReactNode;
+};
+
+export function SettingsGroup({ title, children }: SettingsGroupProps) {
+  return (
+    <>
+      <h2 className="settings-group-title">{title}</h2>
+      <div className="settings-panel">{children}</div>
+    </>
+  );
+}
+
 export function SettingsRow({ icon: Icon, title, description, children, stack = false }: SettingsRowProps) {
   return (
     <div className={`settings-row${stack ? ' settings-row-stack' : ''}`}>

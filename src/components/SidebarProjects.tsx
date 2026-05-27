@@ -37,12 +37,9 @@ type SidebarProjectsProps = {
   runningThreadIds: string[];
   cloneTasks: CloneTask[];
   collapsedProjects: Record<string, boolean>;
-  searchOpen: boolean;
-  searchQuery: string;
   panelState: PanelState;
   onCreatePrimaryChat: () => void;
   onToggleSearch: () => void;
-  onSearchQueryChange: (value: string) => void;
   onToggleAllProjects: () => void;
   onRefreshProjects: () => void | Promise<void>;
   refreshingProjects: boolean;
@@ -81,12 +78,9 @@ export function SidebarProjects({
   runningThreadIds,
   cloneTasks,
   collapsedProjects,
-  searchOpen,
-  searchQuery,
   panelState,
   onCreatePrimaryChat,
   onToggleSearch,
-  onSearchQueryChange,
   onToggleAllProjects,
   onRefreshProjects,
   refreshingProjects,
@@ -557,19 +551,6 @@ export function SidebarProjects({
               </div>
             </div>
           </div>
-
-          {searchOpen ? (
-            <div className="sidebar-search">
-              <Search size={13} />
-              <input
-                autoFocus
-                value={searchQuery}
-                onChange={(event) => onSearchQueryChange(event.target.value)}
-                placeholder="搜索项目和聊天"
-              />
-            </div>
-          ) : null}
-
           {cloneTasks.length === 0 && unpinnedProjects.length === 0 && !hasAnyPinned ? (
             <div className="sidebar-empty">
               <p>当前还没有项目。</p>

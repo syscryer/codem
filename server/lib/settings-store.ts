@@ -119,7 +119,7 @@ export const defaultAppearanceSettings: AppearanceSettings = {
   codeFontMode: 'preset',
   codeFontPreset: 'cascadia',
   codeFontCustom: '"Cascadia Code", "Cascadia Mono", Consolas, monospace',
-  uiFontSize: 13,
+  uiFontSize: 14,
   chatFontSize: 14,
   codeFontSize: 12,
   sidebarWidth: 'default',

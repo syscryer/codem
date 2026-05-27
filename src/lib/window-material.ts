@@ -17,8 +17,8 @@ const windowMaterialById: Record<number, WindowMaterialMode | undefined> = {
 };
 
 const windowMaterialLabels: Record<WindowMaterialMode, string> = {
-  auto: '自动',
-  none: '无',
+  auto: '默认',
+  none: '默认',
   mica: 'Mica',
   acrylic: 'Acrylic',
   micaAlt: 'Mica Alt',
@@ -67,11 +67,11 @@ export function resolveDesktopPlatform(): DesktopPlatform {
 
 export function getPlatformWindowMaterials(platform: DesktopPlatform): WindowMaterialMode[] {
   if (platform === 'windows') {
-    return ['auto', 'none', 'mica', 'acrylic', 'micaAlt'];
+    return ['auto', 'mica', 'acrylic', 'micaAlt'];
   }
 
   if (platform === 'macos') {
-    return ['auto', 'none'];
+    return ['auto'];
   }
 
   return ['auto'];
@@ -102,13 +102,15 @@ export async function getSupportedWindowMaterials(): Promise<WindowMaterialMode[
   try {
     const { invoke } = await import('@tauri-apps/api/core');
     const materials = await invoke<NativeWindowMaterial[]>('get_supported_window_materials');
+    const allowed = new Set(fallback);
     const normalized = Array.isArray(materials)
       ? materials
           .map((material) => {
             if (!material || typeof material.id !== 'number') {
               return undefined;
             }
-            return windowMaterialById[material.id];
+            const candidate = windowMaterialById[material.id];
+            return candidate && allowed.has(candidate) ? candidate : undefined;
           })
           .filter((material): material is WindowMaterialMode => Boolean(material))
       : [];

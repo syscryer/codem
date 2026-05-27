@@ -6,7 +6,7 @@ import type { GeneralSettingsUpdate } from '../../hooks/useAppSettings';
 import { permissionLabel } from '../../lib/ui-labels';
 import { defaultGeneralSettings } from '../../hooks/useAppSettings';
 import { cloneDefaultWorkbenchIgnorePatterns } from '../../lib/review-ignore-patterns';
-import { SegmentedControl, SettingsRow } from './SettingsControls';
+import { SegmentedControl, SettingsGroup, SettingsRow } from './SettingsControls';
 
 type BasicSettingsSectionProps = {
   general: GeneralSettings;
@@ -94,9 +94,9 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
             ))}
           </select>
         </SettingsRow>
+      </div>
 
-        <div className="settings-panel-subtitle">Git 审查</div>
-
+      <SettingsGroup title="Git 审查">
         <SettingsRow icon={GitPullRequest} title="默认隐藏忽略文件" description="审查页默认隐藏命中忽略规则的未跟踪文件">
           <Toggle
             checked={resolvedGeneral.reviewHideNoiseFilesByDefault}
@@ -168,7 +168,9 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
             </div>
           </div>
         </SettingsRow>
+      </SettingsGroup>
 
+      <div className="settings-panel settings-panel-spaced">
         <SettingsRow icon={RotateCcw} title="重置基础设置" description="恢复基础设置默认值">
           <button
             type="button"

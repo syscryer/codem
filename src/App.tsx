@@ -9,6 +9,7 @@ import { Dialogs } from './components/Dialogs';
 import { GitDialog } from './components/GitDialog';
 import { GitHistoryPanel } from './components/GitHistoryPanel';
 import { RightWorkbench } from './components/RightWorkbench';
+import { SessionSearchDialog } from './components/SessionSearchDialog';
 import { SidebarProjects } from './components/SidebarProjects';
 import { SettingsView } from './components/settings/SettingsView';
 import { TerminalDock, useTerminalDockState, type TerminalRunRequest } from './components/TerminalDock';
@@ -283,6 +284,7 @@ export default function App() {
     appView.kind === 'settings'
       ? { kind: 'settings', section: appView.section }
       : { kind: 'workspace', projectId: activeProjectId, threadId: activeThreadId };
+  const activeSettingsSection = appView.kind === 'settings' ? appView.section : 'appearance';
   const canNavigateBack = navigationHistory.past.length > 0;
   const canNavigateForward = navigationHistory.future.length > 0;
   const runtimePlatform = useMemo(() => resolveDesktopPlatform(), []);
@@ -363,6 +365,16 @@ export default function App() {
     setPreviewContentByKey({});
   }, [activeProject?.id]);
 
+  const openSessionSearch = useCallback(() => {
+    setSearchQuery('');
+    setSearchOpen(true);
+  }, [setSearchOpen, setSearchQuery]);
+
+  const closeSessionSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery('');
+  }, [setSearchOpen, setSearchQuery]);
+
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
       if (isEditableShortcutTarget(event.target)) {
@@ -379,7 +391,7 @@ export default function App() {
 
       if (matchesShortcut(event, shortcuts.toggleSearch)) {
         event.preventDefault();
-        setSearchOpen(true);
+        openSessionSearch();
         return;
       }
 
@@ -390,7 +402,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [appView.kind, handleCreatePrimaryChat, setSearchOpen, shortcuts]);
+  }, [appView.kind, handleCreatePrimaryChat, openSessionSearch, shortcuts]);
 
   const latestApprovalDialog = useMemo(
     () => getLatestPendingApprovalDialog(activeThread),
@@ -974,7 +986,7 @@ export default function App() {
         onOpenFolder={() => void handlePickProjectDirectory()}
         onOpenCloneDialog={() => setCloneDialogOpen(true)}
         onOpenSettings={() => openSettings('appearance')}
-        onOpenSearch={() => setSearchOpen(true)}
+        onOpenSearch={openSessionSearch}
         onRunLaunchScript={handleRunLaunchScript}
         onOpenTarget={(targetId) => activeProject ? void handleOpenProjectInEditor(activeProject, targetId) : showToast('请先选择项目。', 'info')}
         onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
@@ -997,39 +1009,42 @@ export default function App() {
         onUnsupportedWindowAction={handleUnsupportedWindowAction}
       />
 
-      {appView.kind === 'settings' ? (
-        <SettingsView
-          activeSection={appView.section}
-          activeProjectId={activeProjectId}
-          activeThreadId={activeThreadId}
-          activeProject={activeProject}
-          projects={projects}
-          runningThreadIds={runningThreadIds}
-          general={general}
-          appearance={appearance}
-          effectiveWindowMaterial={effectiveWindowMaterial}
-          supportedWindowMaterials={supportedWindowMaterials}
-          models={appModelSettings}
-          shortcuts={shortcuts}
-          openWith={openWith}
-          openTargets={openTargets}
-          claudeModels={claudeModels}
-          onSelectSection={(section) => navigateToLocation({ kind: 'settings', section })}
-          onOpenThread={handleSelectThread}
-          onRenameThread={openRenameThreadDialog}
-          onRemoveThread={openRemoveThreadDialog}
-          onOpenWorktreePath={openWorktreePath}
-          onSyncWorkspace={syncWorkspace}
-          showToast={showToast}
-          onUpdateGeneral={updateGeneral}
-          onUpdateAppearance={updateAppearance}
-          onUpdateModels={updateModels}
-          onUpdateShortcuts={updateShortcuts}
-          onUpdateOpenWith={updateOpenWith}
-          onReturnWorkspace={returnWorkspace}
-        />
-      ) : (
-        <div className={`codex-shell${sidebarVisible ? '' : ' sidebar-hidden'}`}>
+      <SettingsView
+        hidden={appView.kind !== 'settings'}
+        activeSection={activeSettingsSection}
+        activeProjectId={activeProjectId}
+        activeThreadId={activeThreadId}
+        activeProject={activeProject}
+        projects={projects}
+        runningThreadIds={runningThreadIds}
+        general={general}
+        appearance={appearance}
+        effectiveWindowMaterial={effectiveWindowMaterial}
+        supportedWindowMaterials={supportedWindowMaterials}
+        models={appModelSettings}
+        shortcuts={shortcuts}
+        openWith={openWith}
+        openTargets={openTargets}
+        claudeModels={claudeModels}
+        onSelectSection={(section) => navigateToLocation({ kind: 'settings', section })}
+        onOpenThread={handleSelectThread}
+        onRenameThread={openRenameThreadDialog}
+        onRemoveThread={openRemoveThreadDialog}
+        onOpenWorktreePath={openWorktreePath}
+        onSyncWorkspace={syncWorkspace}
+        showToast={showToast}
+        onUpdateGeneral={updateGeneral}
+        onUpdateAppearance={updateAppearance}
+        onUpdateSidebarCustomWidth={(width) => updateAppearance({ sidebarCustomWidth: width })}
+        onUpdateModels={updateModels}
+        onUpdateShortcuts={updateShortcuts}
+        onUpdateOpenWith={updateOpenWith}
+        onReturnWorkspace={returnWorkspace}
+      />
+      <div
+        className={`codex-shell${sidebarVisible ? '' : ' sidebar-hidden'}`}
+        hidden={appView.kind === 'settings'}
+      >
           {sidebarVisible ? (
             <SidebarProjects
               activeProjectId={activeProjectId}
@@ -1042,12 +1057,9 @@ export default function App() {
               onTogglePinThread={togglePinThread}
               onTogglePinProject={togglePinProject}
               collapsedProjects={collapsedProjects}
-              searchOpen={searchOpen}
-              searchQuery={searchQuery}
               panelState={panelState}
               onCreatePrimaryChat={() => void handleCreatePrimaryChat()}
-              onToggleSearch={() => setSearchOpen((value) => !value)}
-              onSearchQueryChange={setSearchQuery}
+              onToggleSearch={openSessionSearch}
               onToggleAllProjects={toggleAllProjects}
               onRefreshProjects={handleRefreshProjects}
               refreshingProjects={projectsRefreshing}
@@ -1223,7 +1235,16 @@ export default function App() {
             ) : null}
           </div>
         </div>
-      )}
+
+      <SessionSearchDialog
+        open={searchOpen}
+        query={searchQuery}
+        projects={projects}
+        activeThreadId={activeThreadId}
+        onClose={closeSessionSearch}
+        onQueryChange={setSearchQuery}
+        onSelectThread={handleSelectThread}
+      />
 
       <Dialogs
         approvalDialog={

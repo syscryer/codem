@@ -127,6 +127,10 @@ test('normalizeAppSettings preserves valid appearance values', () => {
   });
 });
 
+test('default appearance uses 14px UI font size', () => {
+  assert.equal(defaultAppSettings.appearance.uiFontSize, 14);
+});
+
 test('normalizeAppSettings preserves valid model settings', () => {
   const settings = normalizeAppSettings({
     models: {
