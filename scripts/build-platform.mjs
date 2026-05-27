@@ -3,6 +3,13 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import process from 'node:process';
 
+import {
+  DEFAULT_RUNTIME_FLAVOR,
+  RUNTIME_ENV_NAME,
+  flavorToMode,
+  normalizeRuntimeFlavor,
+} from './runtime-flavor.mjs';
+
 const SUPPORTED_TARGETS = new Map([
   [
     'win-x64',
@@ -44,6 +51,14 @@ const SUPPORTED_TARGETS = new Map([
   ],
 ]);
 
+function createRuntimeContext(flavor = DEFAULT_RUNTIME_FLAVOR) {
+  const runtimeFlavor = normalizeRuntimeFlavor(flavor);
+  return {
+    flavor: runtimeFlavor,
+    runtimeMode: flavorToMode(runtimeFlavor),
+  };
+}
+
 export function expandPlatformSelection(selection, runtime = process) {
   if (selection !== 'all') {
     return [selection];
@@ -62,12 +77,30 @@ export function expandPlatformSelection(selection, runtime = process) {
   throw new Error(`Unsupported host platform: ${runtime.platform}`);
 }
 
-export function getBuildPlan(target) {
+export function createBuildContext(targets, flavor = DEFAULT_RUNTIME_FLAVOR) {
+  const runtimeContext = createRuntimeContext(flavor);
+  return {
+    targets,
+    ...runtimeContext,
+  };
+}
+
+export function getBuildPlan(target, contextOrFlavor = DEFAULT_RUNTIME_FLAVOR) {
   const plan = SUPPORTED_TARGETS.get(target);
   if (!plan) {
     throw new Error(`Unsupported platform target: ${target}`);
   }
-  return plan;
+
+  const runtimeContext =
+    typeof contextOrFlavor === 'object' && contextOrFlavor !== null
+      ? createRuntimeContext(contextOrFlavor.flavor)
+      : createRuntimeContext(contextOrFlavor);
+
+  return {
+    ...plan,
+    runtimeFlavor: runtimeContext.flavor,
+    runtimeMode: runtimeContext.runtimeMode,
+  };
 }
 
 export function resolveSpawnInvocation(command, args, runtime = process) {
@@ -84,30 +117,43 @@ export function resolveSpawnInvocation(command, args, runtime = process) {
   };
 }
 
-function runPlan(target) {
-  const plan = getBuildPlan(target);
+function createSpawnOptions(plan, runtime = process) {
+  return {
+    cwd: runtime.cwd(),
+    env: {
+      ...runtime.env,
+      [RUNTIME_ENV_NAME]: plan.runtimeMode,
+    },
+    shell: false,
+    stdio: 'inherit',
+  };
+}
+
+export function runPlan(
+  target,
+  contextOrFlavor = DEFAULT_RUNTIME_FLAVOR,
+  { runtime = process, spawn = spawnSync } = {},
+) {
+  const plan = getBuildPlan(target, contextOrFlavor);
   const [command, args] = plan.command;
   console.log(`\nBuilding ${plan.label}...`);
   console.log(`> ${command} ${args.join(' ')}`);
 
-  const invocation = resolveSpawnInvocation(command, args);
-  const result = spawnSync(invocation.command, invocation.args, {
-    cwd: process.cwd(),
-    env: process.env,
-    shell: false,
-    stdio: 'inherit',
-  });
+  const invocation = resolveSpawnInvocation(command, args, runtime);
+  const result = spawn(invocation.command, invocation.args, createSpawnOptions(plan, runtime));
 
   if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+    runtime.exit(result.status ?? 1);
   }
 }
 
 function main() {
   const selection = process.argv[2] ?? 'all';
+  const flavor = process.argv[3] ?? DEFAULT_RUNTIME_FLAVOR;
   const targets = expandPlatformSelection(selection);
-  for (const target of targets) {
-    runPlan(target);
+  const context = createBuildContext(targets, flavor);
+  for (const target of context.targets) {
+    runPlan(target, context);
   }
 }
 

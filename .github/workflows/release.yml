@@ -19,7 +19,7 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.artifact }}
+    name: Build ${{ matrix.artifact }} ${{ matrix.flavor }}
     runs-on: ${{ matrix.platform }}
     strategy:
       fail-fast: false
@@ -27,19 +27,43 @@ jobs:
         include:
           - platform: windows-latest
             artifact: windows-x64
-            npmScript: package:win
+            flavor: with-node
+            npmScript: package:win:with-node
+            bundleRoot: src-tauri/target/release/bundle
+          - platform: windows-latest
+            artifact: windows-x64
+            flavor: no-node
+            npmScript: package:win:no-node
             bundleRoot: src-tauri/target/release/bundle
           - platform: macos-latest
             artifact: macos-arm64
-            npmScript: package:mac-arm64
+            flavor: with-node
+            npmScript: package:mac-arm64:with-node
+            bundleRoot: src-tauri/target/aarch64-apple-darwin/release/bundle
+          - platform: macos-latest
+            artifact: macos-arm64
+            flavor: no-node
+            npmScript: package:mac-arm64:no-node
             bundleRoot: src-tauri/target/aarch64-apple-darwin/release/bundle
           - platform: macos-13
             artifact: macos-x64
-            npmScript: package:mac-x64
+            flavor: with-node
+            npmScript: package:mac-x64:with-node
+            bundleRoot: src-tauri/target/x86_64-apple-darwin/release/bundle
+          - platform: macos-13
+            artifact: macos-x64
+            flavor: no-node
+            npmScript: package:mac-x64:no-node
             bundleRoot: src-tauri/target/x86_64-apple-darwin/release/bundle
           - platform: ubuntu-22.04
             artifact: linux-x64
-            npmScript: package:linux
+            flavor: with-node
+            npmScript: package:linux:with-node
+            bundleRoot: src-tauri/target/x86_64-unknown-linux-gnu/release/bundle
+          - platform: ubuntu-22.04
+            artifact: linux-x64
+            flavor: no-node
+            npmScript: package:linux:no-node
             bundleRoot: src-tauri/target/x86_64-unknown-linux-gnu/release/bundle
 
     steps:
@@ -109,7 +133,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: ${{ matrix.artifact }}
+          key: ${{ matrix.artifact }}-${{ matrix.flavor }}
 
       - name: Install dependencies
         run: npm ci
@@ -132,43 +156,17 @@ jobs:
             exit 1
           fi
 
-          copy_asset() {
-            local file="$1"
-            local base
-            local stem
-            local ext
-            local out
-            base="$(basename "$file")"
-            if [[ "$base" == *.tar.gz ]]; then
-              stem="${base%.tar.gz}"
-              ext="tar.gz"
-            else
-              ext="${base##*.}"
-              stem="${base%.$ext}"
-            fi
-            out="release-assets/${stem}-${{ matrix.artifact }}.${ext}"
-            cp "$file" "$out"
-            if [ -f "$file.sig" ]; then
-              cp "$file.sig" "$out.sig"
-            fi
-          }
-
-          while IFS= read -r -d '' file; do
-            copy_asset "$file"
-          done < <(find "$bundle_root" -type f \( \
-            -name "*.AppImage" -o \
-            -name "*.app.tar.gz" -o \
-            -name "*.deb" -o \
-            -name "*.dmg" -o \
-            -name "*.exe" -o \
-            -name "*.msi" -o \
-            -name "*.rpm" \
-          \) -print0)
+          node scripts/release-assets.mjs \
+            --bundle-root "$bundle_root" \
+            --out-dir release-assets \
+            --artifact "${{ matrix.artifact }}" \
+            --flavor "${{ matrix.flavor }}"
 
           if [ "${RUNNER_OS}" = "macOS" ]; then
             while IFS= read -r -d '' app; do
               app_base="$(basename "$app" .app)"
-              ditto -c -k --sequesterRsrc --keepParent "$app" "release-assets/${app_base}-${{ matrix.artifact }}.app.zip"
+              ditto -c -k --sequesterRsrc --keepParent "$app" \
+                "release-assets/${app_base}-${{ matrix.artifact }}-${{ matrix.flavor }}.app.zip"
             done < <(find "$bundle_root" -type d -name "*.app" -print0)
           fi
 
@@ -182,7 +180,7 @@ jobs:
       - name: Upload platform artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: codem-${{ matrix.artifact }}
+          name: codem-${{ matrix.artifact }}-${{ matrix.flavor }}
           path: release-assets/*
           if-no-files-found: error
 

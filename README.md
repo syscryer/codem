@@ -93,17 +93,24 @@ npm run package:doctor
 常用平台入口：
 
 ```bash
-npm run package:win          # Windows x64, NSIS + MSI
-npm run package:mac-arm64    # macOS Apple Silicon, .app + DMG
-npm run package:mac-x64      # macOS Intel, .app + DMG
+npm run package:win:with-node       # Windows x64, NSIS + MSI, 内置 Node.js
+npm run package:win:no-node         # Windows x64, NSIS + MSI, 依赖系统 Node.js
+npm run package:mac-arm64:with-node # macOS Apple Silicon, .app + DMG, 内置 Node.js
+npm run package:mac-arm64:no-node   # macOS Apple Silicon, .app + DMG, 依赖系统 Node.js
+npm run package:mac-x64:with-node   # macOS Intel, .app + DMG, 内置 Node.js
+npm run package:mac-x64:no-node     # macOS Intel, .app + DMG, 依赖系统 Node.js
 npm run package:mac-universal # macOS Universal, .app + DMG
 npm run package:mac          # macOS Universal 的快捷入口
-npm run package:linux        # Linux x64, deb + rpm + AppImage
+npm run package:linux:with-node     # Linux x64, deb + rpm + AppImage, 内置 Node.js
+npm run package:linux:no-node       # Linux x64, deb + rpm + AppImage, 依赖系统 Node.js
 npm run package:all          # 当前系统推荐目标
 ```
 
 注意事项：
 
+- `with-node` 表示安装包内置运行时 Node.js，目标机器不需要额外安装 Node。
+- `no-node` 表示安装包不携带 Node.js，体积更小，但目标机器需要自行提供可用的 Node 环境。
+- `npm run package:win`、`npm run package:mac-arm64`、`npm run package:mac-x64`、`npm run package:linux` 仍可作为平台快捷入口使用；如果需要明确区分产物口径，优先使用上面的 `with-node` / `no-node` 命令。
 - Tauri 桌面包会先执行 `npm run build`，并把 `dist-server` 作为资源打入包内。
 - Windows、macOS、Linux 通常需要在对应系统或 CI runner 上构建，不建议把这一步当作可靠跨编译。
 - 当前 release workflow 先覆盖多平台产物构建、收集、校验版本和 `SHA256SUMS.txt`，暂不启用自动更新签名、macOS notarize 或代码签名。
