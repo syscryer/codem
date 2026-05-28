@@ -100,10 +100,10 @@ test('clearThreadActivityNotice removes only the selected thread notice', () => 
   });
 });
 
-test('system notifications are only sent for completed or failed runs while unfocused', () => {
+test('system notifications are sent for thread activity while unfocused', () => {
   assert.equal(shouldSendThreadSystemNotification('completed', false), true);
   assert.equal(shouldSendThreadSystemNotification('failed', false), true);
-  assert.equal(shouldSendThreadSystemNotification('approval', false), false);
+  assert.equal(shouldSendThreadSystemNotification('approval', false), true);
   assert.equal(shouldSendThreadSystemNotification('failed', true), false);
 });
 

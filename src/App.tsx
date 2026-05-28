@@ -49,6 +49,7 @@ import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
 import { fetchGitRemote, pullGitBranch, undoConversationChanges } from './lib/git-api';
 import { shouldRenderTerminalDock } from './lib/terminal-dock-state';
 import { calculateRightWorkbenchResizeWidth, clampRightWorkbenchWidth } from './lib/workbench-layout';
+import { showThreadSystemNotification } from './lib/thread-system-notifications';
 import {
   clearThreadActivityNotice,
   shouldRequestTaskbarAttention,
@@ -1526,27 +1527,6 @@ function isAppWindowFocused() {
   }
 
   return document.visibilityState === 'visible' && document.hasFocus();
-}
-
-async function showThreadSystemNotification(notice: ThreadActivityNotice) {
-  if (typeof window === 'undefined' || !('Notification' in window)) {
-    return;
-  }
-
-  const NotificationConstructor = window.Notification;
-  let permission = NotificationConstructor.permission;
-  if (permission === 'default') {
-    permission = await NotificationConstructor.requestPermission();
-  }
-  if (permission !== 'granted') {
-    return;
-  }
-
-  const heading = notice.kind === 'failed' ? 'CodeM 任务失败' : 'CodeM 任务完成';
-  const body = notice.kind === 'failed'
-    ? `“${notice.title}”运行失败`
-    : `“${notice.title}”已完成`;
-  new NotificationConstructor(heading, { body });
 }
 
 async function requestTaskbarAttention() {

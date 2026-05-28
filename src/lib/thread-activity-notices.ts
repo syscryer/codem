@@ -60,7 +60,7 @@ export function clearThreadActivityNotice(
 }
 
 export function shouldSendThreadSystemNotification(kind: ThreadActivityNoticeKind, windowFocused: boolean) {
-  return !windowFocused && (kind === 'completed' || kind === 'failed');
+  return !windowFocused && (kind === 'completed' || kind === 'failed' || kind === 'approval');
 }
 
 export function shouldRequestTaskbarAttention(kind: ThreadActivityNoticeKind, windowFocused: boolean) {

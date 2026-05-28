@@ -32,6 +32,13 @@ struct WindowMaterial {
     name: &'static str,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadNotificationRequest {
+    title: String,
+    body: String,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowState {
@@ -300,8 +307,20 @@ fn get_backend_base_url(state: State<'_, BackendPortState>) -> Result<String, St
     Ok(format!("http://127.0.0.1:{port}"))
 }
 
+#[tauri::command]
+fn show_thread_notification(
+    app: AppHandle,
+    request: ThreadNotificationRequest,
+) -> Result<(), String> {
+    platform::show_thread_notification(&app, request)
+}
+
 fn main() {
+    #[cfg(windows)]
+    platform::declare_process_app_user_model_id();
+
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .manage(PtySessions::default())
         .manage(BackendPortState {
             port: Mutex::new(3001),
@@ -346,7 +365,8 @@ fn main() {
             resize_pty_session,
             close_pty_session,
             pick_directory,
-            get_backend_base_url
+            get_backend_base_url,
+            show_thread_notification
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CodeM desktop shell");
@@ -1280,14 +1300,28 @@ fn material_info(id: i32) -> WindowMaterial {
 
 #[cfg(windows)]
 mod platform {
-    use super::{material_info, WindowMaterial};
+    use super::{material_info, ThreadNotificationRequest, WindowMaterial};
     use std::{ffi::c_void, mem::size_of};
     use tauri::Manager;
-    use windows::Win32::{
-        Foundation::HWND,
-        Graphics::Dwm::{DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_SYSTEMBACKDROP_TYPE},
-        UI::WindowsAndMessaging::GetParent,
+    use tauri_winrt_notification::{Duration, Toast};
+    use windows::{
+        core::w,
+        Win32::{
+            Foundation::HWND,
+            Graphics::Dwm::{
+                DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_SYSTEMBACKDROP_TYPE,
+            },
+            UI::{Shell::SetCurrentProcessExplicitAppUserModelID, WindowsAndMessaging::GetParent},
+        },
     };
+
+    const CODEM_APP_USER_MODEL_ID: &str = "com.mnl.codem";
+
+    pub fn declare_process_app_user_model_id() {
+        unsafe {
+            let _ = SetCurrentProcessExplicitAppUserModelID(w!("com.mnl.codem"));
+        }
+    }
 
     pub fn default_window_material_id() -> i32 {
         2
@@ -1343,6 +1377,18 @@ mod platform {
         Ok(material_info(material))
     }
 
+    pub fn show_thread_notification(
+        _app: &tauri::AppHandle,
+        request: ThreadNotificationRequest,
+    ) -> Result<(), String> {
+        Toast::new(CODEM_APP_USER_MODEL_ID)
+            .title(&request.title)
+            .text1(&request.body)
+            .duration(Duration::Short)
+            .show()
+            .map_err(|error| format!("发送系统通知失败: {error}"))
+    }
+
     fn main_hwnd(app: &tauri::AppHandle) -> Result<HWND, String> {
         let window = app
             .get_webview_window("main")
@@ -1373,7 +1419,7 @@ mod platform {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{material_info, WindowMaterial, WindowMaterialState};
+    use super::{material_info, ThreadNotificationRequest, WindowMaterial, WindowMaterialState};
     use std::process::Command;
     use tauri::Manager;
     use window_vibrancy::{
@@ -1433,11 +1479,25 @@ mod platform {
 
         Ok(material_info(material))
     }
+
+    pub fn show_thread_notification(
+        app: &tauri::AppHandle,
+        request: ThreadNotificationRequest,
+    ) -> Result<(), String> {
+        use tauri_plugin_notification::NotificationExt;
+
+        app.notification()
+            .builder()
+            .title(request.title)
+            .body(request.body)
+            .show()
+            .map_err(|error| format!("发送系统通知失败: {error}"))
+    }
 }
 
 #[cfg(all(not(windows), not(target_os = "macos")))]
 mod platform {
-    use super::{material_info, WindowMaterial};
+    use super::{material_info, ThreadNotificationRequest, WindowMaterial};
     use std::process::Command;
 
     pub fn default_window_material_id() -> i32 {
@@ -1463,5 +1523,19 @@ mod platform {
         }
 
         Err("当前平台不支持窗口材质切换".to_string())
+    }
+
+    pub fn show_thread_notification(
+        app: &tauri::AppHandle,
+        request: ThreadNotificationRequest,
+    ) -> Result<(), String> {
+        use tauri_plugin_notification::NotificationExt;
+
+        app.notification()
+            .builder()
+            .title(request.title)
+            .body(request.body)
+            .show()
+            .map_err(|error| format!("发送系统通知失败: {error}"))
     }
 }
