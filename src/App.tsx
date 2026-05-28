@@ -48,6 +48,7 @@ import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
 import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
 import { fetchGitRemote, pullGitBranch, undoConversationChanges } from './lib/git-api';
 import { shouldRenderTerminalDock } from './lib/terminal-dock-state';
+import { calculateRightWorkbenchResizeWidth, clampRightWorkbenchWidth } from './lib/workbench-layout';
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -164,6 +165,7 @@ export default function App() {
   const [rightWorkbenchOpen, setRightWorkbenchOpen] = useState(false);
   const [rightWorkbenchTab, setRightWorkbenchTab] = useState<RightWorkbenchTab>('overview');
   const [rightWorkbenchWidth, setRightWorkbenchWidth] = useState(680);
+  const [chatWorkspaceWidth, setChatWorkspaceWidth] = useState(0);
   const [filePreviewTabs, setFilePreviewTabs] = useState<WorkbenchPreviewTab[]>([]);
   const [activeFilePreviewKey, setActiveFilePreviewKey] = useState('');
   const [reviewPreviewTabs, setReviewPreviewTabs] = useState<WorkbenchPreviewTab[]>([]);
@@ -300,6 +302,10 @@ export default function App() {
   const chatFontStack = resolveChatFontStack(appearance);
   const codeFontStack = resolveCodeFontStack(appearance);
   const effectiveWindowMaterial = normalizeWindowMaterial(appearance.windowMaterial, supportedWindowMaterials);
+  const effectiveRightWorkbenchWidth =
+    rightWorkbenchOpen && chatWorkspaceWidth > 0
+      ? clampRightWorkbenchWidth(rightWorkbenchWidth, chatWorkspaceWidth)
+      : rightWorkbenchWidth;
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -368,6 +374,47 @@ export default function App() {
     setActiveReviewPreviewKey('');
     setPreviewContentByKey({});
   }, [activeProject?.id]);
+
+  useEffect(() => {
+    const workspaceElement = chatWorkspaceRef.current;
+    if (!workspaceElement) {
+      return;
+    }
+    const observedWorkspaceElement = workspaceElement;
+
+    let rafId: number | null = null;
+    function updateWorkspaceWidth() {
+      if (rafId !== null) {
+        return;
+      }
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const newWidth = Math.round(observedWorkspaceElement.getBoundingClientRect().width);
+        setChatWorkspaceWidth((prevWidth) => (prevWidth === newWidth ? prevWidth : newWidth));
+      });
+    }
+
+    updateWorkspaceWidth();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateWorkspaceWidth);
+      return () => {
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+        }
+        window.removeEventListener('resize', updateWorkspaceWidth);
+      };
+    }
+
+    const observer = new ResizeObserver(updateWorkspaceWidth);
+    observer.observe(observedWorkspaceElement);
+    return () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+      observer.disconnect();
+    };
+  }, []);
 
   const openSessionSearch = useCallback(() => {
     setSearchQuery('');
@@ -942,18 +989,49 @@ export default function App() {
   function handleRightWorkbenchResizeStart(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
     const startX = event.clientX;
-    const startWidth = rightWorkbenchWidth;
+    const workspaceElement = chatWorkspaceRef.current;
+    const workspaceWidth = workspaceElement?.getBoundingClientRect().width ?? window.innerWidth;
+    const startWidth = clampRightWorkbenchWidth(effectiveRightWorkbenchWidth, workspaceWidth);
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
 
-    function handlePointerMove(pointerEvent: PointerEvent) {
-      const nextWidth = startWidth - (pointerEvent.clientX - startX);
-      const workspaceWidth = chatWorkspaceRef.current?.getBoundingClientRect().width ?? window.innerWidth;
-      const maxWidth = Math.max(300, workspaceWidth - 360);
-      setRightWorkbenchWidth(Math.min(maxWidth, Math.max(320, nextWidth)));
+    let rafId: number | null = null;
+    let latestClientX = startX;
+
+    function applyResize(currentX: number) {
+      const containerWidth = workspaceElement?.getBoundingClientRect().width ?? window.innerWidth;
+      setRightWorkbenchWidth(
+        calculateRightWorkbenchResizeWidth({
+          startWidth,
+          startX,
+          currentX,
+          containerWidth,
+        }),
+      );
     }
 
-    function handlePointerUp() {
+    function scheduleResize() {
+      if (rafId !== null) {
+        return;
+      }
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        applyResize(latestClientX);
+      });
+    }
+
+    function handlePointerMove(pointerEvent: PointerEvent) {
+      latestClientX = pointerEvent.clientX;
+      scheduleResize();
+    }
+
+    function handlePointerUp(pointerEvent: PointerEvent) {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      latestClientX = pointerEvent.clientX;
+      applyResize(latestClientX);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       window.removeEventListener('pointermove', handlePointerMove);
@@ -1119,7 +1197,7 @@ export default function App() {
             ref={chatWorkspaceRef}
             className={`chat-workspace${rightWorkbenchOpen ? ' workbench-open' : ''}`}
             style={{
-              '--right-workbench-width': `${rightWorkbenchWidth}px`,
+              '--right-workbench-width': `${effectiveRightWorkbenchWidth}px`,
             } as CSSProperties}
           >
             <main className="chat-shell">

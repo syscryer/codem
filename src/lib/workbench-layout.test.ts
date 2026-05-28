@@ -1,17 +1,24 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
   applyWorkbenchNavigatorWidthOverride,
   buildWorkbenchFilesLayoutColumns,
+  clampRightWorkbenchWidth,
+  calculateRightWorkbenchResizeWidth,
   clampWorkbenchSplitPaneWidthPercent,
   clearWorkbenchNavigatorWidthOverride,
   clampWorkbenchNavigatorWidth,
+  MIN_CHAT_SHELL_WIDTH_WITH_WORKBENCH,
+  MIN_RIGHT_WORKBENCH_WIDTH,
   MAX_WORKBENCH_NAVIGATOR_WIDTH,
   MIN_WORKBENCH_NAVIGATOR_WIDTH,
   WORKBENCH_LAYOUT_COLUMNS_OVERRIDE_CSS_VAR,
   WORKBENCH_NAVIGATOR_WIDTH_OVERRIDE_CSS_VAR,
 } from './workbench-layout';
+
+const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
 test('clampWorkbenchNavigatorWidth keeps width inside allowed range', () => {
   assert.equal(clampWorkbenchNavigatorWidth(MIN_WORKBENCH_NAVIGATOR_WIDTH - 40), MIN_WORKBENCH_NAVIGATOR_WIDTH);
@@ -54,4 +61,48 @@ test('clampWorkbenchSplitPaneWidthPercent respects container width and pane mini
   assert.equal(clampWorkbenchSplitPaneWidthPercent(50, 1000), 50);
   assert.equal(clampWorkbenchSplitPaneWidthPercent(90, 1000), 82);
   assert.equal(clampWorkbenchSplitPaneWidthPercent(50, 300), 50);
+});
+
+test('clampRightWorkbenchWidth keeps the close control inside narrow workspace layouts', () => {
+  assert.equal(clampRightWorkbenchWidth(680, 1200), 680);
+  assert.equal(clampRightWorkbenchWidth(680, 820), 460);
+  assert.equal(clampRightWorkbenchWidth(680, 560), MIN_RIGHT_WORKBENCH_WIDTH);
+  assert.equal(
+    clampRightWorkbenchWidth(260, 900),
+    MIN_RIGHT_WORKBENCH_WIDTH,
+  );
+  assert.equal(
+    clampRightWorkbenchWidth(900, 1200),
+    1200 - MIN_CHAT_SHELL_WIDTH_WITH_WORKBENCH,
+  );
+});
+
+test('calculateRightWorkbenchResizeWidth uses the current pointer position and actual start width', () => {
+  assert.equal(
+    calculateRightWorkbenchResizeWidth({
+      startWidth: 460,
+      startX: 1000,
+      currentX: 900,
+      containerWidth: 820,
+    }),
+    460,
+  );
+  assert.equal(
+    calculateRightWorkbenchResizeWidth({
+      startWidth: 460,
+      startX: 1000,
+      currentX: 1100,
+      containerWidth: 820,
+    }),
+    360,
+  );
+});
+
+test('right workbench grid can shrink without clipping the close button', () => {
+  assert.match(
+    stylesSource,
+    /\.chat-workspace\.workbench-open\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+var\(--right-workbench-width,\s*520px\);/,
+  );
+  assert.match(stylesSource, /\.right-workbench-close\s*\{[\s\S]*flex:\s*0\s+0\s+30px;/);
+  assert.match(stylesSource, /\.right-workbench-tab\s*\{[\s\S]*min-width:\s*0;/);
 });

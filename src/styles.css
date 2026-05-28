@@ -749,7 +749,7 @@ svg {
 }
 
 .chat-workspace.workbench-open {
-  grid-template-columns: minmax(360px, 1fr) var(--right-workbench-width, 520px);
+  grid-template-columns: minmax(0, 1fr) var(--right-workbench-width, 520px);
 }
 
 .chat-workspace.workbench-open .chat-shell {
@@ -1809,7 +1809,9 @@ svg {
 
 .right-workbench-tab {
   height: 30px;
+  min-width: 0;
   max-width: 148px;
+  flex: 0 1 auto;
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -1833,6 +1835,8 @@ svg {
 
 .right-workbench-tab.ghost {
   width: 30px;
+  min-width: 30px;
+  flex: 0 0 30px;
   justify-content: center;
   padding: 0;
   margin-left: 2px;
@@ -1840,6 +1844,7 @@ svg {
 
 .right-workbench-close {
   width: 30px;
+  flex: 0 0 30px;
   height: 30px;
   display: inline-grid;
   place-items: center;
@@ -4476,7 +4481,7 @@ svg {
 }
 
 .agent-preview-summary {
-  gap: 3px;
+  gap: 6px;
 }
 
 .agent-preview-summary .tool-status-dot {
@@ -4489,34 +4494,152 @@ svg {
 
 .agent-preview-title {
   min-width: 0;
-  max-width: 360px;
+  max-width: 260px;
   overflow: hidden;
-  color: #4b5563;
+  color: #3f3f46;
   font-family: inherit;
-  font-weight: 520;
+  font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .agent-preview-meta {
-  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
   color: #7b8088;
   font-family: inherit;
   font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-preview-status {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  padding: 2px 8px;
+  border: 1px solid #d8dee8;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.agent-preview-status.is-running {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.agent-preview-status.is-completed {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.agent-preview-status.is-error {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
 }
 
 .agent-preview-card {
   margin: 6px 0 2px 18px;
   max-width: min(760px, 100%);
   overflow: hidden;
-  border: 1px solid #e7e5e4;
-  border-radius: 8px;
-  background: #fbfbfb;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.95)),
+    #fbfbfb;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+.agent-preview-hero {
+  display: flex;
+  gap: 12px;
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid #e8edf5;
+  background:
+    radial-gradient(circle at 16px 16px, rgba(35, 116, 198, 0.12), transparent 30px),
+    linear-gradient(135deg, rgba(35, 116, 198, 0.08), rgba(15, 23, 42, 0.02));
+}
+
+.agent-preview-avatar {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(35, 116, 198, 0.22);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #2374c6;
+  box-shadow: 0 6px 16px rgba(35, 116, 198, 0.12);
+}
+
+.agent-preview-hero-main {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.agent-preview-hero-title-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-preview-hero-title-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-preview-hero-main p {
+  margin: 0;
+  color: #4b5563;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.agent-preview-metrics,
+.agent-preview-file-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-preview-metrics span {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.68);
+  color: #475569;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.agent-preview-muted {
+  margin: 0;
+  color: #8b95a5;
+  font-size: 12px;
 }
 
 .agent-preview-section {
   padding: 10px 12px;
-  border-bottom: 1px solid #efede9;
+  border-bottom: 1px solid #e8edf5;
 }
 
 .agent-preview-section:last-child {
@@ -4525,14 +4648,52 @@ svg {
 
 .agent-preview-section h4 {
   margin: 0 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
   color: #52525b;
   font-size: 12px;
+  font-weight: 680;
 }
 
-.agent-preview-file-list {
-  display: flex;
-  flex-wrap: wrap;
+.agent-preview-section h4 span {
+  color: #8b95a5;
+  font-size: 11px;
+  font-weight: 520;
+}
+
+.agent-preview-id-grid {
+  display: grid;
   gap: 6px;
+}
+
+.agent-preview-id-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-preview-id-row span {
+  color: #71717a;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.agent-preview-id-row code {
+  min-width: 0;
+  overflow: hidden;
+  padding: 3px 7px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  font-family: var(--code-font);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-preview-file-list code {
@@ -4549,6 +4710,68 @@ svg {
   white-space: nowrap;
 }
 
+.agent-preview-tool-timeline {
+  position: relative;
+  display: grid;
+  gap: 8px;
+}
+
+.agent-preview-tool-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.agent-preview-tool-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border: 2px solid #cbd5e1;
+  border-radius: 999px;
+  background: #ffffff;
+}
+
+.agent-preview-tool-row.tool-running .agent-preview-tool-dot {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.14);
+}
+
+.agent-preview-tool-row.tool-done .agent-preview-tool-dot {
+  border-color: #22c55e;
+}
+
+.agent-preview-tool-row.tool-error .agent-preview-tool-dot {
+  border-color: #ef4444;
+}
+
+.agent-preview-tool-main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.agent-preview-tool-title,
+.agent-preview-tool-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-preview-tool-title {
+  color: #374151;
+  font-family: var(--code-font);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.agent-preview-tool-summary {
+  color: #71717a;
+  font-size: 11px;
+}
+
 .agent-preview-section pre {
   margin: 0;
   max-height: 300px;
@@ -4559,6 +4782,14 @@ svg {
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.agent-preview-prompt-section pre {
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #334155;
 }
 
 .structured-preview-step {

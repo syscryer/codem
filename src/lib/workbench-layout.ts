@@ -1,6 +1,8 @@
 const MIN_WORKBENCH_NAVIGATOR_WIDTH = 220;
 const MAX_WORKBENCH_NAVIGATOR_WIDTH = 520;
 const MIN_WORKBENCH_SPLIT_PANE_WIDTH = 180;
+const MIN_RIGHT_WORKBENCH_WIDTH = 320;
+const MIN_CHAT_SHELL_WIDTH_WITH_WORKBENCH = 360;
 const WORKBENCH_LAYOUT_COLUMNS_CSS_VAR = '--workbench-layout-columns';
 const WORKBENCH_LAYOUT_COLUMNS_OVERRIDE_CSS_VAR = '--workbench-layout-columns-override';
 const WORKBENCH_NAVIGATOR_WIDTH_CSS_VAR = '--workbench-navigator-width';
@@ -8,6 +10,36 @@ const WORKBENCH_NAVIGATOR_WIDTH_OVERRIDE_CSS_VAR = '--workbench-navigator-width-
 
 export function clampWorkbenchNavigatorWidth(width: number) {
   return Math.min(MAX_WORKBENCH_NAVIGATOR_WIDTH, Math.max(MIN_WORKBENCH_NAVIGATOR_WIDTH, Math.round(width)));
+}
+
+export function clampRightWorkbenchWidth(width: number, containerWidth: number) {
+  const roundedWidth = Math.max(0, Math.round(width));
+  const roundedContainerWidth = Math.max(0, Math.round(containerWidth));
+
+  if (roundedContainerWidth <= MIN_RIGHT_WORKBENCH_WIDTH) {
+    return roundedContainerWidth;
+  }
+
+  const preservedChatWidth = Math.min(
+    MIN_CHAT_SHELL_WIDTH_WITH_WORKBENCH,
+    roundedContainerWidth - MIN_RIGHT_WORKBENCH_WIDTH,
+  );
+  const maxWidth = roundedContainerWidth - preservedChatWidth;
+  return Math.min(maxWidth, Math.max(MIN_RIGHT_WORKBENCH_WIDTH, roundedWidth));
+}
+
+export function calculateRightWorkbenchResizeWidth({
+  startWidth,
+  startX,
+  currentX,
+  containerWidth,
+}: {
+  startWidth: number;
+  startX: number;
+  currentX: number;
+  containerWidth: number;
+}) {
+  return clampRightWorkbenchWidth(startWidth - (currentX - startX), containerWidth);
 }
 
 export function buildWorkbenchFilesLayoutColumns(navigatorVisible: boolean, navigatorWidth: number) {
@@ -52,6 +84,8 @@ export function clearWorkbenchNavigatorWidthOverride(
 
 export {
   MAX_WORKBENCH_NAVIGATOR_WIDTH,
+  MIN_CHAT_SHELL_WIDTH_WITH_WORKBENCH,
+  MIN_RIGHT_WORKBENCH_WIDTH,
   MIN_WORKBENCH_SPLIT_PANE_WIDTH,
   MIN_WORKBENCH_NAVIGATOR_WIDTH,
   WORKBENCH_LAYOUT_COLUMNS_CSS_VAR,

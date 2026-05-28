@@ -32,6 +32,7 @@ import {
   shouldHideToolStep,
   summarizeToolRow,
 } from '../lib/conversation';
+import { buildAgentTaskPreview, isAgentTaskToolName, type AgentTaskPreviewData } from '../lib/agent-task-preview';
 import {
   buildChangedFileReviewRequest,
   buildChangedFilesReviewRequests,
@@ -630,7 +631,7 @@ function ToolStepRow({
 }) {
   const preview = useMemo(() => getToolPreview(tool), [tool]);
   const todoPreview = useMemo(() => getTodoWritePreview(tool), [tool]);
-  const agentPreview = useMemo(() => getAgentTaskPreview(tool), [tool]);
+  const agentPreview = useMemo(() => buildAgentTaskPreview(tool), [tool]);
   const structuredPreview = useMemo(() => getStructuredToolPreview(tool), [tool]);
   const [detailsOpen, setDetailsOpen] = useState(false);
   if (agentPreview) {
@@ -1215,27 +1216,56 @@ function AgentTaskPreview({
       >
         <ToolTypeIcon toolName={tool.name} />
         <div className="tool-preview-summary-main agent-preview-summary-main">
-          <span className="agent-preview-title">{tool.title}</span>
+          <span className="agent-preview-title">{preview.agentType}</span>
           <span className="agent-preview-meta">{preview.summary}</span>
         </div>
+        <span className={`agent-preview-status is-${preview.statusTone}`}>{preview.statusLabel}</span>
         <span className={`tool-preview-chevron ${expanded ? 'expanded' : ''}`}>{'>'}</span>
       </button>
 
       {expanded ? (
         <div className="agent-preview-card">
-          {preview.files.length > 0 ? (
+          <section className="agent-preview-hero">
+            <div className="agent-preview-avatar" aria-hidden>
+              <Bot size={18} />
+            </div>
+            <div className="agent-preview-hero-main">
+              <div className="agent-preview-hero-title-row">
+                <strong>{preview.agentType}</strong>
+                <span className={`agent-preview-status is-${preview.statusTone}`}>{preview.statusLabel}</span>
+              </div>
+              <p>{preview.taskDescription}</p>
+              {preview.metrics.length > 0 ? (
+                <div className="agent-preview-metrics">
+                  {preview.metrics.map((metric) => (
+                    <span key={metric}>{metric}</span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </section>
+          {preview.identifiers.length > 0 ? (
             <section className="agent-preview-section">
-              <h4>涉及文件</h4>
-              <div className="agent-preview-file-list">
-                {preview.files.map((filePath) => (
-                  <code key={filePath}>{filePath}</code>
+              <h4>标识</h4>
+              <div className="agent-preview-id-grid">
+                {preview.identifiers.map((item) => (
+                  <div key={`${item.label}-${item.value}`} className="agent-preview-id-row">
+                    <span>{item.label}</span>
+                    <code>{item.value}</code>
+                  </div>
                 ))}
               </div>
             </section>
           ) : null}
+          {preview.promptText && preview.promptText !== preview.taskDescription ? (
+            <section className="agent-preview-section agent-preview-prompt-section">
+              <h4>子代理 Prompt</h4>
+              <pre>{preview.promptText}</pre>
+            </section>
+          ) : null}
           {preview.resultText ? (
             <section className="agent-preview-section">
-              <h4>结果</h4>
+              <h4>输出摘要</h4>
               <pre>{preview.resultText}</pre>
             </section>
           ) : null}
@@ -1247,17 +1277,39 @@ function AgentTaskPreview({
               ))}
             </section>
           ) : null}
-          {preview.subtools.length > 0 ? (
+          {preview.subtools.length > 0 || preview.hiddenSubtoolCount > 0 ? (
             <section className="agent-preview-section">
-              <h4>子代理工具</h4>
-              <div className="structured-preview-list">
-                {preview.subtools.map((subtool) => (
-                  <div key={subtool.id} className={`structured-preview-row tool-${subtool.status}`}>
-                    <span className="structured-preview-label">工具</span>
-                    <span className="structured-preview-value">
-                      {subtool.title} · {summarizeToolRow(subtool)}
-                    </span>
-                  </div>
+              <h4>
+                子代理工具
+                {preview.hiddenSubtoolCount > 0 ? (
+                  <span>已收起 {preview.hiddenSubtoolCount} 条成功结果</span>
+                ) : null}
+              </h4>
+              {preview.subtools.length > 0 ? (
+                <div className="agent-preview-tool-timeline">
+                  {preview.subtools.map((subtool) => (
+                    <div key={subtool.id} className={`agent-preview-tool-row tool-${subtool.status}`}>
+                      <span className="agent-preview-tool-dot" aria-hidden />
+                      <div className="agent-preview-tool-main">
+                        <span className="agent-preview-tool-title">{subtool.title}</span>
+                        <span className="agent-preview-tool-summary">
+                          {subtool.statusLabel} · {subtool.summary}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="agent-preview-muted">成功工具结果已折叠。</p>
+              )}
+            </section>
+          ) : null}
+          {preview.files.length > 0 ? (
+            <section className="agent-preview-section">
+              <h4>涉及文件</h4>
+              <div className="agent-preview-file-list">
+                {preview.files.map((filePath) => (
+                  <code key={filePath}>{filePath}</code>
                 ))}
               </div>
             </section>
@@ -2159,14 +2211,6 @@ type TodoWritePreviewData = {
   counts: Record<TodoStatus, number>;
 };
 
-type AgentTaskPreviewData = {
-  summary: string;
-  files: string[];
-  resultText: string;
-  subMessages: string[];
-  subtools: ToolStep[];
-};
-
 type StructuredToolPreviewData = {
   title: string;
   summary: string;
@@ -2399,26 +2443,6 @@ function formatChangedFilePath(filePath: string) {
   return segments.slice(-3).join('/');
 }
 
-function getAgentTaskPreview(tool: ToolStep): AgentTaskPreviewData | null {
-  const normalizedName = normalizeRuntimeToolName(tool.name);
-  if (normalizedName !== 'agent' && normalizedName !== 'task') {
-    return null;
-  }
-
-  const resultText = stripUsageBlock(tool.resultText ?? '').trim();
-  const usageSummary = getUsageSummaryFromText(tool.resultText);
-  const files = extractAgentResultFiles(resultText);
-  const summary = formatAgentTaskSummary(tool, usageSummary, files.length);
-
-  return {
-    summary,
-    files,
-    resultText,
-    subMessages: tool.subMessages?.filter((message) => message.trim()) ?? [],
-    subtools: tool.subtools ?? [],
-  };
-}
-
 function getStructuredToolPreview(tool: ToolStep): StructuredToolPreviewData | null {
   const normalizedName = normalizeRuntimeToolName(tool.name);
   const input = parseToolInput(tool.inputText);
@@ -2546,18 +2570,6 @@ function getStructuredToolPreview(tool: ToolStep): StructuredToolPreviewData | n
   }
 
   return null;
-}
-
-function formatAgentTaskSummary(tool: ToolStep, usageSummary: string, fileCount: number) {
-  const state = tool.status === 'running' ? '运行中' : tool.status === 'error' ? 'Error' : '完成子任务';
-  const details: string[] = [];
-  if (usageSummary) {
-    details.push(usageSummary);
-  } else if (fileCount > 0) {
-    details.push(`${fileCount} 个文件`);
-  }
-
-  return details.length ? `${state} · ${details.join(' · ')}` : state;
 }
 
 function extractPlanRows(input: Record<string, unknown> | null): StructuredToolPreviewData['rows'] {
@@ -2717,142 +2729,6 @@ function getReadableToolGroupName(name: string) {
     default:
       return name.startsWith('mcp__') ? name.split('__').filter(Boolean).at(-1) ?? name : name;
   }
-}
-
-function extractAgentResultFiles(resultText: string) {
-  const files: string[] = [];
-  const seen = new Set<string>();
-  const lines = resultText
-    .split(/\r?\n/)
-    .map((line) => normalizeAgentResultLine(line))
-    .filter(Boolean);
-
-  for (const line of lines) {
-    if (!isLikelyFilePath(line) || seen.has(line)) {
-      continue;
-    }
-
-    seen.add(line);
-    files.push(line);
-    if (files.length >= 12) {
-      break;
-    }
-  }
-
-  return files;
-}
-
-function normalizeAgentResultLine(line: string) {
-  return line
-    .trim()
-    .replace(/^[-*+]\s+/, '')
-    .replace(/^\d+\.\s+/, '')
-    .replace(/^`+|`+$/g, '')
-    .replace(/^["']|["']$/g, '')
-    .trim();
-}
-
-function isLikelyFilePath(value: string) {
-  if (!value || value.length > 180 || /\s{2,}/.test(value)) {
-    return false;
-  }
-
-  return /^(?:[\w.@()[\]-]+[\\/])*[\w .@()[\]-]+\.[A-Za-z0-9]{1,8}$/.test(value);
-}
-
-function stripUsageBlock(value: string) {
-  return value.replace(/<usage>[\s\S]*?<\/usage>/gi, '').trim();
-}
-
-function getUsageSummaryFromText(value?: string) {
-  const usageBlockMatch = value?.match(/<usage>([\s\S]*?)<\/usage>/i);
-  if (!usageBlockMatch) {
-    return '';
-  }
-
-  const values = parseUsageBlock(usageBlockMatch[1]);
-  const parts: string[] = [];
-  if (typeof values.toolUses === 'number') {
-    parts.push(`${values.toolUses} tool uses`);
-  }
-  if (typeof values.totalTokens === 'number') {
-    parts.push(formatUsageTokenCount(values.totalTokens));
-  }
-  if (typeof values.durationMs === 'number') {
-    parts.push(formatUsageDuration(values.durationMs));
-  }
-
-  return parts.join(' · ');
-}
-
-function parseUsageBlock(block: string) {
-  const result: {
-    totalTokens?: number;
-    toolUses?: number;
-    durationMs?: number;
-  } = {};
-
-  const lines = block
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  for (const line of lines) {
-    const separatorIndex = line.indexOf(':');
-    if (separatorIndex === -1) {
-      continue;
-    }
-
-    const key = line.slice(0, separatorIndex).trim();
-    const rawValue = line.slice(separatorIndex + 1).trim();
-    const numericValue = Number.parseInt(rawValue, 10);
-    if (!Number.isFinite(numericValue)) {
-      continue;
-    }
-
-    if (key === 'total_tokens') {
-      result.totalTokens = numericValue;
-      continue;
-    }
-
-    if (key === 'tool_uses') {
-      result.toolUses = numericValue;
-      continue;
-    }
-
-    if (key === 'duration_ms') {
-      result.durationMs = numericValue;
-    }
-  }
-
-  return result;
-}
-
-function formatUsageTokenCount(value: number) {
-  if (value < 1000) {
-    return `${value} tokens`;
-  }
-
-  const compact = (value / 1000).toFixed(1);
-  return `${compact.endsWith('.0') ? compact.slice(0, -2) : compact}k tokens`;
-}
-
-function formatUsageDuration(durationMs: number) {
-  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const parts: string[] = [];
-
-  if (hours > 0) {
-    parts.push(`${hours}h`);
-  }
-  if (minutes > 0 || hours > 0) {
-    parts.push(`${minutes}m`);
-  }
-  parts.push(`${seconds}s`);
-
-  return parts.join(' ');
 }
 
 function getTodoWritePreview(tool: ToolStep): TodoWritePreviewData | null {
@@ -3068,7 +2944,7 @@ function isBatchGroupableTool(tool: ToolStep) {
     return false;
   }
 
-  return !getTodoWritePreview(tool) && !getAgentTaskPreview(tool);
+  return !getTodoWritePreview(tool) && !isAgentTaskToolName(tool.name);
 }
 
 function isReadTool(tool: ToolStep) {
