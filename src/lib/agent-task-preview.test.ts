@@ -68,7 +68,7 @@ test('buildAgentTaskPreview extracts subagent identity, metrics, and child tool 
   assert.equal(preview.statusLabel, '完成');
   assert.equal(preview.statusTone, 'completed');
   assert.deepEqual(preview.metrics, ['8 个工具', '12.4k tokens', '1m 31s']);
-  assert.equal(preview.summary, '完成子任务 · 8 个工具 · 12.4k tokens · 1m 31s');
+  assert.equal(preview.summary, '检查右侧工作台窄窗口遮挡问题，并给出修复建议 · 8 个工具 · 12.4k tokens · 1m 31s');
   assert.deepEqual(preview.identifiers, [
     { label: 'taskId', value: 'task-123' },
     { label: 'toolUseId', value: 'toolu_agent_1' },
@@ -104,7 +104,7 @@ test('buildAgentTaskPreview keeps agent running until the final result arrives',
   assert.ok(preview);
   assert.equal(preview.statusLabel, '运行中');
   assert.equal(preview.statusTone, 'running');
-  assert.equal(preview.summary, '运行中子任务 · 1 个工具');
+  assert.equal(preview.summary, '检查右侧工作台窄窗口遮挡问题 · 1 个工具');
 });
 
 test('buildAgentTaskPreview hides noisy successful orphan tool results from child timeline', () => {
@@ -136,6 +136,13 @@ test('buildAgentTaskPreview hides noisy successful orphan tool results from chil
         resultText: 'The file index.html has been updated successfully.',
       },
       {
+        id: 'orphan-result-1b',
+        name: 'tool_result',
+        title: '工具返回结果',
+        status: 'done',
+        resultText: '318 .touch-btn.up { grid-area: up; }',
+      },
+      {
         id: 'orphan-result-2',
         name: 'tool_result',
         title: '工具返回异常',
@@ -147,7 +154,15 @@ test('buildAgentTaskPreview hides noisy successful orphan tool results from chil
   });
 
   assert.ok(preview);
-  assert.equal(preview.hiddenSubtoolCount, 1);
+  assert.equal(preview.hiddenSubtoolCount, 2);
+  assert.deepEqual(preview.collapsedSubtools.map((subtool) => subtool.summary), [
+    'The file index.html has been updated successfully.',
+    '318 .touch-btn.up { grid-area: up; }',
+  ]);
+  assert.deepEqual(preview.collapsedSubtoolSummary, [
+    'The file index.html has been updated successfully.',
+    '318 .touch-btn.up { grid-area: up; }',
+  ]);
   assert.deepEqual(
     preview.subtools.map((subtool) => subtool.title),
     ['Read(index.html)', '工具返回异常'],

@@ -1206,6 +1206,7 @@ function AgentTaskPreview({
   preview: AgentTaskPreviewData;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [collapsedResultsExpanded, setCollapsedResultsExpanded] = useState(false);
 
   return (
     <div className={`tool-step agent-preview-step tool-${tool.status}`}>
@@ -1299,9 +1300,35 @@ function AgentTaskPreview({
                     </div>
                   ))}
                 </div>
-              ) : (
-                <p className="agent-preview-muted">成功工具结果已折叠。</p>
-              )}
+              ) : null}
+              {preview.hiddenSubtoolCount > 0 ? (
+                <div className="agent-preview-collapsed-tools">
+                  <button
+                    type="button"
+                    className="agent-preview-collapsed-toggle"
+                    onClick={() => setCollapsedResultsExpanded((current) => !current)}
+                  >
+                    <span>{collapsedResultsExpanded ? '收起成功结果' : `查看 ${preview.hiddenSubtoolCount} 条成功结果`}</span>
+                    <span className={`tool-preview-chevron ${collapsedResultsExpanded ? 'expanded' : ''}`}>{'>'}</span>
+                  </button>
+                  <div className="agent-preview-collapsed-summary">
+                    <span>最近结果</span>
+                    {preview.collapsedSubtoolSummary.map((summary, index) => (
+                      <code key={`${summary}-${index}`}>{summary}</code>
+                    ))}
+                  </div>
+                  {collapsedResultsExpanded ? (
+                    <div className="agent-preview-collapsed-list">
+                      {preview.collapsedSubtools.map((subtool) => (
+                        <div key={subtool.id} className="agent-preview-collapsed-row">
+                          <span>{subtool.statusLabel}</span>
+                          <code>{subtool.summary}</code>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </section>
           ) : null}
           {preview.files.length > 0 ? (

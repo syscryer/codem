@@ -49,6 +49,14 @@ import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
 import { fetchGitRemote, pullGitBranch, undoConversationChanges } from './lib/git-api';
 import { shouldRenderTerminalDock } from './lib/terminal-dock-state';
 import { calculateRightWorkbenchResizeWidth, clampRightWorkbenchWidth } from './lib/workbench-layout';
+import {
+  clearThreadActivityNotice,
+  shouldRequestTaskbarAttention,
+  shouldSendThreadSystemNotification,
+  upsertThreadActivityNotice,
+  type ThreadActivityNotice,
+  type ThreadActivityNoticeMap,
+} from './lib/thread-activity-notices';
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -89,7 +97,6 @@ export default function App() {
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const chatWorkspaceRef = useRef<HTMLDivElement | null>(null);
   const appRootRef = useRef<HTMLDivElement | null>(null);
-  const [dismissedApprovalDialogKey, setDismissedApprovalDialogKey] = useState<string | null>(null);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
   const workspaceState = useWorkspaceState();
@@ -176,6 +183,11 @@ export default function App() {
   const [composerDraftsByKey, setComposerDraftsByKey] = useState<Record<string, string>>({});
   const [projectsRefreshing, setProjectsRefreshing] = useState(false);
   const [worktreeCreateProject, setWorktreeCreateProject] = useState<ProjectSummary | null>(null);
+  const [threadActivityNotices, setThreadActivityNotices] = useState<ThreadActivityNoticeMap>({});
+  const activeThreadIdRef = useRef<string | null>(activeThreadId);
+  const windowFocusedRef = useRef(isAppWindowFocused());
+  const systemNotificationKeysRef = useRef(new Set<string>());
+  const taskbarAttentionRequestedRef = useRef(false);
   const terminalDock = useTerminalDockState();
   const terminalDockAvailable = isTauriRuntime();
   const [terminalRunRequest, setTerminalRunRequest] = useState<TerminalRunRequest | null>(null);
@@ -221,6 +233,28 @@ export default function App() {
     updateShortcuts,
     updateOpenWith,
   } = useAppSettings(showToast);
+
+  const handleThreadActivityNotice = useCallback((notice: ThreadActivityNotice) => {
+    const windowFocused = windowFocusedRef.current;
+    const activeThreadIdSnapshot = activeThreadIdRef.current;
+
+    setThreadActivityNotices((current) =>
+      upsertThreadActivityNotice(current, notice, activeThreadIdSnapshot),
+    );
+
+    if (
+      shouldSendThreadSystemNotification(notice.kind, windowFocused) &&
+      !systemNotificationKeysRef.current.has(notice.key)
+    ) {
+      systemNotificationKeysRef.current.add(notice.key);
+      void showThreadSystemNotification(notice);
+    }
+
+    if (shouldRequestTaskbarAttention(notice.kind, windowFocused) && !taskbarAttentionRequestedRef.current) {
+      taskbarAttentionRequestedRef.current = true;
+      void requestTaskbarAttention();
+    }
+  }, []);
 
   useEffect(() => {
     const root = appRootRef.current;
@@ -284,7 +318,38 @@ export default function App() {
     schedulePersistThreadHistory,
     persistThreadMetadata,
     clearActiveTurnSelection: () => undefined,
+    onThreadActivityNotice: handleThreadActivityNotice,
   });
+
+  useEffect(() => {
+    activeThreadIdRef.current = activeThreadId;
+    if (!activeThreadId) {
+      return;
+    }
+
+    setThreadActivityNotices((current) => clearThreadActivityNotice(current, activeThreadId));
+  }, [activeThreadId]);
+
+  useEffect(() => {
+    function updateWindowFocusState() {
+      const focused = isAppWindowFocused();
+      windowFocusedRef.current = focused;
+      if (focused && taskbarAttentionRequestedRef.current) {
+        taskbarAttentionRequestedRef.current = false;
+        void clearTaskbarAttention();
+      }
+    }
+
+    updateWindowFocusState();
+    window.addEventListener('focus', updateWindowFocusState);
+    window.addEventListener('blur', updateWindowFocusState);
+    document.addEventListener('visibilitychange', updateWindowFocusState);
+    return () => {
+      window.removeEventListener('focus', updateWindowFocusState);
+      window.removeEventListener('blur', updateWindowFocusState);
+      document.removeEventListener('visibilitychange', updateWindowFocusState);
+    };
+  }, []);
 
   const currentAppLocation: AppLocation =
     appView.kind === 'settings'
@@ -455,14 +520,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [appView.kind, handleCreatePrimaryChat, openSessionSearch, shortcuts]);
 
-  const latestApprovalDialog = useMemo(
-    () => getLatestPendingApprovalDialog(activeThread),
-    [activeThread],
-  );
-  const approvalDialog =
-    latestApprovalDialog && latestApprovalDialog.key !== dismissedApprovalDialogKey
-      ? latestApprovalDialog
-      : null;
   const composerDraftKey = activeThreadId ?? GLOBAL_NEW_CHAT_DRAFT_KEY;
   const composerDraft = composerDraftsByKey[composerDraftKey] ?? '';
   const activeRunTurnId = activeThreadId ? activeTurnIdsByThreadId[activeThreadId] : undefined;
@@ -526,6 +583,7 @@ export default function App() {
       rememberCurrentLocation();
     }
     setAppView({ kind: 'workspace' });
+    setThreadActivityNotices((current) => clearThreadActivityNotice(current, threadId));
     await selectThread(projectId, threadId);
   }
 
@@ -569,14 +627,6 @@ export default function App() {
 
   function handleInputDialogValueChange(value: string) {
     setInputDialog((current) => (current ? { ...current, value } : current));
-  }
-
-  function handleCloseApprovalDialog() {
-    if (!latestApprovalDialog) {
-      return;
-    }
-
-    setDismissedApprovalDialogKey(latestApprovalDialog.key);
   }
 
   async function handleCreateThread(projectId: string) {
@@ -1154,6 +1204,7 @@ export default function App() {
               activeThreadId={activeThreadId}
               isNewChatDraft={isNewChatDraft}
               runningThreadIds={runningThreadIds}
+              threadActivityNotices={threadActivityNotices}
               cloneTasks={cloneTasks}
               pinnedThreads={pinnedThreads}
               pinnedProjects={pinnedProjects}
@@ -1355,18 +1406,11 @@ export default function App() {
       />
 
       <Dialogs
-        approvalDialog={
-          approvalDialog
-            ? {
-                turn: approvalDialog.turn,
-                request: approvalDialog.request,
-              }
-            : null
-        }
+        approvalDialog={null}
         inputDialog={inputDialog}
         confirmDialog={confirmDialog}
         toast={toast}
-        onCloseApprovalDialog={handleCloseApprovalDialog}
+        onCloseApprovalDialog={() => undefined}
         onSubmitApprovalDecision={(
           turn: ConversationTurn,
           request: ApprovalRequest,
@@ -1476,6 +1520,57 @@ export default function App() {
   }
 }
 
+function isAppWindowFocused() {
+  if (typeof document === 'undefined') {
+    return true;
+  }
+
+  return document.visibilityState === 'visible' && document.hasFocus();
+}
+
+async function showThreadSystemNotification(notice: ThreadActivityNotice) {
+  if (typeof window === 'undefined' || !('Notification' in window)) {
+    return;
+  }
+
+  const NotificationConstructor = window.Notification;
+  let permission = NotificationConstructor.permission;
+  if (permission === 'default') {
+    permission = await NotificationConstructor.requestPermission();
+  }
+  if (permission !== 'granted') {
+    return;
+  }
+
+  const heading = notice.kind === 'failed' ? 'CodeM 任务失败' : 'CodeM 任务完成';
+  const body = notice.kind === 'failed'
+    ? `“${notice.title}”运行失败`
+    : `“${notice.title}”已完成`;
+  new NotificationConstructor(heading, { body });
+}
+
+async function requestTaskbarAttention() {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  try {
+    const { getCurrentWindow, UserAttentionType } = await import('@tauri-apps/api/window');
+    await getCurrentWindow().requestUserAttention(UserAttentionType.Critical);
+  } catch {}
+}
+
+async function clearTaskbarAttention() {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    await getCurrentWindow().requestUserAttention(null);
+  } catch {}
+}
+
 function isEditableShortcutTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -1539,44 +1634,6 @@ function CurrentTaskDock({ activeThread }: { activeThread: ThreadDetail | null }
       </div>
     </section>
   );
-}
-
-function getLatestPendingApprovalDialog(activeThread: ThreadDetail | null) {
-  if (!activeThread) {
-    return null;
-  }
-
-  const turn = activeThread.turns.at(-1);
-  const requests = (turn?.pendingApprovalRequests ?? []).filter(isActionableApprovalRequest);
-  if (!turn || !requests.length) {
-    return null;
-  }
-
-  const requestIndex = requests.length - 1;
-  const request = requests[requestIndex];
-  return {
-    key: buildApprovalDialogKey(activeThread.id, turn.id, request, requestIndex),
-    turn,
-    request,
-  };
-}
-
-function isActionableApprovalRequest(request: ApprovalRequest) {
-  return request.historical !== true && request.kind !== 'plan-exit';
-}
-
-function buildApprovalDialogKey(
-  threadId: string,
-  turnId: string,
-  request: ApprovalRequest,
-  requestIndex: number,
-) {
-  const identity =
-    request.requestId?.trim() ||
-    request.command?.join(' ') ||
-    request.title.trim() ||
-    `${requestIndex}`;
-  return `${threadId}:${turnId}:${identity}`;
 }
 
 type TodoDockStatus = 'pending' | 'in_progress' | 'completed' | 'unknown';

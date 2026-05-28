@@ -41,6 +41,7 @@ import {
 } from '../lib/conversation';
 import { resolveQueuedPromptRunOptions } from '../lib/queued-prompts';
 import { buildNewChatTitleFromSubmission } from '../lib/new-chat-draft';
+import type { ThreadActivityNoticeKind } from '../lib/thread-activity-notices';
 import type {
   AssistantItem,
   ApprovalDecision,
@@ -111,6 +112,7 @@ type RunContext = {
   model: string;
   effort: ClaudeEffortSelection;
   permissionMode: PermissionMode;
+  terminalNoticeKind?: 'completed' | 'failed';
 };
 
 type QueuedPrompt = {
@@ -161,6 +163,13 @@ type UseClaudeRunArgs = {
   schedulePersistThreadHistory: (threadId: string | null) => void;
   persistThreadMetadata: (threadId: string, payload: ThreadMetadataPatch) => Promise<void>;
   clearActiveTurnSelection: () => void;
+  onThreadActivityNotice?: (notice: {
+    threadId: string;
+    kind: ThreadActivityNoticeKind;
+    title: string;
+    key: string;
+    updatedAtMs: number;
+  }) => void;
 };
 
 export function useClaudeRun({
@@ -180,6 +189,7 @@ export function useClaudeRun({
   schedulePersistThreadHistory,
   persistThreadMetadata,
   clearActiveTurnSelection,
+  onThreadActivityNotice,
 }: UseClaudeRunArgs) {
   const [workspace, setWorkspace] = useState('');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode);
@@ -434,6 +444,41 @@ export function useClaudeRun({
 
   function isThreadRunning(threadId: string | null | undefined) {
     return Boolean(threadId && runContextsByThreadIdRef.current.has(threadId));
+  }
+
+  function getNoticeThreadTitle(threadId: string) {
+    const summary =
+      threadSummariesByIdRef.current.get(threadId) ??
+      (activeThreadSummary?.id === threadId ? activeThreadSummary : null);
+    const title = summary?.title?.trim();
+    return title || '未命名会话';
+  }
+
+  function emitThreadActivityNotice(
+    context: RunContext,
+    kind: ThreadActivityNoticeKind,
+    runId = context.runId,
+  ) {
+    onThreadActivityNotice?.({
+      threadId: context.threadId,
+      kind,
+      title: getNoticeThreadTitle(context.threadId),
+      key: `${kind}:${context.threadId}:${context.turnId}:${runId || 'local'}`,
+      updatedAtMs: Date.now(),
+    });
+  }
+
+  function emitRunSettledNotice(
+    context: RunContext,
+    kind: 'completed' | 'failed',
+    runId = context.runId,
+  ) {
+    if (context.terminalNoticeKind) {
+      return;
+    }
+
+    context.terminalNoticeKind = kind;
+    emitThreadActivityNotice(context, kind, runId);
   }
 
   function updateQueuedPrompts(
@@ -909,6 +954,7 @@ export function useClaudeRun({
           activity: message || '后端没有返回可读流。',
         }));
         schedulePersistThreadHistory(context.threadId);
+        emitRunSettledNotice(context, 'failed');
         return true;
       }
 
@@ -918,6 +964,7 @@ export function useClaudeRun({
         flushQueuedAssistantTextNow(context);
         updateRunningTurn(context, closeTurnAfterUnexpectedStreamEnd);
         schedulePersistThreadHistory(context.threadId);
+        emitRunSettledNotice(context, 'failed');
       }
     } catch (error) {
       flushQueuedAssistantTextNow(context);
@@ -946,6 +993,9 @@ export function useClaudeRun({
               ),
       }));
       schedulePersistThreadHistory(context.threadId);
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        emitRunSettledNotice(context, 'failed');
+      }
       notifyQueuedPromptsRetained(context.threadId);
     } finally {
       context.abortController = null;
@@ -1274,6 +1324,9 @@ export function useClaudeRun({
         title: '批准请求',
         content: formatJson(event.request),
       });
+      if (isActionableApprovalNotice(event.request)) {
+        emitThreadActivityNotice(context, 'approval', event.runId);
+      }
       return;
     }
 
@@ -1381,6 +1434,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'tool-result') {
+      let approvalRequestForNotice: ApprovalRequest | null = null;
       updateRunningTurn(context, (turn) => {
         const toolIndex = event.parentToolUseId ? -1 : findToolResultIndex(turn.tools, event);
         const tools = event.parentToolUseId ? attachToolResultDeep(turn.tools, event) : attachToolResult(turn.tools, event);
@@ -1391,6 +1445,7 @@ export function useClaudeRun({
             ? tools[toolIndex]
             : tools.find((item) => item.toolUseId && item.toolUseId === event.toolUseId);
         const approvalRequest = event.parentToolUseId ? null : createApprovalRequestFromToolResult(tool, event);
+        approvalRequestForNotice = approvalRequest;
         return {
           ...turn,
           activity: event.isSidechain ? turn.activity : summarizeToolResult(event),
@@ -1403,6 +1458,9 @@ export function useClaudeRun({
         };
       });
       schedulePersistThreadHistory(context.threadId);
+      if (approvalRequestForNotice && isActionableApprovalNotice(approvalRequestForNotice)) {
+        emitThreadActivityNotice(context, 'approval', event.runId);
+      }
       return;
     }
 
@@ -1452,6 +1510,7 @@ export function useClaudeRun({
         tone: 'error',
       });
       schedulePersistThreadHistory(context.threadId);
+      emitRunSettledNotice(context, 'failed', event.runId);
       return;
     }
 
@@ -1512,6 +1571,7 @@ export function useClaudeRun({
         void persistThreadMetadata(context.threadId, metadataPatch);
       }
       schedulePersistThreadHistory(context.threadId);
+      emitRunSettledNotice(context, 'completed', event.runId);
     }
   }
 
@@ -2053,6 +2113,10 @@ function removePendingApprovalRequest(
         getApprovalRequestSignature(item) === targetSignature
       ),
   );
+}
+
+function isActionableApprovalNotice(request: ApprovalRequest) {
+  return request.historical !== true && request.kind !== 'plan-exit';
 }
 
 function hasRunningTool(turn: ConversationTurn) {

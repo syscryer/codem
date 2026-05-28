@@ -29,6 +29,8 @@ export type AgentTaskPreviewData = {
   subMessages: string[];
   subtools: AgentTaskChildToolPreview[];
   hiddenSubtoolCount: number;
+  collapsedSubtools: AgentTaskChildToolPreview[];
+  collapsedSubtoolSummary: string[];
 };
 
 type UsageMetrics = {
@@ -58,7 +60,7 @@ export function buildAgentTaskPreview(tool: ToolStep): AgentTaskPreviewData | nu
   const subtoolPreview = buildChildToolPreviews(tool.subtools ?? []);
 
   return {
-    summary: formatAgentTaskSummary(statusLabel, metrics, files.length),
+    summary: formatAgentTaskSummary(taskDescription, metrics, files.length),
     agentType,
     taskDescription,
     promptText,
@@ -71,6 +73,8 @@ export function buildAgentTaskPreview(tool: ToolStep): AgentTaskPreviewData | nu
     subMessages: tool.subMessages?.filter((message) => message.trim()) ?? [],
     subtools: subtoolPreview.items,
     hiddenSubtoolCount: subtoolPreview.hiddenCount,
+    collapsedSubtools: subtoolPreview.collapsedItems,
+    collapsedSubtoolSummary: subtoolPreview.collapsedSummary,
   };
 }
 
@@ -127,18 +131,25 @@ function buildAgentIdentifiers(tool: ToolStep, input: Record<string, unknown> | 
 
 function buildChildToolPreviews(tools: ToolStep[]) {
   const items: AgentTaskChildToolPreview[] = [];
+  const collapsedItems: AgentTaskChildToolPreview[] = [];
   let hiddenCount = 0;
 
   for (const tool of tools) {
     if (isSuccessfulOrphanToolResult(tool)) {
       hiddenCount += 1;
+      collapsedItems.push(formatChildToolPreview(tool));
       continue;
     }
 
     items.push(formatChildToolPreview(tool));
   }
 
-  return { items, hiddenCount };
+  return {
+    items,
+    hiddenCount,
+    collapsedItems,
+    collapsedSummary: collapsedItems.slice(-3).map((item) => item.summary),
+  };
 }
 
 function isSuccessfulOrphanToolResult(tool: ToolStep) {
@@ -202,9 +213,10 @@ function getAgentStatusLabel(status: AgentTaskStatusTone) {
   }
 }
 
-function formatAgentTaskSummary(statusLabel: string, metrics: string[], fileCount: number) {
+function formatAgentTaskSummary(taskDescription: string, metrics: string[], fileCount: number) {
   const details = metrics.length > 0 ? metrics : fileCount > 0 ? [`${fileCount} 个文件`] : [];
-  return details.length ? `${statusLabel}子任务 · ${details.join(' · ')}` : `${statusLabel}子任务`;
+  const summary = summarizePlainText(taskDescription, 64);
+  return details.length ? `${summary} · ${details.join(' · ')}` : summary;
 }
 
 function formatAgentMetrics(usage: UsageMetrics, fileCount: number, subtoolCount: number) {

@@ -1214,6 +1214,31 @@ svg {
   animation: pulse 1.1s ease-in-out infinite;
 }
 
+.sidebar-thread-activity-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 16px;
+  letter-spacing: 0.02em;
+}
+
+.sidebar-thread-activity-badge.completed {
+  background: rgba(22, 163, 74, 0.12);
+  color: #15803d;
+}
+
+.sidebar-thread-activity-badge.failed {
+  background: rgba(220, 38, 38, 0.12);
+  color: #b91c1c;
+}
+
+.sidebar-thread-activity-badge.approval {
+  background: rgba(217, 119, 6, 0.14);
+  color: #b45309;
+}
+
 .sidebar-thread small {
   color: #8f949a;
 }
@@ -4631,12 +4656,6 @@ svg {
   font-weight: 600;
 }
 
-.agent-preview-muted {
-  margin: 0;
-  color: #8b95a5;
-  font-size: 12px;
-}
-
 .agent-preview-section {
   padding: 10px 12px;
   border-bottom: 1px solid #e8edf5;
@@ -4770,6 +4789,81 @@ svg {
 .agent-preview-tool-summary {
   color: #71717a;
   font-size: 11px;
+}
+
+.agent-preview-collapsed-tools {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 9px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.78);
+}
+
+.agent-preview-tool-timeline + .agent-preview-collapsed-tools {
+  margin-top: 12px;
+}
+
+.agent-preview-collapsed-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.agent-preview-collapsed-summary {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.agent-preview-collapsed-summary span,
+.agent-preview-collapsed-row span {
+  flex: 0 0 auto;
+  color: #8b95a5;
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.agent-preview-collapsed-summary code,
+.agent-preview-collapsed-row code {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 3px 7px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #64748b;
+  font-family: var(--code-font);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-preview-collapsed-list {
+  display: grid;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.agent-preview-collapsed-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
 }
 
 .agent-preview-section pre {

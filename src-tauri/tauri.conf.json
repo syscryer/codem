@@ -48,6 +48,7 @@
     "longDescription": "CodeM is a local desktop shell for AI coding agents, conversations, workspaces, Git review, and terminal workflows.",
     "windows": {
       "nsis": {
+        "installerIcon": "icons/installer.ico",
         "installMode": "currentUser",
         "displayLanguageSelector": false,
         "languages": ["SimpChinese", "English"]

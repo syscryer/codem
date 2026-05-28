@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "agents": [
+    "claude-code"
+  ],
+  "skills": {
+    "trellis": {
+      "version": "1.0.0",
+      "sha": "0b638b76d83538c52980f8fdc75174daaa50f911d6b3edb4e8677fe413a80161",
+      "tier": "VERIFIED",
+      "installedAt": "2026-05-27T01:53:00.135Z",
+      "source": "github:wingedpig/trellis",
+      "scope": "project",
+      "files": [
+        "SKILL.md"
+      ],
+      "sourceRepoUrl": "https://github.com/wingedpig/trellis",
+      "sourceSkillPath": "SKILL.md"
+    }
+  },
+  "createdAt": "2026-05-27T01:53:00.133Z",
+  "updatedAt": "2026-05-27T01:53:00.135Z"
+}

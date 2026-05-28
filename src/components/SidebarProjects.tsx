@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { PopoverPortal } from './PopoverPortal';
+import type { ThreadActivityNotice, ThreadActivityNoticeMap } from '../lib/thread-activity-notices';
 import type { CloneTask, PanelState, ProjectSummary, ThreadSummary } from '../types';
 
 const VISIBLE_THREAD_PREVIEW_LIMIT = 5;
@@ -36,6 +37,7 @@ type SidebarProjectsProps = {
   activeThreadId: string | null;
   isNewChatDraft: boolean;
   runningThreadIds: string[];
+  threadActivityNotices: ThreadActivityNoticeMap;
   cloneTasks: CloneTask[];
   collapsedProjects: Record<string, boolean>;
   panelState: PanelState;
@@ -79,6 +81,7 @@ export function SidebarProjects({
   activeThreadId,
   isNewChatDraft,
   runningThreadIds,
+  threadActivityNotices,
   cloneTasks,
   collapsedProjects,
   panelState,
@@ -138,6 +141,7 @@ export function SidebarProjects({
     ],
   });
   const runningThreadIdSet = new Set(runningThreadIds);
+  const noticedThreadIdSet = new Set(Object.keys(threadActivityNotices));
 
   function openProjectMenu(projectId: string, anchor?: { x: number; y: number }) {
     setThreadMenuThreadId(null);
@@ -213,10 +217,11 @@ export function SidebarProjects({
   function renderThreadRow(thread: ThreadSummary, hostProjectId: string) {
     const isRunningThread = runningThreadIdSet.has(thread.id);
     const isPinned = Boolean(thread.pinnedAt);
+    const activityNotice = isRunningThread ? null : threadActivityNotices[thread.id] ?? null;
     return (
       <div
         key={thread.id}
-        className={`sidebar-thread-row ${thread.id === activeThreadId ? 'active' : ''}${isRunningThread ? ' running' : ''}${isPinned ? ' pinned' : ''}`}
+        className={`sidebar-thread-row ${thread.id === activeThreadId ? 'active' : ''}${isRunningThread ? ' running' : ''}${isPinned ? ' pinned' : ''}${activityNotice ? ` has-${activityNotice.kind}-notice` : ''}`}
         onContextMenu={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -227,6 +232,7 @@ export function SidebarProjects({
           <span className="sidebar-thread-title">
             {isRunningThread ? <span className="sidebar-thread-running-dot" aria-label="运行中" /> : null}
             <span className="sidebar-thread-title-text">{thread.title}</span>
+            {activityNotice ? <ThreadActivityBadge notice={activityNotice} /> : null}
           </span>
           <small>{thread.updatedLabel}</small>
         </button>
@@ -265,9 +271,10 @@ export function SidebarProjects({
     const hasMoreThreads = project.threads.length > VISIBLE_THREAD_PREVIEW_LIMIT;
     const previewThreads = project.threads.slice(0, VISIBLE_THREAD_PREVIEW_LIMIT);
     const runningThreads = project.threads.filter((thread) => runningThreadIdSet.has(thread.id));
+    const noticedThreads = project.threads.filter((thread) => noticedThreadIdSet.has(thread.id));
     const visibleThreads = threadExpanded
       ? project.threads
-      : mergeVisibleThreads(previewThreads, runningThreads);
+      : mergeVisibleThreads(previewThreads, runningThreads, noticedThreads);
     const isPinnedProject = Boolean(project.pinnedAt);
 
     return (
@@ -430,6 +437,7 @@ export function SidebarProjects({
     : mergeVisibleThreads(
         pinnedThreads.slice(0, VISIBLE_THREAD_PREVIEW_LIMIT),
         pinnedThreads.filter((thread) => runningThreadIdSet.has(thread.id)),
+        pinnedThreads.filter((thread) => noticedThreadIdSet.has(thread.id)),
       );
   const hasAnyPinned = pinnedThreads.length > 0 || pinnedProjects.length > 0;
 
@@ -630,11 +638,34 @@ export function SidebarProjects({
   );
 }
 
-function mergeVisibleThreads(previewThreads: ThreadSummary[], runningThreads: ThreadSummary[]) {
+function ThreadActivityBadge({ notice }: { notice: ThreadActivityNotice }) {
+  const label = getThreadActivityNoticeLabel(notice);
+  return (
+    <span className={`sidebar-thread-activity-badge ${notice.kind}`} aria-label={label}>
+      {label}
+    </span>
+  );
+}
+
+function getThreadActivityNoticeLabel(notice: ThreadActivityNotice) {
+  if (notice.kind === 'approval') {
+    return '待审批';
+  }
+  if (notice.kind === 'failed') {
+    return '失败';
+  }
+  return '完成';
+}
+
+function mergeVisibleThreads(
+  previewThreads: ThreadSummary[],
+  runningThreads: ThreadSummary[],
+  noticedThreads: ThreadSummary[],
+) {
   const seen = new Set<string>();
   const merged: ThreadSummary[] = [];
 
-  for (const thread of [...previewThreads, ...runningThreads]) {
+  for (const thread of [...previewThreads, ...runningThreads, ...noticedThreads]) {
     if (seen.has(thread.id)) {
       continue;
     }
