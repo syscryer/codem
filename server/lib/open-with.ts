@@ -21,7 +21,11 @@ const builtinOpenTargets: BuiltinOpenTarget[] = [
     id: 'vscode',
     label: 'VS Code',
     kind: 'app',
-    candidates: ['code', commonProgramPath('Microsoft VS Code', 'Code.exe')],
+    candidates: [
+      localAppDataPath('Programs', 'Microsoft VS Code', 'Code.exe'),
+      commonProgramPath('Microsoft VS Code', 'Code.exe'),
+      'code',
+    ],
   },
   {
     id: 'visualstudio',
@@ -33,7 +37,7 @@ const builtinOpenTargets: BuiltinOpenTarget[] = [
     id: 'cursor',
     label: 'Cursor',
     kind: 'app',
-    candidates: ['cursor', localAppDataPath('Programs', 'Cursor', 'Cursor.exe')],
+    candidates: [localAppDataPath('Programs', 'Cursor', 'Cursor.exe'), 'cursor'],
   },
   {
     id: 'antigravity',
@@ -99,7 +103,7 @@ export function discoverOpenTargets(
   resolveCommand: CommandResolver,
 ): OpenAppTarget[] {
   const detectedTargets = builtinOpenTargets.flatMap((target) => {
-    const command = resolveFirstCommand(target.candidates, resolveCommand);
+    const command = resolveFirstCommand(target.candidates, resolveCommand, target.id);
     return command
       ? [
           {
@@ -238,15 +242,42 @@ export function toWslPath(projectPath: string) {
   return `/mnt/${match[1].toLowerCase()}/${match[2].replace(/\\/g, '/')}`;
 }
 
-function resolveFirstCommand(candidates: string[], resolveCommand: CommandResolver) {
+function resolveFirstCommand(candidates: string[], resolveCommand: CommandResolver, targetId: string) {
   for (const candidate of candidates) {
     const resolved = resolveCommand(candidate);
     if (resolved) {
-      return resolved;
+      return resolveGuiEditorExecutable(targetId, resolved, resolveCommand);
     }
   }
 
   return '';
+}
+
+function resolveGuiEditorExecutable(
+  targetId: string,
+  commandPath: string,
+  resolveCommand: CommandResolver,
+) {
+  if (targetId === 'vscode') {
+    return resolveSiblingExecutable(commandPath, ['..', 'Code.exe'], resolveCommand);
+  }
+  if (targetId === 'cursor') {
+    return resolveSiblingExecutable(commandPath, ['..', '..', '..', 'Cursor.exe'], resolveCommand);
+  }
+  return commandPath;
+}
+
+function resolveSiblingExecutable(
+  commandPath: string,
+  relativeSegments: string[],
+  resolveCommand: CommandResolver,
+) {
+  if (!/\.(cmd|bat)$/i.test(commandPath)) {
+    return commandPath;
+  }
+
+  const executablePath = path.resolve(path.dirname(commandPath), ...relativeSegments);
+  return resolveCommand(executablePath) || commandPath;
 }
 
 function dedupeTargets(targets: OpenAppTarget[]) {

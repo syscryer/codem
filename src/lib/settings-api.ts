@@ -19,6 +19,7 @@ import type {
 export const defaultGeneralSettings: GeneralSettings = {
   restoreLastSelectionOnLaunch: true,
   autoRefreshGitStatus: true,
+  enableThreadSystemNotifications: true,
   showDebugButton: true,
   defaultPermissionMode: 'default',
   reviewHideNoiseFilesByDefault: true,
@@ -217,6 +218,10 @@ export function normalizeGeneralSettings(general: unknown): GeneralSettings {
       defaultGeneralSettings.restoreLastSelectionOnLaunch,
     ),
     autoRefreshGitStatus: normalizeBoolean(record.autoRefreshGitStatus, defaultGeneralSettings.autoRefreshGitStatus),
+    enableThreadSystemNotifications: normalizeBoolean(
+      record.enableThreadSystemNotifications,
+      defaultGeneralSettings.enableThreadSystemNotifications,
+    ),
     showDebugButton: normalizeBoolean(record.showDebugButton, defaultGeneralSettings.showDebugButton),
     defaultPermissionMode: normalizeOneOf(
       record.defaultPermissionMode,

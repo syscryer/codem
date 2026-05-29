@@ -1,4 +1,4 @@
-import { GitBranch, GitPullRequest, History, RotateCcw, Rows3, Search, Shield } from 'lucide-react';
+import { Bell, GitBranch, GitPullRequest, History, RotateCcw, Rows3, Search, Shield } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { permissionMenuModes } from '../../constants';
 import type { GeneralSettings } from '../../types';
@@ -19,6 +19,8 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
     restoreLastSelectionOnLaunch:
       general.restoreLastSelectionOnLaunch ?? defaultGeneralSettings.restoreLastSelectionOnLaunch,
     autoRefreshGitStatus: general.autoRefreshGitStatus ?? defaultGeneralSettings.autoRefreshGitStatus,
+    enableThreadSystemNotifications:
+      general.enableThreadSystemNotifications ?? defaultGeneralSettings.enableThreadSystemNotifications,
     showDebugButton: general.showDebugButton ?? defaultGeneralSettings.showDebugButton,
     defaultPermissionMode: general.defaultPermissionMode ?? defaultGeneralSettings.defaultPermissionMode,
     reviewHideNoiseFilesByDefault:
@@ -77,6 +79,14 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
             checked={resolvedGeneral.autoRefreshGitStatus}
             onChange={(autoRefreshGitStatus) => void onUpdateGeneral({ autoRefreshGitStatus })}
             label="自动刷新 Git 状态"
+          />
+        </SettingsRow>
+
+        <SettingsRow icon={Bell} title="任务系统通知" description="窗口不在焦点时，在右下角提示任务完成、失败或等待确认">
+          <Toggle
+            checked={resolvedGeneral.enableThreadSystemNotifications}
+            onChange={(enableThreadSystemNotifications) => void onUpdateGeneral({ enableThreadSystemNotifications })}
+            label="任务系统通知"
           />
         </SettingsRow>
 

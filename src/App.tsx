@@ -47,7 +47,7 @@ import {
 import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
 import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
 import { fetchGitRemote, pullGitBranch, undoConversationChanges } from './lib/git-api';
-import { shouldRenderTerminalDock } from './lib/terminal-dock-state';
+import { resolveTerminalDockPanelIdOnRun, shouldRenderTerminalDock } from './lib/terminal-dock-state';
 import { calculateRightWorkbenchResizeWidth, clampRightWorkbenchWidth } from './lib/workbench-layout';
 import { showThreadSystemNotification } from './lib/thread-system-notifications';
 import {
@@ -244,7 +244,11 @@ export default function App() {
     );
 
     if (
-      shouldSendThreadSystemNotification(notice.kind, windowFocused) &&
+      shouldSendThreadSystemNotification(
+        notice.kind,
+        windowFocused,
+        general.enableThreadSystemNotifications,
+      ) &&
       !systemNotificationKeysRef.current.has(notice.key)
     ) {
       systemNotificationKeysRef.current.add(notice.key);
@@ -255,7 +259,7 @@ export default function App() {
       taskbarAttentionRequestedRef.current = true;
       void requestTaskbarAttention();
     }
-  }, []);
+  }, [general.enableThreadSystemNotifications]);
 
   useEffect(() => {
     const root = appRootRef.current;
@@ -1461,6 +1465,7 @@ export default function App() {
       return;
     }
     terminalDock.openDock();
+    setDockActivePanelId(resolveTerminalDockPanelIdOnRun());
     setTerminalRunRequest({
       id: Date.now(),
       command,

@@ -325,6 +325,7 @@ export type ChatFontSettingMode = 'followUi' | 'preset' | 'custom';
 export type GeneralSettings = {
   restoreLastSelectionOnLaunch: boolean;
   autoRefreshGitStatus: boolean;
+  enableThreadSystemNotifications: boolean;
   showDebugButton: boolean;
   defaultPermissionMode: PermissionMode;
   reviewHideNoiseFilesByDefault: boolean;

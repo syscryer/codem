@@ -1,4 +1,5 @@
 export type TerminalDockBodyKind = 'terminal' | 'extra' | 'unavailable';
+export type TerminalDockPanelId = 'terminal' | 'git-history';
 
 export function shouldRenderTerminalDock({
   isOpen,
@@ -26,4 +27,8 @@ export function resolveTerminalDockBodyKind({
   }
 
   return terminalAvailable ? 'terminal' : 'unavailable';
+}
+
+export function resolveTerminalDockPanelIdOnRun() {
+  return 'terminal' as TerminalDockPanelId;
 }

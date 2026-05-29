@@ -1,7 +1,10 @@
 import { spawn } from 'node:child_process';
+import { rmSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import {
-  buildBackendPortEnv,
+  buildDevServerEnv,
   resolvePreferredBackendPort,
+  resolvePreferredWebPort,
   waitForPort,
 } from './dev-ports.mjs';
 import { resolveDesktopDevPorts } from './desktop-dev-runtime.mjs';
@@ -18,8 +21,12 @@ main().catch((error) => {
 
 async function main() {
   const preferredPort = resolvePreferredBackendPort();
-  const resolved = await resolveDesktopDevPorts({ preferredPort });
-  const childEnv = buildBackendPortEnv(process.env, resolved.backendPort);
+  const preferredWebPort = resolvePreferredWebPort();
+  const resolved = await resolveDesktopDevPorts({ preferredPort, preferredWebPort });
+  const childEnv = buildDevServerEnv(process.env, {
+    backendPort: resolved.backendPort,
+    webPort: resolved.webPort,
+  });
   const requiredPorts = [
     { name: 'backend', port: resolved.backendPort },
     { name: 'web', port: resolved.webPort },
@@ -37,8 +44,10 @@ async function main() {
     );
   }
 
-  const tauri = spawnChild(npmCommand, ['run', 'desktop:shell'], childEnv);
+  const tauriConfigPath = writeTauriDevConfig(resolved.webPort);
+  const tauri = spawnChild(npmCommand, ['run', 'desktop:shell', '--', '--config', tauriConfigPath], childEnv);
   tauri.on('exit', (code) => {
+    cleanupTauriDevConfig(tauriConfigPath);
     stopChildren(tauri);
     process.exit(code ?? 0);
   });
@@ -75,5 +84,23 @@ function stopChildren(except) {
       continue;
     }
     child.kill();
+  }
+}
+
+function writeTauriDevConfig(webPort) {
+  const configPath = path.join(process.cwd(), `.codem-tauri-dev-${process.pid}.json`);
+  writeFileSync(
+    configPath,
+    JSON.stringify({ build: { devUrl: `http://127.0.0.1:${webPort}` } }, null, 2),
+    'utf8',
+  );
+  return configPath;
+}
+
+function cleanupTauriDevConfig(configPath) {
+  try {
+    rmSync(configPath, { force: true });
+  } catch {
+    // 临时启动配置清理失败不影响开发服务退出。
   }
 }

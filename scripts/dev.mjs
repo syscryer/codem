@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process';
 import {
-  DEFAULT_WEB_PORT,
-  buildBackendPortEnv,
+  buildDevServerEnv,
   findAvailablePort,
   resolvePreferredBackendPort,
+  resolvePreferredWebPort,
 } from './dev-ports.mjs';
 import { clearDevSessionState, writeDevSessionState } from './dev-session.mjs';
 
@@ -20,12 +20,14 @@ registerSignalHandlers();
 
 async function main() {
   const preferredPort = resolvePreferredBackendPort();
+  const preferredWebPort = resolvePreferredWebPort();
   const backendPort = await findAvailablePort(preferredPort);
-  const childEnv = buildBackendPortEnv(process.env, backendPort);
+  const webPort = await findAvailablePort(preferredWebPort);
+  const childEnv = buildDevServerEnv(process.env, { backendPort, webPort });
 
   await writeDevSessionState(process.cwd(), {
     backendPort,
-    webPort: DEFAULT_WEB_PORT,
+    webPort,
     pid: process.pid,
   });
 
@@ -33,6 +35,11 @@ async function main() {
     console.log(`Backend port ${preferredPort} is unavailable; using ${backendPort}.`);
   } else {
     console.log(`Using backend port ${backendPort}.`);
+  }
+  if (webPort !== preferredWebPort) {
+    console.log(`Web port ${preferredWebPort} is unavailable; using ${webPort}.`);
+  } else {
+    console.log(`Using web port ${webPort}.`);
   }
   console.log(`Web dev server will proxy /api to http://127.0.0.1:${backendPort}.`);
 
@@ -48,7 +55,7 @@ async function main() {
     process.exit(code ?? 0);
   });
 
-  console.log(`Expected local web URL: http://127.0.0.1:${DEFAULT_WEB_PORT}/`);
+  console.log(`Expected local web URL: http://127.0.0.1:${webPort}/`);
 }
 
 function spawnChild(command, args, env) {

@@ -7,6 +7,10 @@ export function resolvePreferredBackendPort(env = process.env) {
   return normalizePort(env.CODEM_BACKEND_PORT ?? env.PORT, DEFAULT_BACKEND_PORT);
 }
 
+export function resolvePreferredWebPort(env = process.env) {
+  return normalizePort(env.CODEM_WEB_PORT, DEFAULT_WEB_PORT);
+}
+
 export async function findAvailablePort(preferredPort, options = {}) {
   const maxAttempts = options.maxAttempts ?? 2000;
   const isAvailable = options.isAvailable ?? canBindPort;
@@ -29,6 +33,13 @@ export function buildBackendPortEnv(env, port) {
   return {
     ...env,
     CODEM_BACKEND_PORT: String(normalizePort(port, DEFAULT_BACKEND_PORT)),
+  };
+}
+
+export function buildDevServerEnv(env, { backendPort, webPort }) {
+  return {
+    ...buildBackendPortEnv(env, backendPort),
+    CODEM_WEB_PORT: String(normalizePort(webPort, DEFAULT_WEB_PORT)),
   };
 }
 

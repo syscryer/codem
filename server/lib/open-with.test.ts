@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import test from 'node:test';
 import {
   buildOpenTargetLaunch,
@@ -83,6 +84,32 @@ test('discoverOpenTargets includes custom targets with resolved command', () => 
   });
 });
 
+test('discoverOpenTargets prefers GUI editor executables over command shims', () => {
+  const vscodeExe = path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Microsoft VS Code', 'Code.exe');
+  const cursorExe = path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Cursor', 'Cursor.exe');
+  const targets = discoverOpenTargets(emptySettings, createResolver([vscodeExe, 'code', cursorExe, 'cursor']));
+
+  assert.equal(targets.find((target) => target.id === 'vscode')?.command, vscodeExe);
+  assert.equal(targets.find((target) => target.id === 'cursor')?.command, cursorExe);
+});
+
+test('discoverOpenTargets resolves editor command shims back to GUI executables', () => {
+  const vscodeCmd = 'D:\\software\\Microsoft VS Code\\bin\\code.cmd';
+  const vscodeExe = 'D:\\software\\Microsoft VS Code\\Code.exe';
+  const cursorCmd = 'D:\\software\\Cursor\\resources\\app\\bin\\cursor.cmd';
+  const cursorExe = 'D:\\software\\Cursor\\Cursor.exe';
+  const targets = discoverOpenTargets(
+    emptySettings,
+    createResolver(
+      [vscodeCmd, vscodeExe, cursorCmd, cursorExe],
+      { code: vscodeCmd, cursor: cursorCmd },
+    ),
+  );
+
+  assert.equal(targets.find((target) => target.id === 'vscode')?.command, vscodeExe);
+  assert.equal(targets.find((target) => target.id === 'cursor')?.command, cursorExe);
+});
+
 test('buildOpenTargetLaunch opens folders and terminal with target-specific behavior', () => {
   assert.deepEqual(
     buildOpenTargetLaunch(
@@ -144,7 +171,13 @@ test('toWslPath converts Windows drive paths', () => {
   assert.equal(toWslPath('C:\\Users\\syscr\\project'), '/mnt/c/Users/syscr/project');
 });
 
-function createResolver(availableCommands: string[]) {
+function createResolver(availableCommands: string[], aliases: Record<string, string> = {}) {
   const available = new Set(availableCommands.map((command) => command.toLowerCase()));
-  return (command: string) => (available.has(command.toLowerCase()) ? command : '');
+  return (command: string) => {
+    const alias = aliases[command.toLowerCase()];
+    if (alias) {
+      return alias;
+    }
+    return available.has(command.toLowerCase()) ? command : '';
+  };
 }

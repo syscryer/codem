@@ -100,11 +100,13 @@ test('clearThreadActivityNotice removes only the selected thread notice', () => 
   });
 });
 
-test('system notifications are sent for thread activity while unfocused', () => {
-  assert.equal(shouldSendThreadSystemNotification('completed', false), true);
-  assert.equal(shouldSendThreadSystemNotification('failed', false), true);
-  assert.equal(shouldSendThreadSystemNotification('approval', false), true);
-  assert.equal(shouldSendThreadSystemNotification('failed', true), false);
+test('system notifications respect focus state and the user setting', () => {
+  assert.equal(shouldSendThreadSystemNotification('completed', false, true), true);
+  assert.equal(shouldSendThreadSystemNotification('failed', false, true), true);
+  assert.equal(shouldSendThreadSystemNotification('approval', false, true), true);
+  assert.equal(shouldSendThreadSystemNotification('failed', true, true), false);
+  assert.equal(shouldSendThreadSystemNotification('failed', false, false), false);
+  assert.equal(shouldSendThreadSystemNotification('approval', false, false), false);
 });
 
 test('taskbar attention is only requested for approvals while unfocused', () => {

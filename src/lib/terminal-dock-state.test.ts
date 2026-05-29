@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { resolveTerminalDockBodyKind, shouldRenderTerminalDock } from './terminal-dock-state';
+import {
+  resolveTerminalDockBodyKind,
+  resolveTerminalDockPanelIdOnRun,
+  shouldRenderTerminalDock,
+} from './terminal-dock-state';
 
 test('web 端打开额外面板时也应渲染 Dock', () => {
   assert.equal(
@@ -34,4 +38,8 @@ test('没有终端能力且未激活额外面板时显示不可用占位', () =>
     }),
     'unavailable',
   );
+});
+
+test('执行启动脚本时应切回终端面板而不是保留 Git 日志', () => {
+  assert.equal(resolveTerminalDockPanelIdOnRun(), 'terminal');
 });

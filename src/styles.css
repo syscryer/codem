@@ -1631,7 +1631,7 @@ svg {
   min-width: 0;
   justify-content: center;
   font-size: 12px;
-  color: #5f6368;
+  color: #717171;
   padding: 0 10px;
   font-variant-numeric: tabular-nums;
 }
@@ -1766,7 +1766,7 @@ svg {
 }
 
 .diff-chip .diff-count {
-  color: #202124;
+  color: currentColor;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -9770,7 +9770,10 @@ body.git-history-resizing {
   z-index: 20;
   min-width: 220px;
   max-width: 280px;
-  overflow: hidden;
+  max-height: min(520px, calc(100vh - 96px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 6px;
 }
 
@@ -12949,6 +12952,12 @@ body.git-history-resizing {
 
 :is(.model-menu, .effort-menu) {
   max-height: min(420px, calc(100vh - 24px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.status-branch-menu {
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-width: thin;

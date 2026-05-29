@@ -1,12 +1,13 @@
 import {
-  DEFAULT_WEB_PORT,
   findAvailablePort,
   isPortOpen,
+  resolvePreferredWebPort,
 } from './dev-ports.mjs';
 import { readDevSessionState } from './dev-session.mjs';
 
 export async function resolveDesktopDevPorts({
   preferredPort,
+  preferredWebPort = resolvePreferredWebPort(),
   readSessionState = () => readDevSessionState(process.cwd()),
   isPortOpen: checkPort = isPortOpen,
   findAvailablePort: findPort = findAvailablePort,
@@ -23,20 +24,23 @@ export async function resolveDesktopDevPorts({
 
   const preferredPortsReady = await Promise.all([
     checkPort(preferredPort),
-    checkPort(DEFAULT_WEB_PORT),
+    checkPort(preferredWebPort),
   ]);
   if (preferredPortsReady.every(Boolean)) {
     return {
       backendPort: preferredPort,
-      webPort: DEFAULT_WEB_PORT,
+      webPort: preferredWebPort,
       shouldStartDevServer: false,
     };
   }
 
-  const backendPort = await findPort(preferredPort);
+  const [backendPort, webPort] = await Promise.all([
+    findPort(preferredPort),
+    findPort(preferredWebPort),
+  ]);
   return {
     backendPort,
-    webPort: DEFAULT_WEB_PORT,
+    webPort,
     shouldStartDevServer: true,
   };
 }
