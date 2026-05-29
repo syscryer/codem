@@ -8,7 +8,6 @@ export function getGitDiffBadgeLabels(diff: GitDiffSummary) {
 
   return {
     primary: String(filesChanged),
-    secondary: '变更',
     detail: hasLineChanges ? `+${additions} -${deletions}` : '无行增删',
   };
 }

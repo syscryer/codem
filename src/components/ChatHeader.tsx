@@ -4,6 +4,7 @@ import {
   CloudUpload,
   Download,
   GitBranchPlus,
+  GitCompareArrows,
   GitCommitHorizontal,
   GitPullRequest,
   FolderOpen,
@@ -166,6 +167,17 @@ export function ChatHeaderActions({
         onFetch={onGitFetch}
         onPull={onGitPull}
       />
+      <button
+        type="button"
+        className="diff-chip"
+        title={diffTitle}
+        aria-label={diffTitle}
+        disabled={!activeProject}
+        onClick={onOpenReviewWorkbench}
+      >
+        <GitCompareArrows size={14} aria-hidden="true" />
+        <span className="diff-count">{gitDiffLabels.primary}</span>
+      </button>
       {terminalDockAvailable ? (
         <button
           type="button"
@@ -185,16 +197,6 @@ export function ChatHeaderActions({
         disabled={!activeProject}
       >
         <FolderOpen size={15} />
-      </button>
-      <button
-        type="button"
-        className="diff-chip"
-        title={diffTitle}
-        disabled={!activeProject}
-        onClick={onOpenReviewWorkbench}
-      >
-        <span className="diff-count">{gitDiffLabels.primary}</span>
-        <span className="diff-label">{gitDiffLabels.secondary}</span>
       </button>
       {!rightWorkbenchOpen ? (
         <button

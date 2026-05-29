@@ -1627,13 +1627,13 @@ svg {
 .diff-chip {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  min-width: 38px;
-  height: 28px;
+  gap: 5px;
+  min-width: 0;
   justify-content: center;
   font-size: 12px;
-  padding: 0 6px;
   color: #5f6368;
+  padding: 0 10px;
+  font-variant-numeric: tabular-nums;
 }
 
 .open-app-menu {
@@ -9033,11 +9033,23 @@ body.git-history-resizing {
 
 .session-search-input-wrap input {
   width: 100%;
+  padding: 0;
+  margin: 0;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--app-text-strong);
   font: inherit;
+  appearance: none;
+  -webkit-appearance: none;
+  box-shadow: none;
+}
+
+.codex-desktop .session-search-input-wrap input:focus,
+.codex-desktop .session-search-input-wrap input:focus-visible {
+  outline: none;
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .session-search-input-wrap input::placeholder {
@@ -13392,8 +13404,8 @@ body.git-history-resizing {
 }
 
 .codex-desktop[data-platform="macos"] .header-actions.compact .diff-chip {
-  gap: 6px;
-  padding: 0 10px;
+  gap: 5px;
+  padding: 0 8px;
 }
 
 .codex-desktop .sidebar-primary button:hover,
