@@ -326,6 +326,7 @@ export type GeneralSettings = {
   restoreLastSelectionOnLaunch: boolean;
   autoRefreshGitStatus: boolean;
   enableThreadSystemNotifications: boolean;
+  autoGuideQueuedPrompts: boolean;
   showDebugButton: boolean;
   defaultPermissionMode: PermissionMode;
   reviewHideNoiseFilesByDefault: boolean;
@@ -700,6 +701,10 @@ export type GitFileStatus = {
   path: string;
   originalPath?: string;
   status: string;
+  indexStatus?: string;
+  worktreeStatus?: string;
+  conflicted?: boolean;
+  conflictKind?: GitConflictKind;
   staged: boolean;
   unstaged: boolean;
   untracked: boolean;
@@ -723,6 +728,55 @@ export type GitPushPreview = {
   ahead: number;
   behind: number;
   commits: string[];
+};
+
+export type GitPullMode = 'ff-only' | 'merge' | 'rebase';
+
+export type GitOperationKind = 'none' | 'merge' | 'rebase' | 'cherry-pick' | 'revert';
+
+export type GitOperationStatus = 'clean' | 'dirty' | 'blocked_dirty' | 'diverged' | 'conflicted' | 'in_progress';
+
+export type GitConflictKind =
+  | 'both_modified'
+  | 'both_added'
+  | 'both_deleted'
+  | 'deleted_by_us'
+  | 'deleted_by_them'
+  | 'added_by_us'
+  | 'added_by_them'
+  | 'unknown';
+
+export type GitConflictFile = {
+  path: string;
+  originalPath?: string;
+  status: string;
+  conflictKind: GitConflictKind;
+  label: string;
+};
+
+export type GitOperationState = {
+  status: GitOperationStatus;
+  operation: GitOperationKind;
+  branch?: string;
+  upstream?: string;
+  remote?: string;
+  ahead: number;
+  behind: number;
+  hasConflicts: boolean;
+  canContinue: boolean;
+  canAbort: boolean;
+  conflicts: GitConflictFile[];
+  files: GitFileStatus[];
+  message: string;
+};
+
+export type GitConflictFileDetail = GitConflictFile & {
+  baseContent: string;
+  currentContent: string;
+  incomingContent: string;
+  resultContent: string;
+  isText: boolean;
+  binary: boolean;
 };
 
 export type GitFileDiffPreview = {
@@ -780,6 +834,23 @@ export type UndoConversationChangeResult = {
 };
 
 export type GitBranchCreateResult = {
+  output: string;
+  summary: ProjectGitSummary;
+  branch: string;
+};
+
+export type GitTagCreateResult = {
+  output: string;
+  summary: ProjectGitSummary;
+  tag: string;
+};
+
+export type GitRefCheckoutResult = {
+  output: string;
+  summary: ProjectGitSummary;
+};
+
+export type GitBranchDeleteResult = {
   output: string;
   summary: ProjectGitSummary;
   branch: string;
@@ -1023,9 +1094,36 @@ export type ConfirmDialogState =
     }
   | null;
 
+export type ToastDetailRow = {
+  label: string;
+  value: string;
+};
+
+export type ToastDetailSection = {
+  label: string;
+  content: string;
+  defaultOpen?: boolean;
+};
+
+export type ToastDetail = {
+  title: string;
+  summary?: string;
+  rows: ToastDetailRow[];
+  sections: ToastDetailSection[];
+};
+
+export type ToastOptions = {
+  title?: string;
+  detail?: ToastDetail;
+  durationMs?: number;
+};
+
 export type ToastState = {
   id: string;
   message: string;
+  title?: string;
   tone: 'success' | 'error' | 'info';
   durationMs?: number;
+  detail?: ToastDetail;
+  detailOpen?: boolean;
 };

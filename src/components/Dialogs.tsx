@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Copy, Info, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import type {
   ApprovalDecision,
   ApprovalRequest,
   ConfirmDialogState,
   ConversationTurn,
   InputDialogState,
+  ToastDetail,
   ToastState,
 } from '../types';
 
@@ -27,6 +29,8 @@ type DialogsProps = {
   onSubmitInputDialog: () => void | Promise<void>;
   onCloseConfirmDialog: () => void;
   onConfirmRemoveDialog: () => void | Promise<void>;
+  onDismissToast: () => void;
+  onToastDetailOpenChange: (toastId: string, detailOpen: boolean) => void;
 };
 
 export function Dialogs({
@@ -41,7 +45,16 @@ export function Dialogs({
   onSubmitInputDialog,
   onCloseConfirmDialog,
   onConfirmRemoveDialog,
+  onDismissToast,
+  onToastDetailOpenChange,
 }: DialogsProps) {
+  const [expandedToastId, setExpandedToastId] = useState<string | null>(null);
+  const toastDetailOpen = Boolean(toast?.detail && expandedToastId === toast.id);
+
+  useEffect(() => {
+    setExpandedToastId(null);
+  }, [toast?.id]);
+
   return (
     <>
       {approvalDialog ? (
@@ -105,9 +118,113 @@ export function Dialogs({
         </div>
       ) : null}
 
-      {toast ? <div className={`app-toast ${toast.tone}`}>{toast.message}</div> : null}
+      {toast ? (
+        <div className={`app-toast ${toast.tone}${toastDetailOpen ? ' expanded' : ''}`} role="status" aria-live={toast.tone === 'error' ? 'assertive' : 'polite'}>
+          <div className="app-toast-status-icon" aria-hidden="true">
+            <ToastToneIcon tone={toast.tone} />
+          </div>
+          <div className="app-toast-main">
+            <div className="app-toast-title-row">
+              <strong>{toast.title ?? formatToastToneTitle(toast.tone)}</strong>
+              <button type="button" className="app-toast-close" onClick={onDismissToast} aria-label="关闭提示">
+                <X size={14} />
+              </button>
+            </div>
+            <p>{toast.message}</p>
+            {toast.detail ? (
+              <div className="app-toast-actions">
+                <button
+                  type="button"
+                  className="app-toast-action"
+                  onClick={() => {
+                    const nextExpandedToastId = toastDetailOpen ? null : toast.id;
+                    setExpandedToastId(nextExpandedToastId);
+                    onToastDetailOpenChange(toast.id, nextExpandedToastId === toast.id);
+                  }}
+                >
+                  <ChevronDown size={14} className={toastDetailOpen ? 'expanded' : undefined} />
+                  {toastDetailOpen ? '收起详情' : '查看详情'}
+                </button>
+                <button
+                  type="button"
+                  className="app-toast-action subtle"
+                  onClick={() => toast.detail ? void copyToastDetail(toast.detail) : undefined}
+                >
+                  <Copy size={14} />
+                  复制详情
+                </button>
+              </div>
+            ) : null}
+          </div>
+          {toast.detail && toastDetailOpen ? <ToastDetailPanel detail={toast.detail} /> : null}
+        </div>
+      ) : null}
     </>
   );
+}
+
+function ToastToneIcon({ tone }: { tone: ToastState['tone'] }) {
+  if (tone === 'error') {
+    return <AlertTriangle size={18} />;
+  }
+  if (tone === 'info') {
+    return <Info size={18} />;
+  }
+  return <CheckCircle2 size={18} />;
+}
+
+function ToastDetailPanel({ detail }: { detail: ToastDetail }) {
+  return (
+    <div className="app-toast-detail">
+      <div className="app-toast-detail-head">
+        <strong>{detail.title}</strong>
+        {detail.summary ? <span>{detail.summary}</span> : null}
+      </div>
+      {detail.rows.length > 0 ? (
+        <dl className="app-toast-detail-grid">
+          {detail.rows.map((row) => (
+            <div key={`${row.label}-${row.value}`}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {detail.sections.length > 0 ? (
+        <div className="app-toast-detail-sections">
+          {detail.sections.map((section) => (
+            <details key={section.label} className="app-toast-log-section" open={section.defaultOpen}>
+              <summary>{section.label}</summary>
+              <pre>{section.content}</pre>
+            </details>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function formatToastToneTitle(tone: ToastState['tone']) {
+  if (tone === 'error') {
+    return '操作失败';
+  }
+  if (tone === 'info') {
+    return '提示';
+  }
+  return '已完成';
+}
+
+async function copyToastDetail(detail: ToastDetail) {
+  if (!navigator.clipboard) {
+    return;
+  }
+  await navigator.clipboard.writeText(formatToastDetailForCopy(detail));
+}
+
+function formatToastDetailForCopy(detail: ToastDetail) {
+  const rows = detail.rows.map((row) => `${row.label}: ${row.value}`);
+  const sections = detail.sections.map((section) => `[${section.label}]\n${section.content}`);
+  return [detail.title, detail.summary, ...rows, ...sections].filter(Boolean).join('\n\n');
 }
 
 function ApprovalRequestDialog({

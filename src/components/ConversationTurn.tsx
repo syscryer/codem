@@ -408,7 +408,7 @@ function SystemCommandCard({ item }: { item: SystemCommandItem }) {
             </span>
             <span>{item.title}</span>
           </strong>
-          <code>{item.command}</code>
+          {shouldShowSystemCommandCode(item) ? <code>{item.command}</code> : null}
         </div>
         <span className="system-command-card-state">{formatSystemCommandState(item.state)}</span>
       </div>
@@ -422,6 +422,10 @@ function SystemCommandCard({ item }: { item: SystemCommandItem }) {
       ) : null}
     </section>
   );
+}
+
+function shouldShowSystemCommandCode(item: SystemCommandItem) {
+  return item.command !== 'guide';
 }
 
 export const ConversationTurnView = memo(ConversationTurnViewComponent);

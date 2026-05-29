@@ -61,6 +61,8 @@ test('normalizeAppSettings preserves valid appearance values', () => {
     general: {
       restoreLastSelectionOnLaunch: false,
       autoRefreshGitStatus: false,
+      enableThreadSystemNotifications: false,
+      autoGuideQueuedPrompts: true,
       showDebugButton: false,
       defaultPermissionMode: 'auto',
       reviewHideNoiseFilesByDefault: false,
@@ -94,6 +96,8 @@ test('normalizeAppSettings preserves valid appearance values', () => {
     general: {
       restoreLastSelectionOnLaunch: false,
       autoRefreshGitStatus: false,
+      enableThreadSystemNotifications: false,
+      autoGuideQueuedPrompts: true,
       showDebugButton: false,
       defaultPermissionMode: 'auto',
       reviewHideNoiseFilesByDefault: false,
@@ -282,6 +286,8 @@ test('updateGeneralSettings writes formatted JSON and can read it back', () => {
     const settings = store.updateGeneralSettings({
       restoreLastSelectionOnLaunch: false,
       autoRefreshGitStatus: false,
+      enableThreadSystemNotifications: false,
+      autoGuideQueuedPrompts: true,
       showDebugButton: false,
       defaultPermissionMode: 'bypassPermissions',
       reviewHideNoiseFilesByDefault: false,
@@ -294,6 +300,8 @@ test('updateGeneralSettings writes formatted JSON and can read it back', () => {
       general: {
         restoreLastSelectionOnLaunch: false,
         autoRefreshGitStatus: false,
+        enableThreadSystemNotifications: false,
+        autoGuideQueuedPrompts: true,
         showDebugButton: false,
         defaultPermissionMode: 'bypassPermissions',
         reviewHideNoiseFilesByDefault: false,

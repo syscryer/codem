@@ -13,6 +13,8 @@ export type ReviewDisplayMode = 'tree' | 'flat';
 export type GeneralSettings = {
   restoreLastSelectionOnLaunch: boolean;
   autoRefreshGitStatus: boolean;
+  enableThreadSystemNotifications: boolean;
+  autoGuideQueuedPrompts: boolean;
   showDebugButton: boolean;
   defaultPermissionMode: PermissionMode;
   reviewHideNoiseFilesByDefault: boolean;
@@ -129,6 +131,8 @@ export const defaultAppearanceSettings: AppearanceSettings = {
 export const defaultGeneralSettings: GeneralSettings = {
   restoreLastSelectionOnLaunch: true,
   autoRefreshGitStatus: true,
+  enableThreadSystemNotifications: true,
+  autoGuideQueuedPrompts: false,
   showDebugButton: true,
   defaultPermissionMode: 'default',
   reviewHideNoiseFilesByDefault: true,
@@ -309,6 +313,14 @@ function normalizeGeneralSettings(value: unknown): GeneralSettings {
       defaultGeneralSettings.restoreLastSelectionOnLaunch,
     ),
     autoRefreshGitStatus: normalizeBoolean(record.autoRefreshGitStatus, defaultGeneralSettings.autoRefreshGitStatus),
+    enableThreadSystemNotifications: normalizeBoolean(
+      record.enableThreadSystemNotifications,
+      defaultGeneralSettings.enableThreadSystemNotifications,
+    ),
+    autoGuideQueuedPrompts: normalizeBoolean(
+      record.autoGuideQueuedPrompts,
+      defaultGeneralSettings.autoGuideQueuedPrompts,
+    ),
     showDebugButton: normalizeBoolean(record.showDebugButton, defaultGeneralSettings.showDebugButton),
     defaultPermissionMode: normalizeEnum(
       record.defaultPermissionMode,

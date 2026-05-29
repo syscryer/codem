@@ -319,6 +319,10 @@ export type GitFileStatus = {
   path: string;
   originalPath?: string;
   status: string;
+  indexStatus?: string;
+  worktreeStatus?: string;
+  conflicted?: boolean;
+  conflictKind?: GitConflictKind;
   staged: boolean;
   unstaged: boolean;
   untracked: boolean;
@@ -342,6 +346,53 @@ export type GitPushPreview = {
   ahead: number;
   behind: number;
   commits: string[];
+};
+
+export type GitOperationKind = 'none' | 'merge' | 'rebase' | 'cherry-pick' | 'revert';
+
+export type GitOperationStatus = 'clean' | 'dirty' | 'blocked_dirty' | 'diverged' | 'conflicted' | 'in_progress';
+
+export type GitConflictKind =
+  | 'both_modified'
+  | 'both_added'
+  | 'both_deleted'
+  | 'deleted_by_us'
+  | 'deleted_by_them'
+  | 'added_by_us'
+  | 'added_by_them'
+  | 'unknown';
+
+export type GitConflictFile = {
+  path: string;
+  originalPath?: string;
+  status: string;
+  conflictKind: GitConflictKind;
+  label: string;
+};
+
+export type GitOperationState = {
+  status: GitOperationStatus;
+  operation: GitOperationKind;
+  branch?: string;
+  upstream?: string;
+  remote?: string;
+  ahead: number;
+  behind: number;
+  hasConflicts: boolean;
+  canContinue: boolean;
+  canAbort: boolean;
+  conflicts: GitConflictFile[];
+  files: GitFileStatus[];
+  message: string;
+};
+
+export type GitConflictFileDetail = GitConflictFile & {
+  baseContent: string;
+  currentContent: string;
+  incomingContent: string;
+  resultContent: string;
+  isText: boolean;
+  binary: boolean;
 };
 
 export type UndoConversationChangeOperation = {
@@ -1424,6 +1475,98 @@ export async function createProjectGitBranch(projectId: string, branchName: stri
   };
 }
 
+export async function createProjectGitTag(projectId: string, tagName: string, sourceRef?: string) {
+  const projectPath = readProjectPath(projectId);
+  const targetTag = tagName.trim();
+  const targetSourceRef = sourceRef?.trim() || 'HEAD';
+  if (!targetTag) {
+    throw new Error('tag 不能为空');
+  }
+
+  await ensureGitRepository(projectPath);
+  const tagResult = await runGitCommand(projectPath, ['tag', targetTag, targetSourceRef]);
+  if (tagResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(tagResult, `创建标签“${targetTag}”失败`));
+  }
+
+  return {
+    output: tagResult.stdout.trim() || tagResult.stderr.trim() || `已创建标签 ${targetTag}`,
+    summary: await getProjectGitSummary(projectId),
+    tag: targetTag,
+  };
+}
+
+export async function checkoutProjectGitDetachedRef(projectId: string, refName: string) {
+  const projectPath = readProjectPath(projectId);
+  const targetRef = refName.trim();
+  if (!targetRef) {
+    throw new Error('ref 不能为空');
+  }
+
+  await ensureGitRepository(projectPath);
+  let checkoutResult = await runGitCommand(projectPath, ['switch', '--detach', targetRef]);
+  if (shouldFallbackToGitCheckout(checkoutResult)) {
+    checkoutResult = await runGitCommand(projectPath, ['checkout', '--detach', targetRef]);
+  }
+
+  if (checkoutResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(checkoutResult, `签出“${targetRef}”失败`));
+  }
+
+  return {
+    output: checkoutResult.stdout.trim() || checkoutResult.stderr.trim() || `已签出 ${targetRef}`,
+    summary: await getProjectGitSummary(projectId),
+  };
+}
+
+export async function cherryPickProjectGitCommit(projectId: string, commitSha: string) {
+  const projectPath = readProjectPath(projectId);
+  const targetCommit = commitSha.trim();
+  if (!targetCommit) {
+    throw new Error('sha 不能为空');
+  }
+
+  await ensureGitRepository(projectPath);
+  const cherryPickResult = await runGitCommand(projectPath, ['cherry-pick', targetCommit]);
+  if (cherryPickResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(cherryPickResult, `Cherry-pick“${targetCommit}”失败`));
+  }
+
+  return {
+    output: cherryPickResult.stdout.trim() || cherryPickResult.stderr.trim() || `已 Cherry-pick ${targetCommit}`,
+    summary: await getProjectGitSummary(projectId),
+  };
+}
+
+export async function deleteProjectGitBranch(projectId: string, branchName: string, remoteName?: string) {
+  const projectPath = readProjectPath(projectId);
+  const targetBranch = branchName.trim();
+  const targetRemote = remoteName?.trim();
+  if (!targetBranch) {
+    throw new Error('branch 不能为空');
+  }
+
+  await ensureGitRepository(projectPath);
+  const gitInfo = await readGitInfoAsync(projectPath, false);
+  if (!targetRemote && gitInfo.branch === targetBranch) {
+    throw new Error('不能删除当前分支');
+  }
+
+  const deleteArgs = targetRemote
+    ? ['push', targetRemote, '--delete', trimRemoteBranchPrefix(targetBranch, targetRemote)]
+    : ['branch', '-d', targetBranch];
+  const deleteResult = await runGitCommand(projectPath, deleteArgs);
+  if (deleteResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(deleteResult, `删除分支“${targetBranch}”失败`));
+  }
+
+  return {
+    output: deleteResult.stdout.trim() || deleteResult.stderr.trim() || `已删除分支 ${targetBranch}`,
+    summary: await getProjectGitSummary(projectId),
+    branch: targetBranch,
+  };
+}
+
 export async function listProjectGitWorktrees(projectId: string): Promise<GitWorktreeList> {
   const projectPath = readProjectPath(projectId);
   const gitInfo = await readGitInfoAsync(projectPath, false);
@@ -1530,6 +1673,138 @@ export async function getProjectGitStatus(projectId: string): Promise<GitStatusS
   }
 
   return parseGitStatus(result.stdout, projectPath, repositoryRoot);
+}
+
+export async function getProjectGitOperationState(projectId: string): Promise<GitOperationState> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const status = await getProjectGitStatus(projectId);
+  const operation = await detectGitOperation(projectPath);
+  const conflicts = status.files.filter((file) => file.conflicted).map(toGitConflictFile);
+  const hasConflicts = conflicts.length > 0;
+  const dirtyFiles = status.files.filter((file) => !file.conflicted);
+  const operationActive = operation !== 'none';
+  const hasLocalChanges = dirtyFiles.length > 0;
+  const hasDiverged = status.ahead > 0 && status.behind > 0;
+  const state: GitOperationStatus = hasConflicts
+    ? 'conflicted'
+    : operationActive
+      ? 'in_progress'
+      : hasLocalChanges && status.behind > 0
+        ? 'blocked_dirty'
+        : hasDiverged
+          ? 'diverged'
+          : hasLocalChanges
+            ? 'dirty'
+            : 'clean';
+
+  return {
+    status: state,
+    operation,
+    branch: status.branch,
+    upstream: status.upstream,
+    remote: status.remote,
+    ahead: status.ahead,
+    behind: status.behind,
+    hasConflicts,
+    canContinue: operationActive && !hasConflicts,
+    canAbort: operationActive,
+    conflicts,
+    files: status.files,
+    message: buildGitOperationStateMessage(state, operation, conflicts.length),
+  };
+}
+
+export async function getProjectGitConflictFile(projectId: string, filePath: string): Promise<GitConflictFileDetail> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const repositoryRoot = await readGitRepositoryRoot(projectPath);
+  const safePath = normalizeProjectRelativePath(projectPath, filePath);
+  const operationState = await getProjectGitOperationState(projectId);
+  const conflict = operationState.conflicts.find((item) => item.path === safePath);
+
+  if (!conflict) {
+    throw new Error(`文件不是冲突状态：${safePath}`);
+  }
+
+  const repositoryPath = toRepositoryRelativeGitPath(projectPath, repositoryRoot, safePath);
+  const resultContent = readWorkspaceTextFileIfExistsWithOptions(projectPath, safePath, { allowLarge: true });
+
+  return {
+    ...conflict,
+    baseContent: await readGitIndexStageTextFile(projectPath, 1, repositoryPath),
+    currentContent: await readGitIndexStageTextFile(projectPath, 2, repositoryPath),
+    incomingContent: await readGitIndexStageTextFile(projectPath, 3, repositoryPath),
+    resultContent,
+    isText: true,
+    binary: false,
+  };
+}
+
+export async function saveProjectGitConflictResult(projectId: string, filePath: string, content: string) {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const safePath = normalizeProjectRelativePath(projectPath, filePath);
+  const targetPath = path.resolve(projectPath, safePath.replace(/\//g, path.sep));
+  if (!isPathInsideRoot(targetPath, projectPath)) {
+    throw new Error('无权写入该路径');
+  }
+
+  mkdirSync(path.dirname(targetPath), { recursive: true });
+  writeFileSync(targetPath, content, 'utf8');
+
+  return getProjectGitConflictFile(projectId, safePath);
+}
+
+export async function markProjectGitConflictResolved(projectId: string, filePath: string): Promise<GitOperationState> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const safePath = normalizeProjectRelativePath(projectPath, filePath);
+  const targetPath = path.resolve(projectPath, safePath.replace(/\//g, path.sep));
+  const args = existsSync(targetPath) ? ['add', '--', safePath] : ['rm', '--', safePath];
+  const result = await runGitCommand(projectPath, args);
+  if (result.status !== 0) {
+    throw new Error(normalizeGitCommandError(result, '标记冲突已解决失败'));
+  }
+
+  return getProjectGitOperationState(projectId);
+}
+
+export async function continueProjectGitOperation(projectId: string): Promise<GitOperationState> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const state = await getProjectGitOperationState(projectId);
+  if (state.operation === 'none') {
+    throw new Error('当前没有可继续的 Git 操作');
+  }
+  if (state.hasConflicts) {
+    throw new Error('仍有冲突文件未解决，不能继续操作');
+  }
+
+  const args = buildGitOperationCommand(state.operation, 'continue');
+  const result = await runGitCommand(projectPath, args);
+  if (result.status !== 0) {
+    throw new Error(normalizeGitCommandError(result, '继续 Git 操作失败'));
+  }
+
+  return getProjectGitOperationState(projectId);
+}
+
+export async function abortProjectGitOperation(projectId: string): Promise<GitOperationState> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const state = await getProjectGitOperationState(projectId);
+  if (state.operation === 'none') {
+    throw new Error('当前没有可中止的 Git 操作');
+  }
+
+  const args = buildGitOperationCommand(state.operation, 'abort');
+  const result = await runGitCommand(projectPath, args);
+  if (result.status !== 0) {
+    throw new Error(normalizeGitCommandError(result, '中止 Git 操作失败'));
+  }
+
+  return getProjectGitOperationState(projectId);
 }
 
 export async function getProjectGitFileDiff(projectId: string, filePath: string) {
@@ -1865,6 +2140,7 @@ export async function pullProjectGitBranch(
   projectId: string,
   remote?: string,
   targetBranch?: string,
+  mode: 'ff-only' | 'merge' | 'rebase' = 'ff-only',
 ): Promise<{
   output: string;
   summary: Awaited<ReturnType<typeof getProjectGitSummary>>;
@@ -1876,12 +2152,7 @@ export async function pullProjectGitBranch(
   const status = await getProjectGitStatus(projectId);
   const beforeHead = await readGitHead(projectPath);
   const target = await resolveGitPullTarget(projectPath, status.branch, remote, targetBranch);
-  const pullResult = await runGitCommand(projectPath, [
-    'pull',
-    '--ff-only',
-    target.remote,
-    target.targetBranch,
-  ]);
+  const pullResult = await runGitCommand(projectPath, buildGitPullArgs(target.remote, target.targetBranch, mode));
 
   if (pullResult.status !== 0) {
     throw new Error(normalizeGitCommandError(pullResult, '拉取失败'));
@@ -3496,6 +3767,11 @@ function deriveTrackingLocalBranchName(branchName: string) {
   return segments.length > 1 ? segments.slice(1).join('/') : trimmed;
 }
 
+function trimRemoteBranchPrefix(branchName: string, remoteName: string) {
+  const prefix = `${remoteName}/`;
+  return branchName.startsWith(prefix) ? branchName.slice(prefix.length) : branchName;
+}
+
 function normalizeGitStatusFilePath(
   file: GitFileStatus | null,
   projectPath: string,
@@ -3554,7 +3830,8 @@ function parseGitStatusHeader(header?: string): Omit<GitStatusSnapshot, 'files'>
 }
 
 function parseGitStatusCounter(flags: string, key: 'ahead' | 'behind') {
-  const match = flags.match(new RegExp(`${key} (\\d+)`));
+  const aliases = key === 'ahead' ? ['ahead', '领先'] : ['behind', '落后'];
+  const match = flags.match(new RegExp(`(?:${aliases.join('|')})\\s*(\\d+)`, 'i'));
   return match ? Number(match[1]) : 0;
 }
 
@@ -3565,6 +3842,7 @@ function parseGitStatusLine(line: string): GitFileStatus | null {
 
   const indexStatus = line[0];
   const worktreeStatus = line[1];
+  const rawConflictKind = getGitConflictKind(indexStatus, worktreeStatus);
   const rawPath = line.slice(3);
   const renameParts = rawPath.split(' -> ');
   const filePath = normalizeGitRelativePath(renameParts[renameParts.length - 1] ?? rawPath);
@@ -3573,7 +3851,11 @@ function parseGitStatusLine(line: string): GitFileStatus | null {
   return {
     path: filePath,
     originalPath,
-    status: buildGitStatusLabel(indexStatus, worktreeStatus),
+    status: rawConflictKind ? `${indexStatus}${worktreeStatus}` : buildGitStatusLabel(indexStatus, worktreeStatus),
+    indexStatus,
+    worktreeStatus,
+    conflicted: Boolean(rawConflictKind),
+    conflictKind: rawConflictKind,
     staged: indexStatus !== ' ' && indexStatus !== '?',
     unstaged: worktreeStatus !== ' ' && worktreeStatus !== '?',
     untracked: indexStatus === '?' && worktreeStatus === '?',
@@ -3603,6 +3885,60 @@ function buildGitStatusLabel(indexStatus: string, worktreeStatus: string) {
   }
 
   return '变更';
+}
+
+function getGitConflictKind(indexStatus: string, worktreeStatus: string): GitConflictKind | undefined {
+  const code = `${indexStatus}${worktreeStatus}`;
+  switch (code) {
+    case 'UU':
+      return 'both_modified';
+    case 'AA':
+      return 'both_added';
+    case 'DD':
+      return 'both_deleted';
+    case 'DU':
+      return 'deleted_by_us';
+    case 'UD':
+      return 'deleted_by_them';
+    case 'AU':
+      return 'added_by_us';
+    case 'UA':
+      return 'added_by_them';
+    default:
+      return undefined;
+  }
+}
+
+function toGitConflictFile(file: GitFileStatus): GitConflictFile {
+  const conflictKind = file.conflictKind ?? 'unknown';
+  return {
+    path: file.path,
+    originalPath: file.originalPath,
+    status: `${file.indexStatus ?? ''}${file.worktreeStatus ?? ''}`.trim() || file.status,
+    conflictKind,
+    label: getGitConflictKindLabel(conflictKind),
+  };
+}
+
+function getGitConflictKindLabel(conflictKind: GitConflictKind) {
+  switch (conflictKind) {
+    case 'both_modified':
+      return '双方修改';
+    case 'both_added':
+      return '双方新增';
+    case 'both_deleted':
+      return '双方删除';
+    case 'deleted_by_us':
+      return '我方删除，对方修改';
+    case 'deleted_by_them':
+      return '对方删除，我方修改';
+    case 'added_by_us':
+      return '我方新增，对方缺失';
+    case 'added_by_them':
+      return '对方新增，我方缺失';
+    default:
+      return '冲突';
+  }
 }
 
 function normalizeGitRelativePath(filePath: string) {
@@ -4510,6 +4846,16 @@ async function resolveGitPullTarget(
   };
 }
 
+function buildGitPullArgs(remote: string, targetBranch: string, mode: 'ff-only' | 'merge' | 'rebase') {
+  if (mode === 'merge') {
+    return ['pull', '--no-rebase', remote, targetBranch];
+  }
+  if (mode === 'rebase') {
+    return ['pull', '--rebase', remote, targetBranch];
+  }
+  return ['pull', '--ff-only', remote, targetBranch];
+}
+
 async function resolveGitRemote(projectPath: string, requestedRemote?: string) {
   const remotes = await readGitRemotes(projectPath);
   const remote = requestedRemote?.trim();
@@ -4607,6 +4953,111 @@ async function resolveRemoteTrackingRef(
   }
 
   return upstream;
+}
+
+async function detectGitOperation(projectPath: string): Promise<GitOperationKind> {
+  const gitDirectory = await readGitDirectoryPath(projectPath);
+  if (!gitDirectory) {
+    return 'none';
+  }
+
+  if (existsSync(path.join(gitDirectory, 'rebase-merge')) || existsSync(path.join(gitDirectory, 'rebase-apply'))) {
+    return 'rebase';
+  }
+  if (existsSync(path.join(gitDirectory, 'CHERRY_PICK_HEAD'))) {
+    return 'cherry-pick';
+  }
+  if (existsSync(path.join(gitDirectory, 'REVERT_HEAD'))) {
+    return 'revert';
+  }
+  if (existsSync(path.join(gitDirectory, 'MERGE_HEAD'))) {
+    return 'merge';
+  }
+
+  return 'none';
+}
+
+async function readGitDirectoryPath(projectPath: string) {
+  const result = await runGitCommand(projectPath, ['rev-parse', '--git-dir']);
+  if (result.status !== 0) {
+    return '';
+  }
+
+  const gitDirectory = result.stdout.trim();
+  if (!gitDirectory) {
+    return '';
+  }
+
+  return path.isAbsolute(gitDirectory) ? gitDirectory : path.resolve(projectPath, gitDirectory);
+}
+
+function buildGitOperationStateMessage(
+  status: GitOperationStatus,
+  operation: GitOperationKind,
+  conflictCount: number,
+) {
+  if (status === 'conflicted') {
+    return `当前存在 ${conflictCount} 个冲突文件，需要解决后继续。`;
+  }
+  if (status === 'in_progress') {
+    return `${formatGitOperationKind(operation)} 进行中，可以继续或中止。`;
+  }
+  if (status === 'diverged') {
+    return '当前分支和远端已经分叉，不能快进。请查看分支差异后选择合并或变基。';
+  }
+  if (status === 'blocked_dirty') {
+    return '远端有更新且当前存在未提交变更。请先提交、暂存或撤销本地变更。';
+  }
+  if (status === 'dirty') {
+    return '当前存在未提交变更。';
+  }
+  return '工作区干净。';
+}
+
+function formatGitOperationKind(operation: GitOperationKind) {
+  switch (operation) {
+    case 'merge':
+      return '合并';
+    case 'rebase':
+      return '变基';
+    case 'cherry-pick':
+      return 'Cherry-pick';
+    case 'revert':
+      return 'Revert';
+    default:
+      return 'Git 操作';
+  }
+}
+
+function buildGitOperationCommand(operation: GitOperationKind, action: 'continue' | 'abort') {
+  if (operation === 'merge') {
+    return action === 'continue' ? ['commit', '--no-edit'] : ['merge', '--abort'];
+  }
+  if (operation === 'rebase') {
+    return ['rebase', `--${action}`];
+  }
+  if (operation === 'cherry-pick') {
+    return ['cherry-pick', `--${action}`];
+  }
+  if (operation === 'revert') {
+    return ['revert', `--${action}`];
+  }
+
+  return ['status'];
+}
+
+function toRepositoryRelativeGitPath(projectPath: string, repositoryRoot: string, filePath: string) {
+  const absolutePath = path.resolve(projectPath, filePath.replace(/\//g, path.sep));
+  return normalizeGitRelativePath(path.relative(repositoryRoot, absolutePath));
+}
+
+async function readGitIndexStageTextFile(projectPath: string, stage: 1 | 2 | 3, repositoryPath: string) {
+  const result = await runGitCommand(projectPath, ['show', `:${stage}:${repositoryPath}`]);
+  if (result.status !== 0) {
+    return '';
+  }
+
+  return result.stdout;
 }
 
 function runGitCommand(projectPath: string, args: string[]): Promise<GitCommandResult> {

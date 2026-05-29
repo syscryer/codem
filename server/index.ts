@@ -27,16 +27,24 @@ import {
 } from './lib/claude-service.js';
 import {
   canPreviewWorkspaceFile,
+  abortProjectGitOperation,
+  checkoutProjectGitDetachedRef,
+  cherryPickProjectGitCommit,
+  continueProjectGitOperation,
   createProject,
   createThread,
   commitProjectGitChanges,
   createProjectGitWorktree,
   createProjectGitBranch,
+  createProjectGitTag,
   compareProjectGitBranches,
+  deleteProjectGitBranch,
   fetchProjectGitRemote,
+  getProjectGitConflictFile,
   getProjectGitCommitDetails,
   getProjectGitCommitFilePreview,
   getProjectGitFileDiff,
+  getProjectGitOperationState,
   listProjectGitHistory,
   listProjectGitHistoryLog,
   getProjectGitPushPreview,
@@ -60,7 +68,9 @@ import {
   setProjectPinned,
   setThreadPinned,
   saveThreadHistory,
+  markProjectGitConflictResolved,
   setActiveSelection,
+  saveProjectGitConflictResult,
   suggestProjectGitWorktreePath,
   pullProjectGitBranch,
   pushProjectGitBranch,
@@ -875,6 +885,73 @@ app.get('/api/projects/:projectId/git/status', async (request, response) => {
   }
 });
 
+app.get('/api/projects/:projectId/git/operation-state', async (request, response) => {
+  try {
+    response.json(await getProjectGitOperationState(request.params.projectId));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '读取 Git 操作状态失败');
+  }
+});
+
+app.get('/api/projects/:projectId/git/conflicts/file', async (request, response) => {
+  const filePath = typeof request.query.path === 'string' ? request.query.path.trim() : '';
+  if (!filePath) {
+    response.status(400).send('path 不能为空');
+    return;
+  }
+
+  try {
+    response.json(await getProjectGitConflictFile(request.params.projectId, filePath));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '读取冲突文件失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/conflicts/save-result', async (request, response) => {
+  const filePath = typeof request.body?.path === 'string' ? request.body.path.trim() : '';
+  const content = typeof request.body?.content === 'string' ? request.body.content : '';
+  if (!filePath) {
+    response.status(400).send('path 不能为空');
+    return;
+  }
+
+  try {
+    response.json(await saveProjectGitConflictResult(request.params.projectId, filePath, content));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '保存冲突结果失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/conflicts/mark-resolved', async (request, response) => {
+  const filePath = typeof request.body?.path === 'string' ? request.body.path.trim() : '';
+  if (!filePath) {
+    response.status(400).send('path 不能为空');
+    return;
+  }
+
+  try {
+    response.json(await markProjectGitConflictResolved(request.params.projectId, filePath));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '标记冲突已解决失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/operation/continue', async (request, response) => {
+  try {
+    response.json(await continueProjectGitOperation(request.params.projectId));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '继续 Git 操作失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/operation/abort', async (request, response) => {
+  try {
+    response.json(await abortProjectGitOperation(request.params.projectId));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '中止 Git 操作失败');
+  }
+});
+
 app.get('/api/projects/:projectId/git/diff', async (request, response) => {
   const filePath = typeof request.query.path === 'string' ? request.query.path.trim() : '';
   if (!filePath) {
@@ -934,9 +1011,10 @@ app.post('/api/projects/:projectId/git/fetch', async (request, response) => {
 app.post('/api/projects/:projectId/git/pull', async (request, response) => {
   const remote = typeof request.body?.remote === 'string' ? request.body.remote.trim() : undefined;
   const branch = typeof request.body?.branch === 'string' ? request.body.branch.trim() : undefined;
+  const mode = readGitPullMode(request.body?.mode);
 
   try {
-    response.json(await pullProjectGitBranch(request.params.projectId, remote, branch));
+    response.json(await pullProjectGitBranch(request.params.projectId, remote, branch, mode));
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : 'Git 拉取失败');
   }
@@ -968,6 +1046,64 @@ app.post('/api/projects/:projectId/git/branch', async (request, response) => {
     response.json(await createProjectGitBranch(request.params.projectId, branch, source));
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '创建分支失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/tag', async (request, response) => {
+  const tag = typeof request.body?.tag === 'string' ? request.body.tag.trim() : '';
+  const source = typeof request.body?.source === 'string' ? request.body.source.trim() : undefined;
+  if (!tag) {
+    response.status(400).send('tag 不能为空');
+    return;
+  }
+
+  try {
+    response.json(await createProjectGitTag(request.params.projectId, tag, source));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '创建标签失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/cherry-pick', async (request, response) => {
+  const sha = typeof request.body?.sha === 'string' ? request.body.sha.trim() : '';
+  if (!sha) {
+    response.status(400).send('sha 不能为空');
+    return;
+  }
+
+  try {
+    response.json(await cherryPickProjectGitCommit(request.params.projectId, sha));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : 'Cherry-pick 失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/checkout-detached', async (request, response) => {
+  const ref = typeof request.body?.ref === 'string' ? request.body.ref.trim() : '';
+  if (!ref) {
+    response.status(400).send('ref 不能为空');
+    return;
+  }
+
+  try {
+    response.json(await checkoutProjectGitDetachedRef(request.params.projectId, ref));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '签出提交失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/branch/delete', async (request, response) => {
+  const branch = typeof request.body?.branch === 'string' ? request.body.branch.trim() : '';
+  const remote = typeof request.body?.remote === 'string' ? request.body.remote.trim() : undefined;
+  if (!branch) {
+    response.status(400).send('branch 不能为空');
+    return;
+  }
+
+  try {
+    response.json(await deleteProjectGitBranch(request.params.projectId, branch, remote));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '删除分支失败');
   }
 });
 
@@ -1571,6 +1707,10 @@ function readNullablePatchString(body: Record<string, unknown>, key: string) {
   }
 
   return readPatchString(body, key);
+}
+
+function readGitPullMode(value: unknown) {
+  return value === 'merge' || value === 'rebase' ? value : 'ff-only';
 }
 
 function readRepeatedQueryValues(value: unknown) {

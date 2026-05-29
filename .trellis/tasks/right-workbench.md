@@ -19,7 +19,8 @@
 - 文件工作台左侧是预览区，右侧是文件树；所有文件和已更改文件都使用树形展示。
 - 右侧工作台关闭时，聊天区域吃满主内容区宽度。
 - 右侧工作台打开时，聊天区域不应出现横向滚动，底部输入框仍可正常使用。
-- 提交弹窗继续保留，右侧工作台只负责常驻审查和工具查看。
+- 提交入口收敛到右侧工作台的审查区，右侧工作台负责常驻审查、文件选择、提交消息和提交动作。
+- 推送继续保留独立预览确认；“提交并推送”只在提交完成后打开推送预览，不直接静默推送。
 - AI 写入/修改文件后的文件卡片点击“打开”，应在右侧工作台中打开文件预览 tab，而不是只跳外部编辑器。
 - 工作台允许同时打开多个文件 tab，例如 `right-workbench.md`、`task_plan.md`。
 
@@ -131,6 +132,9 @@ div.chat-workspace
 - 已更改文件点击后，在左侧预览区打开 diff tab。
 - 有刷新按钮。
 - 没有 Git 仓库或无变更时展示空态。
+- 存在冲突、分叉、脏工作区阻塞或 Git 操作进行中时，在已更改文件审查区上方显示 Git 冲突中心。
+- 冲突中心支持合并拉取、变基拉取、查看冲突文件、保存结果、标记已解决、继续操作和中止操作。
+- 普通审查状态下文件面板保持单行满高；只有显示冲突中心时才切为上方状态区加下方审查区。
 
 复用现有能力：
 
@@ -201,8 +205,11 @@ onOpenWorkbenchFile: (filePath: string) => void;
 | 4. Files tab | completed | 所有文件懒加载树 + 已更改文件虚拟树 + diff 预览 + 空态 + 刷新 |
 | 5. File preview tabs | in_progress | 所有文件点击可打开预览 tab；Markdown 渲染和普通代码只读预览已接入；写入文件卡片入口待接入 |
 | 6. Browser shell | pending | URL 输入和空白页壳 |
-| 7. Polish | pending | 对齐截图视觉，避免横向滚动和输入框挤压 |
-| 8. Validation | in_progress | 骨架阶段已通过 `npm run typecheck`，后续功能接入后继续验证 |
+| 7. Polish | in_progress | 已补右侧宽度自适应、ResizeObserver/拖拽节流、toast 视觉和详情展开；仍可继续统一局部细节 |
+| 8. Validation | in_progress | 已补工作台布局、Git API、冲突中心、历史右键菜单和 toast 详情测试 |
+| 9. Git commit consolidation | completed | 提交入口已收敛到右侧审查区，提交并推送会转入推送预览确认 |
+| 10. Git conflict center | completed | 已接入 operation-state、冲突文件详情、保存、标记解决、继续、中止、合并拉取和变基拉取 |
+| 11. Git diagnostics | completed | Git 失败 toast 支持展开 stdout/stderr/命令等详情，成功提示保持简短 |
 
 ## Validation Checklist
 
@@ -220,6 +227,12 @@ onOpenWorkbenchFile: (filePath: string) => void;
 - Markdown 文件能以渲染视图预览。
 - 同一文件重复打开不会重复创建 tab。
 - 无 Git 仓库和无变更都有明确空态。
+- 提交入口在右侧审查区可用，提交并推送不会绕过推送预览确认。
+- 当前分支分叉时，已更改文件页展示合并拉取和变基拉取入口。
+- Git 进入冲突后，可以选择冲突文件、查看三方内容、编辑结果、保存、标记解决并继续。
+- 中止 Git 操作需要面板内确认，不应直接误触中止。
+- 没有冲突中心时，已更改文件审查区不应被压缩成很矮的一块。
+- Git 操作失败 toast 可以展开详细日志，展开后不会自动消失。
 - `npm run typecheck` 通过。
 
 ## Risks
@@ -230,3 +243,5 @@ onOpenWorkbenchFile: (filePath: string) => void;
 - 浏览器期望过高：第一版明确是 shell，不承诺真实加载。
 - 文件预览权限：只允许预览当前已登记项目内文件，继续走 `/api/system/file-preview` 的路径权限校验。
 - Markdown 渲染安全：只渲染本地文件内容，不执行其中脚本或外部指令。
+- Git 冲突处理风险：不要自动 stash、自动覆盖或自动选择 merge/rebase；用户必须能看见当前状态并明确确认高风险路径。
+- Git 日志风险：失败详情要保留真实 stdout/stderr，方便排查；成功提示不要堆叠无意义弹窗。

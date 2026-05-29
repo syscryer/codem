@@ -29,10 +29,11 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
 import { MemoGitDiffViewer } from './GitDiffViewer';
+import { GitConflictCenter } from './GitConflictCenter';
 import { ImagePreviewDialog, type ImagePreviewItem } from './ImagePreviewDialog';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { fetchWorkspaceFilePreview } from '../lib/file-preview-api';
-import { commitGitChanges, fetchGitFileDiff, fetchGitStatus } from '../lib/git-api';
+import { commitGitChanges, fetchGitFileDiff, fetchGitOperationState, fetchGitStatus } from '../lib/git-api';
 import { renderMarkdownImage } from '../lib/markdown-image';
 import { fetchProjectFiles } from '../lib/project-files-api';
 import {
@@ -80,6 +81,7 @@ import {
 import { resolveWorkbenchNavigatorVisibility } from '../lib/workbench-navigator-visibility';
 import type {
   GitFileStatus,
+  GitOperationState,
   GitStatusSnapshot,
   ProjectFileEntry,
   ProjectSummary,
@@ -369,6 +371,8 @@ function WorkbenchFiles({
   const [expandedUntrackedDirectories, setExpandedUntrackedDirectories] = useState<string[]>([]);
   const [loadingDirectory, setLoadingDirectory] = useState('');
   const [gitStatus, setGitStatus] = useState<GitStatusSnapshot | null>(null);
+  const [gitOperationState, setGitOperationState] = useState<GitOperationState | null>(null);
+  const [gitOperationLoading, setGitOperationLoading] = useState(false);
   const [fileFilter, setFileFilter] = useState('');
   const [fallbackNavigatorVisible, setFallbackNavigatorVisible] = useState(true);
   const [navigatorWidth, setNavigatorWidth] = useState(292);
@@ -391,23 +395,32 @@ function WorkbenchFiles({
     () => filterWorkbenchNoiseFiles(changedFiles, showNoiseFiles, reviewNoisePatterns),
     [changedFiles, reviewNoisePatterns, showNoiseFiles],
   );
-  const trackedCommitPaths = useMemo(
-    () => visibleChangedFiles.filter((file) => !file.untracked).map((file) => file.path),
+  const committableChangedFiles = useMemo(
+    () => visibleChangedFiles.filter((file) => !file.conflicted),
     [visibleChangedFiles],
   );
+  const trackedCommitPaths = useMemo(
+    () => committableChangedFiles.filter((file) => !file.untracked).map((file) => file.path),
+    [committableChangedFiles],
+  );
   const untrackedCommitPaths = useMemo(
-    () => visibleChangedFiles.filter((file) => file.untracked).map((file) => file.path),
-    [visibleChangedFiles],
+    () => committableChangedFiles.filter((file) => file.untracked).map((file) => file.path),
+    [committableChangedFiles],
   );
   const commitFilesCount = selectedCommitPaths.size;
   const trackedCommitAllSelected =
     trackedCommitPaths.length > 0 && trackedCommitPaths.every((path) => selectedCommitPaths.has(path));
   const untrackedCommitAllSelected =
     untrackedCommitPaths.length > 0 && untrackedCommitPaths.every((path) => selectedCommitPaths.has(path));
-  const commitDisabled = !activeProject || commitWorking !== null || commitFilesCount === 0 || !commitMessage.trim();
+  const commitDisabled =
+    !activeProject ||
+    commitWorking !== null ||
+    Boolean(gitOperationState?.hasConflicts) ||
+    commitFilesCount === 0 ||
+    !commitMessage.trim();
   const { tracked: comparableChangedFiles, untracked: untrackedChangedFiles } = useMemo(
-    () => splitWorkbenchChangedFiles(visibleChangedFiles),
-    [visibleChangedFiles],
+    () => splitWorkbenchChangedFiles(committableChangedFiles),
+    [committableChangedFiles],
   );
   const changedTree = useMemo(() => buildWorkbenchFileTree(comparableChangedFiles), [comparableChangedFiles]);
   const untrackedTree = useMemo(() => buildWorkbenchFileTree(untrackedChangedFiles), [untrackedChangedFiles]);
@@ -444,6 +457,7 @@ function WorkbenchFiles({
     if (!activeProject) {
       setProjectFiles([]);
       setGitStatus(null);
+      setGitOperationState(null);
       setError('');
       return;
     }
@@ -597,15 +611,22 @@ function WorkbenchFiles({
         setProjectFiles(rootFiles);
         setDirectoryFiles({ '': rootFiles });
         setExpandedDirectories([]);
+        setGitOperationState(null);
       } else {
-        const nextStatus = await fetchGitStatus(activeProject.id);
+        setGitOperationLoading(true);
+        const [nextStatus, nextOperationState] = await Promise.all([
+          fetchGitStatus(activeProject.id),
+          fetchGitOperationState(activeProject.id),
+        ]);
         setGitStatus(nextStatus);
+        setGitOperationState(nextOperationState);
         const visibleStatusFiles = filterWorkbenchNoiseFiles(nextStatus.files, showNoiseFiles, reviewNoisePatterns);
+        const visibleCommittableFiles = visibleStatusFiles.filter((file) => !file.conflicted);
         // 默认仅选中已纳入版本管理的变更文件，未跟踪文件需要用户主动勾选才纳入提交。
         setSelectedCommitPaths(
-          new Set(visibleStatusFiles.filter((file) => !file.untracked).map((file) => file.path)),
+          new Set(visibleCommittableFiles.filter((file) => !file.untracked).map((file) => file.path)),
         );
-        const nextGroups = splitWorkbenchChangedFiles(visibleStatusFiles);
+        const nextGroups = splitWorkbenchChangedFiles(visibleCommittableFiles);
         setExpandedChangedDirectories(collectDirectoryPaths(buildWorkbenchFileTree(nextGroups.tracked)));
         setExpandedUntrackedDirectories(collectDirectoryPaths(buildWorkbenchFileTree(nextGroups.untracked)));
       }
@@ -613,7 +634,13 @@ function WorkbenchFiles({
       setError(caughtError instanceof Error ? caughtError.message : '读取文件失败');
     } finally {
       setLoading(false);
+      setGitOperationLoading(false);
     }
+  }
+
+  async function handleGitConflictChanged() {
+    await loadScope('changed');
+    await Promise.resolve(onGitChanged?.());
   }
 
   function openProjectFilePreview(file: ProjectFileEntry) {
@@ -630,6 +657,9 @@ function WorkbenchFiles({
 
   async function handleSubmitCommit(thenPush: boolean) {
     if (!activeProject || commitDisabled) {
+      if (gitOperationState?.hasConflicts) {
+        setCommitError('当前存在冲突，需要先解决冲突后再提交。');
+      }
       return;
     }
 
@@ -650,6 +680,7 @@ function WorkbenchFiles({
       }
     } catch (caughtError) {
       setCommitError(caughtError instanceof Error ? caughtError.message : thenPush ? '提交失败' : '提交失败');
+      await loadScope('changed');
     } finally {
       setCommitWorking(null);
     }
@@ -812,100 +843,123 @@ function WorkbenchFiles({
     setReviewOptionsOpen(false);
   }
 
+  const showGitConflictCenter =
+    scope === 'changed' &&
+    Boolean(
+      activeProject &&
+        gitOperationState &&
+        (gitOperationState.hasConflicts ||
+          gitOperationState.status === 'in_progress' ||
+          gitOperationState.status === 'diverged' ||
+          gitOperationState.status === 'blocked_dirty'),
+    );
+
   return (
-    <section className="workbench-panel workbench-files-panel">
+    <section className={`workbench-panel workbench-files-panel${showGitConflictCenter ? ' with-conflict-center' : ''}`}>
       {!activeProject ? (
         <WorkbenchEmpty icon={<Folder size={24} />} title="未选择项目" description="选择项目后查看项目文件。" />
       ) : (
-        <div
-          ref={layoutRef}
-          className={`workbench-files-layout${navigatorVisible ? '' : ' navigator-hidden'}`}
-          style={{
-            '--workbench-layout-columns': buildWorkbenchFilesLayoutColumns(navigatorVisible, navigatorWidth),
-            '--workbench-navigator-width': `${clampWorkbenchNavigatorWidth(navigatorWidth)}px`,
-          } as CSSProperties}
-        >
-          <PreviewPane
-            tabs={previewTabs}
-            activeKey={activePreviewKey}
-            contentByKey={previewContentByKey}
-            onSelectTab={onSelectPreviewTab}
-            onCloseTab={onClosePreviewTab}
-            onCloseTabs={onClosePreviewTabs}
-          />
-          {navigatorVisible ? (
-            <>
-              <div
-                className="workbench-files-inner-resizer"
-                onPointerDown={handleNavigatorResizeStart}
-                aria-hidden="true"
-              />
-              <FileNavigator
-                scope={scope}
-                scopeLocked={scopeLocked}
-                scopeLabel={scopeLabel}
-                loading={loading}
-                error={error}
-                filter={fileFilter}
-                changedFilesCount={visibleChangedFiles.length}
-                projectFiles={projectFiles}
-                directoryFiles={directoryFiles}
-                expandedDirectories={expandedDirectories}
-                expandedChangedDirectories={expandedChangedDirectories}
-                expandedUntrackedDirectories={expandedUntrackedDirectories}
-                loadingDirectory={loadingDirectory}
-                changedFiles={filteredComparableChangedFiles}
-                untrackedFiles={filteredUntrackedChangedFiles}
-                changedTree={filteredChangedTree}
-                untrackedTree={filteredUntrackedTree}
-                changedDisplayMode={changedDisplayMode}
-                showNoiseFiles={showNoiseFiles}
-                reviewOptionsOpen={reviewOptionsOpen}
-                reviewOptionsRef={reviewOptionsRef}
-                activePreviewKey={activePreviewKey}
-                onFilterChange={setFileFilter}
-                onSelectScope={null}
-                onRefresh={() => void loadScope(scope)}
-                onHide={() => updateNavigatorVisibility(false)}
-                onToggleDirectory={toggleDirectory}
-                onToggleChangedDirectory={toggleChangedDirectory}
-                onToggleUntrackedDirectory={toggleUntrackedDirectory}
-                onOpenProjectFile={openProjectFilePreview}
-                onOpenChangedFile={openChangedPreview}
-                onToggleCommitFile={toggleCommitFile}
-                hideScopeCount={hideScopeCount}
-                emptyTitle={navigatorEmptyTitle}
-                showCommitBar={showCommitBar}
-                selectedCommitPaths={selectedCommitPaths}
-                onToggleCommitNode={toggleCommitNode}
-                commitFilesCount={commitFilesCount}
-                trackedCommitAllSelected={trackedCommitAllSelected}
-                untrackedCommitAllSelected={untrackedCommitAllSelected}
-                commitMessage={commitMessage}
-                commitError={commitError}
-                commitWorking={commitWorking}
-                commitDisabled={commitDisabled}
-                onToggleTrackedCommitPaths={toggleTrackedCommitPaths}
-                onToggleUntrackedCommitPaths={toggleUntrackedCommitPaths}
-                onCommitMessageChange={setCommitMessage}
-                onSubmitCommit={() => void handleSubmitCommit(false)}
-                onSubmitCommitAndPush={() => void handleSubmitCommit(true)}
-                onToggleReviewOptions={() => setReviewOptionsOpen((current) => !current)}
-                onToggleShowNoiseFiles={handleShowNoiseFilesChange}
-                onChangeChangedDisplayMode={handleChangedDisplayModeChange}
-              />
-            </>
-          ) : (
-            <button
-              type="button"
-              className="workbench-file-navigator-rail"
-              title="显示文件树"
-              onClick={() => updateNavigatorVisibility(true)}
-            >
-              <Folder size={15} />
-            </button>
-          )}
-        </div>
+        <>
+          {showGitConflictCenter ? (
+            <GitConflictCenter
+              projectId={activeProject.id}
+              operationState={gitOperationState}
+              loading={gitOperationLoading}
+              onRefresh={() => loadScope('changed')}
+              onChanged={handleGitConflictChanged}
+              showToast={showToast}
+            />
+          ) : null}
+          <div
+            ref={layoutRef}
+            className={`workbench-files-layout${navigatorVisible ? '' : ' navigator-hidden'}`}
+            style={{
+              '--workbench-layout-columns': buildWorkbenchFilesLayoutColumns(navigatorVisible, navigatorWidth),
+              '--workbench-navigator-width': `${clampWorkbenchNavigatorWidth(navigatorWidth)}px`,
+            } as CSSProperties}
+          >
+            <PreviewPane
+              tabs={previewTabs}
+              activeKey={activePreviewKey}
+              contentByKey={previewContentByKey}
+              onSelectTab={onSelectPreviewTab}
+              onCloseTab={onClosePreviewTab}
+              onCloseTabs={onClosePreviewTabs}
+            />
+            {navigatorVisible ? (
+              <>
+                <div
+                  className="workbench-files-inner-resizer"
+                  onPointerDown={handleNavigatorResizeStart}
+                  aria-hidden="true"
+                />
+                <FileNavigator
+                  scope={scope}
+                  scopeLocked={scopeLocked}
+                  scopeLabel={scopeLabel}
+                  loading={loading}
+                  error={error}
+                  filter={fileFilter}
+                  changedFilesCount={visibleChangedFiles.length}
+                  projectFiles={projectFiles}
+                  directoryFiles={directoryFiles}
+                  expandedDirectories={expandedDirectories}
+                  expandedChangedDirectories={expandedChangedDirectories}
+                  expandedUntrackedDirectories={expandedUntrackedDirectories}
+                  loadingDirectory={loadingDirectory}
+                  changedFiles={filteredComparableChangedFiles}
+                  untrackedFiles={filteredUntrackedChangedFiles}
+                  changedTree={filteredChangedTree}
+                  untrackedTree={filteredUntrackedTree}
+                  changedDisplayMode={changedDisplayMode}
+                  showNoiseFiles={showNoiseFiles}
+                  reviewOptionsOpen={reviewOptionsOpen}
+                  reviewOptionsRef={reviewOptionsRef}
+                  activePreviewKey={activePreviewKey}
+                  onFilterChange={setFileFilter}
+                  onSelectScope={null}
+                  onRefresh={() => void loadScope(scope)}
+                  onHide={() => updateNavigatorVisibility(false)}
+                  onToggleDirectory={toggleDirectory}
+                  onToggleChangedDirectory={toggleChangedDirectory}
+                  onToggleUntrackedDirectory={toggleUntrackedDirectory}
+                  onOpenProjectFile={openProjectFilePreview}
+                  onOpenChangedFile={openChangedPreview}
+                  onToggleCommitFile={toggleCommitFile}
+                  hideScopeCount={hideScopeCount}
+                  emptyTitle={navigatorEmptyTitle}
+                  showCommitBar={showCommitBar}
+                  selectedCommitPaths={selectedCommitPaths}
+                  onToggleCommitNode={toggleCommitNode}
+                  commitFilesCount={commitFilesCount}
+                  trackedCommitAllSelected={trackedCommitAllSelected}
+                  untrackedCommitAllSelected={untrackedCommitAllSelected}
+                  commitMessage={commitMessage}
+                  commitError={commitError}
+                  commitWorking={commitWorking}
+                  commitDisabled={commitDisabled}
+                  onToggleTrackedCommitPaths={toggleTrackedCommitPaths}
+                  onToggleUntrackedCommitPaths={toggleUntrackedCommitPaths}
+                  onCommitMessageChange={setCommitMessage}
+                  onSubmitCommit={() => void handleSubmitCommit(false)}
+                  onSubmitCommitAndPush={() => void handleSubmitCommit(true)}
+                  onToggleReviewOptions={() => setReviewOptionsOpen((current) => !current)}
+                  onToggleShowNoiseFiles={handleShowNoiseFilesChange}
+                  onChangeChangedDisplayMode={handleChangedDisplayModeChange}
+                />
+              </>
+            ) : (
+              <button
+                type="button"
+                className="workbench-file-navigator-rail"
+                title="显示文件树"
+                onClick={() => updateNavigatorVisibility(true)}
+              >
+                <Folder size={15} />
+              </button>
+            )}
+          </div>
+        </>
       )}
     </section>
   );

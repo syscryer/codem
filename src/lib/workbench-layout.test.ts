@@ -106,3 +106,25 @@ test('right workbench grid can shrink without clipping the close button', () => 
   assert.match(stylesSource, /\.right-workbench-close\s*\{[\s\S]*flex:\s*0\s+0\s+30px;/);
   assert.match(stylesSource, /\.right-workbench-tab\s*\{[\s\S]*min-width:\s*0;/);
 });
+
+test('review files panel only reserves a top row when the conflict center is visible', () => {
+  const rightWorkbenchSource = readFileSync(new URL('../components/RightWorkbench.tsx', import.meta.url), 'utf8');
+
+  assert.match(
+    stylesSource,
+    /\.workbench-files-panel\s*\{[\s\S]*grid-template-rows:\s*minmax\(0,\s*1fr\);/,
+  );
+  assert.match(
+    stylesSource,
+    /\.workbench-files-panel\.with-conflict-center\s*\{[\s\S]*grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\);/,
+  );
+  assert.match(
+    rightWorkbenchSource,
+    /showGitConflictCenter[\s\S]*gitOperationState\.hasConflicts[\s\S]*gitOperationState\.status === 'blocked_dirty'/,
+  );
+  assert.match(
+    rightWorkbenchSource,
+    /workbench-files-panel\$\{showGitConflictCenter \? ' with-conflict-center' : ''\}/,
+  );
+  assert.match(rightWorkbenchSource, /\{showGitConflictCenter \? \(\s*<GitConflictCenter/);
+});

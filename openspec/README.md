@@ -24,5 +24,6 @@
 ## 当前状态
 
 - 目录已建立
+- 已沉淀 `git-workbench-conflict-resolution.md`，记录 Git 工作台、冲突处理、toast 诊断和任务通知设置的行为约定
 - 还没有完整 OpenSpec CLI 工作流
 - 现阶段可以先用 Markdown 文档做 proposal / decision record

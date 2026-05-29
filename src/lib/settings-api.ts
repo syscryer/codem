@@ -20,6 +20,7 @@ export const defaultGeneralSettings: GeneralSettings = {
   restoreLastSelectionOnLaunch: true,
   autoRefreshGitStatus: true,
   enableThreadSystemNotifications: true,
+  autoGuideQueuedPrompts: false,
   showDebugButton: true,
   defaultPermissionMode: 'default',
   reviewHideNoiseFilesByDefault: true,
@@ -221,6 +222,10 @@ export function normalizeGeneralSettings(general: unknown): GeneralSettings {
     enableThreadSystemNotifications: normalizeBoolean(
       record.enableThreadSystemNotifications,
       defaultGeneralSettings.enableThreadSystemNotifications,
+    ),
+    autoGuideQueuedPrompts: normalizeBoolean(
+      record.autoGuideQueuedPrompts,
+      defaultGeneralSettings.autoGuideQueuedPrompts,
     ),
     showDebugButton: normalizeBoolean(record.showDebugButton, defaultGeneralSettings.showDebugButton),
     defaultPermissionMode: normalizeOneOf(

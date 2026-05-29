@@ -1,26 +1,23 @@
 import {
-  CheckSquare,
+  AlertTriangle,
   CloudUpload,
-  FileText,
+  Copy,
+  ChevronDown,
   GitBranchPlus,
-  GitCommitHorizontal,
   LoaderCircle,
   RefreshCw,
-  Square,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   createGitBranch,
-  commitGitChanges,
-  fetchGitFileDiff,
   fetchGitPushPreview,
   fetchGitStatus,
   pushGitBranch,
 } from '../lib/git-api';
-import type { GitFileStatus, GitPushPreview, GitStatusSnapshot, ProjectSummary } from '../types';
+import type { GitPushPreview, GitStatusSnapshot, ProjectSummary } from '../types';
 
-type GitDialogMode = 'commit' | 'push' | 'branch';
+type GitDialogMode = 'push' | 'branch';
 
 type GitDialogProps = {
   mode: GitDialogMode;
@@ -34,23 +31,11 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
   const [activeMode, setActiveMode] = useState<GitDialogMode>(mode);
   const [status, setStatus] = useState<GitStatusSnapshot | null>(null);
   const [pushPreview, setPushPreview] = useState<GitPushPreview | null>(null);
-  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
-  const [activePath, setActivePath] = useState('');
-  const [diff, setDiff] = useState('');
-  const [message, setMessage] = useState('');
   const [branchName, setBranchName] = useState('');
   const [loading, setLoading] = useState(true);
-  const [diffLoading, setDiffLoading] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState('');
 
-  const files = status?.files ?? [];
-  const selectedFiles = useMemo(
-    () => files.filter((file) => selectedPaths.has(file.path)),
-    [files, selectedPaths],
-  );
-  const allSelected = files.length > 0 && selectedFiles.length === files.length;
-  const submitDisabled = working || selectedFiles.length === 0 || !message.trim();
   const branchSubmitDisabled = working || !branchName.trim();
 
   useEffect(() => {
@@ -61,44 +46,12 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
     void loadData(activeMode);
   }, [activeMode, project.id]);
 
-  useEffect(() => {
-    if (!activePath) {
-      setDiff('');
-      return;
-    }
-
-    let cancelled = false;
-    setDiffLoading(true);
-    fetchGitFileDiff(project.id, activePath)
-      .then((payload) => {
-        if (!cancelled) {
-          setDiff(payload.content);
-        }
-      })
-      .catch((caughtError: unknown) => {
-        if (!cancelled) {
-          setDiff(caughtError instanceof Error ? caughtError.message : '读取差异失败');
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setDiffLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activePath, project.id]);
-
   async function loadData(nextMode = activeMode) {
     setLoading(true);
     setError('');
     try {
       const nextStatus = await fetchGitStatus(project.id);
       setStatus(nextStatus);
-      setSelectedPaths(new Set(nextStatus.files.map((file) => file.path)));
-      setActivePath(nextStatus.files[0]?.path ?? '');
 
       if (nextMode === 'push') {
         setPushPreview(await fetchGitPushPreview(project.id));
@@ -109,45 +62,6 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
       setError(caughtError instanceof Error ? caughtError.message : '读取 Git 信息失败');
     } finally {
       setLoading(false);
-    }
-  }
-
-  function toggleFile(file: GitFileStatus) {
-    setSelectedPaths((current) => {
-      const next = new Set(current);
-      if (next.has(file.path)) {
-        next.delete(file.path);
-      } else {
-        next.add(file.path);
-      }
-      return next;
-    });
-  }
-
-  function toggleAllFiles() {
-    setSelectedPaths(allSelected ? new Set() : new Set(files.map((file) => file.path)));
-  }
-
-  async function handleCommit(thenPush: boolean) {
-    if (submitDisabled) {
-      return;
-    }
-
-    setWorking(true);
-    setError('');
-    try {
-      await commitGitChanges(project.id, selectedFiles.map((file) => file.path), message);
-      if (thenPush) {
-        const preview = await fetchGitPushPreview(project.id);
-        await pushGitBranch(project.id, preview.remote, preview.targetBranch);
-        finishSuccessfulOperation('提交并推送完成');
-      } else {
-        finishSuccessfulOperation('提交完成');
-      }
-    } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : '提交失败');
-    } finally {
-      setWorking(false);
     }
   }
 
@@ -197,10 +111,32 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
     <div className="dialog-backdrop git-dialog-backdrop" role="presentation">
       <section className="dialog-card git-dialog-card" role="dialog" aria-modal="true" aria-label="Git 操作">
         <header className="git-dialog-head">
-          <div>
-            <span className="git-dialog-kicker">Git 操作</span>
-            <h3>{activeMode === 'commit' ? '提交变更' : activeMode === 'push' ? '推送提交' : '创建分支'}</h3>
-            <p>{project.name} · {status?.branch ?? project.gitBranch ?? '未检测到分支'}</p>
+          <div className="git-dialog-title-block">
+            <div className="git-dialog-title-row">
+              <div className="git-dialog-heading">
+                <span className="git-dialog-kicker">Git 操作</span>
+                <h3>{activeMode === 'push' ? '推送提交' : '创建分支'}</h3>
+              </div>
+              <div className="git-dialog-mode-strip" role="tablist" aria-label="Git 操作">
+                <button
+                  type="button"
+                  className={activeMode === 'push' ? 'active' : ''}
+                  onClick={() => setActiveMode('push')}
+                >
+                  <CloudUpload size={15} />
+                  推送
+                </button>
+                <button
+                  type="button"
+                  className={activeMode === 'branch' ? 'active' : ''}
+                  onClick={() => setActiveMode('branch')}
+                >
+                  <GitBranchPlus size={15} />
+                  分支
+                </button>
+              </div>
+            </div>
+            <p className="git-dialog-meta">{project.name} · {status?.branch ?? project.gitBranch ?? '未检测到分支'}</p>
           </div>
           <div className="git-dialog-head-actions">
             <button
@@ -218,57 +154,15 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
           </div>
         </header>
 
-        <div className="git-dialog-tabs" role="tablist" aria-label="Git 操作">
-          <button
-            type="button"
-            className={activeMode === 'commit' ? 'active' : ''}
-            onClick={() => setActiveMode('commit')}
-          >
-            <GitCommitHorizontal size={16} />
-            提交
-          </button>
-          <button
-            type="button"
-            className={activeMode === 'push' ? 'active' : ''}
-            onClick={() => setActiveMode('push')}
-          >
-            <CloudUpload size={16} />
-            推送
-          </button>
-          <button
-            type="button"
-            className={activeMode === 'branch' ? 'active' : ''}
-            onClick={() => setActiveMode('branch')}
-          >
-            <GitBranchPlus size={16} />
-            分支
-          </button>
-        </div>
-
-        {error ? <div className="dialog-error git-dialog-error">{error}</div> : null}
+        {error ? <GitDialogNotice message={error} /> : null}
 
         {loading ? (
           <div className="git-dialog-loading">
             <LoaderCircle className="spin" size={18} />
             正在读取 Git 信息...
           </div>
-        ) : activeMode === 'commit' ? (
-          <CommitPanel
-            files={files}
-            allSelected={allSelected}
-            selectedPaths={selectedPaths}
-            activePath={activePath}
-            diff={diff}
-            diffLoading={diffLoading}
-            message={message}
-            submitDisabled={submitDisabled}
-            onToggleAll={toggleAllFiles}
-            onToggleFile={toggleFile}
-            onSelectFile={setActivePath}
-            onMessageChange={setMessage}
-            onCommit={() => void handleCommit(false)}
-            onCommitAndPush={() => void handleCommit(true)}
-          />
+        ) : error && activeMode === 'push' && !pushPreview ? (
+          <div className="git-empty git-push-empty">修复上方提示后刷新，即可重新读取推送信息。</div>
         ) : activeMode === 'push' ? (
           <PushPanel preview={pushPreview} working={working} onPush={() => void handlePush()} />
         ) : (
@@ -287,143 +181,64 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
   );
 }
 
-function CommitPanel({
-  files,
-  allSelected,
-  selectedPaths,
-  activePath,
-  diff,
-  diffLoading,
-  message,
-  submitDisabled,
-  onToggleAll,
-  onToggleFile,
-  onSelectFile,
-  onMessageChange,
-  onCommit,
-  onCommitAndPush,
-}: {
-  files: GitFileStatus[];
-  allSelected: boolean;
-  selectedPaths: Set<string>;
-  activePath: string;
-  diff: string;
-  diffLoading: boolean;
-  message: string;
-  submitDisabled: boolean;
-  onToggleAll: () => void;
-  onToggleFile: (file: GitFileStatus) => void;
-  onSelectFile: (path: string) => void;
-  onMessageChange: (message: string) => void;
-  onCommit: () => void;
-  onCommitAndPush: () => void;
-}) {
+function GitDialogNotice({ message }: { message: string }) {
+  const [detailOpen, setDetailOpen] = useState(false);
+  const summary = summarizeGitDialogNotice(message);
+
+  async function copyDetail() {
+    try {
+      await navigator.clipboard.writeText(message);
+    } catch {
+      // 复制失败时保留原提示，不额外打扰用户。
+    }
+  }
+
   return (
-    <div className="git-commit-layout">
-      <aside className="git-file-pane">
-        <button type="button" className="git-file-head" onClick={onToggleAll}>
-          {allSelected ? <CheckSquare size={16} /> : <Square size={16} />}
-          <span>变更文件</span>
-          <small>{files.length} 个文件</small>
-        </button>
-        <div className="git-file-list">
-          {files.length === 0 ? (
-            <div className="git-empty">当前没有可提交变更。</div>
-          ) : (
-            files.map((file) => (
-              <button
-                key={file.path}
-                type="button"
-                className={`git-file-row${activePath === file.path ? ' active' : ''}`}
-                onClick={() => onSelectFile(file.path)}
-              >
-                <span
-                  className="git-file-check"
-                  role="checkbox"
-                  aria-checked={selectedPaths.has(file.path)}
-                  tabIndex={0}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onToggleFile(file);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onToggleFile(file);
-                    }
-                  }}
-                >
-                  {selectedPaths.has(file.path) ? <CheckSquare size={15} /> : <Square size={15} />}
-                </span>
-                <FileText size={15} />
-                <span className="git-file-path" title={file.path}>{file.path}</span>
-                <small>{file.status}</small>
-              </button>
-            ))
-          )}
-        </div>
-      </aside>
-
-      <main className="git-diff-pane">
-        <div className="git-diff-head">
-          <strong>{activePath || '未选择文件'}</strong>
-          {diffLoading ? <span>读取中...</span> : null}
-        </div>
-        <DiffPreview content={diff || '选择左侧文件查看差异。'} />
-      </main>
-
-      <footer className="git-commit-footer">
-        <textarea
-          value={message}
-          onChange={(event) => onMessageChange(event.target.value)}
-          placeholder="提交消息"
-          rows={3}
-        />
-        <div className="git-commit-actions">
-          <button type="button" className="dialog-button secondary" disabled={submitDisabled} onClick={onCommitAndPush}>
-            提交并推送
+    <section className="git-dialog-notice" aria-label="Git 提示">
+      <AlertTriangle size={17} />
+      <div className="git-dialog-notice-main">
+        <strong>{summary.title}</strong>
+        <span>{summary.description}</span>
+        <div className="git-dialog-notice-actions">
+          <button type="button" onClick={() => setDetailOpen((value) => !value)}>
+            <ChevronDown size={13} className={detailOpen ? 'expanded' : undefined} />
+            {detailOpen ? '收起详情' : '查看详情'}
           </button>
-          <button type="button" className="dialog-button primary" disabled={submitDisabled} onClick={onCommit}>
-            提交
+          <button type="button" onClick={() => void copyDetail()}>
+            <Copy size={13} />
+            复制详情
           </button>
         </div>
-      </footer>
-    </div>
+        {detailOpen ? (
+          <div className="git-dialog-notice-detail">
+            <pre>{message}</pre>
+          </div>
+        ) : null}
+      </div>
+    </section>
   );
 }
 
-function DiffPreview({ content }: { content: string }) {
-  return (
-    <div className="git-diff-content" role="region" aria-label="文件差异预览">
-      {content.split('\n').map((line, index) => (
-        <div key={`${index}-${line}`} className={`git-diff-line ${getDiffLineClass(line)}`}>
-          <span className="git-diff-line-no">{index + 1}</span>
-          <span className="git-diff-line-text">{line || ' '}</span>
-        </div>
-      ))}
-    </div>
-  );
+function summarizeGitDialogNotice(message: string) {
+  const normalizedMessage = message.toLowerCase();
+  if (normalizedMessage.includes('filename too long') || normalizedMessage.includes('could not open directory')) {
+    return {
+      title: '部分路径过长，Git 状态读取受限',
+      description: '通常是缓存或依赖目录路径过深导致。详细日志已折叠，可展开查看或复制。',
+    };
+  }
+
+  return {
+    title: 'Git 操作失败',
+    description: getFirstGitDialogNoticeLine(message) || '请展开详情查看 Git 返回的完整信息。',
+  };
 }
 
-function getDiffLineClass(line: string) {
-  if (line.startsWith('+') && !line.startsWith('+++')) {
-    return 'added';
-  }
-
-  if (line.startsWith('-') && !line.startsWith('---')) {
-    return 'removed';
-  }
-
-  if (line.startsWith('@@')) {
-    return 'hunk';
-  }
-
-  if (line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('+++') || line.startsWith('---')) {
-    return 'meta';
-  }
-
-  return '';
+function getFirstGitDialogNoticeLine(message: string) {
+  return message
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
 }
 
 function PushPanel({

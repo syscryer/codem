@@ -2,14 +2,20 @@ import type {
   GitBranchCompareResult,
   GitFileDiffPreview,
   GitBranchCreateResult,
+  GitBranchDeleteResult,
   GitCommitFilePreview,
+  GitConflictFileDetail,
   GitCommitResult,
   GitHistoryCommit,
   GitHistoryCommitDetails,
   GitHistoryLogResponse,
+  GitOperationState,
+  GitPullMode,
   GitPushPreview,
   GitPushResult,
+  GitRefCheckoutResult,
   GitRemoteSyncResult,
+  GitTagCreateResult,
   GitStatusSnapshot,
   UndoConversationChange,
   UndoConversationChangeResult,
@@ -92,19 +98,94 @@ export async function fetchGitRemote(projectId: string, remote?: string) {
   return (await response.json()) as GitRemoteSyncResult;
 }
 
-export async function pullGitBranch(projectId: string, remote?: string, branch?: string) {
+export async function pullGitBranch(
+  projectId: string,
+  remote?: string,
+  branch?: string,
+  mode?: GitPullMode,
+) {
   const response = await fetch(`/api/projects/${projectId}/git/pull`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ remote, branch }),
+    body: JSON.stringify({ remote, branch, mode }),
   });
   if (!response.ok) {
     throw new Error(await readError(response));
   }
 
   return (await response.json()) as GitRemoteSyncResult;
+}
+
+export async function fetchGitOperationState(projectId: string) {
+  const response = await fetch(`/api/projects/${projectId}/git/operation-state`);
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitOperationState;
+}
+
+export async function fetchGitConflictFile(projectId: string, filePath: string) {
+  const response = await fetch(`/api/projects/${projectId}/git/conflicts/file?path=${encodeURIComponent(filePath)}`);
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitConflictFileDetail;
+}
+
+export async function saveGitConflictResult(projectId: string, filePath: string, content: string) {
+  const response = await fetch(`/api/projects/${projectId}/git/conflicts/save-result`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ path: filePath, content }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitConflictFileDetail;
+}
+
+export async function markGitConflictResolved(projectId: string, filePath: string) {
+  const response = await fetch(`/api/projects/${projectId}/git/conflicts/mark-resolved`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ path: filePath }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitOperationState;
+}
+
+export async function continueGitOperation(projectId: string) {
+  const response = await fetch(`/api/projects/${projectId}/git/operation/continue`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitOperationState;
+}
+
+export async function abortGitOperation(projectId: string) {
+  const response = await fetch(`/api/projects/${projectId}/git/operation/abort`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitOperationState;
 }
 
 export async function createGitBranch(projectId: string, branch: string) {
@@ -124,6 +205,69 @@ export async function createGitBranchFromSource(projectId: string, branch: strin
   }
 
   return (await response.json()) as GitBranchCreateResult;
+}
+
+export async function createGitTag(projectId: string, tag: string, source?: string) {
+  const response = await fetch(`/api/projects/${projectId}/git/tag`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ tag, source }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitTagCreateResult;
+}
+
+export async function cherryPickGitCommit(projectId: string, sha: string) {
+  const response = await fetch(`/api/projects/${projectId}/git/cherry-pick`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ sha }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitRefCheckoutResult;
+}
+
+export async function checkoutGitDetachedRef(projectId: string, ref: string) {
+  const response = await fetch(`/api/projects/${projectId}/git/checkout-detached`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ ref }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitRefCheckoutResult;
+}
+
+export async function deleteGitBranch(
+  projectId: string,
+  branch: { name: string; remoteName?: string | null },
+) {
+  const response = await fetch(`/api/projects/${projectId}/git/branch/delete`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ branch: branch.name, remote: branch.remoteName ?? undefined }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitBranchDeleteResult;
 }
 
 export async function fetchGitHistory(projectId: string, options?: { ref?: string; limit?: number }) {

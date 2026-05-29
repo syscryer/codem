@@ -20,3 +20,13 @@ test('normalizeGeneralSettings preserves an explicit thread system notification 
     true,
   );
 });
+
+test('normalizeGeneralSettings disables automatic queued prompt guide by default', () => {
+  assert.equal(normalizeGeneralSettings({}).autoGuideQueuedPrompts, false);
+  assert.equal(defaultGeneralSettings.autoGuideQueuedPrompts, false);
+});
+
+test('normalizeGeneralSettings preserves automatic queued prompt guide choice', () => {
+  assert.equal(normalizeGeneralSettings({ autoGuideQueuedPrompts: true }).autoGuideQueuedPrompts, true);
+  assert.equal(normalizeGeneralSettings({ autoGuideQueuedPrompts: false }).autoGuideQueuedPrompts, false);
+});

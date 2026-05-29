@@ -1,4 +1,4 @@
-import { Bell, GitBranch, GitPullRequest, History, RotateCcw, Rows3, Search, Shield } from 'lucide-react';
+import { Bell, GitBranch, GitPullRequest, History, RotateCcw, Rows3, Search, Send, Shield } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { permissionMenuModes } from '../../constants';
 import type { GeneralSettings } from '../../types';
@@ -21,6 +21,7 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
     autoRefreshGitStatus: general.autoRefreshGitStatus ?? defaultGeneralSettings.autoRefreshGitStatus,
     enableThreadSystemNotifications:
       general.enableThreadSystemNotifications ?? defaultGeneralSettings.enableThreadSystemNotifications,
+    autoGuideQueuedPrompts: general.autoGuideQueuedPrompts ?? defaultGeneralSettings.autoGuideQueuedPrompts,
     showDebugButton: general.showDebugButton ?? defaultGeneralSettings.showDebugButton,
     defaultPermissionMode: general.defaultPermissionMode ?? defaultGeneralSettings.defaultPermissionMode,
     reviewHideNoiseFilesByDefault:
@@ -87,6 +88,14 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
             checked={resolvedGeneral.enableThreadSystemNotifications}
             onChange={(enableThreadSystemNotifications) => void onUpdateGeneral({ enableThreadSystemNotifications })}
             label="任务系统通知"
+          />
+        </SettingsRow>
+
+        <SettingsRow icon={Send} title="排队消息立即发送" description="运行中再次发送时，尽量立即引导当前运行；不可引导时仍保留队列">
+          <Toggle
+            checked={resolvedGeneral.autoGuideQueuedPrompts}
+            onChange={(autoGuideQueuedPrompts) => void onUpdateGeneral({ autoGuideQueuedPrompts })}
+            label="排队消息立即发送"
           />
         </SettingsRow>
 

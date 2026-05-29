@@ -47,6 +47,10 @@ import {
 import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
 import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
 import { fetchGitRemote, pullGitBranch, undoConversationChanges } from './lib/git-api';
+import {
+  buildGitOperationToastDetail,
+  normalizeGitOperationToastMessage,
+} from './lib/git-operation-toast-detail';
 import { resolveTerminalDockPanelIdOnRun, shouldRenderTerminalDock } from './lib/terminal-dock-state';
 import { calculateRightWorkbenchResizeWidth, clampRightWorkbenchWidth } from './lib/workbench-layout';
 import { showThreadSystemNotification } from './lib/thread-system-notifications';
@@ -91,6 +95,13 @@ type NavigationHistory = {
   future: AppLocation[];
 };
 
+type GitOperationToastContext = {
+  operation: string;
+  target?: string;
+  branch?: string;
+  command?: string;
+};
+
 const MAX_NAVIGATION_HISTORY = 60;
 
 export default function App() {
@@ -125,6 +136,8 @@ export default function App() {
     setInputDialog,
     setConfirmDialog,
     showToast,
+    dismissToast,
+    setToastDetailOpen,
     syncWorkspace,
     loadWorkspace,
     createThread,
@@ -169,7 +182,7 @@ export default function App() {
     kind: 'workspace',
   });
   const [navigationHistory, setNavigationHistory] = useState<NavigationHistory>({ past: [], future: [] });
-  const [gitDialogMode, setGitDialogMode] = useState<'commit' | 'push' | 'branch' | null>(null);
+  const [gitDialogMode, setGitDialogMode] = useState<'push' | 'branch' | null>(null);
   const [rightWorkbenchOpen, setRightWorkbenchOpen] = useState(false);
   const [rightWorkbenchTab, setRightWorkbenchTab] = useState<RightWorkbenchTab>('overview');
   const [rightWorkbenchWidth, setRightWorkbenchWidth] = useState(680);
@@ -313,6 +326,7 @@ export default function App() {
     activeThreadSummary,
     appModelSettings,
     defaultPermissionMode: general.defaultPermissionMode,
+    autoGuideQueuedPrompts: general.autoGuideQueuedPrompts,
     createThread,
     handlePickProjectDirectory,
     showToast,
@@ -895,6 +909,18 @@ export default function App() {
     }
   }
 
+  function openGitCommitWorkbench() {
+    if (!activeProject?.isGitRepo) {
+      showToast('请先选择 Git 项目。', 'info');
+      return;
+    }
+    setRightWorkbenchOpen(true);
+    setRightWorkbenchTab('review');
+    if (activeProjectId) {
+      void refreshProjectGitSummary(activeProjectId);
+    }
+  }
+
   function openGitHistoryDock() {
     if (!activeProject?.isGitRepo) {
       showToast('请先选择 Git 项目。', 'info');
@@ -915,12 +941,24 @@ export default function App() {
       return;
     }
 
+    const fetchToastContext: GitOperationToastContext = {
+      operation: '获取远端',
+      target: project.name,
+      branch: project.gitBranch,
+      command: 'git fetch --all --prune',
+    };
     try {
       await fetchGitRemote(project.id);
       await refreshProjectGitSummary(project.id);
-      showToast(project.id === activeProjectId ? '远端信息已更新' : `“${project.name}”远端信息已更新`);
+      showGitOperationSuccessToast(
+        fetchToastContext,
+        project.id === activeProjectId ? '远端信息已更新' : `“${project.name}”远端信息已更新`,
+      );
     } catch (error) {
-      showToast(error instanceof Error ? error.message : '获取远端失败', 'error');
+      showGitOperationErrorToast(fetchToastContext, error, '获取远端失败');
+      if (isGitOperationStateError(error)) {
+        openGitCommitWorkbench();
+      }
     }
   }
 
@@ -930,6 +968,12 @@ export default function App() {
       return;
     }
 
+    const pullToastContext: GitOperationToastContext = {
+      operation: '拉取',
+      target: project.name,
+      branch: project.gitBranch,
+      command: 'git pull --ff-only',
+    };
     try {
       const result = await pullGitBranch(project.id);
       await refreshProjectGitSummary(project.id);
@@ -939,10 +983,41 @@ export default function App() {
         commitCount > 0
           ? `拉取完成：${commitCount} 个提交，${fileCount} 个文件`
           : '已经是最新版本';
-      showToast(project.id === activeProjectId ? message : `“${project.name}”${message}`);
+      showGitOperationSuccessToast(
+        pullToastContext,
+        project.id === activeProjectId ? message : `“${project.name}”${message}`,
+      );
     } catch (error) {
-      showToast(error instanceof Error ? error.message : '拉取失败', 'error');
+      showGitOperationErrorToast(pullToastContext, error, '拉取失败');
+      if (isGitOperationStateError(error)) {
+        openGitCommitWorkbench();
+      }
     }
+  }
+
+  function showGitOperationSuccessToast(
+    context: GitOperationToastContext,
+    fallbackMessage: string,
+  ) {
+    showToast(fallbackMessage, 'success', {
+      title: formatGitOperationToastTitle(context.operation, '完成'),
+    });
+  }
+
+  function showGitOperationErrorToast(
+    context: GitOperationToastContext,
+    error: unknown,
+    fallbackMessage: string,
+  ) {
+    const errorText = error instanceof Error ? error.message : fallbackMessage;
+    showToast(normalizeGitOperationToastMessage(errorText, fallbackMessage), 'error', {
+      title: formatGitOperationToastTitle(context.operation, '失败'),
+      detail: buildGitOperationToastDetail({
+        ...context,
+        result: '失败',
+        errorText,
+      }),
+    });
   }
 
   function openWorkbenchPreview(request: WorkbenchPreviewRequest) {
@@ -1149,7 +1224,7 @@ export default function App() {
         onOpenTarget={(targetId) => activeProject ? void handleOpenProjectInEditor(activeProject, targetId) : showToast('请先选择项目。', 'info')}
         onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
         onOpenFilesWorkbench={openFilesWorkbench}
-        onOpenGitCommit={() => activeProject ? setGitDialogMode('commit') : showToast('请先选择项目。', 'info')}
+        onOpenGitCommit={openGitCommitWorkbench}
         onOpenGitPush={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
         onOpenGitBranch={() => activeProject ? setGitDialogMode('branch') : showToast('请先选择项目。', 'info')}
         onOpenGitHistory={openGitHistoryDock}
@@ -1269,7 +1344,7 @@ export default function App() {
                   onOpenTarget={(targetId) => activeProject ? void handleOpenProjectInEditor(activeProject, targetId) : showToast('请先选择项目。', 'info')}
                   onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
                   onOpenFilesWorkbench={openFilesWorkbench}
-                  onOpenGitCommit={() => activeProject ? setGitDialogMode('commit') : showToast('请先选择项目。', 'info')}
+                  onOpenGitCommit={openGitCommitWorkbench}
                   onOpenGitPush={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
                   onOpenGitBranch={() => activeProject ? setGitDialogMode('branch') : showToast('请先选择项目。', 'info')}
                   onOpenGitHistory={openGitHistoryDock}
@@ -1426,6 +1501,8 @@ export default function App() {
         onSubmitInputDialog={submitInputDialog}
         onCloseConfirmDialog={() => setConfirmDialog(null)}
         onConfirmRemoveDialog={handleConfirmDialog}
+        onDismissToast={dismissToast}
+        onToastDetailOpenChange={setToastDetailOpen}
       />
       {worktreeCreateProject ? (
         <WorktreeCreateDialog
@@ -1717,6 +1794,22 @@ function normalizeTodoDockStatus(status?: string): TodoDockStatus {
 
 function formatTodoDockSummary(preview: TodoDockPreview) {
   return `共 ${preview.todos.length} 个任务，已经完成 ${preview.counts.completed} 个`;
+}
+
+function formatGitOperationToastTitle(operation: string, result: '完成' | '失败') {
+  return /[A-Za-z]$/.test(operation) ? `${operation} ${result}` : `${operation}${result}`;
+}
+
+function isGitOperationStateError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : '';
+  return Boolean(
+    message.includes('冲突') ||
+    message.includes('conflict') ||
+    message.includes('unmerged') ||
+    message.includes('不能快进') ||
+    message.includes('not possible to fast-forward') ||
+    message.includes('divergent branches'),
+  );
 }
 
 function hasOpenTodoDockItems(preview: TodoDockPreview) {

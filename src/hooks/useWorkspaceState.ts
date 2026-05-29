@@ -17,6 +17,7 @@ import type {
   ThreadDetail,
   ThreadHistoryPayload,
   ThreadSummary,
+  ToastOptions,
   ToastState,
   WorkspaceBootstrap,
 } from '../types';
@@ -150,7 +151,7 @@ export function useWorkspaceState() {
   }, [isNewChatDraft]);
 
   useEffect(() => {
-    if (!toast) {
+    if (!toast || toast.detailOpen) {
       return undefined;
     }
 
@@ -221,13 +222,25 @@ export function useWorkspaceState() {
     });
   }
 
-  function showToast(message: string, tone: ToastState['tone'] = 'success', durationMs?: number) {
+  function showToast(message: string, tone: ToastState['tone'] = 'success', options?: number | ToastOptions) {
+    const normalizedOptions = typeof options === 'number' ? { durationMs: options } : options;
     setToast({
       id: crypto.randomUUID(),
       message,
       tone,
-      durationMs,
+      title: normalizedOptions?.title,
+      detail: normalizedOptions?.detail,
+      detailOpen: false,
+      durationMs: normalizedOptions?.durationMs ?? (normalizedOptions?.detail ? 9000 : undefined),
     });
+  }
+
+  function dismissToast() {
+    setToast(null);
+  }
+
+  function setToastDetailOpen(toastId: string, detailOpen: boolean) {
+    setToast((current) => (current?.id === toastId ? { ...current, detailOpen } : current));
   }
 
   function openRenameProjectDialog(project: ProjectSummary) {
@@ -965,8 +978,6 @@ export function useWorkspaceState() {
       showToast(await response.text(), 'error');
       return;
     }
-
-    showToast('已在资源管理器中打开项目');
   }
 
   async function handleOpenProjectInEditor(project: ProjectSummary, targetId?: string) {
@@ -981,8 +992,6 @@ export function useWorkspaceState() {
       showToast(await response.text(), 'error');
       return;
     }
-
-    showToast('已请求编辑器打开项目');
   }
 
   async function refreshProjectGitSummary(projectId: string) {
@@ -1237,6 +1246,8 @@ export function useWorkspaceState() {
     setActiveThreadId,
     clearNewChatDraft,
     showToast,
+    dismissToast,
+    setToastDetailOpen,
     syncWorkspace,
     loadWorkspace,
     createThread,

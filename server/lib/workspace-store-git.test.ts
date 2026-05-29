@@ -63,6 +63,7 @@ test('getProjectGitStatus keeps untracked chinese paths readable', () => {
 
   try {
     run('git', ['init', repo]);
+    run('git', ['checkout', '-b', 'main'], repo);
     run('git', ['config', 'user.email', 'codem@example.test'], repo);
     run('git', ['config', 'user.name', 'CodeM Test'], repo);
     writeFileSync(path.join(repo, 'tracked.txt'), 'base\n');
@@ -112,6 +113,7 @@ test('getProjectGitStatus returns paths relative to subdirectory projects', () =
 
   try {
     run('git', ['init', repo]);
+    run('git', ['checkout', '-b', 'main'], repo);
     run('git', ['config', 'user.email', 'codem@example.test'], repo);
     run('git', ['config', 'user.name', 'CodeM Test'], repo);
     mkdirSync(projectDir, { recursive: true });
@@ -664,6 +666,288 @@ test('listProjectGitHistoryLog keeps merge graph lines compact for repeated merg
   }
 });
 
+test('git history context actions can create tags cherry-pick checkout detached and delete branches', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-git-history-actions-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+
+  try {
+    run('git', ['init', repo]);
+    run('git', ['checkout', '-b', 'main'], repo);
+    run('git', ['config', 'user.email', 'codem@example.test'], repo);
+    run('git', ['config', 'user.name', 'CodeM Test'], repo);
+    writeFileSync(path.join(repo, 'base.txt'), 'base\n');
+    run('git', ['add', '.'], repo);
+    run('git', ['commit', '-m', 'base'], repo);
+    run('git', ['branch', 'delete-me'], repo);
+    run('git', ['checkout', '-b', 'feature/menu'], repo);
+    writeFileSync(path.join(repo, 'feature.txt'), 'feature\n');
+    run('git', ['add', '.'], repo);
+    run('git', ['commit', '-m', 'feature menu'], repo);
+    const featureSha = runOutput('git', ['rev-parse', 'HEAD'], repo);
+    run('git', ['checkout', 'main'], repo);
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          import { spawnSync } from 'node:child_process';
+          const {
+            checkoutProjectGitDetachedRef,
+            cherryPickProjectGitCommit,
+            createProject,
+            createProjectGitTag,
+            deleteProjectGitBranch,
+          } = await import('./server/lib/workspace-store.ts');
+          const repo = ${JSON.stringify(repo)};
+          const projectId = createProject(repo);
+          const tag = await createProjectGitTag(projectId, 'v-menu', ${JSON.stringify(featureSha)});
+          const picked = await cherryPickProjectGitCommit(projectId, ${JSON.stringify(featureSha)});
+          const detached = await checkoutProjectGitDetachedRef(projectId, ${JSON.stringify(featureSha)});
+          await deleteProjectGitBranch(projectId, 'delete-me');
+          const tagSha = spawnSync('git', ['rev-parse', 'v-menu'], { cwd: repo, encoding: 'utf8' }).stdout.trim();
+          const headName = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repo, encoding: 'utf8' }).stdout.trim();
+          const deletedStatus = spawnSync('git', ['show-ref', '--verify', 'refs/heads/delete-me'], { cwd: repo, encoding: 'utf8' }).status;
+          console.log(JSON.stringify({
+            tag: tag.tag,
+            tagSha,
+            pickedOutput: picked.output,
+            detachedOutput: detached.output,
+            headName,
+            branchDeleted: deletedStatus !== 0,
+          }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    const payload = JSON.parse(child.stdout.trim()) as {
+      tag: string;
+      tagSha: string;
+      pickedOutput: string;
+      detachedOutput: string;
+      headName: string;
+      branchDeleted: boolean;
+    };
+    assert.equal(payload.tag, 'v-menu');
+    assert.equal(payload.tagSha, featureSha);
+    assert.match(payload.pickedOutput, /feature menu|cherry/i);
+    assert.match(payload.detachedOutput, /HEAD|detached|checkout/i);
+    assert.equal(payload.headName, 'HEAD');
+    assert.equal(payload.branchDeleted, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('git operation state exposes conflicts and can resolve a merge conflict', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-git-conflicts-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+
+  try {
+    run('git', ['init', '-b', 'main', repo]);
+    run('git', ['config', 'user.email', 'codem@example.test'], repo);
+    run('git', ['config', 'user.name', 'CodeM Test'], repo);
+    writeFileSync(path.join(repo, 'conflict.txt'), 'base\n');
+    run('git', ['add', 'conflict.txt'], repo);
+    run('git', ['commit', '-m', 'base'], repo);
+    run('git', ['checkout', '-b', 'feature'], repo);
+    writeFileSync(path.join(repo, 'conflict.txt'), 'incoming\n');
+    run('git', ['commit', '-am', 'incoming'], repo);
+    run('git', ['checkout', 'main'], repo);
+    writeFileSync(path.join(repo, 'conflict.txt'), 'current\n');
+    run('git', ['commit', '-am', 'current'], repo);
+    const mergeResult = spawnSync('git', ['merge', 'feature'], {
+      cwd: repo,
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    assert.notEqual(mergeResult.status, 0, mergeResult.stderr || mergeResult.stdout);
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const {
+            continueProjectGitOperation,
+            createProject,
+            getProjectGitConflictFile,
+            getProjectGitOperationState,
+            markProjectGitConflictResolved,
+            saveProjectGitConflictResult,
+          } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const conflicted = await getProjectGitOperationState(projectId);
+          const detail = await getProjectGitConflictFile(projectId, 'conflict.txt');
+          await saveProjectGitConflictResult(projectId, 'conflict.txt', 'resolved\\n');
+          await markProjectGitConflictResolved(projectId, 'conflict.txt');
+          const readyToContinue = await getProjectGitOperationState(projectId);
+          const continued = await continueProjectGitOperation(projectId);
+          console.log(JSON.stringify({ conflicted, detail, readyToContinue, continued }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+          GIT_EDITOR: 'true',
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    const payload = JSON.parse(child.stdout.trim()) as {
+      conflicted: {
+        status: string;
+        operation: string;
+        hasConflicts: boolean;
+        canAbort: boolean;
+        canContinue: boolean;
+        conflicts: Array<{ path: string; status: string; conflictKind: string; label: string }>;
+      };
+      detail: {
+        path: string;
+        baseContent: string;
+        currentContent: string;
+        incomingContent: string;
+        resultContent: string;
+      };
+      readyToContinue: {
+        status: string;
+        operation: string;
+        hasConflicts: boolean;
+        canContinue: boolean;
+      };
+      continued: {
+        status: string;
+        operation: string;
+        hasConflicts: boolean;
+      };
+    };
+
+    assert.equal(payload.conflicted.status, 'conflicted');
+    assert.equal(payload.conflicted.operation, 'merge');
+    assert.equal(payload.conflicted.hasConflicts, true);
+    assert.equal(payload.conflicted.canAbort, true);
+    assert.equal(payload.conflicted.canContinue, false);
+    assert.deepEqual(payload.conflicted.conflicts[0], {
+      path: 'conflict.txt',
+      status: 'UU',
+      conflictKind: 'both_modified',
+      label: '双方修改',
+    });
+    assert.equal(payload.detail.path, 'conflict.txt');
+    assert.equal(payload.detail.baseContent, 'base\n');
+    assert.equal(payload.detail.currentContent, 'current\n');
+    assert.equal(payload.detail.incomingContent, 'incoming\n');
+    assert.match(payload.detail.resultContent, /<<<<<<< HEAD/);
+    assert.equal(payload.readyToContinue.status, 'in_progress');
+    assert.equal(payload.readyToContinue.operation, 'merge');
+    assert.equal(payload.readyToContinue.hasConflicts, false);
+    assert.equal(payload.readyToContinue.canContinue, true);
+    assert.equal(payload.continued.status, 'clean');
+    assert.equal(payload.continued.operation, 'none');
+    assert.equal(payload.continued.hasConflicts, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('git operation state exposes diverged and blocked dirty states before risky operations', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-git-operation-states-'));
+  const appData = path.join(root, 'appdata');
+  const remote = path.join(root, 'remote.git');
+  const seed = path.join(root, 'seed');
+  const repo = path.join(root, 'repo');
+
+  try {
+    run('git', ['init', '--bare', remote]);
+    run('git', ['init', '-b', 'main', seed]);
+    run('git', ['config', 'user.email', 'codem@example.test'], seed);
+    run('git', ['config', 'user.name', 'CodeM Test'], seed);
+    writeFileSync(path.join(seed, 'tracked.txt'), 'base\n');
+    run('git', ['add', 'tracked.txt'], seed);
+    run('git', ['commit', '-m', 'base'], seed);
+    run('git', ['remote', 'add', 'origin', remote], seed);
+    run('git', ['push', '-u', 'origin', 'main'], seed);
+    run('git', ['clone', '-b', 'main', remote, repo]);
+    run('git', ['config', 'user.email', 'codem@example.test'], repo);
+    run('git', ['config', 'user.name', 'CodeM Test'], repo);
+
+    writeFileSync(path.join(seed, 'remote.txt'), 'remote\n');
+    run('git', ['add', 'remote.txt'], seed);
+    run('git', ['commit', '-m', 'remote change'], seed);
+    run('git', ['push'], seed);
+    writeFileSync(path.join(repo, 'local.txt'), 'local\n');
+    run('git', ['add', 'local.txt'], repo);
+    run('git', ['commit', '-m', 'local change'], repo);
+    run('git', ['fetch', 'origin'], repo);
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const { createProject, getProjectGitOperationState } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const diverged = await getProjectGitOperationState(projectId);
+          await import('node:fs').then(({ writeFileSync }) => writeFileSync(${JSON.stringify(path.join(repo, 'tracked.txt'))}, 'dirty\\n'));
+          const dirty = await getProjectGitOperationState(projectId);
+          console.log(JSON.stringify({ diverged, dirty }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    const payload = JSON.parse(child.stdout.trim()) as {
+      diverged: { status: string; ahead: number; behind: number; message: string };
+      dirty: { status: string; ahead: number; behind: number; message: string };
+    };
+
+    assert.equal(payload.diverged.status, 'diverged');
+    assert.equal(payload.diverged.ahead > 0, true);
+    assert.equal(payload.diverged.behind > 0, true);
+    assert.match(payload.diverged.message, /分叉|不能快进/);
+    assert.equal(payload.dirty.status, 'blocked_dirty');
+    assert.match(payload.dirty.message, /未提交变更/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function run(command: string, args: string[], cwd?: string) {
   const result = spawnSync(command, args, {
     cwd,
@@ -671,4 +955,14 @@ function run(command: string, args: string[], cwd?: string) {
     windowsHide: true,
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
+}
+
+function runOutput(command: string, args: string[], cwd?: string) {
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return result.stdout.trim();
 }

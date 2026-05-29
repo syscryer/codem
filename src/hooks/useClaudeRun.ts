@@ -144,6 +144,7 @@ type UseClaudeRunArgs = {
   activeThreadSummary: ThreadSummary | null;
   appModelSettings: ModelSettings;
   defaultPermissionMode: PermissionMode;
+  autoGuideQueuedPrompts: boolean;
   createThread: (projectId: string, title?: string, options?: { showToast?: boolean }) => Promise<ThreadSummary | null>;
   handlePickProjectDirectory: () => Promise<void>;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
@@ -179,6 +180,7 @@ export function useClaudeRun({
   activeThreadSummary,
   appModelSettings,
   defaultPermissionMode,
+  autoGuideQueuedPrompts,
   createThread,
   handlePickProjectDirectory,
   showToast,
@@ -595,18 +597,22 @@ export function useClaudeRun({
     return targetPrompt.displayText || targetPrompt.prompt;
   }
 
-  async function guideQueuedPrompt(promptId: string) {
+  async function guideQueuedPrompt(promptId: string, options: { silent?: boolean } = {}) {
     const targetThreadId = activeThreadId;
     const context = targetThreadId ? runContextsByThreadIdRef.current.get(targetThreadId) : undefined;
     if (!targetThreadId || !context?.runId) {
-      showToast('当前没有可引导的运行。', 'info');
+      if (!options.silent) {
+        showToast('当前没有可引导的运行。', 'info');
+      }
       return false;
     }
 
     const currentQueue = queuedPromptsByThreadIdRef.current[targetThreadId] ?? [];
     const targetPrompt = currentQueue.find((prompt) => prompt.id === promptId);
     if (!targetPrompt) {
-      showToast('排队消息不存在。', 'error');
+      if (!options.silent) {
+        showToast('排队消息不存在。', 'error');
+      }
       return false;
     }
 
@@ -653,10 +659,14 @@ export function useClaudeRun({
         title: '已引导当前运行',
         content: targetPrompt.prompt,
       });
-      showToast('已发送引导消息。', 'success');
+      if (!options.silent) {
+        showToast('已发送引导消息。', 'success');
+      }
       return true;
     } catch (error) {
-      showToast(error instanceof Error ? error.message : '发送引导消息失败', 'error');
+      if (!options.silent) {
+        showToast(error instanceof Error ? error.message : '发送引导消息失败', 'error');
+      }
       return false;
     }
   }
@@ -708,7 +718,6 @@ export function useClaudeRun({
         initialActivity: nextPrompt.initialActivity,
       }).then((started) => {
         if (started) {
-          showToast('已发送排队提示。', 'success');
           return;
         }
 
@@ -1588,7 +1597,7 @@ export function useClaudeRun({
     threadSummariesByIdRef.current.set(thread.id, thread);
 
     if (isThreadRunning(thread.id)) {
-      enqueuePrompt(thread, {
+      const queuedPrompt = enqueuePrompt(thread, {
         prompt: trimmedPrompt,
         displayText: normalizeDisplayText(submission.displayText, ''),
         attachments: submission.attachments,
@@ -1596,7 +1605,9 @@ export function useClaudeRun({
         initialAssistantItems: submission.initialAssistantItems,
         initialActivity: submission.initialActivity,
       });
-      showToast('已排队，当前运行完成后会继续发送。', 'success');
+      if (autoGuideQueuedPrompts) {
+        void guideQueuedPrompt(queuedPrompt.id, { silent: true });
+      }
       return true;
     }
 

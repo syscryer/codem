@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Download,
   FileText,
   Folder,
@@ -17,18 +18,36 @@ import {
   Star,
   Tag,
   Tags,
+  Upload,
   X,
 } from 'lucide-react';
 import { useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   compareGitBranches,
+  checkoutGitDetachedRef,
+  cherryPickGitCommit,
   createGitBranchFromSource,
+  createGitTag,
+  deleteGitBranch,
   fetchGitCommitDetails,
   fetchGitCommitFilePreview,
   fetchGitHistoryLog,
   fetchGitRemote,
+  pullGitBranch,
+  pushGitBranch,
 } from '../lib/git-api';
 import { buildGitBranchCollections } from '../lib/git-branch-groups';
+import {
+  buildGitHistoryBranchContextActions,
+  buildGitHistoryCommitContextActions,
+  buildGitHistoryFileContextActions,
+  type GitHistoryContextAction,
+} from '../lib/git-history-context-menu';
+import { buildGitHistoryContextMenuDismissSelectors } from '../lib/git-history-context-menu-dismiss';
+import {
+  buildGitOperationToastDetail,
+  normalizeGitOperationToastMessage,
+} from '../lib/git-operation-toast-detail';
 import { resolveGitHistoryDatePresetRange, type GitHistoryDatePreset } from '../lib/git-history-date-filter';
 import { buildGitHistoryFileTree, type GitHistoryFileTreeNode } from '../lib/git-history-file-tree';
 import { buildVsCodeGitGraphRowVisuals, type GitGraphVisual } from '../lib/git-graph-visual';
@@ -37,7 +56,7 @@ import {
   type GitHistorySearchableOption,
 } from '../lib/git-history-searchable-select';
 import { buildGitHistoryBranchSelectSections } from '../lib/git-history-branch-select';
-import { highlightWorkbenchCodeLine } from '../lib/workbench-files';
+import { combineProjectFilePath, highlightWorkbenchCodeLine } from '../lib/workbench-files';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { MemoGitDiffViewer, type GitDiffViewerMode } from './GitDiffViewer';
 import { PopoverPortal } from './PopoverPortal';
@@ -51,7 +70,9 @@ import type {
   GitHistoryCommitFile,
   GitHistoryLogCommit,
   GitHistoryLogResponse,
+  GitPullMode,
   ProjectSummary,
+  ToastOptions,
 } from '../types';
 
 const DEFAULT_LEFT_PANE_WIDTH = 250;
@@ -66,11 +87,30 @@ type GitHistoryPanelProps = {
   onLoadBranches: (projectId: string) => Promise<GitBranchSummary[]>;
   onSwitchBranch: (projectId: string, branchName: string) => Promise<void>;
   onWorkspaceChanged: () => void | Promise<void>;
-  showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
+  showToast: (message: string, tone?: 'success' | 'error' | 'info', options?: number | ToastOptions) => void;
+};
+
+type GitOperationToastContext = {
+  operation: string;
+  target?: string;
+  branch?: string;
+  command?: string;
 };
 
 type BranchContextMenuState = {
   branch: GitBranchSummary;
+  x: number;
+  y: number;
+};
+
+type CommitContextMenuState = {
+  commit: GitHistoryLogCommit;
+  x: number;
+  y: number;
+};
+
+type FileContextMenuState = {
+  file: GitHistoryCommitFile;
   x: number;
   y: number;
 };
@@ -125,9 +165,13 @@ export function GitHistoryPanel({
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareError, setCompareError] = useState('');
   const [branchContextMenu, setBranchContextMenu] = useState<BranchContextMenuState | null>(null);
+  const [commitContextMenu, setCommitContextMenu] = useState<CommitContextMenuState | null>(null);
+  const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
   const [branchWorkingName, setBranchWorkingName] = useState('');
   const [createBranchDialog, setCreateBranchDialog] = useState<{ source: string; name: string } | null>(null);
   const [createBranchWorking, setCreateBranchWorking] = useState(false);
+  const [createTagDialog, setCreateTagDialog] = useState<{ source: string; name: string } | null>(null);
+  const [createTagWorking, setCreateTagWorking] = useState(false);
   const [previewState, setPreviewState] = useState<HistoryPreviewState | null>(null);
   const [previewData, setPreviewData] = useState<GitCommitFilePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -139,6 +183,8 @@ export function GitHistoryPanel({
   const [rightPaneWidth, setRightPaneWidth] = useState(DEFAULT_RIGHT_PANE_WIDTH);
   const contextMenuAnchorRef = useRef<HTMLDivElement | null>(null);
   const branchMenuRef = useRef<HTMLDivElement | null>(null);
+  const commitMenuRef = useRef<HTMLDivElement | null>(null);
+  const fileMenuRef = useRef<HTMLDivElement | null>(null);
   const layoutRef = useRef<HTMLDivElement | null>(null);
   const commitListRef = useRef<HTMLDivElement | null>(null);
   const historyRequestIdRef = useRef(0);
@@ -147,13 +193,14 @@ export function GitHistoryPanel({
   const normalizedBranchTreeSearch = branchTreeSearch.trim().toLowerCase();
 
   useOutsideDismiss({
-    selectors: [
-      {
-        selector: '.git-history-branch-context-menu',
-        onDismiss: () => setBranchContextMenu(null),
-        anchorRefs: [contextMenuAnchorRef, branchMenuRef],
-      },
-    ],
+    selectors: buildGitHistoryContextMenuDismissSelectors({
+      branchMenuRef,
+      commitMenuRef,
+      fileMenuRef,
+      onDismissBranch: () => setBranchContextMenu(null),
+      onDismissCommit: () => setCommitContextMenu(null),
+      onDismissFile: () => setFileContextMenu(null),
+    }),
   });
 
   const currentBranch = project?.gitBranch ?? '';
@@ -412,6 +459,10 @@ export function GitHistoryPanel({
     if (!project?.id) {
       return;
     }
+    if (branch.kind === 'tag') {
+      await handleCheckoutDetached(branch.name, `标签 ${branch.name}`);
+      return;
+    }
     setBranchWorkingName(branch.name);
     try {
       await onSwitchBranch(project.id, branch.name);
@@ -448,21 +499,151 @@ export function GitHistoryPanel({
     }
   }
 
+  async function handlePullCurrentBranch(branch: GitBranchSummary, mode: GitPullMode = 'ff-only') {
+    if (!project?.id) {
+      return;
+    }
+    if (mode !== 'ff-only' && !window.confirm(`确定要${mode === 'merge' ? '合并拉取' : '变基拉取'}当前分支吗？`)) {
+      return;
+    }
+    const syncTarget = resolveBranchRemoteSyncTarget(branch);
+    const branchName = branch.localName ?? branch.name;
+    const operation = mode === 'merge' ? '合并拉取当前分支' : mode === 'rebase' ? '变基拉取当前分支' : '拉取当前分支';
+    const toastContext: GitOperationToastContext = {
+      operation,
+      target: syncTarget.remote ? `${syncTarget.remote}/${syncTarget.branch}` : branchName,
+      branch: currentBranch || undefined,
+      command: syncTarget.remote
+        ? `git pull ${formatGitPullModeArgument(mode)} ${syncTarget.remote} ${syncTarget.branch}`
+        : `git pull ${formatGitPullModeArgument(mode)}`,
+    };
+    setBranchWorkingName(branch.name);
+    try {
+      await pullGitBranch(project.id, syncTarget.remote, syncTarget.branch, mode);
+      await Promise.resolve(onWorkspaceChanged());
+      await loadBranches(true);
+      await loadHistoryLog();
+      showGitOperationSuccessToast(toastContext, `已拉取 ${branchName}`);
+    } catch (error) {
+      showGitOperationErrorToast(toastContext, error, '拉取当前分支失败');
+    } finally {
+      setBranchWorkingName('');
+      setBranchContextMenu(null);
+    }
+  }
+
+  async function handlePushCurrentBranch(branch: GitBranchSummary) {
+    if (!project?.id) {
+      return;
+    }
+    const syncTarget = resolveBranchRemoteSyncTarget(branch);
+    const branchName = branch.localName ?? branch.name;
+    const toastContext: GitOperationToastContext = {
+      operation: '推送当前分支',
+      target: syncTarget.remote ? `${syncTarget.remote}/${syncTarget.branch}` : branchName,
+      branch: currentBranch || undefined,
+      command: syncTarget.remote
+        ? `git push ${syncTarget.remote} ${currentBranch || branchName}:${syncTarget.branch}`
+        : 'git push',
+    };
+    setBranchWorkingName(branch.name);
+    try {
+      await pushGitBranch(project.id, syncTarget.remote, syncTarget.branch);
+      await Promise.resolve(onWorkspaceChanged());
+      await loadBranches(true);
+      showGitOperationSuccessToast(toastContext, `已推送 ${branchName}`);
+    } catch (error) {
+      showGitOperationErrorToast(toastContext, error, '推送当前分支失败');
+    } finally {
+      setBranchWorkingName('');
+      setBranchContextMenu(null);
+    }
+  }
+
   async function handleFetchRemote(branch: GitBranchSummary) {
     if (!project?.id) {
       return;
     }
+    const remoteLabel = branch.remoteName ?? '全部远端';
+    const toastContext: GitOperationToastContext = {
+      operation: '刷新远端',
+      target: remoteLabel,
+      branch: currentBranch || undefined,
+      command: branch.remoteName ? `git fetch --prune ${branch.remoteName}` : 'git fetch --all --prune',
+    };
     setBranchWorkingName(branch.name);
     try {
-      const result = await fetchGitRemote(project.id, branch.remoteName ?? undefined);
+      await fetchGitRemote(project.id, branch.remoteName ?? undefined);
       await Promise.resolve(onWorkspaceChanged());
       await loadBranches(true);
-      showToast(result.output || `已更新 ${branch.remoteName ?? '远端'}`);
+      showGitOperationSuccessToast(toastContext, `已更新 ${remoteLabel}`);
     } catch (error) {
-      showToast(error instanceof Error ? error.message : '更新远程分支失败', 'error');
+      showGitOperationErrorToast(toastContext, error, '更新远程分支失败');
     } finally {
       setBranchWorkingName('');
       setBranchContextMenu(null);
+    }
+  }
+
+  function showGitOperationSuccessToast(
+    context: GitOperationToastContext,
+    fallbackMessage: string,
+  ) {
+    showToast(fallbackMessage, 'success', {
+      title: formatGitOperationToastTitle(context.operation, '完成'),
+    });
+  }
+
+  function showGitOperationErrorToast(
+    context: GitOperationToastContext,
+    error: unknown,
+    fallbackMessage: string,
+  ) {
+    const errorText = error instanceof Error ? error.message : fallbackMessage;
+    showToast(normalizeGitOperationToastMessage(errorText, fallbackMessage), 'error', {
+      title: formatGitOperationToastTitle(context.operation, '失败'),
+      detail: buildGitOperationToastDetail({
+        ...context,
+        result: '失败',
+        errorText,
+      }),
+    });
+  }
+
+  async function copyToClipboard(text: string, successMessage: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(successMessage);
+    } catch {
+      showToast('复制失败，请重试或手动复制。', 'error');
+    } finally {
+      setBranchContextMenu(null);
+      setCommitContextMenu(null);
+      setFileContextMenu(null);
+    }
+  }
+
+  async function openProjectPath(filePath: string, mode: 'open' | 'reveal') {
+    if (!project) {
+      return;
+    }
+    const targetPath = combineProjectFilePath(project.path, filePath);
+    try {
+      const response = await fetch('/api/system/open-path', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ path: targetPath, mode }),
+      });
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || '打开路径失败');
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '打开路径失败', 'error');
+    } finally {
+      setFileContextMenu(null);
     }
   }
 
@@ -470,22 +651,144 @@ export function GitHistoryPanel({
     if (!project?.id || !createBranchDialog?.name.trim()) {
       return;
     }
+    const branchName = createBranchDialog.name.trim();
+    const sourceRef = createBranchDialog.source;
+    const toastContext: GitOperationToastContext = {
+      operation: '创建分支',
+      target: branchName,
+      branch: currentBranch || undefined,
+      command: `git switch -c ${branchName} ${sourceRef}`,
+    };
     setCreateBranchWorking(true);
     try {
       const result: GitBranchCreateResult = await createGitBranchFromSource(
         project.id,
-        createBranchDialog.name.trim(),
-        createBranchDialog.source,
+        branchName,
+        sourceRef,
       );
       await Promise.resolve(onWorkspaceChanged());
       await loadBranches(true);
       setSelectedBranchName(result.branch);
       setCreateBranchDialog(null);
-      showToast(`已创建并切换到 ${result.branch}`);
+      showGitOperationSuccessToast(toastContext, `已创建并切换到 ${result.branch}`);
     } catch (error) {
-      showToast(error instanceof Error ? error.message : '创建分支失败', 'error');
+      showGitOperationErrorToast(toastContext, error, '创建分支失败');
     } finally {
       setCreateBranchWorking(false);
+    }
+  }
+
+  async function handleCreateTag() {
+    if (!project?.id || !createTagDialog?.name.trim()) {
+      return;
+    }
+    const tagName = createTagDialog.name.trim();
+    const sourceRef = createTagDialog.source;
+    const toastContext: GitOperationToastContext = {
+      operation: '创建标签',
+      target: tagName,
+      branch: currentBranch || undefined,
+      command: `git tag ${tagName} ${sourceRef}`,
+    };
+    setCreateTagWorking(true);
+    try {
+      const result = await createGitTag(
+        project.id,
+        tagName,
+        sourceRef,
+      );
+      await Promise.resolve(onWorkspaceChanged());
+      await loadBranches(true);
+      setCreateTagDialog(null);
+      showGitOperationSuccessToast(toastContext, `已创建标签 ${result.tag}`);
+    } catch (error) {
+      showGitOperationErrorToast(toastContext, error, '创建标签失败');
+    } finally {
+      setCreateTagWorking(false);
+    }
+  }
+
+  async function handleCheckoutDetached(ref: string, label: string) {
+    if (!project?.id) {
+      return;
+    }
+    if (!window.confirm(`确定要以 Detached HEAD 签出 ${label} 吗？`)) {
+      return;
+    }
+    const toastContext: GitOperationToastContext = {
+      operation: 'Detached 签出',
+      target: label,
+      branch: currentBranch || undefined,
+      command: `git switch --detach ${ref}`,
+    };
+    try {
+      await checkoutGitDetachedRef(project.id, ref);
+      await Promise.resolve(onWorkspaceChanged());
+      await loadBranches(true);
+      setSelectedBranchName(ref);
+      setCompareState(null);
+      showGitOperationSuccessToast(toastContext, `已签出 ${label}`);
+    } catch (error) {
+      showGitOperationErrorToast(toastContext, error, '签出失败');
+    } finally {
+      setBranchContextMenu(null);
+      setCommitContextMenu(null);
+    }
+  }
+
+  async function handleCherryPickCommit(commit: GitHistoryLogCommit) {
+    if (!project?.id) {
+      return;
+    }
+    if (!window.confirm(`确定要 Cherry-pick ${commit.shortSha} 到当前分支吗？`)) {
+      return;
+    }
+    const toastContext: GitOperationToastContext = {
+      operation: 'Cherry-pick',
+      target: `${commit.shortSha} ${commit.summary || '无提交信息'}`,
+      branch: currentBranch || undefined,
+      command: `git cherry-pick ${commit.sha}`,
+    };
+    try {
+      await cherryPickGitCommit(project.id, commit.sha);
+      await Promise.resolve(onWorkspaceChanged());
+      await loadHistoryLog();
+      showGitOperationSuccessToast(toastContext, `已 Cherry-pick ${commit.shortSha}`);
+    } catch (error) {
+      showGitOperationErrorToast(toastContext, error, 'Cherry-pick 失败');
+    } finally {
+      setCommitContextMenu(null);
+    }
+  }
+
+  async function handleDeleteBranch(branch: GitBranchSummary) {
+    if (!project?.id) {
+      return;
+    }
+    const branchName = branch.localName ?? branch.name;
+    const targetLabel = branch.isRemote ? `远程分支 ${branch.name}` : `分支 ${branchName}`;
+    if (!window.confirm(`确定要删除${targetLabel}吗？`)) {
+      return;
+    }
+    const toastContext: GitOperationToastContext = {
+      operation: '删除分支',
+      target: targetLabel,
+      branch: currentBranch || undefined,
+      command: branch.isRemote && branch.remoteName
+        ? `git push ${branch.remoteName} --delete ${trimRemoteBranchPrefix(branch.name, branch.remoteName)}`
+        : `git branch -d ${branchName}`,
+    };
+    setBranchWorkingName(branch.name);
+    try {
+      await deleteGitBranch(project.id, branch);
+      await Promise.resolve(onWorkspaceChanged());
+      await loadBranches(true);
+      showGitOperationSuccessToast(toastContext, `已删除${targetLabel}`);
+    } catch (error) {
+      showGitOperationErrorToast(toastContext, error, '删除分支失败');
+    } finally {
+      setBranchWorkingName('');
+      setBranchContextMenu(null);
     }
   }
 
@@ -671,6 +974,17 @@ export function GitHistoryPanel({
         className={`git-history-log-row${active ? ' active' : ''}`}
         style={rowStyle}
         onClick={() => setSelectedCommitSha(commit.sha)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setBranchContextMenu(null);
+          setFileContextMenu(null);
+          setSelectedCommitSha(commit.sha);
+          setCommitContextMenu({
+            commit,
+            x: event.clientX,
+            y: event.clientY,
+          });
+        }}
       >
         <div className="git-history-log-graph-cell" aria-hidden="true">
           {graphVisual ? <GitGraphVisualSvg visual={graphVisual} /> : null}
@@ -813,6 +1127,8 @@ export function GitHistoryPanel({
           }}
           onContextMenu={(event) => {
             event.preventDefault();
+            setCommitContextMenu(null);
+            setFileContextMenu(null);
             setBranchContextMenu({
               branch,
               x: event.clientX,
@@ -919,6 +1235,17 @@ export function GitHistoryPanel({
         style={tree ? ({ '--tree-depth': depth } as CSSProperties) : undefined}
         onClick={() => handleSelectDetailFile(file.path)}
         onDoubleClick={() => handleOpenDetailFile(file.path)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setBranchContextMenu(null);
+          setCommitContextMenu(null);
+          setSelectedDetailPath(file.path);
+          setFileContextMenu({
+            file,
+            x: event.clientX,
+            y: event.clientY,
+          });
+        }}
       >
         <div className="git-history-file-main">
           <span
@@ -1130,52 +1457,145 @@ export function GitHistoryPanel({
         offset={0}
       >
         <div ref={branchMenuRef} className="workspace-menu git-history-branch-context-menu" role="menu" aria-label="分支菜单">
-          <button
-            type="button"
-            className="workspace-menu-item"
-            disabled={branchWorkingName === branchContextMenu?.branch.name}
-            onClick={() => branchContextMenu ? void handleCheckoutBranch(branchContextMenu.branch) : undefined}
-          >
-            <GitBranch size={15} />
-            <span>签出</span>
-          </button>
-          <button
-            type="button"
-            className="workspace-menu-item"
-            onClick={() => {
-              if (!branchContextMenu) {
-                return;
-              }
-              setCreateBranchDialog({
-                source: branchContextMenu.branch.name,
-                name: suggestBranchName(branchContextMenu.branch),
-              });
-              setBranchContextMenu(null);
-            }}
-          >
-            <GitBranchPlus size={15} />
-            <span>基于此创建分支</span>
-          </button>
-          <button
-            type="button"
-            className="workspace-menu-item"
-            disabled={!currentBranch || branchMatchesCurrent(branchContextMenu?.branch, currentBranch)}
-            onClick={() => branchContextMenu ? void handleCompareBranch(branchContextMenu.branch) : undefined}
-          >
-            <GitFork size={15} />
-            <span>与当前分支比较</span>
-          </button>
-          {branchContextMenu?.branch.isRemote ? (
-            <button
-              type="button"
-              className="workspace-menu-item"
-              disabled={branchWorkingName === branchContextMenu.branch.name}
-              onClick={() => void handleFetchRemote(branchContextMenu.branch)}
-            >
-              <Download size={15} />
-              <span>更新</span>
-            </button>
-          ) : null}
+          {branchContextMenu
+            ? buildGitHistoryBranchContextActions(branchContextMenu.branch, currentBranch).map((action) => {
+                const branch = branchContextMenu.branch;
+                return (
+                  <button
+                    key={action.id}
+                    type="button"
+                    className={`workspace-menu-item${action.danger ? ' danger' : ''}`}
+                    disabled={action.disabled || branchWorkingName === branch.name}
+                    onClick={() => {
+                      if (action.id === 'checkout') {
+                        void handleCheckoutBranch(branch);
+                      } else if (action.id === 'create-branch') {
+                        setCreateBranchDialog({
+                          source: branch.name,
+                          name: suggestBranchName(branch),
+                        });
+                        setBranchContextMenu(null);
+                      } else if (action.id === 'create-tag') {
+                        setCreateTagDialog({ source: branch.name, name: '' });
+                        setBranchContextMenu(null);
+                      } else if (action.id === 'compare-with-current') {
+                        void handleCompareBranch(branch);
+                      } else if (action.id === 'pull-current') {
+                        void handlePullCurrentBranch(branch);
+                      } else if (action.id === 'pull-current-merge') {
+                        void handlePullCurrentBranch(branch, 'merge');
+                      } else if (action.id === 'pull-current-rebase') {
+                        void handlePullCurrentBranch(branch, 'rebase');
+                      } else if (action.id === 'push-current') {
+                        void handlePushCurrentBranch(branch);
+                      } else if (action.id === 'fetch-remote') {
+                        void handleFetchRemote(branch);
+                      } else if (action.id === 'copy-branch-name') {
+                        void copyToClipboard(branch.localName ?? branch.name, '已复制分支名');
+                      } else if (action.id === 'delete-branch') {
+                        void handleDeleteBranch(branch);
+                      }
+                    }}
+                  >
+                    {renderContextActionIcon(action.id)}
+                    <span>{action.label}</span>
+                  </button>
+                );
+              })
+            : null}
+        </div>
+      </PopoverPortal>
+
+      <PopoverPortal
+        open={Boolean(commitContextMenu)}
+        anchorRef={contextMenuAnchorRef}
+        virtualAnchor={commitContextMenu ? { x: commitContextMenu.x, y: commitContextMenu.y } : null}
+        placement="bottom-start"
+        offset={0}
+      >
+        <div ref={commitMenuRef} className="workspace-menu git-history-commit-context-menu" role="menu" aria-label="提交菜单">
+          {commitContextMenu
+            ? buildGitHistoryCommitContextActions(commitContextMenu.commit, { currentBranch }).map((action) => {
+                const commit = commitContextMenu.commit;
+                return (
+                  <button
+                    key={action.id}
+                    type="button"
+                    className={`workspace-menu-item${action.danger ? ' danger' : ''}`}
+                    disabled={action.disabled}
+                    onClick={() => {
+                      if (action.id === 'open-commit') {
+                        setSelectedCommitSha(commit.sha);
+                        setCommitContextMenu(null);
+                      } else if (action.id === 'create-branch') {
+                        setCreateBranchDialog({
+                          source: commit.sha,
+                          name: `commit-${commit.shortSha}`,
+                        });
+                        setCommitContextMenu(null);
+                      } else if (action.id === 'create-tag') {
+                        setCreateTagDialog({ source: commit.sha, name: '' });
+                        setCommitContextMenu(null);
+                      } else if (action.id === 'checkout-detached') {
+                        void handleCheckoutDetached(commit.sha, `提交 ${commit.shortSha}`);
+                      } else if (action.id === 'cherry-pick') {
+                        void handleCherryPickCommit(commit);
+                      } else if (action.id === 'copy-commit-hash') {
+                        void copyToClipboard(commit.sha, '已复制提交哈希');
+                      } else if (action.id === 'copy-commit-summary') {
+                        void copyToClipboard(commit.summary || '', '已复制提交标题');
+                      } else if (action.id === 'copy-commit-message') {
+                        void copyToClipboard(commit.message || commit.summary || '', '已复制提交信息');
+                      }
+                    }}
+                  >
+                    {renderContextActionIcon(action.id)}
+                    <span>{action.label}</span>
+                  </button>
+                );
+              })
+            : null}
+        </div>
+      </PopoverPortal>
+
+      <PopoverPortal
+        open={Boolean(fileContextMenu)}
+        anchorRef={contextMenuAnchorRef}
+        virtualAnchor={fileContextMenu ? { x: fileContextMenu.x, y: fileContextMenu.y } : null}
+        placement="bottom-start"
+        offset={0}
+      >
+        <div ref={fileMenuRef} className="workspace-menu git-history-file-context-menu" role="menu" aria-label="文件菜单">
+          {fileContextMenu
+            ? buildGitHistoryFileContextActions(fileContextMenu.file).map((action) => {
+                const file = fileContextMenu.file;
+                return (
+                  <button
+                    key={action.id}
+                    type="button"
+                    className={`workspace-menu-item${action.danger ? ' danger' : ''}`}
+                    disabled={action.disabled}
+                    onClick={() => {
+                      if (action.id === 'open-diff') {
+                        handleOpenDetailFile(file.path);
+                        setFileContextMenu(null);
+                      } else if (action.id === 'copy-path') {
+                        void copyToClipboard(file.path, '已复制路径');
+                      } else if (action.id === 'copy-original-path' && file.originalPath) {
+                        void copyToClipboard(file.originalPath, '已复制旧路径');
+                      } else if (action.id === 'copy-full-path') {
+                        void copyToClipboard(combineProjectFilePath(project.path, file.path), '已复制完整路径');
+                      } else if (action.id === 'reveal-file') {
+                        void openProjectPath(file.path, 'reveal');
+                      }
+                    }}
+                  >
+                    {renderContextActionIcon(action.id)}
+                    <span>{action.label}</span>
+                  </button>
+                );
+              })
+            : null}
         </div>
       </PopoverPortal>
 
@@ -1202,6 +1622,35 @@ export function GitHistoryPanel({
               <button type="button" className="dialog-button primary" disabled={createBranchWorking || !createBranchDialog.name.trim()} onClick={() => void handleCreateBranch()}>
                 {createBranchWorking ? <LoaderCircle className="spin" size={14} /> : null}
                 创建并切换
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {createTagDialog ? (
+        <div className="dialog-backdrop git-history-dialog-backdrop" role="presentation" onClick={() => !createTagWorking && setCreateTagDialog(null)}>
+          <section className="dialog-card git-history-inline-dialog" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="dialog-head">
+              <h3>基于 {createTagDialog.source} 创建标签</h3>
+              <p>会在当前仓库中创建轻量标签，不会自动推送到远端。</p>
+            </div>
+            <label className="clone-dialog-field">
+              <span>标签名</span>
+              <input
+                className="dialog-input"
+                value={createTagDialog.name}
+                onChange={(event) => setCreateTagDialog((current) => current ? { ...current, name: event.target.value } : current)}
+                placeholder="v1.0.0"
+              />
+            </label>
+            <div className="dialog-actions">
+              <button type="button" className="dialog-button secondary" disabled={createTagWorking} onClick={() => setCreateTagDialog(null)}>
+                取消
+              </button>
+              <button type="button" className="dialog-button primary" disabled={createTagWorking || !createTagDialog.name.trim()} onClick={() => void handleCreateTag()}>
+                {createTagWorking ? <LoaderCircle className="spin" size={14} /> : null}
+                创建标签
               </button>
             </div>
           </section>
@@ -1295,6 +1744,45 @@ export function GitHistoryPanel({
       ) : null}
     </section>
   );
+}
+
+function renderContextActionIcon(actionId: GitHistoryContextAction['id']) {
+  if (actionId === 'checkout' || actionId === 'checkout-detached') {
+    return <GitBranch size={14} />;
+  }
+  if (actionId === 'create-branch') {
+    return <GitBranchPlus size={14} />;
+  }
+  if (actionId === 'create-tag') {
+    return <Tag size={14} />;
+  }
+  if (actionId === 'compare-with-current' || actionId === 'cherry-pick') {
+    return <GitFork size={14} />;
+  }
+  if (actionId === 'pull-current' || actionId === 'pull-current-merge' || actionId === 'pull-current-rebase' || actionId === 'fetch-remote') {
+    return <Download size={14} />;
+  }
+  if (actionId === 'push-current') {
+    return <Upload size={14} />;
+  }
+  if (
+    actionId === 'copy-branch-name' ||
+    actionId === 'copy-commit-hash' ||
+    actionId === 'copy-commit-summary' ||
+    actionId === 'copy-commit-message' ||
+    actionId === 'copy-path' ||
+    actionId === 'copy-original-path' ||
+    actionId === 'copy-full-path'
+  ) {
+    return <Copy size={14} />;
+  }
+  if (actionId === 'delete-branch') {
+    return <X size={14} />;
+  }
+  if (actionId === 'reveal-file') {
+    return <Folder size={14} />;
+  }
+  return <FileText size={14} />;
 }
 
 function BranchKindIcon({ branch }: { branch: GitBranchSummary }) {
@@ -1778,17 +2266,44 @@ function filterBranchCollections(
   };
 }
 
-function branchMatchesCurrent(branch: GitBranchSummary | null | undefined, currentBranch: string) {
-  if (!branch || !currentBranch) {
-    return false;
-  }
-  return branch.current || branch.name === currentBranch || branch.localName === currentBranch;
-}
-
 function suggestBranchName(branch: GitBranchSummary) {
   const source = branch.localName ?? branch.name;
   const leaf = source.split('/').filter(Boolean).at(-1) ?? 'branch';
   return `${leaf}-copy`;
+}
+
+function resolveBranchRemoteSyncTarget(branch: GitBranchSummary) {
+  if (branch.upstream?.includes('/')) {
+    const [remote, ...branchParts] = branch.upstream.split('/');
+    return {
+      remote,
+      branch: branchParts.join('/') || branch.localName || branch.name,
+    };
+  }
+
+  return {
+    remote: branch.remoteName ?? undefined,
+    branch: branch.localName ?? branch.name,
+  };
+}
+
+function formatGitPullModeArgument(mode: GitPullMode) {
+  if (mode === 'merge') {
+    return '--no-rebase';
+  }
+  if (mode === 'rebase') {
+    return '--rebase';
+  }
+  return '--ff-only';
+}
+
+function formatGitOperationToastTitle(operation: string, result: '完成' | '失败') {
+  return /[A-Za-z]$/.test(operation) ? `${operation} ${result}` : `${operation}${result}`;
+}
+
+function trimRemoteBranchPrefix(branchName: string, remoteName: string) {
+  const prefix = `${remoteName}/`;
+  return branchName.startsWith(prefix) ? branchName.slice(prefix.length) : branchName;
 }
 
 function normalizeStatusClassName(status: string) {

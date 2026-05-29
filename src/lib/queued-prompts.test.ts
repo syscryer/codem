@@ -133,6 +133,18 @@ test('useClaudeRun accepts contentBlocks-only submissions instead of requiring p
   assert.match(useClaudeRunSource, /if \(requestContentBlocks\.length === 0 \|\| isThreadRunning\(thread\.id\)\) \{/);
 });
 
+test('submitPromptToThread queues without toast and optionally guides immediately', () => {
+  const submitPromptToThreadSource = extractFunctionBody(useClaudeRunSource, 'submitPromptToThread');
+
+  assert.doesNotMatch(submitPromptToThreadSource, /已排队，当前运行完成后会继续发送/);
+  assert.doesNotMatch(useClaudeRunSource, /已发送排队提示/);
+  assert.match(submitPromptToThreadSource, /const queuedPrompt = enqueuePrompt\(thread, \{/);
+  assert.match(
+    submitPromptToThreadSource,
+    /if \(autoGuideQueuedPrompts\) \{\s*void guideQueuedPrompt\(queuedPrompt\.id, \{ silent: true \}\);\s*\}/,
+  );
+});
+
 test('useClaudeRun refreshes Claude model options before resolving the run request model', () => {
   assert.match(useClaudeRunSource, /const previousModels = models;/);
   assert.match(useClaudeRunSource, /const latestModels = options\?\.toolResult \? previousModels : \(await loadClaudeModels\(\)\) \?\? previousModels;/);
@@ -167,12 +179,21 @@ test('useClaudeRun stores safe user content block summaries and ConversationTurn
   );
 });
 
+test('ConversationTurn hides the internal guide command label from guided queue cards', () => {
+  assert.match(conversationTurnSource, /function shouldShowSystemCommandCode\(item: SystemCommandItem\)/);
+  assert.match(conversationTurnSource, /return item\.command !== 'guide';/);
+  assert.match(conversationTurnSource, /\{shouldShowSystemCommandCode\(item\) \? <code>\{item\.command\}<\/code> : null\}/);
+});
+
 function extractFunctionBody(source: string, functionName: string) {
   const signature = `async function ${functionName}(`;
   const start = source.indexOf(signature);
   assert.notEqual(start, -1, `missing ${functionName}`);
 
-  const openBrace = source.indexOf('{', start);
+  const bodyStart = source.indexOf(') {', start);
+  assert.notEqual(bodyStart, -1, `missing ${functionName} body start`);
+
+  const openBrace = bodyStart + 2;
   assert.notEqual(openBrace, -1, `missing ${functionName} body`);
 
   let depth = 0;
