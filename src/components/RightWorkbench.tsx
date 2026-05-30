@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   Check,
@@ -9,6 +10,7 @@ import {
   FileText,
   Folder,
   Globe2,
+  GitMerge,
   GitPullRequest,
   LayoutDashboard,
   Link2,
@@ -23,17 +25,28 @@ import {
   Square,
   Unlink2,
   X,
+  XCircle,
 } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
 import { MemoGitDiffViewer } from './GitDiffViewer';
-import { GitConflictCenter } from './GitConflictCenter';
+import { GitConflictMergeDialog } from './git-conflict/GitConflictMergeDialog';
+import { GitConflictOverviewDialog } from './git-conflict/GitConflictOverviewDialog';
+import { GitConflictStatusStrip } from './git-conflict/GitConflictStatusStrip';
 import { ImagePreviewDialog, type ImagePreviewItem } from './ImagePreviewDialog';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { fetchWorkspaceFilePreview } from '../lib/file-preview-api';
-import { commitGitChanges, fetchGitFileDiff, fetchGitOperationState, fetchGitStatus } from '../lib/git-api';
+import {
+  abortGitOperation,
+  commitGitChanges,
+  continueGitOperation,
+  fetchGitFileDiff,
+  fetchGitOperationState,
+  fetchGitStatus,
+  pullGitBranch,
+} from '../lib/git-api';
 import { renderMarkdownImage } from '../lib/markdown-image';
 import { fetchProjectFiles } from '../lib/project-files-api';
 import {
@@ -82,6 +95,7 @@ import { resolveWorkbenchNavigatorVisibility } from '../lib/workbench-navigator-
 import type {
   GitFileStatus,
   GitOperationState,
+  GitPullMode,
   GitStatusSnapshot,
   ProjectFileEntry,
   ProjectSummary,
@@ -372,7 +386,6 @@ function WorkbenchFiles({
   const [loadingDirectory, setLoadingDirectory] = useState('');
   const [gitStatus, setGitStatus] = useState<GitStatusSnapshot | null>(null);
   const [gitOperationState, setGitOperationState] = useState<GitOperationState | null>(null);
-  const [gitOperationLoading, setGitOperationLoading] = useState(false);
   const [fileFilter, setFileFilter] = useState('');
   const [fallbackNavigatorVisible, setFallbackNavigatorVisible] = useState(true);
   const [navigatorWidth, setNavigatorWidth] = useState(292);
@@ -381,6 +394,11 @@ function WorkbenchFiles({
   const [commitMessage, setCommitMessage] = useState('');
   const [commitWorking, setCommitWorking] = useState<'commit' | 'push' | null>(null);
   const [commitError, setCommitError] = useState('');
+  const [gitOperationAction, setGitOperationAction] = useState('');
+  const [pendingPullMode, setPendingPullMode] = useState<GitPullMode | null>(null);
+  const [abortConfirmOpen, setAbortConfirmOpen] = useState(false);
+  const [conflictOverviewOpen, setConflictOverviewOpen] = useState(false);
+  const [mergeDialogPath, setMergeDialogPath] = useState('');
   const [selectedCommitPaths, setSelectedCommitPaths] = useState<Set<string>>(new Set());
   const [showNoiseFiles, setShowNoiseFiles] = useState(() => !reviewHideNoiseFilesByDefault);
   const [changedDisplayMode, setChangedDisplayMode] = useState<ReviewDisplayMode>(reviewDefaultDisplayMode);
@@ -389,6 +407,10 @@ function WorkbenchFiles({
   const reviewOptionsRef = useRef<HTMLDivElement | null>(null);
   const dragNavigatorWidthRef = useRef<number | null>(null);
   const dragFrameRef = useRef<number | null>(null);
+  const hasUnresolvedConflicts = Boolean(
+    gitOperationState?.hasConflicts &&
+      gitOperationState.conflicts.length > 0,
+  );
 
   const changedFiles = gitStatus?.files ?? [];
   const visibleChangedFiles = useMemo(
@@ -419,8 +441,8 @@ function WorkbenchFiles({
     commitFilesCount === 0 ||
     !commitMessage.trim();
   const { tracked: comparableChangedFiles, untracked: untrackedChangedFiles } = useMemo(
-    () => splitWorkbenchChangedFiles(committableChangedFiles),
-    [committableChangedFiles],
+    () => splitWorkbenchChangedFiles(visibleChangedFiles),
+    [visibleChangedFiles],
   );
   const changedTree = useMemo(() => buildWorkbenchFileTree(comparableChangedFiles), [comparableChangedFiles]);
   const untrackedTree = useMemo(() => buildWorkbenchFileTree(untrackedChangedFiles), [untrackedChangedFiles]);
@@ -496,6 +518,22 @@ function WorkbenchFiles({
       return changed ? next : current;
     });
   }, [showNoiseFiles, visibleChangedFiles]);
+
+  useEffect(() => {
+    if (!hasUnresolvedConflicts) {
+      setMergeDialogPath('');
+      setConflictOverviewOpen(false);
+    }
+  }, [hasUnresolvedConflicts]);
+
+  useEffect(() => {
+    if (gitOperationState?.status !== 'diverged') {
+      setPendingPullMode(null);
+    }
+    if (!gitOperationState?.canAbort) {
+      setAbortConfirmOpen(false);
+    }
+  }, [gitOperationState?.canAbort, gitOperationState?.status]);
 
   useEffect(() => {
     if (!activeProject || !activePreviewTabKey) {
@@ -613,7 +651,6 @@ function WorkbenchFiles({
         setExpandedDirectories([]);
         setGitOperationState(null);
       } else {
-        setGitOperationLoading(true);
         const [nextStatus, nextOperationState] = await Promise.all([
           fetchGitStatus(activeProject.id),
           fetchGitOperationState(activeProject.id),
@@ -626,7 +663,7 @@ function WorkbenchFiles({
         setSelectedCommitPaths(
           new Set(visibleCommittableFiles.filter((file) => !file.untracked).map((file) => file.path)),
         );
-        const nextGroups = splitWorkbenchChangedFiles(visibleCommittableFiles);
+        const nextGroups = splitWorkbenchChangedFiles(visibleStatusFiles);
         setExpandedChangedDirectories(collectDirectoryPaths(buildWorkbenchFileTree(nextGroups.tracked)));
         setExpandedUntrackedDirectories(collectDirectoryPaths(buildWorkbenchFileTree(nextGroups.untracked)));
       }
@@ -634,13 +671,82 @@ function WorkbenchFiles({
       setError(caughtError instanceof Error ? caughtError.message : '读取文件失败');
     } finally {
       setLoading(false);
-      setGitOperationLoading(false);
     }
   }
 
   async function handleGitConflictChanged() {
     await loadScope('changed');
     await Promise.resolve(onGitChanged?.());
+  }
+
+  async function runGitOperationAction(action: string, callback: () => Promise<void>) {
+    setGitOperationAction(action);
+    try {
+      await callback();
+    } catch (caughtError) {
+      showToast(caughtError instanceof Error ? caughtError.message : 'Git 操作失败', 'error');
+    } finally {
+      setGitOperationAction('');
+    }
+  }
+
+  function requestGitPull(mode: GitPullMode) {
+    if (!gitOperationState || gitOperationState.status !== 'diverged' || gitOperationAction) {
+      return;
+    }
+
+    setPendingPullMode(mode);
+  }
+
+  async function confirmGitPull() {
+    const mode = pendingPullMode;
+    if (!activeProject || !gitOperationState || gitOperationState.status !== 'diverged' || !mode) {
+      return;
+    }
+
+    const label = formatPullModeLabel(mode);
+    await runGitOperationAction(`pull-${mode}`, async () => {
+      setPendingPullMode(null);
+      try {
+        await pullGitBranch(activeProject.id, gitOperationState.remote, gitOperationState.branch, mode);
+        showToast(`${label}完成`);
+        await handleGitConflictChanged();
+      } catch (caughtError) {
+        const nextState = await fetchGitOperationState(activeProject.id).catch(() => null);
+        await handleGitConflictChanged();
+        if (nextState?.hasConflicts && nextState.conflicts.length > 0) {
+          setConflictOverviewOpen(true);
+          showToast('拉取已进入冲突状态，请在冲突总览中处理。', 'info');
+          return;
+        }
+        throw caughtError;
+      }
+    });
+  }
+
+  async function continueOperation() {
+    if (!activeProject) {
+      return;
+    }
+
+    await runGitOperationAction('continue', async () => {
+      await continueGitOperation(activeProject.id);
+      showToast('Git 操作已继续');
+      await handleGitConflictChanged();
+    });
+  }
+
+  async function abortOperation() {
+    if (!activeProject || !gitOperationState?.canAbort) {
+      return;
+    }
+
+    await runGitOperationAction('abort', async () => {
+      setAbortConfirmOpen(false);
+      await abortGitOperation(activeProject.id);
+      showToast('Git 操作已中止');
+      await handleGitConflictChanged();
+    });
   }
 
   function openProjectFilePreview(file: ProjectFileEntry) {
@@ -651,7 +757,16 @@ function WorkbenchFiles({
     onOpenWorkbenchPreview(buildProjectFilePreviewRequest(file));
   }
 
+  function isCommittableGitFile(file: GitFileStatus) {
+    return !file.conflicted;
+  }
+
   function openChangedPreview(file: GitFileStatus) {
+    if (file.conflicted) {
+      setMergeDialogPath(file.path);
+      return;
+    }
+
     onOpenWorkbenchPreview(buildChangedFilePreviewRequest(file));
   }
 
@@ -687,10 +802,14 @@ function WorkbenchFiles({
   }
 
   function toggleCommitNode(node: WorkbenchFileTreeNode) {
-    setSelectedCommitPaths((current) => toggleWorkbenchFileTreeNodeSelection(node, current));
+    setSelectedCommitPaths((current) => toggleWorkbenchFileTreeNodeSelection(node, current, isCommittableGitFile));
   }
 
   function toggleCommitFile(file: GitFileStatus) {
+    if (!isCommittableGitFile(file)) {
+      return;
+    }
+
     setSelectedCommitPaths((current) => {
       const next = new Set(current);
       if (next.has(file.path)) {
@@ -853,6 +972,8 @@ function WorkbenchFiles({
           gitOperationState.status === 'diverged' ||
           gitOperationState.status === 'blocked_dirty'),
     );
+  const pendingPullLabel = pendingPullMode ? formatPullModeLabel(pendingPullMode) : '';
+  const pendingPullWorking = pendingPullMode ? gitOperationAction === `pull-${pendingPullMode}` : false;
 
   return (
     <section className={`workbench-panel workbench-files-panel${showGitConflictCenter ? ' with-conflict-center' : ''}`}>
@@ -860,16 +981,83 @@ function WorkbenchFiles({
         <WorkbenchEmpty icon={<Folder size={24} />} title="未选择项目" description="选择项目后查看项目文件。" />
       ) : (
         <>
-          {showGitConflictCenter ? (
-            <GitConflictCenter
+          {showGitConflictCenter && gitOperationState ? (
+            <div className="git-conflict-workbench-top">
+              <GitConflictStatusStrip
+                operationState={gitOperationState}
+                onOpenOverview={() => setConflictOverviewOpen(true)}
+                onRequestPull={requestGitPull}
+                onContinue={() => void continueOperation()}
+                onAbort={() => {
+                  if (gitOperationAction) {
+                    return;
+                  }
+                  setAbortConfirmOpen(true);
+                }}
+                onRefresh={() => void loadScope('changed')}
+              />
+              {pendingPullMode && gitOperationState.status === 'diverged' ? (
+                <div className="git-conflict-confirm-strip" role="alertdialog" aria-label={`${pendingPullLabel}确认`}>
+                  <AlertTriangle size={16} />
+                  <div className="git-conflict-confirm-copy">
+                    <strong>确认{pendingPullLabel}当前分支？</strong>
+                    <span>如果发生冲突，会自动打开冲突总览继续处理。</span>
+                  </div>
+                  <div className="git-conflict-confirm-actions">
+                    <button type="button" disabled={Boolean(gitOperationAction)} onClick={() => setPendingPullMode(null)}>
+                      取消
+                    </button>
+                    <button type="button" className="primary" disabled={Boolean(gitOperationAction)} onClick={() => void confirmGitPull()}>
+                      {pendingPullWorking ? <LoaderCircle className="spin" size={13} /> : <GitMerge size={13} />}
+                      确认{pendingPullLabel}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              {abortConfirmOpen ? (
+                <div className="git-conflict-confirm-strip danger" role="alertdialog" aria-label="中止操作确认">
+                  <AlertTriangle size={16} />
+                  <div className="git-conflict-confirm-copy">
+                    <strong>中止当前 Git 操作？</strong>
+                    <span>会放弃这次 Git 操作产生的中间状态，已保存到文件但未提交的解决结果也可能被还原。</span>
+                  </div>
+                  <div className="git-conflict-confirm-actions">
+                    <button type="button" disabled={Boolean(gitOperationAction)} onClick={() => setAbortConfirmOpen(false)}>
+                      取消
+                    </button>
+                    <button type="button" className="danger" disabled={Boolean(gitOperationAction)} onClick={() => void abortOperation()}>
+                      {gitOperationAction === 'abort' ? <LoaderCircle className="spin" size={13} /> : <XCircle size={13} />}
+                      确认中止
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {gitOperationState ? (
+            <GitConflictOverviewDialog
+              open={conflictOverviewOpen}
               projectId={activeProject.id}
               operationState={gitOperationState}
-              loading={gitOperationLoading}
-              onRefresh={() => loadScope('changed')}
+              onClose={() => setConflictOverviewOpen(false)}
+              onOpenMerge={(path) => setMergeDialogPath(path)}
               onChanged={handleGitConflictChanged}
+              onContinue={continueOperation}
+              onAbort={() => {
+                setConflictOverviewOpen(false);
+                setAbortConfirmOpen(true);
+              }}
               showToast={showToast}
             />
           ) : null}
+          <GitConflictMergeDialog
+            open={Boolean(mergeDialogPath)}
+            projectId={activeProject.id}
+            filePath={mergeDialogPath}
+            onClose={() => setMergeDialogPath('')}
+            onResolved={handleGitConflictChanged}
+            showToast={showToast}
+          />
           <div
             ref={layoutRef}
             className={`workbench-files-layout${navigatorVisible ? '' : ' navigator-hidden'}`}
@@ -2215,8 +2403,9 @@ function renderChangedFileTreeRows({
 }): ReactNode[] {
   return nodes.flatMap((node): ReactNode[] => {
     const expanded = node.type === 'directory' && expandedDirectories.includes(node.path);
-    const statusTone = !untracked && node.gitFile ? getGitStatusTone(node.gitFile.status) : '';
-    const checked = isWorkbenchFileTreeNodeSelected(node, selectedCommitPaths);
+    const statusTone = !untracked && node.gitFile ? getGitStatusTone(node.gitFile) : '';
+    const checkDisabled = Boolean(node.gitFile?.conflicted);
+    const checked = isWorkbenchFileTreeNodeSelected(node, selectedCommitPaths, (file) => !file.conflicted);
     const row = (
       <button
         key={node.path}
@@ -2240,12 +2429,19 @@ function renderChangedFileTreeRows({
           className="workbench-tree-check"
           role="checkbox"
           aria-checked={checked}
-          tabIndex={0}
+          aria-disabled={checkDisabled}
+          tabIndex={checkDisabled ? -1 : 0}
           onClick={(event) => {
             event.stopPropagation();
+            if (checkDisabled) {
+              return;
+            }
             onToggleCommitNode(node);
           }}
           onKeyDown={(event) => {
+            if (checkDisabled) {
+              return;
+            }
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault();
               event.stopPropagation();
@@ -2259,6 +2455,7 @@ function renderChangedFileTreeRows({
         <span className={statusTone ? `workbench-file-name status-${statusTone}` : 'workbench-file-name'} title={node.path}>
           {node.name}
         </span>
+        {node.gitFile?.conflicted ? <span className="workbench-conflict-badge">冲突</span> : null}
       </button>
     );
 
@@ -2300,7 +2497,8 @@ function renderChangedFileFlatRows({
 }): ReactNode[] {
   return files.map((file) => {
     const checked = selectedCommitPaths.has(file.path);
-    const statusTone = !untracked ? getGitStatusTone(file.status) : '';
+    const statusTone = !untracked ? getGitStatusTone(file) : '';
+    const checkDisabled = Boolean(file.conflicted);
     const fileName = getFileName(file.path);
     const directoryPath = getFileDirectoryPath(file.path);
 
@@ -2316,12 +2514,19 @@ function renderChangedFileFlatRows({
           className="workbench-tree-check"
           role="checkbox"
           aria-checked={checked}
-          tabIndex={0}
+          aria-disabled={checkDisabled}
+          tabIndex={checkDisabled ? -1 : 0}
           onClick={(event) => {
             event.stopPropagation();
+            if (checkDisabled) {
+              return;
+            }
             onToggleCommitFile(file);
           }}
           onKeyDown={(event) => {
+            if (checkDisabled) {
+              return;
+            }
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault();
               event.stopPropagation();
@@ -2336,6 +2541,7 @@ function renderChangedFileFlatRows({
           <span className={statusTone ? `workbench-file-name status-${statusTone}` : 'workbench-file-name'} title={file.path}>
             {fileName}
           </span>
+          {file.conflicted ? <span className="workbench-conflict-badge">冲突</span> : null}
           <span className="workbench-tree-row-meta" title={directoryPath || '项目根目录'}>
             {directoryPath || '项目根目录'}
           </span>
@@ -2390,8 +2596,12 @@ export function FileIcon({
   );
 }
 
-function getGitStatusTone(status: string) {
-  const normalizedStatus = status.trim().toLowerCase();
+function getGitStatusTone(fileOrStatus: GitFileStatus | string) {
+  const normalizedStatus = typeof fileOrStatus === 'string' ? fileOrStatus.trim().toLowerCase() : fileOrStatus.status.trim().toLowerCase();
+  const conflicted = typeof fileOrStatus === 'string' ? false : Boolean(fileOrStatus.conflicted);
+  if (conflicted || normalizedStatus.includes('冲突') || normalizedStatus === 'uu') {
+    return 'conflicted';
+  }
   if (normalizedStatus.includes('新增') || normalizedStatus.includes('未跟踪') || normalizedStatus.includes('untracked') || normalizedStatus === 'a' || normalizedStatus === '??') {
     return 'added';
   }
@@ -3075,6 +3285,10 @@ function readGitDiffStats(content: string) {
     }
   }
   return { additions, deletions };
+}
+
+function formatPullModeLabel(mode: GitPullMode) {
+  return mode === 'merge' ? '合并拉取' : '变基拉取';
 }
 
 function InfoTile({ label, value }: { label: string; value: string }) {

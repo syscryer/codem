@@ -2,6 +2,7 @@ import { ArrowDown } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { ConversationTurnView } from './ConversationTurn';
 import { findLatestChangedFilesTurnId } from '../lib/conversation-changed-files';
+import { resolveEmptyConversationCopy } from '../lib/new-chat-draft';
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -144,6 +145,13 @@ export function ConversationPane({
     });
   }
 
+  const emptyConversationCopy = activeThread?.turns.length === 0
+    ? resolveEmptyConversationCopy({
+        threadTitle: activeThread.title,
+        activeProjectName,
+      })
+    : null;
+
   return (
     <div className="conversation-shell">
       <section className="conversation" ref={transcriptRef}>
@@ -164,8 +172,8 @@ export function ConversationPane({
           </div>
         ) : activeThread.turns.length === 0 ? (
           <div className="empty-state">
-            <h3>开始一次 Claude Code 会话</h3>
-            <p>输入需求后，Claude 的正文会连续显示，工具调用会以轻量步骤内嵌在回答中。</p>
+            <h3>{emptyConversationCopy?.title}</h3>
+            <p>{emptyConversationCopy?.description}</p>
           </div>
         ) : (
           activeThread.turns.map((turn, index) => (

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   GLOBAL_NEW_CHAT_DRAFT_KEY,
   buildNewChatTitleFromSubmission,
+  resolveEmptyConversationCopy,
   resolveNewChatDraftProjectId,
   shouldAutoRenameThreadTitle,
 } from './new-chat-draft.js';
@@ -49,6 +50,32 @@ test('shouldAutoRenameThreadTitle only allows replacing the untouched default ti
   assert.equal(shouldAutoRenameThreadTitle('新建聊天', '修复设置页'), true);
   assert.equal(shouldAutoRenameThreadTitle('我自己改过名字', '修复设置页'), false);
   assert.equal(shouldAutoRenameThreadTitle('新建聊天', '   '), false);
+});
+
+test('resolveEmptyConversationCopy treats untouched empty threads as new chat drafts', () => {
+  assert.deepEqual(
+    resolveEmptyConversationCopy({
+      threadTitle: '新建聊天',
+      activeProjectName: 'git-test',
+    }),
+    {
+      title: '在「git-test」中创建会话',
+      description: '第一句话会落进当前项目，新的会话会从这里自然展开。',
+    },
+  );
+});
+
+test('resolveEmptyConversationCopy uses generic assistant copy for named empty threads', () => {
+  assert.deepEqual(
+    resolveEmptyConversationCopy({
+      threadTitle: '排查构建问题',
+      activeProjectName: 'git-test',
+    }),
+    {
+      title: '开始一次工作会话',
+      description: '输入需求后，助手的正文会连续显示，工具调用会以轻量步骤内嵌在回答中。',
+    },
+  );
 });
 
 test('resolveNewChatDraftProjectId keeps the visible project when workspace refresh returns stale selection', () => {

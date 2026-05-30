@@ -16,6 +16,16 @@ type NewChatDraftProjectInput = {
   projects: Array<{ id: string }>;
 };
 
+type EmptyConversationCopyInput = {
+  threadTitle?: string | null;
+  activeProjectName?: string;
+};
+
+type EmptyConversationCopy = {
+  title: string;
+  description: string;
+};
+
 export function buildNewChatTitleFromSubmission(input: NewChatTitleInput) {
   const candidate = [
     normalizeTitleText(input.displayText),
@@ -44,6 +54,20 @@ export function resolveNewChatDraftProjectId(input: NewChatDraftProjectInput) {
   }
 
   return input.payloadProjectId;
+}
+
+export function resolveEmptyConversationCopy(input: EmptyConversationCopyInput): EmptyConversationCopy {
+  if ((input.threadTitle ?? '').trim() === DEFAULT_NEW_CHAT_TITLE) {
+    return {
+      title: input.activeProjectName ? `在「${input.activeProjectName}」中创建会话` : '创建新会话',
+      description: '第一句话会落进当前项目，新的会话会从这里自然展开。',
+    };
+  }
+
+  return {
+    title: '开始一次工作会话',
+    description: '输入需求后，助手的正文会连续显示，工具调用会以轻量步骤内嵌在回答中。',
+  };
 }
 
 function readFirstTextBlock(contentBlocks?: InputContentBlock[]) {

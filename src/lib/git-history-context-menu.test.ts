@@ -66,13 +66,11 @@ test('buildGitHistoryCommitContextActions exposes safe copy and ref creation act
   const actions = buildGitHistoryCommitContextActions(commit, { currentBranch: 'main' }).map((action) => action.id);
 
   assert.deepEqual(actions, [
-    'open-commit',
     'create-branch',
     'create-tag',
     'checkout-detached',
     'cherry-pick',
     'copy-commit-hash',
-    'copy-commit-summary',
     'copy-commit-message',
   ]);
 });

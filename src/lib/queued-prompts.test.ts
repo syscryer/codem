@@ -179,6 +179,23 @@ test('useClaudeRun stores safe user content block summaries and ConversationTurn
   );
 });
 
+test('useClaudeRun renames untouched default empty threads from the first submitted message', () => {
+  assert.match(useClaudeRunSource, /shouldAutoRenameThreadTitle/);
+  assert.match(useClaudeRunSource, /renameThread: \(threadId: string, title: string, options\?: \{ showToast\?: boolean \}\) => Promise<ThreadSummary \| null>;/);
+  assert.match(
+    useClaudeRunSource,
+    /const nextThreadTitle = submission \? buildNewChatTitleFromSubmission\(submission\) : '';/,
+  );
+  assert.match(
+    useClaudeRunSource,
+    /if \(shouldAutoRenameThreadTitle\(activeThreadSummary\.title, nextThreadTitle\)\) \{/,
+  );
+  assert.match(
+    useClaudeRunSource,
+    /return \(await renameThread\(activeThreadSummary\.id, nextThreadTitle, \{ showToast: false \}\)\) \?\? activeThreadSummary;/,
+  );
+});
+
 test('ConversationTurn hides the internal guide command label from guided queue cards', () => {
   assert.match(conversationTurnSource, /function shouldShowSystemCommandCode\(item: SystemCommandItem\)/);
   assert.match(conversationTurnSource, /return item\.command !== 'guide';/);

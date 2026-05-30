@@ -40,7 +40,7 @@ import {
   upsertToolStepDeep,
 } from '../lib/conversation';
 import { resolveQueuedPromptRunOptions } from '../lib/queued-prompts';
-import { buildNewChatTitleFromSubmission } from '../lib/new-chat-draft';
+import { buildNewChatTitleFromSubmission, shouldAutoRenameThreadTitle } from '../lib/new-chat-draft';
 import type { ThreadActivityNoticeKind } from '../lib/thread-activity-notices';
 import type {
   AssistantItem,
@@ -146,6 +146,7 @@ type UseClaudeRunArgs = {
   defaultPermissionMode: PermissionMode;
   autoGuideQueuedPrompts: boolean;
   createThread: (projectId: string, title?: string, options?: { showToast?: boolean }) => Promise<ThreadSummary | null>;
+  renameThread: (threadId: string, title: string, options?: { showToast?: boolean }) => Promise<ThreadSummary | null>;
   handlePickProjectDirectory: () => Promise<void>;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
   updateThreadDetail: (
@@ -182,6 +183,7 @@ export function useClaudeRun({
   defaultPermissionMode,
   autoGuideQueuedPrompts,
   createThread,
+  renameThread,
   handlePickProjectDirectory,
   showToast,
   updateThreadDetail,
@@ -355,6 +357,15 @@ export function useClaudeRun({
 
   async function ensureActiveThread(submission?: PromptSubmission) {
     if (activeThreadSummary) {
+      const nextThreadTitle = submission ? buildNewChatTitleFromSubmission(submission) : '';
+      if (shouldAutoRenameThreadTitle(activeThreadSummary.title, nextThreadTitle)) {
+        try {
+          return (await renameThread(activeThreadSummary.id, nextThreadTitle, { showToast: false })) ?? activeThreadSummary;
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : '聊天名称更新失败', 'error');
+        }
+      }
+
       return activeThreadSummary;
     }
 

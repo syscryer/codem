@@ -126,5 +126,110 @@ test('review files panel only reserves a top row when the conflict center is vis
     rightWorkbenchSource,
     /workbench-files-panel\$\{showGitConflictCenter \? ' with-conflict-center' : ''\}/,
   );
-  assert.match(rightWorkbenchSource, /\{showGitConflictCenter \? \(\s*<GitConflictCenter/);
+  assert.match(rightWorkbenchSource, /\{showGitConflictCenter && gitOperationState \? \(\s*<div className="git-conflict-workbench-top">[\s\S]*<GitConflictStatusStrip/);
 });
+
+test('IDEA-style conflict dialogs are not constrained by the right workbench column', () => {
+  assert.match(stylesSource, /\.git-conflict-overview-dialog/);
+  assert.match(stylesSource, /\.git-conflict-merge-dialog/);
+  assert.match(stylesSource, /\.git-conflict-merge-grid/);
+  assert.match(stylesSource, /\.git-conflict-merge-pane/);
+  assert.match(stylesSource, /\.git-conflict-result-editor/);
+  assert.match(stylesSource, /\.idea-merge-toolbar/);
+  assert.match(stylesSource, /\.idea-merge-workspace/);
+  assert.match(stylesSource, /\.idea-merge-pane/);
+  assert.match(stylesSource, /\.idea-merge-result/);
+  assert.match(stylesSource, /grid-template-columns:\s*minmax\(260px,\s*1fr\)\s+minmax\(320px,\s*1\.08fr\)\s+minmax\(260px,\s*1fr\);/);
+  assert.doesNotMatch(stylesSource, /minmax\(260px,\s*0\.78fr\)/);
+  assert.match(stylesSource, /width:\s*min\(1440px,\s*calc\(100vw - 80px\)\)/);
+});
+
+test('IDEA-style conflict dialogs use an opaque developer-tool modal shell', () => {
+  assert.match(
+    stylesSource,
+    /\.git-conflict-dialog-backdrop\s*\{[\s\S]*padding:\s*40px;/,
+  );
+  assert.match(
+    stylesSource,
+    /\.git-conflict-dialog-backdrop\s*\{[\s\S]*background:\s*rgba\(17,\s*24,\s*39,\s*0\.18\);/,
+  );
+  assert.match(
+    stylesSource,
+    /\.git-conflict-overview-dialog,[\s\S]*\.git-conflict-merge-dialog\s*\{[\s\S]*border-radius:\s*12px;/,
+  );
+  assert.match(
+    stylesSource,
+    /\.git-conflict-overview-dialog,[\s\S]*\.git-conflict-merge-dialog\s*\{[\s\S]*background:\s*var\(--app-surface,\s*#ffffff\);/,
+  );
+  assert.match(
+    stylesSource,
+    /\.git-conflict-merge-dialog\s*\{[\s\S]*width:\s*min\(1440px,\s*calc\(100vw - 80px\)\);/,
+  );
+  assert.match(
+    stylesSource,
+    /\.git-conflict-merge-dialog\s*\{[\s\S]*height:\s*min\(860px,\s*calc\(100vh - 96px\)\);/,
+  );
+  assert.match(
+    stylesSource,
+    /\.idea-merge-titlebar\s*\{[\s\S]*min-height:\s*64px;[\s\S]*padding:\s*10px\s+18px;/,
+  );
+  assert.match(
+    stylesSource,
+    /\.idea-merge-titlebar\s*\{[\s\S]*background:\s*var\(--app-surface,\s*#ffffff\);/,
+  );
+  assert.match(
+    stylesSource,
+    /\.git-conflict-dialog-head\s*\{[\s\S]*background:\s*var\(--app-surface,\s*#ffffff\);/,
+  );
+  assert.match(
+    stylesSource,
+    /\.idea-merge-titlecopy\s*\{[\s\S]*gap:\s*5px;/,
+  );
+});
+
+test('Git conflict status strips use a lightweight IDE tool strip style', () => {
+  const workbenchTopBlock = getCssBlock('.git-conflict-workbench-top');
+  const statusPrimaryButtonBlock = getCssBlock('.git-conflict-status-actions .dialog-button.primary');
+  const confirmStripBlock = getCssBlock('.git-conflict-confirm-strip');
+  const confirmDangerBlock = getCssBlock('.git-conflict-confirm-strip.danger');
+
+  assert.match(
+    workbenchTopBlock,
+    /background:\s*var\(--app-surface,\s*#ffffff\);/,
+  );
+  assert.match(
+    workbenchTopBlock,
+    /box-shadow:\s*[\s\S]*inset 3px 0 0/,
+  );
+  assert.doesNotMatch(
+    workbenchTopBlock,
+    /background:\s*color-mix\(in srgb,\s*#fef3c7/,
+  );
+  assert.match(
+    statusPrimaryButtonBlock,
+    /background:\s*color-mix\(in srgb,\s*var\(--accent/,
+  );
+  assert.doesNotMatch(
+    statusPrimaryButtonBlock,
+    /background:\s*#242424;/,
+  );
+  assert.match(
+    confirmStripBlock,
+    /padding:\s*8px 10px;/,
+  );
+  assert.match(
+    confirmStripBlock,
+    /border-radius:\s*10px;/,
+  );
+  assert.match(
+    confirmDangerBlock,
+    /background:\s*color-mix\(in srgb,\s*#fee2e2/,
+  );
+});
+
+function getCssBlock(selector: string) {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = stylesSource.match(new RegExp(`${escapedSelector}\\s*\\{[\\s\\S]*?\\n\\}`));
+  assert.ok(match, `Missing CSS block for ${selector}`);
+  return match[0];
+}

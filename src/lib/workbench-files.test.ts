@@ -221,3 +221,36 @@ test('toggling a directory selects and clears all descendant files', () => {
   const cleared = toggleWorkbenchFileTreeNodeSelection(srcDirectory!, selected);
   assert.deepEqual([...cleared], []);
 });
+
+test('toggling a directory can skip conflicted files that are not committable', () => {
+  const tree = buildWorkbenchFileTree([
+    {
+      path: 'src/App.tsx',
+      status: 'M',
+      staged: false,
+      unstaged: true,
+      untracked: false,
+      deleted: false,
+    },
+    {
+      path: 'src/conflict-demo.ts',
+      status: 'UU',
+      staged: false,
+      unstaged: true,
+      untracked: false,
+      deleted: false,
+      conflicted: true,
+      conflictKind: 'both_modified',
+    },
+  ]);
+
+  const srcDirectory = tree[0];
+  const selected = toggleWorkbenchFileTreeNodeSelection(
+    srcDirectory!,
+    new Set(),
+    (file) => !file.conflicted,
+  );
+
+  assert.deepEqual([...selected], ['src/App.tsx']);
+  assert.equal(isWorkbenchFileTreeNodeSelected(srcDirectory!, selected, (file) => !file.conflicted), true);
+});

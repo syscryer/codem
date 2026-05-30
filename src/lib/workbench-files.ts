@@ -81,24 +81,32 @@ export function buildWorkbenchFileTree(files: GitFileStatus[]) {
   return roots;
 }
 
-export function collectWorkbenchFileTreePaths(node: WorkbenchFileTreeNode): string[] {
+export function collectWorkbenchFileTreePaths(
+  node: WorkbenchFileTreeNode,
+  shouldIncludeFile: (file: GitFileStatus) => boolean = () => true,
+): string[] {
   if (node.type === 'file') {
-    return [node.path];
+    return node.gitFile && !shouldIncludeFile(node.gitFile) ? [] : [node.path];
   }
 
-  return node.children.flatMap(collectWorkbenchFileTreePaths);
+  return node.children.flatMap((child) => collectWorkbenchFileTreePaths(child, shouldIncludeFile));
 }
 
-export function isWorkbenchFileTreeNodeSelected(node: WorkbenchFileTreeNode, selectedPaths: Set<string>) {
-  const paths = collectWorkbenchFileTreePaths(node);
+export function isWorkbenchFileTreeNodeSelected(
+  node: WorkbenchFileTreeNode,
+  selectedPaths: Set<string>,
+  shouldIncludeFile: (file: GitFileStatus) => boolean = () => true,
+) {
+  const paths = collectWorkbenchFileTreePaths(node, shouldIncludeFile);
   return paths.length > 0 && paths.every((path) => selectedPaths.has(path));
 }
 
 export function toggleWorkbenchFileTreeNodeSelection(
   node: WorkbenchFileTreeNode,
   selectedPaths: Set<string>,
+  shouldIncludeFile: (file: GitFileStatus) => boolean = () => true,
 ) {
-  const paths = collectWorkbenchFileTreePaths(node);
+  const paths = collectWorkbenchFileTreePaths(node, shouldIncludeFile);
   const next = new Set(selectedPaths);
   const shouldClear = paths.length > 0 && paths.every((path) => next.has(path));
 

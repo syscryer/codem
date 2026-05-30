@@ -602,6 +602,35 @@ export function useWorkspaceState() {
     return createdThread;
   }
 
+  async function renameThread(threadId: string, title: string, options?: { showToast?: boolean }) {
+    const nextTitle = title.trim();
+    if (!nextTitle) {
+      return null;
+    }
+
+    const response = await fetch(`/api/threads/${threadId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ title: nextTitle }),
+    });
+
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+
+    const payload = (await response.json()) as { workspace: WorkspaceBootstrap };
+    syncWorkspace(payload.workspace);
+    const renamedThread = payload.workspace.projects
+      .flatMap((project) => project.threads)
+      .find((thread) => thread.id === threadId) ?? null;
+    if (options?.showToast !== false) {
+      showToast('聊天名称已更新');
+    }
+    return renamedThread;
+  }
+
   function updateCloneTask(taskId: string, patch: Partial<CloneTask>) {
     setCloneTasks((current) =>
       current.map((task) => (task.id === taskId ? { ...task, ...patch } : task)),
@@ -896,21 +925,7 @@ export function useWorkspaceState() {
         return;
       }
 
-      const response = await fetch(`/api/threads/${inputDialog.threadId}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ title: nextValue }),
-      });
-
-      if (!response.ok) {
-        showToast(await response.text(), 'error');
-        return;
-      }
-
-      const payload = (await response.json()) as { workspace: WorkspaceBootstrap };
-      syncWorkspace(payload.workspace);
+      await renameThread(inputDialog.threadId, nextValue, { showToast: false });
       setInputDialog(null);
       showToast('聊天名称已更新');
     } catch (error) {
@@ -1251,6 +1266,7 @@ export function useWorkspaceState() {
     syncWorkspace,
     loadWorkspace,
     createThread,
+    renameThread,
     enterNewChatDraft,
     createProjectFromPath,
     openWorktreePath,

@@ -14,10 +14,12 @@ import {
   GitFork,
   LoaderCircle,
   RefreshCw,
+  Rows3,
   Search,
   Star,
   Tag,
   Tags,
+  TreePine,
   Upload,
   X,
 } from 'lucide-react';
@@ -159,6 +161,7 @@ export function GitHistoryPanel({
   const [commitDetailsLoading, setCommitDetailsLoading] = useState(false);
   const [commitDetailsError, setCommitDetailsError] = useState('');
   const [detailsDisplayMode, setDetailsDisplayMode] = useState<DetailsDisplayMode>('tree');
+  const [commitMessageExpanded, setCommitMessageExpanded] = useState(false);
   const [expandedDetailDirs, setExpandedDetailDirs] = useState<Record<string, boolean>>({});
   const [selectedDetailPath, setSelectedDetailPath] = useState('');
   const [compareState, setCompareState] = useState<GitBranchCompareResult | null>(null);
@@ -299,12 +302,14 @@ export function GitHistoryPanel({
   useEffect(() => {
     if (!project?.id || !selectedCommitSha) {
       setCommitDetails(null);
+      setCommitMessageExpanded(false);
       return;
     }
 
     let cancelled = false;
     setCommitDetailsLoading(true);
     setCommitDetailsError('');
+    setCommitMessageExpanded(false);
     fetchGitCommitDetails(project.id, selectedCommitSha)
       .then((details) => {
         if (cancelled) {
@@ -334,6 +339,7 @@ export function GitHistoryPanel({
     if (!commitDetails) {
       setExpandedDetailDirs({});
       setSelectedDetailPath('');
+      setCommitMessageExpanded(false);
       return;
     }
 
@@ -1159,6 +1165,11 @@ export function GitHistoryPanel({
       return <PanelEmpty icon={GitCommitHorizontal} title="请选择一个提交" description="点击中间列表中的提交查看详情。" />;
     }
 
+    const hasDetailedCommitMessage = Boolean(
+      commitDetails.message &&
+        commitDetails.message !== commitDetails.summary,
+    );
+
     return (
       <div className="git-history-details-body">
         <div className="git-history-details-meta">
@@ -1171,11 +1182,23 @@ export function GitHistoryPanel({
           {commitDetails.refs && commitDetails.refs.length > 0 ? (
             <div className="git-history-details-refs">
               <span>在 {commitDetails.refs.length} 个分支中：</span>
-              <strong>{commitDetails.refs.join(', ')}</strong>
+              <strong title={commitDetails.refs.join(', ')}>{commitDetails.refs.join(', ')}</strong>
             </div>
           ) : null}
-          {commitDetails.message && commitDetails.message !== commitDetails.summary ? (
-            <pre className="git-history-details-message">{commitDetails.message}</pre>
+          {hasDetailedCommitMessage ? (
+            <div className="git-history-details-message-block">
+              <button
+                type="button"
+                className="git-history-details-message-toggle"
+                aria-expanded={commitMessageExpanded}
+                onClick={() => setCommitMessageExpanded((current) => !current)}
+              >
+                <ChevronDown className={commitMessageExpanded ? '' : 'collapsed'} size={14} />
+                <span>提交说明</span>
+                <small>{commitMessageExpanded ? '收起提交说明' : '展开提交说明'}</small>
+              </button>
+              {commitMessageExpanded ? <pre className="git-history-details-message">{commitDetails.message}</pre> : null}
+            </div>
           ) : null}
         </div>
         <div className="git-history-files-scroll">
@@ -1431,17 +1454,13 @@ export function GitHistoryPanel({
             <div className="git-history-view-mode">
               <button
                 type="button"
-                className={`git-history-view-chip${detailsDisplayMode === 'tree' ? ' active' : ''}`}
-                onClick={() => setDetailsDisplayMode('tree')}
+                className="git-history-view-icon"
+                aria-label={detailsDisplayMode === 'tree' ? '按目录显示提交文件' : '平铺显示提交文件'}
+                aria-pressed={detailsDisplayMode === 'tree'}
+                title={detailsDisplayMode === 'tree' ? '按目录显示' : '平铺显示'}
+                onClick={() => setDetailsDisplayMode((current) => (current === 'tree' ? 'flat' : 'tree'))}
               >
-                目录
-              </button>
-              <button
-                type="button"
-                className={`git-history-view-chip${detailsDisplayMode === 'flat' ? ' active' : ''}`}
-                onClick={() => setDetailsDisplayMode('flat')}
-              >
-                平铺
+                {detailsDisplayMode === 'tree' ? <TreePine size={14} /> : <Rows3 size={14} />}
               </button>
             </div>
           </div>
@@ -1524,10 +1543,7 @@ export function GitHistoryPanel({
                     className={`workspace-menu-item${action.danger ? ' danger' : ''}`}
                     disabled={action.disabled}
                     onClick={() => {
-                      if (action.id === 'open-commit') {
-                        setSelectedCommitSha(commit.sha);
-                        setCommitContextMenu(null);
-                      } else if (action.id === 'create-branch') {
+                      if (action.id === 'create-branch') {
                         setCreateBranchDialog({
                           source: commit.sha,
                           name: `commit-${commit.shortSha}`,
@@ -1542,8 +1558,6 @@ export function GitHistoryPanel({
                         void handleCherryPickCommit(commit);
                       } else if (action.id === 'copy-commit-hash') {
                         void copyToClipboard(commit.sha, '已复制提交哈希');
-                      } else if (action.id === 'copy-commit-summary') {
-                        void copyToClipboard(commit.summary || '', '已复制提交标题');
                       } else if (action.id === 'copy-commit-message') {
                         void copyToClipboard(commit.message || commit.summary || '', '已复制提交信息');
                       }
@@ -1768,7 +1782,6 @@ function renderContextActionIcon(actionId: GitHistoryContextAction['id']) {
   if (
     actionId === 'copy-branch-name' ||
     actionId === 'copy-commit-hash' ||
-    actionId === 'copy-commit-summary' ||
     actionId === 'copy-commit-message' ||
     actionId === 'copy-path' ||
     actionId === 'copy-original-path' ||

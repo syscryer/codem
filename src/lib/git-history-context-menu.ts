@@ -13,11 +13,9 @@ export type GitHistoryContextAction = {
     | 'fetch-remote'
     | 'copy-branch-name'
     | 'delete-branch'
-    | 'open-commit'
     | 'checkout-detached'
     | 'cherry-pick'
     | 'copy-commit-hash'
-    | 'copy-commit-summary'
     | 'copy-commit-message'
     | 'open-diff'
     | 'copy-path'
@@ -88,13 +86,11 @@ export function buildGitHistoryCommitContextActions(
   _options: { currentBranch?: string } = {},
 ): GitHistoryContextAction[] {
   return [
-    { id: 'open-commit', label: '查看提交详情' },
     { id: 'create-branch', label: '基于此提交创建分支' },
     { id: 'create-tag', label: '基于此提交创建标签' },
     { id: 'checkout-detached', label: '签出此提交（Detached）' },
     { id: 'cherry-pick', label: 'Cherry-pick 此提交' },
     { id: 'copy-commit-hash', label: '复制提交哈希' },
-    { id: 'copy-commit-summary', label: '复制提交标题' },
     { id: 'copy-commit-message', label: '复制提交信息' },
   ];
 }

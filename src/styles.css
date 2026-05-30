@@ -1984,6 +1984,121 @@ svg {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
+.git-conflict-workbench-top {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 86%, transparent);
+  background: var(--app-surface, #ffffff);
+  box-shadow:
+    inset 3px 0 0 color-mix(in srgb, #f59e0b 82%, var(--accent, #2374c6) 18%),
+    0 1px 0 color-mix(in srgb, var(--app-surface, #ffffff) 84%, transparent);
+}
+
+.git-conflict-status-strip {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px 9px 14px;
+  background: transparent;
+  color: color-mix(in srgb, var(--accent, #2374c6) 72%, var(--app-text, #242424));
+}
+
+.git-conflict-status-strip.blocked_dirty,
+.git-conflict-status-strip.conflicted {
+  color: color-mix(in srgb, #b45309 78%, var(--app-text, #242424));
+  background: transparent;
+}
+
+.git-conflict-status-icon {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: color-mix(in srgb, #f59e0b 11%, transparent);
+  color: color-mix(in srgb, #b45309 82%, var(--app-text, #242424));
+}
+
+.git-conflict-status-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.git-conflict-status-copy strong {
+  min-width: 0;
+  overflow: hidden;
+  color: color-mix(in srgb, currentColor 86%, var(--app-text, #242424));
+  font-size: 13px;
+  font-weight: 720;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-conflict-status-copy span {
+  min-width: 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--app-muted, #77736c) 86%, var(--app-text, #242424) 14%);
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-conflict-status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.git-conflict-status-actions .dialog-button {
+  min-width: auto;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 92%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--app-surface-muted, #f5f7fa) 78%, var(--app-surface, #ffffff));
+  color: color-mix(in srgb, var(--app-text, #242424) 86%, var(--app-muted, #77736c));
+  font-size: 12px;
+  font-weight: 620;
+  box-shadow: none;
+}
+
+.git-conflict-status-actions .dialog-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent, #2374c6) 24%, var(--app-border, #e2e8f0));
+  background: color-mix(in srgb, var(--accent, #2374c6) 7%, var(--app-surface, #ffffff));
+  color: var(--app-text, #242424);
+}
+
+.git-conflict-status-actions .dialog-button.primary {
+  border-color: color-mix(in srgb, var(--accent, #2374c6) 32%, var(--app-border, #e2e8f0));
+  background: color-mix(in srgb, var(--accent, #2374c6) 12%, var(--app-surface, #ffffff));
+  color: color-mix(in srgb, var(--accent, #2374c6) 88%, var(--app-text, #242424));
+}
+
+.git-conflict-status-actions .dialog-button.secondary {
+  background: color-mix(in srgb, var(--app-surface-muted, #f5f7fa) 78%, var(--app-surface, #ffffff));
+  color: color-mix(in srgb, var(--app-text, #242424) 82%, var(--app-muted, #77736c));
+}
+
+.git-conflict-status-actions .dialog-button:disabled,
+.git-conflict-status-actions .dialog-button.primary:disabled,
+.git-conflict-status-actions .dialog-button.secondary:disabled {
+  border-color: color-mix(in srgb, var(--app-border, #e2e8f0) 70%, transparent);
+  background: color-mix(in srgb, var(--app-surface-muted, #f5f7fa) 58%, var(--app-surface, #ffffff));
+  color: color-mix(in srgb, var(--app-muted, #77736c) 52%, transparent);
+  opacity: 1;
+}
+
 .git-conflict-center {
   min-width: 0;
   container-type: inline-size;
@@ -2058,71 +2173,75 @@ svg {
 .git-conflict-confirm-strip {
   min-width: 0;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
-  border: 1px solid rgba(146, 64, 14, 0.16);
-  border-radius: 13px;
-  background: rgba(255, 255, 255, 0.7);
-  color: #7c2d12;
+  gap: 9px;
+  margin: 0 12px 10px 14px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, #f59e0b 22%, var(--app-border, #e2e8f0));
+  border-radius: 10px;
+  background: var(--app-surface, #ffffff);
+  color: color-mix(in srgb, #92400e 84%, var(--app-text, #242424));
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
 }
 
 .git-conflict-confirm-strip.danger {
-  border-color: rgba(185, 28, 28, 0.18);
-  color: #991b1b;
+  border-color: color-mix(in srgb, #ef4444 26%, var(--app-border, #e2e8f0));
+  background: color-mix(in srgb, #fee2e2 34%, var(--app-surface, #ffffff));
+  color: color-mix(in srgb, #b91c1c 88%, var(--app-text, #242424));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, #ef4444 76%, transparent);
 }
 
 .git-conflict-confirm-copy {
   min-width: 0;
   display: grid;
-  gap: 2px;
+  gap: 1px;
 }
 
 .git-conflict-confirm-copy strong {
   color: currentColor;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 720;
 }
 
 .git-conflict-confirm-copy span {
-  color: var(--app-muted, #77736c);
+  color: color-mix(in srgb, var(--app-muted, #77736c) 86%, var(--app-text, #242424) 14%);
   font-size: 12px;
-  line-height: 1.45;
+  line-height: 1.38;
 }
 
 .git-conflict-confirm-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 7px;
 }
 
 .git-conflict-confirm-actions button {
-  height: 28px;
+  height: 30px;
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 0 9px;
-  border: 1px solid rgba(146, 64, 14, 0.18);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
-  color: #7c2d12;
+  padding: 0 11px;
+  border: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 90%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--app-surface, #ffffff) 92%, var(--app-surface-muted, #f5f7fa));
+  color: color-mix(in srgb, var(--app-text, #242424) 82%, var(--app-muted, #77736c));
   cursor: pointer;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 640;
 }
 
 .git-conflict-confirm-actions button.primary {
-  border-color: color-mix(in srgb, var(--accent, #2374c6) 32%, transparent);
-  background: color-mix(in srgb, var(--accent, #2374c6) 13%, #ffffff);
-  color: var(--accent, #2374c6);
+  border-color: color-mix(in srgb, var(--accent, #2374c6) 34%, var(--app-border, #e2e8f0));
+  background: color-mix(in srgb, var(--accent, #2374c6) 11%, var(--app-surface, #ffffff));
+  color: color-mix(in srgb, var(--accent, #2374c6) 88%, var(--app-text, #242424));
 }
 
 .git-conflict-confirm-actions button.danger {
-  border-color: rgba(185, 28, 28, 0.22);
-  background: rgba(254, 242, 242, 0.82);
-  color: #991b1b;
+  border-color: color-mix(in srgb, #dc2626 36%, var(--app-border, #e2e8f0));
+  background: color-mix(in srgb, #fee2e2 46%, var(--app-surface, #ffffff));
+  color: color-mix(in srgb, #b91c1c 90%, var(--app-text, #242424));
 }
 
 .git-conflict-result-actions button.primary {
@@ -2277,6 +2396,19 @@ svg {
 }
 
 @container (max-width: 760px) {
+  .git-conflict-status-strip {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .git-conflict-status-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .git-conflict-status-copy span {
+    white-space: normal;
+  }
+
   .git-conflict-summary {
     grid-template-columns: 18px minmax(0, 1fr);
   }
@@ -3090,6 +3222,10 @@ svg {
   color: #0284c7;
 }
 
+.workbench-file-name.status-conflicted {
+  color: color-mix(in srgb, #b45309 84%, var(--app-text, #242424));
+}
+
 .workbench-file-name.status-added {
   color: #16a34a;
 }
@@ -3102,7 +3238,27 @@ svg {
   color: #d97706;
 }
 
-.workbench-tree-row > span:last-of-type {
+.workbench-conflict-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 16px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, #d97706 18%, var(--app-border, #e1e1e1));
+  border-radius: 999px;
+  background: color-mix(in srgb, #d97706 6%, var(--app-surface, #ffffff));
+  color: color-mix(in srgb, #b45309 78%, var(--app-muted, #77736c));
+  font-size: 10px;
+  font-weight: 560;
+  line-height: 1;
+  width: fit-content;
+  min-width: 0;
+  max-width: max-content;
+  justify-self: start;
+  white-space: nowrap;
+}
+
+.workbench-tree-row > .workbench-file-name {
   min-width: max-content;
   overflow: visible;
   text-overflow: clip;
@@ -3124,6 +3280,12 @@ svg {
 .workbench-tree-check {
   color: #8f96a0;
   cursor: pointer;
+}
+
+.workbench-tree-check[aria-disabled="true"] {
+  color: #d97706;
+  cursor: not-allowed;
+  opacity: 0.72;
 }
 
 .workbench-tree-check:hover {
@@ -5823,18 +5985,29 @@ svg {
 
 .git-history-toolbar-chip.active,
 .git-history-preview-chip.active,
-.git-history-view-chip.active {
+.git-history-view-icon[aria-pressed="true"] {
   background: color-mix(in srgb, var(--accent, #2374c6) 14%, var(--app-surface-muted, #f6f6f5));
   color: var(--app-text-strong, var(--app-text, #242424));
   border-color: color-mix(in srgb, var(--accent, #2374c6) 28%, transparent);
 }
 
 .git-history-toolbar-icon,
-.git-history-preview-icon {
+.git-history-preview-icon,
+.git-history-view-icon {
   width: 30px;
+  height: 28px;
   display: inline-grid;
   place-items: center;
   padding: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--app-muted, #77736c);
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
 }
 
 .git-history-toolbar-button:hover,
@@ -5842,7 +6015,7 @@ svg {
 .git-history-toolbar-icon:hover,
 .git-history-preview-icon:hover,
 .git-history-preview-chip:hover,
-.git-history-view-chip:hover,
+.git-history-view-icon:hover,
 .git-history-clear-compare:hover {
   background: var(--app-surface-muted, #f6f6f5);
   color: var(--app-text, #242424);
@@ -6794,18 +6967,66 @@ body.git-history-resizing {
   border-radius: 12px;
   background: var(--app-surface-muted, #f6f6f5);
   color: var(--app-text, #242424);
+  max-height: 220px;
+  overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
+.git-history-details-message-block {
+  display: grid;
+  gap: 6px;
+}
+
+.git-history-details-message-toggle {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 16px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--app-muted, #77736c);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+
+.git-history-details-message-toggle:hover {
+  color: var(--app-text, #242424);
+}
+
+.git-history-details-message-toggle .collapsed {
+  transform: rotate(-90deg);
+}
+
+.git-history-details-message-toggle span {
+  color: var(--app-text, #242424);
+  font-weight: 540;
+}
+
+.git-history-details-message-toggle small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .git-history-details-refs {
   min-width: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
   align-items: baseline;
   gap: 6px;
   color: var(--app-muted, #77736c);
   font-size: 12px;
   line-height: 18px;
+}
+
+.git-history-details-refs > span {
+  white-space: nowrap;
 }
 
 .git-history-details-refs strong {
@@ -6843,19 +7064,6 @@ body.git-history-resizing {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-
-.git-history-view-chip {
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 10px;
-  border: 1px solid transparent;
-  border-radius: 9px;
-  background: transparent;
-  color: var(--app-muted, #77736c);
-  cursor: pointer;
-  font-size: 12px;
 }
 
 .git-history-files-list {
@@ -9323,6 +9531,759 @@ body.git-history-resizing {
 .dialog-button.secondary:disabled {
   background: #f3f4f6;
   color: #a0a5ae;
+}
+
+.git-conflict-dialog-backdrop {
+  z-index: 145;
+  padding: 40px;
+  background: rgba(17, 24, 39, 0.18);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.git-conflict-overview-dialog,
+.git-conflict-merge-dialog {
+  min-width: 0;
+  display: grid;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 88%, transparent);
+  border-radius: 12px;
+  background: var(--app-surface, #ffffff);
+  color: var(--app-text, #242424);
+  box-shadow:
+    0 24px 68px rgba(15, 23, 42, 0.18),
+    0 0 0 1px color-mix(in srgb, var(--app-surface, #ffffff) 70%, transparent) inset;
+}
+
+.git-conflict-overview-dialog {
+  width: min(1080px, calc(100vw - 96px));
+  height: min(560px, calc(100vh - 96px));
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.git-conflict-merge-dialog {
+  width: min(1440px, calc(100vw - 80px));
+  height: min(860px, calc(100vh - 96px));
+  max-height: calc(100vh - 96px);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.git-conflict-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 22px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border, #e8e2d8) 72%, transparent);
+  background: var(--app-surface, #ffffff);
+}
+
+.git-conflict-dialog-head > div {
+  min-width: 0;
+}
+
+.git-conflict-dialog-head h3 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--app-text, #242424);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: normal;
+}
+
+.git-conflict-dialog-head p {
+  margin: 6px 0 0;
+  color: color-mix(in srgb, var(--app-muted, #77736c) 88%, var(--app-text, #242424) 12%);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.git-conflict-overview-body {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 218px;
+  gap: 0;
+  overflow: hidden;
+}
+
+.git-conflict-overview-table {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  border: 0;
+  border-right: 1px solid color-mix(in srgb, var(--app-border, #e8e2d8) 80%, transparent);
+  border-radius: 0;
+  background: var(--app-surface, #ffffff);
+}
+
+.git-conflict-overview-row {
+  min-width: 0;
+  min-height: 32px;
+  display: grid;
+  grid-template-columns: minmax(220px, 1.6fr) minmax(92px, 0.5fr) minmax(92px, 0.5fr) minmax(108px, 0.65fr);
+  align-items: center;
+  gap: 10px;
+  padding: 0 13px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border, #e8e2d8) 56%, transparent);
+  background: transparent;
+  color: var(--app-text, #242424);
+  text-align: left;
+}
+
+button.git-conflict-overview-row {
+  cursor: pointer;
+}
+
+button.git-conflict-overview-row:hover,
+button.git-conflict-overview-row.active {
+  background: color-mix(in srgb, var(--accent, #2374c6) 10%, var(--app-surface, #ffffff));
+}
+
+button.git-conflict-overview-row.active {
+  box-shadow: inset 3px 0 0 var(--accent, #2374c6);
+}
+
+button.git-conflict-overview-row:focus-visible,
+.git-conflict-overview-actions .dialog-button:focus-visible,
+.git-conflict-dialog-actions .dialog-button:focus-visible,
+.idea-merge-tool-button:focus-visible,
+.idea-merge-icon-button:focus-visible,
+.idea-merge-inline-action:focus-visible,
+.idea-merge-footer-button:focus-visible,
+.idea-merge-apply-button:focus-visible,
+.idea-merge-cancel-button:focus-visible,
+.idea-merge-window-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent, #2374c6) 72%, transparent);
+  outline-offset: -2px;
+}
+
+.git-conflict-overview-row.head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 30px;
+  background: color-mix(in srgb, var(--app-surface-muted, #f5f7fa) 82%, var(--app-surface, #ffffff));
+  color: var(--app-muted, #77736c);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.git-conflict-overview-row strong,
+.git-conflict-overview-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-conflict-overview-row strong {
+  font-size: 12px;
+}
+
+.git-conflict-overview-row span {
+  color: var(--app-muted, #77736c);
+  font-size: 12px;
+}
+
+.git-conflict-overview-empty {
+  min-height: 160px;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  color: var(--app-muted, #77736c);
+  font-size: 13px;
+}
+
+.git-conflict-overview-actions {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 14px 12px;
+  border: 0;
+  border-radius: 0;
+  background: var(--app-surface-subtle, #fafbfd);
+}
+
+.git-conflict-overview-actions strong,
+.git-conflict-overview-actions span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-conflict-overview-actions strong {
+  color: var(--app-text, #242424);
+  font-size: 13px;
+}
+
+.git-conflict-overview-actions span {
+  margin-bottom: 4px;
+  color: var(--app-muted, #77736c);
+  font-size: 12px;
+}
+
+.git-conflict-overview-actions .dialog-button,
+.git-conflict-dialog-actions .dialog-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--app-border, #d6dee8) 88%, transparent);
+}
+
+.git-conflict-overview-actions .dialog-button.primary,
+.git-conflict-dialog-actions .dialog-button.primary {
+  border-color: color-mix(in srgb, var(--accent, #2374c6) 88%, transparent);
+  background: var(--accent, #2374c6);
+}
+
+.git-conflict-overview-actions .dialog-button.secondary,
+.git-conflict-dialog-actions .dialog-button.secondary {
+  background: var(--app-surface, #ffffff);
+  color: var(--app-text, #242424);
+}
+
+.git-conflict-dialog-actions .dialog-button.danger {
+  border-color: color-mix(in srgb, var(--danger, #d33a31) 28%, var(--app-border, #d6dee8));
+  background: color-mix(in srgb, var(--danger, #d33a31) 8%, var(--app-surface, #ffffff));
+  color: var(--danger, #d33a31);
+}
+
+.idea-merge-titlebar {
+  min-width: 0;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border, #e8e2d8) 74%, transparent);
+  background: var(--app-surface, #ffffff);
+}
+
+.idea-merge-titlemark {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: #2d7ff9;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.idea-merge-titlecopy {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.idea-merge-titlecopy h3 {
+  margin: 0;
+  color: var(--app-text, #242424);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.idea-merge-titlecopy span {
+  min-width: 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--app-muted, #77736c) 90%, var(--app-text, #242424) 10%);
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.idea-merge-window-button {
+  width: 34px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  margin-left: auto;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--app-muted, #77736c);
+  cursor: pointer;
+}
+
+.idea-merge-window-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--app-text, #242424) 7%, transparent);
+  color: var(--app-text, #242424);
+}
+
+.idea-merge-toolbar {
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border, #e8e2d8) 74%, transparent);
+  background: var(--app-surface-subtle, #fafbfd);
+}
+
+.idea-merge-toolbar-group {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.idea-merge-muted-action {
+  color: var(--app-muted, #77736c);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.idea-merge-tool-button,
+.idea-merge-icon-button {
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid color-mix(in srgb, var(--app-border, #d6dee8) 88%, transparent);
+  border-radius: 5px;
+  background: var(--app-surface, #ffffff);
+  color: var(--app-text, #242424);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  padding: 0 8px;
+}
+
+.idea-merge-icon-button.active {
+  border-color: color-mix(in srgb, var(--accent, #2374c6) 34%, var(--app-border, #d6dee8));
+  background: color-mix(in srgb, var(--accent, #2374c6) 10%, var(--app-surface, #ffffff));
+  color: color-mix(in srgb, var(--accent, #2374c6) 86%, var(--app-text, #242424));
+}
+
+.idea-merge-icon-button {
+  width: 26px;
+  padding: 0;
+}
+
+.idea-merge-tool-button:disabled,
+.idea-merge-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.idea-merge-spacer {
+  flex: 1 1 auto;
+}
+
+.idea-merge-summary {
+  color: var(--app-text, #242424);
+  font-size: 12px;
+  font-weight: 560;
+  white-space: nowrap;
+}
+
+.idea-merge-workspace,
+.git-conflict-merge-grid {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(320px, 1.08fr) minmax(260px, 1fr);
+  background: var(--app-surface, #ffffff);
+}
+
+.idea-merge-pane,
+.git-conflict-merge-pane {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border-right: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 82%, transparent);
+}
+
+.idea-merge-pane.right {
+  border-right: 0;
+}
+
+.idea-merge-pane-head {
+  min-width: 0;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 68%, transparent);
+  background: var(--app-surface-subtle, #fafbfd);
+}
+
+.idea-merge-pane-head.center {
+  justify-content: center;
+  text-align: center;
+}
+
+.idea-merge-pane-head > div {
+  min-width: 0;
+  display: grid;
+}
+
+.idea-merge-pane-head span {
+  min-width: 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--app-muted, #77736c) 88%, var(--app-text, #242424) 12%);
+  font-size: 12px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.idea-merge-pane-head strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--app-text, #242424);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.idea-merge-inline-action {
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: color-mix(in srgb, var(--accent, #2374c6) 82%, var(--app-text, #242424));
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.idea-merge-inline-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent, #2374c6) 10%, transparent);
+}
+
+.idea-merge-code {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--app-surface, #ffffff);
+  color: var(--app-text, #242424);
+  font-family: var(--code-font);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.idea-merge-code-line {
+  position: relative;
+  min-width: max-content;
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  align-items: start;
+  min-height: 24px;
+}
+
+.idea-merge-code-line.conflict {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, #f97316 76%, transparent) 0 3px, transparent 3px),
+    color-mix(in srgb, #fed7aa 42%, var(--app-surface, #ffffff));
+}
+
+.idea-merge-code-line.conflict .idea-merge-line-number {
+  color: color-mix(in srgb, #c2410c 72%, var(--app-muted, #77736c));
+}
+
+.idea-merge-code-line.conflict code {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #f97316 10%, transparent);
+}
+
+.idea-merge-code-line code {
+  display: block;
+  min-width: 0;
+  padding: 1px 8px 1px 4px;
+  color: inherit;
+  font-family: inherit;
+  white-space: pre;
+}
+
+.idea-merge-code-token.keyword {
+  color: color-mix(in srgb, #7c3aed 78%, var(--app-text, #242424));
+  font-weight: 600;
+}
+
+.idea-merge-code-token.string {
+  color: color-mix(in srgb, #047857 82%, var(--app-text, #242424));
+}
+
+.idea-merge-code-token.comment {
+  color: color-mix(in srgb, var(--app-muted, #77736c) 82%, var(--app-text, #242424));
+  font-style: italic;
+}
+
+.idea-merge-code-token.number {
+  color: color-mix(in srgb, #b45309 82%, var(--app-text, #242424));
+}
+
+.idea-merge-code-token.punctuation {
+  color: color-mix(in srgb, var(--app-muted, #77736c) 68%, var(--app-text, #242424));
+}
+
+.idea-merge-line-number {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  height: 100%;
+  padding: 1px 8px 1px 0;
+  border-right: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 72%, transparent);
+  background: var(--app-surface-subtle, #fafbfd);
+  color: #9aa3b2;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+}
+
+.idea-merge-result {
+  position: relative;
+  box-shadow:
+    -1px 0 0 color-mix(in srgb, var(--app-border, #e2e8f0) 72%, transparent),
+    1px 0 0 color-mix(in srgb, var(--app-border, #e2e8f0) 72%, transparent);
+}
+
+.idea-merge-result-editor,
+.git-conflict-result-editor {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  overflow: hidden;
+  background: var(--app-surface, #ffffff);
+}
+
+.idea-merge-result-highlights {
+  position: absolute;
+  inset: 0 0 0 46px;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.idea-merge-result-highlight-line {
+  height: 20.15px;
+}
+
+.idea-merge-result-highlight-line.conflict {
+  background: color-mix(in srgb, #fecaca 58%, transparent);
+}
+
+.idea-merge-result-gutter {
+  position: relative;
+  z-index: 1;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 72%, transparent);
+  background: var(--app-surface-subtle, #fafbfd);
+  color: color-mix(in srgb, var(--app-muted, #77736c) 64%, var(--app-text, #242424) 36%);
+  font-family: var(--code-font);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.55;
+  user-select: none;
+}
+
+.idea-merge-result-line-number {
+  height: 20.15px;
+  padding: 1px 8px 1px 0;
+  text-align: right;
+}
+
+.idea-merge-result-textarea {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 2px 10px 2px 10px;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--app-text, #242424);
+  caret-color: var(--app-text, #242424);
+  font-family: var(--code-font);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre;
+  overflow: auto;
+}
+
+.idea-merge-result-textarea::selection {
+  background: color-mix(in srgb, var(--accent, #2374c6) 24%, transparent);
+  color: var(--app-text, #242424);
+}
+
+.idea-merge-footer {
+  min-width: 0;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 72%, transparent);
+  background: var(--app-surface-subtle, #fafbfd);
+}
+
+.idea-merge-footer-left,
+.idea-merge-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.idea-merge-footer-button,
+.idea-merge-apply-button,
+.idea-merge-cancel-button {
+  height: 34px;
+  min-width: 108px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 520;
+}
+
+.idea-merge-footer-button,
+.idea-merge-cancel-button {
+  border: 1px solid color-mix(in srgb, var(--app-border, #d6dee8) 95%, transparent);
+  background: var(--app-surface, #ffffff);
+  color: var(--app-text, #242424);
+}
+
+.idea-merge-apply-button {
+  border: 1px solid color-mix(in srgb, var(--accent, #2374c6) 90%, transparent);
+  background: var(--accent, #2374c6);
+  color: #ffffff;
+}
+
+.idea-merge-footer-button:hover:not(:disabled),
+.idea-merge-cancel-button:hover:not(:disabled),
+.idea-merge-tool-button:hover:not(:disabled),
+.idea-merge-icon-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--app-text, #242424) 8%, var(--app-surface, #ffffff));
+}
+
+.idea-merge-apply-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent, #2374c6) 88%, #000000);
+}
+
+.idea-merge-footer-button:disabled,
+.idea-merge-apply-button:disabled,
+.idea-merge-cancel-button:disabled,
+.idea-merge-inline-action:disabled,
+.idea-merge-window-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.git-conflict-merge-loading {
+  min-height: 360px;
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  color: var(--app-muted, #77736c);
+  font-size: 13px;
+}
+
+.git-conflict-merge-loading.idea {
+  min-height: 0;
+}
+
+.git-conflict-dialog-actions {
+  margin-top: 0;
+  padding: 12px 16px;
+  border-top: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 78%, transparent);
+  background: var(--app-surface-subtle, #fafbfd);
+  flex-wrap: wrap;
+}
+
+@media (max-width: 760px) {
+  .git-conflict-dialog-backdrop {
+    padding: 16px;
+    place-items: stretch;
+  }
+
+  .git-conflict-overview-dialog {
+    width: calc(100vw - 32px);
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+  }
+
+  .git-conflict-merge-dialog {
+    width: calc(100vw - 24px);
+    height: calc(100vh - 24px);
+  }
+
+  .git-conflict-dialog-head,
+  .git-conflict-dialog-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .git-conflict-dialog-head h3 {
+    white-space: normal;
+  }
+
+  .git-conflict-overview-body,
+  .idea-merge-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .idea-merge-toolbar,
+  .idea-merge-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .idea-merge-summary,
+  .idea-merge-muted-action {
+    white-space: normal;
+  }
+
+  .git-conflict-overview-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+    padding: 9px 12px;
+  }
+
+  .git-conflict-overview-row.head {
+    display: none;
+  }
+
+  .idea-merge-pane {
+    min-height: 220px;
+    border-right: 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 82%, transparent);
+  }
 }
 
 .session-search-overlay {
