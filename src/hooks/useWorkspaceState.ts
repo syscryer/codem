@@ -1073,7 +1073,6 @@ export function useWorkspaceState() {
 
     try {
       await navigator.clipboard.writeText(thread.sessionId);
-      showToast('会话 ID 已复制');
     } catch {
       showToast(`复制失败，请手动复制：${thread.sessionId}`, 'error');
     }
@@ -1082,7 +1081,6 @@ export function useWorkspaceState() {
   async function handleCopyProjectPath(project: ProjectSummary) {
     try {
       await navigator.clipboard.writeText(project.path);
-      showToast('项目路径已复制');
     } catch {
       showToast(`复制失败，请手动复制：${project.path}`, 'error');
     }

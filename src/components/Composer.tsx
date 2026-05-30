@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
 import { ArrowUp, Brain, Check, CornerDownRight, File, FileArchive, FileAudio, FileCode, FileImage, FileSpreadsheet, FileText, Folder, Image, Mic, Pencil, Plus, Puzzle, Settings, Shield, Square, Unlock, X, Zap, type LucideIcon } from 'lucide-react';
 import { permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
@@ -126,7 +126,7 @@ export function Composer({
   turns,
   isRunning,
   draftScopeKey,
-  draft,
+  draft: persistedDraft,
   queuedPrompts,
   queuedPromptGuideAvailability,
   onDraftChange,
@@ -144,6 +144,7 @@ export function Composer({
   onStopRun,
   onRunSlashSystemCommand,
 }: ComposerProps) {
+  const [draft, setLocalDraft] = useState(persistedDraft);
   const [attachments, setAttachments] = useState<PendingComposerAttachment[]>([]);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [dragActive, setDragActive] = useState(false);
@@ -160,6 +161,8 @@ export function Composer({
   const fileReferenceMenuRef = useRef<HTMLDivElement | null>(null);
   const fileReferenceItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const attachmentsRef = useRef<PendingComposerAttachment[]>([]);
+  const draftRef = useRef(persistedDraft);
+  const lastPersistedDraftRef = useRef(persistedDraft);
   const draftScopeKeyRef = useRef(draftScopeKey);
   const pendingSelectionRef = useRef<{ start: number; end: number; restoreFocus: boolean } | null>(null);
   const [selectionStart, setSelectionStart] = useState(0);
@@ -204,8 +207,8 @@ export function Composer({
   const hasDraft = Boolean(draft.trim());
   const hasPendingContent = hasDraft || attachments.length > 0;
   const showStopButton = isRunning && !hasPendingContent;
-  const contextUsage = buildComposerContextUsage({ agent, model, turns });
-  const modelMenuHasContext1mOptions = hasClaudeContext1mOptions(models);
+  const contextUsage = useMemo(() => buildComposerContextUsage({ agent, model, turns }), [agent, model, turns]);
+  const modelMenuHasContext1mOptions = useMemo(() => hasClaudeContext1mOptions(models), [models]);
 
   useEffect(() => {
     attachmentsRef.current = attachments;
@@ -230,16 +233,31 @@ export function Composer({
   }, []);
 
   useEffect(() => {
-    draftScopeKeyRef.current = draftScopeKey;
-  }, [draftScopeKey]);
+    if (persistedDraft === lastPersistedDraftRef.current) {
+      return;
+    }
+
+    lastPersistedDraftRef.current = persistedDraft;
+    draftRef.current = persistedDraft;
+    setLocalDraft((current) => (current === persistedDraft ? current : persistedDraft));
+    setSelectionStart(persistedDraft.length);
+    setSelectionEnd(persistedDraft.length);
+  }, [persistedDraft]);
 
   useEffect(() => {
+    draftScopeKeyRef.current = draftScopeKey;
+    lastPersistedDraftRef.current = persistedDraft;
+    draftRef.current = persistedDraft;
+    setLocalDraft((current) => (current === persistedDraft ? current : persistedDraft));
     disposeAttachmentPreviews(attachmentsRef.current);
     attachmentsRef.current = [];
     setAttachments([]);
-    setSelectionStart(draft.length);
-    setSelectionEnd(draft.length);
+    setSelectionStart(persistedDraft.length);
+    setSelectionEnd(persistedDraft.length);
     setSlashMenuDismissed(false);
+    return () => {
+      flushDraftPersistence();
+    };
   }, [draftScopeKey]);
 
   useEffect(() => {
@@ -354,8 +372,19 @@ export function Composer({
     };
   }, []);
 
-  function setDraft(nextDraft: string) {
+  function flushDraftPersistence() {
+    const nextDraft = draftRef.current;
+    if (lastPersistedDraftRef.current === nextDraft) {
+      return;
+    }
+
+    lastPersistedDraftRef.current = nextDraft;
     onDraftChange(nextDraft);
+  }
+
+  function setDraft(nextDraft: string) {
+    draftRef.current = nextDraft;
+    setLocalDraft((current) => (current === nextDraft ? current : nextDraft));
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -368,6 +397,7 @@ export function Composer({
     if (localActionResolution) {
       disposeAttachmentPreviews(submittedAttachments);
       setDraft('');
+      flushDraftPersistence();
       setAttachments([]);
       setSelectionStart(0);
       setSelectionEnd(0);
@@ -562,10 +592,6 @@ export function Composer({
 
   async function appendAttachments(files: File[]) {
     const nextAttachments: PendingComposerAttachment[] = [];
-    let imageCount = 0;
-    let fileTextCount = 0;
-    let fileReferenceCount = 0;
-    let skippedCount = 0;
 
     try {
       for (const file of files) {
@@ -577,7 +603,6 @@ export function Composer({
             file,
             previewUrl: URL.createObjectURL(file),
           });
-          imageCount += 1;
           continue;
         }
 
@@ -588,7 +613,6 @@ export function Composer({
             file,
             text: await readFileAsText(file),
           });
-          fileTextCount += 1;
           continue;
         }
 
@@ -599,11 +623,8 @@ export function Composer({
             file,
             reason: classification.reason,
           });
-          fileReferenceCount += 1;
           continue;
         }
-
-        skippedCount += 1;
       }
     } catch (error) {
       disposeAttachmentPreviews(nextAttachments);
@@ -617,13 +638,6 @@ export function Composer({
     }
 
     setAttachments((current) => [...current, ...nextAttachments]);
-    const summaryParts = [
-      imageCount > 0 ? `${imageCount} 张图片` : '',
-      fileTextCount > 0 ? `${fileTextCount} 个文本文件` : '',
-      fileReferenceCount > 0 ? `${fileReferenceCount} 个大文件引用` : '',
-      skippedCount > 0 ? `跳过 ${skippedCount} 个不支持的文件` : '',
-    ].filter(Boolean);
-    showToast(`已添加${summaryParts.join('，')}。`, skippedCount > 0 ? 'info' : 'success');
   }
 
   // 点击"添加附件"：桌面端走原生文件框拿真实路径，Web 端退回 HTML input。
@@ -658,9 +672,6 @@ export function Composer({
     );
 
     const nextAttachments: PendingComposerAttachment[] = [];
-    let imageCount = 0;
-    let referenceCount = 0;
-    let imageFailed = 0;
 
     for (const filePath of validPaths) {
       if (existingPaths.has(filePath)) {
@@ -678,10 +689,8 @@ export function Composer({
             previewUrl: `data:${image.mimeType};base64,${image.data}`,
             desktopImage: image,
           });
-          imageCount += 1;
           continue;
         }
-        imageFailed += 1;
         // 读图失败则降级为路径引用，至少让模型能用工具读取。
       }
 
@@ -691,7 +700,6 @@ export function Composer({
         path: filePath,
         name: getDesktopPathBasename(filePath),
       });
-      referenceCount += 1;
     }
 
     if (nextAttachments.length === 0) {
@@ -700,12 +708,6 @@ export function Composer({
     }
 
     setAttachments((current) => [...current, ...nextAttachments]);
-    const summaryParts = [
-      imageCount > 0 ? `${imageCount} 张图片` : '',
-      referenceCount > 0 ? `${referenceCount} 个文件引用` : '',
-      imageFailed > 0 ? `${imageFailed} 张图片读取失败已转为引用` : '',
-    ].filter(Boolean);
-    showToast(`已添加${summaryParts.join('，')}。`, imageFailed > 0 ? 'info' : 'success');
   }
 
   // 让拖放订阅始终调用到最新的 appendDesktopPaths（捕获最新 workspace / attachments）。
@@ -737,6 +739,7 @@ export function Composer({
     setSlashMenuDismissed(true);
     disposeAttachmentPreviews(attachmentsRef.current);
     setDraft('');
+    flushDraftPersistence();
     setAttachments([]);
     setSelectionStart(0);
     setSelectionEnd(0);
@@ -1032,6 +1035,7 @@ export function Composer({
           }}
           onPaste={(event) => void handlePaste(event)}
           onKeyDown={handleComposerInputKeyDown}
+          onBlur={flushDraftPersistence}
           placeholder={isRunning ? '等待当前回复完成' : '要求后续变更'}
         />
         <div className="composer-toolbar">

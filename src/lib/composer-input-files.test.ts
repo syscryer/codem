@@ -124,12 +124,16 @@ test('Composer clears submitted content before async attachment and @file resolu
   const clearIndex = handleSubmitBody.indexOf("setDraft('');", handleSubmitBody.indexOf("if (!submittedDraft.trim() && submittedAttachments.length === 0)"));
   const resolveIndex = handleSubmitBody.indexOf('await resolveExistingFileReferenceBlocks');
   const uploadIndex = handleSubmitBody.indexOf('await uploadImageAttachments');
+  const submitIndex = handleSubmitBody.indexOf('const submitted = await onSubmitPrompt');
+  const beforeSubmitBody = handleSubmitBody.slice(clearIndex, submitIndex);
 
   assert.ok(clearIndex > -1);
   assert.ok(resolveIndex > -1);
   assert.ok(uploadIndex > -1);
+  assert.ok(submitIndex > -1);
   assert.ok(clearIndex < resolveIndex);
   assert.ok(clearIndex < uploadIndex);
+  assert.doesNotMatch(beforeSubmitBody, /flushDraftPersistence\(\)/);
 });
 
 test('Composer only creates a preparing queue item when attachments or @file references need async preparation', () => {
@@ -172,4 +176,27 @@ test('Composer rebuilds uploaded image blocks in the original attachment order',
   assert.match(composerSource, /for \(const attachment of submittedAttachments\) \{/);
   assert.match(composerSource, /if \(attachment\.kind === 'image'\) \{/);
   assert.match(composerSource, /const uploadedImage = uploadedImageAttachmentsById\.get\(attachment\.id\);/);
+});
+
+test('Composer keeps successful attachment additions silent while preserving failure toasts', () => {
+  const appendAttachmentsBody = extractFunctionBody(composerSource, 'appendAttachments');
+  const appendDesktopPathsBody = extractFunctionBody(composerSource, 'appendDesktopPaths');
+
+  assert.doesNotMatch(appendAttachmentsBody, /showToast\(`已添加/);
+  assert.doesNotMatch(appendDesktopPathsBody, /showToast\(`已添加/);
+  assert.match(appendAttachmentsBody, /showToast\(error instanceof Error \? error\.message : '附件读取失败。', 'error'\)/);
+  assert.match(appendDesktopPathsBody, /showToast\('没有可添加的有效文件（已过滤敏感路径）。', 'info'\)/);
+});
+
+test('Composer keeps typing local and persists drafts only on explicit boundaries', () => {
+  assert.match(composerSource, /const \[draft, setLocalDraft\] = useState\(persistedDraft\);/);
+  assert.doesNotMatch(composerSource, /DRAFT_PERSIST_DEBOUNCE_MS/);
+  assert.doesNotMatch(composerSource, /draftPersistTimerRef/);
+  assert.doesNotMatch(composerSource, /scheduleDraftPersistence/);
+  assert.match(composerSource, /onBlur=\{flushDraftPersistence\}/);
+
+  const setDraftBody = extractFunctionBody(composerSource, 'setDraft');
+  assert.match(setDraftBody, /setLocalDraft\(\(current\) => \(current === nextDraft \? current : nextDraft\)\);/);
+  assert.doesNotMatch(setDraftBody, /onDraftChange\(nextDraft\)/);
+  assert.doesNotMatch(setDraftBody, /flushDraftPersistence\(\)/);
 });

@@ -616,10 +616,9 @@ export function GitHistoryPanel({
     });
   }
 
-  async function copyToClipboard(text: string, successMessage: string) {
+  async function copyToClipboard(text: string) {
     try {
       await navigator.clipboard.writeText(text);
-      showToast(successMessage);
     } catch {
       showToast('复制失败，请重试或手动复制。', 'error');
     } finally {
@@ -1510,7 +1509,7 @@ export function GitHistoryPanel({
                       } else if (action.id === 'fetch-remote') {
                         void handleFetchRemote(branch);
                       } else if (action.id === 'copy-branch-name') {
-                        void copyToClipboard(branch.localName ?? branch.name, '已复制分支名');
+                        void copyToClipboard(branch.localName ?? branch.name);
                       } else if (action.id === 'delete-branch') {
                         void handleDeleteBranch(branch);
                       }
@@ -1557,9 +1556,9 @@ export function GitHistoryPanel({
                       } else if (action.id === 'cherry-pick') {
                         void handleCherryPickCommit(commit);
                       } else if (action.id === 'copy-commit-hash') {
-                        void copyToClipboard(commit.sha, '已复制提交哈希');
+                        void copyToClipboard(commit.sha);
                       } else if (action.id === 'copy-commit-message') {
-                        void copyToClipboard(commit.message || commit.summary || '', '已复制提交信息');
+                        void copyToClipboard(commit.message || commit.summary || '');
                       }
                     }}
                   >
@@ -1594,11 +1593,11 @@ export function GitHistoryPanel({
                         handleOpenDetailFile(file.path);
                         setFileContextMenu(null);
                       } else if (action.id === 'copy-path') {
-                        void copyToClipboard(file.path, '已复制路径');
+                        void copyToClipboard(file.path);
                       } else if (action.id === 'copy-original-path' && file.originalPath) {
-                        void copyToClipboard(file.originalPath, '已复制旧路径');
+                        void copyToClipboard(file.originalPath);
                       } else if (action.id === 'copy-full-path') {
-                        void copyToClipboard(combineProjectFilePath(project.path, file.path), '已复制完整路径');
+                        void copyToClipboard(combineProjectFilePath(project.path, file.path));
                       } else if (action.id === 'reveal-file') {
                         void openProjectPath(file.path, 'reveal');
                       }
