@@ -124,6 +124,7 @@ type QueuedPrompt = {
   initialAssistantItems?: AssistantItem[];
   initialActivity?: string;
   reuseSession?: boolean;
+  queueStatus?: 'preparing' | 'ready';
   createdAtMs: number;
 };
 
@@ -135,6 +136,8 @@ type PromptSubmission = {
   initialAssistantItems?: AssistantItem[];
   initialActivity?: string;
   reuseSession?: boolean;
+  queueId?: string;
+  queueStatus?: 'preparing' | 'ready';
 };
 
 type UseClaudeRunArgs = {
@@ -212,6 +215,8 @@ export function useClaudeRun({
   const reconnectingThreadIdsRef = useRef(new Set<string>());
   const threadSummariesByIdRef = useRef(new Map<string, ThreadSummary>());
   const queuedPromptsByThreadIdRef = useRef<Record<string, QueuedPrompt[]>>({});
+  // 正在引导中的排队提示 id：防止连点 / 自动引导并发，导致同一条引导在出队前被重复注入。
+  const guidingPromptIdsRef = useRef<Set<string>>(new Set());
   const activeTurnIdRef = useRef('');
   const modelSelectionResetKeyRef = useRef('');
   const modelRef = useRef(DEFAULT_MODEL_VALUE);
@@ -505,7 +510,7 @@ export function useClaudeRun({
 
   function enqueuePrompt(thread: ThreadSummary, submission: PromptSubmission) {
     const queuedPrompt: QueuedPrompt = {
-      id: crypto.randomUUID(),
+      id: submission.queueId ?? crypto.randomUUID(),
       prompt: submission.prompt,
       displayText: submission.displayText,
       attachments: submission.attachments,
@@ -513,6 +518,7 @@ export function useClaudeRun({
       initialAssistantItems: submission.initialAssistantItems,
       initialActivity: submission.initialActivity,
       reuseSession: submission.reuseSession,
+      queueStatus: submission.queueStatus ?? 'ready',
       createdAtMs: Date.now(),
     };
     threadSummariesByIdRef.current.set(thread.id, thread);
@@ -525,6 +531,66 @@ export function useClaudeRun({
       content: submission.prompt,
     });
     return queuedPrompt;
+  }
+
+  function updateQueuedPrompt(threadId: string, promptId: string, submission: PromptSubmission) {
+    const currentQueue = queuedPromptsByThreadIdRef.current[threadId] ?? [];
+    const index = currentQueue.findIndex((prompt) => prompt.id === promptId);
+    if (index === -1) {
+      return null;
+    }
+
+    const updatedPrompt: QueuedPrompt = {
+      ...currentQueue[index],
+      prompt: submission.prompt,
+      displayText: submission.displayText,
+      attachments: submission.attachments,
+      contentBlocks: submission.contentBlocks,
+      initialAssistantItems: submission.initialAssistantItems,
+      initialActivity: submission.initialActivity,
+      reuseSession: submission.reuseSession,
+      queueStatus: submission.queueStatus ?? 'ready',
+    };
+
+    updateQueuedPrompts((current) => {
+      const currentQueue = current[threadId] ?? [];
+      const index = currentQueue.findIndex((prompt) => prompt.id === promptId);
+      if (index === -1) {
+        return current;
+      }
+
+      const nextQueue = [...currentQueue];
+      nextQueue[index] = updatedPrompt;
+      return {
+        ...current,
+        [threadId]: nextQueue,
+      };
+    });
+
+    return updatedPrompt;
+  }
+
+  function removeQueuedPromptFromThread(threadId: string, promptId: string) {
+    let removedPrompt: QueuedPrompt | null = null;
+    updateQueuedPrompts((current) => {
+      const currentQueue = current[threadId] ?? [];
+      const index = currentQueue.findIndex((prompt) => prompt.id === promptId);
+      if (index === -1) {
+        return current;
+      }
+
+      removedPrompt = currentQueue[index];
+      const nextQueue = currentQueue.filter((prompt) => prompt.id !== promptId);
+      const next = { ...current };
+      if (nextQueue.length) {
+        next[threadId] = nextQueue;
+      } else {
+        delete next[threadId];
+      }
+      return next;
+    });
+
+    return removedPrompt;
   }
 
   function shiftQueuedPrompt(threadId: string) {
@@ -627,8 +693,20 @@ export function useClaudeRun({
       return false;
     }
 
+    if (targetPrompt.queueStatus === 'preparing') {
+      if (!options.silent) {
+        showToast('消息仍在准备附件，请稍后再引导。', 'info');
+      }
+      return false;
+    }
+
+    // 该排队提示正在引导中：忽略重复触发，避免 fetch 完成、提示出队前的窗口内被重复注入。
+    if (guidingPromptIdsRef.current.has(promptId)) {
+      return false;
+    }
+    guidingPromptIdsRef.current.add(promptId);
+
     try {
-      const requestImageAttachments = buildRunImageAttachments(targetPrompt.attachments);
       const response = await fetch(`/api/claude/run/${encodeURIComponent(context.runId)}/guide`, {
         method: 'POST',
         headers: {
@@ -641,7 +719,6 @@ export function useClaudeRun({
             attachments: targetPrompt.attachments,
             contentBlocks: targetPrompt.contentBlocks,
           }),
-          attachments: requestImageAttachments.length > 0 ? requestImageAttachments : undefined,
         }),
       });
       if (!response.ok) {
@@ -662,7 +739,10 @@ export function useClaudeRun({
         ...turn,
         items: [
           ...turn.items,
-          createGuideSystemItem(targetPrompt.displayText || targetPrompt.prompt),
+          createGuideSystemItem(
+            targetPrompt.displayText || targetPrompt.prompt,
+            stripTransientAttachmentData(targetPrompt.attachments),
+          ),
         ],
         activity: '已发送引导消息，等待 Claude 接收',
       }));
@@ -679,10 +759,18 @@ export function useClaudeRun({
         showToast(error instanceof Error ? error.message : '发送引导消息失败', 'error');
       }
       return false;
+    } finally {
+      guidingPromptIdsRef.current.delete(promptId);
     }
   }
 
   function maybeStartQueuedPrompt(context: RunContext) {
+    const currentQueue = queuedPromptsByThreadIdRef.current[context.threadId] ?? [];
+    if (currentQueue[0]?.queueStatus === 'preparing') {
+      notifyQueuedPromptsRetained(context.threadId);
+      return;
+    }
+
     const nextPrompt = shiftQueuedPrompt(context.threadId);
     if (!nextPrompt) {
       return;
@@ -1602,12 +1690,24 @@ export function useClaudeRun({
       attachments: submission.attachments,
       contentBlocks: submission.contentBlocks,
     });
-    if (submissionContentBlocks.length === 0) {
+    if (submissionContentBlocks.length === 0 && submission.queueStatus !== 'preparing') {
       return false;
     }
     threadSummariesByIdRef.current.set(thread.id, thread);
 
     if (isThreadRunning(thread.id)) {
+      if (submission.queueId && submission.queueStatus !== 'preparing') {
+        const queuedPrompt = updateQueuedPrompt(thread.id, submission.queueId, {
+          ...submission,
+          displayText: normalizeDisplayText(submission.displayText, ''),
+          queueStatus: 'ready',
+        });
+        if (queuedPrompt && autoGuideQueuedPrompts) {
+          void guideQueuedPrompt(queuedPrompt.id, { silent: true });
+        }
+        return true;
+      }
+
       const queuedPrompt = enqueuePrompt(thread, {
         prompt: trimmedPrompt,
         displayText: normalizeDisplayText(submission.displayText, ''),
@@ -1615,11 +1715,20 @@ export function useClaudeRun({
         contentBlocks: submission.contentBlocks,
         initialAssistantItems: submission.initialAssistantItems,
         initialActivity: submission.initialActivity,
+        queueId: submission.queueId,
+        queueStatus: submission.queueStatus ?? 'ready',
       });
-      if (autoGuideQueuedPrompts) {
+      if (autoGuideQueuedPrompts && queuedPrompt.queueStatus !== 'preparing') {
         void guideQueuedPrompt(queuedPrompt.id, { silent: true });
       }
       return true;
+    }
+
+    if (submission.queueId && submission.queueStatus !== 'preparing') {
+      const removedPrompt = removeQueuedPromptFromThread(thread.id, submission.queueId);
+      if (!removedPrompt) {
+        return true;
+      }
     }
 
     return startRun(thread, trimmedPrompt, {
@@ -2493,7 +2602,7 @@ function normalizeDisplayText(displayText: string | undefined, fallback: string)
   return fallback.trim();
 }
 
-function createGuideSystemItem(prompt: string): AssistantItem {
+function createGuideSystemItem(prompt: string, attachments?: UserImageAttachment[]): AssistantItem {
   return {
     id: crypto.randomUUID(),
     type: 'system-command',
@@ -2502,6 +2611,7 @@ function createGuideSystemItem(prompt: string): AssistantItem {
     cardType: 'compact',
     state: 'done',
     summary: prompt.trim(),
+    ...(attachments && attachments.length ? { attachments } : {}),
   };
 }
 

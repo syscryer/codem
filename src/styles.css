@@ -4670,6 +4670,22 @@ svg {
   color: var(--danger);
 }
 
+/* 引导卡片里的缩略图:左对齐 + 收窄尺寸,贴合紧凑卡片,避免默认靠右悬空留白 */
+.system-command-card .user-message-attachments {
+  justify-content: flex-start;
+}
+
+.system-command-card .user-message-attachment {
+  width: 104px;
+  gap: 5px;
+  padding: 6px;
+  border-radius: 12px;
+}
+
+.system-command-card .user-message-attachment-preview {
+  border-radius: 8px;
+}
+
 .system-command-card-details {
   color: var(--app-muted);
 }
@@ -8377,6 +8393,29 @@ body.git-history-resizing {
   isolation: isolate;
 }
 
+.composer-card-drag-active {
+  position: relative;
+  border-color: color-mix(in srgb, var(--accent, #2374c6) 60%, var(--app-border, #d8d8d8));
+  box-shadow:
+    0 18px 52px rgba(0, 0, 0, 0.08),
+    0 0 0 2px color-mix(in srgb, var(--accent, #2374c6) 36%, transparent);
+}
+
+.composer-drop-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 17px;
+  background: color-mix(in srgb, var(--accent, #2374c6) 12%, var(--app-surface, #ffffff));
+  color: color-mix(in srgb, var(--accent, #2374c6) 86%, var(--app-text, #242424));
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
 .slash-command-menu {
   width: 100%;
   max-width: calc(100vw - 36px);
@@ -8599,7 +8638,7 @@ body.git-history-resizing {
 .composer-queued-prompt {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) auto;
-  align-items: start;
+  align-items: center;
   gap: 8px;
   padding: 7px 9px;
   border: 1px solid #ececec;
@@ -8608,6 +8647,11 @@ body.git-history-resizing {
   color: #3d3d3d;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.composer-queued-prompt.is-preparing {
+  border-color: color-mix(in srgb, var(--accent) 24%, #ececec);
+  background: color-mix(in srgb, var(--accent) 7%, #f7f7f7);
 }
 
 .composer-queued-head {
@@ -8649,6 +8693,15 @@ body.git-history-resizing {
   word-break: break-word;
 }
 
+.composer-queued-status {
+  display: inline;
+  margin-left: 2px;
+  color: #8a8a8a;
+  font-size: 11px;
+  line-height: inherit;
+  white-space: nowrap;
+}
+
 .composer-queued-actions {
   display: inline-flex;
   align-items: center;
@@ -8661,8 +8714,7 @@ body.git-history-resizing {
   height: 22px;
   display: inline-grid;
   place-items: center;
-  align-self: start;
-  margin-top: -2px;
+  align-self: center;
   border: 0;
   border-radius: 7px;
   background: transparent;

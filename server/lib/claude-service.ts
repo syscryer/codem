@@ -1247,11 +1247,12 @@ function spawnClaudeRuntime(command: string, input: StreamInput, inputMode: Clau
     args.push('--resume', resumeSessionId);
   }
 
-  const child = spawn(command, args, {
+  const child = spawn(resolveClaudeSpawnCommand(command), resolveClaudeSpawnArgs(command, args), {
     cwd: input.workingDirectory,
     env: process.env,
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
+    shell: false,
   });
 
   const runtime: ClaudeRuntime = {
@@ -1273,6 +1274,16 @@ function spawnClaudeRuntime(command: string, input: StreamInput, inputMode: Clau
 
   bindClaudeRuntime(runtime);
   return runtime;
+}
+
+function resolveClaudeSpawnCommand(command: string) {
+  return process.platform === 'win32' && /\.(cmd|bat)$/i.test(command) ? 'cmd.exe' : command;
+}
+
+function resolveClaudeSpawnArgs(command: string, args: string[]) {
+  return process.platform === 'win32' && /\.(cmd|bat)$/i.test(command)
+    ? ['/d', '/s', '/c', command, ...args]
+    : args;
 }
 
 function bindClaudeRuntime(runtime: ClaudeRuntime) {
@@ -1968,13 +1979,31 @@ function resolveClaudeCommand() {
     return null;
   }
 
-  cachedClaudeCommand =
-    lookup.stdout
-      .split(/\r?\n/)
-      .map((item) => item.trim())
-      .find(Boolean) ?? null;
+  const candidates = lookup.stdout
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  cachedClaudeCommand = selectSpawnableClaudeCommand(candidates);
 
   return cachedClaudeCommand;
+}
+
+function selectSpawnableClaudeCommand(candidates: string[]) {
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  if (process.platform !== 'win32') {
+    return candidates[0] ?? null;
+  }
+
+  const spawnableExtensions = new Set(['.exe', '.cmd', '.bat', '.com']);
+  const preferredCandidate = candidates.find((candidate) =>
+    spawnableExtensions.has(candidate.slice(candidate.lastIndexOf('.')).toLowerCase()),
+  );
+
+  return preferredCandidate ?? candidates[0] ?? null;
 }
 
 function isNoResponseRequestedAssistant(payload: ClaudeJsonLine) {
@@ -2000,10 +2029,9 @@ export function buildClaudeInputMessage(input: StreamInput): ClaudeInputMessage 
     );
   }
 
-  const content = normalizeStreamInputContentBlocks(input).flatMap((block) => {
-    const mappedBlock = buildClaudeContentBlockFromInputBlock(block);
-    return mappedBlock ? [mappedBlock] : [];
-  });
+  const content = normalizeStreamInputContentBlocks(input).flatMap((block) =>
+    buildClaudeContentBlocksFromInputBlock(block),
+  );
 
   return {
     type: 'user',
@@ -2058,16 +2086,20 @@ function buildLegacyImageAttachmentsForNormalize(
   }));
 }
 
-function buildClaudeContentBlockFromInputBlock(block: InputContentBlock): ClaudeInputContentBlock | null {
+function buildClaudeContentBlocksFromInputBlock(block: InputContentBlock): ClaudeInputContentBlock[] {
   switch (block.type) {
     case 'text':
-      return {
-        type: 'text',
-        text: block.text,
-      };
-    case 'image':
+      return [
+        {
+          type: 'text',
+          text: block.text,
+        },
+      ];
+    case 'image': {
+      // 多模态模型用 base64 image block 直接“看”图；非多模态模型看不懂 image block，
+      // 因此只要图片落了本地路径，就额外补一条路径兜底文本，让它知道有图片并能用 ViewImage 打开。
       if (block.data && block.mimeType) {
-        return {
+        const imageBlock: ClaudeInputContentBlock = {
           type: 'image',
           source: {
             type: 'base64',
@@ -2075,29 +2107,66 @@ function buildClaudeContentBlockFromInputBlock(block: InputContentBlock): Claude
             data: block.data,
           },
         };
+        const fallbackText = buildInputImagePathFallbackText(block);
+        return fallbackText ? [imageBlock, { type: 'text', text: fallbackText }] : [imageBlock];
       }
-      return {
-        type: 'text',
-        text: buildInputImageReferenceText(block),
-      };
+      return [
+        {
+          type: 'text',
+          text: buildInputImageReferenceText(block),
+        },
+      ];
+    }
     case 'file_text':
-      return {
-        type: 'text',
-        text: buildInputFileTextBlockText(block),
-      };
+      return [
+        {
+          type: 'text',
+          text: buildInputFileTextBlockText(block),
+        },
+      ];
     case 'file_reference':
-      return {
-        type: 'text',
-        text: buildInputFileReferenceText(block),
-      };
+      return [
+        {
+          type: 'text',
+          text: buildInputFileReferenceText(block),
+        },
+      ];
     case 'attachment_metadata':
-      return {
-        type: 'text',
-        text: buildInputAttachmentMetadataText(block),
-      };
+      return [
+        {
+          type: 'text',
+          text: buildInputAttachmentMetadataText(block),
+        },
+      ];
     default:
-      return null;
+      return [];
   }
+}
+
+// Windows 反斜杠路径出现在发给模型的纯文本里时，\U、\D、\n 等会被模型当作转义序列，
+// 导致路径被理解 / 复述错乱（实测 C:\Users\...\Downloads\x.zip 会被还原成错误路径）。
+// 统一改成正斜杠：Claude Code 在 Windows 的 Read / Bash 等工具同样接受 /，无歧义。
+function toModelReadablePath(filePath: string): string {
+  return filePath.replace(/\\/g, '/');
+}
+
+// base64 image block 已发送给多模态模型时使用的兜底文本：仅在有本地路径时补充，
+// 措辞先说明图片已作为附件提供，再把 ViewImage + 路径作为兜底，避免诱导用 Read/Grep 读图。
+function buildInputImagePathFallbackText(
+  block: Extract<InputContentBlock, { type: 'image' }>,
+) {
+  if (!block.path) {
+    return '';
+  }
+
+  return [
+    '（以下为图片附件信息，多模态模型可直接查看上面的图片，无需读取文件）',
+    block.name ? `名称：${block.name}` : '',
+    `路径：${toModelReadablePath(block.path)}`,
+    '如果你无法直接识别上面的图片，请使用 ViewImage 查看该路径，不要用 Read 或 Grep 读取图片内容。',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function buildInputImageReferenceText(
@@ -2106,7 +2175,7 @@ function buildInputImageReferenceText(
   return [
     '[图片引用]',
     block.name ? `名称：${block.name}` : '',
-    block.path ? `路径：${block.path}` : '',
+    block.path ? `路径：${toModelReadablePath(block.path)}` : '',
     block.mimeType ? `类型：${block.mimeType}` : '',
     typeof block.size === 'number' ? `大小：${block.size} bytes` : '',
     '请使用 ViewImage 查看这张图片，不要用 Read 或 Grep 读取图片内容。',
@@ -2118,13 +2187,19 @@ function buildInputImageReferenceText(
 function buildInputFileTextBlockText(
   block: Extract<InputContentBlock, { type: 'file_text' }>,
 ) {
-  return `文件 ${block.path} 内容：\n\n${block.text}`;
+  return `文件 ${toModelReadablePath(block.path)} 内容：\n\n${block.text}`;
 }
 
 function buildInputFileReferenceText(
   block: Extract<InputContentBlock, { type: 'file_reference' }>,
 ) {
-  return `文件已作为路径引用提供：${block.path}${block.reason ? `\n原因：${block.reason}` : ''}`;
+  return [
+    `文件已作为路径引用提供：${toModelReadablePath(block.path)}`,
+    block.reason ? `原因：${block.reason}` : '',
+    '可使用 Read 等工具按需读取该文件内容。',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function buildInputAttachmentMetadataText(

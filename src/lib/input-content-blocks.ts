@@ -2,6 +2,7 @@ import type {
   InputContentBlock,
   InputContentBlockSummary,
   InputReferenceReason,
+  InputReferenceSource,
   UserImageAttachment,
 } from '../types.js';
 
@@ -208,6 +209,7 @@ function normalizeContentBlock(block: InputContentBlock): InputContentBlock | nu
         ...(trimOptionalString(block.mimeType) ? { mimeType: trimOptionalString(block.mimeType) } : {}),
         ...(normalizeSize(block.size) !== undefined ? { size: normalizeSize(block.size) } : {}),
         ...(normalizeReferenceReason(block.reason) ? { reason: normalizeReferenceReason(block.reason) } : {}),
+        ...(normalizeReferenceSource(block.source) ? { source: normalizeReferenceSource(block.source) } : {}),
       };
     }
     case 'attachment_metadata': {
@@ -260,6 +262,10 @@ function normalizeReferenceReason(value?: InputReferenceReason) {
   return value === 'too_large' || value === 'binary' || value === 'unsupported' || value === 'provider_unsupported'
     ? value
     : undefined;
+}
+
+function normalizeReferenceSource(value?: InputReferenceSource) {
+  return value === 'mention' || value === 'attachment' ? value : undefined;
 }
 
 function normalizeSize(value?: number) {

@@ -7,6 +7,14 @@ import { buildComposerContextUsage } from '../lib/composer-context-usage';
 import { classifyComposerFile, supportedComposerUploadAccept } from '../lib/composer-input-files';
 import { extractAtFileReferences, shouldSearchFileReferenceQuery } from '../lib/file-reference-paths';
 import { getWorkbenchFileIconKind, resolveWorkbenchFileIcon } from '../lib/workbench-files';
+import { isTauriRuntime } from '../lib/window-material';
+import { pickDesktopFiles } from '../lib/desktop-dialog';
+import { subscribeDesktopDragDrop } from '../lib/desktop-drag-drop';
+import {
+  dedupeAndValidateDesktopPaths,
+  getDesktopPathBasename,
+  isDesktopImagePath,
+} from '../lib/desktop-attachment-paths';
 import { PopoverPortal } from './PopoverPortal';
 import { ComposerContextIndicator } from './ComposerContextIndicator';
 import { SlashCommandMenu } from './SlashCommandMenu';
@@ -20,8 +28,10 @@ type PendingComposerAttachment =
   | {
       id: string;
       kind: 'image';
-      file: File;
+      file?: File;
       previewUrl: string;
+      // 桌面端拖拽 / 文件框选择的图片：已带真实路径与 base64，提交时直接复用，不走上传。
+      desktopImage?: ResolvedDesktopImage;
     }
   | {
       id: string;
@@ -34,7 +44,22 @@ type PendingComposerAttachment =
       kind: 'file_reference';
       file: File;
       reason: 'too_large' | 'unsupported';
+    }
+  | {
+      id: string;
+      // 桌面端拖拽 / 原生文件框选择的外部文件：直接持有真实磁盘绝对路径，作为路径引用发送。
+      kind: 'path_reference';
+      path: string;
+      name: string;
     };
+
+type ResolvedDesktopImage = {
+  path: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  data: string;
+};
 
 type FileReferenceSearchResult = {
   path: string;
@@ -66,7 +91,7 @@ type ComposerProps = {
   isRunning: boolean;
   draftScopeKey: string;
   draft: string;
-  queuedPrompts: Array<{ id: string; displayText: string; createdAtMs: number }>;
+  queuedPrompts: Array<{ id: string; displayText: string; createdAtMs: number; queueStatus?: 'preparing' | 'ready' }>;
   queuedPromptGuideAvailability: { available: boolean; reason?: string };
   onDraftChange: (value: string) => void;
   onSubmitPrompt: (submission: {
@@ -74,6 +99,8 @@ type ComposerProps = {
     displayText: string;
     attachments?: UserImageAttachment[];
     contentBlocks?: InputContentBlock[];
+    queueId?: string;
+    queueStatus?: 'preparing' | 'ready';
   }) => Promise<boolean> | boolean;
   onRemoveQueuedPrompt: (promptId: string) => void;
   onRecallQueuedPrompt: (promptId: string) => void;
@@ -119,6 +146,7 @@ export function Composer({
 }: ComposerProps) {
   const [attachments, setAttachments] = useState<PendingComposerAttachment[]>([]);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
@@ -182,6 +210,24 @@ export function Composer({
   useEffect(() => {
     attachmentsRef.current = attachments;
   }, [attachments]);
+
+  // 桌面端：订阅原生文件拖放事件，把拖入的真实路径转成附件。用 ref 持有最新回调避免闭包过期。
+  const appendDesktopPathsRef = useRef<(paths: string[]) => void>(() => {});
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    const unsubscribe = subscribeDesktopDragDrop({
+      onPhaseChange: (phase) => {
+        setDragActive(phase === 'enter' || phase === 'over');
+      },
+      onDrop: (paths) => {
+        setDragActive(false);
+        appendDesktopPathsRef.current(paths);
+      },
+    });
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     draftScopeKeyRef.current = draftScopeKey;
@@ -342,8 +388,37 @@ export function Composer({
       return;
     }
 
-    const contentBlocks: InputContentBlock[] = [];
+    function restoreSubmittedContent() {
+      if (draftScopeKeyRef.current === submitDraftScopeKey) {
+        setDraft(submittedDraft);
+        setAttachments(submittedAttachments);
+      } else {
+        disposeAttachmentPreviews(submittedAttachments);
+      }
+    }
+
+    setDraft('');
+    setAttachments([]);
+    setSelectionStart(0);
+    setSelectionEnd(0);
+
     const trimmedDraft = submittedDraft.trim();
+    const needsAsyncPreparation = submittedAttachments.length > 0 || extractAtFileReferences(submittedDraft).length > 0;
+    const pendingQueueId = isRunning && needsAsyncPreparation ? crypto.randomUUID() : '';
+    if (pendingQueueId) {
+      const queued = await onSubmitPrompt({
+        prompt: submittedDraft,
+        displayText: trimmedDraft,
+        queueId: pendingQueueId,
+        queueStatus: 'preparing',
+      });
+      if (!queued) {
+        restoreSubmittedContent();
+        return;
+      }
+    }
+
+    const contentBlocks: InputContentBlock[] = [];
     if (trimmedDraft) {
       contentBlocks.push({
         type: 'text',
@@ -361,6 +436,10 @@ export function Composer({
     if (submittedAttachments.length > 0) {
       if (!workspace.trim()) {
         showToast('请先选择工作目录后再添加附件。', 'info');
+        if (pendingQueueId) {
+          onRemoveQueuedPrompt(pendingQueueId);
+        }
+        restoreSubmittedContent();
         return;
       }
     }
@@ -370,6 +449,10 @@ export function Composer({
         uploadedAttachments = await uploadImageAttachments(imageAttachments, workspace.trim());
       } catch (error) {
         showToast(error instanceof Error ? error.message : '图片粘贴上传失败。', 'error');
+        if (pendingQueueId) {
+          onRemoveQueuedPrompt(pendingQueueId);
+        }
+        restoreSubmittedContent();
         return;
       }
     }
@@ -415,24 +498,32 @@ export function Composer({
           size: attachment.file.size,
           reason: attachment.reason === 'too_large' ? '文件超过 1MB，第一阶段不会内联发送。' : '文件类型暂不支持。',
         });
+        continue;
+      }
+
+      if (attachment.kind === 'path_reference') {
+        contentBlocks.push({
+          type: 'file_reference',
+          id: attachment.id,
+          path: attachment.path,
+          name: attachment.name,
+          source: 'attachment',
+        });
       }
     }
 
-    setDraft('');
-    setAttachments([]);
     const submitted = await onSubmitPrompt({
       prompt: submittedDraft,
       displayText: trimmedDraft,
       attachments: uploadedAttachments,
       contentBlocks,
+      ...(pendingQueueId ? { queueId: pendingQueueId, queueStatus: 'ready' as const } : {}),
     });
     if (!submitted) {
-      if (draftScopeKeyRef.current === submitDraftScopeKey) {
-        setDraft(submittedDraft);
-        setAttachments(submittedAttachments);
-      } else {
-        disposeAttachmentPreviews(submittedAttachments);
+      if (pendingQueueId) {
+        onRemoveQueuedPrompt(pendingQueueId);
       }
+      restoreSubmittedContent();
       return;
     }
 
@@ -442,7 +533,7 @@ export function Composer({
   function removeAttachment(attachmentId: string) {
     setAttachments((current) => {
       const target = current.find((item) => item.id === attachmentId);
-      if (target?.kind === 'image') {
+      if (target?.kind === 'image' && target.previewUrl.startsWith('blob:')) {
         URL.revokeObjectURL(target.previewUrl);
       }
       return current.filter((item) => item.id !== attachmentId);
@@ -534,6 +625,93 @@ export function Composer({
     ].filter(Boolean);
     showToast(`已添加${summaryParts.join('，')}。`, skippedCount > 0 ? 'info' : 'success');
   }
+
+  // 点击"添加附件"：桌面端走原生文件框拿真实路径，Web 端退回 HTML input。
+  async function handleAddAttachmentClick() {
+    if (isTauriRuntime()) {
+      const picked = await pickDesktopFiles(workspace.trim() || undefined);
+      if (picked === undefined) {
+        // 拿不到桌面对话框（异常）时退回 HTML input，保证仍可添加。
+        fileInputRef.current?.click();
+        return;
+      }
+      if (picked.length > 0) {
+        await appendDesktopPaths(picked);
+      }
+      return;
+    }
+    fileInputRef.current?.click();
+  }
+
+  // 桌面端拖拽 / 文件框拿到的真实磁盘路径：图片读为 base64 多模态，其它作为路径引用附件。
+  async function appendDesktopPaths(rawPaths: string[]) {
+    const validPaths = dedupeAndValidateDesktopPaths(rawPaths);
+    if (validPaths.length === 0) {
+      showToast('没有可添加的有效文件（已过滤敏感路径）。', 'info');
+      return;
+    }
+
+    const existingPaths = new Set(
+      attachmentsRef.current
+        .map((item) => (item.kind === 'path_reference' ? item.path : ''))
+        .filter(Boolean),
+    );
+
+    const nextAttachments: PendingComposerAttachment[] = [];
+    let imageCount = 0;
+    let referenceCount = 0;
+    let imageFailed = 0;
+
+    for (const filePath of validPaths) {
+      if (existingPaths.has(filePath)) {
+        continue;
+      }
+      existingPaths.add(filePath);
+
+      if (isDesktopImagePath(filePath)) {
+        const image = await readDesktopImageAttachment(filePath);
+        if (image) {
+          nextAttachments.push({
+            id: crypto.randomUUID(),
+            kind: 'image',
+            // 已经有 base64，直接用 data URL 预览，避免外部路径被 image-preview 的工作区校验拦下。
+            previewUrl: `data:${image.mimeType};base64,${image.data}`,
+            desktopImage: image,
+          });
+          imageCount += 1;
+          continue;
+        }
+        imageFailed += 1;
+        // 读图失败则降级为路径引用，至少让模型能用工具读取。
+      }
+
+      nextAttachments.push({
+        id: crypto.randomUUID(),
+        kind: 'path_reference',
+        path: filePath,
+        name: getDesktopPathBasename(filePath),
+      });
+      referenceCount += 1;
+    }
+
+    if (nextAttachments.length === 0) {
+      showToast('文件已在附件列表中。', 'info');
+      return;
+    }
+
+    setAttachments((current) => [...current, ...nextAttachments]);
+    const summaryParts = [
+      imageCount > 0 ? `${imageCount} 张图片` : '',
+      referenceCount > 0 ? `${referenceCount} 个文件引用` : '',
+      imageFailed > 0 ? `${imageFailed} 张图片读取失败已转为引用` : '',
+    ].filter(Boolean);
+    showToast(`已添加${summaryParts.join('，')}。`, imageFailed > 0 ? 'info' : 'success');
+  }
+
+  // 让拖放订阅始终调用到最新的 appendDesktopPaths（捕获最新 workspace / attachments）。
+  appendDesktopPathsRef.current = (paths: string[]) => {
+    void appendDesktopPaths(paths);
+  };
 
   function updateDraftSelection(
     nextSelectionStart: number,
@@ -675,7 +853,12 @@ export function Composer({
 
   return (
     <form className="composer" onSubmit={(event) => void handleSubmit(event)}>
-      <div ref={composerCardRef} className="composer-card">
+      <div ref={composerCardRef} className={`composer-card${dragActive ? ' composer-card-drag-active' : ''}`}>
+        {dragActive ? (
+          <div className="composer-drop-hint" aria-hidden="true">
+            松开以添加文件
+          </div>
+        ) : null}
         <PopoverPortal
           open={fileReferenceMenuOpen}
           anchorRef={composerCardRef}
@@ -749,17 +932,28 @@ export function Composer({
                 <small>{queuedPromptGuideAvailability.reason}</small>
               ) : null}
             </div>
-            {queuedPrompts.map((prompt, index) => (
-              <div key={prompt.id} className="composer-queued-prompt">
+            {queuedPrompts.map((prompt, index) => {
+              const isPreparing = prompt.queueStatus === 'preparing';
+              const guideDisabled = isPreparing || !queuedPromptGuideAvailability.available;
+              const guideTitle = isPreparing
+                ? '正在准备附件和文件引用'
+                : queuedPromptGuideAvailability.available
+                  ? '立即引导当前运行'
+                  : queuedPromptGuideAvailability.reason ?? '暂不能引导';
+              return (
+              <div key={prompt.id} className={`composer-queued-prompt${isPreparing ? ' is-preparing' : ''}`}>
                 <span className="composer-queued-index">{index + 1}</span>
-                <span className="composer-queued-text">{prompt.displayText || '图片消息'}</span>
+                <span className="composer-queued-text">
+                  {prompt.displayText || '图片消息'}
+                  {isPreparing ? <small className="composer-queued-status"> · 准备附件中...</small> : null}
+                </span>
                 <div className="composer-queued-actions">
                   <button
                     type="button"
                     className="composer-queued-action"
                     aria-label="立即引导当前运行"
-                    title={queuedPromptGuideAvailability.available ? '立即引导当前运行' : queuedPromptGuideAvailability.reason ?? '暂不能引导'}
-                    disabled={!queuedPromptGuideAvailability.available}
+                    title={guideTitle}
+                    disabled={guideDisabled}
                     onClick={() => void onGuideQueuedPrompt(prompt.id)}
                   >
                     <CornerDownRight size={13} />
@@ -784,7 +978,8 @@ export function Composer({
                   </button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         ) : null}
         {attachments.length > 0 ? (
@@ -792,15 +987,19 @@ export function Composer({
             {attachments.map((attachment) => (
               <div key={attachment.id} className="composer-attachment">
                 {attachment.kind === 'image' ? (
-                  <img src={attachment.previewUrl} alt={attachment.file.name || '粘贴图片'} className="composer-attachment-preview" />
+                  <img src={attachment.previewUrl} alt={attachmentDisplayName(attachment)} className="composer-attachment-preview" />
                 ) : (
                   <div className="composer-attachment-preview" aria-hidden="true">
-                    <Pencil size={18} />
+                    {attachment.kind === 'path_reference' ? <CornerDownRight size={18} /> : <Pencil size={18} />}
                   </div>
                 )}
                 <div className="composer-attachment-meta">
-                  <span className="composer-attachment-name">{attachment.file.name || 'pasted-image.png'}</span>
-                  <span className="composer-attachment-size">{formatAttachmentSize(attachment.file.size)}</span>
+                  <span className="composer-attachment-name">{attachmentDisplayName(attachment)}</span>
+                  {attachment.kind === 'path_reference' ? (
+                    <span className="composer-attachment-size" title={attachment.path}>{attachment.path}</span>
+                  ) : (
+                    <span className="composer-attachment-size">{attachmentSizeLabel(attachment)}</span>
+                  )}
                   <span className="composer-attachment-size">{attachmentLabel(attachment)}</span>
                 </div>
                 <button
@@ -854,7 +1053,7 @@ export function Composer({
                     role="menuitem"
                     onClick={() => {
                       setAddMenuOpen(false);
-                      fileInputRef.current?.click();
+                      void handleAddAttachmentClick();
                     }}
                   >
                     <Image size={15} />
@@ -1083,6 +1282,27 @@ async function uploadImageAttachments(attachments: PendingComposerAttachment[], 
   const uploadedAttachments: UserImageAttachment[] = [];
 
   for (const attachment of attachments) {
+    if (attachment.kind !== 'image') {
+      continue;
+    }
+
+    // 桌面端图片已带真实路径与 base64，直接复用，无需再次上传落盘。
+    if (attachment.desktopImage) {
+      uploadedAttachments.push({
+        id: attachment.id,
+        path: attachment.desktopImage.path,
+        mimeType: attachment.desktopImage.mimeType,
+        size: attachment.desktopImage.size,
+        name: attachment.desktopImage.name,
+        data: attachment.desktopImage.data,
+      });
+      continue;
+    }
+
+    if (!attachment.file) {
+      continue;
+    }
+
     const dataUrl = await readFileAsDataUrl(attachment.file);
     const imagePayload = extractImageDataUrlPayload(dataUrl);
     const response = await fetch('/api/system/attachments/image', {
@@ -1120,6 +1340,41 @@ async function uploadImageAttachments(attachments: PendingComposerAttachment[], 
   }
 
   return uploadedAttachments;
+}
+
+// 桌面端按真实路径读取图片，返回 base64，供构建多模态 image block。
+async function readDesktopImageAttachment(filePath: string): Promise<ResolvedDesktopImage | null> {
+  try {
+    const response = await fetch('/api/system/attachments/image-from-path', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ path: filePath }),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = (await response.json()) as {
+      path?: string;
+      name?: string;
+      mimeType?: string;
+      size?: number;
+      data?: string;
+    };
+    if (!payload.data || !payload.mimeType || !payload.path) {
+      return null;
+    }
+    return {
+      path: payload.path,
+      name: payload.name || getDesktopPathBasename(filePath),
+      mimeType: payload.mimeType,
+      size: typeof payload.size === 'number' ? payload.size : 0,
+      data: payload.data,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function readFileAsDataUrl(file: File) {
@@ -1185,12 +1440,36 @@ function attachmentLabel(attachment: PendingComposerAttachment) {
   if (attachment.kind === 'file_text') {
     return '文本内联';
   }
+  if (attachment.kind === 'path_reference') {
+    return '文件引用';
+  }
   return '大文件引用';
+}
+
+function attachmentDisplayName(attachment: PendingComposerAttachment) {
+  if (attachment.kind === 'path_reference') {
+    return attachment.name || 'file';
+  }
+  if (attachment.kind === 'image') {
+    return attachment.desktopImage?.name || attachment.file?.name || 'pasted-image.png';
+  }
+  return attachment.file.name || 'file';
+}
+
+function attachmentSizeLabel(attachment: PendingComposerAttachment) {
+  if (attachment.kind === 'path_reference') {
+    return '';
+  }
+  if (attachment.kind === 'image') {
+    const size = attachment.desktopImage?.size ?? attachment.file?.size;
+    return typeof size === 'number' ? formatAttachmentSize(size) : '';
+  }
+  return formatAttachmentSize(attachment.file.size);
 }
 
 function disposeAttachmentPreviews(attachments: PendingComposerAttachment[]) {
   for (const attachment of attachments) {
-    if (attachment.kind === 'image') {
+    if (attachment.kind === 'image' && attachment.previewUrl.startsWith('blob:')) {
       URL.revokeObjectURL(attachment.previewUrl);
     }
   }
@@ -1269,6 +1548,7 @@ async function resolveExistingFileReferenceBlocks(draft: string, workspace: stri
       type: 'file_reference',
       path: matchedFile.path,
       name: getPathBasename(matchedFile.path),
+      source: 'mention',
     });
   }
 

@@ -193,7 +193,7 @@ function ConversationTurnViewComponent({
               }
 
               if (item.type === 'system-command') {
-                return <SystemCommandCard key={item.id} item={item} />;
+                return <SystemCommandCard key={item.id} item={item} onPreviewImage={setImagePreview} />;
               }
 
               if (item.type === 'tool-group') {
@@ -394,7 +394,13 @@ function ThinkingMessage({ content }: { content: string }) {
   );
 }
 
-function SystemCommandCard({ item }: { item: SystemCommandItem }) {
+function SystemCommandCard({
+  item,
+  onPreviewImage,
+}: {
+  item: SystemCommandItem;
+  onPreviewImage: (preview: ImagePreviewItem) => void;
+}) {
   const detailText = formatSystemCommandDetails(item.details);
   const Icon = getSystemCommandIcon(item.cardType);
 
@@ -413,6 +419,9 @@ function SystemCommandCard({ item }: { item: SystemCommandItem }) {
         <span className="system-command-card-state">{formatSystemCommandState(item.state)}</span>
       </div>
       {item.summary ? <div className="system-command-card-summary preserve-format">{item.summary}</div> : null}
+      {item.attachments?.length ? (
+        <UserAttachmentGallery attachments={item.attachments} onPreviewImage={onPreviewImage} />
+      ) : null}
       {item.errorMessage ? <div className="system-command-card-error preserve-format">{item.errorMessage}</div> : null}
       {detailText ? (
         <details className="system-command-card-details">
@@ -437,8 +446,17 @@ function UserContentBlocks({
   blocks: InputContentBlockSummary[];
   onPreviewImage: (preview: ImagePreviewItem) => void;
 }) {
-  // file_reference 仅是路径引用，不显示在用户消息上（@文件 已经体现在 prompt 文本里）。
-  const visibleBlocks = blocks.filter((block) => block.type !== 'text' && block.type !== 'file_reference');
+  // file_reference 分两种来源：'mention'（@文件，路径已体现在 prompt 文本里）保持隐藏；
+  // 'attachment'（桌面端拖拽 / 文件框选择的文件）需要显示成附件卡片。
+  const visibleBlocks = blocks.filter((block) => {
+    if (block.type === 'text') {
+      return false;
+    }
+    if (block.type === 'file_reference') {
+      return block.source === 'attachment';
+    }
+    return true;
+  });
   if (visibleBlocks.length === 0) {
     return null;
   }

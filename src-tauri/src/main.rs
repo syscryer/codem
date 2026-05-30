@@ -302,6 +302,38 @@ fn pick_directory(initial_path: Option<String>) -> Result<Option<String>, String
 }
 
 #[tauri::command]
+fn pick_files(initial_path: Option<String>) -> Result<Vec<String>, String> {
+    let mut dialog = rfd::FileDialog::new();
+
+    if let Some(initial_path) = initial_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let resolved_path = PathBuf::from(initial_path);
+        let directory = if resolved_path.is_dir() {
+            Some(resolved_path)
+        } else {
+            resolved_path.parent().map(Path::to_path_buf)
+        };
+
+        if let Some(directory) = directory.filter(|value| value.is_dir()) {
+            dialog = dialog.set_directory(directory);
+        }
+    }
+
+    Ok(dialog
+        .pick_files()
+        .map(|paths| {
+            paths
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+#[tauri::command]
 fn get_backend_base_url(state: State<'_, BackendPortState>) -> Result<String, String> {
     let port = *state.port.lock().map_err(|error| error.to_string())?;
     Ok(format!("http://127.0.0.1:{port}"))
@@ -365,6 +397,7 @@ fn main() {
             resize_pty_session,
             close_pty_session,
             pick_directory,
+            pick_files,
             get_backend_base_url,
             show_thread_notification
         ])

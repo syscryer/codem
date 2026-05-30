@@ -138,6 +138,10 @@ export type UserImageAttachment = {
 
 export type InputReferenceReason = 'too_large' | 'binary' | 'unsupported' | 'provider_unsupported';
 
+// file_reference 的来源：'mention' 来自 @文件（路径已体现在 prompt 文本，不单独显示卡片）；
+// 'attachment' 来自桌面端拖拽 / 文件框选择的附件（需要在用户消息里显示成附件卡片）。
+export type InputReferenceSource = 'mention' | 'attachment';
+
 export type InputContentBlock =
   | {
       type: 'text';
@@ -170,6 +174,7 @@ export type InputContentBlock =
       mimeType?: string;
       size?: number;
       reason?: InputReferenceReason;
+      source?: InputReferenceSource;
     }
   | {
       type: 'attachment_metadata';
@@ -211,6 +216,7 @@ export type InputContentBlockSummary =
       mimeType?: string;
       size?: number;
       reason?: InputReferenceReason;
+      source?: InputReferenceSource;
     }
   | {
       type: 'attachment_metadata';
@@ -233,6 +239,8 @@ export type SystemCommandItem = {
   cardType: SlashCardType;
   state: 'running' | 'done' | 'error';
   summary?: string;
+  // 引导随附的图片：只存路径 / 元数据（不含 base64），供卡片显示缩略图。
+  attachments?: UserImageAttachment[];
   details?: Record<string, unknown>;
   errorMessage?: string;
 };

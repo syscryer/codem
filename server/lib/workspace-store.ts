@@ -123,6 +123,7 @@ export type ThreadTurn = {
         cardType: 'status' | 'context' | 'cost' | 'compact';
         state: 'running' | 'done' | 'error';
         summary?: string;
+        attachments?: UserImageAttachment[];
         details?: Record<string, unknown>;
         errorMessage?: string;
       }
@@ -5889,6 +5890,12 @@ function normalizeStoredSystemCommandItem(
     return null;
   }
 
+  const attachments = Array.isArray(item.attachments)
+    ? item.attachments
+        .map((attachment) => normalizeStoredUserAttachment(attachment))
+        .filter((attachment): attachment is UserImageAttachment => Boolean(attachment))
+    : [];
+
   return {
     id: firstNonEmptyString(item, ['id']) ?? randomUUID(),
     type: 'system-command',
@@ -5897,6 +5904,7 @@ function normalizeStoredSystemCommandItem(
     cardType,
     state,
     ...(typeof item.summary === 'string' && item.summary.trim() ? { summary: item.summary.trim() } : {}),
+    ...(attachments.length ? { attachments } : {}),
     ...(asRecord(item.details) ? { details: asRecord(item.details) as Record<string, unknown> } : {}),
     ...(typeof item.errorMessage === 'string' && item.errorMessage.trim()
       ? { errorMessage: item.errorMessage.trim() }
@@ -6117,6 +6125,7 @@ function normalizeStoredUserContentBlock(value: unknown): InputContentBlockSumma
       ...(item.reason === 'too_large' || item.reason === 'binary' || item.reason === 'unsupported' || item.reason === 'provider_unsupported'
         ? { reason: item.reason }
         : {}),
+      ...(item.source === 'mention' || item.source === 'attachment' ? { source: item.source } : {}),
     };
   }
 

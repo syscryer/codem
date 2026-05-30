@@ -1,10 +1,11 @@
 import express, { type ErrorRequestHandler, type RequestHandler } from 'express';
 import path from 'node:path';
 import { readFileSync, statSync } from 'node:fs';
-import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { normalizeInputContentBlocks } from '../src/lib/input-content-blocks.js';
-import type { InputContentBlock, InputReferenceReason } from '../src/types.js';
+import { validateDesktopFilePath } from '../src/lib/desktop-attachment-paths.js';
+import type { InputContentBlock, InputReferenceReason, InputReferenceSource } from '../src/types.js';
 import {
   acknowledgeRunEvents,
   cancelRun,
@@ -663,6 +664,59 @@ app.post('/api/system/attachments/image', async (request, response) => {
     });
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '图片保存失败');
+  }
+});
+
+// 桌面端拖拽 / 文件框选择的图片只有真实磁盘路径，这里按路径读取并返回 base64，
+// 供前端构建多模态 image content block（与粘贴上传的图片走同一套发送链路）。
+app.post('/api/system/attachments/image-from-path', async (request, response) => {
+  const rawPath = typeof request.body?.path === 'string' ? request.body.path.trim() : '';
+
+  if (!rawPath) {
+    response.status(400).send('path 不能为空');
+    return;
+  }
+
+  // 复用桌面附件的安全过滤：拒绝目录穿越与敏感路径（凭据 / 密钥 / .env 等），与前端
+  // validateDesktopFilePath 保持一致，避免绕过前端直接用该端点读取任意磁盘文件。
+  if (!validateDesktopFilePath(rawPath)) {
+    response.status(403).send('该路径不被允许。');
+    return;
+  }
+
+  const filePath = path.resolve(rawPath);
+
+  if (!isSupportedImageFilePath(filePath)) {
+    response.status(400).send('仅支持常见图片格式。');
+    return;
+  }
+
+  try {
+    const stats = await stat(filePath);
+    if (!stats.isFile()) {
+      response.status(400).send('目标不是文件');
+      return;
+    }
+    if (stats.size > 10 * 1024 * 1024) {
+      response.status(400).send('图片过大，请控制在 10MB 以内。');
+      return;
+    }
+
+    const buffer = await readFile(filePath);
+    if (buffer.length === 0) {
+      response.status(400).send('图片内容为空。');
+      return;
+    }
+
+    response.json({
+      path: filePath,
+      name: path.basename(filePath),
+      mimeType: imageMimeTypeFromFilePath(filePath),
+      size: buffer.length,
+      data: buffer.toString('base64'),
+    });
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '图片读取失败');
   }
 });
 
@@ -1942,6 +1996,7 @@ function normalizeProvidedClaudeRunContentBlock(value: unknown): InputContentBlo
       ...(normalizeOptionalString(item.mimeType) ? { mimeType: normalizeOptionalString(item.mimeType) } : {}),
       ...(normalizeNonNegativeNumber(item.size) !== undefined ? { size: normalizeNonNegativeNumber(item.size) } : {}),
       ...(normalizeInputReferenceReason(item.reason) ? { reason: normalizeInputReferenceReason(item.reason) } : {}),
+      ...(normalizeInputReferenceSource(item.source) ? { source: normalizeInputReferenceSource(item.source) } : {}),
     };
   }
 
@@ -1977,6 +2032,10 @@ function normalizeInputReferenceReason(value: unknown): InputReferenceReason | u
   return value === 'too_large' || value === 'binary' || value === 'unsupported' || value === 'provider_unsupported'
     ? value
     : undefined;
+}
+
+function normalizeInputReferenceSource(value: unknown): InputReferenceSource | undefined {
+  return value === 'mention' || value === 'attachment' ? value : undefined;
 }
 
 function parseImageDataUrl(dataUrl: string, requestedMimeType: string) {
@@ -2121,4 +2180,29 @@ function isSupportedImageFilePath(filePath: string) {
     extension === '.bmp' ||
     extension === '.avif'
   );
+}
+
+function imageMimeTypeFromFilePath(filePath: string) {
+  const extension = path.extname(filePath).toLowerCase();
+  switch (extension) {
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.webp':
+      return 'image/webp';
+    case '.gif':
+      return 'image/gif';
+    case '.bmp':
+      return 'image/bmp';
+    case '.avif':
+      return 'image/avif';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.ico':
+      return 'image/x-icon';
+    default:
+      return 'application/octet-stream';
+  }
 }

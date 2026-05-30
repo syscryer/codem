@@ -48,7 +48,10 @@ test('continuing a Claude thread reuses a managed runtime before spawning a new 
   assert.match(spawnClaudeRuntimeBody, /\[\s*['"]-p['"],\s*['"]['"],\s*['"]--input-format['"],\s*['"]stream-json['"]\s*\]/);
   assert.match(spawnClaudeRuntimeBody, /['"]--permission-prompt-tool['"][\s\S]*['"]stdio['"]/);
   assert.match(spawnClaudeRuntimeBody, /if\s*\(\s*resumeSessionId\s*\)\s*{\s*args\.push\(['"]--resume['"],\s*resumeSessionId\)/s);
-  assert.match(spawnClaudeRuntimeBody, /spawn\(command,\s*args,\s*{/);
+  assert.match(
+    spawnClaudeRuntimeBody,
+    /spawn\(resolveClaudeSpawnCommand\(command\),\s*resolveClaudeSpawnArgs\(command,\s*args\),\s*\{/,
+  );
 });
 
 test('reusable runtime prompts are sent through stream-json stdin', () => {
@@ -162,11 +165,11 @@ test('Claude input message maps neutral blocks into Claude stdin content', () =>
     },
     {
       type: 'text',
-      text: '文件已作为路径引用提供：D:\\workspace\\src\\App.tsx\n原因：too_large',
+      text: '文件已作为路径引用提供：D:/workspace/src/App.tsx\n原因：too_large\n可使用 Read 等工具按需读取该文件内容。',
     },
     {
       type: 'text',
-      text: '文件 D:\\workspace\\notes\\todo.md 内容：\n\nconsole.log("hi")',
+      text: '文件 D:/workspace/notes/todo.md 内容：\n\nconsole.log("hi")',
     },
     {
       type: 'text',
@@ -318,6 +321,64 @@ test('Claude input trace summarizes neutral blocks without exposing content', ()
   assert.doesNotMatch(summary, /SGVsbG8=/);
 });
 
+test('image content blocks with a local path append a ViewImage fallback text for non-multimodal models', () => {
+  const input = {
+    contentBlocks: [
+      {
+        type: 'image',
+        id: 'image-1',
+        path: 'D:\\workspace\\.codem-attachments\\pasted-1.png',
+        name: 'pasted-1.png',
+        mimeType: 'image/png',
+        size: 8,
+        data: 'iVBORw0KGgo=',
+      },
+    ],
+  } as Parameters<typeof buildClaudeInputMessage>[0];
+
+  const message = buildClaudeInputMessage(input);
+
+  assert.equal(message.message.content.length, 2);
+  assert.deepEqual(message.message.content[0], {
+    type: 'image',
+    source: {
+      type: 'base64',
+      media_type: 'image/png',
+      data: 'iVBORw0KGgo=',
+    },
+  });
+
+  const fallback = message.message.content[1] as { type: 'text'; text: string };
+  assert.equal(fallback.type, 'text');
+  assert.match(fallback.text, /D:\/workspace\/\.codem-attachments\/pasted-1\.png/);
+  assert.match(fallback.text, /ViewImage/);
+  assert.doesNotMatch(fallback.text, /iVBORw0KGgo=/);
+});
+
+test('image content blocks without a local path do not append fallback text', () => {
+  const input = {
+    contentBlocks: [
+      {
+        type: 'image',
+        mimeType: 'image/png',
+        data: 'iVBORw0KGgo=',
+      },
+    ],
+  } as Parameters<typeof buildClaudeInputMessage>[0];
+
+  const message = buildClaudeInputMessage(input);
+
+  assert.equal(message.message.content.length, 1);
+  assert.deepEqual(message.message.content[0], {
+    type: 'image',
+    source: {
+      type: 'base64',
+      media_type: 'image/png',
+      data: 'iVBORw0KGgo=',
+    },
+  });
+});
+
 test('trace summary uses content block summary instead of raw prompt details', () => {
   const body = extractFunctionBody('summarizeClaudeInputForTrace');
   assert.match(body, /summarizeInputContentBlocksForTrace/);
@@ -364,6 +425,30 @@ test('managed runtime compatibility includes the Claude provider fingerprint', (
   assert.match(createClaudeStreamBody, /providerFingerprint:\s*providerSnapshot\.fingerprint/);
   assert.match(isRuntimeCompatibleBody, /runtime\.providerFingerprint\s*===\s*input\.providerFingerprint/);
   assert.match(spawnClaudeRuntimeBody, /providerFingerprint:\s*input\.providerFingerprint/);
+});
+
+test('Windows Claude command resolution prefers spawnable executables over npm shell shims', () => {
+  const resolveBody = extractFunctionBody('resolveClaudeCommand');
+  const selectBody = extractFunctionBody('selectSpawnableClaudeCommand');
+
+  assert.match(resolveBody, /selectSpawnableClaudeCommand\(candidates\)/);
+  assert.match(selectBody, /process\.platform !== ['"]win32['"]/);
+  assert.match(selectBody, /new Set\(\[['"]\.exe['"], ['"]\.cmd['"], ['"]\.bat['"], ['"]\.com['"]\]\)/);
+  assert.match(selectBody, /candidates\.find/);
+  assert.match(selectBody, /preferredCandidate \?\? candidates\[0\] \?\? null/);
+});
+
+test('Windows Claude cmd shims are spawned through cmd.exe with wrapped args', () => {
+  const spawnClaudeRuntimeBody = extractFunctionBody('spawnClaudeRuntime');
+  const resolveCommandBody = extractFunctionBody('resolveClaudeSpawnCommand');
+  const resolveArgsBody = extractFunctionBody('resolveClaudeSpawnArgs');
+
+  assert.match(spawnClaudeRuntimeBody, /spawn\(resolveClaudeSpawnCommand\(command\),\s*resolveClaudeSpawnArgs\(command,\s*args\),\s*\{/);
+  assert.match(spawnClaudeRuntimeBody, /shell:\s*false/);
+  assert.match(resolveCommandBody, /process\.platform === ['"]win32['"]/);
+  assert.match(resolveCommandBody, /cmd\.exe/);
+  assert.match(resolveArgsBody, /\/\\\.\(cmd\|bat\)\$\/i/);
+  assert.match(resolveArgsBody, /['"]\/d['"],\s*['"]\/s['"],\s*['"]\/c['"],\s*command,\s*\.\.\.args/);
 });
 
 test('cold resume starts a stream-json runtime so tool results can be sent while running', () => {

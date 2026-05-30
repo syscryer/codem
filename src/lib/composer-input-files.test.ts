@@ -10,6 +10,27 @@ import {
 
 const composerSource = readFileSync(new URL('../components/Composer.tsx', import.meta.url), 'utf8');
 
+function extractFunctionBody(source: string, functionName: string) {
+  const marker = `function ${functionName}`;
+  const start = source.indexOf(marker);
+  assert.ok(start >= 0, `Missing function ${functionName}`);
+  const bodyStart = source.indexOf('{', start);
+  assert.ok(bodyStart >= 0, `Missing body for ${functionName}`);
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(bodyStart + 1, index);
+      }
+    }
+  }
+  throw new Error(`Could not extract function ${functionName}`);
+}
+
 test('classifyComposerFile supports images and small text/code files', () => {
   assert.deepEqual(
     classifyComposerFile({
@@ -96,6 +117,51 @@ test('Composer only restores failed submissions inside the same draft scope and 
   assert.match(composerSource, /if \(draftScopeKeyRef\.current === submitDraftScopeKey\) \{/);
   assert.match(composerSource, /disposeAttachmentPreviews\(submittedAttachments\);/);
   assert.match(composerSource, /useEffect\(\(\) => \{\s*return \(\) => \{\s*disposeAttachmentPreviews\(attachmentsRef\.current\);/s);
+});
+
+test('Composer clears submitted content before async attachment and @file resolution work', () => {
+  const handleSubmitBody = extractFunctionBody(composerSource, 'handleSubmit');
+  const clearIndex = handleSubmitBody.indexOf("setDraft('');", handleSubmitBody.indexOf("if (!submittedDraft.trim() && submittedAttachments.length === 0)"));
+  const resolveIndex = handleSubmitBody.indexOf('await resolveExistingFileReferenceBlocks');
+  const uploadIndex = handleSubmitBody.indexOf('await uploadImageAttachments');
+
+  assert.ok(clearIndex > -1);
+  assert.ok(resolveIndex > -1);
+  assert.ok(uploadIndex > -1);
+  assert.ok(clearIndex < resolveIndex);
+  assert.ok(clearIndex < uploadIndex);
+});
+
+test('Composer only creates a preparing queue item when attachments or @file references need async preparation', () => {
+  const handleSubmitBody = extractFunctionBody(composerSource, 'handleSubmit');
+  const preparingIndex = handleSubmitBody.indexOf("queueStatus: 'preparing'");
+  const readyIndex = handleSubmitBody.indexOf("queueStatus: 'ready'");
+  const resolveIndex = handleSubmitBody.indexOf('await resolveExistingFileReferenceBlocks');
+  const uploadIndex = handleSubmitBody.indexOf('await uploadImageAttachments');
+
+  assert.ok(preparingIndex > -1);
+  assert.ok(readyIndex > -1);
+  assert.ok(resolveIndex > -1);
+  assert.ok(uploadIndex > -1);
+  assert.match(handleSubmitBody, /const needsAsyncPreparation = submittedAttachments\.length > 0 \|\| extractAtFileReferences\(submittedDraft\)\.length > 0;/);
+  assert.match(handleSubmitBody, /const pendingQueueId = isRunning && needsAsyncPreparation \? crypto\.randomUUID\(\) : '';/);
+  assert.ok(preparingIndex < resolveIndex);
+  assert.ok(preparingIndex < uploadIndex);
+  assert.ok(resolveIndex < readyIndex);
+});
+
+test('Composer restores submitted content when attachment preparation fails before final submit', () => {
+  const handleSubmitBody = extractFunctionBody(composerSource, 'handleSubmit');
+
+  assert.match(handleSubmitBody, /function restoreSubmittedContent\(\) \{/);
+  assert.match(
+    handleSubmitBody,
+    /if \(!workspace\.trim\(\)\) \{[\s\S]*onRemoveQueuedPrompt\(pendingQueueId\);[\s\S]*restoreSubmittedContent\(\);[\s\S]*return;/,
+  );
+  assert.match(
+    handleSubmitBody,
+    /catch \(error\) \{[\s\S]*onRemoveQueuedPrompt\(pendingQueueId\);[\s\S]*restoreSubmittedContent\(\);[\s\S]*return;/,
+  );
 });
 
 test('Composer rebuilds uploaded image blocks in the original attachment order', () => {

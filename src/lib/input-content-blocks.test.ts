@@ -503,3 +503,33 @@ test('unsupported block errors do not leak block payloads', () => {
     },
   );
 });
+
+test('file_reference blocks preserve the attachment source marker through normalization', () => {
+  const blocks = normalizeInputContentBlocks({
+    contentBlocks: [
+      {
+        type: 'file_reference',
+        path: 'I:\\安装包\\redis\\redis-6.2.1.txt',
+        name: 'redis-6.2.1.txt',
+        source: 'attachment',
+      },
+      {
+        type: 'file_reference',
+        path: 'src/App.tsx',
+        name: 'App.tsx',
+        source: 'mention',
+      },
+      {
+        type: 'file_reference',
+        path: 'src/util.ts',
+        name: 'util.ts',
+        // 没有 source：保持 undefined，不臆造
+      },
+    ],
+  });
+
+  assert.equal(blocks.length, 3);
+  assert.equal(blocks[0].type === 'file_reference' && blocks[0].source, 'attachment');
+  assert.equal(blocks[1].type === 'file_reference' && blocks[1].source, 'mention');
+  assert.equal(blocks[2].type === 'file_reference' && 'source' in blocks[2], false);
+});

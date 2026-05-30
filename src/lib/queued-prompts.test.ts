@@ -112,7 +112,23 @@ test('guideQueuedPrompt sends the queued prompt to the active run without creati
     /fetch\(`\/api\/claude\/run\/\$\{encodeURIComponent\(context\.runId\)\}\/guide`/,
   );
   assert.match(guideQueuedPromptSource, /contentBlocks: targetPrompt\.contentBlocks,/);
+  assert.doesNotMatch(guideQueuedPromptSource, /attachments:\s*requestImageAttachments/);
   assert.doesNotMatch(guideQueuedPromptSource, /ensureActiveThread|createThread|startRun\(/);
+});
+
+test('guideQueuedPrompt waits for preparing queued prompts before sending guide payloads', () => {
+  const guideQueuedPromptSource = extractFunctionBody(useClaudeRunSource, 'guideQueuedPrompt');
+
+  assert.match(guideQueuedPromptSource, /targetPrompt\.queueStatus === 'preparing'/);
+  assert.doesNotMatch(guideQueuedPromptSource, /fetch\(`\/api\/claude\/run\/\$\{encodeURIComponent\(context\.runId\)\}\/guide`[\s\S]*queueStatus === 'preparing'/);
+});
+
+test('submitPromptToThread updates an existing preparing queue item when final content is ready', () => {
+  const submitPromptToThreadSource = extractFunctionBody(useClaudeRunSource, 'submitPromptToThread');
+
+  assert.match(submitPromptToThreadSource, /submission\.queueId/);
+  assert.match(submitPromptToThreadSource, /updateQueuedPrompt\(thread\.id,\s*submission\.queueId,/);
+  assert.match(submitPromptToThreadSource, /queueStatus: 'ready'/);
 });
 
 test('useClaudeRun preserves contentBlocks across queue, direct send, and guide payloads', () => {
@@ -129,7 +145,7 @@ test('useClaudeRun accepts contentBlocks-only submissions instead of requiring p
     useClaudeRunSource,
     /const submissionContentBlocks = buildRunContentBlocks\(\{\s*prompt: submission\.prompt,\s*attachments: submission\.attachments,\s*contentBlocks: submission\.contentBlocks,\s*\}\);/,
   );
-  assert.match(useClaudeRunSource, /if \(submissionContentBlocks\.length === 0\) \{/);
+  assert.match(useClaudeRunSource, /if \(submissionContentBlocks\.length === 0 && submission\.queueStatus !== 'preparing'\) \{/);
   assert.match(useClaudeRunSource, /if \(requestContentBlocks\.length === 0 \|\| isThreadRunning\(thread\.id\)\) \{/);
 });
 
@@ -141,7 +157,7 @@ test('submitPromptToThread queues without toast and optionally guides immediatel
   assert.match(submitPromptToThreadSource, /const queuedPrompt = enqueuePrompt\(thread, \{/);
   assert.match(
     submitPromptToThreadSource,
-    /if \(autoGuideQueuedPrompts\) \{\s*void guideQueuedPrompt\(queuedPrompt\.id, \{ silent: true \}\);\s*\}/,
+    /if \(autoGuideQueuedPrompts && queuedPrompt\.queueStatus !== 'preparing'\) \{\s*void guideQueuedPrompt\(queuedPrompt\.id, \{ silent: true \}\);\s*\}/,
   );
 });
 
@@ -172,10 +188,12 @@ test('useClaudeRun stores safe user content block summaries and ConversationTurn
   assert.match(conversationTurnSource, /const hasUserContentBlocks = Boolean\(turn\.userContentBlocks\?\.length\);/);
   assert.match(conversationTurnSource, /<UserContentBlocks blocks=\{turn\.userContentBlocks \?\? \[\]\} onPreviewImage=\{setImagePreview\} \/>/);
   assert.doesNotMatch(conversationTurnSource, /user-message-attachment-kind/);
-  // file_reference 块不渲染附件卡片，避免在用户消息里出现孤立的"路径气泡"
+  // 文本块不渲染卡片；@文件（mention 来源）的 file_reference 仍隐藏，
+  // 桌面端拖拽 / 文件框添加（attachment 来源）的 file_reference 需要显示成附件卡片。
+  assert.match(conversationTurnSource, /if \(block\.type === 'text'\) \{\s*return false;\s*\}/);
   assert.match(
     conversationTurnSource,
-    /blocks\.filter\(\(block\) => block\.type !== 'text' && block\.type !== 'file_reference'\)/,
+    /if \(block\.type === 'file_reference'\) \{\s*return block\.source === 'attachment';\s*\}/,
   );
 });
 
