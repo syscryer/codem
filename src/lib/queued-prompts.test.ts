@@ -140,6 +140,14 @@ test('useClaudeRun preserves contentBlocks across queue, direct send, and guide 
   assert.match(useClaudeRunSource, /contentBlocks: submission\.contentBlocks,/);
 });
 
+test('useClaudeRun avoids duplicating image base64 in run requests once contentBlocks are built', () => {
+  const startRunSource = extractFunctionBody(useClaudeRunSource, 'startRun');
+
+  assert.match(startRunSource, /contentBlocks: requestContentBlocks,/);
+  assert.doesNotMatch(startRunSource, /buildRunImageAttachments/);
+  assert.doesNotMatch(startRunSource, /attachments: requestImageAttachments/);
+});
+
 test('useClaudeRun accepts contentBlocks-only submissions instead of requiring prompt text', () => {
   assert.match(
     useClaudeRunSource,
@@ -161,14 +169,21 @@ test('submitPromptToThread queues without toast and optionally guides immediatel
   );
 });
 
-test('useClaudeRun refreshes Claude model options before resolving the run request model', () => {
+test('useClaudeRun starts the run request before refreshing Claude model options', () => {
   assert.match(useClaudeRunSource, /const previousModels = models;/);
-  assert.match(useClaudeRunSource, /const latestModels = options\?\.toolResult \? previousModels : \(await loadClaudeModels\(\)\) \?\? previousModels;/);
+  assert.match(useClaudeRunSource, /const latestModels = previousModels;/);
   assert.match(
     useClaudeRunSource,
     /resolveRunModelSelection\(\s*runModelCandidate,\s*latestModels,\s*appModelSettings\.defaultModelId,\s*previousModels,\s*\)/,
   );
   assert.match(useClaudeRunSource, /model: requestModel,/);
+  const startRunSource = extractFunctionBody(useClaudeRunSource, 'startRun');
+  const fetchRunIndex = startRunSource.indexOf("fetch('/api/claude/run'");
+  const refreshModelsIndex = startRunSource.indexOf('void loadClaudeModels()');
+  assert.ok(fetchRunIndex > -1);
+  assert.ok(refreshModelsIndex > -1);
+  assert.ok(fetchRunIndex < refreshModelsIndex);
+  assert.doesNotMatch(startRunSource, /await loadClaudeModels\(\)/);
 });
 
 test('useClaudeRun clears stale provider metadata and starts without the old session', () => {
@@ -197,7 +212,7 @@ test('useClaudeRun stores safe user content block summaries and ConversationTurn
   );
 });
 
-test('useClaudeRun renames untouched default empty threads from the first submitted message', () => {
+test('useClaudeRun renames untouched default empty threads without blocking the first message', () => {
   assert.match(useClaudeRunSource, /shouldAutoRenameThreadTitle/);
   assert.match(useClaudeRunSource, /renameThread: \(threadId: string, title: string, options\?: \{ showToast\?: boolean \}\) => Promise<ThreadSummary \| null>;/);
   assert.match(
@@ -210,8 +225,9 @@ test('useClaudeRun renames untouched default empty threads from the first submit
   );
   assert.match(
     useClaudeRunSource,
-    /return \(await renameThread\(activeThreadSummary\.id, nextThreadTitle, \{ showToast: false \}\)\) \?\? activeThreadSummary;/,
+    /void renameThread\(activeThreadSummary\.id, nextThreadTitle, \{ showToast: false \}\)/,
   );
+  assert.doesNotMatch(useClaudeRunSource, /return \(await renameThread\(activeThreadSummary\.id, nextThreadTitle, \{ showToast: false \}\)\) \?\? activeThreadSummary;/);
 });
 
 test('ConversationTurn hides the internal guide command label from guided queue cards', () => {

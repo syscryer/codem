@@ -1,5 +1,5 @@
 import { ArrowDown } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { ConversationTurnView } from './ConversationTurn';
 import { findLatestChangedFilesTurnId } from '../lib/conversation-changed-files';
 import { resolveEmptyConversationCopy } from '../lib/new-chat-draft';
@@ -46,6 +46,16 @@ type ConversationPaneProps = {
   ) => Promise<boolean>;
 };
 
+function useLatestCallback<T extends (...args: never[]) => unknown>(callback: T): T {
+  const callbackRef = useRef(callback);
+
+  useLayoutEffect(() => {
+    callbackRef.current = callback;
+  }, [callback]);
+
+  return useCallback(((...args: Parameters<T>) => callbackRef.current(...args)) as T, []);
+}
+
 export function ConversationPane({
   activeThread,
   isNewChatDraft,
@@ -68,6 +78,13 @@ export function ConversationPane({
   const shouldAutoFollowRef = useRef(true);
   const previousThreadIdRef = useRef<string | null>(null);
   const latestChangedFilesTurnId = activeThread ? findLatestChangedFilesTurnId(activeThread.turns) : null;
+  const stableOpenWorkbenchPreview = useLatestCallback(onOpenWorkbenchPreview);
+  const stableOpenOutputPath = useLatestCallback(onOpenOutputPath);
+  const stableRevealOutputPath = useLatestCallback(onRevealOutputPath);
+  const stableUndoChangedFiles = useLatestCallback(onUndoChangedFiles);
+  const stableSubmitRequestUserInput = useLatestCallback(onSubmitRequestUserInput);
+  const stableSubmitRuntimeRecoveryAction = useLatestCallback(onSubmitRuntimeRecoveryAction);
+  const stableSubmitApprovalDecision = useLatestCallback(onSubmitApprovalDecision);
 
   function syncBottomAnchorVisibility() {
     const transcript = transcriptRef.current;
@@ -180,17 +197,17 @@ export function ConversationPane({
             <ConversationTurnView
               key={turn.id}
               turn={turn}
-              nowMs={clockNowMs}
+              nowMs={isRunning && turn.id === activeTurnId ? clockNowMs : 0}
               isLiveRunning={isRunning && turn.id === activeTurnId}
               isLatest={index === activeThread.turns.length - 1}
               canUndoChangedFiles={turn.id === latestChangedFilesTurnId && undoneTurnIds[turn.id] !== true}
-              onOpenWorkbenchPreview={onOpenWorkbenchPreview}
-              onOpenOutputPath={onOpenOutputPath}
-              onRevealOutputPath={onRevealOutputPath}
-              onUndoChangedFiles={onUndoChangedFiles}
-              onSubmitRequestUserInput={onSubmitRequestUserInput}
-              onSubmitRuntimeRecoveryAction={onSubmitRuntimeRecoveryAction}
-              onSubmitApprovalDecision={onSubmitApprovalDecision}
+              onOpenWorkbenchPreview={stableOpenWorkbenchPreview}
+              onOpenOutputPath={stableOpenOutputPath}
+              onRevealOutputPath={stableRevealOutputPath}
+              onUndoChangedFiles={stableUndoChangedFiles}
+              onSubmitRequestUserInput={stableSubmitRequestUserInput}
+              onSubmitRuntimeRecoveryAction={stableSubmitRuntimeRecoveryAction}
+              onSubmitApprovalDecision={stableSubmitApprovalDecision}
             />
           ))
         )}

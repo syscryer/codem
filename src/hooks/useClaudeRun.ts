@@ -8,7 +8,6 @@ import { normalizeSessionId, resolvePromptSubmissionSessionId } from '../lib/cla
 import {
   buildHistoryContentBlocks,
   buildRunContentBlocks,
-  buildRunImageAttachments,
   stripTransientAttachmentData,
 } from '../lib/claude-run-attachments';
 import {
@@ -364,11 +363,9 @@ export function useClaudeRun({
     if (activeThreadSummary) {
       const nextThreadTitle = submission ? buildNewChatTitleFromSubmission(submission) : '';
       if (shouldAutoRenameThreadTitle(activeThreadSummary.title, nextThreadTitle)) {
-        try {
-          return (await renameThread(activeThreadSummary.id, nextThreadTitle, { showToast: false })) ?? activeThreadSummary;
-        } catch (error) {
+        void renameThread(activeThreadSummary.id, nextThreadTitle, { showToast: false }).catch((error) => {
           showToast(error instanceof Error ? error.message : '聊天名称更新失败', 'error');
-        }
+        });
       }
 
       return activeThreadSummary;
@@ -946,7 +943,6 @@ export function useClaudeRun({
       contentBlocks: options?.contentBlocks,
     });
     const turnAttachments = stripTransientAttachmentData(options?.attachments);
-    const requestImageAttachments = buildRunImageAttachments(options?.attachments);
     const submitAtMs = Date.now();
     const turnId = crypto.randomUUID();
     const turnDisplayText = normalizeDisplayText(options?.displayText, trimmedPrompt);
@@ -997,7 +993,7 @@ export function useClaudeRun({
     );
 
     const previousModels = models;
-    const latestModels = options?.toolResult ? previousModels : (await loadClaudeModels()) ?? previousModels;
+    const latestModels = previousModels;
     if (!runContextsByThreadIdRef.current.has(context.threadId)) {
       return true;
     }
@@ -1026,89 +1022,94 @@ export function useClaudeRun({
     const controller = new AbortController();
     context.abortController = controller;
 
-    try {
-      appendTraceDebug(context, 'client_submit', submitAtMs, `${trimmedPrompt.length} chars`);
-      appendTraceDebug(context, 'fetch_start');
-      const response = await fetch('/api/claude/run', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          threadId: thread.id,
-          turnId,
-          prompt: trimmedPrompt,
-          workingDirectory: runWorkingDirectory,
-          permissionMode: runPermissionMode,
-          model: requestModel,
-          effort: requestEffort,
-          sessionId: runSessionId,
-          toolResult: options?.toolResult,
-          contentBlocks: requestContentBlocks,
-          attachments: requestImageAttachments.length > 0 ? requestImageAttachments : undefined,
-          clientSubmitAtMs: submitAtMs,
-        }),
-        signal: controller.signal,
-      });
-      appendTraceDebug(context, 'response_headers');
+    void (async () => {
+      try {
+        appendTraceDebug(context, 'client_submit', submitAtMs, `${trimmedPrompt.length} chars`);
+        appendTraceDebug(context, 'fetch_start');
+        const runRequest = fetch('/api/claude/run', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            threadId: thread.id,
+            turnId,
+            prompt: trimmedPrompt,
+            workingDirectory: runWorkingDirectory,
+            permissionMode: runPermissionMode,
+            model: requestModel,
+            effort: requestEffort,
+            sessionId: runSessionId,
+            toolResult: options?.toolResult,
+            contentBlocks: requestContentBlocks,
+            clientSubmitAtMs: submitAtMs,
+          }),
+          signal: controller.signal,
+        });
+        if (!options?.toolResult) {
+          void loadClaudeModels();
+        }
+        const response = await runRequest;
+        appendTraceDebug(context, 'response_headers');
 
-      if (!response.ok || !response.body) {
-        const message = await response.text();
+        if (!response.ok || !response.body) {
+          const message = await response.text();
+          updateRunningTurn(context, (turn) => ({
+            ...turn,
+            items: settleRunningSystemCommandItems(turn.items, 'error', message || '后端没有返回可读流。'),
+            status: 'error',
+            durationMs: turn.durationMs ?? getElapsedDuration(turn),
+            activity: message || '后端没有返回可读流。',
+          }));
+          schedulePersistThreadHistory(context.threadId);
+          emitRunSettledNotice(context, 'failed');
+          return;
+        }
+
+        const sawTerminalEvent = await consumeClaudeEventStream(response, context);
+
+        if (!sawTerminalEvent) {
+          flushQueuedAssistantTextNow(context);
+          updateRunningTurn(context, closeTurnAfterUnexpectedStreamEnd);
+          schedulePersistThreadHistory(context.threadId);
+          emitRunSettledNotice(context, 'failed');
+        }
+      } catch (error) {
+        flushQueuedAssistantTextNow(context);
         updateRunningTurn(context, (turn) => ({
           ...turn,
-          items: settleRunningSystemCommandItems(turn.items, 'error', message || '后端没有返回可读流。'),
-          status: 'error',
+          ...settleRunningToolSteps(turn, error instanceof DOMException && error.name === 'AbortError' ? 'done' : 'error'),
+          items: settleRunningSystemCommandItems(
+            turn.items,
+            'error',
+            error instanceof DOMException && error.name === 'AbortError'
+              ? '上下文压缩已停止。'
+              : error instanceof Error
+                ? error.message
+                : '未知错误',
+          ),
+          status: error instanceof DOMException && error.name === 'AbortError' ? 'stopped' : 'error',
           durationMs: turn.durationMs ?? getElapsedDuration(turn),
-          activity: message || '后端没有返回可读流。',
+          activity:
+            error instanceof DOMException && error.name === 'AbortError'
+              ? '已停止当前运行'
+              : formatRuntimeErrorActivity(
+                  error instanceof Error ? error.message : '未知错误',
+                  turn.recoveryHint ??
+                    createRuntimeRecoveryHint(error instanceof Error ? error.message : '未知错误', 'process') ??
+                    undefined,
+                ),
         }));
         schedulePersistThreadHistory(context.threadId);
-        emitRunSettledNotice(context, 'failed');
-        return true;
+        if (!(error instanceof DOMException && error.name === 'AbortError')) {
+          emitRunSettledNotice(context, 'failed');
+        }
+        notifyQueuedPromptsRetained(context.threadId);
+      } finally {
+        context.abortController = null;
+        removeRunContext(context);
       }
-
-      const sawTerminalEvent = await consumeClaudeEventStream(response, context);
-
-      if (!sawTerminalEvent) {
-        flushQueuedAssistantTextNow(context);
-        updateRunningTurn(context, closeTurnAfterUnexpectedStreamEnd);
-        schedulePersistThreadHistory(context.threadId);
-        emitRunSettledNotice(context, 'failed');
-      }
-    } catch (error) {
-      flushQueuedAssistantTextNow(context);
-      updateRunningTurn(context, (turn) => ({
-        ...turn,
-        ...settleRunningToolSteps(turn, error instanceof DOMException && error.name === 'AbortError' ? 'done' : 'error'),
-        items: settleRunningSystemCommandItems(
-          turn.items,
-          'error',
-          error instanceof DOMException && error.name === 'AbortError'
-            ? '上下文压缩已停止。'
-            : error instanceof Error
-              ? error.message
-              : '未知错误',
-        ),
-        status: error instanceof DOMException && error.name === 'AbortError' ? 'stopped' : 'error',
-        durationMs: turn.durationMs ?? getElapsedDuration(turn),
-        activity:
-          error instanceof DOMException && error.name === 'AbortError'
-            ? '已停止当前运行'
-            : formatRuntimeErrorActivity(
-                error instanceof Error ? error.message : '未知错误',
-                turn.recoveryHint ??
-                  createRuntimeRecoveryHint(error instanceof Error ? error.message : '未知错误', 'process') ??
-                  undefined,
-              ),
-      }));
-      schedulePersistThreadHistory(context.threadId);
-      if (!(error instanceof DOMException && error.name === 'AbortError')) {
-        emitRunSettledNotice(context, 'failed');
-      }
-      notifyQueuedPromptsRetained(context.threadId);
-    } finally {
-      context.abortController = null;
-      removeRunContext(context);
-    }
+    })();
 
     return true;
   }
