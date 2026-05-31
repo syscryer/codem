@@ -19,6 +19,7 @@ import {
   markRunDetached,
   markThreadRunDetached,
   reconnectClaudeRunEvents,
+  requestThreadRuntimeContext,
   submitRunApprovalDecision,
   submitRunGuidePrompt,
   submitRunRequestUserInput,
@@ -1666,6 +1667,20 @@ app.delete('/api/claude/run/:runId', (request, response) => {
 app.post('/api/claude/runtime/:threadId/close', (request, response) => {
   const closed = closeThreadRuntime(request.params.threadId);
   response.json({ closed });
+});
+
+app.post('/api/claude/runtime/:threadId/context', async (request, response) => {
+  const timeoutMs =
+    typeof request.body?.timeoutMs === 'number' && Number.isFinite(request.body.timeoutMs)
+      ? request.body.timeoutMs
+      : undefined;
+  const result = await requestThreadRuntimeContext(request.params.threadId, { timeoutMs });
+  if (!result.ok) {
+    response.status(result.httpStatus).json(result);
+    return;
+  }
+
+  response.json(result);
 });
 
 app.get('/api/claude/runtimes', (_request, response) => {

@@ -28,6 +28,48 @@ export type UsageSnapshot = {
   usageSource?: 'context' | 'message' | 'result';
 };
 
+export type ClaudeContextSummary = {
+  hasContextUsage: boolean;
+  hasMcpTools: boolean;
+  hasFreeSpace: boolean;
+  hasSystemPrompt: boolean;
+  hasMemory: boolean;
+  hasSkills: boolean;
+  model?: string;
+  usedTokens?: number;
+  totalTokens?: number;
+  freeTokens?: number;
+  percent?: number;
+  categories: {
+    systemPrompt?: number;
+    memoryFiles?: number;
+    skills?: number;
+    messages?: number;
+    freeSpace?: number;
+  };
+  mcpToolCount: number;
+  memoryFileCount: number;
+  skillCount: number;
+  markdownChars: number;
+};
+
+export type ClaudeContextSnapshot = {
+  source: 'stream-json';
+  requestedAtMs: number;
+  durationMs: number;
+  eventCount: number;
+  markdown: string;
+  markdownTruncated: boolean;
+  summary: ClaudeContextSummary;
+};
+
+export type ClaudeContextRequestState = {
+  status: 'idle' | 'loading' | 'success' | 'error';
+  context?: ClaudeContextSnapshot;
+  error?: string;
+  updatedAtMs?: number;
+};
+
 export type RuntimeReconnectReason =
   | 'resume-session-missing'
   | 'broken-pipe'
@@ -880,12 +922,14 @@ export type WorkspaceBootstrap = {
 export type ThreadHistoryPayload = {
   threadId: string;
   turns: ConversationTurn[];
+  claudeContext?: ClaudeContextSnapshot;
 };
 
 export type ThreadDetail = ThreadSummary & {
   turns: ConversationTurn[];
   debugEvents: DebugEvent[];
   rawEvents: string[];
+  claudeContext?: ClaudeContextSnapshot;
   historyLoaded: boolean;
   historyLoading: boolean;
 };

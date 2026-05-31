@@ -112,6 +112,294 @@ test('getThreadHistory keeps stored cost metrics when transcript lacks total_cos
   }
 });
 
+test('getThreadHistory returns latest Claude /context local command snapshot separately from turns', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-history-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+  const sessionId = 'session-context-1';
+  const transcriptPath = path.join(
+    root,
+    '.claude',
+    'projects',
+    path.resolve(repo).replace(/[^a-zA-Z0-9]/g, '-'),
+    `${sessionId}.jsonl`,
+  );
+  const contextStdout = [
+    'Context Usage',
+    '',
+    'Model: claude-opus-4-8[1m]',
+    '2.8k/1m tokens (0%)',
+    '',
+    'Estimated usage by category',
+    'System prompt: 921 tokens',
+    'Memory files: 157 tokens',
+    'Skills: 1.7k tokens',
+    'Messages: 5 tokens',
+    'Free space: 997.2k',
+  ].join('\n');
+
+  try {
+    mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: 'user',
+          sessionId,
+          cwd: repo,
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'hello' }],
+          },
+          timestamp: '2026-05-05T00:00:00.000Z',
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          sessionId,
+          cwd: repo,
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'world' }],
+          },
+          timestamp: '2026-05-05T00:00:01.000Z',
+        }),
+        JSON.stringify({
+          type: 'system',
+          subtype: 'local_command',
+          sessionId,
+          cwd: repo,
+          content: [
+            '<command-name>/context</command-name>',
+            `<local-command-stdout>${contextStdout}</local-command-stdout>`,
+          ].join('\n'),
+          timestamp: '2026-05-05T00:00:02.000Z',
+        }),
+      ].join('\n'),
+      'utf8',
+    );
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const { createProject, createThread, updateThreadMetadata, getThreadHistory } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const threadId = createThread(projectId, 'history-context');
+          updateThreadMetadata(threadId, {
+            sessionId: ${JSON.stringify(sessionId)},
+            workingDirectory: ${JSON.stringify(repo)},
+          });
+          const history = getThreadHistory(threadId);
+          console.log(JSON.stringify({
+            turnCount: history.turns.length,
+            assistantText: history.turns[0]?.assistantText,
+            context: history.claudeContext ? {
+              usedTokens: history.claudeContext.summary.usedTokens,
+              totalTokens: history.claudeContext.summary.totalTokens,
+              freeTokens: history.claudeContext.summary.freeTokens,
+              model: history.claudeContext.summary.model,
+              hasSystemPrompt: history.claudeContext.summary.hasSystemPrompt,
+            } : null,
+          }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+          USERPROFILE: root,
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    assert.deepEqual(JSON.parse(child.stdout.trim()), {
+      turnCount: 1,
+      assistantText: 'world',
+      context: {
+        usedTokens: 2_800,
+        totalTokens: 1_000_000,
+        freeTokens: 997_200,
+        model: 'claude-opus-4-8[1m]',
+        hasSystemPrompt: true,
+      },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('getThreadHistory reparses stored histories polluted by Claude local command transcript blocks', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-history-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+  const sessionId = 'session-local-command-pollution-1';
+  const transcriptPath = path.join(
+    root,
+    '.claude',
+    'projects',
+    path.resolve(repo).replace(/[^a-zA-Z0-9]/g, '-'),
+    `${sessionId}.jsonl`,
+  );
+  const compactCommand = [
+    '<command-name>/compact</command-name>',
+    '<command-message>compact</command-message>',
+    '<command-args></command-args>',
+  ].join('\n');
+  const compactStdout = '<local-command-stdout>Compacted </local-command-stdout>';
+  const contextCommand = [
+    '<command-name>/context</command-name>',
+    '<command-message>context</command-message>',
+    '<command-args></command-args>',
+  ].join('\n');
+  const contextStdout = '<local-command-stdout>Context Usage\n2.8k/1m tokens (0%)</local-command-stdout>';
+
+  try {
+    mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: 'user',
+          sessionId,
+          cwd: repo,
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'hello' }],
+          },
+          timestamp: '2026-05-05T00:00:00.000Z',
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          sessionId,
+          cwd: repo,
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'world' }],
+          },
+          timestamp: '2026-05-05T00:00:01.000Z',
+        }),
+        JSON.stringify({
+          type: 'system',
+          subtype: 'local_command',
+          sessionId,
+          cwd: repo,
+          content: [compactCommand, compactStdout].join('\n'),
+          timestamp: '2026-05-05T00:00:02.000Z',
+        }),
+        JSON.stringify({
+          type: 'system',
+          subtype: 'local_command',
+          sessionId,
+          cwd: repo,
+          content: [contextCommand, contextStdout].join('\n'),
+          timestamp: '2026-05-05T00:00:03.000Z',
+        }),
+      ].join('\n'),
+      'utf8',
+    );
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const { createProject, createThread, saveThreadHistory, updateThreadMetadata, getThreadHistory } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const threadId = createThread(projectId, 'history-local-command-pollution');
+          saveThreadHistory(threadId, [
+            {
+              id: 'turn-clean',
+              userText: 'hello',
+              assistantText: 'world',
+              status: 'done',
+              items: [{ id: 'item-clean', type: 'text', text: 'world' }],
+              tools: [],
+            },
+            {
+              id: 'turn-dirty-compact-command',
+              userText: '',
+              assistantText: ${JSON.stringify(compactCommand)},
+              status: 'stopped',
+              items: [{ id: 'item-dirty-compact-command', type: 'text', text: ${JSON.stringify(compactCommand)} }],
+              tools: [],
+            },
+            {
+              id: 'turn-dirty-compact-stdout',
+              userText: '',
+              assistantText: ${JSON.stringify(compactStdout)},
+              status: 'stopped',
+              items: [{ id: 'item-dirty-compact-stdout', type: 'text', text: ${JSON.stringify(compactStdout)} }],
+              tools: [],
+            },
+            {
+              id: 'turn-dirty-context-command',
+              userText: '',
+              assistantText: ${JSON.stringify(contextCommand)},
+              status: 'stopped',
+              items: [{ id: 'item-dirty-context-command', type: 'text', text: ${JSON.stringify(contextCommand)} }],
+              tools: [],
+            },
+          ]);
+          updateThreadMetadata(threadId, {
+            sessionId: ${JSON.stringify(sessionId)},
+            workingDirectory: ${JSON.stringify(repo)},
+          });
+          const history = getThreadHistory(threadId);
+          console.log(JSON.stringify({
+            turns: history.turns.map((turn) => ({
+              userText: turn.userText,
+              assistantText: turn.assistantText,
+              items: turn.items.map((item) => item.type === 'text' ? item.text : item.type),
+            })),
+            context: history.claudeContext ? {
+              usedTokens: history.claudeContext.summary.usedTokens,
+              totalTokens: history.claudeContext.summary.totalTokens,
+            } : null,
+          }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+          USERPROFILE: root,
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    assert.deepEqual(JSON.parse(child.stdout.trim()), {
+      turns: [
+        {
+          userText: 'hello',
+          assistantText: 'world',
+          items: ['world'],
+        },
+      ],
+      context: {
+        usedTokens: 2_800,
+        totalTokens: 1_000_000,
+      },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('updateThreadMetadata clears a stored model when model is null', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-history-'));
   const appData = path.join(root, 'appdata');

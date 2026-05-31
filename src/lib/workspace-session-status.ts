@@ -16,7 +16,10 @@ export type WorkspaceSessionRuntimeSnapshot = {
 export type WorkspaceSessionUsageSummary = {
   turnCountLabel: string;
   durationLabel: string;
-  tokenLabel: string;
+  inputTokenLabel: string;
+  cacheCreationTokenLabel: string;
+  cacheReadTokenLabel: string;
+  outputTokenLabel: string;
   costLabel: string;
 };
 
@@ -43,10 +46,9 @@ export function summarizeWorkspaceSessionUsage(turns: ConversationTurn[]): Works
   const totals = runTurns.reduce(
     (summary, turn) => {
       summary.durationMs += turn.durationMs ?? 0;
-      summary.inputTokens +=
-        (turn.inputTokens ?? 0) +
-        (turn.cacheCreationInputTokens ?? 0) +
-        (turn.cacheReadInputTokens ?? 0);
+      summary.inputTokens += turn.inputTokens ?? 0;
+      summary.cacheCreationInputTokens += turn.cacheCreationInputTokens ?? 0;
+      summary.cacheReadInputTokens += turn.cacheReadInputTokens ?? 0;
       summary.outputTokens += turn.outputTokens ?? 0;
       summary.totalCostUsd += turn.totalCostUsd ?? 0;
       return summary;
@@ -54,6 +56,8 @@ export function summarizeWorkspaceSessionUsage(turns: ConversationTurn[]): Works
     {
       durationMs: 0,
       inputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
       outputTokens: 0,
       totalCostUsd: 0,
     },
@@ -62,9 +66,12 @@ export function summarizeWorkspaceSessionUsage(turns: ConversationTurn[]): Works
   return {
     turnCountLabel: String(runTurns.length),
     durationLabel: totals.durationMs > 0 ? formatCompactDuration(totals.durationMs) : '-',
-    tokenLabel: totals.inputTokens > 0 || totals.outputTokens > 0
-      ? `${formatCompactNumber(totals.inputTokens)} / ${formatCompactNumber(totals.outputTokens)}`
+    inputTokenLabel: totals.inputTokens > 0 ? formatCompactNumber(totals.inputTokens) : '-',
+    cacheCreationTokenLabel: totals.cacheCreationInputTokens > 0
+      ? formatCompactNumber(totals.cacheCreationInputTokens)
       : '-',
+    cacheReadTokenLabel: totals.cacheReadInputTokens > 0 ? formatCompactNumber(totals.cacheReadInputTokens) : '-',
+    outputTokenLabel: totals.outputTokens > 0 ? formatCompactNumber(totals.outputTokens) : '-',
     costLabel: totals.totalCostUsd > 0 ? formatUsd(totals.totalCostUsd) : '-',
   };
 }
@@ -91,6 +98,10 @@ export function formatCompactDuration(durationMs: number) {
 }
 
 export function formatCompactNumber(value: number) {
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 1 : 2).replace(/\.?0+$/, '')}m`;
+  }
+
   if (value >= 1000) {
     return `${(value / 1000).toFixed(value >= 10000 ? 1 : 2).replace(/\.?0+$/, '')}k`;
   }

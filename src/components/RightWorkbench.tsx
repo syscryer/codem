@@ -71,6 +71,7 @@ import {
   resolveWorkbenchChangeScrollTop,
   type WorkbenchSplitDiffRow,
 } from '../lib/workbench-diff';
+import { renderMarkdownLink } from '../lib/markdown-link';
 import {
   applyWorkbenchNavigatorWidthOverride,
   buildWorkbenchFilesLayoutColumns,
@@ -2237,6 +2238,9 @@ function MarkdownPreview({ content }: { content: string }) {
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{
+            a({ href, title, children }) {
+              return renderMarkdownLink({ href, title, children });
+            },
             img({ src, alt, title }) {
               return renderMarkdownImage({
                 src,

@@ -8932,7 +8932,7 @@ body.git-history-resizing {
 }
 
 .composer-context-card {
-  width: min(280px, calc(100vw - 36px));
+  width: min(380px, calc(100vw - 36px));
   padding: 12px;
   overflow: hidden;
   isolation: isolate;
@@ -9005,6 +9005,33 @@ body.git-history-resizing {
   color: #7c828d;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.composer-context-meter {
+  height: 6px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(229, 231, 235, 0.88);
+}
+
+.composer-context-meter span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: inherit;
+  transition: width 160ms ease;
+}
+
+.composer-context-card-status {
+  margin: 10px 0 0;
+  color: #92400e;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.composer-context-card-status.is-critical {
+  color: #b91c1c;
 }
 
 .composer-context-card-compact {
@@ -9119,6 +9146,99 @@ body.git-history-resizing {
 .composer-context-card-breakdown dd {
   color: #2f2f2f;
   font-variant-numeric: tabular-nums;
+}
+
+.composer-context-native {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(229, 231, 235, 0.92);
+}
+
+.composer-context-native-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #2f2f2f;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.composer-context-native-head strong {
+  font-weight: 650;
+}
+
+.composer-context-native-head span {
+  color: #7c828d;
+  font-variant-numeric: tabular-nums;
+}
+
+.composer-context-native-grid {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+.composer-context-native-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.composer-context-native-grid div {
+  min-width: 0;
+}
+
+.composer-context-native-grid dt,
+.composer-context-native-grid dd {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.composer-context-native-grid dt,
+.composer-context-native-grid dd {
+  overflow-wrap: anywhere;
+  color: #2f2f2f;
+  font-variant-numeric: tabular-nums;
+}
+
+.composer-context-native-grid dt {
+  color: #7c828d;
+}
+
+.composer-context-native-empty {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #7c828d;
+}
+
+.composer-context-markdown {
+  margin-top: 10px;
+  border-top: 1px solid rgba(229, 231, 235, 0.92);
+  padding-top: 8px;
+}
+
+.composer-context-markdown summary {
+  color: #6f6f6f;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.composer-context-markdown pre {
+  max-height: min(300px, 42vh);
+  margin: 8px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid rgba(229, 231, 235, 0.92);
+  border-radius: 8px;
+  color: #30343b;
+  background: rgba(255, 255, 255, 0.72);
+  font-family: var(--code-font-family);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .plain-icon {
@@ -13680,9 +13800,11 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .settings-usage-refresh-button {
-  width: 68px;
+  width: max-content;
+  min-width: 76px;
   justify-content: center;
   flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .settings-usage-range-control {
@@ -14458,6 +14580,7 @@ button.git-conflict-overview-row:focus-visible,
 .codex-desktop .assistant-runtime-question,
 .codex-desktop .composer-queued-prompt,
 .codex-desktop .composer-context-ring-core,
+.codex-desktop .composer-context-markdown pre,
 .codex-desktop .message-body,
 .codex-desktop .tool-details pre,
 .codex-desktop .thinking-message pre,
@@ -14484,6 +14607,39 @@ button.git-conflict-overview-row:focus-visible,
 .codex-desktop .settings-select-trigger.open {
   border-color: color-mix(in srgb, var(--app-border) 78%, var(--accent) 22%);
   background: color-mix(in srgb, var(--app-surface) 86%, var(--app-surface-muted) 14%);
+}
+
+.codex-desktop .composer-context-card-head,
+.codex-desktop .composer-context-card-summary,
+.codex-desktop .composer-context-card-compact-head strong,
+.codex-desktop .composer-context-card-compact-grid dd,
+.codex-desktop .composer-context-card-breakdown dd,
+.codex-desktop .composer-context-native-head,
+.codex-desktop .composer-context-native-grid dd,
+.codex-desktop .composer-context-markdown pre {
+  color: var(--app-text);
+}
+
+.codex-desktop .composer-context-card-head span,
+.codex-desktop .composer-context-card-summary-total,
+.codex-desktop .composer-context-card-empty,
+.codex-desktop .composer-context-card-status,
+.codex-desktop .composer-context-card-compact-head span,
+.codex-desktop .composer-context-card-compact-grid dt,
+.codex-desktop .composer-context-card-breakdown dt,
+.codex-desktop .composer-context-native-head span,
+.codex-desktop .composer-context-native-grid dt,
+.codex-desktop .composer-context-native-empty,
+.codex-desktop .composer-context-markdown summary {
+  color: var(--app-text-muted);
+}
+
+.codex-desktop .composer-context-meter {
+  background: var(--app-border);
+}
+
+.codex-desktop .composer-context-card-status.is-critical {
+  color: var(--danger);
 }
 
 .codex-desktop .settings-select:hover {
@@ -14819,25 +14975,6 @@ button.git-conflict-overview-row:focus-visible,
   white-space: nowrap;
 }
 
-.status-run-copy-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-}
-
-.status-run-copy-row code {
-  min-width: 0;
-  overflow: visible;
-  color: #2d2d2d;
-  font-family: var(--code-font);
-  font-size: 12px;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-
-.status-run-copy-row button,
 .status-run-actions button {
   min-height: 28px;
   display: inline-flex;
@@ -14854,10 +14991,6 @@ button.git-conflict-overview-row:focus-visible,
   line-height: 1;
 }
 
-.status-run-copy-row button {
-  padding: 0 8px;
-}
-
 .status-run-actions {
   display: flex;
   flex-wrap: wrap;
@@ -14870,13 +15003,11 @@ button.git-conflict-overview-row:focus-visible,
   padding: 0 10px;
 }
 
-.status-run-copy-row button:hover,
 .status-run-actions button:hover:not(:disabled) {
   background: #f5f5f4;
   color: #242424;
 }
 
-.status-run-copy-row button:focus-visible,
 .status-run-actions button:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgba(36, 36, 36, 0.16);
@@ -15472,8 +15603,7 @@ button.git-conflict-overview-row:focus-visible,
   color: var(--app-muted);
 }
 
-.codex-desktop .status-run-row strong,
-.codex-desktop .status-run-copy-row code {
+.codex-desktop .status-run-row strong {
   color: var(--app-text);
 }
 
@@ -15485,7 +15615,6 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .codex-desktop .status-session-icon,
-.codex-desktop .status-run-copy-row button,
 .codex-desktop .status-run-actions button {
   background: var(--app-surface-muted);
   border-color: var(--app-border);
@@ -15507,13 +15636,11 @@ button.git-conflict-overview-row:focus-visible,
   color: color-mix(in srgb, #167245 72%, var(--app-text));
 }
 
-.codex-desktop .status-run-copy-row button:hover,
 .codex-desktop .status-run-actions button:hover:not(:disabled) {
   background: var(--app-hover);
   color: var(--app-text-strong);
 }
 
-.codex-desktop .status-run-copy-row button:focus-visible,
 .codex-desktop .status-run-actions button:focus-visible {
   box-shadow: var(--app-focus-ring);
 }

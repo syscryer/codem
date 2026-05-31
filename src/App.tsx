@@ -65,6 +65,8 @@ import {
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  ClaudeContextRequestState,
+  ClaudeContextSnapshot,
   ConversationTurn,
   RequestUserInputRequest,
   RuntimeSuggestedAction,
@@ -101,6 +103,44 @@ type GitOperationToastContext = {
   branch?: string;
   command?: string;
 };
+
+type ClaudeContextApiResponse =
+  | { ok: true; context: ClaudeContextSnapshot }
+  | { ok: false; error?: string; code?: string };
+
+async function fetchClaudeRuntimeContext(threadId: string, timeoutMs = 12_000) {
+  const response = await fetch(`/api/claude/runtime/${encodeURIComponent(threadId)}/context`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ timeoutMs }),
+  });
+  const payload = (await response.json().catch(() => null)) as ClaudeContextApiResponse | null;
+  if (!response.ok) {
+    throw new Error(payload && !payload.ok ? payload.error || '获取 Claude /context 信息失败' : '获取 Claude /context 信息失败');
+  }
+  if (!payload?.ok) {
+    throw new Error(payload?.error || '获取 Claude /context 信息失败');
+  }
+
+  return payload.context;
+}
+
+function formatClaudeContextDisplayError(error: unknown) {
+  const message = error instanceof Error ? error.message : '';
+  if (/没有可复用|stream-json|请先发送一轮消息/i.test(message)) {
+    return '当前线程还没有可读取的上下文，请先发送一轮消息。';
+  }
+  if (/正在运行|正在进行|runtime-busy/i.test(message)) {
+    return '当前会话还在处理中，稍后再查看上下文。';
+  }
+  if (/timeout|超时|限定时间/i.test(message)) {
+    return '读取上下文超时，请稍后重试。';
+  }
+
+  return message || '读取上下文失败。';
+}
 
 const MAX_NAVIGATION_HISTORY = 60;
 
@@ -196,6 +236,7 @@ export default function App() {
   const [fileNavigatorManualVisibility, setFileNavigatorManualVisibility] = useState<boolean | null>(null);
   const [undoneTurnIds, setUndoneTurnIds] = useState<Record<string, boolean>>({});
   const [composerDraftsByKey, setComposerDraftsByKey] = useState<Record<string, string>>({});
+  const [claudeContextByThreadId, setClaudeContextByThreadId] = useState<Record<string, ClaudeContextRequestState>>({});
   const [projectsRefreshing, setProjectsRefreshing] = useState(false);
   const [worktreeCreateProject, setWorktreeCreateProject] = useState<ProjectSummary | null>(null);
   const [threadActivityNotices, setThreadActivityNotices] = useState<ThreadActivityNoticeMap>({});
@@ -543,6 +584,16 @@ export default function App() {
 
   const composerDraftKey = activeThreadId ?? GLOBAL_NEW_CHAT_DRAFT_KEY;
   const composerDraft = composerDraftsByKey[composerDraftKey] ?? '';
+  const historyClaudeContextState = activeThread?.claudeContext
+    ? {
+        status: 'success' as const,
+        context: activeThread.claudeContext,
+        updatedAtMs: activeThread.claudeContext.requestedAtMs,
+      }
+    : undefined;
+  const activeClaudeContextState = activeThreadId
+    ? claudeContextByThreadId[activeThreadId] ?? historyClaudeContextState ?? { status: 'idle' as const }
+    : { status: 'idle' as const };
   const activeRunTurnId = activeThreadId ? activeTurnIdsByThreadId[activeThreadId] : undefined;
   const activeRunTurn = activeRunTurnId
     ? activeThread?.turns.find((turn) => turn.id === activeRunTurnId)
@@ -571,6 +622,47 @@ export default function App() {
     },
     [composerDraftKey],
   );
+
+  const handleRefreshClaudeContext = useCallback(async () => {
+    const threadId = activeThreadId;
+    if (!threadId) {
+      return;
+    }
+    const historyContext = activeThread?.id === threadId ? activeThread.claudeContext : undefined;
+
+    setClaudeContextByThreadId((current) => ({
+      ...current,
+      [threadId]: {
+        status: 'loading',
+        context: current[threadId]?.context ?? historyContext,
+        updatedAtMs: Date.now(),
+      },
+    }));
+
+    try {
+      const context = await fetchClaudeRuntimeContext(threadId);
+
+      setClaudeContextByThreadId((current) => ({
+        ...current,
+        [threadId]: {
+          status: 'success',
+          context,
+          updatedAtMs: Date.now(),
+        },
+      }));
+    } catch (error) {
+      const message = formatClaudeContextDisplayError(error);
+      setClaudeContextByThreadId((current) => ({
+        ...current,
+        [threadId]: {
+          status: 'error',
+          context: current[threadId]?.context ?? historyContext,
+          error: message,
+          updatedAtMs: Date.now(),
+        },
+      }));
+    }
+  }, [activeThread?.claudeContext, activeThread?.id, activeThreadId]);
 
   function handleRecallQueuedPrompt(promptId: string) {
     const recalledText = recallQueuedPrompt(promptId);
@@ -755,15 +847,51 @@ export default function App() {
     }
 
     if (command.localActionId === 'show-context') {
-      const result = buildContextSlashCardResult({ turns });
+      let nativeContext: ClaudeContextSnapshot | undefined;
+      let contextError: string | undefined;
+
+      try {
+        nativeContext = await fetchClaudeRuntimeContext(thread.id);
+        setClaudeContextByThreadId((current) => ({
+          ...current,
+          [thread.id]: {
+            status: 'success',
+            context: nativeContext,
+            updatedAtMs: Date.now(),
+          },
+        }));
+      } catch (error) {
+        contextError = formatClaudeContextDisplayError(error);
+        setClaudeContextByThreadId((current) => ({
+          ...current,
+          [thread.id]: {
+            status: 'error',
+            context: current[thread.id]?.context,
+            error: contextError,
+            updatedAtMs: Date.now(),
+          },
+        }));
+      }
+
+      const result = buildContextSlashCardResult({
+        turns,
+        modelLabel: modelLabel(models.find((item) => item.id === model) ?? model),
+        nativeContext,
+      });
       appendSystemCommandTurn(
         thread,
         submittedText,
         settleSystemCommandItem(createSystemCommandItem(submittedText, result.title, result.cardType), {
-          state: 'done',
-          summary: result.summary,
-          details: result.details,
-          errorMessage: undefined,
+          state: contextError ? 'error' : 'done',
+          summary: contextError ? '读取上下文失败' : result.summary,
+          details: contextError
+            ? {
+                ...result.details,
+                error: contextError,
+                usageSource: 'context read failed',
+              }
+            : result.details,
+          errorMessage: contextError,
         }),
       );
       return;
@@ -1399,6 +1527,7 @@ export default function App() {
                 effort={effort}
                 models={models}
                 turns={activeThread?.turns ?? []}
+                claudeContextState={activeClaudeContextState}
                 isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
                 draftScopeKey={composerDraftKey}
                 draft={composerDraft}
@@ -1418,6 +1547,7 @@ export default function App() {
                 onCreateNewChat={() => void handleCreatePrimaryChat()}
                 onStopRun={() => stopRun(activeThreadId ?? undefined)}
                 onRunSlashSystemCommand={handleRunSlashSystemCommand}
+                onRefreshClaudeContext={handleRefreshClaudeContext}
               />
 
               <WorkspaceStatus

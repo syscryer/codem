@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import {
   attachToolResult,
   createToolStep,
+  mergeUsageSnapshot,
   normalizeSubagentMessages,
   upsertSubagentText,
   upsertToolDelta,
 } from './conversation.js';
+import type { ConversationTurn } from '../types.js';
 
 test('normalizeSubagentMessages keeps recent bounded content', () => {
   const messages = normalizeSubagentMessages([
@@ -91,4 +93,43 @@ test('sidechain tool payloads are truncated while normal tool payloads stay inta
   });
   assert.ok((withResult[0]?.resultText?.length ?? 0) <= 6_000);
   assert.match(withResult[0]?.resultText ?? '', /\[已截断\]/);
+});
+
+test('mergeUsageSnapshot keeps the previous context usage when a stream frame reports only zeros', () => {
+  const turn: ConversationTurn = {
+    id: 'turn-usage',
+    userText: '',
+    workspace: 'D:\\project\\codem',
+    assistantText: '',
+    tools: [],
+    items: [],
+    status: 'running',
+    inputTokens: 75,
+    outputTokens: 211,
+    cacheCreationInputTokens: 43_113,
+    cacheReadInputTokens: 0,
+    contextUsage: {
+      inputTokens: 75,
+      outputTokens: 211,
+      cacheCreationInputTokens: 43_113,
+      cacheReadInputTokens: 0,
+      modelContextWindow: 1_000_000,
+      usageSource: 'message',
+    },
+  };
+
+  const patch = mergeUsageSnapshot(turn, {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    modelContextWindow: 1_000_000,
+    usageSource: 'context',
+  });
+
+  assert.deepEqual(patch.contextUsage, turn.contextUsage);
+  assert.equal(patch.inputTokens, 75);
+  assert.equal(patch.outputTokens, 211);
+  assert.equal(patch.cacheCreationInputTokens, 43_113);
+  assert.equal(patch.cacheReadInputTokens, 0);
 });

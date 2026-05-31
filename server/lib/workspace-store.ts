@@ -11,7 +11,8 @@ import {
 } from './open-with.js';
 import { getAppSettings } from './settings-store.js';
 import { collectUsageStats, type UsageStatsRangeDays } from './usage-stats.js';
-import type { InputContentBlockSummary } from '../../src/types.js';
+import { createClaudeContextSnapshot, extractClaudeContextMarkdownFromPayload } from './claude-context.js';
+import type { ClaudeContextSnapshot, InputContentBlockSummary } from '../../src/types.js';
 
 type OrganizeBy = 'project' | 'timeline' | 'chat-first';
 type SortBy = 'created' | 'updated';
@@ -976,13 +977,17 @@ export function getThreadHistory(threadId: string) {
     throw new Error('聊天不存在');
   }
 
+  const claudeContext = readLatestClaudeContextSnapshot(thread.transcript_path);
+  const createPayload = (turns: ThreadTurn[]) => ({
+    threadId,
+    turns: removeClaudeLocalCommandPollution(turns),
+    ...(claudeContext ? { claudeContext } : {}),
+  });
+
   const storedTurns = readStoredThreadHistory(threadId);
   if (thread.session_id) {
     if (storedTurns.some(hasLocalUserInputSummary)) {
-      return {
-        threadId,
-        turns: storedTurns,
-      };
+      return createPayload(storedTurns);
     }
 
     if (storedTurns.length > 0) {
@@ -995,17 +1000,11 @@ export function getThreadHistory(threadId: string) {
         if (reparsedTurns.length > 0) {
           const mergedTurns = mergeStoredTurnMetrics(storedTurns, reparsedTurns);
           saveThreadHistory(threadId, mergedTurns);
-          return {
-            threadId,
-            turns: mergedTurns,
-          };
+          return createPayload(mergedTurns);
         }
       }
 
-      return {
-        threadId,
-        turns: storedTurns,
-      };
+      return createPayload(storedTurns);
     }
 
     const turns = hasUsableTranscript(thread)
@@ -1016,10 +1015,7 @@ export function getThreadHistory(threadId: string) {
       saveThreadHistory(threadId, turns);
     }
 
-    return {
-      threadId,
-      turns: turns.length > 0 ? turns : storedTurns,
-    };
+    return createPayload(turns.length > 0 ? turns : storedTurns);
   }
 
   if (storedTurns.length > 0) {
@@ -1031,17 +1027,11 @@ export function getThreadHistory(threadId: string) {
       const reparsedTurns = parseClaudeTranscript(thread.transcript_path, thread.session_id ?? undefined);
       if (reparsedTurns.length > 0) {
         saveThreadHistory(threadId, reparsedTurns);
-        return {
-          threadId,
-          turns: reparsedTurns,
-        };
+        return createPayload(reparsedTurns);
       }
     }
 
-    return {
-      threadId,
-      turns: storedTurns,
-    };
+    return createPayload(storedTurns);
   }
 
   const turns =
@@ -1053,10 +1043,7 @@ export function getThreadHistory(threadId: string) {
     saveThreadHistory(threadId, turns);
   }
 
-  return {
-    threadId,
-    turns,
-  };
+  return createPayload(turns);
 }
 
 export function saveThreadHistory(threadId: string, turns: ThreadTurn[], options?: { touchUpdatedAt?: boolean }) {
@@ -2752,6 +2739,9 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
     if (payload.isMeta) {
       continue;
     }
+    if (isClaudeLocalCommandPayload(payload)) {
+      continue;
+    }
     if (isClaudeTaskNotificationPayload(payload)) {
       continue;
     }
@@ -2963,6 +2953,66 @@ function parseClaudeTranscript(transcriptPath: string, sessionId?: string): Thre
         toolLookup.set(tool.toolUseId, tool);
       }
     }
+  }
+}
+
+function readLatestClaudeContextSnapshot(transcriptPath: string | null): ClaudeContextSnapshot | undefined {
+  if (!transcriptPath || !existsSync(transcriptPath)) {
+    return undefined;
+  }
+
+  let latest:
+    | {
+        markdown: string;
+        requestedAtMs: number;
+        eventCount: number;
+      }
+    | undefined;
+  let parsedEventCount = 0;
+
+  try {
+    const transcriptMtimeMs = statSync(transcriptPath).mtimeMs;
+    const lines = readFileSync(transcriptPath, 'utf8').split(/\r?\n/).filter(Boolean);
+
+    for (const line of lines) {
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+
+      parsedEventCount += 1;
+      const markdown = extractClaudeContextMarkdownFromPayload(payload).trim();
+      if (!markdown) {
+        continue;
+      }
+
+      const snapshot = createClaudeContextSnapshot(markdown, {
+        requestedAtMs: parseIsoTimestampMs(readString(payload, ['timestamp'])) ?? transcriptMtimeMs,
+        durationMs: 0,
+        eventCount: 1,
+      });
+      if (!snapshot.summary.hasContextUsage) {
+        continue;
+      }
+
+      latest = {
+        markdown,
+        requestedAtMs: snapshot.requestedAtMs,
+        eventCount: parsedEventCount,
+      };
+    }
+
+    return latest
+      ? createClaudeContextSnapshot(latest.markdown, {
+          requestedAtMs: latest.requestedAtMs,
+          durationMs: 0,
+          eventCount: latest.eventCount,
+        })
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -3216,6 +3266,7 @@ function readStoredThreadHistory(threadId: string): ThreadTurn[] {
 function shouldReparseStoredHistory(turns: ThreadTurn[]) {
   return turns.some((turn) =>
     hasStoredTaskNotificationPollution(turn) ||
+    hasStoredClaudeLocalCommandPollution(turn) ||
     turn.tools.some(
       (tool) =>
         tool.name === 'tool_result' ||
@@ -3304,6 +3355,114 @@ function hasStoredTaskNotificationPollution(turn: ThreadTurn) {
 
     return false;
   });
+}
+
+function hasStoredClaudeLocalCommandPollution(turn: ThreadTurn) {
+  if (isClaudeLocalCommandTranscriptText(turn.userText) || isClaudeLocalCommandTranscriptText(turn.assistantText)) {
+    return true;
+  }
+
+  return turn.items.some((item) => {
+    if (item.type === 'text' || item.type === 'thinking') {
+      return isClaudeLocalCommandTranscriptText(item.text);
+    }
+
+    if (item.type === 'system-command') {
+      return (
+        isClaudeLocalCommandTranscriptText(item.summary) ||
+        isClaudeLocalCommandTranscriptText(item.errorMessage)
+      );
+    }
+
+    return false;
+  });
+}
+
+function removeClaudeLocalCommandPollution(turns: ThreadTurn[]) {
+  return turns
+    .map((turn) => {
+      const items = turn.items.filter((item) => {
+        if (item.type === 'text' || item.type === 'thinking') {
+          return !isClaudeLocalCommandTranscriptText(item.text);
+        }
+
+        if (item.type === 'system-command') {
+          return !(
+            isClaudeLocalCommandTranscriptText(item.summary) ||
+            isClaudeLocalCommandTranscriptText(item.errorMessage)
+          );
+        }
+
+        return true;
+      });
+      const removedItems = items.length !== turn.items.length;
+      const assistantText = removedItems
+        ? items
+            .map((item) => (item.type === 'text' ? item.text : ''))
+            .filter(Boolean)
+            .join('')
+        : turn.assistantText;
+
+      return {
+        ...turn,
+        userText: isClaudeLocalCommandTranscriptText(turn.userText) ? '' : turn.userText,
+        assistantText: isClaudeLocalCommandTranscriptText(assistantText) ? '' : assistantText,
+        items,
+      };
+    })
+    .filter((turn) =>
+      Boolean(
+        turn.userText.trim() ||
+          turn.assistantText.trim() ||
+          turn.items.length > 0 ||
+          turn.tools.length > 0 ||
+          turn.pendingUserInputRequests?.length ||
+          turn.pendingApprovalRequests?.length,
+      ),
+    );
+}
+
+function isClaudeLocalCommandPayload(payload: Record<string, unknown>) {
+  return payload.type === 'system' && readString(payload, ['subtype']) === 'local_command';
+}
+
+function isClaudeLocalCommandTranscriptText(value: string | undefined) {
+  const text = value?.trim();
+  if (!text) {
+    return false;
+  }
+
+  if (/^<local-command-(?:stdout|stderr)>[\s\S]*<\/local-command-(?:stdout|stderr)>$/i.test(text)) {
+    return true;
+  }
+
+  if (
+    /^<command-name>[\s\S]*<\/command-name>\s*(?:<command-message>[\s\S]*<\/command-message>\s*)?(?:<command-args>[\s\S]*<\/command-args>\s*)?(?:<local-command-(?:stdout|stderr)>[\s\S]*<\/local-command-(?:stdout|stderr)>\s*)?$/i.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) {
+    return false;
+  }
+
+  const localCommandTagPattern = /<(?:command-name|command-message|command-args|local-command-stdout|local-command-stderr)\b/i;
+  if (!lines.some((line) => localCommandTagPattern.test(line))) {
+    return false;
+  }
+
+  return lines.every((line) =>
+    /^<command-name>[\s\S]*<\/command-name>$/i.test(line) ||
+    /^<command-message>[\s\S]*<\/command-message>$/i.test(line) ||
+    /^<command-args>[\s\S]*<\/command-args>$/i.test(line) ||
+    /^<local-command-(?:stdout|stderr)>[\s\S]*<\/local-command-(?:stdout|stderr)>$/i.test(line),
+  );
 }
 
 function isStoredHistoryOutdated(threadId: string, transcriptPath: string) {

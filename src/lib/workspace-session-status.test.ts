@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildWorkspaceSessionButtonState,
+  formatCompactNumber,
   getWorkspaceSessionRunTurns,
   summarizeWorkspaceSessionUsage,
 } from './workspace-session-status.js';
@@ -63,6 +64,7 @@ test('summarizeWorkspaceSessionUsage formats current session totals for the pane
         id: 'turn-1',
         durationMs: 102000,
         inputTokens: 12400,
+        cacheReadInputTokens: 3000,
         outputTokens: 2100,
         totalCostUsd: 0.08,
       }),
@@ -70,6 +72,7 @@ test('summarizeWorkspaceSessionUsage formats current session totals for the pane
         id: 'turn-2',
         durationMs: 892000,
         inputTokens: 30200,
+        cacheCreationInputTokens: 1200,
         outputTokens: 5700,
         totalCostUsd: 0.04,
       }),
@@ -96,10 +99,20 @@ test('summarizeWorkspaceSessionUsage formats current session totals for the pane
     {
       turnCountLabel: '2',
       durationLabel: '16m 34s',
-      tokenLabel: '42.6k / 7.8k',
+      inputTokenLabel: '42.6k',
+      cacheCreationTokenLabel: '1.2k',
+      cacheReadTokenLabel: '3k',
+      outputTokenLabel: '7.8k',
       costLabel: '$0.12',
     },
   );
+});
+
+test('formatCompactNumber uses million units for large token totals', () => {
+  assert.equal(formatCompactNumber(484500), '484.5k');
+  assert.equal(formatCompactNumber(4650100), '4.65m');
+  assert.equal(formatCompactNumber(9037300), '9.04m');
+  assert.equal(formatCompactNumber(10000000), '10m');
 });
 
 function turn(overrides: Partial<ConversationTurn>): ConversationTurn {

@@ -3,7 +3,7 @@ import { ArrowUp, Brain, Check, CornerDownRight, File, FileArchive, FileAudio, F
 import { permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
-import { buildComposerContextUsage } from '../lib/composer-context-usage';
+import { buildComposerContextUsage, shouldRefreshNativeContextOnOpen } from '../lib/composer-context-usage';
 import { classifyComposerFile, supportedComposerUploadAccept } from '../lib/composer-input-files';
 import { extractAtFileReferences, shouldSearchFileReferenceQuery } from '../lib/file-reference-paths';
 import { getWorkbenchFileIconKind, resolveWorkbenchFileIcon } from '../lib/workbench-files';
@@ -22,7 +22,7 @@ import { hasClaudeContext1mOptions } from '../lib/claude-model-selection';
 import { applySlashCommandSelection, getNextSlashCommandIndex } from '../lib/slash-command-editor';
 import { getSlashDismissResetKey, resolveSlashCommandSubmission } from '../lib/slash-command-submit';
 import { modelContext1mMenuActionLabel, modelMenuDescriptionLabel, modelMenuPrimaryLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
-import type { AgentType, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
+import type { AgentType, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingComposerAttachment =
   | {
@@ -88,6 +88,7 @@ type ComposerProps = {
   effort: ClaudeEffortSelection;
   models: ClaudeModelOption[];
   turns: ConversationTurn[];
+  claudeContextState?: ClaudeContextRequestState;
   isRunning: boolean;
   draftScopeKey: string;
   draft: string;
@@ -114,6 +115,7 @@ type ComposerProps = {
   onCreateNewChat: () => Promise<void> | void;
   onStopRun: () => void | Promise<void>;
   onRunSlashSystemCommand: (command: SlashCommand, submittedText: string) => Promise<void> | void;
+  onRefreshClaudeContext: () => Promise<void> | void;
 };
 
 export function Composer({
@@ -124,6 +126,7 @@ export function Composer({
   effort,
   models,
   turns,
+  claudeContextState,
   isRunning,
   draftScopeKey,
   draft: persistedDraft,
@@ -143,6 +146,7 @@ export function Composer({
   onCreateNewChat,
   onStopRun,
   onRunSlashSystemCommand,
+  onRefreshClaudeContext,
 }: ComposerProps) {
   const [draft, setLocalDraft] = useState(persistedDraft);
   const [attachments, setAttachments] = useState<PendingComposerAttachment[]>([]);
@@ -207,7 +211,25 @@ export function Composer({
   const hasDraft = Boolean(draft.trim());
   const hasPendingContent = hasDraft || attachments.length > 0;
   const showStopButton = isRunning && !hasPendingContent;
-  const contextUsage = useMemo(() => buildComposerContextUsage({ agent, model, turns }), [agent, model, turns]);
+  const nativeContext = claudeContextState?.context;
+  const nativeContextSummary = nativeContext?.summary;
+  const contextUsage = useMemo(
+    () => buildComposerContextUsage({
+      agent,
+      model,
+      turns,
+      nativeContextSummary,
+      nativeContextRequestedAtMs: nativeContext?.requestedAtMs,
+    }),
+    [agent, model, nativeContext?.requestedAtMs, nativeContextSummary, turns],
+  );
+  const shouldRefreshClaudeContextOnOpen = useMemo(
+    () => agent === 'claude' && shouldRefreshNativeContextOnOpen({
+      turns,
+      nativeContextRequestedAtMs: nativeContext?.requestedAtMs,
+    }),
+    [agent, nativeContext?.requestedAtMs, turns],
+  );
   const modelMenuHasContext1mOptions = useMemo(() => hasClaudeContext1mOptions(models), [models]);
 
   useEffect(() => {
@@ -1245,7 +1267,13 @@ export function Composer({
                 <span className="model-trigger-chevron" aria-hidden="true" />
               </button>
             </div>
-            <ComposerContextIndicator usage={contextUsage} />
+            <ComposerContextIndicator
+              usage={contextUsage}
+              nativeContext={claudeContextState?.context}
+              nativeContextStatus={claudeContextState?.status ?? 'idle'}
+              onRefreshClaudeContext={onRefreshClaudeContext}
+              shouldRefreshClaudeContextOnOpen={shouldRefreshClaudeContextOnOpen}
+            />
             <button type="button" className="plain-icon"><Mic size={15} /></button>
             {showStopButton ? (
               <button type="button" className="send-button stop" onClick={() => void onStopRun()} title="停止">

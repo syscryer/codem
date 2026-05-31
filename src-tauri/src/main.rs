@@ -12,7 +12,7 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, Url, WindowEvent};
 
 #[cfg(not(windows))]
 use std::process::{Command, Stdio};
@@ -154,6 +154,17 @@ fn get_current_window_material(app: tauri::AppHandle) -> Result<WindowMaterial, 
 #[tauri::command]
 fn set_window_material(app: tauri::AppHandle, material: i32) -> Result<WindowMaterial, String> {
     platform::set_window_material(&app, material)
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let parsed = Url::parse(url.trim()).map_err(|error| format!("外部链接地址无效: {error}"))?;
+    let url = match parsed.scheme() {
+        "http" | "https" => parsed,
+        scheme => return Err(format!("不支持的外部链接协议: {scheme}")),
+    };
+
+    platform::open_external_url(url.as_str())
 }
 
 #[tauri::command]
@@ -399,6 +410,7 @@ fn main() {
             pick_directory,
             pick_files,
             get_backend_base_url,
+            open_external_url,
             show_thread_notification
         ])
         .run(tauri::generate_context!())
@@ -1338,13 +1350,16 @@ mod platform {
     use tauri::Manager;
     use tauri_winrt_notification::{Duration, Toast};
     use windows::{
-        core::w,
+        core::{w, HSTRING, PCWSTR},
         Win32::{
             Foundation::HWND,
             Graphics::Dwm::{
                 DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_SYSTEMBACKDROP_TYPE,
             },
-            UI::{Shell::SetCurrentProcessExplicitAppUserModelID, WindowsAndMessaging::GetParent},
+            UI::{
+                Shell::{SetCurrentProcessExplicitAppUserModelID, ShellExecuteW},
+                WindowsAndMessaging::{GetParent, SW_SHOWNORMAL},
+            },
         },
     };
 
@@ -1408,6 +1423,27 @@ mod platform {
         }
 
         Ok(material_info(material))
+    }
+
+    pub fn open_external_url(url: &str) -> Result<(), String> {
+        let target = HSTRING::from(url);
+        let result = unsafe {
+            ShellExecuteW(
+                None,
+                w!("open"),
+                &target,
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        let code = result.0 as isize;
+
+        if code <= 32 {
+            return Err(format!("打开外部链接失败: {code}"));
+        }
+
+        Ok(())
     }
 
     pub fn show_thread_notification(
@@ -1513,6 +1549,19 @@ mod platform {
         Ok(material_info(material))
     }
 
+    pub fn open_external_url(url: &str) -> Result<(), String> {
+        let status = Command::new("open")
+            .arg(url)
+            .status()
+            .map_err(|error| format!("打开外部链接失败: {error}"))?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("打开外部链接失败: {status}"))
+        }
+    }
+
     pub fn show_thread_notification(
         app: &tauri::AppHandle,
         request: ThreadNotificationRequest,
@@ -1556,6 +1605,19 @@ mod platform {
         }
 
         Err("当前平台不支持窗口材质切换".to_string())
+    }
+
+    pub fn open_external_url(url: &str) -> Result<(), String> {
+        let status = Command::new("xdg-open")
+            .arg(url)
+            .status()
+            .map_err(|error| format!("打开外部链接失败: {error}"))?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("打开外部链接失败: {status}"))
+        }
     }
 
     pub fn show_thread_notification(

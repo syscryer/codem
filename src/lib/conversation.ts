@@ -21,6 +21,7 @@ export function createThreadDetail(summary: ThreadSummary): ThreadDetail {
     turns: [],
     debugEvents: [],
     rawEvents: [],
+    claudeContext: undefined,
     historyLoaded: false,
     historyLoading: false,
   };
@@ -441,35 +442,68 @@ export function settleRunningToolSteps(
 }
 
 export function mergeUsageSnapshot(turn: ConversationTurn, snapshot: UsageSnapshot): Partial<ConversationTurn> {
-  const nextContextUsage =
-    snapshot.usageSource === 'result'
-      ? turn.contextUsage
-      : hasUsageTokenSnapshot(snapshot)
-        ? snapshot
-        : turn.contextUsage;
+  const shouldMergeTurnUsage = snapshot.usageSource === 'result' || hasPositiveUsageTokenSnapshot(snapshot);
+  const nextContextUsage = mergeContextUsageSnapshot(turn.contextUsage, snapshot);
 
   return {
-    inputTokens: snapshot.inputTokens ?? turn.inputTokens,
-    outputTokens: snapshot.outputTokens ?? turn.outputTokens,
-    cacheCreationInputTokens: snapshot.cacheCreationInputTokens ?? turn.cacheCreationInputTokens,
-    cacheReadInputTokens: snapshot.cacheReadInputTokens ?? turn.cacheReadInputTokens,
-    contextUsage: nextContextUsage
-      ? {
-          ...nextContextUsage,
-          modelContextWindow: nextContextUsage.modelContextWindow ?? turn.contextUsage?.modelContextWindow,
-        }
-      : nextContextUsage,
+    inputTokens: shouldMergeTurnUsage ? snapshot.inputTokens ?? turn.inputTokens : turn.inputTokens,
+    outputTokens: shouldMergeTurnUsage ? snapshot.outputTokens ?? turn.outputTokens : turn.outputTokens,
+    cacheCreationInputTokens: shouldMergeTurnUsage
+      ? snapshot.cacheCreationInputTokens ?? turn.cacheCreationInputTokens
+      : turn.cacheCreationInputTokens,
+    cacheReadInputTokens: shouldMergeTurnUsage
+      ? snapshot.cacheReadInputTokens ?? turn.cacheReadInputTokens
+      : turn.cacheReadInputTokens,
+    contextUsage: nextContextUsage,
   };
 }
 
-function hasUsageTokenSnapshot(snapshot: UsageSnapshot) {
+function mergeContextUsageSnapshot(
+  current: ConversationTurn['contextUsage'],
+  snapshot: UsageSnapshot,
+): ConversationTurn['contextUsage'] {
+  if (snapshot.usageSource === 'result') {
+    return current;
+  }
+
+  if (hasPositiveContextUsageTokenSnapshot(snapshot)) {
+    return {
+      ...snapshot,
+      outputTokens: snapshot.outputTokens ?? current?.outputTokens,
+      modelContextWindow: snapshot.modelContextWindow ?? current?.modelContextWindow,
+    };
+  }
+
+  if (!current) {
+    return undefined;
+  }
+
+  return {
+    ...current,
+    outputTokens: positiveNumberOrUndefined(snapshot.outputTokens) ?? current.outputTokens,
+    modelContextWindow: positiveNumberOrUndefined(snapshot.modelContextWindow) ?? current.modelContextWindow,
+  };
+}
+
+function hasPositiveUsageTokenSnapshot(snapshot: UsageSnapshot) {
   return (
-    snapshot.inputTokens !== undefined ||
-    snapshot.outputTokens !== undefined ||
-    snapshot.cacheCreationInputTokens !== undefined ||
-    snapshot.cacheReadInputTokens !== undefined ||
-    snapshot.modelContextWindow !== undefined
+    positiveNumberOrUndefined(snapshot.inputTokens) !== undefined ||
+    positiveNumberOrUndefined(snapshot.outputTokens) !== undefined ||
+    positiveNumberOrUndefined(snapshot.cacheCreationInputTokens) !== undefined ||
+    positiveNumberOrUndefined(snapshot.cacheReadInputTokens) !== undefined
   );
+}
+
+function hasPositiveContextUsageTokenSnapshot(snapshot: UsageSnapshot) {
+  return (
+    positiveNumberOrUndefined(snapshot.inputTokens) !== undefined ||
+    positiveNumberOrUndefined(snapshot.cacheCreationInputTokens) !== undefined ||
+    positiveNumberOrUndefined(snapshot.cacheReadInputTokens) !== undefined
+  );
+}
+
+function positiveNumberOrUndefined(value: number | undefined) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 export function getElapsedDuration(turn: ConversationTurn) {

@@ -43,6 +43,7 @@ import { collectConversationOutputFiles, type ConversationOutputFile } from '../
 import { buildConversationOutputFileListState } from '../lib/conversation-output-file-list';
 import { runConversationOutputFileMenuAction } from '../lib/conversation-output-file-interactions';
 import { renderMarkdownImage, type MarkdownImagePreviewPayload } from '../lib/markdown-image';
+import { renderMarkdownLink } from '../lib/markdown-link';
 import { buildConversationOutputFilePreviewRequest } from '../lib/workbench-preview';
 import { buildWorkspaceImagePreviewUrl } from '../lib/file-preview-api';
 import type {
@@ -354,6 +355,9 @@ function MarkdownMessage({
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          a({ href, title, children }) {
+            return renderMarkdownLink({ href, title, children });
+          },
           img({ src, alt, title }) {
             return renderMarkdownImage({ src, alt, title, onPreview: onPreviewImage });
           },
@@ -2167,6 +2171,60 @@ function getSystemCommandDetailLabel(key: string) {
       return '总成本';
     case 'runningTurnCount':
       return '运行中回合';
+    case 'contextWindowTokens':
+      return '上下文窗口';
+    case 'usedContextTokens':
+      return '已用上下文';
+    case 'freeContextTokens':
+      return '剩余上下文';
+    case 'usagePercent':
+      return '上下文占比';
+    case 'usageSource':
+      return '统计来源';
+    case 'cumulativeInputTokens':
+      return '累计输入 tokens';
+    case 'cumulativeOutputTokens':
+      return '累计输出 tokens';
+    case 'cumulativeCacheCreationInputTokens':
+      return '累计缓存创建 tokens';
+    case 'cumulativeCacheReadInputTokens':
+      return '累计缓存读取 tokens';
+    case 'cumulativeTotalTokens':
+      return '累计总 tokens';
+    case 'note':
+      return '说明';
+    case 'mcpToolCount':
+      return 'MCP tools';
+    case 'memoryFileCount':
+      return 'Memory 文件数';
+    case 'skillCount':
+      return 'Skills 数';
+    case 'systemPromptTokens':
+      return 'System prompt tokens';
+    case 'memoryFilesTokens':
+      return 'Memory files tokens';
+    case 'skillsTokens':
+      return 'Skills tokens';
+    case 'messagesTokens':
+      return 'Messages tokens';
+    case 'freeSpaceTokens':
+      return 'Free space tokens';
+    case 'hasContextUsage':
+      return '包含 Context Usage';
+    case 'hasMcpTools':
+      return '包含 MCP tools';
+    case 'hasFreeSpace':
+      return '包含 Free space';
+    case 'hasSystemPrompt':
+      return '包含 System prompt';
+    case 'hasMemory':
+      return '包含 Memory';
+    case 'hasSkills':
+      return '包含 Skills';
+    case 'markdownChars':
+      return '原始 Markdown 字符数';
+    case 'error':
+      return '错误';
     default:
       return key;
   }

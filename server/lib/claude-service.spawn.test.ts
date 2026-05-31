@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as ClaudeService from './claude-service.js';
 import { buildClaudeInputMessage, summarizeClaudeInputForHistory, summarizeClaudeInputForTrace } from './claude-service.js';
 
 const source = readFileSync(new URL('./claude-service.ts', import.meta.url), 'utf8');
@@ -509,13 +510,15 @@ test('cold resume starts a stream-json runtime so tool results can be sent while
 test('run events are buffered for reconnect instead of being tied to one response', () => {
   const createRunStateBody = extractFunctionBody('createRunState');
   const pushRunEventBody = extractFunctionBody('pushRunEvent');
+  const pushReconnectBody = extractFunctionBody('pushReconnectBufferedEvent');
   const reconnectBody = extractFunctionBody('reconnectClaudeRunEvents');
   const bufferedEventBody = extractFunctionBody('createBufferedRunEventForReconnect');
 
   assert.match(createRunStateBody, /eventLog:\s*\[\]/);
   assert.match(createRunStateBody, /eventWaiters:\s*new Set/);
-  assert.match(pushRunEventBody, /createBufferedRunEventForReconnect\(event\)/);
-  assert.match(pushRunEventBody, /state\.eventLog\.push\(bufferedEvent\)/);
+  assert.match(pushRunEventBody, /pushReconnectBufferedEvent\(state\.eventLog,\s*event\)/);
+  assert.match(pushReconnectBody, /createBufferedRunEventForReconnect\(event\)/);
+  assert.match(pushReconnectBody, /eventLog\.splice\(0,\s*overflow\)/);
   assert.match(pushRunEventBody, /state\.eventWaiters/);
   assert.match(reconnectBody, /afterEventIndex/);
   assert.match(reconnectBody, /state\.eventLog\.length/);
@@ -525,13 +528,63 @@ test('run events are buffered for reconnect instead of being tied to one respons
   assert.match(bufferedEventBody, /return null/);
 });
 
+test('reconnect event buffering keeps only the most recent bounded events', () => {
+  const pushReconnectBufferedEvent = (
+    ClaudeService as {
+      pushReconnectBufferedEvent?: (eventLog: unknown[], event: unknown, maxEvents?: number) => void;
+    }
+  ).pushReconnectBufferedEvent;
+
+  if (typeof pushReconnectBufferedEvent !== 'function') {
+    assert.fail('pushReconnectBufferedEvent should be exported');
+  }
+
+  const eventLog: unknown[] = [];
+  for (let index = 0; index < 5; index += 1) {
+    pushReconnectBufferedEvent(
+      eventLog,
+      {
+        type: 'phase',
+        runId: 'run-a',
+        phase: 'computing',
+        label: `phase-${index}`,
+      },
+      3,
+    );
+  }
+
+  assert.deepEqual(
+    eventLog.map((event) => (event as { label?: string }).label),
+    ['phase-2', 'phase-3', 'phase-4'],
+  );
+});
+
+test('runtime stream buffers are bounded while retaining the newest text', () => {
+  const appendBoundedRuntimeBuffer = (
+    ClaudeService as {
+      appendBoundedRuntimeBuffer?: (buffer: string, chunk: string, maxChars?: number) => string;
+    }
+  ).appendBoundedRuntimeBuffer;
+
+  if (typeof appendBoundedRuntimeBuffer !== 'function') {
+    assert.fail('appendBoundedRuntimeBuffer should be exported');
+  }
+
+  const next = appendBoundedRuntimeBuffer('prefix-', 'x'.repeat(128), 32);
+
+  assert.equal(next.length, 32);
+  assert.match(next, /\[已截断\]/);
+  assert.ok(next.endsWith('x'.repeat(12)));
+});
+
 test('Claude retry progress from stderr is surfaced as a running phase update', () => {
   const stderrBody = extractFunctionBody('flushRuntimeStderrLine');
   const bindRuntimeBody = extractFunctionBody('bindClaudeRuntime');
 
   assert.match(source, /parseClaudeRetryStatus/);
   assert.match(source, /splitClaudeStderrBuffer/);
-  assert.match(bindRuntimeBody, /splitClaudeStderrBuffer\(runtime\.stderrBuffer\)/);
+  assert.match(bindRuntimeBody, /splitClaudeStderrBuffer\(stderrBuffer\)/);
+  assert.match(bindRuntimeBody, /appendBoundedRuntimeBuffer\(['"]{2},\s*rest\)/);
   assert.match(bindRuntimeBody, /parseClaudeRetryStatus\(runtime\.stderrBuffer\)/);
   assert.match(stderrBody, /parseClaudeRetryStatus\(trimmed\)/);
   assert.match(stderrBody, /type:\s*['"]phase['"]/);
@@ -577,6 +630,25 @@ test('managed runtime status endpoint reports only CodeM-owned live runtimes', (
   assert.match(statusBody, /activeRun:\s*Boolean\(runtime\.currentRun\)/);
   assert.match(serverSource, /getThreadRuntimeStatuses/);
   assert.match(serverSource, /\/api\/claude\/runtimes/);
+});
+
+test('runtime context requests use a dedicated stream-json side channel', () => {
+  const requestBody = extractFunctionBody('requestThreadRuntimeContext');
+  const stdoutBody = extractFunctionBody('flushRuntimeStdoutLine');
+  const getRuntimeBody = extractFunctionBody('getOrCreateClaudeRuntime');
+  const createStreamBody = extractFunctionBody('createClaudeStream');
+
+  assert.match(source, /contextRequest\?:\s*ClaudeContextRequest/);
+  assert.match(requestBody, /threadRuntimes\.get\(normalizedThreadId\)/);
+  assert.match(requestBody, /runtime\.child\.stdin\.write\(payload,/);
+  assert.match(requestBody, /buildClaudeContextRequestMessage\(runtime\.key\)/);
+  assert.match(stdoutBody, /if\s*\(runtime\.contextRequest\)\s*{/);
+  assert.match(stdoutBody, /handleRuntimeContextStdoutLine\(runtime,\s*runtime\.contextRequest,\s*line\)/);
+  assert.match(stdoutBody, /const state = runtime\.currentRun/);
+  assert.match(getRuntimeBody, /existing\.contextRequest/);
+  assert.match(createStreamBody, /runtime\.contextRequest/);
+  assert.match(serverSource, /requestThreadRuntimeContext/);
+  assert.match(serverSource, /\/api\/claude\/runtime\/:threadId\/context/);
 });
 
 test('request user input answers prefer control responses and keep tool-result fallback', () => {

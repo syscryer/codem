@@ -213,6 +213,7 @@ export function useWorkspaceState() {
             turns: existing?.turns ?? [],
             debugEvents: existing?.debugEvents ?? [],
             rawEvents: existing?.rawEvents ?? [],
+            claudeContext: existing?.claudeContext,
             historyLoaded: existing?.historyLoaded ?? false,
             historyLoading: existing?.historyLoading ?? false,
           };
@@ -361,6 +362,7 @@ export function useWorkspaceState() {
           [payload.threadId]: {
             ...existing,
             turns: mergedTurns,
+            claudeContext: payload.claudeContext ?? existing.claudeContext,
             historyLoaded: true,
             historyLoading: false,
           },

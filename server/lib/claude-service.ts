@@ -2,7 +2,7 @@ import { access } from 'node:fs/promises';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type { Readable, Writable } from 'node:stream';
-import type { InputContentBlock, UserImageAttachment } from '../../src/types.js';
+import type { InputContentBlock, UserImageAttachment, ClaudeContextSnapshot } from '../../src/types.js';
 import {
   normalizeInputContentBlocks,
   stripTransientInputBlockData,
@@ -10,6 +10,10 @@ import {
 } from '../../src/lib/input-content-blocks.js';
 import { getClaudeProviderSnapshot, getConfiguredModelOptions } from './claude-models.js';
 import { parseClaudeApiRetryStatus, parseClaudeRetryStatus, splitClaudeStderrBuffer } from './claude-stderr.js';
+import {
+  createClaudeContextSnapshot,
+  extractClaudeContextMarkdownFromPayload,
+} from './claude-context.js';
 
 export type ClaudePermissionMode =
   | 'default'
@@ -236,6 +240,41 @@ type ToolInputAccumulator = {
   emittedApprovalRequest: boolean;
 };
 
+type ClaudeContextErrorCode =
+  | 'invalid-thread'
+  | 'runtime-unavailable'
+  | 'runtime-busy'
+  | 'context-timeout'
+  | 'context-write-failed'
+  | 'context-json-parse-failed'
+  | 'context-result-error'
+  | 'context-empty-response'
+  | 'context-runtime-ended';
+
+type ClaudeContextRequestResult =
+  | {
+      ok: true;
+      context: ClaudeContextSnapshot;
+    }
+  | {
+      ok: false;
+      code: ClaudeContextErrorCode;
+      error: string;
+      httpStatus: number;
+    };
+
+type ClaudeContextRequest = {
+  id: string;
+  threadId: string;
+  requestedAtMs: number;
+  timeoutTimer: ReturnType<typeof setTimeout>;
+  eventCount: number;
+  assistantTexts: string[];
+  stderrLines: string[];
+  settled: boolean;
+  resolve: (result: ClaudeContextRequestResult) => void;
+};
+
 type RunState = {
   runId: string;
   input: StreamInput;
@@ -280,6 +319,7 @@ type ClaudeRuntime = {
   stdoutBuffer: string;
   stderrBuffer: string;
   currentRun: RunState | null;
+  contextRequest?: ClaudeContextRequest;
   closed: boolean;
 };
 
@@ -294,9 +334,13 @@ const threadActiveRuns = new Map<string, string>();
 const threadRuntimes = new Map<string, ClaudeRuntime>();
 const TEXT_DELTA_COALESCE_MS = process.platform === 'win32' ? 32 : 0;
 const RUN_RECONNECT_RETENTION_MS = 10 * 60 * 1000;
+const RUN_RECONNECT_BUFFER_MAX_EVENTS = 1000;
 const RUN_RECONNECT_BUFFER_TEXT_MAX_CHARS = 16_000;
 const RUN_RECONNECT_BUFFER_MESSAGE_MAX_CHARS = 8_000;
 const RUN_RECONNECT_BUFFER_TRUNCATION_MARKER = '\n...[已截断]...\n';
+const RUNTIME_STREAM_BUFFER_MAX_CHARS = 1_000_000;
+const CLAUDE_CONTEXT_REQUEST_TIMEOUT_MS = 12_000;
+const CLAUDE_CONTEXT_STDERR_MAX_LINES = 3;
 let cachedClaudeCommand: string | null | undefined;
 
 export async function isDirectoryAccessible(directory: string) {
@@ -380,6 +424,91 @@ export function getThreadRuntimeStatuses() {
   }
 
   return statuses;
+}
+
+export function requestThreadRuntimeContext(
+  threadId: string,
+  options: { timeoutMs?: number } = {},
+): Promise<ClaudeContextRequestResult> {
+  const normalizedThreadId = threadId.trim();
+  if (!normalizedThreadId) {
+    return Promise.resolve(createContextRequestError(
+      'invalid-thread',
+      'threadId 不能为空。',
+      400,
+    ));
+  }
+
+  const runtime = threadRuntimes.get(normalizedThreadId);
+  if (!runtime || !isRuntimeProcessAlive(runtime) || runtime.inputMode !== 'stdin') {
+    if (runtime) {
+      threadRuntimes.delete(normalizedThreadId);
+    }
+    return Promise.resolve(createContextRequestError(
+      'runtime-unavailable',
+      '当前线程没有可复用的 Claude stream-json 会话，请先发送一轮消息后再获取上下文。',
+      404,
+    ));
+  }
+
+  if (runtime.currentRun) {
+    return Promise.resolve(createContextRequestError(
+      'runtime-busy',
+      '当前 Claude 会话正在运行中，请等待本轮结束后再获取上下文信息。',
+      409,
+    ));
+  }
+
+  if (runtime.contextRequest) {
+    return Promise.resolve(createContextRequestError(
+      'runtime-busy',
+      '已有上下文信息请求正在进行，请稍后再试。',
+      409,
+    ));
+  }
+
+  return new Promise<ClaudeContextRequestResult>((resolve) => {
+    const timeoutMs = normalizeContextTimeout(options.timeoutMs);
+    const request: ClaudeContextRequest = {
+      id: randomUUID(),
+      threadId: normalizedThreadId,
+      requestedAtMs: Date.now(),
+      timeoutTimer: setTimeout(() => {
+        settleRuntimeContextRequest(
+          runtime,
+          request,
+          createContextRequestError(
+            'context-timeout',
+            'Claude 未在限定时间内返回 /context 结果。',
+            504,
+          ),
+        );
+      }, timeoutMs),
+      eventCount: 0,
+      assistantTexts: [],
+      stderrLines: [],
+      settled: false,
+      resolve,
+    };
+
+    runtime.contextRequest = request;
+    const payload = `${JSON.stringify(buildClaudeContextRequestMessage(runtime.key))}\n`;
+    runtime.child.stdin.write(payload, (error) => {
+      if (!error) {
+        return;
+      }
+
+      settleRuntimeContextRequest(
+        runtime,
+        request,
+        createContextRequestError(
+          'context-write-failed',
+          `写入 Claude Code /context 请求失败：${error.message}`,
+          500,
+        ),
+      );
+    });
+  });
 }
 
 export function markRunDetached(runId: string) {
@@ -768,11 +897,13 @@ export async function* createClaudeStream(input: StreamInput): AsyncGenerator<St
   const { runtime, reused } = getOrCreateClaudeRuntime(command, runtimeInput);
   const spawnReturnedAtMs = Date.now();
 
-  if (runtime.currentRun) {
+  if (runtime.currentRun || runtime.contextRequest) {
     yield {
       type: 'error',
       runId,
-      message: '当前会话仍有运行中的 Claude 请求，请等待结束或停止后再发送。',
+      message: runtime.contextRequest
+        ? '当前会话正在获取上下文信息，请稍后再发送。'
+        : '当前会话仍有运行中的 Claude 请求，请等待结束或停止后再发送。',
     };
     return;
   }
@@ -854,6 +985,164 @@ function createRunState(runId: string, input: StreamInput, sessionId?: string): 
   };
 }
 
+function buildClaudeContextRequestMessage(_threadId: string): ClaudeInputMessage {
+  return {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: '/context',
+        },
+      ],
+    },
+  };
+}
+
+function normalizeContextTimeout(value: number | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return CLAUDE_CONTEXT_REQUEST_TIMEOUT_MS;
+  }
+
+  return Math.min(60_000, Math.max(1_000, Math.floor(value)));
+}
+
+function createContextRequestError(
+  code: ClaudeContextErrorCode,
+  error: string,
+  httpStatus: number,
+): Extract<ClaudeContextRequestResult, { ok: false }> {
+  return {
+    ok: false,
+    code,
+    error,
+    httpStatus,
+  };
+}
+
+function settleRuntimeContextRequest(
+  runtime: ClaudeRuntime,
+  request: ClaudeContextRequest,
+  result: ClaudeContextRequestResult,
+) {
+  if (request.settled || runtime.contextRequest !== request) {
+    return;
+  }
+
+  request.settled = true;
+  clearTimeout(request.timeoutTimer);
+  runtime.contextRequest = undefined;
+  request.resolve(result);
+}
+
+function failRuntimeContextRequest(
+  runtime: ClaudeRuntime,
+  code: ClaudeContextErrorCode,
+  error: string,
+  httpStatus: number,
+) {
+  const request = runtime.contextRequest;
+  if (!request) {
+    return;
+  }
+
+  settleRuntimeContextRequest(runtime, request, createContextRequestError(code, error, httpStatus));
+}
+
+function handleRuntimeContextStdoutLine(
+  runtime: ClaudeRuntime,
+  request: ClaudeContextRequest,
+  line: string,
+) {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return;
+  }
+
+  let payload: ClaudeJsonLine;
+  try {
+    payload = JSON.parse(trimmed) as ClaudeJsonLine;
+  } catch (error) {
+    settleRuntimeContextRequest(
+      runtime,
+      request,
+      createContextRequestError(
+        'context-json-parse-failed',
+        `Claude /context 返回了无法解析的 stream-json 行：${error instanceof Error ? error.message : 'JSON 解析失败'}`,
+        502,
+      ),
+    );
+    return;
+  }
+
+  request.eventCount += 1;
+
+  const resultErrorMessage = getResultErrorMessage(payload);
+  if (payload.session_id && !resultErrorMessage) {
+    runtime.sessionId = payload.session_id;
+  }
+
+  const markdown = extractClaudeContextMarkdownFromPayload(payload);
+  if (payload.type === 'assistant' && markdown.trim()) {
+    request.assistantTexts.push(markdown);
+  }
+
+  if (payload.type !== 'result') {
+    return;
+  }
+
+  if (resultErrorMessage) {
+    settleRuntimeContextRequest(
+      runtime,
+      request,
+      createContextRequestError(
+        'context-result-error',
+        resultErrorMessage,
+        502,
+      ),
+    );
+    return;
+  }
+
+  const resultMarkdown = markdown.trim() ? markdown : request.assistantTexts.at(-1) ?? '';
+  if (!resultMarkdown.trim()) {
+    settleRuntimeContextRequest(
+      runtime,
+      request,
+      createContextRequestError(
+        'context-empty-response',
+        'Claude 已返回 /context 结果事件，但没有可展示的 Markdown 内容。',
+        502,
+      ),
+    );
+    return;
+  }
+
+  settleRuntimeContextRequest(runtime, request, {
+    ok: true,
+    context: createClaudeContextSnapshot(resultMarkdown, {
+      requestedAtMs: request.requestedAtMs,
+      durationMs: Math.max(0, Date.now() - request.requestedAtMs),
+      eventCount: request.eventCount,
+    }),
+  });
+}
+
+function appendRuntimeContextStderrLine(runtime: ClaudeRuntime, line: string) {
+  const request = runtime.contextRequest;
+  const trimmed = line.trim();
+  if (!request || !trimmed) {
+    return false;
+  }
+
+  request.stderrLines.push(trimmed.slice(0, 1_000));
+  if (request.stderrLines.length > CLAUDE_CONTEXT_STDERR_MAX_LINES) {
+    request.stderrLines.splice(0, request.stderrLines.length - CLAUDE_CONTEXT_STDERR_MAX_LINES);
+  }
+  return true;
+}
+
 function enqueueRunEvent(state: RunState, event: StreamEvent) {
   if (state.finished) {
     return;
@@ -878,10 +1167,7 @@ function enqueueTrace(state: RunState, name: string, atMs = Date.now(), detail?:
 }
 
 function pushRunEvent(state: RunState, event: StreamEvent) {
-  const bufferedEvent = createBufferedRunEventForReconnect(event);
-  if (bufferedEvent) {
-    state.eventLog.push(bufferedEvent);
-  }
+  pushReconnectBufferedEvent(state.eventLog, event);
   state.queue.push(event);
   state.wakeQueue?.();
   state.wakeQueue = null;
@@ -889,6 +1175,29 @@ function pushRunEvent(state: RunState, event: StreamEvent) {
     wake();
   }
   state.eventWaiters.clear();
+}
+
+export function pushReconnectBufferedEvent(
+  eventLog: StreamEvent[],
+  event: StreamEvent,
+  maxEvents = RUN_RECONNECT_BUFFER_MAX_EVENTS,
+) {
+  const bufferedEvent = createBufferedRunEventForReconnect(event);
+  if (!bufferedEvent) {
+    return;
+  }
+
+  const normalizedMaxEvents = Math.max(0, Math.floor(maxEvents));
+  if (normalizedMaxEvents === 0) {
+    eventLog.length = 0;
+    return;
+  }
+
+  eventLog.push(bufferedEvent);
+  const overflow = eventLog.length - normalizedMaxEvents;
+  if (overflow > 0) {
+    eventLog.splice(0, overflow);
+  }
 }
 
 function createBufferedRunEventForReconnect(event: StreamEvent) {
@@ -940,6 +1249,24 @@ function truncateBufferedRunText(text: string, maxChars: number) {
   const headLength = Math.floor((maxChars - markerLength) * 0.5);
   const tailLength = Math.max(0, maxChars - markerLength - headLength);
   return `${text.slice(0, headLength)}${RUN_RECONNECT_BUFFER_TRUNCATION_MARKER}${text.slice(-tailLength)}`;
+}
+
+export function appendBoundedRuntimeBuffer(
+  buffer: string,
+  chunk: string,
+  maxChars = RUNTIME_STREAM_BUFFER_MAX_CHARS,
+) {
+  const next = `${buffer}${chunk}`;
+  if (next.length <= maxChars) {
+    return next;
+  }
+
+  const marker = RUN_RECONNECT_BUFFER_TRUNCATION_MARKER.trim();
+  if (maxChars <= marker.length) {
+    return next.slice(-maxChars);
+  }
+
+  return `${marker}${next.slice(-(maxChars - marker.length))}`;
 }
 
 function waitForRunEvent(state: RunState, signal?: AbortSignal) {
@@ -1122,7 +1449,7 @@ function getOrCreateClaudeRuntime(command: string, input: StreamInput): { runtim
   const existing = threadRuntimes.get(key);
 
   if (existing) {
-    if (existing.currentRun) {
+    if (existing.currentRun || existing.contextRequest) {
       return { runtime: existing, reused: false };
     }
 
@@ -1293,9 +1620,9 @@ function resolveClaudeSpawnArgs(command: string, args: string[]) {
 
 function bindClaudeRuntime(runtime: ClaudeRuntime) {
   runtime.child.stdout.on('data', (chunk: Buffer | string) => {
-    runtime.stdoutBuffer += chunk.toString();
-    const lines = runtime.stdoutBuffer.split(/\r?\n/);
-    runtime.stdoutBuffer = lines.pop() ?? '';
+    const stdoutBuffer = `${runtime.stdoutBuffer}${chunk.toString()}`;
+    const lines = stdoutBuffer.split(/\r?\n/);
+    runtime.stdoutBuffer = appendBoundedRuntimeBuffer('', lines.pop() ?? '');
 
     for (const line of lines) {
       flushRuntimeStdoutLine(runtime, line);
@@ -1303,9 +1630,9 @@ function bindClaudeRuntime(runtime: ClaudeRuntime) {
   });
 
   runtime.child.stderr.on('data', (chunk: Buffer | string) => {
-    runtime.stderrBuffer += chunk.toString();
-    const { lines, rest } = splitClaudeStderrBuffer(runtime.stderrBuffer);
-    runtime.stderrBuffer = rest;
+    const stderrBuffer = `${runtime.stderrBuffer}${chunk.toString()}`;
+    const { lines, rest } = splitClaudeStderrBuffer(stderrBuffer);
+    runtime.stderrBuffer = appendBoundedRuntimeBuffer('', rest);
 
     for (const line of lines) {
       flushRuntimeStderrLine(runtime, line);
@@ -1318,6 +1645,16 @@ function bindClaudeRuntime(runtime: ClaudeRuntime) {
   });
 
   runtime.child.stdin.on('error', (error) => {
+    if (runtime.contextRequest) {
+      failRuntimeContextRequest(
+        runtime,
+        'context-write-failed',
+        `写入 Claude Code /context 请求失败：${error.message}`,
+        500,
+      );
+      return;
+    }
+
     const state = runtime.currentRun;
     if (!state) {
       return;
@@ -1337,6 +1674,15 @@ function bindClaudeRuntime(runtime: ClaudeRuntime) {
   });
 
   runtime.child.once('error', (error) => {
+    if (runtime.contextRequest) {
+      failRuntimeContextRequest(
+        runtime,
+        'context-runtime-ended',
+        `Claude 运行时异常，/context 请求未完成：${error.message}`,
+        500,
+      );
+    }
+
     const state = runtime.currentRun;
     if (state) {
       enqueueRetryableRuntimeError(state.runId, error.message, 'process', state.emittedRecoveryHintKeys, (event) =>
@@ -1362,6 +1708,18 @@ function bindClaudeRuntime(runtime: ClaudeRuntime) {
     if (runtime.stderrBuffer.trim()) {
       flushRuntimeStderrLine(runtime, runtime.stderrBuffer);
       runtime.stderrBuffer = '';
+    }
+
+    if (runtime.contextRequest) {
+      const stderrTail = runtime.contextRequest.stderrLines.length
+        ? ` stderr: ${runtime.contextRequest.stderrLines.join('\n')}`
+        : '';
+      failRuntimeContextRequest(
+        runtime,
+        'context-runtime-ended',
+        `Claude 运行时已结束，/context 请求未完成。code=${code ?? 'null'} signal=${signal ?? 'null'}${stderrTail}`,
+        502,
+      );
     }
 
     const state = runtime.currentRun;
@@ -1393,6 +1751,11 @@ function bindClaudeRuntime(runtime: ClaudeRuntime) {
 }
 
 function flushRuntimeStdoutLine(runtime: ClaudeRuntime, line: string) {
+  if (runtime.contextRequest) {
+    handleRuntimeContextStdoutLine(runtime, runtime.contextRequest, line);
+    return;
+  }
+
   const state = runtime.currentRun;
   if (!state) {
     return;
@@ -1878,6 +2241,10 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
 }
 
 function flushRuntimeStderrLine(runtime: ClaudeRuntime, line: string) {
+  if (appendRuntimeContextStderrLine(runtime, line)) {
+    return;
+  }
+
   const state = runtime.currentRun;
   const trimmed = line.trim();
   if (!state || !trimmed) {
@@ -1911,6 +2278,14 @@ function closeClaudeRuntime(runtime: ClaudeRuntime) {
 
   runtime.closed = true;
   threadRuntimes.delete(runtime.key);
+  if (runtime.contextRequest) {
+    failRuntimeContextRequest(
+      runtime,
+      'context-runtime-ended',
+      'Claude 会话已关闭，/context 请求未完成。',
+      500,
+    );
+  }
   const state = runtime.currentRun;
   if (state) {
     state.seenDoneEvent = true;

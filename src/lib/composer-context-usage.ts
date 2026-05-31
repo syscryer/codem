@@ -1,4 +1,4 @@
-import type { AgentType, ConversationTurn } from '../types';
+import type { AgentType, ClaudeContextSummary, ConversationTurn } from '../types';
 
 export type ComposerContextUsageLevel = 'empty' | 'low' | 'medium' | 'high' | 'critical';
 
@@ -31,8 +31,17 @@ export function buildComposerContextUsage(input: {
   agent: AgentType;
   model: string;
   turns: ConversationTurn[];
+  nativeContextSummary?: Pick<ClaudeContextSummary, 'usedTokens' | 'totalTokens' | 'freeTokens' | 'percent'>;
+  nativeContextRequestedAtMs?: number;
+  nativeContextWindowTokens?: number;
 }): ComposerContextUsage {
-  const totalTokens = resolveLatestRuntimeContextWindow(input.turns) ?? resolveClaudeContextWindow(input.model);
+  const nativeSummaryUsage = resolveNativeContextSummaryUsage(input.nativeContextSummary);
+  const nativeSummaryFresh = isNativeContextFreshForTurns(input.nativeContextRequestedAtMs, input.turns);
+  const totalTokens =
+    nativeSummaryUsage.totalTokens ??
+    resolveNativeContextWindow(input.nativeContextWindowTokens) ??
+    resolveLatestRuntimeContextWindow(input.turns) ??
+    resolveClaudeContextWindow(input.model);
 
   if (input.agent !== 'claude') {
     return createContextUsageResult({
@@ -42,16 +51,22 @@ export function buildComposerContextUsage(input: {
   }
 
   const breakdown = resolveLatestUsageBreakdown(input.turns, totalTokens);
-
-  const usedTokens =
+  const runtimeUsedTokens =
     breakdown.inputTokens +
     breakdown.cacheCreationInputTokens +
     breakdown.cacheReadInputTokens;
-  const hasUsage = usedTokens > 0;
+
+  const usedTokens =
+    nativeSummaryFresh
+      ? nativeSummaryUsage.usedTokens ?? runtimeUsedTokens
+      : Math.max(nativeSummaryUsage.usedTokens ?? 0, runtimeUsedTokens);
+  const hasUsage = nativeSummaryFresh
+    ? nativeSummaryUsage.hasUsage ?? usedTokens > 0
+    : usedTokens > 0;
   const compact = resolveCompactState(usedTokens, totalTokens);
-  const percent = hasUsage && totalTokens > 0
+  const percent = (nativeSummaryFresh ? nativeSummaryUsage.percent : undefined) ?? (hasUsage && totalTokens > 0
     ? Math.min(100, Number(((usedTokens / totalTokens) * 100).toFixed(1)))
-    : 0;
+    : 0);
 
   return {
     visible: true,
@@ -62,6 +77,57 @@ export function buildComposerContextUsage(input: {
     level: resolveUsageLevel(hasUsage, percent),
     compact,
     breakdown,
+  };
+}
+
+export function shouldRefreshNativeContextOnOpen(input: {
+  turns: ConversationTurn[];
+  nativeContextRequestedAtMs?: number;
+}) {
+  if (!hasRuntimeContextTurn(input.turns)) {
+    return false;
+  }
+
+  if (typeof input.nativeContextRequestedAtMs !== 'number') {
+    return true;
+  }
+
+  return !isNativeContextFreshForTurns(input.nativeContextRequestedAtMs, input.turns);
+}
+
+export function isNativeContextFreshForTurns(
+  requestedAtMs: number | undefined,
+  turns: ConversationTurn[],
+) {
+  if (typeof requestedAtMs !== 'number' || !Number.isFinite(requestedAtMs)) {
+    return true;
+  }
+
+  const latestStartedAtMs = resolveLatestRuntimeContextTurnStartedAtMs(turns);
+  return typeof latestStartedAtMs !== 'number' || latestStartedAtMs <= requestedAtMs;
+}
+
+function resolveNativeContextSummaryUsage(summary: Pick<ClaudeContextSummary, 'usedTokens' | 'totalTokens' | 'freeTokens' | 'percent'> | undefined) {
+  if (!summary) {
+    return {};
+  }
+
+  const totalTokens = resolveNativeContextWindow(summary.totalTokens);
+  const usedTokens =
+    resolveNativeContextWindow(summary.usedTokens) ??
+    (typeof totalTokens === 'number' && typeof summary.freeTokens === 'number'
+      ? Math.max(0, totalTokens - summary.freeTokens)
+      : undefined);
+  const percent = typeof summary.percent === 'number' && Number.isFinite(summary.percent)
+    ? summary.percent
+    : undefined;
+
+  return {
+    usedTokens,
+    totalTokens,
+    freeTokens: resolveNativeContextWindow(summary.freeTokens),
+    percent,
+    hasUsage: typeof usedTokens === 'number' ? usedTokens > 0 : undefined,
   };
 }
 
@@ -106,6 +172,51 @@ function isPlausibleContextSnapshot(currentTokens: number, totalTokens: number) 
   }
 
   return currentTokens <= totalTokens * 2;
+}
+
+function hasRuntimeContextTurn(turns: ConversationTurn[]) {
+  return turns.some(isRuntimeContextTurn);
+}
+
+function resolveLatestRuntimeContextTurnStartedAtMs(turns: ConversationTurn[]) {
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (!isRuntimeContextTurn(turn)) {
+      continue;
+    }
+    return typeof turn.startedAtMs === 'number' && Number.isFinite(turn.startedAtMs)
+      ? turn.startedAtMs
+      : undefined;
+  }
+
+  return undefined;
+}
+
+function isRuntimeContextTurn(turn: ConversationTurn) {
+  if (turn.status === 'pending') {
+    return false;
+  }
+  if (isLocalSystemCommandTurn(turn)) {
+    return false;
+  }
+
+  return (
+    Boolean(turn.contextUsage) ||
+    (turn.inputTokens ?? 0) > 0 ||
+    (turn.cacheCreationInputTokens ?? 0) > 0 ||
+    (turn.cacheReadInputTokens ?? 0) > 0 ||
+    turn.tools.length > 0 ||
+    Boolean(turn.assistantText.trim())
+  );
+}
+
+function isLocalSystemCommandTurn(turn: ConversationTurn) {
+  return (
+    turn.items.length > 0 &&
+    turn.items.every((item) => item.type === 'system-command') &&
+    turn.tools.length === 0 &&
+    !turn.assistantText.trim()
+  );
 }
 
 function createContextUsageResult(input: {
@@ -175,6 +286,12 @@ function resolveClaudeContextWindow(model: string) {
   }
 
   return DEFAULT_CLAUDE_CONTEXT_WINDOW;
+}
+
+function resolveNativeContextWindow(value: number | undefined) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
 }
 
 function resolveLatestRuntimeContextWindow(turns: ConversationTurn[]) {

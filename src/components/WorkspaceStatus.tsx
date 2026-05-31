@@ -1,4 +1,4 @@
-import { Activity, Check, Copy, GitBranchPlus, GitFork, LayoutPanelLeft, Link2, Plus, RefreshCw, Zap } from 'lucide-react';
+import { Activity, Check, GitBranchPlus, GitFork, LayoutPanelLeft, Link2, Plus, RefreshCw, Zap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { fetchProjectWorktrees } from '../lib/worktree-api';
@@ -340,6 +340,14 @@ export function WorkspaceStatus({
     activeRun: sessionActiveRun,
   });
   const sessionUsage = summarizeWorkspaceSessionUsage(activeThread?.turns ?? []);
+  const sessionTokenUsageLabel = formatTokenUsagePair(
+    sessionUsage.inputTokenLabel,
+    sessionUsage.outputTokenLabel,
+  );
+  const sessionCacheUsageLabel = formatCacheUsagePair(
+    sessionUsage.cacheCreationTokenLabel,
+    sessionUsage.cacheReadTokenLabel,
+  );
   const sessionDescription = workspaceSessionDescription(sessionButtonState);
   const sessionDebugPayload = {
     state: sessionButtonState,
@@ -514,20 +522,19 @@ export function WorkspaceStatus({
                   <h4>当前会话</h4>
                   <StatusRunRow label="回合" value={sessionUsage.turnCountLabel} />
                   <StatusRunRow label="耗时" value={sessionUsage.durationLabel} />
-                  <StatusRunRow label="Tokens" value={sessionUsage.tokenLabel} />
+                  <StatusRunRow label="输入/输出" value={sessionTokenUsageLabel} />
+                  {sessionCacheUsageLabel ? <StatusRunRow label="缓存" value={sessionCacheUsageLabel} /> : null}
                   <StatusRunRow label="Cost" value={sessionUsage.costLabel} />
                 </section>
 
                 {activeThread?.sessionId ? (
                   <section className="status-run-section">
                     <h4>Session</h4>
-                    <div className="status-run-copy-row">
-                      <code title={activeThread.sessionId}>{activeThread.sessionId}</code>
-                      <button type="button" onClick={() => void handleCopySessionId()}>
-                        <Copy size={12} />
-                        <span>复制</span>
-                      </button>
-                    </div>
+                    <StatusRunRow
+                      label="Session"
+                      value={activeThread.sessionId}
+                      title={activeThread.sessionId}
+                    />
                     <StatusRunRow label="工作目录" value={activeThread.workingDirectory || activeProject?.path || '-'} />
                   </section>
                 ) : (
@@ -636,6 +643,26 @@ function WorkspaceSessionStateIcon({ state }: { state: WorkspaceSessionButtonSta
   }
 
   return <Link2 size={12} />;
+}
+
+function formatTokenUsagePair(inputLabel: string, outputLabel: string) {
+  return `${inputLabel} / ${outputLabel}`;
+}
+
+function formatCacheUsagePair(writeLabel: string, readLabel: string) {
+  if (writeLabel === '-' && readLabel === '-') {
+    return '';
+  }
+
+  if (writeLabel === '-') {
+    return `读取 ${readLabel}`;
+  }
+
+  if (readLabel === '-') {
+    return `写入 ${writeLabel}`;
+  }
+
+  return `写入 ${writeLabel} / 读取 ${readLabel}`;
 }
 
 function StatusRunRow({ label, value, title }: { label: string; value: string; title?: string }) {
