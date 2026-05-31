@@ -978,7 +978,7 @@ export function getThreadHistory(threadId: string) {
 
   const storedTurns = readStoredThreadHistory(threadId);
   if (thread.session_id) {
-    if (storedTurns.some(hasUserAttachments)) {
+    if (storedTurns.some(hasLocalUserInputSummary)) {
       return {
         threadId,
         turns: storedTurns,
@@ -3231,7 +3231,7 @@ function shouldRefreshStoredHistory(threadId: string, transcriptPath: string, tu
     return false;
   }
 
-  if (turns.some(hasUserAttachments)) {
+  if (turns.some(hasLocalUserInputSummary)) {
     return false;
   }
 
@@ -3278,6 +3278,14 @@ function hasPendingHumanRequest(turn: ThreadTurn) {
 
 function hasUserAttachments(turn: ThreadTurn) {
   return Boolean(turn.userAttachments?.length);
+}
+
+function hasLocalUserInputSummary(turn: ThreadTurn) {
+  return hasUserAttachments(turn) || Boolean(turn.userContentBlocks?.some(hasStructuredUserContentBlockSummary));
+}
+
+function hasStructuredUserContentBlockSummary(block: InputContentBlockSummary) {
+  return block.type !== 'text';
 }
 
 function hasStoredTaskNotificationPollution(turn: ThreadTurn) {

@@ -1,13 +1,20 @@
-import { Activity, Check, GitBranchPlus, GitFork, LayoutPanelLeft, RefreshCw } from 'lucide-react';
+import { Activity, Check, Copy, GitBranchPlus, GitFork, LayoutPanelLeft, Link2, Plus, RefreshCw, Zap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { fetchProjectWorktrees } from '../lib/worktree-api';
+import {
+  buildWorkspaceSessionButtonState,
+  summarizeWorkspaceSessionUsage,
+  type WorkspaceSessionButtonState,
+} from '../lib/workspace-session-status';
+import { permissionLabel } from '../lib/ui-labels';
 import { PopoverPortal } from './PopoverPortal';
-import type { GitBranchSummary, GitWorktreeInfo, GitWorktreeList, ProjectSummary, ThreadDetail } from '../types';
+import type { GitBranchSummary, GitWorktreeInfo, GitWorktreeList, PermissionMode, ProjectSummary, ThreadDetail, ThreadRuntimeStatus } from '../types';
 
 type WorkspaceStatusProps = {
   activeProject: ProjectSummary | null;
   activeThread: ThreadDetail | null;
+  isActiveThreadRunning: boolean;
   projects: ProjectSummary[];
   onLoadBranches: (projectId: string) => Promise<GitBranchSummary[]>;
   onSelectBranch: (projectId: string, branchName: string) => Promise<void>;
@@ -47,6 +54,7 @@ type ActiveRunPayload =
 export function WorkspaceStatus({
   activeProject,
   activeThread,
+  isActiveThreadRunning,
   projects,
   onLoadBranches,
   onSelectBranch,
@@ -57,8 +65,12 @@ export function WorkspaceStatus({
   const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
   const [runStatusOpen, setRunStatusOpen] = useState(false);
   const [runStatus, setRunStatus] = useState<ActiveRunPayload | null>(null);
+  const [runtimeStatus, setRuntimeStatus] = useState<ThreadRuntimeStatus | null>(null);
   const [runStatusLoading, setRunStatusLoading] = useState(false);
   const [runStatusError, setRunStatusError] = useState<string | null>(null);
+  const [debugJsonOpen, setDebugJsonOpen] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const [closingRuntime, setClosingRuntime] = useState(false);
   const [branches, setBranches] = useState<GitBranchSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -95,8 +107,40 @@ export function WorkspaceStatus({
   useEffect(() => {
     setRunStatusOpen(false);
     setRunStatus(null);
+    setRuntimeStatus(null);
     setRunStatusError(null);
     setRunStatusLoading(false);
+    setDebugJsonOpen(false);
+    setCopyError(null);
+  }, [activeThread?.id]);
+
+  useEffect(() => {
+    if (!activeThread?.id) {
+      setRuntimeStatus(null);
+      return;
+    }
+
+    const threadId = activeThread.id;
+    let cancelled = false;
+    async function refreshRuntimeStatus() {
+      try {
+        const nextRuntimeStatus = await fetchRuntimeStatusForThread(threadId);
+        if (!cancelled) {
+          setRuntimeStatus(nextRuntimeStatus);
+        }
+      } catch {
+        if (!cancelled) {
+          setRuntimeStatus(null);
+        }
+      }
+    }
+
+    void refreshRuntimeStatus();
+    const timer = window.setInterval(() => void refreshRuntimeStatus(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [activeThread?.id]);
 
   const canSelectBranch = Boolean(activeProject?.isGitRepo && activeProject?.id);
@@ -222,28 +266,61 @@ export function WorkspaceStatus({
   async function loadRunStatus() {
     if (!activeThread?.id) {
       setRunStatus({ active: false });
+      setRuntimeStatus(null);
       return;
     }
 
     setRunStatusLoading(true);
     setRunStatusError(null);
     try {
-      const response = await fetch(`/api/claude/runs/active/${encodeURIComponent(activeThread.id)}`);
-      if (response.status === 404) {
-        setRunStatus({ active: false });
-        return;
-      }
-
-      if (!response.ok) {
-        const message = await response.text();
-        throw new Error(message || '读取运行状态失败');
-      }
-
-      setRunStatus((await response.json()) as ActiveRunPayload);
+      const [nextRunStatus, nextRuntimeStatus] = await Promise.all([
+        fetchActiveRunStatus(activeThread.id),
+        fetchRuntimeStatusForThread(activeThread.id),
+      ]);
+      setRunStatus(nextRunStatus);
+      setRuntimeStatus(nextRuntimeStatus);
     } catch (error) {
       setRunStatusError(error instanceof Error ? error.message : '读取运行状态失败');
     } finally {
       setRunStatusLoading(false);
+    }
+  }
+
+  async function handleCopySessionId() {
+    const sessionId = activeThread?.sessionId?.trim();
+    if (!sessionId) {
+      return;
+    }
+
+    setCopyError(null);
+    try {
+      await navigator.clipboard.writeText(sessionId);
+    } catch {
+      setCopyError(`复制失败，请手动复制：${sessionId}`);
+    }
+  }
+
+  async function handleCloseRuntime() {
+    if (!activeThread?.id || !runtimeStatus?.alive || sessionActiveRun) {
+      return;
+    }
+
+    setClosingRuntime(true);
+    setRunStatusError(null);
+    try {
+      const response = await fetch(`/api/claude/runtime/${encodeURIComponent(activeThread.id)}/close`, {
+        method: 'POST',
+      });
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || '重置热连接失败');
+      }
+
+      setRuntimeStatus(await fetchRuntimeStatusForThread(activeThread.id));
+    } catch (error) {
+      setRunStatusError(error instanceof Error ? error.message : '重置热连接失败');
+    } finally {
+      setClosingRuntime(false);
     }
   }
 
@@ -254,6 +331,21 @@ export function WorkspaceStatus({
       void loadRunStatus();
     }
   }
+
+  const sessionActiveRun = isActiveThreadRunning || Boolean(runtimeStatus?.activeRun) || runStatus?.active === true;
+  const sessionRuntimeAlive = Boolean(runtimeStatus?.alive);
+  const sessionButtonState = buildWorkspaceSessionButtonState({
+    sessionId: activeThread?.sessionId,
+    runtimeAlive: sessionRuntimeAlive,
+    activeRun: sessionActiveRun,
+  });
+  const sessionUsage = summarizeWorkspaceSessionUsage(activeThread?.turns ?? []);
+  const sessionDescription = workspaceSessionDescription(sessionButtonState);
+  const sessionDebugPayload = {
+    state: sessionButtonState,
+    activeRun: runStatus ?? { active: false },
+    runtime: runtimeStatus ?? { threadId: activeThread?.id ?? '', alive: false, activeRun: false },
+  };
 
   return (
     <footer className="workspace-status">
@@ -387,10 +479,13 @@ export function WorkspaceStatus({
       <div className="status-run-picker" ref={runStatusRef}>
         <PopoverPortal open={runStatusOpen} anchorRef={runStatusRef} placement="top-end">
           <div className="status-run-menu" role="dialog" aria-label="Claude 运行状态">
-            <div className="status-run-head">
-              <div>
-                <strong>运行状态接口</strong>
-                <span>/api/claude/runs/active/{activeThread?.id ?? ':threadId'}</span>
+            <div className={`status-run-head is-${sessionButtonState.id}`}>
+              <span className="status-session-icon" aria-hidden="true">
+                <WorkspaceSessionStateIcon state={sessionButtonState} />
+              </span>
+              <div className="status-run-head-text">
+                <strong>Claude 会话</strong>
+                <span>{sessionButtonState.label} · {sessionDescription}</span>
               </div>
               <button
                 type="button"
@@ -403,19 +498,93 @@ export function WorkspaceStatus({
             </div>
             {runStatusLoading ? <div className="status-run-state">正在读取...</div> : null}
             {!runStatusLoading && runStatusError ? <div className="status-run-error">{runStatusError}</div> : null}
-            {!runStatusLoading && !runStatusError ? (
-              <pre className="status-run-json">{JSON.stringify(runStatus ?? { active: false }, null, 2)}</pre>
+            {!runStatusLoading ? (
+              <div className="status-run-content">
+                {runStatus?.active ? (
+                  <section className="status-run-section">
+                    <h4>当前运行</h4>
+                    <StatusRunRow label="Run" value={compactIdentifier(runStatus.runId)} title={runStatus.runId} />
+                    <StatusRunRow label="阶段" value={formatRunPhase(runStatus.currentPhase)} />
+                    <StatusRunRow label="活动" value={runStatus.currentActivity || runStatus.lastToolName || '-'} />
+                    <StatusRunRow label="事件" value={String(runStatus.eventCount)} />
+                  </section>
+                ) : null}
+
+                <section className="status-run-section">
+                  <h4>当前会话</h4>
+                  <StatusRunRow label="回合" value={sessionUsage.turnCountLabel} />
+                  <StatusRunRow label="耗时" value={sessionUsage.durationLabel} />
+                  <StatusRunRow label="Tokens" value={sessionUsage.tokenLabel} />
+                  <StatusRunRow label="Cost" value={sessionUsage.costLabel} />
+                </section>
+
+                {activeThread?.sessionId ? (
+                  <section className="status-run-section">
+                    <h4>Session</h4>
+                    <div className="status-run-copy-row">
+                      <code title={activeThread.sessionId}>{activeThread.sessionId}</code>
+                      <button type="button" onClick={() => void handleCopySessionId()}>
+                        <Copy size={12} />
+                        <span>复制</span>
+                      </button>
+                    </div>
+                    <StatusRunRow label="工作目录" value={activeThread.workingDirectory || activeProject?.path || '-'} />
+                  </section>
+                ) : (
+                  <section className="status-run-section">
+                    <h4>工作目录</h4>
+                    <p className="status-run-path">{activeProject?.path || activeThread?.workingDirectory || '-'}</p>
+                  </section>
+                )}
+
+                <section className="status-run-section">
+                  <h4>连接</h4>
+                  <StatusRunRow label="后台运行" value={sessionActiveRun ? '是' : '无'} />
+                  <StatusRunRow label="热连接" value={formatHotRuntimeState(sessionActiveRun, sessionRuntimeAlive)} />
+                  <StatusRunRow label="PID" value={runtimeStatus?.pid ? String(runtimeStatus.pid) : '-'} />
+                </section>
+
+                {sessionButtonState.id === 'hot' ? (
+                  <section className="status-run-section">
+                    <h4>会话配置</h4>
+                    <StatusRunRow label="模型" value={runtimeModelLabel(runtimeStatus, activeThread)} />
+                    <StatusRunRow label="权限" value={runtimePermissionLabel(runtimeStatus, activeThread)} />
+                  </section>
+                ) : null}
+
+                {copyError ? <div className="status-run-error inline">{copyError}</div> : null}
+
+                <div className="status-run-actions">
+                  {activeThread?.sessionId ? (
+                    <button type="button" onClick={() => void handleCopySessionId()}>
+                      复制 session
+                    </button>
+                  ) : null}
+                  {sessionRuntimeAlive && !sessionActiveRun ? (
+                    <button type="button" disabled={closingRuntime} onClick={() => void handleCloseRuntime()}>
+                      {closingRuntime ? '重置中...' : '重置热连接'}
+                    </button>
+                  ) : null}
+                  <button type="button" onClick={() => setDebugJsonOpen((value) => !value)}>
+                    调试 JSON
+                  </button>
+                </div>
+
+                {debugJsonOpen ? (
+                  <pre className="status-run-json">{JSON.stringify(sessionDebugPayload, null, 2)}</pre>
+                ) : null}
+              </div>
             ) : null}
           </div>
         </PopoverPortal>
         <button
           type="button"
-          className="status-item status-run-trigger"
+          className={`status-item status-run-trigger is-${sessionButtonState.id}`}
           aria-expanded={runStatusOpen}
           onClick={handleRunStatusTriggerClick}
         >
-          <Activity size={12} />
-          <span>{activeThread?.sessionId ? 'session 已连接' : '新会话'}</span>
+          <WorkspaceSessionStateIcon state={sessionButtonState} />
+          <span>{sessionButtonState.label}</span>
           <span className="footer-chevron" aria-hidden="true" />
         </button>
       </div>
@@ -453,4 +622,125 @@ function worktreeLabel(worktree: GitWorktreeInfo) {
 function samePath(left: string, right: string) {
   return left.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() ===
     right.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function WorkspaceSessionStateIcon({ state }: { state: WorkspaceSessionButtonState }) {
+  if (state.id === 'new') {
+    return <Plus size={12} />;
+  }
+  if (state.id === 'hot') {
+    return <Zap size={12} />;
+  }
+  if (state.id === 'running') {
+    return <Activity size={12} />;
+  }
+
+  return <Link2 size={12} />;
+}
+
+function StatusRunRow({ label, value, title }: { label: string; value: string; title?: string }) {
+  return (
+    <div className="status-run-row">
+      <span>{label}</span>
+      <strong title={title ?? value}>{value}</strong>
+    </div>
+  );
+}
+
+function workspaceSessionDescription(state: WorkspaceSessionButtonState) {
+  if (state.id === 'new') {
+    return '首次发送消息后会创建 Claude session。';
+  }
+  if (state.id === 'hot') {
+    return 'Claude 进程仍在后台保留，下次发送会直接复用。';
+  }
+  if (state.id === 'running') {
+    return 'Claude 正在处理当前任务。';
+  }
+
+  return '已绑定 Claude session，下次发送会恢复上下文。';
+}
+
+function compactIdentifier(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '-';
+  }
+  if (trimmed.length <= 18) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, 8)}...${trimmed.slice(-6)}`;
+}
+
+function formatRunPhase(phase?: string) {
+  if (phase === 'requesting') {
+    return '请求中';
+  }
+  if (phase === 'thinking') {
+    return '思考中';
+  }
+  if (phase === 'computing') {
+    return '生成中';
+  }
+  if (phase === 'tool') {
+    return '工具调用';
+  }
+
+  return '-';
+}
+
+function formatHotRuntimeState(activeRun: boolean, runtimeAlive: boolean) {
+  if (activeRun) {
+    return '使用中';
+  }
+  if (runtimeAlive) {
+    return '已保留';
+  }
+  return '未保留';
+}
+
+function runtimeModelLabel(_runtimeStatus: ThreadRuntimeStatus | null, activeThread: ThreadDetail | null) {
+  return activeThread?.model?.trim() || '-';
+}
+
+function runtimePermissionLabel(_runtimeStatus: ThreadRuntimeStatus | null, activeThread: ThreadDetail | null) {
+  const mode = activeThread?.permissionMode?.trim();
+  if (!mode) {
+    return '-';
+  }
+  return isPermissionMode(mode) ? permissionLabel(mode) : mode;
+}
+
+function isPermissionMode(value: string): value is PermissionMode {
+  return value === 'default' ||
+    value === 'plan' ||
+    value === 'acceptEdits' ||
+    value === 'auto' ||
+    value === 'dontAsk' ||
+    value === 'bypassPermissions';
+}
+
+async function fetchActiveRunStatus(threadId: string): Promise<ActiveRunPayload> {
+  const response = await fetch(`/api/claude/runs/active/${encodeURIComponent(threadId)}`);
+  if (response.status === 404) {
+    return { active: false };
+  }
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || '读取运行状态失败');
+  }
+
+  return (await response.json()) as ActiveRunPayload;
+}
+
+async function fetchRuntimeStatusForThread(threadId: string) {
+  const response = await fetch('/api/claude/runtimes');
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || '读取热连接状态失败');
+  }
+
+  const statuses = (await response.json()) as Record<string, ThreadRuntimeStatus>;
+  return statuses[threadId] ?? null;
 }

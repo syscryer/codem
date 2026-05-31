@@ -947,3 +947,209 @@ test('saveThreadHistory stores only safe user content block summaries', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('getThreadHistory refreshes text-only content block histories from newer transcript', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-history-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+  const sessionId = 'session-text-block-refresh-1';
+  const transcriptPath = path.join(
+    root,
+    '.claude',
+    'projects',
+    path.resolve(repo).replace(/[^a-zA-Z0-9]/g, '-'),
+    `${sessionId}.jsonl`,
+  );
+
+  try {
+    mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'hello' }],
+          },
+          timestamp: '2026-05-05T00:00:00.000Z',
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'fresh assistant' }],
+          },
+          timestamp: '2026-05-05T00:00:01.000Z',
+        }),
+      ].join('\n'),
+      'utf8',
+    );
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const { utimesSync } = await import('node:fs');
+          const { createProject, createThread, saveThreadHistory, updateThreadMetadata, getThreadHistory } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const threadId = createThread(projectId, 'history-text-block-refresh');
+          updateThreadMetadata(threadId, {
+            sessionId: ${JSON.stringify(sessionId)},
+            workingDirectory: ${JSON.stringify(repo)},
+          });
+          saveThreadHistory(threadId, [{
+            id: 'turn-1',
+            userText: 'hello',
+            userContentBlocks: [{ type: 'text', text: 'hello' }],
+            workspace: ${JSON.stringify(repo)},
+            assistantText: 'stale assistant',
+            status: 'done',
+            items: [],
+            tools: [],
+          }]);
+          const future = new Date(Date.now() + 5000);
+          utimesSync(${JSON.stringify(transcriptPath)}, future, future);
+          const history = getThreadHistory(threadId);
+          console.log(JSON.stringify({
+            userText: history.turns[0]?.userText,
+            assistantText: history.turns[0]?.assistantText,
+          }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+          USERPROFILE: root,
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    assert.deepEqual(JSON.parse(child.stdout.trim()), {
+      userText: 'hello',
+      assistantText: 'fresh assistant',
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('getThreadHistory keeps stored content block summaries when transcript is newer', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-history-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+  const sessionId = 'session-content-block-refresh-1';
+  const transcriptPath = path.join(
+    root,
+    '.claude',
+    'projects',
+    path.resolve(repo).replace(/[^a-zA-Z0-9]/g, '-'),
+    `${sessionId}.jsonl`,
+  );
+
+  try {
+    mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: '<input><file>README.md</file></input>' }],
+          },
+          timestamp: '2026-05-05T00:00:00.000Z',
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: '收到。' }],
+          },
+          timestamp: '2026-05-05T00:00:01.000Z',
+        }),
+      ].join('\n'),
+      'utf8',
+    );
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const { utimesSync } = await import('node:fs');
+          const { createProject, createThread, saveThreadHistory, updateThreadMetadata, getThreadHistory } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const threadId = createThread(projectId, 'history-content-block-refresh');
+          updateThreadMetadata(threadId, {
+            sessionId: ${JSON.stringify(sessionId)},
+            workingDirectory: ${JSON.stringify(repo)},
+          });
+          saveThreadHistory(threadId, [{
+            id: 'turn-1',
+            userText: '请参考 README',
+            userContentBlocks: [
+              {
+                type: 'file_reference',
+                path: ${JSON.stringify(path.join(repo, 'README.md'))},
+                name: 'README.md',
+                reason: 'too_large',
+                source: 'attachment',
+              },
+            ],
+            workspace: ${JSON.stringify(repo)},
+            assistantText: '收到。',
+            status: 'done',
+            items: [],
+            tools: [],
+          }]);
+          const future = new Date(Date.now() + 5000);
+          utimesSync(${JSON.stringify(transcriptPath)}, future, future);
+          const history = getThreadHistory(threadId);
+          console.log(JSON.stringify({
+            userText: history.turns[0]?.userText,
+            userContentBlocks: history.turns[0]?.userContentBlocks ?? null,
+          }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+          USERPROFILE: root,
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    assert.deepEqual(JSON.parse(child.stdout.trim()), {
+      userText: '请参考 README',
+      userContentBlocks: [
+        {
+          type: 'file_reference',
+          path: path.join(repo, 'README.md'),
+          name: 'README.md',
+          reason: 'too_large',
+          source: 'attachment',
+        },
+      ],
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

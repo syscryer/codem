@@ -123,6 +123,13 @@ test('guideQueuedPrompt waits for preparing queued prompts before sending guide 
   assert.doesNotMatch(guideQueuedPromptSource, /fetch\(`\/api\/claude\/run\/\$\{encodeURIComponent\(context\.runId\)\}\/guide`[\s\S]*queueStatus === 'preparing'/);
 });
 
+test('guideQueuedPrompt stays silent on successful guide delivery', () => {
+  const guideQueuedPromptSource = extractFunctionBody(useClaudeRunSource, 'guideQueuedPrompt');
+
+  assert.doesNotMatch(guideQueuedPromptSource, /showToast\('已发送引导消息。', 'success'\)/);
+  assert.match(guideQueuedPromptSource, /showToast\(error instanceof Error \? error\.message : '发送引导消息失败', 'error'\)/);
+});
+
 test('submitPromptToThread updates an existing preparing queue item when final content is ready', () => {
   const submitPromptToThreadSource = extractFunctionBody(useClaudeRunSource, 'submitPromptToThread');
 
@@ -210,6 +217,11 @@ test('useClaudeRun stores safe user content block summaries and ConversationTurn
     conversationTurnSource,
     /if \(block\.type === 'file_reference'\) \{\s*return block\.source === 'attachment';\s*\}/,
   );
+});
+
+test('useClaudeRun restores active run content block summaries when reconnecting', () => {
+  assert.match(useClaudeRunSource, /type ActiveRunInfo = \{[\s\S]*userContentBlocks\?: InputContentBlockSummary\[\];/);
+  assert.match(useClaudeRunSource, /userContentBlocks:\s*activeRun\.userContentBlocks,/);
 });
 
 test('useClaudeRun renames untouched default empty threads without blocking the first message', () => {

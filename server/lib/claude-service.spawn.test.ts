@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildClaudeInputMessage, summarizeClaudeInputForTrace } from './claude-service.js';
+import { buildClaudeInputMessage, summarizeClaudeInputForHistory, summarizeClaudeInputForTrace } from './claude-service.js';
 
 const source = readFileSync(new URL('./claude-service.ts', import.meta.url), 'utf8');
 const serverSource = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
@@ -67,10 +67,9 @@ test('reusable runtime prompts are sent through stream-json stdin', () => {
 
 test('Claude adapter consumes shared neutral block types and helpers', () => {
   assert.match(source, /import type\s*\{\s*InputContentBlock[\s\S]*\}\s*from ['"]\.\.\/\.\.\/src\/types\.js['"]/);
-  assert.match(
-    source,
-    /import\s*\{\s*normalizeInputContentBlocks,\s*summarizeInputContentBlocksForTrace\s*\}\s*from ['"]\.\.\/\.\.\/src\/lib\/input-content-blocks\.js['"]/,
-  );
+  assert.match(source, /normalizeInputContentBlocks/);
+  assert.match(source, /stripTransientInputBlockData/);
+  assert.match(source, /summarizeInputContentBlocksForTrace/);
   assert.doesNotMatch(source, /type NeutralInputContentBlock\s*=/);
   assert.doesNotMatch(source, /function summarizeNeutralInputContentBlocksForTrace/);
   assert.doesNotMatch(source, /function normalizeProvidedNeutralInputContentBlocks/);
@@ -385,6 +384,53 @@ test('trace summary uses content block summary instead of raw prompt details', (
   assert.doesNotMatch(body, /input\.prompt\.length/);
 });
 
+test('history summary strips transient content block payloads for active run reconnect', () => {
+  const summary = summarizeClaudeInputForHistory({
+    prompt: 'legacy prompt',
+    contentBlocks: [
+      {
+        type: 'text',
+        text: '  请结合附件继续  ',
+      },
+      {
+        type: 'image',
+        path: 'D:\\workspace\\.codem-attachments\\image.png',
+        name: 'image.png',
+        mimeType: 'image/png',
+        size: 5,
+        data: 'SGVsbG8=',
+      },
+      {
+        type: 'file_text',
+        path: 'D:\\workspace\\src\\note.ts',
+        name: 'note.ts',
+        text: 'console.log("secret")',
+      },
+    ],
+  } as Parameters<typeof summarizeClaudeInputForHistory>[0]);
+
+  assert.deepEqual(summary, [
+    {
+      type: 'text',
+      text: '请结合附件继续',
+    },
+    {
+      type: 'image',
+      path: 'D:\\workspace\\.codem-attachments\\image.png',
+      name: 'image.png',
+      mimeType: 'image/png',
+      size: 5,
+      imageBytes: 5,
+    },
+    {
+      type: 'file_text',
+      path: 'D:\\workspace\\src\\note.ts',
+      name: 'note.ts',
+      textBytes: 21,
+    },
+  ]);
+});
+
 test('guide prompts keep the 4-argument compatibility signature and still isolate guide content blocks', () => {
   const submitGuideBody = extractFunctionBody('submitRunGuidePrompt');
 
@@ -510,6 +556,15 @@ test('client disconnect detaches a run instead of cancelling the Claude process'
   assert.doesNotMatch(serverSource, /response\.on\(['"]close['"][\s\S]{0,160}cancelRun/);
   assert.match(serverSource, /\/api\/claude\/runs\/active\/:threadId/);
   assert.match(serverSource, /\/api\/claude\/run\/:runId\/events/);
+});
+
+test('active run status reports an inactive payload without a not-found response', () => {
+  const routeMatch = serverSource.match(/app\.get\('\/api\/claude\/runs\/active\/:threadId'[\s\S]*?\n}\);/);
+  assert.ok(routeMatch, 'active run route should exist');
+
+  const routeBody = routeMatch[0];
+  assert.match(routeBody, /response\.json\(\{\s*active:\s*false\s*\}\)/);
+  assert.doesNotMatch(routeBody, /response\.status\(404\)/);
 });
 
 test('managed runtime status endpoint reports only CodeM-owned live runtimes', () => {

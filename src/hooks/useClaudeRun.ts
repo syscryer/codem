@@ -53,6 +53,7 @@ import type {
   ConversationTurn,
   DebugEvent,
   InputContentBlock,
+  InputContentBlockSummary,
   ModelSettings,
   PermissionMode,
   RequestUserInputRequest,
@@ -79,6 +80,7 @@ type ActiveRunInfo = {
   threadId: string;
   turnId?: string;
   prompt: string;
+  userContentBlocks?: InputContentBlockSummary[];
   workingDirectory: string;
   sessionId?: string;
   permissionMode: PermissionMode;
@@ -747,9 +749,6 @@ export function useClaudeRun({
         title: '已引导当前运行',
         content: targetPrompt.prompt,
       });
-      if (!options.silent) {
-        showToast('已发送引导消息。', 'success');
-      }
       return true;
     } catch (error) {
       if (!options.silent) {
@@ -1161,6 +1160,7 @@ export function useClaudeRun({
           id: activeRun.turnId ?? crypto.randomUUID(),
           backendRunId: activeRun.runId,
           userText: activeRun.prompt,
+          userContentBlocks: activeRun.userContentBlocks,
           workspace: activeRun.workingDirectory || thread.workingDirectory,
           assistantText: '',
           tools: [],

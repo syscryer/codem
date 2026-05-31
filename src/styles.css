@@ -11421,6 +11421,22 @@ button.git-conflict-overview-row:focus-visible,
   cursor: pointer;
 }
 
+.status-run-trigger.is-new svg {
+  color: #6f6f6f;
+}
+
+.status-run-trigger.is-idle svg {
+  color: #5f6368;
+}
+
+.status-run-trigger.is-hot svg {
+  color: #8a6500;
+}
+
+.status-run-trigger.is-running svg {
+  color: #167245;
+}
+
 .status-branch-menu {
   position: absolute;
   left: 0;
@@ -14584,10 +14600,10 @@ button.git-conflict-overview-row:focus-visible,
   right: 0;
   bottom: calc(100% + 8px);
   z-index: 20;
-  width: min(560px, calc(100vw - 48px));
-  max-height: min(420px, calc(100vh - 140px));
+  width: min(430px, calc(100vw - 48px));
+  max-height: none;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
   overflow: hidden;
 }
 
@@ -14692,13 +14708,14 @@ button.git-conflict-overview-row:focus-visible,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   padding: 10px 12px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 }
 
-.status-run-head > div {
+.status-run-head-text {
   min-width: 0;
+  flex: 1 1 auto;
   display: grid;
   gap: 2px;
 }
@@ -14718,6 +14735,162 @@ button.git-conflict-overview-row:focus-visible,
   line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.status-run-content {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  overflow-x: visible;
+  overflow-y: visible;
+}
+
+.status-session-icon {
+  width: 24px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #f4f4f4;
+  color: #6f6f6f;
+}
+
+.status-run-head.is-new .status-session-icon {
+  background: #f5f5f4;
+  color: #5f6368;
+}
+
+.status-run-head.is-idle .status-session-icon {
+  background: #f1f5f9;
+  color: #526173;
+}
+
+.status-run-head.is-hot .status-session-icon {
+  background: #fff7d6;
+  color: #8a6500;
+}
+
+.status-run-head.is-running .status-session-icon {
+  background: #e9f8ef;
+  color: #167245;
+}
+
+.status-run-path,
+.status-run-prompt {
+  margin: 3px 0 0;
+  color: #6f6f6f;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.status-run-section {
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.status-run-section h4 {
+  margin: 0 0 1px;
+  color: #7a7a7a;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.status-run-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 10px;
+  min-height: 19px;
+  color: #777777;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.status-run-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #2d2d2d;
+  font-weight: 520;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-run-copy-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.status-run-copy-row code {
+  min-width: 0;
+  overflow: visible;
+  color: #2d2d2d;
+  font-family: var(--code-font);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.status-run-copy-row button,
+.status-run-actions button {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.58);
+  color: #4f4f4f;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 520;
+  line-height: 1;
+}
+
+.status-run-copy-row button {
+  padding: 0 8px;
+}
+
+.status-run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.status-run-actions button {
+  padding: 0 10px;
+}
+
+.status-run-copy-row button:hover,
+.status-run-actions button:hover:not(:disabled) {
+  background: #f5f5f4;
+  color: #242424;
+}
+
+.status-run-copy-row button:focus-visible,
+.status-run-actions button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(36, 36, 36, 0.16);
+}
+
+.status-run-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.status-run-error.inline {
+  margin: 0 12px 10px;
+  padding: 8px 0 0;
+  border-top: 1px solid rgba(180, 35, 24, 0.12);
 }
 
 .status-run-refresh {
@@ -14758,6 +14931,7 @@ button.git-conflict-overview-row:focus-visible,
 .status-run-json {
   min-height: 0;
   margin: 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
   padding: 12px;
   overflow: auto;
   background: #fafafa;
@@ -15261,6 +15435,18 @@ button.git-conflict-overview-row:focus-visible,
   color: color-mix(in srgb, var(--app-muted) 95%, var(--app-text) 5%);
 }
 
+.codex-desktop .status-run-trigger.is-hot svg {
+  color: color-mix(in srgb, #8a6500 72%, var(--app-text));
+}
+
+.codex-desktop .status-run-trigger.is-idle svg {
+  color: color-mix(in srgb, var(--app-muted) 82%, var(--app-text));
+}
+
+.codex-desktop .status-run-trigger.is-running svg {
+  color: color-mix(in srgb, #167245 72%, var(--app-text));
+}
+
 .codex-desktop :where(.sidebar-section-head, .sidebar-search input, .workspace-menu-group-title, .sidebar-thread small, .turn-time, .turn-status, .settings-row-label small, .assistant-runtime-footnote, .assistant-runtime-question-hint, .dialog-head p, .status-branch-menu-meta, .status-run-head span) {
   font-size: max(11px, calc(var(--app-ui-font-size, 14px) - 1px));
 }
@@ -15278,8 +15464,58 @@ button.git-conflict-overview-row:focus-visible,
 .codex-desktop .status-branch-menu-state,
 .codex-desktop .status-branch-menu-meta,
 .codex-desktop .status-run-head span,
-.codex-desktop .status-run-state {
+.codex-desktop .status-run-state,
+.codex-desktop .status-run-section h4,
+.codex-desktop .status-run-row,
+.codex-desktop .status-run-path,
+.codex-desktop .status-run-prompt {
   color: var(--app-muted);
+}
+
+.codex-desktop .status-run-row strong,
+.codex-desktop .status-run-copy-row code {
+  color: var(--app-text);
+}
+
+.codex-desktop .status-run-head,
+.codex-desktop .status-run-section,
+.codex-desktop .status-run-actions,
+.codex-desktop .status-run-json {
+  border-color: var(--app-border);
+}
+
+.codex-desktop .status-session-icon,
+.codex-desktop .status-run-copy-row button,
+.codex-desktop .status-run-actions button {
+  background: var(--app-surface-muted);
+  border-color: var(--app-border);
+  color: var(--app-text);
+}
+
+.codex-desktop .status-run-head.is-idle .status-session-icon {
+  background: var(--app-surface-muted);
+  color: color-mix(in srgb, var(--app-muted) 82%, var(--app-text));
+}
+
+.codex-desktop .status-run-head.is-hot .status-session-icon {
+  background: color-mix(in srgb, #f5c542 20%, var(--app-surface-muted));
+  color: color-mix(in srgb, #8a6500 72%, var(--app-text));
+}
+
+.codex-desktop .status-run-head.is-running .status-session-icon {
+  background: color-mix(in srgb, #22c55e 16%, var(--app-surface-muted));
+  color: color-mix(in srgb, #167245 72%, var(--app-text));
+}
+
+.codex-desktop .status-run-copy-row button:hover,
+.codex-desktop .status-run-actions button:hover:not(:disabled) {
+  background: var(--app-hover);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .status-run-copy-row button:focus-visible,
+.codex-desktop .status-run-actions button:focus-visible {
+  box-shadow: var(--app-focus-ring);
 }
 
 .codex-desktop .status-branch-menu-item {

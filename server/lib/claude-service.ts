@@ -3,7 +3,11 @@ import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type { Readable, Writable } from 'node:stream';
 import type { InputContentBlock, UserImageAttachment } from '../../src/types.js';
-import { normalizeInputContentBlocks, summarizeInputContentBlocksForTrace } from '../../src/lib/input-content-blocks.js';
+import {
+  normalizeInputContentBlocks,
+  stripTransientInputBlockData,
+  summarizeInputContentBlocksForTrace,
+} from '../../src/lib/input-content-blocks.js';
 import { getClaudeProviderSnapshot, getConfiguredModelOptions } from './claude-models.js';
 import { parseClaudeApiRetryStatus, parseClaudeRetryStatus, splitClaudeStderrBuffer } from './claude-stderr.js';
 
@@ -700,6 +704,7 @@ export function getActiveRunForThread(threadId: string) {
     threadId: state.input.threadId,
     turnId: state.input.turnId,
     prompt: state.input.prompt,
+    userContentBlocks: summarizeClaudeInputForHistory(state.input),
     workingDirectory: state.input.workingDirectory,
     sessionId: state.sessionId,
     permissionMode: state.input.permissionMode,
@@ -2046,6 +2051,12 @@ export function summarizeClaudeInputForTrace(
   input: Pick<StreamInput, 'prompt' | 'imageAttachments' | 'contentBlocks'>,
 ) {
   return summarizeInputContentBlocksForTrace(normalizeStreamInputContentBlocks(input));
+}
+
+export function summarizeClaudeInputForHistory(
+  input: Pick<StreamInput, 'prompt' | 'imageAttachments' | 'contentBlocks'>,
+) {
+  return stripTransientInputBlockData(normalizeStreamInputContentBlocks(input)) ?? [];
 }
 
 function normalizeStreamInputContentBlocks(

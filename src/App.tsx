@@ -1423,6 +1423,7 @@ export default function App() {
               <WorkspaceStatus
                 activeProject={activeProject}
                 activeThread={activeThread}
+                isActiveThreadRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
                 projects={projects}
                 onLoadBranches={loadProjectGitBranches}
                 onSelectBranch={switchProjectGitBranch}

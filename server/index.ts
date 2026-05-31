@@ -1495,7 +1495,7 @@ app.post('/api/claude/run', async (request, response) => {
 app.get('/api/claude/runs/active/:threadId', (request, response) => {
   const activeRun = getActiveRunForThread(request.params.threadId);
   if (!activeRun) {
-    response.status(404).json({ active: false });
+    response.json({ active: false });
     return;
   }
 
