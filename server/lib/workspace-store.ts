@@ -1402,6 +1402,7 @@ export async function switchProjectGitBranch(projectId: string, branchName: stri
   const localBranches = await readGitLocalBranchNames(projectPath);
   const remoteBranches = await readGitRemoteBranchNames(projectPath);
   const trackingLocalName = deriveTrackingLocalBranchName(targetBranch);
+  const shouldTrackSelectedRemote = remoteBranches.includes(targetBranch) && Boolean(trackingLocalName);
   let switchResult: GitCommandResult;
 
   if (localBranches.includes(targetBranch)) {
@@ -1432,6 +1433,18 @@ export async function switchProjectGitBranch(projectId: string, branchName: stri
 
   if (switchResult.status !== 0) {
     throw new Error(normalizeGitCommandError(switchResult, `切换到分支“${targetBranch}”失败`));
+  }
+
+  if (shouldTrackSelectedRemote && trackingLocalName) {
+    const upstreamResult = await runGitCommand(projectPath, [
+      'branch',
+      '--set-upstream-to',
+      targetBranch,
+      trackingLocalName,
+    ]);
+    if (upstreamResult.status !== 0) {
+      throw new Error(normalizeGitCommandError(upstreamResult, `设置分支“${trackingLocalName}”跟踪“${targetBranch}”失败`));
+    }
   }
 
   return getProjectGitSummary(projectId);

@@ -225,6 +225,74 @@ test('listProjectGitBranches includes local and remote branches', () => {
   }
 });
 
+test('switchProjectGitBranch switches a tracked local branch to the selected remote branch', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-git-switch-remote-'));
+  const appData = path.join(root, 'appdata');
+  const remoteOrigin = path.join(root, 'origin.git');
+  const remoteGitee = path.join(root, 'gitee.git');
+  const repo = path.join(root, 'repo');
+
+  try {
+    run('git', ['init', '--bare', remoteOrigin]);
+    run('git', ['init', '--bare', remoteGitee]);
+    run('git', ['init', '-b', 'main', repo]);
+    run('git', ['config', 'user.email', 'codem@example.test'], repo);
+    run('git', ['config', 'user.name', 'CodeM Test'], repo);
+    writeFileSync(path.join(repo, 'tracked.txt'), 'base\n');
+    run('git', ['add', 'tracked.txt'], repo);
+    run('git', ['commit', '-m', 'initial'], repo);
+    run('git', ['remote', 'add', 'origin', remoteOrigin], repo);
+    run('git', ['remote', 'add', 'gitee', remoteGitee], repo);
+    run('git', ['push', '-u', 'origin', 'main'], repo);
+    run('git', ['push', 'gitee', 'main'], repo);
+    run('git', ['checkout', '-b', 'feature/demo'], repo);
+    writeFileSync(path.join(repo, 'feature.txt'), 'feature\n');
+    run('git', ['add', 'feature.txt'], repo);
+    run('git', ['commit', '-m', 'feature'], repo);
+    run('git', ['push', '-u', 'origin', 'feature/demo'], repo);
+    run('git', ['checkout', 'main'], repo);
+    run('git', ['branch', '--set-upstream-to=origin/main', 'main'], repo);
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const { createProject, switchProjectGitBranch, getProjectGitStatus } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          await switchProjectGitBranch(projectId, 'gitee/main');
+          const status = await getProjectGitStatus(projectId);
+          console.log(JSON.stringify(status));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    const status = JSON.parse(child.stdout.trim()) as {
+      branch: string;
+      upstream: string | null;
+      remote: string | null;
+    };
+    assert.equal(status.branch, 'main');
+    assert.equal(status.upstream, 'gitee/main');
+    assert.equal(status.remote, 'gitee');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('listProjectGitBranches includes tags as a separate kind', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-git-tags-'));
   const appData = path.join(root, 'appdata');
