@@ -39,6 +39,23 @@ struct ThreadNotificationRequest {
     body: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppRuntimeInfo {
+    version: String,
+    repository_url: &'static str,
+    distribution_mode: &'static str,
+    is_tauri: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppUpdateCheckResult {
+    status: &'static str,
+    version: Option<String>,
+    message: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowState {
@@ -358,6 +375,26 @@ fn show_thread_notification(
     platform::show_thread_notification(&app, request)
 }
 
+#[tauri::command]
+fn get_app_runtime_info(app: AppHandle) -> Result<AppRuntimeInfo, String> {
+    let package_info = app.package_info();
+    Ok(AppRuntimeInfo {
+        version: package_info.version.to_string(),
+        repository_url: "https://github.com/syscryer/codem",
+        distribution_mode: detect_distribution_mode(&app),
+        is_tauri: true,
+    })
+}
+
+#[tauri::command]
+fn check_app_update(_app: AppHandle) -> Result<AppUpdateCheckResult, String> {
+    Ok(AppUpdateCheckResult {
+        status: "unsupported",
+        version: None,
+        message: Some("当前版本暂未接入应用内自动更新".to_string()),
+    })
+}
+
 fn main() {
     #[cfg(windows)]
     platform::declare_process_app_user_model_id();
@@ -411,10 +448,27 @@ fn main() {
             pick_files,
             get_backend_base_url,
             open_external_url,
-            show_thread_notification
+            show_thread_notification,
+            get_app_runtime_info,
+            check_app_update
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CodeM desktop shell");
+}
+
+fn detect_distribution_mode(app: &tauri::AppHandle) -> &'static str {
+    let Ok(executable_dir) = app.path().executable_dir() else {
+        return "desktop-nsis";
+    };
+    detect_distribution_mode_from_dir(&executable_dir)
+}
+
+fn detect_distribution_mode_from_dir(executable_dir: &Path) -> &'static str {
+    if executable_dir.join("portable.marker").exists() {
+        return "desktop-portable";
+    }
+
+    "desktop-nsis"
 }
 
 fn pty_size(cols: u16, rows: u16) -> PtySize {
@@ -1218,9 +1272,11 @@ fn development_backend_command() -> Command {
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_window_state_to_area, has_minimum_window_size, normalize_window_state,
-        prepare_window_state_for_save, resolve_backend_port_from_value, MonitorWorkArea, WindowState,
+        clamp_window_state_to_area, detect_distribution_mode_from_dir, has_minimum_window_size,
+        normalize_window_state, prepare_window_state_for_save, resolve_backend_port_from_value,
+        MonitorWorkArea, WindowState,
     };
+    use std::{fs, time::{SystemTime, UNIX_EPOCH}};
 
     #[test]
     fn resolve_backend_port_from_value_accepts_valid_port() {
@@ -1321,6 +1377,22 @@ mod tests {
         };
 
         assert!(!has_minimum_window_size(state));
+    }
+
+    #[test]
+    fn detect_distribution_mode_from_dir_returns_portable_when_marker_exists() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("codem-portable-marker-{unique}"));
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+        fs::write(temp_dir.join("portable.marker"), b"").expect("create marker file");
+
+        let mode = detect_distribution_mode_from_dir(&temp_dir);
+
+        fs::remove_dir_all(&temp_dir).expect("remove temp dir");
+        assert_eq!(mode, "desktop-portable");
     }
 }
 

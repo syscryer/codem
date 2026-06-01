@@ -341,6 +341,10 @@ const RUN_RECONNECT_BUFFER_TRUNCATION_MARKER = '\n...[已截断]...\n';
 const RUNTIME_STREAM_BUFFER_MAX_CHARS = 1_000_000;
 const CLAUDE_CONTEXT_REQUEST_TIMEOUT_MS = 12_000;
 const CLAUDE_CONTEXT_STDERR_MAX_LINES = 3;
+const CLAUDE_CLI_MINIMUM_SUPPORTED_VERSION = '2.1.123';
+const CLAUDE_CLI_INSTALL_COMMAND = 'npm install -g @anthropic-ai/claude-code';
+const CLAUDE_CLI_UPDATE_COMMAND = 'claude update';
+const CLAUDE_CLI_SETUP_URL = 'https://docs.anthropic.com/en/docs/claude-code/setup';
 let cachedClaudeCommand: string | null | undefined;
 
 export async function isDirectoryAccessible(directory: string) {
@@ -382,6 +386,57 @@ export function getClaudeModels() {
   return {
     available: true,
     models: getConfiguredModelOptions(),
+  };
+}
+
+export function getClaudeCliVersionInfo() {
+  const command = resolveClaudeCommand();
+  if (!command) {
+    return {
+      installed: false,
+      supported: false,
+      version: null,
+      minimumSupportedVersion: CLAUDE_CLI_MINIMUM_SUPPORTED_VERSION,
+      command: null,
+      updateCommand: CLAUDE_CLI_UPDATE_COMMAND,
+      installCommand: CLAUDE_CLI_INSTALL_COMMAND,
+      setupUrl: CLAUDE_CLI_SETUP_URL,
+      versionError: '未找到 claude 命令',
+    };
+  }
+
+  const versionResult = spawnSync(command, ['--version'], {
+    encoding: 'utf8',
+    timeout: 10_000,
+    windowsHide: true,
+  });
+
+  const output = `${versionResult.stdout ?? ''}\n${versionResult.stderr ?? ''}`.trim();
+  const version = parseClaudeCliVersion(output);
+
+  if (versionResult.status !== 0 || !version) {
+    return {
+      installed: true,
+      supported: false,
+      version: null,
+      minimumSupportedVersion: CLAUDE_CLI_MINIMUM_SUPPORTED_VERSION,
+      command,
+      updateCommand: CLAUDE_CLI_UPDATE_COMMAND,
+      installCommand: CLAUDE_CLI_INSTALL_COMMAND,
+      setupUrl: CLAUDE_CLI_SETUP_URL,
+      versionError: output || '读取 Claude CLI 版本失败',
+    };
+  }
+
+  return {
+    installed: true,
+    supported: compareSemanticVersions(version, CLAUDE_CLI_MINIMUM_SUPPORTED_VERSION) >= 0,
+    version,
+    minimumSupportedVersion: CLAUDE_CLI_MINIMUM_SUPPORTED_VERSION,
+    command,
+    updateCommand: CLAUDE_CLI_UPDATE_COMMAND,
+    installCommand: CLAUDE_CLI_INSTALL_COMMAND,
+    setupUrl: CLAUDE_CLI_SETUP_URL,
   };
 }
 
@@ -2367,6 +2422,32 @@ function resolveClaudeCommand() {
   cachedClaudeCommand = selectSpawnableClaudeCommand(candidates);
 
   return cachedClaudeCommand;
+}
+
+function parseClaudeCliVersion(output: string) {
+  const trimmed = output.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const match = trimmed.match(/\b(\d+\.\d+\.\d+)\b/);
+  return match?.[1] ?? '';
+}
+
+function compareSemanticVersions(left: string, right: string) {
+  const leftParts = left.split('.').map((part) => Number(part));
+  const rightParts = right.split('.').map((part) => Number(part));
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const leftValue = leftParts[index] ?? 0;
+    const rightValue = rightParts[index] ?? 0;
+    if (leftValue !== rightValue) {
+      return leftValue - rightValue;
+    }
+  }
+
+  return 0;
 }
 
 function selectSpawnableClaudeCommand(candidates: string[]) {

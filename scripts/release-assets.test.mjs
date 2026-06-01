@@ -80,6 +80,7 @@ test('collectAndCopyReleaseAssets 递归复制支持的产物并重命名', asyn
     await writeFile(path.join(bundleRoot, 'nsis', 'CodeM_0.1.0_x64-setup.exe.sig'), 'exe-sig');
     await writeFile(path.join(bundleRoot, 'nested', 'deep', 'CodeM_0.1.0_x64_en-US.msi'), 'msi');
     await writeFile(path.join(bundleRoot, 'nested', 'deep', 'CodeM_0.1.0_amd64.deb'), 'deb');
+    await writeFile(path.join(bundleRoot, 'nested', 'deep', 'CodeM-portable.zip'), 'zip');
     await writeFile(path.join(bundleRoot, 'nested', 'deep', 'README.txt'), 'ignore');
 
     const copiedAssets = await collectAndCopyReleaseAssets({
@@ -90,12 +91,14 @@ test('collectAndCopyReleaseAssets 递归复制支持的产物并重命名', asyn
     });
 
     assert.deepEqual(copiedAssets.map((asset) => path.basename(asset.destination)).sort(), [
+      'CodeM-portable-windows-x64-with-node.zip',
       'CodeM_0.1.0_amd64-windows-x64-with-node.deb',
       'CodeM_0.1.0_x64-setup-windows-x64-with-node.exe',
       'CodeM_0.1.0_x64_en-US-windows-x64-with-node.msi',
     ]);
 
     assert.deepEqual((await readdir(outDir)).sort(), [
+      'CodeM-portable-windows-x64-with-node.zip',
       'CodeM_0.1.0_amd64-windows-x64-with-node.deb',
       'CodeM_0.1.0_x64-setup-windows-x64-with-node.exe',
       'CodeM_0.1.0_x64-setup-windows-x64-with-node.exe.sig',

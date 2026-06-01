@@ -152,6 +152,16 @@ jobs:
             --artifact "${{ matrix.artifact }}" \
             --flavor "${{ matrix.flavor }}"
 
+          if [ "${RUNNER_OS}" = "Windows" ] && [ "${{ matrix.artifact }}" = "windows-x64" ] && [ "${{ matrix.flavor }}" = "with-node" ]; then
+            portable_root="release-assets/CodeM"
+            mkdir -p "$portable_root"
+            cp src-tauri/target/release/codem.exe "$portable_root/CodeM.exe"
+            cp -R src-tauri/target/release/_up_ "$portable_root/_up_"
+            powershell -NoProfile -Command "Compress-Archive -Path 'release-assets/CodeM' -DestinationPath 'release-assets/CodeM-portable-${{ matrix.artifact }}-${{ matrix.flavor }}.zip' -Force"
+
+            rm -rf "$portable_root"
+          fi
+
           if [ "${RUNNER_OS}" = "macOS" ]; then
             while IFS= read -r -d '' app; do
               app_base="$(basename "$app" .app)"

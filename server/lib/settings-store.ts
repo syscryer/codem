@@ -15,6 +15,7 @@ export type GeneralSettings = {
   autoRefreshGitStatus: boolean;
   enableThreadSystemNotifications: boolean;
   autoGuideQueuedPrompts: boolean;
+  autoCheckAppUpdate: boolean;
   showDebugButton: boolean;
   defaultPermissionMode: PermissionMode;
   reviewHideNoiseFilesByDefault: boolean;
@@ -133,6 +134,7 @@ export const defaultGeneralSettings: GeneralSettings = {
   autoRefreshGitStatus: true,
   enableThreadSystemNotifications: true,
   autoGuideQueuedPrompts: false,
+  autoCheckAppUpdate: true,
   showDebugButton: true,
   defaultPermissionMode: 'default',
   reviewHideNoiseFilesByDefault: true,
@@ -320,6 +322,10 @@ function normalizeGeneralSettings(value: unknown): GeneralSettings {
     autoGuideQueuedPrompts: normalizeBoolean(
       record.autoGuideQueuedPrompts,
       defaultGeneralSettings.autoGuideQueuedPrompts,
+    ),
+    autoCheckAppUpdate: normalizeBoolean(
+      record.autoCheckAppUpdate,
+      defaultGeneralSettings.autoCheckAppUpdate,
     ),
     showDebugButton: normalizeBoolean(record.showDebugButton, defaultGeneralSettings.showDebugButton),
     defaultPermissionMode: normalizeEnum(

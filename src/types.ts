@@ -377,12 +377,36 @@ export type GeneralSettings = {
   autoRefreshGitStatus: boolean;
   enableThreadSystemNotifications: boolean;
   autoGuideQueuedPrompts: boolean;
+  autoCheckAppUpdate: boolean;
   showDebugButton: boolean;
   defaultPermissionMode: PermissionMode;
   reviewHideNoiseFilesByDefault: boolean;
   reviewDefaultDisplayMode: ReviewDisplayMode;
   reviewNoisePatterns: string[];
   reviewIgnorePatternsCustomized: boolean;
+};
+
+export type AppUpdateCheckState = 'idle' | 'checking' | 'latest' | 'available' | 'failed' | 'unsupported';
+
+export type AppDistributionMode = 'desktop-nsis' | 'desktop-portable' | 'web';
+
+export type AppRuntimeInfo = {
+  version: string;
+  repositoryUrl: string;
+  distributionMode: AppDistributionMode;
+  isTauri: boolean;
+};
+
+export type ClaudeCliVersionInfo = {
+  installed: boolean;
+  supported: boolean;
+  version: string | null;
+  minimumSupportedVersion: string;
+  command: string | null;
+  updateCommand: string;
+  installCommand: string;
+  setupUrl: string;
+  versionError?: string;
 };
 
 export type AppearanceSettings = {

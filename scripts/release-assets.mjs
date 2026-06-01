@@ -5,7 +5,7 @@ import { copyFile, mkdir, readdir } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 const COMPOUND_EXTENSIONS = ['.app.tar.gz', '.tar.gz'];
-const SUPPORTED_ASSET_EXTENSIONS = ['.AppImage', '.app.tar.gz', '.deb', '.dmg', '.exe', '.msi', '.rpm'];
+const SUPPORTED_ASSET_EXTENSIONS = ['.AppImage', '.app.tar.gz', '.deb', '.dmg', '.exe', '.msi', '.rpm', '.zip'];
 const REQUIRED_CLI_OPTIONS = ['bundleRoot', 'outDir', 'artifact', 'flavor'];
 
 export function splitAssetName(fileName) {

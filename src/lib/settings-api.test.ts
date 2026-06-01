@@ -30,3 +30,13 @@ test('normalizeGeneralSettings preserves automatic queued prompt guide choice', 
   assert.equal(normalizeGeneralSettings({ autoGuideQueuedPrompts: true }).autoGuideQueuedPrompts, true);
   assert.equal(normalizeGeneralSettings({ autoGuideQueuedPrompts: false }).autoGuideQueuedPrompts, false);
 });
+
+test('normalizeGeneralSettings enables automatic app update checks by default', () => {
+  assert.equal(normalizeGeneralSettings({}).autoCheckAppUpdate, true);
+  assert.equal(defaultGeneralSettings.autoCheckAppUpdate, true);
+});
+
+test('normalizeGeneralSettings preserves explicit automatic app update choice', () => {
+  assert.equal(normalizeGeneralSettings({ autoCheckAppUpdate: false }).autoCheckAppUpdate, false);
+  assert.equal(normalizeGeneralSettings({ autoCheckAppUpdate: true }).autoCheckAppUpdate, true);
+});

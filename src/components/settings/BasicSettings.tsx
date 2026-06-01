@@ -1,11 +1,13 @@
-import { Bell, GitBranch, GitPullRequest, History, RotateCcw, Rows3, Search, Send, Shield } from 'lucide-react';
+import { Bell, Code2, Download, ExternalLink, GitBranch, GitPullRequest, History, RefreshCw, RotateCcw, Rows3, Search, Send, Shield, TerminalSquare } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { permissionMenuModes } from '../../constants';
-import type { GeneralSettings } from '../../types';
+import type { AppRuntimeInfo, AppUpdateCheckState, ClaudeCliVersionInfo, GeneralSettings } from '../../types';
 import type { GeneralSettingsUpdate } from '../../hooks/useAppSettings';
 import { permissionLabel } from '../../lib/ui-labels';
 import { defaultGeneralSettings } from '../../hooks/useAppSettings';
 import { cloneDefaultWorkbenchIgnorePatterns } from '../../lib/review-ignore-patterns';
+import { openExternalUrl } from '../../lib/markdown-link';
+import { checkForAppUpdate, getAppRuntimeInfo, readClaudeCliVersionInfo, type AppUpdateInfo } from '../../lib/settings-runtime';
 import { SegmentedControl, SettingsGroup, SettingsRow } from './SettingsControls';
 
 type BasicSettingsSectionProps = {
@@ -22,6 +24,7 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
     enableThreadSystemNotifications:
       general.enableThreadSystemNotifications ?? defaultGeneralSettings.enableThreadSystemNotifications,
     autoGuideQueuedPrompts: general.autoGuideQueuedPrompts ?? defaultGeneralSettings.autoGuideQueuedPrompts,
+    autoCheckAppUpdate: general.autoCheckAppUpdate ?? defaultGeneralSettings.autoCheckAppUpdate,
     showDebugButton: general.showDebugButton ?? defaultGeneralSettings.showDebugButton,
     defaultPermissionMode: general.defaultPermissionMode ?? defaultGeneralSettings.defaultPermissionMode,
     reviewHideNoiseFilesByDefault:
@@ -46,10 +49,76 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
     [resolvedGeneral.reviewNoisePatterns],
   );
   const noisePatternsDirty = noisePatternsDraft !== savedNoisePatternsDraft;
+  const [runtimeInfo, setRuntimeInfo] = useState<AppRuntimeInfo | null>(null);
+  const [runtimeInfoLoading, setRuntimeInfoLoading] = useState(true);
+  const [updateCheckState, setUpdateCheckState] = useState<AppUpdateCheckState>('idle');
+  const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [claudeCliInfo, setClaudeCliInfo] = useState<ClaudeCliVersionInfo | null>(null);
+  const [claudeCliChecking, setClaudeCliChecking] = useState(false);
 
   useEffect(() => {
     setNoisePatternsDraft(savedNoisePatternsDraft);
   }, [savedNoisePatternsDraft]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRuntimeInfo() {
+      setRuntimeInfoLoading(true);
+      const nextRuntimeInfo = await getAppRuntimeInfo();
+      if (!cancelled) {
+        setRuntimeInfo(nextRuntimeInfo);
+        setRuntimeInfoLoading(false);
+      }
+    }
+
+    void loadRuntimeInfo();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadClaudeCliInfo() {
+      setClaudeCliChecking(true);
+      const nextInfo = await readClaudeCliVersionInfo();
+      if (!cancelled) {
+        setClaudeCliInfo(nextInfo);
+        setClaudeCliChecking(false);
+      }
+    }
+
+    void loadClaudeCliInfo();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!resolvedGeneral.autoCheckAppUpdate) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function runAutoCheck() {
+      setUpdateCheckState('checking');
+      const result = await checkForAppUpdate({ silent: true });
+      if (cancelled) {
+        return;
+      }
+
+      setUpdateInfo(result);
+      setUpdateCheckState(resolveUpdateCheckState(result));
+    }
+
+    void runAutoCheck();
+    return () => {
+      cancelled = true;
+    };
+  }, [resolvedGeneral.autoCheckAppUpdate]);
 
   function saveReviewNoisePatterns() {
     const nextPatterns = parseReviewNoisePatterns(noisePatternsDraft);
@@ -58,6 +127,20 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
       reviewNoisePatterns: nextPatterns,
       reviewIgnorePatternsCustomized: !useRecommendedPatterns,
     });
+  }
+
+  async function handleCheckAppUpdate() {
+    setUpdateCheckState('checking');
+    const result = await checkForAppUpdate();
+    setUpdateInfo(result);
+    setUpdateCheckState(resolveUpdateCheckState(result));
+  }
+
+  async function handleCheckClaudeCliVersion() {
+    setClaudeCliChecking(true);
+    const nextInfo = await readClaudeCliVersionInfo();
+    setClaudeCliInfo(nextInfo);
+    setClaudeCliChecking(false);
   }
 
   return (
@@ -115,7 +198,112 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
         </SettingsRow>
       </div>
 
-      <SettingsGroup title="Git 审查">
+      <SettingsGroup title="应用更新" insetTitle>
+        <SettingsRow
+          icon={Download}
+          title={`当前版本 ${runtimeInfoLoading ? '读取中...' : `v${runtimeInfo?.version ?? import.meta.env.PACKAGE_VERSION ?? '0.0.0'}`}`}
+          description={(
+            <span className="settings-runtime-description">
+              <span>{runtimeInfo ? formatDistributionMode(runtimeInfo.distributionMode) : '读取应用运行信息中'}</span>
+              <span className={`settings-runtime-state settings-runtime-state-${updateCheckState}`}>
+                {formatUpdateCheckState(updateCheckState, updateInfo)}
+              </span>
+            </span>
+          )}
+        >
+          <button
+            type="button"
+            className="settings-action-button"
+            onClick={() => void handleCheckAppUpdate()}
+            disabled={updateCheckState === 'checking'}
+          >
+            <RefreshCw size={14} className={updateCheckState === 'checking' ? 'spin' : ''} />
+            <span>立即检查</span>
+          </button>
+        </SettingsRow>
+        <SettingsRow
+          icon={ExternalLink}
+          title={(
+            <button
+              type="button"
+              className="settings-runtime-link settings-runtime-link-strong"
+              onClick={() => void openExternalUrl(runtimeInfo?.repositoryUrl ?? 'https://github.com/syscryer/codem')}
+            >
+              <span>{runtimeInfo?.repositoryUrl ?? 'https://github.com/syscryer/codem'}</span>
+            </button>
+          )}
+          description=""
+        >
+          <span className="settings-runtime-empty-control" />
+        </SettingsRow>
+        <SettingsRow icon={RefreshCw} title="自动检查更新" description="启动时检查新版本，并在桌面版里提示安装更新">
+          <Toggle
+            checked={resolvedGeneral.autoCheckAppUpdate}
+            onChange={(autoCheckAppUpdate) => void onUpdateGeneral({ autoCheckAppUpdate })}
+            label="自动检查更新"
+          />
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Claude CLI 版本" insetTitle>
+        <SettingsRow
+          icon={TerminalSquare}
+          title={`Claude CLI ${claudeCliInfo?.installed ? (claudeCliInfo.version ?? '已安装') : '未安装'}`}
+          description={(
+            <span className="settings-runtime-description">
+              <span>{claudeCliInfo?.installed ? '检查本机 Claude CLI 是否满足当前桌面端运行要求' : '当前 PATH 中未找到 Claude CLI，可先完成安装'}</span>
+              <span className={`settings-runtime-state ${claudeCliInfo?.installed && claudeCliInfo.supported ? 'settings-runtime-state-latest' : 'settings-runtime-state-muted'}`}>
+                {formatClaudeCliState(claudeCliInfo)}
+              </span>
+            </span>
+          )}
+        >
+          <div className="settings-runtime-actions">
+            <button
+              type="button"
+              className="settings-action-button"
+              onClick={() => void handleCheckClaudeCliVersion()}
+              disabled={claudeCliChecking}
+            >
+              <RefreshCw size={14} className={claudeCliChecking ? 'spin' : ''} />
+              <span>重新检查</span>
+            </button>
+            <button
+              type="button"
+              className="settings-action-button"
+              onClick={() => void openExternalUrl(claudeCliInfo?.setupUrl ?? 'https://docs.anthropic.com/en/docs/claude-code/setup')}
+            >
+              <ExternalLink size={14} />
+              <span>{claudeCliInfo?.installed ? '安装文档' : '安装说明'}</span>
+            </button>
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          icon={Code2}
+          title={(
+            <span className="settings-runtime-inline-meta">
+            <span>{claudeCliInfo?.installed ? '更新命令' : '安装命令'}</span>
+            <code className="settings-runtime-command">
+              {claudeCliInfo?.installed
+                ? (claudeCliInfo.updateCommand ?? 'claude update')
+                : (claudeCliInfo?.installCommand ?? 'npm install -g @anthropic-ai/claude-code')}
+            </code>
+            {claudeCliInfo?.command ? (
+              <>
+                <span>路径</span>
+                <code className="settings-runtime-command">{claudeCliInfo.command}</code>
+              </>
+            ) : null}
+            {claudeCliInfo?.versionError ? <span>{claudeCliInfo.versionError}</span> : null}
+            </span>
+          )}
+          description=""
+        >
+          <span className="settings-runtime-empty-control" />
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Git 审查" insetTitle>
         <SettingsRow icon={GitPullRequest} title="默认隐藏忽略文件" description="审查页默认隐藏命中忽略规则的未跟踪文件">
           <Toggle
             checked={resolvedGeneral.reviewHideNoiseFilesByDefault}
@@ -254,4 +442,59 @@ function areReviewIgnorePatternsEqual(left: string[], right: string[]) {
   }
 
   return left.every((pattern, index) => pattern === right[index]);
+}
+
+function resolveUpdateCheckState(updateInfo: AppUpdateInfo | null): AppUpdateCheckState {
+  if (!updateInfo) {
+    return 'latest';
+  }
+  if (updateInfo.status === 'available') {
+    return 'available';
+  }
+  if (updateInfo.status === 'unsupported') {
+    return 'unsupported';
+  }
+  if (updateInfo.status === 'failed') {
+    return 'failed';
+  }
+  return 'latest';
+}
+
+function formatUpdateCheckState(state: AppUpdateCheckState, updateInfo: AppUpdateInfo | null) {
+  if (state === 'checking') {
+    return '检查中...';
+  }
+  if (state === 'available') {
+    return updateInfo?.version ? `发现新版本 ${updateInfo.version}` : '发现新版本';
+  }
+  if (state === 'failed') {
+    return updateInfo?.message ?? '检查失败';
+  }
+  if (state === 'unsupported') {
+    return updateInfo?.message ?? '当前环境不支持';
+  }
+  return '已是最新';
+}
+
+function formatDistributionMode(mode: AppRuntimeInfo['distributionMode']) {
+  if (mode === 'desktop-nsis') {
+    return '桌面安装版';
+  }
+  if (mode === 'desktop-portable') {
+    return '桌面绿色版';
+  }
+  return 'Web 版';
+}
+
+function formatClaudeCliState(info: ClaudeCliVersionInfo | null) {
+  if (!info) {
+    return '读取中...';
+  }
+  if (!info.installed) {
+    return '未安装';
+  }
+  if (info.supported) {
+    return '已满足要求';
+  }
+  return '需要升级';
 }

@@ -12,6 +12,7 @@ import {
   closeThreadRuntime,
   createClaudeStream,
   detectClaudeCommand,
+  getClaudeCliVersionInfo,
   getActiveRunForThread,
   getClaudeModels,
   getThreadRuntimeStatuses,
@@ -136,6 +137,15 @@ app.get('/api/health', async (_request, response) => {
 
 app.get('/api/claude/models', (_request, response) => {
   response.json(getClaudeModels());
+});
+
+app.get('/api/claude/version-info', (_request, response) => {
+  try {
+    response.json(getClaudeCliVersionInfo());
+  } catch (error) {
+    console.error('读取 Claude CLI 版本信息失败', error);
+    response.status(500).json({ error: '读取 Claude CLI 版本信息失败' });
+  }
 });
 
 app.get('/api/claude/system-prompt', (_request, response) => {

@@ -3,18 +3,29 @@ import { Minus, Monitor, Plus } from 'lucide-react';
 
 type SettingsRowProps = {
   icon: typeof Monitor;
-  title: string;
-  description: string;
+  title: ReactNode;
+  description: ReactNode;
   children: ReactNode;
+  titleSuffix?: ReactNode;
   stack?: boolean;
 };
 
 type SettingsGroupProps = {
   title: string;
   children: ReactNode;
+  insetTitle?: boolean;
 };
 
-export function SettingsGroup({ title, children }: SettingsGroupProps) {
+export function SettingsGroup({ title, children, insetTitle = false }: SettingsGroupProps) {
+  if (insetTitle) {
+    return (
+      <div className="settings-panel settings-panel-titled">
+        <h2 className="settings-panel-title">{title}</h2>
+        {children}
+      </div>
+    );
+  }
+
   return (
     <>
       <h2 className="settings-group-title">{title}</h2>
@@ -23,13 +34,16 @@ export function SettingsGroup({ title, children }: SettingsGroupProps) {
   );
 }
 
-export function SettingsRow({ icon: Icon, title, description, children, stack = false }: SettingsRowProps) {
+export function SettingsRow({ icon: Icon, title, description, children, titleSuffix, stack = false }: SettingsRowProps) {
   return (
     <div className={`settings-row${stack ? ' settings-row-stack' : ''}`}>
       <div className="settings-row-label">
         <Icon size={15} />
         <span>
-          <strong>{title}</strong>
+          <strong className="settings-row-title">
+            <span>{title}</span>
+            {titleSuffix ? <span className="settings-row-title-suffix">{titleSuffix}</span> : null}
+          </strong>
           <small>{description}</small>
         </span>
       </div>
