@@ -21,6 +21,7 @@ output/
 .codem-*.log
 .codem-*.err.log
 .codem-dev-session.json
+.codem-tauri-dev-*.json
 .codem-attachments/
 server-dev.log
 server-dev.err.log

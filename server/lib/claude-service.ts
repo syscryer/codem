@@ -341,7 +341,7 @@ const RUN_RECONNECT_BUFFER_TRUNCATION_MARKER = '\n...[已截断]...\n';
 const RUNTIME_STREAM_BUFFER_MAX_CHARS = 1_000_000;
 const CLAUDE_CONTEXT_REQUEST_TIMEOUT_MS = 12_000;
 const CLAUDE_CONTEXT_STDERR_MAX_LINES = 3;
-const CLAUDE_CLI_MINIMUM_SUPPORTED_VERSION = '2.1.123';
+const CLAUDE_CLI_RECOMMENDED_VERSION = '2.1.123';
 const CLAUDE_CLI_INSTALL_COMMAND = 'npm install -g @anthropic-ai/claude-code';
 const CLAUDE_CLI_UPDATE_COMMAND = 'claude update';
 const CLAUDE_CLI_SETUP_URL = 'https://docs.anthropic.com/en/docs/claude-code/setup';
@@ -396,7 +396,7 @@ export function getClaudeCliVersionInfo() {
       installed: false,
       supported: false,
       version: null,
-      minimumSupportedVersion: CLAUDE_CLI_MINIMUM_SUPPORTED_VERSION,
+      recommendedVersion: CLAUDE_CLI_RECOMMENDED_VERSION,
       command: null,
       updateCommand: CLAUDE_CLI_UPDATE_COMMAND,
       installCommand: CLAUDE_CLI_INSTALL_COMMAND,
@@ -419,7 +419,7 @@ export function getClaudeCliVersionInfo() {
       installed: true,
       supported: false,
       version: null,
-      minimumSupportedVersion: CLAUDE_CLI_MINIMUM_SUPPORTED_VERSION,
+      recommendedVersion: CLAUDE_CLI_RECOMMENDED_VERSION,
       command,
       updateCommand: CLAUDE_CLI_UPDATE_COMMAND,
       installCommand: CLAUDE_CLI_INSTALL_COMMAND,
@@ -430,9 +430,9 @@ export function getClaudeCliVersionInfo() {
 
   return {
     installed: true,
-    supported: compareSemanticVersions(version, CLAUDE_CLI_MINIMUM_SUPPORTED_VERSION) >= 0,
+    supported: compareSemanticVersions(version, CLAUDE_CLI_RECOMMENDED_VERSION) >= 0,
     version,
-    minimumSupportedVersion: CLAUDE_CLI_MINIMUM_SUPPORTED_VERSION,
+    recommendedVersion: CLAUDE_CLI_RECOMMENDED_VERSION,
     command,
     updateCommand: CLAUDE_CLI_UPDATE_COMMAND,
     installCommand: CLAUDE_CLI_INSTALL_COMMAND,

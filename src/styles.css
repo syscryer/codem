@@ -12053,6 +12053,18 @@ button.git-conflict-overview-row:focus-visible,
   width: 100%;
 }
 
+.settings-row-muted {
+  min-height: 42px;
+}
+
+.settings-row-muted > .settings-row-label {
+  opacity: 0.72;
+}
+
+.settings-row:not(.settings-row-stack):not(:has(> .settings-row-control)) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .settings-inline-value {
   max-width: 260px;
   overflow: hidden;
@@ -13766,28 +13778,28 @@ button.git-conflict-overview-row:focus-visible,
   align-items: center;
   padding: 1px 7px;
   border-radius: 5px;
-  background: color-mix(in srgb, var(--app-panel) 88%, #f6f1df);
-  color: var(--app-text-muted);
+  background: color-mix(in srgb, var(--app-surface-muted, #f5f7fa) 84%, #f6f1df);
+  color: var(--app-muted, #77736c);
   font-size: 12px;
   font-weight: 560;
   line-height: 1.3;
 }
 
 .settings-runtime-state-latest {
-  background: color-mix(in srgb, var(--app-success) 13%, #ffffff);
-  color: var(--app-success);
+  background: color-mix(in srgb, var(--success, #16a34a) 14%, var(--app-surface, #ffffff));
+  color: var(--success, #16a34a);
 }
 
 .settings-runtime-state-available {
-  background: color-mix(in srgb, var(--app-accent-strong) 12%, #ffffff);
-  color: var(--app-accent-strong);
+  background: color-mix(in srgb, var(--accent, #2374c6) 12%, var(--app-surface, #ffffff));
+  color: var(--accent, #2374c6);
 }
 
 .settings-runtime-state-muted,
 .settings-runtime-state-failed,
 .settings-runtime-state-unsupported {
-  background: color-mix(in srgb, var(--app-panel) 88%, #f6f1df);
-  color: var(--app-text-muted);
+  background: color-mix(in srgb, var(--app-surface-muted, #f5f7fa) 84%, #f6f1df);
+  color: var(--app-muted, #77736c);
 }
 
 .settings-runtime-link {
@@ -13799,14 +13811,14 @@ button.git-conflict-overview-row:focus-visible,
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--app-text-muted);
+  color: var(--app-muted, #77736c);
   font: inherit;
   cursor: pointer;
   line-height: 1.4;
 }
 
 .settings-runtime-link:hover {
-  color: var(--app-text-strong);
+  color: var(--app-text-strong, #1f1f1f);
 }
 
 .settings-runtime-link-strong {
@@ -13826,10 +13838,10 @@ button.git-conflict-overview-row:focus-visible,
   width: fit-content;
   max-width: min(100%, 480px);
   padding: 4px 8px;
-  border: 1px solid var(--app-border);
+  border: 1px solid var(--app-border, #e2e8f0);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--app-panel) 96%, transparent);
-  color: var(--app-text-strong);
+  background: color-mix(in srgb, var(--app-surface-muted, #f5f7fa) 82%, var(--app-surface, #ffffff));
+  color: var(--app-text-strong, #1f1f1f);
   font-family: Consolas, "SFMono-Regular", Menlo, monospace;
   font-size: 12px;
   line-height: 1.5;
@@ -13862,10 +13874,6 @@ button.git-conflict-overview-row:focus-visible,
   gap: 8px;
   flex-wrap: wrap;
 }
-
-.settings-runtime-empty-control {
-  width: 1px;
-  height: 1px;
 }
 
 .settings-ignore-editor-head {

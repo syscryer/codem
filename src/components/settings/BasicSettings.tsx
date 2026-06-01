@@ -223,6 +223,7 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
         </SettingsRow>
         <SettingsRow
           icon={ExternalLink}
+          muted
           title={(
             <button
               type="button"
@@ -233,9 +234,7 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
             </button>
           )}
           description=""
-        >
-          <span className="settings-runtime-empty-control" />
-        </SettingsRow>
+        />
         <SettingsRow icon={RefreshCw} title="自动检查更新" description="启动时检查新版本，并在桌面版里提示安装更新">
           <Toggle
             checked={resolvedGeneral.autoCheckAppUpdate}
@@ -280,6 +279,7 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
         </SettingsRow>
         <SettingsRow
           icon={Code2}
+          muted
           title={(
             <span className="settings-runtime-inline-meta">
             <span>{claudeCliInfo?.installed ? '更新命令' : '安装命令'}</span>
@@ -298,9 +298,7 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
             </span>
           )}
           description=""
-        >
-          <span className="settings-runtime-empty-control" />
-        </SettingsRow>
+        />
       </SettingsGroup>
 
       <SettingsGroup title="Git 审查" insetTitle>

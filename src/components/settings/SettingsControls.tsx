@@ -5,9 +5,10 @@ type SettingsRowProps = {
   icon: typeof Monitor;
   title: ReactNode;
   description: ReactNode;
-  children: ReactNode;
+  children?: ReactNode;
   titleSuffix?: ReactNode;
   stack?: boolean;
+  muted?: boolean;
 };
 
 type SettingsGroupProps = {
@@ -34,9 +35,9 @@ export function SettingsGroup({ title, children, insetTitle = false }: SettingsG
   );
 }
 
-export function SettingsRow({ icon: Icon, title, description, children, titleSuffix, stack = false }: SettingsRowProps) {
+export function SettingsRow({ icon: Icon, title, description, children, titleSuffix, stack = false, muted = false }: SettingsRowProps) {
   return (
-    <div className={`settings-row${stack ? ' settings-row-stack' : ''}`}>
+    <div className={`settings-row${stack ? ' settings-row-stack' : ''}${muted ? ' settings-row-muted' : ''}`}>
       <div className="settings-row-label">
         <Icon size={15} />
         <span>
@@ -47,7 +48,7 @@ export function SettingsRow({ icon: Icon, title, description, children, titleSuf
           <small>{description}</small>
         </span>
       </div>
-      <div className="settings-row-control">{children}</div>
+      {children ? <div className="settings-row-control">{children}</div> : null}
     </div>
   );
 }

@@ -401,7 +401,7 @@ export type ClaudeCliVersionInfo = {
   installed: boolean;
   supported: boolean;
   version: string | null;
-  minimumSupportedVersion: string;
+  recommendedVersion: string;
   command: string | null;
   updateCommand: string;
   installCommand: string;

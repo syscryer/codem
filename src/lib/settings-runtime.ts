@@ -5,7 +5,7 @@ import { isTauriRuntime } from './window-material';
 
 const DEFAULT_REPOSITORY_URL = 'https://github.com/syscryer/codem';
 const DEFAULT_CLAUDE_CLI_SETUP_URL = 'https://docs.anthropic.com/en/docs/claude-code/setup';
-const DEFAULT_CLAUDE_CLI_MIN_VERSION = '2.1.123';
+const DEFAULT_CLAUDE_CLI_RECOMMENDED_VERSION = '2.1.123';
 
 export type AppUpdateInfo = {
   status: 'available' | 'latest' | 'failed' | 'unsupported';
@@ -111,7 +111,7 @@ export async function readClaudeCliVersionInfo(): Promise<ClaudeCliVersionInfo> 
       installed: false,
       supported: false,
       version: null,
-      minimumSupportedVersion: DEFAULT_CLAUDE_CLI_MIN_VERSION,
+      recommendedVersion: DEFAULT_CLAUDE_CLI_RECOMMENDED_VERSION,
       command: null,
       updateCommand: 'claude update',
       installCommand: 'npm install -g @anthropic-ai/claude-code',
@@ -129,7 +129,10 @@ function normalizeClaudeCliVersionInfo(value: unknown): ClaudeCliVersionInfo {
     installed,
     supported,
     version: normalizeString(record.version) || null,
-    minimumSupportedVersion: normalizeString(record.minimumSupportedVersion) || DEFAULT_CLAUDE_CLI_MIN_VERSION,
+    recommendedVersion:
+      normalizeString(record.recommendedVersion) ||
+      normalizeString(record.minimumSupportedVersion) ||
+      DEFAULT_CLAUDE_CLI_RECOMMENDED_VERSION,
     command: normalizeString(record.command) || null,
     updateCommand: normalizeString(record.updateCommand) || 'claude update',
     installCommand: normalizeString(record.installCommand) || 'npm install -g @anthropic-ai/claude-code',
