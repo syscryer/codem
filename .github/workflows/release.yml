@@ -45,16 +45,6 @@ jobs:
             flavor: no-node
             npmScript: package:mac-arm64:no-node
             bundleRoot: src-tauri/target/aarch64-apple-darwin/release/bundle
-          - platform: macos-13
-            artifact: macos-x64
-            flavor: with-node
-            npmScript: package:mac-x64:with-node
-            bundleRoot: src-tauri/target/x86_64-apple-darwin/release/bundle
-          - platform: macos-13
-            artifact: macos-x64
-            flavor: no-node
-            npmScript: package:mac-x64:no-node
-            bundleRoot: src-tauri/target/x86_64-apple-darwin/release/bundle
           - platform: ubuntu-22.04
             artifact: linux-x64
             flavor: with-node
