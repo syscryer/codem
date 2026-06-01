@@ -602,6 +602,17 @@ test('Claude stream api_retry events are surfaced as retry phase updates', () =>
   assert.match(handleBody, /label:\s*retryStatus\.message/);
 });
 
+test('sidechain token usage and result events do not update the parent run', () => {
+  const handleBody = extractFunctionBody('handleClaudePayload');
+
+  assert.match(handleBody, /const isSidechain = Boolean\(payload\.isSidechain\)/);
+  assert.match(
+    handleBody,
+    /if\s*\(\s*payload\.type !== ['"]result['"] && !isSidechain\s*\)\s*\{\s*const usage = extractUsage\(payload\);/,
+  );
+  assert.match(handleBody, /if\s*\(\s*payload\.type === ['"]result['"] && !isSidechain\s*\)\s*\{/);
+});
+
 test('client disconnect detaches a run instead of cancelling the Claude process', () => {
   assert.match(serverSource, /response\.on\(['"]close['"]/);
   assert.match(serverSource, /markRunDetached\(currentRunId\)/);

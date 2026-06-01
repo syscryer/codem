@@ -1932,7 +1932,7 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
     });
   }
 
-  if (payload.type !== 'result') {
+  if (payload.type !== 'result' && !isSidechain) {
     const usage = extractUsage(payload);
     if (usage) {
       enqueue({
@@ -2257,7 +2257,7 @@ function handleClaudePayload(runtime: ClaudeRuntime, state: RunState, payload: C
     }
   }
 
-  if (payload.type === 'result') {
+  if (payload.type === 'result' && !isSidechain) {
     const usage = normalizeUsage(payload.usage, 'result');
     if (usage) {
       enqueue({
