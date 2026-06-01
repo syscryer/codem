@@ -81,6 +81,7 @@ import {
   updatePanelState,
   updateThreadMetadata,
 } from './lib/workspace-store.js';
+import { sortFileReferenceSearchResults, type FileReferenceSearchResult } from '../src/lib/file-reference-paths.js';
 import {
   getAppSettings,
   updateAppearanceSettings,
@@ -2104,7 +2105,7 @@ async function searchWorkspaceFiles(root: string, query: string) {
     return [];
   }
   const skipDirectories = new Set(['.git', 'node_modules', 'target', 'dist', '.next', '.venv', 'venv', '.codem-attachments']);
-  const results: Array<{ path: string; rel: string; isDirectory: boolean; }> = [];
+  const results: FileReferenceSearchResult[] = [];
   const stack: Array<{ directory: string; depth: number }> = [{ directory: root, depth: 0 }];
 
   while (stack.length > 0 && results.length < MAX_WORKSPACE_FILE_SEARCH_CANDIDATES) {
@@ -2141,9 +2142,7 @@ async function searchWorkspaceFiles(root: string, query: string) {
     }
   }
 
-  return results
-    .sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.rel.length - b.rel.length || a.rel.localeCompare(b.rel))
-    .slice(0, MAX_WORKSPACE_FILE_SEARCH_RESULTS);
+  return sortFileReferenceSearchResults(results, normalizedQuery).slice(0, MAX_WORKSPACE_FILE_SEARCH_RESULTS);
 }
 
 function normalizeWorkspaceSearchQuery(query: string) {

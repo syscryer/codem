@@ -40,3 +40,11 @@ test('Git history commit details refs stay readable in narrow details panels', (
   assert.match(stylesSource, /\.git-history-details-refs\s*>\s*span\s*\{[^}]*white-space:\s*nowrap;/);
   assert.match(stylesSource, /\.git-history-details-refs strong\s*\{[^}]*text-overflow:\s*ellipsis;/);
 });
+
+test('Git history branch rows show upstream tooltip for local branches', () => {
+  assert.match(panelSource, /const branchTooltip =\s*branch\.kind === 'local'/);
+  assert.match(panelSource, /title=\{branchTooltip\}/);
+  assert.match(panelSource, /\$\{branch\.name\} -> \$\{branch\.upstream\}/);
+  assert.match(panelSource, /未设置跟踪分支/);
+  assert.doesNotMatch(panelSource, /branch\.kind === 'remote' \? branch\.name : branchTooltip/);
+});

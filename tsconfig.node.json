@@ -18,6 +18,7 @@
     "src/lib/review-ignore-patterns.ts",
     "src/lib/input-content-blocks.ts",
     "src/lib/desktop-attachment-paths.ts",
+    "src/lib/file-reference-paths.ts",
     "src/types.ts",
     "vite.config.ts"
   ]

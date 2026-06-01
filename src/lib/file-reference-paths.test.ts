@@ -6,6 +6,7 @@ import {
   dedupeFileReferencePaths,
   extractAtFileReferences,
   normalizePathForComparison,
+  sortFileReferenceSearchResults,
   shouldSearchFileReferenceQuery,
 } from './file-reference-paths.js';
 
@@ -54,7 +55,7 @@ test('server search endpoint returns lightweight absolute path metadata', () => 
   assert.match(serverSource, /response\.json\(\{\s*files: await searchWorkspaceFiles\(root,\s*query\)\s*\}\)/s);
   assert.match(
     serverSource,
-    /const results: Array<\{\s*path: string;\s*rel: string;\s*isDirectory: boolean;\s*\}> = \[\];/,
+    /const results: FileReferenceSearchResult\[\] = \[\];/,
   );
   assert.match(
     serverSource,
@@ -62,10 +63,44 @@ test('server search endpoint returns lightweight absolute path metadata', () => 
   );
 });
 
-test('server search ranks directories first and limits returned results', () => {
+test('server search uses shared file reference ranking and limits returned results', () => {
   assert.match(serverSource, /const MAX_WORKSPACE_FILE_SEARCH_RESULTS = 80;/);
-  assert.match(serverSource, /Number\(b\.isDirectory\) - Number\(a\.isDirectory\)/);
-  assert.match(serverSource, /\.slice\(0,\s*MAX_WORKSPACE_FILE_SEARCH_RESULTS\)/);
+  assert.match(
+    serverSource,
+    /sortFileReferenceSearchResults\(results,\s*normalizedQuery\)\.slice\(0,\s*MAX_WORKSPACE_FILE_SEARCH_RESULTS\)/,
+  );
+});
+
+test('sortFileReferenceSearchResults keeps directories first inside the same match group', () => {
+  const results = sortFileReferenceSearchResults(
+    [
+      { path: 'D:/repo/src/spec.ts', rel: 'src/spec.ts', isDirectory: false },
+      { path: 'D:/repo/src/spec', rel: 'src/spec', isDirectory: true },
+    ],
+    'spec',
+  );
+
+  assert.deepEqual(
+    results.map((result) => result.rel),
+    ['src/spec', 'src/spec.ts'],
+  );
+});
+
+test('sortFileReferenceSearchResults prioritizes basename and path segment matches before broad contains', () => {
+  const results = sortFileReferenceSearchResults(
+    [
+      { path: 'D:/repo/openspec', rel: 'openspec', isDirectory: true },
+      { path: 'D:/repo/src/components/SpecPanel.tsx', rel: 'src/components/SpecPanel.tsx', isDirectory: false },
+      { path: 'D:/repo/.trellis/spec', rel: '.trellis/spec', isDirectory: true },
+      { path: 'D:/repo/src/types.ts', rel: 'src/types.ts', isDirectory: false },
+    ],
+    'spec',
+  );
+
+  assert.deepEqual(
+    results.map((result) => result.rel),
+    ['.trellis/spec', 'src/components/SpecPanel.tsx', 'openspec', 'src/types.ts'],
+  );
 });
 
 test('Composer inserts selected @ references using rel path and converts them into file_reference blocks', () => {

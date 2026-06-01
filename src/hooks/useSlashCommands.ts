@@ -95,20 +95,70 @@ export function getVisibleSlashCommands(commands: SlashCommand[], query: string,
 }
 
 export function filterSlashCommands(commands: SlashCommand[], query: string) {
-  if (!query) {
+  const normalizedQuery = normalizeSlashCommandQuery(query);
+  if (!normalizedQuery) {
     return commands;
   }
 
-  return commands.filter((command) => {
-    const haystack = [
-      command.slash,
-      command.name,
-      command.title,
-      command.description ?? '',
-      command.sourceLabel ?? '',
-    ]
-      .join(' ')
-      .toLowerCase();
-    return haystack.includes(query);
+  const groupRanks = buildSlashCommandGroupRanks(commands);
+  return commands
+    .map((command, originalIndex) => ({
+      command,
+      originalIndex,
+      groupRank: groupRanks.get(command.source) ?? originalIndex,
+      matchRank: scoreSlashCommandMatch(command, normalizedQuery),
+    }))
+    .filter((item): item is typeof item & { matchRank: number } => item.matchRank !== null)
+    .sort((left, right) => {
+      if (left.groupRank !== right.groupRank) {
+        return left.groupRank - right.groupRank;
+      }
+      if (left.matchRank !== right.matchRank) {
+        return left.matchRank - right.matchRank;
+      }
+      return left.originalIndex - right.originalIndex;
+    })
+    .map((item) => item.command);
+}
+
+function buildSlashCommandGroupRanks(commands: SlashCommand[]) {
+  const ranks = new Map<SlashCommand['source'], number>();
+  commands.forEach((command, index) => {
+    if (!ranks.has(command.source)) {
+      ranks.set(command.source, index);
+    }
   });
+  return ranks;
+}
+
+function scoreSlashCommandMatch(command: SlashCommand, query: string) {
+  const slash = normalizeSlashCommandValue(command.slash);
+  const name = normalizeSlashCommandValue(command.name);
+  const title = normalizeSlashCommandValue(command.title);
+  const description = normalizeSlashCommandValue(command.description ?? '');
+  const sourceLabel = normalizeSlashCommandValue(command.sourceLabel ?? '');
+
+  if (slash === query || name === query) {
+    return 0;
+  }
+  if (slash.startsWith(query) || name.startsWith(query)) {
+    return 1;
+  }
+  if (title === query) {
+    return 2;
+  }
+  if (title.startsWith(query)) {
+    return 3;
+  }
+
+  const haystack = `${slash} ${name} ${title} ${description} ${sourceLabel}`;
+  return haystack.includes(query) ? 4 : null;
+}
+
+function normalizeSlashCommandQuery(query: string) {
+  return normalizeSlashCommandValue(query).replace(/^\/+/, '');
+}
+
+function normalizeSlashCommandValue(value: string) {
+  return value.trim().toLowerCase();
 }

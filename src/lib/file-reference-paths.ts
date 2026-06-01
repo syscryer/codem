@@ -30,6 +30,69 @@ export function shouldSearchFileReferenceQuery(query: string) {
   return query.trim().length > 0;
 }
 
+export type FileReferenceSearchResult = {
+  path: string;
+  rel: string;
+  isDirectory: boolean;
+};
+
+export function sortFileReferenceSearchResults(
+  results: FileReferenceSearchResult[],
+  query: string,
+) {
+  const normalizedQuery = normalizeFileReferenceSearchQuery(query);
+
+  return results
+    .map((result, index) => ({
+      result,
+      index,
+      score: scoreFileReferenceSearchResult(result, normalizedQuery),
+    }))
+    .sort((a, b) => (
+      a.score - b.score
+      || Number(b.result.isDirectory) - Number(a.result.isDirectory)
+      || a.result.rel.length - b.result.rel.length
+      || a.result.rel.localeCompare(b.result.rel)
+      || a.index - b.index
+    ))
+    .map(({ result }) => result);
+}
+
+function normalizeFileReferenceSearchQuery(query: string) {
+  return query.replace(/\\/g, '/').toLowerCase();
+}
+
+function scoreFileReferenceSearchResult(
+  result: FileReferenceSearchResult,
+  normalizedQuery: string,
+) {
+  if (!normalizedQuery) {
+    return 0;
+  }
+
+  const normalizedRel = result.rel.replace(/\\/g, '/').toLowerCase();
+  const segments = normalizedRel.split('/').filter(Boolean);
+  const basename = segments.at(-1) ?? normalizedRel;
+
+  if (normalizedRel === normalizedQuery || basename === normalizedQuery) {
+    return 0;
+  }
+  if (basename.startsWith(normalizedQuery)) {
+    return 1;
+  }
+  if (normalizedRel.startsWith(normalizedQuery) || segments.some((segment) => segment === normalizedQuery)) {
+    return 2;
+  }
+  if (segments.some((segment) => segment.startsWith(normalizedQuery))) {
+    return 3;
+  }
+  if (normalizedRel.includes(normalizedQuery)) {
+    return 4;
+  }
+
+  return 5;
+}
+
 export function extractAtFileReferences(text: string) {
   const references: string[] = [];
   const pattern = /(^|[\s([{\u3000])@(?:"([^"\n]+)"|'([^'\n]+)'|`([^`\n]+)`|([^\s@'"`][^\s@]*))/g;

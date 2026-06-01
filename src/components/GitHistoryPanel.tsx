@@ -1120,11 +1120,18 @@ export function GitHistoryPanel({
     return items.map((branch) => {
       const active = !compareState && currentRef === branch.name;
       const displayName = branch.kind === 'remote' ? branch.localName ?? branch.name : branch.name;
+      const branchTooltip =
+        branch.kind === 'local'
+          ? branch.upstream?.includes('/')
+            ? `${branch.name} -> ${branch.upstream}`
+            : `${branch.name}（未设置跟踪分支）`
+          : branch.name;
       return (
         <button
           key={branch.name}
           type="button"
           className={`git-history-branch-row${active ? ' active' : ''}`}
+          title={branchTooltip}
           onClick={() => {
             setCompareState(null);
             setCompareError('');
@@ -1143,7 +1150,7 @@ export function GitHistoryPanel({
         >
           <span className="git-history-branch-row-main">
             <BranchKindIcon branch={branch} />
-            <strong title={branch.name}>{displayName}</strong>
+            <strong>{displayName}</strong>
           </span>
           {branchWorkingName === branch.name ? (
             <LoaderCircle className="spin" size={14} />
