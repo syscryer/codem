@@ -18,6 +18,14 @@ export type UsageTotals = {
 
 export type UsageProviderRow = UsageTotals & {
   provider: string;
+  providerKey: string;
+  host: string | null;
+  inferred: boolean;
+  lastUsedAt: string | null;
+  models: UsageProviderModelRow[];
+};
+
+export type UsageProviderModelRow = UsageTotals & {
   model: string;
   lastUsedAt: string | null;
 };
@@ -439,12 +447,7 @@ export function collectUsageStats(
   return {
     generatedAt: new Date().toISOString(),
     totals: normalizeTotals(totalsRow),
-    byProvider: byProviderRows.map((row) => ({
-      provider: row.provider || 'unknown',
-      model: row.model || '未配置',
-      lastUsedAt: row.lastUsedAt,
-      ...normalizeTotals(row),
-    })),
+    byProvider: buildProviderRows(byProviderRows),
     byProject: byProjectRows.map((row) => ({
       projectId: row.projectId,
       projectName: row.projectName,
@@ -490,6 +493,196 @@ function normalizeTotals(row: UsageTotalsRow | undefined): UsageTotals {
     durationMs: normalizeNumber(row?.durationMs),
     totalCostUsd: normalizeNumber(row?.totalCostUsd),
   };
+}
+
+function buildProviderRows(rows: UsageProviderSqlRow[]): UsageProviderRow[] {
+  const groups = new Map<
+    string,
+    {
+      provider: string;
+      providerKey: string;
+      host: string | null;
+      inferred: boolean;
+      lastUsedAt: string | null;
+      totals: UsageTotals;
+      models: UsageProviderModelRow[];
+    }
+  >();
+
+  rows.forEach((row) => {
+    const model = row.model || '未配置';
+    const providerInfo = inferUsageProvider(row.provider || 'unknown', model);
+    const groupKey = `${providerInfo.providerKey}:${providerInfo.host ?? ''}:${providerInfo.provider}`;
+    const totals = normalizeTotals(row);
+    const existing =
+      groups.get(groupKey) ??
+      {
+        provider: providerInfo.provider,
+        providerKey: providerInfo.providerKey,
+        host: providerInfo.host,
+        inferred: providerInfo.inferred,
+        lastUsedAt: null,
+        totals: createEmptyTotals(),
+        models: [],
+      };
+
+    existing.totals = mergeTotals(existing.totals, totals);
+    existing.lastUsedAt = latestIsoDate(existing.lastUsedAt, row.lastUsedAt);
+    existing.models.push({
+      model,
+      lastUsedAt: row.lastUsedAt,
+      ...totals,
+    });
+    groups.set(groupKey, existing);
+  });
+
+  return Array.from(groups.values())
+    .map((group) => ({
+      provider: group.provider,
+      providerKey: group.providerKey,
+      host: group.host,
+      inferred: group.inferred,
+      lastUsedAt: group.lastUsedAt,
+      models: group.models.sort(sortUsageTotalsDesc),
+      ...group.totals,
+    }))
+    .sort(sortProviderRows);
+}
+
+function inferUsageProvider(rawProvider: string, model: string) {
+  const normalizedModel = model.trim().toLowerCase();
+  const normalizedProvider = rawProvider.trim().toLowerCase();
+
+  if (/\b(glm|zhipu|bigmodel)\b/i.test(normalizedModel)) {
+    return {
+      provider: '智谱 GLM',
+      providerKey: 'zhipu',
+      host: 'open.bigmodel.cn',
+      inferred: true,
+    };
+  }
+
+  if (/\b(minimax|mimo)\b/i.test(normalizedModel)) {
+    return {
+      provider: 'MiniMax',
+      providerKey: 'minimax',
+      host: 'api.minimaxi.com',
+      inferred: true,
+    };
+  }
+
+  if (/\b(claude|sonnet|opus|haiku)\b/i.test(normalizedModel)) {
+    return {
+      provider: 'Anthropic / Claude',
+      providerKey: 'anthropic',
+      host: 'api.anthropic.com',
+      inferred: true,
+    };
+  }
+
+  if (/\bdeepseek\b/i.test(normalizedModel)) {
+    return {
+      provider: 'DeepSeek',
+      providerKey: 'deepseek',
+      host: 'api.deepseek.com',
+      inferred: true,
+    };
+  }
+
+  if (/\b(qwen|dashscope|tongyi)\b/i.test(normalizedModel)) {
+    return {
+      provider: '阿里 DashScope',
+      providerKey: 'dashscope',
+      host: 'dashscope.aliyuncs.com',
+      inferred: true,
+    };
+  }
+
+  if (/\bopenrouter\b/i.test(normalizedModel)) {
+    return {
+      provider: 'OpenRouter',
+      providerKey: 'openrouter',
+      host: 'openrouter.ai',
+      inferred: true,
+    };
+  }
+
+  if (normalizedProvider && normalizedProvider !== 'claude-code') {
+    return {
+      provider: formatProviderName(rawProvider),
+      providerKey: normalizedProvider,
+      host: null,
+      inferred: false,
+    };
+  }
+
+  return {
+    provider: 'Claude Code',
+    providerKey: 'claude-code',
+    host: null,
+    inferred: false,
+  };
+}
+
+function createEmptyTotals(): UsageTotals {
+  return {
+    projects: 0,
+    threads: 0,
+    messages: 0,
+    toolCalls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    totalTokens: 0,
+    durationMs: 0,
+    totalCostUsd: 0,
+  };
+}
+
+function mergeTotals(current: UsageTotals, next: UsageTotals): UsageTotals {
+  return {
+    projects: current.projects + next.projects,
+    threads: current.threads + next.threads,
+    messages: current.messages + next.messages,
+    toolCalls: current.toolCalls + next.toolCalls,
+    inputTokens: current.inputTokens + next.inputTokens,
+    outputTokens: current.outputTokens + next.outputTokens,
+    cacheCreationInputTokens: current.cacheCreationInputTokens + next.cacheCreationInputTokens,
+    cacheReadInputTokens: current.cacheReadInputTokens + next.cacheReadInputTokens,
+    totalTokens: current.totalTokens + next.totalTokens,
+    durationMs: current.durationMs + next.durationMs,
+    totalCostUsd: current.totalCostUsd + next.totalCostUsd,
+  };
+}
+
+function sortUsageTotalsDesc(left: UsageTotals, right: UsageTotals) {
+  return right.totalTokens - left.totalTokens || right.threads - left.threads;
+}
+
+function sortProviderRows(left: UsageProviderRow, right: UsageProviderRow) {
+  return (
+    right.totalTokens - left.totalTokens ||
+    right.threads - left.threads ||
+    left.provider.localeCompare(right.provider, 'zh-CN')
+  );
+}
+
+function latestIsoDate(current: string | null, next: string | null) {
+  if (!current) {
+    return next;
+  }
+
+  if (!next) {
+    return current;
+  }
+
+  return next > current ? next : current;
+}
+
+function formatProviderName(provider: string) {
+  const normalized = provider.trim();
+  return normalized || 'unknown';
 }
 
 function normalizeNumber(value: number | null | undefined) {

@@ -331,9 +331,40 @@ function normalizeUsageProviderRows(value: unknown): UsageStatsResponse['byProvi
       return [];
     }
     const totals = normalizeUsageTotals(item);
+    const fallbackModel = normalizeOptionalString(item.model) || '未配置';
+    const lastUsedAt = normalizeNullableString(item.lastUsedAt);
     return [{
       ...totals,
       provider: normalizeOptionalString(item.provider) || 'unknown',
+      providerKey: normalizeOptionalString(item.providerKey) || normalizeOptionalString(item.provider) || 'unknown',
+      host: normalizeNullableString(item.host),
+      inferred: Boolean(item.inferred),
+      lastUsedAt,
+      models: normalizeUsageProviderModelRows(item.models, fallbackModel, lastUsedAt, totals),
+    }];
+  });
+}
+
+function normalizeUsageProviderModelRows(
+  value: unknown,
+  fallbackModel: string,
+  fallbackLastUsedAt: string | null,
+  fallbackTotals: UsageStatsResponse['totals'],
+): UsageStatsResponse['byProvider'][number]['models'] {
+  if (!Array.isArray(value)) {
+    return [{
+      ...fallbackTotals,
+      model: fallbackModel,
+      lastUsedAt: fallbackLastUsedAt,
+    }];
+  }
+
+  return value.flatMap((item) => {
+    if (!isRecord(item)) {
+      return [];
+    }
+    return [{
+      ...normalizeUsageTotals(item),
       model: normalizeOptionalString(item.model) || '未配置',
       lastUsedAt: normalizeNullableString(item.lastUsedAt),
     }];

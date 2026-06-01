@@ -535,6 +535,14 @@ export type UsageTotals = {
 
 export type UsageProviderRow = UsageTotals & {
   provider: string;
+  providerKey: string;
+  host: string | null;
+  inferred: boolean;
+  lastUsedAt: string | null;
+  models: UsageProviderModelRow[];
+};
+
+export type UsageProviderModelRow = UsageTotals & {
   model: string;
   lastUsedAt: string | null;
 };

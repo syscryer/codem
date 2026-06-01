@@ -123,10 +123,18 @@ test('collectUsageStats groups usage by provider and project without double-coun
     durationMs: 3000,
     totalCostUsd: 0.03,
   });
-  assert.deepEqual(stats.byProvider.map((row) => [row.provider, row.model, row.totalTokens]), [
-    ['claude', 'sonnet', 35],
-    ['codex', 'gpt-5.1', 15],
-  ]);
+  assert.deepEqual(
+    stats.byProvider.map((row) => [
+      row.provider,
+      row.providerKey,
+      row.totalTokens,
+      row.models.map((model) => [model.model, model.totalTokens]),
+    ]),
+    [
+      ['Anthropic / Claude', 'anthropic', 35, [['sonnet', 35]]],
+      ['codex', 'codex', 15, [['gpt-5.1', 15]]],
+    ],
+  );
   assert.deepEqual(stats.byProject.map((row) => [row.projectId, row.projectName, row.totalTokens]), [
     ['p1', 'codem', 35],
     ['p2', 'other', 15],
@@ -258,9 +266,15 @@ test('collectUsageStats filters totals and rankings by selected range while keep
     durationMs: 2000,
     totalCostUsd: 0.02,
   });
-  assert.deepEqual(stats.byProvider.map((row) => [row.provider, row.model, row.totalTokens]), [
-    ['codex', 'gpt-5.1', 15],
-  ]);
+  assert.deepEqual(
+    stats.byProvider.map((row) => [
+      row.provider,
+      row.providerKey,
+      row.totalTokens,
+      row.models.map((model) => [model.model, model.totalTokens]),
+    ]),
+    [['codex', 'codex', 15, [['gpt-5.1', 15]]]],
+  );
   assert.deepEqual(stats.byProject.map((row) => [row.projectId, row.projectName, row.totalTokens]), [
     ['p2', 'other', 15],
   ]);
@@ -271,6 +285,122 @@ test('collectUsageStats filters totals and rankings by selected range while keep
     ['2026-04-10', 35],
     ['2026-04-22', 15],
   ]);
+
+  db.close();
+});
+
+test('collectUsageStats groups Claude Code model usage by inferred provider with model breakdowns', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE projects (
+      id TEXT PRIMARY KEY,
+      path TEXT NOT NULL,
+      name TEXT NOT NULL,
+      custom_name INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE threads (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      title TEXT NOT NULL,
+      custom_title INTEGER NOT NULL DEFAULT 0,
+      session_id TEXT,
+      transcript_path TEXT,
+      working_directory TEXT NOT NULL,
+      model TEXT,
+      permission_mode TEXT,
+      imported INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      turn_sort INTEGER NOT NULL,
+      item_sort INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      status TEXT,
+      activity TEXT,
+      metrics TEXT,
+      session_id TEXT,
+      phase TEXT,
+      started_at_ms INTEGER,
+      duration_ms INTEGER,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cache_creation_input_tokens INTEGER,
+      cache_read_input_tokens INTEGER,
+      total_cost_usd REAL,
+      pending_approval_requests_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE tool_calls (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      turn_sort INTEGER NOT NULL,
+      item_sort INTEGER NOT NULL,
+      tool_sort INTEGER NOT NULL,
+      tool_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL,
+      tool_use_id TEXT,
+      parent_tool_use_id TEXT,
+      is_sidechain INTEGER NOT NULL DEFAULT 0,
+      input_text TEXT,
+      result_text TEXT,
+      is_error INTEGER NOT NULL DEFAULT 0,
+      subtools_json TEXT,
+      sub_messages_json TEXT
+    );
+  `);
+
+  db.prepare(`
+    INSERT INTO projects (id, path, name, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run('p1', 'D:\\project\\codem', 'codem', '2026-04-20T00:00:00.000Z', '2026-04-21T00:00:00.000Z');
+  const insertThread = db.prepare(`
+    INSERT INTO threads (id, project_id, provider, title, working_directory, model, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  insertThread.run('glm-thread', 'p1', 'claude-code', 'GLM', 'D:\\project\\codem', 'glm-5.1', '2026-04-20T00:00:00.000Z', '2026-04-21T00:00:00.000Z');
+  insertThread.run('minimax-thread', 'p1', 'claude-code', 'MiniMax', 'D:\\project\\codem', 'mimo-v2-pro', '2026-04-20T00:00:00.000Z', '2026-04-21T00:00:00.000Z');
+  insertThread.run('claude-thread', 'p1', 'claude-code', 'Claude', 'D:\\project\\codem', 'claude-opus-4-8', '2026-04-20T00:00:00.000Z', '2026-04-21T00:00:00.000Z');
+
+  const insertMessage = db.prepare(`
+    INSERT INTO messages (
+      id, thread_id, turn_id, turn_sort, item_sort, role, content,
+      duration_ms, input_tokens, output_tokens, cache_creation_input_tokens,
+      cache_read_input_tokens, total_cost_usd, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  insertMessage.run('glm-message', 'glm-thread', 'turn-1', 0, 0, 'assistant', 'answer', 1000, 100, 20, 0, 0, 0.1, '2026-04-21T00:00:00.000Z');
+  insertMessage.run('minimax-message', 'minimax-thread', 'turn-2', 0, 0, 'assistant', 'answer', 2000, 50, 10, 0, 0, 0.2, '2026-04-21T00:00:00.000Z');
+  insertMessage.run('claude-message', 'claude-thread', 'turn-3', 0, 0, 'assistant', 'answer', 3000, 30, 5, 0, 0, 0.3, '2026-04-21T00:00:00.000Z');
+
+  const stats = collectUsageStats(db);
+
+  assert.deepEqual(
+    stats.byProvider.map((row) => [
+      row.provider,
+      row.providerKey,
+      row.host,
+      row.inferred,
+      row.totalTokens,
+      row.models.map((model) => [model.model, model.totalTokens]),
+    ]),
+    [
+      ['智谱 GLM', 'zhipu', 'open.bigmodel.cn', true, 120, [['glm-5.1', 120]]],
+      ['MiniMax', 'minimax', 'api.minimaxi.com', true, 60, [['mimo-v2-pro', 60]]],
+      ['Anthropic / Claude', 'anthropic', 'api.anthropic.com', true, 35, [['claude-opus-4-8', 35]]],
+    ],
+  );
 
   db.close();
 });

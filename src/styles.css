@@ -14052,7 +14052,110 @@ button.git-conflict-overview-row:focus-visible,
   gap: 8px 12px;
 }
 
+.settings-usage-chart-shell {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.settings-usage-y-axis {
+  min-width: 0;
+  height: 160px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding-top: 92px;
+  color: #8a8a8a;
+  font-size: 11px;
+  text-align: right;
+}
+
+.settings-usage-chart-area {
+  position: relative;
+  min-width: 0;
+  padding-top: 92px;
+}
+
+.settings-usage-grid-lines {
+  position: absolute;
+  top: 92px;
+  right: 0;
+  left: 0;
+  height: 160px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.settings-usage-grid-lines span {
+  display: block;
+  border-top: 1px solid #eeeeee;
+}
+
+.settings-usage-floating-tooltip {
+  position: absolute;
+  top: 0;
+  z-index: 2;
+  width: min(230px, 72vw);
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #e7e7e7;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 14px 34px rgba(16, 24, 40, 0.12);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.settings-usage-floating-tooltip::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  border-right: 1px solid #e7e7e7;
+  border-bottom: 1px solid #e7e7e7;
+  background: inherit;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.settings-usage-floating-tooltip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-usage-floating-tooltip-head strong,
+.settings-usage-floating-tooltip-grid strong {
+  color: #242424;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.settings-usage-floating-tooltip-head span,
+.settings-usage-floating-tooltip-grid span {
+  color: #777777;
+  font-size: 11px;
+}
+
+.settings-usage-floating-tooltip-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px 12px;
+}
+
+.settings-usage-floating-tooltip-grid strong {
+  text-align: right;
+}
+
 .settings-usage-chart {
+  position: relative;
+  z-index: 1;
   min-width: 0;
   min-height: 180px;
   display: grid;
@@ -14226,6 +14329,77 @@ button.git-conflict-overview-row:focus-visible,
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.settings-usage-provider-row {
+  gap: 9px;
+}
+
+.settings-usage-model-list {
+  display: grid;
+  gap: 7px;
+  padding-top: 4px;
+  border-top: 1px solid #eeeeee;
+}
+
+.settings-usage-model-row {
+  display: grid;
+  gap: 5px;
+}
+
+.settings-usage-model-row > div:first-child {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.settings-usage-model-row span {
+  min-width: 0;
+  overflow: hidden;
+  color: #666666;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-usage-model-row strong {
+  flex: 0 0 auto;
+  color: #303030;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-usage-model-row .settings-usage-track {
+  height: 4px;
+}
+
+@media (max-width: 900px) {
+  .settings-usage-summary,
+  .settings-usage-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-usage-trend-head,
+  .settings-usage-head-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .settings-usage-chart-shell {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+
+  .settings-usage-floating-tooltip {
+    width: min(210px, calc(100vw - 64px));
+  }
+}
+
+@media (max-width: 480px) {
+  .settings-usage-floating-tooltip {
+    left: 50% !important;
+  }
 }
 
 .settings-segmented,
@@ -15306,7 +15480,11 @@ button.git-conflict-overview-row:focus-visible,
 .codex-desktop .settings-usage-trend-summary small,
 .codex-desktop .settings-usage-chart-column small,
 .codex-desktop .settings-usage-trend-tooltip-head span,
-.codex-desktop .settings-usage-trend-tooltip-grid span {
+.codex-desktop .settings-usage-trend-tooltip-grid span,
+.codex-desktop .settings-usage-y-axis,
+.codex-desktop .settings-usage-floating-tooltip-head span,
+.codex-desktop .settings-usage-floating-tooltip-grid span,
+.codex-desktop .settings-usage-model-row span {
   color: var(--app-muted);
 }
 
@@ -15314,6 +15492,7 @@ button.git-conflict-overview-row:focus-visible,
 .codex-desktop .settings-usage-card,
 .codex-desktop .settings-usage-row,
 .codex-desktop .settings-usage-trend-tooltip,
+.codex-desktop .settings-usage-floating-tooltip,
 .codex-desktop .changed-files-summary-card,
 .codex-desktop .session-list-row,
 .codex-desktop .plugins-suite-panel .settings-list-row,
@@ -15333,6 +15512,9 @@ button.git-conflict-overview-row:focus-visible,
 .codex-desktop .settings-usage-group h2,
 .codex-desktop .settings-usage-row strong,
 .codex-desktop .settings-usage-row-head > span,
+.codex-desktop .settings-usage-floating-tooltip-head strong,
+.codex-desktop .settings-usage-floating-tooltip-grid strong,
+.codex-desktop .settings-usage-model-row strong,
 .codex-desktop .session-row-title strong,
 .codex-desktop .changed-files-summary-title strong,
 .codex-desktop .changed-files-summary-path {
@@ -15351,6 +15533,11 @@ button.git-conflict-overview-row:focus-visible,
 
 .codex-desktop .settings-usage-track {
   background: color-mix(in srgb, var(--app-border) 78%, var(--app-surface-muted) 22%);
+}
+
+.codex-desktop .settings-usage-grid-lines span,
+.codex-desktop .settings-usage-model-list {
+  border-color: var(--app-border);
 }
 
 .codex-desktop .settings-usage-chart-column.active .settings-usage-chart-bar {
@@ -16040,6 +16227,15 @@ button.git-conflict-overview-row:focus-visible,
 @media (max-width: 960px) {
   .codex-shell {
     grid-template-columns: 1fr;
+  }
+
+  .settings-view,
+  .codex-desktop .settings-view {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-content {
+    grid-column: 1;
   }
 
   .app-sidebar {

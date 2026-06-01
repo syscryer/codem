@@ -2,6 +2,7 @@ import { BarChart3, Clock3, Coins, MessageSquareText, RefreshCw, Wrench } from '
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { fetchUsageStats } from '../../lib/settings-api';
+import { buildUsageTrendBuckets, type UsageTrendBucketUnit, type UsageTrendRange } from '../../lib/usage-trend';
 import type { UsageProjectRow, UsageProviderRow, UsageStatsResponse, UsageTotals, UsageTrendPoint } from '../../types';
 
 const emptyTotals: UsageTotals = {
@@ -19,8 +20,7 @@ const emptyTotals: UsageTotals = {
 };
 
 type TrendMetric = 'tokens' | 'cost' | 'duration';
-type TrendRangeDays = 7 | 30 | 90;
-type UsageSummaryRange = TrendRangeDays | 'all';
+type UsageSummaryRange = UsageTrendRange;
 
 export function UsageSettingsSection() {
   const [stats, setStats] = useState<UsageStatsResponse | null>(null);
@@ -28,7 +28,6 @@ export function UsageSettingsSection() {
   const [error, setError] = useState('');
   const [summaryRange, setSummaryRange] = useState<UsageSummaryRange>(30);
   const [trendMetric, setTrendMetric] = useState<TrendMetric>('tokens');
-  const [trendRangeDays, setTrendRangeDays] = useState<TrendRangeDays>(30);
 
   async function loadUsage(range: UsageSummaryRange) {
     setLoading(true);
@@ -55,10 +54,11 @@ export function UsageSettingsSection() {
     () => Math.max(1, ...(stats?.byProject ?? []).map((row) => row.totalTokens)),
     [stats],
   );
-  const trendPoints = useMemo(
-    () => buildTrendWindow(stats?.byDay ?? [], trendRangeDays),
-    [stats, trendRangeDays],
+  const trendBuckets = useMemo(
+    () => buildUsageTrendBuckets(stats?.byDay ?? [], summaryRange),
+    [stats, summaryRange],
   );
+  const trendPoints = trendBuckets.points;
   const trendMaxValue = useMemo(
     () => Math.max(1, ...trendPoints.map((point) => getTrendMetricValue(point, trendMetric))),
     [trendMetric, trendPoints],
@@ -107,12 +107,12 @@ export function UsageSettingsSection() {
 
         <UsageTrendCard
           metric={trendMetric}
-          rangeDays={trendRangeDays}
+          range={summaryRange}
+          bucketUnit={trendBuckets.unit}
           points={trendPoints}
           maxValue={trendMaxValue}
           totalValue={trendTotalValue}
           onMetricChange={setTrendMetric}
-          onRangeChange={setTrendRangeDays}
         />
 
         {error ? <div className="settings-list-empty">{error}</div> : null}
@@ -121,7 +121,7 @@ export function UsageSettingsSection() {
         <div className="settings-usage-grid">
           <UsageGroup title="按提供商 / 模型" emptyText="暂无提供商使用记录">
             {(stats?.byProvider ?? []).map((row) => (
-              <ProviderUsageRow key={`${row.provider}:${row.model}`} row={row} maxTokens={maxProviderTokens} />
+              <ProviderUsageRow key={`${row.providerKey}:${row.host ?? row.provider}`} row={row} maxTokens={maxProviderTokens} />
             ))}
           </UsageGroup>
 
@@ -138,32 +138,34 @@ export function UsageSettingsSection() {
 
 function UsageTrendCard({
   metric,
-  rangeDays,
+  range,
+  bucketUnit,
   points,
   maxValue,
   totalValue,
   onMetricChange,
-  onRangeChange,
 }: {
   metric: TrendMetric;
-  rangeDays: TrendRangeDays;
+  range: UsageSummaryRange;
+  bucketUnit: UsageTrendBucketUnit;
   points: UsageTrendPoint[];
   maxValue: number;
   totalValue: number;
   onMetricChange: (metric: TrendMetric) => void;
-  onRangeChange: (days: TrendRangeDays) => void;
 }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const safeHoveredIndex = hoveredIndex !== null && hoveredIndex >= 0 && hoveredIndex < points.length ? hoveredIndex : null;
   const activeIndex = safeHoveredIndex ?? findLatestTrendIndex(points);
   const activePoint = activeIndex >= 0 ? points[activeIndex] : null;
+  const yAxisTicks = useMemo(() => buildYAxisTicks(maxValue), [maxValue]);
+  const tooltipLeft = points.length > 1 && activeIndex >= 0 ? (activeIndex / (points.length - 1)) * 100 : 50;
 
   return (
     <div className="settings-usage-trend">
       <div className="settings-usage-trend-head">
         <div className="settings-usage-trend-title">
           <strong>使用趋势</strong>
-          <small>按天统计最近一段时间的使用变化</small>
+          <small>随统计范围自动切换日、周或月粒度</small>
         </div>
         <div className="settings-usage-trend-controls">
           <div className="settings-segmented">
@@ -182,68 +184,76 @@ function UsageTrendCard({
               </button>
             ))}
           </div>
-          <div className="settings-segmented">
-            {([7, 30, 90] as TrendRangeDays[]).map((value) => (
-              <button
-                key={value}
-                type="button"
-                className={rangeDays === value ? 'active' : ''}
-                onClick={() => onRangeChange(value)}
-              >
-                {value}天
-              </button>
-            ))}
-          </div>
         </div>
       </div>
 
       <div className="settings-usage-trend-summary">
         <strong>{formatTrendMetric(metric, totalValue)}</strong>
-        <small>最近 {rangeDays} 天累计</small>
+        <small>{formatUsageTrendScope(range, bucketUnit)}</small>
       </div>
 
-      {activePoint ? (
-        <div className="settings-usage-trend-tooltip">
-          <div className="settings-usage-trend-tooltip-head">
-            <strong>{formatTrendTooltipDate(activePoint.date)}</strong>
-            <span>{formatTrendMetric(metric, getTrendMetricValue(activePoint, metric))}</span>
+      <div className="settings-usage-chart-shell">
+        <div className="settings-usage-y-axis" aria-hidden="true">
+          {yAxisTicks.map((tick) => (
+            <span key={tick}>{formatTrendAxisValue(metric, tick)}</span>
+          ))}
+        </div>
+        <div className="settings-usage-chart-area">
+          {activePoint ? (
+            <div
+              className="settings-usage-floating-tooltip"
+              style={{ left: `clamp(116px, ${tooltipLeft}%, calc(100% - 116px))` }}
+            >
+              <div className="settings-usage-floating-tooltip-head">
+                <strong>{formatTrendTooltipDate(activePoint.date, bucketUnit)}</strong>
+                <span>{formatTrendMetric(metric, getTrendMetricValue(activePoint, metric))}</span>
+              </div>
+              <div className="settings-usage-floating-tooltip-grid">
+                <span>Tokens</span>
+                <strong>{formatTokenValue(activePoint.totalTokens)}</strong>
+                <span>费用</span>
+                <strong>{formatCost(activePoint.totalCostUsd)}</strong>
+                <span>耗时</span>
+                <strong>{formatDuration(activePoint.durationMs)}</strong>
+                <span>会话</span>
+                <strong>{formatNumber(activePoint.threads)}</strong>
+              </div>
+            </div>
+          ) : null}
+          <div className="settings-usage-grid-lines" aria-hidden="true">
+            {yAxisTicks.map((tick) => (
+              <span key={tick} />
+            ))}
           </div>
-          <div className="settings-usage-trend-tooltip-grid">
-            <span>Tokens：{formatTokenValue(activePoint.totalTokens)}</span>
-            <span>费用：{formatCost(activePoint.totalCostUsd)}</span>
-            <span>耗时：{formatDuration(activePoint.durationMs)}</span>
-            <span>会话：{formatNumber(activePoint.threads)}</span>
+          <div className="settings-usage-chart" role="img" aria-label={`${formatUsageTrendScope(range, bucketUnit)}${getTrendMetricLabel(metric)}趋势图`}>
+            {points.map((point, index) => {
+              const value = getTrendMetricValue(point, metric);
+              const heightPercent = maxValue > 0 ? Math.max(0, Math.round((value / maxValue) * 100)) : 0;
+              const labelVisible = shouldShowTrendLabel(index, points.length, range, bucketUnit);
+              return (
+                <div
+                  key={point.date}
+                  className={`settings-usage-chart-column${activeIndex === index ? ' active' : ''}`}
+                  tabIndex={0}
+                  onClick={() => setHoveredIndex(index)}
+                  onMouseEnter={() => setHoveredIndex(index)}
+                  onMouseMove={() => setHoveredIndex(index)}
+                  onMouseLeave={() => setHoveredIndex(null)}
+                  onFocus={() => setHoveredIndex(index)}
+                  onBlur={() => setHoveredIndex(null)}
+                >
+                  <div className="settings-usage-chart-bar-wrap">
+                    <span
+                      className="settings-usage-chart-bar"
+                      style={{ height: `${Math.max(value > 0 ? 2 : 0, heightPercent)}%` }}
+                    />
+                  </div>
+                  <small>{labelVisible ? formatTrendAxisLabel(point.date, range, bucketUnit) : ''}</small>
+                </div>
+              );
+            })}
           </div>
         </div>
-      ) : null}
-
-      <div className="settings-usage-chart" role="img" aria-label={`最近 ${rangeDays} 天${getTrendMetricLabel(metric)}趋势图`}>
-        {points.map((point, index) => {
-          const value = getTrendMetricValue(point, metric);
-          const heightPercent = maxValue > 0 ? Math.max(0, Math.round((value / maxValue) * 100)) : 0;
-          const labelVisible = shouldShowTrendLabel(index, points.length, rangeDays);
-          return (
-            <div
-              key={point.date}
-              className={`settings-usage-chart-column${activeIndex === index ? ' active' : ''}`}
-              tabIndex={0}
-              onClick={() => setHoveredIndex(index)}
-              onMouseEnter={() => setHoveredIndex(index)}
-              onMouseMove={() => setHoveredIndex(index)}
-              onMouseLeave={() => setHoveredIndex(null)}
-              onFocus={() => setHoveredIndex(index)}
-              onBlur={() => setHoveredIndex(null)}
-            >
-              <div className="settings-usage-chart-bar-wrap">
-                <span
-                  className="settings-usage-chart-bar"
-                  style={{ height: `${Math.max(value > 0 ? 2 : 0, heightPercent)}%` }}
-                />
-              </div>
-              <small>{labelVisible ? formatTrendAxisLabel(point.date, rangeDays) : ''}</small>
-            </div>
-          );
-        })}
       </div>
     </div>
   );
@@ -283,13 +293,41 @@ function UsageGroup({ title, emptyText, children }: { title: string; emptyText: 
 }
 
 function ProviderUsageRow({ row, maxTokens }: { row: UsageProviderRow; maxTokens: number }) {
+  const maxModelTokens = Math.max(1, ...row.models.map((model) => model.totalTokens));
+  const providerSubtitle = [row.host, row.inferred ? '推断' : '记录'].filter(Boolean).join(' · ');
+
   return (
-    <UsageBarRow
-      title={row.provider}
-      subtitle={row.model}
-      row={row}
-      maxTokens={maxTokens}
-    />
+    <div className="settings-usage-row settings-usage-provider-row">
+      <div className="settings-usage-row-head">
+        <div>
+          <strong>{row.provider}</strong>
+          <small>{providerSubtitle || row.providerKey}</small>
+        </div>
+        <span>{formatTokenValue(row.totalTokens)} tokens</span>
+      </div>
+      <div className="settings-usage-track" aria-hidden="true">
+        <span style={{ width: `${Math.max(4, Math.round((row.totalTokens / maxTokens) * 100))}%` }} />
+      </div>
+      <div className="settings-usage-row-meta">
+        <span>{formatNumber(row.threads)} 会话</span>
+        <span>{formatNumber(row.toolCalls)} 工具</span>
+        <span>{formatDuration(row.durationMs)}</span>
+        <span>{formatCost(row.totalCostUsd)}</span>
+      </div>
+      <div className="settings-usage-model-list">
+        {row.models.map((model) => (
+          <div className="settings-usage-model-row" key={model.model}>
+            <div>
+              <span>{model.model}</span>
+              <strong>{formatTokenValue(model.totalTokens)}</strong>
+            </div>
+            <div className="settings-usage-track" aria-hidden="true">
+              <span style={{ width: `${Math.max(4, Math.round((model.totalTokens / maxModelTokens) * 100))}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -431,69 +469,109 @@ function formatTrendMetric(metric: TrendMetric, value: number) {
   }
 }
 
-function buildTrendWindow(points: UsageTrendPoint[], rangeDays: TrendRangeDays) {
-  const pointMap = new Map(points.map((point) => [point.date, point]));
-  const result: UsageTrendPoint[] = [];
-
-  for (let offset = rangeDays - 1; offset >= 0; offset -= 1) {
-    const date = new Date();
-    date.setHours(0, 0, 0, 0);
-    date.setDate(date.getDate() - offset);
-    const key = toIsoDate(date);
-    result.push(pointMap.get(key) ?? {
-      date: key,
-      ...emptyTotals,
-    });
+function formatTrendAxisValue(metric: TrendMetric, value: number) {
+  switch (metric) {
+    case 'cost':
+      return formatCost(value);
+    case 'duration':
+      return formatDuration(value);
+    default:
+      return formatTokenValue(value);
   }
-
-  return result;
 }
 
-function shouldShowTrendLabel(index: number, total: number, rangeDays: TrendRangeDays) {
+function buildYAxisTicks(maxValue: number) {
+  const safeMax = Number.isFinite(maxValue) ? Math.max(0, maxValue) : 0;
+  if (safeMax <= 0) {
+    return [0];
+  }
+
+  return [safeMax, safeMax / 2, 0];
+}
+
+function shouldShowTrendLabel(index: number, total: number, range: UsageSummaryRange, bucketUnit: UsageTrendBucketUnit) {
   if (index === 0 || index === total - 1) {
     return true;
   }
-  if (rangeDays <= 7) {
+
+  if (range !== 'all' && range <= 7) {
     return true;
   }
-  if (rangeDays <= 30) {
+
+  if (bucketUnit === 'month') {
+    return true;
+  }
+
+  if (bucketUnit === 'week') {
+    return index % Math.max(1, Math.ceil(total / 6)) === 0;
+  }
+
+  if (range === 'all' || range <= 30) {
     return index % 5 === 0;
   }
+
   return index % 15 === 0;
 }
 
-function formatTrendAxisLabel(dateText: string, rangeDays: TrendRangeDays) {
-  const date = new Date(`${dateText}T00:00:00`);
-  if (Number.isNaN(date.getTime())) {
+function formatTrendAxisLabel(dateText: string, range: UsageSummaryRange, bucketUnit: UsageTrendBucketUnit) {
+  const date = parseUsageDate(dateText);
+  if (!date) {
     return dateText;
   }
 
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
-  if (rangeDays <= 7) {
+  if (bucketUnit === 'month') {
+    return `${date.getUTCFullYear()}/${date.getUTCMonth() + 1}`;
+  }
+
+  const month = date.getUTCMonth() + 1;
+  const day = date.getUTCDate();
+  if (range === 'all' && bucketUnit === 'week') {
     return `${month}/${day}`;
   }
+
   return `${month}/${day}`;
 }
 
-function toIsoDate(date: Date) {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function formatTrendTooltipDate(dateText: string) {
-  const date = new Date(`${dateText}T00:00:00`);
-  if (Number.isNaN(date.getTime())) {
+function formatTrendTooltipDate(dateText: string, bucketUnit: UsageTrendBucketUnit) {
+  const date = parseUsageDate(dateText);
+  if (!date) {
     return dateText;
   }
 
-  return `${date.getMonth() + 1}月${date.getDate()}日`;
+  if (bucketUnit === 'month') {
+    return `${date.getUTCFullYear()}年${date.getUTCMonth() + 1}月`;
+  }
+
+  const month = date.getUTCMonth() + 1;
+  const day = date.getUTCDate();
+  if (bucketUnit === 'week') {
+    const end = addDays(date, 6);
+    return `${month}月${day}日 - ${end.getUTCMonth() + 1}月${end.getUTCDate()}日`;
+  }
+
+  return `${month}月${day}日`;
+}
+
+function parseUsageDate(dateText: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateText);
+  if (!match) {
+    return null;
+  }
+
+  return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+}
+
+function addDays(date: Date, days: number) {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
 }
 
 function formatUsageSummaryRange(range: UsageSummaryRange) {
   return range === 'all' ? '全部历史' : `最近 ${range} 天`;
+}
+
+function formatUsageTrendScope(range: UsageSummaryRange, bucketUnit: UsageTrendBucketUnit) {
+  const bucketLabel = bucketUnit === 'month' ? '按月聚合' : bucketUnit === 'week' ? '按周聚合' : '按日统计';
+  return `${formatUsageSummaryRange(range)}累计 · ${bucketLabel}`;
 }
 
 function findLatestTrendIndex(points: UsageTrendPoint[]) {
