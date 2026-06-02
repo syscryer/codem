@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "codem"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "portable-pty",
  "rfd",
