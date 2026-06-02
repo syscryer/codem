@@ -12620,7 +12620,9 @@ button.git-conflict-overview-row:focus-visible,
 .session-project-item {
   width: 100%;
   min-width: 0;
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   padding: 0;
   border: 0;
   border-radius: 8px;
@@ -12628,7 +12630,7 @@ button.git-conflict-overview-row:focus-visible,
   appearance: none;
   -webkit-appearance: none;
   color: #333333;
-  cursor: pointer;
+  cursor: default;
   text-align: left;
 }
 
@@ -12639,6 +12641,20 @@ button.git-conflict-overview-row:focus-visible,
 .session-project-item.active {
   background: #ffffff;
   box-shadow: 0 0 0 1px #e5e5e5;
+}
+
+.session-project-open {
+  min-width: 0;
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
 }
 
 .session-project-card {
@@ -12687,6 +12703,12 @@ button.git-conflict-overview-row:focus-visible,
   color: #666666;
   font-style: normal;
   font-size: 12px;
+}
+
+.session-project-delete {
+  width: 28px;
+  height: 28px;
+  margin: 8px 8px 0 0;
 }
 
 .session-project-usage,

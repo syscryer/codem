@@ -1391,6 +1391,7 @@ export default function App() {
         claudeModels={claudeModels}
         onSelectSection={(section) => navigateToLocation({ kind: 'settings', section })}
         onOpenThread={handleSelectThread}
+        onRemoveProject={openRemoveProjectDialog}
         onRenameThread={openRenameThreadDialog}
         onRemoveThread={openRemoveThreadDialog}
         onOpenWorktreePath={openWorktreePath}

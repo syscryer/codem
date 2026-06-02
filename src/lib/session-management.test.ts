@@ -3,11 +3,14 @@ import assert from 'node:assert/strict';
 import {
   buildSessionProjectSummaries,
   buildSessionManagementRows,
+  buildSessionManagementUsageByProject,
   filterSessionManagementRows,
   getSelectableSessionIds,
+  resolveSessionProjectSelection,
+  summarizeSessionManagementUsage,
   shortSessionId,
 } from './session-management.js';
-import type { ProjectSummary, ThreadSummary } from '../types.js';
+import type { ProjectSummary, ThreadSummary, UsageThreadRow } from '../types.js';
 
 test('buildSessionManagementRows flattens projects and marks active, running, and session state', () => {
   const rows = buildSessionManagementRows([
@@ -123,6 +126,36 @@ test('buildSessionProjectSummaries creates the left project navigation', () => {
   ]);
 });
 
+test('buildSessionProjectSummaries keeps empty projects visible for project cleanup', () => {
+  const projects = [
+    project('project-a', 'CodeM', 'D:/project/codem', [
+      thread('thread-a', 'project-a', '本地', 'session-local', '2026-05-21T10:00:00.000Z', false),
+    ]),
+    project('project-empty', 'Empty', 'D:/project/empty', []),
+  ];
+  const rows = buildSessionManagementRows(projects, {
+    activeProjectId: 'project-a',
+    activeThreadId: 'thread-a',
+    runningThreadIds: [],
+  });
+
+  assert.deepEqual(buildSessionProjectSummaries(rows, projects), [
+    { id: 'all', name: '全部项目', path: '', total: 1, running: 0, missingSession: 0 },
+    { id: 'project-a', name: 'CodeM', path: 'D:/project/codem', total: 1, running: 0, missingSession: 0 },
+    { id: 'project-empty', name: 'Empty', path: 'D:/project/empty', total: 0, running: 0, missingSession: 0 },
+  ]);
+});
+
+test('resolveSessionProjectSelection falls back to all when the selected project has no session summary', () => {
+  const summaries = [
+    { id: 'all' as const, name: '全部项目', path: '', total: 2, running: 0, missingSession: 0 },
+    { id: 'project-a', name: 'CodeM', path: 'D:/project/codem', total: 2, running: 0, missingSession: 0 },
+  ];
+
+  assert.equal(resolveSessionProjectSelection(summaries, 'project-a'), 'project-a');
+  assert.equal(resolveSessionProjectSelection(summaries, 'missing-project'), 'all');
+});
+
 test('getSelectableSessionIds excludes running sessions from bulk delete', () => {
   const rows = buildSessionManagementRows([
     project('project-a', 'CodeM', 'D:/project/codem', [
@@ -136,6 +169,36 @@ test('getSelectableSessionIds excludes running sessions from bulk delete', () =>
   });
 
   assert.deepEqual(getSelectableSessionIds(rows), ['thread-a']);
+});
+
+test('summarizeSessionManagementUsage ignores stale usage rows for deleted sessions', () => {
+  const rows = buildSessionManagementRows([
+    project('project-a', 'CodeM', 'D:/project/codem', [
+      thread('thread-a', 'project-a', '保留会话', 'session-local', '2026-05-21T10:00:00.000Z', false),
+    ]),
+  ], {
+    activeProjectId: 'project-a',
+    activeThreadId: 'thread-a',
+    runningThreadIds: [],
+  });
+
+  const totals = summarizeSessionManagementUsage(rows, [
+    usageThread('thread-a', 'project-a', 100, 12_000, 0.05),
+    usageThread('deleted-thread', 'project-a', 6_700_000, 800, 1.25),
+  ]);
+
+  assert.equal(totals.totalTokens, 100);
+  assert.equal(totals.durationMs, 12_000);
+  assert.equal(totals.totalCostUsd, 0.05);
+});
+
+test('buildSessionManagementUsageByProject shows zero usage when all sessions were deleted', () => {
+  const usageByProject = buildSessionManagementUsageByProject([], [
+    usageThread('deleted-thread', 'project-a', 6_700_000, 800, 1.25),
+  ]);
+
+  assert.equal(usageByProject.get('all')?.totalTokens, 0);
+  assert.equal(usageByProject.get('project-a')?.totalTokens, undefined);
 });
 
 test('shortSessionId keeps empty values readable and compacts long ids', () => {
@@ -182,5 +245,37 @@ function thread(
     imported,
     model: 'sonnet',
     permissionMode: 'default',
+  };
+}
+
+function usageThread(
+  threadId: string,
+  projectId: string,
+  totalTokens: number,
+  durationMs: number,
+  totalCostUsd: number,
+): UsageThreadRow {
+  return {
+    projects: 0,
+    threads: 1,
+    messages: 1,
+    toolCalls: 0,
+    inputTokens: totalTokens,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    totalTokens,
+    durationMs,
+    totalCostUsd,
+    threadId,
+    projectId,
+    projectName: projectId,
+    title: threadId,
+    sessionId: `session-${threadId}`,
+    provider: 'claude',
+    model: 'sonnet',
+    workingDirectory: `D:/workspace/${projectId}`,
+    updatedAt: '2026-05-21T10:00:00.000Z',
+    lastUsedAt: '2026-05-21T10:00:00.000Z',
   };
 }

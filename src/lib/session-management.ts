@@ -1,4 +1,4 @@
-import type { ProjectSummary, ThreadRuntimeStatus, ThreadSummary } from '../types';
+import type { ProjectSummary, ThreadRuntimeStatus, ThreadSummary, UsageThreadRow, UsageTotals } from '../types';
 
 export type SessionProjectId = string | 'all';
 
@@ -71,7 +71,10 @@ export function buildSessionManagementRows(
     .sort((left, right) => right.thread.updatedAt.localeCompare(left.thread.updatedAt));
 }
 
-export function buildSessionProjectSummaries(rows: SessionManagementRow[]): SessionProjectSummary[] {
+export function buildSessionProjectSummaries(
+  rows: SessionManagementRow[],
+  projects: ProjectSummary[] = [],
+): SessionProjectSummary[] {
   const summaries = new Map<string, SessionProjectSummary>();
   const allSummary: SessionProjectSummary = {
     id: 'all',
@@ -81,6 +84,17 @@ export function buildSessionProjectSummaries(rows: SessionManagementRow[]): Sess
     running: rows.filter((row) => row.running).length,
     missingSession: rows.filter((row) => !row.hasSession).length,
   };
+
+  for (const project of projects) {
+    summaries.set(project.id, {
+      id: project.id,
+      name: project.name,
+      path: project.path,
+      total: 0,
+      running: 0,
+      missingSession: 0,
+    });
+  }
 
   for (const row of rows) {
     const existing = summaries.get(row.project.id) ?? {
@@ -98,6 +112,13 @@ export function buildSessionProjectSummaries(rows: SessionManagementRow[]): Sess
   }
 
   return [allSummary, ...summaries.values()];
+}
+
+export function resolveSessionProjectSelection(
+  projectSummaries: SessionProjectSummary[],
+  selectedProjectId: SessionProjectId,
+): SessionProjectId {
+  return projectSummaries.some((project) => project.id === selectedProjectId) ? selectedProjectId : 'all';
 }
 
 export function filterSessionManagementRows(
@@ -118,6 +139,33 @@ export function getSelectableSessionIds(rows: SessionManagementRow[]) {
   return rows
     .filter((row) => !row.running)
     .map((row) => row.thread.id);
+}
+
+export function summarizeSessionManagementUsage(
+  rows: SessionManagementRow[],
+  usageRows: UsageThreadRow[],
+): UsageTotals {
+  const usageByThreadId = buildUsageByThreadId(usageRows);
+  return rows.reduce((totals, row) => mergeUsageTotals(totals, usageByThreadId.get(row.thread.id)), createEmptyUsageTotals());
+}
+
+export function buildSessionManagementUsageByProject(
+  rows: SessionManagementRow[],
+  usageRows: UsageThreadRow[],
+): Map<SessionProjectId, UsageTotals> {
+  const usageByThreadId = buildUsageByThreadId(usageRows);
+  const usageByProjectId = new Map<SessionProjectId, UsageTotals>([['all', createEmptyUsageTotals()]]);
+
+  for (const row of rows) {
+    const usage = usageByThreadId.get(row.thread.id);
+    usageByProjectId.set('all', mergeUsageTotals(usageByProjectId.get('all') ?? createEmptyUsageTotals(), usage));
+    usageByProjectId.set(
+      row.project.id,
+      mergeUsageTotals(usageByProjectId.get(row.project.id) ?? createEmptyUsageTotals(), usage),
+    );
+  }
+
+  return usageByProjectId;
 }
 
 export function shortSessionId(sessionId: string) {
@@ -145,4 +193,50 @@ function normalizeSearchText(values: Array<string | undefined>) {
     .filter((value): value is string => Boolean(value?.trim()))
     .join(' ')
     .toLowerCase();
+}
+
+function buildUsageByThreadId(usageRows: UsageThreadRow[]) {
+  const usageByThreadId = new Map<string, UsageThreadRow>();
+  for (const row of usageRows) {
+    if (row.threadId) {
+      usageByThreadId.set(row.threadId, row);
+    }
+  }
+  return usageByThreadId;
+}
+
+function createEmptyUsageTotals(): UsageTotals {
+  return {
+    projects: 0,
+    threads: 0,
+    messages: 0,
+    toolCalls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    totalTokens: 0,
+    durationMs: 0,
+    totalCostUsd: 0,
+  };
+}
+
+function mergeUsageTotals(current: UsageTotals, next: UsageTotals | undefined): UsageTotals {
+  if (!next) {
+    return current;
+  }
+
+  return {
+    projects: current.projects + next.projects,
+    threads: current.threads + next.threads,
+    messages: current.messages + next.messages,
+    toolCalls: current.toolCalls + next.toolCalls,
+    inputTokens: current.inputTokens + next.inputTokens,
+    outputTokens: current.outputTokens + next.outputTokens,
+    cacheCreationInputTokens: current.cacheCreationInputTokens + next.cacheCreationInputTokens,
+    cacheReadInputTokens: current.cacheReadInputTokens + next.cacheReadInputTokens,
+    totalTokens: current.totalTokens + next.totalTokens,
+    durationMs: current.durationMs + next.durationMs,
+    totalCostUsd: current.totalCostUsd + next.totalCostUsd,
+  };
 }

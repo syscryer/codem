@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import * as childProcess from 'node:child_process';
@@ -2399,7 +2399,12 @@ function deleteDuplicateThreadsBySessionId(sessionId: string, excludeThreadId: s
 }
 
 function filterVisibleThreadRows(threadRows: StoredThreadRow[]) {
-  return threadRows.filter(hasVisibleThreadSource);
+  const missingTranscriptThreadIds = threadRows
+    .filter((row) => row.session_id && !hasUsableTranscript(row))
+    .map((row) => row.id);
+  const storedHistoryThreadIds = readThreadIdsWithStoredHistory(missingTranscriptThreadIds);
+
+  return threadRows.filter((row) => hasVisibleThreadSource(row, storedHistoryThreadIds));
 }
 
 function hasUsableTranscript(row: StoredThreadRow) {
@@ -2410,12 +2415,32 @@ function hasUsableTranscript(row: StoredThreadRow) {
   return existsSync(row.transcript_path);
 }
 
-function hasVisibleThreadSource(row: StoredThreadRow) {
+function hasVisibleThreadSource(row: StoredThreadRow, storedHistoryThreadIds: Set<string>) {
   if (!row.session_id) {
     return row.imported !== 1;
   }
 
-  return hasUsableTranscript(row);
+  return hasUsableTranscript(row) || storedHistoryThreadIds.has(row.id);
+}
+
+function readThreadIdsWithStoredHistory(threadIds: string[]) {
+  const result = new Set<string>();
+  for (let index = 0; index < threadIds.length; index += 500) {
+    const chunk = threadIds.slice(index, index + 500);
+    if (chunk.length === 0) {
+      continue;
+    }
+
+    const placeholders = chunk.map(() => '?').join(', ');
+    const rows = db
+      .prepare(`SELECT DISTINCT thread_id FROM messages WHERE thread_id IN (${placeholders})`)
+      .all(...chunk) as Array<{ thread_id: string }>;
+    for (const row of rows) {
+      result.add(row.thread_id);
+    }
+  }
+
+  return result;
 }
 
 function isPathInsideRoot(targetPath: string, rootPath: string) {
@@ -2456,6 +2481,7 @@ function deleteClaudeTranscriptFile(transcriptPath: string) {
     if (existsSync(resolvedPath)) {
       unlinkSync(resolvedPath);
     }
+    deleteEmptyClaudeProjectDirectory(path.dirname(resolvedPath), claudeProjectsRoot);
   } catch (error) {
     if (isErrnoException(error) && error.code === 'ENOENT') {
       return;
@@ -2463,6 +2489,21 @@ function deleteClaudeTranscriptFile(transcriptPath: string) {
 
     throw error;
   }
+}
+
+function deleteEmptyClaudeProjectDirectory(directoryPath: string, claudeProjectsRoot: string) {
+  const resolvedDirectory = path.resolve(directoryPath);
+  if (resolvedDirectory.toLowerCase() === claudeProjectsRoot.toLowerCase()) {
+    return;
+  }
+  if (!isPathInsideRoot(resolvedDirectory, claudeProjectsRoot)) {
+    return;
+  }
+  if (!existsSync(resolvedDirectory) || readdirSync(resolvedDirectory).length > 0) {
+    return;
+  }
+
+  rmdirSync(resolvedDirectory);
 }
 
 function isErrnoException(error: unknown): error is NodeJS.ErrnoException {

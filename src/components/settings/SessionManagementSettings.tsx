@@ -10,8 +10,11 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   buildSessionProjectSummaries,
   buildSessionManagementRows,
+  buildSessionManagementUsageByProject,
   filterSessionManagementRows,
   getSelectableSessionIds,
+  resolveSessionProjectSelection,
+  summarizeSessionManagementUsage,
   shortSessionId,
   type SessionProjectId,
   type SessionProjectSummary,
@@ -35,24 +38,11 @@ type SessionManagementSettingsSectionProps = {
   projects: ProjectSummary[];
   runningThreadIds: string[];
   onOpenThread: (projectId: string, threadId: string) => void | Promise<void>;
+  onRemoveProject: (project: ProjectSummary) => void;
   onRenameThread: (thread: ThreadSummary) => void;
   onRemoveThread: (thread: ThreadSummary) => void;
   onSyncWorkspace: (workspace: WorkspaceBootstrap) => void;
   showToast: (message: string, tone?: ToastState['tone']) => void;
-};
-
-const emptyUsageTotals: UsageTotals = {
-  projects: 0,
-  threads: 0,
-  messages: 0,
-  toolCalls: 0,
-  inputTokens: 0,
-  outputTokens: 0,
-  cacheCreationInputTokens: 0,
-  cacheReadInputTokens: 0,
-  totalTokens: 0,
-  durationMs: 0,
-  totalCostUsd: 0,
 };
 
 export function SessionManagementSettingsSection({
@@ -61,6 +51,7 @@ export function SessionManagementSettingsSection({
   projects,
   runningThreadIds,
   onOpenThread,
+  onRemoveProject,
   onRenameThread,
   onRemoveThread,
   onSyncWorkspace,
@@ -127,10 +118,14 @@ export function SessionManagementSettingsSection({
       }),
     [activeProjectId, activeThreadId, projects, runningThreadIds, runtimeStatuses],
   );
-  const projectSummaries = useMemo(() => buildSessionProjectSummaries(rows), [rows]);
+  const projectSummaries = useMemo(() => buildSessionProjectSummaries(rows, projects), [projects, rows]);
+  const effectiveSelectedProjectId = useMemo(
+    () => resolveSessionProjectSelection(projectSummaries, selectedProjectId),
+    [projectSummaries, selectedProjectId],
+  );
   const filteredRows = useMemo(
-    () => filterSessionManagementRows(rows, { query, projectId: selectedProjectId }),
-    [query, rows, selectedProjectId],
+    () => filterSessionManagementRows(rows, { query, projectId: effectiveSelectedProjectId }),
+    [effectiveSelectedProjectId, query, rows],
   );
   const selectableThreadIds = useMemo(() => getSelectableSessionIds(filteredRows), [filteredRows]);
   const visibleSelectedCount = selectedThreadIds.filter((threadId) => selectableThreadIds.includes(threadId)).length;
@@ -140,7 +135,12 @@ export function SessionManagementSettingsSection({
   const deletableThreadIds = selectedRows
     .filter((row) => !row.running)
     .map((row) => row.thread.id);
-  const selectedProject = projectSummaries.find((project) => project.id === selectedProjectId) ?? projectSummaries[0];
+  const selectedProject = projectSummaries.find((project) => project.id === effectiveSelectedProjectId) ?? projectSummaries[0];
+  const projectById = useMemo(() => {
+    const byId = new Map<string, ProjectSummary>();
+    projects.forEach((project) => byId.set(project.id, project));
+    return byId;
+  }, [projects]);
   const usageByThreadId = useMemo(() => {
     const byThreadId = new Map<string, UsageThreadRow>();
     usageStats?.byThread.forEach((row) => {
@@ -150,22 +150,14 @@ export function SessionManagementSettingsSection({
     });
     return byThreadId;
   }, [usageStats]);
-  const usageByProjectId = useMemo(() => {
-    const byProjectId = new Map<string, UsageTotals>();
-    usageStats?.byProject.forEach((row) => {
-      byProjectId.set(row.projectId, row);
-    });
-    return byProjectId;
-  }, [usageStats]);
-  const selectedProjectUsage = useMemo(() => {
-    if (!usageStats) {
-      return emptyUsageTotals;
-    }
-    if (selectedProjectId === 'all') {
-      return usageStats.totals;
-    }
-    return usageStats.byProject.find((row) => row.projectId === selectedProjectId) ?? emptyUsageTotals;
-  }, [selectedProjectId, usageStats]);
+  const usageByProjectId = useMemo(
+    () => buildSessionManagementUsageByProject(rows, usageStats?.byThread ?? []),
+    [rows, usageStats],
+  );
+  const selectedProjectUsage = useMemo(
+    () => summarizeSessionManagementUsage(filteredRows, usageStats?.byThread ?? []),
+    [filteredRows, usageStats],
+  );
 
   function selectProject(projectId: SessionProjectId) {
     setSelectedProjectId(projectId);
@@ -289,9 +281,12 @@ export function SessionManagementSettingsSection({
               <ProjectNavItem
                 key={project.id}
                 project={project}
-                active={selectedProjectId === project.id}
-                usage={project.id === 'all' ? usageStats?.totals : usageByProjectId.get(project.id)}
+                active={effectiveSelectedProjectId === project.id}
+                usage={usageByProjectId.get(project.id)}
                 onSelect={() => selectProject(project.id)}
+                onRemove={project.id !== 'all' && projectById.has(project.id)
+                  ? () => onRemoveProject(projectById.get(project.id) as ProjectSummary)
+                  : undefined}
               />
             ))}
           </aside>
@@ -467,35 +462,53 @@ function ProjectNavItem({
   active,
   usage,
   onSelect,
+  onRemove,
 }: {
   project: SessionProjectSummary;
   active: boolean;
   usage?: UsageTotals;
   onSelect: () => void;
+  onRemove?: () => void;
 }) {
+  const removeDisabled = project.running > 0;
+
   return (
-    <button
-      type="button"
-      className={`session-project-item${active ? ' active' : ''}`}
-      onClick={onSelect}
-    >
-      <span className="session-project-card">
-        <span>
-          <strong>{project.name}</strong>
-          {project.path ? <small>{project.path}</small> : <small>所有项目中的会话</small>}
-        </span>
-        <em>{project.total}</em>
-        <span className="session-project-usage">
-          {formatCompactTokenCount(usage?.totalTokens ?? 0)} tokens · 运行耗时 {formatDurationCompact(usage?.durationMs ?? 0)}
-        </span>
-        {project.running > 0 || project.missingSession > 0 ? (
-          <span className="session-project-flags">
-            {project.running > 0 ? <span className="session-project-flag running">{project.running} 运行中</span> : null}
-            {project.missingSession > 0 ? <span className="session-project-flag warning">{project.missingSession} 未开始</span> : null}
+    <div className={`session-project-item${active ? ' active' : ''}`}>
+      <button
+        type="button"
+        className="session-project-open"
+        onClick={onSelect}
+      >
+        <span className="session-project-card">
+          <span>
+            <strong>{project.name}</strong>
+            {project.path ? <small>{project.path}</small> : <small>所有项目中的会话</small>}
           </span>
-        ) : null}
-      </span>
-    </button>
+          <em>{project.total}</em>
+          <span className="session-project-usage">
+            {formatCompactTokenCount(usage?.totalTokens ?? 0)} tokens · 运行耗时 {formatDurationCompact(usage?.durationMs ?? 0)}
+          </span>
+          {project.running > 0 || project.missingSession > 0 ? (
+            <span className="session-project-flags">
+              {project.running > 0 ? <span className="session-project-flag running">{project.running} 运行中</span> : null}
+              {project.missingSession > 0 ? <span className="session-project-flag warning">{project.missingSession} 未开始</span> : null}
+            </span>
+          ) : null}
+        </span>
+      </button>
+      {onRemove ? (
+        <button
+          type="button"
+          className="settings-icon-button danger session-project-delete"
+          disabled={removeDisabled}
+          onClick={onRemove}
+          title={removeDisabled ? '运行中的项目请先停止当前任务' : '删除项目'}
+          aria-label={`删除项目 ${project.name}`}
+        >
+          <Trash2 size={14} />
+        </button>
+      ) : null}
+    </div>
   );
 }
 

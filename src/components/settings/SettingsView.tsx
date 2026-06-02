@@ -54,6 +54,7 @@ type SettingsViewProps = {
   claudeModels: ClaudeModelInfo;
   onSelectSection: (section: SettingsSection) => void;
   onOpenThread: (projectId: string, threadId: string) => void | Promise<void>;
+  onRemoveProject: (project: ProjectSummary) => void;
   onRenameThread: (thread: ThreadSummary) => void;
   onRemoveThread: (thread: ThreadSummary) => void;
   onOpenWorktreePath: (worktreePath: string) => Promise<void>;
@@ -101,6 +102,7 @@ export function SettingsView({
   claudeModels,
   onSelectSection,
   onOpenThread,
+  onRemoveProject,
   onRenameThread,
   onRemoveThread,
   onOpenWorktreePath,
@@ -180,6 +182,7 @@ export function SettingsView({
           projects={projects}
           runningThreadIds={runningThreadIds}
           onOpenThread={onOpenThread}
+          onRemoveProject={onRemoveProject}
           onRenameThread={onRenameThread}
           onRemoveThread={onRemoveThread}
           onSyncWorkspace={onSyncWorkspace}
