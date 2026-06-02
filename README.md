@@ -1,73 +1,76 @@
 # CodeM
 
-一个最小可用的本地 UI，用来在浏览器里调用本机 `Claude Code`。
+CodeM 是一个给 Claude Code 用的本地桌面壳。
 
-## 当前能力
+它把本机 `claude` CLI 包成图形界面，让你可以在一个桌面应用里管理项目、继续会话、查看运行过程、处理权限确认，并把聊天记录和项目状态保存在本机。
 
-- 输入 prompt 并调用 `claude`
-- 实时展示 `stream-json` 返回内容
-- 自动记录并复用线程级 `sessionId`
-- 支持切换工作目录
-- 支持停止当前运行
-- 支持模型选择，并在切换非运行线程时同步当前 provider 配置
-- 权限菜单收敛为“默认 / 自动执行 / 完全访问”三档，内部仍兼容 Claude Code 的历史权限值
-- 按 turn 聚合展示对话，用户输入和 Claude 正文保持主线连续
-- Claude 正文支持 Markdown / GFM 渲染，包括表格、列表、代码块和链接
-- 工具调用以内联步骤展示，参数和结果默认折叠
-- `TodoWrite` 会渲染为计划任务卡片；当前未完成任务会固定在输入框上方，完成后自动收起
-- 支持 Plan 确认、权限审批和 AI 提问卡片；需要用户决策时会暂停当前运行，避免错误结果继续污染上下文
-- 支持运行中继续输入，后续 prompt 会进入当前线程队列，也可以从队列中移除
-- 运行中会展示接近 Claude Code TUI 的 `Thinking...` / `Computing...` 状态、耗时和输出 token
-- 运行中 token 统计使用本地估算平滑展示，结束后回落到真实统计
-- 工具调用行改为 `Bash(...)` / `Read(...)` / `Edit(...)` 等紧凑 TUI 风格，并保留错误摘要
-- system/raw/snapshot/stderr 等调试信息放入右侧调试抽屉
-- 可查看最近的原始事件流和 assistant message snapshot
-- 支持保留多个线程，新建聊天不会清空旧线程
-- 启动时自动从 Claude Code 本地 session 缓存导入项目与聊天
-- 左侧项目与 Claude Code 目录工作区一一对应
-- 支持项目级 git 分支读取与展示
-- 支持项目级操作：打开目录、修改显示名、移除
-- 支持线程级操作：重命名聊天、复制会话 ID
-- 当前项目与线程选择会持久化到本地 SQLite
-- 线程消息与工具调用会持久化到本地 SQLite
-- 新增项目、重命名、移除、复制会话 ID 使用应用内弹层和 toast，不再依赖浏览器原生弹窗
-- 后端优先复用热会话 stdin runtime；遇到 Plan、审批、AI 提问等人类输入节点时保留可写 runtime，并通过对应 tool result 继续同一轮运行
+> 当前阶段 CodeM 主要是 Claude Code 的图形界面，不是独立模型平台。后续可以继续扩展其他 provider，但现在先把 Claude Code 的本地工作流做好。
 
-## 技术栈
+## 界面预览
 
-- 前端：React + Vite
-- 后端：Node.js + Express
-- Claude 调用：本机 `claude` CLI
-- 本地持久化：Node.js 内置 `node:sqlite`
+### 主界面
 
-## 规范与协作
+项目和会话集中在左侧，当前会话在中间展开，底部输入框保留权限、模型和运行状态。
 
-- 开发规范入口：`.trellis/workflow.md`
-- frontend 规范：`.trellis/spec/frontend/`
-- backend 规范：`.trellis/spec/backend/`
-- 思考指南：`.trellis/spec/guides/`
-- 后续任务沉淀：`.trellis/tasks/`
-- 行为提案与变更记录：`openspec/README.md`
-- 后续开发路线图：`roadmap.md`
+![CodeM 主界面](docs/assets/readme-home.png)
 
-当前仓库采用的是轻量 `.trellis` 结构：
+### 工作台
 
-- 已提供规范目录和任务目录骨架
-- 暂未引入 `.trellis/scripts/`、developer 初始化、session record 自动化
-- 适合当前阶段先约束重构和功能开发，再按需要逐步补齐流程能力
+对话、文件和项目上下文可以放在同一个窗口里，日常写代码时不用在终端和文件管理器之间来回切。
 
-## 运行方式
+![CodeM 工作台](docs/assets/readme-workbench.png)
+
+### 外观设置
+
+主题、强调色、窗口材质、界面密度和字体可以在设置里调整，尽量贴合自己的桌面环境。
+
+![CodeM 外观设置](docs/assets/readme-appearance.png)
+
+### 使用情况
+
+内置使用情况视图，用来查看会话、Token、耗时和费用的简单统计。
+
+![CodeM 使用情况](docs/assets/readme-usage.png)
+
+## 当前能做什么
+
+- 调用本机 `claude` CLI，并实时展示 Claude Code 的输出
+- 按项目管理聊天，会话可以继续复用 `sessionId`
+- 支持切换工作目录、停止运行、继续输入和队列发送
+- 支持默认、自动执行、完全访问三档权限模式
+- 支持 Plan 确认、权限审批和 AI 提问卡片
+- 支持 Markdown / GFM 渲染，工具调用会折叠展示
+- 支持 `TodoWrite` 计划卡片和运行状态展示
+- 支持项目级 Git 分支和变更数量展示
+- 支持工作台视图，可以查看文件、审查、浏览器等区域
+- 支持主题、强调色、窗口材质、界面密度和字体设置
+- 项目、线程、消息和工具调用会持久化到本机 SQLite
+
+## 快速开始
+
+先确认本机已经安装并登录 Claude Code，并且终端里可以执行：
+
+```bash
+claude --help
+```
+
+安装依赖：
 
 ```bash
 npm install
+```
+
+启动 Web 开发模式：
+
+```bash
 npm run dev
 ```
 
-启动后：
+默认地址：
 
-- 前端地址：`http://127.0.0.1:5173`
-- 后端地址：默认 `http://127.0.0.1:3001`，如果端口不可用会自动切换
-- 本地数据库：`%LOCALAPPDATA%\\CodeM\\codem.sqlite`
+- 前端：`http://127.0.0.1:5173`
+- 后端：默认 `http://127.0.0.1:3001`，如果端口不可用会自动切换
+- 本地数据库：`%LOCALAPPDATA%\CodeM\codem.sqlite`
 
 ## 桌面开发
 
@@ -75,14 +78,31 @@ npm run dev
 npm run desktop:dev
 ```
 
-桌面开发模式会尽量复用当前仓库正在运行的 Web 开发会话：
+桌面开发模式使用 Tauri，并会尽量复用当前仓库正在运行的 Web 和后端服务：
 
 - `src/**` 改动通过 Vite HMR 即时刷新
 - `server/**` 改动通过 `tsx watch` 自动重启后端
 - `src-tauri/**` 改动通过 `tauri dev` 自动重编译并重启桌面壳
-- 如果当前仓库已经有 `npm run dev` 在运行，`desktop:dev` 会复用同一组 Web / backend 开发服务，而不是再猜一个新的后端端口
 
-## 多平台打包
+## 使用方式
+
+1. 确保当前机器可以执行 `claude --help`
+2. 启动 CodeM
+3. 在左侧选择或添加项目目录
+4. 在输入框输入需求并发送
+5. 当前线程默认续聊，新建聊天不会删除旧线程
+
+建议只在可信目录里使用“完全访问”权限模式。这个模式会让 Claude Code 跳过部分权限确认，适合自己的开发目录，不适合陌生代码仓库。
+
+## 技术栈
+
+- 前端：React + Vite
+- 桌面壳：Tauri
+- 后端：Node.js + Express
+- Claude 调用：本机 `claude` CLI
+- 本地持久化：Node.js 内置 `node:sqlite`
+
+## 打包
 
 打包前先检查本机基础环境：
 
@@ -90,55 +110,37 @@ npm run desktop:dev
 npm run package:doctor
 ```
 
-常用平台入口：
+常用入口：
 
 ```bash
-npm run package:win:with-node       # Windows x64, NSIS + MSI, 内置 Node.js
-npm run package:win:no-node         # Windows x64, NSIS + MSI, 依赖系统 Node.js
-npm run package:mac-arm64:with-node # macOS Apple Silicon, .app + DMG, 内置 Node.js
-npm run package:mac-arm64:no-node   # macOS Apple Silicon, .app + DMG, 依赖系统 Node.js
-npm run package:mac-x64:with-node   # macOS Intel, .app + DMG, 内置 Node.js
-npm run package:mac-x64:no-node     # macOS Intel, .app + DMG, 依赖系统 Node.js
-npm run package:mac-universal # macOS Universal, .app + DMG
-npm run package:mac          # macOS Universal 的快捷入口
-npm run package:linux:with-node     # Linux x64, deb + rpm + AppImage, 内置 Node.js
-npm run package:linux:no-node       # Linux x64, deb + rpm + AppImage, 依赖系统 Node.js
-npm run package:all          # 当前系统推荐目标
+npm run package:win:with-node       # Windows x64，内置 Node.js
+npm run package:win:no-node         # Windows x64，依赖系统 Node.js
+npm run package:mac-arm64:with-node # macOS Apple Silicon，内置 Node.js
+npm run package:mac-arm64:no-node   # macOS Apple Silicon，依赖系统 Node.js
+npm run package:mac-x64:with-node   # macOS Intel，内置 Node.js
+npm run package:mac-x64:no-node     # macOS Intel，依赖系统 Node.js
+npm run package:mac-universal       # macOS Universal
+npm run package:linux:with-node     # Linux x64，内置 Node.js
+npm run package:linux:no-node       # Linux x64，依赖系统 Node.js
+npm run package:all                 # 当前系统推荐目标
 ```
 
-注意事项：
+`with-node` 表示安装包内置运行时 Node.js，目标机器不需要额外安装 Node。`no-node` 表示安装包不携带 Node.js，体积更小，但目标机器需要自行提供可用的 Node 环境。
 
-- `with-node` 表示安装包内置运行时 Node.js，目标机器不需要额外安装 Node。
-- `no-node` 表示安装包不携带 Node.js，体积更小，但目标机器需要自行提供可用的 Node 环境。
-- `npm run package:win`、`npm run package:mac-arm64`、`npm run package:mac-x64`、`npm run package:linux` 仍可作为平台快捷入口使用；如果需要明确区分产物口径，优先使用上面的 `with-node` / `no-node` 命令。
-- Tauri 桌面包会先执行 `npm run build`，并把 `dist-server` 作为资源打入包内。
-- Windows、macOS、Linux 通常需要在对应系统或 CI runner 上构建，不建议把这一步当作可靠跨编译。
-- 当前 release workflow 先覆盖多平台产物构建、收集、校验版本和 `SHA256SUMS.txt`，暂不启用自动更新签名、macOS notarize 或代码签名。
-- macOS/Linux 的真实可运行性仍需要在对应系统上验证，重点检查后端服务启动、SQLite 数据目录、CLI 查找和窗口效果降级。
+## 当前边界
 
-## 使用说明
-
-1. 确保当前机器已经能在终端里执行 `claude --help`
-2. 在左侧填写工作目录
-3. 输入 prompt 后点击“发送给 Claude”
-4. 当前线程默认续聊；点击“新建聊天”会创建新线程，但不会删除旧线程
-
-## 设计说明
-
-- 现在先做本地 Web UI，而不是 Electron / Tauri 壳
-- 这样可以更快验证“Claude CLI 是否能被稳定包装”
-- 如果后面确认交互可行，再包成桌面应用会比较顺手
-- 数据模型与持久化方向已经开始按多 provider 演进，后续不只支持 `Claude Code`
-- 规范层使用轻量 `.trellis`，功能提案层预留 `openspec/`
-
-## 已知边界
-
+- 目前主要支持 Claude Code，不要把它理解成已经完成的多模型客户端
 - Claude CLI 参数如果未来变动，后端桥接需要同步调整
-- “完全访问”对应 Claude Code 的跳过权限模式，风险较高，只建议在可信目录下使用
-- Plan / 审批 / AI 提问会暂停等待用户决策；批准、拒绝或回答后优先写回同一运行，旧版不可写 runtime 才回落到同 `sessionId` 续跑
-- 线程标题的 Claude Code 侧名称目前只做导入，不反写 Claude Code 本地 session 名称
+- Plan、审批、AI 提问会暂停等待用户决策
 - 线程历史持久化以 CodeM 自己的 SQLite 为主，Claude transcript 作为导入与补录来源
-- 排序 / 显示按钮、插件、自动化目前仍以基础占位为主
-- 模型内部隐藏思考链不会展示；界面只展示 Claude CLI 在 `stream-json` 中实际暴露的事件
-- `thinking_delta` 会渲染为默认折叠的 Thinking 块；模型未暴露的隐藏思考链不会展示
-- 详细需求与演进路线见 `requirements.md`
+- 模型内部隐藏思考链不会展示，界面只展示 Claude CLI 在 `stream-json` 中实际暴露的事件
+
+## 开发文档
+
+- 开发规范入口：`.trellis/workflow.md`
+- frontend 规范：`.trellis/spec/frontend/`
+- backend 规范：`.trellis/spec/backend/`
+- 思考指南：`.trellis/spec/guides/`
+- 行为提案与变更记录：`openspec/README.md`
+- 详细需求与演进路线：`requirements.md`
+- 后续开发路线图：`roadmap.md`
