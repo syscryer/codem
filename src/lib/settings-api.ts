@@ -164,9 +164,17 @@ export async function fetchOpenWithTargets(): Promise<OpenWithTargetsResponse> {
   }
 }
 
-export async function fetchUsageStats(range?: 7 | 30 | 90 | 'all'): Promise<UsageStatsResponse> {
+export async function fetchUsageStats(range?: 1 | 7 | 30 | 90 | 'all', projectId?: string): Promise<UsageStatsResponse> {
   try {
-    const query = range && range !== 'all' ? `?range=${range}` : '';
+    const searchParams = new URLSearchParams();
+    if (range && range !== 'all') {
+      searchParams.set('range', `${range}`);
+    }
+    if (projectId) {
+      searchParams.set('projectId', projectId);
+    }
+    const queryText = searchParams.toString();
+    const query = queryText ? `?${queryText}` : '';
     const response = await fetch(`/api/usage${query}`);
     if (!response.ok) {
       throw new Error('读取使用情况失败');
@@ -314,6 +322,7 @@ function normalizeUsageStats(value: unknown): UsageStatsResponse {
   return {
     generatedAt: normalizeOptionalString(record.generatedAt) || new Date(0).toISOString(),
     totals: normalizeUsageTotals(record.totals),
+    projectOptions: normalizeUsageProjectRows(record.projectOptions ?? record.byProject),
     byProvider: normalizeUsageProviderRows(record.byProvider),
     byProject: normalizeUsageProjectRows(record.byProject),
     byThread: normalizeUsageThreadRows(record.byThread),

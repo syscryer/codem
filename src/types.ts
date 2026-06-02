@@ -574,6 +574,7 @@ export type UsageTrendPoint = UsageTotals & {
 export type UsageStatsResponse = {
   generatedAt: string;
   totals: UsageTotals;
+  projectOptions: UsageProjectRow[];
   byProvider: UsageProviderRow[];
   byProject: UsageProjectRow[];
   byThread: UsageThreadRow[];

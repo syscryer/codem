@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export type UsageStatsRangeDays = 7 | 30 | 90;
+export type UsageStatsRangeDays = 1 | 7 | 30 | 90;
 
 export type UsageTotals = {
   projects: number;
@@ -67,6 +67,7 @@ export type UsageTrendPoint = {
 export type UsageStatsResponse = {
   generatedAt: string;
   totals: UsageTotals;
+  projectOptions: UsageProjectRow[];
   byProvider: UsageProviderRow[];
   byProject: UsageProjectRow[];
   byThread: UsageThreadRow[];
@@ -135,10 +136,21 @@ const usageCtes = `
     SELECT
       thread_id,
       turn_id,
-      MIN(created_at) AS createdAt,
-      substr(MIN(created_at), 1, 10) AS usageDate
-    FROM messages
-    GROUP BY thread_id, turn_id
+      strftime('%Y-%m-%dT%H:%M:%fZ', usageStartedAtMs / 1000.0, 'unixepoch') AS createdAt,
+      date(usageStartedAtMs / 1000.0, 'unixepoch', 'localtime') AS usageDate
+    FROM (
+      SELECT
+        thread_id,
+        turn_id,
+        MIN(
+          CASE
+            WHEN started_at_ms IS NOT NULL THEN started_at_ms
+            ELSE CAST(strftime('%s', created_at) AS INTEGER) * 1000
+          END
+        ) AS usageStartedAtMs
+      FROM messages
+      GROUP BY thread_id, turn_id
+    )
   ),
   turn_message_counts AS (
     SELECT
@@ -199,10 +211,21 @@ function buildFilteredUsageCtes(startDate: string) {
       SELECT
         thread_id,
         turn_id,
-        MIN(created_at) AS createdAt,
-        substr(MIN(created_at), 1, 10) AS usageDate
-      FROM messages
-      GROUP BY thread_id, turn_id
+        strftime('%Y-%m-%dT%H:%M:%fZ', usageStartedAtMs / 1000.0, 'unixepoch') AS createdAt,
+        date(usageStartedAtMs / 1000.0, 'unixepoch', 'localtime') AS usageDate
+      FROM (
+        SELECT
+          thread_id,
+          turn_id,
+          MIN(
+            CASE
+              WHEN started_at_ms IS NOT NULL THEN started_at_ms
+              ELSE CAST(strftime('%s', created_at) AS INTEGER) * 1000
+            END
+          ) AS usageStartedAtMs
+        FROM messages
+        GROUP BY thread_id, turn_id
+      )
     ),
     turn_message_counts AS (
       SELECT
@@ -280,9 +303,15 @@ export function collectUsageStats(
   options?: {
     rangeDays?: UsageStatsRangeDays;
     currentDate?: Date | string;
+    projectId?: string;
   },
 ): UsageStatsResponse {
   const startDate = options?.rangeDays ? buildUsageRangeStartDate(options.rangeDays, options.currentDate) : null;
+  const projectId = normalizeProjectId(options?.projectId);
+  const projectParams = projectId ? [projectId] : [];
+  const threadProjectWhere = projectId ? 'WHERE t.project_id = ?' : '';
+  const projectWhere = projectId ? 'WHERE p.id = ?' : '';
+  const dayProjectWhere = projectId ? 'AND t.project_id = ?' : '';
   const aggregateCtes = startDate ? buildFilteredUsageCtes(startDate) : usageCtes;
   const totalsFromClause = startDate
     ? `
@@ -291,16 +320,18 @@ export function collectUsageStats(
       LEFT JOIN thread_usage tu ON tu.thread_id = t.id
       LEFT JOIN message_counts mc ON mc.thread_id = t.id
       LEFT JOIN tool_counts tc ON tc.thread_id = t.id
+      ${threadProjectWhere}
     `
     : `
       FROM threads t
       LEFT JOIN thread_usage tu ON tu.thread_id = t.id
       LEFT JOIN message_counts mc ON mc.thread_id = t.id
       LEFT JOIN tool_counts tc ON tc.thread_id = t.id
+      ${threadProjectWhere}
     `;
   const totalsProjectsSql = startDate
     ? 'COUNT(DISTINCT t.project_id) AS projects'
-    : '(SELECT COUNT(*) FROM projects) AS projects';
+    : projectId ? 'COUNT(DISTINCT t.project_id) AS projects' : '(SELECT COUNT(*) FROM projects) AS projects';
 
   const totalsRow = db.prepare(`
     ${aggregateCtes}
@@ -316,7 +347,7 @@ export function collectUsageStats(
       COALESCE(SUM(tu.totalCostUsd), 0) AS totalCostUsd,
       COALESCE(SUM(tu.durationMs), 0) AS durationMs
       ${totalsFromClause}
-  `).get() as UsageTotalsRow | undefined;
+  `).get(...projectParams) as UsageTotalsRow | undefined;
 
   const byProviderRows = db.prepare(`
     ${aggregateCtes}
@@ -345,9 +376,10 @@ export function collectUsageStats(
     LEFT JOIN message_counts mc ON mc.thread_id = t.id
     LEFT JOIN tool_counts tc ON tc.thread_id = t.id
     ${startDate ? 'LEFT JOIN thread_last_used tlu ON tlu.thread_id = t.id' : ''}
+    ${threadProjectWhere}
     GROUP BY t.provider, COALESCE(t.model, '未配置')
     ORDER BY totalTokens DESC, threads DESC, provider ASC
-  `).all() as UsageProviderSqlRow[];
+  `).all(...projectParams) as UsageProviderSqlRow[];
 
   const byProjectRows = db.prepare(`
     ${aggregateCtes}
@@ -375,6 +407,35 @@ export function collectUsageStats(
     LEFT JOIN message_counts mc ON mc.thread_id = t.id
     LEFT JOIN tool_counts tc ON tc.thread_id = t.id
     ${startDate ? 'LEFT JOIN thread_last_used tlu ON tlu.thread_id = t.id' : ''}
+    ${projectWhere}
+    GROUP BY p.id, p.name, p.path
+    ORDER BY (COALESCE(SUM(tu.inputTokens), 0) + COALESCE(SUM(tu.outputTokens), 0) + COALESCE(SUM(tu.cacheCreationInputTokens), 0) + COALESCE(SUM(tu.cacheReadInputTokens), 0)) DESC,
+      threads DESC,
+      p.updated_at DESC
+  `).all(...projectParams) as UsageProjectSqlRow[];
+
+  const projectOptionRows = db.prepare(`
+    ${usageCtes}
+    SELECT
+      p.id AS projectId,
+      p.name AS projectName,
+      p.path AS projectPath,
+      1 AS projects,
+      COUNT(t.id) AS threads,
+      COALESCE(SUM(mc.messages), 0) AS messages,
+      COALESCE(SUM(tc.toolCalls), 0) AS toolCalls,
+      COALESCE(SUM(tu.inputTokens), 0) AS inputTokens,
+      COALESCE(SUM(tu.outputTokens), 0) AS outputTokens,
+      COALESCE(SUM(tu.cacheCreationInputTokens), 0) AS cacheCreationInputTokens,
+      COALESCE(SUM(tu.cacheReadInputTokens), 0) AS cacheReadInputTokens,
+      COALESCE(SUM(tu.totalCostUsd), 0) AS totalCostUsd,
+      COALESCE(SUM(tu.durationMs), 0) AS durationMs,
+      MAX(COALESCE(t.updated_at, p.updated_at)) AS lastUsedAt
+    FROM projects p
+    LEFT JOIN threads t ON t.project_id = p.id
+    LEFT JOIN thread_usage tu ON tu.thread_id = t.id
+    LEFT JOIN message_counts mc ON mc.thread_id = t.id
+    LEFT JOIN tool_counts tc ON tc.thread_id = t.id
     GROUP BY p.id, p.name, p.path
     ORDER BY (COALESCE(SUM(tu.inputTokens), 0) + COALESCE(SUM(tu.outputTokens), 0) + COALESCE(SUM(tu.cacheCreationInputTokens), 0) + COALESCE(SUM(tu.cacheReadInputTokens), 0)) DESC,
       threads DESC,
@@ -410,10 +471,11 @@ export function collectUsageStats(
     LEFT JOIN message_counts mc ON mc.thread_id = t.id
     LEFT JOIN tool_counts tc ON tc.thread_id = t.id
     ${startDate ? 'LEFT JOIN thread_last_used tlu ON tlu.thread_id = t.id' : ''}
+    ${threadProjectWhere}
     ORDER BY COALESCE(tu.totalCostUsd, 0) DESC,
       (COALESCE(tu.inputTokens, 0) + COALESCE(tu.outputTokens, 0) + COALESCE(tu.cacheCreationInputTokens, 0) + COALESCE(tu.cacheReadInputTokens, 0)) DESC,
       t.updated_at DESC
-  `).all() as UsageThreadSqlRow[];
+  `).all(...projectParams) as UsageThreadSqlRow[];
 
   const byDayRows = db.prepare(`
     ${usageCtes}
@@ -436,25 +498,22 @@ export function collectUsageStats(
       COALESCE(SUM(tu.totalCostUsd), 0) AS totalCostUsd,
       0 AS projects
     FROM turn_dates td
+    INNER JOIN threads t ON t.id = td.thread_id
     LEFT JOIN turn_usage tu ON tu.thread_id = td.thread_id AND tu.turn_id = td.turn_id
     LEFT JOIN turn_message_counts tmc ON tmc.thread_id = td.thread_id AND tmc.turn_id = td.turn_id
     LEFT JOIN turn_tool_counts ttc ON ttc.thread_id = td.thread_id AND ttc.turn_id = td.turn_id
     WHERE td.usageDate IS NOT NULL
+      ${dayProjectWhere}
     GROUP BY td.usageDate
     ORDER BY td.usageDate ASC
-  `).all() as UsageTrendSqlRow[];
+  `).all(...projectParams) as UsageTrendSqlRow[];
 
   return {
     generatedAt: new Date().toISOString(),
     totals: normalizeTotals(totalsRow),
+    projectOptions: projectOptionRows.map(normalizeProjectRow),
     byProvider: buildProviderRows(byProviderRows),
-    byProject: byProjectRows.map((row) => ({
-      projectId: row.projectId,
-      projectName: row.projectName,
-      projectPath: row.projectPath,
-      lastUsedAt: row.lastUsedAt,
-      ...normalizeTotals(row),
-    })),
+    byProject: byProjectRows.map(normalizeProjectRow),
     byThread: byThreadRows.map((row) => ({
       threadId: row.threadId,
       projectId: row.projectId,
@@ -492,6 +551,16 @@ function normalizeTotals(row: UsageTotalsRow | undefined): UsageTotals {
     totalTokens: inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens,
     durationMs: normalizeNumber(row?.durationMs),
     totalCostUsd: normalizeNumber(row?.totalCostUsd),
+  };
+}
+
+function normalizeProjectRow(row: UsageProjectSqlRow): UsageProjectRow {
+  return {
+    projectId: row.projectId,
+    projectName: row.projectName,
+    projectPath: row.projectPath,
+    lastUsedAt: row.lastUsedAt,
+    ...normalizeTotals(row),
   };
 }
 
@@ -562,7 +631,16 @@ function inferUsageProvider(rawProvider: string, model: string) {
     };
   }
 
-  if (/\b(minimax|mimo)\b/i.test(normalizedModel)) {
+  if (/\bmimo\b/i.test(normalizedModel)) {
+    return {
+      provider: 'Mimo',
+      providerKey: 'mimo',
+      host: null,
+      inferred: true,
+    };
+  }
+
+  if (/\bminimax\b/i.test(normalizedModel)) {
     return {
       provider: 'MiniMax',
       providerKey: 'minimax',
@@ -687,6 +765,11 @@ function formatProviderName(provider: string) {
 
 function normalizeNumber(value: number | null | undefined) {
   return Number.isFinite(value) ? Number(value) : 0;
+}
+
+function normalizeProjectId(value: string | undefined) {
+  const normalized = value?.trim();
+  return normalized || null;
 }
 
 function buildUsageRangeStartDate(rangeDays: UsageStatsRangeDays, currentDate?: Date | string) {

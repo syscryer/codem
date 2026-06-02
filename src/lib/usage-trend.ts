@@ -1,6 +1,6 @@
 import type { UsageTrendPoint } from '../types';
 
-export type UsageTrendRange = 7 | 30 | 90 | 'all';
+export type UsageTrendRange = 1 | 7 | 30 | 90 | 'all';
 export type UsageTrendBucketUnit = 'day' | 'week' | 'month';
 
 export type UsageTrendBucketResult = {
@@ -25,7 +25,7 @@ export function buildUsageTrendBuckets(
   return buildAllTimeBuckets(sourcePoints);
 }
 
-function buildFixedDayWindow(sourcePoints: UsageTrendPoint[], days: 7 | 30 | 90, currentDate: Date | string) {
+function buildFixedDayWindow(sourcePoints: UsageTrendPoint[], days: 1 | 7 | 30 | 90, currentDate: Date | string) {
   const byDate = aggregateByDate(sourcePoints, (point) => point.date);
   const endDate = parseDateInput(currentDate);
   const startDate = addDays(endDate, -(days - 1));

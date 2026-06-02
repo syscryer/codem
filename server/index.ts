@@ -241,7 +241,7 @@ app.get('/api/usage', (request, response) => {
       response.status(400).json({ error: '不支持的使用情况统计范围' });
       return;
     }
-    response.json(getUsageStats(range ?? undefined));
+    response.json(getUsageStats(range ?? undefined, resolveUsageProjectId(request.query.projectId)));
   } catch (error) {
     console.error('读取使用情况失败', error);
     response.status(500).json({ error: '读取使用情况失败' });
@@ -1814,10 +1814,14 @@ function resolveUsageRangeDays(value: unknown) {
   if (!trimmed || trimmed === 'all') {
     return null;
   }
-  if (trimmed === '7' || trimmed === '30' || trimmed === '90') {
-    return Number(trimmed) as 7 | 30 | 90;
+  if (trimmed === '1' || trimmed === '7' || trimmed === '30' || trimmed === '90') {
+    return Number(trimmed) as 1 | 7 | 30 | 90;
   }
   return 'invalid' as const;
+}
+
+function resolveUsageProjectId(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function isPayloadTooLargeError(error: unknown) {

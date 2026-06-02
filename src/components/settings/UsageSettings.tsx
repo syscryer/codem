@@ -1,9 +1,12 @@
-import { BarChart3, Clock3, Coins, MessageSquareText, RefreshCw, Wrench } from 'lucide-react';
+import { BarChart3, Check, ChevronDown, Clock3, Coins, MessageSquareText, RefreshCw, Search, Wrench } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useOutsideDismiss } from '../../hooks/useOutsideDismiss';
 import { fetchUsageStats } from '../../lib/settings-api';
+import { filterUsageProjects } from '../../lib/usage-project-filter';
 import { buildUsageTrendBuckets, type UsageTrendBucketUnit, type UsageTrendRange } from '../../lib/usage-trend';
 import type { UsageProjectRow, UsageProviderRow, UsageStatsResponse, UsageTotals, UsageTrendPoint } from '../../types';
+import { PopoverPortal } from '../PopoverPortal';
 
 const emptyTotals: UsageTotals = {
   projects: 0,
@@ -28,12 +31,13 @@ export function UsageSettingsSection() {
   const [error, setError] = useState('');
   const [summaryRange, setSummaryRange] = useState<UsageSummaryRange>(30);
   const [trendMetric, setTrendMetric] = useState<TrendMetric>('tokens');
+  const [selectedProjectId, setSelectedProjectId] = useState('all');
 
-  async function loadUsage(range: UsageSummaryRange) {
+  async function loadUsage(range: UsageSummaryRange, projectId: string) {
     setLoading(true);
     setError('');
     try {
-      setStats(await fetchUsageStats(range));
+      setStats(await fetchUsageStats(range, projectId === 'all' ? undefined : projectId));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : '读取使用情况失败');
     } finally {
@@ -42,10 +46,12 @@ export function UsageSettingsSection() {
   }
 
   useEffect(() => {
-    void loadUsage(summaryRange);
-  }, [summaryRange]);
+    void loadUsage(summaryRange, selectedProjectId);
+  }, [summaryRange, selectedProjectId]);
 
   const totals = stats?.totals ?? emptyTotals;
+  const projectOptions = stats?.projectOptions ?? [];
+  const selectedProject = projectOptions.find((project) => project.projectId === selectedProjectId) ?? null;
   const maxProviderTokens = useMemo(
     () => Math.max(1, ...(stats?.byProvider ?? []).map((row) => row.totalTokens)),
     [stats],
@@ -60,7 +66,7 @@ export function UsageSettingsSection() {
   );
   const trendPoints = trendBuckets.points;
   const trendMaxValue = useMemo(
-    () => Math.max(1, ...trendPoints.map((point) => getTrendMetricValue(point, trendMetric))),
+    () => Math.max(0, ...trendPoints.map((point) => getTrendMetricValue(point, trendMetric))),
     [trendMetric, trendPoints],
   );
   const trendTotalValue = useMemo(
@@ -73,22 +79,30 @@ export function UsageSettingsSection() {
       <header className="settings-section-head settings-section-head-row">
         <h1>使用情况</h1>
         <div className="settings-usage-head-actions">
+          <div className="settings-usage-project-control">
+            <span>项目</span>
+            <UsageProjectSelect
+              value={selectedProjectId}
+              projects={projectOptions}
+              onChange={setSelectedProjectId}
+            />
+          </div>
           <div className="settings-usage-range-control" aria-label="统计范围">
             <span>统计范围</span>
             <div className="settings-segmented">
-              {([7, 30, 90, 'all'] as UsageSummaryRange[]).map((value) => (
+              {([1, 7, 30, 90, 'all'] as UsageSummaryRange[]).map((value) => (
                 <button
                   key={value}
                   type="button"
                   className={summaryRange === value ? 'active' : ''}
                   onClick={() => setSummaryRange(value)}
                 >
-                  {value === 'all' ? '全部' : `${value}天`}
+                  {formatUsageRangeTabLabel(value)}
                 </button>
               ))}
             </div>
           </div>
-          <button type="button" className="settings-action-button settings-usage-refresh-button" disabled={loading} onClick={() => void loadUsage(summaryRange)}>
+          <button type="button" className="settings-action-button settings-usage-refresh-button" disabled={loading} onClick={() => void loadUsage(summaryRange, selectedProjectId)}>
             <RefreshCw className={loading ? 'spin' : undefined} size={14} />
             <span>刷新</span>
           </button>
@@ -96,7 +110,7 @@ export function UsageSettingsSection() {
       </header>
 
       <div className="settings-usage-panel">
-        <div className="settings-usage-scope">当前统计范围：{formatUsageSummaryRange(summaryRange)}</div>
+        <div className="settings-usage-scope">当前统计范围：{formatUsageScopeLabel(summaryRange, selectedProject)}</div>
         <div className="settings-usage-summary">
           <UsageCard icon={MessageSquareText} label="会话" value={formatNumber(totals.threads)} hint={`${formatNumber(totals.messages)} 条消息`} />
           <UsageCard icon={BarChart3} label="Token" value={formatTokenValue(totals.totalTokens)} hint={formatTokenBreakdown(totals)} />
@@ -159,6 +173,9 @@ function UsageTrendCard({
   const activePoint = activeIndex >= 0 ? points[activeIndex] : null;
   const yAxisTicks = useMemo(() => buildYAxisTicks(maxValue), [maxValue]);
   const tooltipLeft = points.length > 1 && activeIndex >= 0 ? (activeIndex / (points.length - 1)) * 100 : 50;
+  const selectHoveredIndex = (index: number) => {
+    setHoveredIndex((current) => (current === index ? current : index));
+  };
 
   return (
     <div className="settings-usage-trend">
@@ -198,7 +215,7 @@ function UsageTrendCard({
             <span key={tick}>{formatTrendAxisValue(metric, tick)}</span>
           ))}
         </div>
-        <div className="settings-usage-chart-area">
+        <div className="settings-usage-chart-area" onMouseLeave={() => setHoveredIndex(null)}>
           {activePoint ? (
             <div
               className="settings-usage-floating-tooltip"
@@ -235,11 +252,10 @@ function UsageTrendCard({
                   key={point.date}
                   className={`settings-usage-chart-column${activeIndex === index ? ' active' : ''}`}
                   tabIndex={0}
-                  onClick={() => setHoveredIndex(index)}
-                  onMouseEnter={() => setHoveredIndex(index)}
-                  onMouseMove={() => setHoveredIndex(index)}
-                  onMouseLeave={() => setHoveredIndex(null)}
-                  onFocus={() => setHoveredIndex(index)}
+                  onClick={() => selectHoveredIndex(index)}
+                  onMouseEnter={() => selectHoveredIndex(index)}
+                  onMouseMove={() => selectHoveredIndex(index)}
+                  onFocus={() => selectHoveredIndex(index)}
                   onBlur={() => setHoveredIndex(null)}
                 >
                   <div className="settings-usage-chart-bar-wrap">
@@ -255,6 +271,114 @@ function UsageTrendCard({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function UsageProjectSelect({
+  value,
+  projects,
+  onChange,
+}: {
+  value: string;
+  projects: UsageProjectRow[];
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [projectQuery, setProjectQuery] = useState('');
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const filteredProjects = useMemo(() => filterUsageProjects(projects, projectQuery), [projects, projectQuery]);
+  const allOption = useMemo(
+    () => ({ value: 'all', label: '全部项目', detail: `${formatNumber(projects.length)} 个项目` }),
+    [projects.length],
+  );
+  const selectedProject = projects.find((project) => project.projectId === value);
+  const selected = selectedProject
+    ? { value: selectedProject.projectId, label: selectedProject.projectName, detail: selectedProject.projectPath }
+    : allOption;
+
+  useOutsideDismiss({
+    selectors: [
+      { selector: '.settings-usage-project-menu', onDismiss: () => setOpen(false), anchorRefs: [anchorRef] },
+    ],
+  });
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setProjectQuery('');
+    window.setTimeout(() => searchInputRef.current?.focus(), 0);
+  }, [open]);
+
+  function selectProject(projectId: string) {
+    onChange(projectId);
+    setProjectQuery('');
+    setOpen(false);
+  }
+
+  return (
+    <div className="settings-select-anchor settings-usage-project-select" ref={anchorRef}>
+      <button
+        type="button"
+        className={`settings-select-trigger${open ? ' open' : ''}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="选择使用情况项目"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span>{selected?.label ?? '全部项目'}</span>
+        <ChevronDown size={15} className="settings-select-chevron" />
+      </button>
+      <PopoverPortal open={open} anchorRef={anchorRef} placement="bottom-start" offset={8}>
+        <div className="settings-select-menu settings-usage-project-menu" role="menu" aria-label="选择使用情况项目">
+          <label className="settings-usage-project-search" aria-label="搜索项目">
+            <Search size={14} aria-hidden="true" />
+            <input
+              ref={searchInputRef}
+              type="search"
+              value={projectQuery}
+              placeholder="搜索项目"
+              onChange={(event) => setProjectQuery(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            className={`settings-select-menu-item settings-usage-project-all${value === 'all' ? ' current' : ''}`}
+            role="menuitemradio"
+            aria-checked={value === 'all'}
+            onClick={() => selectProject('all')}
+          >
+            <span>
+              <strong>{allOption.label}</strong>
+              <small>{allOption.detail}</small>
+            </span>
+            {value === 'all' ? <Check size={15} /> : null}
+          </button>
+          <div className="settings-usage-project-menu-list" role="group" aria-label="项目列表">
+            {filteredProjects.map((project) => (
+              <button
+                key={project.projectId}
+                type="button"
+                className={`settings-select-menu-item${project.projectId === value ? ' current' : ''}`}
+                role="menuitemradio"
+                aria-checked={project.projectId === value}
+                onClick={() => selectProject(project.projectId)}
+              >
+                <span>
+                  <strong>{project.projectName}</strong>
+                  <small>{project.projectPath}</small>
+                </span>
+                {project.projectId === value ? <Check size={15} /> : null}
+              </button>
+            ))}
+            {filteredProjects.length === 0 ? (
+              <div className="settings-usage-project-empty">没有匹配的项目</div>
+            ) : null}
+          </div>
+        </div>
+      </PopoverPortal>
     </div>
   );
 }
@@ -566,7 +690,21 @@ function addDays(date: Date, days: number) {
 }
 
 function formatUsageSummaryRange(range: UsageSummaryRange) {
+  if (range === 1) {
+    return '今日';
+  }
   return range === 'all' ? '全部历史' : `最近 ${range} 天`;
+}
+
+function formatUsageRangeTabLabel(range: UsageSummaryRange) {
+  if (range === 1) {
+    return '今日';
+  }
+  return range === 'all' ? '全部' : `${range}天`;
+}
+
+function formatUsageScopeLabel(range: UsageSummaryRange, project: UsageProjectRow | null) {
+  return `${formatUsageSummaryRange(range)} · ${project ? project.projectName : '全部项目'}`;
 }
 
 function formatUsageTrendScope(range: UsageSummaryRange, bucketUnit: UsageTrendBucketUnit) {

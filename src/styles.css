@@ -13941,7 +13941,8 @@ button.git-conflict-overview-row:focus-visible,
   white-space: nowrap;
 }
 
-.settings-usage-range-control {
+.settings-usage-range-control,
+.settings-usage-project-control {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -13949,8 +13950,143 @@ button.git-conflict-overview-row:focus-visible,
   font-size: 12px;
 }
 
-.settings-usage-range-control > span {
+.settings-usage-range-control > span,
+.settings-usage-project-control > span {
   white-space: nowrap;
+}
+
+.settings-usage-project-select {
+  width: 190px;
+}
+
+.settings-usage-project-select .settings-select-trigger {
+  width: 100%;
+}
+
+.settings-select-menu.settings-usage-project-menu {
+  width: min(326px, calc(100vw - 32px));
+  max-height: min(398px, calc(100vh - 96px));
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 3px;
+  padding: 8px;
+  overflow: hidden;
+}
+
+.settings-usage-project-search {
+  min-width: 0;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--app-border, #e1e1e1) 86%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--app-surface-subtle, #fbfbfa) 76%, transparent);
+  color: var(--app-muted, #77736c);
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.settings-usage-project-search svg {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--app-muted, #77736c) 88%, transparent);
+}
+
+.settings-usage-project-search input {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  color: var(--app-text, #303030);
+  font-size: 12px;
+  outline: none;
+  box-shadow: none;
+}
+
+.settings-usage-project-search input:focus,
+.settings-usage-project-search input:focus-visible {
+  border-color: transparent;
+  outline: none;
+  box-shadow: none;
+}
+
+.settings-usage-project-search input::-webkit-search-decoration,
+.settings-usage-project-search input::-webkit-search-cancel-button,
+.settings-usage-project-search input::-webkit-search-results-button,
+.settings-usage-project-search input::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+}
+
+.settings-usage-project-search input::placeholder {
+  color: color-mix(in srgb, var(--app-muted, #8a8f98) 78%, transparent);
+}
+
+.settings-usage-project-search:focus-within {
+  border-color: color-mix(in srgb, var(--app-border, #d5d9e0) 82%, var(--app-text, #303030) 18%);
+  background: color-mix(in srgb, var(--app-surface, #ffffff) 88%, var(--app-surface-subtle, #fbfbfa) 12%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-border, #d5d9e0) 62%, transparent);
+}
+
+.settings-usage-project-menu-list {
+  min-height: 0;
+  max-height: min(292px, calc(100vh - 196px));
+  display: grid;
+  gap: 2px;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-border, #e1e1e1) transparent;
+}
+
+.settings-usage-project-menu .settings-select-menu-item {
+  height: auto;
+  min-height: 42px;
+  padding: 7px 10px;
+  border-radius: 8px;
+}
+
+.settings-usage-project-all {
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+
+.settings-usage-project-menu .settings-select-menu-item span {
+  display: grid;
+  gap: 1px;
+  white-space: normal;
+}
+
+.settings-usage-project-menu .settings-select-menu-item strong,
+.settings-usage-project-menu .settings-select-menu-item small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-usage-project-menu .settings-select-menu-item strong {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.settings-usage-project-menu .settings-select-menu-item small {
+  color: var(--app-muted, #858585);
+  font-size: 11px;
+}
+
+.settings-usage-project-empty {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  color: var(--app-muted, #858585);
+  font-size: 12px;
 }
 
 .settings-usage-scope {
@@ -14053,6 +14189,9 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .settings-usage-chart-shell {
+  --usage-chart-tooltip-space: 92px;
+  --usage-chart-plot-height: 160px;
+  --usage-chart-label-space: 24px;
   min-width: 0;
   display: grid;
   grid-template-columns: 46px minmax(0, 1fr);
@@ -14060,29 +14199,45 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .settings-usage-y-axis {
+  position: relative;
   min-width: 0;
-  height: 160px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  padding-top: 92px;
+  height: calc(var(--usage-chart-tooltip-space) + var(--usage-chart-plot-height) + var(--usage-chart-label-space));
   color: #8a8a8a;
   font-size: 11px;
   text-align: right;
 }
 
+.settings-usage-y-axis span {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+}
+
+.settings-usage-y-axis span:nth-child(1) {
+  top: var(--usage-chart-tooltip-space);
+}
+
+.settings-usage-y-axis span:nth-child(2) {
+  top: calc(var(--usage-chart-tooltip-space) + 80px);
+}
+
+.settings-usage-y-axis span:nth-child(3),
+.settings-usage-y-axis span:only-child {
+  top: calc(var(--usage-chart-tooltip-space) + var(--usage-chart-plot-height));
+}
+
 .settings-usage-chart-area {
   position: relative;
   min-width: 0;
-  padding-top: 92px;
+  padding-top: var(--usage-chart-tooltip-space);
 }
 
 .settings-usage-grid-lines {
   position: absolute;
-  top: 92px;
+  top: var(--usage-chart-tooltip-space);
   right: 0;
   left: 0;
-  height: 160px;
+  height: var(--usage-chart-plot-height);
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -14102,25 +14257,20 @@ button.git-conflict-overview-row:focus-visible,
   display: grid;
   gap: 8px;
   padding: 10px 12px;
-  border: 1px solid #e7e7e7;
-  border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 14px 34px rgba(16, 24, 40, 0.12);
+  border: 1px solid rgba(214, 218, 224, 0.72);
+  border-radius: 10px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.74), rgba(248, 250, 252, 0.52)),
+    rgba(255, 255, 255, 0.42);
+  box-shadow:
+    0 18px 44px rgba(15, 23, 42, 0.14),
+    0 6px 18px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88),
+    inset 0 -1px 0 rgba(148, 163, 184, 0.16);
+  backdrop-filter: blur(20px) saturate(1.18);
+  -webkit-backdrop-filter: blur(20px) saturate(1.18);
   transform: translateX(-50%);
   pointer-events: none;
-}
-
-.settings-usage-floating-tooltip::after {
-  content: '';
-  position: absolute;
-  bottom: -6px;
-  left: 50%;
-  width: 10px;
-  height: 10px;
-  border-right: 1px solid #e7e7e7;
-  border-bottom: 1px solid #e7e7e7;
-  background: inherit;
-  transform: translateX(-50%) rotate(45deg);
 }
 
 .settings-usage-floating-tooltip-head {
@@ -14179,7 +14329,7 @@ button.git-conflict-overview-row:focus-visible,
 .settings-usage-chart-bar-wrap {
   width: 100%;
   min-width: 0;
-  height: 160px;
+  height: var(--usage-chart-plot-height);
   display: flex;
   align-items: end;
   justify-content: center;
@@ -14749,10 +14899,10 @@ button.git-conflict-overview-row:focus-visible,
   background:
     linear-gradient(
       145deg,
-      color-mix(in srgb, var(--app-surface) 46%, transparent),
-      color-mix(in srgb, var(--app-surface-muted) 38%, transparent)
+      color-mix(in srgb, var(--app-surface) 40%, transparent),
+      color-mix(in srgb, var(--app-surface-muted) 32%, transparent)
     ),
-    color-mix(in srgb, var(--app-surface) 28%, transparent) !important;
+    color-mix(in srgb, var(--app-surface) 22%, transparent) !important;
   color: var(--app-text);
   box-shadow:
     0 24px 52px rgba(15, 23, 42, 0.15),
@@ -14765,14 +14915,14 @@ button.git-conflict-overview-row:focus-visible,
 
 .codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover)::before {
   background:
-    radial-gradient(ellipse at 22% 0%, color-mix(in srgb, var(--app-surface) 12%, transparent), transparent 40%),
-    linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 8%, transparent), color-mix(in srgb, var(--app-surface-muted) 4%, transparent));
+    radial-gradient(ellipse at 22% 0%, color-mix(in srgb, var(--app-surface) 9%, transparent), transparent 40%),
+    linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 6%, transparent), color-mix(in srgb, var(--app-surface-muted) 3%, transparent));
 }
 
 .codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover)::after {
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 10%, transparent), transparent 34%),
-    linear-gradient(90deg, color-mix(in srgb, var(--app-surface) 6%, transparent), transparent 24%, transparent 76%, color-mix(in srgb, var(--app-surface) 4%, transparent));
+    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 7%, transparent), transparent 34%),
+    linear-gradient(90deg, color-mix(in srgb, var(--app-surface) 4%, transparent), transparent 24%, transparent 76%, color-mix(in srgb, var(--app-surface) 3%, transparent));
 }
 
 /* 顶部菜单栏的菜单弹出在 sidebar 之上，backdrop-filter 实际透出的是 sidebar 内容；
@@ -15077,8 +15227,8 @@ button.git-conflict-overview-row:focus-visible,
   border: 1px solid rgba(214, 218, 224, 0.78);
   border-radius: 18px;
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.42), rgba(246, 248, 250, 0.36)),
-    rgba(248, 250, 252, 0.38);
+    linear-gradient(145deg, rgba(255, 255, 255, 0.36), rgba(246, 248, 250, 0.3)),
+    rgba(248, 250, 252, 0.32);
   box-shadow:
     0 24px 52px rgba(15, 23, 42, 0.16),
     0 8px 22px rgba(15, 23, 42, 0.07),
@@ -15107,8 +15257,8 @@ button.git-conflict-overview-row:focus-visible,
   inset: 0;
   z-index: -1;
   background:
-    radial-gradient(ellipse at 22% 0%, rgba(255, 255, 255, 0.12), transparent 40%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.08), rgba(241, 247, 255, 0.04));
+    radial-gradient(ellipse at 22% 0%, rgba(255, 255, 255, 0.09), transparent 40%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.06), rgba(241, 247, 255, 0.03));
   pointer-events: none;
 }
 
@@ -15119,8 +15269,8 @@ button.git-conflict-overview-row:focus-visible,
   z-index: -1;
   border-radius: 17px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.1), transparent 34%),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.06), transparent 24%, transparent 76%, rgba(255, 255, 255, 0.04));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 34%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04), transparent 24%, transparent 76%, rgba(255, 255, 255, 0.03));
   pointer-events: none;
 }
 
@@ -15470,7 +15620,21 @@ button.git-conflict-overview-row:focus-visible,
   background: color-mix(in srgb, var(--accent) 82%, var(--app-surface) 18%);
 }
 
+.codex-desktop .settings-usage-project-search input:focus,
+.codex-desktop .settings-usage-project-search input:focus-visible {
+  border-color: transparent;
+  outline: none;
+  box-shadow: none;
+}
+
+.codex-desktop .settings-usage-project-search:focus-within {
+  border-color: color-mix(in srgb, var(--app-border) 82%, var(--app-text) 18%);
+  background: color-mix(in srgb, var(--app-surface) 88%, var(--app-surface-subtle) 12%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-border) 62%, transparent);
+}
+
 .codex-desktop .settings-usage-range-control,
+.codex-desktop .settings-usage-project-control,
 .codex-desktop .settings-usage-scope,
 .codex-desktop .settings-usage-card span,
 .codex-desktop .settings-usage-card small,
@@ -15492,7 +15656,6 @@ button.git-conflict-overview-row:focus-visible,
 .codex-desktop .settings-usage-card,
 .codex-desktop .settings-usage-row,
 .codex-desktop .settings-usage-trend-tooltip,
-.codex-desktop .settings-usage-floating-tooltip,
 .codex-desktop .changed-files-summary-card,
 .codex-desktop .session-list-row,
 .codex-desktop .plugins-suite-panel .settings-list-row,
@@ -15500,6 +15663,25 @@ button.git-conflict-overview-row:focus-visible,
   border-color: var(--app-border);
   background: var(--app-surface-subtle);
   color: var(--app-text);
+}
+
+.codex-desktop .settings-usage-floating-tooltip {
+  border-color: color-mix(in srgb, var(--app-border) 72%, transparent);
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--app-surface) 72%, transparent),
+      color-mix(in srgb, var(--app-surface-subtle) 52%, transparent)
+    ),
+    color-mix(in srgb, var(--app-surface) 36%, transparent);
+  color: var(--app-text);
+  box-shadow:
+    0 18px 44px color-mix(in srgb, var(--app-text) 13%, transparent),
+    0 6px 18px color-mix(in srgb, var(--app-text) 7%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--app-surface) 92%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--app-border) 22%, transparent);
+  backdrop-filter: blur(22px) saturate(1.2);
+  -webkit-backdrop-filter: blur(22px) saturate(1.2);
 }
 
 .codex-desktop .changed-files-summary-card {

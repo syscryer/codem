@@ -633,9 +633,12 @@ export function getWorkspaceBootstrap(): WorkspaceBootstrap {
   };
 }
 
-export function getUsageStats(rangeDays?: UsageStatsRangeDays) {
+export function getUsageStats(rangeDays?: UsageStatsRangeDays, projectId?: string) {
   hydrateThreadHistoryForUsage();
-  return collectUsageStats(db, rangeDays ? { rangeDays } : undefined);
+  return collectUsageStats(db, {
+    ...(rangeDays ? { rangeDays } : {}),
+    ...(projectId ? { projectId } : {}),
+  });
 }
 
 export function createProject(projectPath: string) {
@@ -1081,7 +1084,7 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[], options
     db.prepare(`DELETE FROM messages WHERE thread_id = ?`).run(threadId);
 
     turns.forEach((turn, turnIndex) => {
-      const baseCreatedAt = new Date(Date.now() + turnIndex).toISOString();
+      const baseCreatedAt = resolveTurnCreatedAt(turn, turnIndex);
       const turnStatus = normalizePersistedTurnStatus(turn);
       insertMessage.run(
         randomUUID(),
@@ -1221,6 +1224,15 @@ export function saveThreadHistory(threadId: string, turns: ThreadTurn[], options
     db.exec('ROLLBACK');
     throw error;
   }
+}
+
+function resolveTurnCreatedAt(turn: ThreadTurn, turnIndex: number) {
+  const candidate = typeof turn.startedAtMs === 'number' ? new Date(turn.startedAtMs) : null;
+  if (candidate && !Number.isNaN(candidate.getTime())) {
+    return candidate.toISOString();
+  }
+
+  return new Date(Date.now() + turnIndex).toISOString();
 }
 
 export function openProjectInExplorer(projectId: string) {

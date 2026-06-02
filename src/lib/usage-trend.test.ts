@@ -40,6 +40,26 @@ test('buildUsageTrendBuckets fills fixed day ranges through the selected current
   assert.equal(result.points[6].totalTokens, 0);
 });
 
+test('buildUsageTrendBuckets returns a single current-day point for today range', () => {
+  const source: UsageTrendPoint[] = [
+    {
+      date: '2026-06-01',
+      ...emptyPointTotals,
+      totalTokens: 100,
+    },
+    {
+      date: '2026-06-02',
+      ...emptyPointTotals,
+      totalTokens: 300,
+    },
+  ];
+
+  const result = buildUsageTrendBuckets(source, 1, '2026-06-02T12:00:00.000Z');
+
+  assert.equal(result.unit, 'day');
+  assert.deepEqual(result.points.map((point) => [point.date, point.totalTokens]), [['2026-06-02', 300]]);
+});
+
 test('buildUsageTrendBuckets aggregates all-time ranges by week when history is wider than 90 days', () => {
   const source: UsageTrendPoint[] = [
     {
