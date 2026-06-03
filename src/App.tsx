@@ -1509,6 +1509,10 @@ export default function App() {
                   rightWorkbenchOpen={rightWorkbenchOpen}
                   onToggleRightWorkbench={() => setRightWorkbenchOpen((value) => !value)}
                   onOpenReviewWorkbench={openReviewWorkbench}
+                  onTogglePinThread={togglePinThread}
+                  onOpenRenameThreadDialog={openRenameThreadDialog}
+                  onCopySessionId={handleCopySessionId}
+                  onOpenRemoveThreadDialog={handleOpenRemoveThreadDialog}
                 />
               )}
 

@@ -2,6 +2,7 @@ import {
   Check,
   ChevronDown,
   CloudUpload,
+  Copy,
   Download,
   GitBranchPlus,
   GitCompareArrows,
@@ -9,17 +10,21 @@ import {
   GitPullRequest,
   FolderOpen,
   MoreHorizontal,
+  Pencil,
+  Pin,
+  PinOff,
   Play,
   RefreshCw,
   SquareSplitHorizontal,
   TerminalSquare,
+  Trash2,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { PopoverPortal } from './PopoverPortal';
 import { getGitDiffBadgeLabels } from '../lib/git-diff';
 import { getOpenAppIcon } from '../lib/open-app-icons';
-import type { OpenAppTarget, ProjectSummary, ThreadDetail } from '../types';
+import type { OpenAppTarget, ProjectSummary, ThreadDetail, ThreadSummary } from '../types';
 
 const LAUNCH_SCRIPTS_STORAGE_KEY = 'codem::project-launch-scripts';
 
@@ -27,7 +32,14 @@ type ChatHeaderProps = {
   activeProject: ProjectSummary | null;
   activeThread: ThreadDetail | null;
   isNewChatDraft: boolean;
-} & ChatHeaderActionsProps;
+} & ChatHeaderActionsProps & ChatHeaderThreadActionsProps;
+
+type ChatHeaderThreadActionsProps = {
+  onTogglePinThread: (threadId: string, pinned: boolean) => void | Promise<void>;
+  onOpenRenameThreadDialog: (thread: ThreadSummary) => void;
+  onCopySessionId: (thread: ThreadSummary) => void | Promise<void>;
+  onOpenRemoveThreadDialog: (thread: ThreadSummary) => void;
+};
 
 export type ChatHeaderActionsProps = {
   activeProject: ProjectSummary | null;
@@ -75,15 +87,88 @@ export function ChatHeader({
   rightWorkbenchOpen,
   onToggleRightWorkbench,
   onOpenReviewWorkbench,
+  onTogglePinThread,
+  onOpenRenameThreadDialog,
+  onCopySessionId,
+  onOpenRemoveThreadDialog,
 }: ChatHeaderProps) {
+  const [threadMenuOpen, setThreadMenuOpen] = useState(false);
+  const threadMenuRef = useRef<HTMLDivElement | null>(null);
+  const threadPinned = Boolean(activeThread?.pinnedAt);
+
+  useOutsideDismiss({
+    selectors: [
+      { selector: '.chat-thread-menu-popover', onDismiss: () => setThreadMenuOpen(false), anchorRefs: [threadMenuRef] },
+    ],
+  });
+
+  useEffect(() => {
+    setThreadMenuOpen(false);
+  }, [activeThread?.id, isNewChatDraft]);
+
+  function runThreadMenuAction(action: () => void | Promise<void>) {
+    setThreadMenuOpen(false);
+    void action();
+  }
+
   return (
     <header className="chat-header">
       <div className="thread-title">
         <h2>{activeThread?.title ?? (isNewChatDraft ? '新建聊天' : '选择一个聊天')}</h2>
         <span className="thread-project">{activeProject?.name ?? '未选择项目'}</span>
-        <button type="button" className="more-button thread-more-button" aria-label="更多">
-          <MoreHorizontal size={15} />
-        </button>
+        <div className="chat-thread-menu" ref={threadMenuRef}>
+          <button
+            type="button"
+            className="more-button thread-more-button"
+            aria-label="更多会话操作"
+            aria-haspopup="menu"
+            aria-expanded={threadMenuOpen}
+            disabled={!activeThread}
+            onClick={() => setThreadMenuOpen((open) => !open)}
+          >
+            <MoreHorizontal size={15} />
+          </button>
+          <PopoverPortal open={threadMenuOpen && Boolean(activeThread)} anchorRef={threadMenuRef} placement="bottom-end" offset={6}>
+            <div className="workspace-menu thread-menu-popover chat-thread-menu-popover" role="menu" aria-label="会话操作">
+              <button
+                type="button"
+                className="workspace-menu-item"
+                role="menuitem"
+                onClick={() => activeThread ? runThreadMenuAction(() => onTogglePinThread(activeThread.id, !threadPinned)) : undefined}
+              >
+                {threadPinned ? <PinOff size={14} /> : <Pin size={14} />}
+                <span>{threadPinned ? '取消置顶' : '置顶聊天'}</span>
+              </button>
+              <button
+                type="button"
+                className="workspace-menu-item"
+                role="menuitem"
+                onClick={() => activeThread ? runThreadMenuAction(() => onOpenRenameThreadDialog(activeThread)) : undefined}
+              >
+                <Pencil size={14} />
+                <span>重命名聊天</span>
+              </button>
+              <button
+                type="button"
+                className="workspace-menu-item"
+                role="menuitem"
+                onClick={() => activeThread ? runThreadMenuAction(() => onCopySessionId(activeThread)) : undefined}
+              >
+                <Copy size={14} />
+                <span>复制会话 ID</span>
+              </button>
+              <button
+                type="button"
+                className="workspace-menu-item danger"
+                role="menuitem"
+                onClick={() => activeThread ? runThreadMenuAction(() => onOpenRemoveThreadDialog(activeThread)) : undefined}
+              >
+                <Trash2 size={14} />
+                <span>删除聊天</span>
+              </button>
+            </div>
+          </PopoverPortal>
+        </div>
       </div>
       <ChatHeaderActions
         activeProject={activeProject}

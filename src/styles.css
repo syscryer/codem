@@ -1472,7 +1472,7 @@ svg {
   color: #111827;
   font-size: 14px;
   font-weight: 560;
-  line-height: 1.15;
+  line-height: 1.25;
 }
 
 .thread-project {
@@ -1480,8 +1480,13 @@ svg {
   align-items: center;
   color: #8b8b8b;
   font-size: 12px;
-  line-height: 1;
-  transform: translateY(1px);
+  line-height: 1.25;
+}
+
+.chat-thread-menu {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
 }
 
 .more-button {
@@ -1497,7 +1502,17 @@ svg {
 
 .thread-more-button {
   margin-left: -3px;
-  transform: translateY(1px);
+}
+
+.thread-more-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.chat-thread-menu-popover {
+  width: 154px;
+  min-width: 154px;
+  max-width: 154px;
 }
 
 .header-actions {

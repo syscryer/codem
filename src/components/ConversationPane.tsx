@@ -17,6 +17,11 @@ import type {
 
 const BOTTOM_ANCHOR_THRESHOLD_PX = 96;
 
+type ConversationScrollPosition = {
+  scrollTop: number;
+  anchoredToBottom: boolean;
+};
+
 type ConversationPaneProps = {
   activeThread: ThreadDetail | null;
   isNewChatDraft: boolean;
@@ -82,6 +87,7 @@ export function ConversationPane({
   const [showBottomAnchor, setShowBottomAnchor] = useState(false);
   const shouldAutoFollowRef = useRef(true);
   const previousThreadIdRef = useRef<string | null>(null);
+  const scrollPositionsByThreadIdRef = useRef<Map<string, ConversationScrollPosition>>(new Map());
   const latestChangedFilesTurnId = activeThread ? findLatestChangedFilesTurnId(activeThread.turns) : null;
   const stableOpenWorkbenchPreview = useLatestCallback(onOpenWorkbenchPreview);
   const stableOpenOutputPath = useLatestCallback(onOpenOutputPath);
@@ -100,7 +106,14 @@ export function ConversationPane({
 
     const distanceToBottom =
       transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
-    shouldAutoFollowRef.current = distanceToBottom <= BOTTOM_ANCHOR_THRESHOLD_PX;
+    const anchoredToBottom = distanceToBottom <= BOTTOM_ANCHOR_THRESHOLD_PX;
+    if (activeThread?.id) {
+      scrollPositionsByThreadIdRef.current.set(activeThread.id, {
+        scrollTop: transcript.scrollTop,
+        anchoredToBottom,
+      });
+    }
+    shouldAutoFollowRef.current = anchoredToBottom;
     setShowBottomAnchor(
       Boolean(activeThread?.turns.length) && distanceToBottom > BOTTOM_ANCHOR_THRESHOLD_PX,
     );
@@ -124,8 +137,29 @@ export function ConversationPane({
   }, [activeThread?.id, activeThread?.turns.length, transcriptRef]);
 
   useLayoutEffect(() => {
-    const threadChanged = previousThreadIdRef.current !== activeThread?.id;
-    previousThreadIdRef.current = activeThread?.id ?? null;
+    const threadId = activeThread?.id ?? null;
+    const threadChanged = previousThreadIdRef.current !== threadId;
+    previousThreadIdRef.current = threadId;
+
+    if (threadChanged && threadId && activeThread?.historyLoaded) {
+      const savedPosition = scrollPositionsByThreadIdRef.current.get(threadId);
+      if (savedPosition) {
+        const frame = requestAnimationFrame(() => {
+          const transcript = transcriptRef.current;
+          if (!transcript) {
+            return;
+          }
+
+          const maxScrollTop = Math.max(0, transcript.scrollHeight - transcript.clientHeight);
+          transcript.scrollTop = savedPosition.anchoredToBottom
+            ? maxScrollTop
+            : Math.min(savedPosition.scrollTop, maxScrollTop);
+          syncBottomAnchorVisibility();
+        });
+
+        return () => cancelAnimationFrame(frame);
+      }
+    }
 
     if (threadChanged) {
       shouldAutoFollowRef.current = true;
