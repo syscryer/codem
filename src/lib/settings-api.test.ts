@@ -40,3 +40,13 @@ test('normalizeGeneralSettings preserves explicit automatic app update choice', 
   assert.equal(normalizeGeneralSettings({ autoCheckAppUpdate: false }).autoCheckAppUpdate, false);
   assert.equal(normalizeGeneralSettings({ autoCheckAppUpdate: true }).autoCheckAppUpdate, true);
 });
+
+test('normalizeGeneralSettings keeps intermediate process expansion off by default', () => {
+  assert.equal(normalizeGeneralSettings({}).collapseIntermediateProcess, false);
+  assert.equal(defaultGeneralSettings.collapseIntermediateProcess, false);
+});
+
+test('normalizeGeneralSettings preserves explicit intermediate process collapse choice', () => {
+  assert.equal(normalizeGeneralSettings({ collapseIntermediateProcess: true }).collapseIntermediateProcess, true);
+  assert.equal(normalizeGeneralSettings({ collapseIntermediateProcess: false }).collapseIntermediateProcess, false);
+});

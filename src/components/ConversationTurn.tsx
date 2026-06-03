@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
@@ -13,6 +13,7 @@ import {
   CircleGauge,
   ClipboardList,
   Copy,
+  Eye,
   FilePenLine,
   FileText,
   Folder,
@@ -24,6 +25,7 @@ import {
   Search,
   Sparkles,
   SquareTerminal,
+  Trash2,
   Wrench,
 } from 'lucide-react';
 import {
@@ -44,13 +46,15 @@ import { buildConversationOutputFileListState } from '../lib/conversation-output
 import { runConversationOutputFileMenuAction } from '../lib/conversation-output-file-interactions';
 import { renderMarkdownImage, type MarkdownImagePreviewPayload } from '../lib/markdown-image';
 import { renderMarkdownLink } from '../lib/markdown-link';
-import { buildConversationOutputFilePreviewRequest } from '../lib/workbench-preview';
+import { buildConversationOutputFilePreviewRequest, resolveWorkbenchPreviewFilePath } from '../lib/workbench-preview';
 import { buildWorkspaceImagePreviewUrl } from '../lib/file-preview-api';
+import { deleteProjectFile } from '../lib/project-files-api';
 import type {
   ApprovalDecision,
   ApprovalRequest,
   ConversationTurn,
   InputContentBlockSummary,
+  ProjectSummary,
   RequestUserInputQuestion,
   RequestUserInputRequest,
   RuntimeRecoveryHint,
@@ -61,12 +65,16 @@ import type {
   WorkbenchPreviewRequest,
 } from '../types';
 
+const CHANGED_FILES_SUMMARY_INITIAL_LIMIT = 8;
+
 function ConversationTurnViewComponent({
   turn,
   nowMs,
   isLiveRunning,
   isLatest,
   canUndoChangedFiles,
+  activeProject,
+  collapseIntermediateProcess,
   onOpenWorkbenchPreview,
   onOpenOutputPath,
   onRevealOutputPath,
@@ -80,6 +88,8 @@ function ConversationTurnViewComponent({
   isLiveRunning: boolean;
   isLatest: boolean;
   canUndoChangedFiles: boolean;
+  activeProject: ProjectSummary | null;
+  collapseIntermediateProcess: boolean;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onOpenOutputPath: (path: string) => Promise<void>;
   onRevealOutputPath: (path: string) => Promise<void>;
@@ -100,6 +110,7 @@ function ConversationTurnViewComponent({
   ) => Promise<boolean>;
 }) {
   const [imagePreview, setImagePreview] = useState<ImagePreviewItem | null>(null);
+  const [intermediateProcessExpanded, setIntermediateProcessExpanded] = useState(false);
   const running = isTurnInFlight(turn, isLiveRunning);
   const requestCardsByToolId = useMemo(() => {
     const requests = turn.pendingUserInputRequests ?? [];
@@ -129,6 +140,14 @@ function ConversationTurnViewComponent({
     return !shouldHideTurnToolStep(turn, item.tool) || Boolean(getToolAnchoredRequest(item.tool, requestCardsByToolId));
   });
   const groupedVisibleItems = useMemo(() => groupToolItems(visibleItems), [visibleItems]);
+  const shouldCollapseIntermediateItems = collapseIntermediateProcess && !running;
+  const intermediateItems = shouldCollapseIntermediateItems
+    ? groupedVisibleItems.filter(isIntermediateAssistantItem)
+    : [];
+  const narrativeItems = shouldCollapseIntermediateItems
+    ? groupedVisibleItems.filter((item) => !isIntermediateAssistantItem(item))
+    : groupedVisibleItems;
+  const canToggleIntermediateProcess = shouldCollapseIntermediateItems && intermediateItems.length > 0;
   const changedFileGroups = useMemo(() => collectConversationChangedFileGroups(turn.tools), [turn.tools]);
   const outputFiles = useMemo(() => collectConversationOutputFiles(turn.tools), [turn.tools]);
   const undoChanges = useMemo(() => buildConversationUndoChanges(turn.tools), [turn.tools]);
@@ -174,45 +193,39 @@ function ConversationTurnViewComponent({
         <div className="message-label">Claude</div>
         <div className="assistant-content">
           {showLeadingProgressLine ? (
-            <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
+            <TurnProgressLine
+              turn={turn}
+              nowMs={nowMs}
+              isLiveRunning={isLiveRunning}
+              compact
+              intermediateProcessExpanded={intermediateProcessExpanded}
+              canToggleIntermediateProcess={canToggleIntermediateProcess}
+              onToggleIntermediateProcess={() => setIntermediateProcessExpanded((expanded) => !expanded)}
+            />
           ) : null}
 
-          {groupedVisibleItems.length > 0 ? (
-            groupedVisibleItems.map((item) => {
-              if (item.type === 'text') {
-                return (
-                  <MarkdownMessage
-                    key={item.id}
-                    content={item.text}
-                    onPreviewImage={setImagePreview}
-                  />
-                );
-              }
+          {intermediateItems.length > 0 && intermediateProcessExpanded ? (
+            <IntermediateProcessBody
+              items={intermediateItems}
+              turn={turn}
+              turnInFlight={running}
+              requestCardsByToolId={requestCardsByToolId}
+              onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+              onSubmitRequestUserInput={onSubmitRequestUserInput}
+              onPreviewImage={setImagePreview}
+            />
+          ) : null}
 
-              if (item.type === 'thinking') {
-                return <ThinkingMessage key={item.id} content={item.text} />;
-              }
-
-              if (item.type === 'system-command') {
-                return <SystemCommandCard key={item.id} item={item} onPreviewImage={setImagePreview} />;
-              }
-
-              if (item.type === 'tool-group') {
-                return <ToolStepsGroup key={item.id} tools={item.tools} variant={item.variant} />;
-              }
-
-              return (
-                <ToolItemWithAnchoredCards
-                  key={item.id}
-                  tool={item.tool}
-                  turn={turn}
-                  turnInFlight={running}
-                  requestCardsByToolId={requestCardsByToolId}
-                  onOpenWorkbenchPreview={onOpenWorkbenchPreview}
-                  onSubmitRequestUserInput={onSubmitRequestUserInput}
-                />
-              );
-            })
+          {narrativeItems.length > 0 ? (
+            narrativeItems.map((item) => renderAssistantItem({
+              item,
+              turn,
+              turnInFlight: running,
+              requestCardsByToolId,
+              onOpenWorkbenchPreview,
+              onSubmitRequestUserInput,
+              onPreviewImage: setImagePreview,
+            }))
           ) : (
             running ? (
               null
@@ -236,6 +249,7 @@ function ConversationTurnViewComponent({
             <ChangedFilesSummaryCard
               files={changedFileGroups}
               canUndo={canUndoChangedFiles}
+              activeProject={activeProject}
               onReview={() => {
                 const requests = buildChangedFilesReviewRequests(changedFileGroups);
                 requests.forEach((request) => onOpenWorkbenchPreview(request));
@@ -246,6 +260,8 @@ function ConversationTurnViewComponent({
                   onOpenWorkbenchPreview(request);
                 }
               }}
+              onOpenOutputPath={onOpenOutputPath}
+              onRevealOutputPath={onRevealOutputPath}
               onUndo={() => onUndoChangedFiles(turn, undoChanges)}
             />
           ) : null}
@@ -307,20 +323,53 @@ function TurnProgressLine({
   nowMs,
   isLiveRunning,
   compact = false,
+  intermediateProcessExpanded = false,
+  canToggleIntermediateProcess = false,
+  onToggleIntermediateProcess,
 }: {
   turn: ConversationTurn;
   nowMs: number;
   isLiveRunning: boolean;
   compact?: boolean;
+  intermediateProcessExpanded?: boolean;
+  canToggleIntermediateProcess?: boolean;
+  onToggleIntermediateProcess?: () => void;
 }) {
   const running = isTurnInFlight(turn, isLiveRunning);
   const text = formatTurnProgress(turn, running ? nowMs : undefined, isLiveRunning);
-
-  return (
-    <div className={`working-line tui-progress ${compact ? 'compact' : ''} ${running ? 'running' : ''}`}>
+  const className = `working-line tui-progress ${compact ? 'compact' : ''} ${running ? 'running' : ''} ${
+    canToggleIntermediateProcess ? 'can-toggle-intermediate' : ''
+  }`;
+  const content = (
+    <>
       <TurnProgressIcon turn={turn} running={running} />
       <span className="tui-progress-text">{text}</span>
-    </div>
+      {canToggleIntermediateProcess ? (
+        <ChevronDown
+          className={`progress-collapse-chevron ${intermediateProcessExpanded ? 'expanded' : ''}`}
+          size={14}
+          aria-hidden="true"
+        />
+      ) : null}
+    </>
+  );
+
+  if (canToggleIntermediateProcess) {
+    return (
+      <button
+        type="button"
+        className={className}
+        aria-expanded={intermediateProcessExpanded}
+        title={intermediateProcessExpanded ? '收起中间过程' : '展开中间过程'}
+        onClick={onToggleIntermediateProcess}
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <div className={className}>{content}</div>
   );
 }
 
@@ -551,6 +600,94 @@ function UserAttachmentGallery({
 type DisplayAssistantItem =
   | ConversationTurn['items'][number]
   | { id: string; type: 'tool-group'; variant: 'read' | 'generic'; tools: ToolStep[] };
+
+type AssistantItemRenderProps = {
+  item: DisplayAssistantItem;
+  turn: ConversationTurn;
+  turnInFlight: boolean;
+  requestCardsByToolId: Map<string, RequestUserInputRequest>;
+  onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
+  onSubmitRequestUserInput: (
+    turn: ConversationTurn,
+    request: RequestUserInputRequest,
+    answers: Record<string, string>,
+  ) => Promise<boolean>;
+  onPreviewImage: (preview: ImagePreviewItem) => void;
+};
+
+function isIntermediateAssistantItem(item: DisplayAssistantItem) {
+  return item.type === 'thinking' || item.type === 'tool' || item.type === 'tool-group';
+}
+
+function IntermediateProcessBody({
+  items,
+  turn,
+  turnInFlight,
+  requestCardsByToolId,
+  onOpenWorkbenchPreview,
+  onSubmitRequestUserInput,
+  onPreviewImage,
+}: Omit<AssistantItemRenderProps, 'item'> & {
+  items: DisplayAssistantItem[];
+}) {
+  return (
+    <div className="intermediate-process-body">
+      {items.map((item) => renderAssistantItem({
+        item,
+        turn,
+        turnInFlight,
+        requestCardsByToolId,
+        onOpenWorkbenchPreview,
+        onSubmitRequestUserInput,
+        onPreviewImage,
+      }))}
+    </div>
+  );
+}
+
+function renderAssistantItem({
+  item,
+  turn,
+  turnInFlight,
+  requestCardsByToolId,
+  onOpenWorkbenchPreview,
+  onSubmitRequestUserInput,
+  onPreviewImage,
+}: AssistantItemRenderProps) {
+  if (item.type === 'text') {
+    return (
+      <MarkdownMessage
+        key={item.id}
+        content={item.text}
+        onPreviewImage={onPreviewImage}
+      />
+    );
+  }
+
+  if (item.type === 'thinking') {
+    return <ThinkingMessage key={item.id} content={item.text} />;
+  }
+
+  if (item.type === 'system-command') {
+    return <SystemCommandCard key={item.id} item={item} onPreviewImage={onPreviewImage} />;
+  }
+
+  if (item.type === 'tool-group') {
+    return <ToolStepsGroup key={item.id} tools={item.tools} variant={item.variant} />;
+  }
+
+  return (
+    <ToolItemWithAnchoredCards
+      key={item.id}
+      tool={item.tool}
+      turn={turn}
+      turnInFlight={turnInFlight}
+      requestCardsByToolId={requestCardsByToolId}
+      onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+      onSubmitRequestUserInput={onSubmitRequestUserInput}
+    />
+  );
+}
 
 function ToolStepsGroup({ tools, variant }: { tools: ToolStep[]; variant: 'read' | 'generic' }) {
   const [expanded, setExpanded] = useState(false);
@@ -1042,35 +1179,98 @@ function ConversationOutputFileCard({
 function ChangedFilesSummaryCard({
   files,
   canUndo,
+  activeProject,
   onReview,
   onReviewFile,
+  onOpenOutputPath,
+  onRevealOutputPath,
   onUndo,
 }: {
   files: ChangedFilePreviewGroup[];
   canUndo: boolean;
+  activeProject: ProjectSummary | null;
   onReview: () => void;
   onReviewFile: (file: ChangedFilePreviewGroup) => void;
+  onOpenOutputPath: (path: string) => Promise<void>;
+  onRevealOutputPath: (path: string) => Promise<void>;
   onUndo: () => void;
 }) {
   const [expandedFilePaths, setExpandedFilePaths] = useState<string[]>([]);
+  const [showAllFiles, setShowAllFiles] = useState(false);
+  const [hiddenDeletedFilePaths, setHiddenDeletedFilePaths] = useState<string[]>([]);
+  const [contextMenu, setContextMenu] = useState<{
+    file: ChangedFilePreviewGroup;
+    x: number;
+    y: number;
+  } | null>(null);
+  const cardRef = useRef<HTMLElement | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  const visibleFiles = useMemo(
+    () => files.filter((file) => !hiddenDeletedFilePaths.includes(file.path)),
+    [files, hiddenDeletedFilePaths],
+  );
+  const renderedFiles = showAllFiles ? visibleFiles : visibleFiles.slice(0, CHANGED_FILES_SUMMARY_INITIAL_LIMIT);
+  const hiddenFilesCount = Math.max(0, visibleFiles.length - renderedFiles.length);
   const totals = useMemo(
     () =>
-      files.reduce(
+      visibleFiles.reduce(
         (summary, file) => ({
           additions: summary.additions + file.additions,
           deletions: summary.deletions + file.deletions,
         }),
         { additions: 0, deletions: 0 },
       ),
-    [files],
+    [visibleFiles],
   );
+
+  useOutsideDismiss({
+    refs: [
+      { ref: contextMenuRef, onDismiss: () => setContextMenu(null) },
+    ],
+  });
 
   useEffect(() => {
     setExpandedFilePaths((current) => {
+      const validPaths = new Set(visibleFiles.map((file) => file.path));
+      return current.filter((filePath) => validPaths.has(filePath));
+    });
+  }, [visibleFiles]);
+
+  useEffect(() => {
+    setHiddenDeletedFilePaths((current) => {
       const validPaths = new Set(files.map((file) => file.path));
       return current.filter((filePath) => validPaths.has(filePath));
     });
   }, [files]);
+
+  useEffect(() => {
+    if (visibleFiles.length <= CHANGED_FILES_SUMMARY_INITIAL_LIMIT) {
+      setShowAllFiles(false);
+    }
+  }, [visibleFiles.length]);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return undefined;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setContextMenu(null);
+      }
+    }
+
+    function handleResize() {
+      setContextMenu(null);
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [contextMenu]);
 
   function toggleFile(filePath: string) {
     setExpandedFilePaths((current) =>
@@ -1080,11 +1280,50 @@ function ChangedFilesSummaryCard({
     );
   }
 
+  function resolveFileFullPath(file: ChangedFilePreviewGroup) {
+    return activeProject ? resolveWorkbenchPreviewFilePath(activeProject.path, file.path) : file.path;
+  }
+
+  function openFileContextMenu(event: ReactMouseEvent<HTMLElement>, file: ChangedFilePreviewGroup) {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({
+      file,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }
+
+  async function copyChangedFilePath(file: ChangedFilePreviewGroup, fullPath: boolean) {
+    setContextMenu(null);
+    await navigator.clipboard.writeText(fullPath ? resolveFileFullPath(file) : file.path);
+  }
+
+  async function deleteChangedFile(file: ChangedFilePreviewGroup) {
+    if (!activeProject) {
+      setContextMenu(null);
+      return;
+    }
+
+    const confirmed = window.confirm(`确认删除文件「${file.path}」？\n\n该操作会从磁盘删除。`);
+    if (!confirmed) {
+      return;
+    }
+
+    setContextMenu(null);
+    await deleteProjectFile(activeProject.id, file.path);
+    setHiddenDeletedFilePaths((current) => current.includes(file.path) ? current : [...current, file.path]);
+  }
+
+  if (visibleFiles.length === 0) {
+    return null;
+  }
+
   return (
-    <section className="changed-files-summary-card">
+    <section ref={cardRef} className="changed-files-summary-card">
       <header className="changed-files-summary-head">
         <div className="changed-files-summary-title">
-          <strong>{files.length} 个文件已更改</strong>
+          <strong>{visibleFiles.length} 个文件已更改</strong>
           {totals.additions > 0 ? <span className="tool-preview-add">+{totals.additions}</span> : null}
           {totals.deletions > 0 ? <span className="tool-preview-del">-{totals.deletions}</span> : null}
         </div>
@@ -1102,7 +1341,7 @@ function ChangedFilesSummaryCard({
         </div>
       </header>
       <div className="changed-files-summary-list">
-        {files.map((file) => {
+        {renderedFiles.map((file) => {
           const expanded = expandedFilePaths.includes(file.path);
 
           return (
@@ -1114,6 +1353,7 @@ function ChangedFilesSummaryCard({
                   tabIndex={0}
                   aria-expanded={expanded}
                   onClick={() => toggleFile(file.path)}
+                  onContextMenu={(event) => openFileContextMenu(event, file)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault();
@@ -1146,6 +1386,100 @@ function ChangedFilesSummaryCard({
           );
         })}
       </div>
+      {hiddenFilesCount > 0 || showAllFiles ? (
+        <button
+          type="button"
+          className="changed-files-summary-more"
+          onClick={() => setShowAllFiles((current) => !current)}
+        >
+          {showAllFiles ? '收起文件列表' : `展开剩余 ${hiddenFilesCount} 个文件`}
+          <ChevronDown className={showAllFiles ? 'expanded' : ''} size={15} aria-hidden="true" />
+        </button>
+      ) : null}
+      <PopoverPortal
+        open={Boolean(contextMenu)}
+        anchorRef={cardRef}
+        virtualAnchor={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        placement="bottom-start"
+        offset={0}
+      >
+        <div
+          ref={contextMenuRef}
+          className="workspace-menu changed-files-summary-menu"
+          role="menu"
+          aria-label="审查文件菜单"
+        >
+          <button
+            type="button"
+            className="workspace-menu-item"
+            role="menuitem"
+            onClick={() => {
+              if (!contextMenu) return;
+              onReviewFile(contextMenu.file);
+              setContextMenu(null);
+            }}
+          >
+            <Eye size={14} />
+            <span>打开预览</span>
+          </button>
+          <button
+            type="button"
+            className="workspace-menu-item"
+            role="menuitem"
+            onClick={() => {
+              if (!contextMenu) return;
+              void onOpenOutputPath(resolveFileFullPath(contextMenu.file));
+              setContextMenu(null);
+            }}
+          >
+            <ArrowUpRight size={14} />
+            <span>用默认应用打开</span>
+          </button>
+          <button
+            type="button"
+            className="workspace-menu-item"
+            role="menuitem"
+            onClick={() => {
+              if (!contextMenu) return;
+              void onRevealOutputPath(resolveFileFullPath(contextMenu.file));
+              setContextMenu(null);
+            }}
+          >
+            <Folder size={14} />
+            <span>在资源管理器中显示</span>
+          </button>
+          <div className="workspace-menu-divider" role="separator" />
+          <button
+            type="button"
+            className="workspace-menu-item"
+            role="menuitem"
+            onClick={() => contextMenu ? void copyChangedFilePath(contextMenu.file, false) : undefined}
+          >
+            <Copy size={14} />
+            <span>复制路径</span>
+          </button>
+          <button
+            type="button"
+            className="workspace-menu-item"
+            role="menuitem"
+            onClick={() => contextMenu ? void copyChangedFilePath(contextMenu.file, true) : undefined}
+          >
+            <Copy size={14} />
+            <span>复制完整路径</span>
+          </button>
+          <div className="workspace-menu-divider" role="separator" />
+          <button
+            type="button"
+            className="workspace-menu-item danger"
+            role="menuitem"
+            disabled={!activeProject}
+            onClick={() => contextMenu ? void deleteChangedFile(contextMenu.file) : undefined}
+          >
+            <Trash2 size={14} />
+            <span>删除</span>
+          </button>
+        </div>
+      </PopoverPortal>
     </section>
   );
 }
@@ -1901,10 +2235,6 @@ function formatTurnProgress(turn: ConversationTurn, nowMs?: number, isLiveRunnin
   } else if (typeof turn.outputTokens === 'number') {
     parts.push(`↓ ${formatTokenCount(turn.outputTokens)} tokens`);
   }
-  if (typeof turn.thoughtCount === 'number' && turn.thoughtCount > 0 && (!running || turn.phase === 'thinking')) {
-    parts.push(`思考 ${turn.thoughtCount} 段`);
-  }
-
   const prefix =
     !running
       ? getCompletedTurnLabel(turn)

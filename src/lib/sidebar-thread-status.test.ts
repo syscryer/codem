@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { resolveSidebarThreadStatus } from './sidebar-thread-status.js';
 
-test('resolveSidebarThreadStatus prioritizes running over hot and completed notices', () => {
+test('resolveSidebarThreadStatus prioritizes running over completed and hot indicators', () => {
   assert.equal(
     resolveSidebarThreadStatus({
       threadId: 'thread-1',
@@ -21,6 +21,28 @@ test('resolveSidebarThreadStatus prioritizes running over hot and completed noti
       },
     }),
     'running',
+  );
+});
+
+test('resolveSidebarThreadStatus prioritizes completed notices over hot sessions', () => {
+  assert.equal(
+    resolveSidebarThreadStatus({
+      threadId: 'thread-1',
+      runningThreadIds: new Set(),
+      runtimeStatuses: {
+        'thread-1': { threadId: 'thread-1', pid: 1234, alive: true, activeRun: false },
+      },
+      threadActivityNotices: {
+        'thread-1': {
+          threadId: 'thread-1',
+          kind: 'completed',
+          title: '完成任务',
+          key: 'completed:thread-1:turn-1',
+          updatedAtMs: 100,
+        },
+      },
+    }),
+    'completed',
   );
 });
 

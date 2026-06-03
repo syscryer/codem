@@ -41,6 +41,7 @@ import {
   createProjectGitBranch,
   createProjectGitTag,
   compareProjectGitBranches,
+  deleteProjectFile,
   deleteProjectGitBranch,
   fetchProjectGitRemote,
   getProjectGitConflictFile,
@@ -849,6 +850,16 @@ app.get('/api/projects/:projectId/files', (request, response) => {
     response.json(listProjectFiles(request.params.projectId, directory));
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '读取项目文件失败');
+  }
+});
+
+app.delete('/api/projects/:projectId/files', (request, response) => {
+  const filePath = typeof request.body?.path === 'string' ? request.body.path.trim() : '';
+
+  try {
+    response.json(deleteProjectFile(request.params.projectId, filePath));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '删除项目文件失败');
   }
 });
 

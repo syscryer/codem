@@ -14,3 +14,18 @@ export async function fetchProjectFiles(projectId: string, directory = '') {
 
   return (await response.json()) as ProjectFileEntry[];
 }
+
+export async function deleteProjectFile(projectId: string, path: string) {
+  const response = await fetch(`/api/projects/${projectId}/files`, {
+    method: 'DELETE',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ path }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as { ok: true; path: string };
+}

@@ -948,8 +948,8 @@ svg {
 }
 
 .sidebar-project.active {
-  background: rgba(255, 255, 255, 0.62);
-  border-radius: 12px;
+  background: transparent;
+  border-radius: 0;
 }
 
 .sidebar-project.clone-task {
@@ -2709,6 +2709,12 @@ svg {
 .workbench-preview-context-menu .workspace-menu-item {
   grid-template-columns: minmax(0, 1fr);
   padding: 8px 12px;
+}
+
+.workbench-file-context-menu {
+  width: 220px;
+  min-width: 220px;
+  max-width: 220px;
 }
 
 .workbench-preview-overflow-item {
@@ -4584,9 +4590,13 @@ svg {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  border: 0;
+  background: transparent;
   color: #7a7f87;
+  font-family: inherit;
   font-size: 13px;
   line-height: 1.35;
+  text-align: left;
 }
 
 .assistant-content > .working-line.compact {
@@ -4595,6 +4605,35 @@ svg {
   padding-bottom: 6px;
   margin-bottom: 2px;
   border-bottom: 1px solid #efefef;
+}
+
+.working-line.can-toggle-intermediate {
+  cursor: pointer;
+}
+
+.working-line.can-toggle-intermediate:hover .tui-progress-text,
+.working-line.can-toggle-intermediate:focus-visible .tui-progress-text {
+  color: #636b75;
+}
+
+.working-line.can-toggle-intermediate:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.18);
+  outline-offset: 2px;
+}
+
+.progress-collapse-chevron {
+  margin-left: 1px;
+  color: #a0a6af;
+  transition: transform 140ms ease, color 140ms ease;
+}
+
+.working-line.can-toggle-intermediate:hover .progress-collapse-chevron,
+.working-line.can-toggle-intermediate:focus-visible .progress-collapse-chevron {
+  color: #737b86;
+}
+
+.progress-collapse-chevron.expanded {
+  transform: rotate(180deg);
 }
 
 .system-command-card {
@@ -5010,6 +5049,12 @@ svg {
   margin-left: 18px;
   background: #fbfbfb;
   color: #4b5563;
+}
+
+.intermediate-process-body {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 8px;
 }
 
 .tool-preview-card {
@@ -7924,6 +7969,41 @@ body.git-history-resizing {
 
 .changed-file-block.expanded .changed-file-chevron {
   transform: rotate(180deg);
+}
+
+.changed-files-summary-more {
+  width: 100%;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-top: 1px solid rgba(226, 232, 240, 0.72);
+  background: transparent;
+  color: #7a8491;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.changed-files-summary-more:hover,
+.changed-files-summary-more:focus-visible {
+  background: transparent;
+  color: #4b5563;
+}
+
+.changed-files-summary-more svg {
+  transition: transform 140ms ease;
+}
+
+.changed-files-summary-more svg.expanded {
+  transform: rotate(180deg);
+}
+
+.changed-files-summary-menu {
+  width: 220px;
+  min-width: 220px;
+  max-width: 220px;
 }
 
 .changed-file-diff-body {
@@ -15942,7 +16022,7 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .codex-desktop .sidebar-project.active {
-  background: var(--sidebar-project-active-surface);
+  background: transparent;
 }
 
 .codex-desktop .sidebar-search,

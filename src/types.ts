@@ -379,6 +379,7 @@ export type GeneralSettings = {
   autoGuideQueuedPrompts: boolean;
   autoCheckAppUpdate: boolean;
   showDebugButton: boolean;
+  collapseIntermediateProcess: boolean;
   defaultPermissionMode: PermissionMode;
   reviewHideNoiseFilesByDefault: boolean;
   reviewDefaultDisplayMode: ReviewDisplayMode;

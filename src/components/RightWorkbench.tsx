@@ -7,8 +7,12 @@ import {
   ChevronDown,
   ChevronRight,
   CloudUpload,
+  Copy,
+  Eye,
+  ExternalLink,
   FileText,
   Folder,
+  FolderOpen,
   Globe2,
   GitMerge,
   GitPullRequest,
@@ -23,11 +27,12 @@ import {
   Rows3,
   Search,
   Square,
+  Trash2,
   Unlink2,
   X,
   XCircle,
 } from 'lucide-react';
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
@@ -48,7 +53,7 @@ import {
   pullGitBranch,
 } from '../lib/git-api';
 import { renderMarkdownImage } from '../lib/markdown-image';
-import { fetchProjectFiles } from '../lib/project-files-api';
+import { deleteProjectFile, fetchProjectFiles } from '../lib/project-files-api';
 import {
   buildWorkbenchFileTree,
   filterWorkbenchNoiseFiles,
@@ -138,6 +143,19 @@ type RightWorkbenchProps = {
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onClose: () => void;
 };
+
+type WorkbenchNavigatorContextMenuItem = {
+  source: 'project' | 'changed';
+  type: 'directory' | 'file';
+  path: string;
+  name: string;
+  projectFile?: ProjectFileEntry;
+  changedFile?: GitFileStatus;
+  x: number;
+  y: number;
+};
+
+type WorkbenchNavigatorContextMenuTarget = Omit<WorkbenchNavigatorContextMenuItem, 'x' | 'y'>;
 
 export function RightWorkbench({
   activeTab,
@@ -404,8 +422,10 @@ function WorkbenchFiles({
   const [showNoiseFiles, setShowNoiseFiles] = useState(() => !reviewHideNoiseFilesByDefault);
   const [changedDisplayMode, setChangedDisplayMode] = useState<ReviewDisplayMode>(reviewDefaultDisplayMode);
   const [reviewOptionsOpen, setReviewOptionsOpen] = useState(false);
+  const [navigatorContextMenu, setNavigatorContextMenu] = useState<WorkbenchNavigatorContextMenuItem | null>(null);
   const layoutRef = useRef<HTMLDivElement | null>(null);
   const reviewOptionsRef = useRef<HTMLDivElement | null>(null);
+  const navigatorContextMenuRef = useRef<HTMLDivElement | null>(null);
   const dragNavigatorWidthRef = useRef<number | null>(null);
   const dragFrameRef = useRef<number | null>(null);
   const hasUnresolvedConflicts = Boolean(
@@ -471,6 +491,9 @@ function WorkbenchFiles({
   activeProjectIdRef.current = activeProject?.id ?? '';
 
   useOutsideDismiss({
+    refs: [
+      { ref: navigatorContextMenuRef, onDismiss: () => setNavigatorContextMenu(null) },
+    ],
     selectors: [
       { selector: '.workbench-review-options-menu', onDismiss: () => setReviewOptionsOpen(false), anchorRefs: [reviewOptionsRef] },
     ],
@@ -490,7 +513,31 @@ function WorkbenchFiles({
 
   useEffect(() => {
     setReviewOptionsOpen(false);
+    setNavigatorContextMenu(null);
   }, [activeProject?.id, scope]);
+
+  useEffect(() => {
+    if (!navigatorContextMenu) {
+      return undefined;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setNavigatorContextMenu(null);
+      }
+    }
+
+    function handleResize() {
+      setNavigatorContextMenu(null);
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [navigatorContextMenu]);
 
   useEffect(() => {
     setShowNoiseFiles(!reviewHideNoiseFilesByDefault);
@@ -769,6 +816,121 @@ function WorkbenchFiles({
     }
 
     onOpenWorkbenchPreview(buildChangedFilePreviewRequest(file));
+  }
+
+  function openNavigatorContextMenu(
+    event: ReactMouseEvent<HTMLElement>,
+    target: WorkbenchNavigatorContextMenuTarget,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    setReviewOptionsOpen(false);
+    setNavigatorContextMenu({
+      ...target,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }
+
+  function resolveNavigatorContextFullPath(item: WorkbenchNavigatorContextMenuItem) {
+    if (!activeProject) {
+      return item.path;
+    }
+
+    return resolveWorkbenchPreviewFilePath(activeProject.path, item.path);
+  }
+
+  async function openNavigatorContextPath(mode: 'open' | 'reveal') {
+    const item = navigatorContextMenu;
+    if (!item) {
+      return;
+    }
+
+    setNavigatorContextMenu(null);
+    try {
+      const response = await fetch('/api/system/open-path', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          path: resolveNavigatorContextFullPath(item),
+          mode,
+        }),
+      });
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || (mode === 'reveal' ? '定位文件失败' : '打开文件失败'));
+      }
+    } catch (caughtError) {
+      showToast(caughtError instanceof Error ? caughtError.message : mode === 'reveal' ? '定位文件失败' : '打开文件失败', 'error');
+    }
+  }
+
+  async function copyNavigatorContextPath(fullPath: boolean) {
+    const item = navigatorContextMenu;
+    if (!item) {
+      return;
+    }
+
+    setNavigatorContextMenu(null);
+    try {
+      await navigator.clipboard.writeText(fullPath ? resolveNavigatorContextFullPath(item) : item.path);
+      showToast(fullPath ? '完整路径已复制' : '路径已复制');
+    } catch {
+      showToast('复制路径失败', 'error');
+    }
+  }
+
+  function openNavigatorContextPreview() {
+    const item = navigatorContextMenu;
+    if (!item || item.type !== 'file') {
+      return;
+    }
+
+    setNavigatorContextMenu(null);
+    if (item.projectFile) {
+      openProjectFilePreview(item.projectFile);
+      return;
+    }
+    if (item.changedFile) {
+      openChangedPreview(item.changedFile);
+    }
+  }
+
+  async function deleteNavigatorContextItem() {
+    const item = navigatorContextMenu;
+    if (!activeProject || !item) {
+      return;
+    }
+
+    const label = item.type === 'directory' ? '文件夹' : '文件';
+    const confirmed = window.confirm(`确认删除${label}「${item.path}」？\n\n该操作会从磁盘删除。`);
+    if (!confirmed) {
+      return;
+    }
+
+    setNavigatorContextMenu(null);
+    try {
+      await deleteProjectFile(activeProject.id, item.path);
+      setExpandedDirectories((directories) => pruneDeletedNavigatorPaths(directories, item.path));
+      setExpandedChangedDirectories((directories) => pruneDeletedNavigatorPaths(directories, item.path));
+      setExpandedUntrackedDirectories((directories) => pruneDeletedNavigatorPaths(directories, item.path));
+      setDirectoryFiles((current) => pruneDeletedDirectoryFiles(current, item.path));
+      const deletedPreviewKeys = previewTabs
+        .filter((tab) => isNavigatorPathDeletedBy(tab.path, item.path))
+        .map((tab) => tab.key);
+      if (deletedPreviewKeys.length) {
+        onClosePreviewTabs(deletedPreviewKeys);
+      }
+      await loadScope(scope);
+      void Promise.resolve(onGitChanged?.()).catch((caughtError: unknown) => {
+        showToast(caughtError instanceof Error ? caughtError.message : '刷新 Git 状态失败', 'error');
+      });
+      showToast(`${label}已删除`);
+    } catch (caughtError) {
+      showToast(caughtError instanceof Error ? caughtError.message : `${label}删除失败`, 'error');
+    }
   }
 
   async function handleSubmitCommit(thenPush: boolean) {
@@ -1114,6 +1276,7 @@ function WorkbenchFiles({
                   onToggleUntrackedDirectory={toggleUntrackedDirectory}
                   onOpenProjectFile={openProjectFilePreview}
                   onOpenChangedFile={openChangedPreview}
+                  onOpenContextMenu={openNavigatorContextMenu}
                   onToggleCommitFile={toggleCommitFile}
                   hideScopeCount={hideScopeCount}
                   emptyTitle={navigatorEmptyTitle}
@@ -1147,6 +1310,81 @@ function WorkbenchFiles({
                 <Folder size={15} />
               </button>
             )}
+            <PopoverPortal
+              open={Boolean(navigatorContextMenu)}
+              anchorRef={layoutRef}
+              virtualAnchor={navigatorContextMenu ? { x: navigatorContextMenu.x, y: navigatorContextMenu.y } : null}
+              placement="bottom-start"
+              offset={0}
+            >
+              <div
+                ref={navigatorContextMenuRef}
+                className="workspace-menu workbench-file-context-menu"
+                role="menu"
+                aria-label="文件菜单"
+              >
+                {navigatorContextMenu?.type === 'file' ? (
+                  <button
+                    type="button"
+                    className="workspace-menu-item"
+                    role="menuitem"
+                    onClick={openNavigatorContextPreview}
+                  >
+                    <Eye size={16} />
+                    <span>打开预览</span>
+                  </button>
+                ) : null}
+                {navigatorContextMenu?.type === 'file' ? (
+                  <button
+                    type="button"
+                    className="workspace-menu-item"
+                    role="menuitem"
+                    onClick={() => void openNavigatorContextPath('open')}
+                  >
+                    <ExternalLink size={16} />
+                    <span>用默认应用打开</span>
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="workspace-menu-item"
+                  role="menuitem"
+                  onClick={() => void openNavigatorContextPath('reveal')}
+                >
+                  <FolderOpen size={16} />
+                  <span>在资源管理器中显示</span>
+                </button>
+                <div className="workspace-menu-divider" role="separator" />
+                <button
+                  type="button"
+                  className="workspace-menu-item"
+                  role="menuitem"
+                  onClick={() => void copyNavigatorContextPath(false)}
+                >
+                  <Copy size={16} />
+                  <span>复制路径</span>
+                </button>
+                <button
+                  type="button"
+                  className="workspace-menu-item"
+                  role="menuitem"
+                  onClick={() => void copyNavigatorContextPath(true)}
+                >
+                  <Copy size={16} />
+                  <span>复制完整路径</span>
+                </button>
+                <div className="workspace-menu-divider" role="separator" />
+                <button
+                  type="button"
+                  className="workspace-menu-item danger"
+                  role="menuitem"
+                  onClick={() => void deleteNavigatorContextItem()}
+                >
+                  <Trash2 size={16} />
+                  <span>删除</span>
+                </button>
+              </div>
+            </PopoverPortal>
           </div>
         </>
       )}
@@ -1678,6 +1916,7 @@ function FileNavigator({
   onToggleUntrackedDirectory,
   onOpenProjectFile,
   onOpenChangedFile,
+  onOpenContextMenu,
   onToggleCommitFile,
   hideScopeCount = false,
   emptyTitle,
@@ -1731,6 +1970,7 @@ function FileNavigator({
   onToggleUntrackedDirectory: (directoryPath: string) => void;
   onOpenProjectFile: (file: ProjectFileEntry) => void;
   onOpenChangedFile: (file: GitFileStatus) => void;
+  onOpenContextMenu: (event: ReactMouseEvent<HTMLElement>, target: WorkbenchNavigatorContextMenuTarget) => void;
   onToggleCommitFile?: (file: GitFileStatus) => void;
   hideScopeCount?: boolean;
   emptyTitle: string;
@@ -1867,6 +2107,7 @@ function FileNavigator({
             activePreviewKey={activePreviewKey}
             onToggleDirectory={onToggleDirectory}
             onOpenFile={onOpenProjectFile}
+            onOpenContextMenu={onOpenContextMenu}
           />
         ) : changedTree.length || untrackedTree.length || changedFiles.length || untrackedFiles.length ? (
           <ChangedFileTree
@@ -1888,6 +2129,7 @@ function FileNavigator({
             onToggleAllTrackedCommitPaths={onToggleTrackedCommitPaths ?? (() => undefined)}
             onToggleAllUntrackedCommitPaths={onToggleUntrackedCommitPaths ?? (() => undefined)}
             onOpenFile={onOpenChangedFile}
+            onOpenContextMenu={onOpenContextMenu}
           />
         ) : (
           <WorkbenchEmpty icon={<GitPullRequest size={24} />} title={emptyTitle} description="工作区很干净，可以继续开发。" />
@@ -1942,6 +2184,7 @@ function AllFilesList({
   activePreviewKey,
   onToggleDirectory,
   onOpenFile,
+  onOpenContextMenu,
 }: {
   files: ProjectFileEntry[];
   directoryFiles: Record<string, ProjectFileEntry[]>;
@@ -1951,6 +2194,7 @@ function AllFilesList({
   activePreviewKey: string;
   onToggleDirectory: (directoryPath: string) => void;
   onOpenFile: (file: ProjectFileEntry) => void;
+  onOpenContextMenu: (event: ReactMouseEvent<HTMLElement>, target: WorkbenchNavigatorContextMenuTarget) => void;
 }) {
   if (files.length === 0) {
     return <WorkbenchEmpty icon={<Folder size={24} />} title="没有文件" description="当前项目目录为空。" />;
@@ -1968,6 +2212,7 @@ function AllFilesList({
         depth: 0,
         onToggleDirectory,
         onOpenFile,
+        onOpenContextMenu,
       })}
     </div>
   );
@@ -1983,6 +2228,7 @@ function renderProjectFileRows({
   depth,
   onToggleDirectory,
   onOpenFile,
+  onOpenContextMenu,
 }: {
   files: ProjectFileEntry[];
   directoryFiles: Record<string, ProjectFileEntry[]>;
@@ -1993,6 +2239,7 @@ function renderProjectFileRows({
   depth: number;
   onToggleDirectory: (directoryPath: string) => void;
   onOpenFile: (file: ProjectFileEntry) => void;
+  onOpenContextMenu: (event: ReactMouseEvent<HTMLElement>, target: WorkbenchNavigatorContextMenuTarget) => void;
 }): ReactNode[] {
   return files.flatMap<ReactNode>((file): ReactNode[] => {
     const isDirectory = file.type === 'directory';
@@ -2016,6 +2263,15 @@ function renderProjectFileRows({
             onOpenFile(file);
           }
         }}
+        onContextMenu={(event) =>
+          onOpenContextMenu(event, {
+            source: 'project',
+            type: file.type,
+            path: file.path,
+            name: file.name,
+            projectFile: file,
+          })
+        }
       >
         {isDirectory ? (
           expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />
@@ -2043,6 +2299,7 @@ function renderProjectFileRows({
           depth: depth + 1,
           onToggleDirectory,
           onOpenFile,
+          onOpenContextMenu,
         })
       : [
           <div key={`${file.path}:empty`} className="workbench-tree-empty" style={{ paddingLeft: `${43 + depth * 18}px` }}>
@@ -2073,6 +2330,7 @@ function ChangedFileTree({
   onToggleAllTrackedCommitPaths,
   onToggleAllUntrackedCommitPaths,
   onOpenFile,
+  onOpenContextMenu,
 }: {
   displayMode: ReviewDisplayMode;
   changedFiles: GitFileStatus[];
@@ -2092,6 +2350,7 @@ function ChangedFileTree({
   onToggleAllTrackedCommitPaths: () => void;
   onToggleAllUntrackedCommitPaths: () => void;
   onOpenFile: (file: GitFileStatus) => void;
+  onOpenContextMenu: (event: ReactMouseEvent<HTMLElement>, target: WorkbenchNavigatorContextMenuTarget) => void;
 }) {
   return (
     <div className="workbench-all-files-list">
@@ -2111,6 +2370,7 @@ function ChangedFileTree({
           onToggleCommitFile={onToggleCommitFile}
           onToggleAll={onToggleAllTrackedCommitPaths}
           onOpenFile={onOpenFile}
+          onOpenContextMenu={onOpenContextMenu}
         />
       ) : null}
       {untrackedNodes.length || untrackedFiles.length ? (
@@ -2129,6 +2389,7 @@ function ChangedFileTree({
           onToggleCommitFile={onToggleCommitFile}
           onToggleAll={onToggleAllUntrackedCommitPaths}
           onOpenFile={onOpenFile}
+          onOpenContextMenu={onOpenContextMenu}
           untracked
         />
       ) : null}
@@ -2151,6 +2412,7 @@ function ChangedFileTreeSection({
   onToggleCommitFile,
   onToggleAll,
   onOpenFile,
+  onOpenContextMenu,
   untracked = false,
 }: {
   title: string;
@@ -2167,6 +2429,7 @@ function ChangedFileTreeSection({
   onToggleCommitFile: (file: GitFileStatus) => void;
   onToggleAll?: () => void;
   onOpenFile: (file: GitFileStatus) => void;
+  onOpenContextMenu: (event: ReactMouseEvent<HTMLElement>, target: WorkbenchNavigatorContextMenuTarget) => void;
   untracked?: boolean;
 }) {
   // 未进行版本管理的文件默认折叠，避免在审查页占用过多视觉空间。
@@ -2212,6 +2475,7 @@ function ChangedFileTreeSection({
               selectedCommitPaths,
               onToggleCommitFile,
               onOpenFile,
+              onOpenContextMenu,
               untracked,
             })
           : renderChangedFileTreeRows({
@@ -2223,6 +2487,7 @@ function ChangedFileTreeSection({
               onToggleDirectory,
               onToggleCommitNode,
               onOpenFile,
+              onOpenContextMenu,
               untracked,
             })}
     </section>
@@ -2393,6 +2658,7 @@ function renderChangedFileTreeRows({
   onToggleDirectory,
   onToggleCommitNode,
   onOpenFile,
+  onOpenContextMenu,
   untracked = false,
 }: {
   nodes: WorkbenchFileTreeNode[];
@@ -2403,6 +2669,7 @@ function renderChangedFileTreeRows({
   onToggleDirectory: (directoryPath: string) => void;
   onToggleCommitNode: (node: WorkbenchFileTreeNode) => void;
   onOpenFile: (file: GitFileStatus) => void;
+  onOpenContextMenu: (event: ReactMouseEvent<HTMLElement>, target: WorkbenchNavigatorContextMenuTarget) => void;
   untracked?: boolean;
 }): ReactNode[] {
   return nodes.flatMap((node): ReactNode[] => {
@@ -2423,6 +2690,15 @@ function renderChangedFileTreeRows({
             onOpenFile(node.gitFile);
           }
         }}
+        onContextMenu={(event) =>
+          onOpenContextMenu(event, {
+            source: 'changed',
+            type: node.type,
+            path: node.path,
+            name: node.name,
+            changedFile: node.gitFile,
+          })
+        }
       >
         {node.type === 'directory' ? (
           expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />
@@ -2478,6 +2754,7 @@ function renderChangedFileTreeRows({
         onToggleDirectory,
         onToggleCommitNode,
         onOpenFile,
+        onOpenContextMenu,
         untracked,
       }),
     ];
@@ -2490,6 +2767,7 @@ function renderChangedFileFlatRows({
   selectedCommitPaths,
   onToggleCommitFile,
   onOpenFile,
+  onOpenContextMenu,
   untracked = false,
 }: {
   files: GitFileStatus[];
@@ -2497,6 +2775,7 @@ function renderChangedFileFlatRows({
   selectedCommitPaths: Set<string>;
   onToggleCommitFile: (file: GitFileStatus) => void;
   onOpenFile: (file: GitFileStatus) => void;
+  onOpenContextMenu: (event: ReactMouseEvent<HTMLElement>, target: WorkbenchNavigatorContextMenuTarget) => void;
   untracked?: boolean;
 }): ReactNode[] {
   return files.map((file) => {
@@ -2512,6 +2791,15 @@ function renderChangedFileFlatRows({
         type="button"
         className={`workbench-tree-row selectable has-check flat${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === buildChangedWorkbenchPreviewKey(file.path) ? ' active' : ''}`}
         onClick={() => onOpenFile(file)}
+        onContextMenu={(event) =>
+          onOpenContextMenu(event, {
+            source: 'changed',
+            type: 'file',
+            path: file.path,
+            name: fileName,
+            changedFile: file,
+          })
+        }
       >
         <span className="workbench-tree-spacer" />
         <span
@@ -2733,6 +3021,34 @@ function getFileDirectoryPath(filePath: string) {
   const parts = filePath.replace(/\\/g, '/').split('/').filter(Boolean);
   parts.pop();
   return parts.join('/');
+}
+
+function normalizeNavigatorPath(filePath: string) {
+  return filePath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+function isNavigatorPathDeletedBy(candidatePath: string, deletedPath: string) {
+  const candidate = normalizeNavigatorPath(candidatePath);
+  const deleted = normalizeNavigatorPath(deletedPath);
+  return candidate === deleted || candidate.startsWith(`${deleted}/`);
+}
+
+function pruneDeletedNavigatorPaths(paths: string[], deletedPath: string) {
+  return paths.filter((item) => !isNavigatorPathDeletedBy(item, deletedPath));
+}
+
+function pruneDeletedDirectoryFiles(
+  directoryFiles: Record<string, ProjectFileEntry[]>,
+  deletedPath: string,
+) {
+  return Object.fromEntries(
+    Object.entries(directoryFiles)
+      .filter(([directoryPath]) => !isNavigatorPathDeletedBy(directoryPath, deletedPath))
+      .map(([directoryPath, entries]) => [
+        directoryPath,
+        entries.filter((entry) => !isNavigatorPathDeletedBy(entry.path, deletedPath)),
+      ]),
+  );
 }
 
 function WorkbenchEmpty({

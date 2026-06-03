@@ -23,6 +23,7 @@ export const defaultGeneralSettings: GeneralSettings = {
   autoGuideQueuedPrompts: false,
   autoCheckAppUpdate: true,
   showDebugButton: true,
+  collapseIntermediateProcess: false,
   defaultPermissionMode: 'default',
   reviewHideNoiseFilesByDefault: true,
   reviewDefaultDisplayMode: 'tree',
@@ -241,6 +242,10 @@ export function normalizeGeneralSettings(general: unknown): GeneralSettings {
       defaultGeneralSettings.autoCheckAppUpdate,
     ),
     showDebugButton: normalizeBoolean(record.showDebugButton, defaultGeneralSettings.showDebugButton),
+    collapseIntermediateProcess: normalizeBoolean(
+      record.collapseIntermediateProcess,
+      defaultGeneralSettings.collapseIntermediateProcess,
+    ),
     defaultPermissionMode: normalizeOneOf(
       record.defaultPermissionMode,
       ['default', 'auto', 'bypassPermissions'],

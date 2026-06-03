@@ -22,12 +22,12 @@ export function resolveSidebarThreadStatus({
     return 'running';
   }
 
-  if (runtimeStatus?.alive) {
-    return 'hot';
-  }
-
   if (threadActivityNotices[threadId]) {
     return 'completed';
+  }
+
+  if (runtimeStatus?.alive) {
+    return 'hot';
   }
 
   return null;

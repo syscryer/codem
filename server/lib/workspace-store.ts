@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import * as childProcess from 'node:child_process';
@@ -1300,6 +1300,26 @@ export function listProjectFiles(projectId: string, relativeDirectory = ''): Pro
       };
     })
     .sort(compareProjectFileEntries);
+}
+
+export function deleteProjectFile(projectId: string, filePath: string) {
+  const projectPath = readProjectPath(projectId);
+  const safePath = normalizeProjectRelativePath(projectPath, filePath);
+  const targetPath = path.resolve(projectPath, safePath);
+  if (targetPath === path.resolve(projectPath)) {
+    throw new Error('不能删除项目根目录');
+  }
+  if (!isPathInsideRoot(targetPath, projectPath)) {
+    throw new Error(`文件不在项目目录内：${safePath}`);
+  }
+
+  const stats = statSync(targetPath);
+  rmSync(targetPath, { recursive: stats.isDirectory(), force: false });
+
+  return {
+    ok: true,
+    path: safePath,
+  };
 }
 
 export async function getProjectGitSummary(projectId: string) {

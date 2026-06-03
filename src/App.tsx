@@ -1515,7 +1515,9 @@ export default function App() {
               <ConversationPane
                 activeThread={activeThread}
                 isNewChatDraft={isNewChatDraft}
+                activeProject={activeProject}
                 activeProjectName={activeProject?.name}
+                collapseIntermediateProcess={general.collapseIntermediateProcess}
                 clockNowMs={clockNowMs}
                 isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
                 activeTurnId={activeThreadId ? activeTurnIdsByThreadId[activeThreadId] ?? '' : ''}

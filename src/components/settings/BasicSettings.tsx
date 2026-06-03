@@ -1,4 +1,4 @@
-import { Bell, Code2, Download, ExternalLink, GitBranch, GitPullRequest, History, RefreshCw, RotateCcw, Rows3, Search, Send, Shield, TerminalSquare } from 'lucide-react';
+import { Bell, Code2, Download, ExternalLink, GitBranch, GitPullRequest, History, ListCollapse, RefreshCw, RotateCcw, Rows3, Search, Send, Shield, TerminalSquare } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { permissionMenuModes } from '../../constants';
 import type { AppRuntimeInfo, AppUpdateCheckState, ClaudeCliVersionInfo, GeneralSettings } from '../../types';
@@ -26,6 +26,8 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
     autoGuideQueuedPrompts: general.autoGuideQueuedPrompts ?? defaultGeneralSettings.autoGuideQueuedPrompts,
     autoCheckAppUpdate: general.autoCheckAppUpdate ?? defaultGeneralSettings.autoCheckAppUpdate,
     showDebugButton: general.showDebugButton ?? defaultGeneralSettings.showDebugButton,
+    collapseIntermediateProcess:
+      general.collapseIntermediateProcess ?? defaultGeneralSettings.collapseIntermediateProcess,
     defaultPermissionMode: general.defaultPermissionMode ?? defaultGeneralSettings.defaultPermissionMode,
     reviewHideNoiseFilesByDefault:
       general.reviewHideNoiseFilesByDefault ?? defaultGeneralSettings.reviewHideNoiseFilesByDefault,
@@ -179,6 +181,14 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
             checked={resolvedGeneral.autoGuideQueuedPrompts}
             onChange={(autoGuideQueuedPrompts) => void onUpdateGeneral({ autoGuideQueuedPrompts })}
             label="排队消息立即发送"
+          />
+        </SettingsRow>
+
+        <SettingsRow icon={ListCollapse} title="收起中间过程" description="已完成的回复默认折叠 Thinking、工具调用和文件修改过程，只保留最终回复与汇总">
+          <Toggle
+            checked={resolvedGeneral.collapseIntermediateProcess}
+            onChange={(collapseIntermediateProcess) => void onUpdateGeneral({ collapseIntermediateProcess })}
+            label="收起中间过程"
           />
         </SettingsRow>
 

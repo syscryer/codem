@@ -7,6 +7,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   ConversationTurn,
+  ProjectSummary,
   RequestUserInputRequest,
   RuntimeSuggestedAction,
   ThreadDetail,
@@ -19,7 +20,9 @@ const BOTTOM_ANCHOR_THRESHOLD_PX = 96;
 type ConversationPaneProps = {
   activeThread: ThreadDetail | null;
   isNewChatDraft: boolean;
+  activeProject: ProjectSummary | null;
   activeProjectName?: string;
+  collapseIntermediateProcess: boolean;
   clockNowMs: number;
   isRunning: boolean;
   activeTurnId: string;
@@ -59,7 +62,9 @@ function useLatestCallback<T extends (...args: never[]) => unknown>(callback: T)
 export function ConversationPane({
   activeThread,
   isNewChatDraft,
+  activeProject,
   activeProjectName,
+  collapseIntermediateProcess,
   clockNowMs,
   isRunning,
   activeTurnId,
@@ -201,6 +206,8 @@ export function ConversationPane({
               isLiveRunning={isRunning && turn.id === activeTurnId}
               isLatest={index === activeThread.turns.length - 1}
               canUndoChangedFiles={turn.id === latestChangedFilesTurnId && undoneTurnIds[turn.id] !== true}
+              activeProject={activeProject}
+              collapseIntermediateProcess={collapseIntermediateProcess}
               onOpenWorkbenchPreview={stableOpenWorkbenchPreview}
               onOpenOutputPath={stableOpenOutputPath}
               onRevealOutputPath={stableRevealOutputPath}
