@@ -242,8 +242,8 @@ export function SidebarProjects({
             <span className="sidebar-thread-title-text">{thread.title}</span>
           </span>
           <span className="sidebar-thread-meta">
-            <small>{thread.updatedLabel}</small>
             <SidebarThreadStatusIcon status={threadStatus} />
+            {isRunningThread ? null : <small>{thread.updatedLabel}</small>}
           </span>
         </button>
         <PopoverPortal
