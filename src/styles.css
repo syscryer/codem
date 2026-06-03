@@ -1204,39 +1204,49 @@ svg {
   white-space: nowrap;
 }
 
-.sidebar-thread-running-dot {
-  width: 6px;
-  height: 6px;
+.sidebar-thread-meta {
+  min-width: max-content;
   flex: 0 0 auto;
-  border-radius: 999px;
-  background: #16a34a;
-  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.12);
-  animation: pulse 1.1s ease-in-out infinite;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  overflow: visible;
 }
 
-.sidebar-thread-activity-badge {
+.sidebar-thread-status-icon {
   flex: 0 0 auto;
-  padding: 1px 6px;
+  display: inline-grid;
+  place-items: center;
+  overflow: visible;
+  white-space: normal;
+}
+
+.sidebar-thread-status-icon.completed {
+  width: 8px;
+  height: 8px;
   border-radius: 999px;
-  font-size: 10px;
-  font-weight: 650;
-  line-height: 16px;
-  letter-spacing: 0.02em;
+  background: #1a73e8;
 }
 
-.sidebar-thread-activity-badge.completed {
-  background: rgba(22, 163, 74, 0.12);
-  color: #15803d;
+.sidebar-thread-status-icon.running {
+  width: 9px;
+  height: 9px;
+  border: 2px solid #7f8790;
+  border-left-color: transparent;
+  border-radius: 999px;
 }
 
-.sidebar-thread-activity-badge.failed {
-  background: rgba(220, 38, 38, 0.12);
-  color: #b91c1c;
+.sidebar-thread-status-icon.hot {
+  width: 12px;
+  height: 12px;
+  color: #6f7d8d;
 }
 
-.sidebar-thread-activity-badge.approval {
-  background: rgba(217, 119, 6, 0.14);
-  color: #b45309;
+.sidebar-thread-status-icon.hot svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.4;
 }
 
 .sidebar-thread small {
