@@ -47,6 +47,7 @@ import {
 import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
 import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
 import { fetchGitRemote, pullGitBranch, undoConversationChanges } from './lib/git-api';
+import { fetchThreadRuntimeStatuses } from './lib/thread-runtime-statuses';
 import {
   buildGitOperationToastDetail,
   normalizeGitOperationToastMessage,
@@ -78,6 +79,7 @@ import type {
   SettingsSection,
   SystemCommandItem,
   ThreadDetail,
+  ThreadRuntimeStatus,
   ThreadSummary,
   ToolStep,
   ProjectSummary,
@@ -240,6 +242,7 @@ export default function App() {
   const [projectsRefreshing, setProjectsRefreshing] = useState(false);
   const [worktreeCreateProject, setWorktreeCreateProject] = useState<ProjectSummary | null>(null);
   const [threadActivityNotices, setThreadActivityNotices] = useState<ThreadActivityNoticeMap>({});
+  const [threadRuntimeStatuses, setThreadRuntimeStatuses] = useState<Record<string, ThreadRuntimeStatus>>({});
   const activeThreadIdRef = useRef<string | null>(activeThreadId);
   const windowFocusedRef = useRef(isAppWindowFocused());
   const systemNotificationKeysRef = useRef(new Set<string>());
@@ -391,6 +394,24 @@ export default function App() {
 
     setThreadActivityNotices((current) => clearThreadActivityNotice(current, activeThreadId));
   }, [activeThreadId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refreshThreadRuntimeStatuses() {
+      const statuses = await fetchThreadRuntimeStatuses();
+      if (!cancelled) {
+        setThreadRuntimeStatuses(statuses);
+      }
+    }
+
+    void refreshThreadRuntimeStatuses();
+    const timer = window.setInterval(() => void refreshThreadRuntimeStatuses(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     function updateWindowFocusState() {
@@ -1416,6 +1437,7 @@ export default function App() {
               isNewChatDraft={isNewChatDraft}
               runningThreadIds={runningThreadIds}
               threadActivityNotices={threadActivityNotices}
+              threadRuntimeStatuses={threadRuntimeStatuses}
               cloneTasks={cloneTasks}
               pinnedThreads={pinnedThreads}
               pinnedProjects={pinnedProjects}

@@ -21,6 +21,7 @@ import {
   type SessionManagementRow,
 } from '../../lib/session-management';
 import { fetchUsageStats } from '../../lib/settings-api';
+import { fetchThreadRuntimeStatuses } from '../../lib/thread-runtime-statuses';
 import type {
   ProjectSummary,
   ThreadRuntimeStatus,
@@ -623,15 +624,3 @@ function formatDurationVerbose(value: number) {
   return parts.join(' ');
 }
 
-async function fetchThreadRuntimeStatuses() {
-  try {
-    const response = await fetch('/api/claude/runtimes');
-    if (!response.ok) {
-      return {};
-    }
-
-    return (await response.json()) as Record<string, ThreadRuntimeStatus>;
-  } catch {
-    return {};
-  }
-}
