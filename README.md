@@ -127,6 +127,8 @@ npm run package:all                 # 当前系统推荐目标
 
 `with-node` 表示安装包内置运行时 Node.js，目标机器不需要额外安装 Node。`no-node` 表示安装包不携带 Node.js，体积更小，但目标机器需要自行提供可用的 Node 环境。
 
+应用内自动更新默认只覆盖 GitHub Release 中的 `with-node` 安装版。发布 workflow 会为 `with-node` 产物生成 Tauri updater 签名和 `latest.json`；`no-node` 和绿色版仍作为手动下载包保留。启用 release 自动更新前，需要在 GitHub Secrets 中配置 `TAURI_SIGNING_PRIVATE_KEY`，如果私钥设置了密码，还需要配置 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
+
 ## 当前边界
 
 - 目前主要支持 Claude Code，不要把它理解成已经完成的多模型客户端

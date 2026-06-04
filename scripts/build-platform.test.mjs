@@ -90,6 +90,33 @@ test('runPlan passes the normalized runtime mode into spawnSync env', () => {
   assert.equal(capturedOptions.env.PATH, 'fake-path');
 });
 
+test('runPlan appends updater artifact config only when release signing is enabled', () => {
+  let capturedArgs;
+  const context = createBuildContext(['win-x64'], 'with-node');
+
+  runPlan('win-x64', context, {
+    runtime: {
+      cwd: () => 'D:\\cursor_project\\codem',
+      env: {
+        CODEM_CREATE_UPDATER_ARTIFACTS: '1',
+      },
+      platform: 'linux',
+      exit: () => {
+        throw new Error('runPlan should not exit on successful fake spawn');
+      },
+    },
+    spawn: (_command, args) => {
+      capturedArgs = args;
+      return { status: 0 };
+    },
+  });
+
+  assert.deepEqual(capturedArgs.slice(-2), [
+    '--config',
+    '{"bundle":{"createUpdaterArtifacts":true}}',
+  ]);
+});
+
 test('resolveSpawnInvocation runs npm through node on Windows when npm_execpath is available', () => {
   assert.deepEqual(
     resolveSpawnInvocation('npm', ['run', 'desktop:build'], {

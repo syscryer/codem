@@ -131,7 +131,24 @@ jobs:
       - name: Run packaging doctor
         run: npm run package:doctor
 
+      - name: Validate updater signing secrets
+        if: matrix.flavor == 'with-node'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            echo "::error::Missing TAURI_SIGNING_PRIVATE_KEY secret. Tauri updater artifacts must be signed."
+            exit 1
+          fi
+
       - name: Build platform bundle
+        env:
+          CODEM_CREATE_UPDATER_ARTIFACTS: ${{ matrix.flavor == 'with-node' && '1' || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run ${{ matrix.npmScript }}
 
       - name: Collect release assets
@@ -211,6 +228,7 @@ jobs:
           find downloaded-assets -maxdepth 2 -type f -exec cp {} release-assets/ \;
           git archive --format=zip --prefix="$prefix" -o "release-assets/codem-${version}-source.zip" HEAD
           git archive --format=tar --prefix="$prefix" HEAD | gzip -9 > "release-assets/codem-${version}-source.tar.gz"
+          node scripts/generate-latest-json.mjs release-assets "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" "$version"
 
           (
             cd release-assets

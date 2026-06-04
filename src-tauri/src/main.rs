@@ -25,6 +25,23 @@ const MIN_WINDOW_HEIGHT: u32 = 640;
 #[cfg(target_os = "windows")]
 const POWERSHELL_7_PATH: &str = r"C:\Program Files\PowerShell\7\pwsh.exe";
 
+#[cfg(target_os = "windows")]
+fn updater_builder() -> tauri_plugin_updater::Builder {
+    let builder = tauri_plugin_updater::Builder::new();
+    let Ok(exe) = std::env::current_exe() else {
+        return builder;
+    };
+    let Some(dir) = exe.parent() else {
+        return builder;
+    };
+    builder.installer_arg(format!("/D={}", dir.display()))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn updater_builder() -> tauri_plugin_updater::Builder {
+    tauri_plugin_updater::Builder::new()
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowMaterial {
@@ -45,15 +62,8 @@ struct AppRuntimeInfo {
     version: String,
     repository_url: &'static str,
     distribution_mode: &'static str,
+    runtime_flavor: &'static str,
     is_tauri: bool,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AppUpdateCheckResult {
-    status: &'static str,
-    version: Option<String>,
-    message: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -382,16 +392,8 @@ fn get_app_runtime_info(app: AppHandle) -> Result<AppRuntimeInfo, String> {
         version: package_info.version.to_string(),
         repository_url: "https://github.com/syscryer/codem",
         distribution_mode: detect_distribution_mode(&app),
+        runtime_flavor: detect_runtime_flavor(&app),
         is_tauri: true,
-    })
-}
-
-#[tauri::command]
-fn check_app_update(_app: AppHandle) -> Result<AppUpdateCheckResult, String> {
-    Ok(AppUpdateCheckResult {
-        status: "unsupported",
-        version: None,
-        message: Some("当前版本暂未接入应用内自动更新".to_string()),
     })
 }
 
@@ -401,6 +403,8 @@ fn main() {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(updater_builder().build())
         .manage(PtySessions::default())
         .manage(BackendPortState {
             port: Mutex::new(3001),
@@ -449,8 +453,7 @@ fn main() {
             get_backend_base_url,
             open_external_url,
             show_thread_notification,
-            get_app_runtime_info,
-            check_app_update
+            get_app_runtime_info
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CodeM desktop shell");
@@ -469,6 +472,20 @@ fn detect_distribution_mode_from_dir(executable_dir: &Path) -> &'static str {
     }
 
     "desktop-nsis"
+}
+
+fn detect_runtime_flavor(app: &tauri::AppHandle) -> &'static str {
+    find_packaged_backend_entry(app)
+        .map(|server_entry| detect_runtime_flavor_from_entry(&server_entry))
+        .unwrap_or("development")
+}
+
+fn detect_runtime_flavor_from_entry(server_entry: &Path) -> &'static str {
+    if find_packaged_node_runtime(server_entry).is_some() {
+        return "with-node";
+    }
+
+    "no-node"
 }
 
 fn pty_size(cols: u16, rows: u16) -> PtySize {
@@ -1272,9 +1289,10 @@ fn development_backend_command() -> Command {
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_window_state_to_area, detect_distribution_mode_from_dir, has_minimum_window_size,
-        normalize_window_state, prepare_window_state_for_save, resolve_backend_port_from_value,
-        MonitorWorkArea, WindowState,
+        clamp_window_state_to_area, detect_distribution_mode_from_dir,
+        detect_runtime_flavor_from_entry, has_minimum_window_size, normalize_window_state,
+        prepare_window_state_for_save, resolve_backend_port_from_value, MonitorWorkArea,
+        WindowState,
     };
     use std::{fs, time::{SystemTime, UNIX_EPOCH}};
 
@@ -1393,6 +1411,34 @@ mod tests {
 
         fs::remove_dir_all(&temp_dir).expect("remove temp dir");
         assert_eq!(mode, "desktop-portable");
+    }
+
+    #[test]
+    fn detect_runtime_flavor_from_entry_checks_packaged_node_runtime() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("codem-runtime-flavor-{unique}"));
+        let dist_server_dir = temp_dir.join("dist-server");
+        let runtime_dir = dist_server_dir.join("runtime");
+        let server_entry = dist_server_dir.join("index.mjs");
+
+        fs::create_dir_all(&dist_server_dir).expect("create dist-server");
+        fs::write(&server_entry, b"").expect("create server entry");
+        assert_eq!(detect_runtime_flavor_from_entry(&server_entry), "no-node");
+
+        fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+        #[cfg(windows)]
+        let runtime = runtime_dir.join("node.exe");
+        #[cfg(not(windows))]
+        let runtime = runtime_dir.join("node");
+        fs::write(runtime, b"").expect("create runtime");
+
+        let mode = detect_runtime_flavor_from_entry(&server_entry);
+
+        fs::remove_dir_all(&temp_dir).expect("remove temp dir");
+        assert_eq!(mode, "with-node");
     }
 }
 

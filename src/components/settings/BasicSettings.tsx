@@ -7,7 +7,13 @@ import { permissionLabel } from '../../lib/ui-labels';
 import { defaultGeneralSettings } from '../../hooks/useAppSettings';
 import { cloneDefaultWorkbenchIgnorePatterns } from '../../lib/review-ignore-patterns';
 import { openExternalUrl } from '../../lib/markdown-link';
-import { checkForAppUpdate, getAppRuntimeInfo, readClaudeCliVersionInfo, type AppUpdateInfo } from '../../lib/settings-runtime';
+import {
+  checkForAppUpdate,
+  getAppRuntimeInfo,
+  installAppUpdate,
+  readClaudeCliVersionInfo,
+  type AppUpdateInfo,
+} from '../../lib/settings-runtime';
 import { SegmentedControl, SettingsGroup, SettingsRow } from './SettingsControls';
 
 type BasicSettingsSectionProps = {
@@ -55,8 +61,10 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
   const [runtimeInfoLoading, setRuntimeInfoLoading] = useState(true);
   const [updateCheckState, setUpdateCheckState] = useState<AppUpdateCheckState>('idle');
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [updateInstallMessage, setUpdateInstallMessage] = useState<string | null>(null);
   const [claudeCliInfo, setClaudeCliInfo] = useState<ClaudeCliVersionInfo | null>(null);
   const [claudeCliChecking, setClaudeCliChecking] = useState(false);
+  const updateInstalling = updateCheckState === 'installing';
 
   useEffect(() => {
     setNoisePatternsDraft(savedNoisePatternsDraft);
@@ -106,6 +114,7 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
     let cancelled = false;
 
     async function runAutoCheck() {
+      setUpdateInstallMessage(null);
       setUpdateCheckState('checking');
       const result = await checkForAppUpdate({ silent: true });
       if (cancelled) {
@@ -132,10 +141,30 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
   }
 
   async function handleCheckAppUpdate() {
+    setUpdateInstallMessage(null);
     setUpdateCheckState('checking');
     const result = await checkForAppUpdate();
     setUpdateInfo(result);
     setUpdateCheckState(resolveUpdateCheckState(result));
+  }
+
+  async function handleInstallAppUpdate() {
+    const update = updateInfo?.update;
+    if (!update) {
+      return;
+    }
+
+    setUpdateCheckState('installing');
+    setUpdateInstallMessage('正在准备更新...');
+    try {
+      await installAppUpdate(update, setUpdateInstallMessage);
+    } catch (error) {
+      setUpdateInfo({
+        status: 'failed',
+        message: error instanceof Error ? error.message : '安装更新失败',
+      });
+      setUpdateCheckState('failed');
+    }
   }
 
   async function handleCheckClaudeCliVersion() {
@@ -214,22 +243,35 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
           title={`当前版本 ${runtimeInfoLoading ? '读取中...' : `v${runtimeInfo?.version ?? import.meta.env.PACKAGE_VERSION ?? '0.0.0'}`}`}
           description={(
             <span className="settings-runtime-description">
-              <span>{runtimeInfo ? formatDistributionMode(runtimeInfo.distributionMode) : '读取应用运行信息中'}</span>
+              <span>{runtimeInfo ? formatRuntimeSummary(runtimeInfo) : '读取应用运行信息中'}</span>
               <span className={`settings-runtime-state settings-runtime-state-${updateCheckState}`}>
-                {formatUpdateCheckState(updateCheckState, updateInfo)}
+                {formatUpdateCheckState(updateCheckState, updateInfo, updateInstallMessage)}
               </span>
             </span>
           )}
         >
-          <button
-            type="button"
-            className="settings-action-button"
-            onClick={() => void handleCheckAppUpdate()}
-            disabled={updateCheckState === 'checking'}
-          >
-            <RefreshCw size={14} className={updateCheckState === 'checking' ? 'spin' : ''} />
-            <span>立即检查</span>
-          </button>
+          <div className="settings-runtime-actions">
+            <button
+              type="button"
+              className="settings-action-button"
+              onClick={() => void handleCheckAppUpdate()}
+              disabled={updateCheckState === 'checking' || updateInstalling}
+            >
+              <RefreshCw size={14} className={updateCheckState === 'checking' ? 'spin' : ''} />
+              <span>立即检查</span>
+            </button>
+            {updateInfo?.status === 'available' && updateInfo.update ? (
+              <button
+                type="button"
+                className="settings-action-button primary"
+                onClick={() => void handleInstallAppUpdate()}
+                disabled={updateInstalling}
+              >
+                <Download size={14} className={updateInstalling ? 'spin' : ''} />
+                <span>安装并重启</span>
+              </button>
+            ) : null}
+          </div>
         </SettingsRow>
         <SettingsRow
           icon={ExternalLink}
@@ -245,7 +287,7 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
           )}
           description=""
         />
-        <SettingsRow icon={RefreshCw} title="自动检查更新" description="启动时检查新版本，并在桌面版里提示安装更新">
+        <SettingsRow icon={RefreshCw} title="自动检查更新" description="启动时检查新版本，并在桌面安装版里提示安装更新">
           <Toggle
             checked={resolvedGeneral.autoCheckAppUpdate}
             onChange={(autoCheckAppUpdate) => void onUpdateGeneral({ autoCheckAppUpdate })}
@@ -468,9 +510,16 @@ function resolveUpdateCheckState(updateInfo: AppUpdateInfo | null): AppUpdateChe
   return 'latest';
 }
 
-function formatUpdateCheckState(state: AppUpdateCheckState, updateInfo: AppUpdateInfo | null) {
+function formatUpdateCheckState(
+  state: AppUpdateCheckState,
+  updateInfo: AppUpdateInfo | null,
+  installMessage?: string | null,
+) {
   if (state === 'checking') {
     return '检查中...';
+  }
+  if (state === 'installing') {
+    return installMessage ?? '正在安装更新...';
   }
   if (state === 'available') {
     return updateInfo?.version ? `发现新版本 ${updateInfo.version}` : '发现新版本';
@@ -492,6 +541,20 @@ function formatDistributionMode(mode: AppRuntimeInfo['distributionMode']) {
     return '桌面绿色版';
   }
   return 'Web 版';
+}
+
+function formatRuntimeSummary(info: AppRuntimeInfo) {
+  const mode = formatDistributionMode(info.distributionMode);
+  if (info.distributionMode !== 'desktop-nsis') {
+    return mode;
+  }
+  if (info.runtimeFlavor === 'with-node') {
+    return `${mode} · 内置 Node`;
+  }
+  if (info.runtimeFlavor === 'no-node') {
+    return `${mode} · 依赖系统 Node`;
+  }
+  return mode;
 }
 
 function formatClaudeCliState(info: ClaudeCliVersionInfo | null) {

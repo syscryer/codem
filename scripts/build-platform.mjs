@@ -50,6 +50,12 @@ const SUPPORTED_TARGETS = new Map([
     },
   ],
 ]);
+const CREATE_UPDATER_ARTIFACTS_ENV = 'CODEM_CREATE_UPDATER_ARTIFACTS';
+const CREATE_UPDATER_ARTIFACTS_CONFIG = JSON.stringify({
+  bundle: {
+    createUpdaterArtifacts: true,
+  },
+});
 
 function createRuntimeContext(flavor = DEFAULT_RUNTIME_FLAVOR) {
   const runtimeFlavor = normalizeRuntimeFlavor(flavor);
@@ -136,15 +142,22 @@ export function runPlan(
 ) {
   const plan = getBuildPlan(target, contextOrFlavor);
   const [command, args] = plan.command;
+  const buildArgs = [...args, ...updaterArtifactsArgs(runtime)];
   console.log(`\nBuilding ${plan.label}...`);
-  console.log(`> ${command} ${args.join(' ')}`);
+  console.log(`> ${command} ${buildArgs.join(' ')}`);
 
-  const invocation = resolveSpawnInvocation(command, args, runtime);
+  const invocation = resolveSpawnInvocation(command, buildArgs, runtime);
   const result = spawn(invocation.command, invocation.args, createSpawnOptions(plan, runtime));
 
   if (result.status !== 0) {
     runtime.exit(result.status ?? 1);
   }
+}
+
+function updaterArtifactsArgs(runtime = process) {
+  return runtime.env?.[CREATE_UPDATER_ARTIFACTS_ENV] === '1'
+    ? ['--config', CREATE_UPDATER_ARTIFACTS_CONFIG]
+    : [];
 }
 
 function main() {

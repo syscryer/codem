@@ -387,14 +387,16 @@ export type GeneralSettings = {
   reviewIgnorePatternsCustomized: boolean;
 };
 
-export type AppUpdateCheckState = 'idle' | 'checking' | 'latest' | 'available' | 'failed' | 'unsupported';
+export type AppUpdateCheckState = 'idle' | 'checking' | 'latest' | 'available' | 'installing' | 'failed' | 'unsupported';
 
 export type AppDistributionMode = 'desktop-nsis' | 'desktop-portable' | 'web';
+export type AppRuntimeFlavor = 'with-node' | 'no-node' | 'development' | 'unknown';
 
 export type AppRuntimeInfo = {
   version: string;
   repositoryUrl: string;
   distributionMode: AppDistributionMode;
+  runtimeFlavor: AppRuntimeFlavor;
   isTauri: boolean;
 };
 
