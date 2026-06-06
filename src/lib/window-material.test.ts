@@ -7,6 +7,7 @@ import { defaultAppearanceSettings } from './settings-api.js';
 
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+const menubarSource = readFileSync(new URL('../components/AppMenubar.tsx', import.meta.url), 'utf8');
 const settingsViewSource = readFileSync(new URL('../components/settings/SettingsView.tsx', import.meta.url), 'utf8');
 const settingsSidebarSource = readFileSync(new URL('../components/settings/SettingsSidebar.tsx', import.meta.url), 'utf8');
 const windowsVisibleWindowMaterials = ['auto', 'mica', 'acrylic', 'micaAlt'] as const;
@@ -116,6 +117,59 @@ test('桌面菜单栏不再使用独立高光层分割侧边栏材质', () => {
   assert.match(
     stylesSource,
     /\.codex-desktop\s+\.desktop-menubar::after\s*\{[^}]*content:\s*none;[^}]*\}/s,
+  );
+});
+
+test('桌面标题栏左侧导航按钮颜色与菜单文字对齐', () => {
+  assert.match(
+    stylesSource,
+    /\.desktop-menu-trigger\s*\{[^}]*font-size:\s*13px;[^}]*\}/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.desktop-menu-trigger\s*,\s*\.window-controls button\s*\{[^}]*color:\s*inherit;[^}]*\}/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.window-nav button\s*\{[^}]*color:\s*inherit;[^}]*\}/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.window-nav button:disabled\s*\{[^}]*color:\s*color-mix\(in srgb,\s*currentColor\s*52%,\s*transparent\);[^}]*\}/s,
+  );
+});
+
+test('桌面标题栏收起侧边栏按钮单独降低一档颜色', () => {
+  assert.match(
+    menubarSource,
+    /className="window-nav-sidebar-toggle"/,
+  );
+  assert.match(
+    stylesSource,
+    /\.window-nav\s+button\.window-nav-sidebar-toggle\s*\{[^}]*color:\s*color-mix\(in srgb,\s*currentColor\s*60%,\s*transparent\);[^}]*\}/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.window-nav\s+button\.window-nav-sidebar-toggle:hover\s*\{[^}]*color:\s*color-mix\(in srgb,\s*#1f1f1f\s*60%,\s*transparent\);[^}]*\}/s,
+  );
+});
+
+test('侧边栏项目和会话菜单使用局部 Acrylic 玻璃，不影响全局玻璃菜单', () => {
+  assert.match(
+    stylesSource,
+    /\.codex-desktop\s+:is\(\.project-menu-popover,\s*\.thread-menu-popover\)\s*\{[^}]*background:\s*linear-gradient\(\s*145deg,\s*color-mix\(in srgb,\s*var\(--app-surface\)\s*86%,\s*transparent\),\s*color-mix\(in srgb,\s*var\(--app-surface-muted\)\s*78%,\s*transparent\)\s*\),\s*color-mix\(in srgb,\s*var\(--app-surface\)\s*70%,\s*transparent\)\s*!important;[^}]*backdrop-filter:\s*blur\(34px\)\s+saturate\(1\.28\);/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.codex-desktop\s+:is\(\.project-menu-popover,\s*\.thread-menu-popover\)::before\s*\{[^}]*repeating-linear-gradient\(\s*45deg,\s*color-mix\(in srgb,\s*var\(--app-surface\)\s*10%,\s*transparent\)\s+0\s+1px,\s*transparent\s+1px\s+3px\s*\)[^}]*linear-gradient\(145deg,\s*color-mix\(in srgb,\s*var\(--app-surface\)\s*34%,\s*transparent\),\s*color-mix\(in srgb,\s*var\(--app-surface-muted\)\s*22%,\s*transparent\)\)/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.codex-desktop\s+:is\(\.project-menu-popover,\s*\.thread-menu-popover\)::after\s*\{[^}]*opacity:\s*0\.62;/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.codex-desktop\s+:is\(\.workspace-menu,\s*\.open-app-dropdown,[^)]*\.desktop-menu-popover\)\s*\{[^}]*color-mix\(in srgb,\s*var\(--app-surface\)\s*22%,\s*transparent\)\s*!important;/s,
   );
 });
 

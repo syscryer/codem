@@ -40,6 +40,7 @@ export function GitConflictOverviewDialog({
   const conflicts = operationState.conflicts;
   const [activePath, setActivePath] = useState('');
   const [workingAction, setWorkingAction] = useState('');
+  const [inlineStatus, setInlineStatus] = useState('');
   const activeConflict = useMemo(
     () => conflicts.find((conflict) => conflict.path === activePath) ?? conflicts[0] ?? null,
     [activePath, conflicts],
@@ -51,6 +52,7 @@ export function GitConflictOverviewDialog({
       return;
     }
 
+    setInlineStatus('');
     setActivePath((current) => {
       if (current && conflicts.some((conflict) => conflict.path === current)) {
         return current;
@@ -84,7 +86,7 @@ export function GitConflictOverviewDialog({
       const content = buildConflictResolutionContent(detail, choice);
       await saveGitConflictResult(projectId, activeConflict.path, content);
       await markGitConflictResolved(projectId, activeConflict.path);
-      showToast(choice === 'current' ? '已接受当前版本' : '已接受传入版本');
+      setInlineStatus(choice === 'current' ? '已接受当前版本' : '已接受传入版本');
       await Promise.resolve(onChanged());
     });
   }
@@ -123,7 +125,10 @@ export function GitConflictOverviewDialog({
                   type="button"
                   className={`git-conflict-overview-row${conflict.path === activeConflict?.path ? ' active' : ''}`}
                   role="row"
-                  onClick={() => setActivePath(conflict.path)}
+                  onClick={() => {
+                    setActivePath(conflict.path);
+                    setInlineStatus('');
+                  }}
                 >
                   <strong role="cell" title={conflict.path}>{conflict.path}</strong>
                   <span role="cell">{formatSideLabel(conflict.status, 'current')}</span>
@@ -139,6 +144,7 @@ export function GitConflictOverviewDialog({
           <aside className="git-conflict-overview-actions" aria-label="文件级冲突操作">
             <strong>{activeConflict?.path ?? '未选择文件'}</strong>
             <span>{activeConflict?.label ?? '所有冲突文件已处理。'}</span>
+            {inlineStatus ? <span className="git-conflict-inline-status">{inlineStatus}</span> : null}
             <button
               type="button"
               className="dialog-button secondary"

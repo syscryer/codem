@@ -192,7 +192,6 @@ export function SessionManagementSettingsSection({
 
     if (!confirmingDelete) {
       setConfirmingDelete(true);
-      showToast(`再次点击“删除所选”将删除 ${deletableThreadIds.length} 个会话。`, 'info');
       return;
     }
 
@@ -237,7 +236,9 @@ export function SessionManagementSettingsSection({
         throw new Error(await response.text());
       }
       const result = (await response.json()) as { closed?: boolean };
-      showToast(result.closed ? '会话连接已重置' : '当前没有可重置的会话连接', result.closed ? 'success' : 'info');
+      if (result.closed) {
+        showToast('会话连接已重置');
+      }
       setRuntimeStatuses(await fetchThreadRuntimeStatuses());
     } catch (error) {
       showToast(error instanceof Error ? error.message : '重置会话连接失败', 'error');
@@ -247,9 +248,11 @@ export function SessionManagementSettingsSection({
   }
 
   const selectedDeleteLabel = confirmingDelete ? '确认删除所选' : '删除所选';
-  const selectedDeleteHint = selectedRunningCount > 0
-    ? `已跳过 ${selectedRunningCount} 个运行中的会话`
-    : `${deletableThreadIds.length} 个可删除`;
+  const selectedDeleteHint = getSelectedDeleteHint({
+    confirmingDelete,
+    deletableCount: deletableThreadIds.length,
+    selectedRunningCount,
+  });
 
   return (
     <section className="settings-page-section settings-page-wide">
@@ -347,6 +350,24 @@ export function SessionManagementSettingsSection({
       </div>
     </section>
   );
+}
+
+function getSelectedDeleteHint({
+  confirmingDelete,
+  deletableCount,
+  selectedRunningCount,
+}: {
+  confirmingDelete: boolean;
+  deletableCount: number;
+  selectedRunningCount: number;
+}) {
+  if (confirmingDelete) {
+    return `再次点击将删除 ${deletableCount} 个会话`;
+  }
+  if (selectedRunningCount > 0) {
+    return `已跳过 ${selectedRunningCount} 个运行中的会话`;
+  }
+  return `${deletableCount} 个可删除`;
 }
 
 function SessionRow({

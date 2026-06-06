@@ -876,7 +876,6 @@ function WorkbenchFiles({
     setNavigatorContextMenu(null);
     try {
       await navigator.clipboard.writeText(fullPath ? resolveNavigatorContextFullPath(item) : item.path);
-      showToast(fullPath ? '完整路径已复制' : '路径已复制');
     } catch {
       showToast('复制路径失败', 'error');
     }

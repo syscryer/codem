@@ -559,7 +559,7 @@ export function useWorkspaceState() {
     });
   }
 
-  async function createThread(projectId: string, title?: string, options?: CreateThreadOptions) {
+  async function createThread(projectId: string, title?: string, _options?: CreateThreadOptions) {
     const response = await fetch(`/api/projects/${projectId}/threads`, {
       method: 'POST',
       headers: {
@@ -598,13 +598,10 @@ export function useWorkspaceState() {
     setActiveThreadId(payload.threadId);
     newChatDraftRef.current = false;
     setIsNewChatDraft(false);
-    if (options?.showToast !== false) {
-      showToast('已新建聊天');
-    }
     return createdThread;
   }
 
-  async function renameThread(threadId: string, title: string, options?: { showToast?: boolean }) {
+  async function renameThread(threadId: string, title: string, _options?: { showToast?: boolean }) {
     const nextTitle = title.trim();
     if (!nextTitle) {
       return null;
@@ -627,9 +624,6 @@ export function useWorkspaceState() {
     const renamedThread = payload.workspace.projects
       .flatMap((project) => project.threads)
       .find((thread) => thread.id === threadId) ?? null;
-    if (options?.showToast !== false) {
-      showToast('聊天名称已更新');
-    }
     return renamedThread;
   }
 
@@ -682,12 +676,10 @@ export function useWorkspaceState() {
       newChatDraftRef.current = false;
       setIsNewChatDraft(false);
       await persistSelection(project.id, firstThread.id);
-      showToast('已切换到工作树');
       return;
     }
 
     await createThread(project.id, undefined, { showToast: false });
-    showToast('已切换到工作树');
   }
 
   async function selectDirectoryPath(initialPath?: string) {
@@ -915,7 +907,6 @@ export function useWorkspaceState() {
         const payload = (await response.json()) as { workspace: WorkspaceBootstrap };
         syncWorkspace(payload.workspace);
         setInputDialog(null);
-        showToast('项目名称已更新');
         return;
       }
 
@@ -929,7 +920,6 @@ export function useWorkspaceState() {
 
       await renameThread(inputDialog.threadId, nextValue, { showToast: false });
       setInputDialog(null);
-      showToast('聊天名称已更新');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '操作失败', 'error');
     }

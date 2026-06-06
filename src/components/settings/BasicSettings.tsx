@@ -1,4 +1,4 @@
-import { Bell, Code2, Download, ExternalLink, GitBranch, GitPullRequest, History, ListCollapse, RefreshCw, RotateCcw, Rows3, Search, Send, Shield, TerminalSquare } from 'lucide-react';
+import { Bell, Code2, Download, ExternalLink, GitBranch, GitPullRequest, History, ListCollapse, LoaderCircle, RefreshCw, RotateCcw, Rows3, Search, Send, Shield, TerminalSquare } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { permissionMenuModes } from '../../constants';
 import type { AppRuntimeInfo, AppUpdateCheckState, ClaudeCliVersionInfo, GeneralSettings } from '../../types';
@@ -267,7 +267,7 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
                 onClick={() => void handleInstallAppUpdate()}
                 disabled={updateInstalling}
               >
-                <Download size={14} className={updateInstalling ? 'spin' : ''} />
+                {updateInstalling ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />}
                 <span>安装并重启</span>
               </button>
             ) : null}

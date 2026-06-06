@@ -221,7 +221,7 @@ export function AppMenubar({
 
   const navigation = (
     <div className="window-nav">
-      <button type="button" aria-label={sidebarVisible ? '隐藏侧边栏' : '显示侧边栏'} onClick={onToggleSidebar}>
+      <button type="button" className="window-nav-sidebar-toggle" aria-label={sidebarVisible ? '隐藏侧边栏' : '显示侧边栏'} onClick={onToggleSidebar}>
         <PanelLeft size={navIconSize} />
       </button>
       <button type="button" aria-label="后退" disabled={!canNavigateBack} onClick={onNavigateBack}>

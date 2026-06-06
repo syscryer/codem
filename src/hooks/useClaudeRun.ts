@@ -1882,7 +1882,6 @@ export function useClaudeRun({
         content: formatJson({ requestId: request.requestId, answers }),
       });
       schedulePersistThreadHistory(activeThreadId);
-      showToast('已回答 Claude 的提问。', 'success');
       return true;
     }
 
@@ -1908,7 +1907,6 @@ export function useClaudeRun({
       content: formatJson({ requestId: request.requestId, answers }),
     });
     schedulePersistThreadHistory(activeThreadId);
-    showToast('已将补充信息作为续聊提交。', 'success');
     return true;
   }
 
@@ -2022,7 +2020,6 @@ export function useClaudeRun({
         }),
       });
       schedulePersistThreadHistory(threadId);
-      showToast(decision === 'approve' ? '已批准并继续任务。' : '已拒绝该操作并继续任务。', 'success');
       return true;
     }
 
@@ -2070,7 +2067,6 @@ export function useClaudeRun({
       },
     });
 
-    showToast(decision === 'approve' ? '已批准并继续任务。' : '已拒绝该操作并继续任务。', 'success');
     return true;
   }
 

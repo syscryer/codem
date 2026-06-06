@@ -742,7 +742,6 @@ export default function App() {
     setProjectsRefreshing(true);
     try {
       await loadWorkspace();
-      showToast('项目已刷新');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '刷新项目失败', 'error');
     } finally {

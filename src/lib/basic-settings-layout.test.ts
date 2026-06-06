@@ -21,3 +21,9 @@ test('应用更新与 Claude CLI 版本区域不再展示冗余辅助文案', ()
   assert.doesNotMatch(source, /最低支持：/);
   assert.doesNotMatch(source, /更新命令：/);
 });
+
+test('应用更新安装中使用加载图标而不是旋转下载箭头', () => {
+  assert.match(source, /LoaderCircle/);
+  assert.match(source, /updateInstalling\s*\?\s*<LoaderCircle className="spin" size=\{14\} \/>/);
+  assert.doesNotMatch(source, /<Download size=\{14\} className=\{updateInstalling \? 'spin' : ''\} \/>/);
+});

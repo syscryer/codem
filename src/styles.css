@@ -541,13 +541,17 @@ svg {
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: #b4b8be;
+  color: inherit;
   cursor: pointer;
   font-size: 13px;
 }
 
+.window-nav button.window-nav-sidebar-toggle {
+  color: color-mix(in srgb, currentColor 60%, transparent);
+}
+
 .window-nav button:disabled {
-  color: #d0d3d8;
+  color: color-mix(in srgb, currentColor 52%, transparent);
   cursor: default;
 }
 
@@ -598,9 +602,13 @@ svg {
   color: #1f1f1f;
 }
 
+.window-nav button.window-nav-sidebar-toggle:hover {
+  color: color-mix(in srgb, #1f1f1f 60%, transparent);
+}
+
 .window-nav button:disabled:hover {
   background: transparent;
-  color: #d0d3d8;
+  color: color-mix(in srgb, currentColor 52%, transparent);
 }
 
 .desktop-menu-popover {
@@ -2193,6 +2201,20 @@ svg {
 .git-conflict-result-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+.git-conflict-inline-status {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #16a34a 10%, transparent);
+  color: #166534;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
 }
 
 .git-conflict-confirm-strip {
@@ -10010,6 +10032,13 @@ button.git-conflict-overview-row:focus-visible,
   font-size: 12px;
 }
 
+.git-conflict-overview-actions .git-conflict-inline-status {
+  margin-bottom: 0;
+  color: #166534;
+  overflow: visible;
+  text-overflow: clip;
+}
+
 .git-conflict-overview-actions .dialog-button,
 .git-conflict-dialog-actions .dialog-button {
   display: inline-flex;
@@ -15058,6 +15087,43 @@ button.git-conflict-overview-row:focus-visible,
   background:
     linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 96%, transparent), color-mix(in srgb, var(--app-surface-muted) 92%, transparent)),
     color-mix(in srgb, var(--app-surface) 90%, transparent) !important;
+}
+
+.codex-desktop :is(.project-menu-popover, .thread-menu-popover) {
+  border-color: color-mix(in srgb, var(--app-border) 86%, transparent);
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--app-surface) 86%, transparent),
+      color-mix(in srgb, var(--app-surface-muted) 78%, transparent)
+    ),
+    color-mix(in srgb, var(--app-surface) 70%, transparent) !important;
+  box-shadow:
+    0 30px 72px rgba(15, 23, 42, 0.2),
+    0 10px 28px rgba(15, 23, 42, 0.09),
+    inset 0 1px 0 color-mix(in srgb, var(--app-surface) 98%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--app-surface) 44%, transparent);
+  backdrop-filter: blur(34px) saturate(1.28);
+  -webkit-backdrop-filter: blur(34px) saturate(1.28);
+}
+
+.codex-desktop :is(.project-menu-popover, .thread-menu-popover)::before {
+  background:
+    radial-gradient(ellipse at 18% 0%, color-mix(in srgb, var(--app-surface) 30%, transparent), transparent 44%),
+    repeating-linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--app-surface) 10%, transparent) 0 1px,
+      transparent 1px 3px
+    ),
+    linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 34%, transparent), color-mix(in srgb, var(--app-surface-muted) 22%, transparent));
+  background-blend-mode: normal, soft-light, normal;
+}
+
+.codex-desktop :is(.project-menu-popover, .thread-menu-popover)::after {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 20%, transparent), transparent 38%),
+    linear-gradient(110deg, color-mix(in srgb, var(--app-surface) 12%, transparent), transparent 30%, transparent 72%, color-mix(in srgb, var(--app-border) 10%, transparent));
+  opacity: 0.62;
 }
 
 .codex-desktop .open-app-dropdown {

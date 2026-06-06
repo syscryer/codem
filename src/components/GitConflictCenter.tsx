@@ -43,6 +43,7 @@ export function GitConflictCenter({
   const [resultContent, setResultContent] = useState('');
   const [detailLoading, setDetailLoading] = useState(false);
   const [workingAction, setWorkingAction] = useState('');
+  const [inlineStatus, setInlineStatus] = useState('');
   const [pendingPullMode, setPendingPullMode] = useState<GitPullMode | null>(null);
   const [abortConfirmOpen, setAbortConfirmOpen] = useState(false);
   const operationLabel = formatOperationLabel(operationState?.operation ?? 'none');
@@ -94,6 +95,7 @@ export function GitConflictCenter({
     if (!activeConflict) {
       setDetail(null);
       setResultContent('');
+      setInlineStatus('');
       return;
     }
 
@@ -104,6 +106,7 @@ export function GitConflictCenter({
         if (!cancelled) {
           setDetail(nextDetail);
           setResultContent(nextDetail.resultContent);
+          setInlineStatus('');
         }
       })
       .catch((error: unknown) => {
@@ -157,7 +160,7 @@ export function GitConflictCenter({
       const nextDetail = await saveGitConflictResult(projectId, activeConflict.path, resultContent);
       setDetail(nextDetail);
       setResultContent(nextDetail.resultContent);
-      showToast('冲突结果已保存');
+      setInlineStatus('冲突结果已保存');
     });
   }
 
@@ -168,7 +171,7 @@ export function GitConflictCenter({
     await runAction('mark', async () => {
       await saveGitConflictResult(projectId, activeConflict.path, resultContent);
       await markGitConflictResolved(projectId, activeConflict.path);
-      showToast('已标记冲突解决');
+      setInlineStatus('已标记冲突解决');
       await Promise.resolve(onChanged());
     });
   }
@@ -238,18 +241,21 @@ export function GitConflictCenter({
   function acceptCurrent() {
     if (detail) {
       setResultContent(detail.currentContent);
+      setInlineStatus('');
     }
   }
 
   function acceptIncoming() {
     if (detail) {
       setResultContent(detail.incomingContent);
+      setInlineStatus('');
     }
   }
 
   function acceptBoth() {
     if (detail) {
       setResultContent([detail.currentContent.trimEnd(), detail.incomingContent.trimStart()].filter(Boolean).join('\n'));
+      setInlineStatus('');
     }
   }
 
@@ -378,7 +384,13 @@ export function GitConflictCenter({
 
                 <label className="git-conflict-result">
                   <span>Result</span>
-                  <textarea value={resultContent} onChange={(event) => setResultContent(event.target.value)} />
+                  <textarea
+                    value={resultContent}
+                    onChange={(event) => {
+                      setResultContent(event.target.value);
+                      setInlineStatus('');
+                    }}
+                  />
                 </label>
 
                 <div className="git-conflict-result-actions">
@@ -390,6 +402,7 @@ export function GitConflictCenter({
                     {workingAction === 'mark' ? <LoaderCircle className="spin" size={13} /> : <Check size={13} />}
                     标记已解决
                   </button>
+                  {inlineStatus ? <span className="git-conflict-inline-status">{inlineStatus}</span> : null}
                 </div>
               </>
             ) : (

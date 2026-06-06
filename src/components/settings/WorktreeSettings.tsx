@@ -95,7 +95,6 @@ export function WorktreeSettingsSection({
 
     if (pendingRemovePath !== worktree.path) {
       setPendingRemovePath(worktree.path);
-      showToast(`再次点击“删除”即可移除 ${worktreeTitle(worktree)}。`, 'info');
       return;
     }
 
@@ -259,6 +258,7 @@ function WorktreeRow({
         </div>
         <small className="worktree-row-path" title={worktree.path}>{worktree.path}</small>
         {worktree.statusError ? <small className="mcp-warning-inline">{worktree.statusError}</small> : null}
+        {pendingRemove ? <small className="mcp-warning-inline">再次点击将移除该工作树。</small> : null}
       </div>
       <div className="settings-list-actions worktree-list-actions">
         <button type="button" className="settings-action-button" onClick={onOpen} disabled={!worktree.exists}>

@@ -49,6 +49,7 @@ export function GitConflictMergeDialog({
   const [loading, setLoading] = useState(false);
   const [workingAction, setWorkingAction] = useState('');
   const [syncScroll, setSyncScroll] = useState(true);
+  const [inlineStatus, setInlineStatus] = useState('');
   const leftScrollRef = useRef<HTMLDivElement | null>(null);
   const resultScrollRef = useRef<HTMLTextAreaElement | null>(null);
   const rightScrollRef = useRef<HTMLDivElement | null>(null);
@@ -89,6 +90,7 @@ export function GitConflictMergeDialog({
     if (!open || !filePath) {
       setDetail(null);
       setResultContent('');
+      setInlineStatus('');
       return;
     }
 
@@ -99,6 +101,7 @@ export function GitConflictMergeDialog({
         if (!cancelled) {
           setDetail(nextDetail);
           setResultContent(nextDetail.resultContent);
+          setInlineStatus('');
         }
       })
       .catch((caughtError: unknown) => {
@@ -126,6 +129,7 @@ export function GitConflictMergeDialog({
     if (!detail) {
       return;
     }
+    setInlineStatus('');
 
     if (choice === 'both') {
       setResultContent(buildConflictResolutionContent(detail, 'both'));
@@ -155,7 +159,7 @@ export function GitConflictMergeDialog({
       const nextDetail = await saveGitConflictResult(projectId, filePath, resultContent);
       setDetail(nextDetail);
       setResultContent(nextDetail.resultContent);
-      showToast('冲突结果已保存');
+      setInlineStatus('冲突结果已保存');
     });
   }
 
@@ -168,7 +172,6 @@ export function GitConflictMergeDialog({
     await runAction('resolve', async () => {
       await saveGitConflictResult(projectId, filePath, resultContent);
       await markGitConflictResolved(projectId, filePath);
-      showToast('已保存并标记冲突解决');
       await Promise.resolve(onResolved());
       onClose();
     });
@@ -315,7 +318,10 @@ export function GitConflictMergeDialog({
                 lines={resultLines}
                 conflictLineNumbers={conflictLineNumbers}
                 resultContent={resultContent}
-                onChange={setResultContent}
+                onChange={(nextContent) => {
+                  setResultContent(nextContent);
+                  setInlineStatus('');
+                }}
                 scrollRef={resultScrollRef}
                 onScroll={(scrollTop) => handleSynchronizedScroll('result', scrollTop)}
               />
@@ -347,6 +353,7 @@ export function GitConflictMergeDialog({
                 </button>
               </div>
               <div className="idea-merge-footer-right">
+                {inlineStatus ? <span className="git-conflict-inline-status">{inlineStatus}</span> : null}
                 <button type="button" className="idea-merge-footer-button" disabled={Boolean(workingAction)} onClick={() => void saveResult()}>
                   {workingAction === 'save' ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />}
                   保存结果
