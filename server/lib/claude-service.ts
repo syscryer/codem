@@ -405,7 +405,7 @@ export function getClaudeCliVersionInfo() {
     };
   }
 
-  const versionResult = spawnSync(command, ['--version'], {
+  const versionResult = spawnSync(resolveClaudeSpawnCommand(command), resolveClaudeSpawnArgs(command, ['--version']), {
     encoding: 'utf8',
     timeout: 10_000,
     windowsHide: true,
@@ -2403,8 +2403,8 @@ function resolveClaudeCommand() {
     return cachedClaudeCommand;
   }
 
-  const lookupCommand = process.platform === 'win32' ? 'where.exe' : 'which';
-  const lookup = spawnSync(lookupCommand, ['claude'], {
+  const lookupInvocation = buildClaudeCommandLookupInvocation();
+  const lookup = spawnSync(lookupInvocation.command, lookupInvocation.args, {
     encoding: 'utf8',
     windowsHide: true,
   });
@@ -2422,6 +2422,26 @@ function resolveClaudeCommand() {
   cachedClaudeCommand = selectSpawnableClaudeCommand(candidates);
 
   return cachedClaudeCommand;
+}
+
+export function buildClaudeCommandLookupInvocation(platform: NodeJS.Platform | string = process.platform) {
+  if (platform !== 'win32') {
+    return {
+      command: 'which',
+      args: ['claude'],
+    };
+  }
+
+  const script = [
+    '$OutputEncoding = [System.Text.Encoding]::UTF8',
+    '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+    "Get-Command claude -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
+  ].join('; ');
+
+  return {
+    command: 'powershell.exe',
+    args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+  };
 }
 
 function parseClaudeCliVersion(output: string) {

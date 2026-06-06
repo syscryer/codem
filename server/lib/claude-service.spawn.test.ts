@@ -2,7 +2,12 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as ClaudeService from './claude-service.js';
-import { buildClaudeInputMessage, summarizeClaudeInputForHistory, summarizeClaudeInputForTrace } from './claude-service.js';
+import {
+  buildClaudeCommandLookupInvocation,
+  buildClaudeInputMessage,
+  summarizeClaudeInputForHistory,
+  summarizeClaudeInputForTrace,
+} from './claude-service.js';
 
 const source = readFileSync(new URL('./claude-service.ts', import.meta.url), 'utf8');
 const serverSource = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
@@ -496,6 +501,22 @@ test('Windows Claude cmd shims are spawned through cmd.exe with wrapped args', (
   assert.match(resolveCommandBody, /cmd\.exe/);
   assert.match(resolveArgsBody, /\/\\\.\(cmd\|bat\)\$\/i/);
   assert.match(resolveArgsBody, /['"]\/d['"],\s*['"]\/s['"],\s*['"]\/c['"],\s*command,\s*\.\.\.args/);
+});
+
+test('Windows Claude lookup uses PowerShell with UTF-8 output so Chinese user directories are preserved', () => {
+  const lookup = buildClaudeCommandLookupInvocation('win32');
+
+  assert.equal(lookup.command, 'powershell.exe');
+  assert.deepEqual(lookup.args.slice(0, 3), ['-NoProfile', '-ExecutionPolicy', 'Bypass']);
+  assert.match(lookup.args.at(-1) ?? '', /\[Console\]::OutputEncoding\s*=\s*\[System\.Text\.Encoding\]::UTF8/);
+  assert.match(lookup.args.at(-1) ?? '', /\$OutputEncoding\s*=\s*\[System\.Text\.Encoding\]::UTF8/);
+  assert.match(lookup.args.at(-1) ?? '', /Get-Command claude/);
+});
+
+test('Claude version check wraps Windows cmd shims the same way as runtime spawning', () => {
+  const versionInfoBody = extractFunctionBody('getClaudeCliVersionInfo');
+
+  assert.match(versionInfoBody, /spawnSync\(resolveClaudeSpawnCommand\(command\),\s*resolveClaudeSpawnArgs\(command,\s*\[['"]--version['"]\]\)/);
 });
 
 test('cold resume starts a stream-json runtime so tool results can be sent while running', () => {
