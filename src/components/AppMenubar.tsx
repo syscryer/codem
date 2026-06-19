@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Check, Minus, PanelLeft, Square, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Minus, Square, X } from 'lucide-react';
 import { useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { getWindowMaterialLabel, isTauriRuntime } from '../lib/window-material';
@@ -222,7 +222,7 @@ export function AppMenubar({
   const navigation = (
     <div className="window-nav">
       <button type="button" className="window-nav-sidebar-toggle" aria-label={sidebarVisible ? '隐藏侧边栏' : '显示侧边栏'} onClick={onToggleSidebar}>
-        <PanelLeft size={navIconSize} />
+        <SidebarToggleIcon visible={sidebarVisible} />
       </button>
       <button type="button" aria-label="后退" disabled={!canNavigateBack} onClick={onNavigateBack}>
         <ArrowLeft size={navIconSize} />
@@ -420,6 +420,24 @@ export function AppMenubar({
       <div className="window-title-spacer" />
       {windowControls}
     </header>
+  );
+}
+
+function SidebarToggleIcon({ visible }: { visible: boolean }) {
+  const railX = visible ? 6 : 11;
+
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3.5" y="3.5" width="13" height="13" rx="3" />
+      <rect x={railX} y="6.25" width="3" height="7.5" rx="1" fill="currentColor" stroke="none" />
+    </svg>
   );
 }
 
