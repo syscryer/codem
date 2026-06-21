@@ -52,6 +52,7 @@ test('continuing a Claude thread reuses a managed runtime before spawning a new 
   assert.match(isRuntimeCompatibleBody, /runtime\.reusable/);
   assert.match(spawnClaudeRuntimeBody, /inputMode\s*===\s*['"]stdin['"]/);
   assert.match(spawnClaudeRuntimeBody, /\[\s*['"]-p['"],\s*['"]['"],\s*['"]--input-format['"],\s*['"]stream-json['"]\s*\]/);
+  assert.match(spawnClaudeRuntimeBody, /['"]--include-hook-events['"]/);
   assert.match(spawnClaudeRuntimeBody, /['"]--permission-prompt-tool['"][\s\S]*['"]stdio['"]/);
   assert.match(spawnClaudeRuntimeBody, /if\s*\(\s*resumeSessionId\s*\)\s*{\s*args\.push\(['"]--resume['"],\s*resumeSessionId\)/s);
   assert.match(
@@ -467,6 +468,16 @@ test('Claude effort is parsed, passed to the CLI, and included in runtime compat
   assert.match(spawnClaudeRuntimeBody, /effort:\s*input\.effort/);
 });
 
+test('Claude ultracode effort is translated to session settings instead of --effort', () => {
+  const spawnClaudeRuntimeBody = extractFunctionBody('spawnClaudeRuntime');
+
+  assert.match(source, /export type ClaudeEffortLevel = [^;]*['"]ultracode['"]/);
+  assert.match(serverSource, /value === ['"]ultracode['"]/);
+  assert.match(spawnClaudeRuntimeBody, /input\.effort === ['"]ultracode['"]/);
+  assert.match(spawnClaudeRuntimeBody, /args\.push\(['"]--settings['"],\s*JSON\.stringify\(\{\s*ultracode:\s*true\s*\}\)\)/);
+  assert.match(spawnClaudeRuntimeBody, /else if\s*\(\s*input\.effort\s*\)\s*{\s*args\.push\(['"]--effort['"],\s*input\.effort\)/);
+});
+
 test('managed runtime compatibility includes the Claude provider fingerprint', () => {
   const isRuntimeCompatibleBody = extractFunctionBody('isRuntimeCompatible');
   const spawnClaudeRuntimeBody = extractFunctionBody('spawnClaudeRuntime');
@@ -641,6 +652,22 @@ test('client disconnect detaches a run instead of cancelling the Claude process'
   assert.doesNotMatch(serverSource, /response\.on\(['"]close['"][\s\S]{0,160}cancelRun/);
   assert.match(serverSource, /\/api\/claude\/runs\/active\/:threadId/);
   assert.match(serverSource, /\/api\/claude\/run\/:runId\/events/);
+});
+
+test('Claude runs can be softly interrupted through stdin before hard cancellation', () => {
+  const interruptBody = extractFunctionBody('interruptRun');
+  const buildInterruptBody = extractFunctionBody('buildClaudeInterruptControlRequestMessage');
+
+  assert.match(source, /export function interruptRun\(runId: string\)/);
+  assert.match(serverSource, /app\.post\('\/api\/claude\/run\/:runId\/interrupt'/);
+  assert.match(serverSource, /interruptRun\(request\.params\.runId\)/);
+  assert.match(interruptBody, /activeRun\.runtime\.inputMode !== ['"]stdin['"]/);
+  assert.match(interruptBody, /activeRun\.runtime\.child\.stdin\.write\(payload,/);
+  assert.match(interruptBody, /buildClaudeInterruptControlRequestMessage\(\)/);
+  assert.match(buildInterruptBody, /type:\s*['"]control_request['"]/);
+  assert.match(buildInterruptBody, /request_id:\s*randomUUID\(\)/);
+  assert.match(buildInterruptBody, /subtype:\s*['"]interrupt['"]/);
+  assert.doesNotMatch(interruptBody, /closeClaudeRuntime/);
 });
 
 test('active run status reports an inactive payload without a not-found response', () => {

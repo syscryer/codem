@@ -16,6 +16,7 @@ import {
   getActiveRunForThread,
   getClaudeModels,
   getThreadRuntimeStatuses,
+  interruptRun,
   isDirectoryAccessible,
   markRunDetached,
   markThreadRunDetached,
@@ -1686,6 +1687,16 @@ app.delete('/api/claude/run/:runId', (request, response) => {
   response.json({ cancelled });
 });
 
+app.post('/api/claude/run/:runId/interrupt', (request, response) => {
+  const result = interruptRun(request.params.runId);
+  if (!result.submitted) {
+    response.status(409).json(result);
+    return;
+  }
+
+  response.json(result);
+});
+
 app.post('/api/claude/runtime/:threadId/close', (request, response) => {
   const closed = closeThreadRuntime(request.params.threadId);
   response.json({ closed });
@@ -1877,7 +1888,8 @@ function isClaudeEffortLevel(value: string): value is ClaudeEffortLevel {
     value === 'medium' ||
     value === 'high' ||
     value === 'xhigh' ||
-    value === 'max';
+    value === 'max' ||
+    value === 'ultracode';
 }
 
 function normalizeClaudeRunImageAttachments(value: unknown): ClaudeInputImageAttachment[] {

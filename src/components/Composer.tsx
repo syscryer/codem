@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
-import { ArrowUp, Brain, Check, CornerDownRight, File, FileArchive, FileAudio, FileCode, FileImage, FileSpreadsheet, FileText, Folder, Image, Mic, Pencil, Plus, Puzzle, Settings, Shield, Square, Unlock, X, Zap, type LucideIcon } from 'lucide-react';
+import { ArrowUp, Brain, Check, CornerDownRight, File, FileArchive, FileAudio, FileCode, FileImage, FileSpreadsheet, FileText, Folder, Image, Loader2, Mic, Pencil, Plus, Puzzle, Settings, Shield, Square, Unlock, X, Zap, type LucideIcon } from 'lucide-react';
 import { permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
@@ -78,6 +78,7 @@ const claudeEffortOptions: Array<{
   { value: 'high', label: 'High', description: '复杂代码和排查问题' },
   { value: 'xhigh', label: 'XHigh', description: '更深入的推理' },
   { value: 'max', label: 'Max', description: '当前会话最高努力级别' },
+  { value: 'ultracode', label: 'Ultracode', description: 'xhigh 与自动 workflows，仅当前会话' },
 ];
 
 type ComposerProps = {
@@ -90,6 +91,7 @@ type ComposerProps = {
   turns: ConversationTurn[];
   claudeContextState?: ClaudeContextRequestState;
   isRunning: boolean;
+  isInterrupting?: boolean;
   draftScopeKey: string;
   draft: string;
   queuedPrompts: Array<{ id: string; displayText: string; createdAtMs: number; queueStatus?: 'preparing' | 'ready' }>;
@@ -128,6 +130,7 @@ export function Composer({
   turns,
   claudeContextState,
   isRunning,
+  isInterrupting = false,
   draftScopeKey,
   draft: persistedDraft,
   queuedPrompts,
@@ -1276,8 +1279,14 @@ export function Composer({
             />
             <button type="button" className="plain-icon"><Mic size={15} /></button>
             {showStopButton ? (
-              <button type="button" className="send-button stop" onClick={() => void onStopRun()} title="停止">
-                <Square size={13} fill="currentColor" />
+              <button
+                type="button"
+                className="send-button stop"
+                onClick={() => void onStopRun()}
+                disabled={isInterrupting}
+                title={isInterrupting ? '正在中断当前回合' : '中断当前回合'}
+              >
+                {isInterrupting ? <Loader2 size={14} className="spin-icon" /> : <Square size={13} fill="currentColor" />}
               </button>
             ) : (
               <button

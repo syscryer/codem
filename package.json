@@ -8,6 +8,7 @@
     "dev:web": "vite",
     "dev:server": "tsx watch server/index.ts",
     "desktop:dev": "node scripts/desktop-dev.mjs",
+    "trellis": "node scripts/trellis.mjs",
     "desktop:shell": "tauri dev",
     "desktop:build": "tauri build",
     "package:doctor": "node scripts/doctor.mjs",

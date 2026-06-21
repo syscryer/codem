@@ -987,7 +987,7 @@ export type ClaudeModelOption = {
   contextWindowTokens?: number;
 };
 
-export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 export type ClaudeEffortSelection = 'default' | ClaudeEffortLevel;
 
 export type ClaudeGlobalPrompt = {

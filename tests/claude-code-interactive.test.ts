@@ -38,8 +38,8 @@ test('Claude Code 运行默认通过 stdin stream-json 交互发送 prompt', () 
   const writePromptBody = extractFunctionBody(serviceSource, 'writePromptToClaude');
   const buildInputMessageBody = extractFunctionBody(serviceSource, 'buildClaudeInputMessage');
 
-  assert.match(createClaudeStreamBody, /getOrCreateClaudeRuntime\(command,\s*input\)/);
-  assert.match(createClaudeStreamBody, /writePromptToClaude\(runtime,\s*state,\s*input\)/);
+  assert.match(createClaudeStreamBody, /getOrCreateClaudeRuntime\(command,\s*runtimeInput\)/);
+  assert.match(createClaudeStreamBody, /writePromptToClaude\(runtime,\s*state,\s*runtimeInput\)/);
   assert.match(getOrCreateRuntimeBody, /spawnClaudeRuntime\(command,\s*input,\s*['"]stdin['"]\)/);
   assert.doesNotMatch(getOrCreateRuntimeBody, /spawnClaudeRuntime\(command,\s*input,\s*['"]argv['"]\)/);
 
@@ -49,12 +49,13 @@ test('Claude Code 运行默认通过 stdin stream-json 交互发送 prompt', () 
   );
   assert.match(spawnRuntimeBody, /args\.push\([\s\S]*['"]--verbose['"][\s\S]*['"]--output-format['"][\s\S]*['"]stream-json['"]/);
   assert.match(spawnRuntimeBody, /args\.push\([\s\S]*['"]--include-partial-messages['"]/);
+  assert.match(spawnRuntimeBody, /args\.push\([\s\S]*['"]--include-hook-events['"]/);
   assert.match(spawnRuntimeBody, /['"]--permission-prompt-tool['"][\s\S]*['"]stdio['"]/);
   assert.match(writePromptBody, /runtime\.child\.stdin\.write\(payload,/);
   assert.match(writePromptBody, /JSON\.stringify\(buildClaudeInputMessage\(input\)\)/);
   assert.match(buildInputMessageBody, /type:\s*['"]user['"]/);
   assert.match(buildInputMessageBody, /role:\s*['"]user['"]/);
-  assert.match(buildInputMessageBody, /text:\s*input\.prompt/);
+  assert.match(buildInputMessageBody, /normalizeStreamInputContentBlocks\(input\)/);
 });
 
 test('交互运行中的人工决策会回写到同一个 Claude Code 会话', () => {

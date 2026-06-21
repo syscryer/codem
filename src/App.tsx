@@ -349,6 +349,7 @@ export default function App() {
     backendRunId,
     isRunning,
     runningThreadIds,
+    activeRunsByThreadId,
     activeTurnIdsByThreadId,
     queuedPrompts,
     removeQueuedPrompt,
@@ -1557,6 +1558,7 @@ export default function App() {
                 turns={activeThread?.turns ?? []}
                 claudeContextState={activeClaudeContextState}
                 isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
+                isInterrupting={Boolean(activeThreadId && activeRunsByThreadId[activeThreadId]?.interrupting)}
                 draftScopeKey={composerDraftKey}
                 draft={composerDraft}
                 queuedPrompts={queuedPrompts}

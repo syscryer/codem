@@ -139,10 +139,12 @@ npm run package:all                 # 当前系统推荐目标
 
 ## 开发文档
 
-- 开发规范入口：`.trellis/workflow.md`
+- 开发规范入口：`.trellis/workflow.md`（后续非临时改动必须按 Trellis 记录任务、session、边界和验收）
+- Trellis CLI：`npm run trellis -- start <topic> --title "任务标题"`，之后用 `record`、`verify`、`complete` 形成 session record 闭环
 - frontend 规范：`.trellis/spec/frontend/`
 - backend 规范：`.trellis/spec/backend/`
 - 思考指南：`.trellis/spec/guides/`
+- 开发任务沉淀：`.trellis/tasks/`
 - 行为提案与变更记录：`openspec/README.md`
 - 详细需求与演进路线：`requirements.md`
 - 后续开发路线图：`roadmap.md`

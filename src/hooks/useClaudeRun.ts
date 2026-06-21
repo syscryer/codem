@@ -95,6 +95,7 @@ type ActiveRunView = {
   runId: string;
   turnId: string;
   startedAtMs: number;
+  interrupting?: boolean;
 };
 
 type RunContext = {
@@ -102,6 +103,9 @@ type RunContext = {
   turnId: string;
   runId: string;
   abortController: AbortController | null;
+  interrupting: boolean;
+  interruptRequested: boolean;
+  interruptFallbackTimer: number | null;
   terminalRunId: string;
   workingDirectory: string;
   pendingAssistantText: string;
@@ -115,6 +119,8 @@ type RunContext = {
   permissionMode: PermissionMode;
   terminalNoticeKind?: 'completed' | 'failed';
 };
+
+const CLAUDE_INTERRUPT_FALLBACK_MS = 6000;
 
 type QueuedPrompt = {
   id: string;
@@ -407,6 +413,7 @@ export function useClaudeRun({
         runId: context.runId,
         turnId: context.turnId,
         startedAtMs: context.traceStartedAtMs,
+        interrupting: context.interrupting,
       },
     }));
     if (context.threadId === activeThreadId) {
@@ -430,8 +437,37 @@ export function useClaudeRun({
         runId,
         turnId: context.turnId,
         startedAtMs: context.traceStartedAtMs,
+        interrupting: context.interrupting,
       },
     }));
+  }
+
+  function setRunInterrupting(context: RunContext, interrupting: boolean) {
+    context.interrupting = interrupting;
+    setActiveRunsByThreadId((current) => {
+      const activeRun = current[context.threadId];
+      if (!activeRun) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [context.threadId]: {
+          ...activeRun,
+          interrupting,
+        },
+      };
+    });
+  }
+
+  function clearRunInterruptState(context: RunContext) {
+    if (context.interruptFallbackTimer !== null) {
+      window.clearTimeout(context.interruptFallbackTimer);
+      context.interruptFallbackTimer = null;
+    }
+    if (context.interrupting) {
+      setRunInterrupting(context, false);
+    }
   }
 
   function removeRunContext(context: RunContext) {
@@ -439,6 +475,8 @@ export function useClaudeRun({
       window.cancelAnimationFrame(context.assistantTextFrame);
       context.assistantTextFrame = null;
     }
+
+    clearRunInterruptState(context);
 
     runContextsByThreadIdRef.current.delete(context.threadId);
     if (context.runId) {
@@ -950,6 +988,9 @@ export function useClaudeRun({
       turnId,
       runId: '',
       abortController: null,
+      interrupting: false,
+      interruptRequested: false,
+      interruptFallbackTimer: null,
       terminalRunId: '',
       workingDirectory: runWorkingDirectory,
       pendingAssistantText: '',
@@ -1257,7 +1298,7 @@ export function useClaudeRun({
       }
     }
 
-    if (completedSuccessfully) {
+    if (completedSuccessfully && !context.interruptRequested) {
       maybeStartQueuedPrompt(context);
     } else if (sawTerminalEvent) {
       notifyQueuedPromptsRetained(context.threadId);
@@ -1783,11 +1824,10 @@ export function useClaudeRun({
       return;
     }
 
-    const hadLocalStream = Boolean(context.abortController);
-    context.abortController?.abort();
     const currentRunId = context.runId;
 
     if (!currentRunId) {
+      context.abortController?.abort();
       flushQueuedAssistantTextNow(context);
       updateRunningTurn(context, (turn) => ({
         ...closeTurnWithoutTerminalEvent(turn),
@@ -1798,31 +1838,70 @@ export function useClaudeRun({
       return;
     }
 
+    if (context.interrupting) {
+      return;
+    }
+
+    const hardCancelRun = async () => {
+      const hadLocalStream = Boolean(context.abortController);
+      context.abortController?.abort();
+      try {
+        await fetch(`/api/claude/run/${currentRunId}`, {
+          method: 'DELETE',
+        });
+      } catch {
+        appendRunningDebug(context, {
+          title: '取消请求未确认',
+          content: '前端已停止等待，但后端取消请求未确认完成。',
+          tone: 'error',
+        });
+      } finally {
+        if (!hadLocalStream) {
+          flushQueuedAssistantTextNow(context);
+          updateRunningTurn(context, (turn) => ({
+            ...turn,
+            ...settleRunningToolSteps(turn, 'done'),
+            items: settleRunningSystemCommandItems(turn.items, 'error', '上下文压缩已停止。'),
+            status: 'stopped',
+            phase: undefined,
+            durationMs: turn.durationMs ?? getElapsedDuration(turn),
+            activity: '已停止当前运行',
+          }));
+          schedulePersistThreadHistory(context.threadId);
+          removeRunContext(context);
+        }
+      }
+    };
+
+    context.interruptRequested = true;
+    setRunInterrupting(context, true);
+    updateRunningTurn(context, (turn) => ({
+      ...turn,
+      activity: '正在中断当前回合',
+    }));
+
+    context.interruptFallbackTimer = window.setTimeout(() => {
+      context.interruptFallbackTimer = null;
+      setRunInterrupting(context, false);
+      void hardCancelRun();
+    }, CLAUDE_INTERRUPT_FALLBACK_MS);
+
     try {
-      await fetch(`/api/claude/run/${currentRunId}`, {
-        method: 'DELETE',
+      const response = await fetch(`/api/claude/run/${currentRunId}/interrupt`, {
+        method: 'POST',
       });
-    } catch {
+
+      if (!response.ok) {
+        throw new Error(await readErrorResponseText(response) || '中断请求未被后端接受。');
+      }
+    } catch (error) {
+      clearRunInterruptState(context);
       appendRunningDebug(context, {
-        title: '取消请求未确认',
-        content: '前端已停止等待，但后端取消请求未确认完成。',
+        title: '软中断失败，改为停止运行',
+        content: error instanceof Error ? error.message : '发送中断请求失败。',
         tone: 'error',
       });
-    } finally {
-      if (!hadLocalStream) {
-        flushQueuedAssistantTextNow(context);
-        updateRunningTurn(context, (turn) => ({
-          ...turn,
-          ...settleRunningToolSteps(turn, 'done'),
-          items: settleRunningSystemCommandItems(turn.items, 'error', '上下文压缩已停止。'),
-          status: 'stopped',
-          phase: undefined,
-          durationMs: turn.durationMs ?? getElapsedDuration(turn),
-          activity: '已停止当前运行',
-        }));
-        schedulePersistThreadHistory(context.threadId);
-        removeRunContext(context);
-      }
+      await hardCancelRun();
     }
   }
 
@@ -2717,7 +2796,14 @@ function normalizeClaudeModelOptions(value: unknown): ClaudeModelOption[] {
 }
 
 function normalizeClaudeEffortSelection(value: unknown): ClaudeEffortSelection {
-  if (value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' || value === 'max') {
+  if (
+    value === 'low' ||
+    value === 'medium' ||
+    value === 'high' ||
+    value === 'xhigh' ||
+    value === 'max' ||
+    value === 'ultracode'
+  ) {
     return value;
   }
 

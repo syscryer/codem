@@ -36,3 +36,4 @@ test-results/
 .idea/
 .learnings/
 hello.txt
+.trellis/workspace/current-session.json

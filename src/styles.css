@@ -9460,8 +9460,14 @@ body.git-history-resizing {
   padding: 6px;
 }
 
-.effort-menu {
+.effort-menu.effort-menu {
   width: min(280px, calc(100vw - 40px));
+  max-height: min(480px, calc(100vh - 24px));
+  scrollbar-width: none;
+}
+
+.effort-menu::-webkit-scrollbar {
+  display: none;
 }
 
 .model-menu.model-menu-compact {
@@ -9498,6 +9504,8 @@ body.git-history-resizing {
 .effort-menu-item {
   grid-template-columns: 16px minmax(0, 1fr) 22px;
   gap: 10px;
+  min-height: 52px;
+  padding-block: 7px;
 }
 
 .model-menu-item-with-toggle {
@@ -16593,6 +16601,10 @@ button.git-conflict-overview-row:focus-visible,
   to {
     transform: rotate(360deg);
   }
+}
+
+.spin-icon {
+  animation: spin 0.9s linear infinite;
 }
 
 @keyframes progress-flow {

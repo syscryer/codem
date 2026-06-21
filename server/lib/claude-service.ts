@@ -23,7 +23,7 @@ export type ClaudePermissionMode =
   | 'dontAsk'
   | 'bypassPermissions';
 
-export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 
 type StreamInput = {
   threadId: string;
@@ -449,6 +449,49 @@ export function cancelRun(runId: string) {
   activeRun.cancel();
   activeRuns.delete(runId);
   return true;
+}
+
+export function interruptRun(runId: string) {
+  const activeRun = activeRuns.get(runId);
+  if (!activeRun || activeRun.state.finished) {
+    return {
+      submitted: false,
+      error: '当前运行不存在或已经结束。',
+    };
+  }
+
+  if (activeRun.runtime.inputMode !== 'stdin' || activeRun.runtime.closed) {
+    return {
+      submitted: false,
+      error: '当前 Claude 运行不支持软中断，请使用停止重试。',
+    };
+  }
+
+  const payload = `${JSON.stringify(buildClaudeInterruptControlRequestMessage())}\n`;
+  activeRun.runtime.child.stdin.write(payload, (error) => {
+    if (error) {
+      const message = `写入 Claude Code 中断请求失败：${error.message}`;
+      enqueueRetryableRuntimeError(
+        activeRun.state.runId,
+        message,
+        'process',
+        activeRun.state.emittedRecoveryHintKeys,
+        (event) => enqueueRunEvent(activeRun.state, event),
+      );
+      enqueueRunEvent(activeRun.state, {
+        type: 'error',
+        runId: activeRun.state.runId,
+        message,
+      });
+      return;
+    }
+
+    enqueueTrace(activeRun.state, 'stdin_interrupt_written', Date.now());
+  });
+
+  return {
+    submitted: true,
+  };
 }
 
 export function closeThreadRuntime(threadId: string) {
@@ -1612,6 +1655,7 @@ function spawnClaudeRuntime(command: string, input: StreamInput, inputMode: Clau
     '--output-format',
     'stream-json',
     '--include-partial-messages',
+    '--include-hook-events',
     '--permission-prompt-tool',
     'stdio',
   );
@@ -1626,7 +1670,9 @@ function spawnClaudeRuntime(command: string, input: StreamInput, inputMode: Clau
     args.push('--model', input.model);
   }
 
-  if (input.effort) {
+  if (input.effort === 'ultracode') {
+    args.push('--settings', JSON.stringify({ ultracode: true }));
+  } else if (input.effort) {
     args.push('--effort', input.effort);
   }
 
@@ -2736,6 +2782,16 @@ function buildClaudeControlResponseMessage(
               toolUseID: toolUseId,
               decisionClassification: 'user_reject',
             },
+    },
+  };
+}
+
+function buildClaudeInterruptControlRequestMessage() {
+  return {
+    type: 'control_request',
+    request_id: randomUUID(),
+    request: {
+      subtype: 'interrupt',
     },
   };
 }

@@ -61,3 +61,18 @@ test('context errors are normalized into user-facing copy', () => {
   assert.match(appSource, /读取上下文超时，请稍后重试。/);
   assert.match(appSource, /当前会话还在处理中，稍后再查看上下文。/);
 });
+
+test('composer exposes ultracode as a session-only effort option', () => {
+  assert.match(typesSource, /export type ClaudeEffortLevel = [^;]*['"]ultracode['"]/);
+  assert.match(composerSource, /value:\s*['"]ultracode['"]/);
+  assert.match(composerSource, /label:\s*['"]Ultracode['"]/);
+  assert.match(composerSource, /仅当前会话/);
+});
+
+test('composer stop button reflects soft interrupt state', () => {
+  assert.match(composerSource, /isInterrupting\?:\s*boolean/);
+  assert.match(composerSource, /disabled=\{isInterrupting\}/);
+  assert.match(composerSource, /正在中断当前回合/);
+  assert.match(composerSource, /Loader2/);
+  assert.match(appSource, /isInterrupting=\{Boolean\(activeThreadId && activeRunsByThreadId\[activeThreadId\]\?\.interrupting\)\}/);
+});
