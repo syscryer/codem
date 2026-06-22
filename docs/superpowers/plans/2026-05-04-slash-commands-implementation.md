@@ -66,7 +66,7 @@ Add grouped console output by source plus a short preview for any `insert-templa
 Suggested run:
 
 ```bash
-node scripts/slash-commands-spike.mjs --project D:\project\codem
+node scripts/slash-commands-spike.mjs --project <codem-workspace>
 ```
 
 - [x] **Step 4: Validate spike behavior manually**
@@ -179,7 +179,7 @@ If source scanning partially fails, still return successful command results wher
 Suggested check:
 
 ```bash
-Invoke-RestMethod "http://127.0.0.1:3001/api/slash-commands?projectPath=D:\project\codem"
+Invoke-RestMethod "http://127.0.0.1:3001/api/slash-commands?projectPath=<codem-workspace>"
 ```
 
 Expected: command payload includes built-in and local entries even if optional sources are empty.
@@ -417,7 +417,7 @@ Assert:
 - [x] **Step 1: Run spike validation**
 
 ```bash
-node scripts/slash-commands-spike.mjs --project D:\project\codem
+node scripts/slash-commands-spike.mjs --project <codem-workspace>
 ```
 
 Expected: grouped normalized command output.

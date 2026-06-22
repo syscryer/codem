@@ -9,7 +9,7 @@ Extend CodeM settings beyond Appearance with focused, low-risk sections:
 - MCP 管理
 - Skills 管理
 
-This task intentionally does not replace `cc-switch`. Provider ownership stays in `cc-switch`; CodeM only adds local model selection settings and read-only visibility for MCP/Skills.
+This task intentionally does not replace external provider configuration ownership. CodeM only adds local model selection settings and read-only visibility for MCP/Skills.
 
 ## Scope
 
@@ -24,7 +24,7 @@ In scope:
 
 Out of scope:
 
-- Listing cc-switch providers.
+- Listing external provider configurations.
 - Switching providers.
 - Editing base URL, API key, proxy, or provider live config.
 - MCP add/edit/delete/enable/disable.
@@ -38,11 +38,11 @@ Main design:
 
 - `docs/superpowers/specs/2026-04-26-settings-extensions-design.md`
 
-External references:
+External reference themes:
 
-- `D:\project\desktop-cc-gui` for custom model UX patterns.
-- `D:\project\cc-switch` for later MCP/Skills ideas, but first version remains read-only.
-- `D:\project\any-code` for Claude Code global `CLAUDE.md` prompt editing behavior.
+- Custom model UX patterns from mature desktop agent clients.
+- Later MCP/Skills ideas remain out of scope for the first read-only version.
+- Claude Code global `CLAUDE.md` prompt editing behavior.
 
 ## Stage 1. Model Settings
 
@@ -69,7 +69,7 @@ Acceptance:
 - Added custom models appear in the Composer model menu.
 - Selected custom model is sent as `--model`.
 - Refresh preserves custom models and default selection.
-- No cc-switch provider files are modified.
+- No external provider configuration files are modified.
 
 ## Stage 2. Global Prompt
 
@@ -163,7 +163,7 @@ Acceptance:
 
 ## Risks
 
-- Accidentally changing provider ownership from cc-switch to CodeM.
+- Accidentally changing provider ownership from the external provider configuration layer to CodeM.
 - Accidentally overwriting the user's Claude Code global `CLAUDE.md` content.
 - Trimming or reformatting Markdown in the global prompt file.
 - Custom model default overriding existing thread-specific model restoration.

@@ -2,7 +2,7 @@
 
 ## 背景
 
-仓库：`D:\cursor_project\codem`
+仓库：CodeM 本地工作区
 
 当前在实现 Git 日志面板的车道图，位置在 Git 日志三栏面板中间提交列表左侧。目标效果参考 VSCode / IDEA：
 

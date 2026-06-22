@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Bring Claudinal's full plugin management workflow into CodeM's Settings area, with CodeM styling and both web and desktop entry points.
+**Goal:** Add a full Claude Code plugin management workflow to CodeM's Settings area, with CodeM styling and both web and desktop entry points.
 
-**Architecture:** Keep CodeM's Node/Express backend and Tauri shell, but add a dedicated plugin service that exposes plugin, marketplace, and skill discovery plus the mutating claude plugin/skill commands. On the frontend, replace the current read-only Skills settings entry with a unified Plugins settings suite that mirrors Claudinal's information architecture while reusing CodeM's existing settings UI primitives.
+**Architecture:** Keep CodeM's Node/Express backend and Tauri shell, but add a dedicated plugin service that exposes plugin, marketplace, and skill discovery plus the mutating claude plugin/skill commands. On the frontend, replace the current read-only Skills settings entry with a unified Plugins settings suite based on CodeM's settings information architecture and existing UI primitives.
 
 **Tech Stack:** TypeScript, React 19, Vite, Express 5, Node built-ins, Tauri 2, `claude` CLI, node:test.
 
@@ -186,7 +186,7 @@ export function PluginsSettingsSection() {
 }
 ```
 
-Use CodeM's existing settings panel classes and CodeM's spacing/typography rather than copying Claudinal's styling verbatim.
+Use CodeM's existing settings panel classes and CodeM's spacing/typography rather than copying styling or component structure from another implementation.
 
 - [ ] **Step 4: Run the test to verify it passes**
 

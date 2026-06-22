@@ -4,7 +4,7 @@
 
 **Goal:** Build CodeM's permanent settings view foundation and ship the first usable Appearance section.
 
-**Architecture:** Settings are an application-level view, not a modal. User preference data is stored in a local JSON settings file under the existing CodeM app data directory and exposed through backend APIs; the frontend applies appearance values through a settings hook and CSS variables. MCP and Skills are intentionally left as navigable placeholder sections in this plan because they are independent resource-management subsystems and should be implemented from separate plans using `D:\project\cc-switch` as reference.
+**Architecture:** Settings are an application-level view, not a modal. User preference data is stored in a local JSON settings file under the existing CodeM app data directory and exposed through backend APIs; the frontend applies appearance values through a settings hook and CSS variables. MCP and Skills are intentionally left as navigable placeholder sections in this plan because they are independent resource-management subsystems and should be implemented from separate plans.
 
 **Tech Stack:** React 19, TypeScript strict mode, Vite, Express 5, Node.js fs APIs, existing CodeM CSS.
 
@@ -64,10 +64,7 @@ This plan implements:
 - Local file persistence through backend APIs.
 - Typecheck, build, and browser verification.
 
-This plan does not implement full MCP, Skills, Providers, or shortcut editing. Those sections remain navigable placeholders. MCP and Skills should later follow `D:\project\cc-switch`:
-
-- MCP: `D:\project\cc-switch\src\lib\api\mcp.ts`, `D:\project\cc-switch\src\lib\schemas\mcp.ts`, `D:\project\cc-switch\src\components\mcp\UnifiedMcpPanel.tsx`
-- Skills: `D:\project\cc-switch\src\lib\api\skills.ts`, `D:\project\cc-switch\src\components\skills\UnifiedSkillsPanel.tsx`, `D:\project\cc-switch\src\components\skills\SkillsPage.tsx`
+This plan does not implement full MCP, Skills, Providers, or shortcut editing. Those sections remain navigable placeholders. MCP and Skills should later get separate CodeM-native plans.
 
 ---
 
@@ -1234,7 +1231,7 @@ In `.trellis/tasks/settings-appearance.md`, add this under `Stage 1. Task And Co
 
 ```md
 - [x] 建立 Superpowers 执行计划：`docs/superpowers/plans/2026-04-26-settings-system-plan.md`。
-- [x] 明确 MCP / Skills 不在第一版实现，后续参考 `D:\project\cc-switch` 单独规划。
+- [x] 明确 MCP / Skills 不在第一版实现，后续单独规划。
 ```
 
 - [ ] **Step 2: Run status check**

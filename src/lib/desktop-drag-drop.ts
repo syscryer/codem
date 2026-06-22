@@ -1,7 +1,7 @@
 import { isTauriRuntime } from './window-material';
 
 // 监听 Tauri 窗口的原生文件拖放事件，回调里拿到的是文件真实磁盘绝对路径。
-// 设计参考开源项目 desktop-cc-gui（MIT）的 dragDrop 服务，适配 CodeM 的单订阅场景。
+// 适配 CodeM 的单订阅场景。
 
 export type DesktopDragDropPhase = 'enter' | 'over' | 'leave' | 'drop';
 

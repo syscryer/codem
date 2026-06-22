@@ -111,7 +111,7 @@ Move `SettingsRow`, `SegmentedControl`, and `Stepper` into `SettingsControls.tsx
 
 - [ ] **Step 2: Build `ModelSettingsSection`**
 
-Show current configured model, add/delete custom model rows, and a default selector. Do not show provider lists and do not call cc-switch.
+Show current configured model, add/delete custom model rows, and a default selector. Do not show provider lists and do not call external provider management tools.
 
 - [ ] **Step 3: Merge Composer model options**
 

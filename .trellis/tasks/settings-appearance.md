@@ -14,12 +14,7 @@
 
 ## Reference
 
-可参考但不直接照搬：
-
-- `D:\project\desktop-cc-gui\src\features\settings\components\SettingsView.tsx`
-- `D:\project\desktop-cc-gui\src\features\settings\hooks\useAppSettings.ts`
-- `D:\project\desktop-cc-gui\src\features\settings\components\settings-view\sections\BasicAppearanceSection.tsx`
-- `D:\project\desktop-cc-gui\src\styles\settings.part1.css`
+可参考成熟桌面客户端的设置体验，但不直接复制具体实现。
 
 参考点：
 
@@ -28,7 +23,7 @@
 - 默认值、normalize、持久化 hook 分层。
 - 外观 section 独立组件。
 
-不要照搬：
+不采用：
 
 - 过大的 `SettingsView` 单体状态。
 - 复杂主题编辑器。
@@ -223,7 +218,7 @@ UI 字号           - 13 +
 
 - [x] 建立本任务文档。
 - [x] 建立 Superpowers 执行计划：`docs/superpowers/plans/2026-04-26-settings-system-plan.md`。
-- [x] 明确 MCP / Skills 不在第一版实现，后续参考 `D:\project\cc-switch` 单独规划。
+- [x] 明确 MCP / Skills 不在第一版实现，后续单独规划。
 - [x] 确认最终左侧分类命名。
 - [x] 确认外观第一版字段不再扩张。
 

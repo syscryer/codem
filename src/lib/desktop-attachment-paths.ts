@@ -1,6 +1,5 @@
 // 桌面端拖拽 / 原生文件框拿到的真实磁盘路径处理工具。
-// 设计参考开源项目 desktop-cc-gui（MIT）的 pathValidation / filePathReferences，
-// 并适配 CodeM 的附件数据模型：只做安全过滤 + 规范化 + 去重，不限制文件类型。
+// 适配 CodeM 的附件数据模型：只做安全过滤 + 规范化 + 去重，不限制文件类型。
 
 const MAX_PATH_LENGTH = 4096;
 

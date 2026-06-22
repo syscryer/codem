@@ -9,16 +9,16 @@ Extend the new CodeM settings view with four focused sections:
 3. MCP management
 4. Skills management
 
-This is not a provider-management replacement for `cc-switch`. CodeM keeps `cc-switch` responsible for provider, base URL, API key, proxy, and live config switching. CodeM only exposes local app settings and read-only operational visibility where that is safe.
+This is not a provider-management replacement. CodeM keeps provider, base URL, API key, proxy, and live config switching owned by the external Claude configuration layer. CodeM only exposes local app settings and read-only operational visibility where that is safe.
 
 ## Decisions
 
 - "供应商管理" becomes a model-focused section in behavior. The left navigation can keep the existing label for now, but the page title should be "模型设置".
-- CodeM does not list cc-switch providers.
+- CodeM does not list external provider configurations.
 - CodeM does not switch providers.
 - CodeM can show the current default model read from the existing Claude configuration path.
 - CodeM can store custom model IDs locally and include them in the Composer model picker.
-- Global prompt means the Claude Code global `CLAUDE.md` prompt/memory file, matching Any-code's behavior. It is not stored as CodeM app settings and is not injected into prompts by CodeM.
+- Global prompt means the Claude Code global `CLAUDE.md` prompt/memory file. It is not stored as CodeM app settings and is not injected into prompts by CodeM.
 - MCP and Skills are read-only in the first version.
 
 ## Model Settings
@@ -61,7 +61,7 @@ Reuse the current local JSON settings file and `settings-store` pattern:
   - `PUT /api/settings/models`
   - optionally keep `GET /api/settings` as the main read endpoint.
 
-No cc-switch files are modified.
+No external provider configuration files are modified.
 
 ### Frontend
 
@@ -90,7 +90,7 @@ When `defaultModelId` is set, new Composer selection should prefer it unless the
 This section edits Claude Code's global prompt file:
 
 - Path: `~/.claude/CLAUDE.md`, resolved from `USERPROFILE` on Windows or `HOME` elsewhere.
-- Behavior reference: Any-code's `get_system_prompt()` and `save_system_prompt()` commands.
+- Behavior reference: read and write the Claude Code global `CLAUDE.md` file directly.
 - Empty content means an empty `CLAUDE.md` file, not "disabled prompt injection".
 
 CodeM must not copy this content into its local settings JSON.

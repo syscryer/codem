@@ -62,7 +62,7 @@ export function ModelSettingsSection({
       </header>
 
       <div className="settings-panel">
-        <SettingsRow icon={Box} title="当前 Claude 默认模型" description="来自 Claude Code 当前配置，供应商仍由 cc-switch 管理">
+        <SettingsRow icon={Box} title="当前 Claude 默认模型" description="来自 Claude Code 当前配置，供应商仍由外部配置管理">
           <span className="settings-inline-value">{defaultModel?.description?.replace(/^使用当前 Claude Code 默认模型：/, '') || '未配置'}</span>
         </SettingsRow>
         <SettingsRow icon={CircleDot} title="新聊天默认选择" description="仅影响 CodeM Composer 初始模型，不切换供应商">

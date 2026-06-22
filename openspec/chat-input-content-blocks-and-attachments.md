@@ -22,9 +22,9 @@ CodeM 当前已经补上了图片发送的关键链路：图片可以作为 Clau
 
 ## Reference Findings
 
-### claudinal
+### 统一输入桥接模式
 
-`D:\cursor_project\claudinal` 最值得借鉴的是桥接层的统一性：
+成熟客户端的输入桥接通常需要先统一内部语义,再由 provider adapter 转成目标协议：
 
 - 所有输入先在前端转成 `contentBlocks`
 - 文本、图片、PDF document 都走同一个 blocks 数组
@@ -33,14 +33,14 @@ CodeM 当前已经补上了图片发送的关键链路：图片可以作为 Clau
 - 长粘贴文本转成 txt 附件，旧版 `.doc` 明确拒绝
 - `@文件` 补全保持轻量，跳过 `.git`、`node_modules`、`target`、`dist`、`.next`、`.venv`、`venv`
 
-不建议照搬的点：
+不采用的点：
 
 - `<uploaded_file>` 文本包裹可以参考，但 CodeM 更适合用 first-class internal blocks 表达，不要把附件语义只压进 prompt 文本。
 - 前端/Tauri 会话编排不需要迁移，CodeM 应继续沿用当前后端托管 Claude runtime 的架构。
 
-### desktop-cc-gui
+### 桌面输入交互边界
 
-`D:\cursor_project\desktop-cc-gui` 最值得借鉴的是输入交互边界：
+桌面代码客户端常见的输入交互需要覆盖上传、粘贴、拖拽和路径引用等边界：
 
 - ChatInputBox 对上传、粘贴、拖拽、文件树拖入、`@路径` 插入拆分清楚
 - Windows 路径大小写、斜杠、`file://`、UNC 路径有专门归一化
@@ -48,17 +48,17 @@ CodeM 当前已经补上了图片发送的关键链路：图片可以作为 Clau
 - 防重复 drop、高 DPI 坐标、空 dataTransfer、跨窗口拖拽都有测试
 - 附件列表支持本地路径预览和 base64/data URL 预览
 
-不建议照搬的点：
+不采用的点：
 
 - 整套 ChatInputBox 架构过重，和 CodeM 当前 Composer 不完全匹配。
-- 它的发送层仍偏 `text + images`，不是完整统一 content blocks，桥接设计不如 `claudinal` 干净。
+- 仅 `text + images` 的发送层不适合作为 CodeM 的长期内部协议。
 
 ## Decision Direction
 
 CodeM 采用组合方案：
 
-- 桥接协议借鉴 `claudinal`：内部统一 `contentBlocks`，provider adapter 再转成 Claude stdin message。
-- 输入交互借鉴 `desktop-cc-gui`：路径归一化、拖拽粘贴边界、去重、测试覆盖。
+- 桥接协议按 Claude CLI stdin stream-json 公开能力设计：内部统一 `contentBlocks`，provider adapter 再转成 Claude stdin message。
+- 输入交互按桌面代码客户端常见边界设计：路径归一化、拖拽粘贴边界、去重、测试覆盖。
 - Runtime 架构继续沿用 CodeM 当前后端托管方式，不迁移到 Tauri 直连 Claude runtime。
 - 落地方式采用“协议中立，功能轻量”：现在只聚焦 Claude 的高频输入闭环，但内部模型不能绑定 Claude，后续接入其他 agent 时只新增 adapter。
 
@@ -85,7 +85,7 @@ CodeM 采用组合方案：
 - 跨窗口拖拽、高 DPI 拖拽、复杂文件树拖入。
 - 用户手动切换“内联/仅引用”。
 - 完整文件预览器或附件管理器。
-- 重写 Composer 或搬运 `desktop-cc-gui` 的 ChatInputBox。
+- 重写 Composer 或整体替换为另一套重型 ChatInputBox 架构。
 
 这能避免功能做重，同时避免把核心协议焊死在 Claude 上。
 
@@ -101,8 +101,8 @@ CodeM 采用组合方案：
 
 ## Non-Goals
 
-- 不整体重写 Composer 或照搬 `desktop-cc-gui` 的 ChatInputBox。
-- 不迁移到 `claudinal` 的 Tauri 会话管理方式。
+- 不整体重写 Composer 或整体替换为另一套重型 ChatInputBox 架构。
+- 不迁移到其他 Tauri 直连会话管理方式。
 - 不把所有二进制文件都强行转成 prompt 文本。
 - 不在第一阶段实现复杂文件管理器或完整文件预览器。
 - 不在第一阶段实现 PDF/DOCX 深度解析、长粘贴附件化、跨窗口拖拽等低频复杂能力。

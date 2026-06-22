@@ -471,7 +471,7 @@ Expected: `tsc -b` 退出码为 0。
 
 - [ ] **Step 3: 手工验证 blocked_dirty**
 
-用 `D:\project\git-test` 制造或保留未跟踪文件，确认：
+用本地 Git 测试仓库制造或保留未跟踪文件，确认：
 
 - 右侧显示“远端有更新，但工作区存在未提交变更”。
 - 不显示合并拉取主按钮。
@@ -479,7 +479,7 @@ Expected: `tsc -b` 退出码为 0。
 
 - [ ] **Step 4: 手工验证冲突总览**
 
-让 `D:\project\git-test` 处于 `ahead 1, behind 1`，点击合并拉取：
+让本地 Git 测试仓库处于 `ahead 1, behind 1`，点击合并拉取：
 
 - 应出现应用内确认条。
 - Git 进入冲突后，总览弹窗打开。

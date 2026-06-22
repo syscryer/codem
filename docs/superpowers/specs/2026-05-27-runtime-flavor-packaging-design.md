@@ -171,19 +171,19 @@ GitHub Release 中的所有资产都带 flavor 后缀，例如：
 2. 不同平台的同名 bundle 不会互相覆盖。
 3. `.sig`、`.app.zip`、`SHA256SUMS.txt` 等后续资产处理保持可预期。
 
-## 可借鉴实现
+## 实现原则
 
-参考 `D:\cursor_project\claudinal` 的经验，吸收以下做法：
+本次打包链路吸收成熟桌面项目的通用做法：
 
 1. `package.json` 暴露显式打包命令，降低日常使用门槛。
 2. 用独立脚本整理 release 产物命名，而不是把所有命名逻辑堆进 Tauri 配置。
 3. GitHub workflow 在收集 release assets 时统一重命名，确保下载侧稳定。
 
-不直接复用其实现的部分：
+不采用的部分：
 
-1. 它没有 `with-node` / `no-node` 双 runtime 设计。
-2. 它的 zip/portable 逻辑与 CodeM 当前以 `dist-server` 为核心的桌面后端结构不同。
-3. 它的 updater 资产组织不是本次目标。
+1. 不引入与 CodeM 当前 `with-node` / `no-node` 双 runtime 设计无关的 zip/portable 逻辑。
+2. 不改变 CodeM 当前以 `dist-server` 为核心的桌面后端结构。
+3. 不扩展 updater 资产组织到本次目标之外。
 
 ## 验证策略
 

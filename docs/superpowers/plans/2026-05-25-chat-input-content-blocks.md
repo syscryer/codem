@@ -28,7 +28,7 @@ Do not:
 - Implement DOCX extraction.
 - Implement long paste to file attachment.
 - Implement cross-window drag-drop, high-DPI drag coordinates, or full file tree drag bridge.
-- Rewrite Composer into `desktop-cc-gui` ChatInputBox.
+- Rewrite Composer around another full ChatInputBox architecture.
 - Commit changes automatically. Project rule: no git commit unless the user explicitly asks.
 
 ## File Map

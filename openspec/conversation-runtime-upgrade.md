@@ -11,7 +11,7 @@ CodeM 目前已经具备基础对话能力：
 - 停止当前运行
 - 调试抽屉与 raw event 查看
 
-但对照 `D:\project\desktop-cc-gui` 后，可以确认当前缺口主要集中在“对话运行态逻辑”，不是基础渲染能力。
+结合成熟桌面代码客户端的运行态设计后，可以确认当前缺口主要集中在“对话运行态逻辑”，不是基础渲染能力。
 
 这些缺口会直接影响：
 
@@ -48,7 +48,7 @@ CodeM 目前已经具备基础对话能力：
 
 本提案暂不覆盖：
 
-- 全量照搬 `desktop-cc-gui` 的 message architecture
+- 全量替换为另一套 message architecture
 - 全新的全局状态库
 - 推理内容完整可视化
 - 多 provider 同时落地
@@ -219,11 +219,6 @@ Persistence 主要影响：
 - 已确认刷新恢复路径
 - 新增对话行为有对应测试覆盖
 - `npm run typecheck` 通过
-
-## References
-
-- Current repo: `D:\project\codem`
-- Reference repo: `D:\project\desktop-cc-gui`
 
 ## Current Implementation Notes
 

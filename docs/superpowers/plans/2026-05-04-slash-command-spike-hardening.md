@@ -349,7 +349,7 @@ Expected: PASS.
 Run:
 
 ```bash
-node scripts/slash-commands-spike.mjs --project D:\project\codem
+node scripts/slash-commands-spike.mjs --project <codem-workspace>
 ```
 
 Expected: grouped output with source sections and template previews.
@@ -359,7 +359,7 @@ Expected: grouped output with source sections and template previews.
 Run:
 
 ```bash
-node scripts/slash-commands-spike.mjs --project D:\project\codem --assert
+node scripts/slash-commands-spike.mjs --project <codem-workspace> --assert
 ```
 
 Expected: zero exit code and `Slash command assertions passed.` on stderr.
@@ -369,7 +369,7 @@ Expected: zero exit code and `Slash command assertions passed.` on stderr.
 Run:
 
 ```bash
-node scripts/slash-commands-spike.mjs --project D:\project\codem --json
+node scripts/slash-commands-spike.mjs --project <codem-workspace> --json
 ```
 
 Expected: valid JSON containing `commands` and `summary`.
