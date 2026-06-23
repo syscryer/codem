@@ -1,5 +1,5 @@
 import { access } from 'node:fs/promises';
-import { accessSync, constants, readdirSync } from 'node:fs';
+import { accessSync, closeSync, constants, openSync, readSync, readdirSync } from 'node:fs';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
@@ -2555,17 +2555,60 @@ function gatherClaudeCommandFallbackCandidatesSync(): string[] {
     add(path.join(fnmNodeRoot, versionDir, 'installation', 'bin', 'claude'));
   }
 
-  // 仅保留实际存在且可执行的条目。
-  const existing: string[] = [];
+  // 仅保留实际存在且可执行的条目；按 Mach-O 原生二进制优先、node 脚本次之的顺序返回。
+  // 原因：/usr/local/bin/claude 这种 #!/usr/bin/env node 包装脚本在 .app 浅 PATH 下
+  // 找不到 node 而退出码 127；~/.local/bin/claude 这种 Bun 编译的原生 Mach-O 二进制
+  // 是真正能直接 spawn 的可执行文件。
+  const native: string[] = [];
+  const scripted: string[] = [];
   for (const candidate of candidates) {
     try {
       accessSync(candidate, constants.X_OK);
-      existing.push(candidate);
     } catch {
-      // 跳过不存在的目录/无执行权限的条目。
+      continue;
+    }
+    if (isNativeExecutable(candidate)) {
+      native.push(candidate);
+    } else {
+      scripted.push(candidate);
     }
   }
-  return existing;
+  return [...native, ...scripted];
+}
+
+function isNativeExecutable(filePath: string): boolean {
+  // 读取前 4 字节判断是否是 Mach-O / ELF / 其他原生可执行格式，避免依赖 `file` 命令。
+  let fd: number;
+  try {
+    fd = openSync(filePath, constants.O_RDONLY);
+  } catch {
+    return false;
+  }
+  try {
+    const buffer = Buffer.alloc(4);
+    const bytesRead = readSync(fd, buffer, 0, 4, 0);
+    if (bytesRead < 4) {
+      return false;
+    }
+    // Mach-O: 0xCF 0xFA 0xED 0xFE (LE 64) / 0xFE 0xED 0xFA 0xCE (BE 32) 等；
+    // ELF: 0x7F 'E' 'L' 'F'。
+    const [b0, b1, b2, b3] = buffer;
+    const isMachO =
+      (b0 === 0xcf && b1 === 0xfa && b2 === 0xed && b3 === 0xfe) ||
+      (b0 === 0xfe && b1 === 0xed && b2 === 0xfa && b3 === 0xce) ||
+      (b0 === 0xfe && b1 === 0xed && b2 === 0xfa && b3 === 0xcf) ||
+      (b0 === 0xca && b1 === 0xfe && b2 === 0xba && b3 === 0xbe);
+    const isElf = b0 === 0x7f && b1 === 0x45 && b2 === 0x4c && b3 === 0x46;
+    return isMachO || isElf;
+  } catch {
+    return false;
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // 忽略关闭错误。
+    }
+  }
 }
 
 export function buildClaudeCommandLookupInvocation(platform: NodeJS.Platform | string = process.platform) {
