@@ -504,6 +504,14 @@ export function closeThreadRuntime(threadId: string) {
   return true;
 }
 
+export function closeAllThreadRuntimes() {
+  const runtimes = Array.from(threadRuntimes.values());
+  for (const runtime of runtimes) {
+    closeClaudeRuntime(runtime);
+  }
+  return runtimes.length;
+}
+
 export function getThreadRuntimeStatuses() {
   const statuses: Record<string, { threadId: string; pid?: number; alive: boolean; activeRun: boolean }> = {};
 

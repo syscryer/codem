@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { filterSlashCommandsForAgent } from '../lib/agent-slash-capabilities';
 import { PLUGINS_CHANGED_EVENT } from '../lib/plugins';
@@ -23,6 +23,10 @@ export function useSlashCommands({
   const [commands, setCommands] = useState<SlashCommand[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
+  // showToast 是父级传入的普通函数（非 useCallback），每次渲染引用都会变。
+  // 用 ref 持有，避免把它放进下面的 effect 依赖造成无限重渲染/请求爆击。
+  const showToastRef = useRef(showToast);
+  showToastRef.current = showToast;
 
   useEffect(() => {
     function handlePluginsChanged() {
@@ -53,7 +57,10 @@ export function useSlashCommands({
         if (abortController.signal.aborted) {
           return;
         }
-        showToast?.(error instanceof Error ? error.message : '读取 Slash Commands 失败', 'error');
+        showToastRef.current?.(
+          error instanceof Error ? error.message : '读取 Slash Commands 失败',
+          'error',
+        );
       } finally {
         if (!abortController.signal.aborted) {
           setLoading(false);
@@ -63,7 +70,7 @@ export function useSlashCommands({
 
     void loadSlashCommands();
     return () => abortController.abort();
-  }, [projectPath, refreshToken, showToast]);
+  }, [projectPath, refreshToken]);
 
   const context = useMemo(
     () => getCurrentLineSlashContext(draft, selectionStart),

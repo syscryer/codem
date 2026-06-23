@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {
+  APP_DATA_DIR_ENV,
   DEFAULT_BACKEND_PORT,
   DEFAULT_WEB_PORT,
   buildBackendPortEnv,
   buildDevServerEnv,
   findAvailablePort,
+  resolveDevAppDataDirectory,
   resolvePreferredBackendPort,
   resolvePreferredWebPort,
 } from './dev-ports.mjs';
@@ -41,9 +44,28 @@ test('buildBackendPortEnv passes the selected port to child processes', () => {
 });
 
 test('buildDevServerEnv passes backend and web ports to child processes', () => {
-  assert.deepEqual(buildDevServerEnv({ PORT: '9999' }, { backendPort: 3004, webPort: 6173 }), {
+  assert.deepEqual(
+    buildDevServerEnv({ PORT: '9999', CODEM_DEV_APP_DATA_DIR: '/tmp/codem-dev' }, { backendPort: 3004, webPort: 6173 }),
+    {
     PORT: '9999',
+    CODEM_DEV_APP_DATA_DIR: '/tmp/codem-dev',
     CODEM_BACKEND_PORT: '3004',
     CODEM_WEB_PORT: '6173',
-  });
+    [APP_DATA_DIR_ENV]: '/tmp/codem-dev',
+    },
+  );
+});
+
+test('resolveDevAppDataDirectory uses a macOS-specific dev profile by default', () => {
+  assert.equal(
+    resolveDevAppDataDirectory({ HOME: '/Users/dev' }, 'darwin'),
+    path.join('/Users/dev', 'Library', 'Application Support', 'com.mnl.codem.dev', 'data'),
+  );
+});
+
+test('resolveDevAppDataDirectory preserves explicit app data overrides', () => {
+  assert.equal(
+    resolveDevAppDataDirectory({ CODEM_APP_DATA_DIR: '/tmp/custom-codem-data' }, 'darwin'),
+    '/tmp/custom-codem-data',
+  );
 });

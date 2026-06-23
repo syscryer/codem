@@ -1177,11 +1177,14 @@ export function useClaudeRun({
       }
 
       const startedAtMs = activeRun.startedAtMs || Date.now();
-      context = {
+      const reconnectContext: RunContext = {
         threadId: thread.id,
         turnId: activeRun.turnId,
         runId: activeRun.runId,
         abortController: null,
+        interrupting: false,
+        interruptRequested: false,
+        interruptFallbackTimer: null,
         terminalRunId: '',
         workingDirectory: activeRun.workingDirectory || thread.workingDirectory,
         pendingAssistantText: '',
@@ -1194,7 +1197,8 @@ export function useClaudeRun({
         effort: normalizeClaudeEffortSelection(activeRun.effort),
         permissionMode: activeRun.permissionMode || permissionMode,
       };
-      registerRunContext(context);
+      context = reconnectContext;
+      registerRunContext(reconnectContext);
 
       updateThreadDetail(thread.id, (existing) => {
         const replayTurn: ConversationTurn = {
@@ -1235,10 +1239,10 @@ export function useClaudeRun({
         return;
       }
 
-      const sawTerminalEvent = await consumeClaudeEventStream(eventsResponse, context);
+      const sawTerminalEvent = await consumeClaudeEventStream(eventsResponse, reconnectContext);
       if (!sawTerminalEvent && !activeRun.finished) {
-        flushQueuedAssistantTextNow(context);
-        updateRunningTurn(context, (turn) => ({
+        flushQueuedAssistantTextNow(reconnectContext);
+        updateRunningTurn(reconnectContext, (turn) => ({
           ...turn,
           activity: '后台运行仍在，事件流暂时断开',
         }));

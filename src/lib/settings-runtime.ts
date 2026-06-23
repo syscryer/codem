@@ -64,7 +64,7 @@ export async function getAppRuntimeInfo(): Promise<AppRuntimeInfo> {
   }
 }
 
-export async function checkForAppUpdate(_options: AppUpdateCheckOptions = {}): Promise<AppUpdateInfo | null> {
+export async function checkForAppUpdate(options: AppUpdateCheckOptions = {}): Promise<AppUpdateInfo | null> {
   if (!isTauriRuntime()) {
     return {
       status: 'unsupported',
@@ -106,6 +106,9 @@ export async function checkForAppUpdate(_options: AppUpdateCheckOptions = {}): P
       update,
     };
   } catch (error) {
+    if (options.silent) {
+      return null;
+    }
     return {
       status: 'failed',
       message: error instanceof Error ? error.message : '检查更新失败',

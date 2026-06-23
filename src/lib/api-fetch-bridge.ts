@@ -1,6 +1,8 @@
 import { isTauriRuntime } from './window-material';
 
 const fallbackApiBaseUrl = 'http://127.0.0.1:3001';
+const backendReadyTimeoutMs = 8000;
+const backendReadyPollMs = 100;
 
 let apiBaseUrl = fallbackApiBaseUrl;
 
@@ -35,6 +37,7 @@ export async function initializeApiFetchBridge() {
     if (typeof nextBaseUrl === 'string' && /^https?:\/\//.test(nextBaseUrl)) {
       apiBaseUrl = nextBaseUrl.replace(/\/+$/, '');
     }
+    await waitForBackendReady(apiBaseUrl);
   } catch {
     apiBaseUrl = fallbackApiBaseUrl;
   }
@@ -88,4 +91,23 @@ function toApiBaseUrl(url: URL) {
 
 function isApiPath(value: string) {
   return value === '/api' || value.startsWith('/api/') || value.startsWith('/api?');
+}
+
+async function waitForBackendReady(baseUrl: string) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < backendReadyTimeoutMs) {
+    try {
+      const response = await fetch(`${baseUrl}/api/health`, { cache: 'no-store' });
+      if (response.ok) {
+        return;
+      }
+    } catch {
+      // The desktop shell may still be launching the bundled backend.
+    }
+    await sleep(backendReadyPollMs);
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }

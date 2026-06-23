@@ -9,6 +9,7 @@ import type { InputContentBlock, InputReferenceReason, InputReferenceSource } fr
 import {
   acknowledgeRunEvents,
   cancelRun,
+  closeAllThreadRuntimes,
   closeThreadRuntime,
   createClaudeStream,
   detectClaudeCommand,
@@ -125,6 +126,7 @@ const port = Number(process.env.CODEM_BACKEND_PORT ?? process.env.PORT ?? 3001);
 const jsonBodyLimit = process.env.CODEM_JSON_BODY_LIMIT ?? '25mb';
 const MAX_WORKSPACE_FILE_SEARCH_RESULTS = 80;
 const MAX_WORKSPACE_FILE_SEARCH_CANDIDATES = 500;
+const SHUTDOWN_GRACE_MS = 500;
 
 const app = express();
 
@@ -1727,9 +1729,34 @@ if (await isDirectoryAccessible(distRoot)) {
   });
 }
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`CodeM bridge listening at http://127.0.0.1:${port}`);
 });
+
+let shuttingDown = false;
+function shutdown(signal: NodeJS.Signals) {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  const closedRuntimes = closeAllThreadRuntimes();
+  if (closedRuntimes > 0) {
+    console.log(`CodeM bridge closing ${closedRuntimes} Claude runtime(s) after ${signal}`);
+  }
+
+  const timeout = setTimeout(() => {
+    process.exit(0);
+  }, SHUTDOWN_GRACE_MS);
+  timeout.unref();
+
+  server.close(() => {
+    clearTimeout(timeout);
+    process.exit(0);
+  });
+}
+
+process.once('SIGINT', shutdown);
+process.once('SIGTERM', shutdown);
 
 function createJsonBodyErrorHandler(): ErrorRequestHandler {
   return (error, _request, response, next) => {
@@ -1765,14 +1792,22 @@ function createLocalCorsHandler(): RequestHandler {
 }
 
 function isAllowedLocalOrigin(origin: string) {
-  if (origin === 'http://tauri.localhost' || origin === 'https://tauri.localhost') {
+  if (
+    origin === 'http://tauri.localhost' ||
+    origin === 'https://tauri.localhost' ||
+    origin === 'tauri://localhost'
+  ) {
     return true;
   }
 
   try {
     const url = new URL(origin);
-    return (url.hostname === '127.0.0.1' || url.hostname === 'localhost') &&
-      (url.protocol === 'http:' || url.protocol === 'https:');
+    const isLocalHost = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
+    const isAllowedScheme =
+      url.protocol === 'http:' ||
+      url.protocol === 'https:' ||
+      url.protocol === 'tauri:';
+    return isLocalHost && isAllowedScheme;
   } catch {
     return false;
   }

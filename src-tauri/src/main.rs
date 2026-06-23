@@ -10,18 +10,21 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, Url, WindowEvent};
 
 #[cfg(not(windows))]
-use std::process::{Command, Stdio};
+use std::process::{Child as StdChild, Command, Stdio};
 
 const WINDOW_STATE_FILE_NAME: &str = "window-state.json";
 const DESKTOP_LOG_FILE_NAME: &str = "desktop.log";
 const BACKEND_LOG_FILE_NAME: &str = "backend.log";
+const BACKEND_APP_DATA_DIR_ENV: &str = "CODEM_APP_DATA_DIR";
+const BACKEND_DATA_DIR_NAME: &str = "data";
 const MIN_WINDOW_WIDTH: u32 = 960;
 const MIN_WINDOW_HEIGHT: u32 = 640;
+const BACKEND_TERMINATE_GRACE_PERIOD_MS: u64 = 800;
 #[cfg(target_os = "windows")]
 const POWERSHELL_7_PATH: &str = r"C:\Program Files\PowerShell\7\pwsh.exe";
 
@@ -159,10 +162,31 @@ struct BackendPtyProcesses {
 #[cfg(windows)]
 impl Drop for BackendPtyProcesses {
     fn drop(&mut self) {
+        if let Ok(process_slot) = self.process.get_mut() {
+            if let Some(mut process) = process_slot.take() {
+                stop_backend_pty_process(&mut process);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+struct BackendChildProcess {
+    child: StdChild,
+}
+
+#[cfg(not(windows))]
+#[derive(Default)]
+struct BackendChildProcesses {
+    process: Mutex<Option<BackendChildProcess>>,
+}
+
+#[cfg(not(windows))]
+impl Drop for BackendChildProcesses {
+    fn drop(&mut self) {
         if let Ok(process) = self.process.get_mut() {
-            if let Some(process) = process.as_mut() {
-                let _ = process.child.kill();
-                let _ = process.child.wait();
+            if let Some(mut process) = process.take() {
+                stop_backend_child_process(&mut process.child);
             }
         }
     }
@@ -412,23 +436,24 @@ fn main() {
         .manage(WindowMaterialState::default());
     #[cfg(windows)]
     let builder = builder.manage(BackendPtyProcesses::default());
+    #[cfg(not(windows))]
+    let builder = builder.manage(BackendChildProcesses::default());
 
     builder
         .setup(|app| {
             let app_handle = app.handle().clone();
             restore_main_window_state(&app_handle);
             focus_main_window(&app_handle);
-            let _ = platform::set_window_material(&app_handle, platform::default_window_material_id());
-            #[cfg(windows)]
-            let backend_processes = app.state::<BackendPtyProcesses>();
-
-            #[cfg(windows)]
-            let startup_result = ensure_backend_started(&app_handle, &backend_processes);
-            #[cfg(not(windows))]
-            let startup_result = ensure_backend_started(&app_handle);
-
-            match startup_result {
-                Ok(()) => log_desktop_event(&app_handle, "backend start check completed"),
+            if let Err(error) =
+                platform::set_window_material(&app_handle, platform::default_window_material_id())
+            {
+                log_desktop_event(
+                    &app_handle,
+                    &format!("default window material failed: {error}"),
+                );
+            }
+            match resolve_backend_startup_target(&app_handle) {
+                Ok(target) => start_backend_startup_check(app_handle, target),
                 Err(error) => {
                     log_desktop_event(&app_handle, &format!("backend start failed: {error}"))
                 }
@@ -455,8 +480,57 @@ fn main() {
             show_thread_notification,
             get_app_runtime_info
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run CodeM desktop shell");
+        .build(tauri::generate_context!())
+        .expect("failed to build CodeM desktop shell")
+        .run(|app_handle, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                cleanup_managed_backend_processes(app_handle);
+            }
+        });
+}
+
+fn cleanup_managed_backend_processes(app: &tauri::AppHandle) {
+    #[cfg(windows)]
+    if let Some(backend_processes) = app.try_state::<BackendPtyProcesses>() {
+        stop_managed_backend_pty_process(&backend_processes);
+    }
+
+    #[cfg(not(windows))]
+    if let Some(backend_processes) = app.try_state::<BackendChildProcesses>() {
+        stop_managed_backend_child_process(&backend_processes);
+    }
+}
+
+fn start_backend_startup_check(app: tauri::AppHandle, target: BackendStartupTarget) {
+    if target.reuse_existing {
+        log_desktop_event(&app, "backend start check completed");
+        return;
+    }
+
+    log_desktop_event(
+        &app,
+        &format!("backend start check scheduled: {}", target.port),
+    );
+    thread::spawn(move || {
+        #[cfg(windows)]
+        let startup_result = {
+            let backend_processes = app.state::<BackendPtyProcesses>();
+            ensure_backend_started_impl(&app, Some(&backend_processes), target.port)
+        };
+        #[cfg(not(windows))]
+        let startup_result = {
+            let backend_processes = app.state::<BackendChildProcesses>();
+            ensure_backend_started_impl(&app, &backend_processes, target.port)
+        };
+
+        match startup_result {
+            Ok(()) => log_desktop_event(&app, "backend start check completed"),
+            Err(error) => log_desktop_event(&app, &format!("backend start failed: {error}")),
+        }
+    });
 }
 
 fn detect_distribution_mode(app: &tauri::AppHandle) -> &'static str {
@@ -592,7 +666,10 @@ fn restore_main_window_state(app: &tauri::AppHandle) {
         normalized_state.width,
         normalized_state.height,
     ));
-    let _ = window.set_position(PhysicalPosition::new(normalized_state.x, normalized_state.y));
+    let _ = window.set_position(PhysicalPosition::new(
+        normalized_state.x,
+        normalized_state.y,
+    ));
     if normalized_state != state {
         let _ = persist_window_state(app, normalized_state);
     }
@@ -679,7 +756,10 @@ fn read_monitor_work_areas(
         .collect()
 }
 
-fn normalize_window_state(state: WindowState, work_areas: &[MonitorWorkArea]) -> Option<WindowState> {
+fn normalize_window_state(
+    state: WindowState,
+    work_areas: &[MonitorWorkArea],
+) -> Option<WindowState> {
     if state.width < MIN_WINDOW_WIDTH || state.height < MIN_WINDOW_HEIGHT {
         return None;
     }
@@ -718,12 +798,21 @@ fn clamp_window_state_to_area(state: WindowState, area: MonitorWorkArea) -> Wind
     let max_height = area.height.max(MIN_WINDOW_HEIGHT as i32) as u32;
     let width = state.width.min(max_width);
     let height = state.height.min(max_height);
-    let max_x = area.x.saturating_add(area.width.saturating_sub(width as i32));
-    let max_y = area.y.saturating_add(area.height.saturating_sub(height as i32));
+    let max_x = area
+        .x
+        .saturating_add(area.width.saturating_sub(width as i32));
+    let max_y = area
+        .y
+        .saturating_add(area.height.saturating_sub(height as i32));
     let x = state.x.clamp(area.x, max_x);
     let y = state.y.clamp(area.y, max_y);
 
-    WindowState { x, y, width, height }
+    WindowState {
+        x,
+        y,
+        width,
+        height,
+    }
 }
 
 fn rects_intersect(
@@ -745,27 +834,6 @@ fn rects_intersect(
 }
 
 #[cfg(windows)]
-fn ensure_backend_started(
-    app: &tauri::AppHandle,
-    backend_processes: &BackendPtyProcesses,
-) -> Result<(), String> {
-    let target = resolve_backend_startup_target(app)?;
-    if target.reuse_existing {
-        return Ok(());
-    }
-    ensure_backend_started_impl(app, Some(backend_processes), target.port)
-}
-
-#[cfg(not(windows))]
-fn ensure_backend_started(app: &tauri::AppHandle) -> Result<(), String> {
-    let target = resolve_backend_startup_target(app)?;
-    if target.reuse_existing {
-        return Ok(());
-    }
-    ensure_backend_started_impl(app, target.port)
-}
-
-#[cfg(windows)]
 fn ensure_backend_started_impl(
     app: &tauri::AppHandle,
     backend_processes: Option<&BackendPtyProcesses>,
@@ -775,8 +843,12 @@ fn ensure_backend_started_impl(
 }
 
 #[cfg(not(windows))]
-fn ensure_backend_started_impl(app: &tauri::AppHandle, backend_port: u16) -> Result<(), String> {
-    ensure_backend_started_with_launcher(app, backend_port)
+fn ensure_backend_started_impl(
+    app: &tauri::AppHandle,
+    backend_processes: &BackendChildProcesses,
+    backend_port: u16,
+) -> Result<(), String> {
+    ensure_backend_started_with_launcher(app, backend_processes, backend_port)
 }
 
 #[cfg(windows)]
@@ -785,8 +857,8 @@ fn ensure_backend_started_with_launcher(
     backend_processes: Option<&BackendPtyProcesses>,
     backend_port: u16,
 ) -> Result<(), String> {
-    let backend_processes = backend_processes
-        .ok_or_else(|| "missing backend process state".to_string())?;
+    let backend_processes =
+        backend_processes.ok_or_else(|| "missing backend process state".to_string())?;
 
     if let Some(server_entry) = find_packaged_backend_entry(app) {
         return start_node_backend_process(app, backend_processes, backend_port, &server_entry);
@@ -802,18 +874,22 @@ fn ensure_backend_started_with_launcher(
 }
 
 #[cfg(not(windows))]
-fn ensure_backend_started_with_launcher(app: &tauri::AppHandle, backend_port: u16) -> Result<(), String> {
+fn ensure_backend_started_with_launcher(
+    app: &tauri::AppHandle,
+    backend_processes: &BackendChildProcesses,
+    backend_port: u16,
+) -> Result<(), String> {
     if let Some(server_entry) = find_packaged_backend_entry(app) {
-        return start_node_backend_process(app, backend_port, &server_entry);
+        return start_node_backend_process(app, backend_processes, backend_port, &server_entry);
     }
 
     if let Some(server_entry) = find_development_backend_entry() {
-        return start_node_backend_process(app, backend_port, &server_entry);
+        return start_node_backend_process(app, backend_processes, backend_port, &server_entry);
     }
 
     let project_root =
         find_project_root().ok_or_else(|| "CodeM project directory not found".to_string())?;
-    start_development_backend_process(app, backend_port, &project_root)
+    start_development_backend_process(app, backend_processes, backend_port, &project_root)
 }
 
 fn is_backend_ready(port: u16) -> bool {
@@ -978,13 +1054,26 @@ fn start_node_backend_process(
     command.cwd(cwd.as_os_str());
     command.env("NODE_ENV", "production");
     command.env("PORT", backend_port.to_string());
+    if let Some(app_data_dir) = backend_app_data_dir(app) {
+        command.env(
+            BACKEND_APP_DATA_DIR_ENV,
+            app_data_dir.to_string_lossy().to_string(),
+        );
+    }
 
-    start_backend_pty_process(app, backend_processes, backend_port, command, "node backend")
+    start_backend_pty_process(
+        app,
+        backend_processes,
+        backend_port,
+        command,
+        "node backend",
+    )
 }
 
 #[cfg(not(windows))]
 fn start_node_backend_process(
     app: &tauri::AppHandle,
+    backend_processes: &BackendChildProcesses,
     backend_port: u16,
     server_entry: &Path,
 ) -> Result<(), String> {
@@ -1014,19 +1103,19 @@ fn start_node_backend_process(
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(stderr);
+    if let Some(app_data_dir) = backend_app_data_dir(app) {
+        command.env(BACKEND_APP_DATA_DIR_ENV, app_data_dir);
+    }
 
     platform::prepare_hidden_background_command(&mut command);
 
-    match command.spawn() {
-        Ok(child) => {
-            log_desktop_event(app, &format!("node backend spawned: pid={}", child.id()));
-            wait_for_backend_ready(app, backend_port)
-        }
-        Err(error) => {
-            log_desktop_event(app, &format!("node backend spawn error: {error}"));
-            Err(format!("启动 CodeM 后端失败: {error}"))
-        }
-    }
+    start_backend_child_process(
+        app,
+        backend_processes,
+        backend_port,
+        command,
+        "node backend",
+    )
 }
 
 fn normalize_process_path(path: &Path) -> PathBuf {
@@ -1062,12 +1151,25 @@ fn start_development_backend_process(
     command.args(["/D", "/S", "/C", "npm run dev:server"]);
     command.cwd(project_root.as_os_str());
     command.env("PORT", backend_port.to_string());
-    start_backend_pty_process(app, backend_processes, backend_port, command, "development backend")
+    if let Some(app_data_dir) = backend_app_data_dir(app) {
+        command.env(
+            BACKEND_APP_DATA_DIR_ENV,
+            app_data_dir.to_string_lossy().to_string(),
+        );
+    }
+    start_backend_pty_process(
+        app,
+        backend_processes,
+        backend_port,
+        command,
+        "development backend",
+    )
 }
 
 #[cfg(not(windows))]
 fn start_development_backend_process(
     app: &tauri::AppHandle,
+    backend_processes: &BackendChildProcesses,
     backend_port: u16,
     project_root: &Path,
 ) -> Result<(), String> {
@@ -1084,22 +1186,19 @@ fn start_development_backend_process(
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(stderr);
+    if let Some(app_data_dir) = backend_app_data_dir(app) {
+        command.env(BACKEND_APP_DATA_DIR_ENV, app_data_dir);
+    }
 
     platform::prepare_hidden_background_command(&mut command);
 
-    match command.spawn() {
-        Ok(child) => {
-            log_desktop_event(
-                app,
-                &format!("development backend spawned: pid={}", child.id()),
-            );
-            wait_for_backend_ready(app, backend_port)
-        }
-        Err(error) => {
-            log_desktop_event(app, &format!("development backend spawn error: {error}"));
-            Err(format!("启动 CodeM 后端失败: {error}"))
-        }
-    }
+    start_backend_child_process(
+        app,
+        backend_processes,
+        backend_port,
+        command,
+        "development backend",
+    )
 }
 
 #[cfg(not(windows))]
@@ -1111,6 +1210,19 @@ fn node_backend_command(server_entry: &Path) -> Command {
 
 fn node_backend_executable(server_entry: &Path) -> PathBuf {
     find_packaged_node_runtime(server_entry).unwrap_or_else(|| PathBuf::from("node"))
+}
+
+fn backend_app_data_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os(BACKEND_APP_DATA_DIR_ENV) {
+        if !value.to_string_lossy().trim().is_empty() {
+            return Some(PathBuf::from(value));
+        }
+    }
+
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|directory| directory.join(BACKEND_DATA_DIR_NAME))
 }
 
 fn find_packaged_node_runtime(server_entry: &Path) -> Option<PathBuf> {
@@ -1179,6 +1291,7 @@ fn append_log_line(path: &Path, message: &str) {
     }
 }
 
+#[cfg(windows)]
 fn append_log_chunk(path: &Path, chunk: &str) {
     if chunk.is_empty() {
         return;
@@ -1206,8 +1319,103 @@ fn wait_for_backend_ready(app: &tauri::AppHandle, port: u16) -> Result<(), Strin
         thread::sleep(step);
     }
 
-    log_desktop_event(app, &format!("backend did not become ready before timeout: {port}"));
+    log_desktop_event(
+        app,
+        &format!("backend did not become ready before timeout: {port}"),
+    );
     Err(format!("CodeM 后端启动超时，端口 {port} 未就绪。"))
+}
+
+#[cfg(not(windows))]
+fn start_backend_child_process(
+    app: &tauri::AppHandle,
+    backend_processes: &BackendChildProcesses,
+    backend_port: u16,
+    mut command: Command,
+    label: &str,
+) -> Result<(), String> {
+    match command.spawn() {
+        Ok(child) => {
+            let pid = child.id();
+            replace_backend_child_process(backend_processes, child)?;
+            log_desktop_event(
+                app,
+                &format!("{label} spawned: pid={pid}, port={backend_port}"),
+            );
+
+            match wait_for_backend_ready(app, backend_port) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    stop_managed_backend_child_process(backend_processes);
+                    Err(error)
+                }
+            }
+        }
+        Err(error) => {
+            log_desktop_event(app, &format!("{label} spawn error: {error}"));
+            Err(format!("启动 CodeM 后端失败: {error}"))
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_backend_child_process(
+    backend_processes: &BackendChildProcesses,
+    child: StdChild,
+) -> Result<(), String> {
+    let existing = {
+        let mut process_slot = backend_processes
+            .process
+            .lock()
+            .map_err(|error| error.to_string())?;
+        process_slot.replace(BackendChildProcess { child })
+    };
+
+    if let Some(mut existing) = existing {
+        stop_backend_child_process(&mut existing.child);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn stop_managed_backend_child_process(backend_processes: &BackendChildProcesses) {
+    let Ok(mut process_slot) = backend_processes.process.lock() else {
+        return;
+    };
+    if let Some(mut process) = process_slot.take() {
+        stop_backend_child_process(&mut process.child);
+    }
+}
+
+#[cfg(not(windows))]
+fn stop_backend_child_process(child: &mut StdChild) {
+    if child.try_wait().ok().flatten().is_some() {
+        return;
+    }
+
+    terminate_backend_child_process(child);
+    let started_at = Instant::now();
+    while started_at.elapsed() < Duration::from_millis(BACKEND_TERMINATE_GRACE_PERIOD_MS) {
+        if child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(not(windows))]
+fn terminate_backend_child_process(child: &StdChild) {
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg(child.id().to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 #[cfg(windows)]
@@ -1264,11 +1472,33 @@ fn start_backend_pty_process(
     });
 
     if let Some(pid) = pid {
-        log_desktop_event(app, &format!("{label} spawned via pty: pid={pid}, port={backend_port}"));
+        log_desktop_event(
+            app,
+            &format!("{label} spawned via pty: pid={pid}, port={backend_port}"),
+        );
     } else {
-        log_desktop_event(app, &format!("{label} spawned via pty: port={backend_port}"));
+        log_desktop_event(
+            app,
+            &format!("{label} spawned via pty: port={backend_port}"),
+        );
     }
     wait_for_backend_ready(app, backend_port)
+}
+
+#[cfg(windows)]
+fn stop_managed_backend_pty_process(backend_processes: &BackendPtyProcesses) {
+    let Ok(mut process_slot) = backend_processes.process.lock() else {
+        return;
+    };
+    if let Some(mut process) = process_slot.take() {
+        stop_backend_pty_process(&mut process);
+    }
+}
+
+#[cfg(windows)]
+fn stop_backend_pty_process(process: &mut BackendPtyProcess) {
+    let _ = process.child.kill();
+    let _ = process.child.wait();
 }
 
 fn current_timestamp_ms() -> u128 {
@@ -1276,14 +1506,6 @@ fn current_timestamp_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0)
-}
-
-#[cfg(windows)]
-#[cfg(not(windows))]
-fn development_backend_command() -> Command {
-    let mut command = Command::new("cmd.exe");
-    command.args(["/D", "/S", "/C", "npm run dev:server"]);
-    command
 }
 
 #[cfg(test)]
@@ -1294,7 +1516,10 @@ mod tests {
         prepare_window_state_for_save, resolve_backend_port_from_value, MonitorWorkArea,
         WindowState,
     };
-    use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn resolve_backend_port_from_value_accepts_valid_port() {
@@ -1610,10 +1835,7 @@ mod platform {
     use std::process::Command;
     use tauri::Manager;
     use window_vibrancy::{
-        apply_vibrancy,
-        clear_vibrancy,
-        NSVisualEffectMaterial,
-        NSVisualEffectState,
+        apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial, NSVisualEffectState,
     };
 
     pub fn default_window_material_id() -> i32 {

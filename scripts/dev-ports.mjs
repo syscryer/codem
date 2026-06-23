@@ -1,7 +1,11 @@
+import { homedir } from 'node:os';
+import path from 'node:path';
 import net from 'node:net';
 
 export const DEFAULT_BACKEND_PORT = 3001;
 export const DEFAULT_WEB_PORT = 5173;
+export const APP_DATA_DIR_ENV = 'CODEM_APP_DATA_DIR';
+export const DEV_APP_DATA_DIR_ENV = 'CODEM_DEV_APP_DATA_DIR';
 
 export function resolvePreferredBackendPort(env = process.env) {
   return normalizePort(env.CODEM_BACKEND_PORT ?? env.PORT, DEFAULT_BACKEND_PORT);
@@ -40,7 +44,38 @@ export function buildDevServerEnv(env, { backendPort, webPort }) {
   return {
     ...buildBackendPortEnv(env, backendPort),
     CODEM_WEB_PORT: String(normalizePort(webPort, DEFAULT_WEB_PORT)),
+    [APP_DATA_DIR_ENV]: resolveDevAppDataDirectory(env),
   };
+}
+
+export function resolveDevAppDataDirectory(env = process.env, platform = process.platform) {
+  const explicitDirectory = normalizeDirectory(env[APP_DATA_DIR_ENV]);
+  if (explicitDirectory) {
+    return explicitDirectory;
+  }
+
+  const devDirectory = normalizeDirectory(env[DEV_APP_DATA_DIR_ENV]);
+  if (devDirectory) {
+    return devDirectory;
+  }
+
+  const homeDirectory = normalizeDirectory(env.HOME) || normalizeDirectory(env.USERPROFILE) || homedir();
+  if (platform === 'darwin') {
+    return path.join(homeDirectory, 'Library', 'Application Support', 'com.mnl.codem.dev', 'data');
+  }
+  if (platform === 'win32') {
+    const baseDirectory =
+      normalizeDirectory(env.LOCALAPPDATA) ||
+      normalizeDirectory(env.APPDATA) ||
+      path.join(homeDirectory, 'AppData', 'Local');
+    return path.join(baseDirectory, 'CodeM Dev');
+  }
+  if (platform === 'linux') {
+    const baseDirectory = normalizeDirectory(env.XDG_DATA_HOME) || path.join(homeDirectory, '.local', 'share');
+    return path.join(baseDirectory, 'codem-dev');
+  }
+
+  return path.join(homeDirectory, '.codem-dev');
 }
 
 export function isPortOpen(port, host = '127.0.0.1') {
@@ -89,6 +124,10 @@ function normalizePort(value, fallback) {
   }
 
   return port;
+}
+
+function normalizeDirectory(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
 function delay(ms) {

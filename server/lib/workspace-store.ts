@@ -14,6 +14,8 @@ import { collectUsageStats, type UsageStatsRangeDays } from './usage-stats.js';
 import { createClaudeContextSnapshot, extractClaudeContextMarkdownFromPayload } from './claude-context.js';
 import type { ClaudeContextSnapshot, InputContentBlockSummary } from '../../src/types.js';
 
+const APP_DATA_DIR_ENV = 'CODEM_APP_DATA_DIR';
+
 type OrganizeBy = 'project' | 'timeline' | 'chat-first';
 type SortBy = 'created' | 'updated';
 type Visibility = 'all' | 'relevant';
@@ -2321,6 +2323,12 @@ function initializeDatabase() {
 }
 
 function resolveAppDirectory() {
+  const explicitDirectory = normalizeAppDataDirectory(process.env[APP_DATA_DIR_ENV]);
+  if (explicitDirectory) {
+    mkdirSync(explicitDirectory, { recursive: true });
+    return explicitDirectory;
+  }
+
   const baseDirectory =
     process.env.LOCALAPPDATA ||
     process.env.APPDATA ||
@@ -2328,6 +2336,10 @@ function resolveAppDirectory() {
   const directory = path.join(baseDirectory, 'CodeM');
   mkdirSync(directory, { recursive: true });
   return directory;
+}
+
+function normalizeAppDataDirectory(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
 function ensureColumn(tableName: string, columnName: string, definition: string) {

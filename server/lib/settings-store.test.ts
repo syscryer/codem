@@ -546,6 +546,27 @@ test('default settings store writes under LOCALAPPDATA when it is set', () => {
   });
 });
 
+test('default settings store honors CODEM_APP_DATA_DIR before platform defaults', () => {
+  withTemporaryDirectory((directory) => {
+    const appDataDirectory = path.join(directory, 'codem-data');
+    const localAppData = path.join(directory, 'local-app-data');
+    const expectedSettingsPath = path.join(appDataDirectory, 'settings.json');
+
+    assertDefaultStoreWritesToPath(
+      {
+        ...process.env,
+        CODEM_APP_DATA_DIR: appDataDirectory,
+        LOCALAPPDATA: localAppData,
+        APPDATA: '',
+      },
+      expectedSettingsPath,
+    );
+
+    assert.equal(existsSync(expectedSettingsPath), true);
+    assert.equal(existsSync(path.join(localAppData, 'CodeM', 'settings.json')), false);
+  });
+});
+
 test('default settings store writes under APPDATA when LOCALAPPDATA is unset', () => {
   withTemporaryDirectory((directory) => {
     const appData = path.join(directory, 'app-data');

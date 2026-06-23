@@ -91,7 +91,15 @@ function writeTauriDevConfig(webPort) {
   const configPath = path.join(process.cwd(), `.codem-tauri-dev-${process.pid}.json`);
   writeFileSync(
     configPath,
-    JSON.stringify({ build: { devUrl: `http://127.0.0.1:${webPort}` } }, null, 2),
+    JSON.stringify(
+      {
+        productName: 'CodeM Dev',
+        identifier: 'com.mnl.codem.dev',
+        build: { devUrl: `http://127.0.0.1:${webPort}` },
+      },
+      null,
+      2,
+    ),
     'utf8',
   );
   return configPath;

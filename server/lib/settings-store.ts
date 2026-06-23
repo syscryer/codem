@@ -94,6 +94,7 @@ export type AppSettings = {
 };
 
 const SETTINGS_FILE_NAME = 'settings.json';
+const APP_DATA_DIR_ENV = 'CODEM_APP_DATA_DIR';
 
 type SettingsStoreFileSystem = {
   renameSync: typeof renameSync;
@@ -816,6 +817,12 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 }
 
 function resolveAppDirectory() {
+  const explicitDirectory = normalizeAppDataDirectory(process.env[APP_DATA_DIR_ENV]);
+  if (explicitDirectory) {
+    mkdirSync(explicitDirectory, { recursive: true });
+    return explicitDirectory;
+  }
+
   const baseDirectory =
     process.env.LOCALAPPDATA ||
     process.env.APPDATA ||
@@ -823,4 +830,8 @@ function resolveAppDirectory() {
   const directory = path.join(baseDirectory, 'CodeM');
   mkdirSync(directory, { recursive: true });
   return directory;
+}
+
+function normalizeAppDataDirectory(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
 }

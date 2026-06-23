@@ -691,6 +691,17 @@ test('managed runtime status endpoint reports only CodeM-owned live runtimes', (
   assert.match(serverSource, /\/api\/claude\/runtimes/);
 });
 
+test('server shutdown closes all managed Claude runtimes', () => {
+  const closeAllBody = extractFunctionBody('closeAllThreadRuntimes');
+
+  assert.match(source, /export function closeAllThreadRuntimes/);
+  assert.match(closeAllBody, /Array\.from\(threadRuntimes\.values\(\)\)/);
+  assert.match(closeAllBody, /closeClaudeRuntime\(runtime\)/);
+  assert.match(serverSource, /closeAllThreadRuntimes/);
+  assert.match(serverSource, /process\.once\(['"]SIGINT['"],\s*shutdown\)/);
+  assert.match(serverSource, /process\.once\(['"]SIGTERM['"],\s*shutdown\)/);
+});
+
 test('runtime context requests use a dedicated stream-json side channel', () => {
   const requestBody = extractFunctionBody('requestThreadRuntimeContext');
   const stdoutBody = extractFunctionBody('flushRuntimeStdoutLine');

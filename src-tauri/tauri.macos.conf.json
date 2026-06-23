@@ -23,8 +23,7 @@
   },
   "bundle": {
     "resources": [
-      "../dist-server/index.mjs",
-      "../dist-server/package.json"
+      "../dist-server"
     ]
   }
 }
