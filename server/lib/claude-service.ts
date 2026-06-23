@@ -1,6 +1,9 @@
 import { access } from 'node:fs/promises';
+import { accessSync, constants, readdirSync } from 'node:fs';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import type { InputContentBlock, UserImageAttachment, ClaudeContextSnapshot } from '../../src/types.js';
 import {
@@ -2463,19 +2466,106 @@ function resolveClaudeCommand() {
     windowsHide: true,
   });
 
-  if (lookup.status !== 0) {
+  const candidates =
+    lookup.status === 0
+      ? lookup.stdout
+          .split(/\r?\n/)
+          .map((item) => item.trim())
+          .filter(Boolean)
+      : [];
+
+  // 非 Windows 场景下，从 Finder/Applications 启动 .app 进程时继承的是浅 PATH（仅
+  // /usr/bin:/bin 等），`which claude` 会找不到用户安装在 /usr/local/bin、Homebrew、
+  // nvm、Volta 等目录下的可执行文件。`which` 失败或结果为空时，扫描常见安装目录
+  // 兜底，命中第一个能直接 spawn 的候选。Windows 走 powershell Get-Command 分支，
+  // 不进此处。
+  const resolvedCandidates =
+    candidates.length > 0
+      ? candidates
+      : process.platform === 'win32'
+        ? candidates
+        : gatherClaudeCommandFallbackCandidatesSync();
+
+  if (resolvedCandidates.length === 0) {
     cachedClaudeCommand = null;
     return null;
   }
 
-  const candidates = lookup.stdout
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-  cachedClaudeCommand = selectSpawnableClaudeCommand(candidates);
+  cachedClaudeCommand = selectSpawnableClaudeCommand(resolvedCandidates);
 
   return cachedClaudeCommand;
+}
+
+function gatherClaudeCommandFallbackCandidatesSync(): string[] {
+  if (process.platform === 'win32') {
+    return [];
+  }
+
+  const home = process.env.HOME ?? os.homedir();
+  const seen = new Set<string>();
+  const add = (value: string | undefined | null) => {
+    if (!value) {
+      return;
+    }
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      return;
+    }
+    seen.add(trimmed);
+    candidates.push(trimmed);
+  };
+  const candidates: string[] = [];
+
+  // 静态已知目录：/usr/local/bin（Intel Homebrew）、/opt/homebrew/bin（Apple Silicon
+  // Homebrew）、/usr/bin、/bin，以及用户级 ~/.local/bin 与 ~/.volta/bin。
+  for (const dir of [
+    '/usr/local/bin/claude',
+    '/opt/homebrew/bin/claude',
+    '/usr/bin/claude',
+    '/bin/claude',
+    `${home}/.local/bin/claude`,
+    `${home}/.volta/bin/claude`,
+  ]) {
+    add(dir);
+  }
+
+  // nvm: ~/.nvm/versions/node/<version>/bin/claude，遍历所有已安装的 Node 版本。
+  const nvmRoot = process.env.NVM_DIR ?? `${home}/.nvm`;
+  const nvmNodeRoot = path.join(nvmRoot, 'versions', 'node');
+  let nvmEntries: string[] = [];
+  try {
+    nvmEntries = readdirSync(nvmNodeRoot);
+  } catch {
+    nvmEntries = [];
+  }
+  for (const versionDir of nvmEntries) {
+    add(path.join(nvmNodeRoot, versionDir, 'bin', 'claude'));
+  }
+
+  // fnm: ~/.fnm/node-versions/<version>/installation/bin/claude
+  const fnmRoot = process.env.FNM_DIR ?? `${home}/.fnm`;
+  const fnmNodeRoot = path.join(fnmRoot, 'node-versions');
+  let fnmEntries: string[] = [];
+  try {
+    fnmEntries = readdirSync(fnmNodeRoot);
+  } catch {
+    fnmEntries = [];
+  }
+  for (const versionDir of fnmEntries) {
+    add(path.join(fnmNodeRoot, versionDir, 'installation', 'bin', 'claude'));
+  }
+
+  // 仅保留实际存在且可执行的条目。
+  const existing: string[] = [];
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, constants.X_OK);
+      existing.push(candidate);
+    } catch {
+      // 跳过不存在的目录/无执行权限的条目。
+    }
+  }
+  return existing;
 }
 
 export function buildClaudeCommandLookupInvocation(platform: NodeJS.Platform | string = process.platform) {
