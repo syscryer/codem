@@ -239,6 +239,12 @@ svg {
 .codex-desktop[data-platform="macos"] {
   --desktop-menubar-height: 52px;
   --desktop-window-radius: 16px;
+  /* macOS 原生 vibrancy 已由 Rust apply_vibrancy 提供在 webview 下层，::before 在此
+     给半透明 tint + backdrop-filter 模糊形成玻璃材质。auto/none 在通用规则里被设成
+     opaque+blur0（让位 Windows 系统材质），mac 这里覆盖回玻璃。 */
+  --app-material-fill: rgba(246, 247, 250, 0.5);
+  --app-material-glow: rgba(255, 255, 255, 0.22);
+  --app-material-blur: 30px;
   --sidebar-surface: rgba(246, 247, 250, 0.42);
   --sidebar-border-color: rgba(255, 255, 255, 0.28);
   --sidebar-sheen-top: rgba(255, 255, 255, 0.34);
@@ -298,6 +304,9 @@ svg {
 }
 
 .codex-desktop[data-theme-mode="dark"][data-platform="macos"] {
+  --app-material-fill: rgba(30, 30, 32, 0.5);
+  --app-material-glow: rgba(255, 255, 255, 0.06);
+  --app-material-blur: 30px;
   --sidebar-surface: rgba(32, 34, 38, 0.32);
   --sidebar-border-color: rgba(255, 255, 255, 0.1);
   --sidebar-sheen-top: rgba(255, 255, 255, 0.12);
@@ -792,6 +801,11 @@ svg {
   border-right: 1px solid #dedede;
   color: #4b4f56;
   overflow: hidden;
+}
+
+.codex-desktop[data-platform="macos"] .app-sidebar {
+  background: var(--sidebar-surface);
+  border-right-color: var(--sidebar-border-color);
 }
 
 .app-sidebar > * {
