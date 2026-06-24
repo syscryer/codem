@@ -118,6 +118,70 @@ test('buildComposerContextUsage prefers native 1m context window over stale turn
   assert.equal(usage.compact.thresholdTokens, 955_000);
 });
 
+test('buildComposerContextUsage treats GLM-5.2 1M aliases as a 1M context window', () => {
+  const usage = buildComposerContextUsage({
+    agent: 'claude',
+    model: 'GLM-5.2[1m]',
+    turns: [
+      turn({
+        id: 'turn-glm-52',
+        inputTokens: 100_000,
+        cacheCreationInputTokens: 50_000,
+        cacheReadInputTokens: 0,
+        outputTokens: 1_000,
+      }),
+    ],
+  });
+
+  assert.equal(usage.totalTokens, 1_000_000);
+  assert.equal(usage.usedTokens, 150_000);
+  assert.equal(usage.percent, 15);
+  assert.equal(usage.compact.thresholdTokens, 955_000);
+});
+
+test('buildComposerContextUsage keeps bare provider models on the default window without explicit capability metadata', () => {
+  const usage = buildComposerContextUsage({
+    agent: 'claude',
+    model: 'GLM-5.2',
+    turns: [
+      turn({
+        id: 'turn-glm-52-bare',
+        inputTokens: 100_000,
+        cacheCreationInputTokens: 50_000,
+        cacheReadInputTokens: 0,
+        outputTokens: 1_000,
+      }),
+    ],
+  });
+
+  assert.equal(usage.totalTokens, 200_000);
+  assert.equal(usage.usedTokens, 150_000);
+  assert.equal(usage.percent, 75);
+  assert.equal(usage.compact.thresholdTokens, 155_000);
+});
+
+test('buildComposerContextUsage uses configured capability metadata for bare provider model windows', () => {
+  const usage = buildComposerContextUsage({
+    agent: 'claude',
+    model: 'GLM-5.2',
+    nativeContextWindowTokens: 1_000_000,
+    turns: [
+      turn({
+        id: 'turn-provider-capability',
+        inputTokens: 100_000,
+        cacheCreationInputTokens: 50_000,
+        cacheReadInputTokens: 0,
+        outputTokens: 1_000,
+      }),
+    ],
+  });
+
+  assert.equal(usage.totalTokens, 1_000_000);
+  assert.equal(usage.usedTokens, 150_000);
+  assert.equal(usage.percent, 15);
+  assert.equal(usage.compact.thresholdTokens, 955_000);
+});
+
 test('buildComposerContextUsage uses native context usage for the primary number', () => {
   const usage = buildComposerContextUsage({
     agent: 'claude',

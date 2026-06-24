@@ -216,6 +216,10 @@ export function Composer({
   const showStopButton = isRunning && !hasPendingContent;
   const nativeContext = claudeContextState?.context;
   const nativeContextSummary = nativeContext?.summary;
+  const selectedModelOption = useMemo(
+    () => models.find((option) => option.id === model),
+    [model, models],
+  );
   const contextUsage = useMemo(
     () => buildComposerContextUsage({
       agent,
@@ -223,8 +227,9 @@ export function Composer({
       turns,
       nativeContextSummary,
       nativeContextRequestedAtMs: nativeContext?.requestedAtMs,
+      nativeContextWindowTokens: selectedModelOption?.contextWindowTokens,
     }),
-    [agent, model, nativeContext?.requestedAtMs, nativeContextSummary, turns],
+    [agent, model, nativeContext?.requestedAtMs, nativeContextSummary, selectedModelOption?.contextWindowTokens, turns],
   );
   const shouldRefreshClaudeContextOnOpen = useMemo(
     () => agent === 'claude' && shouldRefreshNativeContextOnOpen({

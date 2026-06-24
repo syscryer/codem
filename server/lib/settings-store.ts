@@ -56,9 +56,17 @@ export type CustomModel = {
   description?: string;
 };
 
+export type ModelCapability = {
+  modelId: string;
+  contextWindowTokens?: number;
+  supportsContext1m?: boolean;
+  context1mModel?: string;
+};
+
 export type ModelSettings = {
   customModels: CustomModel[];
   defaultModelId: string;
+  modelCapabilities: ModelCapability[];
 };
 
 export type ComposerSendShortcut = 'enter' | 'modEnter';
@@ -149,6 +157,7 @@ export const defaultGeneralSettings: GeneralSettings = {
 export const defaultModelSettings: ModelSettings = {
   customModels: [],
   defaultModelId: '__default',
+  modelCapabilities: [],
 };
 const CLAUDE_MODEL_SLOT_VALUES = ['sonnet', 'sonnet[1m]', 'opus', 'opus[1m]', 'haiku'] as const;
 
@@ -414,10 +423,12 @@ function normalizeModelSettings(value: unknown): ModelSettings {
   const record = isRecord(value) ? value : {};
   const customModels = normalizeCustomModels(record.customModels);
   const defaultModelId = normalizeDefaultModelId(record.defaultModelId, customModels);
+  const modelCapabilities = normalizeModelCapabilities(record.modelCapabilities);
 
   return {
     customModels,
     defaultModelId,
+    modelCapabilities,
   };
 }
 
@@ -558,6 +569,43 @@ function normalizeCustomModels(value: unknown): CustomModel[] {
   return models;
 }
 
+function normalizeModelCapabilities(value: unknown): ModelCapability[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seenIds = new Set<string>();
+  const capabilities: ModelCapability[] = [];
+
+  for (const item of value) {
+    if (!isRecord(item)) {
+      continue;
+    }
+
+    const modelId = normalizeModelId(item.modelId);
+    if (!modelId || seenIds.has(modelId)) {
+      continue;
+    }
+
+    seenIds.add(modelId);
+    const capability: ModelCapability = { modelId };
+    const contextWindowTokens = normalizeContextWindowTokens(item.contextWindowTokens);
+    const context1mModel = normalizeModelId(item.context1mModel);
+    if (contextWindowTokens !== undefined) {
+      capability.contextWindowTokens = contextWindowTokens;
+    }
+    if (typeof item.supportsContext1m === 'boolean') {
+      capability.supportsContext1m = item.supportsContext1m;
+    }
+    if (context1mModel) {
+      capability.context1mModel = context1mModel;
+    }
+    capabilities.push(capability);
+  }
+
+  return capabilities;
+}
+
 function normalizeDefaultModelId(value: unknown, customModels: CustomModel[]) {
   const id = normalizeLegacyModelId(normalizeModelId(value));
   if (!id || id === '__default') {
@@ -580,6 +628,14 @@ function normalizeModelId(value: unknown) {
   }
 
   return trimmed;
+}
+
+function normalizeContextWindowTokens(value: unknown) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0 || value > 5_000_000) {
+    return undefined;
+  }
+
+  return value;
 }
 
 function normalizeLegacyModelId(id: string) {

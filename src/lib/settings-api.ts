@@ -57,6 +57,7 @@ export const defaultAppearanceSettings: AppearanceSettings = {
 export const defaultModelSettings: ModelSettings = {
   customModels: [],
   defaultModelId: '__default',
+  modelCapabilities: [],
 };
 
 export const defaultShortcutSettings: ShortcutSettings = {
@@ -468,10 +469,12 @@ export function normalizeModelSettings(models: unknown): ModelSettings {
   const record = isRecord(models) ? models : {};
   const customModels = normalizeCustomModels(record.customModels);
   const defaultModelId = normalizeDefaultModelId(record.defaultModelId, customModels);
+  const modelCapabilities = normalizeModelCapabilities(record.modelCapabilities);
 
   return {
     customModels,
     defaultModelId,
+    modelCapabilities,
   };
 }
 
@@ -603,6 +606,43 @@ function normalizeCustomModels(value: unknown): CustomModel[] {
   return models;
 }
 
+function normalizeModelCapabilities(value: unknown): ModelSettings['modelCapabilities'] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seenIds = new Set<string>();
+  const capabilities: ModelSettings['modelCapabilities'] = [];
+
+  for (const item of value) {
+    if (!isRecord(item)) {
+      continue;
+    }
+
+    const modelId = normalizeModelId(item.modelId);
+    if (!modelId || seenIds.has(modelId)) {
+      continue;
+    }
+
+    seenIds.add(modelId);
+    const capability: ModelSettings['modelCapabilities'][number] = { modelId };
+    const contextWindowTokens = normalizeContextWindowTokens(item.contextWindowTokens);
+    const context1mModel = normalizeModelId(item.context1mModel);
+    if (contextWindowTokens !== undefined) {
+      capability.contextWindowTokens = contextWindowTokens;
+    }
+    if (typeof item.supportsContext1m === 'boolean') {
+      capability.supportsContext1m = item.supportsContext1m;
+    }
+    if (context1mModel) {
+      capability.context1mModel = context1mModel;
+    }
+    capabilities.push(capability);
+  }
+
+  return capabilities;
+}
+
 function normalizeDefaultModelId(value: unknown, customModels: CustomModel[]) {
   const id = normalizeLegacyModelId(normalizeModelId(value));
   if (!id || id === defaultModelSettings.defaultModelId) {
@@ -625,6 +665,14 @@ function normalizeModelId(value: unknown) {
   }
 
   return trimmed;
+}
+
+function normalizeContextWindowTokens(value: unknown) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0 || value > 5_000_000) {
+    return undefined;
+  }
+
+  return value;
 }
 
 function normalizeLegacyModelId(id: string) {

@@ -65,7 +65,7 @@ export function getConfiguredModelOptions(): ClaudeModelOption[] {
       description: buildSlotDescription('默认推荐模型', sonnetModel),
       model: sonnetModel || 'sonnet',
       kind: 'slot',
-      ...(canUseAnthropicContext1m && isClaudeFamilyModel(sonnetModel || 'sonnet')
+      ...(canUseAnthropicContext1m && canUseContext1mAlias(sonnetModel || 'sonnet')
         ? {
             supportsContext1m: true,
             context1mModel: withContext1mSuffix(sonnetModel || 'sonnet'),
@@ -78,7 +78,7 @@ export function getConfiguredModelOptions(): ClaudeModelOption[] {
       description: buildSlotDescription('更强，适合复杂任务', opusModel),
       model: opusModel || 'opus',
       kind: 'slot',
-      ...(canUseAnthropicContext1m && isClaudeFamilyModel(opusModel || 'opus')
+      ...(canUseAnthropicContext1m && canUseContext1mAlias(opusModel || 'opus')
         ? {
             supportsContext1m: true,
             context1mModel: withContext1mSuffix(opusModel || 'opus'),
@@ -214,6 +214,15 @@ function withContext1mSuffix(model: string) {
 
 function isClaudeFamilyModel(model: string) {
   return /\b(claude|sonnet|opus|haiku)\b/i.test(model.trim());
+}
+
+function canUseContext1mAlias(model: string | undefined) {
+  if (!model) {
+    return false;
+  }
+
+  const normalized = model.trim();
+  return isClaudeFamilyModel(normalized);
 }
 
 function buildSlotDescription(summary: string, configuredModel?: string) {

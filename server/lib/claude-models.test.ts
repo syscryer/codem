@@ -102,6 +102,27 @@ test('getConfiguredModelOptions hides automatic 1M switches when Claude Code dis
   );
 });
 
+test('getConfiguredModelOptions hides GLM-5.2 1M switches when Claude Code disables 1M context', () => {
+  withIsolatedClaudeSettings(
+    {
+      env: {
+        CLAUDE_CODE_DISABLE_1M_CONTEXT: 'true',
+        ANTHROPIC_MODEL: 'GLM-5.2',
+        ANTHROPIC_DEFAULT_SONNET_MODEL: 'GLM-5.2',
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'GLM-5.2',
+      },
+    },
+    () => {
+      const options = getConfiguredModelOptions();
+
+      assert.deepEqual(
+        options.filter((option) => option.supportsContext1m),
+        [],
+      );
+    },
+  );
+});
+
 test('getConfiguredModelOptions labels the default option with the configured Claude model', () => {
   withIsolatedClaudeSettings(
     {
@@ -168,6 +189,39 @@ test('getConfiguredModelOptions keeps configured non-Claude gateway slots withou
           ['opus', 'Opus', 'glm-5.1', undefined, undefined],
           ['haiku', 'Haiku', 'glm-5.1', undefined, undefined],
         ],
+      );
+    },
+  );
+});
+
+test('getConfiguredModelOptions does not hardcode provider model context windows', () => {
+  withIsolatedClaudeSettings(
+    {
+      env: {
+        ANTHROPIC_BASE_URL: 'https://open.bigmodel.cn/api/anthropic',
+        ANTHROPIC_MODEL: 'GLM-5.2',
+        ANTHROPIC_DEFAULT_SONNET_MODEL: 'GLM-5.2',
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'GLM-5.2',
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: 'GLM-5.2',
+      },
+    },
+    () => {
+      const options = getConfiguredModelOptions();
+
+      assert.deepEqual(
+        options.map((option) => [option.id, option.model, option.contextWindowTokens]),
+        [
+          ['__default', 'GLM-5.2', undefined],
+          ['sonnet', 'GLM-5.2', undefined],
+          ['opus', 'GLM-5.2', undefined],
+          ['haiku', 'GLM-5.2', undefined],
+        ],
+      );
+      assert.deepEqual(
+        options
+          .filter((option) => option.supportsContext1m)
+          .map((option) => [option.id, option.context1mModel]),
+        [],
       );
     },
   );

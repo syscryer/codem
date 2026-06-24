@@ -57,15 +57,30 @@ test('resolveModelSettingsUpdate merges patches against the latest model setting
   const current: ModelSettings = {
     customModels: [{ id: 'custom/model' }],
     defaultModelId: 'custom/model',
+    modelCapabilities: [],
   };
 
   const next = resolveModelSettingsUpdate(current, {
     customModels: [...current.customModels, { id: 'other/model' }],
+    modelCapabilities: [
+      {
+        modelId: 'other/model',
+        contextWindowTokens: 1_000_000,
+        supportsContext1m: true,
+      },
+    ],
   });
 
   assert.deepEqual(next, {
     customModels: [{ id: 'custom/model' }, { id: 'other/model' }],
     defaultModelId: 'custom/model',
+    modelCapabilities: [
+      {
+        modelId: 'other/model',
+        contextWindowTokens: 1_000_000,
+        supportsContext1m: true,
+      },
+    ],
   });
 });
 
@@ -73,11 +88,19 @@ test('resolveModelSettingsUpdate normalizes duplicate custom models and stale de
   const next = resolveModelSettingsUpdate(defaultModelSettings, {
     customModels: [{ id: ' custom/model ' }, { id: 'custom/model' }, { id: 'bad model' }],
     defaultModelId: 'missing/model',
+    modelCapabilities: [
+      { modelId: ' custom/model ', contextWindowTokens: 1_000_000, supportsContext1m: true },
+      { modelId: 'custom/model', contextWindowTokens: 128_000, supportsContext1m: false },
+      { modelId: 'bad model', contextWindowTokens: 1_000_000, supportsContext1m: true },
+    ],
   });
 
   assert.deepEqual(next, {
     customModels: [{ id: 'custom/model' }],
     defaultModelId: '__default',
+    modelCapabilities: [
+      { modelId: 'custom/model', contextWindowTokens: 1_000_000, supportsContext1m: true },
+    ],
   });
 });
 

@@ -4,6 +4,7 @@ import {
   resolveInitialClaudeModelId,
   resolveRunModelSelection,
 } from '../lib/claude-model-selection';
+import { mergeModelOptions } from '../lib/claude-model-options';
 import { normalizeSessionId, resolvePromptSubmissionSessionId } from '../lib/claude-run-session';
 import {
   buildHistoryContentBlocks,
@@ -239,8 +240,8 @@ export function useClaudeRun({
   );
   const queuedPrompts = activeThreadId ? queuedPromptsByThreadId[activeThreadId] ?? [] : [];
   const models = useMemo(
-    () => mergeModelOptions(claudeModels.models, appModelSettings.customModels),
-    [claudeModels.models, appModelSettings.customModels],
+    () => mergeModelOptions(claudeModels.models, appModelSettings.customModels, appModelSettings.modelCapabilities),
+    [claudeModels.models, appModelSettings.customModels, appModelSettings.modelCapabilities],
   );
 
   useEffect(() => {
@@ -253,7 +254,9 @@ export function useClaudeRun({
       activeThreadSummary?.id ?? '',
       activeThreadSummary?.model ?? '',
       appModelSettings.defaultModelId,
-      models.map((option) => `${option.id}:${option.model ?? ''}:${option.context1mModel ?? ''}`).join('|'),
+      models
+        .map((option) => `${option.id}:${option.model ?? ''}:${option.supportsContext1m ? '1m' : ''}:${option.context1mModel ?? ''}:${option.contextWindowTokens ?? ''}`)
+        .join('|'),
     ].join('\n');
     if (modelSelectionResetKeyRef.current === resetKey) {
       return;
@@ -351,7 +354,7 @@ export function useClaudeRun({
         modelRef.current = nextModel;
         return nextModel;
       });
-      return mergeModelOptions(latestConfiguredModels, appModelSettings.customModels);
+      return mergeModelOptions(latestConfiguredModels, appModelSettings.customModels, appModelSettings.modelCapabilities);
     } catch (error) {
       const targetThreadId = activeThreadId;
       if (!targetThreadId) {
@@ -2693,42 +2696,6 @@ function createGuideSystemItem(prompt: string, attachments?: UserImageAttachment
     summary: prompt.trim(),
     ...(attachments && attachments.length ? { attachments } : {}),
   };
-}
-
-function mergeModelOptions(configuredModels: ClaudeModelOption[], customModels: ModelSettings['customModels']) {
-  const result: ClaudeModelOption[] = [];
-  const seenIds = new Set<string>();
-  const push = (option: ClaudeModelOption) => {
-    const id = option.id.trim();
-    if (!id || seenIds.has(id)) {
-      return;
-    }
-
-    seenIds.add(id);
-    result.push({ ...option, id });
-  };
-
-  if (!configuredModels.some((option) => option.id === DEFAULT_MODEL_VALUE)) {
-    push({
-      id: DEFAULT_MODEL_VALUE,
-      label: '默认',
-      description: '使用当前 Claude Code 默认模型，不传 --model',
-      kind: 'default',
-    });
-  }
-
-  configuredModels.forEach(push);
-  customModels.forEach((item) => {
-    push({
-      id: item.id,
-      label: item.label || item.id,
-      description: item.description || '自定义模型',
-      model: item.id,
-      kind: 'custom',
-    });
-  });
-
-  return result;
 }
 
 function normalizeClaudeModelOptions(value: unknown): ClaudeModelOption[] {

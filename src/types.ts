@@ -441,9 +441,17 @@ export type CustomModel = {
   description?: string;
 };
 
+export type ModelCapability = {
+  modelId: string;
+  contextWindowTokens?: number;
+  supportsContext1m?: boolean;
+  context1mModel?: string;
+};
+
 export type ModelSettings = {
   customModels: CustomModel[];
   defaultModelId: string;
+  modelCapabilities: ModelCapability[];
 };
 
 export type ComposerSendShortcut = 'enter' | 'modEnter';

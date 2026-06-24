@@ -12297,6 +12297,29 @@ button.git-conflict-overview-row:focus-visible,
   gap: 8px;
 }
 
+.settings-model-capabilities-form {
+  flex-wrap: wrap;
+}
+
+.settings-model-capabilities-form .settings-input {
+  flex: 1 1 150px;
+}
+
+.settings-model-capabilities-form .settings-model-capability-token-input {
+  flex: 0 1 120px;
+  max-width: 150px;
+}
+
+.settings-model-capability-toggle {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #575f68;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .settings-shortcut-control {
   display: inline-flex;
   align-items: center;

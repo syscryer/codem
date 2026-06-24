@@ -150,6 +150,14 @@ test('normalizeAppSettings preserves valid model settings', () => {
         },
       ],
       defaultModelId: 'anthropic/claude-sonnet-4.5',
+      modelCapabilities: [
+        {
+          modelId: ' GLM-5.2 ',
+          contextWindowTokens: 1_000_000,
+          supportsContext1m: true,
+          context1mModel: ' GLM-5.2[1m] ',
+        },
+      ],
     },
   });
 
@@ -162,7 +170,57 @@ test('normalizeAppSettings preserves valid model settings', () => {
       },
     ],
     defaultModelId: 'anthropic/claude-sonnet-4.5',
+    modelCapabilities: [
+      {
+        modelId: 'GLM-5.2',
+        contextWindowTokens: 1_000_000,
+        supportsContext1m: true,
+        context1mModel: 'GLM-5.2[1m]',
+      },
+    ],
   });
+});
+
+test('normalizeAppSettings drops invalid and duplicate model capability settings', () => {
+  const settings = normalizeAppSettings({
+    models: {
+      modelCapabilities: [
+        {
+          modelId: 'glm-5.2',
+          contextWindowTokens: 1_000_000,
+          supportsContext1m: true,
+        },
+        {
+          modelId: 'glm-5.2',
+          contextWindowTokens: 128_000,
+          supportsContext1m: false,
+        },
+        {
+          modelId: 'bad model',
+          contextWindowTokens: 1_000_000,
+          supportsContext1m: true,
+        },
+        {
+          modelId: 'tiny/model',
+          contextWindowTokens: 0,
+          supportsContext1m: true,
+          context1mModel: 'tiny/model long',
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(settings.models.modelCapabilities, [
+    {
+      modelId: 'glm-5.2',
+      contextWindowTokens: 1_000_000,
+      supportsContext1m: true,
+    },
+    {
+      modelId: 'tiny/model',
+      supportsContext1m: true,
+    },
+  ]);
 });
 
 test('normalizeAppSettings preserves valid shortcuts and open-with settings', () => {
@@ -389,6 +447,7 @@ test('normalizeAppSettings filters invalid and duplicate custom models', () => {
       { id: 'provider/model:202604[beta]', label: 'Beta', description: 'Experimental' },
     ],
     defaultModelId: '__default',
+    modelCapabilities: [],
   });
 });
 
@@ -427,6 +486,7 @@ test('updateModelSettings writes formatted JSON and can read it back', () => {
       models: {
         customModels: [{ id: 'custom/model' }],
         defaultModelId: 'custom/model',
+        modelCapabilities: [],
       },
       shortcuts: defaultAppSettings.shortcuts,
       openWith: defaultAppSettings.openWith,
