@@ -238,14 +238,13 @@ svg {
 
 .codex-desktop[data-platform="macos"] {
   --desktop-menubar-height: 52px;
+  --mac-sidebar-top-space: 36px;
   --desktop-window-radius: 16px;
-  /* macOS 原生 vibrancy 已由 Rust apply_vibrancy 提供在 webview 下层，::before 在此
-     给半透明 tint + backdrop-filter 模糊形成玻璃材质。auto/none 在通用规则里被设成
-     opaque+blur0（让位 Windows 系统材质），mac 这里覆盖回玻璃。 */
-  --app-material-fill: rgba(246, 247, 250, 0.5);
+  /* macOS 的真实模糊交给 Rust apply_vibrancy，CSS 只做 tint 和高光，避免拖动窗口时整窗 backdrop-filter 重绘。 */
+  --app-material-fill: rgba(246, 247, 250, 0.22);
   --app-material-glow: rgba(255, 255, 255, 0.22);
-  --app-material-blur: 30px;
-  --sidebar-surface: rgba(246, 247, 250, 0.42);
+  --app-material-blur: 0px;
+  --sidebar-surface: rgba(246, 247, 250, 0.3);
   --sidebar-border-color: rgba(255, 255, 255, 0.28);
   --sidebar-sheen-top: rgba(255, 255, 255, 0.34);
   --sidebar-sheen-edge: rgba(255, 255, 255, 0.14);
@@ -261,6 +260,15 @@ svg {
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.18),
     0 0 0 1px rgba(15, 23, 42, 0.08);
+}
+
+.codex-desktop[data-platform="macos"] {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.codex-desktop[data-platform="macos"]::before {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .codex-desktop[data-theme-mode="dark"][data-window-material="auto"],
@@ -304,10 +312,10 @@ svg {
 }
 
 .codex-desktop[data-theme-mode="dark"][data-platform="macos"] {
-  --app-material-fill: rgba(30, 30, 32, 0.5);
+  --app-material-fill: rgba(30, 30, 32, 0.22);
   --app-material-glow: rgba(255, 255, 255, 0.06);
-  --app-material-blur: 30px;
-  --sidebar-surface: rgba(32, 34, 38, 0.32);
+  --app-material-blur: 0px;
+  --sidebar-surface: rgba(32, 34, 38, 0.24);
   --sidebar-border-color: rgba(255, 255, 255, 0.1);
   --sidebar-sheen-top: rgba(255, 255, 255, 0.12);
   --sidebar-sheen-edge: rgba(255, 255, 255, 0.06);
@@ -438,9 +446,9 @@ svg {
 }
 
 .desktop-menubar.is-macos {
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 16px;
-  padding: 0 18px 0 14px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 0 14px;
 }
 
 .desktop-menubar::before {
@@ -471,9 +479,19 @@ svg {
 }
 
 .codex-desktop[data-platform="macos"] .desktop-menubar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--sidebar-width, 300px);
   border-top-left-radius: var(--desktop-window-radius);
-  border-top-right-radius: var(--desktop-window-radius);
   color: color-mix(in srgb, #ffffff 78%, var(--app-text) 22%);
+  -webkit-app-region: drag;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.codex-desktop[data-platform="macos"]:has(.codex-shell.sidebar-hidden) .desktop-menubar {
+  width: 170px;
 }
 
 .desktop-menubar-leading,
@@ -754,6 +772,7 @@ svg {
 }
 
 .codex-desktop[data-platform="macos"] .codex-shell {
+  grid-row: 1;
   border-bottom-left-radius: var(--desktop-window-radius);
   border-bottom-right-radius: var(--desktop-window-radius);
 }
@@ -15074,6 +15093,34 @@ button.git-conflict-overview-row:focus-visible,
   background: transparent;
 }
 
+.codex-desktop[data-platform="macos"] .chat-workspace {
+  position: relative;
+  z-index: 2;
+  background: transparent;
+}
+
+.codex-desktop[data-platform="macos"] .chat-workspace::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: linear-gradient(180deg, var(--sidebar-sheen-top), transparent 52%);
+  opacity: 0.74;
+  pointer-events: none;
+}
+
+.codex-desktop[data-platform="macos"] .chat-workspace::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    linear-gradient(90deg, var(--sidebar-sheen-edge), transparent 22%),
+    radial-gradient(circle at 18% 8%, rgba(255, 255, 255, 0.18), transparent 28%);
+  opacity: 0.72;
+  pointer-events: none;
+}
+
 .codex-desktop .desktop-menubar {
   background: transparent;
   backdrop-filter: none;
@@ -15229,10 +15276,14 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .codex-desktop[data-platform="macos"] .chat-shell {
-  border-top-left-radius: 0;
+  --chat-header-height: 46px;
+  z-index: 2;
+  border-top-left-radius: var(--desktop-window-radius);
   border-top-right-radius: 0;
   border-bottom-right-radius: var(--desktop-window-radius);
   border-left-color: color-mix(in srgb, var(--app-border) 44%, transparent);
+  background: var(--app-surface);
+  overflow: hidden;
 }
 
 .codex-desktop[data-platform="macos"] .codex-shell.sidebar-hidden .chat-shell {
@@ -16058,12 +16109,17 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .codex-desktop[data-platform="macos"] .app-sidebar {
+  padding-top: var(--mac-sidebar-top-space);
   border-bottom-left-radius: var(--desktop-window-radius);
 }
 
 .codex-desktop[data-platform="macos"] .desktop-menubar .window-nav {
+  position: absolute;
+  top: 22px;
+  left: 92px;
+  transform: translateY(-50%);
   gap: 4px;
-  margin-left: 74px;
+  margin-left: 0;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -16072,6 +16128,9 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .codex-desktop[data-platform="macos"] .window-nav button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 24px;
   height: 22px;
   border: 0;
@@ -16089,6 +16148,82 @@ button.git-conflict-overview-row:focus-visible,
 .codex-desktop[data-platform="macos"] .window-nav button:disabled {
   background: transparent;
   color: color-mix(in srgb, var(--app-muted) 34%, transparent);
+}
+
+.codex-desktop[data-platform="macos"] .chat-header {
+  height: var(--chat-header-height);
+  min-height: var(--chat-header-height);
+  padding: 0 20px 0 32px;
+  border-bottom-color: var(--app-border);
+  border-top-left-radius: var(--desktop-window-radius);
+  background: var(--app-surface);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  cursor: default;
+  -webkit-app-region: drag;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.codex-desktop[data-platform="macos"] :is(
+  button,
+  input,
+  textarea,
+  select,
+  a,
+  [role="button"],
+  [role="menu"],
+  [role="menuitem"],
+  [role="menuitemradio"],
+  [data-popover-portal],
+  .desktop-menu-popover,
+  .workspace-menu,
+  .open-app-dropdown,
+  .model-menu,
+  .effort-menu,
+  .permission-menu,
+  .composer-add-menu,
+  .status-branch-menu,
+  .status-run-menu,
+  .settings-select-menu
+) {
+  -webkit-app-region: no-drag;
+}
+
+.codex-desktop[data-platform="macos"] .chat-header::before {
+  content: none;
+}
+
+.codex-desktop[data-platform="macos"] .thread-title {
+  gap: 10px;
+  -webkit-app-region: drag;
+}
+
+.codex-desktop[data-platform="macos"] .thread-title h2 {
+  max-width: min(42vw, 520px);
+  color: var(--app-text-strong);
+  font-size: 15px;
+  font-weight: 640;
+  line-height: 1.2;
+  -webkit-app-region: drag;
+}
+
+.codex-desktop[data-platform="macos"] .thread-project {
+  display: none;
+}
+
+.codex-desktop[data-platform="macos"] .thread-more-button {
+  width: 28px;
+  height: 28px;
+  margin-left: 0;
+  border-radius: 8px;
+  color: var(--app-muted);
+}
+
+.codex-desktop[data-platform="macos"] .thread-more-button:hover:not(:disabled) {
+  background: var(--app-hover);
+  color: var(--app-text-strong);
 }
 
 .codex-desktop[data-platform="macos"] :is(.desktop-menu-trigger:hover, .desktop-menu-trigger.active) {

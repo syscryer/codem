@@ -1,24 +1,18 @@
 import { ArrowLeft, ArrowRight, Check, Minus, Square, X } from 'lucide-react';
 import { useRef, useState, type MouseEvent, type PointerEvent } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { getWindowMaterialLabel, isTauriRuntime } from '../lib/window-material';
-import { ChatHeaderActions } from './ChatHeader';
 import { PopoverPortal } from './PopoverPortal';
-import type { DesktopPlatform, OpenAppTarget, ProjectSummary, ThreadDetail, WindowMaterialMode } from '../types';
+import type { DesktopPlatform, WindowMaterialMode } from '../types';
 
 type AppMenuId = 'file' | 'edit' | 'view' | 'window' | 'help';
 
 type AppMenubarProps = {
   platform: DesktopPlatform;
-  activeProject: ProjectSummary | null;
-  activeThread: ThreadDetail | null;
-  isNewChatDraft: boolean;
   sidebarVisible: boolean;
   windowMaterial: WindowMaterialMode;
   supportedWindowMaterials: WindowMaterialMode[];
-  openTargets: OpenAppTarget[];
-  selectedOpenTargetId: string;
-  runAvailable: boolean;
   canNavigateBack: boolean;
   canNavigateForward: boolean;
   onToggleSidebar: () => void;
@@ -29,22 +23,6 @@ type AppMenubarProps = {
   onOpenCloneDialog: () => void;
   onOpenSettings: () => void;
   onOpenSearch: () => void;
-  onRunLaunchScript: (command: string) => void;
-  onOpenTarget: (targetId?: string) => void;
-  onSelectOpenTarget: (targetId: string) => void;
-  onOpenFilesWorkbench: () => void;
-  onOpenGitCommit: () => void;
-  onOpenGitPush: () => void;
-  onOpenGitBranch: () => void;
-  onOpenGitHistory: () => void;
-  onGitFetch: () => void;
-  onGitPull: () => void;
-  terminalDockOpen: boolean;
-  onToggleTerminalDock: () => void;
-  terminalDockAvailable: boolean;
-  rightWorkbenchOpen: boolean;
-  onToggleRightWorkbench: () => void;
-  onOpenReviewWorkbench: () => void;
   onSelectWindowMaterial: (material: WindowMaterialMode) => void;
   onShowAbout: () => void;
   onShowShortcuts: () => void;
@@ -58,8 +36,6 @@ const menuLabels: Record<AppMenuId, string> = {
   window: '窗口',
   help: '帮助',
 };
-
-const WINDOW_DRAG_THRESHOLD_PX = 4;
 
 const defaultShortcutLabels = {
   newChat: 'Ctrl+N',
@@ -95,15 +71,9 @@ const macShortcutLabels = {
 
 export function AppMenubar({
   platform,
-  activeProject,
-  activeThread,
-  isNewChatDraft,
   sidebarVisible,
   windowMaterial,
   supportedWindowMaterials,
-  openTargets,
-  selectedOpenTargetId,
-  runAvailable,
   canNavigateBack,
   canNavigateForward,
   onToggleSidebar,
@@ -114,22 +84,6 @@ export function AppMenubar({
   onOpenCloneDialog,
   onOpenSettings,
   onOpenSearch,
-  onRunLaunchScript,
-  onOpenTarget,
-  onSelectOpenTarget,
-  onOpenFilesWorkbench,
-  onOpenGitCommit,
-  onOpenGitPush,
-  onOpenGitBranch,
-  onOpenGitHistory,
-  onGitFetch,
-  onGitPull,
-  terminalDockOpen,
-  onToggleTerminalDock,
-  terminalDockAvailable,
-  rightWorkbenchOpen,
-  onToggleRightWorkbench,
-  onOpenReviewWorkbench,
   onSelectWindowMaterial,
   onShowAbout,
   onShowShortcuts,
@@ -152,34 +106,8 @@ export function AppMenubar({
       return;
     }
 
-    const pointerId = event.pointerId;
-    const startX = event.clientX;
-    const startY = event.clientY;
-
-    function cleanup() {
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', cleanup);
-      window.removeEventListener('pointercancel', cleanup);
-    }
-
-    function handlePointerMove(moveEvent: globalThis.PointerEvent) {
-      if (moveEvent.pointerId !== pointerId) {
-        return;
-      }
-
-      const distanceX = Math.abs(moveEvent.clientX - startX);
-      const distanceY = Math.abs(moveEvent.clientY - startY);
-      if (distanceX < WINDOW_DRAG_THRESHOLD_PX && distanceY < WINDOW_DRAG_THRESHOLD_PX) {
-        return;
-      }
-
-      cleanup();
-      void startWindowDrag();
-    }
-
-    window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', cleanup);
-    window.addEventListener('pointercancel', cleanup);
+    event.preventDefault();
+    void startWindowDrag();
   }
 
   function handleTitlebarDoubleClick(event: MouseEvent<HTMLElement>) {
@@ -208,19 +136,10 @@ export function AppMenubar({
   const isMacos = platform === 'macos';
   const showWindowMaterialMenu = supportedWindowMaterials.length > 1;
   const shortcutLabels = isMacos ? macShortcutLabels : defaultShortcutLabels;
-  const title = activeThread?.title ?? (isNewChatDraft ? '新建聊天' : activeProject?.name ?? 'CodeM');
-  const subtitle =
-    activeThread && activeProject
-      ? activeProject.name
-      : isNewChatDraft
-        ? activeProject?.name ? `在 ${activeProject.name} 中创建会话` : '创建新会话'
-        : activeThread
-          ? '当前会话'
-          : activeProject?.path ?? '工作区';
   const navIconSize = isMacos ? 15 : 13;
 
   const navigation = (
-    <div className="window-nav">
+    <div className="window-nav" data-tauri-drag-region>
       <button type="button" className="window-nav-sidebar-toggle" aria-label={sidebarVisible ? '隐藏侧边栏' : '显示侧边栏'} onClick={onToggleSidebar}>
         <SidebarToggleIcon visible={sidebarVisible} />
       </button>
@@ -370,40 +289,12 @@ export function AppMenubar({
     return (
       <header
         className="desktop-menubar is-macos"
+        data-tauri-drag-region
         onDoubleClick={handleTitlebarDoubleClick}
         onPointerDown={handleDragStart}
       >
         <div className="desktop-menubar-leading">
           {navigation}
-        </div>
-        <div className="desktop-menubar-title">
-          <strong className="desktop-menubar-title-text">{title}</strong>
-          <span className="desktop-menubar-subtitle">{subtitle}</span>
-        </div>
-        <div className="desktop-menubar-toolbar">
-          <ChatHeaderActions
-            activeProject={activeProject}
-            openTargets={openTargets}
-            selectedOpenTargetId={selectedOpenTargetId}
-            runAvailable={runAvailable}
-            onRunLaunchScript={onRunLaunchScript}
-            onOpenTarget={onOpenTarget}
-            onSelectOpenTarget={onSelectOpenTarget}
-            onOpenFilesWorkbench={onOpenFilesWorkbench}
-            onOpenGitCommit={onOpenGitCommit}
-            onOpenGitPush={onOpenGitPush}
-            onOpenGitBranch={onOpenGitBranch}
-            onOpenGitHistory={onOpenGitHistory}
-            onGitFetch={onGitFetch}
-            onGitPull={onGitPull}
-            terminalDockOpen={terminalDockOpen}
-            onToggleTerminalDock={onToggleTerminalDock}
-            terminalDockAvailable={terminalDockAvailable}
-            rightWorkbenchOpen={rightWorkbenchOpen}
-            onToggleRightWorkbench={onToggleRightWorkbench}
-            onOpenReviewWorkbench={onOpenReviewWorkbench}
-            compact
-          />
         </div>
       </header>
     );
@@ -412,6 +303,7 @@ export function AppMenubar({
   return (
     <header
       className="desktop-menubar"
+      data-tauri-drag-region
       onDoubleClick={handleTitlebarDoubleClick}
       onPointerDown={handleDragStart}
     >
@@ -488,7 +380,6 @@ async function startWindowDrag() {
   }
 
   try {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window');
     await getCurrentWindow().startDragging();
   } catch {
     // Web mode keeps the same menu UI but cannot move a native window.

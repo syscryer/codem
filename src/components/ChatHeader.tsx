@@ -112,10 +112,10 @@ export function ChatHeader({
   }
 
   return (
-    <header className="chat-header">
-      <div className="thread-title">
-        <h2>{activeThread?.title ?? (isNewChatDraft ? '新建聊天' : '选择一个聊天')}</h2>
-        <span className="thread-project">{activeProject?.name ?? '未选择项目'}</span>
+    <header className="chat-header" data-tauri-drag-region>
+      <div className="thread-title" data-tauri-drag-region>
+        <h2 data-tauri-drag-region>{activeThread?.title ?? (isNewChatDraft ? '新建聊天' : '选择一个聊天')}</h2>
+        <span className="thread-project" data-tauri-drag-region>{activeProject?.name ?? '未选择项目'}</span>
         <div className="chat-thread-menu" ref={threadMenuRef}>
           <button
             type="button"

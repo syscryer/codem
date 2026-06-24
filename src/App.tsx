@@ -1352,15 +1352,9 @@ export default function App() {
     >
       <AppMenubar
         platform={runtimePlatform}
-        activeProject={activeProject}
-        activeThread={activeThread}
-        isNewChatDraft={isNewChatDraft}
         sidebarVisible={sidebarVisible}
         windowMaterial={effectiveWindowMaterial}
         supportedWindowMaterials={supportedWindowMaterials}
-        openTargets={openTargets}
-        selectedOpenTargetId={openWith.selectedTargetId}
-        runAvailable={terminalDockAvailable}
         canNavigateBack={canNavigateBack}
         canNavigateForward={canNavigateForward}
         onToggleSidebar={() => setSidebarVisible((value) => !value)}
@@ -1371,22 +1365,6 @@ export default function App() {
         onOpenCloneDialog={() => setCloneDialogOpen(true)}
         onOpenSettings={() => openSettings('appearance')}
         onOpenSearch={openSessionSearch}
-        onRunLaunchScript={handleRunLaunchScript}
-        onOpenTarget={(targetId) => activeProject ? void handleOpenProjectInEditor(activeProject, targetId) : showToast('请先选择项目。', 'info')}
-        onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
-        onOpenFilesWorkbench={openFilesWorkbench}
-        onOpenGitCommit={openGitCommitWorkbench}
-        onOpenGitPush={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
-        onOpenGitBranch={() => activeProject ? setGitDialogMode('branch') : showToast('请先选择项目。', 'info')}
-        onOpenGitHistory={openGitHistoryDock}
-        onGitFetch={() => void handleGitFetch()}
-        onGitPull={() => void handleGitPull()}
-        terminalDockOpen={terminalDock.open}
-        onToggleTerminalDock={terminalDock.toggle}
-        terminalDockAvailable={terminalDockAvailable}
-        rightWorkbenchOpen={rightWorkbenchOpen}
-        onToggleRightWorkbench={() => setRightWorkbenchOpen((value) => !value)}
-        onOpenReviewWorkbench={openReviewWorkbench}
         onSelectWindowMaterial={(windowMaterial) => updateAppearance({ windowMaterial })}
         onShowAbout={showAbout}
         onShowShortcuts={showShortcuts}
@@ -1485,36 +1463,34 @@ export default function App() {
             } as CSSProperties}
           >
             <main className="chat-shell">
-              {runtimePlatform === 'macos' ? null : (
-                <ChatHeader
-                  activeProject={activeProject}
-                  activeThread={activeThread}
-                  isNewChatDraft={isNewChatDraft}
-                  openTargets={openTargets}
-                  selectedOpenTargetId={openWith.selectedTargetId}
-                  runAvailable={terminalDockAvailable}
-                  onRunLaunchScript={handleRunLaunchScript}
-                  onOpenTarget={(targetId) => activeProject ? void handleOpenProjectInEditor(activeProject, targetId) : showToast('请先选择项目。', 'info')}
-                  onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
-                  onOpenFilesWorkbench={openFilesWorkbench}
-                  onOpenGitCommit={openGitCommitWorkbench}
-                  onOpenGitPush={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
-                  onOpenGitBranch={() => activeProject ? setGitDialogMode('branch') : showToast('请先选择项目。', 'info')}
-                  onOpenGitHistory={openGitHistoryDock}
-                  onGitFetch={() => void handleGitFetch()}
-                  onGitPull={() => void handleGitPull()}
-                  terminalDockOpen={terminalDock.open}
-                  onToggleTerminalDock={terminalDock.toggle}
-                  terminalDockAvailable={terminalDockAvailable}
-                  rightWorkbenchOpen={rightWorkbenchOpen}
-                  onToggleRightWorkbench={() => setRightWorkbenchOpen((value) => !value)}
-                  onOpenReviewWorkbench={openReviewWorkbench}
-                  onTogglePinThread={togglePinThread}
-                  onOpenRenameThreadDialog={openRenameThreadDialog}
-                  onCopySessionId={handleCopySessionId}
-                  onOpenRemoveThreadDialog={handleOpenRemoveThreadDialog}
-                />
-              )}
+              <ChatHeader
+                activeProject={activeProject}
+                activeThread={activeThread}
+                isNewChatDraft={isNewChatDraft}
+                openTargets={openTargets}
+                selectedOpenTargetId={openWith.selectedTargetId}
+                runAvailable={terminalDockAvailable}
+                onRunLaunchScript={handleRunLaunchScript}
+                onOpenTarget={(targetId) => activeProject ? void handleOpenProjectInEditor(activeProject, targetId) : showToast('请先选择项目。', 'info')}
+                onSelectOpenTarget={(targetId) => void updateOpenWith({ selectedTargetId: targetId })}
+                onOpenFilesWorkbench={openFilesWorkbench}
+                onOpenGitCommit={openGitCommitWorkbench}
+                onOpenGitPush={() => activeProject ? setGitDialogMode('push') : showToast('请先选择项目。', 'info')}
+                onOpenGitBranch={() => activeProject ? setGitDialogMode('branch') : showToast('请先选择项目。', 'info')}
+                onOpenGitHistory={openGitHistoryDock}
+                onGitFetch={() => void handleGitFetch()}
+                onGitPull={() => void handleGitPull()}
+                terminalDockOpen={terminalDock.open}
+                onToggleTerminalDock={terminalDock.toggle}
+                terminalDockAvailable={terminalDockAvailable}
+                rightWorkbenchOpen={rightWorkbenchOpen}
+                onToggleRightWorkbench={() => setRightWorkbenchOpen((value) => !value)}
+                onOpenReviewWorkbench={openReviewWorkbench}
+                onTogglePinThread={togglePinThread}
+                onOpenRenameThreadDialog={openRenameThreadDialog}
+                onCopySessionId={handleCopySessionId}
+                onOpenRemoveThreadDialog={handleOpenRemoveThreadDialog}
+              />
 
               <ConversationPane
                 activeThread={activeThread}
