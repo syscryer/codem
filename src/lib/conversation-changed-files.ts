@@ -27,6 +27,7 @@ export type ConversationUndoOperation = {
   kind: 'replace-snippet' | 'delete-file' | 'restore-file';
   beforeText: string;
   afterText: string;
+  replaceAll?: boolean;
 };
 
 export type ConversationUndoChange = {
@@ -55,21 +56,28 @@ export function buildChangedFilesReviewRequests(files: ConversationChangedFileGr
     .filter((request): request is NonNullable<typeof request> => Boolean(request));
 }
 
-export function buildConversationUndoChanges(tools: ToolStep[]) {
+export function buildConversationUndoChanges(
+  tools: ToolStep[],
+  projectPath?: string,
+  previousTurns: ConversationTurn[] = [],
+) {
   const grouped = new Map<string, ConversationUndoChange>();
+  const knownFiles = buildKnownFileContentMap(previousTurns, projectPath);
 
   for (const tool of tools) {
-    const change = extractUndoChange(tool);
+    const change = extractUndoChange(tool, projectPath, knownFiles);
     if (!change) {
       continue;
     }
 
-    const current = grouped.get(change.path) ?? {
-      path: change.path,
+    const normalizedPath = normalizeConversationUndoPath(change.path, projectPath);
+
+    const current = grouped.get(normalizedPath) ?? {
+      path: normalizedPath,
       operations: [],
     };
     current.operations.push(change.operation);
-    grouped.set(change.path, current);
+    grouped.set(normalizedPath, current);
   }
 
   return [...grouped.values()];
@@ -85,7 +93,19 @@ export function findLatestChangedFilesTurnId(turns: ConversationTurn[]) {
   return null;
 }
 
-function extractUndoChange(tool: ToolStep) {
+function extractUndoChange(
+  tool: ToolStep,
+  projectPath?: string,
+  knownFiles: Map<string, string | null> = new Map(),
+) {
+  if (tool.status !== 'done') {
+    return null;
+  }
+
+  if (tool.name === 'Bash') {
+    return extractBashDeleteUndoChange(tool, projectPath, knownFiles);
+  }
+
   if (tool.name !== 'Edit' && tool.name !== 'Write' && tool.name !== 'NotebookEdit') {
     return null;
   }
@@ -107,13 +127,18 @@ function extractUndoChange(tool: ToolStep) {
   const changeType = getToolInputString(input, ['change_type']) ?? 'update';
 
   if (oldString !== undefined || newString !== undefined) {
+    const operation: ConversationUndoOperation = {
+      kind: 'replace-snippet' as const,
+      beforeText: oldString ?? '',
+      afterText: newString ?? '',
+    };
+    if (input.replace_all === true) {
+      operation.replaceAll = true;
+    }
+
     return {
       path: filePath,
-      operation: {
-        kind: 'replace-snippet' as const,
-        beforeText: oldString ?? '',
-        afterText: newString ?? '',
-      },
+      operation,
     };
   }
 
@@ -152,6 +177,158 @@ function extractUndoChange(tool: ToolStep) {
       afterText: parsedDiff.afterText,
     },
   };
+}
+
+function extractBashDeleteUndoChange(
+  tool: ToolStep,
+  projectPath: string | undefined,
+  knownFiles: Map<string, string | null>,
+) {
+  const input = parseToolInput(tool.inputText);
+  const command = input ? getToolInputString(input, ['command', 'cmd', 'cmdString']) : undefined;
+  const deletedPath = command ? extractSimpleDeletedFilePath(command) : undefined;
+  if (!deletedPath) {
+    return null;
+  }
+
+  const normalizedPath = normalizeConversationUndoPath(deletedPath, projectPath);
+  const beforeText = knownFiles.get(normalizedPath);
+  if (beforeText === undefined || beforeText === null) {
+    return null;
+  }
+
+  return {
+    path: normalizedPath,
+    operation: {
+      kind: 'restore-file' as const,
+      beforeText,
+      afterText: '',
+    },
+  };
+}
+
+function buildKnownFileContentMap(turns: ConversationTurn[], projectPath?: string) {
+  const knownFiles = new Map<string, string | null>();
+
+  for (const turn of turns) {
+    for (const tool of turn.tools) {
+      const change = extractStructuredUndoChange(tool);
+      if (!change) {
+        continue;
+      }
+
+      const normalizedPath = normalizeConversationUndoPath(change.path, projectPath ?? turn.workspace);
+      knownFiles.set(normalizedPath, applyKnownFileOperation(knownFiles.get(normalizedPath), change.operation));
+    }
+  }
+
+  return knownFiles;
+}
+
+function extractStructuredUndoChange(tool: ToolStep) {
+  if (tool.status !== 'done') {
+    return null;
+  }
+  if (tool.name !== 'Edit' && tool.name !== 'Write' && tool.name !== 'NotebookEdit') {
+    return null;
+  }
+
+  return extractUndoChange(tool);
+}
+
+function applyKnownFileOperation(currentText: string | null | undefined, operation: ConversationUndoOperation) {
+  if (operation.kind === 'delete-file') {
+    return operation.afterText;
+  }
+
+  if (operation.kind === 'restore-file') {
+    return null;
+  }
+
+  if (currentText === undefined || currentText === null || !operation.afterText) {
+    return currentText ?? null;
+  }
+
+  if (operation.replaceAll) {
+    return currentText.split(operation.beforeText).join(operation.afterText);
+  }
+
+  const firstIndex = currentText.indexOf(operation.beforeText);
+  const lastIndex = currentText.lastIndexOf(operation.beforeText);
+  if (firstIndex === -1 || firstIndex !== lastIndex) {
+    return currentText;
+  }
+
+  return currentText.slice(0, firstIndex) +
+    operation.afterText +
+    currentText.slice(firstIndex + operation.beforeText.length);
+}
+
+function extractSimpleDeletedFilePath(command: string) {
+  const tokens = tokenizeShellCommand(command.trim());
+  if (tokens.length < 2) {
+    return null;
+  }
+
+  const commandName = normalizeShellCommandName(tokens[0]);
+  if (commandName === 'rm') {
+    const paths = tokens.slice(1).filter((token) => !token.startsWith('-'));
+    return paths.length === 1 && !looksLikeDirectoryDelete(paths[0]) ? paths[0] : null;
+  }
+
+  if (commandName === 'del' || commandName === 'erase') {
+    const paths = tokens.slice(1).filter((token) => !token.startsWith('/') && !token.startsWith('-'));
+    return paths.length === 1 && !looksLikeDirectoryDelete(paths[0]) ? paths[0] : null;
+  }
+
+  return null;
+}
+
+function tokenizeShellCommand(command: string) {
+  const tokens: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = '';
+      }
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (current) {
+    tokens.push(current);
+  }
+
+  return tokens;
+}
+
+function normalizeShellCommandName(value: string) {
+  return value.replace(/\\/g, '/').split('/').pop()?.toLowerCase() ?? value.toLowerCase();
+}
+
+function looksLikeDirectoryDelete(filePath: string) {
+  return filePath.endsWith('/') || filePath.endsWith('\\') || filePath === '.' || filePath === '..';
 }
 
 function parseToolInput(inputText?: string) {
@@ -216,6 +393,30 @@ function parseDiffContent(diff: string) {
 
 function normalizePreviewText(value: string) {
   return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function normalizeConversationUndoPath(filePath: string, projectPath?: string) {
+  const normalizedFilePath = normalizePathForComparison(filePath);
+  if (!projectPath) {
+    return normalizedFilePath;
+  }
+
+  const normalizedProjectPath = normalizePathForComparison(projectPath);
+  if (!normalizedProjectPath) {
+    return normalizedFilePath;
+  }
+
+  const lowerFilePath = normalizedFilePath.toLowerCase();
+  const lowerProjectPath = normalizedProjectPath.toLowerCase();
+  if (lowerFilePath.startsWith(`${lowerProjectPath}/`)) {
+    return normalizedFilePath.slice(normalizedProjectPath.length + 1);
+  }
+
+  return normalizedFilePath;
+}
+
+function normalizePathForComparison(value: string) {
+  return value.replace(/\\/g, '/').replace(/\/+$/, '');
 }
 
 function buildConversationReviewDiff(file: ConversationChangedFileGroup) {

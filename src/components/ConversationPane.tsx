@@ -239,6 +239,7 @@ export function ConversationPane({
               nowMs={isRunning && turn.id === activeTurnId ? clockNowMs : 0}
               isLiveRunning={isRunning && turn.id === activeTurnId}
               isLatest={index === activeThread.turns.length - 1}
+              previousTurns={activeThread.turns.slice(0, index)}
               canUndoChangedFiles={turn.id === latestChangedFilesTurnId && undoneTurnIds[turn.id] !== true}
               activeProject={activeProject}
               collapseIntermediateProcess={collapseIntermediateProcess}

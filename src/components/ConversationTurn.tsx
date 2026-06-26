@@ -72,6 +72,7 @@ function ConversationTurnViewComponent({
   nowMs,
   isLiveRunning,
   isLatest,
+  previousTurns,
   canUndoChangedFiles,
   activeProject,
   collapseIntermediateProcess,
@@ -87,6 +88,7 @@ function ConversationTurnViewComponent({
   nowMs: number;
   isLiveRunning: boolean;
   isLatest: boolean;
+  previousTurns: ConversationTurn[];
   canUndoChangedFiles: boolean;
   activeProject: ProjectSummary | null;
   collapseIntermediateProcess: boolean;
@@ -150,7 +152,10 @@ function ConversationTurnViewComponent({
   const canToggleIntermediateProcess = shouldCollapseIntermediateItems && intermediateItems.length > 0;
   const changedFileGroups = useMemo(() => collectConversationChangedFileGroups(turn.tools), [turn.tools]);
   const outputFiles = useMemo(() => collectConversationOutputFiles(turn.tools), [turn.tools]);
-  const undoChanges = useMemo(() => buildConversationUndoChanges(turn.tools), [turn.tools]);
+  const undoChanges = useMemo(
+    () => buildConversationUndoChanges(turn.tools, activeProject?.path ?? turn.workspace, previousTurns),
+    [activeProject?.path, previousTurns, turn.tools, turn.workspace],
+  );
   const showProgressLine =
     running ||
     turn.status === 'stopped' ||

@@ -403,6 +403,7 @@ export type UndoConversationChangeOperation = {
   kind: 'replace-snippet' | 'delete-file' | 'restore-file';
   beforeText: string;
   afterText: string;
+  replaceAll?: boolean;
 };
 
 export type UndoConversationChange = {
@@ -414,6 +415,27 @@ export type UndoConversationChangeResult = {
   restored: string[];
   deleted: string[];
   summary: Awaited<ReturnType<typeof getProjectGitSummary>>;
+};
+
+type PlannedUndoConversationChange = {
+  path: string;
+  resolvedPath: string;
+  originalText: string | null;
+  finalText: string | null;
+  outcome: 'restored' | 'deleted';
+};
+
+type UndoConversationFileState = {
+  path: string;
+  resolvedPath: string;
+  originalText: string | null;
+  currentText: string | null;
+};
+
+type UndoFileSnapshot = {
+  path: string;
+  resolvedPath: string;
+  text: string | null;
 };
 
 export type ProjectFileEntry = {
@@ -2061,18 +2083,14 @@ export async function undoProjectAiTurnChanges(
     throw new Error('没有可撤销的文件改动');
   }
 
-  const restored: string[] = [];
-  const deleted: string[] = [];
-
-  for (const change of safeChanges) {
-    const outcome = applyUndoConversationChange(projectPath, change);
-    if (outcome === 'restored') {
-      restored.push(change.path);
-    }
-    if (outcome === 'deleted') {
-      deleted.push(change.path);
-    }
-  }
+  const plannedChanges = planUndoConversationChanges(projectPath, safeChanges);
+  applyPlannedUndoConversationChanges(plannedChanges);
+  const restored = plannedChanges
+    .filter((change) => change.outcome === 'restored')
+    .map((change) => change.path);
+  const deleted = plannedChanges
+    .filter((change) => change.outcome === 'deleted')
+    .map((change) => change.path);
 
   return {
     restored,
@@ -4337,54 +4355,149 @@ function isUndoConversationChangeOperation(value: unknown): value is UndoConvers
   return (
     (candidate.kind === 'replace-snippet' || candidate.kind === 'delete-file' || candidate.kind === 'restore-file') &&
     typeof candidate.beforeText === 'string' &&
-    typeof candidate.afterText === 'string'
+    typeof candidate.afterText === 'string' &&
+    (candidate.replaceAll === undefined || typeof candidate.replaceAll === 'boolean')
   );
 }
 
-function applyUndoConversationChange(projectPath: string, change: UndoConversationChange) {
-  const resolvedPath = path.resolve(projectPath, change.path);
-  let currentText = existsSync(resolvedPath) ? readWorkspaceTextFile(projectPath, change.path) : null;
+function planUndoConversationChanges(projectPath: string, changes: UndoConversationChange[]) {
+  const states = new Map<string, UndoConversationFileState>();
 
-  for (let index = change.operations.length - 1; index >= 0; index -= 1) {
-    const operation = change.operations[index];
+  for (const change of changes) {
+    const state = states.get(change.path) ?? createUndoConversationFileState(projectPath, change.path);
+    state.currentText = applyUndoConversationOperations(state.currentText, change.operations, change.path);
+    states.set(change.path, state);
+  }
+
+  return [...states.values()].map((state): PlannedUndoConversationChange => {
+    const outcome = state.currentText !== null ? 'restored' : 'deleted';
+    return {
+      path: state.path,
+      resolvedPath: state.resolvedPath,
+      originalText: state.originalText,
+      finalText: state.currentText,
+      outcome,
+    };
+  });
+}
+
+function createUndoConversationFileState(projectPath: string, filePath: string): UndoConversationFileState {
+  const resolvedPath = path.resolve(projectPath, filePath);
+  const originalText = existsSync(resolvedPath) ? readWorkspaceTextFile(projectPath, filePath) : null;
+  return {
+    path: filePath,
+    resolvedPath,
+    originalText,
+    currentText: originalText,
+  };
+}
+
+function applyUndoConversationOperations(
+  initialText: string | null,
+  operations: UndoConversationChangeOperation[],
+  filePath: string,
+) {
+  let currentText = initialText;
+
+  for (let index = operations.length - 1; index >= 0; index -= 1) {
+    const operation = operations[index];
 
     if (operation.kind === 'replace-snippet') {
       if (currentText === null) {
-        throw new Error(`文件 ${change.path} 不存在，无法安全撤销。`);
+        throw new Error(`文件 ${filePath} 不存在，无法安全撤销。`);
       }
 
-      currentText = reverseSnippetChange(currentText, operation, change.path);
+      currentText = reverseSnippetChange(currentText, operation, filePath);
       continue;
     }
 
     if (operation.kind === 'delete-file') {
       if (currentText === null) {
-        throw new Error(`文件 ${change.path} 已不存在，无法确认是否还能安全撤销。`);
+        throw new Error(`文件 ${filePath} 已不存在，无法确认是否还能安全撤销。`);
       }
-      if (normalizePreviewText(currentText) !== normalizePreviewText(operation.afterText)) {
-        throw new Error(`文件 ${change.path} 已经不是上次 AI 修改后的内容，无法安全撤销。`);
+      if (!isUndoWholeFileContentMatch(currentText, operation.afterText)) {
+        throw new Error(`文件 ${filePath} 已经不是上次 AI 修改后的内容，无法安全撤销。`);
       }
 
-      unlinkSync(resolvedPath);
       currentText = null;
       continue;
     }
 
     if (currentText !== null && currentText.trim().length > 0) {
-      throw new Error(`文件 ${change.path} 已经不是上次 AI 修改后的内容，无法安全撤销。`);
+      throw new Error(`文件 ${filePath} 已经不是上次 AI 修改后的内容，无法安全撤销。`);
     }
 
-    mkdirSync(path.dirname(resolvedPath), { recursive: true });
-    writeFileSync(resolvedPath, operation.beforeText, 'utf8');
     currentText = operation.beforeText;
   }
 
-  if (currentText !== null) {
-    writeFileSync(resolvedPath, currentText, 'utf8');
-    return 'restored' as const;
+  return currentText;
+}
+
+function applyPlannedUndoConversationChanges(changes: PlannedUndoConversationChange[]) {
+  const snapshots: UndoFileSnapshot[] = [];
+
+  try {
+    for (const change of changes) {
+      const currentText = readUndoFileSnapshot(change.resolvedPath);
+      if (currentText !== change.originalText) {
+        throw new Error(`文件 ${change.path} 已经不是撤销校验时的内容，无法安全撤销。`);
+      }
+
+      snapshots.push({
+        path: change.path,
+        resolvedPath: change.resolvedPath,
+        text: currentText,
+      });
+      writePlannedUndoConversationChange(change);
+    }
+  } catch (error) {
+    const rollbackError = restoreUndoFileSnapshots(snapshots);
+    if (rollbackError) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${message}；回滚部分文件失败：${rollbackError.message}`);
+    }
+    throw error;
+  }
+}
+
+function writePlannedUndoConversationChange(change: PlannedUndoConversationChange) {
+  if (change.finalText === null) {
+    if (existsSync(change.resolvedPath)) {
+      unlinkSync(change.resolvedPath);
+    }
+    return;
   }
 
-  return 'deleted' as const;
+  mkdirSync(path.dirname(change.resolvedPath), { recursive: true });
+  writeFileSync(change.resolvedPath, change.finalText, 'utf8');
+}
+
+function readUndoFileSnapshot(resolvedPath: string) {
+  return existsSync(resolvedPath) ? readFileSync(resolvedPath, 'utf8') : null;
+}
+
+function restoreUndoFileSnapshots(snapshots: UndoFileSnapshot[]) {
+  const errors: string[] = [];
+
+  for (let index = snapshots.length - 1; index >= 0; index -= 1) {
+    const snapshot = snapshots[index];
+    try {
+      if (snapshot.text === null) {
+        if (existsSync(snapshot.resolvedPath)) {
+          unlinkSync(snapshot.resolvedPath);
+        }
+        continue;
+      }
+
+      mkdirSync(path.dirname(snapshot.resolvedPath), { recursive: true });
+      writeFileSync(snapshot.resolvedPath, snapshot.text, 'utf8');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`${snapshot.path}: ${message}`);
+    }
+  }
+
+  return errors.length > 0 ? new Error(errors.join('; ')) : null;
 }
 
 function reverseSnippetChange(
@@ -4404,6 +4517,10 @@ function reverseSnippetChange(
     throw new Error(`文件 ${filePath} 已经不是上次 AI 修改后的内容，无法安全撤销。`);
   }
 
+  if (operation.replaceAll) {
+    return normalizedCurrent.split(normalizedAfter).join(normalizedBefore);
+  }
+
   const lastIndex = normalizedCurrent.lastIndexOf(normalizedAfter);
   if (firstIndex !== lastIndex) {
     throw new Error(`文件 ${filePath} 存在重复片段，无法安全撤销这次 AI 修改。`);
@@ -4412,6 +4529,22 @@ function reverseSnippetChange(
   return normalizedCurrent.slice(0, firstIndex) +
     normalizedBefore +
     normalizedCurrent.slice(firstIndex + normalizedAfter.length);
+}
+
+function isUndoWholeFileContentMatch(currentText: string, expectedText: string) {
+  const normalizedCurrent = normalizePreviewText(currentText);
+  const normalizedExpected = normalizePreviewText(expectedText);
+  return (
+    normalizedCurrent === normalizedExpected ||
+    normalizeLineTrailingWhitespace(normalizedCurrent) === normalizeLineTrailingWhitespace(normalizedExpected)
+  );
+}
+
+function normalizeLineTrailingWhitespace(value: string) {
+  return value
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+$/g, ''))
+    .join('\n');
 }
 
 function normalizeProjectRelativePaths(projectPath: string, filePaths: string[]) {

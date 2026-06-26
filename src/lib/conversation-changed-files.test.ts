@@ -172,6 +172,163 @@ test('buildConversationUndoChanges groups tool edits by file and preserves rever
   ]);
 });
 
+test('buildConversationUndoChanges normalizes absolute tool paths into project-relative undo paths', () => {
+  const tools: ToolStep[] = [
+    {
+      id: 'tool-absolute-edit',
+      name: 'Edit',
+      title: 'Edit absolute file',
+      status: 'done',
+      inputText: JSON.stringify({
+        file_path: 'D:\\ai_proj\\test\\snake-game\\index.html',
+        old_string: '<title>Old</title>',
+        new_string: '<title>New</title>',
+      }),
+    },
+    {
+      id: 'tool-absolute-write',
+      name: 'Write',
+      title: 'Write absolute file',
+      status: 'done',
+      inputText: JSON.stringify({
+        file_path: 'D:\\ai_proj\\test\\snake-game\\style.css',
+        content: 'body { color: red; }\n',
+      }),
+    },
+  ];
+
+  const changes = buildConversationUndoChanges(tools, 'D:\\ai_proj');
+  assert.deepEqual(changes, [
+    {
+      path: 'test/snake-game/index.html',
+      operations: [
+        {
+          kind: 'replace-snippet',
+          beforeText: '<title>Old</title>',
+          afterText: '<title>New</title>',
+        },
+      ],
+    },
+    {
+      path: 'test/snake-game/style.css',
+      operations: [
+        {
+          kind: 'delete-file',
+          beforeText: '',
+          afterText: 'body { color: red; }\n',
+        },
+      ],
+    },
+  ]);
+});
+
+test('buildConversationUndoChanges skips failed file tools and preserves replace_all edits', () => {
+  const tools: ToolStep[] = [
+    {
+      id: 'tool-success-replace-all',
+      name: 'Edit',
+      title: 'Edit repeated snippet',
+      status: 'done',
+      inputText: JSON.stringify({
+        file_path: 'src/game.js',
+        old_string: 'this.snakeLength = 3;',
+        new_string: 'this.snakeLength = 5;',
+        replace_all: true,
+      }),
+    },
+    {
+      id: 'tool-failed-edit',
+      name: 'Edit',
+      title: 'Failed edit',
+      status: 'error',
+      inputText: JSON.stringify({
+        file_path: 'src/game.js',
+        old_string: 'this.score += 10;',
+        new_string: 'this.score += 20;',
+      }),
+    },
+  ];
+
+  const changes = buildConversationUndoChanges(tools);
+  assert.deepEqual(changes, [
+    {
+      path: 'src/game.js',
+      operations: [
+        {
+          kind: 'replace-snippet',
+          beforeText: 'this.snakeLength = 3;',
+          afterText: 'this.snakeLength = 5;',
+          replaceAll: true,
+        },
+      ],
+    },
+  ]);
+});
+
+test('buildConversationUndoChanges restores files deleted by simple Bash rm when prior content is known', () => {
+  const priorTurn: ConversationTurn = {
+    id: 'turn-create',
+    userText: 'create game',
+    workspace: 'D:/ai_proj/test',
+    assistantText: 'created',
+    tools: [
+      {
+        id: 'tool-write-style',
+        name: 'Write',
+        title: 'Write style',
+        status: 'done',
+        inputText: JSON.stringify({
+          file_path: 'D:\\ai_proj\\test\\snake-game\\style.css',
+          content: 'body { color: green; }\n',
+        }),
+      },
+    ],
+    items: [],
+    status: 'done',
+  };
+  const currentTools: ToolStep[] = [
+    {
+      id: 'tool-rm-style',
+      name: 'Bash',
+      title: 'Bash(rm D:/ai_proj/test/snake-game/style.css)',
+      status: 'done',
+      inputText: JSON.stringify({
+        command: 'rm D:/ai_proj/test/snake-game/style.css',
+      }),
+    },
+  ];
+
+  const changes = buildConversationUndoChanges(currentTools, 'D:\\ai_proj\\test', [priorTurn]);
+  assert.deepEqual(changes, [
+    {
+      path: 'snake-game/style.css',
+      operations: [
+        {
+          kind: 'restore-file',
+          beforeText: 'body { color: green; }\n',
+          afterText: '',
+        },
+      ],
+    },
+  ]);
+});
+
+test('buildConversationUndoChanges ignores Bash rm when no prior content is known', () => {
+  const tools: ToolStep[] = [
+    {
+      id: 'tool-rm-unknown',
+      name: 'Bash',
+      title: 'Bash(rm snake-game/unknown.css)',
+      status: 'done',
+      inputText: JSON.stringify({
+        command: 'rm snake-game/unknown.css',
+      }),
+    },
+  ];
+
+  assert.deepEqual(buildConversationUndoChanges(tools, 'D:\\ai_proj\\test', []), []);
+});
+
 test('findLatestChangedFilesTurnId only returns the most recent turn with changed files', () => {
   const turns: ConversationTurn[] = [
     {
