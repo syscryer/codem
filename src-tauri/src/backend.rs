@@ -33,6 +33,7 @@ struct AppState {
     workspace_write_lock: Arc<Mutex<()>>,
     runs: Arc<Mutex<std::collections::HashMap<String, ActiveRunRecord>>>,
     runtimes: Arc<Mutex<std::collections::HashMap<String, ClaudeRuntimeRecord>>>,
+    context_requests: Arc<Mutex<std::collections::HashMap<String, ClaudeContextRequestRecord>>>,
 }
 
 #[derive(Clone)]
@@ -86,6 +87,21 @@ struct ClaudeRuntimeRecord {
     stdin: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
     current_run_id: Option<String>,
     closed: bool,
+}
+
+struct ClaudeContextRequestRecord {
+    requested_at_ms: i64,
+    event_count: i64,
+    assistant_texts: Vec<String>,
+    stderr_lines: Vec<String>,
+    responder: Option<tokio::sync::oneshot::Sender<Result<Value, ClaudeContextRequestError>>>,
+}
+
+#[derive(Debug)]
+struct ClaudeContextRequestError {
+    code: &'static str,
+    message: String,
+    status: StatusCode,
 }
 
 #[derive(Debug)]
@@ -369,6 +385,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         workspace_write_lock: Arc::new(Mutex::new(())),
         runs: Arc::new(Mutex::new(std::collections::HashMap::new())),
         runtimes: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        context_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
     };
     let app = create_router(state);
     let address = SocketAddr::from(([127, 0, 0, 1], port));
@@ -842,6 +859,24 @@ async fn claude_run(
         mark_run_finished(&state, &run_id);
         return build_run_stream_response(state, run_id);
     }
+    if state
+        .context_requests
+        .lock()
+        .ok()
+        .is_some_and(|requests| requests.contains_key(&thread_id))
+    {
+        push_run_event(
+            &state,
+            &run_id,
+            json!({
+                "type": "error",
+                "runId": run_id,
+                "message": "当前 Claude 会话正在获取上下文信息，请稍后再发送。",
+            }),
+        );
+        mark_run_finished(&state, &run_id);
+        return build_run_stream_response(state, run_id);
+    }
 
     set_runtime_current_run(&state, &thread_id, Some(run_id.clone()))?;
     set_run_runtime_handles(&state, &run_id, runtime.child_id, runtime.stdin.clone());
@@ -1130,13 +1165,34 @@ async fn claude_runtime_context(
     AxumPath(thread_id): AxumPath<String>,
     Json(payload): Json<Value>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
-    let has_active = state
-        .runs
+    let normalized_thread_id = thread_id.trim().to_string();
+    if normalized_thread_id.is_empty() {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "code": "invalid-thread",
+                "error": "threadId 不能为空。",
+            })),
+        ));
+    }
+    let runtime = state
+        .runtimes
         .lock()
-        .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?
-        .values()
-        .any(|run| run.thread_id == thread_id && !run.finished);
-    if has_active {
+        .map_err(|error| ApiError::internal(format!("读取 Claude 会话失败: {error}")))?
+        .get(&normalized_thread_id)
+        .cloned();
+    let Some(runtime) = runtime.filter(|runtime| !runtime.closed) else {
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "ok": false,
+                "code": "runtime-unavailable",
+                "error": "当前线程没有可复用的 Claude stream-json 会话，请先发送一轮消息后再获取上下文。",
+            })),
+        ));
+    };
+    if runtime.current_run_id.is_some() {
         return Ok((
             StatusCode::CONFLICT,
             Json(json!({
@@ -1146,60 +1202,93 @@ async fn claude_runtime_context(
             })),
         ));
     }
-
-    let remembered = latest_run_context_for_thread(&state, &thread_id)?;
-    let detail = open_initialized_workspace_database(&state)
-        .ok()
-        .and_then(|connection| read_thread_detail(&connection, &thread_id).ok());
-    let session_id = detail
-        .as_ref()
-        .and_then(|detail| detail.session_id.as_deref())
-        .or_else(|| remembered.as_ref().and_then(|value| value.0.as_deref()));
-    let Some(session_id) = session_id.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok((
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "ok": false,
-                "code": "runtime-unavailable",
-                "error": "当前线程还没有 Claude sessionId，请先发送一轮消息后再获取上下文。",
-            })),
-        ));
-    };
-    let working_directory = detail
-        .as_ref()
-        .map(|detail| detail.working_directory.as_str())
-        .or_else(|| remembered.as_ref().map(|value| value.1.as_str()))
-        .unwrap_or(".");
     let timeout_ms = payload
         .get("timeoutMs")
         .and_then(Value::as_u64)
         .unwrap_or(12_000)
         .clamp(1_000, 60_000);
     let requested_at_ms = current_timestamp_ms_i64();
-    let started = std::time::Instant::now();
-    match request_claude_context_snapshot(
-        session_id,
-        working_directory,
-        timeout_ms,
-        requested_at_ms,
-    )
-    .await
+    let (sender, receiver) =
+        tokio::sync::oneshot::channel::<Result<Value, ClaudeContextRequestError>>();
     {
-        Ok(mut context) => {
-            context["durationMs"] = json!(started.elapsed().as_millis() as i64);
-            Ok((
-                StatusCode::OK,
-                Json(json!({ "ok": true, "context": context })),
-            ))
+        let mut requests = state
+            .context_requests
+            .lock()
+            .map_err(|error| ApiError::internal(format!("创建上下文请求失败: {error}")))?;
+        if requests.contains_key(&normalized_thread_id) {
+            return Ok((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "ok": false,
+                    "code": "runtime-busy",
+                    "error": "已有上下文信息请求正在进行，请稍后再试。",
+                })),
+            ));
         }
-        Err(error) => Ok((
+        requests.insert(
+            normalized_thread_id.clone(),
+            ClaudeContextRequestRecord {
+                requested_at_ms,
+                event_count: 0,
+                assistant_texts: Vec::new(),
+                stderr_lines: Vec::new(),
+                responder: Some(sender),
+            },
+        );
+    }
+    let message = build_claude_context_request_message();
+    if let Err(error) = write_claude_stdin_message(&runtime.stdin, &message).await {
+        settle_runtime_context_request(
+            &state,
+            &normalized_thread_id,
+            Err(ClaudeContextRequestError {
+                code: "context-write-failed",
+                message: format!("写入 Claude Code /context 请求失败：{error}"),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            }),
+        );
+    }
+    let result = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), receiver).await;
+    match result {
+        Ok(Ok(Ok(context))) => Ok((
+            StatusCode::OK,
+            Json(json!({ "ok": true, "context": context })),
+        )),
+        Ok(Ok(Err(error))) => Ok((
             error.status,
             Json(json!({
                 "ok": false,
-                "code": "context-result-error",
+                "code": error.code,
                 "error": error.message,
             })),
         )),
+        Ok(Err(_)) => Ok((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "ok": false,
+                "code": "context-runtime-ended",
+                "error": "Claude 运行时已结束，/context 请求未完成。",
+            })),
+        )),
+        Err(_) => {
+            settle_runtime_context_request(
+                &state,
+                &normalized_thread_id,
+                Err(ClaudeContextRequestError {
+                    code: "context-timeout",
+                    message: "Claude 未在限定时间内返回 /context 结果。".to_string(),
+                    status: StatusCode::GATEWAY_TIMEOUT,
+                }),
+            );
+            Ok((
+                StatusCode::GATEWAY_TIMEOUT,
+                Json(json!({
+                    "ok": false,
+                    "code": "context-timeout",
+                    "error": "Claude 未在限定时间内返回 /context 结果。",
+                })),
+            ))
+        }
     }
 }
 
@@ -8747,122 +8836,6 @@ fn build_claude_tool_result_message(request_id: &str, content: &str, is_error: b
     })
 }
 
-async fn request_claude_context_snapshot(
-    session_id: &str,
-    working_directory: &str,
-    timeout_ms: u64,
-    requested_at_ms: i64,
-) -> ApiResult<Value> {
-    let command =
-        resolve_claude_command().ok_or_else(|| ApiError::bad_request("未找到 claude 命令"))?;
-    let mut child = background_tokio_command(&command)
-        .args([
-            "-p",
-            "/context",
-            "--verbose",
-            "--output-format",
-            "stream-json",
-            "--resume",
-            session_id,
-        ])
-        .current_dir(working_directory)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|error| ApiError::internal(format!("启动 Claude /context 失败: {error}")))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| ApiError::internal("Claude /context stdout 不可读"))?;
-    let stderr = child.stderr.take();
-    let stderr_task = stderr.map(|stderr| {
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            let mut collected = Vec::new();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if !line.trim().is_empty() {
-                    collected.push(line);
-                }
-                if collected.len() >= 5 {
-                    break;
-                }
-            }
-            collected
-        })
-    });
-    let read_task = async move {
-        let mut lines = BufReader::new(stdout).lines();
-        let mut markdown = String::new();
-        let mut event_count = 0_i64;
-        while let Ok(Some(line)) = lines.next_line().await {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            event_count += 1;
-            if let Ok(payload) = serde_json::from_str::<Value>(trimmed) {
-                let extracted = extract_context_markdown_from_payload(&payload);
-                if !extracted.trim().is_empty() {
-                    if !markdown.is_empty() {
-                        markdown.push('\n');
-                    }
-                    markdown.push_str(&extracted);
-                }
-                if payload.get("type").and_then(Value::as_str) == Some("result") {
-                    break;
-                }
-            }
-        }
-        (markdown, event_count)
-    };
-    let (markdown, event_count) =
-        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), read_task).await {
-            Ok(result) => result,
-            Err(_) => {
-                let _ = child.kill().await;
-                return Err(ApiError {
-                    status: StatusCode::GATEWAY_TIMEOUT,
-                    message: "Claude 未在限定时间内返回 /context 结果。".to_string(),
-                });
-            }
-        };
-    let status = child.wait().await;
-    let stderr_lines = if let Some(task) = stderr_task {
-        task.await.unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    if markdown.trim().is_empty() {
-        let message = stderr_lines
-            .into_iter()
-            .take(3)
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(ApiError {
-            status: StatusCode::BAD_GATEWAY,
-            message: if message.trim().is_empty() {
-                "Claude /context 没有返回可读内容。".to_string()
-            } else {
-                message
-            },
-        });
-    }
-    if let Ok(status) = status {
-        if !status.success() && markdown.trim().is_empty() {
-            return Err(ApiError {
-                status: StatusCode::BAD_GATEWAY,
-                message: format!("Claude /context 退出码: {status}"),
-            });
-        }
-    }
-    Ok(create_context_snapshot_value(
-        &strip_ansi_control_codes(&markdown),
-        requested_at_ms,
-        0,
-        event_count,
-    ))
-}
-
 fn extract_context_markdown_from_payload(payload: &Value) -> String {
     if payload.get("type").and_then(Value::as_str) == Some("result") {
         return payload
@@ -9097,7 +9070,12 @@ async fn get_or_create_claude_runtime(
         .cloned();
 
     if let Some(runtime) = existing {
-        if runtime.current_run_id.is_some() {
+        let has_context_request = state
+            .context_requests
+            .lock()
+            .ok()
+            .is_some_and(|requests| requests.contains_key(thread_id));
+        if runtime.current_run_id.is_some() || has_context_request {
             return Ok((runtime, false));
         }
         if is_claude_runtime_compatible(&runtime, working_directory, permission_mode, payload) {
@@ -9283,6 +9261,9 @@ fn set_run_runtime_handles(
 }
 
 fn handle_runtime_stdout_line(state: &AppState, thread_id: &str, line: &str) {
+    if handle_runtime_context_stdout_line(state, thread_id, line) {
+        return;
+    }
     let run_id = state.runtimes.lock().ok().and_then(|runtimes| {
         runtimes
             .get(thread_id)
@@ -9317,6 +9298,9 @@ fn handle_runtime_stderr_line(state: &AppState, thread_id: &str, line: &str) {
     if trimmed.is_empty() {
         return;
     }
+    if append_runtime_context_stderr_line(state, thread_id, trimmed) {
+        return;
+    }
     let run_id = state.runtimes.lock().ok().and_then(|runtimes| {
         runtimes
             .get(thread_id)
@@ -9336,6 +9320,13 @@ fn handle_runtime_exit(
     thread_id: &str,
     status: Result<std::process::ExitStatus, std::io::Error>,
 ) {
+    fail_runtime_context_request(
+        state,
+        thread_id,
+        "context-runtime-ended",
+        "Claude 运行时已结束，/context 请求未完成。",
+        StatusCode::INTERNAL_SERVER_ERROR,
+    );
     let run_id = {
         let Ok(mut runtimes) = state.runtimes.lock() else {
             return;
@@ -9389,6 +9380,13 @@ fn close_thread_runtime(state: &AppState, thread_id: &str) -> ApiResult<bool> {
     let Some(runtime) = runtime else {
         return Ok(false);
     };
+    fail_runtime_context_request(
+        state,
+        thread_id,
+        "context-runtime-ended",
+        "Claude 会话已关闭，/context 请求未完成。",
+        StatusCode::INTERNAL_SERVER_ERROR,
+    );
     if let Some(run_id) = runtime.current_run_id.as_deref() {
         push_run_event(
             state,
@@ -9426,6 +9424,196 @@ fn runtime_status_json(runtime: &ClaudeRuntimeRecord) -> Value {
         "model": runtime.model,
         "effort": runtime.effort,
     })
+}
+
+fn build_claude_context_request_message() -> Value {
+    json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "text",
+                "text": "/context",
+            }],
+        },
+    })
+}
+
+fn settle_runtime_context_request(
+    state: &AppState,
+    thread_id: &str,
+    result: Result<Value, ClaudeContextRequestError>,
+) {
+    let responder = state
+        .context_requests
+        .lock()
+        .ok()
+        .and_then(|mut requests| requests.remove(thread_id))
+        .and_then(|mut request| request.responder.take());
+    if let Some(responder) = responder {
+        let _ = responder.send(result);
+    }
+}
+
+fn fail_runtime_context_request(
+    state: &AppState,
+    thread_id: &str,
+    code: &'static str,
+    message: &str,
+    status: StatusCode,
+) {
+    settle_runtime_context_request(
+        state,
+        thread_id,
+        Err(ClaudeContextRequestError {
+            code,
+            message: message.to_string(),
+            status,
+        }),
+    );
+}
+
+fn append_runtime_context_stderr_line(state: &AppState, thread_id: &str, line: &str) -> bool {
+    let Ok(mut requests) = state.context_requests.lock() else {
+        return false;
+    };
+    let Some(request) = requests.get_mut(thread_id) else {
+        return false;
+    };
+    request
+        .stderr_lines
+        .push(line.chars().take(1_000).collect::<String>());
+    if request.stderr_lines.len() > 20 {
+        let overflow = request.stderr_lines.len() - 20;
+        request.stderr_lines.drain(0..overflow);
+    }
+    true
+}
+
+fn handle_runtime_context_stdout_line(state: &AppState, thread_id: &str, line: &str) -> bool {
+    if !state
+        .context_requests
+        .lock()
+        .ok()
+        .is_some_and(|requests| requests.contains_key(thread_id))
+    {
+        return false;
+    }
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let payload = match serde_json::from_str::<Value>(trimmed) {
+        Ok(payload) => payload,
+        Err(error) => {
+            settle_runtime_context_request(
+                state,
+                thread_id,
+                Err(ClaudeContextRequestError {
+                    code: "context-json-parse-failed",
+                    message: format!("Claude /context 返回了无法解析的 stream-json 行：{error}"),
+                    status: StatusCode::BAD_GATEWAY,
+                }),
+            );
+            return true;
+        }
+    };
+    let mut terminal: Option<Result<Value, ClaudeContextRequestError>> = None;
+    let mut runtime_session_update: Option<String> = None;
+    if let Ok(mut requests) = state.context_requests.lock() {
+        let Some(request) = requests.get_mut(thread_id) else {
+            return true;
+        };
+        request.event_count += 1;
+        let result_error = context_result_error_message(&payload);
+        if result_error.is_none() {
+            if let Some(session_id) = payload.get("session_id").and_then(Value::as_str) {
+                runtime_session_update = Some(session_id.to_string());
+            }
+        }
+        let markdown = extract_context_markdown_from_payload(&payload);
+        if payload.get("type").and_then(Value::as_str) == Some("assistant")
+            && !markdown.trim().is_empty()
+        {
+            request.assistant_texts.push(markdown.clone());
+        }
+        if payload.get("type").and_then(Value::as_str) == Some("result") {
+            if let Some(message) = result_error {
+                terminal = Some(Err(ClaudeContextRequestError {
+                    code: "context-result-error",
+                    message,
+                    status: StatusCode::BAD_GATEWAY,
+                }));
+            } else {
+                let result_markdown = if !markdown.trim().is_empty() {
+                    markdown
+                } else {
+                    request.assistant_texts.last().cloned().unwrap_or_default()
+                };
+                if result_markdown.trim().is_empty() {
+                    terminal = Some(Err(ClaudeContextRequestError {
+                        code: "context-empty-response",
+                        message: "Claude 已返回 /context 结果事件，但没有可展示的 Markdown 内容。"
+                            .to_string(),
+                        status: StatusCode::BAD_GATEWAY,
+                    }));
+                } else {
+                    terminal = Some(Ok(create_context_snapshot_value(
+                        &strip_ansi_control_codes(&result_markdown),
+                        request.requested_at_ms,
+                        (current_timestamp_ms_i64() - request.requested_at_ms).max(0),
+                        request.event_count,
+                    )));
+                }
+            }
+        }
+    }
+    if let Some(session_id) = runtime_session_update {
+        if let Ok(mut runtimes) = state.runtimes.lock() {
+            if let Some(runtime) = runtimes.get_mut(thread_id) {
+                runtime.session_id = Some(session_id);
+            }
+        }
+    }
+    if let Some(result) = terminal {
+        settle_runtime_context_request(state, thread_id, result);
+    }
+    true
+}
+
+fn context_result_error_message(payload: &Value) -> Option<String> {
+    let errors = payload
+        .get("errors")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::trim))
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let has_error = payload
+        .get("is_error")
+        .or_else(|| payload.get("isError"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || payload.get("subtype").and_then(Value::as_str) == Some("error_during_execution")
+        || !errors.is_empty();
+    if !has_error {
+        return None;
+    }
+    let details = errors.join("\n");
+    if !details.trim().is_empty() {
+        return Some(details);
+    }
+    payload
+        .get("result")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| Some("Claude 运行失败，但未返回具体错误。".to_string()))
 }
 
 fn remember_control_request_mapping(state: &AppState, run_id: &str, line: &str) {
@@ -10566,21 +10754,6 @@ fn push_trace_event(state: &AppState, run_id: &str, name: &str, at_ms: i64, deta
         }
     }
     push_run_event(state, run_id, event);
-}
-
-fn latest_run_context_for_thread(
-    state: &AppState,
-    thread_id: &str,
-) -> ApiResult<Option<(Option<String>, String)>> {
-    let runs = state
-        .runs
-        .lock()
-        .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?;
-    Ok(runs
-        .values()
-        .filter(|run| run.thread_id == thread_id)
-        .max_by_key(|run| run.started_at_ms)
-        .map(|run| (run.session_id.clone(), run.working_directory.clone())))
 }
 
 fn mark_run_finished(state: &AppState, run_id: &str) {
