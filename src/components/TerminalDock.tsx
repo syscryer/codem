@@ -280,6 +280,7 @@ export function TerminalDock({
   const cleanupRef = useRef<(() => void) | null>(null);
   const outputBuffersRef = useRef<Record<string, string>>({});
   const previousTabIdsRef = useRef<string[]>([]);
+  const terminalTabsRef = useRef<DockTerminalTab[]>(terminalTabs);
   const wasOpenRef = useRef(false);
   const handledRunRequestIdRef = useRef<number | null>(null);
   const [commandRequestsByTabId, setCommandRequestsByTabId] = useState<Record<string, TerminalRunRequest>>({});
@@ -300,11 +301,28 @@ export function TerminalDock({
   });
 
   useEffect(() => {
+    terminalTabsRef.current = terminalTabs;
+  }, [terminalTabs]);
+
+  useEffect(() => {
     return () => {
       cleanupRef.current?.();
       cleanupRef.current = null;
+      terminalTabsRef.current.forEach((tab) => {
+        void closePtySession(tab.id);
+      });
     };
   }, []);
+
+  useEffect(() => {
+    if (isOpen) {
+      return;
+    }
+
+    terminalTabs.forEach((tab) => {
+      void closePtySession(tab.id);
+    });
+  }, [isOpen, terminalTabs]);
 
   useEffect(() => {
     if (activeTerminalTabId && terminalTabs.some((tab) => tab.id === activeTerminalTabId)) {
@@ -619,12 +637,7 @@ function terminalTitleFromWorkspace(workspace: TerminalWorkspace | null, fallbac
 }
 
 export function useTerminalDockState() {
-  const [open, setOpen] = useState<boolean>(() => {
-    if (typeof window === 'undefined') {
-      return false;
-    }
-    return window.localStorage.getItem(OPEN_STORAGE_KEY) === 'true';
-  });
+  const [open, setOpen] = useState<boolean>(false);
 
   function toggle() {
     setOpen((current) => {

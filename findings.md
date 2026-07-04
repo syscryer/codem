@@ -66,3 +66,17 @@
 - 所有文件视图不应一次性递归扫描完整仓库，尤其要避免 `node_modules` 这类目录造成卡顿；更适合按文件夹懒加载一级内容。
 - 已更改文件不需要读取真实目录树，可以将 Git status 返回的路径组装成虚拟目录树，这样更快也更接近 Codex/IDE 的变更视图。
 - 右侧工作台更适合采用“左侧预览 tab + 右侧文件树”的结构，文件树负责导航，预览区负责 diff、Markdown 和代码阅读。
+
+## Rust 后端真实接口对照发现
+
+- 原版项目目录为 `D:\cursor_project\codem`，当前 Rust 重构目录为 `D:\ai_proj\codem`。
+- 当前用户要求不是只验证路由存在，而是用原版接口行为做逐接口真实对照。
+- 第一轮接口对照脚本有缺陷：`POST /api/projects` 返回字段是 `projectId`，`POST /api/projects/:id/threads` 返回字段是 `threadId`，脚本只取 `project.id/id`，导致大量请求落到 `/api/projects/undefined/...` 和 `/api/threads/undefined/...`。
+- 路由覆盖已达到 old=96、rust=96、missing=[]、extra=[]，但行为差异仍需继续修。
+- 初筛真差异包括：`/api/claude/version-info` 字段不兼容、`/api/claude/system-prompt` GET 缺少 metadata、settings 更新未按旧版 normalize、临时目录文件预览权限策略不一致、错误响应文本/JSON 格式不一致。
+- 最终对照脚本固定使用旧版 `http://127.0.0.1:39201` 和 Rust `http://127.0.0.1:39202`，结果写入 `%TEMP%\codem-api-compare-fixtures\api-compare-results.json`。
+- 最终 50 个真实接口全部通过：workspace、project/thread、Git、Claude run、MCP/configs、plugins/skills、settings、file/image/attachments 均完成状态码和结构对照。
+- 对照过程中确认旧版 workspace 会隐藏绑定了不存在 transcript 且没有本地历史的 session 线程；Rust 已补同样的可见性过滤。
+- Claude run 兼容点不只包括首个 status，还包括旧版开头 trace 事件和 system payload 的 `claude-event` 包装事件。
+- Git history/log 旧版即使单提交也会返回最小 graph segment，Rust 已补 `segmentsBefore` 和 `segmentsAfter`。
+- MCP 列表旧版不会为缺失 args 的服务输出空 `args: []`；Rust 已改为仅原配置存在 args 时输出。

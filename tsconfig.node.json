@@ -14,7 +14,6 @@
     "types": ["node"]
   },
   "include": [
-    "server",
     "src/lib/review-ignore-patterns.ts",
     "src/lib/input-content-blocks.ts",
     "src/lib/desktop-attachment-paths.ts",

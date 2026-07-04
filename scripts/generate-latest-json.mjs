@@ -7,15 +7,15 @@ import { pathToFileURL } from 'node:url';
 const TARGETS = [
   {
     platform: 'windows-x86_64',
-    match: (fileName) => fileName.endsWith('-setup-windows-x64-with-node.exe'),
+    match: (fileName) => fileName.endsWith('-setup-windows-x64-rust.exe'),
   },
   {
     platform: 'darwin-aarch64',
-    match: (fileName) => fileName.endsWith('-macos-arm64-with-node.app.tar.gz'),
+    match: (fileName) => fileName.endsWith('-macos-arm64-rust.app.tar.gz'),
   },
   {
     platform: 'linux-x86_64',
-    match: (fileName) => fileName.endsWith('-linux-x64-with-node.AppImage'),
+    match: (fileName) => fileName.endsWith('-linux-x64-rust.AppImage'),
   },
 ];
 

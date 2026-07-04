@@ -548,11 +548,8 @@ function formatRuntimeSummary(info: AppRuntimeInfo) {
   if (info.distributionMode !== 'desktop-nsis') {
     return mode;
   }
-  if (info.runtimeFlavor === 'with-node') {
-    return `${mode} · 内置 Node`;
-  }
-  if (info.runtimeFlavor === 'no-node') {
-    return `${mode} · 依赖系统 Node`;
+  if (info.runtimeFlavor === 'rust') {
+    return `${mode} · Rust 后端`;
   }
   return mode;
 }

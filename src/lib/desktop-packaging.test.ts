@@ -15,8 +15,8 @@ const macosTauriConfig = JSON.parse(
   };
 };
 
-test('macOS with-node packaging keeps the full dist-server resource tree', () => {
-  assert.deepEqual(macosTauriConfig.bundle?.resources, ['../dist-server']);
+test('macOS packaging does not bundle the legacy Node backend resources', () => {
+  assert.deepEqual(macosTauriConfig.bundle?.resources, []);
 });
 
 test('macOS private API config enables the matching Tauri cargo feature', () => {
@@ -36,5 +36,5 @@ test('desktop shell cleans managed backend processes on app exit', () => {
 test('desktop shell passes an app-scoped data directory to the backend', () => {
   assert.match(tauriMainSource, /const BACKEND_APP_DATA_DIR_ENV: &str = "CODEM_APP_DATA_DIR"/);
   assert.match(tauriMainSource, /fn backend_app_data_dir\(app: &tauri::AppHandle\) -> Option<PathBuf>/);
-  assert.match(tauriMainSource, /\.env\(BACKEND_APP_DATA_DIR_ENV,\s*app_data_dir/s);
+  assert.match(tauriMainSource, /codem::backend::run_blocking_with_config\(backend_port,\s*app_data_dir\)/s);
 });

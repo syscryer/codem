@@ -390,7 +390,7 @@ export type GeneralSettings = {
 export type AppUpdateCheckState = 'idle' | 'checking' | 'latest' | 'available' | 'installing' | 'failed' | 'unsupported';
 
 export type AppDistributionMode = 'desktop-nsis' | 'desktop-portable' | 'web';
-export type AppRuntimeFlavor = 'with-node' | 'no-node' | 'development' | 'unknown';
+export type AppRuntimeFlavor = 'rust' | 'development' | 'unknown';
 
 export type AppRuntimeInfo = {
   version: string;

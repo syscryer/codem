@@ -19,6 +19,27 @@
 - 默认使用用户本机 `claude` 命令，不绑定 Claude subagent wrapper。
 - UI 默认工作目录为 `D:\cursor_project\codem`，但允许改为其他本地目录。
 
+## 当前重构计划：Rust 后端真实接口对照
+
+## 目标
+- 在 `D:\ai_proj\codem` 中彻底用 Rust 后端接管原 Node Express 后端。
+- 原版 `D:\cursor_project\codem` 作为行为基线，逐接口用真实请求对照。
+- 不保留 Node 后端运行兜底；发现差异时修 Rust 实现或明确记录可接受差异。
+
+## 阶段
+| 阶段 | 状态 | 说明 |
+| --- | --- | --- |
+| 1. 恢复上下文与任务记录 | completed | 已读取 README、Trellis workflow/spec、rust-backend-rewrite 任务和当前 session |
+| 2. 修复接口对照脚本 | completed | 已修正 `projectId/threadId`、Git 写接口隔离、usage 种子、workspace 目标裁剪和数组代表元素比较 |
+| 3. 重跑真实接口对照 | completed | 已对照 workspace/project/thread/Git/Claude/MCP/plugins/skills/settings/file/attachments 等 50 个真实接口 |
+| 4. 修复真实差异 | completed | 已补 Claude trace/claude-event、Git graph segment、MCP 空 args、workspace null 字段、线程可见性过滤等差异 |
+| 5. 验证与记录 | completed | 接口对照 50/50 通过；cargo check、typecheck 通过；Trellis 和进度文件已记录 |
+
+## 当前发现
+- 路由数量 96/96 已覆盖，但不能等同于行为完成。
+- 最终接口对照结果：50 个接口全部通过，结果文件在 `%TEMP%\codem-api-compare-fixtures\api-compare-results.json`，日志在 `%TEMP%\codem-api-compare-last-run.log`。
+- 对照脚本会将 live workspace/usage 中与本轮目标无关的真实历史数据归一化，避免旧库历史脏数据影响接口契约判断。
+
 ## 风险
 - Claude CLI 的参数将来可能变化，后端需尽量做兼容解析。
 - Windows 下命令解析与字符流分片需要特别处理。

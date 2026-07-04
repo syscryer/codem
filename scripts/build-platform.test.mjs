@@ -22,53 +22,53 @@ test('expandPlatformSelection maps all to the current operating system targets',
 test('createBuildContext uses the default runtime flavor when flavor is omitted', () => {
   assert.deepEqual(createBuildContext(['win-x64'], undefined), {
     targets: ['win-x64'],
-    flavor: 'with-node',
-    runtimeMode: 'bundled',
+    flavor: 'rust',
+    runtimeMode: 'rust',
   });
 });
 
 test('getBuildPlan returns explicit Tauri commands for each supported target', () => {
-  assert.deepEqual(getBuildPlan('win-x64', 'with-node').command, [
+  assert.deepEqual(getBuildPlan('win-x64', 'rust').command, [
     'npm',
     ['run', 'desktop:build', '--', '--bundles', 'nsis,msi'],
   ]);
-  assert.deepEqual(getBuildPlan('mac-arm64', 'with-node').command, [
+  assert.deepEqual(getBuildPlan('mac-arm64', 'rust').command, [
     'npm',
     ['run', 'desktop:build', '--', '--target', 'aarch64-apple-darwin', '--bundles', 'app,dmg'],
   ]);
-  assert.deepEqual(getBuildPlan('mac-x64', 'with-node').command, [
+  assert.deepEqual(getBuildPlan('mac-x64', 'rust').command, [
     'npm',
     ['run', 'desktop:build', '--', '--target', 'x86_64-apple-darwin', '--bundles', 'app,dmg'],
   ]);
-  assert.deepEqual(getBuildPlan('mac-universal', 'with-node').command, [
+  assert.deepEqual(getBuildPlan('mac-universal', 'rust').command, [
     'npm',
     ['run', 'desktop:build', '--', '--target', 'universal-apple-darwin', '--bundles', 'app,dmg'],
   ]);
-  assert.deepEqual(getBuildPlan('linux-x64', 'with-node').command, [
+  assert.deepEqual(getBuildPlan('linux-x64', 'rust').command, [
     'npm',
     ['run', 'desktop:build', '--', '--target', 'x86_64-unknown-linux-gnu', '--bundles', 'deb,rpm,appimage'],
   ]);
 });
 
-test('getBuildPlan adds runtime flavor metadata for no-node packaging', () => {
-  assert.deepEqual(getBuildPlan('linux-x64', 'no-node'), {
+test('getBuildPlan adds runtime flavor metadata for rust packaging', () => {
+  assert.deepEqual(getBuildPlan('linux-x64', 'rust'), {
     label: 'Linux x64',
     command: [
       'npm',
       ['run', 'desktop:build', '--', '--target', 'x86_64-unknown-linux-gnu', '--bundles', 'deb,rpm,appimage'],
     ],
-    runtimeFlavor: 'no-node',
-    runtimeMode: 'external',
+    runtimeFlavor: 'rust',
+    runtimeMode: 'rust',
   });
 });
 
 test('getBuildPlan rejects unsupported targets with a helpful message', () => {
-  assert.throws(() => getBuildPlan('linux-arm64', 'with-node'), /Unsupported platform target: linux-arm64/);
+  assert.throws(() => getBuildPlan('linux-arm64', 'rust'), /Unsupported platform target: linux-arm64/);
 });
 
 test('runPlan passes the normalized runtime mode into spawnSync env', () => {
   let capturedOptions;
-  const context = createBuildContext(['linux-x64'], 'no-node');
+  const context = createBuildContext(['linux-x64'], 'rust');
 
   runPlan('linux-x64', context, {
     runtime: {
@@ -86,13 +86,13 @@ test('runPlan passes the normalized runtime mode into spawnSync env', () => {
     },
   });
 
-  assert.equal(capturedOptions.env[RUNTIME_ENV_NAME], 'external');
+  assert.equal(capturedOptions.env[RUNTIME_ENV_NAME], 'rust');
   assert.equal(capturedOptions.env.PATH, 'fake-path');
 });
 
 test('runPlan appends updater artifact config only when release signing is enabled', () => {
   let capturedArgs;
-  const context = createBuildContext(['win-x64'], 'with-node');
+  const context = createBuildContext(['win-x64'], 'rust');
 
   runPlan('win-x64', context, {
     runtime: {

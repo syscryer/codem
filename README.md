@@ -81,8 +81,8 @@ npm run desktop:dev
 桌面开发模式使用 Tauri，并会尽量复用当前仓库正在运行的 Web 和后端服务：
 
 - `src/**` 改动通过 Vite HMR 即时刷新
-- `server/**` 改动通过 `tsx watch` 自动重启后端
-- `src-tauri/**` 改动通过 `tauri dev` 自动重编译并重启桌面壳
+- Rust 后端由 `src-tauri/**` 提供，开发模式通过 `cargo run --bin codem-backend` 启动
+- `src-tauri/**` 改动通过 Rust/Tauri 工具链重新编译；桌面壳会随 `tauri dev` 重启
 
 ## 使用方式
 
@@ -98,9 +98,9 @@ npm run desktop:dev
 
 - 前端：React + Vite
 - 桌面壳：Tauri
-- 后端：Node.js + Express
+- 后端：Rust + Axum
 - Claude 调用：本机 `claude` CLI
-- 本地持久化：Node.js 内置 `node:sqlite`
+- 本地持久化：SQLite（Rust rusqlite）
 
 ## 打包
 
@@ -113,21 +113,17 @@ npm run package:doctor
 常用入口：
 
 ```bash
-npm run package:win:with-node       # Windows x64，内置 Node.js
-npm run package:win:no-node         # Windows x64，依赖系统 Node.js
-npm run package:mac-arm64:with-node # macOS Apple Silicon，内置 Node.js
-npm run package:mac-arm64:no-node   # macOS Apple Silicon，依赖系统 Node.js
-npm run package:mac-x64:with-node   # macOS Intel，内置 Node.js
-npm run package:mac-x64:no-node     # macOS Intel，依赖系统 Node.js
+npm run package:win                 # Windows x64
+npm run package:mac-arm64           # macOS Apple Silicon
+npm run package:mac-x64             # macOS Intel
 npm run package:mac-universal       # macOS Universal
-npm run package:linux:with-node     # Linux x64，内置 Node.js
-npm run package:linux:no-node       # Linux x64，依赖系统 Node.js
+npm run package:linux               # Linux x64
 npm run package:all                 # 当前系统推荐目标
 ```
 
-`with-node` 表示安装包内置运行时 Node.js，目标机器不需要额外安装 Node。`no-node` 表示安装包不携带 Node.js，体积更小，但目标机器需要自行提供可用的 Node 环境。
+桌面后端由 Rust 随 Tauri 应用一同编译，不再区分 `with-node` / `no-node` 安装包，也不再打包 `dist-server` Node 后端资源。
 
-应用内自动更新默认只覆盖 GitHub Release 中的 `with-node` 安装版。发布 workflow 会为 `with-node` 产物生成 Tauri updater 签名和 `latest.json`；`no-node` 和绿色版仍作为手动下载包保留。启用 release 自动更新前，需要在 GitHub Secrets 中配置 `TAURI_SIGNING_PRIVATE_KEY`，如果私钥设置了密码，还需要配置 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
+应用内自动更新使用 GitHub Release 中的桌面安装产物。发布 workflow 会为安装产物生成 Tauri updater 签名和 `latest.json`；启用 release 自动更新前，需要在 GitHub Secrets 中配置 `TAURI_SIGNING_PRIVATE_KEY`，如果私钥设置了密码，还需要配置 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
 
 ## 当前边界
 

@@ -1,9 +1,8 @@
-export const DEFAULT_RUNTIME_FLAVOR = 'with-node';
+export const DEFAULT_RUNTIME_FLAVOR = 'rust';
 export const RUNTIME_ENV_NAME = 'CODEM_RUNTIME_MODE';
 
 const FLAVOR_TO_MODE = new Map([
-  ['with-node', 'bundled'],
-  ['no-node', 'external'],
+  ['rust', 'rust'],
 ]);
 
 const SUPPORTED_RUNTIME_FLAVORS = [...FLAVOR_TO_MODE.keys()];

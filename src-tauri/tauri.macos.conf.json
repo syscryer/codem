@@ -22,8 +22,6 @@
     ]
   },
   "bundle": {
-    "resources": [
-      "../dist-server"
-    ]
+    "resources": []
   }
 }

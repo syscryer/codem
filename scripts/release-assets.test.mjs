@@ -34,15 +34,15 @@ test('splitAssetName 识别普通扩展名', () => {
 
 test('buildReleaseAssetName 为 Windows 安装包追加 artifact 与 flavor', () => {
   assert.equal(
-    buildReleaseAssetName('CodeM_0.1.0_x64-setup.exe', 'windows-x64', 'with-node'),
-    'CodeM_0.1.0_x64-setup-windows-x64-with-node.exe',
+    buildReleaseAssetName('CodeM_0.1.0_x64-setup.exe', 'windows-x64', 'rust'),
+    'CodeM_0.1.0_x64-setup-windows-x64-rust.exe',
   );
 });
 
 test('buildReleaseAssetName 为 macOS app tarball 追加 artifact 与 flavor', () => {
   assert.equal(
-    buildReleaseAssetName('CodeM.app.tar.gz', 'macos-arm64', 'no-node'),
-    'CodeM-macos-arm64-no-node.app.tar.gz',
+    buildReleaseAssetName('CodeM.app.tar.gz', 'macos-arm64', 'rust'),
+    'CodeM-macos-arm64-rust.app.tar.gz',
   );
 });
 
@@ -56,13 +56,13 @@ test('parseCliArgs 解析 workflow 所需参数', () => {
       '--artifact',
       'windows-x64',
       '--flavor',
-      'with-node',
+      'rust',
     ]),
     {
       bundleRoot: 'src-tauri/target/release/bundle',
       outDir: 'release-assets',
       artifact: 'windows-x64',
-      flavor: 'with-node',
+      flavor: 'rust',
     },
   );
 });
@@ -87,30 +87,30 @@ test('collectAndCopyReleaseAssets 递归复制支持的产物并重命名', asyn
       bundleRoot,
       outDir,
       artifact: 'windows-x64',
-      flavor: 'with-node',
+      flavor: 'rust',
     });
 
     assert.deepEqual(copiedAssets.map((asset) => path.basename(asset.destination)).sort(), [
-      'CodeM-portable-windows-x64-with-node.zip',
-      'CodeM_0.1.0_amd64-windows-x64-with-node.deb',
-      'CodeM_0.1.0_x64-setup-windows-x64-with-node.exe',
-      'CodeM_0.1.0_x64_en-US-windows-x64-with-node.msi',
+      'CodeM-portable-windows-x64-rust.zip',
+      'CodeM_0.1.0_amd64-windows-x64-rust.deb',
+      'CodeM_0.1.0_x64-setup-windows-x64-rust.exe',
+      'CodeM_0.1.0_x64_en-US-windows-x64-rust.msi',
     ]);
 
     assert.deepEqual((await readdir(outDir)).sort(), [
-      'CodeM-portable-windows-x64-with-node.zip',
-      'CodeM_0.1.0_amd64-windows-x64-with-node.deb',
-      'CodeM_0.1.0_x64-setup-windows-x64-with-node.exe',
-      'CodeM_0.1.0_x64-setup-windows-x64-with-node.exe.sig',
-      'CodeM_0.1.0_x64_en-US-windows-x64-with-node.msi',
+      'CodeM-portable-windows-x64-rust.zip',
+      'CodeM_0.1.0_amd64-windows-x64-rust.deb',
+      'CodeM_0.1.0_x64-setup-windows-x64-rust.exe',
+      'CodeM_0.1.0_x64-setup-windows-x64-rust.exe.sig',
+      'CodeM_0.1.0_x64_en-US-windows-x64-rust.msi',
     ]);
 
     assert.equal(
-      await readFile(path.join(outDir, 'CodeM_0.1.0_x64-setup-windows-x64-with-node.exe'), 'utf8'),
+      await readFile(path.join(outDir, 'CodeM_0.1.0_x64-setup-windows-x64-rust.exe'), 'utf8'),
       'exe',
     );
     assert.equal(
-      await readFile(path.join(outDir, 'CodeM_0.1.0_x64-setup-windows-x64-with-node.exe.sig'), 'utf8'),
+      await readFile(path.join(outDir, 'CodeM_0.1.0_x64-setup-windows-x64-rust.exe.sig'), 'utf8'),
       'exe-sig',
     );
   } finally {

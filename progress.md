@@ -197,3 +197,29 @@
 - 已运行 `npm run typecheck`，结果通过。
 - 已重启 `npm run dev`，后端监听 `http://127.0.0.1:3001`，前端监听 `http://127.0.0.1:5173/`。
 - 已验证 `/api/health`、`/api/claude/models` 和本地页面加载，浏览器 console error 为空。
+
+## 2026-07-04
+
+### Rust 后端真实接口对照接手
+
+- 用户明确当前工作区 `D:\ai_proj\codem` 是彻底 Rust 后端重构区，原版项目在 `D:\cursor_project\codem`。
+- 已读取 README、`.trellis/workflow.md`、frontend/backend/guides 入口规范、`.trellis/tasks/rust-backend-rewrite.md` 和当前 Trellis session。
+- 确认已有进展：Rust 后端路由数量与旧 Express 对齐 96/96，桌面 dev smoke、cargo check、typecheck、Claude 热会话等曾通过。
+- 确认未完成点：第一轮接口对照脚本把项目和线程 ID 解析错，导致大量 `undefined` 请求，不能作为最终“所有接口已对比”的结论。
+- 已确认真实响应结构：`POST /api/projects` 返回 `projectId`，`POST /api/projects/:id/threads` 返回 `threadId`。
+- 下一步修正对照脚本，重跑 workspace/project/thread/Git/Claude/MCP/plugins/skills/settings/file/attachments 等接口，再按真差异修 Rust 后端。
+- 修复第一批确定差异：补 `version-info` 旧版字段、`system-prompt` metadata、settings normalize、open-with selectedTargetId，并将 Git push-preview 改为无 remote 时返回旧版错误。
+- 遇到一次编译错误：新增 push-preview 逻辑引用了不存在的 `read_git_remotes`，已补同名 helper 后继续检查。
+- 遇到一次编译错误：新增了与既有 `remove_null_fields(&mut Value)` 重名的 helper，且调用类型不匹配；已删除重复函数并改为原地清理后 push。
+- 遇到一次对照脚本错误：把脚本输出重定向到其启动时会删除的 fixture 目录，Windows 返回 EPERM；改为把日志写到 `%TEMP%` 根下。
+
+### Rust 后端真实接口对照收口
+
+- 继续接手剩余接口差异，确认原版基线为 `D:\cursor_project\codem`，Rust 重构区为 `D:\ai_proj\codem`。
+- 修复 Rust 后端兼容差异：补 `/api/claude/run` 旧版 trace 开头事件、system payload 的 `claude-event` 包装、Git history/log 最小 graph segment、MCP 服务缺失 args 时不输出空数组、workspace project 中 null 字段清理。
+- 补齐 workspace 线程可见性过滤：绑定 `sessionId` 的线程如果没有可用 transcript 且没有本地 messages/tool_calls 历史，不进入 workspace 列表，对齐旧 Express 行为。
+- 修正临时接口对照脚本 `%TEMP%\codem-api-compare.cjs`：写入 usage 种子后再测 `/api/usage`，对 workspace 只裁剪本轮目标 project/thread，对真实历史数据造成的选择态和 usage host 脏类型做归一化。
+- 最终运行 `node "%TEMP%\codem-api-compare.cjs"`，50 个接口全部通过，结果文件为 `%TEMP%\codem-api-compare-fixtures\api-compare-results.json`，日志为 `%TEMP%\codem-api-compare-last-run.log`。
+- 已运行 `cargo check --manifest-path src-tauri/Cargo.toml --bin codem-backend`，结果通过。
+- 已运行 `cargo check --manifest-path src-tauri/Cargo.toml --bin codem`，结果通过。
+- 已运行 `npm run typecheck`，结果通过。

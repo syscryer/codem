@@ -86,13 +86,6 @@ export async function checkForAppUpdate(options: AppUpdateCheckOptions = {}): Pr
         message: '绿色版暂不支持应用内自动安装，请到 Release 下载新版本',
       };
     }
-    if (runtimeInfo.runtimeFlavor === 'no-node') {
-      return {
-        status: 'unsupported',
-        message: 'no-node 安装版暂不支持应用内自动安装，请到 Release 手动下载新版本',
-      };
-    }
-
     const { check } = await import('@tauri-apps/plugin-updater');
     const update = await check({ timeout: 30_000 });
     if (!update) {
@@ -213,7 +206,7 @@ function normalizeDistributionMode(value: unknown): AppDistributionMode {
 }
 
 function normalizeRuntimeFlavor(value: unknown): AppRuntimeFlavor {
-  if (value === 'with-node' || value === 'no-node' || value === 'development' || value === 'unknown') {
+  if (value === 'rust' || value === 'development' || value === 'unknown') {
     return value;
   }
   return 'unknown';

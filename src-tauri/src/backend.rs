@@ -1,0 +1,10848 @@
+use axum::{
+    body::Body,
+    extract::{Path as AxumPath, Query, State},
+    http::{Method, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{delete, get, patch, post, put},
+    Json, Router,
+};
+use base64::{engine::general_purpose, Engine as _};
+use bytes::Bytes;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
+use std::{
+    env, fs,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{Arc, Mutex},
+};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tower_http::cors::{Any, CorsLayer};
+
+const CLAUDE_CLI_RECOMMENDED_VERSION: &str = "2.1.123";
+const CLAUDE_CLI_UPDATE_COMMAND: &str = "claude update";
+const CLAUDE_CLI_INSTALL_COMMAND: &str = "npm install -g @anthropic-ai/claude-code";
+const CLAUDE_CLI_SETUP_URL: &str = "https://docs.anthropic.com/en/docs/claude-code/setup";
+
+#[derive(Clone)]
+struct AppState {
+    app_data_dir: Arc<PathBuf>,
+    settings_write_lock: Arc<Mutex<()>>,
+    workspace_write_lock: Arc<Mutex<()>>,
+    runs: Arc<Mutex<std::collections::HashMap<String, ActiveRunRecord>>>,
+    runtimes: Arc<Mutex<std::collections::HashMap<String, ClaudeRuntimeRecord>>>,
+}
+
+#[derive(Clone)]
+struct ActiveRunRecord {
+    run_id: String,
+    thread_id: String,
+    turn_id: Option<String>,
+    prompt: String,
+    user_content_blocks: Option<Value>,
+    working_directory: String,
+    session_id: Option<String>,
+    permission_mode: String,
+    model: Option<String>,
+    effort: Option<String>,
+    started_at_ms: i64,
+    events: Vec<Value>,
+    finished: bool,
+    child_id: Option<u32>,
+    stdin: Option<Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>>,
+    notify: Arc<tokio::sync::Notify>,
+    collected_result: String,
+    saw_done: bool,
+    control_request_tool_use_ids: std::collections::HashMap<String, Option<String>>,
+    emitted_request_user_input_keys: std::collections::HashSet<String>,
+    emitted_approval_request_keys: std::collections::HashSet<String>,
+    paused_for_user_input: bool,
+    block_type_by_index: std::collections::HashMap<i64, String>,
+    tool_input_accumulators: std::collections::HashMap<i64, ToolInputAccumulator>,
+}
+
+#[derive(Clone, Debug)]
+struct ToolInputAccumulator {
+    name: String,
+    tool_use_id: Option<String>,
+    parent_tool_use_id: Option<String>,
+    is_sidechain: bool,
+    input_text: String,
+    emitted_request_user_input: bool,
+    emitted_approval_request: bool,
+}
+
+#[derive(Clone)]
+struct ClaudeRuntimeRecord {
+    thread_id: String,
+    working_directory: String,
+    permission_mode: String,
+    model: Option<String>,
+    effort: Option<String>,
+    session_id: Option<String>,
+    child_id: u32,
+    stdin: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
+    current_run_id: Option<String>,
+    closed: bool,
+}
+
+#[derive(Debug)]
+struct ApiError {
+    status: StatusCode,
+    message: String,
+}
+
+#[derive(Debug)]
+struct ProjectRow {
+    id: String,
+    path: String,
+    name: String,
+    created_at: String,
+    updated_at: String,
+    pinned_at: Option<String>,
+}
+
+#[derive(Debug)]
+struct ThreadRow {
+    id: String,
+    project_id: String,
+    provider: String,
+    title: String,
+    session_id: Option<String>,
+    transcript_path: Option<String>,
+    working_directory: String,
+    model: Option<String>,
+    permission_mode: Option<String>,
+    imported: bool,
+    updated_at: String,
+    pinned_at: Option<String>,
+}
+
+#[derive(Debug)]
+struct ThreadDetailRow {
+    project_id: String,
+    session_id: Option<String>,
+    transcript_path: Option<String>,
+    working_directory: String,
+    model: Option<String>,
+    permission_mode: Option<String>,
+}
+
+#[derive(Debug)]
+struct MessageRow {
+    turn_id: String,
+    turn_sort: i64,
+    item_sort: i64,
+    role: String,
+    content: String,
+    status: Option<String>,
+    activity: Option<String>,
+    metrics: Option<String>,
+    session_id: Option<String>,
+    phase: Option<String>,
+    started_at_ms: Option<i64>,
+    duration_ms: Option<i64>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_creation_input_tokens: Option<i64>,
+    cache_read_input_tokens: Option<i64>,
+    context_usage_json: Option<String>,
+    total_cost_usd: Option<f64>,
+    pending_approval_requests_json: Option<String>,
+    user_attachments_json: Option<String>,
+    user_content_blocks_json: Option<String>,
+}
+
+#[derive(Debug)]
+struct ToolCallRow {
+    turn_id: String,
+    turn_sort: i64,
+    item_sort: i64,
+    tool_id: String,
+    name: String,
+    title: String,
+    status: String,
+    tool_use_id: Option<String>,
+    parent_tool_use_id: Option<String>,
+    is_sidechain: bool,
+    input_text: Option<String>,
+    result_text: Option<String>,
+    is_error: bool,
+    subtools_json: Option<String>,
+    sub_messages_json: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ProjectCreateRequest {
+    path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RenameRequest {
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ThreadCreateRequest {
+    title: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectionRequest {
+    project_id: Option<String>,
+    thread_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PanelPatchRequest {
+    #[serde(rename = "organizeBy")]
+    organize_by: Option<String>,
+    #[serde(rename = "sortBy")]
+    sort_by: Option<String>,
+    visibility: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PinRequest {
+    pinned: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectDirectoryRequest {
+    initial_path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OpenPathRequest {
+    path: Option<String>,
+    mode: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCloneRequest {
+    repo_url: Option<String>,
+    base_directory: Option<String>,
+    folder_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ProjectFilesQuery {
+    path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ProjectFileDeleteRequest {
+    path: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeRunRequest {
+    thread_id: Option<String>,
+    turn_id: Option<String>,
+    prompt: Option<String>,
+    working_directory: Option<String>,
+    session_id: Option<String>,
+    permission_mode: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    tool_result: Option<Value>,
+    content_blocks: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileSearchQuery {
+    working_directory: Option<String>,
+    query: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileResolveQuery {
+    working_directory: Option<String>,
+    path: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageAttachmentRequest {
+    working_directory: Option<String>,
+    file_name: Option<String>,
+    mime_type: Option<String>,
+    data_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ImageFromPathRequest {
+    path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PreviewQuery {
+    path: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitDiffSummary {
+    additions: u32,
+    deletions: u32,
+    files_changed: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitInfo {
+    is_git_repo: bool,
+    branch: Option<String>,
+    diff: GitDiffSummary,
+}
+
+struct ParsedImageData {
+    mime_type: String,
+    extension: String,
+    bytes: Vec<u8>,
+}
+
+impl ApiError {
+    fn internal(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.into(),
+        }
+    }
+
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: message.into(),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.status, self.message).into_response()
+    }
+}
+
+type ApiResult<T> = Result<T, ApiError>;
+
+pub fn run_from_env_blocking() -> Result<(), String> {
+    let port = env::var("CODEM_BACKEND_PORT")
+        .ok()
+        .or_else(|| env::var("PORT").ok())
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(3001);
+    let app_data_dir = resolve_app_data_dir()?;
+    run_blocking_with_config(port, app_data_dir)
+}
+
+pub fn run_blocking_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("启动 Rust 后端运行时失败: {error}"))?;
+
+    runtime.block_on(run_with_config(port, app_data_dir))
+}
+
+async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String> {
+    fs::create_dir_all(&app_data_dir).map_err(|error| format!("创建应用数据目录失败: {error}"))?;
+
+    let state = AppState {
+        app_data_dir: Arc::new(app_data_dir),
+        settings_write_lock: Arc::new(Mutex::new(())),
+        workspace_write_lock: Arc::new(Mutex::new(())),
+        runs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        runtimes: Arc::new(Mutex::new(std::collections::HashMap::new())),
+    };
+    let app = create_router(state);
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let listener = tokio::net::TcpListener::bind(address)
+        .await
+        .map_err(|error| format!("监听 Rust 后端端口失败: {error}"))?;
+
+    println!("CodeM Rust backend listening on http://{address}");
+    axum::serve(listener, app)
+        .await
+        .map_err(|error| format!("Rust 后端服务异常退出: {error}"))
+}
+
+fn create_router(state: AppState) -> Router {
+    Router::new()
+        .route("/api/health", get(health))
+        .route("/api/claude/models", get(claude_models))
+        .route("/api/settings", get(get_settings))
+        .route("/api/settings/appearance", put(update_appearance_settings))
+        .route("/api/settings/general", put(update_general_settings))
+        .route("/api/settings/models", put(update_model_settings))
+        .route("/api/settings/shortcuts", put(update_shortcut_settings))
+        .route("/api/settings/open-with", put(update_open_with_settings))
+        .route("/api/claude/version-info", get(claude_version_info))
+        .route(
+            "/api/claude/system-prompt",
+            get(get_claude_system_prompt).put(update_claude_system_prompt),
+        )
+        .route("/api/mcp/servers", get(mcp_servers))
+        .route("/api/mcp/configs", get(mcp_configs))
+        .route("/api/mcp/configs/{scope}", put(update_mcp_config))
+        .route("/api/mcp/open", post(open_mcp_config))
+        .route("/api/skills", get(skills_overview))
+        .route("/api/plugins/installed", get(installed_plugins))
+        .route("/api/plugins/marketplaces", get(plugin_marketplaces))
+        .route("/api/plugins/skills", get(plugin_skills))
+        .route(
+            "/api/plugins/skills/install-from-path",
+            post(plugin_install_skill_from_path),
+        )
+        .route(
+            "/api/plugins/skills/install-builtin",
+            post(plugin_install_builtin_skill),
+        )
+        .route("/api/plugins/command", post(plugin_command))
+        .route("/api/slash-commands", get(slash_commands))
+        .route("/api/claude/run", post(claude_run))
+        .route(
+            "/api/claude/runs/active/{thread_id}",
+            get(claude_active_run),
+        )
+        .route("/api/claude/run/{run_id}/events", get(claude_run_events))
+        .route("/api/claude/run/{run_id}/ack", post(claude_run_ack))
+        .route("/api/claude/run/{run_id}/guide", post(claude_run_guide))
+        .route(
+            "/api/claude/run/{run_id}/request-user-input",
+            post(claude_run_request_user_input),
+        )
+        .route(
+            "/api/claude/run/{run_id}/approval-decision",
+            post(claude_run_approval_decision),
+        )
+        .route(
+            "/api/claude/run/{run_id}/interrupt",
+            post(claude_run_interrupt),
+        )
+        .route("/api/claude/run/{run_id}", delete(claude_run_cancel))
+        .route(
+            "/api/claude/runtime/{thread_id}/close",
+            post(claude_runtime_close),
+        )
+        .route(
+            "/api/claude/runtime/{thread_id}/context",
+            post(claude_runtime_context),
+        )
+        .route("/api/claude/runtimes", get(claude_runtimes))
+        .route("/api/open-with/targets", get(open_with_targets))
+        .route("/api/usage", get(usage_stats))
+        .route("/api/workspace/bootstrap", get(workspace_bootstrap))
+        .route("/api/workspace/selection", post(update_workspace_selection))
+        .route("/api/workspace/panel", patch(update_workspace_panel))
+        .route("/api/system/select-directory", post(select_directory))
+        .route("/api/system/open-path", post(open_system_path))
+        .route("/api/system/files/search", get(search_system_files))
+        .route("/api/system/files/resolve", get(resolve_system_file))
+        .route("/api/system/attachments/image", post(save_image_attachment))
+        .route(
+            "/api/system/attachments/image-from-path",
+            post(read_image_attachment_from_path),
+        )
+        .route("/api/system/image-preview", get(image_preview))
+        .route("/api/system/file-preview", get(file_preview))
+        .route("/api/git/clone", post(git_clone))
+        .route("/api/projects/{project_id}/git", get(project_git_summary))
+        .route(
+            "/api/projects/{project_id}/git/status",
+            get(project_git_status),
+        )
+        .route(
+            "/api/projects/{project_id}/git/branches",
+            get(project_git_branches),
+        )
+        .route(
+            "/api/projects/{project_id}/git/history",
+            get(project_git_history),
+        )
+        .route(
+            "/api/projects/{project_id}/git/history/log",
+            get(project_git_history_log),
+        )
+        .route(
+            "/api/projects/{project_id}/git/history/compare",
+            get(project_git_history_compare),
+        )
+        .route(
+            "/api/projects/{project_id}/git/history/commit",
+            get(project_git_commit_details),
+        )
+        .route(
+            "/api/projects/{project_id}/git/history/file",
+            get(project_git_commit_file),
+        )
+        .route("/api/projects/{project_id}/git/diff", get(project_git_diff))
+        .route(
+            "/api/projects/{project_id}/git/operation-state",
+            get(project_git_operation_state),
+        )
+        .route(
+            "/api/projects/{project_id}/git/conflicts/file",
+            get(project_git_conflict_file),
+        )
+        .route(
+            "/api/projects/{project_id}/git/conflicts/save-result",
+            post(project_git_conflict_save_result),
+        )
+        .route(
+            "/api/projects/{project_id}/git/conflicts/mark-resolved",
+            post(project_git_conflict_mark_resolved),
+        )
+        .route(
+            "/api/projects/{project_id}/git/operation/continue",
+            post(project_git_operation_continue),
+        )
+        .route(
+            "/api/projects/{project_id}/git/operation/abort",
+            post(project_git_operation_abort),
+        )
+        .route(
+            "/api/projects/{project_id}/git/add-files",
+            post(project_git_add_files),
+        )
+        .route(
+            "/api/projects/{project_id}/git/revert-file",
+            post(project_git_revert_file),
+        )
+        .route(
+            "/api/projects/{project_id}/git/commit",
+            post(project_git_commit),
+        )
+        .route(
+            "/api/projects/{project_id}/git/push-preview",
+            get(project_git_push_preview),
+        )
+        .route(
+            "/api/projects/{project_id}/git/push",
+            post(project_git_push),
+        )
+        .route(
+            "/api/projects/{project_id}/git/fetch",
+            post(project_git_fetch),
+        )
+        .route(
+            "/api/projects/{project_id}/git/pull",
+            post(project_git_pull),
+        )
+        .route(
+            "/api/projects/{project_id}/git/switch",
+            post(project_git_switch),
+        )
+        .route(
+            "/api/projects/{project_id}/git/branch",
+            post(project_git_branch),
+        )
+        .route("/api/projects/{project_id}/git/tag", post(project_git_tag))
+        .route(
+            "/api/projects/{project_id}/git/branch/delete",
+            post(project_git_delete_branch),
+        )
+        .route(
+            "/api/projects/{project_id}/git/cherry-pick",
+            post(project_git_cherry_pick),
+        )
+        .route(
+            "/api/projects/{project_id}/git/checkout-detached",
+            post(project_git_checkout_detached),
+        )
+        .route(
+            "/api/projects/{project_id}/git/undo-turn-changes",
+            post(project_git_undo_turn_changes),
+        )
+        .route(
+            "/api/projects/{project_id}/git/worktrees",
+            get(project_git_worktrees)
+                .post(project_git_create_worktree)
+                .delete(project_git_delete_worktree),
+        )
+        .route(
+            "/api/projects/{project_id}/git/worktrees/suggest-path",
+            get(project_git_suggest_worktree_path),
+        )
+        .route("/api/projects", post(create_project))
+        .route(
+            "/api/projects/{project_id}",
+            patch(rename_project).delete(delete_project),
+        )
+        .route("/api/projects/{project_id}/open", post(open_project))
+        .route(
+            "/api/projects/{project_id}/open-editor",
+            post(open_project_editor),
+        )
+        .route(
+            "/api/projects/{project_id}/files",
+            get(list_project_files).delete(delete_project_file),
+        )
+        .route("/api/projects/{project_id}/threads", post(create_thread))
+        .route("/api/projects/{project_id}/pin", post(pin_project))
+        .route(
+            "/api/threads/{thread_id}",
+            patch(update_thread).delete(delete_thread),
+        )
+        .route("/api/threads/{thread_id}/pin", post(pin_thread))
+        .route(
+            "/api/threads/{thread_id}/history",
+            get(get_thread_history).put(save_thread_history),
+        )
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([
+                    Method::GET,
+                    Method::POST,
+                    Method::PUT,
+                    Method::PATCH,
+                    Method::DELETE,
+                ])
+                .allow_headers(Any),
+        )
+        .with_state(state)
+}
+
+async fn health() -> Json<Value> {
+    Json(match resolve_claude_command() {
+        Some(command) => json!({
+            "available": true,
+            "command": command,
+        }),
+        None => json!({
+            "available": false,
+            "error": "未找到 claude 命令",
+        }),
+    })
+}
+
+async fn claude_models() -> Json<Value> {
+    let Some(_) = resolve_claude_command() else {
+        return Json(json!({
+            "available": false,
+            "models": [],
+            "error": "未找到 claude 命令",
+        }));
+    };
+
+    Json(json!({
+        "available": true,
+        "models": configured_model_options(),
+    }))
+}
+
+async fn claude_version_info() -> Json<Value> {
+    let Some(command) = resolve_claude_command() else {
+        return Json(json!({
+            "installed": false,
+            "supported": false,
+            "version": Value::Null,
+            "recommendedVersion": CLAUDE_CLI_RECOMMENDED_VERSION,
+            "command": Value::Null,
+            "updateCommand": CLAUDE_CLI_UPDATE_COMMAND,
+            "installCommand": CLAUDE_CLI_INSTALL_COMMAND,
+            "setupUrl": CLAUDE_CLI_SETUP_URL,
+            "versionError": "未找到 claude 命令",
+        }));
+    };
+    let output = background_command(&command).arg("--version").output();
+    match output {
+        Ok(output) => {
+            let output_text = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .trim()
+            .to_string();
+            let version = parse_claude_cli_version(&output_text);
+            if !output.status.success() || version.is_none() {
+                return Json(json!({
+                    "installed": true,
+                    "supported": false,
+                    "version": Value::Null,
+                    "recommendedVersion": CLAUDE_CLI_RECOMMENDED_VERSION,
+                    "command": command,
+                    "updateCommand": CLAUDE_CLI_UPDATE_COMMAND,
+                    "installCommand": CLAUDE_CLI_INSTALL_COMMAND,
+                    "setupUrl": CLAUDE_CLI_SETUP_URL,
+                    "versionError": if output_text.is_empty() { "读取 Claude CLI 版本失败".to_string() } else { output_text },
+                }));
+            }
+            let version = version.unwrap_or_default();
+            Json(json!({
+                "installed": true,
+                "supported": compare_semantic_versions(&version, CLAUDE_CLI_RECOMMENDED_VERSION) >= 0,
+                "version": version,
+                "recommendedVersion": CLAUDE_CLI_RECOMMENDED_VERSION,
+                "command": command,
+                "updateCommand": CLAUDE_CLI_UPDATE_COMMAND,
+                "installCommand": CLAUDE_CLI_INSTALL_COMMAND,
+                "setupUrl": CLAUDE_CLI_SETUP_URL,
+            }))
+        }
+        Err(error) => Json(json!({
+            "installed": true,
+            "supported": false,
+            "version": Value::Null,
+            "recommendedVersion": CLAUDE_CLI_RECOMMENDED_VERSION,
+            "command": command,
+            "updateCommand": CLAUDE_CLI_UPDATE_COMMAND,
+            "installCommand": CLAUDE_CLI_INSTALL_COMMAND,
+            "setupUrl": CLAUDE_CLI_SETUP_URL,
+            "versionError": error.to_string(),
+        })),
+    }
+}
+
+async fn get_claude_system_prompt() -> Json<Value> {
+    Json(read_claude_global_prompt())
+}
+
+async fn update_claude_system_prompt(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
+    let content = payload
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    write_claude_system_prompt(content)?;
+    Ok(Json(read_claude_global_prompt()))
+}
+
+async fn claude_run(
+    State(state): State<AppState>,
+    Json(payload): Json<ClaudeRunRequest>,
+) -> ApiResult<Response> {
+    let thread_id = payload
+        .thread_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("threadId 不能为空"))?
+        .to_string();
+    let working_directory = payload
+        .working_directory
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("workingDirectory 不能为空"))?;
+    let working_directory = resolve_accessible_directory(working_directory)?;
+    let prompt = build_claude_prompt(&payload);
+    if prompt.trim().is_empty() && payload.tool_result.is_none() {
+        return Err(ApiError::bad_request("发送内容不能为空"));
+    }
+    let command =
+        resolve_claude_command().ok_or_else(|| ApiError::bad_request("未找到 claude 命令"))?;
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let started_at_ms = current_timestamp_ms_i64();
+    let permission_mode = normalize_claude_permission_mode(payload.permission_mode.as_deref());
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let record = ActiveRunRecord {
+        run_id: run_id.clone(),
+        thread_id: thread_id.clone(),
+        turn_id: payload.turn_id.clone(),
+        prompt: prompt.clone(),
+        user_content_blocks: summarize_content_blocks(payload.content_blocks.as_ref()),
+        working_directory: working_directory.clone(),
+        session_id: payload.session_id.clone(),
+        permission_mode: permission_mode.clone(),
+        model: payload.model.clone(),
+        effort: payload.effort.clone(),
+        started_at_ms,
+        events: Vec::new(),
+        finished: false,
+        child_id: None,
+        stdin: None,
+        notify: notify.clone(),
+        collected_result: String::new(),
+        saw_done: false,
+        control_request_tool_use_ids: std::collections::HashMap::new(),
+        emitted_request_user_input_keys: std::collections::HashSet::new(),
+        emitted_approval_request_keys: std::collections::HashSet::new(),
+        paused_for_user_input: false,
+        block_type_by_index: std::collections::HashMap::new(),
+        tool_input_accumulators: std::collections::HashMap::new(),
+    };
+    state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("锁定运行状态失败: {error}")))?
+        .insert(run_id.clone(), record);
+
+    push_trace_event(
+        &state,
+        &run_id,
+        "server_request_received",
+        started_at_ms,
+        None,
+    );
+    let stream_started_at_ms = current_timestamp_ms_i64();
+    push_trace_event(
+        &state,
+        &run_id,
+        "create_stream_started",
+        stream_started_at_ms,
+        None,
+    );
+    push_trace_event(
+        &state,
+        &run_id,
+        "claude_command_resolved",
+        stream_started_at_ms,
+        Some(&command),
+    );
+
+    let (runtime, runtime_reused) = match get_or_create_claude_runtime(
+        &state,
+        &command,
+        &thread_id,
+        &working_directory,
+        &permission_mode,
+        &payload,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            push_run_event(
+                &state,
+                &run_id,
+                json!({ "type": "error", "runId": run_id, "message": error.message }),
+            );
+            mark_run_finished(&state, &run_id);
+            return build_run_stream_response(state, run_id);
+        }
+    };
+
+    if runtime.closed || runtime.current_run_id.is_some() {
+        push_run_event(
+            &state,
+            &run_id,
+            json!({
+                "type": "error",
+                "runId": run_id,
+                "message": "当前会话仍有运行中的 Claude 请求，请等待结束或停止后再发送。",
+            }),
+        );
+        mark_run_finished(&state, &run_id);
+        return build_run_stream_response(state, run_id);
+    }
+
+    set_runtime_current_run(&state, &thread_id, Some(run_id.clone()))?;
+    set_run_runtime_handles(&state, &run_id, runtime.child_id, runtime.stdin.clone());
+    if runtime_reused {
+        push_trace_event(
+            &state,
+            &run_id,
+            "claude_runtime_reused",
+            current_timestamp_ms_i64(),
+            Some(&thread_id),
+        );
+    } else {
+        push_trace_event(
+            &state,
+            &run_id,
+            "claude_spawn_started",
+            current_timestamp_ms_i64(),
+            None,
+        );
+    }
+    push_run_event(
+        &state,
+        &run_id,
+        json!({
+            "type": "status",
+            "runId": run_id,
+            "message": if runtime_reused { "已复用 Claude Code 会话" } else { "已启动 Claude Code 会话" },
+        }),
+    );
+
+    let message = build_claude_input_message(
+        &prompt,
+        payload.content_blocks.as_ref(),
+        payload.tool_result.as_ref(),
+    );
+    if let Err(error) = write_claude_stdin_message(&runtime.stdin, &message).await {
+        push_run_event(
+            &state,
+            &run_id,
+            json!({ "type": "error", "runId": run_id, "message": format!("写入 Claude 初始消息失败: {error}") }),
+        );
+        close_thread_runtime(&state, &thread_id)?;
+        mark_run_finished(&state, &run_id);
+    }
+
+    build_run_stream_response(state, run_id)
+}
+
+async fn claude_active_run(
+    State(state): State<AppState>,
+    AxumPath(thread_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let runs = state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?;
+    let Some(run) = runs
+        .values()
+        .find(|run| run.thread_id == thread_id && !run.finished)
+    else {
+        return Ok(Json(json!({ "active": false })));
+    };
+    Ok(Json(active_run_json(run)))
+}
+
+async fn claude_run_events(
+    State(state): State<AppState>,
+    AxumPath(run_id): AxumPath<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Response> {
+    let after = query
+        .get("after")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let events = {
+        let runs = state
+            .runs
+            .lock()
+            .map_err(|error| ApiError::internal(format!("读取运行事件失败: {error}")))?;
+        runs.get(&run_id)
+            .map(|run| run.events.iter().skip(after).cloned().collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    let stream = async_stream::stream! {
+        for event in events {
+            let line = format!("{}\n", serde_json::to_string(&event).unwrap_or_default());
+            yield Ok::<Bytes, std::convert::Infallible>(Bytes::from(line));
+        }
+    };
+    Response::builder()
+        .header("Content-Type", "application/x-ndjson; charset=utf-8")
+        .header("Cache-Control", "no-cache, no-transform")
+        .body(Body::from_stream(stream))
+        .map_err(|error| ApiError::internal(format!("构建运行事件响应失败: {error}")))
+}
+
+async fn claude_run_ack(
+    State(state): State<AppState>,
+    AxumPath(run_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let acknowledged = state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("确认运行事件失败: {error}")))?
+        .get(&run_id)
+        .is_some();
+    Ok(Json(json!({ "acknowledged": acknowledged })))
+}
+
+async fn claude_run_guide(
+    State(state): State<AppState>,
+    AxumPath(run_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let prompt = payload
+        .get("prompt")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let content_blocks = payload.get("contentBlocks");
+    if prompt.is_empty()
+        && content_blocks
+            .and_then(Value::as_array)
+            .is_none_or(|items| items.is_empty())
+    {
+        return Err(ApiError::bad_request("缺少有效引导内容。"));
+    }
+    let message = build_claude_input_message(&prompt, content_blocks, None);
+    write_run_stdin_message(&state, &run_id, &message).await?;
+    push_run_event(
+        &state,
+        &run_id,
+        json!({ "type": "trace", "runId": run_id, "name": "stdin_guide_prompt_written", "atMs": current_timestamp_ms_i64() }),
+    );
+    Ok(Json(json!({ "submitted": true })))
+}
+
+async fn claude_run_request_user_input(
+    State(state): State<AppState>,
+    AxumPath(run_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let request_id = required_json_string(&payload, "requestId", "缺少提问请求 ID。")?;
+    ensure_run_paused_for_user_input(&state, &run_id, "Claude 还没有完成提问，请稍后再提交答案。")?;
+    let answers = payload
+        .get("answers")
+        .and_then(Value::as_object)
+        .ok_or_else(|| ApiError::bad_request("缺少有效回答。"))?;
+    let submitted_answers = answers
+        .iter()
+        .filter_map(|(key, value)| {
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|answer| !answer.is_empty())
+                .map(|answer| (key.clone(), json!(answer)))
+        })
+        .collect::<Map<String, Value>>();
+    if submitted_answers.is_empty() {
+        return Err(ApiError::bad_request("缺少有效回答。"));
+    }
+    let questions = payload
+        .get("questions")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let normalized_answers =
+        build_request_user_input_response_answers(&questions, &submitted_answers);
+    let content = json!({
+        "questions": questions,
+        "answers": normalized_answers,
+    })
+    .to_string();
+    let message = if let Some((control_request_id, tool_use_id)) =
+        control_response_ids_for_request(&state, &run_id, request_id)?
+    {
+        build_ask_user_question_control_response_message(
+            &control_request_id,
+            tool_use_id.as_deref(),
+            questions,
+            Value::Object(normalized_answers),
+        )
+    } else {
+        build_claude_tool_result_message(request_id, &content, false)
+    };
+    write_run_stdin_message(&state, &run_id, &message).await?;
+    mark_run_human_input_resumed(&state, &run_id, request_id);
+    push_run_event(
+        &state,
+        &run_id,
+        json!({ "type": "trace", "runId": run_id, "name": "stdin_tool_result_written", "atMs": current_timestamp_ms_i64(), "detail": request_id }),
+    );
+    Ok(Json(json!({ "submitted": true })))
+}
+
+async fn claude_run_approval_decision(
+    State(state): State<AppState>,
+    AxumPath(run_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let request_id = required_json_string(&payload, "requestId", "缺少批准请求 ID。")?;
+    let decision = payload
+        .get("decision")
+        .and_then(Value::as_str)
+        .unwrap_or("approve");
+    let default_content = if decision == "reject" {
+        "The user rejected this request. Do not perform the requested action."
+    } else {
+        "The user approved this request. Continue the original task."
+    };
+    let content = payload
+        .get("content")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default_content);
+    let message = if let Some((control_request_id, tool_use_id)) =
+        control_response_ids_for_request(&state, &run_id, request_id)?
+    {
+        build_claude_control_response_message(&control_request_id, decision, tool_use_id.as_deref())
+    } else {
+        build_claude_tool_result_message(request_id, content, decision == "reject")
+    };
+    write_run_stdin_message(&state, &run_id, &message).await?;
+    mark_run_human_input_resumed(&state, &run_id, request_id);
+    push_run_event(
+        &state,
+        &run_id,
+        json!({ "type": "trace", "runId": run_id, "name": "stdin_approval_result_written", "atMs": current_timestamp_ms_i64(), "detail": request_id }),
+    );
+    Ok(Json(json!({ "submitted": true })))
+}
+
+async fn claude_run_interrupt(
+    State(state): State<AppState>,
+    AxumPath(run_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let message = json!({
+        "type": "control_request",
+        "request_id": uuid::Uuid::new_v4().to_string(),
+        "request": { "subtype": "interrupt" },
+    });
+    let submitted = match write_run_stdin_message(&state, &run_id, &message).await {
+        Ok(()) => {
+            push_run_event(
+                &state,
+                &run_id,
+                json!({ "type": "trace", "runId": run_id, "name": "stdin_interrupt_written", "atMs": current_timestamp_ms_i64() }),
+            );
+            true
+        }
+        Err(_) => kill_run_child(&state, &run_id)?,
+    };
+    Ok(Json(json!({ "submitted": submitted })))
+}
+
+async fn claude_run_cancel(
+    State(state): State<AppState>,
+    AxumPath(run_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let thread_id = state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?
+        .get(&run_id)
+        .map(|run| run.thread_id.clone());
+    let cancelled = if let Some(thread_id) = thread_id {
+        close_thread_runtime(&state, &thread_id)?
+    } else {
+        kill_run_child(&state, &run_id)?
+    };
+    mark_run_finished(&state, &run_id);
+    Ok(Json(json!({ "cancelled": cancelled })))
+}
+
+async fn claude_runtime_close(
+    State(state): State<AppState>,
+    AxumPath(thread_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let closed = close_thread_runtime(&state, &thread_id)?;
+    Ok(Json(json!({ "closed": closed })))
+}
+
+async fn claude_runtime_context(
+    State(state): State<AppState>,
+    AxumPath(thread_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let has_active = state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?
+        .values()
+        .any(|run| run.thread_id == thread_id && !run.finished);
+    if has_active {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "ok": false,
+                "code": "runtime-busy",
+                "error": "当前 Claude 会话正在运行中，请等待本轮结束后再获取上下文信息。",
+            })),
+        ));
+    }
+
+    let remembered = latest_run_context_for_thread(&state, &thread_id)?;
+    let detail = open_initialized_workspace_database(&state)
+        .ok()
+        .and_then(|connection| read_thread_detail(&connection, &thread_id).ok());
+    let session_id = detail
+        .as_ref()
+        .and_then(|detail| detail.session_id.as_deref())
+        .or_else(|| remembered.as_ref().and_then(|value| value.0.as_deref()));
+    let Some(session_id) = session_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "ok": false,
+                "code": "runtime-unavailable",
+                "error": "当前线程还没有 Claude sessionId，请先发送一轮消息后再获取上下文。",
+            })),
+        ));
+    };
+    let working_directory = detail
+        .as_ref()
+        .map(|detail| detail.working_directory.as_str())
+        .or_else(|| remembered.as_ref().map(|value| value.1.as_str()))
+        .unwrap_or(".");
+    let timeout_ms = payload
+        .get("timeoutMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(12_000)
+        .clamp(1_000, 60_000);
+    let requested_at_ms = current_timestamp_ms_i64();
+    let started = std::time::Instant::now();
+    match request_claude_context_snapshot(
+        session_id,
+        working_directory,
+        timeout_ms,
+        requested_at_ms,
+    )
+    .await
+    {
+        Ok(mut context) => {
+            context["durationMs"] = json!(started.elapsed().as_millis() as i64);
+            Ok((
+                StatusCode::OK,
+                Json(json!({ "ok": true, "context": context })),
+            ))
+        }
+        Err(error) => Ok((
+            error.status,
+            Json(json!({
+                "ok": false,
+                "code": "context-result-error",
+                "error": error.message,
+            })),
+        )),
+    }
+}
+
+async fn claude_runtimes(State(state): State<AppState>) -> ApiResult<Json<Value>> {
+    let runtimes = state
+        .runtimes
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取 runtime 状态失败: {error}")))?;
+    Ok(Json(Value::Array(
+        runtimes
+            .values()
+            .filter(|runtime| !runtime.closed)
+            .map(runtime_status_json)
+            .collect(),
+    )))
+}
+
+async fn open_with_targets(State(state): State<AppState>) -> Json<Value> {
+    let settings = read_app_settings(&state).unwrap_or_else(|_| default_app_settings());
+    let selected_target_id = settings
+        .get("openWith")
+        .and_then(|value| value.get("selectedTargetId"))
+        .and_then(Value::as_str)
+        .unwrap_or("vscode");
+    Json(json!({
+        "targets": discover_open_targets(),
+        "selectedTargetId": selected_target_id,
+    }))
+}
+
+async fn usage_stats(
+    State(state): State<AppState>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let range_days = query
+        .get("rangeDays")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(30);
+    let project_id = query.get("projectId").map(String::as_str);
+    let connection = open_initialized_workspace_database(&state)?;
+    Ok(Json(read_usage_stats(&connection, range_days, project_id)?))
+}
+
+async fn get_settings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
+    read_app_settings(&state).map(Json)
+}
+
+async fn update_appearance_settings(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    update_settings_section(&state, "appearance", payload, UpdateMode::Replace).map(Json)
+}
+
+async fn update_general_settings(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    update_settings_section(&state, "general", payload, UpdateMode::Merge).map(Json)
+}
+
+async fn update_model_settings(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    update_settings_section(&state, "models", payload, UpdateMode::Replace).map(Json)
+}
+
+async fn update_shortcut_settings(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    update_settings_section(&state, "shortcuts", payload, UpdateMode::Merge).map(Json)
+}
+
+async fn update_open_with_settings(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    update_settings_section(&state, "openWith", payload, UpdateMode::Merge).map(Json)
+}
+
+async fn workspace_bootstrap(State(state): State<AppState>) -> ApiResult<Json<Value>> {
+    read_workspace_bootstrap(&state).map(Json)
+}
+
+async fn update_workspace_selection(
+    State(state): State<AppState>,
+    Json(payload): Json<SelectionRequest>,
+) -> ApiResult<Json<Value>> {
+    let _guard = lock_workspace_write(&state)?;
+    let connection = open_initialized_workspace_database(&state)?;
+    if let Some(project_id) = normalize_optional_string(payload.project_id) {
+        write_state_value(&connection, "activeProjectId", &project_id)?;
+    }
+    if let Some(thread_id) = normalize_optional_string(payload.thread_id) {
+        write_state_value(&connection, "activeThreadId", &thread_id)?;
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn update_workspace_panel(
+    State(state): State<AppState>,
+    Json(payload): Json<PanelPatchRequest>,
+) -> ApiResult<Json<Value>> {
+    let _guard = lock_workspace_write(&state)?;
+    let connection = open_initialized_workspace_database(&state)?;
+    let current = read_panel_state(&connection)?;
+    write_state_value(
+        &connection,
+        "panel.organizeBy",
+        normalize_panel_value(payload.organize_by, current["organizeBy"].as_str()),
+    )?;
+    write_state_value(
+        &connection,
+        "panel.sortBy",
+        normalize_panel_value(payload.sort_by, current["sortBy"].as_str()),
+    )?;
+    write_state_value(
+        &connection,
+        "panel.visibility",
+        normalize_panel_value(payload.visibility, current["visibility"].as_str()),
+    )?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn select_directory(Json(payload): Json<SelectDirectoryRequest>) -> ApiResult<Json<Value>> {
+    let selected_path = run_directory_picker(payload.initial_path.as_deref())?;
+    Ok(Json(json!({
+        "ok": true,
+        "path": selected_path,
+    })))
+}
+
+async fn open_system_path(Json(payload): Json<OpenPathRequest>) -> ApiResult<Json<Value>> {
+    let path = payload
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("path 不能为空"))?;
+    let target_path = resolve_absolute_path(path)?;
+    if payload.mode.as_deref() == Some("reveal") {
+        reveal_path_in_explorer(&target_path)?;
+    } else {
+        open_path_with_system(&target_path)?;
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn search_system_files(Query(query): Query<FileSearchQuery>) -> ApiResult<Json<Value>> {
+    let working_directory = query
+        .working_directory
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("workingDirectory 不能为空"))?;
+    let root = resolve_accessible_directory(working_directory)?;
+    let files = search_workspace_files(&root, query.query.as_deref().unwrap_or_default())?;
+    Ok(Json(json!({ "files": files })))
+}
+
+async fn resolve_system_file(Query(query): Query<FileResolveQuery>) -> ApiResult<Json<Value>> {
+    let working_directory = query
+        .working_directory
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("workingDirectory 不能为空"))?;
+    let raw_path = query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("path 不能为空"))?;
+    let root = resolve_accessible_directory(working_directory)?;
+    let resolved = resolve_workspace_relative_path(&root, raw_path)
+        .ok_or_else(|| ApiError::bad_request("path 必须是 workspace 内的相对路径"))?;
+    let metadata =
+        fs::metadata(&resolved.0).map_err(|_| ApiError::not_found("path 在 workspace 中不存在"))?;
+    Ok(Json(json!({
+        "path": resolved.0,
+        "rel": resolved.1,
+        "isDirectory": metadata.is_dir(),
+    })))
+}
+
+async fn save_image_attachment(
+    Json(payload): Json<ImageAttachmentRequest>,
+) -> ApiResult<Json<Value>> {
+    let working_directory = payload
+        .working_directory
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("workingDirectory 不能为空"))?;
+    let data_url = payload
+        .data_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("dataUrl 不能为空"))?;
+    let root = resolve_accessible_directory(working_directory)?;
+    let parsed = parse_image_data_url(data_url, payload.mime_type.as_deref().unwrap_or_default())?;
+    let attachments_dir = PathBuf::from(root).join(".codem-attachments");
+    fs::create_dir_all(&attachments_dir)
+        .map_err(|error| ApiError::internal(format!("创建附件目录失败: {error}")))?;
+    let file_path = attachments_dir.join(build_attachment_file_name(&parsed.extension));
+    fs::write(&file_path, &parsed.bytes)
+        .map_err(|error| ApiError::internal(format!("保存图片失败: {error}")))?;
+    Ok(Json(json!({
+        "path": file_path.display().to_string(),
+        "mimeType": parsed.mime_type,
+        "size": parsed.bytes.len(),
+        "name": payload.file_name.as_deref().map(str::trim).filter(|value| !value.is_empty()).unwrap_or_else(|| file_path.file_name().and_then(|value| value.to_str()).unwrap_or("image")),
+    })))
+}
+
+async fn read_image_attachment_from_path(
+    Json(payload): Json<ImageFromPathRequest>,
+) -> ApiResult<Json<Value>> {
+    let raw_path = payload
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("path 不能为空"))?;
+    validate_desktop_file_path(raw_path)?;
+    let file_path = resolve_absolute_path(raw_path)?;
+    if !is_supported_image_file_path(&file_path) {
+        return Err(ApiError::bad_request("仅支持常见图片格式。"));
+    }
+    let metadata = fs::metadata(&file_path)
+        .map_err(|error| ApiError::bad_request(format!("图片读取失败: {error}")))?;
+    if !metadata.is_file() {
+        return Err(ApiError::bad_request("目标不是文件"));
+    }
+    if metadata.len() > 10 * 1024 * 1024 {
+        return Err(ApiError::bad_request("图片过大，请控制在 10MB 以内。"));
+    }
+    let bytes = fs::read(&file_path)
+        .map_err(|error| ApiError::bad_request(format!("图片读取失败: {error}")))?;
+    if bytes.is_empty() {
+        return Err(ApiError::bad_request("图片内容为空。"));
+    }
+    Ok(Json(json!({
+        "path": file_path,
+        "name": Path::new(&file_path).file_name().and_then(|value| value.to_str()).unwrap_or("image"),
+        "mimeType": image_mime_type_from_file_path(&file_path),
+        "size": bytes.len(),
+        "data": general_purpose::STANDARD.encode(bytes),
+    })))
+}
+
+async fn image_preview(
+    State(state): State<AppState>,
+    Query(query): Query<PreviewQuery>,
+) -> ApiResult<Response> {
+    let file_path = query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("path 不能为空"))?;
+    let file_path = resolve_absolute_path(file_path)?;
+    ensure_can_preview_workspace_file(&state, &file_path)?;
+    if !is_supported_image_file_path(&file_path) {
+        return Err(ApiError::bad_request("仅支持图片预览"));
+    }
+    let metadata = fs::metadata(&file_path)
+        .map_err(|error| ApiError::bad_request(format!("图片预览失败: {error}")))?;
+    if !metadata.is_file() {
+        return Err(ApiError::bad_request("目标不是文件"));
+    }
+    if metadata.len() > 15 * 1024 * 1024 {
+        return Err(ApiError::bad_request("图片过大，暂不预览"));
+    }
+    let bytes = fs::read(&file_path)
+        .map_err(|error| ApiError::bad_request(format!("图片预览失败: {error}")))?;
+    Response::builder()
+        .header("Cache-Control", "no-store")
+        .header("Content-Type", image_mime_type_from_file_path(&file_path))
+        .body(Body::from(bytes))
+        .map_err(|error| ApiError::internal(format!("构建图片响应失败: {error}")))
+}
+
+async fn file_preview(
+    State(state): State<AppState>,
+    Query(query): Query<PreviewQuery>,
+) -> ApiResult<Json<Value>> {
+    let file_path = query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("path 不能为空"))?;
+    let file_path = resolve_absolute_path(file_path)?;
+    ensure_can_preview_workspace_file(&state, &file_path)?;
+    let metadata = fs::metadata(&file_path)
+        .map_err(|error| ApiError::bad_request(format!("文件预览失败: {error}")))?;
+    if !metadata.is_file() {
+        return Err(ApiError::bad_request("目标不是文件"));
+    }
+    if is_supported_image_file_path(&file_path) {
+        return Ok(Json(json!({
+            "path": file_path,
+            "content": "",
+            "mode": "image",
+            "previewUrl": format!("/api/system/image-preview?path={}", percent_encode(&file_path)),
+        })));
+    }
+    if metadata.len() > 200 * 1024 {
+        return Err(ApiError::bad_request("文件过大，暂不预览"));
+    }
+    let bytes = fs::read(&file_path)
+        .map_err(|error| ApiError::bad_request(format!("文件预览失败: {error}")))?;
+    if bytes.contains(&0) {
+        return Err(ApiError::bad_request("二进制文件暂不预览"));
+    }
+    let content = String::from_utf8(bytes)
+        .map_err(|_| ApiError::bad_request("文件不是 UTF-8 文本，暂不预览"))?;
+    Ok(Json(json!({
+        "path": file_path,
+        "content": content,
+    })))
+}
+
+async fn git_clone(Json(payload): Json<GitCloneRequest>) -> ApiResult<Json<Value>> {
+    let repo_url = payload
+        .repo_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("repoUrl 不能为空"))?;
+    let base_directory = payload
+        .base_directory
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("baseDirectory 不能为空"))?;
+    let base_directory = resolve_accessible_directory(base_directory)?;
+    let mut args = vec!["clone".to_string(), repo_url.to_string()];
+    if let Some(folder_name) = payload
+        .folder_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        args.push(folder_name.to_string());
+    }
+    let output = run_git_command_checked(&base_directory, &args)?;
+    let path = payload
+        .folder_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|folder| {
+            PathBuf::from(&base_directory)
+                .join(folder)
+                .display()
+                .to_string()
+        });
+    Ok(Json(json!({
+        "ok": true,
+        "path": path,
+        "output": output,
+    })))
+}
+
+async fn open_project(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    open_path_with_system(&project_path)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn open_project_editor(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let target_id = payload
+        .get("targetId")
+        .and_then(Value::as_str)
+        .unwrap_or("vscode");
+    open_project_with_target(&project_path, target_id)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn list_project_files(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Query(query): Query<ProjectFilesQuery>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let relative = query.path.as_deref().unwrap_or_default();
+    let directory = resolve_project_relative_directory(&project_path, relative)?;
+    let entries = fs::read_dir(&directory)
+        .map_err(|error| ApiError::bad_request(format!("读取项目文件失败: {error}")))?;
+    let mut files = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == ".git" {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let relative_path = path
+            .strip_prefix(&project_path)
+            .ok()
+            .map(|value| value.display().to_string().replace('\\', "/"))
+            .unwrap_or_else(|| name.clone());
+        files.push(json!({
+            "name": name,
+            "path": relative_path,
+            "type": if file_type.is_dir() { "directory" } else { "file" },
+        }));
+    }
+    files.sort_by(|left, right| {
+        let left_type = left.get("type").and_then(Value::as_str).unwrap_or("");
+        let right_type = right.get("type").and_then(Value::as_str).unwrap_or("");
+        right_type.cmp(left_type).then_with(|| {
+            left.get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .cmp(right.get("name").and_then(Value::as_str).unwrap_or(""))
+        })
+    });
+    Ok(Json(Value::Array(files)))
+}
+
+async fn delete_project_file(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<ProjectFileDeleteRequest>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let relative = payload
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("path 不能为空"))?;
+    let target = resolve_project_relative_path(&project_path, relative)?;
+    let metadata = fs::metadata(&target)
+        .map_err(|error| ApiError::bad_request(format!("删除项目文件失败: {error}")))?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(&target)
+    } else {
+        fs::remove_file(&target)
+    }
+    .map_err(|error| ApiError::bad_request(format!("删除项目文件失败: {error}")))?;
+    Ok(Json(json!({ "ok": true, "path": relative })))
+}
+
+async fn project_git_summary(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    Ok(Json(project_git_summary_json(&project_path)))
+}
+
+async fn project_git_status(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    Ok(Json(read_git_status_snapshot(&project_path)?))
+}
+
+async fn project_git_branches(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    Ok(Json(Value::Array(read_git_branches(&project_path)?)))
+}
+
+async fn project_git_history(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let limit = query
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(40);
+    let reference = query.get("ref").map(String::as_str);
+    let commits = read_git_history(&project_path, reference, limit)?
+        .into_iter()
+        .map(compact_git_history_commit)
+        .collect();
+    Ok(Json(Value::Array(commits)))
+}
+
+async fn project_git_history_log(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let limit = query
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(80);
+    let commits = read_git_history(&project_path, None, limit)?;
+    let available_authors = unique_json_strings(&commits, "author");
+    Ok(Json(json!({
+        "commits": commits,
+        "limit": limit,
+        "hasMore": false,
+        "nextCursor": null,
+        "availableAuthors": available_authors,
+        "activeRefs": [],
+    })))
+}
+
+async fn project_git_history_compare(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let target = query
+        .get("targetBranch")
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ApiError::bad_request("targetBranch 和 compareBranch 不能为空"))?;
+    let compare = query
+        .get("compareBranch")
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ApiError::bad_request("targetBranch 和 compareBranch 不能为空"))?;
+    Ok(Json(json!({
+        "branch": target,
+        "compareBranch": compare,
+        "targetOnlyCommits": read_git_history_range(&project_path, &format!("{compare}..{target}"), 40)?,
+        "currentOnlyCommits": read_git_history_range(&project_path, &format!("{target}..{compare}"), 40)?,
+    })))
+}
+
+async fn project_git_commit_details(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let sha = query
+        .get("sha")
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ApiError::bad_request("sha 不能为空"))?;
+    Ok(Json(read_git_commit_details(&project_path, sha)?))
+}
+
+async fn project_git_commit_file(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let sha = query
+        .get("sha")
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ApiError::bad_request("sha 和 path 不能为空"))?;
+    let file_path = query
+        .get("path")
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ApiError::bad_request("sha 和 path 不能为空"))?;
+    Ok(Json(read_git_commit_file(&project_path, sha, file_path)?))
+}
+
+async fn project_git_diff(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let file_path = query
+        .get("path")
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ApiError::bad_request("path 不能为空"))?;
+    Ok(Json(read_git_file_diff(&project_path, file_path)?))
+}
+
+async fn project_git_operation_state(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    Ok(Json(read_git_operation_state_value(&project_path)?))
+}
+
+async fn project_git_add_files(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let paths = read_string_array(payload.get("paths"));
+    if paths.is_empty() {
+        return Err(ApiError::bad_request("paths 不能为空"));
+    }
+    let mut args = vec!["add".to_string(), "--".to_string()];
+    args.extend(paths.iter().cloned());
+    run_git_command_checked(&project_path, &args)?;
+    Ok(Json(json!({
+        "added": paths,
+        "summary": project_git_summary_json(&project_path),
+    })))
+}
+
+async fn project_git_revert_file(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let mut paths = read_string_array(payload.get("paths"));
+    if paths.is_empty() {
+        if let Some(path) = payload.get("path").and_then(Value::as_str) {
+            paths.push(path.to_string());
+        }
+    }
+    if paths.is_empty() {
+        return Err(ApiError::bad_request("paths 不能为空"));
+    }
+    let mut args = vec!["checkout".to_string(), "--".to_string()];
+    args.extend(paths.iter().cloned());
+    run_git_command_checked(&project_path, &args)?;
+    Ok(Json(json!({
+        "paths": paths,
+        "reverted": paths,
+        "deleted": [],
+        "summary": project_git_summary_json(&project_path),
+    })))
+}
+
+async fn project_git_commit(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let message = payload
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if message.trim().is_empty() {
+        return Err(ApiError::bad_request("message 不能为空"));
+    }
+    let files = read_string_array(payload.get("files"));
+    if !files.is_empty() {
+        let mut args = vec!["add".to_string(), "--".to_string()];
+        args.extend(files);
+        run_git_command_checked(&project_path, &args)?;
+    }
+    let output = run_git_command_checked(&project_path, &["commit", "-m", message])?;
+    Ok(Json(json!({
+        "output": output,
+        "summary": project_git_summary_json(&project_path),
+    })))
+}
+
+async fn project_git_push_preview(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    ensure_git_repo(&project_path)?;
+    let status = read_git_status_snapshot(&project_path)?;
+    let remotes = read_git_remotes(&project_path)?;
+    if remotes.is_empty() {
+        return Err(ApiError::bad_request("当前仓库没有可用远端"));
+    }
+    let branch = status.get("branch").and_then(Value::as_str).unwrap_or("");
+    if branch.is_empty() || branch == "HEAD" {
+        return Err(ApiError::bad_request("当前不是可推送的本地分支"));
+    }
+    let upstream = status.get("upstream").and_then(Value::as_str);
+    let upstream_remote = upstream.and_then(|value| value.split('/').next());
+    let upstream_branch =
+        upstream.and_then(|value| value.split_once('/').map(|(_, branch)| branch));
+    let remote = if remotes.iter().any(|item| item == "gitee") {
+        "gitee".to_string()
+    } else if let Some(upstream_remote) =
+        upstream_remote.filter(|value| remotes.iter().any(|item| item == value))
+    {
+        upstream_remote.to_string()
+    } else {
+        remotes.first().cloned().unwrap_or_default()
+    };
+    let target_branch = if Some(remote.as_str()) == upstream_remote {
+        upstream_branch.unwrap_or(branch).to_string()
+    } else {
+        branch.to_string()
+    };
+    Ok(Json(json!({
+        "branch": branch,
+        "remote": remote,
+        "targetBranch": target_branch,
+        "upstream": status.get("upstream"),
+        "ahead": status.get("ahead").cloned().unwrap_or_else(|| json!(0)),
+        "behind": status.get("behind").cloned().unwrap_or_else(|| json!(0)),
+        "commits": [],
+    })))
+}
+
+async fn project_git_push(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let mut args = vec!["push".to_string()];
+    if let Some(remote) = payload
+        .get("remote")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        args.push(remote.to_string());
+    }
+    if let Some(branch) = payload
+        .get("branch")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        args.push(branch.to_string());
+    }
+    let output = run_git_command_checked(&project_path, &args)?;
+    Ok(Json(
+        json!({ "output": output, "summary": project_git_summary_json(&project_path) }),
+    ))
+}
+
+async fn project_git_fetch(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let mut args = vec!["fetch".to_string()];
+    if let Some(remote) = payload
+        .get("remote")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        args.push(remote.to_string());
+    }
+    let output = run_git_command_checked(&project_path, &args)?;
+    Ok(Json(
+        json!({ "output": output, "summary": project_git_summary_json(&project_path) }),
+    ))
+}
+
+async fn project_git_pull(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let mut args = vec!["pull".to_string()];
+    if payload.get("mode").and_then(Value::as_str) == Some("ff-only") {
+        args.push("--ff-only".to_string());
+    } else if payload.get("mode").and_then(Value::as_str) == Some("rebase") {
+        args.push("--rebase".to_string());
+    }
+    if let Some(remote) = payload
+        .get("remote")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        args.push(remote.to_string());
+    }
+    if let Some(branch) = payload
+        .get("branch")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        args.push(branch.to_string());
+    }
+    let output = run_git_command_checked(&project_path, &args)?;
+    Ok(Json(
+        json!({ "output": output, "summary": project_git_summary_json(&project_path) }),
+    ))
+}
+
+async fn project_git_switch(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let branch = required_json_string(&payload, "branch", "branch 不能为空")?;
+    let output = run_git_command_checked(&project_path, &["switch", branch])?;
+    Ok(Json(
+        json!({ "output": output, "summary": project_git_summary_json(&project_path) }),
+    ))
+}
+
+async fn project_git_branch(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let branch = required_json_string(&payload, "branch", "branch 不能为空")?;
+    let mut args = vec!["branch".to_string(), branch.to_string()];
+    if let Some(source) = payload
+        .get("source")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        args.push(source.to_string());
+    }
+    let output = run_git_command_checked(&project_path, &args)?;
+    Ok(Json(
+        json!({ "output": output, "summary": project_git_summary_json(&project_path), "branch": branch }),
+    ))
+}
+
+async fn project_git_tag(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let tag = required_json_string(&payload, "tag", "tag 不能为空")?;
+    let mut args = vec!["tag".to_string(), tag.to_string()];
+    if let Some(source) = payload
+        .get("source")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        args.push(source.to_string());
+    }
+    let output = run_git_command_checked(&project_path, &args)?;
+    Ok(Json(
+        json!({ "output": output, "summary": project_git_summary_json(&project_path), "tag": tag }),
+    ))
+}
+
+async fn project_git_delete_branch(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let branch = required_json_string(&payload, "branch", "branch 不能为空")?;
+    let output = if let Some(remote) = payload
+        .get("remote")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        run_git_command_checked(&project_path, &["push", remote, "--delete", branch])?
+    } else {
+        run_git_command_checked(&project_path, &["branch", "-D", branch])?
+    };
+    Ok(Json(
+        json!({ "output": output, "summary": project_git_summary_json(&project_path), "branch": branch }),
+    ))
+}
+
+async fn project_git_cherry_pick(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let sha = required_json_string(&payload, "sha", "sha 不能为空")?;
+    let output = run_git_command_checked(&project_path, &["cherry-pick", sha])?;
+    Ok(Json(
+        json!({ "output": output, "summary": project_git_summary_json(&project_path) }),
+    ))
+}
+
+async fn project_git_checkout_detached(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let reference = required_json_string(&payload, "ref", "ref 不能为空")?;
+    let output = run_git_command_checked(&project_path, &["checkout", "--detach", reference])?;
+    Ok(Json(
+        json!({ "output": output, "summary": project_git_summary_json(&project_path) }),
+    ))
+}
+
+async fn project_git_conflict_file(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let file_path = query
+        .get("path")
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ApiError::bad_request("path 不能为空"))?;
+    Ok(Json(read_git_conflict_file_detail(
+        &project_path,
+        file_path,
+    )?))
+}
+
+async fn project_git_conflict_save_result(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let file_path = required_json_string(&payload, "path", "path 不能为空")?;
+    let content = payload
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::bad_request("content 不能为空"))?;
+    let absolute = resolve_project_relative_file_path(&project_path, file_path)?;
+    if let Some(parent) = absolute.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| ApiError::internal(format!("创建目录失败: {error}")))?;
+    }
+    fs::write(&absolute, content)
+        .map_err(|error| ApiError::internal(format!("保存冲突结果失败: {error}")))?;
+    Ok(Json(read_git_conflict_file_detail(
+        &project_path,
+        file_path,
+    )?))
+}
+
+async fn project_git_conflict_mark_resolved(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let file_path = required_json_string(&payload, "path", "path 不能为空")?;
+    run_git_command_checked(&project_path, &["add", "--", file_path])?;
+    Ok(Json(read_git_operation_state_value(&project_path)?))
+}
+
+async fn project_git_operation_continue(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let operation = detect_git_operation(&project_path)?;
+    let args: Vec<&str> = match operation.as_str() {
+        "rebase" => vec!["rebase", "--continue"],
+        "cherry-pick" => vec!["cherry-pick", "--continue"],
+        "revert" => vec!["revert", "--continue"],
+        "merge" => vec!["commit", "--no-edit"],
+        _ => return Err(ApiError::bad_request("当前没有可继续的 Git 操作")),
+    };
+    run_git_command_checked(&project_path, &args)?;
+    Ok(Json(read_git_operation_state_value(&project_path)?))
+}
+
+async fn project_git_operation_abort(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let operation = detect_git_operation(&project_path)?;
+    let args: Vec<&str> = match operation.as_str() {
+        "rebase" => vec!["rebase", "--abort"],
+        "cherry-pick" => vec!["cherry-pick", "--abort"],
+        "revert" => vec!["revert", "--abort"],
+        "merge" => vec!["merge", "--abort"],
+        _ => return Err(ApiError::bad_request("当前没有可中止的 Git 操作")),
+    };
+    run_git_command_checked(&project_path, &args)?;
+    Ok(Json(read_git_operation_state_value(&project_path)?))
+}
+
+async fn project_git_undo_turn_changes(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let changes = payload
+        .get("changes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ApiError::bad_request("changes 必须是数组"))?;
+    let mut restored = Vec::new();
+    let mut deleted = Vec::new();
+    for change in changes {
+        let Some(path) = change.get("path").and_then(Value::as_str) else {
+            continue;
+        };
+        let absolute = resolve_project_relative_file_path(&project_path, path)?;
+        let operations = change
+            .get("operations")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for operation in operations {
+            let kind = operation.get("kind").and_then(Value::as_str).unwrap_or("");
+            match kind {
+                "delete-file" => {
+                    if absolute.exists() {
+                        fs::remove_file(&absolute).map_err(|error| {
+                            ApiError::internal(format!("删除文件失败: {error}"))
+                        })?;
+                    }
+                    deleted.push(path.to_string());
+                }
+                "restore-file" => {
+                    let before = operation
+                        .get("beforeText")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if let Some(parent) = absolute.parent() {
+                        fs::create_dir_all(parent).map_err(|error| {
+                            ApiError::internal(format!("创建目录失败: {error}"))
+                        })?;
+                    }
+                    fs::write(&absolute, before)
+                        .map_err(|error| ApiError::internal(format!("恢复文件失败: {error}")))?;
+                    restored.push(path.to_string());
+                }
+                "replace-snippet" => {
+                    let before = operation
+                        .get("beforeText")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let after = operation
+                        .get("afterText")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let current = fs::read_to_string(&absolute).unwrap_or_default();
+                    let next = if !after.is_empty() && current.contains(after) {
+                        current.replacen(after, before, 1)
+                    } else {
+                        before.to_string()
+                    };
+                    fs::write(&absolute, next)
+                        .map_err(|error| ApiError::internal(format!("恢复片段失败: {error}")))?;
+                    restored.push(path.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(Json(json!({
+        "restored": restored,
+        "deleted": deleted,
+        "summary": project_git_summary_json(&project_path),
+    })))
+}
+
+async fn project_git_worktrees(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    Ok(Json(read_git_worktrees_value(&project_path)?))
+}
+
+async fn project_git_suggest_worktree_path(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let branch = query
+        .get("branch")
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("worktree");
+    let base = PathBuf::from(&project_path);
+    let parent = base.parent().unwrap_or_else(|| Path::new("."));
+    let stem = base
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("repo");
+    let sanitized_branch = branch
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let candidate = parent.join(format!(
+        "{stem}-{}",
+        if sanitized_branch.is_empty() {
+            "worktree"
+        } else {
+            &sanitized_branch
+        }
+    ));
+    Ok(Json(json!({ "path": candidate })))
+}
+
+async fn project_git_create_worktree(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let branch = required_json_string(&payload, "branch", "branch 不能为空")?;
+    let path = required_json_string(&payload, "path", "path 不能为空")?;
+    let base = payload
+        .get("base")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("HEAD");
+    let add_project = payload
+        .get("addProject")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    run_git_command_checked(
+        &project_path,
+        &["worktree", "add", "-b", branch, path, base],
+    )?;
+    let mut new_project_id = Value::Null;
+    let mut workspace = Value::Null;
+    if add_project {
+        let _guard = lock_workspace_write(&state)?;
+        let connection = open_initialized_workspace_database(&state)?;
+        match create_project_row(&connection, path) {
+            Ok(id) => new_project_id = json!(id),
+            Err(_) => {
+                if let Ok(existing) = find_project_id_by_path(&connection, path) {
+                    new_project_id = existing.map(Value::String).unwrap_or(Value::Null);
+                }
+            }
+        }
+        workspace = read_workspace_bootstrap_with_connection(&state, &connection)?;
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "path": path,
+        "branch": branch,
+        "projectId": new_project_id,
+        "workspace": workspace,
+    })))
+}
+
+async fn project_git_delete_worktree(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = read_project_path(&state, &project_id)?;
+    let path = required_json_string(&payload, "path", "path 不能为空")?;
+    run_git_command_checked(&project_path, &["worktree", "remove", path])?;
+    let workspace = read_workspace_bootstrap(&state)?;
+    Ok(Json(json!({ "ok": true, "workspace": workspace })))
+}
+
+async fn create_project(
+    State(state): State<AppState>,
+    Json(payload): Json<ProjectCreateRequest>,
+) -> ApiResult<Json<Value>> {
+    let project_path = payload
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("path 不能为空"))?;
+    let resolved_path = resolve_accessible_directory(project_path)?;
+
+    let _guard = lock_workspace_write(&state)?;
+    let connection = open_initialized_workspace_database(&state)?;
+    let project_id = create_project_row(&connection, &resolved_path)?;
+    let workspace = read_workspace_bootstrap_with_connection(&state, &connection)?;
+    Ok(Json(json!({
+        "ok": true,
+        "projectId": project_id,
+        "workspace": workspace,
+    })))
+}
+
+async fn rename_project(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<RenameRequest>,
+) -> ApiResult<Json<Value>> {
+    let name = payload
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("name 不能为空"))?;
+
+    let _guard = lock_workspace_write(&state)?;
+    let connection = open_initialized_workspace_database(&state)?;
+    ensure_project_exists(&connection, &project_id)?;
+    connection
+        .execute(
+            "UPDATE projects SET name = ?, custom_name = 1, updated_at = ? WHERE id = ?",
+            params![name, current_timestamp(), project_id],
+        )
+        .map_err(|error| ApiError::internal(format!("修改项目失败: {error}")))?;
+    let workspace = read_workspace_bootstrap_with_connection(&state, &connection)?;
+    Ok(Json(json!({ "ok": true, "workspace": workspace })))
+}
+
+async fn delete_project(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let _guard = lock_workspace_write(&state)?;
+    let mut connection = open_initialized_workspace_database(&state)?;
+    remove_project_row(&mut connection, &project_id)?;
+    let workspace = read_workspace_bootstrap_with_connection(&state, &connection)?;
+    Ok(Json(json!({ "ok": true, "workspace": workspace })))
+}
+
+async fn create_thread(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<ThreadCreateRequest>,
+) -> ApiResult<Json<Value>> {
+    let _guard = lock_workspace_write(&state)?;
+    let connection = open_initialized_workspace_database(&state)?;
+    let thread_id = create_thread_row(&connection, &project_id, payload.title.as_deref())?;
+    let thread = read_thread_summary(&connection, &thread_id)?;
+    Ok(Json(json!({
+        "ok": true,
+        "threadId": thread_id,
+        "thread": thread,
+    })))
+}
+
+async fn update_thread(
+    State(state): State<AppState>,
+    AxumPath(thread_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let _guard = lock_workspace_write(&state)?;
+    let connection = open_initialized_workspace_database(&state)?;
+    let mut refresh_workspace = false;
+
+    if let Some(title) = payload
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        ensure_thread_exists(&connection, &thread_id)?;
+        connection
+            .execute(
+                "UPDATE threads SET title = ?, custom_title = 1, updated_at = ? WHERE id = ?",
+                params![title, current_timestamp(), thread_id],
+            )
+            .map_err(|error| ApiError::internal(format!("修改聊天名称失败: {error}")))?;
+        refresh_workspace = true;
+    }
+
+    update_thread_metadata_from_payload(&connection, &thread_id, &payload)?;
+
+    if refresh_workspace {
+        let workspace = read_workspace_bootstrap_with_connection(&state, &connection)?;
+        return Ok(Json(json!({ "ok": true, "workspace": workspace })));
+    }
+
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn delete_thread(
+    State(state): State<AppState>,
+    AxumPath(thread_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let _guard = lock_workspace_write(&state)?;
+    let mut connection = open_initialized_workspace_database(&state)?;
+    remove_thread_row(&mut connection, &thread_id)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn pin_thread(
+    State(state): State<AppState>,
+    AxumPath(thread_id): AxumPath<String>,
+    Json(payload): Json<PinRequest>,
+) -> ApiResult<Json<Value>> {
+    let _guard = lock_workspace_write(&state)?;
+    let connection = open_initialized_workspace_database(&state)?;
+    ensure_thread_exists(&connection, &thread_id)?;
+    let pinned_at: Option<String> = payload.pinned.unwrap_or(false).then(current_timestamp);
+    connection
+        .execute(
+            "UPDATE threads SET pinned_at = ? WHERE id = ?",
+            params![pinned_at, thread_id],
+        )
+        .map_err(|error| ApiError::internal(format!("置顶聊天失败: {error}")))?;
+    let workspace = read_workspace_bootstrap_with_connection(&state, &connection)?;
+    Ok(Json(json!({ "ok": true, "workspace": workspace })))
+}
+
+async fn pin_project(
+    State(state): State<AppState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(payload): Json<PinRequest>,
+) -> ApiResult<Json<Value>> {
+    let _guard = lock_workspace_write(&state)?;
+    let connection = open_initialized_workspace_database(&state)?;
+    ensure_project_exists(&connection, &project_id)?;
+    let pinned_at: Option<String> = payload.pinned.unwrap_or(false).then(current_timestamp);
+    connection
+        .execute(
+            "UPDATE projects SET pinned_at = ? WHERE id = ?",
+            params![pinned_at, project_id],
+        )
+        .map_err(|error| ApiError::internal(format!("置顶项目失败: {error}")))?;
+    let workspace = read_workspace_bootstrap_with_connection(&state, &connection)?;
+    Ok(Json(json!({ "ok": true, "workspace": workspace })))
+}
+
+async fn get_thread_history(
+    State(state): State<AppState>,
+    AxumPath(thread_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let connection = open_initialized_workspace_database(&state)?;
+    ensure_thread_exists(&connection, &thread_id)?;
+    let turns = read_stored_thread_history(&connection, &thread_id)?;
+    Ok(Json(json!({
+        "threadId": thread_id,
+        "turns": turns,
+    })))
+}
+
+async fn save_thread_history(
+    State(state): State<AppState>,
+    AxumPath(thread_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let turns = payload
+        .get("turns")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| ApiError::bad_request("turns 必须是数组"))?;
+    let _guard = lock_workspace_write(&state)?;
+    let mut connection = open_initialized_workspace_database(&state)?;
+    write_thread_history(&mut connection, &thread_id, &turns)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+fn read_workspace_bootstrap(state: &AppState) -> ApiResult<Value> {
+    let settings = read_app_settings(&state)?;
+    let connection = open_initialized_workspace_database(state)?;
+    read_workspace_bootstrap_with_settings(state, &connection, &settings)
+}
+
+fn read_workspace_bootstrap_with_connection(
+    state: &AppState,
+    connection: &Connection,
+) -> ApiResult<Value> {
+    let settings = read_app_settings(state)?;
+    read_workspace_bootstrap_with_settings(state, connection, &settings)
+}
+
+fn read_workspace_bootstrap_with_settings(
+    _state: &AppState,
+    connection: &Connection,
+    settings: &Value,
+) -> ApiResult<Value> {
+    let restore_selection = settings
+        .get("general")
+        .and_then(|general| general.get("restoreLastSelectionOnLaunch"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+
+    let panel_state = read_panel_state(connection)?;
+    let project_rows = read_project_rows(connection)?;
+    let thread_rows = read_thread_rows(connection)?;
+    let thread_rows = filter_visible_thread_rows(connection, thread_rows)?;
+    let mut active_project_id = if restore_selection {
+        read_state_value(&connection, "activeProjectId")?
+    } else {
+        None
+    };
+    let mut active_thread_id = if restore_selection {
+        read_state_value(&connection, "activeThreadId")?
+    } else {
+        None
+    };
+
+    let has_active_project = active_project_id
+        .as_ref()
+        .map(|id| project_rows.iter().any(|project| &project.id == id))
+        .unwrap_or(false);
+    if !has_active_project {
+        active_project_id = project_rows.first().map(|project| project.id.clone());
+    }
+
+    let active_project_id_ref = active_project_id.as_deref();
+    let projects: Vec<Value> = project_rows
+        .iter()
+        .map(|project| {
+            let git_info = if Some(project.id.as_str()) == active_project_id_ref {
+                read_git_info(&project.path, true)
+            } else {
+                GitInfo {
+                    is_git_repo: false,
+                    branch: None,
+                    diff: empty_git_diff(),
+                }
+            };
+            let project_threads: Vec<Value> = thread_rows
+                .iter()
+                .filter(|thread| thread.project_id == project.id)
+                .map(thread_summary_json)
+                .collect();
+            let mut project_json = json!({
+                "id": project.id,
+                "name": project.name,
+                "path": project.path,
+                "createdAt": project.created_at,
+                "updatedAt": project.updated_at,
+                "gitBranch": git_info.branch,
+                "gitDiff": git_info.diff,
+                "isGitRepo": git_info.is_git_repo,
+                "isGitWorktree": is_git_worktree(&project.path),
+                "threads": project_threads,
+            });
+            if let Some(pinned_at) = project.pinned_at.as_ref() {
+                if let Some(object) = project_json.as_object_mut() {
+                    object.insert("pinnedAt".to_string(), json!(pinned_at));
+                }
+            }
+            remove_null_fields(&mut project_json);
+            project_json
+        })
+        .collect();
+
+    let active_project_threads = active_project_id
+        .as_ref()
+        .and_then(|id| {
+            projects
+                .iter()
+                .find(|project| project.get("id").and_then(Value::as_str) == Some(id.as_str()))
+        })
+        .and_then(|project| project.get("threads"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let has_active_thread = active_thread_id
+        .as_ref()
+        .map(|id| {
+            active_project_threads
+                .iter()
+                .any(|thread| thread.get("id").and_then(Value::as_str) == Some(id.as_str()))
+        })
+        .unwrap_or(false);
+    if !has_active_thread {
+        active_thread_id = active_project_threads
+            .first()
+            .and_then(|thread| thread.get("id"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+    }
+
+    if let Some(id) = active_project_id.as_deref() {
+        write_state_value(&connection, "activeProjectId", id)?;
+    }
+    if let Some(id) = active_thread_id.as_deref() {
+        write_state_value(&connection, "activeThreadId", id)?;
+    }
+
+    Ok(json!({
+        "projects": projects,
+        "activeProjectId": active_project_id,
+        "activeThreadId": active_thread_id,
+        "panelState": panel_state,
+    }))
+}
+
+#[derive(Clone, Copy)]
+enum UpdateMode {
+    Replace,
+    Merge,
+}
+
+fn read_app_settings(state: &AppState) -> ApiResult<Value> {
+    let settings_path = settings_path(state);
+    let Ok(content) = fs::read_to_string(settings_path) else {
+        return Ok(default_app_settings());
+    };
+    let value = serde_json::from_str::<Value>(&content).unwrap_or_else(|_| default_app_settings());
+    Ok(normalize_app_settings(&value))
+}
+
+fn update_settings_section(
+    state: &AppState,
+    section: &str,
+    payload: Value,
+    mode: UpdateMode,
+) -> ApiResult<Value> {
+    let _guard = state
+        .settings_write_lock
+        .lock()
+        .map_err(|error| ApiError::internal(format!("锁定设置写入失败: {error}")))?;
+    let mut settings = read_app_settings(state)?;
+    match mode {
+        UpdateMode::Replace => {
+            settings[section] = payload;
+        }
+        UpdateMode::Merge => {
+            if !settings.get(section).is_some_and(Value::is_object) {
+                settings[section] = json!({});
+            }
+            if let (Some(current), Some(next)) = (settings.get_mut(section), payload.as_object()) {
+                if let Some(current_object) = current.as_object_mut() {
+                    for (key, value) in next {
+                        current_object.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+    }
+    settings = normalize_app_settings(&settings);
+    write_app_settings(state, &settings)?;
+    Ok(settings)
+}
+
+fn write_app_settings(state: &AppState, settings: &Value) -> ApiResult<()> {
+    let path = settings_path(state);
+    let parent = path
+        .parent()
+        .ok_or_else(|| ApiError::internal("设置文件路径无效"))?;
+    fs::create_dir_all(parent)
+        .map_err(|error| ApiError::internal(format!("创建设置目录失败: {error}")))?;
+    let temporary_path = path.with_extension(format!(
+        "json.{}.{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let content = serde_json::to_string_pretty(settings)
+        .map_err(|error| ApiError::internal(format!("序列化设置失败: {error}")))?;
+    fs::write(&temporary_path, format!("{content}\n"))
+        .map_err(|error| ApiError::internal(format!("写入设置失败: {error}")))?;
+    fs::rename(&temporary_path, &path)
+        .map_err(|error| ApiError::internal(format!("保存设置失败: {error}")))?;
+    Ok(())
+}
+
+fn normalize_app_settings(value: &Value) -> Value {
+    let record = value.as_object();
+    json!({
+        "general": normalize_general_settings(record.and_then(|item| item.get("general"))),
+        "appearance": normalize_appearance_settings(record.and_then(|item| item.get("appearance"))),
+        "models": normalize_model_settings(record.and_then(|item| item.get("models"))),
+        "shortcuts": normalize_shortcut_settings(record.and_then(|item| item.get("shortcuts"))),
+        "openWith": normalize_open_with_settings(record.and_then(|item| item.get("openWith"))),
+    })
+}
+
+fn normalize_general_settings(value: Option<&Value>) -> Value {
+    let record = value.and_then(Value::as_object);
+    let default_patterns = default_workbench_ignore_patterns();
+    let has_customized_flag = record
+        .and_then(|item| item.get("reviewIgnorePatternsCustomized"))
+        .is_some_and(Value::is_boolean);
+    let review_ignore_patterns_customized =
+        bool_setting(record, "reviewIgnorePatternsCustomized", false);
+    let review_noise_patterns = if has_customized_flag {
+        if review_ignore_patterns_customized {
+            string_array_setting(record.and_then(|item| item.get("reviewNoisePatterns")), 160)
+        } else {
+            default_patterns
+        }
+    } else {
+        merge_string_patterns(
+            default_patterns
+                .into_iter()
+                .chain(string_array_setting(
+                    record.and_then(|item| item.get("reviewNoisePatterns")),
+                    160,
+                ))
+                .collect(),
+        )
+    };
+
+    json!({
+        "restoreLastSelectionOnLaunch": bool_setting(record, "restoreLastSelectionOnLaunch", true),
+        "autoRefreshGitStatus": bool_setting(record, "autoRefreshGitStatus", true),
+        "enableThreadSystemNotifications": bool_setting(record, "enableThreadSystemNotifications", true),
+        "autoGuideQueuedPrompts": bool_setting(record, "autoGuideQueuedPrompts", false),
+        "autoCheckAppUpdate": bool_setting(record, "autoCheckAppUpdate", true),
+        "showDebugButton": bool_setting(record, "showDebugButton", true),
+        "collapseIntermediateProcess": bool_setting(record, "collapseIntermediateProcess", false),
+        "defaultPermissionMode": enum_setting(record, "defaultPermissionMode", &["default", "auto", "bypassPermissions"], "default"),
+        "reviewHideNoiseFilesByDefault": bool_setting(record, "reviewHideNoiseFilesByDefault", true),
+        "reviewDefaultDisplayMode": enum_setting(record, "reviewDefaultDisplayMode", &["tree", "flat"], "tree"),
+        "reviewNoisePatterns": review_noise_patterns,
+        "reviewIgnorePatternsCustomized": review_ignore_patterns_customized,
+    })
+}
+
+fn normalize_appearance_settings(value: Option<&Value>) -> Value {
+    let record = value.and_then(Value::as_object);
+    let legacy_ui_font_preset = enum_value(
+        record.and_then(|item| item.get("uiFontFamily")),
+        &["system", "yahei", "dengxian", "song"],
+        "codex",
+    );
+    let legacy_code_font_preset = enum_value(
+        record.and_then(|item| item.get("codeFontFamily")),
+        &["cascadia", "jetbrains", "consolas"],
+        "cascadia",
+    );
+    let mut appearance = Map::new();
+    appearance.insert(
+        "themeMode".to_string(),
+        json!(enum_setting(
+            record,
+            "themeMode",
+            &["system", "light", "dark"],
+            "system"
+        )),
+    );
+    appearance.insert(
+        "density".to_string(),
+        json!(enum_setting(
+            record,
+            "density",
+            &["comfortable", "compact"],
+            "comfortable"
+        )),
+    );
+    appearance.insert(
+        "accentColor".to_string(),
+        json!(enum_setting(
+            record,
+            "accentColor",
+            &["blue", "emerald", "amber", "rose", "violet", "custom"],
+            "blue"
+        )),
+    );
+    appearance.insert(
+        "accentColorCustom".to_string(),
+        json!(hex_color_setting(record, "accentColorCustom", "#2374C6")),
+    );
+    appearance.insert(
+        "uiFontMode".to_string(),
+        json!(enum_setting(
+            record,
+            "uiFontMode",
+            &["preset", "custom"],
+            if record.is_some_and(|item| item.contains_key("uiFontFamily")) {
+                "preset"
+            } else {
+                "preset"
+            }
+        )),
+    );
+    appearance.insert(
+        "uiFontPreset".to_string(),
+        json!(enum_setting_with_fallback(
+            record,
+            "uiFontPreset",
+            &[
+                "codex",
+                "system",
+                "segoe",
+                "yahei",
+                "dengxian",
+                "song",
+                "sourceHanSans",
+                "misans",
+                "harmony"
+            ],
+            &legacy_ui_font_preset
+        )),
+    );
+    appearance.insert(
+        "uiFontCustom".to_string(),
+        json!(string_setting(record, "uiFontCustom", "-apple-system, BlinkMacSystemFont, \"Segoe UI Variable Text\", \"Segoe UI Variable Display\", \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif", 500)),
+    );
+    appearance.insert(
+        "chatFontMode".to_string(),
+        json!(enum_setting(
+            record,
+            "chatFontMode",
+            &["followUi", "preset", "custom"],
+            "followUi"
+        )),
+    );
+    appearance.insert(
+        "chatFontPreset".to_string(),
+        json!(enum_setting(
+            record,
+            "chatFontPreset",
+            &[
+                "codex",
+                "system",
+                "segoe",
+                "yahei",
+                "dengxian",
+                "song",
+                "sourceHanSans",
+                "misans",
+                "harmony"
+            ],
+            "codex"
+        )),
+    );
+    appearance.insert(
+        "chatFontCustom".to_string(),
+        json!(string_setting(record, "chatFontCustom", "-apple-system, BlinkMacSystemFont, \"Segoe UI Variable Text\", \"Segoe UI Variable Display\", \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif", 500)),
+    );
+    appearance.insert(
+        "codeFontMode".to_string(),
+        json!(enum_setting(
+            record,
+            "codeFontMode",
+            &["preset", "custom"],
+            if record.is_some_and(|item| item.contains_key("codeFontFamily")) {
+                "preset"
+            } else {
+                "preset"
+            }
+        )),
+    );
+    appearance.insert(
+        "codeFontPreset".to_string(),
+        json!(enum_setting_with_fallback(
+            record,
+            "codeFontPreset",
+            &[
+                "cascadia",
+                "jetbrains",
+                "consolas",
+                "firaCode",
+                "sourceCodePro"
+            ],
+            &legacy_code_font_preset
+        )),
+    );
+    appearance.insert(
+        "codeFontCustom".to_string(),
+        json!(string_setting(
+            record,
+            "codeFontCustom",
+            "\"Cascadia Code\", \"Cascadia Mono\", Consolas, monospace",
+            500
+        )),
+    );
+    appearance.insert(
+        "uiFontSize".to_string(),
+        json!(number_choice_setting(
+            record,
+            "uiFontSize",
+            &[12, 13, 14, 15],
+            14
+        )),
+    );
+    appearance.insert(
+        "chatFontSize".to_string(),
+        json!(number_choice_setting(
+            record,
+            "chatFontSize",
+            &[13, 14, 15, 16],
+            14
+        )),
+    );
+    appearance.insert(
+        "codeFontSize".to_string(),
+        json!(number_choice_setting(
+            record,
+            "codeFontSize",
+            &[12, 13, 14],
+            12
+        )),
+    );
+    appearance.insert(
+        "sidebarWidth".to_string(),
+        json!(enum_setting(
+            record,
+            "sidebarWidth",
+            &["narrow", "default", "wide"],
+            "default"
+        )),
+    );
+    if let Some(width) = ranged_i64_setting(record, "sidebarCustomWidth", 220, 520) {
+        appearance.insert("sidebarCustomWidth".to_string(), json!(width));
+    }
+    appearance.insert(
+        "windowMaterial".to_string(),
+        json!(enum_setting(
+            record,
+            "windowMaterial",
+            &["auto", "none", "mica", "acrylic", "micaAlt"],
+            "mica"
+        )),
+    );
+    Value::Object(appearance)
+}
+
+fn normalize_model_settings(value: Option<&Value>) -> Value {
+    let record = value.and_then(Value::as_object);
+    let custom_models = normalize_custom_models(record.and_then(|item| item.get("customModels")));
+    let default_model_id = normalize_default_model_id(
+        record.and_then(|item| item.get("defaultModelId")),
+        &custom_models,
+    );
+    json!({
+        "customModels": custom_models,
+        "defaultModelId": default_model_id,
+        "modelCapabilities": normalize_model_capabilities(record.and_then(|item| item.get("modelCapabilities"))),
+    })
+}
+
+fn normalize_shortcut_settings(value: Option<&Value>) -> Value {
+    let record = value.and_then(Value::as_object);
+    json!({
+        "newChat": nullable_shortcut_setting(record, "newChat", Some("ctrl+n")),
+        "toggleSearch": nullable_shortcut_setting(record, "toggleSearch", Some("ctrl+g")),
+        "toggleDebug": nullable_shortcut_setting(record, "toggleDebug", Some("ctrl+shift+d")),
+        "composerSend": enum_setting(record, "composerSend", &["enter", "modEnter"], "enter"),
+    })
+}
+
+fn normalize_open_with_settings(value: Option<&Value>) -> Value {
+    let record = value.and_then(Value::as_object);
+    if let Some(record) = record {
+        if record.contains_key("target") {
+            return normalize_legacy_open_with_settings(record);
+        }
+    }
+    json!({
+        "selectedTargetId": normalize_open_target_id(record.and_then(|item| item.get("selectedTargetId"))).unwrap_or_else(|| "vscode".to_string()),
+        "customTargets": normalize_open_app_targets(record.and_then(|item| item.get("customTargets"))),
+    })
+}
+
+fn normalize_legacy_open_with_settings(record: &Map<String, Value>) -> Value {
+    let target = enum_value(
+        record.get("target"),
+        &["auto", "cursor", "vscode", "custom"],
+        "auto",
+    );
+    if target == "cursor" || target == "vscode" {
+        return json!({
+            "selectedTargetId": target,
+            "customTargets": [],
+        });
+    }
+    if target == "custom" {
+        if let Some(command) = limited_string(record.get("customCommand"), 300) {
+            return json!({
+                "selectedTargetId": "custom",
+                "customTargets": [{
+                    "id": "custom",
+                    "label": "Custom",
+                    "kind": "command",
+                    "command": command,
+                    "args": parse_open_with_args(limited_string(record.get("customArgs"), 600).as_deref().unwrap_or("")),
+                }],
+            });
+        }
+    }
+    json!({
+        "selectedTargetId": "vscode",
+        "customTargets": [],
+    })
+}
+
+fn default_workbench_ignore_patterns() -> Vec<String> {
+    [
+        ".idea",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".cache",
+        "logs",
+        ".ds_store",
+        "thumbs.db",
+        "*.log",
+        "*.pyc",
+        "*.pyo",
+        "*.tmp",
+        "*.temp",
+        "*.swp",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn bool_setting(record: Option<&Map<String, Value>>, key: &str, default_value: bool) -> bool {
+    record
+        .and_then(|item| item.get(key))
+        .and_then(Value::as_bool)
+        .unwrap_or(default_value)
+}
+
+fn enum_setting(
+    record: Option<&Map<String, Value>>,
+    key: &str,
+    allowed: &[&str],
+    default_value: &str,
+) -> String {
+    enum_value(
+        record.and_then(|item| item.get(key)),
+        allowed,
+        default_value,
+    )
+}
+
+fn enum_setting_with_fallback(
+    record: Option<&Map<String, Value>>,
+    key: &str,
+    allowed: &[&str],
+    fallback: &str,
+) -> String {
+    enum_value(record.and_then(|item| item.get(key)), allowed, fallback)
+}
+
+fn enum_value(value: Option<&Value>, allowed: &[&str], default_value: &str) -> String {
+    value
+        .and_then(Value::as_str)
+        .filter(|candidate| allowed.iter().any(|allowed| allowed == candidate))
+        .unwrap_or(default_value)
+        .to_string()
+}
+
+fn string_setting(
+    record: Option<&Map<String, Value>>,
+    key: &str,
+    default_value: &str,
+    max_len: usize,
+) -> String {
+    limited_string(record.and_then(|item| item.get(key)), max_len)
+        .unwrap_or_else(|| default_value.to_string())
+}
+
+fn limited_string(value: Option<&Value>, max_len: usize) -> Option<String> {
+    let text = value?.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(text.chars().take(max_len).collect())
+}
+
+fn hex_color_setting(
+    record: Option<&Map<String, Value>>,
+    key: &str,
+    default_value: &str,
+) -> String {
+    let Some(value) = record
+        .and_then(|item| item.get(key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+    else {
+        return default_value.to_string();
+    };
+    let bytes = value.as_bytes();
+    let valid = bytes.len() == 7
+        && bytes[0] == b'#'
+        && bytes[1..].iter().all(|byte| byte.is_ascii_hexdigit());
+    if valid {
+        value.to_string()
+    } else {
+        default_value.to_string()
+    }
+}
+
+fn number_choice_setting(
+    record: Option<&Map<String, Value>>,
+    key: &str,
+    allowed: &[i64],
+    default_value: i64,
+) -> i64 {
+    let value = record
+        .and_then(|item| item.get(key))
+        .and_then(Value::as_i64)
+        .unwrap_or(default_value);
+    if allowed.contains(&value) {
+        value
+    } else {
+        default_value
+    }
+}
+
+fn ranged_i64_setting(
+    record: Option<&Map<String, Value>>,
+    key: &str,
+    min_value: i64,
+    max_value: i64,
+) -> Option<i64> {
+    let value = record.and_then(|item| item.get(key))?.as_i64()?;
+    (min_value..=max_value).contains(&value).then_some(value)
+}
+
+fn string_array_setting(value: Option<&Value>, limit: usize) -> Vec<String> {
+    let Some(items) = value.and_then(Value::as_array) else {
+        return vec![];
+    };
+    items
+        .iter()
+        .filter_map(|item| limited_string(Some(item), 300))
+        .take(limit)
+        .collect()
+}
+
+fn merge_string_patterns(patterns: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut merged = vec![];
+    for pattern in patterns {
+        let normalized = pattern.trim();
+        if normalized.is_empty() || !seen.insert(normalized.to_string()) {
+            continue;
+        }
+        merged.push(normalized.to_string());
+    }
+    merged
+}
+
+fn nullable_shortcut_setting(
+    record: Option<&Map<String, Value>>,
+    key: &str,
+    default_value: Option<&str>,
+) -> Value {
+    match record.and_then(|item| item.get(key)) {
+        Some(Value::Null) => Value::Null,
+        Some(value) => limited_string(Some(value), 80)
+            .map(Value::String)
+            .unwrap_or_else(|| default_value.map_or(Value::Null, |value| json!(value))),
+        None => default_value.map_or(Value::Null, |value| json!(value)),
+    }
+}
+
+fn normalize_custom_models(value: Option<&Value>) -> Value {
+    let Some(items) = value.and_then(Value::as_array) else {
+        return json!([]);
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut models = Vec::new();
+    for item in items {
+        let Some(record) = item.as_object() else {
+            continue;
+        };
+        let Some(id) = normalize_model_id(record.get("id")) else {
+            continue;
+        };
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let mut model = Map::new();
+        model.insert("id".to_string(), json!(id));
+        if let Some(label) = limited_string(record.get("label"), 120) {
+            model.insert("label".to_string(), json!(label));
+        }
+        if let Some(description) = limited_string(record.get("description"), 300) {
+            model.insert("description".to_string(), json!(description));
+        }
+        models.push(Value::Object(model));
+    }
+    Value::Array(models)
+}
+
+fn normalize_model_capabilities(value: Option<&Value>) -> Value {
+    let Some(items) = value.and_then(Value::as_array) else {
+        return json!([]);
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut capabilities = Vec::new();
+    for item in items {
+        let Some(record) = item.as_object() else {
+            continue;
+        };
+        let Some(model_id) = normalize_model_id(record.get("modelId")) else {
+            continue;
+        };
+        if !seen.insert(model_id.clone()) {
+            continue;
+        }
+        let mut capability = Map::new();
+        capability.insert("modelId".to_string(), json!(model_id));
+        if let Some(tokens) = record
+            .get("contextWindowTokens")
+            .and_then(Value::as_i64)
+            .filter(|tokens| (1..=10_000_000).contains(tokens))
+        {
+            capability.insert("contextWindowTokens".to_string(), json!(tokens));
+        }
+        if let Some(supports) = record.get("supportsContext1m").and_then(Value::as_bool) {
+            capability.insert("supportsContext1m".to_string(), json!(supports));
+        }
+        if let Some(context_model) = normalize_model_id(record.get("context1mModel")) {
+            capability.insert("context1mModel".to_string(), json!(context_model));
+        }
+        capabilities.push(Value::Object(capability));
+    }
+    Value::Array(capabilities)
+}
+
+fn normalize_default_model_id(value: Option<&Value>, custom_models: &Value) -> String {
+    let candidate = normalize_model_id(value).unwrap_or_else(|| "__default".to_string());
+    let slots = [
+        "__default",
+        "sonnet",
+        "sonnet[1m]",
+        "opus",
+        "opus[1m]",
+        "haiku",
+    ];
+    if slots.contains(&candidate.as_str()) {
+        return candidate;
+    }
+    let custom_match = custom_models
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|item| item.get("id").and_then(Value::as_str) == Some(candidate.as_str()));
+    if custom_match {
+        candidate
+    } else {
+        "__default".to_string()
+    }
+}
+
+fn normalize_model_id(value: Option<&Value>) -> Option<String> {
+    let id = limited_string(value, 120)?;
+    let valid = id.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/' | '[' | ']')
+    });
+    valid.then_some(id)
+}
+
+fn normalize_open_app_targets(value: Option<&Value>) -> Value {
+    let Some(items) = value.and_then(Value::as_array) else {
+        return json!([]);
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut targets = Vec::new();
+    for item in items {
+        let Some(record) = item.as_object() else {
+            continue;
+        };
+        let Some(id) = normalize_open_target_id(record.get("id")) else {
+            continue;
+        };
+        let Some(label) = limited_string(record.get("label"), 80) else {
+            continue;
+        };
+        let kind = enum_value(
+            record.get("kind"),
+            &["app", "command", "explorer", "terminal", "git-bash", "wsl"],
+            "",
+        );
+        if kind.is_empty() || !seen.insert(id.clone()) {
+            continue;
+        }
+        let mut target = Map::new();
+        target.insert("id".to_string(), json!(id));
+        target.insert("label".to_string(), json!(label));
+        target.insert("kind".to_string(), json!(kind));
+        if let Some(command) = limited_string(record.get("command"), 300) {
+            target.insert("command".to_string(), json!(command));
+        }
+        target.insert(
+            "args".to_string(),
+            json!(string_array_setting(record.get("args"), 80)),
+        );
+        targets.push(Value::Object(target));
+    }
+    Value::Array(targets)
+}
+
+fn normalize_open_target_id(value: Option<&Value>) -> Option<String> {
+    let id = limited_string(value, 80)?;
+    let valid = id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'));
+    valid.then_some(id)
+}
+
+fn parse_open_with_args(value: &str) -> Vec<String> {
+    value
+        .split_whitespace()
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn default_app_settings() -> Value {
+    json!({
+        "general": {
+            "restoreLastSelectionOnLaunch": true,
+            "autoRefreshGitStatus": true,
+            "enableThreadSystemNotifications": true,
+            "autoGuideQueuedPrompts": false,
+            "autoCheckAppUpdate": true,
+            "showDebugButton": true,
+            "collapseIntermediateProcess": false,
+            "defaultPermissionMode": "default",
+            "reviewHideNoiseFilesByDefault": true,
+            "reviewDefaultDisplayMode": "tree",
+            "reviewNoisePatterns": [
+                ".idea",
+                "__pycache__",
+                ".pytest_cache",
+                ".mypy_cache",
+                ".ruff_cache",
+                ".cache",
+                "logs",
+                ".ds_store",
+                "thumbs.db",
+                "*.log",
+                "*.pyc",
+                "*.pyo",
+                "*.tmp",
+                "*.temp",
+                "*.swp"
+            ],
+            "reviewIgnorePatternsCustomized": false
+        },
+        "appearance": {
+            "themeMode": "system",
+            "density": "comfortable",
+            "accentColor": "blue",
+            "accentColorCustom": "#2374C6",
+            "uiFontMode": "preset",
+            "uiFontPreset": "codex",
+            "uiFontCustom": "-apple-system, BlinkMacSystemFont, \"Segoe UI Variable Text\", \"Segoe UI Variable Display\", \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif",
+            "chatFontMode": "followUi",
+            "chatFontPreset": "codex",
+            "chatFontCustom": "-apple-system, BlinkMacSystemFont, \"Segoe UI Variable Text\", \"Segoe UI Variable Display\", \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif",
+            "codeFontMode": "preset",
+            "codeFontPreset": "cascadia",
+            "codeFontCustom": "\"Cascadia Code\", \"Cascadia Mono\", Consolas, monospace",
+            "uiFontSize": 14,
+            "chatFontSize": 14,
+            "codeFontSize": 12,
+            "sidebarWidth": "default",
+            "windowMaterial": "mica"
+        },
+        "models": {
+            "customModels": [],
+            "defaultModelId": "__default",
+            "modelCapabilities": []
+        },
+        "shortcuts": {
+            "newChat": "ctrl+n",
+            "toggleSearch": "ctrl+g",
+            "toggleDebug": "ctrl+shift+d",
+            "composerSend": "enter"
+        },
+        "openWith": {
+            "selectedTargetId": "vscode",
+            "customTargets": []
+        }
+    })
+}
+
+fn configured_model_options() -> Value {
+    let main_model = configured_env_string("ANTHROPIC_MODEL");
+    let sonnet_model = configured_env_string("ANTHROPIC_DEFAULT_SONNET_MODEL");
+    let opus_model = configured_env_string("ANTHROPIC_DEFAULT_OPUS_MODEL");
+    let haiku_model = configured_env_string("ANTHROPIC_DEFAULT_HAIKU_MODEL");
+    let context_1m_disabled =
+        configured_env_string("CLAUDE_CODE_DISABLE_1M_CONTEXT").is_some_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        });
+    let can_use_context_1m = !context_1m_disabled;
+    let sonnet_value = sonnet_model.as_deref().unwrap_or("sonnet");
+    let opus_value = opus_model.as_deref().unwrap_or("opus");
+    let haiku_value = haiku_model.as_deref().unwrap_or("haiku");
+    let mut models = vec![
+        json!({
+            "id": "__default",
+            "label": main_model.as_deref().unwrap_or("默认"),
+            "description": main_model
+                .as_ref()
+                .map(|model| format!("使用当前 Claude Code 默认模型：{model}"))
+                .unwrap_or_else(|| "使用当前 Claude Code 默认模型，不传 --model".to_string()),
+            "model": main_model,
+            "kind": "default",
+        }),
+        json!({
+            "id": "sonnet",
+            "label": "Sonnet",
+            "description": slot_description("默认推荐模型", sonnet_model.as_deref()),
+            "model": sonnet_value,
+            "kind": "slot",
+            "supportsContext1m": can_use_context_1m && can_use_context_1m_alias(sonnet_value),
+            "context1mModel": with_context_1m_suffix(sonnet_value),
+        }),
+        json!({
+            "id": "opus",
+            "label": "Opus",
+            "description": slot_description("更强，适合复杂任务", opus_model.as_deref()),
+            "model": opus_value,
+            "kind": "slot",
+            "supportsContext1m": can_use_context_1m && can_use_context_1m_alias(opus_value),
+            "context1mModel": with_context_1m_suffix(opus_value),
+        }),
+        json!({
+            "id": "haiku",
+            "label": "Haiku",
+            "description": slot_description("更快，适合简单回复", haiku_model.as_deref()),
+            "model": haiku_value,
+            "kind": "slot",
+        }),
+    ];
+
+    for model in &mut models {
+        remove_null_fields(model);
+        if model.get("supportsContext1m") == Some(&Value::Bool(false)) {
+            if let Some(object) = model.as_object_mut() {
+                object.remove("supportsContext1m");
+                object.remove("context1mModel");
+            }
+        }
+    }
+
+    Value::Array(models)
+}
+
+fn remove_null_fields(value: &mut Value) {
+    if let Value::Object(object) = value {
+        object.retain(|_, item| !item.is_null());
+    }
+}
+
+fn slot_description(summary: &str, configured_model: Option<&str>) -> String {
+    configured_model
+        .map(|model| format!("当前映射：{model} · {summary}"))
+        .unwrap_or_else(|| summary.to_string())
+}
+
+fn with_context_1m_suffix(model: &str) -> String {
+    if model.to_ascii_lowercase().ends_with("[1m]") {
+        model.to_string()
+    } else {
+        format!("{model}[1m]")
+    }
+}
+
+fn can_use_context_1m_alias(model: &str) -> bool {
+    let normalized = model.to_ascii_lowercase();
+    normalized.contains("claude")
+        || normalized.contains("sonnet")
+        || normalized.contains("opus")
+        || normalized.contains("haiku")
+}
+
+fn configured_env_string(key: &str) -> Option<String> {
+    read_claude_settings_env()
+        .and_then(|env| env.get(key).and_then(Value::as_str).map(str::to_string))
+        .or_else(|| env::var(key).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn read_claude_settings_env() -> Option<Map<String, Value>> {
+    let path = home_dir()?.join(".claude").join("settings.json");
+    let content = fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<Value>(&content).ok()?;
+    value.get("env")?.as_object().cloned()
+}
+
+fn parse_claude_cli_version(output: &str) -> Option<String> {
+    output.split_whitespace().find_map(|part| {
+        let candidate = part
+            .trim_matches(|ch: char| !ch.is_ascii_digit() && ch != '.')
+            .trim();
+        let pieces: Vec<&str> = candidate.split('.').collect();
+        if pieces.len() >= 3
+            && pieces
+                .iter()
+                .all(|piece| !piece.is_empty() && piece.chars().all(|ch| ch.is_ascii_digit()))
+        {
+            Some(pieces[..3].join("."))
+        } else {
+            None
+        }
+    })
+}
+
+fn compare_semantic_versions(left: &str, right: &str) -> i8 {
+    let parse = |value: &str| -> Vec<i64> {
+        value
+            .split('.')
+            .map(|piece| piece.parse::<i64>().unwrap_or(0))
+            .collect()
+    };
+    let left_parts = parse(left);
+    let right_parts = parse(right);
+    for index in 0..3 {
+        let left_value = *left_parts.get(index).unwrap_or(&0);
+        let right_value = *right_parts.get(index).unwrap_or(&0);
+        if left_value > right_value {
+            return 1;
+        }
+        if left_value < right_value {
+            return -1;
+        }
+    }
+    0
+}
+
+fn background_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    configure_background_command(&mut command);
+    command
+}
+
+fn background_tokio_command(program: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(program);
+    configure_tokio_background_command(&mut command);
+    command
+}
+
+#[cfg(target_os = "windows")]
+fn configure_background_command(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_background_command(_command: &mut Command) {}
+
+#[cfg(target_os = "windows")]
+fn configure_tokio_background_command(command: &mut tokio::process::Command) {
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_tokio_background_command(_command: &mut tokio::process::Command) {}
+
+fn resolve_claude_command() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    let lookup = background_command("where.exe").arg("claude").output().ok();
+
+    #[cfg(not(target_os = "windows"))]
+    let lookup = background_command("which").arg("claude").output().ok();
+
+    lookup
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| {
+            stdout
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn open_workspace_database(state: &AppState) -> ApiResult<Connection> {
+    Connection::open(state.app_data_dir.join("codem.sqlite"))
+        .map_err(|error| ApiError::internal(format!("打开工作区数据库失败: {error}")))
+}
+
+fn open_initialized_workspace_database(state: &AppState) -> ApiResult<Connection> {
+    let connection = open_workspace_database(state)?;
+    initialize_workspace_database(&connection)?;
+    Ok(connection)
+}
+
+fn initialize_workspace_database(connection: &Connection) -> ApiResult<()> {
+    connection
+        .execute_batch(
+            r#"
+            PRAGMA journal_mode = WAL;
+            PRAGMA foreign_keys = ON;
+
+            CREATE TABLE IF NOT EXISTS projects (
+              id TEXT PRIMARY KEY,
+              path TEXT NOT NULL UNIQUE,
+              name TEXT NOT NULL,
+              custom_name INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              pinned_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS threads (
+              id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL,
+              provider TEXT NOT NULL,
+              title TEXT NOT NULL,
+              custom_title INTEGER NOT NULL DEFAULT 0,
+              session_id TEXT,
+              transcript_path TEXT,
+              working_directory TEXT NOT NULL,
+              model TEXT,
+              permission_mode TEXT,
+              imported INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              pinned_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS app_state (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ignored_imported_sessions (
+              session_id TEXT PRIMARY KEY,
+              transcript_path TEXT,
+              deleted_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS messages (
+              id TEXT PRIMARY KEY,
+              thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+              turn_id TEXT NOT NULL,
+              turn_sort INTEGER NOT NULL,
+              item_sort INTEGER NOT NULL,
+              role TEXT NOT NULL,
+              content TEXT NOT NULL,
+              status TEXT,
+              activity TEXT,
+              metrics TEXT,
+              session_id TEXT,
+              phase TEXT,
+              started_at_ms INTEGER,
+              duration_ms INTEGER,
+              input_tokens INTEGER,
+              output_tokens INTEGER,
+              cache_creation_input_tokens INTEGER,
+              cache_read_input_tokens INTEGER,
+              context_usage_json TEXT,
+              total_cost_usd REAL,
+              pending_approval_requests_json TEXT,
+              user_attachments_json TEXT,
+              user_content_blocks_json TEXT,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS tool_calls (
+              id TEXT PRIMARY KEY,
+              thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+              turn_id TEXT NOT NULL,
+              turn_sort INTEGER NOT NULL,
+              item_sort INTEGER NOT NULL,
+              tool_sort INTEGER NOT NULL,
+              tool_id TEXT NOT NULL,
+              name TEXT NOT NULL,
+              title TEXT NOT NULL,
+              status TEXT NOT NULL,
+              tool_use_id TEXT,
+              parent_tool_use_id TEXT,
+              is_sidechain INTEGER NOT NULL DEFAULT 0,
+              input_text TEXT,
+              result_text TEXT,
+              is_error INTEGER NOT NULL DEFAULT 0,
+              subtools_json TEXT,
+              sub_messages_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_messages_thread_turn
+            ON messages (thread_id, turn_sort, item_sort, role);
+            CREATE INDEX IF NOT EXISTS idx_tool_calls_thread_turn
+            ON tool_calls (thread_id, turn_sort, item_sort, tool_sort);
+            "#,
+        )
+        .map_err(|error| ApiError::internal(format!("初始化工作区数据库失败: {error}")))
+        .and_then(|_| {
+            ensure_column(
+                connection,
+                "tool_calls",
+                "turn_sort",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(connection, "tool_calls", "parent_tool_use_id", "TEXT")?;
+            ensure_column(
+                connection,
+                "tool_calls",
+                "is_sidechain",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(connection, "tool_calls", "subtools_json", "TEXT")?;
+            ensure_column(connection, "tool_calls", "sub_messages_json", "TEXT")?;
+            ensure_column(connection, "messages", "phase", "TEXT")?;
+            ensure_column(connection, "messages", "started_at_ms", "INTEGER")?;
+            ensure_column(connection, "messages", "duration_ms", "INTEGER")?;
+            ensure_column(connection, "messages", "input_tokens", "INTEGER")?;
+            ensure_column(connection, "messages", "output_tokens", "INTEGER")?;
+            ensure_column(
+                connection,
+                "messages",
+                "cache_creation_input_tokens",
+                "INTEGER",
+            )?;
+            ensure_column(connection, "messages", "cache_read_input_tokens", "INTEGER")?;
+            ensure_column(connection, "messages", "context_usage_json", "TEXT")?;
+            ensure_column(connection, "messages", "total_cost_usd", "REAL")?;
+            ensure_column(
+                connection,
+                "messages",
+                "pending_approval_requests_json",
+                "TEXT",
+            )?;
+            ensure_column(connection, "messages", "user_attachments_json", "TEXT")?;
+            ensure_column(connection, "messages", "user_content_blocks_json", "TEXT")?;
+            ensure_column(connection, "threads", "pinned_at", "TEXT")?;
+            ensure_column(connection, "projects", "pinned_at", "TEXT")?;
+            Ok(())
+        })
+}
+
+fn read_project_rows(connection: &Connection) -> ApiResult<Vec<ProjectRow>> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT id, path, name, created_at, updated_at, pinned_at
+            FROM projects
+            ORDER BY updated_at DESC, created_at DESC
+            "#,
+        )
+        .map_err(|error| ApiError::internal(format!("读取项目列表失败: {error}")))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(ProjectRow {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                name: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                pinned_at: row.get(5)?,
+            })
+        })
+        .map_err(|error| ApiError::internal(format!("读取项目列表失败: {error}")))?;
+
+    collect_rows(rows, "读取项目列表失败")
+}
+
+fn read_thread_rows(connection: &Connection) -> ApiResult<Vec<ThreadRow>> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT id, project_id, provider, title, session_id, transcript_path, working_directory, model, permission_mode, imported, updated_at, pinned_at
+            FROM threads
+            ORDER BY updated_at DESC, created_at DESC
+            "#,
+        )
+        .map_err(|error| ApiError::internal(format!("读取线程列表失败: {error}")))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(ThreadRow {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                provider: row.get(2)?,
+                title: row.get(3)?,
+                session_id: row.get(4)?,
+                transcript_path: row.get(5)?,
+                working_directory: row.get(6)?,
+                model: row.get(7)?,
+                permission_mode: row.get(8)?,
+                imported: row.get::<_, i64>(9)? != 0,
+                updated_at: row.get(10)?,
+                pinned_at: row.get(11)?,
+            })
+        })
+        .map_err(|error| ApiError::internal(format!("读取线程列表失败: {error}")))?;
+
+    collect_rows(rows, "读取线程列表失败")
+}
+
+fn filter_visible_thread_rows(
+    connection: &Connection,
+    thread_rows: Vec<ThreadRow>,
+) -> ApiResult<Vec<ThreadRow>> {
+    let mut visible = Vec::new();
+    for row in thread_rows {
+        if row.session_id.is_none() {
+            if !row.imported {
+                visible.push(row);
+            }
+            continue;
+        }
+        if has_usable_transcript(&row) || thread_has_stored_history(connection, &row.id)? {
+            visible.push(row);
+        }
+    }
+    Ok(visible)
+}
+
+fn has_usable_transcript(row: &ThreadRow) -> bool {
+    row.transcript_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|path| Path::new(path).exists())
+}
+
+fn thread_has_stored_history(connection: &Connection, thread_id: &str) -> ApiResult<bool> {
+    let message_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE thread_id = ?",
+            params![thread_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| ApiError::internal(format!("读取聊天历史失败: {error}")))?;
+    if message_count > 0 {
+        return Ok(true);
+    }
+    let tool_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM tool_calls WHERE thread_id = ?",
+            params![thread_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| ApiError::internal(format!("读取工具记录失败: {error}")))?;
+    Ok(tool_count > 0)
+}
+
+fn collect_rows<T>(
+    rows: impl Iterator<Item = rusqlite::Result<T>>,
+    message: &str,
+) -> ApiResult<Vec<T>> {
+    rows.collect::<rusqlite::Result<Vec<T>>>()
+        .map_err(|error| ApiError::internal(format!("{message}: {error}")))
+}
+
+fn ensure_column(
+    connection: &Connection,
+    table_name: &str,
+    column_name: &str,
+    definition: &str,
+) -> ApiResult<()> {
+    let table_identifier = quote_sql_identifier(table_name)?;
+    let column_identifier = quote_sql_identifier(column_name)?;
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table_identifier})"))
+        .map_err(|error| ApiError::internal(format!("读取数据库表结构失败: {error}")))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| ApiError::internal(format!("读取数据库表结构失败: {error}")))?;
+    let columns = collect_rows(rows, "读取数据库表结构失败")?;
+    if columns.iter().any(|column| column == column_name) {
+        return Ok(());
+    }
+
+    connection
+        .execute_batch(&format!(
+            "ALTER TABLE {table_identifier} ADD COLUMN {column_identifier} {definition}"
+        ))
+        .map_err(|error| ApiError::internal(format!("迁移数据库表结构失败: {error}")))
+}
+
+fn quote_sql_identifier(identifier: &str) -> ApiResult<String> {
+    if identifier.chars().enumerate().all(|(index, ch)| {
+        ch == '_' || ch.is_ascii_alphanumeric() && (index > 0 || !ch.is_ascii_digit())
+    }) {
+        return Ok(format!("\"{}\"", identifier.replace('"', "\"\"")));
+    }
+
+    Err(ApiError::internal(format!(
+        "非法数据库标识符: {identifier}"
+    )))
+}
+
+fn lock_workspace_write(state: &AppState) -> ApiResult<std::sync::MutexGuard<'_, ()>> {
+    state
+        .workspace_write_lock
+        .lock()
+        .map_err(|error| ApiError::internal(format!("锁定工作区写入失败: {error}")))
+}
+
+fn current_timestamp() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+}
+
+fn normalize_panel_value(value: Option<String>, fallback: Option<&str>) -> String {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .or(fallback)
+        .unwrap_or("project")
+        .to_string()
+}
+
+fn read_panel_state(connection: &Connection) -> ApiResult<Value> {
+    Ok(json!({
+        "organizeBy": read_state_value(connection, "panel.organizeBy")?.unwrap_or_else(|| "project".to_string()),
+        "sortBy": read_state_value(connection, "panel.sortBy")?.unwrap_or_else(|| "updated".to_string()),
+        "visibility": read_state_value(connection, "panel.visibility")?.unwrap_or_else(|| "all".to_string()),
+    }))
+}
+
+fn resolve_accessible_directory(value: &str) -> ApiResult<String> {
+    let raw_path = PathBuf::from(value);
+    let absolute_path = if raw_path.is_absolute() {
+        raw_path
+    } else {
+        env::current_dir()
+            .map_err(|error| ApiError::internal(format!("读取当前目录失败: {error}")))?
+            .join(raw_path)
+    };
+    let metadata = fs::metadata(&absolute_path).map_err(|_| {
+        ApiError::bad_request(format!("目录不存在或不可访问：{}", absolute_path.display()))
+    })?;
+    if !metadata.is_dir() {
+        return Err(ApiError::bad_request(format!(
+            "目录不存在或不可访问：{}",
+            absolute_path.display()
+        )));
+    }
+    Ok(absolute_path.display().to_string())
+}
+
+fn create_project_row(connection: &Connection, project_path: &str) -> ApiResult<String> {
+    let now = current_timestamp();
+    let existing: Option<String> = connection
+        .query_row(
+            "SELECT id FROM projects WHERE path = ?",
+            params![project_path],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取项目失败: {error}")))?;
+    if let Some(id) = existing {
+        connection
+            .execute(
+                "UPDATE projects SET updated_at = ? WHERE id = ?",
+                params![now, id],
+            )
+            .map_err(|error| ApiError::internal(format!("更新项目失败: {error}")))?;
+        write_state_value(connection, "activeProjectId", &id)?;
+        return Ok(id);
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let name = Path::new(project_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(project_path);
+    connection
+        .execute(
+            r#"
+            INSERT INTO projects (id, path, name, custom_name, created_at, updated_at)
+            VALUES (?, ?, ?, 0, ?, ?)
+            "#,
+            params![id, project_path, name, now, now],
+        )
+        .map_err(|error| ApiError::internal(format!("创建项目失败: {error}")))?;
+    write_state_value(connection, "activeProjectId", &id)?;
+    Ok(id)
+}
+
+fn ensure_project_exists(connection: &Connection, project_id: &str) -> ApiResult<()> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM projects WHERE id = ?",
+            params![project_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取项目失败: {error}")))?
+        .is_some();
+    exists
+        .then_some(())
+        .ok_or_else(|| ApiError::bad_request("项目不存在"))
+}
+
+fn ensure_thread_exists(connection: &Connection, thread_id: &str) -> ApiResult<()> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM threads WHERE id = ?",
+            params![thread_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取聊天失败: {error}")))?
+        .is_some();
+    exists
+        .then_some(())
+        .ok_or_else(|| ApiError::not_found("聊天不存在"))
+}
+
+fn create_thread_row(
+    connection: &Connection,
+    project_id: &str,
+    title: Option<&str>,
+) -> ApiResult<String> {
+    let project_path: String = connection
+        .query_row(
+            "SELECT path FROM projects WHERE id = ?",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取项目失败: {error}")))?
+        .ok_or_else(|| ApiError::bad_request("项目不存在"))?;
+    let now = current_timestamp();
+    let id = uuid::Uuid::new_v4().to_string();
+    let thread_title = title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("新建聊天");
+    connection
+        .execute(
+            r#"
+            INSERT INTO threads (
+              id, project_id, provider, title, custom_title, session_id, transcript_path,
+              working_directory, model, permission_mode, imported, created_at, updated_at
+            )
+            VALUES (?, ?, 'claude-code', ?, 0, NULL, NULL, ?, NULL, NULL, 0, ?, ?)
+            "#,
+            params![id, project_id, thread_title, project_path, now, now],
+        )
+        .map_err(|error| ApiError::internal(format!("创建聊天失败: {error}")))?;
+    connection
+        .execute(
+            "UPDATE projects SET updated_at = ? WHERE id = ?",
+            params![now, project_id],
+        )
+        .map_err(|error| ApiError::internal(format!("更新项目失败: {error}")))?;
+    write_state_value(connection, "activeProjectId", project_id)?;
+    write_state_value(connection, "activeThreadId", &id)?;
+    Ok(id)
+}
+
+fn read_thread_summary(connection: &Connection, thread_id: &str) -> ApiResult<Value> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT id, project_id, provider, title, session_id, transcript_path, working_directory, model, permission_mode, imported, updated_at, pinned_at
+            FROM threads
+            WHERE id = ?
+            "#,
+        )
+        .map_err(|error| ApiError::internal(format!("读取聊天失败: {error}")))?;
+    let thread = statement
+        .query_row(params![thread_id], |row| {
+            Ok(ThreadRow {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                provider: row.get(2)?,
+                title: row.get(3)?,
+                session_id: row.get(4)?,
+                transcript_path: row.get(5)?,
+                working_directory: row.get(6)?,
+                model: row.get(7)?,
+                permission_mode: row.get(8)?,
+                imported: row.get::<_, i64>(9)? != 0,
+                updated_at: row.get(10)?,
+                pinned_at: row.get(11)?,
+            })
+        })
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取聊天失败: {error}")))?
+        .ok_or_else(|| ApiError::not_found("聊天不存在"))?;
+    Ok(thread_summary_json(&thread))
+}
+
+fn remove_project_row(connection: &mut Connection, project_id: &str) -> ApiResult<()> {
+    ensure_project_exists(connection, project_id)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| ApiError::internal(format!("删除项目失败: {error}")))?;
+    transaction
+        .execute(
+            "DELETE FROM tool_calls WHERE thread_id IN (SELECT id FROM threads WHERE project_id = ?)",
+            params![project_id],
+        )
+        .map_err(|error| ApiError::internal(format!("删除项目工具记录失败: {error}")))?;
+    transaction
+        .execute(
+            "DELETE FROM messages WHERE thread_id IN (SELECT id FROM threads WHERE project_id = ?)",
+            params![project_id],
+        )
+        .map_err(|error| ApiError::internal(format!("删除项目历史失败: {error}")))?;
+    transaction
+        .execute(
+            "DELETE FROM threads WHERE project_id = ?",
+            params![project_id],
+        )
+        .map_err(|error| ApiError::internal(format!("删除项目聊天失败: {error}")))?;
+    transaction
+        .execute("DELETE FROM projects WHERE id = ?", params![project_id])
+        .map_err(|error| ApiError::internal(format!("删除项目失败: {error}")))?;
+    transaction
+        .execute(
+            "DELETE FROM app_state WHERE key = 'activeProjectId' AND value = ?",
+            params![project_id],
+        )
+        .map_err(|error| ApiError::internal(format!("清理项目选择失败: {error}")))?;
+    transaction
+        .commit()
+        .map_err(|error| ApiError::internal(format!("提交项目删除失败: {error}")))
+}
+
+fn remove_thread_row(connection: &mut Connection, thread_id: &str) -> ApiResult<()> {
+    let project_id: String = connection
+        .query_row(
+            "SELECT project_id FROM threads WHERE id = ?",
+            params![thread_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取聊天失败: {error}")))?
+        .ok_or_else(|| ApiError::bad_request("聊天不存在"))?;
+    let now = current_timestamp();
+    let transaction = connection
+        .transaction()
+        .map_err(|error| ApiError::internal(format!("删除聊天失败: {error}")))?;
+    transaction
+        .execute(
+            "DELETE FROM tool_calls WHERE thread_id = ?",
+            params![thread_id],
+        )
+        .map_err(|error| ApiError::internal(format!("删除工具记录失败: {error}")))?;
+    transaction
+        .execute(
+            "DELETE FROM messages WHERE thread_id = ?",
+            params![thread_id],
+        )
+        .map_err(|error| ApiError::internal(format!("删除聊天历史失败: {error}")))?;
+    transaction
+        .execute("DELETE FROM threads WHERE id = ?", params![thread_id])
+        .map_err(|error| ApiError::internal(format!("删除聊天失败: {error}")))?;
+    transaction
+        .execute(
+            "UPDATE projects SET updated_at = ? WHERE id = ?",
+            params![now, project_id],
+        )
+        .map_err(|error| ApiError::internal(format!("更新项目失败: {error}")))?;
+    transaction
+        .execute(
+            "DELETE FROM app_state WHERE key = 'activeThreadId' AND value = ?",
+            params![thread_id],
+        )
+        .map_err(|error| ApiError::internal(format!("清理聊天选择失败: {error}")))?;
+    transaction
+        .commit()
+        .map_err(|error| ApiError::internal(format!("提交聊天删除失败: {error}")))
+}
+
+fn read_thread_detail(connection: &Connection, thread_id: &str) -> ApiResult<ThreadDetailRow> {
+    connection
+        .query_row(
+            r#"
+            SELECT project_id, session_id, transcript_path, working_directory, model, permission_mode
+            FROM threads
+            WHERE id = ?
+            "#,
+            params![thread_id],
+            |row| {
+                Ok(ThreadDetailRow {
+                    project_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    transcript_path: row.get(2)?,
+                    working_directory: row.get(3)?,
+                    model: row.get(4)?,
+                    permission_mode: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取聊天失败: {error}")))?
+        .ok_or_else(|| ApiError::not_found("聊天不存在"))
+}
+
+fn update_thread_metadata_from_payload(
+    connection: &Connection,
+    thread_id: &str,
+    payload: &Value,
+) -> ApiResult<()> {
+    let thread = read_thread_detail(connection, thread_id)?;
+    let has_session_id = payload.get("sessionId").is_some();
+    let has_model = payload.get("model").is_some();
+    let has_working_directory = payload.get("workingDirectory").is_some();
+    let has_permission_mode = payload.get("permissionMode").is_some();
+    if !(has_session_id || has_model || has_working_directory || has_permission_mode) {
+        return Ok(());
+    }
+
+    let session_id = if has_session_id {
+        payload
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    } else {
+        thread.session_id
+    };
+    let working_directory = if has_working_directory {
+        payload
+            .get("workingDirectory")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or(thread.working_directory)
+    } else {
+        thread.working_directory
+    };
+    let transcript_path = if let Some(session_id) = session_id.as_deref() {
+        Some(resolve_claude_transcript_path(
+            &working_directory,
+            session_id,
+        ))
+    } else if has_session_id {
+        None
+    } else {
+        thread.transcript_path
+    };
+    let model = if has_model {
+        payload
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    } else {
+        thread.model
+    };
+    let permission_mode = if has_permission_mode {
+        payload
+            .get("permissionMode")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .or(thread.permission_mode)
+    } else {
+        thread.permission_mode
+    };
+    let now = current_timestamp();
+    connection
+        .execute(
+            r#"
+            UPDATE threads
+            SET session_id = ?,
+                transcript_path = ?,
+                working_directory = ?,
+                model = ?,
+                permission_mode = ?,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+            params![
+                session_id,
+                transcript_path,
+                working_directory,
+                model,
+                permission_mode,
+                now,
+                thread_id
+            ],
+        )
+        .map_err(|error| ApiError::internal(format!("更新聊天元数据失败: {error}")))?;
+    connection
+        .execute(
+            "UPDATE projects SET updated_at = ? WHERE id = ?",
+            params![now, thread.project_id],
+        )
+        .map_err(|error| ApiError::internal(format!("更新项目失败: {error}")))?;
+    Ok(())
+}
+
+fn resolve_claude_transcript_path(working_directory: &str, session_id: &str) -> String {
+    let root = home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".claude")
+        .join("projects")
+        .join(sanitize_project_path(working_directory));
+    root.join(format!("{session_id}.jsonl"))
+        .display()
+        .to_string()
+}
+
+fn sanitize_project_path(project_path: &str) -> String {
+    let absolute_path = if Path::new(project_path).is_absolute() {
+        PathBuf::from(project_path)
+    } else {
+        env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(project_path)
+    };
+    absolute_path
+        .display()
+        .to_string()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect()
+}
+
+fn read_stored_thread_history(connection: &Connection, thread_id: &str) -> ApiResult<Vec<Value>> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT turn_id, turn_sort, item_sort, role, content, status, activity, metrics, session_id,
+                   phase, started_at_ms, duration_ms, input_tokens, output_tokens,
+                   cache_creation_input_tokens, cache_read_input_tokens, context_usage_json,
+                   total_cost_usd, pending_approval_requests_json, user_attachments_json,
+                   user_content_blocks_json
+            FROM messages
+            WHERE thread_id = ?
+            ORDER BY turn_sort ASC, item_sort ASC, CASE role WHEN 'user' THEN 0 ELSE 1 END ASC
+            "#,
+        )
+        .map_err(|error| ApiError::internal(format!("读取聊天历史失败: {error}")))?;
+    let message_rows = collect_rows(
+        statement
+            .query_map(params![thread_id], |row| {
+                Ok(MessageRow {
+                    turn_id: row.get(0)?,
+                    turn_sort: row.get(1)?,
+                    item_sort: row.get(2)?,
+                    role: row.get(3)?,
+                    content: row.get(4)?,
+                    status: row.get(5)?,
+                    activity: row.get(6)?,
+                    metrics: row.get(7)?,
+                    session_id: row.get(8)?,
+                    phase: row.get(9)?,
+                    started_at_ms: row.get(10)?,
+                    duration_ms: row.get(11)?,
+                    input_tokens: row.get(12)?,
+                    output_tokens: row.get(13)?,
+                    cache_creation_input_tokens: row.get(14)?,
+                    cache_read_input_tokens: row.get(15)?,
+                    context_usage_json: row.get(16)?,
+                    total_cost_usd: row.get(17)?,
+                    pending_approval_requests_json: row.get(18)?,
+                    user_attachments_json: row.get(19)?,
+                    user_content_blocks_json: row.get(20)?,
+                })
+            })
+            .map_err(|error| ApiError::internal(format!("读取聊天历史失败: {error}")))?,
+        "读取聊天历史失败",
+    )?;
+
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT turn_id, turn_sort, item_sort, tool_id, name, title, status, tool_use_id,
+                   parent_tool_use_id, is_sidechain, input_text, result_text, is_error,
+                   subtools_json, sub_messages_json
+            FROM tool_calls
+            WHERE thread_id = ?
+            ORDER BY turn_sort ASC, item_sort ASC, tool_sort ASC
+            "#,
+        )
+        .map_err(|error| ApiError::internal(format!("读取工具调用失败: {error}")))?;
+    let tool_rows = collect_rows(
+        statement
+            .query_map(params![thread_id], |row| {
+                Ok(ToolCallRow {
+                    turn_id: row.get(0)?,
+                    turn_sort: row.get(1)?,
+                    item_sort: row.get(2)?,
+                    tool_id: row.get(3)?,
+                    name: row.get(4)?,
+                    title: row.get(5)?,
+                    status: row.get(6)?,
+                    tool_use_id: row.get(7)?,
+                    parent_tool_use_id: row.get(8)?,
+                    is_sidechain: row.get::<_, i64>(9)? != 0,
+                    input_text: row.get(10)?,
+                    result_text: row.get(11)?,
+                    is_error: row.get::<_, i64>(12)? != 0,
+                    subtools_json: row.get(13)?,
+                    sub_messages_json: row.get(14)?,
+                })
+            })
+            .map_err(|error| ApiError::internal(format!("读取工具调用失败: {error}")))?,
+        "读取工具调用失败",
+    )?;
+
+    use std::collections::BTreeMap;
+    let mut turns: BTreeMap<String, Value> = BTreeMap::new();
+    let mut sort_keys: BTreeMap<String, i64> = BTreeMap::new();
+    let mut item_buckets: BTreeMap<String, Vec<(i64, Value)>> = BTreeMap::new();
+
+    for row in message_rows {
+        let turn = turns
+            .entry(row.turn_id.clone())
+            .or_insert_with(|| default_turn_json(&row.turn_id));
+        sort_keys
+            .entry(row.turn_id.clone())
+            .and_modify(|value| *value = (*value).min(row.turn_sort))
+            .or_insert(row.turn_sort);
+        apply_message_row_to_turn(turn, &row);
+        if row.role == "system-command" {
+            if let Some(item) = parse_json_value(row.content.as_str()) {
+                item_buckets
+                    .entry(row.turn_id)
+                    .or_default()
+                    .push((row.item_sort, item));
+            }
+        } else if row.role == "assistant" && !row.content.trim().is_empty() {
+            item_buckets.entry(row.turn_id).or_default().push((
+                row.item_sort,
+                json!({
+                    "id": uuid::Uuid::new_v4().to_string(),
+                    "type": "text",
+                    "text": row.content,
+                }),
+            ));
+        }
+    }
+
+    for row in tool_rows {
+        let turn = turns
+            .entry(row.turn_id.clone())
+            .or_insert_with(|| default_turn_json(&row.turn_id));
+        sort_keys
+            .entry(row.turn_id.clone())
+            .and_modify(|value| *value = (*value).min(row.turn_sort))
+            .or_insert(row.turn_sort);
+        let tool = tool_row_json(&row);
+        if let Some(tools) = turn.get_mut("tools").and_then(Value::as_array_mut) {
+            tools.push(tool.clone());
+        }
+        item_buckets.entry(row.turn_id).or_default().push((
+            row.item_sort,
+            json!({
+                "id": row.tool_id,
+                "type": "tool",
+                "tool": tool,
+            }),
+        ));
+    }
+
+    let mut ordered: Vec<(i64, Value)> = turns
+        .into_iter()
+        .map(|(turn_id, mut turn)| {
+            let mut items = item_buckets.remove(&turn_id).unwrap_or_default();
+            items.sort_by_key(|(sort, _)| *sort);
+            turn["items"] = Value::Array(items.into_iter().map(|(_, item)| item).collect());
+            (*sort_keys.get(&turn_id).unwrap_or(&0), turn)
+        })
+        .collect();
+    ordered.sort_by_key(|(sort, _)| *sort);
+    Ok(ordered.into_iter().map(|(_, turn)| turn).collect())
+}
+
+fn default_turn_json(turn_id: &str) -> Value {
+    json!({
+        "id": turn_id,
+        "userText": "",
+        "assistantText": "",
+        "status": "done",
+        "items": [],
+        "tools": [],
+    })
+}
+
+fn apply_message_row_to_turn(turn: &mut Value, row: &MessageRow) {
+    set_json_string(turn, "status", normalize_status(row.status.as_deref()));
+    set_json_optional_string(turn, "activity", row.activity.as_deref());
+    set_json_optional_string(turn, "metrics", row.metrics.as_deref());
+    set_json_optional_string(turn, "sessionId", row.session_id.as_deref());
+    set_json_optional_string(turn, "phase", row.phase.as_deref());
+    set_json_optional_number(turn, "startedAtMs", row.started_at_ms);
+    set_json_optional_number(turn, "durationMs", row.duration_ms);
+    set_json_optional_number(turn, "inputTokens", row.input_tokens);
+    set_json_optional_number(turn, "outputTokens", row.output_tokens);
+    set_json_optional_number(
+        turn,
+        "cacheCreationInputTokens",
+        row.cache_creation_input_tokens,
+    );
+    set_json_optional_number(turn, "cacheReadInputTokens", row.cache_read_input_tokens);
+    set_json_optional_float(turn, "totalCostUsd", row.total_cost_usd);
+    set_json_optional_value(turn, "contextUsage", row.context_usage_json.as_deref());
+    set_json_optional_value(
+        turn,
+        "pendingApprovalRequests",
+        row.pending_approval_requests_json.as_deref(),
+    );
+    if row.role == "user" {
+        turn["userText"] = Value::String(row.content.clone());
+        set_json_optional_value(
+            turn,
+            "userAttachments",
+            row.user_attachments_json.as_deref(),
+        );
+        set_json_optional_value(
+            turn,
+            "userContentBlocks",
+            row.user_content_blocks_json.as_deref(),
+        );
+    } else if row.role == "assistant" {
+        let assistant_text = turn
+            .get("assistantText")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        turn["assistantText"] = Value::String(format!("{assistant_text}{}", row.content));
+    }
+}
+
+fn write_thread_history(
+    connection: &mut Connection,
+    thread_id: &str,
+    turns: &[Value],
+) -> ApiResult<()> {
+    let thread = read_thread_detail(connection, thread_id)?;
+    let now = current_timestamp();
+    let transaction = connection
+        .transaction()
+        .map_err(|error| ApiError::internal(format!("保存聊天历史失败: {error}")))?;
+    transaction
+        .execute(
+            "DELETE FROM tool_calls WHERE thread_id = ?",
+            params![thread_id],
+        )
+        .map_err(|error| ApiError::internal(format!("清理工具记录失败: {error}")))?;
+    transaction
+        .execute(
+            "DELETE FROM messages WHERE thread_id = ?",
+            params![thread_id],
+        )
+        .map_err(|error| ApiError::internal(format!("清理聊天历史失败: {error}")))?;
+
+    for (turn_index, turn) in turns.iter().enumerate() {
+        let turn_id = turn
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let created_at = turn
+            .get("startedAtMs")
+            .and_then(Value::as_i64)
+            .and_then(timestamp_ms_to_iso)
+            .unwrap_or_else(current_timestamp);
+        insert_message_row(
+            &transaction,
+            thread_id,
+            &turn_id,
+            turn_index as i64,
+            0,
+            "user",
+            turn.get("userText")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            turn,
+            &created_at,
+            true,
+        )?;
+
+        let mut next_tool_sort = 0_i64;
+        let items = turn.get("items").and_then(Value::as_array).cloned();
+        let assistant_text = turn
+            .get("assistantText")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let fallback_items = if items.as_ref().is_some_and(|items| !items.is_empty()) {
+            Vec::new()
+        } else if assistant_text.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![json!({
+                "id": uuid::Uuid::new_v4().to_string(),
+                "type": "text",
+                "text": assistant_text,
+            })]
+        };
+        for (item_index, item) in items.unwrap_or(fallback_items).iter().enumerate() {
+            match item.get("type").and_then(Value::as_str) {
+                Some("text") | Some("thinking") => {
+                    insert_message_row(
+                        &transaction,
+                        thread_id,
+                        &turn_id,
+                        turn_index as i64,
+                        item_index as i64,
+                        "assistant",
+                        item.get("text").and_then(Value::as_str).unwrap_or_default(),
+                        turn,
+                        &created_at,
+                        false,
+                    )?;
+                }
+                Some("system-command") => {
+                    insert_message_row(
+                        &transaction,
+                        thread_id,
+                        &turn_id,
+                        turn_index as i64,
+                        item_index as i64,
+                        "system-command",
+                        &serde_json::to_string(item).unwrap_or_default(),
+                        turn,
+                        &created_at,
+                        false,
+                    )?;
+                }
+                Some("tool") => {
+                    if let Some(tool) = item.get("tool") {
+                        insert_tool_row(
+                            &transaction,
+                            thread_id,
+                            &turn_id,
+                            turn_index as i64,
+                            item_index as i64,
+                            next_tool_sort,
+                            tool,
+                        )?;
+                        next_tool_sort += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    transaction
+        .execute(
+            "UPDATE threads SET updated_at = ? WHERE id = ?",
+            params![now, thread_id],
+        )
+        .map_err(|error| ApiError::internal(format!("更新聊天时间失败: {error}")))?;
+    transaction
+        .execute(
+            "UPDATE projects SET updated_at = ? WHERE id = ?",
+            params![now, thread.project_id],
+        )
+        .map_err(|error| ApiError::internal(format!("更新项目时间失败: {error}")))?;
+    transaction
+        .commit()
+        .map_err(|error| ApiError::internal(format!("提交聊天历史失败: {error}")))
+}
+
+fn insert_message_row(
+    transaction: &rusqlite::Transaction<'_>,
+    thread_id: &str,
+    turn_id: &str,
+    turn_sort: i64,
+    item_sort: i64,
+    role: &str,
+    content: &str,
+    turn: &Value,
+    created_at: &str,
+    include_user_payload: bool,
+) -> ApiResult<()> {
+    transaction
+        .execute(
+            r#"
+            INSERT INTO messages (
+              id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics,
+              session_id, phase, started_at_ms, duration_ms, input_tokens, output_tokens,
+              cache_creation_input_tokens, cache_read_input_tokens, context_usage_json, total_cost_usd,
+              pending_approval_requests_json, user_attachments_json, user_content_blocks_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                thread_id,
+                turn_id,
+                turn_sort,
+                item_sort,
+                role,
+                content,
+                turn.get("status")
+                    .and_then(Value::as_str)
+                    .map(|status| normalize_status(Some(status)))
+                    .unwrap_or("done"),
+                turn.get("activity").and_then(Value::as_str),
+                turn.get("metrics").and_then(Value::as_str),
+                turn.get("sessionId").and_then(Value::as_str),
+                turn.get("phase").and_then(Value::as_str),
+                turn.get("startedAtMs").and_then(Value::as_i64),
+                turn.get("durationMs").and_then(Value::as_i64),
+                turn.get("inputTokens").and_then(Value::as_i64),
+                turn.get("outputTokens").and_then(Value::as_i64),
+                turn.get("cacheCreationInputTokens").and_then(Value::as_i64),
+                turn.get("cacheReadInputTokens").and_then(Value::as_i64),
+                serialize_optional_json(turn.get("contextUsage")),
+                turn.get("totalCostUsd").and_then(Value::as_f64),
+                serialize_optional_json(turn.get("pendingApprovalRequests")),
+                if include_user_payload {
+                    serialize_optional_json(turn.get("userAttachments"))
+                } else {
+                    None
+                },
+                if include_user_payload {
+                    serialize_optional_json(turn.get("userContentBlocks"))
+                } else {
+                    None
+                },
+                created_at,
+            ],
+        )
+        .map(|_| ())
+        .map_err(|error| ApiError::internal(format!("写入聊天历史失败: {error}")))
+}
+
+fn insert_tool_row(
+    transaction: &rusqlite::Transaction<'_>,
+    thread_id: &str,
+    turn_id: &str,
+    turn_sort: i64,
+    item_sort: i64,
+    tool_sort: i64,
+    tool: &Value,
+) -> ApiResult<()> {
+    let tool_id = tool
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "tool");
+    transaction
+        .execute(
+            r#"
+            INSERT INTO tool_calls (
+              id, thread_id, turn_id, turn_sort, item_sort, tool_sort, tool_id, name, title, status,
+              tool_use_id, parent_tool_use_id, is_sidechain, input_text, result_text, is_error,
+              subtools_json, sub_messages_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                thread_id,
+                turn_id,
+                turn_sort,
+                item_sort,
+                tool_sort,
+                tool_id,
+                tool.get("name").and_then(Value::as_str).unwrap_or("tool"),
+                tool.get("title").and_then(Value::as_str).unwrap_or("tool"),
+                normalize_status(tool.get("status").and_then(Value::as_str)),
+                tool.get("toolUseId").and_then(Value::as_str),
+                tool.get("parentToolUseId").and_then(Value::as_str),
+                if tool
+                    .get("isSidechain")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    1
+                } else {
+                    0
+                },
+                tool.get("inputText").and_then(Value::as_str),
+                tool.get("resultText").and_then(Value::as_str),
+                if tool
+                    .get("isError")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    1
+                } else {
+                    0
+                },
+                serialize_optional_json(tool.get("subtools")),
+                serialize_optional_json(tool.get("subMessages")),
+            ],
+        )
+        .map(|_| ())
+        .map_err(|error| ApiError::internal(format!("写入工具调用失败: {error}")))
+}
+
+fn tool_row_json(row: &ToolCallRow) -> Value {
+    let mut tool = json!({
+        "id": row.tool_id,
+        "name": row.name,
+        "title": row.title,
+        "status": normalize_status(Some(row.status.as_str())),
+        "isSidechain": row.is_sidechain,
+        "isError": row.is_error,
+    });
+    set_json_optional_string(&mut tool, "toolUseId", row.tool_use_id.as_deref());
+    set_json_optional_string(
+        &mut tool,
+        "parentToolUseId",
+        row.parent_tool_use_id.as_deref(),
+    );
+    set_json_optional_string(&mut tool, "inputText", row.input_text.as_deref());
+    set_json_optional_string(&mut tool, "resultText", row.result_text.as_deref());
+    set_json_optional_value(&mut tool, "subtools", row.subtools_json.as_deref());
+    set_json_optional_value(&mut tool, "subMessages", row.sub_messages_json.as_deref());
+    tool
+}
+
+fn normalize_status(value: Option<&str>) -> &'static str {
+    match value {
+        Some("pending") => "pending",
+        Some("running") => "running",
+        Some("error") => "error",
+        Some("stopped") => "stopped",
+        _ => "done",
+    }
+}
+
+fn serialize_optional_json(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    if value.is_null() {
+        return None;
+    }
+    if value.as_array().is_some_and(|items| items.is_empty()) {
+        return None;
+    }
+    if value.as_object().is_some_and(|items| items.is_empty()) {
+        return None;
+    }
+    serde_json::to_string(value).ok()
+}
+
+fn parse_json_value(value: &str) -> Option<Value> {
+    serde_json::from_str(value).ok()
+}
+
+fn set_json_string(target: &mut Value, key: &str, value: &str) {
+    target[key] = Value::String(value.to_string());
+}
+
+fn set_json_optional_string(target: &mut Value, key: &str, value: Option<&str>) {
+    if let Some(value) = value.filter(|item| !item.is_empty()) {
+        target[key] = Value::String(value.to_string());
+    }
+}
+
+fn set_json_optional_number(target: &mut Value, key: &str, value: Option<i64>) {
+    if let Some(value) = value {
+        target[key] = json!(value);
+    }
+}
+
+fn set_json_optional_float(target: &mut Value, key: &str, value: Option<f64>) {
+    if let Some(value) = value {
+        target[key] = json!(value);
+    }
+}
+
+fn set_json_optional_value(target: &mut Value, key: &str, value: Option<&str>) {
+    if let Some(value) = value.and_then(parse_json_value) {
+        target[key] = value;
+    }
+}
+
+fn timestamp_ms_to_iso(value: i64) -> Option<String> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(value)
+        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+}
+
+fn search_workspace_files(root: &str, query: &str) -> ApiResult<Vec<Value>> {
+    let normalized_query = query.replace('\\', "/").to_ascii_lowercase();
+    if normalized_query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let skip_directories = [
+        ".git",
+        "node_modules",
+        "target",
+        "dist",
+        ".next",
+        ".venv",
+        "venv",
+        ".codem-attachments",
+    ];
+    let mut results: Vec<(String, String, bool, usize)> = Vec::new();
+    let mut stack = vec![(PathBuf::from(root), 0_usize)];
+    let mut index = 0_usize;
+
+    while let Some((directory, depth)) = stack.pop() {
+        if depth >= 4 || results.len() >= 500 {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if results.len() >= 500 {
+                break;
+            }
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let is_directory = file_type.is_dir();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if is_directory && skip_directories.contains(&name.as_str()) {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(root)
+                .ok()
+                .map(|value| value.display().to_string().replace('\\', "/"))
+                .unwrap_or_else(|| name.clone());
+            if rel.to_ascii_lowercase().contains(&normalized_query) {
+                results.push((path.display().to_string(), rel, is_directory, index));
+                index += 1;
+            }
+            if is_directory {
+                stack.push((path, depth + 1));
+            }
+        }
+    }
+
+    results.sort_by(|left, right| {
+        file_search_score(&left.1, &normalized_query)
+            .cmp(&file_search_score(&right.1, &normalized_query))
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| left.1.len().cmp(&right.1.len()))
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.3.cmp(&right.3))
+    });
+    Ok(results
+        .into_iter()
+        .take(80)
+        .map(|(path, rel, is_directory, _)| {
+            json!({
+                "path": path,
+                "rel": rel,
+                "isDirectory": is_directory,
+            })
+        })
+        .collect())
+}
+
+fn file_search_score(rel: &str, normalized_query: &str) -> u8 {
+    let normalized_rel = rel.replace('\\', "/").to_ascii_lowercase();
+    let segments: Vec<&str> = normalized_rel
+        .split('/')
+        .filter(|value| !value.is_empty())
+        .collect();
+    let basename = segments.last().copied().unwrap_or(normalized_rel.as_str());
+    if normalized_rel == normalized_query || basename == normalized_query {
+        return 0;
+    }
+    if basename.starts_with(normalized_query) {
+        return 1;
+    }
+    if normalized_rel.starts_with(normalized_query)
+        || segments.iter().any(|segment| *segment == normalized_query)
+    {
+        return 2;
+    }
+    if segments
+        .iter()
+        .any(|segment| segment.starts_with(normalized_query))
+    {
+        return 3;
+    }
+    if normalized_rel.contains(normalized_query) {
+        return 4;
+    }
+    5
+}
+
+fn resolve_workspace_relative_path(root: &str, raw_path: &str) -> Option<(String, String)> {
+    let stripped = raw_path.trim().trim_matches([' ', '\'', '"', '`']);
+    if stripped.is_empty() || Path::new(stripped).is_absolute() {
+        return None;
+    }
+    let slashed = stripped
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string();
+    if slashed == ".."
+        || slashed.starts_with("../")
+        || slashed.contains("/../")
+        || slashed.ends_with("/..")
+    {
+        return None;
+    }
+    let absolute = PathBuf::from(root).join(slashed.replace('/', std::path::MAIN_SEPARATOR_STR));
+    if !is_path_inside_root(&absolute.display().to_string(), root) {
+        return None;
+    }
+    let rel = absolute
+        .strip_prefix(root)
+        .ok()?
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    Some((absolute.display().to_string(), rel))
+}
+
+fn parse_image_data_url(data_url: &str, requested_mime_type: &str) -> ApiResult<ParsedImageData> {
+    let Some((metadata, encoded)) = data_url.split_once(',') else {
+        return Err(ApiError::bad_request("仅支持粘贴常见图片格式。"));
+    };
+    if !metadata.starts_with("data:image/") || !metadata.ends_with(";base64") {
+        return Err(ApiError::bad_request("仅支持粘贴常见图片格式。"));
+    }
+    let detected_mime_type = metadata
+        .trim_start_matches("data:")
+        .trim_end_matches(";base64");
+    let mime_type = if requested_mime_type.trim().is_empty() {
+        detected_mime_type
+    } else {
+        requested_mime_type.trim()
+    };
+    let extension = extension_from_image_mime_type(mime_type)?;
+    let bytes = general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| ApiError::bad_request("仅支持粘贴常见图片格式。"))?;
+    if bytes.is_empty() {
+        return Err(ApiError::bad_request("图片内容为空。"));
+    }
+    if bytes.len() > 10 * 1024 * 1024 {
+        return Err(ApiError::bad_request("图片过大，请控制在 10MB 以内。"));
+    }
+    Ok(ParsedImageData {
+        mime_type: mime_type.to_string(),
+        extension: extension.to_string(),
+        bytes,
+    })
+}
+
+fn extension_from_image_mime_type(mime_type: &str) -> ApiResult<&'static str> {
+    match mime_type {
+        "image/png" => Ok("png"),
+        "image/jpeg" => Ok("jpg"),
+        "image/webp" => Ok("webp"),
+        "image/gif" => Ok("gif"),
+        _ => Err(ApiError::bad_request(format!(
+            "暂不支持的图片格式：{mime_type}"
+        ))),
+    }
+}
+
+fn build_attachment_file_name(extension: &str) -> String {
+    let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S");
+    let suffix = uuid::Uuid::new_v4().to_string();
+    format!("pasted-{timestamp}-{}.{}", &suffix[..8], extension)
+}
+
+fn validate_desktop_file_path(file_path: &str) -> ApiResult<()> {
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() || trimmed.len() > 4096 {
+        return Err(ApiError::bad_request("path 不能为空"));
+    }
+    let normalized = trimmed.replace('\\', "/");
+    if normalized.contains("/../") || normalized.starts_with("../") || normalized.ends_with("/..") {
+        return Err(ApiError::bad_request("该路径不被允许。"));
+    }
+    let lower = normalized.to_ascii_lowercase();
+    for pattern in [
+        "/etc/passwd",
+        "/etc/shadow",
+        "/proc/",
+        "/sys/",
+        "/.ssh/",
+        "/.aws/",
+        "/.gnupg/",
+        "/.kube/",
+    ] {
+        if lower.contains(pattern) {
+            return Err(ApiError::bad_request("该路径不被允许。"));
+        }
+    }
+    if lower.contains("/.env.") || lower.ends_with("/.env") {
+        return Err(ApiError::bad_request("该路径不被允许。"));
+    }
+    Ok(())
+}
+
+fn is_supported_image_file_path(file_path: &str) -> bool {
+    matches!(
+        Path::new(file_path)
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .as_deref(),
+        Some("png" | "jpg" | "jpeg" | "webp" | "gif" | "svg" | "ico" | "bmp" | "avif")
+    )
+}
+
+fn image_mime_type_from_file_path(file_path: &str) -> &'static str {
+    match Path::new(file_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("bmp") => "image/bmp",
+        Some("avif") => "image/avif",
+        Some("svg") => "image/svg+xml",
+        Some("ico") => "image/x-icon",
+        _ => "application/octet-stream",
+    }
+}
+
+fn ensure_can_preview_workspace_file(state: &AppState, file_path: &str) -> ApiResult<()> {
+    let connection = open_initialized_workspace_database(state)?;
+    let mut statement = connection
+        .prepare("SELECT path FROM projects")
+        .map_err(|error| ApiError::internal(format!("读取项目列表失败: {error}")))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| ApiError::internal(format!("读取项目列表失败: {error}")))?;
+    let project_paths = collect_rows(rows, "读取项目列表失败")?;
+    if project_paths
+        .iter()
+        .any(|project_path| is_path_inside_root(file_path, project_path))
+    {
+        return Ok(());
+    }
+    Err(ApiError {
+        status: StatusCode::FORBIDDEN,
+        message: "无权访问该路径".to_string(),
+    })
+}
+
+fn is_path_inside_root(target_path: &str, root_path: &str) -> bool {
+    let target = normalize_path_for_compare(target_path);
+    let root = normalize_path_for_compare(root_path);
+    target == root || target.starts_with(&format!("{root}/"))
+}
+
+fn normalize_path_for_compare(path: &str) -> String {
+    PathBuf::from(path)
+        .display()
+        .to_string()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+}
+
+fn resolve_absolute_path(path: &str) -> ApiResult<String> {
+    let raw_path = PathBuf::from(path);
+    let absolute_path = if raw_path.is_absolute() {
+        raw_path
+    } else {
+        env::current_dir()
+            .map_err(|error| ApiError::internal(format!("读取当前目录失败: {error}")))?
+            .join(raw_path)
+    };
+    Ok(absolute_path.display().to_string())
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(*byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+fn run_directory_picker(initial_path: Option<&str>) -> ApiResult<Option<String>> {
+    #[cfg(target_os = "windows")]
+    {
+        let initial_path = initial_path
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(resolve_absolute_path)
+            .transpose()?
+            .unwrap_or_default();
+        let script = build_folder_picker_script(&initial_path);
+        let output = background_command("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-Sta",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+            ])
+            .arg(script)
+            .output()
+            .map_err(|error| ApiError::internal(format!("目录选择器启动失败: {error}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(ApiError::internal(if stderr.is_empty() {
+                "目录选择器执行失败".to_string()
+            } else {
+                stderr
+            }));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((!stdout.is_empty()).then_some(stdout))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = initial_path;
+        Err(ApiError::bad_request("当前平台暂不支持目录选择器"))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn build_folder_picker_script(initial_path: &str) -> String {
+    let escaped_path = powershell_escape(initial_path);
+    format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = '选择要添加的项目目录'
+$dialog.Filter = '文件夹|*.folder'
+$dialog.CheckFileExists = $false
+$dialog.CheckPathExists = $true
+$dialog.ValidateNames = $false
+$dialog.DereferenceLinks = $true
+$dialog.Multiselect = $false
+$dialog.FileName = '选择当前文件夹'
+if ('{escaped_path}') {{
+  $initialPath = '{escaped_path}'
+  if ([System.IO.File]::Exists($initialPath)) {{
+    $initialPath = [System.IO.Path]::GetDirectoryName($initialPath)
+  }}
+  if ([System.IO.Directory]::Exists($initialPath)) {{
+    $dialog.InitialDirectory = $initialPath
+  }}
+}}
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$owner.StartPosition = 'Manual'
+$owner.Size = New-Object System.Drawing.Size(1, 1)
+$owner.Location = New-Object System.Drawing.Point(-32000, -32000)
+$owner.ShowInTaskbar = $false
+$owner.Show()
+$owner.Activate()
+$result = $dialog.ShowDialog($owner)
+$owner.Close()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK -and $dialog.FileName) {{
+  $selectedPath = $dialog.FileName
+  if (-not [System.IO.Directory]::Exists($selectedPath)) {{
+    $selectedPath = [System.IO.Path]::GetDirectoryName($selectedPath)
+  }}
+  if ($selectedPath) {{
+    Write-Output $selectedPath
+  }}
+}}
+"#
+    )
+}
+
+fn open_path_with_system(path: &str) -> ApiResult<()> {
+    #[cfg(target_os = "windows")]
+    let status = background_command("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
+        .arg(format!(
+            "$ErrorActionPreference = 'Stop'; Start-Process -FilePath '{}'",
+            powershell_escape(path)
+        ))
+        .status();
+
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open").arg(path).status();
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let status = Command::new("xdg-open").arg(path).status();
+
+    status
+        .map_err(|error| ApiError::internal(format!("打开路径失败: {error}")))?
+        .success()
+        .then_some(())
+        .ok_or_else(|| ApiError::bad_request("打开路径失败"))
+}
+
+fn reveal_path_in_explorer(path: &str) -> ApiResult<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let status = background_command("powershell.exe")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
+            .arg(format!(
+                "$ErrorActionPreference = 'Stop'; Start-Process -FilePath 'explorer.exe' -ArgumentList @('/select,', '{}')",
+                powershell_escape(path)
+            ))
+            .status()
+            .map_err(|error| ApiError::internal(format!("在资源管理器中打开失败: {error}")))?;
+        return status
+            .success()
+            .then_some(())
+            .ok_or_else(|| ApiError::bad_request("在资源管理器中打开失败"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        open_path_with_system(path)
+    }
+}
+
+fn powershell_escape(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn read_project_path(state: &AppState, project_id: &str) -> ApiResult<String> {
+    let connection = open_initialized_workspace_database(state)?;
+    connection
+        .query_row(
+            "SELECT path FROM projects WHERE id = ?",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取项目失败: {error}")))?
+        .ok_or_else(|| ApiError::bad_request("项目不存在"))
+}
+
+fn project_git_summary_json(project_path: &str) -> Value {
+    let git_info = read_git_info(project_path, true);
+    json!({
+        "isGitRepo": git_info.is_git_repo,
+        "gitBranch": git_info.branch,
+        "gitDiff": git_info.diff,
+        "isGitWorktree": is_git_worktree(project_path),
+    })
+}
+
+fn run_git_command(
+    project_path: &str,
+    args: &[impl AsRef<str>],
+) -> ApiResult<(i32, String, String)> {
+    let output = background_command("git")
+        .args(args.iter().map(AsRef::as_ref))
+        .current_dir(project_path)
+        .output()
+        .map_err(|error| ApiError::internal(format!("执行 Git 失败: {error}")))?;
+    let status = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    Ok((status, stdout, stderr))
+}
+
+fn run_git_command_checked(project_path: &str, args: &[impl AsRef<str>]) -> ApiResult<String> {
+    let (status, stdout, stderr) = run_git_command(project_path, args)?;
+    if status == 0 {
+        return Ok(if stdout.trim().is_empty() {
+            stderr
+        } else {
+            stdout
+        });
+    }
+    Err(ApiError::bad_request(if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    }))
+}
+
+fn read_git_status_snapshot(project_path: &str) -> ApiResult<Value> {
+    ensure_git_repo(project_path)?;
+    let output = run_git_command_checked(project_path, &["status", "--porcelain=v1", "-b"])?;
+    let mut branch = None;
+    let mut upstream = None;
+    let mut remote = None;
+    let mut ahead = 0_i64;
+    let mut behind = 0_i64;
+    let mut files = Vec::new();
+    for line in output.lines() {
+        if let Some(header) = line.strip_prefix("## ") {
+            let parsed = parse_git_status_header(header);
+            branch = parsed.0;
+            upstream = parsed.1;
+            remote = parsed.2;
+            ahead = parsed.3;
+            behind = parsed.4;
+            continue;
+        }
+        if line.len() >= 3 {
+            files.push(parse_git_status_file(line));
+        }
+    }
+    let mut status = json!({
+        "branch": branch,
+        "ahead": ahead,
+        "behind": behind,
+        "files": files,
+    });
+    if let Some(object) = status.as_object_mut() {
+        if let Some(upstream) = upstream {
+            object.insert("upstream".to_string(), json!(upstream));
+        }
+        if let Some(remote) = remote {
+            object.insert("remote".to_string(), json!(remote));
+        }
+    }
+    Ok(status)
+}
+
+fn ensure_git_repo(project_path: &str) -> ApiResult<()> {
+    let (status, stdout, stderr) =
+        run_git_command(project_path, &["rev-parse", "--is-inside-work-tree"])?;
+    if status == 0 && stdout.trim() == "true" {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(if stderr.trim().is_empty() {
+            "不是 Git 仓库".to_string()
+        } else {
+            stderr
+        }))
+    }
+}
+
+fn parse_git_status_header(
+    header: &str,
+) -> (Option<String>, Option<String>, Option<String>, i64, i64) {
+    let mut parts = header.split("...");
+    let branch = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "HEAD")
+        .map(ToString::to_string);
+    let mut upstream = None;
+    let mut remote = None;
+    let mut ahead = 0_i64;
+    let mut behind = 0_i64;
+    if let Some(rest) = parts.next() {
+        let (name, meta) = rest.split_once(' ').unwrap_or((rest, ""));
+        let name = name.trim();
+        if !name.is_empty() {
+            upstream = Some(name.to_string());
+            remote = name.split('/').next().map(ToString::to_string);
+        }
+        if let Some(meta) = meta
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+        {
+            for part in meta.split(',') {
+                let trimmed = part.trim();
+                if let Some(value) = trimmed.strip_prefix("ahead ") {
+                    ahead = value.parse().unwrap_or(0);
+                }
+                if let Some(value) = trimmed.strip_prefix("behind ") {
+                    behind = value.parse().unwrap_or(0);
+                }
+            }
+        }
+    }
+    (branch, upstream, remote, ahead, behind)
+}
+
+fn parse_git_status_file(line: &str) -> Value {
+    let index_status = line.chars().next().unwrap_or(' ');
+    let worktree_status = line.chars().nth(1).unwrap_or(' ');
+    let raw_path = line.get(3..).unwrap_or_default();
+    let (path, original_path) = raw_path
+        .split_once(" -> ")
+        .map(|(from, to)| (to.to_string(), Some(from.to_string())))
+        .unwrap_or_else(|| (raw_path.to_string(), None));
+    let conflicted = matches!(
+        (index_status, worktree_status),
+        ('A', 'A') | ('D', 'D') | ('U', _) | (_, 'U')
+    );
+    let untracked = index_status == '?' && worktree_status == '?';
+    let mut file = json!({
+        "path": path,
+        "status": if conflicted { format!("{}{}", index_status, worktree_status) } else { git_status_label(index_status, worktree_status).to_string() },
+        "indexStatus": index_status.to_string(),
+        "worktreeStatus": worktree_status.to_string(),
+        "conflicted": conflicted,
+        "staged": !untracked && index_status != ' ',
+        "unstaged": !untracked && worktree_status != ' ',
+        "untracked": untracked,
+        "deleted": index_status == 'D' || worktree_status == 'D',
+    });
+    if let Some(object) = file.as_object_mut() {
+        if let Some(original_path) = original_path {
+            object.insert("originalPath".to_string(), json!(original_path));
+        }
+        if conflicted {
+            object.insert("conflictKind".to_string(), json!("unknown"));
+        }
+    }
+    file
+}
+
+fn git_status_label(index_status: char, worktree_status: char) -> &'static str {
+    if index_status == '?' && worktree_status == '?' {
+        return "未跟踪";
+    }
+    if index_status == 'A' || worktree_status == 'A' {
+        return "新增";
+    }
+    if index_status == 'D' || worktree_status == 'D' {
+        return "删除";
+    }
+    if index_status == 'R' || worktree_status == 'R' {
+        return "重命名";
+    }
+    if index_status == 'M' || worktree_status == 'M' {
+        return "修改";
+    }
+    "变更"
+}
+
+fn read_git_branches(project_path: &str) -> ApiResult<Vec<Value>> {
+    ensure_git_repo(project_path)?;
+    let output = run_git_command_checked(
+        project_path,
+        &[
+            "for-each-ref",
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+            "--format=%(refname)\t%(refname:short)\t%(upstream:short)\t%(HEAD)",
+        ],
+    )?;
+    Ok(output
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let full = parts.next()?;
+            let name = parts.next()?.to_string();
+            let upstream = parts
+                .next()
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string);
+            let current = parts.next().unwrap_or_default().trim() == "*";
+            let kind = if full.starts_with("refs/remotes/") {
+                "remote"
+            } else if full.starts_with("refs/tags/") {
+                "tag"
+            } else {
+                "local"
+            };
+            let remote_name = (kind == "remote")
+                .then(|| name.split('/').next().unwrap_or_default().to_string())
+                .filter(|value| !value.is_empty());
+            let local_name = if kind == "remote" && name.contains('/') {
+                Some(name.split('/').skip(1).collect::<Vec<_>>().join("/"))
+            } else {
+                Some(name.clone())
+            };
+            Some(json!({
+                "name": name,
+                "current": current,
+                "kind": kind,
+                "isRemote": kind == "remote",
+                "remoteName": remote_name,
+                "localName": local_name,
+                "upstream": upstream,
+            }))
+        })
+        .collect())
+}
+
+fn read_git_remotes(project_path: &str) -> ApiResult<Vec<String>> {
+    ensure_git_repo(project_path)?;
+    let output = run_git_command_checked(project_path, &["remote"])?;
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+fn read_git_history(
+    project_path: &str,
+    reference: Option<&str>,
+    limit: usize,
+) -> ApiResult<Vec<Value>> {
+    let reference = reference
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("HEAD");
+    read_git_history_range(project_path, reference, limit)
+}
+
+fn read_git_history_range(project_path: &str, range: &str, limit: usize) -> ApiResult<Vec<Value>> {
+    ensure_git_repo(project_path)?;
+    let format = "%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%ct%x1f%P%x1f%D";
+    let output = run_git_command_checked(
+        project_path,
+        &[
+            "log",
+            range,
+            &format!("--max-count={}", limit.clamp(1, 200)),
+            &format!("--format={format}"),
+        ],
+    )?;
+    Ok(output.lines().filter_map(parse_git_history_line).collect())
+}
+
+fn parse_git_history_line(line: &str) -> Option<Value> {
+    let parts: Vec<&str> = line.split('\x1f').collect();
+    if parts.len() < 8 {
+        return None;
+    }
+    let commit_time = parts[5].parse::<i64>().unwrap_or(0);
+    let parents: Vec<&str> = parts[6].split_whitespace().collect();
+    let refs: Vec<&str> = parts[7]
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect();
+    Some(json!({
+        "sha": parts[0],
+        "shortSha": parts[1],
+        "summary": parts[2],
+        "message": parts[2],
+        "author": parts[3],
+        "authorEmail": parts[4],
+        "commitTime": commit_time,
+        "parents": parents,
+        "refs": refs,
+        "graphText": "",
+        "graph": {
+            "lane": 0,
+            "colorIndex": 0,
+            "segmentsBefore": [
+                {
+                    "lane": 0,
+                    "colorIndex": 0,
+                    "kind": "vertical",
+                },
+            ],
+            "segmentsAfter": if parents.is_empty() {
+                json!([
+                    {
+                        "lane": 0,
+                        "fromLane": 0,
+                        "colorIndex": 0,
+                        "kind": "end",
+                    },
+                ])
+            } else {
+                json!([
+                    {
+                        "lane": 0,
+                        "fromLane": 0,
+                        "colorIndex": 0,
+                        "kind": "vertical",
+                    },
+                ])
+            },
+        },
+    }))
+}
+
+fn compact_git_history_commit(commit: Value) -> Value {
+    json!({
+        "sha": commit.get("sha").cloned().unwrap_or(Value::Null),
+        "shortSha": commit.get("shortSha").cloned().unwrap_or(Value::Null),
+        "author": commit.get("author").cloned().unwrap_or(Value::Null),
+        "commitTime": commit.get("commitTime").cloned().unwrap_or(Value::Null),
+        "summary": commit.get("summary").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn read_git_commit_details(project_path: &str, sha: &str) -> ApiResult<Value> {
+    let base = read_git_history_range(project_path, sha, 1)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| ApiError::bad_request("提交不存在"))?;
+    let message = run_git_command_checked(project_path, &["show", "-s", "--format=%B", sha])?;
+    let stat = run_git_command_checked(project_path, &["show", "--numstat", "--format=", sha])?;
+    let mut files = Vec::new();
+    let mut total_additions = 0_i64;
+    let mut total_deletions = 0_i64;
+    for line in stat.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let additions = parts[0].parse::<i64>().unwrap_or(0);
+        let deletions = parts[1].parse::<i64>().unwrap_or(0);
+        total_additions += additions;
+        total_deletions += deletions;
+        files.push(json!({
+            "path": parts[2],
+            "status": "M",
+            "additions": additions,
+            "deletions": deletions,
+            "binary": parts[0] == "-" || parts[1] == "-",
+        }));
+    }
+    let mut result = base;
+    result["message"] = json!(message.trim());
+    result["files"] = Value::Array(files);
+    result["totalAdditions"] = json!(total_additions);
+    result["totalDeletions"] = json!(total_deletions);
+    Ok(result)
+}
+
+fn read_git_commit_file(project_path: &str, sha: &str, file_path: &str) -> ApiResult<Value> {
+    let after = run_git_command(project_path, &["show", &format!("{sha}:{file_path}")])?.1;
+    let before = run_git_command(project_path, &["show", &format!("{sha}^:{file_path}")])
+        .map(|(_, stdout, _)| stdout)
+        .unwrap_or_default();
+    Ok(json!({
+        "sha": sha,
+        "path": file_path,
+        "status": "M",
+        "additions": 0,
+        "deletions": 0,
+        "binary": false,
+        "content": after,
+        "beforeContent": before,
+        "afterContent": after,
+    }))
+}
+
+fn read_git_file_diff(project_path: &str, file_path: &str) -> ApiResult<Value> {
+    let diff = run_git_command_checked(project_path, &["diff", "--", file_path])?;
+    let before = run_git_command(project_path, &["show", &format!("HEAD:{file_path}")])
+        .map(|(_, stdout, _)| stdout)
+        .unwrap_or_default();
+    let after_path = PathBuf::from(project_path).join(file_path);
+    let after = fs::read_to_string(after_path).unwrap_or_default();
+    Ok(json!({
+        "path": file_path,
+        "content": diff,
+        "beforeContent": before,
+        "afterContent": after,
+    }))
+}
+
+fn read_git_operation_state_value(project_path: &str) -> ApiResult<Value> {
+    let status = read_git_status_snapshot(project_path)?;
+    let files = status.get("files").cloned().unwrap_or_else(|| json!([]));
+    let conflicts = files
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|item| {
+            item.get("conflicted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .map(|item| {
+            let path = item.get("path").and_then(Value::as_str).unwrap_or("");
+            let status = item.get("status").and_then(Value::as_str).unwrap_or("");
+            json!({
+                "path": path,
+                "originalPath": item.get("originalPath").cloned().unwrap_or(Value::Null),
+                "status": status,
+                "conflictKind": classify_git_conflict_kind(status),
+                "label": git_conflict_label(status),
+            })
+        })
+        .collect::<Vec<_>>();
+    let operation = detect_git_operation(project_path)?;
+    let has_conflicts = !conflicts.is_empty();
+    let dirty = files.as_array().is_some_and(|items| !items.is_empty());
+    let status_text = if has_conflicts {
+        "conflicted"
+    } else if operation != "none" {
+        "in_progress"
+    } else if dirty {
+        "dirty"
+    } else {
+        "clean"
+    };
+    let mut state = json!({
+        "status": status_text,
+        "operation": operation,
+        "branch": status.get("branch"),
+        "ahead": status.get("ahead").cloned().unwrap_or_else(|| json!(0)),
+        "behind": status.get("behind").cloned().unwrap_or_else(|| json!(0)),
+        "hasConflicts": has_conflicts,
+        "canContinue": operation != "none" && !has_conflicts,
+        "canAbort": operation != "none",
+        "conflicts": conflicts,
+        "files": files,
+        "message": if has_conflicts {
+            "存在冲突文件"
+        } else if operation != "none" {
+            "Git 操作进行中"
+        } else if dirty {
+            "工作区有未提交改动"
+        } else {
+            "工作区干净"
+        },
+    });
+    if let Some(object) = state.as_object_mut() {
+        if let Some(upstream) = status.get("upstream") {
+            object.insert("upstream".to_string(), upstream.clone());
+        }
+        if let Some(remote) = status.get("remote") {
+            object.insert("remote".to_string(), remote.clone());
+        }
+    }
+    Ok(state)
+}
+
+fn read_git_conflict_file_detail(project_path: &str, file_path: &str) -> ApiResult<Value> {
+    ensure_git_repo(project_path)?;
+    let status = read_git_status_snapshot(project_path)?;
+    let file = status
+        .get("files")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.get("path").and_then(Value::as_str) == Some(file_path)
+                    && item
+                        .get("conflicted")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+            })
+        })
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "path": file_path,
+                "status": "UU",
+                "originalPath": null,
+            })
+        });
+    let status_text = file.get("status").and_then(Value::as_str).unwrap_or("UU");
+    let base_content = git_show_stage(project_path, "1", file_path).unwrap_or_default();
+    let current_content = git_show_stage(project_path, "2", file_path).unwrap_or_default();
+    let incoming_content = git_show_stage(project_path, "3", file_path).unwrap_or_default();
+    let result_content =
+        fs::read_to_string(resolve_project_relative_file_path(project_path, file_path)?)
+            .unwrap_or_default();
+    Ok(json!({
+        "path": file_path,
+        "originalPath": file.get("originalPath").cloned().unwrap_or(Value::Null),
+        "status": status_text,
+        "conflictKind": classify_git_conflict_kind(status_text),
+        "label": git_conflict_label(status_text),
+        "baseContent": base_content,
+        "currentContent": current_content,
+        "incomingContent": incoming_content,
+        "resultContent": result_content,
+        "isText": true,
+        "binary": false,
+    }))
+}
+
+fn git_show_stage(project_path: &str, stage: &str, file_path: &str) -> ApiResult<String> {
+    let spec = format!(":{stage}:{file_path}");
+    let (status, stdout, stderr) = run_git_command(project_path, &["show", &spec])?;
+    if status == 0 {
+        Ok(stdout)
+    } else {
+        Err(ApiError::bad_request(stderr))
+    }
+}
+
+fn detect_git_operation(project_path: &str) -> ApiResult<String> {
+    let git_path = |name: &str| -> ApiResult<PathBuf> {
+        let output = run_git_command_checked(project_path, &["rev-parse", "--git-path", name])?;
+        Ok(PathBuf::from(project_path).join(output.trim()))
+    };
+    if git_path("rebase-merge")?.exists() || git_path("rebase-apply")?.exists() {
+        return Ok("rebase".to_string());
+    }
+    if git_path("CHERRY_PICK_HEAD")?.exists() {
+        return Ok("cherry-pick".to_string());
+    }
+    if git_path("REVERT_HEAD")?.exists() {
+        return Ok("revert".to_string());
+    }
+    if git_path("MERGE_HEAD")?.exists() {
+        return Ok("merge".to_string());
+    }
+    Ok("none".to_string())
+}
+
+fn classify_git_conflict_kind(status: &str) -> &'static str {
+    match status {
+        "UU" => "both_modified",
+        "AA" => "both_added",
+        "DD" => "both_deleted",
+        "DU" => "deleted_by_us",
+        "UD" => "deleted_by_them",
+        "AU" => "added_by_us",
+        "UA" => "added_by_them",
+        _ => "unknown",
+    }
+}
+
+fn git_conflict_label(status: &str) -> &'static str {
+    match classify_git_conflict_kind(status) {
+        "both_modified" => "双方都修改",
+        "both_added" => "双方都新增",
+        "both_deleted" => "双方都删除",
+        "deleted_by_us" => "本地删除，对方修改",
+        "deleted_by_them" => "本地修改，对方删除",
+        "added_by_us" => "本地新增，对方修改",
+        "added_by_them" => "本地修改，对方新增",
+        _ => "未知冲突",
+    }
+}
+
+fn resolve_project_relative_file_path(project_path: &str, relative: &str) -> ApiResult<PathBuf> {
+    let root = fs::canonicalize(project_path)
+        .map_err(|error| ApiError::bad_request(format!("项目路径无效: {error}")))?;
+    let relative = relative.replace('\\', "/");
+    if relative.starts_with('/')
+        || relative == ".."
+        || relative.starts_with("../")
+        || relative.contains("/../")
+        || relative.ends_with("/..")
+    {
+        return Err(ApiError::bad_request("文件路径不能越过项目目录"));
+    }
+    Ok(root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR)))
+}
+
+fn read_git_worktrees_value(project_path: &str) -> ApiResult<Value> {
+    ensure_git_repo(project_path)?;
+    let current_root = run_git_command_checked(project_path, &["rev-parse", "--show-toplevel"])
+        .ok()
+        .map(|value| value.trim().to_string());
+    let output = run_git_command_checked(project_path, &["worktree", "list", "--porcelain"])?;
+    let mut worktrees = Vec::new();
+    let mut current = Map::new();
+    for line in output.lines() {
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                worktrees.push(git_worktree_record_to_value(project_path, &current));
+                current = Map::new();
+            }
+            continue;
+        }
+        if let Some((key, value)) = line.split_once(' ') {
+            current.insert(key.to_string(), json!(value));
+        } else {
+            current.insert(line.to_string(), json!(true));
+        }
+    }
+    if !current.is_empty() {
+        worktrees.push(git_worktree_record_to_value(project_path, &current));
+    }
+    Ok(json!({
+        "isRepo": true,
+        "currentRoot": current_root,
+        "worktrees": worktrees,
+    }))
+}
+
+fn git_worktree_record_to_value(current_project_path: &str, record: &Map<String, Value>) -> Value {
+    let path = record
+        .get("worktree")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let branch_ref = record.get("branch").and_then(Value::as_str);
+    let branch = branch_ref
+        .and_then(|value| value.strip_prefix("refs/heads/").or(Some(value)))
+        .map(ToString::to_string);
+    let exists = Path::new(path).exists();
+    let (changed_files, status_error) = if exists {
+        match run_git_command(path, &["status", "--porcelain=v1"]) {
+            Ok((0, stdout, _)) => (
+                Some(
+                    stdout
+                        .lines()
+                        .filter(|line| !line.trim().is_empty())
+                        .count(),
+                ),
+                None,
+            ),
+            Ok((_, stdout, stderr)) => (
+                None,
+                Some(if stderr.trim().is_empty() {
+                    stdout
+                } else {
+                    stderr
+                }),
+            ),
+            Err(error) => (None, Some(error.message)),
+        }
+    } else {
+        (None, None)
+    };
+    let current = fs::canonicalize(path).ok() == fs::canonicalize(current_project_path).ok();
+    json!({
+        "path": path,
+        "head": record.get("HEAD").and_then(Value::as_str),
+        "branch": branch,
+        "detached": branch_ref.is_none(),
+        "bare": record.get("bare").and_then(Value::as_bool).unwrap_or(false),
+        "locked": record.get("locked").and_then(Value::as_str),
+        "prunable": record.get("prunable").and_then(Value::as_str),
+        "main": worktree_is_main(record),
+        "current": current,
+        "exists": exists,
+        "changedFiles": changed_files,
+        "statusError": status_error,
+    })
+}
+
+fn worktree_is_main(record: &Map<String, Value>) -> bool {
+    record
+        .get("branch")
+        .and_then(Value::as_str)
+        .is_some_and(|branch| branch.ends_with("/main") || branch.ends_with("/master"))
+}
+
+fn find_project_id_by_path(
+    connection: &Connection,
+    project_path: &str,
+) -> ApiResult<Option<String>> {
+    connection
+        .query_row(
+            "SELECT id FROM projects WHERE path = ?",
+            params![project_path],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取项目失败: {error}")))
+}
+
+fn unique_json_strings(items: &[Value], key: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    for item in items {
+        if let Some(value) = item.get(key).and_then(Value::as_str) {
+            if !values.iter().any(|existing| existing == value) {
+                values.push(value.to_string());
+            }
+        }
+    }
+    values
+}
+
+fn read_string_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn required_json_string<'a>(payload: &'a Value, key: &str, message: &str) -> ApiResult<&'a str> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request(message))
+}
+
+fn claude_system_prompt_path() -> Option<PathBuf> {
+    home_dir().map(|home| home.join(".claude").join("CLAUDE.md"))
+}
+
+fn read_claude_global_prompt() -> Value {
+    let Some(path) = claude_system_prompt_path() else {
+        return json!({
+            "path": "",
+            "content": "",
+            "exists": false,
+            "length": 0,
+        });
+    };
+    match fs::metadata(&path).and_then(|metadata| {
+        let content = fs::read_to_string(&path)?;
+        Ok((metadata, content))
+    }) {
+        Ok((metadata, content)) => {
+            let mut result = Map::new();
+            result.insert("path".to_string(), json!(path.display().to_string()));
+            result.insert("content".to_string(), json!(content));
+            result.insert("exists".to_string(), json!(true));
+            if let Ok(modified) = metadata.modified() {
+                let updated_at: chrono::DateTime<chrono::Utc> = modified.into();
+                result.insert(
+                    "updatedAt".to_string(),
+                    json!(updated_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+                );
+            }
+            let length = result
+                .get("content")
+                .and_then(Value::as_str)
+                .map(|value| value.chars().count())
+                .unwrap_or(0);
+            result.insert("length".to_string(), json!(length));
+            Value::Object(result)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({
+            "path": path.display().to_string(),
+            "content": "",
+            "exists": false,
+            "length": 0,
+        }),
+        Err(_) => json!({
+            "path": path.display().to_string(),
+            "content": "",
+            "exists": false,
+            "length": 0,
+        }),
+    }
+}
+
+fn write_claude_system_prompt(content: &str) -> ApiResult<()> {
+    let path = claude_system_prompt_path()
+        .ok_or_else(|| ApiError::internal("无法定位 Claude 配置目录"))?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| ApiError::internal(format!("创建 Claude 配置目录失败: {error}")))?;
+    }
+    fs::write(path, content)
+        .map_err(|error| ApiError::internal(format!("保存 Claude system prompt 失败: {error}")))
+}
+
+fn discover_open_targets() -> Vec<Value> {
+    let mut targets = Vec::new();
+    for (id, label, kind, command) in [
+        ("vscode", "VS Code", "app", "code"),
+        ("visualstudio", "Visual Studio", "app", "devenv"),
+        ("cursor", "Cursor", "app", "cursor"),
+        ("antigravity", "Antigravity", "app", "antigravity"),
+        ("git-bash", "Git Bash", "git-bash", "git-bash.exe"),
+        ("wsl", "WSL", "wsl", "wsl.exe"),
+        ("idea", "IntelliJ IDEA", "app", "idea64.exe"),
+        ("rider", "Rider", "app", "rider64.exe"),
+        ("pycharm", "PyCharm", "app", "pycharm64.exe"),
+        ("webstorm", "WebStorm", "app", "webstorm64.exe"),
+    ] {
+        if command_exists(command) {
+            targets.push(json!({
+                "id": id,
+                "label": label,
+                "kind": kind,
+                "command": command,
+                "args": [],
+            }));
+        }
+    }
+    targets.push(json!({
+        "id": "explorer",
+        "label": "File Explorer",
+        "kind": "explorer",
+        "command": "explorer.exe",
+        "args": [],
+    }));
+    targets.push(json!({
+        "id": "terminal",
+        "label": "Terminal",
+        "kind": "terminal",
+        "command": "cmd.exe",
+        "args": [],
+    }));
+    targets
+}
+
+fn command_exists(command: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    let output = background_command("where.exe").arg(command).output();
+
+    #[cfg(not(target_os = "windows"))]
+    let output = background_command("which").arg(command).output();
+
+    output.is_ok_and(|output| output.status.success())
+}
+
+fn open_project_with_target(project_path: &str, target_id: &str) -> ApiResult<()> {
+    match target_id {
+        "explorer" => open_path_with_system(project_path),
+        "terminal" => open_terminal_at_path(project_path),
+        "cursor" if command_exists("cursor") => spawn_detached("cursor", &[project_path]),
+        "vscode" if command_exists("code") => spawn_detached("code", &[project_path]),
+        _ if command_exists("code") => spawn_detached("code", &[project_path]),
+        _ => open_path_with_system(project_path),
+    }
+}
+
+fn open_terminal_at_path(project_path: &str) -> ApiResult<()> {
+    #[cfg(target_os = "windows")]
+    {
+        spawn_detached(
+            "powershell.exe",
+            &[
+                "-NoExit",
+                "-Command",
+                &format!(
+                    "Set-Location -LiteralPath '{}'",
+                    powershell_escape(project_path)
+                ),
+            ],
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = project_path;
+        open_path_with_system(project_path)
+    }
+}
+
+fn spawn_detached(command: &str, args: &[&str]) -> ApiResult<()> {
+    Command::new(command)
+        .args(args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| ApiError::bad_request(format!("打开工具启动失败: {error}")))
+}
+
+async fn mcp_servers(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(list_mcp_servers_value(
+        query.get("projectPath").map(String::as_str),
+    )))
+}
+
+async fn mcp_configs(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let project_path = query.get("projectPath").map(String::as_str);
+    let snapshot = read_mcp_config_snapshot(project_path)?;
+    Ok(Json(json!({
+        "paths": snapshot.get("paths").cloned().unwrap_or_else(|| json!({})),
+        "configs": snapshot.get("configs").cloned().unwrap_or_else(|| json!({})),
+        "hasProject": project_path.is_some_and(|value| !value.trim().is_empty()),
+        "overview": list_mcp_servers_value(project_path),
+    })))
+}
+
+async fn update_mcp_config(
+    AxumPath(scope): AxumPath<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let project_path = query.get("projectPath").map(String::as_str);
+    let config = normalize_mcp_config(&payload);
+    match scope.as_str() {
+        "global" | "project" => {
+            let path = resolve_mcp_config_path(&scope, project_path)?;
+            write_json_file_pretty(&path, &config)?;
+            Ok(Json(config))
+        }
+        "claude-json-global" => {
+            write_claude_json_mcp_config("global", project_path, &config)?;
+            Ok(Json(config))
+        }
+        "claude-json-project" => {
+            write_claude_json_mcp_config("project", project_path, &config)?;
+            Ok(Json(config))
+        }
+        _ => Err(ApiError::bad_request("不支持的 MCP 配置作用域")),
+    }
+}
+
+async fn open_mcp_config(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
+    let scope = required_json_string(&payload, "scope", "scope 不能为空")?;
+    let project_path = payload.get("projectPath").and_then(Value::as_str);
+    let target = ensure_mcp_config_file(scope, project_path)?;
+    open_path_with_system(
+        target
+            .to_str()
+            .ok_or_else(|| ApiError::bad_request("MCP 配置路径无效"))?,
+    )?;
+    Ok(Json(json!({ "ok": true, "path": target })))
+}
+
+async fn skills_overview(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(list_codex_skills_value(
+        query.get("projectPath").map(String::as_str),
+    )))
+}
+
+async fn installed_plugins() -> ApiResult<Json<Value>> {
+    Ok(Json(list_installed_plugins_value()))
+}
+
+async fn plugin_marketplaces() -> ApiResult<Json<Value>> {
+    Ok(Json(list_plugin_marketplaces_value()))
+}
+
+async fn plugin_skills(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(list_claude_plugin_skills_value(
+        query.get("projectPath").map(String::as_str),
+    )))
+}
+
+async fn plugin_install_skill_from_path(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
+    let source = required_json_string(&payload, "path", "Skill 来源目录不能为空")?;
+    let source_path =
+        fs::canonicalize(source).map_err(|_| ApiError::bad_request("Skill 来源目录不存在"))?;
+    if !source_path.is_dir() {
+        return Err(ApiError::bad_request("Skill 来源目录不存在"));
+    }
+
+    let scope = payload
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("user");
+    let target_root = if scope == "project" {
+        let cwd = payload
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ApiError::bad_request("project scope 需要 cwd"))?;
+        PathBuf::from(cwd).join(".claude").join("skills")
+    } else {
+        home_dir()
+            .ok_or_else(|| ApiError::internal("无法定位用户目录"))?
+            .join(".claude")
+            .join("skills")
+    };
+    let overwrite = payload
+        .get("overwrite")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mut installed = Vec::new();
+    fs::create_dir_all(&target_root)
+        .map_err(|error| ApiError::internal(format!("创建 Skill 目录失败: {error}")))?;
+
+    for directory in collect_skill_source_directories(&source_path) {
+        let skill_file = directory.join("SKILL.md");
+        let parsed = parse_skill_markdown(&skill_file)?;
+        let name = sanitize_skill_directory_name(
+            parsed
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| {
+                    directory
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("skill")
+                }),
+        )?;
+        let target = target_root.join(&name);
+        if target.exists() {
+            if !overwrite {
+                return Err(ApiError::bad_request(format!("Skill 已存在：{name}")));
+            }
+            fs::remove_dir_all(&target)
+                .map_err(|error| ApiError::internal(format!("删除旧 Skill 失败: {error}")))?;
+        }
+        copy_directory_recursive(&directory, &target)?;
+        installed.push(json!({ "name": name, "path": target }));
+    }
+    Ok(Json(json!({ "installed": installed })))
+}
+
+async fn plugin_install_builtin_skill(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
+    let builtin_id = required_json_string(&payload, "id", "内置 Skill id 不能为空")?;
+    if builtin_id != "playwright-cli" {
+        return Err(ApiError::bad_request(format!(
+            "未知内置 Skill：{builtin_id}"
+        )));
+    }
+    let cwd = payload
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(home_dir)
+        .ok_or_else(|| ApiError::internal("无法定位安装目录"))?;
+    let command = if cfg!(target_os = "windows") {
+        "npx.cmd"
+    } else {
+        "npx"
+    };
+    let args = [
+        "--yes",
+        "--package",
+        "@playwright/cli@latest",
+        "playwright-cli",
+        "install",
+        "--skills",
+    ];
+    Ok(Json(run_external_command_value(
+        command,
+        &args,
+        Some(&cwd),
+    )?))
+}
+
+async fn plugin_command(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
+    let kind = required_json_string(&payload, "kind", "kind 不能为空")?;
+    let action = required_json_string(&payload, "action", "action 不能为空")?;
+    let mut args = vec!["plugin".to_string()];
+    if kind == "marketplace" {
+        args.push("marketplace".to_string());
+        args.push(action.to_string());
+    } else if kind == "plugin" {
+        args.push(action.to_string());
+    } else {
+        return Err(ApiError::bad_request("不支持的插件命令类型"));
+    }
+    if let Some(target) = payload
+        .get("target")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        args.push(target.to_string());
+    }
+    if kind == "plugin" {
+        if let Some(scope) = payload
+            .get("scope")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            args.push("--scope".to_string());
+            args.push(scope.to_string());
+        }
+    }
+    let cwd = payload
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let command = if cfg!(target_os = "windows") {
+        "claude.exe"
+    } else {
+        "claude"
+    };
+    let mut result = run_external_command_value(command, &arg_refs, cwd.as_ref())?;
+    result["command"] = json!("claude");
+    Ok(Json(result))
+}
+
+async fn slash_commands(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(json!({
+        "commands": list_slash_commands_value(query.get("projectPath").map(String::as_str)),
+    })))
+}
+
+fn read_mcp_config_snapshot(project_path: Option<&str>) -> ApiResult<Value> {
+    let global = resolve_mcp_config_path("global", project_path)?;
+    let project = resolve_mcp_config_path("project", project_path).unwrap_or_default();
+    let claude_json = home_dir()
+        .ok_or_else(|| ApiError::internal("无法定位用户目录"))?
+        .join(".claude.json");
+    let claude_json_value = read_json_file_if_exists(&claude_json)?;
+    Ok(json!({
+        "paths": {
+            "global": global,
+            "project": project,
+            "claudeJson": claude_json,
+        },
+        "configs": {
+            "global": normalize_mcp_config(&read_json_file_if_exists(&global)?.unwrap_or(Value::Null)),
+            "project": normalize_mcp_config(&read_json_file_if_exists(&project)?.unwrap_or(Value::Null)),
+            "claudeJsonGlobal": normalize_mcp_config(&extract_claude_json_global_mcp(&claude_json_value)),
+            "claudeJsonProject": normalize_mcp_config(&extract_claude_json_project_mcp(&claude_json_value, project_path)),
+        },
+    }))
+}
+
+fn resolve_mcp_config_path(scope: &str, project_path: Option<&str>) -> ApiResult<PathBuf> {
+    if scope == "global" {
+        return home_dir()
+            .map(|home| home.join(".claude").join("mcp.json"))
+            .ok_or_else(|| ApiError::internal("无法定位用户目录"));
+    }
+    let project = project_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("项目级 MCP 配置需要项目目录"))?;
+    Ok(PathBuf::from(project).join(".mcp.json"))
+}
+
+fn ensure_mcp_config_file(scope: &str, project_path: Option<&str>) -> ApiResult<PathBuf> {
+    let snapshot = read_mcp_config_snapshot(project_path)?;
+    let paths = snapshot.get("paths").cloned().unwrap_or_else(|| json!({}));
+    let configs = snapshot
+        .get("configs")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let (path, config) = match scope {
+        "global" => (
+            json_path(&paths, "global")?,
+            configs
+                .get("global")
+                .cloned()
+                .unwrap_or_else(|| json!({"mcpServers": {}})),
+        ),
+        "project" => (
+            json_path(&paths, "project")?,
+            configs
+                .get("project")
+                .cloned()
+                .unwrap_or_else(|| json!({"mcpServers": {}})),
+        ),
+        "claude-json-global" => {
+            let path = json_path(&paths, "claudeJson")?;
+            if !path.exists() {
+                write_claude_json_mcp_config(
+                    "global",
+                    project_path,
+                    configs
+                        .get("claudeJsonGlobal")
+                        .unwrap_or(&json!({"mcpServers": {}})),
+                )?;
+            }
+            return Ok(path);
+        }
+        "claude-json-project" => {
+            let path = json_path(&paths, "claudeJson")?;
+            if !path.exists() {
+                write_claude_json_mcp_config(
+                    "project",
+                    project_path,
+                    configs
+                        .get("claudeJsonProject")
+                        .unwrap_or(&json!({"mcpServers": {}})),
+                )?;
+            }
+            return Ok(path);
+        }
+        _ => return Err(ApiError::bad_request("不支持的 MCP 配置作用域")),
+    };
+    if !path.exists() {
+        write_json_file_pretty(&path, &config)?;
+    }
+    Ok(path)
+}
+
+fn json_path(value: &Value, key: &str) -> ApiResult<PathBuf> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| ApiError::bad_request("MCP 配置路径无效"))
+}
+
+fn normalize_mcp_config(value: &Value) -> Value {
+    let mut root = value.as_object().cloned().unwrap_or_default();
+    let servers = value
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|(name, config)| {
+                    if name.trim().is_empty() || !config.is_object() {
+                        None
+                    } else {
+                        Some((name.clone(), config.clone()))
+                    }
+                })
+                .collect::<Map<String, Value>>()
+        })
+        .unwrap_or_default();
+    root.insert("mcpServers".to_string(), Value::Object(servers));
+    Value::Object(root)
+}
+
+fn write_claude_json_mcp_config(
+    scope: &str,
+    project_path: Option<&str>,
+    config: &Value,
+) -> ApiResult<()> {
+    let path = home_dir()
+        .ok_or_else(|| ApiError::internal("无法定位用户目录"))?
+        .join(".claude.json");
+    let mut root = read_json_file_if_exists(&path)?
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let servers = config
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if scope == "global" {
+        root.insert("mcpServers".to_string(), Value::Object(servers));
+    } else {
+        let project = project_path
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ApiError::bad_request("项目级 MCP 配置需要项目目录"))?;
+        let project_key = find_claude_project_write_key(root.get("projects"), project);
+        let mut projects = root
+            .get("projects")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let mut project_value = projects
+            .get(&project_key)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        project_value.insert("mcpServers".to_string(), Value::Object(servers));
+        projects.insert(project_key, Value::Object(project_value));
+        root.insert("projects".to_string(), Value::Object(projects));
+    }
+    write_json_file_pretty(&path, &Value::Object(root))
+}
+
+fn extract_claude_json_global_mcp(value: &Option<Value>) -> Value {
+    value
+        .as_ref()
+        .and_then(|root| root.get("mcpServers"))
+        .map(|servers| json!({ "mcpServers": servers }))
+        .unwrap_or(Value::Null)
+}
+
+fn extract_claude_json_project_mcp(value: &Option<Value>, project_path: Option<&str>) -> Value {
+    let Some(project_path) = project_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Value::Null;
+    };
+    let Some(projects) = value
+        .as_ref()
+        .and_then(|root| root.get("projects"))
+        .and_then(Value::as_object)
+    else {
+        return Value::Null;
+    };
+    let target = normalize_claude_project_key(project_path);
+    for candidate in [project_path.to_string(), target.clone()] {
+        if let Some(servers) = projects
+            .get(&normalize_claude_project_key(&candidate))
+            .and_then(|project| project.get("mcpServers"))
+        {
+            return json!({ "mcpServers": servers });
+        }
+    }
+    for (key, project) in projects {
+        if normalize_claude_project_key(key).eq_ignore_ascii_case(&target) {
+            if let Some(servers) = project.get("mcpServers") {
+                return json!({ "mcpServers": servers });
+            }
+        }
+    }
+    Value::Null
+}
+
+fn find_claude_project_write_key(projects: Option<&Value>, project_path: &str) -> String {
+    let target = normalize_claude_project_key(project_path);
+    if let Some(projects) = projects.and_then(Value::as_object) {
+        if projects.contains_key(&target) {
+            return target;
+        }
+        for key in projects.keys() {
+            if normalize_claude_project_key(key).eq_ignore_ascii_case(&target) {
+                return key.clone();
+            }
+        }
+    }
+    target
+}
+
+fn normalize_claude_project_key(value: &str) -> String {
+    value
+        .replace('\\', "/")
+        .trim()
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn list_mcp_servers_value(project_path: Option<&str>) -> Value {
+    let mut servers = Vec::new();
+    let mut errors = Vec::new();
+    let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let project = project_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    read_json_mcp_servers(
+        "Claude Code settings",
+        &home.join(".claude").join("settings.json"),
+        &mut servers,
+        &mut errors,
+    );
+    read_json_mcp_servers(
+        "Claude MCP global",
+        &home.join(".claude").join("mcp.json"),
+        &mut servers,
+        &mut errors,
+    );
+    read_json_mcp_servers(
+        "Claude Code global",
+        &home.join(".claude.json"),
+        &mut servers,
+        &mut errors,
+    );
+    read_claude_json_project_mcp_servers(
+        "Claude CLI project",
+        &home.join(".claude.json"),
+        &project,
+        &mut servers,
+        &mut errors,
+    );
+    if let Some(appdata) = env::var("APPDATA").ok().map(PathBuf::from) {
+        read_json_mcp_servers(
+            "Claude Desktop",
+            &appdata.join("Claude").join("claude_desktop_config.json"),
+            &mut servers,
+            &mut errors,
+        );
+    }
+    read_codex_toml_mcp_servers(
+        &home.join(".codex").join("config.toml"),
+        &mut servers,
+        &mut errors,
+    );
+    read_json_mcp_servers(
+        "Project MCP",
+        &project.join(".mcp.json"),
+        &mut servers,
+        &mut errors,
+    );
+    read_json_mcp_servers(
+        "Claude Code project settings",
+        &project.join(".claude").join("settings.json"),
+        &mut servers,
+        &mut errors,
+    );
+    read_json_mcp_servers(
+        "Cursor MCP",
+        &project.join(".cursor").join("mcp.json"),
+        &mut servers,
+        &mut errors,
+    );
+    json!({ "servers": servers, "errors": errors })
+}
+
+fn read_json_mcp_servers(
+    source: &str,
+    path: &Path,
+    servers: &mut Vec<Value>,
+    errors: &mut Vec<Value>,
+) {
+    if !path.exists() {
+        return;
+    }
+    match read_json_file_if_exists(path) {
+        Ok(Some(value)) => {
+            let Some(items) = value.get("mcpServers").and_then(Value::as_object) else {
+                return;
+            };
+            for (name, raw) in items {
+                if !raw.is_object() {
+                    continue;
+                }
+                let mut server = json!({
+                    "id": format!("{source}:{name}"),
+                    "name": name,
+                    "source": path,
+                    "status": "unknown",
+                    "tools": [],
+                    "command": raw.get("command").and_then(Value::as_str),
+                });
+                if raw.get("args").and_then(Value::as_array).is_some() {
+                    if let Some(object) = server.as_object_mut() {
+                        object.insert(
+                            "args".to_string(),
+                            redact_sensitive_args(raw.get("args").and_then(Value::as_array)),
+                        );
+                    }
+                }
+                remove_null_fields(&mut server);
+                servers.push(server);
+            }
+        }
+        Ok(None) => {}
+        Err(error) => errors.push(json!({
+            "source": source,
+            "path": path,
+            "message": format!("解析 MCP 配置失败：{}", error.message),
+        })),
+    }
+}
+
+fn read_claude_json_project_mcp_servers(
+    source: &str,
+    path: &Path,
+    project: &Path,
+    servers: &mut Vec<Value>,
+    errors: &mut Vec<Value>,
+) {
+    let project_string = project.to_string_lossy().to_string();
+    let Ok(value) = read_json_file_if_exists(path) else {
+        errors.push(json!({ "source": source, "path": path, "message": "解析 MCP 配置失败" }));
+        return;
+    };
+    let Some(config) = extract_claude_json_project_mcp(&value, Some(&project_string))
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .cloned()
+    else {
+        return;
+    };
+    for (name, raw) in config {
+        if !raw.is_object() {
+            continue;
+        }
+        let mut server = json!({
+            "id": format!("{source}:{name}"),
+            "name": name,
+            "source": path,
+            "status": "unknown",
+            "tools": [],
+            "command": raw.get("command").and_then(Value::as_str),
+        });
+        if raw.get("args").and_then(Value::as_array).is_some() {
+            if let Some(object) = server.as_object_mut() {
+                object.insert(
+                    "args".to_string(),
+                    redact_sensitive_args(raw.get("args").and_then(Value::as_array)),
+                );
+            }
+        }
+        remove_null_fields(&mut server);
+        servers.push(server);
+    }
+}
+
+fn read_codex_toml_mcp_servers(path: &Path, servers: &mut Vec<Value>, errors: &mut Vec<Value>) {
+    if !path.exists() {
+        return;
+    }
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) => {
+            errors.push(json!({ "source": "Codex", "path": path, "message": format!("解析 MCP 配置失败：{error}") }));
+            return;
+        }
+    };
+    let mut active = String::new();
+    let mut parsed: std::collections::BTreeMap<String, (Option<String>, Vec<String>)> =
+        std::collections::BTreeMap::new();
+    for raw_line in content.lines() {
+        let line = strip_toml_comment(raw_line).trim().to_string();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            let table = &line[1..line.len() - 1];
+            active = table
+                .strip_prefix("mcp_servers.")
+                .map(unquote_toml_string)
+                .unwrap_or_default();
+            if !active.is_empty() {
+                parsed.entry(active.clone()).or_default();
+            }
+            continue;
+        }
+        if active.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let entry = parsed.entry(active.clone()).or_default();
+        if key.trim() == "command" {
+            entry.0 = Some(unquote_toml_string(value.trim()));
+        } else if key.trim() == "args" {
+            entry.1 = parse_toml_string_array(value.trim());
+        }
+    }
+    for (name, (command, args)) in parsed {
+        let mut server = json!({
+            "id": format!("Codex:{name}"),
+            "name": name,
+            "source": path,
+            "status": "unknown",
+            "tools": [],
+            "command": command,
+        });
+        if !args.is_empty() {
+            if let Some(object) = server.as_object_mut() {
+                object.insert("args".to_string(), redact_sensitive_strings(&args));
+            }
+        }
+        remove_null_fields(&mut server);
+        servers.push(server);
+    }
+}
+
+fn list_codex_skills_value(project_path: Option<&str>) -> Value {
+    let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let mut skills = Vec::new();
+    let mut errors = Vec::new();
+    let roots = [
+        (home.join(".codex").join("skills"), "user"),
+        (home.join(".codex").join("plugins").join("cache"), "plugin"),
+    ];
+    for (root, source) in roots {
+        scan_codex_skill_root(&root, source, &mut skills, &mut errors);
+    }
+    if let Some(project) = project_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        scan_codex_skill_root(
+            &PathBuf::from(project).join(".codex").join("skills"),
+            "project",
+            &mut skills,
+            &mut errors,
+        );
+    }
+    skills.sort_by(|left, right| {
+        left.get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .cmp(right.get("name").and_then(Value::as_str).unwrap_or(""))
+    });
+    json!({ "skills": skills, "errors": errors })
+}
+
+fn scan_codex_skill_root(
+    root: &Path,
+    source: &str,
+    skills: &mut Vec<Value>,
+    errors: &mut Vec<Value>,
+) {
+    for skill_file in find_named_files(root, "SKILL.md", 8) {
+        match parse_skill_markdown(&skill_file) {
+            Ok(frontmatter) => {
+                if let Some(name) = frontmatter.get("name").and_then(Value::as_str) {
+                    skills.push(json!({
+                        "id": format!("{source}:{}", skill_file.display()),
+                        "name": name,
+                        "description": frontmatter.get("description").and_then(Value::as_str),
+                        "path": skill_file,
+                        "source": source,
+                    }));
+                } else {
+                    errors.push(
+                        json!({ "path": skill_file, "message": "Skill frontmatter 缺少 name" }),
+                    );
+                }
+            }
+            Err(error) => errors.push(json!({ "path": skill_file, "message": error.message })),
+        }
+    }
+}
+
+fn list_installed_plugins_value() -> Value {
+    let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let plugins_root = home.join(".claude").join("plugins");
+    let installed = read_json_file_if_exists(&plugins_root.join("installed_plugins.json"))
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| json!({}));
+    let entries = installed
+        .get("plugins")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let marketplace_index = build_marketplace_index(&plugins_root);
+    let mut items = Vec::new();
+    for (plugin_id, raw_installations) in entries {
+        let (name, marketplace) = split_plugin_id(&plugin_id);
+        let metadata = marketplace_index
+            .get(&marketplace)
+            .and_then(|plugins| {
+                plugins
+                    .iter()
+                    .find(|item| item.get("name").and_then(Value::as_str) == Some(name.as_str()))
+            })
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        for installation in raw_installations.as_array().cloned().unwrap_or_default() {
+            let mut item = json!({
+                "id": plugin_id,
+                "name": name,
+                "marketplace": marketplace,
+                "version": installation.get("version").and_then(Value::as_str),
+                "scope": installation.get("scope").and_then(Value::as_str).unwrap_or("user"),
+                "installPath": installation.get("installPath").and_then(Value::as_str),
+                "projectPath": installation.get("projectPath").and_then(Value::as_str),
+                "installedAt": installation.get("installedAt").and_then(Value::as_str),
+                "lastUpdated": installation.get("lastUpdated").and_then(Value::as_str),
+                "description": metadata.get("description").and_then(Value::as_str),
+                "author": metadata.get("author").and_then(Value::as_str),
+                "homepage": metadata.get("homepage").and_then(Value::as_str),
+                "category": metadata.get("category").and_then(Value::as_str),
+            });
+            remove_null_fields(&mut item);
+            items.push(item);
+        }
+    }
+    items.sort_by(|left, right| {
+        let left_key = format!(
+            "{}:{}",
+            left.get("name").and_then(Value::as_str).unwrap_or(""),
+            left.get("scope").and_then(Value::as_str).unwrap_or("")
+        );
+        let right_key = format!(
+            "{}:{}",
+            right.get("name").and_then(Value::as_str).unwrap_or(""),
+            right.get("scope").and_then(Value::as_str).unwrap_or("")
+        );
+        left_key.cmp(&right_key)
+    });
+    Value::Array(items)
+}
+
+fn list_plugin_marketplaces_value() -> Value {
+    let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let plugins_root = home.join(".claude").join("plugins");
+    let known = read_json_file_if_exists(&plugins_root.join("known_marketplaces.json"))
+        .ok()
+        .flatten()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let mut marketplaces = Vec::new();
+    for (name, meta) in known {
+        marketplaces.push(json!({
+            "name": name,
+            "source": meta.get("source").and_then(|source| source.get("repo").or_else(|| source.get("url"))).and_then(Value::as_str),
+            "installLocation": meta.get("installLocation").and_then(Value::as_str),
+            "lastUpdated": meta.get("lastUpdated").and_then(Value::as_str),
+            "plugins": read_marketplace_plugins(&plugins_root, &name),
+        }));
+    }
+    marketplaces.sort_by(|left, right| {
+        left.get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .cmp(right.get("name").and_then(Value::as_str).unwrap_or(""))
+    });
+    Value::Array(marketplaces)
+}
+
+fn list_claude_plugin_skills_value(project_path: Option<&str>) -> Value {
+    let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let mut skills = Vec::new();
+    scan_claude_skill_directory(&home.join(".claude").join("skills"), "user", &mut skills);
+    if let Some(project) = project_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        scan_claude_skill_directory(
+            &PathBuf::from(project).join(".claude").join("skills"),
+            "project",
+            &mut skills,
+        );
+    }
+    let cache_root = home.join(".claude").join("plugins").join("cache");
+    for skill_file in find_named_files(&cache_root, "SKILL.md", 8) {
+        let plugin_name = infer_plugin_skill_source(&cache_root, &skill_file);
+        push_claude_skill_from_file(&skill_file, &plugin_name, &mut skills);
+    }
+    skills.sort_by(|left, right| {
+        left.get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .cmp(right.get("name").and_then(Value::as_str).unwrap_or(""))
+    });
+    Value::Array(skills)
+}
+
+fn scan_claude_skill_directory(root: &Path, source: &str, skills: &mut Vec<Value>) {
+    if !root.exists() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path().join("SKILL.md");
+        if path.exists() {
+            push_claude_skill_from_file(&path, source, skills);
+        }
+    }
+}
+
+fn push_claude_skill_from_file(skill_file: &Path, source: &str, skills: &mut Vec<Value>) {
+    if let Ok(frontmatter) = parse_skill_markdown(skill_file) {
+        let Some(name) = frontmatter.get("name").and_then(Value::as_str) else {
+            return;
+        };
+        skills.push(json!({
+            "name": name,
+            "description": frontmatter.get("description").and_then(Value::as_str),
+            "source": source,
+            "path": skill_file,
+            "disableModelInvocation": frontmatter.get("disable-model-invocation").and_then(Value::as_bool).unwrap_or(false),
+            "userInvocable": frontmatter.get("user-invocable").and_then(Value::as_bool).unwrap_or(true),
+        }));
+    }
+}
+
+fn list_slash_commands_value(project_path: Option<&str>) -> Vec<Value> {
+    let mut commands = vec![
+        slash_command(
+            "app:/clear",
+            "clear",
+            "/clear",
+            "New Chat",
+            "新建一个空聊天，不把当前输入发给 Claude。",
+            "app",
+            "local-action",
+            "CodeM",
+            Some("clear-thread"),
+        ),
+        slash_command(
+            "builtin:/status",
+            "status",
+            "/status",
+            "Status",
+            "显示当前项目、模型、权限模式和会话信息。",
+            "builtin",
+            "local-action",
+            "CodeM",
+            Some("show-status"),
+        ),
+        slash_command(
+            "builtin:/compact",
+            "compact",
+            "/compact",
+            "Compact Context",
+            "把当前 Claude 会话压缩成更短的上下文。",
+            "builtin",
+            "local-action",
+            "CodeM",
+            Some("compact-thread"),
+        ),
+        slash_command(
+            "builtin:/context",
+            "context",
+            "/context",
+            "Context Usage",
+            "查看当前会话的上下文使用情况。",
+            "builtin",
+            "local-action",
+            "CodeM",
+            Some("show-context"),
+        ),
+        slash_command(
+            "builtin:/cost",
+            "cost",
+            "/cost",
+            "Token Cost",
+            "查看 Token 使用统计。",
+            "builtin",
+            "local-action",
+            "CodeM",
+            Some("show-cost"),
+        ),
+    ];
+    commands.extend(list_markdown_slash_commands(project_path));
+    commands.extend(list_skill_slash_commands(project_path));
+    if let Some(servers) = list_mcp_servers_value(project_path)
+        .get("servers")
+        .and_then(Value::as_array)
+    {
+        for server in servers {
+            let name = server
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("server");
+            let segment = sanitize_mcp_segment(name);
+            commands.push(json!({
+                "id": format!("mcp:{}", server.get("id").and_then(Value::as_str).unwrap_or(name)),
+                "name": format!("mcp__{segment}__"),
+                "slash": format!("/mcp__{segment}__"),
+                "title": format!("MCP {name}"),
+                "description": format!("插入 {name} 的 MCP 命令前缀，后续继续补完整命令名。"),
+                "source": "mcp",
+                "action": "passthrough",
+                "sourceLabel": name,
+                "agentScope": ["claude"],
+            }));
+        }
+    }
+    normalize_sort_slash_commands(commands)
+}
+
+fn read_json_file_if_exists(path: &Path) -> ApiResult<Option<Value>> {
+    if path.as_os_str().is_empty() || !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(path)
+        .map_err(|error| ApiError::internal(format!("读取 JSON 文件失败: {error}")))?;
+    serde_json::from_str(&content)
+        .map(Some)
+        .map_err(|error| ApiError::internal(format!("解析 JSON 文件失败: {error}")))
+}
+
+fn write_json_file_pretty(path: &Path, value: &Value) -> ApiResult<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| ApiError::internal(format!("创建目录失败: {error}")))?;
+    }
+    let content = serde_json::to_string_pretty(value)
+        .map_err(|error| ApiError::internal(format!("序列化 JSON 失败: {error}")))?;
+    fs::write(path, format!("{content}\n"))
+        .map_err(|error| ApiError::internal(format!("写入 JSON 文件失败: {error}")))
+}
+
+fn redact_sensitive_args(args: Option<&Vec<Value>>) -> Value {
+    let strings = args
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    redact_sensitive_strings(&strings)
+}
+
+fn redact_sensitive_strings(args: &[String]) -> Value {
+    Value::Array(
+        args.iter()
+            .enumerate()
+            .map(|(index, arg)| {
+                if index > 0 && is_sensitive_arg_name(&args[index - 1]) {
+                    return json!("<redacted>");
+                }
+                if let Some((name, _)) = arg.split_once('=') {
+                    if is_sensitive_arg_name(name) {
+                        return json!(format!("{name}=<redacted>"));
+                    }
+                }
+                json!(arg)
+            })
+            .collect(),
+    )
+}
+
+fn is_sensitive_arg_name(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    [
+        "api-key",
+        "apikey",
+        "api_key",
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "credential",
+        "access-key",
+        "access_key",
+        "auth",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn strip_toml_comment(line: &str) -> String {
+    let mut quote: Option<char> = None;
+    let mut previous = '\0';
+    let mut result = String::new();
+    for character in line.chars() {
+        if (character == '"' || character == '\'') && previous != '\\' {
+            quote = if quote == Some(character) {
+                None
+            } else {
+                quote.or(Some(character))
+            };
+        }
+        if character == '#' && quote.is_none() {
+            break;
+        }
+        result.push(character);
+        previous = character;
+    }
+    result
+}
+
+fn unquote_toml_string(value: &str) -> String {
+    let trimmed = value.trim();
+    if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+    {
+        return trimmed[1..trimmed.len().saturating_sub(1)]
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\");
+    }
+    trimmed.to_string()
+}
+
+fn parse_toml_string_array(value: &str) -> Vec<String> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+        return Vec::new();
+    }
+    let mut items = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut previous = '\0';
+    for character in trimmed[1..trimmed.len().saturating_sub(1)].chars() {
+        if (character == '"' || character == '\'') && previous != '\\' {
+            quote = if quote == Some(character) {
+                None
+            } else {
+                quote.or(Some(character))
+            };
+        }
+        if character == ',' && quote.is_none() {
+            let parsed = unquote_toml_string(&current);
+            if !parsed.is_empty() {
+                items.push(parsed);
+            }
+            current.clear();
+            previous = character;
+            continue;
+        }
+        current.push(character);
+        previous = character;
+    }
+    let parsed = unquote_toml_string(&current);
+    if !parsed.is_empty() {
+        items.push(parsed);
+    }
+    items
+}
+
+fn find_named_files(root: &Path, file_name: &str, max_depth: usize) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    walk_find_named_files(root, file_name, max_depth, 0, &mut result);
+    result
+}
+
+fn walk_find_named_files(
+    directory: &Path,
+    file_name: &str,
+    max_depth: usize,
+    depth: usize,
+    result: &mut Vec<PathBuf>,
+) {
+    if depth > max_depth || !directory.exists() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && entry.file_name().to_string_lossy() == file_name {
+            result.push(path);
+        } else if path.is_dir() {
+            walk_find_named_files(&path, file_name, max_depth, depth + 1, result);
+        }
+    }
+}
+
+fn parse_skill_markdown(skill_file: &Path) -> ApiResult<Value> {
+    let content = fs::read_to_string(skill_file)
+        .map_err(|error| ApiError::internal(format!("读取 Skill 失败: {error}")))?;
+    Ok(Value::Object(parse_frontmatter_map(&content)))
+}
+
+fn parse_frontmatter_map(content: &str) -> Map<String, Value> {
+    let mut result = Map::new();
+    if !content.trim_start().starts_with("---") {
+        return result;
+    }
+    let trimmed = content.trim_start();
+    let body = &trimmed[3..];
+    let Some(end_index) = body.find("\n---") else {
+        return result;
+    };
+    let frontmatter = body[..end_index].trim();
+    for raw_line in frontmatter.lines() {
+        let Some((key, value)) = raw_line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim().trim_matches('"').trim_matches('\'');
+        if key.is_empty() {
+            continue;
+        }
+        let normalized = key.to_ascii_lowercase();
+        if normalized == "disable-model-invocation" || normalized == "user-invocable" {
+            result.insert(
+                normalized,
+                json!(
+                    value.to_ascii_lowercase() != "false" && value.to_ascii_lowercase() == "true"
+                ),
+            );
+        } else {
+            result.insert(key.to_string(), json!(value));
+        }
+    }
+    result
+}
+
+fn collect_skill_source_directories(source_path: &Path) -> Vec<PathBuf> {
+    if source_path.join("SKILL.md").exists() {
+        return vec![source_path.to_path_buf()];
+    }
+    let Ok(entries) = fs::read_dir(source_path) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && path.join("SKILL.md").exists())
+        .collect()
+}
+
+fn sanitize_skill_directory_name(value: &str) -> ApiResult<String> {
+    let sanitized = value.trim();
+    if sanitized.is_empty() || sanitized.chars().any(|ch| "\\/:*?\"<>|".contains(ch)) {
+        return Err(ApiError::bad_request(format!("非法 Skill 名称：{value}")));
+    }
+    Ok(sanitized.to_string())
+}
+
+fn copy_directory_recursive(source: &Path, target: &Path) -> ApiResult<()> {
+    fs::create_dir_all(target)
+        .map_err(|error| ApiError::internal(format!("创建目录失败: {error}")))?;
+    let entries = fs::read_dir(source)
+        .map_err(|error| ApiError::internal(format!("读取目录失败: {error}")))?;
+    for entry in entries.flatten() {
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_directory_recursive(&source_path, &target_path)?;
+        } else {
+            fs::copy(&source_path, &target_path)
+                .map_err(|error| ApiError::internal(format!("复制文件失败: {error}")))?;
+        }
+    }
+    Ok(())
+}
+
+fn run_external_command_value(
+    command: &str,
+    args: &[&str],
+    cwd: Option<&PathBuf>,
+) -> ApiResult<Value> {
+    let mut child = background_command(command);
+    child.args(args);
+    if let Some(cwd) = cwd {
+        child.current_dir(cwd);
+    }
+    let output = child
+        .output()
+        .map_err(|error| ApiError::bad_request(format!("执行命令失败: {error}")))?;
+    Ok(json!({
+        "stdout": String::from_utf8_lossy(&output.stdout).to_string(),
+        "stderr": String::from_utf8_lossy(&output.stderr).to_string(),
+        "exit_code": output.status.code().unwrap_or(-1),
+        "command": command.trim_end_matches(".exe"),
+        "args": args,
+        "cwd": cwd,
+    }))
+}
+
+fn build_marketplace_index(plugins_root: &Path) -> std::collections::HashMap<String, Vec<Value>> {
+    let mut index = std::collections::HashMap::new();
+    let marketplace_root = plugins_root.join("marketplaces");
+    let Ok(entries) = fs::read_dir(&marketplace_root) else {
+        return index;
+    };
+    for entry in entries.flatten() {
+        if entry.path().is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            index.insert(name.clone(), read_marketplace_plugins(plugins_root, &name));
+        }
+    }
+    index
+}
+
+fn read_marketplace_plugins(plugins_root: &Path, name: &str) -> Vec<Value> {
+    let path = plugins_root
+        .join("marketplaces")
+        .join(name)
+        .join(".claude-plugin")
+        .join("marketplace.json");
+    let raw = read_json_file_if_exists(&path)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| json!({}));
+    let mut plugins = raw
+        .get("plugins")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            let name = entry.get("name").and_then(Value::as_str)?;
+            Some(json!({
+                "name": name,
+                "description": entry.get("description").and_then(Value::as_str),
+                "author": entry.get("author").and_then(|author| author.get("name")).and_then(Value::as_str),
+                "homepage": entry.get("homepage").and_then(Value::as_str),
+                "category": entry.get("category").and_then(Value::as_str),
+            }))
+        })
+        .collect::<Vec<_>>();
+    plugins.sort_by(|left, right| {
+        left.get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .cmp(right.get("name").and_then(Value::as_str).unwrap_or(""))
+    });
+    plugins
+}
+
+fn split_plugin_id(plugin_id: &str) -> (String, String) {
+    let mut parts = plugin_id.splitn(2, '@');
+    (
+        parts.next().unwrap_or_default().to_string(),
+        parts.next().unwrap_or_default().to_string(),
+    )
+}
+
+fn infer_plugin_skill_source(cache_root: &Path, skill_file: &Path) -> String {
+    let relative = skill_file.strip_prefix(cache_root).unwrap_or(skill_file);
+    let parts: Vec<String> = relative
+        .components()
+        .filter_map(|component| component.as_os_str().to_str().map(ToString::to_string))
+        .collect();
+    if parts.len() >= 2 {
+        return format!("plugin:{}@{}", parts[1], parts[0]);
+    }
+    "plugin:unknown".to_string()
+}
+
+fn slash_command(
+    id: &str,
+    name: &str,
+    slash: &str,
+    title: &str,
+    description: &str,
+    source: &str,
+    action: &str,
+    source_label: &str,
+    local_action_id: Option<&str>,
+) -> Value {
+    let category = match name {
+        "context" | "cost" => "context",
+        _ => "session",
+    };
+    json!({
+        "id": id,
+        "name": name,
+        "slash": slash,
+        "title": title,
+        "description": description,
+        "source": source,
+        "action": action,
+        "sourceLabel": source_label,
+        "localActionId": local_action_id,
+        "category": category,
+        "agentScope": ["claude"],
+    })
+}
+
+fn list_markdown_slash_commands(project_path: Option<&str>) -> Vec<Value> {
+    let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let mut sources = vec![(
+        home.join(".claude").join("commands"),
+        "user",
+        "User command",
+        None,
+    )];
+    let plugin_roots = collect_plugin_command_roots(&home);
+    if let Some(project) = project_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sources.push((
+            PathBuf::from(project).join(".claude").join("commands"),
+            "project",
+            "Project command",
+            None,
+        ));
+    }
+    sources.extend(plugin_roots);
+    let mut commands = Vec::new();
+    for (root, source, source_label, namespace) in sources {
+        for file in find_markdown_files(&root, 10) {
+            if let Some(command) = build_markdown_slash_command(
+                &root,
+                &file,
+                source,
+                source_label,
+                namespace.as_deref(),
+            ) {
+                commands.push(command);
+            }
+        }
+    }
+    commands
+}
+
+fn collect_plugin_command_roots(
+    home: &Path,
+) -> Vec<(PathBuf, &'static str, &'static str, Option<String>)> {
+    let root = home.join(".claude").join("plugins");
+    let mut roots = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for file in find_named_files(&root, "COMMANDS_MARKER_DO_NOT_MATCH", 0) {
+        let _ = file;
+    }
+    collect_command_directories(&root, 0, &mut seen, &mut roots);
+    roots
+}
+
+fn collect_command_directories(
+    directory: &Path,
+    depth: usize,
+    seen: &mut std::collections::HashSet<PathBuf>,
+    roots: &mut Vec<(PathBuf, &'static str, &'static str, Option<String>)>,
+) {
+    if depth > 10 || !directory.exists() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .eq_ignore_ascii_case("commands")
+        {
+            let normalized = fs::canonicalize(&path).unwrap_or(path.clone());
+            if seen.insert(normalized.clone()) {
+                let namespace = resolve_plugin_command_namespace(&normalized);
+                roots.push((normalized, "plugin", "plugin", Some(namespace)));
+            }
+        }
+        collect_command_directories(&path, depth + 1, seen, roots);
+    }
+}
+
+fn find_markdown_files(root: &Path, max_depth: usize) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    walk_find_markdown_files(root, max_depth, 0, &mut result);
+    result
+}
+
+fn walk_find_markdown_files(
+    directory: &Path,
+    max_depth: usize,
+    depth: usize,
+    result: &mut Vec<PathBuf>,
+) {
+    if depth > max_depth || !directory.exists() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
+            result.push(path);
+        } else if path.is_dir() {
+            walk_find_markdown_files(&path, max_depth, depth + 1, result);
+        }
+    }
+}
+
+fn build_markdown_slash_command(
+    root: &Path,
+    file: &Path,
+    source: &str,
+    source_label: &str,
+    namespace: Option<&str>,
+) -> Option<Value> {
+    let relative = file.strip_prefix(root).ok()?;
+    let mut segments: Vec<String> = relative
+        .components()
+        .filter_map(|component| component.as_os_str().to_str().map(ToString::to_string))
+        .collect();
+    let file_name = segments.pop()?;
+    let stem = Path::new(&file_name).file_stem()?.to_str()?;
+    let command_name = if stem == "index" || stem == "$ARGUMENTS" {
+        if segments.is_empty() {
+            return None;
+        }
+        segments.join(":")
+    } else if segments.is_empty() {
+        stem.to_string()
+    } else {
+        format!("{}:{stem}", segments.join(":"))
+    };
+    let mut normalized = normalize_slash_command_name(&command_name);
+    if source == "plugin" {
+        normalized = format!("{}:{normalized}", namespace.unwrap_or("plugin"));
+    }
+    let content = fs::read_to_string(file).ok()?;
+    let frontmatter = parse_frontmatter_map(&content);
+    if source == "plugin"
+        && frontmatter
+            .get("disable-model-invocation")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return None;
+    }
+    Some(json!({
+        "id": format!("{source}:{}", file.display()),
+        "name": normalized,
+        "slash": format!("/{normalized}"),
+        "title": humanize_slash_command_name(&command_name),
+        "description": frontmatter.get("description").and_then(Value::as_str),
+        "argumentHint": frontmatter.get("argument-hint").or_else(|| frontmatter.get("argument_hint")).and_then(Value::as_str),
+        "source": source,
+        "action": "passthrough",
+        "sourceLabel": source_label,
+        "agentScope": ["claude"],
+    }))
+}
+
+fn list_skill_slash_commands(project_path: Option<&str>) -> Vec<Value> {
+    let skills = list_codex_skills_value(project_path);
+    let mut commands = Vec::new();
+    for skill in skills
+        .get("skills")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+    {
+        let Some(name) = skill.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let normalized = normalize_slash_command_name(name);
+        if normalized.is_empty() {
+            continue;
+        }
+        let description = skill
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        commands.push(json!({
+            "id": format!("skill:{}", skill.get("path").and_then(Value::as_str).unwrap_or(name)),
+            "name": normalized,
+            "slash": format!("/{normalized}"),
+            "title": humanize_slash_command_name(&normalized),
+            "description": if description.is_empty() { format!("插入 {normalized} 工作流模板。") } else { description.to_string() },
+            "source": "skill",
+            "action": "insert-template",
+            "template": build_skill_template(name, description),
+            "sourceLabel": format!("{} skill", skill.get("source").and_then(Value::as_str).unwrap_or("user")),
+            "agentScope": ["claude"],
+        }));
+    }
+    commands
+}
+
+fn build_skill_template(name: &str, description: &str) -> String {
+    if normalize_slash_command_name(name) == "brainstorming" {
+        return [
+            "我们先做一轮结构化 brainstorming，再进入实现。",
+            "",
+            "目标 / 想法：",
+            "- ",
+            "",
+            "当前上下文：",
+            "- ",
+            "",
+            "约束：",
+            "- ",
+            "",
+            "我希望你先做的事：",
+            "- 给出 2-3 种方案",
+            "- 推荐一个方向并解释取舍",
+            "- 先把设计讲清楚，不急着写代码",
+        ]
+        .join("\n");
+    }
+    [
+        format!("请按 “{name}” 的思路来帮我推进这件事。"),
+        if description.is_empty() {
+            String::new()
+        } else {
+            format!("参考意图：{description}")
+        },
+        String::new(),
+        "任务：".to_string(),
+        "- ".to_string(),
+        String::new(),
+        "上下文：".to_string(),
+        "- ".to_string(),
+        String::new(),
+        "约束：".to_string(),
+        "- ".to_string(),
+        String::new(),
+        "期望输出：".to_string(),
+        "- ".to_string(),
+    ]
+    .into_iter()
+    .filter(|line| !line.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
+fn normalize_slash_command_name(value: &str) -> String {
+    let mut result = String::new();
+    let mut last_separator = false;
+    for character in value.trim().trim_start_matches('/').chars() {
+        let next = if character == '\\' || character == '/' {
+            Some(':')
+        } else if character.is_whitespace() {
+            Some('-')
+        } else if character == ':' {
+            Some(':')
+        } else {
+            Some(character.to_ascii_lowercase())
+        };
+        if let Some(character) = next {
+            if (character == ':' || character == '-') && last_separator {
+                continue;
+            }
+            last_separator = character == ':' || character == '-';
+            result.push(character);
+        }
+    }
+    result.trim_matches('-').trim_matches(':').to_string()
+}
+
+fn humanize_slash_command_name(value: &str) -> String {
+    normalize_slash_command_name(value)
+        .split(':')
+        .map(|segment| {
+            segment
+                .split('-')
+                .filter(|word| !word.is_empty())
+                .map(|word| {
+                    let mut chars = word.chars();
+                    match chars.next() {
+                        Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+                        None => String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+fn resolve_plugin_command_namespace(directory: &Path) -> String {
+    let parts: Vec<String> = directory
+        .components()
+        .filter_map(|component| component.as_os_str().to_str().map(ToString::to_string))
+        .collect();
+    let Some(index) = parts
+        .iter()
+        .position(|part| part.eq_ignore_ascii_case("commands"))
+    else {
+        return "plugin".to_string();
+    };
+    let plugin_segment =
+        if index >= 2 && is_version_like(parts.get(index.saturating_sub(1)).map(String::as_str)) {
+            parts.get(index - 2)
+        } else {
+            parts.get(index.saturating_sub(1))
+        };
+    normalize_slash_namespace(plugin_segment.map(String::as_str).unwrap_or("plugin"))
+}
+
+fn normalize_slash_namespace(value: &str) -> String {
+    let mut result = String::new();
+    let mut last_dash = false;
+    for character in value.trim().chars() {
+        let next = if character.is_ascii_alphanumeric() {
+            character.to_ascii_lowercase()
+        } else {
+            '-'
+        };
+        if next == '-' && last_dash {
+            continue;
+        }
+        last_dash = next == '-';
+        result.push(next);
+    }
+    let trimmed = result.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "plugin".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn is_version_like(value: Option<&str>) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    !value.is_empty()
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '.' || character == '-'
+        })
+        && value
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit())
+}
+
+fn sanitize_mcp_segment(value: &str) -> String {
+    let mut result = String::new();
+    let mut last_underscore = false;
+    for character in value.trim().chars() {
+        let next = if character.is_ascii_alphanumeric() {
+            character.to_ascii_lowercase()
+        } else {
+            '_'
+        };
+        if next == '_' && last_underscore {
+            continue;
+        }
+        last_underscore = next == '_';
+        result.push(next);
+    }
+    let trimmed = result.trim_matches('_').to_string();
+    if trimmed.is_empty() {
+        "server".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn normalize_sort_slash_commands(commands: Vec<Value>) -> Vec<Value> {
+    let mut deduped: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    for command in commands {
+        let slash = command
+            .get("slash")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if slash.is_empty() {
+            continue;
+        }
+        let replace = deduped
+            .get(&slash)
+            .map(|current| {
+                slash_source_priority(command.get("source").and_then(Value::as_str).unwrap_or(""))
+                    > slash_source_priority(
+                        current.get("source").and_then(Value::as_str).unwrap_or(""),
+                    )
+            })
+            .unwrap_or(true);
+        if replace {
+            deduped.insert(slash, command);
+        }
+    }
+    let mut values: Vec<Value> = deduped.into_values().collect();
+    values.sort_by(|left, right| {
+        let left_source = left.get("source").and_then(Value::as_str).unwrap_or("");
+        let right_source = right.get("source").and_then(Value::as_str).unwrap_or("");
+        let source_delta = slash_source_order(left_source).cmp(&slash_source_order(right_source));
+        if source_delta != std::cmp::Ordering::Equal {
+            return source_delta;
+        }
+        left.get("slash")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .cmp(right.get("slash").and_then(Value::as_str).unwrap_or(""))
+    });
+    values
+}
+
+fn slash_source_priority(source: &str) -> i32 {
+    match source {
+        "app" => 700,
+        "builtin" => 600,
+        "project" => 500,
+        "user" => 400,
+        "plugin" => 300,
+        "skill" => 200,
+        "mcp" => 100,
+        _ => 0,
+    }
+}
+
+fn slash_source_order(source: &str) -> i32 {
+    match source {
+        "builtin" => 1,
+        "project" | "user" => 2,
+        "plugin" | "skill" => 3,
+        "mcp" => 4,
+        "app" => 5,
+        _ => 99,
+    }
+}
+
+fn read_usage_stats(
+    connection: &Connection,
+    _range_days: i64,
+    project_id: Option<&str>,
+) -> ApiResult<Value> {
+    let project_filter = project_id.filter(|value| !value.trim().is_empty());
+    let totals = read_usage_totals(connection, project_filter)?;
+    let project_rows = read_usage_project_rows(connection, project_filter)?;
+    let thread_rows = read_usage_thread_rows(connection, project_filter)?;
+    let provider_rows = build_usage_provider_rows(&thread_rows);
+    let day_rows = read_usage_day_rows(connection, project_filter)?;
+    Ok(json!({
+        "generatedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        "totals": totals,
+        "projectOptions": project_rows,
+        "byProvider": provider_rows,
+        "byProject": project_rows,
+        "byThread": thread_rows,
+        "byDay": day_rows,
+    }))
+}
+
+fn usage_aggregate_ctes() -> &'static str {
+    r#"
+    WITH message_usage AS (
+      SELECT
+        thread_id,
+        COUNT(*) AS messages,
+        COALESCE(SUM(input_tokens), 0) AS inputTokens,
+        COALESCE(SUM(output_tokens), 0) AS outputTokens,
+        COALESCE(SUM(cache_creation_input_tokens), 0) AS cacheCreationInputTokens,
+        COALESCE(SUM(cache_read_input_tokens), 0) AS cacheReadInputTokens,
+        COALESCE(SUM(total_cost_usd), 0) AS totalCostUsd,
+        COALESCE(SUM(duration_ms), 0) AS durationMs,
+        MAX(created_at) AS lastUsedAt
+      FROM messages
+      GROUP BY thread_id
+    ),
+    tool_usage AS (
+      SELECT thread_id, COUNT(*) AS toolCalls
+      FROM tool_calls
+      GROUP BY thread_id
+    )
+    "#
+}
+
+fn read_usage_totals(connection: &Connection, project_id: Option<&str>) -> ApiResult<Value> {
+    let sql = format!(
+        r#"
+        {}
+        SELECT
+          COUNT(DISTINCT p.id) AS projects,
+          COUNT(DISTINCT t.id) AS threads,
+          COALESCE(SUM(mu.messages), 0) AS messages,
+          COALESCE(SUM(tu.toolCalls), 0) AS toolCalls,
+          COALESCE(SUM(mu.inputTokens), 0) AS inputTokens,
+          COALESCE(SUM(mu.outputTokens), 0) AS outputTokens,
+          COALESCE(SUM(mu.cacheCreationInputTokens), 0) AS cacheCreationInputTokens,
+          COALESCE(SUM(mu.cacheReadInputTokens), 0) AS cacheReadInputTokens,
+          COALESCE(SUM(mu.durationMs), 0) AS durationMs,
+          COALESCE(SUM(mu.totalCostUsd), 0) AS totalCostUsd
+        FROM projects p
+        LEFT JOIN threads t ON t.project_id = p.id
+        LEFT JOIN message_usage mu ON mu.thread_id = t.id
+        LEFT JOIN tool_usage tu ON tu.thread_id = t.id
+        {}
+        "#,
+        usage_aggregate_ctes(),
+        if project_id.is_some() {
+            "WHERE p.id = ?"
+        } else {
+            ""
+        }
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| ApiError::internal(format!("读取使用情况失败: {error}")))?;
+    let mapper = |row: &rusqlite::Row<'_>| {
+        Ok(usage_totals_json(
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+            row.get(7)?,
+            row.get(8)?,
+            row.get(9)?,
+        ))
+    };
+    if let Some(project_id) = project_id {
+        statement
+            .query_row(params![project_id], mapper)
+            .map_err(|error| ApiError::internal(format!("读取使用情况失败: {error}")))
+    } else {
+        statement
+            .query_row([], mapper)
+            .map_err(|error| ApiError::internal(format!("读取使用情况失败: {error}")))
+    }
+}
+
+fn read_usage_project_rows(connection: &Connection, project_id: Option<&str>) -> ApiResult<Value> {
+    let sql = format!(
+        r#"
+        {}
+        SELECT
+          p.id,
+          p.name,
+          p.path,
+          1 AS projects,
+          COUNT(DISTINCT t.id) AS threads,
+          COALESCE(SUM(mu.messages), 0) AS messages,
+          COALESCE(SUM(tu.toolCalls), 0) AS toolCalls,
+          COALESCE(SUM(mu.inputTokens), 0) AS inputTokens,
+          COALESCE(SUM(mu.outputTokens), 0) AS outputTokens,
+          COALESCE(SUM(mu.cacheCreationInputTokens), 0) AS cacheCreationInputTokens,
+          COALESCE(SUM(mu.cacheReadInputTokens), 0) AS cacheReadInputTokens,
+          COALESCE(SUM(mu.durationMs), 0) AS durationMs,
+          COALESCE(SUM(mu.totalCostUsd), 0) AS totalCostUsd,
+          MAX(COALESCE(mu.lastUsedAt, t.updated_at, p.updated_at)) AS lastUsedAt
+        FROM projects p
+        LEFT JOIN threads t ON t.project_id = p.id
+        LEFT JOIN message_usage mu ON mu.thread_id = t.id
+        LEFT JOIN tool_usage tu ON tu.thread_id = t.id
+        {}
+        GROUP BY p.id, p.name, p.path
+        ORDER BY totalCostUsd DESC, inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens DESC, threads DESC
+        "#,
+        usage_aggregate_ctes(),
+        if project_id.is_some() {
+            "WHERE p.id = ?"
+        } else {
+            ""
+        }
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| ApiError::internal(format!("读取使用情况失败: {error}")))?;
+    let mapper = |row: &rusqlite::Row<'_>| {
+        let totals = usage_totals_json(
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+            row.get(7)?,
+            row.get(8)?,
+            row.get(9)?,
+            row.get(10)?,
+            row.get(11)?,
+            row.get(12)?,
+        );
+        Ok(merge_json_objects(
+            json!({
+                "projectId": row.get::<_, String>(0)?,
+                "projectName": row.get::<_, String>(1)?,
+                "projectPath": row.get::<_, String>(2)?,
+                "lastUsedAt": row.get::<_, Option<String>>(13)?,
+            }),
+            totals,
+        ))
+    };
+    let rows = if let Some(project_id) = project_id {
+        statement.query_map(params![project_id], mapper)
+    } else {
+        statement.query_map([], mapper)
+    }
+    .map_err(|error| ApiError::internal(format!("读取使用情况失败: {error}")))?;
+    Ok(Value::Array(collect_rows(rows, "读取使用情况失败")?))
+}
+
+fn read_usage_thread_rows(connection: &Connection, project_id: Option<&str>) -> ApiResult<Value> {
+    let sql = format!(
+        r#"
+        {}
+        SELECT
+          t.id,
+          t.project_id,
+          p.name,
+          t.title,
+          COALESCE(t.session_id, ''),
+          COALESCE(t.provider, 'unknown'),
+          COALESCE(t.model, '未配置'),
+          COALESCE(t.working_directory, ''),
+          t.updated_at,
+          COALESCE(mu.lastUsedAt, t.updated_at),
+          0 AS projects,
+          1 AS threads,
+          COALESCE(mu.messages, 0) AS messages,
+          COALESCE(tu.toolCalls, 0) AS toolCalls,
+          COALESCE(mu.inputTokens, 0) AS inputTokens,
+          COALESCE(mu.outputTokens, 0) AS outputTokens,
+          COALESCE(mu.cacheCreationInputTokens, 0) AS cacheCreationInputTokens,
+          COALESCE(mu.cacheReadInputTokens, 0) AS cacheReadInputTokens,
+          COALESCE(mu.durationMs, 0) AS durationMs,
+          COALESCE(mu.totalCostUsd, 0) AS totalCostUsd
+        FROM threads t
+        INNER JOIN projects p ON p.id = t.project_id
+        LEFT JOIN message_usage mu ON mu.thread_id = t.id
+        LEFT JOIN tool_usage tu ON tu.thread_id = t.id
+        {}
+        ORDER BY totalCostUsd DESC, inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens DESC, t.updated_at DESC
+        "#,
+        usage_aggregate_ctes(),
+        if project_id.is_some() {
+            "WHERE t.project_id = ?"
+        } else {
+            ""
+        }
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| ApiError::internal(format!("读取使用情况失败: {error}")))?;
+    let mapper = |row: &rusqlite::Row<'_>| {
+        let totals = usage_totals_json(
+            row.get(10)?,
+            row.get(11)?,
+            row.get(12)?,
+            row.get(13)?,
+            row.get(14)?,
+            row.get(15)?,
+            row.get(16)?,
+            row.get(17)?,
+            row.get(18)?,
+            row.get(19)?,
+        );
+        Ok(merge_json_objects(
+            json!({
+                "threadId": row.get::<_, String>(0)?,
+                "projectId": row.get::<_, String>(1)?,
+                "projectName": row.get::<_, String>(2)?,
+                "title": row.get::<_, String>(3)?,
+                "sessionId": row.get::<_, String>(4)?,
+                "provider": row.get::<_, String>(5)?,
+                "model": row.get::<_, String>(6)?,
+                "workingDirectory": row.get::<_, String>(7)?,
+                "updatedAt": row.get::<_, Option<String>>(8)?,
+                "lastUsedAt": row.get::<_, Option<String>>(9)?,
+            }),
+            totals,
+        ))
+    };
+    let rows = if let Some(project_id) = project_id {
+        statement.query_map(params![project_id], mapper)
+    } else {
+        statement.query_map([], mapper)
+    }
+    .map_err(|error| ApiError::internal(format!("读取使用情况失败: {error}")))?;
+    Ok(Value::Array(collect_rows(rows, "读取使用情况失败")?))
+}
+
+fn read_usage_day_rows(connection: &Connection, project_id: Option<&str>) -> ApiResult<Value> {
+    let sql = format!(
+        r#"
+        SELECT
+          date(m.created_at) AS usageDate,
+          0 AS projects,
+          COUNT(DISTINCT m.thread_id) AS threads,
+          COUNT(m.id) AS messages,
+          COUNT(tc.id) AS toolCalls,
+          COALESCE(SUM(m.input_tokens), 0) AS inputTokens,
+          COALESCE(SUM(m.output_tokens), 0) AS outputTokens,
+          COALESCE(SUM(m.cache_creation_input_tokens), 0) AS cacheCreationInputTokens,
+          COALESCE(SUM(m.cache_read_input_tokens), 0) AS cacheReadInputTokens,
+          COALESCE(SUM(m.duration_ms), 0) AS durationMs,
+          COALESCE(SUM(m.total_cost_usd), 0) AS totalCostUsd
+        FROM messages m
+        INNER JOIN threads t ON t.id = m.thread_id
+        LEFT JOIN tool_calls tc ON tc.thread_id = m.thread_id AND tc.turn_id = m.turn_id
+        WHERE m.created_at IS NOT NULL {}
+        GROUP BY usageDate
+        ORDER BY usageDate ASC
+        "#,
+        if project_id.is_some() {
+            "AND t.project_id = ?"
+        } else {
+            ""
+        }
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| ApiError::internal(format!("读取使用情况失败: {error}")))?;
+    let mapper = |row: &rusqlite::Row<'_>| {
+        let totals = usage_totals_json(
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+            row.get(7)?,
+            row.get(8)?,
+            row.get(9)?,
+            row.get(10)?,
+        );
+        Ok(merge_json_objects(
+            json!({ "date": row.get::<_, String>(0)? }),
+            totals,
+        ))
+    };
+    let rows = if let Some(project_id) = project_id {
+        statement.query_map(params![project_id], mapper)
+    } else {
+        statement.query_map([], mapper)
+    }
+    .map_err(|error| ApiError::internal(format!("读取使用情况失败: {error}")))?;
+    Ok(Value::Array(collect_rows(rows, "读取使用情况失败")?))
+}
+
+fn build_usage_provider_rows(thread_rows: &Value) -> Value {
+    let mut groups: std::collections::BTreeMap<String, (Value, Vec<Value>)> =
+        std::collections::BTreeMap::new();
+    for row in thread_rows.as_array().into_iter().flatten() {
+        let provider = row
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let model = row.get("model").and_then(Value::as_str).unwrap_or("未配置");
+        let key = format!("{provider}:{model}");
+        let model_row = merge_json_objects(
+            json!({
+                "model": model,
+                "lastUsedAt": row.get("lastUsedAt").cloned().unwrap_or(Value::Null),
+            }),
+            usage_totals_from_value(row),
+        );
+        let entry = groups.entry(key).or_insert_with(|| {
+            (
+                merge_json_objects(
+                    json!({
+                        "provider": provider,
+                        "providerKey": provider,
+                        "host": "",
+                        "inferred": false,
+                        "lastUsedAt": row.get("lastUsedAt").cloned().unwrap_or(Value::Null),
+                    }),
+                    usage_totals_from_value(row),
+                ),
+                Vec::new(),
+            )
+        });
+        entry.1.push(model_row);
+    }
+    Value::Array(
+        groups
+            .into_values()
+            .map(|(mut provider, models)| {
+                if let Some(object) = provider.as_object_mut() {
+                    object.insert("models".to_string(), Value::Array(models));
+                }
+                provider
+            })
+            .collect(),
+    )
+}
+
+fn usage_totals_json(
+    projects: i64,
+    threads: i64,
+    messages: i64,
+    tool_calls: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_creation_input_tokens: i64,
+    cache_read_input_tokens: i64,
+    duration_ms: i64,
+    total_cost_usd: f64,
+) -> Value {
+    json!({
+        "projects": projects,
+        "threads": threads,
+        "messages": messages,
+        "toolCalls": tool_calls,
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "cacheCreationInputTokens": cache_creation_input_tokens,
+        "cacheReadInputTokens": cache_read_input_tokens,
+        "totalTokens": input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens,
+        "durationMs": duration_ms,
+        "totalCostUsd": total_cost_usd,
+    })
+}
+
+fn usage_totals_from_value(value: &Value) -> Value {
+    json!({
+        "projects": value.get("projects").and_then(Value::as_i64).unwrap_or(0),
+        "threads": value.get("threads").and_then(Value::as_i64).unwrap_or(0),
+        "messages": value.get("messages").and_then(Value::as_i64).unwrap_or(0),
+        "toolCalls": value.get("toolCalls").and_then(Value::as_i64).unwrap_or(0),
+        "inputTokens": value.get("inputTokens").and_then(Value::as_i64).unwrap_or(0),
+        "outputTokens": value.get("outputTokens").and_then(Value::as_i64).unwrap_or(0),
+        "cacheCreationInputTokens": value.get("cacheCreationInputTokens").and_then(Value::as_i64).unwrap_or(0),
+        "cacheReadInputTokens": value.get("cacheReadInputTokens").and_then(Value::as_i64).unwrap_or(0),
+        "totalTokens": value.get("totalTokens").and_then(Value::as_i64).unwrap_or(0),
+        "durationMs": value.get("durationMs").and_then(Value::as_i64).unwrap_or(0),
+        "totalCostUsd": value.get("totalCostUsd").and_then(Value::as_f64).unwrap_or(0.0),
+    })
+}
+
+fn merge_json_objects(mut left: Value, right: Value) -> Value {
+    if let (Some(left), Some(right)) = (left.as_object_mut(), right.as_object()) {
+        for (key, value) in right {
+            left.insert(key.clone(), value.clone());
+        }
+    }
+    left
+}
+
+fn resolve_project_relative_directory(project_path: &str, relative: &str) -> ApiResult<String> {
+    let path = if relative.trim().is_empty() {
+        project_path.to_string()
+    } else {
+        resolve_project_relative_path(project_path, relative)?
+    };
+    let metadata = fs::metadata(&path)
+        .map_err(|error| ApiError::bad_request(format!("读取项目文件失败: {error}")))?;
+    if metadata.is_dir() {
+        Ok(path)
+    } else {
+        Err(ApiError::bad_request("目标不是目录"))
+    }
+}
+
+fn resolve_project_relative_path(project_path: &str, relative: &str) -> ApiResult<String> {
+    let resolved = resolve_workspace_relative_path(project_path, relative)
+        .ok_or_else(|| ApiError::bad_request("文件路径必须是项目内的相对路径"))?;
+    Ok(resolved.0)
+}
+
+fn build_claude_prompt(payload: &ClaudeRunRequest) -> String {
+    if let Some(tool_result) = payload.tool_result.as_ref() {
+        let content = tool_result
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !content.trim().is_empty() {
+            return content.to_string();
+        }
+    }
+    let mut parts = Vec::new();
+    if let Some(prompt) = payload
+        .prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(prompt.to_string());
+    }
+    if let Some(blocks) = payload.content_blocks.as_ref().and_then(Value::as_array) {
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) == Some("text") {
+                if let Some(text) = block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    if !parts.iter().any(|part| part == text) {
+                        parts.push(text.to_string());
+                    }
+                }
+            } else if let Some(path) = block.get("path").and_then(Value::as_str) {
+                parts.push(format!("附件路径：{path}"));
+            }
+        }
+    }
+    parts.join("\n\n")
+}
+
+fn summarize_content_blocks(value: Option<&Value>) -> Option<Value> {
+    let blocks = value?.as_array()?;
+    Some(Value::Array(
+        blocks
+            .iter()
+            .map(|block| {
+                let mut summary = block.clone();
+                if let Some(object) = summary.as_object_mut() {
+                    object.remove("data");
+                    if let Some(text) = object.get("text").and_then(Value::as_str) {
+                        object.insert("textBytes".to_string(), json!(text.len()));
+                        object.remove("text");
+                    }
+                }
+                summary
+            })
+            .collect(),
+    ))
+}
+
+fn normalize_claude_permission_mode(value: Option<&str>) -> String {
+    match value {
+        Some("plan") => "plan".to_string(),
+        Some("acceptEdits") => "acceptEdits".to_string(),
+        Some("auto") => "acceptEdits".to_string(),
+        Some("dontAsk") | Some("bypassPermissions") => "bypassPermissions".to_string(),
+        _ => "default".to_string(),
+    }
+}
+
+fn build_claude_run_args(payload: &ClaudeRunRequest, permission_mode: &str) -> Vec<String> {
+    let mut args = vec![
+        "-p".to_string(),
+        "".to_string(),
+        "--input-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--include-partial-messages".to_string(),
+        "--include-hook-events".to_string(),
+        "--permission-prompt-tool".to_string(),
+        "stdio".to_string(),
+    ];
+    if permission_mode == "bypassPermissions" {
+        args.push("--dangerously-skip-permissions".to_string());
+    } else {
+        args.push("--permission-mode".to_string());
+        args.push(permission_mode.to_string());
+    }
+    if let Some(model) = payload
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+    if let Some(effort) = payload
+        .effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if effort == "ultracode" {
+            args.push("--settings".to_string());
+            args.push(json!({ "ultracode": true }).to_string());
+        } else {
+            args.push("--effort".to_string());
+            args.push(effort.to_string());
+        }
+    }
+    if let Some(session_id) = payload
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        args.push("--resume".to_string());
+        args.push(session_id.to_string());
+    }
+    args
+}
+
+fn build_claude_input_message(
+    prompt: &str,
+    content_blocks: Option<&Value>,
+    tool_result: Option<&Value>,
+) -> Value {
+    if let Some(tool_result) = tool_result {
+        if let Some(request_id) = tool_result
+            .get("requestId")
+            .or_else(|| tool_result.get("request_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let content = tool_result
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let is_error = tool_result
+                .get("isError")
+                .or_else(|| tool_result.get("is_error"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            return build_claude_tool_result_message(request_id, content, is_error);
+        }
+    }
+
+    let mut content = Vec::new();
+    if let Some(blocks) = content_blocks.and_then(Value::as_array) {
+        for block in blocks {
+            match block.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if let Some(text) = block
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                    {
+                        content.push(json!({ "type": "text", "text": text }));
+                    }
+                }
+                Some("image") => {
+                    if let Some(source) = block.get("source") {
+                        content.push(json!({ "type": "image", "source": source }));
+                    } else if let (Some(data), Some(media_type)) = (
+                        block.get("data").and_then(Value::as_str),
+                        block
+                            .get("mimeType")
+                            .or_else(|| block.get("mime_type"))
+                            .and_then(Value::as_str),
+                    ) {
+                        content.push(json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": data,
+                            },
+                        }));
+                    }
+                }
+                Some("file") | Some("file-reference") | Some("project-file") => {
+                    if let Some(path) = block.get("path").and_then(Value::as_str) {
+                        content
+                            .push(json!({ "type": "text", "text": format!("附件路径：{path}") }));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if content.is_empty() && !prompt.trim().is_empty() {
+        content.push(json!({ "type": "text", "text": prompt }));
+    }
+    json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": content,
+        },
+    })
+}
+
+fn build_claude_tool_result_message(request_id: &str, content: &str, is_error: bool) -> Value {
+    json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": request_id,
+                "content": content,
+                "is_error": is_error,
+            }],
+        },
+    })
+}
+
+async fn request_claude_context_snapshot(
+    session_id: &str,
+    working_directory: &str,
+    timeout_ms: u64,
+    requested_at_ms: i64,
+) -> ApiResult<Value> {
+    let command =
+        resolve_claude_command().ok_or_else(|| ApiError::bad_request("未找到 claude 命令"))?;
+    let mut child = background_tokio_command(&command)
+        .args([
+            "-p",
+            "/context",
+            "--verbose",
+            "--output-format",
+            "stream-json",
+            "--resume",
+            session_id,
+        ])
+        .current_dir(working_directory)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| ApiError::internal(format!("启动 Claude /context 失败: {error}")))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ApiError::internal("Claude /context stdout 不可读"))?;
+    let stderr = child.stderr.take();
+    let stderr_task = stderr.map(|stderr| {
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            let mut collected = Vec::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    collected.push(line);
+                }
+                if collected.len() >= 5 {
+                    break;
+                }
+            }
+            collected
+        })
+    });
+    let read_task = async move {
+        let mut lines = BufReader::new(stdout).lines();
+        let mut markdown = String::new();
+        let mut event_count = 0_i64;
+        while let Ok(Some(line)) = lines.next_line().await {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            event_count += 1;
+            if let Ok(payload) = serde_json::from_str::<Value>(trimmed) {
+                let extracted = extract_context_markdown_from_payload(&payload);
+                if !extracted.trim().is_empty() {
+                    if !markdown.is_empty() {
+                        markdown.push('\n');
+                    }
+                    markdown.push_str(&extracted);
+                }
+                if payload.get("type").and_then(Value::as_str) == Some("result") {
+                    break;
+                }
+            }
+        }
+        (markdown, event_count)
+    };
+    let (markdown, event_count) =
+        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), read_task).await {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = child.kill().await;
+                return Err(ApiError {
+                    status: StatusCode::GATEWAY_TIMEOUT,
+                    message: "Claude 未在限定时间内返回 /context 结果。".to_string(),
+                });
+            }
+        };
+    let status = child.wait().await;
+    let stderr_lines = if let Some(task) = stderr_task {
+        task.await.unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    if markdown.trim().is_empty() {
+        let message = stderr_lines
+            .into_iter()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(ApiError {
+            status: StatusCode::BAD_GATEWAY,
+            message: if message.trim().is_empty() {
+                "Claude /context 没有返回可读内容。".to_string()
+            } else {
+                message
+            },
+        });
+    }
+    if let Ok(status) = status {
+        if !status.success() && markdown.trim().is_empty() {
+            return Err(ApiError {
+                status: StatusCode::BAD_GATEWAY,
+                message: format!("Claude /context 退出码: {status}"),
+            });
+        }
+    }
+    Ok(create_context_snapshot_value(
+        &strip_ansi_control_codes(&markdown),
+        requested_at_ms,
+        0,
+        event_count,
+    ))
+}
+
+fn extract_context_markdown_from_payload(payload: &Value) -> String {
+    if payload.get("type").and_then(Value::as_str) == Some("result") {
+        return payload
+            .get("result")
+            .and_then(Value::as_str)
+            .map(strip_ansi_control_codes)
+            .unwrap_or_default();
+    }
+    if payload.get("type").and_then(Value::as_str) == Some("assistant") {
+        return payload
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        (item.get("type").and_then(Value::as_str) == Some("text"))
+                            .then(|| item.get("text").and_then(Value::as_str))
+                            .flatten()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .unwrap_or_default();
+    }
+    String::new()
+}
+
+fn create_context_snapshot_value(
+    markdown: &str,
+    requested_at_ms: i64,
+    duration_ms: i64,
+    event_count: i64,
+) -> Value {
+    let max_chars = 50_000;
+    let markdown_truncated = markdown.chars().count() > max_chars;
+    let safe_markdown = if markdown_truncated {
+        format!(
+            "{}\n\n...[已截断]...",
+            markdown.chars().take(max_chars).collect::<String>()
+        )
+    } else {
+        markdown.to_string()
+    };
+    json!({
+        "source": "stream-json",
+        "requestedAtMs": requested_at_ms,
+        "durationMs": duration_ms,
+        "eventCount": event_count,
+        "markdown": safe_markdown,
+        "markdownTruncated": markdown_truncated,
+        "summary": summarize_context_markdown(markdown),
+    })
+}
+
+fn summarize_context_markdown(markdown: &str) -> Value {
+    let normalized = strip_ansi_control_codes(markdown);
+    let (used_tokens, total_tokens, percent) = parse_context_token_line(&normalized);
+    let free_tokens = match (used_tokens, total_tokens) {
+        (Some(used), Some(total)) => Some((total - used).max(0)),
+        _ => None,
+    };
+    json!({
+        "hasContextUsage": normalized.to_ascii_lowercase().contains("context usage"),
+        "hasMcpTools": normalized.to_ascii_lowercase().contains("mcp tools"),
+        "hasFreeSpace": normalized.to_ascii_lowercase().contains("free space") || free_tokens.is_some(),
+        "hasSystemPrompt": normalized.to_ascii_lowercase().contains("system prompt"),
+        "hasMemory": normalized.to_ascii_lowercase().contains("memory files"),
+        "hasSkills": normalized.to_ascii_lowercase().contains("skills"),
+        "model": parse_context_model(&normalized),
+        "usedTokens": used_tokens,
+        "totalTokens": total_tokens,
+        "freeTokens": free_tokens,
+        "percent": percent,
+        "categories": {},
+        "mcpToolCount": count_context_section_rows(&normalized, "MCP Tools"),
+        "memoryFileCount": count_context_section_rows(&normalized, "Memory Files"),
+        "skillCount": count_context_section_rows(&normalized, "Skills"),
+        "markdownChars": markdown.len(),
+    })
+}
+
+fn strip_ansi_control_codes(value: &str) -> String {
+    let mut result = String::new();
+    let mut chars = value.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\u{1b}' && chars.peek() == Some(&'[') {
+            let _ = chars.next();
+            for next in chars.by_ref() {
+                if ('@'..='~').contains(&next) {
+                    break;
+                }
+            }
+            continue;
+        }
+        result.push(character);
+    }
+    result
+}
+
+fn parse_context_model(markdown: &str) -> Option<String> {
+    markdown.lines().find_map(|line| {
+        let normalized = line.trim();
+        normalized
+            .strip_prefix("Model:")
+            .or_else(|| normalized.strip_prefix("**Model:**"))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    })
+}
+
+fn parse_context_token_line(markdown: &str) -> (Option<i64>, Option<i64>, Option<f64>) {
+    for line in markdown.lines() {
+        let lower = line.to_ascii_lowercase();
+        if !lower.contains('/') || !(lower.contains("token") || lower.contains("tokens")) {
+            continue;
+        }
+        let compact = line.replace(',', "");
+        let Some((left, right)) = compact.split_once('/') else {
+            continue;
+        };
+        let used = parse_context_token_count(left);
+        let total = parse_context_token_count(right);
+        let percent = line
+            .split('(')
+            .nth(1)
+            .and_then(|value| value.split('%').next())
+            .and_then(|value| value.trim().parse::<f64>().ok());
+        if used.is_some() || total.is_some() {
+            return (used, total, percent);
+        }
+    }
+    (None, None, None)
+}
+
+fn parse_context_token_count(value: &str) -> Option<i64> {
+    let token = value
+        .split_whitespace()
+        .find(|part| part.chars().any(|ch| ch.is_ascii_digit()))?
+        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '.')
+        .to_ascii_lowercase();
+    let (number, multiplier) = if let Some(raw) = token.strip_suffix('k') {
+        (raw, 1_000.0)
+    } else if let Some(raw) = token.strip_suffix('m') {
+        (raw, 1_000_000.0)
+    } else {
+        (token.as_str(), 1.0)
+    };
+    number
+        .parse::<f64>()
+        .ok()
+        .map(|value| (value * multiplier).round() as i64)
+}
+
+fn count_context_section_rows(markdown: &str, heading: &str) -> i64 {
+    let mut in_section = false;
+    let mut count = 0_i64;
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case(heading)
+            || trimmed.eq_ignore_ascii_case(&format!("## {heading}"))
+        {
+            in_section = true;
+            continue;
+        }
+        if in_section && trimmed.starts_with('#') {
+            break;
+        }
+        if in_section
+            && !trimmed.is_empty()
+            && !trimmed.starts_with('|')
+            && !trimmed.chars().all(|ch| ch == '-')
+        {
+            count += 1;
+        }
+    }
+    count
+}
+
+async fn write_claude_stdin_message(
+    stdin: &Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
+    message: &Value,
+) -> Result<(), String> {
+    let mut stdin = stdin.lock().await;
+    let line = serde_json::to_string(message).map_err(|error| error.to_string())?;
+    stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|error| error.to_string())?;
+    stdin
+        .write_all(b"\n")
+        .await
+        .map_err(|error| error.to_string())?;
+    stdin.flush().await.map_err(|error| error.to_string())
+}
+
+async fn write_run_stdin_message(state: &AppState, run_id: &str, message: &Value) -> ApiResult<()> {
+    let stdin = {
+        let runs = state
+            .runs
+            .lock()
+            .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?;
+        let run = runs
+            .get(run_id)
+            .ok_or_else(|| ApiError::bad_request("当前运行不存在或已经结束。"))?;
+        if run.finished {
+            return Err(ApiError::bad_request("当前运行不存在或已经结束。"));
+        }
+        run.stdin
+            .clone()
+            .ok_or_else(|| ApiError::bad_request("当前 Claude 运行不支持 stdin 写回。"))?
+    };
+    write_claude_stdin_message(&stdin, message)
+        .await
+        .map_err(|error| ApiError::internal(format!("写入 Claude stdin 失败: {error}")))
+}
+
+async fn get_or_create_claude_runtime(
+    state: &AppState,
+    command: &str,
+    thread_id: &str,
+    working_directory: &str,
+    permission_mode: &str,
+    payload: &ClaudeRunRequest,
+) -> ApiResult<(ClaudeRuntimeRecord, bool)> {
+    let existing = state
+        .runtimes
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取 Claude 会话失败: {error}")))?
+        .get(thread_id)
+        .cloned();
+
+    if let Some(runtime) = existing {
+        if runtime.current_run_id.is_some() {
+            return Ok((runtime, false));
+        }
+        if is_claude_runtime_compatible(&runtime, working_directory, permission_mode, payload) {
+            return Ok((runtime, true));
+        }
+        close_thread_runtime(state, thread_id)?;
+    }
+
+    let mut args = build_claude_run_args(payload, permission_mode);
+    let mut child = background_tokio_command(command)
+        .args(args.drain(..))
+        .current_dir(working_directory)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| ApiError::internal(format!("启动 Claude 失败: {error}")))?;
+    let child_id = child
+        .id()
+        .ok_or_else(|| ApiError::internal("Claude 进程 ID 不可用"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ApiError::internal("Claude stdin 不可写"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ApiError::internal("Claude stdout 不可读"))?;
+    let stderr = child.stderr.take();
+    let stdin = Arc::new(tokio::sync::Mutex::new(stdin));
+    let runtime = ClaudeRuntimeRecord {
+        thread_id: thread_id.to_string(),
+        working_directory: working_directory.to_string(),
+        permission_mode: permission_mode.to_string(),
+        model: payload.model.clone(),
+        effort: payload.effort.clone(),
+        session_id: payload.session_id.clone(),
+        child_id,
+        stdin,
+        current_run_id: None,
+        closed: false,
+    };
+
+    state
+        .runtimes
+        .lock()
+        .map_err(|error| ApiError::internal(format!("保存 Claude 会话失败: {error}")))?
+        .insert(thread_id.to_string(), runtime.clone());
+
+    let stdout_state = state.clone();
+    let stdout_thread_id = thread_id.to_string();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            handle_runtime_stdout_line(&stdout_state, &stdout_thread_id, &line);
+        }
+    });
+
+    if let Some(stderr) = stderr {
+        let stderr_state = state.clone();
+        let stderr_thread_id = thread_id.to_string();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                handle_runtime_stderr_line(&stderr_state, &stderr_thread_id, &line);
+            }
+        });
+    }
+
+    let exit_state = state.clone();
+    let exit_thread_id = thread_id.to_string();
+    tokio::spawn(async move {
+        let status = child.wait().await;
+        handle_runtime_exit(&exit_state, &exit_thread_id, status);
+    });
+
+    Ok((runtime, false))
+}
+
+fn is_claude_runtime_compatible(
+    runtime: &ClaudeRuntimeRecord,
+    working_directory: &str,
+    permission_mode: &str,
+    payload: &ClaudeRunRequest,
+) -> bool {
+    if runtime.closed
+        || runtime.working_directory != working_directory
+        || runtime.permission_mode != permission_mode
+        || runtime.model != payload.model
+        || runtime.effort != payload.effort
+    {
+        return false;
+    }
+    let requested_session_id = payload
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (runtime.session_id.as_deref(), requested_session_id) {
+        (Some(current), Some(requested)) => current == requested,
+        _ => true,
+    }
+}
+
+fn build_run_stream_response(state: AppState, run_id: String) -> ApiResult<Response> {
+    let stream = async_stream::stream! {
+        let mut index = 0_usize;
+        loop {
+            let Some(notify) = run_notify(&state, &run_id) else {
+                break;
+            };
+            let notified = notify.notified();
+            let Some((events, finished)) = snapshot_run_events_after(&state, &run_id, index) else {
+                break;
+            };
+            index += events.len();
+            let had_events = !events.is_empty();
+            for event in events {
+                let line = format!("{}\n", serde_json::to_string(&event).unwrap_or_default());
+                yield Ok::<Bytes, std::convert::Infallible>(Bytes::from(line));
+            }
+            if finished {
+                break;
+            }
+            if !had_events {
+                notified.await;
+            }
+        }
+    };
+    Response::builder()
+        .header("Content-Type", "application/x-ndjson; charset=utf-8")
+        .header("Cache-Control", "no-cache, no-transform")
+        .body(Body::from_stream(stream))
+        .map_err(|error| ApiError::internal(format!("构建 Claude 响应失败: {error}")))
+}
+
+fn snapshot_run_events_after(
+    state: &AppState,
+    run_id: &str,
+    after: usize,
+) -> Option<(Vec<Value>, bool)> {
+    let runs = state.runs.lock().ok()?;
+    let run = runs.get(run_id)?;
+    Some((
+        run.events.iter().skip(after).cloned().collect(),
+        run.finished,
+    ))
+}
+
+fn run_notify(state: &AppState, run_id: &str) -> Option<Arc<tokio::sync::Notify>> {
+    let runs = state.runs.lock().ok()?;
+    runs.get(run_id).map(|run| run.notify.clone())
+}
+
+fn set_runtime_current_run(
+    state: &AppState,
+    thread_id: &str,
+    run_id: Option<String>,
+) -> ApiResult<()> {
+    let mut runtimes = state
+        .runtimes
+        .lock()
+        .map_err(|error| ApiError::internal(format!("更新 Claude 会话失败: {error}")))?;
+    let runtime = runtimes
+        .get_mut(thread_id)
+        .ok_or_else(|| ApiError::bad_request("当前线程没有可用 Claude 会话"))?;
+    runtime.current_run_id = run_id;
+    Ok(())
+}
+
+fn set_run_runtime_handles(
+    state: &AppState,
+    run_id: &str,
+    child_id: u32,
+    stdin: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
+) {
+    if let Ok(mut runs) = state.runs.lock() {
+        if let Some(run) = runs.get_mut(run_id) {
+            run.child_id = Some(child_id);
+            run.stdin = Some(stdin);
+        }
+    }
+}
+
+fn handle_runtime_stdout_line(state: &AppState, thread_id: &str, line: &str) {
+    let run_id = state.runtimes.lock().ok().and_then(|runtimes| {
+        runtimes
+            .get(thread_id)
+            .and_then(|runtime| runtime.current_run_id.clone())
+    });
+    let Some(run_id) = run_id else {
+        return;
+    };
+    remember_control_request_mapping(state, &run_id, line);
+
+    let (events, saw_done) = {
+        let Ok(mut runs) = state.runs.lock() else {
+            return;
+        };
+        let Some(run) = runs.get_mut(&run_id) else {
+            return;
+        };
+        let events = map_claude_json_line(&run_id, line, run);
+        (events, run.saw_done)
+    };
+
+    for event in events {
+        emit_run_event(state, &run_id, event);
+    }
+    if saw_done {
+        finish_runtime_run(state, thread_id, &run_id);
+    }
+}
+
+fn handle_runtime_stderr_line(state: &AppState, thread_id: &str, line: &str) {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let run_id = state.runtimes.lock().ok().and_then(|runtimes| {
+        runtimes
+            .get(thread_id)
+            .and_then(|runtime| runtime.current_run_id.clone())
+    });
+    if let Some(run_id) = run_id {
+        push_run_event(
+            state,
+            &run_id,
+            json!({ "type": "stderr", "runId": run_id, "text": trimmed }),
+        );
+    }
+}
+
+fn handle_runtime_exit(
+    state: &AppState,
+    thread_id: &str,
+    status: Result<std::process::ExitStatus, std::io::Error>,
+) {
+    let run_id = {
+        let Ok(mut runtimes) = state.runtimes.lock() else {
+            return;
+        };
+        let run_id = runtimes
+            .get(thread_id)
+            .and_then(|runtime| runtime.current_run_id.clone());
+        runtimes.remove(thread_id);
+        run_id
+    };
+    if let Some(run_id) = run_id {
+        let already_done = state
+            .runs
+            .lock()
+            .ok()
+            .and_then(|runs| runs.get(&run_id).map(|run| run.saw_done || run.finished))
+            .unwrap_or(false);
+        if !already_done {
+            let message = match status {
+                Ok(status) if status.success() => "Claude 会话已结束。".to_string(),
+                Ok(status) => format!("Claude 退出码: {status}"),
+                Err(error) => format!("等待 Claude 退出失败: {error}"),
+            };
+            push_run_event(
+                state,
+                &run_id,
+                json!({ "type": "error", "runId": run_id, "message": message }),
+            );
+        }
+        mark_run_finished(state, &run_id);
+    }
+}
+
+fn finish_runtime_run(state: &AppState, thread_id: &str, run_id: &str) {
+    if let Ok(mut runtimes) = state.runtimes.lock() {
+        if let Some(runtime) = runtimes.get_mut(thread_id) {
+            if runtime.current_run_id.as_deref() == Some(run_id) {
+                runtime.current_run_id = None;
+            }
+        }
+    }
+    mark_run_finished(state, run_id);
+}
+
+fn close_thread_runtime(state: &AppState, thread_id: &str) -> ApiResult<bool> {
+    let runtime = state
+        .runtimes
+        .lock()
+        .map_err(|error| ApiError::internal(format!("关闭 Claude 会话失败: {error}")))?
+        .remove(thread_id);
+    let Some(runtime) = runtime else {
+        return Ok(false);
+    };
+    if let Some(run_id) = runtime.current_run_id.as_deref() {
+        push_run_event(
+            state,
+            run_id,
+            json!({ "type": "error", "runId": run_id, "message": "Claude 会话已关闭。" }),
+        );
+        mark_run_finished(state, run_id);
+    }
+    kill_process_tree(runtime.child_id)
+}
+
+fn kill_process_tree(child_id: u32) -> ApiResult<bool> {
+    #[cfg(target_os = "windows")]
+    let status = background_command("taskkill")
+        .args(["/PID", &child_id.to_string(), "/T", "/F"])
+        .status();
+    #[cfg(not(target_os = "windows"))]
+    let status = Command::new("kill")
+        .arg("-TERM")
+        .arg(child_id.to_string())
+        .status();
+    Ok(status.is_ok_and(|status| status.success()))
+}
+
+fn runtime_status_json(runtime: &ClaudeRuntimeRecord) -> Value {
+    json!({
+        "threadId": runtime.thread_id,
+        "pid": runtime.child_id,
+        "alive": !runtime.closed,
+        "activeRun": runtime.current_run_id.is_some(),
+        "runId": runtime.current_run_id,
+        "sessionId": runtime.session_id,
+        "workingDirectory": runtime.working_directory,
+        "permissionMode": runtime.permission_mode,
+        "model": runtime.model,
+        "effort": runtime.effort,
+    })
+}
+
+fn remember_control_request_mapping(state: &AppState, run_id: &str, line: &str) {
+    let Ok(payload) = serde_json::from_str::<Value>(line.trim()) else {
+        return;
+    };
+    if payload.get("type").and_then(Value::as_str) != Some("control_request") {
+        return;
+    }
+    let Some(request_id) = payload
+        .get("request_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+    else {
+        return;
+    };
+    let tool_use_id = payload
+        .pointer("/request/tool_use_id")
+        .or_else(|| payload.pointer("/request/toolUseId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    if let Ok(mut runs) = state.runs.lock() {
+        if let Some(run) = runs.get_mut(run_id) {
+            run.control_request_tool_use_ids
+                .insert(request_id, tool_use_id);
+        }
+    }
+}
+
+fn control_response_ids_for_request(
+    state: &AppState,
+    run_id: &str,
+    request_id: &str,
+) -> ApiResult<Option<(String, Option<String>)>> {
+    let runs = state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取控制请求失败: {error}")))?;
+    let Some(run) = runs.get(run_id) else {
+        return Ok(None);
+    };
+    if let Some(tool_use_id) = run.control_request_tool_use_ids.get(request_id) {
+        return Ok(Some((request_id.to_string(), tool_use_id.clone())));
+    }
+    Ok(run
+        .control_request_tool_use_ids
+        .iter()
+        .find_map(|(control_request_id, tool_use_id)| {
+            (tool_use_id.as_deref() == Some(request_id))
+                .then(|| (control_request_id.clone(), tool_use_id.clone()))
+        }))
+}
+
+fn ensure_run_paused_for_user_input(
+    state: &AppState,
+    run_id: &str,
+    message: &str,
+) -> ApiResult<()> {
+    let runs = state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?;
+    let run = runs
+        .get(run_id)
+        .ok_or_else(|| ApiError::bad_request("当前运行不存在或已经结束。"))?;
+    if run.finished {
+        return Err(ApiError::bad_request("当前运行不存在或已经结束。"));
+    }
+    if !run.paused_for_user_input {
+        return Err(ApiError::bad_request(message));
+    }
+    Ok(())
+}
+
+fn mark_run_human_input_resumed(state: &AppState, run_id: &str, request_id: &str) {
+    if let Ok(mut runs) = state.runs.lock() {
+        if let Some(run) = runs.get_mut(run_id) {
+            run.paused_for_user_input = false;
+            if run
+                .control_request_tool_use_ids
+                .remove(request_id)
+                .is_none()
+            {
+                let matched_control_request_id = run.control_request_tool_use_ids.iter().find_map(
+                    |(control_request_id, tool_use_id)| {
+                        (tool_use_id.as_deref() == Some(request_id))
+                            .then(|| control_request_id.clone())
+                    },
+                );
+                if let Some(control_request_id) = matched_control_request_id {
+                    run.control_request_tool_use_ids.remove(&control_request_id);
+                }
+            }
+        }
+    }
+}
+
+fn build_request_user_input_response_answers(
+    questions: &Value,
+    submitted_answers: &Map<String, Value>,
+) -> Map<String, Value> {
+    let mut response_answers = Map::new();
+    let Some(questions) = questions.as_array() else {
+        return submitted_answers.clone();
+    };
+    for (index, question) in questions.iter().enumerate() {
+        let key = first_json_string(question, &["id"])
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("question-{index}"));
+        let Some(answer) = submitted_answers
+            .get(&key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let normalized_answer = normalize_request_user_input_answer_value(question, answer);
+        response_answers.insert(key, json!(normalized_answer));
+        if let Some(question_text) = first_json_string(question, &["question", "prompt", "label"]) {
+            response_answers.insert(question_text.to_string(), json!(normalized_answer));
+        }
+    }
+    if response_answers.is_empty() {
+        submitted_answers.clone()
+    } else {
+        response_answers
+    }
+}
+
+fn normalize_request_user_input_answer_value(question: &Value, answer: &str) -> String {
+    let Some(options) = question.get("options").and_then(Value::as_array) else {
+        return answer.to_string();
+    };
+    if options.is_empty() {
+        return answer.to_string();
+    }
+    let option_labels = options
+        .iter()
+        .filter_map(|option| first_json_string(option, &["label", "title", "value"]))
+        .collect::<std::collections::HashSet<_>>();
+    let parts = answer
+        .lines()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let selected_labels = parts
+        .iter()
+        .copied()
+        .filter(|part| option_labels.contains(part))
+        .collect::<Vec<_>>();
+    let free_text = parts
+        .iter()
+        .copied()
+        .filter(|part| !option_labels.contains(part))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+    if question
+        .get("isOther")
+        .or_else(|| question.get("is_other"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && !free_text.is_empty()
+    {
+        return free_text;
+    }
+    if question
+        .get("multiSelect")
+        .or_else(|| question.get("multi_select"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return selected_labels.join(", ");
+    }
+    selected_labels
+        .first()
+        .map(|value| (*value).to_string())
+        .unwrap_or_else(|| {
+            if free_text.is_empty() {
+                answer.to_string()
+            } else {
+                free_text
+            }
+        })
+}
+
+fn build_claude_control_response_message(
+    request_id: &str,
+    decision: &str,
+    tool_use_id: Option<&str>,
+) -> Value {
+    let response = if decision == "reject" {
+        json!({
+            "behavior": "deny",
+            "message": "Permission denied by user.",
+            "toolUseID": tool_use_id,
+            "decisionClassification": "user_reject",
+        })
+    } else {
+        json!({
+            "behavior": "allow",
+            "updatedInput": {},
+            "toolUseID": tool_use_id,
+            "decisionClassification": "user_temporary",
+        })
+    };
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": response,
+        },
+    })
+}
+
+fn build_ask_user_question_control_response_message(
+    request_id: &str,
+    tool_use_id: Option<&str>,
+    questions: Value,
+    answers: Value,
+) -> Value {
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": {
+                "behavior": "allow",
+                "updatedInput": {
+                    "questions": questions,
+                    "answers": answers,
+                },
+                "toolUseID": tool_use_id,
+                "decisionClassification": "user_temporary",
+            },
+        },
+    })
+}
+
+fn map_claude_json_line(run_id: &str, line: &str, run: &mut ActiveRunRecord) -> Vec<Value> {
+    let payload = match serde_json::from_str::<Value>(line.trim()) {
+        Ok(payload) => payload,
+        Err(_) => {
+            return vec![json!({ "type": "stderr", "runId": run_id, "text": line })];
+        }
+    };
+    let mut events = vec![json!({ "type": "raw", "runId": run_id, "raw": payload })];
+    let is_sidechain = payload
+        .get("isSidechain")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let parent_tool_use_id = payload.get("parent_tool_use_id").and_then(Value::as_str);
+    if let Some(session_id) = payload.get("session_id").and_then(Value::as_str) {
+        events.push(json!({ "type": "session", "runId": run_id, "sessionId": session_id }));
+    }
+    if payload.get("type").and_then(Value::as_str) == Some("stream_event") {
+        if let Some(event) = payload.get("event") {
+            map_claude_stream_event(
+                run_id,
+                event,
+                run,
+                is_sidechain,
+                parent_tool_use_id,
+                &mut events,
+            );
+        }
+    }
+    if let Some(request) = parse_control_request_user_input(&payload) {
+        events.push(json!({ "type": "request-user-input", "runId": run_id, "request": request }));
+    }
+    if let Some(request) = parse_control_approval_request(&payload) {
+        events.push(json!({ "type": "approval-request", "runId": run_id, "request": request }));
+    }
+    if payload.get("type").and_then(Value::as_str) == Some("system") {
+        let mut event = json!({
+            "type": "claude-event",
+            "runId": run_id,
+            "label": describe_claude_system_event(&payload),
+            "eventType": "system",
+            "raw": payload,
+        });
+        if let Some(object) = event.as_object_mut() {
+            if let Some(subtype) = payload.get("subtype").and_then(Value::as_str) {
+                object.insert("subtype".to_string(), json!(subtype));
+            }
+            if let Some(status) = payload.get("status").and_then(Value::as_str) {
+                object.insert("status".to_string(), json!(status));
+            }
+        }
+        events.push(event);
+    }
+    if payload.get("type").and_then(Value::as_str) == Some("assistant") {
+        if let Some(content) = payload
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+        {
+            if !is_sidechain {
+                events.push(
+                    json!({ "type": "assistant-snapshot", "runId": run_id, "blocks": content }),
+                );
+            }
+            for block in content {
+                if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                    continue;
+                }
+                let tool_name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
+                let tool_use_id = block.get("id").and_then(Value::as_str);
+                let input = block.get("input").unwrap_or(&Value::Null);
+                if let Some(request) = parse_request_user_input_event(tool_name, input, tool_use_id)
+                {
+                    events.push(json!({ "type": "request-user-input", "runId": run_id, "request": request }));
+                    continue;
+                }
+                if let Some(request) =
+                    parse_runtime_approval_request_event(tool_name, input, tool_use_id)
+                {
+                    events.push(
+                        json!({ "type": "approval-request", "runId": run_id, "request": request }),
+                    );
+                    continue;
+                }
+            }
+        }
+    }
+    if payload.get("type").and_then(Value::as_str) == Some("user") {
+        if let Some(content) = payload
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+        {
+            for block in content {
+                if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                    continue;
+                }
+                let content_text =
+                    stringify_claude_content(block.get("content").unwrap_or(&Value::Null));
+                let tool_use_id = block.get("tool_use_id").and_then(Value::as_str);
+                let is_error = block
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if is_internal_human_input_tool_result(run, tool_use_id, &content_text, is_error) {
+                    events.push(json!({
+                        "type": "trace",
+                        "runId": run_id,
+                        "name": "internal_human_input_tool_result_skipped",
+                        "atMs": current_timestamp_ms_i64(),
+                        "detail": tool_use_id,
+                    }));
+                    continue;
+                }
+                events.push(json!({
+                    "type": "tool-result",
+                    "runId": run_id,
+                    "toolUseId": tool_use_id,
+                    "parentToolUseId": parent_tool_use_id,
+                    "isSidechain": is_sidechain,
+                    "content": content_text,
+                    "isError": is_error,
+                }));
+                if is_error && is_human_approval_tool_result_content(&content_text) {
+                    run.paused_for_user_input = true;
+                    events.push(json!({
+                        "type": "trace",
+                        "runId": run_id,
+                        "name": "paused_for_approval_result",
+                        "atMs": current_timestamp_ms_i64(),
+                    }));
+                    return events;
+                }
+            }
+        }
+    }
+    if payload.get("type").and_then(Value::as_str) == Some("result") {
+        run.saw_done = true;
+        let result = payload
+            .get("result")
+            .and_then(Value::as_str)
+            .unwrap_or(run.collected_result.as_str());
+        events.push(json!({
+            "type": "done",
+            "runId": run_id,
+            "sessionId": payload.get("session_id").and_then(Value::as_str),
+            "result": result,
+            "totalCostUsd": payload.get("total_cost_usd").and_then(Value::as_f64),
+            "durationMs": payload.get("duration_ms").and_then(Value::as_i64),
+            "inputTokens": payload.pointer("/usage/input_tokens").and_then(Value::as_i64),
+            "outputTokens": payload.pointer("/usage/output_tokens").and_then(Value::as_i64),
+            "cacheCreationInputTokens": payload.pointer("/usage/cache_creation_input_tokens").and_then(Value::as_i64),
+            "cacheReadInputTokens": payload.pointer("/usage/cache_read_input_tokens").and_then(Value::as_i64),
+        }));
+    }
+    events
+}
+
+fn describe_claude_system_event(payload: &Value) -> String {
+    match payload.get("subtype").and_then(Value::as_str) {
+        Some("init") => "Claude 会话初始化".to_string(),
+        Some("status") => format!(
+            "状态：{}",
+            payload
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ),
+        Some(subtype) => format!("Claude system: {subtype}"),
+        None => "Claude system".to_string(),
+    }
+}
+
+fn map_claude_stream_event(
+    run_id: &str,
+    event: &Value,
+    run: &mut ActiveRunRecord,
+    is_sidechain: bool,
+    parent_tool_use_id: Option<&str>,
+    events: &mut Vec<Value>,
+) {
+    match event.get("type").and_then(Value::as_str) {
+        Some("content_block_start") => {
+            let index = event.get("index").and_then(Value::as_i64).unwrap_or(-1);
+            if let Some(block) = event.get("content_block") {
+                if let Some(block_type) = block.get("type").and_then(Value::as_str) {
+                    run.block_type_by_index
+                        .insert(index, block_type.to_string());
+                }
+                if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                    let tool_name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
+                    let tool_use_id = block.get("id").and_then(Value::as_str);
+                    let input = block.get("input").unwrap_or(&Value::Null);
+                    run.tool_input_accumulators.insert(
+                        index,
+                        ToolInputAccumulator {
+                            name: tool_name.to_string(),
+                            tool_use_id: tool_use_id.map(ToString::to_string),
+                            parent_tool_use_id: parent_tool_use_id.map(ToString::to_string),
+                            is_sidechain,
+                            input_text: get_tool_input_seed(input),
+                            emitted_request_user_input: false,
+                            emitted_approval_request: false,
+                        },
+                    );
+                    if let Some(request) =
+                        parse_request_user_input_event(tool_name, input, tool_use_id)
+                    {
+                        if let Some(accumulator) = run.tool_input_accumulators.get_mut(&index) {
+                            accumulator.emitted_request_user_input = true;
+                        }
+                        events.push(json!({ "type": "request-user-input", "runId": run_id, "request": request }));
+                        return;
+                    }
+                    if let Some(request) =
+                        parse_runtime_approval_request_event(tool_name, input, tool_use_id)
+                    {
+                        if let Some(accumulator) = run.tool_input_accumulators.get_mut(&index) {
+                            accumulator.emitted_approval_request = true;
+                        }
+                        events.push(json!({ "type": "approval-request", "runId": run_id, "request": request }));
+                        return;
+                    }
+                    if !is_sidechain {
+                        events.push(json!({ "type": "phase", "runId": run_id, "phase": "tool", "label": "执行工具中" }));
+                    }
+                    events.push(json!({
+                        "type": "tool-start",
+                        "runId": run_id,
+                        "blockIndex": index,
+                        "toolUseId": tool_use_id,
+                        "parentToolUseId": parent_tool_use_id,
+                        "isSidechain": is_sidechain,
+                        "name": tool_name,
+                        "input": input,
+                    }));
+                }
+                if block.get("type").and_then(Value::as_str) == Some("thinking") && !is_sidechain {
+                    events.push(json!({ "type": "phase", "runId": run_id, "phase": "thinking", "label": "思考中" }));
+                }
+            }
+        }
+        Some("content_block_delta") => {
+            let index = event.get("index").and_then(Value::as_i64).unwrap_or(-1);
+            if let Some(delta) = event.get("delta") {
+                match delta.get("type").and_then(Value::as_str) {
+                    Some("text_delta") => {
+                        if let Some(text) = delta.get("text").and_then(Value::as_str) {
+                            run.collected_result.push_str(text);
+                            events.push(json!({ "type": "delta", "runId": run_id, "text": text }));
+                            events.push(json!({ "type": "phase", "runId": run_id, "phase": "computing", "label": "生成回复中" }));
+                        }
+                    }
+                    Some("thinking_delta") => {
+                        let text = delta
+                            .get("thinking")
+                            .or_else(|| delta.get("text"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        if !text.is_empty() && !is_sidechain {
+                            events.push(
+                                json!({ "type": "thinking-delta", "runId": run_id, "text": text }),
+                            );
+                        }
+                        if !is_sidechain {
+                            events.push(json!({ "type": "phase", "runId": run_id, "phase": "thinking", "label": "思考中" }));
+                        }
+                    }
+                    Some("input_json_delta") => {
+                        if let Some(text) = delta.get("partial_json").and_then(Value::as_str) {
+                            let mut tool_use_id = None;
+                            let mut event_parent_tool_use_id =
+                                parent_tool_use_id.map(ToString::to_string);
+                            let mut event_is_sidechain = is_sidechain;
+                            if let Some(accumulator) = run.tool_input_accumulators.get_mut(&index) {
+                                tool_use_id = accumulator.tool_use_id.clone();
+                                event_parent_tool_use_id = accumulator.parent_tool_use_id.clone();
+                                event_is_sidechain = accumulator.is_sidechain;
+                                if accumulator.emitted_request_user_input
+                                    || accumulator.emitted_approval_request
+                                {
+                                    return;
+                                }
+                                accumulator.input_text.push_str(text);
+                                let before = events.len();
+                                emit_structured_tool_events_from_accumulator(
+                                    run_id,
+                                    accumulator,
+                                    events,
+                                );
+                                if events.len() > before {
+                                    return;
+                                }
+                            }
+                            events.push(json!({
+                                "type": "tool-input-delta",
+                                "runId": run_id,
+                                "blockIndex": index,
+                                "toolUseId": tool_use_id,
+                                "parentToolUseId": event_parent_tool_use_id,
+                                "isSidechain": event_is_sidechain,
+                                "text": text,
+                            }));
+                            if !event_is_sidechain {
+                                events.push(json!({ "type": "phase", "runId": run_id, "phase": "tool", "label": "执行工具中" }));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some("content_block_stop") => {
+            let index = event.get("index").and_then(Value::as_i64).unwrap_or(-1);
+            let current_block_type = run.block_type_by_index.remove(&index);
+            let mut event_parent_tool_use_id = parent_tool_use_id.map(ToString::to_string);
+            let mut event_is_sidechain = is_sidechain;
+            if let Some(mut accumulator) = run.tool_input_accumulators.remove(&index) {
+                event_parent_tool_use_id = accumulator.parent_tool_use_id.clone();
+                event_is_sidechain = accumulator.is_sidechain;
+                let already_emitted =
+                    accumulator.emitted_request_user_input || accumulator.emitted_approval_request;
+                if !already_emitted {
+                    let before = events.len();
+                    emit_structured_tool_events_from_accumulator(run_id, &mut accumulator, events);
+                    if events.len() > before {
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            }
+            if current_block_type.as_deref() == Some("tool_use") {
+                events.push(json!({
+                    "type": "tool-stop",
+                    "runId": run_id,
+                    "blockIndex": index,
+                    "parentToolUseId": event_parent_tool_use_id,
+                    "isSidechain": event_is_sidechain,
+                }));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn emit_structured_tool_events_from_accumulator(
+    run_id: &str,
+    accumulator: &mut ToolInputAccumulator,
+    events: &mut Vec<Value>,
+) {
+    let Some(input) = parse_json_object(&accumulator.input_text) else {
+        return;
+    };
+    if !accumulator.emitted_request_user_input {
+        if let Some(request) = parse_request_user_input_event(
+            &accumulator.name,
+            &input,
+            accumulator.tool_use_id.as_deref(),
+        ) {
+            accumulator.emitted_request_user_input = true;
+            events
+                .push(json!({ "type": "request-user-input", "runId": run_id, "request": request }));
+            return;
+        }
+    }
+    if !accumulator.emitted_approval_request {
+        if let Some(request) = parse_runtime_approval_request_event(
+            &accumulator.name,
+            &input,
+            accumulator.tool_use_id.as_deref(),
+        ) {
+            accumulator.emitted_approval_request = true;
+            events.push(json!({ "type": "approval-request", "runId": run_id, "request": request }));
+        }
+    }
+}
+
+fn parse_json_object(value: &str) -> Option<Value> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = serde_json::from_str::<Value>(trimmed).ok()?;
+    parsed.as_object()?;
+    Some(parsed)
+}
+
+fn get_tool_input_seed(input: &Value) -> String {
+    if !input.is_object() {
+        return String::new();
+    }
+    input
+        .as_object()
+        .filter(|object| !object.is_empty())
+        .and_then(|_| serde_json::to_string(input).ok())
+        .unwrap_or_default()
+}
+
+fn stringify_claude_content(content: &Value) -> String {
+    if let Some(text) = content.as_str() {
+        return text.to_string();
+    }
+    if let Some(items) = content.as_array() {
+        return items
+            .iter()
+            .map(|item| {
+                if let Some(text) = item.as_str() {
+                    return text.to_string();
+                }
+                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                    return text.to_string();
+                }
+                serde_json::to_string_pretty(item).unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    if content.is_null() {
+        String::new()
+    } else {
+        serde_json::to_string_pretty(content).unwrap_or_default()
+    }
+}
+
+fn is_internal_human_input_tool_result(
+    run: &ActiveRunRecord,
+    tool_use_id: Option<&str>,
+    content: &str,
+    is_error: bool,
+) -> bool {
+    let Some(tool_use_id) = tool_use_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let key = format!("id:{tool_use_id}");
+    if run.emitted_request_user_input_keys.contains(&key) {
+        return true;
+    }
+    if !run.emitted_approval_request_keys.contains(&key) {
+        return false;
+    }
+    !is_error || is_expected_approval_interruption_content(content)
+}
+
+fn is_expected_approval_interruption_content(content: &str) -> bool {
+    let normalized = content.trim().to_ascii_lowercase();
+    normalized == "exit plan mode?"
+        || normalized.contains("exit plan mode?")
+        || is_human_approval_tool_result_content(content)
+}
+
+fn is_human_approval_tool_result_content(content: &str) -> bool {
+    let normalized = content.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+    normalized.contains("this command requires approval")
+        || normalized.contains("requires approval")
+        || normalized.contains("requires your approval")
+        || normalized.contains("approval required")
+        || (normalized.contains("was blocked")
+            && normalized.contains("for security")
+            && normalized.contains("claude code"))
+}
+
+fn emit_run_event(state: &AppState, run_id: &str, event: Value) {
+    match event.get("type").and_then(Value::as_str) {
+        Some("request-user-input") => {
+            let Some(request) = event.get("request") else {
+                push_run_event(state, run_id, event);
+                return;
+            };
+            let key = request_user_input_key(request);
+            let should_emit = {
+                let Ok(mut runs) = state.runs.lock() else {
+                    return;
+                };
+                let Some(run) = runs.get_mut(run_id) else {
+                    return;
+                };
+                if run.emitted_request_user_input_keys.contains(&key) {
+                    false
+                } else {
+                    run.emitted_request_user_input_keys.insert(key);
+                    run.paused_for_user_input = true;
+                    true
+                }
+            };
+            if should_emit {
+                push_trace_event(
+                    state,
+                    run_id,
+                    "paused_for_user_input",
+                    current_timestamp_ms_i64(),
+                    None,
+                );
+                push_run_event(state, run_id, event);
+            }
+        }
+        Some("approval-request") => {
+            let Some(request) = event.get("request") else {
+                push_run_event(state, run_id, event);
+                return;
+            };
+            let key = approval_request_key(request);
+            let auto_approve = {
+                let Ok(mut runs) = state.runs.lock() else {
+                    return;
+                };
+                let Some(run) = runs.get_mut(run_id) else {
+                    return;
+                };
+                if run.emitted_approval_request_keys.contains(&key) {
+                    return;
+                }
+                run.emitted_approval_request_keys.insert(key);
+                should_auto_approve_bypass_permission_request(run, request)
+            };
+            if auto_approve {
+                auto_approve_permission_request(state.clone(), run_id.to_string(), event);
+            } else {
+                if let Ok(mut runs) = state.runs.lock() {
+                    if let Some(run) = runs.get_mut(run_id) {
+                        run.paused_for_user_input = true;
+                    }
+                }
+                push_trace_event(
+                    state,
+                    run_id,
+                    "paused_for_approval_request",
+                    current_timestamp_ms_i64(),
+                    None,
+                );
+                push_run_event(state, run_id, event);
+            }
+        }
+        _ => push_run_event(state, run_id, event),
+    }
+}
+
+fn auto_approve_permission_request(state: AppState, run_id: String, event: Value) {
+    let request_id = event
+        .get("request")
+        .and_then(|request| request.get("requestId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let Some(request_id) = request_id else {
+        push_run_event(&state, &run_id, event);
+        return;
+    };
+    tokio::spawn(async move {
+        let message = approval_response_message_for_request(
+            &state,
+            &run_id,
+            &request_id,
+            "approve",
+            "The user approved this request. Continue the original task.",
+        );
+        let result = match message {
+            Ok(message) => write_run_stdin_message(&state, &run_id, &message).await,
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(()) => {
+                mark_run_human_input_resumed(&state, &run_id, &request_id);
+                push_run_event(
+                    &state,
+                    &run_id,
+                    json!({ "type": "trace", "runId": run_id, "name": "auto_approved_bypass_permission", "atMs": current_timestamp_ms_i64(), "detail": request_id }),
+                );
+            }
+            Err(_) => {
+                if let Ok(mut runs) = state.runs.lock() {
+                    if let Some(run) = runs.get_mut(&run_id) {
+                        run.paused_for_user_input = true;
+                    }
+                }
+                push_trace_event(
+                    &state,
+                    &run_id,
+                    "paused_for_approval_request",
+                    current_timestamp_ms_i64(),
+                    None,
+                );
+                push_run_event(&state, &run_id, event);
+            }
+        }
+    });
+}
+
+fn approval_response_message_for_request(
+    state: &AppState,
+    run_id: &str,
+    request_id: &str,
+    decision: &str,
+    content: &str,
+) -> ApiResult<Value> {
+    Ok(
+        if let Some((control_request_id, tool_use_id)) =
+            control_response_ids_for_request(state, run_id, request_id)?
+        {
+            build_claude_control_response_message(
+                &control_request_id,
+                decision,
+                tool_use_id.as_deref(),
+            )
+        } else {
+            build_claude_tool_result_message(request_id, content, decision == "reject")
+        },
+    )
+}
+
+fn should_auto_approve_bypass_permission_request(run: &ActiveRunRecord, request: &Value) -> bool {
+    run.permission_mode == "bypassPermissions"
+        && !run.finished
+        && run.stdin.is_some()
+        && request.get("kind").and_then(Value::as_str) == Some("permission")
+        && request
+            .get("requestId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+}
+
+fn request_user_input_key(request: &Value) -> String {
+    if let Some(request_id) = request
+        .get("requestId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!("id:{request_id}");
+    }
+    format!(
+        "shape:{}",
+        json!({
+            "title": request.get("title").cloned().unwrap_or(Value::Null),
+            "description": request.get("description").cloned().unwrap_or(Value::Null),
+            "questions": request.get("questions").cloned().unwrap_or(Value::Null),
+        })
+    )
+}
+
+fn approval_request_key(request: &Value) -> String {
+    if let Some(request_id) = request
+        .get("requestId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!("id:{request_id}");
+    }
+    format!(
+        "shape:{}",
+        json!({
+            "title": request.get("title").cloned().unwrap_or(Value::Null),
+            "description": request.get("description").cloned().unwrap_or(Value::Null),
+            "command": request.get("command").cloned().unwrap_or(Value::Null),
+            "danger": request.get("danger").cloned().unwrap_or(Value::Null),
+        })
+    )
+}
+
+fn parse_control_request_user_input(payload: &Value) -> Option<Value> {
+    let request = payload.get("request")?;
+    if request.get("subtype").and_then(Value::as_str) != Some("can_use_tool") {
+        return None;
+    }
+    let tool_name = first_json_string(request, &["tool_name", "toolName", "name"])?;
+    let tool_use_id = request
+        .get("tool_use_id")
+        .or_else(|| request.get("toolUseId"))
+        .and_then(Value::as_str);
+    parse_request_user_input_event(
+        tool_name,
+        request.get("input").unwrap_or(&Value::Null),
+        tool_use_id,
+    )
+}
+
+fn parse_control_approval_request(payload: &Value) -> Option<Value> {
+    let request = payload.get("request")?;
+    if request.get("subtype").and_then(Value::as_str) != Some("can_use_tool") {
+        return None;
+    }
+    let request_id = payload.get("request_id").and_then(Value::as_str)?;
+    let tool_name =
+        first_json_string(request, &["tool_name", "toolName", "name"]).unwrap_or("tool");
+    let input = request.get("input").unwrap_or(&Value::Null);
+    if normalize_tool_name(tool_name) == "exitplanmode" {
+        return Some(json!({
+            "requestId": request_id,
+            "kind": "plan-exit",
+            "title": "计划待确认",
+            "description": first_json_string(input, &["plan", "description", "reason", "message"]),
+            "danger": "low",
+        }));
+    }
+    Some(json!({
+        "requestId": request_id,
+        "kind": "permission",
+        "title": first_json_string(request, &["title", "display_name", "displayName", "message", "question"]).map(ToString::to_string).unwrap_or_else(|| format!("等待批准：{tool_name}")),
+        "description": first_json_string(request, &["description", "decision_reason", "decisionReason"]),
+        "command": normalize_approval_command(input.get("command").or_else(|| input.get("argv")).or_else(|| input.get("args"))),
+        "danger": normalize_danger_level(first_json_string(request, &["danger", "risk"])),
+    }))
+}
+
+fn parse_request_user_input_event(
+    tool_name: &str,
+    input: &Value,
+    tool_use_id: Option<&str>,
+) -> Option<Value> {
+    let normalized = normalize_tool_name(tool_name);
+    let raw_questions = input.get("questions").and_then(Value::as_array)?;
+    let has_shape = raw_questions.iter().any(has_request_user_input_shape);
+    if normalized != "requestuserinput" && normalized != "askuserquestion" && !has_shape {
+        return None;
+    }
+    let questions = raw_questions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, question)| parse_request_user_input_question(question, index))
+        .collect::<Vec<_>>();
+    if questions.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "requestId": first_json_string(input, &["requestId", "request_id", "toolUseId", "tool_use_id"]).or(tool_use_id),
+        "title": first_json_string(input, &["title", "message", "prompt"]).unwrap_or("需要你的选择"),
+        "description": first_json_string(input, &["description", "instructions"]),
+        "questions": questions,
+    }))
+}
+
+fn parse_request_user_input_question(question: &Value, index: usize) -> Option<Value> {
+    let text = first_json_string(question, &["question", "text", "prompt", "message"])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let options = question
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|option| {
+                    let label = first_json_string(option, &["label", "title", "value"])?;
+                    Some(json!({
+                        "label": label,
+                        "description": first_json_string(option, &["description", "detail", "details"]),
+                    }))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Some(json!({
+        "id": first_json_string(question, &["id", "name", "key"]).map(ToString::to_string).unwrap_or_else(|| format!("question-{index}")),
+        "header": first_json_string(question, &["header", "title"]),
+        "question": text,
+        "options": options,
+        "multiSelect": question.get("multiSelect").or_else(|| question.get("multi_select")).and_then(Value::as_bool).unwrap_or(false),
+        "required": question.get("required").and_then(Value::as_bool).unwrap_or(false),
+        "secret": question.get("secret").and_then(Value::as_bool).unwrap_or(false),
+        "isOther": question.get("isOther").or_else(|| question.get("is_other")).and_then(Value::as_bool).unwrap_or(false),
+        "placeholder": first_json_string(question, &["placeholder"]),
+    }))
+}
+
+fn parse_approval_request_event(
+    tool_name: &str,
+    input: &Value,
+    tool_use_id: Option<&str>,
+) -> Option<Value> {
+    let normalized = normalize_tool_name(tool_name);
+    if normalized == "exitplanmode" {
+        return Some(json!({
+            "requestId": first_json_string(input, &["requestId", "request_id", "toolUseId", "tool_use_id"]).or(tool_use_id),
+            "kind": "plan-exit",
+            "title": "计划待确认",
+            "description": first_json_string(input, &["plan", "description", "reason", "message"]),
+            "danger": "low",
+        }));
+    }
+    if normalized != "approvalrequest" {
+        return None;
+    }
+    Some(json!({
+        "requestId": first_json_string(input, &["requestId", "request_id", "toolUseId", "tool_use_id"]).or(tool_use_id),
+        "kind": "permission",
+        "title": first_json_string(input, &["title", "message", "question"]).unwrap_or("等待批准"),
+        "description": first_json_string(input, &["description", "reason"]),
+        "command": normalize_approval_command(input.get("command").or_else(|| input.get("argv")).or_else(|| input.get("args"))),
+        "danger": normalize_danger_level(first_json_string(input, &["danger", "risk"])),
+    }))
+}
+
+fn parse_runtime_approval_request_event(
+    tool_name: &str,
+    input: &Value,
+    tool_use_id: Option<&str>,
+) -> Option<Value> {
+    if normalize_tool_name(tool_name) == "exitplanmode" {
+        return None;
+    }
+    parse_approval_request_event(tool_name, input, tool_use_id)
+}
+
+fn first_json_string<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_tool_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn has_request_user_input_shape(value: &Value) -> bool {
+    first_json_string(value, &["question", "text", "prompt", "message"]).is_some()
+}
+
+fn normalize_approval_command(value: Option<&Value>) -> Value {
+    let Some(items) = value.and_then(Value::as_array) else {
+        return Value::Null;
+    };
+    Value::Array(
+        items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| json!(value))
+            .collect(),
+    )
+}
+
+fn normalize_danger_level(value: Option<&str>) -> Value {
+    match value {
+        Some("low") | Some("medium") | Some("high") => json!(value),
+        _ => Value::Null,
+    }
+}
+
+fn push_run_event(state: &AppState, run_id: &str, event: Value) {
+    let mut runtime_session_update: Option<(String, String)> = None;
+    let mut notify: Option<Arc<tokio::sync::Notify>> = None;
+    if let Ok(mut runs) = state.runs.lock() {
+        if let Some(run) = runs.get_mut(run_id) {
+            if event.get("type").and_then(Value::as_str) == Some("session") {
+                if let Some(session_id) = event.get("sessionId").and_then(Value::as_str) {
+                    run.session_id = Some(session_id.to_string());
+                    runtime_session_update = Some((run.thread_id.clone(), session_id.to_string()));
+                }
+            }
+            run.events.push(event);
+            notify = Some(run.notify.clone());
+        }
+    }
+    if let Some((thread_id, session_id)) = runtime_session_update {
+        if let Ok(mut runtimes) = state.runtimes.lock() {
+            if let Some(runtime) = runtimes.get_mut(&thread_id) {
+                runtime.session_id = Some(session_id);
+            }
+        }
+    }
+    if let Some(notify) = notify {
+        notify.notify_waiters();
+    }
+}
+
+fn push_trace_event(state: &AppState, run_id: &str, name: &str, at_ms: i64, detail: Option<&str>) {
+    let started_at_ms = state
+        .runs
+        .lock()
+        .ok()
+        .and_then(|runs| runs.get(run_id).map(|run| run.started_at_ms))
+        .unwrap_or(at_ms);
+    let mut event = json!({
+        "type": "trace",
+        "runId": run_id,
+        "name": name,
+        "atMs": at_ms,
+        "elapsedMs": (at_ms - started_at_ms).max(0),
+    });
+    if let Some(detail) = detail {
+        if let Some(object) = event.as_object_mut() {
+            object.insert("detail".to_string(), json!(detail));
+        }
+    }
+    push_run_event(state, run_id, event);
+}
+
+fn latest_run_context_for_thread(
+    state: &AppState,
+    thread_id: &str,
+) -> ApiResult<Option<(Option<String>, String)>> {
+    let runs = state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?;
+    Ok(runs
+        .values()
+        .filter(|run| run.thread_id == thread_id)
+        .max_by_key(|run| run.started_at_ms)
+        .map(|run| (run.session_id.clone(), run.working_directory.clone())))
+}
+
+fn mark_run_finished(state: &AppState, run_id: &str) {
+    let mut notify = None;
+    if let Ok(mut runs) = state.runs.lock() {
+        if let Some(run) = runs.get_mut(run_id) {
+            run.finished = true;
+            run.child_id = None;
+            run.stdin = None;
+            notify = Some(run.notify.clone());
+        }
+    }
+    if let Some(notify) = notify {
+        notify.notify_waiters();
+    }
+}
+
+fn kill_run_child(state: &AppState, run_id: &str) -> ApiResult<bool> {
+    let child_id = state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?
+        .get(run_id)
+        .and_then(|run| run.child_id);
+    let Some(child_id) = child_id else {
+        return Ok(false);
+    };
+    kill_process_tree(child_id)
+}
+
+fn active_run_json(run: &ActiveRunRecord) -> Value {
+    json!({
+        "active": true,
+        "runId": run.run_id,
+        "threadId": run.thread_id,
+        "turnId": run.turn_id,
+        "prompt": run.prompt,
+        "userContentBlocks": run.user_content_blocks,
+        "workingDirectory": run.working_directory,
+        "sessionId": run.session_id,
+        "permissionMode": run.permission_mode,
+        "model": run.model,
+        "effort": run.effort,
+        "startedAtMs": run.started_at_ms,
+        "eventCount": run.events.len(),
+        "finished": run.finished,
+    })
+}
+
+fn current_timestamp_ms_i64() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+fn read_state_value(connection: &Connection, key: &str) -> ApiResult<Option<String>> {
+    connection
+        .query_row(
+            "SELECT value FROM app_state WHERE key = ?",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取工作区状态失败: {error}")))
+}
+
+fn write_state_value(connection: &Connection, key: &str, value: impl AsRef<str>) -> ApiResult<()> {
+    let value = value.as_ref();
+    connection
+        .execute(
+            r#"
+            INSERT INTO app_state (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+            params![key, value],
+        )
+        .map(|_| ())
+        .map_err(|error| ApiError::internal(format!("保存工作区状态失败: {error}")))
+}
+
+fn thread_summary_json(thread: &ThreadRow) -> Value {
+    let mut value = json!({
+        "id": thread.id,
+        "projectId": thread.project_id,
+        "title": thread.title,
+        "sessionId": thread.session_id.clone().unwrap_or_default(),
+        "workingDirectory": thread.working_directory,
+        "updatedAt": thread.updated_at,
+        "updatedLabel": format_updated_label(&thread.updated_at),
+        "provider": thread.provider,
+        "imported": thread.imported,
+    });
+    if let Some(object) = value.as_object_mut() {
+        if let Some(model) = thread.model.as_ref() {
+            object.insert("model".to_string(), json!(model));
+        }
+        if let Some(permission_mode) = thread.permission_mode.as_ref() {
+            object.insert("permissionMode".to_string(), json!(permission_mode));
+        }
+        if let Some(pinned_at) = thread.pinned_at.as_ref() {
+            object.insert("pinnedAt".to_string(), json!(pinned_at));
+        }
+    }
+    value
+}
+
+fn format_updated_label(updated_at: &str) -> String {
+    let Ok(timestamp) = chrono::DateTime::parse_from_rfc3339(updated_at) else {
+        return "现在".to_string();
+    };
+    let diff_minutes = chrono::Utc::now()
+        .signed_duration_since(timestamp.with_timezone(&chrono::Utc))
+        .num_minutes()
+        .max(0);
+    if diff_minutes < 1 {
+        "现在".to_string()
+    } else if diff_minutes < 60 {
+        format!("{diff_minutes} 分钟前")
+    } else {
+        let hours = diff_minutes / 60;
+        if hours < 24 {
+            format!("{hours} 小时前")
+        } else {
+            let days = hours / 24;
+            if days < 30 {
+                format!("{days} 天前")
+            } else {
+                timestamp.format("%-m/%-d").to_string()
+            }
+        }
+    }
+}
+
+fn empty_git_diff() -> GitDiffSummary {
+    GitDiffSummary {
+        additions: 0,
+        deletions: 0,
+        files_changed: 0,
+    }
+}
+
+fn read_git_info(project_path: &str, include_diff: bool) -> GitInfo {
+    if !Path::new(project_path).exists() {
+        return GitInfo {
+            is_git_repo: false,
+            branch: None,
+            diff: empty_git_diff(),
+        };
+    }
+
+    let repo_check = background_command("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(project_path)
+        .output();
+    let is_git_repo = repo_check
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .is_some_and(|stdout| stdout.trim() == "true");
+
+    if !is_git_repo {
+        return GitInfo {
+            is_git_repo: false,
+            branch: None,
+            diff: empty_git_diff(),
+        };
+    }
+
+    GitInfo {
+        is_git_repo: true,
+        branch: read_git_branch(project_path),
+        diff: if include_diff {
+            read_git_diff_summary(project_path)
+        } else {
+            empty_git_diff()
+        },
+    }
+}
+
+fn read_git_branch(project_path: &str) -> Option<String> {
+    background_command("git")
+        .args(["branch", "--show-current"])
+        .current_dir(project_path)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|stdout| stdout.trim().to_string())
+        .filter(|branch| !branch.is_empty())
+}
+
+fn read_git_diff_summary(project_path: &str) -> GitDiffSummary {
+    let Some(output) = background_command("git")
+        .args(["diff", "--shortstat"])
+        .current_dir(project_path)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+    else {
+        return empty_git_diff();
+    };
+
+    parse_git_diff_shortstat(&output)
+}
+
+fn parse_git_diff_shortstat(value: &str) -> GitDiffSummary {
+    let mut summary = empty_git_diff();
+    let parts: Vec<&str> = value.split(',').collect();
+    for part in parts {
+        let trimmed = part.trim();
+        if trimmed.contains("file") {
+            summary.files_changed = leading_number(trimmed);
+        } else if trimmed.contains("insertion") {
+            summary.additions = leading_number(trimmed);
+        } else if trimmed.contains("deletion") {
+            summary.deletions = leading_number(trimmed);
+        }
+    }
+    summary
+}
+
+fn leading_number(value: &str) -> u32 {
+    value
+        .split_whitespace()
+        .next()
+        .and_then(|number| number.parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+fn is_git_worktree(project_path: &str) -> bool {
+    Path::new(project_path).join(".git").is_file()
+}
+
+fn settings_path(state: &AppState) -> PathBuf {
+    state.app_data_dir.join("settings.json")
+}
+
+fn resolve_app_data_dir() -> Result<PathBuf, String> {
+    if let Some(path) = env::var("CODEM_APP_DATA_DIR")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(PathBuf::from(path));
+    }
+
+    if let Some(base) = env::var("LOCALAPPDATA")
+        .ok()
+        .or_else(|| env::var("APPDATA").ok())
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(PathBuf::from(base).join("CodeM"));
+    }
+
+    home_dir()
+        .map(|home| home.join("AppData").join("Local").join("CodeM"))
+        .ok_or_else(|| "无法定位应用数据目录".to_string())
+}
+
+fn home_dir() -> Option<PathBuf> {
+    env::var("USERPROFILE")
+        .ok()
+        .or_else(|| env::var("HOME").ok())
+        .map(PathBuf::from)
+}
