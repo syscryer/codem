@@ -3133,6 +3133,7 @@ svg {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -3155,6 +3156,12 @@ svg {
 
 .workbench-commit-bar-button.primary {
   background: #f5f6f8;
+}
+
+.workbench-commit-bar-button.danger {
+  border-color: color-mix(in srgb, var(--danger, #d33a31) 24%, #e7e7e7);
+  background: color-mix(in srgb, var(--danger, #d33a31) 6%, #ffffff);
+  color: var(--danger, #d33a31);
 }
 
 .workbench-commit-bar-button:disabled {
@@ -3282,6 +3289,11 @@ svg {
 
 .workbench-tree-row.active {
   background: rgba(156, 163, 175, 0.14);
+}
+
+.workbench-tree-row.context-active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
 .workbench-tree-row.flat {
@@ -9885,6 +9897,93 @@ body.git-history-resizing {
   background: rgba(17, 24, 39, 0.18);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
+}
+
+.git-revert-dialog-backdrop {
+  z-index: 146;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.24);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+}
+
+.git-revert-confirm-dialog {
+  width: min(460px, calc(100vw - 32px));
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--danger, #d33a31) 18%, var(--app-border, #e2e8f0));
+  border-radius: 14px;
+  background: var(--app-surface, #ffffff);
+  color: var(--app-text, #242424);
+  box-shadow:
+    0 24px 68px rgba(15, 23, 42, 0.2),
+    inset 3px 0 0 color-mix(in srgb, var(--danger, #d33a31) 78%, transparent);
+}
+
+.git-revert-confirm-heading {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: start;
+  gap: 11px;
+}
+
+.git-revert-confirm-heading h3 {
+  margin: 0;
+  color: color-mix(in srgb, var(--danger, #d33a31) 88%, var(--app-text, #242424));
+  font-size: 16px;
+  font-weight: 740;
+  line-height: 1.35;
+}
+
+.git-revert-confirm-heading p {
+  margin: 5px 0 0;
+  color: color-mix(in srgb, var(--app-muted, #77736c) 88%, var(--app-text, #242424) 12%);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.git-revert-confirm-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger, #d33a31) 11%, transparent);
+  color: color-mix(in srgb, var(--danger, #d33a31) 88%, var(--app-text, #242424));
+}
+
+.git-revert-confirm-body {
+  display: grid;
+  gap: 6px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger, #d33a31) 14%, var(--app-border, #e2e8f0));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger, #d33a31) 5%, var(--app-surface, #ffffff));
+}
+
+.git-revert-confirm-body p {
+  margin: 0;
+  color: color-mix(in srgb, var(--app-text, #242424) 84%, var(--app-muted, #77736c));
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.git-revert-confirm-body p.danger {
+  color: color-mix(in srgb, var(--danger, #d33a31) 88%, var(--app-text, #242424));
+  font-weight: 650;
+}
+
+.git-revert-confirm-actions {
+  margin-top: 0;
+}
+
+.git-revert-confirm-actions .dialog-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
 .git-conflict-overview-dialog,

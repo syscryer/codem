@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -157,6 +157,203 @@ test('getProjectGitStatus returns paths relative to subdirectory projects', () =
     assert.equal(payload.diff.path, '.mcp.json');
     assert.equal(payload.diff.afterContent.includes('"ok":true'), true);
     assert.equal(payload.diff.beforeContent, '');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('revertProjectGitFileChange restores tracked changes and deletes untracked files', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-git-revert-file-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+  const untrackedPath = path.join(repo, 'notes', 'new.txt');
+
+  try {
+    run('git', ['init', '-b', 'main', repo]);
+    run('git', ['config', 'user.email', 'codem@example.test'], repo);
+    run('git', ['config', 'user.name', 'CodeM Test'], repo);
+    writeFileSync(path.join(repo, 'tracked.txt'), 'base\n');
+    run('git', ['add', 'tracked.txt'], repo);
+    run('git', ['commit', '-m', 'initial'], repo);
+    writeFileSync(path.join(repo, 'tracked.txt'), 'staged\n');
+    run('git', ['add', 'tracked.txt'], repo);
+    writeFileSync(path.join(repo, 'tracked.txt'), 'worktree\n');
+    mkdirSync(path.dirname(untrackedPath), { recursive: true });
+    writeFileSync(untrackedPath, 'new\n');
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const {
+            createProject,
+            getProjectGitStatus,
+            revertProjectGitFileChange,
+          } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const trackedResult = await revertProjectGitFileChange(projectId, 'tracked.txt');
+          const statusAfterTracked = await getProjectGitStatus(projectId);
+          const untrackedResult = await revertProjectGitFileChange(projectId, 'notes/new.txt');
+          const finalStatus = await getProjectGitStatus(projectId);
+          console.log(JSON.stringify({ trackedResult, statusAfterTracked, untrackedResult, finalStatus }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    const payload = JSON.parse(child.stdout.trim()) as {
+      trackedResult: { reverted: string[]; deleted: string[] };
+      statusAfterTracked: { files: Array<{ path: string; untracked: boolean }> };
+      untrackedResult: { reverted: string[]; deleted: string[] };
+      finalStatus: { files: Array<{ path: string }> };
+    };
+    assert.deepEqual(payload.trackedResult.reverted, ['tracked.txt']);
+    assert.deepEqual(payload.trackedResult.deleted, []);
+    assert.equal(payload.statusAfterTracked.files.some((file) => file.path === 'notes/new.txt' && file.untracked), true);
+    assert.deepEqual(payload.untrackedResult.deleted, ['notes/new.txt']);
+    assert.equal(normalizeTestText(readFileSync(path.join(repo, 'tracked.txt'), 'utf8')), 'base\n');
+    assert.equal(existsSync(untrackedPath), false);
+    assert.deepEqual(payload.finalStatus.files, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('revertProjectGitFileChanges expands directory targets without touching sibling changes', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-git-revert-directory-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+
+  try {
+    run('git', ['init', '-b', 'main', repo]);
+    run('git', ['config', 'user.email', 'codem@example.test'], repo);
+    run('git', ['config', 'user.name', 'CodeM Test'], repo);
+    mkdirSync(path.join(repo, 'src', 'nested'), { recursive: true });
+    writeFileSync(path.join(repo, 'src', 'a.txt'), 'a-base\n');
+    writeFileSync(path.join(repo, 'src', 'nested', 'b.txt'), 'b-base\n');
+    writeFileSync(path.join(repo, 'keep.txt'), 'keep-base\n');
+    run('git', ['add', '.'], repo);
+    run('git', ['commit', '-m', 'initial'], repo);
+    writeFileSync(path.join(repo, 'src', 'a.txt'), 'a-change\n');
+    writeFileSync(path.join(repo, 'src', 'nested', 'b.txt'), 'b-change\n');
+    writeFileSync(path.join(repo, 'keep.txt'), 'keep-change\n');
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const {
+            createProject,
+            getProjectGitStatus,
+            revertProjectGitFileChanges,
+          } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const result = await revertProjectGitFileChanges(projectId, ['src']);
+          const status = await getProjectGitStatus(projectId);
+          console.log(JSON.stringify({ result, status }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    const payload = JSON.parse(child.stdout.trim()) as {
+      result: { paths: string[] };
+      status: { files: Array<{ path: string }> };
+    };
+    assert.deepEqual(payload.result.paths.sort(), ['src/a.txt', 'src/nested/b.txt']);
+    assert.deepEqual(payload.status.files.map((file) => file.path), ['keep.txt']);
+    assert.equal(normalizeTestText(readFileSync(path.join(repo, 'src', 'a.txt'), 'utf8')), 'a-base\n');
+    assert.equal(normalizeTestText(readFileSync(path.join(repo, 'src', 'nested', 'b.txt'), 'utf8')), 'b-base\n');
+    assert.equal(normalizeTestText(readFileSync(path.join(repo, 'keep.txt'), 'utf8')), 'keep-change\n');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('addProjectGitFilesToIndex stages untracked files', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-git-add-files-'));
+  const appData = path.join(root, 'appdata');
+  const repo = path.join(root, 'repo');
+
+  try {
+    run('git', ['init', '-b', 'main', repo]);
+    run('git', ['config', 'user.email', 'codem@example.test'], repo);
+    run('git', ['config', 'user.name', 'CodeM Test'], repo);
+    writeFileSync(path.join(repo, 'tracked.txt'), 'base\n');
+    run('git', ['add', 'tracked.txt'], repo);
+    run('git', ['commit', '-m', 'initial'], repo);
+    mkdirSync(path.join(repo, 'docs'), { recursive: true });
+    writeFileSync(path.join(repo, 'docs', 'new.md'), 'new\n');
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const {
+            addProjectGitFilesToIndex,
+            createProject,
+            getProjectGitStatus,
+          } = await import('./server/lib/workspace-store.ts');
+          const projectId = createProject(${JSON.stringify(repo)});
+          const before = await getProjectGitStatus(projectId);
+          const result = await addProjectGitFilesToIndex(projectId, ['docs/new.md']);
+          const after = await getProjectGitStatus(projectId);
+          console.log(JSON.stringify({ before, result, after }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    const payload = JSON.parse(child.stdout.trim()) as {
+      before: { files: Array<{ path: string; untracked: boolean; staged: boolean; status: string }> };
+      result: { added: string[] };
+      after: { files: Array<{ path: string; untracked: boolean; staged: boolean; status: string }> };
+    };
+    assert.equal(payload.before.files.some((file) => file.path === 'docs/new.md' && file.untracked), true);
+    assert.deepEqual(payload.result.added, ['docs/new.md']);
+    assert.equal(
+      payload.after.files.some((file) => file.path === 'docs/new.md' && !file.untracked && file.staged && file.status === '新增'),
+      true,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1033,4 +1230,8 @@ function runOutput(command: string, args: string[], cwd?: string) {
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   return result.stdout.trim();
+}
+
+function normalizeTestText(value: string) {
+  return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  addGitFilesToIndex,
   abortGitOperation,
   checkoutGitDetachedRef,
   cherryPickGitCommit,
@@ -12,6 +13,8 @@ import {
   markGitConflictResolved,
   pullGitBranch,
   pushGitBranch,
+  revertGitFileChange,
+  revertGitFileChanges,
   saveGitConflictResult,
 } from './git-api.js';
 
@@ -84,6 +87,42 @@ test('pushGitBranch posts the selected remote and branch', async () => {
     url: '/api/projects/project-1/git/push',
     method: 'POST',
     body: { remote: 'origin', branch: 'main' },
+  });
+});
+
+test('revertGitFileChange posts the target file path', async () => {
+  const fetchCalls = mockFetch({ paths: ['src/App.tsx'], reverted: ['src/App.tsx'], deleted: [], summary: {} });
+
+  await revertGitFileChange('project-1', 'src/App.tsx');
+
+  assert.deepEqual(fetchCalls[0], {
+    url: '/api/projects/project-1/git/revert-file',
+    method: 'POST',
+    body: { paths: ['src/App.tsx'] },
+  });
+});
+
+test('revertGitFileChanges posts multiple target file paths', async () => {
+  const fetchCalls = mockFetch({ paths: ['src/App.tsx', 'src/types.ts'], reverted: [], deleted: [], summary: {} });
+
+  await revertGitFileChanges('project-1', ['src/App.tsx', 'src/types.ts']);
+
+  assert.deepEqual(fetchCalls[0], {
+    url: '/api/projects/project-1/git/revert-file',
+    method: 'POST',
+    body: { paths: ['src/App.tsx', 'src/types.ts'] },
+  });
+});
+
+test('addGitFilesToIndex posts target file paths', async () => {
+  const fetchCalls = mockFetch({ added: ['src/App.tsx', 'src/types.ts'], summary: {} });
+
+  await addGitFilesToIndex('project-1', ['src/App.tsx', 'src/types.ts']);
+
+  assert.deepEqual(fetchCalls[0], {
+    url: '/api/projects/project-1/git/add-files',
+    method: 'POST',
+    body: { paths: ['src/App.tsx', 'src/types.ts'] },
   });
 });
 

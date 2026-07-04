@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import * as childProcess from 'node:child_process';
@@ -397,6 +397,18 @@ export type GitConflictFileDetail = GitConflictFile & {
   resultContent: string;
   isText: boolean;
   binary: boolean;
+};
+
+export type GitFileRevertResult = {
+  paths: string[];
+  reverted: string[];
+  deleted: string[];
+  summary: Awaited<ReturnType<typeof getProjectGitSummary>>;
+};
+
+export type GitAddFilesResult = {
+  added: string[];
+  summary: Awaited<ReturnType<typeof getProjectGitSummary>>;
 };
 
 export type UndoConversationChangeOperation = {
@@ -1902,6 +1914,102 @@ export async function getProjectGitFileDiff(projectId: string, filePath: string)
     beforeContent: await readGitRevisionTextFileWithOptions(projectPath, 'HEAD', safePath, { allowLarge: true }),
     afterContent: fileStatus?.deleted ? '' : readWorkspaceTextFileIfExistsWithOptions(projectPath, safePath, { allowLarge: true }),
   };
+}
+
+export async function revertProjectGitFileChange(projectId: string, filePath: string): Promise<GitFileRevertResult> {
+  return revertProjectGitFileChanges(projectId, [filePath]);
+}
+
+export async function addProjectGitFilesToIndex(projectId: string, filePaths: string[]): Promise<GitAddFilesResult> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const safePaths = normalizeProjectRelativePaths(projectPath, filePaths);
+  if (safePaths.length === 0) {
+    throw new Error('请选择要添加到 Git 的文件');
+  }
+
+  const addResult = await runGitCommand(projectPath, ['add', '--', ...safePaths]);
+  if (addResult.status !== 0) {
+    throw new Error(normalizeGitCommandError(addResult, '添加文件到 Git 失败'));
+  }
+
+  return {
+    added: safePaths,
+    summary: await getProjectGitSummary(projectId),
+  };
+}
+
+export async function revertProjectGitFileChanges(projectId: string, filePaths: string[]): Promise<GitFileRevertResult> {
+  const projectPath = readProjectPath(projectId);
+  await ensureGitRepository(projectPath);
+  const safeTargets = normalizeProjectRelativePaths(projectPath, filePaths);
+  if (safeTargets.length === 0) {
+    throw new Error('请选择要回滚的文件');
+  }
+
+  const status = await getProjectGitStatus(projectId);
+  const fileStatuses = collectGitFileStatusesForTargets(status.files, safeTargets);
+
+  if (fileStatuses.length === 0) {
+    throw new Error('所选路径下没有本地改动');
+  }
+  if (fileStatuses.some((file) => file.conflicted)) {
+    throw new Error('冲突文件需要先通过冲突总览处理');
+  }
+
+  const repositoryRoot = await readGitRepositoryRoot(projectPath);
+  const reverted: string[] = [];
+  const deleted: string[] = [];
+  for (const fileStatus of fileStatuses) {
+    const result = await revertProjectGitFileStatus(projectPath, repositoryRoot, fileStatus);
+    reverted.push(...result.reverted);
+    deleted.push(...result.deleted);
+  }
+
+  return {
+    paths: fileStatuses.map((file) => file.path),
+    reverted,
+    deleted,
+    summary: await getProjectGitSummary(projectId),
+  };
+}
+
+async function revertProjectGitFileStatus(
+  projectPath: string,
+  repositoryRoot: string,
+  fileStatus: GitFileStatus,
+) {
+  const reverted: string[] = [];
+  const deleted: string[] = [];
+  if (fileStatus.untracked) {
+    deleteWorkspaceGitFile(projectPath, fileStatus.path);
+    deleted.push(fileStatus.path);
+  } else {
+    const existsInHead = fileStatus.originalPath
+      ? true
+      : await gitPathExistsInHead(projectPath, repositoryRoot, fileStatus.path);
+
+    if (!existsInHead) {
+      const removeFromIndexResult = await runGitCommand(projectPath, ['rm', '--cached', '--ignore-unmatch', '--', fileStatus.path]);
+      if (removeFromIndexResult.status !== 0) {
+        throw new Error(normalizeGitCommandError(removeFromIndexResult, '移除新增文件暂存状态失败'));
+      }
+      deleteWorkspaceGitFile(projectPath, fileStatus.path);
+      deleted.push(fileStatus.path);
+    } else {
+      const restorePaths = normalizeProjectRelativePaths(
+        projectPath,
+        fileStatus.originalPath ? [fileStatus.originalPath, fileStatus.path] : [fileStatus.path],
+      );
+      const restoreResult = await runGitCommand(projectPath, ['restore', '--staged', '--worktree', '--', ...restorePaths]);
+      if (restoreResult.status !== 0) {
+        throw new Error(normalizeGitCommandError(restoreResult, '回滚文件改动失败'));
+      }
+      reverted.push(...restorePaths);
+    }
+  }
+
+  return { reverted, deleted };
 }
 
 export async function listProjectGitHistory(
@@ -4147,6 +4255,26 @@ function parseGitStatusLine(line: string): GitFileStatus | null {
   };
 }
 
+function collectGitFileStatusesForTargets(files: GitFileStatus[], targets: string[]) {
+  const selected = new Map<string, GitFileStatus>();
+  for (const file of files) {
+    if (targets.some((target) => gitFileStatusMatchesTarget(file, target))) {
+      selected.set(file.path, file);
+    }
+  }
+
+  return [...selected.values()];
+}
+
+function gitFileStatusMatchesTarget(file: GitFileStatus, target: string) {
+  return isSameOrChildGitPath(file.path, target) ||
+    (file.originalPath ? isSameOrChildGitPath(file.originalPath, target) : false);
+}
+
+function isSameOrChildGitPath(candidatePath: string, targetPath: string) {
+  return candidatePath === targetPath || candidatePath.startsWith(`${targetPath}/`);
+}
+
 function buildGitStatusLabel(indexStatus: string, worktreeStatus: string) {
   if (indexStatus === '?' && worktreeStatus === '?') {
     return '未跟踪';
@@ -4592,6 +4720,23 @@ function normalizeProjectDirectoryPath(projectPath: string, directoryPath: strin
   }
 
   return normalizedPath;
+}
+
+function deleteWorkspaceGitFile(projectPath: string, filePath: string) {
+  const resolvedPath = path.resolve(projectPath, filePath.replace(/\//g, path.sep));
+  if (!isPathInsideRoot(resolvedPath, projectPath)) {
+    throw new Error(`文件不在项目目录内：${filePath}`);
+  }
+  if (!existsSync(resolvedPath)) {
+    return;
+  }
+
+  const stats = lstatSync(resolvedPath);
+  if (stats.isDirectory()) {
+    throw new Error(`只能回滚文件：${filePath}`);
+  }
+
+  rmSync(resolvedPath, { force: true });
 }
 
 function shouldShowProjectFileEntry(name: string) {
@@ -5448,6 +5593,12 @@ function buildGitOperationCommand(operation: GitOperationKind, action: 'continue
 function toRepositoryRelativeGitPath(projectPath: string, repositoryRoot: string, filePath: string) {
   const absolutePath = path.resolve(projectPath, filePath.replace(/\//g, path.sep));
   return normalizeGitRelativePath(path.relative(repositoryRoot, absolutePath));
+}
+
+async function gitPathExistsInHead(projectPath: string, repositoryRoot: string, filePath: string) {
+  const repositoryPath = toRepositoryRelativeGitPath(projectPath, repositoryRoot, filePath);
+  const result = await runGitCommand(projectPath, ['cat-file', '-e', `HEAD:${repositoryPath}`]);
+  return result.status === 0;
 }
 
 async function readGitIndexStageTextFile(projectPath: string, stage: 1 | 2 | 3, repositoryPath: string) {

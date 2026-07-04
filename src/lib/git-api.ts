@@ -1,4 +1,5 @@
 import type {
+  GitAddFilesResult,
   GitBranchCompareResult,
   GitFileDiffPreview,
   GitBranchCreateResult,
@@ -6,6 +7,7 @@ import type {
   GitCommitFilePreview,
   GitConflictFileDetail,
   GitCommitResult,
+  GitFileRevertResult,
   GitHistoryCommit,
   GitHistoryCommitDetails,
   GitHistoryLogResponse,
@@ -42,6 +44,40 @@ export async function fetchGitFileDiff(projectId: string, filePath: string) {
   }
 
   return (await response.json()) as GitFileDiffPreview;
+}
+
+export async function revertGitFileChange(projectId: string, filePath: string) {
+  return revertGitFileChanges(projectId, [filePath]);
+}
+
+export async function revertGitFileChanges(projectId: string, filePaths: string[]) {
+  const response = await fetch(`/api/projects/${projectId}/git/revert-file`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ paths: filePaths }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitFileRevertResult;
+}
+
+export async function addGitFilesToIndex(projectId: string, filePaths: string[]) {
+  const response = await fetch(`/api/projects/${projectId}/git/add-files`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ paths: filePaths }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as GitAddFilesResult;
 }
 
 export async function fetchGitPushPreview(projectId: string) {

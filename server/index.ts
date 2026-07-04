@@ -33,6 +33,7 @@ import {
 import {
   canPreviewWorkspaceFile,
   abortProjectGitOperation,
+  addProjectGitFilesToIndex,
   checkoutProjectGitDetachedRef,
   cherryPickProjectGitCommit,
   continueProjectGitOperation,
@@ -80,6 +81,7 @@ import {
   suggestProjectGitWorktreePath,
   pullProjectGitBranch,
   pushProjectGitBranch,
+  revertProjectGitFileChanges,
   switchProjectGitBranch,
   undoProjectAiTurnChanges,
   updatePanelState,
@@ -1043,6 +1045,40 @@ app.get('/api/projects/:projectId/git/diff', async (request, response) => {
     response.json(await getProjectGitFileDiff(request.params.projectId, filePath));
   } catch (error) {
     response.status(400).send(error instanceof Error ? error.message : '读取 Git 差异失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/revert-file', async (request, response) => {
+  const filePaths = Array.isArray(request.body?.paths)
+    ? request.body.paths.filter((filePath: unknown): filePath is string => typeof filePath === 'string')
+    : typeof request.body?.path === 'string'
+      ? [request.body.path]
+      : [];
+  if (filePaths.length === 0) {
+    response.status(400).send('paths 不能为空');
+    return;
+  }
+
+  try {
+    response.json(await revertProjectGitFileChanges(request.params.projectId, filePaths));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '回滚文件改动失败');
+  }
+});
+
+app.post('/api/projects/:projectId/git/add-files', async (request, response) => {
+  const filePaths = Array.isArray(request.body?.paths)
+    ? request.body.paths.filter((filePath: unknown): filePath is string => typeof filePath === 'string')
+    : [];
+  if (filePaths.length === 0) {
+    response.status(400).send('paths 不能为空');
+    return;
+  }
+
+  try {
+    response.json(await addProjectGitFilesToIndex(request.params.projectId, filePaths));
+  } catch (error) {
+    response.status(400).send(error instanceof Error ? error.message : '添加文件到 Git 失败');
   }
 });
 

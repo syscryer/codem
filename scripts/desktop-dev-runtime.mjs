@@ -10,26 +10,15 @@ export async function resolveDesktopDevPorts({
   preferredWebPort = resolvePreferredWebPort(),
   readSessionState = () => readDevSessionState(process.cwd()),
   isPortOpen: checkPort = isPortOpen,
+  isProcessAlive = defaultIsProcessAlive,
   findAvailablePort: findPort = findAvailablePort,
 } = {}) {
   const session = await readSessionState();
-  const sessionReady = await getSessionPortsIfReady(session, checkPort);
+  const sessionReady = await getSessionPortsIfReady(session, checkPort, isProcessAlive);
   if (sessionReady) {
     return {
       backendPort: sessionReady.backendPort,
       webPort: sessionReady.webPort,
-      shouldStartDevServer: false,
-    };
-  }
-
-  const preferredPortsReady = await Promise.all([
-    checkPort(preferredPort),
-    checkPort(preferredWebPort),
-  ]);
-  if (preferredPortsReady.every(Boolean)) {
-    return {
-      backendPort: preferredPort,
-      webPort: preferredWebPort,
       shouldStartDevServer: false,
     };
   }
@@ -45,8 +34,14 @@ export async function resolveDesktopDevPorts({
   };
 }
 
-async function getSessionPortsIfReady(session, checkPort) {
-  if (!session || !Number.isInteger(session.backendPort) || !Number.isInteger(session.webPort)) {
+async function getSessionPortsIfReady(session, checkPort, isProcessAlive) {
+  if (
+    !session ||
+    !Number.isInteger(session.backendPort) ||
+    !Number.isInteger(session.webPort) ||
+    !Number.isInteger(session.pid) ||
+    !(await isProcessAlive(session.pid))
+  ) {
     return null;
   }
 
@@ -62,4 +57,13 @@ async function getSessionPortsIfReady(session, checkPort) {
     backendPort: session.backendPort,
     webPort: session.webPort,
   };
+}
+
+async function defaultIsProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -44,6 +44,7 @@ import { ImagePreviewDialog, type ImagePreviewItem } from './ImagePreviewDialog'
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { fetchWorkspaceFilePreview } from '../lib/file-preview-api';
 import {
+  addGitFilesToIndex,
   abortGitOperation,
   commitGitChanges,
   continueGitOperation,
@@ -51,6 +52,7 @@ import {
   fetchGitOperationState,
   fetchGitStatus,
   pullGitBranch,
+  revertGitFileChanges,
 } from '../lib/git-api';
 import { renderMarkdownImage } from '../lib/markdown-image';
 import { deleteProjectFile, fetchProjectFiles } from '../lib/project-files-api';
@@ -149,6 +151,7 @@ type WorkbenchNavigatorContextMenuItem = {
   type: 'directory' | 'file';
   path: string;
   name: string;
+  changeGroup?: 'tracked' | 'untracked';
   projectFile?: ProjectFileEntry;
   changedFile?: GitFileStatus;
   x: number;
@@ -156,6 +159,14 @@ type WorkbenchNavigatorContextMenuItem = {
 };
 
 type WorkbenchNavigatorContextMenuTarget = Omit<WorkbenchNavigatorContextMenuItem, 'x' | 'y'>;
+
+type PendingRevertConfirm = {
+  label: string;
+  files: GitFileStatus[];
+  paths: string[];
+  addedCount: number;
+  conflictedCount: number;
+};
 
 export function RightWorkbench({
   activeTab,
@@ -413,8 +424,11 @@ function WorkbenchFiles({
   const [commitMessage, setCommitMessage] = useState('');
   const [commitWorking, setCommitWorking] = useState<'commit' | 'push' | null>(null);
   const [commitError, setCommitError] = useState('');
+  const [gitRevertWorking, setGitRevertWorking] = useState(false);
+  const [gitAddWorking, setGitAddWorking] = useState(false);
   const [gitOperationAction, setGitOperationAction] = useState('');
   const [pendingPullMode, setPendingPullMode] = useState<GitPullMode | null>(null);
+  const [pendingRevertConfirm, setPendingRevertConfirm] = useState<PendingRevertConfirm | null>(null);
   const [abortConfirmOpen, setAbortConfirmOpen] = useState(false);
   const [conflictOverviewOpen, setConflictOverviewOpen] = useState(false);
   const [mergeDialogPath, setMergeDialogPath] = useState('');
@@ -458,9 +472,30 @@ function WorkbenchFiles({
   const commitDisabled =
     !activeProject ||
     commitWorking !== null ||
+    gitRevertWorking ||
+    gitAddWorking ||
     Boolean(gitOperationState?.hasConflicts) ||
     commitFilesCount === 0 ||
     !commitMessage.trim();
+  const selectedUntrackedFiles = useMemo(
+    () => committableChangedFiles.filter((file) => file.untracked && selectedCommitPaths.has(file.path)),
+    [committableChangedFiles, selectedCommitPaths],
+  );
+  const revertSelectedDisabled =
+    !activeProject ||
+    commitWorking !== null ||
+    gitRevertWorking ||
+    gitAddWorking ||
+    Boolean(gitOperationState?.hasConflicts) ||
+    commitFilesCount === 0;
+  const addSelectedToGitVisible = selectedUntrackedFiles.length > 0;
+  const addSelectedToGitDisabled =
+    !activeProject ||
+    commitWorking !== null ||
+    gitRevertWorking ||
+    gitAddWorking ||
+    Boolean(gitOperationState?.hasConflicts) ||
+    selectedUntrackedFiles.length === 0;
   const { tracked: comparableChangedFiles, untracked: untrackedChangedFiles } = useMemo(
     () => splitWorkbenchChangedFiles(visibleChangedFiles),
     [visibleChangedFiles],
@@ -514,6 +549,7 @@ function WorkbenchFiles({
   useEffect(() => {
     setReviewOptionsOpen(false);
     setNavigatorContextMenu(null);
+    setPendingRevertConfirm(null);
   }, [activeProject?.id, scope]);
 
   useEffect(() => {
@@ -538,6 +574,21 @@ function WorkbenchFiles({
       window.removeEventListener('resize', handleResize);
     };
   }, [navigatorContextMenu]);
+
+  useEffect(() => {
+    if (!pendingRevertConfirm || gitRevertWorking) {
+      return undefined;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setPendingRevertConfirm(null);
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [gitRevertWorking, pendingRevertConfirm]);
 
   useEffect(() => {
     setShowNoiseFiles(!reviewHideNoiseFilesByDefault);
@@ -689,6 +740,9 @@ function WorkbenchFiles({
       return;
     }
 
+    if (nextScope === 'changed') {
+      setPendingRevertConfirm(null);
+    }
     setLoading(true);
     setError('');
     try {
@@ -929,6 +983,177 @@ function WorkbenchFiles({
       showToast(`${label}已删除`);
     } catch (caughtError) {
       showToast(caughtError instanceof Error ? caughtError.message : `${label}删除失败`, 'error');
+    }
+  }
+
+  function getNavigatorContextChangedFiles(item: WorkbenchNavigatorContextMenuItem) {
+    if (item.source !== 'changed') {
+      return [];
+    }
+    if (item.changedFile) {
+      return [item.changedFile];
+    }
+
+    const sourceFiles =
+      item.changeGroup === 'untracked'
+        ? untrackedChangedFiles
+        : item.changeGroup === 'tracked'
+          ? comparableChangedFiles
+          : visibleChangedFiles;
+    return sourceFiles.filter((file) => isChangedFileInsideNavigatorPath(file, item.path));
+  }
+
+  function getNavigatorContextUntrackedFiles(item: WorkbenchNavigatorContextMenuItem) {
+    if (item.source !== 'changed' || item.changeGroup !== 'untracked') {
+      return [];
+    }
+    if (item.changedFile) {
+      return item.changedFile.untracked ? [item.changedFile] : [];
+    }
+
+    return untrackedChangedFiles.filter((file) => isChangedFileInsideNavigatorPath(file, item.path));
+  }
+
+  async function addNavigatorContextUntrackedFilesToGit() {
+    const item = navigatorContextMenu;
+    if (!activeProject || !item || item.source !== 'changed') {
+      return;
+    }
+
+    const files = getNavigatorContextUntrackedFiles(item);
+    const label = item.type === 'directory'
+      ? `目录「${item.path}」下的未跟踪文件`
+      : `「${item.path}」`;
+    await addUntrackedFilesToGit(files, label);
+  }
+
+  async function addSelectedUntrackedFilesToGit() {
+    await addUntrackedFilesToGit(selectedUntrackedFiles, `选中的 ${selectedUntrackedFiles.length} 个未跟踪文件`);
+  }
+
+  async function addUntrackedFilesToGit(files: GitFileStatus[], label: string) {
+    if (!activeProject || gitAddWorking) {
+      return;
+    }
+
+    const uniqueFiles = dedupeGitFiles(files.filter((file) => file.untracked));
+    if (uniqueFiles.length === 0) {
+      setNavigatorContextMenu(null);
+      showToast('没有可添加到 Git 的未跟踪文件。', 'info');
+      return;
+    }
+
+    setNavigatorContextMenu(null);
+    setGitAddWorking(true);
+    try {
+      const paths = uniqueFiles.map((file) => file.path);
+      const result = await addGitFilesToIndex(activeProject.id, paths);
+      const affectedPaths = new Set([...paths, ...result.added]);
+      const stalePreviewKeys = previewTabs
+        .filter((tab) => tab.source === 'changed-file' && isPreviewTabAffectedByPaths(tab, affectedPaths))
+        .map((tab) => tab.key);
+      if (stalePreviewKeys.length) {
+        onClosePreviewTabs(stalePreviewKeys);
+      }
+      await loadScope('changed');
+      void Promise.resolve(onGitChanged?.()).catch((caughtError: unknown) => {
+        showToast(caughtError instanceof Error ? caughtError.message : '刷新 Git 状态失败', 'error');
+      });
+      showToast(`已添加${label}到 Git，共 ${result.added.length} 个文件`);
+    } catch (caughtError) {
+      showToast(caughtError instanceof Error ? caughtError.message : '添加文件到 Git 失败', 'error');
+    } finally {
+      setGitAddWorking(false);
+    }
+  }
+
+  async function revertNavigatorContextChangedFiles() {
+    const item = navigatorContextMenu;
+    if (!activeProject || !item || item.source !== 'changed') {
+      return;
+    }
+
+    const files = getNavigatorContextChangedFiles(item);
+    const label = item.type === 'directory'
+      ? `目录「${item.path}」下的改动`
+      : `「${item.path}」的本地改动`;
+    await revertChangedFiles(files, label);
+  }
+
+  async function revertSelectedCommitFiles() {
+    const files = committableChangedFiles.filter((file) => selectedCommitPaths.has(file.path));
+    await revertChangedFiles(files, `选中的 ${files.length} 个文件`);
+  }
+
+  async function revertChangedFiles(files: GitFileStatus[], label: string) {
+    if (!activeProject || gitRevertWorking) {
+      return;
+    }
+
+    const uniqueFiles = dedupeGitFiles(files);
+    const conflictedCount = uniqueFiles.filter((file) => file.conflicted).length;
+    const eligibleFiles = uniqueFiles.filter((file) => !file.conflicted);
+    if (eligibleFiles.length === 0) {
+      setNavigatorContextMenu(null);
+      showToast(conflictedCount > 0 ? '冲突文件需要先通过冲突总览处理。' : '没有可回滚的文件。', 'info');
+      return;
+    }
+
+    const paths = eligibleFiles.map((file) => file.path);
+    const addedCount = eligibleFiles.filter((file) => file.untracked || file.status === '新增').length;
+    setNavigatorContextMenu(null);
+    setPendingRevertConfirm({
+      label,
+      files: eligibleFiles,
+      paths,
+      addedCount,
+      conflictedCount,
+    });
+  }
+
+  async function confirmRevertChangedFiles() {
+    if (!activeProject || gitRevertWorking || !pendingRevertConfirm) {
+      return;
+    }
+
+    const { files: eligibleFiles, paths } = pendingRevertConfirm;
+    setGitRevertWorking(true);
+    try {
+      const result = await revertGitFileChanges(activeProject.id, paths);
+      const affectedPaths = new Set(
+        [
+          ...paths,
+          ...eligibleFiles.map((file) => file.originalPath).filter((pathValue): pathValue is string => Boolean(pathValue)),
+          ...result.paths,
+          ...result.reverted,
+          ...result.deleted,
+        ].filter(
+          (pathValue): pathValue is string => Boolean(pathValue),
+        ),
+      );
+      const stalePreviewKeys = previewTabs
+        .filter((tab) => tab.source === 'changed-file' && isPreviewTabAffectedByPaths(tab, affectedPaths))
+        .map((tab) => tab.key);
+      if (stalePreviewKeys.length) {
+        onClosePreviewTabs(stalePreviewKeys);
+      }
+      setSelectedCommitPaths((current) => {
+        const next = new Set(current);
+        for (const affectedPath of affectedPaths) {
+          next.delete(affectedPath);
+        }
+        return next;
+      });
+      await loadScope('changed');
+      void Promise.resolve(onGitChanged?.()).catch((caughtError: unknown) => {
+        showToast(caughtError instanceof Error ? caughtError.message : '刷新 Git 状态失败', 'error');
+      });
+      setPendingRevertConfirm(null);
+      showToast(result.deleted.length ? `已回滚 ${result.paths.length} 个文件，新增文件已删除` : `已回滚 ${result.paths.length} 个文件`);
+    } catch (caughtError) {
+      showToast(caughtError instanceof Error ? caughtError.message : '回滚文件改动失败', 'error');
+    } finally {
+      setGitRevertWorking(false);
     }
   }
 
@@ -1196,6 +1421,53 @@ function WorkbenchFiles({
               ) : null}
             </div>
           ) : null}
+          {pendingRevertConfirm ? (
+            <div
+              className="dialog-backdrop git-revert-dialog-backdrop"
+              role="presentation"
+              onClick={() => {
+                if (!gitRevertWorking) {
+                  setPendingRevertConfirm(null);
+                }
+              }}
+            >
+              <section
+                className="dialog-card git-revert-confirm-dialog"
+                role="alertdialog"
+                aria-modal="true"
+                aria-label="回滚改动确认"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="git-revert-confirm-heading">
+                  <div className="git-revert-confirm-icon" aria-hidden="true">
+                    <AlertTriangle size={19} />
+                  </div>
+                  <div>
+                    <h3>确认回滚{pendingRevertConfirm.label}？</h3>
+                    <p>这个操作会撤销工作区中的本地改动。</p>
+                  </div>
+                </div>
+                <div className="git-revert-confirm-body">
+                  <p>将回滚 {pendingRevertConfirm.paths.length} 个文件。已跟踪文件会恢复到 HEAD，暂存状态也会被清除。</p>
+                  {pendingRevertConfirm.addedCount > 0 ? (
+                    <p className="danger">未跟踪或新增文件会从磁盘删除：{pendingRevertConfirm.addedCount} 个。</p>
+                  ) : null}
+                  {pendingRevertConfirm.conflictedCount > 0 ? (
+                    <p>其中 {pendingRevertConfirm.conflictedCount} 个冲突文件不会处理，请通过冲突总览解决。</p>
+                  ) : null}
+                </div>
+                <div className="dialog-actions git-revert-confirm-actions">
+                  <button type="button" className="dialog-button secondary" disabled={gitRevertWorking} onClick={() => setPendingRevertConfirm(null)}>
+                    取消
+                  </button>
+                  <button type="button" className="dialog-button danger" disabled={gitRevertWorking} onClick={() => void confirmRevertChangedFiles()}>
+                    {gitRevertWorking ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}
+                    确认回滚
+                  </button>
+                </div>
+              </section>
+            </div>
+          ) : null}
           {gitOperationState ? (
             <GitConflictOverviewDialog
               open={conflictOverviewOpen}
@@ -1266,6 +1538,7 @@ function WorkbenchFiles({
                   reviewOptionsOpen={reviewOptionsOpen}
                   reviewOptionsRef={reviewOptionsRef}
                   activePreviewKey={activePreviewKey}
+                  contextMenuTarget={navigatorContextMenu}
                   onFilterChange={setFileFilter}
                   onSelectScope={null}
                   onRefresh={() => void loadScope(scope)}
@@ -1289,9 +1562,16 @@ function WorkbenchFiles({
                   commitError={commitError}
                   commitWorking={commitWorking}
                   commitDisabled={commitDisabled}
+                  gitRevertWorking={gitRevertWorking}
+                  revertSelectedDisabled={revertSelectedDisabled}
+                  gitAddWorking={gitAddWorking}
+                  addSelectedToGitVisible={addSelectedToGitVisible}
+                  addSelectedToGitDisabled={addSelectedToGitDisabled}
                   onToggleTrackedCommitPaths={toggleTrackedCommitPaths}
                   onToggleUntrackedCommitPaths={toggleUntrackedCommitPaths}
                   onCommitMessageChange={setCommitMessage}
+                  onAddSelectedToGit={() => void addSelectedUntrackedFilesToGit()}
+                  onRevertSelectedCommitFiles={() => void revertSelectedCommitFiles()}
                   onSubmitCommit={() => void handleSubmitCommit(false)}
                   onSubmitCommitAndPush={() => void handleSubmitCommit(true)}
                   onToggleReviewOptions={() => setReviewOptionsOpen((current) => !current)}
@@ -1372,6 +1652,36 @@ function WorkbenchFiles({
                   <Copy size={16} />
                   <span>复制完整路径</span>
                 </button>
+                {navigatorContextMenu?.source === 'changed' && getNavigatorContextUntrackedFiles(navigatorContextMenu).length > 0 ? (
+                  <>
+                    <div className="workspace-menu-divider" role="separator" />
+                    <button
+                      type="button"
+                      className="workspace-menu-item"
+                      role="menuitem"
+                      disabled={gitAddWorking}
+                      onClick={() => void addNavigatorContextUntrackedFilesToGit()}
+                    >
+                      <Plus size={16} />
+                      <span>添加到 Git</span>
+                    </button>
+                  </>
+                ) : null}
+                {navigatorContextMenu?.source === 'changed' && getNavigatorContextChangedFiles(navigatorContextMenu).some((file) => !file.conflicted) ? (
+                  <>
+                    <div className="workspace-menu-divider" role="separator" />
+                    <button
+                      type="button"
+                      className="workspace-menu-item danger"
+                      role="menuitem"
+                      disabled={gitRevertWorking}
+                      onClick={() => void revertNavigatorContextChangedFiles()}
+                    >
+                      <RotateCcw size={16} />
+                      <span>回滚改动</span>
+                    </button>
+                  </>
+                ) : null}
                 <div className="workspace-menu-divider" role="separator" />
                 <button
                   type="button"
@@ -1906,6 +2216,7 @@ function FileNavigator({
   reviewOptionsOpen = false,
   reviewOptionsRef,
   activePreviewKey,
+  contextMenuTarget,
   onFilterChange,
   onSelectScope,
   onRefresh,
@@ -1929,9 +2240,16 @@ function FileNavigator({
   commitError = '',
   commitWorking = null,
   commitDisabled = true,
+  gitRevertWorking = false,
+  revertSelectedDisabled = true,
+  gitAddWorking = false,
+  addSelectedToGitVisible = false,
+  addSelectedToGitDisabled = true,
   onToggleTrackedCommitPaths,
   onToggleUntrackedCommitPaths,
   onCommitMessageChange,
+  onAddSelectedToGit,
+  onRevertSelectedCommitFiles,
   onSubmitCommit,
   onSubmitCommitAndPush,
   onToggleReviewOptions,
@@ -1960,6 +2278,7 @@ function FileNavigator({
   reviewOptionsOpen?: boolean;
   reviewOptionsRef: RefObject<HTMLDivElement | null>;
   activePreviewKey: string;
+  contextMenuTarget: WorkbenchNavigatorContextMenuTarget | null;
   onFilterChange: (filter: string) => void;
   onSelectScope: ((scope: 'all' | 'changed') => void) | null;
   onRefresh: () => void;
@@ -1983,9 +2302,16 @@ function FileNavigator({
   commitError?: string;
   commitWorking?: 'commit' | 'push' | null;
   commitDisabled?: boolean;
+  gitRevertWorking?: boolean;
+  revertSelectedDisabled?: boolean;
+  gitAddWorking?: boolean;
+  addSelectedToGitVisible?: boolean;
+  addSelectedToGitDisabled?: boolean;
   onToggleTrackedCommitPaths?: () => void;
   onToggleUntrackedCommitPaths?: () => void;
   onCommitMessageChange?: (message: string) => void;
+  onAddSelectedToGit?: () => void;
+  onRevertSelectedCommitFiles?: () => void;
   onSubmitCommit?: () => void;
   onSubmitCommitAndPush?: () => void;
   onToggleReviewOptions?: () => void;
@@ -2104,6 +2430,7 @@ function FileNavigator({
             loadingDirectory={loadingDirectory}
             filter={filter}
             activePreviewKey={activePreviewKey}
+            contextMenuTarget={contextMenuTarget}
             onToggleDirectory={onToggleDirectory}
             onOpenFile={onOpenProjectFile}
             onOpenContextMenu={onOpenContextMenu}
@@ -2118,6 +2445,7 @@ function FileNavigator({
             expandedChangedDirectories={expandedChangedDirectories}
             expandedUntrackedDirectories={expandedUntrackedDirectories}
             activePreviewKey={activePreviewKey}
+            contextMenuTarget={contextMenuTarget}
             selectedCommitPaths={selectedCommitPaths ?? new Set()}
             allTrackedCommitSelected={trackedCommitAllSelected}
             allUntrackedCommitSelected={untrackedCommitAllSelected}
@@ -2149,6 +2477,26 @@ function FileNavigator({
             rows={3}
           />
           <div className="workbench-commit-bar-actions">
+            {addSelectedToGitVisible ? (
+              <button
+                type="button"
+                className="workbench-commit-bar-button"
+                disabled={addSelectedToGitDisabled}
+                onClick={onAddSelectedToGit}
+              >
+                {gitAddWorking ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />}
+                <span>添加到 Git</span>
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="workbench-commit-bar-button danger"
+              disabled={revertSelectedDisabled}
+              onClick={onRevertSelectedCommitFiles}
+            >
+              {gitRevertWorking ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}
+              <span>回滚选中</span>
+            </button>
             <button
               type="button"
               className="workbench-commit-bar-button"
@@ -2181,6 +2529,7 @@ function AllFilesList({
   loadingDirectory,
   filter,
   activePreviewKey,
+  contextMenuTarget,
   onToggleDirectory,
   onOpenFile,
   onOpenContextMenu,
@@ -2191,6 +2540,7 @@ function AllFilesList({
   loadingDirectory: string;
   filter: string;
   activePreviewKey: string;
+  contextMenuTarget: WorkbenchNavigatorContextMenuTarget | null;
   onToggleDirectory: (directoryPath: string) => void;
   onOpenFile: (file: ProjectFileEntry) => void;
   onOpenContextMenu: (event: ReactMouseEvent<HTMLElement>, target: WorkbenchNavigatorContextMenuTarget) => void;
@@ -2208,6 +2558,7 @@ function AllFilesList({
         loadingDirectory,
         filter,
         activePreviewKey,
+        contextMenuTarget,
         depth: 0,
         onToggleDirectory,
         onOpenFile,
@@ -2224,6 +2575,7 @@ function renderProjectFileRows({
   loadingDirectory,
   filter,
   activePreviewKey,
+  contextMenuTarget,
   depth,
   onToggleDirectory,
   onOpenFile,
@@ -2235,6 +2587,7 @@ function renderProjectFileRows({
   loadingDirectory: string;
   filter: string;
   activePreviewKey: string;
+  contextMenuTarget: WorkbenchNavigatorContextMenuTarget | null;
   depth: number;
   onToggleDirectory: (directoryPath: string) => void;
   onOpenFile: (file: ProjectFileEntry) => void;
@@ -2245,6 +2598,11 @@ function renderProjectFileRows({
     const expanded = isDirectory && expandedDirectories.includes(file.path);
     const children = directoryFiles[file.path] ?? [];
     const visibleChildren = filterProjectEntries(children, filter);
+    const contextActive = isNavigatorContextTarget(contextMenuTarget, {
+      source: 'project',
+      type: file.type,
+      path: file.path,
+    });
     if (filter && !file.path.toLowerCase().includes(filter.toLowerCase()) && visibleChildren.length === 0) {
       return [];
     }
@@ -2253,7 +2611,7 @@ function renderProjectFileRows({
       <button
         key={file.path}
         type="button"
-        className={`workbench-tree-row${activePreviewKey === buildProjectWorkbenchPreviewKey(file.path) ? ' active' : ''}`}
+        className={`workbench-tree-row${activePreviewKey === buildProjectWorkbenchPreviewKey(file.path) ? ' active' : ''}${contextActive ? ' context-active' : ''}`}
         style={{ paddingLeft: `${10 + depth * 18}px` }}
         onClick={() => {
           if (isDirectory) {
@@ -2295,6 +2653,7 @@ function renderProjectFileRows({
           loadingDirectory,
           filter,
           activePreviewKey,
+          contextMenuTarget,
           depth: depth + 1,
           onToggleDirectory,
           onOpenFile,
@@ -2319,6 +2678,7 @@ function ChangedFileTree({
   expandedChangedDirectories,
   expandedUntrackedDirectories,
   activePreviewKey,
+  contextMenuTarget,
   selectedCommitPaths,
   allTrackedCommitSelected,
   allUntrackedCommitSelected,
@@ -2339,6 +2699,7 @@ function ChangedFileTree({
   expandedChangedDirectories: string[];
   expandedUntrackedDirectories: string[];
   activePreviewKey: string;
+  contextMenuTarget: WorkbenchNavigatorContextMenuTarget | null;
   selectedCommitPaths: Set<string>;
   allTrackedCommitSelected: boolean;
   allUntrackedCommitSelected: boolean;
@@ -2362,6 +2723,7 @@ function ChangedFileTree({
           displayMode={displayMode}
           expandedDirectories={expandedChangedDirectories}
           activePreviewKey={activePreviewKey}
+          contextMenuTarget={contextMenuTarget}
           selectedCommitPaths={selectedCommitPaths}
           allSelected={allTrackedCommitSelected}
           onToggleDirectory={onToggleChangedDirectory}
@@ -2381,6 +2743,7 @@ function ChangedFileTree({
           displayMode={displayMode}
           expandedDirectories={expandedUntrackedDirectories}
           activePreviewKey={activePreviewKey}
+          contextMenuTarget={contextMenuTarget}
           selectedCommitPaths={selectedCommitPaths}
           allSelected={allUntrackedCommitSelected}
           onToggleDirectory={onToggleUntrackedDirectory}
@@ -2404,6 +2767,7 @@ function ChangedFileTreeSection({
   displayMode,
   expandedDirectories,
   activePreviewKey,
+  contextMenuTarget,
   selectedCommitPaths,
   allSelected = false,
   onToggleDirectory,
@@ -2421,6 +2785,7 @@ function ChangedFileTreeSection({
   displayMode: ReviewDisplayMode;
   expandedDirectories: string[];
   activePreviewKey: string;
+  contextMenuTarget: WorkbenchNavigatorContextMenuTarget | null;
   selectedCommitPaths: Set<string>;
   allSelected?: boolean;
   onToggleDirectory: (directoryPath: string) => void;
@@ -2471,6 +2836,7 @@ function ChangedFileTreeSection({
           ? renderChangedFileFlatRows({
               files,
               activePreviewKey,
+              contextMenuTarget,
               selectedCommitPaths,
               onToggleCommitFile,
               onOpenFile,
@@ -2481,6 +2847,7 @@ function ChangedFileTreeSection({
               nodes,
               expandedDirectories,
               activePreviewKey,
+              contextMenuTarget,
               selectedCommitPaths,
               depth: 0,
               onToggleDirectory,
@@ -2652,6 +3019,7 @@ function renderChangedFileTreeRows({
   nodes,
   expandedDirectories,
   activePreviewKey,
+  contextMenuTarget,
   selectedCommitPaths,
   depth,
   onToggleDirectory,
@@ -2663,6 +3031,7 @@ function renderChangedFileTreeRows({
   nodes: WorkbenchFileTreeNode[];
   expandedDirectories: string[];
   activePreviewKey: string;
+  contextMenuTarget: WorkbenchNavigatorContextMenuTarget | null;
   selectedCommitPaths: Set<string>;
   depth: number;
   onToggleDirectory: (directoryPath: string) => void;
@@ -2676,11 +3045,18 @@ function renderChangedFileTreeRows({
     const statusTone = !untracked && node.gitFile ? getGitStatusTone(node.gitFile) : '';
     const checkDisabled = Boolean(node.gitFile?.conflicted);
     const checked = isWorkbenchFileTreeNodeSelected(node, selectedCommitPaths, (file) => !file.conflicted);
+    const changeGroup = untracked ? 'untracked' : 'tracked';
+    const contextActive = isNavigatorContextTarget(contextMenuTarget, {
+      source: 'changed',
+      type: node.type,
+      path: node.path,
+      changeGroup,
+    });
     const row = (
       <button
         key={node.path}
         type="button"
-        className={`workbench-tree-row selectable has-check${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === buildChangedWorkbenchPreviewKey(node.path) ? ' active' : ''}`}
+        className={`workbench-tree-row selectable has-check${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === buildChangedWorkbenchPreviewKey(node.path) ? ' active' : ''}${contextActive ? ' context-active' : ''}`}
         style={{ paddingLeft: `${16 + depth * 18}px` }}
         onClick={() => {
           if (node.type === 'directory') {
@@ -2695,6 +3071,7 @@ function renderChangedFileTreeRows({
             type: node.type,
             path: node.path,
             name: node.name,
+            changeGroup,
             changedFile: node.gitFile,
           })
         }
@@ -2748,6 +3125,7 @@ function renderChangedFileTreeRows({
         nodes: node.children,
         expandedDirectories,
         activePreviewKey,
+        contextMenuTarget,
         selectedCommitPaths,
         depth: depth + 1,
         onToggleDirectory,
@@ -2763,6 +3141,7 @@ function renderChangedFileTreeRows({
 function renderChangedFileFlatRows({
   files,
   activePreviewKey,
+  contextMenuTarget,
   selectedCommitPaths,
   onToggleCommitFile,
   onOpenFile,
@@ -2771,6 +3150,7 @@ function renderChangedFileFlatRows({
 }: {
   files: GitFileStatus[];
   activePreviewKey: string;
+  contextMenuTarget: WorkbenchNavigatorContextMenuTarget | null;
   selectedCommitPaths: Set<string>;
   onToggleCommitFile: (file: GitFileStatus) => void;
   onOpenFile: (file: GitFileStatus) => void;
@@ -2783,12 +3163,19 @@ function renderChangedFileFlatRows({
     const checkDisabled = Boolean(file.conflicted);
     const fileName = getFileName(file.path);
     const directoryPath = getFileDirectoryPath(file.path);
+    const changeGroup = untracked ? 'untracked' : 'tracked';
+    const contextActive = isNavigatorContextTarget(contextMenuTarget, {
+      source: 'changed',
+      type: 'file',
+      path: file.path,
+      changeGroup,
+    });
 
     return (
       <button
         key={file.path}
         type="button"
-        className={`workbench-tree-row selectable has-check flat${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === buildChangedWorkbenchPreviewKey(file.path) ? ' active' : ''}`}
+        className={`workbench-tree-row selectable has-check flat${statusTone ? ` status-${statusTone}` : ''}${activePreviewKey === buildChangedWorkbenchPreviewKey(file.path) ? ' active' : ''}${contextActive ? ' context-active' : ''}`}
         onClick={() => onOpenFile(file)}
         onContextMenu={(event) =>
           onOpenContextMenu(event, {
@@ -2796,6 +3183,7 @@ function renderChangedFileFlatRows({
             type: 'file',
             path: file.path,
             name: fileName,
+            changeGroup,
             changedFile: file,
           })
         }
@@ -3030,6 +3418,33 @@ function isNavigatorPathDeletedBy(candidatePath: string, deletedPath: string) {
   const candidate = normalizeNavigatorPath(candidatePath);
   const deleted = normalizeNavigatorPath(deletedPath);
   return candidate === deleted || candidate.startsWith(`${deleted}/`);
+}
+
+function isNavigatorContextTarget(
+  current: WorkbenchNavigatorContextMenuTarget | null,
+  target: Pick<WorkbenchNavigatorContextMenuTarget, 'source' | 'type' | 'path' | 'changeGroup'>,
+) {
+  if (!current) {
+    return false;
+  }
+
+  return current.source === target.source &&
+    current.type === target.type &&
+    current.path === target.path &&
+    (current.changeGroup ?? null) === (target.changeGroup ?? null);
+}
+
+function isChangedFileInsideNavigatorPath(file: GitFileStatus, navigatorPath: string) {
+  return isNavigatorPathDeletedBy(file.path, navigatorPath) ||
+    (file.originalPath ? isNavigatorPathDeletedBy(file.originalPath, navigatorPath) : false);
+}
+
+function isPreviewTabAffectedByPaths(tab: WorkbenchPreviewTab, affectedPaths: Set<string>) {
+  return [...affectedPaths].some((affectedPath) => isNavigatorPathDeletedBy(tab.path, affectedPath));
+}
+
+function dedupeGitFiles(files: GitFileStatus[]) {
+  return [...new Map(files.map((file) => [file.path, file])).values()];
 }
 
 function pruneDeletedNavigatorPaths(paths: string[], deletedPath: string) {

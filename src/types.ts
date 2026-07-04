@@ -880,6 +880,18 @@ export type GitFileDiffPreview = {
   afterContent?: string;
 };
 
+export type GitFileRevertResult = {
+  paths: string[];
+  reverted: string[];
+  deleted: string[];
+  summary: ProjectGitSummary;
+};
+
+export type GitAddFilesResult = {
+  added: string[];
+  summary: ProjectGitSummary;
+};
+
 export type GitCommitFilePreview = {
   sha: string;
   path: string;
