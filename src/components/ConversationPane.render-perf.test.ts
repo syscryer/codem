@@ -27,3 +27,16 @@ test('ConversationPane only ticks nowMs for the live running turn', () => {
   assert.match(source, /nowMs=\{isRunning && turn\.id === activeTurnId \? clockNowMs : 0\}/);
   assert.doesNotMatch(source, /nowMs=\{clockNowMs\}/);
 });
+
+test('ConversationPane only builds previous turn history for the undoable change turn', () => {
+  assert.match(source, /const EMPTY_PREVIOUS_TURNS: ConversationTurn\[\] = \[\];/);
+  assert.match(
+    source,
+    /const canUndoChangedFiles = turn\.id === latestChangedFilesTurnId && undoneTurnIds\[turn\.id\] !== true;/,
+  );
+  assert.match(
+    source,
+    /const previousTurns = canUndoChangedFiles\s*\?\s*activeThread\.turns\.slice\(0, index\)\s*:\s*EMPTY_PREVIOUS_TURNS;/,
+  );
+  assert.doesNotMatch(source, /previousTurns=\{activeThread\.turns\.slice\(0, index\)\}/);
+});

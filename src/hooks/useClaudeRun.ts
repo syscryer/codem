@@ -880,10 +880,6 @@ export function useClaudeRun({
     showToast('当前运行未正常完成，队列已保留。', 'info');
   }
 
-  function markRunStreamProgress() {
-    setClockNowMs(Date.now());
-  }
-
   function appendRunningDebug(context: RunContext, event: Omit<DebugEvent, 'id'>) {
     appendDebug(context.threadId, event);
   }
@@ -1326,7 +1322,6 @@ export function useClaudeRun({
       return null;
     }
 
-    markRunStreamProgress();
     appendRunningRawEvent(context, line);
 
     try {
