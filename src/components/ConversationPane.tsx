@@ -16,6 +16,7 @@ import type {
 } from '../types';
 
 const BOTTOM_ANCHOR_THRESHOLD_PX = 96;
+const EMPTY_PREVIOUS_TURNS: ConversationTurn[] = [];
 
 type ConversationScrollPosition = {
   scrollTop: number;
@@ -232,26 +233,33 @@ export function ConversationPane({
             <p>{emptyConversationCopy?.description}</p>
           </div>
         ) : (
-          activeThread.turns.map((turn, index) => (
-            <ConversationTurnView
-              key={turn.id}
-              turn={turn}
-              nowMs={isRunning && turn.id === activeTurnId ? clockNowMs : 0}
-              isLiveRunning={isRunning && turn.id === activeTurnId}
-              isLatest={index === activeThread.turns.length - 1}
-              previousTurns={activeThread.turns.slice(0, index)}
-              canUndoChangedFiles={turn.id === latestChangedFilesTurnId && undoneTurnIds[turn.id] !== true}
-              activeProject={activeProject}
-              collapseIntermediateProcess={collapseIntermediateProcess}
-              onOpenWorkbenchPreview={stableOpenWorkbenchPreview}
-              onOpenOutputPath={stableOpenOutputPath}
-              onRevealOutputPath={stableRevealOutputPath}
-              onUndoChangedFiles={stableUndoChangedFiles}
-              onSubmitRequestUserInput={stableSubmitRequestUserInput}
-              onSubmitRuntimeRecoveryAction={stableSubmitRuntimeRecoveryAction}
-              onSubmitApprovalDecision={stableSubmitApprovalDecision}
-            />
-          ))
+          activeThread.turns.map((turn, index) => {
+            const canUndoChangedFiles = turn.id === latestChangedFilesTurnId && undoneTurnIds[turn.id] !== true;
+            const previousTurns = canUndoChangedFiles
+              ? activeThread.turns.slice(0, index)
+              : EMPTY_PREVIOUS_TURNS;
+
+            return (
+              <ConversationTurnView
+                key={turn.id}
+                turn={turn}
+                nowMs={isRunning && turn.id === activeTurnId ? clockNowMs : 0}
+                isLiveRunning={isRunning && turn.id === activeTurnId}
+                isLatest={index === activeThread.turns.length - 1}
+                previousTurns={previousTurns}
+                canUndoChangedFiles={canUndoChangedFiles}
+                activeProject={activeProject}
+                collapseIntermediateProcess={collapseIntermediateProcess}
+                onOpenWorkbenchPreview={stableOpenWorkbenchPreview}
+                onOpenOutputPath={stableOpenOutputPath}
+                onRevealOutputPath={stableRevealOutputPath}
+                onUndoChangedFiles={stableUndoChangedFiles}
+                onSubmitRequestUserInput={stableSubmitRequestUserInput}
+                onSubmitRuntimeRecoveryAction={stableSubmitRuntimeRecoveryAction}
+                onSubmitApprovalDecision={stableSubmitApprovalDecision}
+              />
+            );
+          })
         )}
         <div ref={bottomRef} />
       </section>

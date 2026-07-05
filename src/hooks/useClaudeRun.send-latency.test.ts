@@ -78,3 +78,16 @@ test('soft interrupt keeps queued prompts retained instead of auto-continuing', 
   assert.match(consumeBody, /maybeStartQueuedPrompt\(context\)/);
   assert.match(consumeBody, /notifyQueuedPromptsRetained\(context\.threadId\)/);
 });
+
+test('stream frames do not refresh the running clock on every line', () => {
+  const source = readFileSync(new URL('./useClaudeRun.ts', import.meta.url), 'utf8');
+  const handleLineIndex = source.indexOf('function handleStreamLine');
+  const handleEventIndex = source.indexOf('function handleClaudeEvent', handleLineIndex);
+  assert.notEqual(handleLineIndex, -1);
+  assert.notEqual(handleEventIndex, -1);
+
+  const handleLineBody = source.slice(handleLineIndex, handleEventIndex);
+  assert.doesNotMatch(handleLineBody, /setClockNowMs\(Date\.now\(\)\)/);
+  assert.doesNotMatch(handleLineBody, /markRunStreamProgress\(\)/);
+  assert.match(source, /window\.setInterval\(\(\) => \{\s*setClockNowMs\(Date\.now\(\)\);\s*\}, 1000\)/);
+});

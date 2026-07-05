@@ -29,6 +29,11 @@ type ThreadMetadataPatch = {
   permissionMode?: string;
 };
 
+type PendingWorkspaceLogBatch = {
+  debugEvents: DebugEvent[];
+  rawEvents: string[];
+};
+
 type CreateProjectOptions = {
   successMessage?: string | null;
 };
@@ -41,6 +46,7 @@ const MAX_DEBUG_EVENTS = 220;
 const MAX_RAW_EVENTS = 220;
 const MAX_DEBUG_CONTENT_CHARS = 12_000;
 const MAX_RAW_EVENT_CHARS = 16_000;
+const WORKSPACE_LOG_FLUSH_MS = 100;
 const LOG_TRUNCATION_MARKER = '\n...[已截断]...\n';
 const PERSIST_HISTORY_DEBOUNCE_MS = 150;
 const PERSIST_HISTORY_RETRY_DELAY_MS = 500;
@@ -84,6 +90,8 @@ export function useWorkspaceState() {
       }
     >
   >(new Map());
+  const pendingLogBatchesRef = useRef<Map<string, PendingWorkspaceLogBatch>>(new Map());
+  const pendingLogFlushTimerRef = useRef<number | null>(null);
 
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   const activeThreadSummary = useMemo(
@@ -149,6 +157,16 @@ export function useWorkspaceState() {
   useEffect(() => {
     newChatDraftRef.current = isNewChatDraft;
   }, [isNewChatDraft]);
+
+  useEffect(() => {
+    return () => {
+      if (pendingLogFlushTimerRef.current !== null) {
+        window.clearTimeout(pendingLogFlushTimerRef.current);
+        pendingLogFlushTimerRef.current = null;
+      }
+      pendingLogBatchesRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
     if (!toast || toast.detailOpen) {
@@ -457,49 +475,89 @@ export function useWorkspaceState() {
     );
   }
 
+  function getPendingLogBatch(threadId: string) {
+    let batch = pendingLogBatchesRef.current.get(threadId);
+    if (!batch) {
+      batch = { debugEvents: [], rawEvents: [] };
+      pendingLogBatchesRef.current.set(threadId, batch);
+    }
+    return batch;
+  }
+
+  function scheduleThreadLogFlush() {
+    if (pendingLogFlushTimerRef.current !== null) {
+      return;
+    }
+
+    pendingLogFlushTimerRef.current = window.setTimeout(() => {
+      pendingLogFlushTimerRef.current = null;
+      flushPendingThreadLogs();
+    }, WORKSPACE_LOG_FLUSH_MS);
+  }
+
+  function flushPendingThreadLogs() {
+    const entries = Array.from(pendingLogBatchesRef.current.entries());
+    pendingLogBatchesRef.current.clear();
+    if (entries.length === 0) {
+      return;
+    }
+
+    startTransition(() => {
+      setThreadDetails((current) => {
+        let next: Record<string, ThreadDetail> | null = null;
+
+        for (const [threadId, batch] of entries) {
+          const existing = (next ?? current)[threadId];
+          if (!existing) {
+            continue;
+          }
+
+          const nextDebugEvents = batch.debugEvents.length
+            ? [...existing.debugEvents, ...batch.debugEvents].slice(-MAX_DEBUG_EVENTS)
+            : existing.debugEvents;
+          const nextRawEvents = batch.rawEvents.length
+            ? [...existing.rawEvents, ...batch.rawEvents].slice(-MAX_RAW_EVENTS)
+            : existing.rawEvents;
+
+          next = next ?? { ...current };
+          next[threadId] = {
+            ...existing,
+            debugEvents: nextDebugEvents,
+            rawEvents: nextRawEvents,
+          };
+        }
+
+        if (!next) {
+          return current;
+        }
+
+        threadDetailsRef.current = next;
+        return next;
+      });
+    });
+  }
+
   function appendDebug(threadId: string, event: Omit<DebugEvent, 'id'>) {
     const normalizedEvent = {
       ...event,
       content: truncateWorkspaceLogText(event.content, MAX_DEBUG_CONTENT_CHARS),
     };
-    startTransition(() => {
-      setThreadDetails((current) => {
-        const existing = current[threadId];
-        if (!existing) {
-          return current;
-        }
-
-        return {
-          ...current,
-          [threadId]: {
-            ...existing,
-            debugEvents: [...existing.debugEvents, { ...normalizedEvent, id: crypto.randomUUID() }].slice(
-              -MAX_DEBUG_EVENTS,
-            ),
-          },
-        };
-      });
-    });
+    const batch = getPendingLogBatch(threadId);
+    batch.debugEvents.push({ ...normalizedEvent, id: crypto.randomUUID() });
+    if (batch.debugEvents.length > MAX_DEBUG_EVENTS) {
+      batch.debugEvents.splice(0, batch.debugEvents.length - MAX_DEBUG_EVENTS);
+    }
+    scheduleThreadLogFlush();
   }
 
   function appendRawEvent(threadId: string, line: string) {
     const normalizedLine = truncateWorkspaceLogText(line, MAX_RAW_EVENT_CHARS);
-    startTransition(() => {
-      setThreadDetails((current) => {
-        const existing = current[threadId];
-        if (!existing) {
-          return current;
-        }
-
-        return {
-          ...current,
-          [threadId]: {
-            ...existing,
-            rawEvents: [...existing.rawEvents, normalizedLine].slice(-MAX_RAW_EVENTS),
-          },
-        };
-      });
-    });
+    const batch = getPendingLogBatch(threadId);
+    batch.rawEvents.push(normalizedLine);
+    if (batch.rawEvents.length > MAX_RAW_EVENTS) {
+      batch.rawEvents.splice(0, batch.rawEvents.length - MAX_RAW_EVENTS);
+    }
+    scheduleThreadLogFlush();
   }
 
   async function persistThreadMetadata(threadId: string, payload: ThreadMetadataPatch) {

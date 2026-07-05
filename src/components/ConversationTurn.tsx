@@ -134,13 +134,20 @@ function ConversationTurnViewComponent({
     }
     return ids;
   }, [requestCardsByToolId, turn.items]);
-  const visibleItems = turn.items.filter((item) => {
-    if (item.type === 'text' || item.type === 'thinking' || item.type === 'system-command') {
-      return true;
-    }
+  const visibleItems = useMemo(
+    () =>
+      turn.items.filter((item) => {
+        if (item.type === 'text' || item.type === 'thinking' || item.type === 'system-command') {
+          return true;
+        }
 
-    return !shouldHideTurnToolStep(turn, item.tool) || Boolean(getToolAnchoredRequest(item.tool, requestCardsByToolId));
-  });
+        return (
+          !shouldHideTurnToolStep(turn, item.tool) ||
+          Boolean(getToolAnchoredRequest(item.tool, requestCardsByToolId))
+        );
+      }),
+    [requestCardsByToolId, turn],
+  );
   const groupedVisibleItems = useMemo(() => groupToolItems(visibleItems), [visibleItems]);
   const shouldCollapseIntermediateItems = collapseIntermediateProcess && !running;
   const intermediateItems = shouldCollapseIntermediateItems
