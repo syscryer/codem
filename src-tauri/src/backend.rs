@@ -59,6 +59,7 @@ struct ActiveRunRecord {
     control_request_tool_use_ids: std::collections::HashMap<String, Option<String>>,
     emitted_request_user_input_keys: std::collections::HashSet<String>,
     emitted_approval_request_keys: std::collections::HashSet<String>,
+    emitted_recovery_hint_keys: std::collections::HashSet<String>,
     paused_for_user_input: bool,
     block_type_by_index: std::collections::HashMap<i64, String>,
     tool_input_accumulators: std::collections::HashMap<i64, ToolInputAccumulator>,
@@ -108,6 +109,7 @@ struct ClaudeContextRequestError {
 struct ApiError {
     status: StatusCode,
     message: String,
+    json_body: bool,
 }
 
 #[derive(Debug)]
@@ -331,6 +333,7 @@ impl ApiError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: message.into(),
+            json_body: false,
         }
     }
 
@@ -338,6 +341,31 @@ impl ApiError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
+            json_body: false,
+        }
+    }
+
+    fn bad_request_json(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+            json_body: true,
+        }
+    }
+
+    fn internal_json(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.into(),
+            json_body: true,
+        }
+    }
+
+    fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: message.into(),
+            json_body: false,
         }
     }
 
@@ -345,13 +373,18 @@ impl ApiError {
         Self {
             status: StatusCode::NOT_FOUND,
             message: message.into(),
+            json_body: false,
         }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status, self.message).into_response()
+        if self.json_body {
+            (self.status, Json(json!({ "error": self.message }))).into_response()
+        } else {
+            (self.status, self.message).into_response()
+        }
     }
 }
 
@@ -791,6 +824,7 @@ async fn claude_run(
         control_request_tool_use_ids: std::collections::HashMap::new(),
         emitted_request_user_input_keys: std::collections::HashSet::new(),
         emitted_approval_request_keys: std::collections::HashSet::new(),
+        emitted_recovery_hint_keys: std::collections::HashSet::new(),
         paused_for_user_input: false,
         block_type_by_index: std::collections::HashMap::new(),
         tool_input_accumulators: std::collections::HashMap::new(),
@@ -957,7 +991,14 @@ async fn claude_run_events(
             .lock()
             .map_err(|error| ApiError::internal(format!("读取运行事件失败: {error}")))?;
         runs.get(&run_id)
-            .map(|run| run.events.iter().skip(after).cloned().collect::<Vec<_>>())
+            .map(|run| {
+                run.events
+                    .iter()
+                    .filter(|event| should_replay_run_event(event))
+                    .skip(after)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default()
     };
     let stream = async_stream::stream! {
@@ -971,6 +1012,13 @@ async fn claude_run_events(
         .header("Cache-Control", "no-cache, no-transform")
         .body(Body::from_stream(stream))
         .map_err(|error| ApiError::internal(format!("构建运行事件响应失败: {error}")))
+}
+
+fn should_replay_run_event(event: &Value) -> bool {
+    !matches!(
+        event.get("type").and_then(Value::as_str),
+        Some("raw") | Some("trace") | Some("assistant-snapshot") | Some("claude-event")
+    )
 }
 
 async fn claude_run_ack(
@@ -990,7 +1038,7 @@ async fn claude_run_guide(
     State(state): State<AppState>,
     AxumPath(run_id): AxumPath<String>,
     Json(payload): Json<Value>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<(StatusCode, Json<Value>)> {
     let prompt = payload
         .get("prompt")
         .and_then(Value::as_str)
@@ -1003,29 +1051,72 @@ async fn claude_run_guide(
             .and_then(Value::as_array)
             .is_none_or(|items| items.is_empty())
     {
-        return Err(ApiError::bad_request("缺少有效引导内容。"));
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "submitted": false, "error": "缺少有效引导内容。" })),
+        ));
+    }
+    if let Err(error) = ensure_run_supports_runtime_input(
+        &state,
+        &run_id,
+        "当前 Claude 运行不支持运行中引导，请等待结束后再继续。",
+    ) {
+        return Ok((
+            if error.status == StatusCode::BAD_REQUEST {
+                StatusCode::CONFLICT
+            } else {
+                error.status
+            },
+            Json(json!({ "submitted": false, "error": error.message })),
+        ));
+    }
+    if let Err(error) = ensure_run_not_paused_for_guide(&state, &run_id) {
+        return Ok((
+            error.status,
+            Json(json!({ "submitted": false, "error": error.message })),
+        ));
     }
     let message = build_claude_input_message(&prompt, content_blocks, None);
-    write_run_stdin_message(&state, &run_id, &message).await?;
+    if let Err(error) = write_run_stdin_message_raw_error(&state, &run_id, &message).await {
+        let message = format!("写入 Claude Code 引导消息失败：{}", error.message);
+        enqueue_retryable_runtime_error(&state, &run_id, &message, "process");
+        push_run_event(
+            &state,
+            &run_id,
+            json!({ "type": "error", "runId": run_id, "message": message }),
+        );
+        finish_run_and_close_runtime(&state, &run_id)?;
+        return Ok((StatusCode::OK, Json(json!({ "submitted": true }))));
+    }
     push_run_event(
         &state,
         &run_id,
         json!({ "type": "trace", "runId": run_id, "name": "stdin_guide_prompt_written", "atMs": current_timestamp_ms_i64() }),
     );
-    Ok(Json(json!({ "submitted": true })))
+    Ok((StatusCode::OK, Json(json!({ "submitted": true }))))
 }
 
 async fn claude_run_request_user_input(
     State(state): State<AppState>,
     AxumPath(run_id): AxumPath<String>,
     Json(payload): Json<Value>,
-) -> ApiResult<Json<Value>> {
-    let request_id = required_json_string(&payload, "requestId", "缺少提问请求 ID。")?;
-    ensure_run_paused_for_user_input(&state, &run_id, "Claude 还没有完成提问，请稍后再提交答案。")?;
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let Some(request_id) = payload
+        .get("requestId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "submitted": false, "error": "缺少提问请求 ID。" })),
+        ));
+    };
     let answers = payload
         .get("answers")
         .and_then(Value::as_object)
-        .ok_or_else(|| ApiError::bad_request("缺少有效回答。"))?;
+        .cloned()
+        .unwrap_or_default();
     let submitted_answers = answers
         .iter()
         .filter_map(|(key, value)| {
@@ -1037,12 +1128,35 @@ async fn claude_run_request_user_input(
         })
         .collect::<Map<String, Value>>();
     if submitted_answers.is_empty() {
-        return Err(ApiError::bad_request("缺少有效回答。"));
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "submitted": false, "error": "缺少有效回答。" })),
+        ));
     }
     let questions = payload
         .get("questions")
         .cloned()
         .unwrap_or_else(|| json!([]));
+    if questions.as_array().is_none_or(|items| items.is_empty()) {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "submitted": false, "error": "缺少提问问题定义。" })),
+        ));
+    }
+    if let Err(error) = ensure_run_paused_for_user_input(
+        &state,
+        &run_id,
+        "Claude 还没有完成提问，请稍后再提交答案。",
+    ) {
+        return Ok((
+            if error.status == StatusCode::BAD_REQUEST {
+                StatusCode::CONFLICT
+            } else {
+                error.status
+            },
+            Json(json!({ "submitted": false, "error": error.message })),
+        ));
+    }
     let normalized_answers =
         build_request_user_input_response_answers(&questions, &submitted_answers);
     let content = json!({
@@ -1069,15 +1183,39 @@ async fn claude_run_request_user_input(
         &run_id,
         json!({ "type": "trace", "runId": run_id, "name": "stdin_tool_result_written", "atMs": current_timestamp_ms_i64(), "detail": request_id }),
     );
-    Ok(Json(json!({ "submitted": true })))
+    Ok((StatusCode::OK, Json(json!({ "submitted": true }))))
 }
 
 async fn claude_run_approval_decision(
     State(state): State<AppState>,
     AxumPath(run_id): AxumPath<String>,
     Json(payload): Json<Value>,
-) -> ApiResult<Json<Value>> {
-    let request_id = required_json_string(&payload, "requestId", "缺少批准请求 ID。")?;
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let Some(request_id) = payload
+        .get("requestId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "submitted": false, "error": "缺少批准请求 ID。" })),
+        ));
+    };
+    if let Err(error) = ensure_run_supports_runtime_input(
+        &state,
+        &run_id,
+        "当前 Claude 运行不支持运行中批准，请等待结束后再继续。",
+    ) {
+        return Ok((
+            if error.status == StatusCode::BAD_REQUEST {
+                StatusCode::CONFLICT
+            } else {
+                error.status
+            },
+            Json(json!({ "submitted": false, "error": error.message })),
+        ));
+    }
     let decision = payload
         .get("decision")
         .and_then(Value::as_str)
@@ -1107,19 +1245,33 @@ async fn claude_run_approval_decision(
         &run_id,
         json!({ "type": "trace", "runId": run_id, "name": "stdin_approval_result_written", "atMs": current_timestamp_ms_i64(), "detail": request_id }),
     );
-    Ok(Json(json!({ "submitted": true })))
+    Ok((StatusCode::OK, Json(json!({ "submitted": true }))))
 }
 
 async fn claude_run_interrupt(
     State(state): State<AppState>,
     AxumPath(run_id): AxumPath<String>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    if let Err(error) = ensure_run_supports_runtime_input(
+        &state,
+        &run_id,
+        "当前 Claude 运行不支持软中断，请使用停止重试。",
+    ) {
+        return Ok((
+            if error.status == StatusCode::BAD_REQUEST {
+                StatusCode::CONFLICT
+            } else {
+                error.status
+            },
+            Json(json!({ "submitted": false, "error": error.message })),
+        ));
+    }
     let message = json!({
         "type": "control_request",
         "request_id": uuid::Uuid::new_v4().to_string(),
         "request": { "subtype": "interrupt" },
     });
-    let submitted = match write_run_stdin_message(&state, &run_id, &message).await {
+    let submitted = match write_run_stdin_message_raw_error(&state, &run_id, &message).await {
         Ok(()) => {
             push_run_event(
                 &state,
@@ -1128,9 +1280,18 @@ async fn claude_run_interrupt(
             );
             true
         }
-        Err(_) => kill_run_child(&state, &run_id)?,
+        Err(error) => {
+            let message = format!("写入 Claude Code 中断请求失败：{}", error.message);
+            enqueue_retryable_runtime_error(&state, &run_id, &message, "process");
+            push_run_event(
+                &state,
+                &run_id,
+                json!({ "type": "error", "runId": run_id, "message": message }),
+            );
+            true
+        }
     };
-    Ok(Json(json!({ "submitted": submitted })))
+    Ok((StatusCode::OK, Json(json!({ "submitted": submitted }))))
 }
 
 async fn claude_run_cancel(
@@ -1173,6 +1334,7 @@ async fn claude_runtime_context(
                 "ok": false,
                 "code": "invalid-thread",
                 "error": "threadId 不能为空。",
+                "httpStatus": 400,
             })),
         ));
     }
@@ -1189,6 +1351,7 @@ async fn claude_runtime_context(
                 "ok": false,
                 "code": "runtime-unavailable",
                 "error": "当前线程没有可复用的 Claude stream-json 会话，请先发送一轮消息后再获取上下文。",
+                "httpStatus": 404,
             })),
         ));
     };
@@ -1199,6 +1362,7 @@ async fn claude_runtime_context(
                 "ok": false,
                 "code": "runtime-busy",
                 "error": "当前 Claude 会话正在运行中，请等待本轮结束后再获取上下文信息。",
+                "httpStatus": 409,
             })),
         ));
     }
@@ -1222,6 +1386,7 @@ async fn claude_runtime_context(
                     "ok": false,
                     "code": "runtime-busy",
                     "error": "已有上下文信息请求正在进行，请稍后再试。",
+                    "httpStatus": 409,
                 })),
             ));
         }
@@ -1260,6 +1425,7 @@ async fn claude_runtime_context(
                 "ok": false,
                 "code": error.code,
                 "error": error.message,
+                "httpStatus": error.status.as_u16(),
             })),
         )),
         Ok(Err(_)) => Ok((
@@ -1268,6 +1434,7 @@ async fn claude_runtime_context(
                 "ok": false,
                 "code": "context-runtime-ended",
                 "error": "Claude 运行时已结束，/context 请求未完成。",
+                "httpStatus": 500,
             })),
         )),
         Err(_) => {
@@ -1286,6 +1453,7 @@ async fn claude_runtime_context(
                     "ok": false,
                     "code": "context-timeout",
                     "error": "Claude 未在限定时间内返回 /context 结果。",
+                    "httpStatus": 504,
                 })),
             ))
         }
@@ -1297,13 +1465,19 @@ async fn claude_runtimes(State(state): State<AppState>) -> ApiResult<Json<Value>
         .runtimes
         .lock()
         .map_err(|error| ApiError::internal(format!("读取 runtime 状态失败: {error}")))?;
-    Ok(Json(Value::Array(
-        runtimes
-            .values()
-            .filter(|runtime| !runtime.closed)
-            .map(runtime_status_json)
-            .collect(),
-    )))
+    let mut statuses = Map::new();
+    for runtime in runtimes.values().filter(|runtime| !runtime.closed) {
+        statuses.insert(
+            runtime.thread_id.clone(),
+            json!({
+                "threadId": runtime.thread_id,
+                "pid": runtime.child_id,
+                "alive": true,
+                "activeRun": runtime.current_run_id.is_some(),
+            }),
+        );
+    }
+    Ok(Json(Value::Object(statuses)))
 }
 
 async fn open_with_targets(State(state): State<AppState>) -> Json<Value> {
@@ -1323,10 +1497,8 @@ async fn usage_stats(
     State(state): State<AppState>,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<Json<Value>> {
-    let range_days = query
-        .get("rangeDays")
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or(30);
+    let range_days =
+        resolve_usage_range_days(query.get("range").or_else(|| query.get("rangeDays")))?;
     let project_id = query.get("projectId").map(String::as_str);
     let connection = open_initialized_workspace_database(&state)?;
     Ok(Json(read_usage_stats(&connection, range_days, project_id)?))
@@ -1616,46 +1788,81 @@ async fn file_preview(
     })))
 }
 
-async fn git_clone(Json(payload): Json<GitCloneRequest>) -> ApiResult<Json<Value>> {
+async fn git_clone(Json(payload): Json<GitCloneRequest>) -> ApiResult<(StatusCode, Json<Value>)> {
     let repo_url = payload
         .repo_url
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| ApiError::bad_request("repoUrl 不能为空"))?;
+        .ok_or_else(|| ApiError::bad_request_json("仓库地址不能为空"))?;
     let base_directory = payload
         .base_directory
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| ApiError::bad_request("baseDirectory 不能为空"))?;
-    let base_directory = resolve_accessible_directory(base_directory)?;
-    let mut args = vec!["clone".to_string(), repo_url.to_string()];
-    if let Some(folder_name) = payload
-        .folder_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        args.push(folder_name.to_string());
+        .ok_or_else(|| ApiError::bad_request_json("保存位置不能为空"))?;
+    let base_directory = resolve_absolute_path(base_directory)?;
+    fs::create_dir_all(&base_directory).map_err(|_| {
+        ApiError::bad_request_json(format!("保存位置不存在且无法创建：{base_directory}"))
+    })?;
+    let metadata = fs::metadata(&base_directory).map_err(|_| {
+        ApiError::bad_request_json(format!("保存位置不存在且无法创建：{base_directory}"))
+    })?;
+    if !metadata.is_dir() {
+        return Err(ApiError::bad_request_json("保存位置不可用"));
     }
-    let output = run_git_command_checked(&base_directory, &args)?;
-    let path = payload
+    let folder_name = payload
         .folder_name
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|folder| {
-            PathBuf::from(&base_directory)
-                .join(folder)
-                .display()
-                .to_string()
-        });
-    Ok(Json(json!({
-        "ok": true,
-        "path": path,
-        "output": output,
-    })))
+        .ok_or_else(|| ApiError::bad_request_json("项目目录名不能为空"))?;
+    if folder_name == "."
+        || folder_name == ".."
+        || folder_name.contains(['<', '>', ':', '"', '/', '\\', '|', '?', '*'])
+        || folder_name.chars().any(|character| character.is_control())
+        || Path::new(folder_name)
+            .file_name()
+            .and_then(|value| value.to_str())
+            != Some(folder_name)
+    {
+        return Err(ApiError::bad_request_json("项目目录名包含无效字符"));
+    }
+    let project_path = PathBuf::from(&base_directory)
+        .join(folder_name)
+        .display()
+        .to_string();
+    if Path::new(&project_path).exists() {
+        return Err(ApiError::bad_request_json(format!(
+            "目标目录已存在：{project_path}"
+        )));
+    }
+    let (clone_status, clone_stdout, clone_stderr) = run_git_command(
+        &base_directory,
+        &[
+            "clone".to_string(),
+            repo_url.to_string(),
+            project_path.clone(),
+        ],
+    )?;
+    if clone_status != 0 {
+        let _ = fs::remove_dir_all(&project_path);
+        let raw_log = build_git_clone_raw_log(&clone_stderr, &clone_stdout);
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format_git_clone_error(&clone_stderr, &clone_stdout),
+                "rawLog": raw_log,
+            })),
+        ));
+    }
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "projectPath": project_path,
+        })),
+    ))
 }
 
 async fn open_project(
@@ -1951,11 +2158,12 @@ async fn project_git_commit(
         return Err(ApiError::bad_request("message 不能为空"));
     }
     let files = read_string_array(payload.get("files"));
-    if !files.is_empty() {
-        let mut args = vec!["add".to_string(), "--".to_string()];
-        args.extend(files);
-        run_git_command_checked(&project_path, &args)?;
+    if files.is_empty() {
+        return Err(ApiError::bad_request("请选择要提交的文件"));
     }
+    let mut args = vec!["add".to_string(), "--".to_string()];
+    args.extend(files);
+    run_git_command_checked(&project_path, &args)?;
     let output = run_git_command_checked(&project_path, &["commit", "-m", message])?;
     Ok(Json(json!({
         "output": output,
@@ -2060,6 +2268,7 @@ async fn project_git_pull(
     Json(payload): Json<Value>,
 ) -> ApiResult<Json<Value>> {
     let project_path = read_project_path(&state, &project_id)?;
+    let before_head = read_git_head(&project_path).unwrap_or_default();
     let mut args = vec!["pull".to_string()];
     if payload.get("mode").and_then(Value::as_str) == Some("ff-only") {
         args.push("--ff-only".to_string());
@@ -2081,9 +2290,13 @@ async fn project_git_pull(
         args.push(branch.to_string());
     }
     let output = run_git_command_checked(&project_path, &args)?;
-    Ok(Json(
-        json!({ "output": output, "summary": project_git_summary_json(&project_path) }),
-    ))
+    let after_head = read_git_head(&project_path).unwrap_or_default();
+    Ok(Json(json!({
+        "output": output,
+        "summary": project_git_summary_json(&project_path),
+        "commitsPulled": count_git_commits_between(&project_path, &before_head, &after_head).unwrap_or(0),
+        "filesChanged": count_git_files_between(&project_path, &before_head, &after_head).unwrap_or(0),
+    })))
 }
 
 async fn project_git_switch(
@@ -2093,10 +2306,11 @@ async fn project_git_switch(
 ) -> ApiResult<Json<Value>> {
     let project_path = read_project_path(&state, &project_id)?;
     let branch = required_json_string(&payload, "branch", "branch 不能为空")?;
-    let output = run_git_command_checked(&project_path, &["switch", branch])?;
-    Ok(Json(
-        json!({ "output": output, "summary": project_git_summary_json(&project_path) }),
-    ))
+    let current = read_git_info(&project_path, false);
+    if current.branch.as_deref() != Some(branch) {
+        run_git_command_checked(&project_path, &["switch", branch])?;
+    }
+    Ok(Json(project_git_summary_json(&project_path)))
 }
 
 async fn project_git_branch(
@@ -2153,9 +2367,17 @@ async fn project_git_delete_branch(
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
     {
-        run_git_command_checked(&project_path, &["push", remote, "--delete", branch])?
+        let trimmed_branch = trim_remote_branch_prefix(branch, remote);
+        run_git_command_checked(
+            &project_path,
+            &["push", remote, "--delete", &trimmed_branch],
+        )?
     } else {
-        run_git_command_checked(&project_path, &["branch", "-D", branch])?
+        let current = read_git_info(&project_path, false);
+        if current.branch.as_deref() == Some(branch) {
+            return Err(ApiError::bad_request("不能删除当前分支"));
+        }
+        run_git_command_checked(&project_path, &["branch", "-d", branch])?
     };
     Ok(Json(
         json!({ "output": output, "summary": project_git_summary_json(&project_path), "branch": branch }),
@@ -2284,6 +2506,9 @@ async fn project_git_undo_turn_changes(
         .get("changes")
         .and_then(Value::as_array)
         .ok_or_else(|| ApiError::bad_request("changes 必须是数组"))?;
+    if changes.is_empty() {
+        return Err(ApiError::bad_request("没有可撤销的文件改动"));
+    }
     let mut restored = Vec::new();
     let mut deleted = Vec::new();
     for change in changes {
@@ -2436,13 +2661,18 @@ async fn project_git_create_worktree(
         }
         workspace = read_workspace_bootstrap_with_connection(&state, &connection)?;
     }
-    Ok(Json(json!({
+    let mut response = json!({
         "ok": true,
         "path": path,
         "branch": branch,
         "projectId": new_project_id,
-        "workspace": workspace,
-    })))
+    });
+    if add_project {
+        if let Some(object) = response.as_object_mut() {
+            object.insert("workspace".to_string(), workspace);
+        }
+    }
+    Ok(Json(response))
 }
 
 async fn project_git_delete_worktree(
@@ -2619,13 +2849,9 @@ async fn get_thread_history(
     State(state): State<AppState>,
     AxumPath(thread_id): AxumPath<String>,
 ) -> ApiResult<Json<Value>> {
-    let connection = open_initialized_workspace_database(&state)?;
-    ensure_thread_exists(&connection, &thread_id)?;
-    let turns = read_stored_thread_history(&connection, &thread_id)?;
-    Ok(Json(json!({
-        "threadId": thread_id,
-        "turns": turns,
-    })))
+    let _guard = lock_workspace_write(&state)?;
+    let mut connection = open_initialized_workspace_database(&state)?;
+    read_thread_history_payload(&mut connection, &thread_id).map(Json)
 }
 
 async fn save_thread_history(
@@ -4493,6 +4719,174 @@ fn sanitize_project_path(project_path: &str) -> String {
         .collect()
 }
 
+fn read_thread_history_payload(connection: &mut Connection, thread_id: &str) -> ApiResult<Value> {
+    let thread = read_thread_detail(connection, thread_id)?;
+    let stored_turns = read_stored_thread_history(connection, thread_id)?;
+    let claude_context = thread
+        .transcript_path
+        .as_deref()
+        .and_then(read_latest_claude_context_snapshot);
+    let mut turns = stored_turns.clone();
+    if let Some(transcript_path) = thread
+        .transcript_path
+        .as_deref()
+        .filter(|path| Path::new(path).exists())
+    {
+        let should_parse = if turns.is_empty() {
+            true
+        } else {
+            should_refresh_stored_history(connection, thread_id, transcript_path, &turns)?
+        };
+        if should_parse {
+            let reparsed_turns =
+                parse_claude_transcript(transcript_path, thread.session_id.as_deref());
+            if !reparsed_turns.is_empty() {
+                turns = if stored_turns.is_empty() {
+                    reparsed_turns
+                } else {
+                    merge_stored_turn_metrics(&stored_turns, reparsed_turns)
+                };
+                write_thread_history(connection, thread_id, &turns)?;
+            }
+        }
+    }
+    let mut payload = json!({
+        "threadId": thread_id,
+        "turns": remove_claude_local_command_pollution(turns),
+    });
+    if let Some(context) = claude_context {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("claudeContext".to_string(), context);
+        }
+    }
+    Ok(payload)
+}
+
+fn should_refresh_stored_history(
+    connection: &Connection,
+    thread_id: &str,
+    transcript_path: &str,
+    turns: &[Value],
+) -> ApiResult<bool> {
+    if turns.iter().any(has_pending_human_request) || turns.iter().any(has_local_user_input_summary)
+    {
+        return Ok(false);
+    }
+    if should_reparse_stored_history(turns) {
+        return Ok(true);
+    }
+    is_stored_history_outdated(connection, thread_id, transcript_path)
+}
+
+fn is_stored_history_outdated(
+    connection: &Connection,
+    thread_id: &str,
+    transcript_path: &str,
+) -> ApiResult<bool> {
+    let latest_created_at: Option<String> = connection
+        .query_row(
+            "SELECT MAX(created_at) FROM messages WHERE thread_id = ?",
+            params![thread_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取聊天更新时间失败: {error}")))?
+        .flatten();
+    let Some(latest_created_at) = latest_created_at else {
+        return Ok(true);
+    };
+    let transcript_updated_at = fs::metadata(transcript_path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .map(chrono::DateTime::<chrono::Utc>::from)
+        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    Ok(transcript_updated_at.is_some_and(|value| value > latest_created_at))
+}
+
+fn should_reparse_stored_history(turns: &[Value]) -> bool {
+    turns.iter().any(|turn| {
+        has_claude_local_command_text(turn.get("userText").and_then(Value::as_str))
+            || has_claude_local_command_text(turn.get("assistantText").and_then(Value::as_str))
+            || turn
+                .get("tools")
+                .and_then(Value::as_array)
+                .is_some_and(|tools| {
+                    tools
+                        .iter()
+                        .any(|tool| tool.get("name").and_then(Value::as_str) == Some("tool_result"))
+                })
+    })
+}
+
+fn has_pending_human_request(turn: &Value) -> bool {
+    json_array_has_items(turn.get("pendingUserInputRequests"))
+        || json_array_has_items(turn.get("pendingApprovalRequests"))
+}
+
+fn has_local_user_input_summary(turn: &Value) -> bool {
+    json_array_has_items(turn.get("userAttachments"))
+        || turn
+            .get("userContentBlocks")
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| block.get("type").and_then(Value::as_str) != Some("text"))
+            })
+}
+
+fn json_array_has_items(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty())
+}
+
+fn merge_stored_turn_metrics(stored_turns: &[Value], reparsed_turns: Vec<Value>) -> Vec<Value> {
+    let mut stored_by_key = std::collections::HashMap::new();
+    for (index, turn) in stored_turns.iter().enumerate() {
+        stored_by_key.insert(turn_merge_key(turn, index), turn);
+    }
+    reparsed_turns
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut turn)| {
+            if let Some(stored) = stored_by_key.get(&turn_merge_key(&turn, index)) {
+                for key in [
+                    "inputTokens",
+                    "outputTokens",
+                    "cacheCreationInputTokens",
+                    "cacheReadInputTokens",
+                    "contextUsage",
+                    "totalCostUsd",
+                    "durationMs",
+                ] {
+                    if turn.get(key).is_none_or(Value::is_null) {
+                        if let Some(value) = stored.get(key).filter(|value| !value.is_null()) {
+                            if let Some(object) = turn.as_object_mut() {
+                                object.insert(key.to_string(), value.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            turn
+        })
+        .collect()
+}
+
+fn turn_merge_key(turn: &Value, index: usize) -> String {
+    let user_text = turn
+        .get("userText")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if user_text.is_empty() {
+        format!("index:{index}")
+    } else {
+        format!("user:{user_text}")
+    }
+}
+
 fn read_stored_thread_history(connection: &Connection, thread_id: &str) -> ApiResult<Vec<Value>> {
     let mut statement = connection
         .prepare(
@@ -4985,6 +5379,910 @@ fn tool_row_json(row: &ToolCallRow) -> Value {
     tool
 }
 
+fn parse_claude_transcript(transcript_path: &str, session_id: Option<&str>) -> Vec<Value> {
+    let Ok(content) = fs::read_to_string(transcript_path) else {
+        return Vec::new();
+    };
+    let mut turns: Vec<Value> = Vec::new();
+    for line in content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let Ok(payload) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if payload
+            .get("isMeta")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || is_claude_local_command_payload(&payload)
+            || is_claude_task_notification_payload(&payload)
+        {
+            continue;
+        }
+        let timestamp_ms = payload
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(parse_iso_timestamp_ms);
+        if payload.get("type").and_then(Value::as_str) == Some("attachment") {
+            if let Some(summary) = extract_guide_attachment_text(&payload) {
+                if let Some(turn) = turns.last_mut() {
+                    push_turn_item(turn, create_guide_system_command_item(&summary));
+                }
+            }
+            continue;
+        }
+        if payload
+            .get("isSidechain")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            let parent_tool_use_id = payload
+                .get("parent_tool_use_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            if let Some(parent_tool_use_id) = parent_tool_use_id {
+                if payload.pointer("/message/role").and_then(Value::as_str) == Some("assistant") {
+                    attach_sidechain_assistant_message(&mut turns, parent_tool_use_id, &payload);
+                    continue;
+                }
+                if payload.pointer("/message/role").and_then(Value::as_str) == Some("user") {
+                    if let Some(index) = turns
+                        .iter()
+                        .position(|turn| turn_has_tool_use_id(turn, parent_tool_use_id))
+                    {
+                        attach_tool_results(&mut turns[index], payload.pointer("/message/content"));
+                    } else if let Some(turn) = turns.last_mut() {
+                        attach_tool_results(turn, payload.pointer("/message/content"));
+                    }
+                    continue;
+                }
+            }
+        }
+        match payload.get("type").and_then(Value::as_str) {
+            Some("user") => {
+                if payload.pointer("/message/role").and_then(Value::as_str) != Some("user") {
+                    continue;
+                }
+                let content = payload.pointer("/message/content");
+                if !content.is_some_and(contains_tool_result) {
+                    let user_text = content.map(extract_user_text).unwrap_or_default();
+                    turns.push(create_transcript_turn(
+                        &user_text,
+                        session_id,
+                        timestamp_ms,
+                        "stopped",
+                        Some("运行结束但没有返回正文"),
+                    ));
+                } else if let Some(turn) = turns.last_mut() {
+                    attach_tool_results(turn, content);
+                }
+            }
+            Some("assistant") => {
+                if payload.pointer("/message/role").and_then(Value::as_str) != Some("assistant") {
+                    continue;
+                }
+                if turns.is_empty() {
+                    turns.push(create_transcript_turn(
+                        "",
+                        session_id,
+                        timestamp_ms,
+                        "done",
+                        None,
+                    ));
+                }
+                let turn = turns.last_mut().expect("turn exists");
+                set_turn_started_at(turn, timestamp_ms);
+                apply_transcript_metrics(turn, &payload, payload.get("message"));
+                for block in extract_content_blocks(payload.pointer("/message/content")) {
+                    match block.get("type").and_then(Value::as_str) {
+                        Some("thinking") => {
+                            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                                push_thinking_item(turn, text);
+                            }
+                        }
+                        Some("text") => {
+                            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                                set_json_string(turn, "status", "done");
+                                remove_json_key(turn, "activity");
+                                append_assistant_text(turn, text);
+                                push_text_item(turn, text);
+                            }
+                        }
+                        Some("tool_use") => {
+                            let Some(name) = block.get("name").and_then(Value::as_str) else {
+                                continue;
+                            };
+                            set_json_string(turn, "status", "done");
+                            remove_json_key(turn, "activity");
+                            let input = block.get("input").cloned().unwrap_or(Value::Null);
+                            let input_text = format_json_value(&input);
+                            let tool_use_id = block
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .map(ToString::to_string);
+                            let tool_id = tool_use_id
+                                .clone()
+                                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                            let tool = json!({
+                                "id": tool_id,
+                                "name": name,
+                                "title": describe_tool_call(name, &input_text),
+                                "status": "done",
+                                "toolUseId": tool_use_id,
+                                "inputText": input_text,
+                            });
+                            push_tool_to_turn(turn, tool.clone());
+                            if let Some(request) = parse_request_user_input_event(
+                                name,
+                                &input,
+                                tool.get("toolUseId").and_then(Value::as_str),
+                            ) {
+                                upsert_pending_request(turn, "pendingUserInputRequests", request);
+                            }
+                            if let Some(request) = parse_approval_request_event(
+                                name,
+                                &input,
+                                tool.get("toolUseId").and_then(Value::as_str),
+                            ) {
+                                upsert_pending_request(
+                                    turn,
+                                    "pendingApprovalRequests",
+                                    mark_approval_request_historical(request),
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Some("result") => {
+                if let Some(turn) = turns.last_mut() {
+                    set_turn_started_at(turn, timestamp_ms);
+                    apply_transcript_metrics(turn, &payload, None);
+                    if let Some(message) = context_result_error_message(&payload) {
+                        set_json_string(turn, "status", "error");
+                        set_json_string(turn, "activity", &message);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    turns
+        .into_iter()
+        .filter(|turn| {
+            turn.get("userText")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty())
+                || turn
+                    .get("assistantText")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+                || json_array_has_items(turn.get("tools"))
+        })
+        .collect()
+}
+
+fn read_latest_claude_context_snapshot(transcript_path: &str) -> Option<Value> {
+    let metadata = fs::metadata(transcript_path).ok()?;
+    let transcript_mtime_ms = metadata
+        .modified()
+        .ok()
+        .map(chrono::DateTime::<chrono::Utc>::from)
+        .map(|timestamp| timestamp.timestamp_millis())
+        .unwrap_or_else(current_timestamp_ms_i64);
+    let content = fs::read_to_string(transcript_path).ok()?;
+    let mut latest: Option<(String, i64, i64)> = None;
+    let mut event_count = 0_i64;
+    for line in content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let Ok(payload) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        event_count += 1;
+        let markdown = extract_context_markdown_from_payload(&payload)
+            .trim()
+            .to_string();
+        if markdown.is_empty() {
+            continue;
+        }
+        let snapshot = create_context_snapshot_value(
+            &markdown,
+            payload
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_iso_timestamp_ms)
+                .unwrap_or(transcript_mtime_ms),
+            0,
+            1,
+        );
+        if snapshot
+            .pointer("/summary/hasContextUsage")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            latest = Some((
+                markdown,
+                snapshot["requestedAtMs"]
+                    .as_i64()
+                    .unwrap_or(transcript_mtime_ms),
+                event_count,
+            ));
+        }
+    }
+    latest.map(|(markdown, requested_at_ms, count)| {
+        create_context_snapshot_value(&markdown, requested_at_ms, 0, count)
+    })
+}
+
+fn create_transcript_turn(
+    user_text: &str,
+    session_id: Option<&str>,
+    started_at_ms: Option<i64>,
+    status: &str,
+    activity: Option<&str>,
+) -> Value {
+    let mut turn = json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "userText": user_text,
+        "assistantText": "",
+        "status": status,
+        "items": [],
+        "tools": [],
+    });
+    set_json_optional_string(&mut turn, "sessionId", session_id);
+    set_json_optional_number(&mut turn, "startedAtMs", started_at_ms);
+    set_json_optional_string(&mut turn, "activity", activity);
+    turn
+}
+
+fn parse_iso_timestamp_ms(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|timestamp| timestamp.timestamp_millis())
+}
+
+fn contains_tool_result(content: &Value) -> bool {
+    content.as_array().is_some_and(|items| {
+        items
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("tool_result"))
+    })
+}
+
+fn extract_user_text(content: &Value) -> String {
+    if let Some(text) = content.as_str() {
+        return text.trim().to_string();
+    }
+    content
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    (item.get("type").and_then(Value::as_str) == Some("text"))
+                        .then(|| item.get("text").and_then(Value::as_str))
+                        .flatten()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+fn extract_content_blocks(content: Option<&Value>) -> Vec<Value> {
+    content
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let block_type = item.get("type").and_then(Value::as_str)?;
+                    let text = item
+                        .get("text")
+                        .or_else(|| item.get("thinking"))
+                        .and_then(Value::as_str);
+                    if block_type == "text" && text == Some("No response requested.") {
+                        return None;
+                    }
+                    Some(json!({
+                        "type": block_type,
+                        "text": text,
+                        "id": item.get("id").and_then(Value::as_str),
+                        "name": item.get("name").and_then(Value::as_str),
+                        "input": item.get("input").cloned().unwrap_or(Value::Null),
+                    }))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn append_assistant_text(turn: &mut Value, text: &str) {
+    let current = turn
+        .get("assistantText")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    turn["assistantText"] = Value::String(format!("{current}{text}"));
+}
+
+fn push_text_item(turn: &mut Value, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(items) = turn.get_mut("items").and_then(Value::as_array_mut) {
+        if let Some(last) = items.last_mut() {
+            if last.get("type").and_then(Value::as_str) == Some("text") {
+                let current = last.get("text").and_then(Value::as_str).unwrap_or_default();
+                last["text"] = Value::String(format!("{current}{text}"));
+                return;
+            }
+        }
+        items.push(json!({
+            "id": uuid::Uuid::new_v4().to_string(),
+            "type": "text",
+            "text": text,
+        }));
+    }
+}
+
+fn push_thinking_item(turn: &mut Value, text: &str) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    push_turn_item(
+        turn,
+        json!({
+            "id": uuid::Uuid::new_v4().to_string(),
+            "type": "thinking",
+            "text": trimmed,
+        }),
+    );
+}
+
+fn push_turn_item(turn: &mut Value, item: Value) {
+    if let Some(items) = turn.get_mut("items").and_then(Value::as_array_mut) {
+        items.push(item);
+    }
+}
+
+fn push_tool_to_turn(turn: &mut Value, tool: Value) {
+    if let Some(tools) = turn.get_mut("tools").and_then(Value::as_array_mut) {
+        tools.push(tool.clone());
+    }
+    push_turn_item(
+        turn,
+        json!({
+            "id": tool.get("id").cloned().unwrap_or_else(|| json!(uuid::Uuid::new_v4().to_string())),
+            "type": "tool",
+            "tool": tool,
+        }),
+    );
+}
+
+fn attach_tool_results(turn: &mut Value, content: Option<&Value>) {
+    let Some(items) = content.and_then(Value::as_array) else {
+        return;
+    };
+    for item in items {
+        if item.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        let Some(tool_use_id) = item.get("tool_use_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let result_text = stringify_claude_content(item.get("content").unwrap_or(&Value::Null));
+        let is_error = item
+            .get("is_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if update_tool_result(turn, tool_use_id, &result_text, is_error) {
+            mark_request_user_input_submitted(turn, tool_use_id, &result_text);
+            if is_error && is_human_approval_tool_result_content(&result_text) {
+                let request = json!({
+                    "requestId": tool_use_id,
+                    "kind": "permission",
+                    "title": "工具调用需要你确认",
+                    "description": "Claude 返回该操作需要批准后才能继续。批准后会以完全访问模式继续执行。",
+                    "danger": "medium",
+                    "historical": true,
+                });
+                upsert_pending_request(turn, "pendingApprovalRequests", request);
+            } else {
+                remove_pending_approval_request(turn, tool_use_id);
+            }
+        }
+    }
+}
+
+fn update_tool_result(
+    turn: &mut Value,
+    tool_use_id: &str,
+    result_text: &str,
+    is_error: bool,
+) -> bool {
+    let mut updated = false;
+    if let Some(tools) = turn.get_mut("tools").and_then(Value::as_array_mut) {
+        updated |= update_tool_result_in_array(tools, tool_use_id, result_text, is_error);
+    }
+    if let Some(items) = turn.get_mut("items").and_then(Value::as_array_mut) {
+        for item in items {
+            if item.get("type").and_then(Value::as_str) == Some("tool") {
+                if let Some(tool) = item.get_mut("tool") {
+                    updated |= update_tool_value_result(tool, tool_use_id, result_text, is_error);
+                }
+            }
+        }
+    }
+    updated
+}
+
+fn update_tool_result_in_array(
+    tools: &mut [Value],
+    tool_use_id: &str,
+    result_text: &str,
+    is_error: bool,
+) -> bool {
+    let mut updated = false;
+    for tool in tools {
+        updated |= update_tool_value_result(tool, tool_use_id, result_text, is_error);
+        if let Some(subtools) = tool.get_mut("subtools").and_then(Value::as_array_mut) {
+            updated |= update_tool_result_in_array(subtools, tool_use_id, result_text, is_error);
+        }
+    }
+    updated
+}
+
+fn update_tool_value_result(
+    tool: &mut Value,
+    tool_use_id: &str,
+    result_text: &str,
+    is_error: bool,
+) -> bool {
+    let matches = tool.get("toolUseId").and_then(Value::as_str) == Some(tool_use_id)
+        || tool.get("id").and_then(Value::as_str) == Some(tool_use_id);
+    if matches {
+        tool["resultText"] = json!(result_text);
+        tool["isError"] = json!(is_error);
+        tool["status"] = json!(if is_error { "error" } else { "done" });
+    }
+    matches
+}
+
+fn turn_has_tool_use_id(turn: &Value, tool_use_id: &str) -> bool {
+    turn.get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool_matches_use_id(tool, tool_use_id))
+        })
+}
+
+fn tool_matches_use_id(tool: &Value, tool_use_id: &str) -> bool {
+    tool.get("toolUseId").and_then(Value::as_str) == Some(tool_use_id)
+        || tool.get("id").and_then(Value::as_str) == Some(tool_use_id)
+        || tool
+            .get("subtools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| {
+                tools
+                    .iter()
+                    .any(|tool| tool_matches_use_id(tool, tool_use_id))
+            })
+}
+
+fn attach_sidechain_assistant_message(
+    turns: &mut [Value],
+    parent_tool_use_id: &str,
+    payload: &Value,
+) {
+    let content = payload.pointer("/message/content");
+    for block in extract_content_blocks(content) {
+        if block.get("type").and_then(Value::as_str) == Some("text") {
+            if let Some(text) = block
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                append_tool_submessage(turns, parent_tool_use_id, text);
+            }
+            continue;
+        }
+        if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+            continue;
+        }
+        let Some(name) = block.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let input = block.get("input").cloned().unwrap_or(Value::Null);
+        let input_text = format_json_value(&input);
+        let tool_use_id = block
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        let tool = json!({
+            "id": tool_use_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            "name": name,
+            "title": describe_tool_call(name, &input_text),
+            "status": "done",
+            "toolUseId": tool_use_id,
+            "parentToolUseId": parent_tool_use_id,
+            "isSidechain": true,
+            "inputText": input_text,
+        });
+        append_tool_subtool(turns, parent_tool_use_id, tool);
+    }
+}
+
+fn append_tool_submessage(turns: &mut [Value], tool_use_id: &str, text: &str) {
+    for turn in turns {
+        if append_tool_submessage_in_turn(turn, tool_use_id, text) {
+            return;
+        }
+    }
+}
+
+fn append_tool_submessage_in_turn(turn: &mut Value, tool_use_id: &str, text: &str) -> bool {
+    let mut updated = false;
+    if let Some(tools) = turn.get_mut("tools").and_then(Value::as_array_mut) {
+        updated |= append_tool_submessage_in_array(tools, tool_use_id, text);
+    }
+    if let Some(items) = turn.get_mut("items").and_then(Value::as_array_mut) {
+        for item in items {
+            if let Some(tool) = item.get_mut("tool") {
+                updated |= append_tool_submessage_value(tool, tool_use_id, text);
+            }
+        }
+    }
+    updated
+}
+
+fn append_tool_submessage_in_array(tools: &mut [Value], tool_use_id: &str, text: &str) -> bool {
+    for tool in tools {
+        if append_tool_submessage_value(tool, tool_use_id, text) {
+            return true;
+        }
+        if let Some(subtools) = tool.get_mut("subtools").and_then(Value::as_array_mut) {
+            if append_tool_submessage_in_array(subtools, tool_use_id, text) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn append_tool_submessage_value(tool: &mut Value, tool_use_id: &str, text: &str) -> bool {
+    if tool.get("toolUseId").and_then(Value::as_str) != Some(tool_use_id)
+        && tool.get("id").and_then(Value::as_str) != Some(tool_use_id)
+    {
+        return false;
+    }
+    if !tool.get("subMessages").is_some_and(Value::is_array) {
+        tool["subMessages"] = json!([]);
+    }
+    if let Some(items) = tool.get_mut("subMessages").and_then(Value::as_array_mut) {
+        items.push(json!(text));
+    }
+    true
+}
+
+fn append_tool_subtool(turns: &mut [Value], tool_use_id: &str, subtool: Value) {
+    for turn in turns {
+        if append_tool_subtool_in_turn(turn, tool_use_id, subtool.clone()) {
+            return;
+        }
+    }
+}
+
+fn append_tool_subtool_in_turn(turn: &mut Value, tool_use_id: &str, subtool: Value) -> bool {
+    let mut updated = false;
+    if let Some(tools) = turn.get_mut("tools").and_then(Value::as_array_mut) {
+        updated |= append_tool_subtool_in_array(tools, tool_use_id, subtool.clone());
+    }
+    if let Some(items) = turn.get_mut("items").and_then(Value::as_array_mut) {
+        for item in items {
+            if let Some(tool) = item.get_mut("tool") {
+                updated |= append_tool_subtool_value(tool, tool_use_id, subtool.clone());
+            }
+        }
+    }
+    updated
+}
+
+fn append_tool_subtool_in_array(tools: &mut [Value], tool_use_id: &str, subtool: Value) -> bool {
+    for tool in tools {
+        if append_tool_subtool_value(tool, tool_use_id, subtool.clone()) {
+            return true;
+        }
+        if let Some(subtools) = tool.get_mut("subtools").and_then(Value::as_array_mut) {
+            if append_tool_subtool_in_array(subtools, tool_use_id, subtool.clone()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn append_tool_subtool_value(tool: &mut Value, tool_use_id: &str, subtool: Value) -> bool {
+    if tool.get("toolUseId").and_then(Value::as_str) != Some(tool_use_id)
+        && tool.get("id").and_then(Value::as_str) != Some(tool_use_id)
+    {
+        return false;
+    }
+    if !tool.get("subtools").is_some_and(Value::is_array) {
+        tool["subtools"] = json!([]);
+    }
+    if let Some(items) = tool.get_mut("subtools").and_then(Value::as_array_mut) {
+        items.push(subtool);
+    }
+    true
+}
+
+fn mark_request_user_input_submitted(turn: &mut Value, request_id: &str, result_text: &str) {
+    let Some(requests) = turn
+        .get_mut("pendingUserInputRequests")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for request in requests {
+        if request.get("requestId").and_then(Value::as_str) == Some(request_id) {
+            request["submittedAtMs"] = json!(current_timestamp_ms_i64());
+            request["submittedAnswers"] = json!(result_text);
+        }
+    }
+}
+
+fn upsert_pending_request(turn: &mut Value, key: &str, request: Value) {
+    if !turn.get(key).is_some_and(Value::is_array) {
+        turn[key] = json!([]);
+    }
+    let request_id = request.get("requestId").and_then(Value::as_str);
+    if let Some(items) = turn.get_mut(key).and_then(Value::as_array_mut) {
+        if let Some(request_id) = request_id {
+            if let Some(existing) = items
+                .iter_mut()
+                .find(|item| item.get("requestId").and_then(Value::as_str) == Some(request_id))
+            {
+                *existing = request;
+                return;
+            }
+        }
+        items.push(request);
+    }
+}
+
+fn remove_pending_approval_request(turn: &mut Value, request_id: &str) {
+    let Some(items) = turn
+        .get_mut("pendingApprovalRequests")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    items.retain(|item| {
+        item.get("kind").and_then(Value::as_str) == Some("plan-exit")
+            || item.get("requestId").and_then(Value::as_str) != Some(request_id)
+    });
+    if items.is_empty() {
+        remove_json_key(turn, "pendingApprovalRequests");
+    }
+}
+
+fn mark_approval_request_historical(mut request: Value) -> Value {
+    request["historical"] = json!(true);
+    request
+}
+
+fn set_turn_started_at(turn: &mut Value, timestamp_ms: Option<i64>) {
+    if turn.get("startedAtMs").and_then(Value::as_i64).is_none() {
+        set_json_optional_number(turn, "startedAtMs", timestamp_ms);
+    }
+}
+
+fn apply_transcript_metrics(turn: &mut Value, payload: &Value, message: Option<&Value>) {
+    if let Some(usage) = payload
+        .pointer("/context_window/current_usage")
+        .or_else(|| payload.get("usage"))
+        .or_else(|| message.and_then(|message| message.get("usage")))
+    {
+        set_json_optional_number(
+            turn,
+            "inputTokens",
+            usage.get("input_tokens").and_then(Value::as_i64),
+        );
+        set_json_optional_number(
+            turn,
+            "outputTokens",
+            usage.get("output_tokens").and_then(Value::as_i64),
+        );
+        set_json_optional_number(
+            turn,
+            "cacheCreationInputTokens",
+            usage
+                .get("cache_creation_input_tokens")
+                .and_then(Value::as_i64),
+        );
+        set_json_optional_number(
+            turn,
+            "cacheReadInputTokens",
+            usage.get("cache_read_input_tokens").and_then(Value::as_i64),
+        );
+    }
+    set_json_optional_number(
+        turn,
+        "durationMs",
+        payload.get("duration_ms").and_then(Value::as_i64),
+    );
+    set_json_optional_float(
+        turn,
+        "totalCostUsd",
+        payload.get("total_cost_usd").and_then(Value::as_f64),
+    );
+}
+
+fn format_json_value(value: &Value) -> String {
+    if value.is_null() {
+        String::new()
+    } else if let Some(text) = value.as_str() {
+        text.to_string()
+    } else {
+        serde_json::to_string_pretty(value).unwrap_or_default()
+    }
+}
+
+fn describe_tool_call(name: &str, input_text: &str) -> String {
+    let parsed = serde_json::from_str::<Value>(input_text).ok();
+    let file_path = parsed
+        .as_ref()
+        .and_then(|value| first_json_string(value, &["file_path", "path", "notebook_path"]));
+    let pattern = parsed
+        .as_ref()
+        .and_then(|value| first_json_string(value, &["pattern", "query"]));
+    let command = parsed
+        .as_ref()
+        .and_then(|value| first_json_string(value, &["command", "cmd", "cmdString"]));
+    if name == "Read" {
+        if let Some(value) = file_path {
+            return format!("Read({})", compact_tool_argument(value));
+        }
+    }
+    if name == "Grep" || name == "Glob" {
+        if let Some(value) = pattern {
+            return format!("{name}({})", compact_tool_argument(value));
+        }
+    }
+    if name == "Bash" {
+        if let Some(value) = command {
+            return format!("Bash({})", compact_tool_argument(value));
+        }
+    }
+    name.to_string()
+}
+
+fn compact_tool_argument(value: &str) -> String {
+    let trimmed = value.trim();
+    let max_chars = 80;
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    format!("{}...", trimmed.chars().take(max_chars).collect::<String>())
+}
+
+fn extract_guide_attachment_text(payload: &Value) -> Option<String> {
+    let attachment = payload.get("attachment")?;
+    if attachment.get("type").and_then(Value::as_str) != Some("queued_command")
+        || attachment.get("commandMode").and_then(Value::as_str) != Some("prompt")
+    {
+        return None;
+    }
+    let text = extract_user_text(attachment.get("prompt")?);
+    (!text.is_empty()).then_some(text)
+}
+
+fn create_guide_system_command_item(summary: &str) -> Value {
+    json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "type": "system-command",
+        "command": "guide",
+        "title": "已引导当前运行",
+        "cardType": "compact",
+        "state": "done",
+        "summary": summary,
+    })
+}
+
+fn is_claude_local_command_payload(payload: &Value) -> bool {
+    let content = payload.pointer("/message/content");
+    content.is_some_and(|content| {
+        has_claude_local_command_text(content.as_str())
+            || content.as_array().is_some_and(|items| {
+                items.iter().any(|item| {
+                    has_claude_local_command_text(item.get("text").and_then(Value::as_str))
+                })
+            })
+    })
+}
+
+fn has_claude_local_command_text(text: Option<&str>) -> bool {
+    let trimmed = text.unwrap_or_default().trim();
+    trimmed.starts_with("<local-command-")
+        || trimmed.starts_with("<command-name>")
+        || trimmed.starts_with("<command-message>")
+        || trimmed.starts_with("<command-args>")
+}
+
+fn is_claude_task_notification_payload(payload: &Value) -> bool {
+    payload
+        .pointer("/origin/kind")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value == "task-notification")
+        || payload
+            .pointer("/attachment/commandMode")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value == "task-notification")
+        || payload
+            .pointer("/message/content")
+            .is_some_and(is_task_notification_content)
+}
+
+fn is_task_notification_content(content: &Value) -> bool {
+    content.as_str().is_some_and(is_task_notification_text)
+        || content.as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("type").and_then(Value::as_str) == Some("text")
+                    && item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .is_some_and(is_task_notification_text)
+            })
+        })
+}
+
+fn is_task_notification_text(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.starts_with("<task-notification>") && trimmed.contains("</task-notification>")
+}
+
+fn remove_claude_local_command_pollution(turns: Vec<Value>) -> Vec<Value> {
+    turns
+        .into_iter()
+        .map(|mut turn| {
+            if let Some(items) = turn.get_mut("items").and_then(Value::as_array_mut) {
+                items.retain(|item| match item.get("type").and_then(Value::as_str) {
+                    Some("text") | Some("thinking") => {
+                        !has_claude_local_command_text(item.get("text").and_then(Value::as_str))
+                    }
+                    Some("system-command") => {
+                        !has_claude_local_command_text(item.get("summary").and_then(Value::as_str))
+                            && !has_claude_local_command_text(
+                                item.get("errorMessage").and_then(Value::as_str),
+                            )
+                    }
+                    _ => true,
+                });
+            }
+            turn
+        })
+        .collect()
+}
+
+fn remove_json_key(target: &mut Value, key: &str) {
+    if let Some(object) = target.as_object_mut() {
+        object.remove(key);
+    }
+}
+
 fn normalize_status(value: Option<&str>) -> &'static str {
     match value {
         Some("pending") => "pending",
@@ -5308,6 +6606,7 @@ fn ensure_can_preview_workspace_file(state: &AppState, file_path: &str) -> ApiRe
     Err(ApiError {
         status: StatusCode::FORBIDDEN,
         message: "无权访问该路径".to_string(),
+        json_body: false,
     })
 }
 
@@ -5442,25 +6741,40 @@ if ($result -eq [System.Windows.Forms.DialogResult]::OK -and $dialog.FileName) {
 
 fn open_path_with_system(path: &str) -> ApiResult<()> {
     #[cfg(target_os = "windows")]
-    let status = background_command("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
-        .arg(format!(
-            "$ErrorActionPreference = 'Stop'; Start-Process -FilePath '{}'",
-            powershell_escape(path)
-        ))
-        .status();
+    {
+        let output = background_command("powershell.exe")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
+            .arg(format!(
+                "$ErrorActionPreference = 'Stop'; Start-Process -FilePath '{}'",
+                powershell_escape(path)
+            ))
+            .output()
+            .map_err(|error| ApiError::internal(format!("打开路径失败: {error}")))?;
 
-    #[cfg(target_os = "macos")]
-    let status = Command::new("open").arg(path).status();
+        return output.status.success().then_some(()).ok_or_else(|| {
+            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            ApiError::bad_request(if message.is_empty() {
+                "打开路径失败".to_string()
+            } else {
+                message
+            })
+        });
+    }
 
-    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-    let status = Command::new("xdg-open").arg(path).status();
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(target_os = "macos")]
+        let status = Command::new("open").arg(path).status();
 
-    status
-        .map_err(|error| ApiError::internal(format!("打开路径失败: {error}")))?
-        .success()
-        .then_some(())
-        .ok_or_else(|| ApiError::bad_request("打开路径失败"))
+        #[cfg(not(target_os = "macos"))]
+        let status = Command::new("xdg-open").arg(path).status();
+
+        status
+            .map_err(|error| ApiError::internal(format!("打开路径失败: {error}")))?
+            .success()
+            .then_some(())
+            .ok_or_else(|| ApiError::bad_request("打开路径失败"))
+    }
 }
 
 fn reveal_path_in_explorer(path: &str) -> ApiResult<()> {
@@ -5752,6 +7066,94 @@ fn read_git_remotes(project_path: &str) -> ApiResult<Vec<String>> {
         .collect())
 }
 
+fn read_git_head(project_path: &str) -> ApiResult<String> {
+    run_git_command_checked(project_path, &["rev-parse", "HEAD"])
+        .map(|value| value.trim().to_string())
+}
+
+fn count_git_commits_between(
+    project_path: &str,
+    before_head: &str,
+    after_head: &str,
+) -> ApiResult<i64> {
+    if before_head.trim().is_empty() || after_head.trim().is_empty() || before_head == after_head {
+        return Ok(0);
+    }
+    let output = run_git_command_checked(
+        project_path,
+        &[
+            "rev-list",
+            "--count",
+            &format!("{before_head}..{after_head}"),
+        ],
+    )?;
+    Ok(output.trim().parse::<i64>().unwrap_or(0))
+}
+
+fn count_git_files_between(
+    project_path: &str,
+    before_head: &str,
+    after_head: &str,
+) -> ApiResult<i64> {
+    if before_head.trim().is_empty() || after_head.trim().is_empty() || before_head == after_head {
+        return Ok(0);
+    }
+    let output = run_git_command_checked(
+        project_path,
+        &["diff", "--name-only", before_head, after_head],
+    )?;
+    Ok(output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count() as i64)
+}
+
+fn build_git_clone_raw_log(stderr: &str, stdout: &str) -> String {
+    [stderr.trim(), stdout.trim()]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn format_git_clone_error(stderr: &str, stdout: &str) -> String {
+    let lines = format!("{stderr}\n{stdout}")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| !line.to_ascii_lowercase().starts_with("cloning into"))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if let Some(fatal_line) = lines
+        .iter()
+        .rev()
+        .find(|line| line.to_ascii_lowercase().starts_with("fatal:"))
+    {
+        return fatal_line
+            .get("fatal:".len()..)
+            .unwrap_or(fatal_line)
+            .trim()
+            .to_string();
+    }
+    if let Some(remote_line) = lines
+        .iter()
+        .rev()
+        .find(|line| line.to_ascii_lowercase().starts_with("remote:"))
+    {
+        return remote_line
+            .get("remote:".len()..)
+            .unwrap_or(remote_line)
+            .trim()
+            .to_string();
+    }
+    lines
+        .last()
+        .cloned()
+        .unwrap_or_else(|| "git clone 执行失败".to_string())
+}
+
 fn read_git_history(
     project_path: &str,
     reference: Option<&str>,
@@ -5873,10 +7275,18 @@ fn read_git_commit_details(project_path: &str, sha: &str) -> ApiResult<Value> {
     }
     let mut result = base;
     result["message"] = json!(message.trim());
-    result["files"] = Value::Array(files);
-    result["totalAdditions"] = json!(total_additions);
-    result["totalDeletions"] = json!(total_deletions);
-    Ok(result)
+    Ok(json!({
+        "sha": result.get("sha").cloned().unwrap_or(Value::Null),
+        "shortSha": result.get("shortSha").cloned().unwrap_or(Value::Null),
+        "author": result.get("author").cloned().unwrap_or(Value::Null),
+        "commitTime": result.get("commitTime").cloned().unwrap_or(Value::Null),
+        "summary": result.get("summary").cloned().unwrap_or(Value::Null),
+        "message": result.get("message").cloned().unwrap_or(Value::Null),
+        "refs": result.get("refs").cloned().unwrap_or_else(|| json!([])),
+        "files": Value::Array(files),
+        "totalAdditions": total_additions,
+        "totalDeletions": total_deletions,
+    }))
 }
 
 fn read_git_commit_file(project_path: &str, sha: &str, file_path: &str) -> ApiResult<Value> {
@@ -5898,18 +7308,78 @@ fn read_git_commit_file(project_path: &str, sha: &str, file_path: &str) -> ApiRe
 }
 
 fn read_git_file_diff(project_path: &str, file_path: &str) -> ApiResult<Value> {
-    let diff = run_git_command_checked(project_path, &["diff", "--", file_path])?;
-    let before = run_git_command(project_path, &["show", &format!("HEAD:{file_path}")])
+    ensure_git_repo(project_path)?;
+    let safe_path = normalize_project_relative_git_path(file_path)?;
+    let status = read_git_status_snapshot(project_path)?;
+    let file_status = status
+        .get("files")
+        .and_then(Value::as_array)
+        .and_then(|files| {
+            files
+                .iter()
+                .find(|file| file.get("path").and_then(Value::as_str) == Some(safe_path.as_str()))
+        });
+    if file_status
+        .and_then(|file| file.get("untracked"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let content = fs::read_to_string(resolve_project_relative_file_path(
+            project_path,
+            &safe_path,
+        )?)
+        .unwrap_or_default();
+        return Ok(json!({
+            "path": safe_path,
+            "content": format!("未跟踪文件：{safe_path}\n\n{content}"),
+            "beforeContent": "",
+            "afterContent": content,
+        }));
+    }
+    let staged_diff =
+        run_git_command_checked(project_path, &["diff", "--cached", "--", &safe_path])?;
+    let worktree_diff = run_git_command_checked(project_path, &["diff", "--", &safe_path])?;
+    let diff = [staged_diff.trim_end(), worktree_diff.trim_end()]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let before = run_git_command(project_path, &["show", &format!("HEAD:{safe_path}")])
         .map(|(_, stdout, _)| stdout)
         .unwrap_or_default();
-    let after_path = PathBuf::from(project_path).join(file_path);
-    let after = fs::read_to_string(after_path).unwrap_or_default();
+    let deleted = file_status
+        .and_then(|file| file.get("deleted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let after = if deleted {
+        String::new()
+    } else {
+        fs::read_to_string(resolve_project_relative_file_path(
+            project_path,
+            &safe_path,
+        )?)
+        .unwrap_or_default()
+    };
     Ok(json!({
-        "path": file_path,
-        "content": diff,
+        "path": safe_path,
+        "content": if diff.is_empty() { "当前文件没有可显示的差异。".to_string() } else { diff },
         "beforeContent": before,
         "afterContent": after,
     }))
+}
+
+fn normalize_project_relative_git_path(file_path: &str) -> ApiResult<String> {
+    let normalized = file_path.trim().replace('\\', "/");
+    if normalized.is_empty()
+        || normalized.starts_with('/')
+        || normalized == ".."
+        || normalized.starts_with("../")
+        || normalized.contains("/../")
+        || normalized.ends_with("/..")
+    {
+        return Err(ApiError::bad_request("文件路径不能越过项目目录"));
+    }
+    Ok(normalized)
 }
 
 fn read_git_operation_state_value(project_path: &str) -> ApiResult<Value> {
@@ -6013,7 +7483,6 @@ fn read_git_conflict_file_detail(project_path: &str, file_path: &str) -> ApiResu
             .unwrap_or_default();
     Ok(json!({
         "path": file_path,
-        "originalPath": file.get("originalPath").cloned().unwrap_or(Value::Null),
         "status": status_text,
         "conflictKind": classify_git_conflict_kind(status_text),
         "label": git_conflict_label(status_text),
@@ -6441,6 +7910,12 @@ async fn update_mcp_config(
 
 async fn open_mcp_config(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
     let scope = required_json_string(&payload, "scope", "scope 不能为空")?;
+    if !matches!(
+        scope,
+        "global" | "project" | "claude-json-global" | "claude-json-project"
+    ) {
+        return Err(ApiError::bad_request_json("不支持的 MCP 配置作用域"));
+    }
     let project_path = payload.get("projectPath").and_then(Value::as_str);
     let target = ensure_mcp_config_file(scope, project_path)?;
     open_path_with_system(
@@ -6540,9 +8015,7 @@ async fn plugin_install_skill_from_path(Json(payload): Json<Value>) -> ApiResult
 async fn plugin_install_builtin_skill(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
     let builtin_id = required_json_string(&payload, "id", "内置 Skill id 不能为空")?;
     if builtin_id != "playwright-cli" {
-        return Err(ApiError::bad_request(format!(
-            "未知内置 Skill：{builtin_id}"
-        )));
+        return Err(ApiError::internal_json("安装内置 Skill 失败"));
     }
     let cwd = payload
         .get("cwd")
@@ -7038,6 +8511,7 @@ fn read_codex_toml_mcp_servers(path: &Path, servers: &mut Vec<Value>, errors: &m
             let table = &line[1..line.len() - 1];
             active = table
                 .strip_prefix("mcp_servers.")
+                .filter(|rest| !rest.trim().is_empty() && !rest.contains('.'))
                 .map(unquote_toml_string)
                 .unwrap_or_default();
             if !active.is_empty() {
@@ -7239,10 +8713,7 @@ fn list_claude_plugin_skills_value(project_path: Option<&str>) -> Value {
         );
     }
     let cache_root = home.join(".claude").join("plugins").join("cache");
-    for skill_file in find_named_files(&cache_root, "SKILL.md", 8) {
-        let plugin_name = infer_plugin_skill_source(&cache_root, &skill_file);
-        push_claude_skill_from_file(&skill_file, &plugin_name, &mut skills);
-    }
+    scan_claude_plugin_skill_cache(&cache_root, &mut skills);
     skills.sort_by(|left, right| {
         left.get("name")
             .and_then(Value::as_str)
@@ -7250,6 +8721,40 @@ fn list_claude_plugin_skills_value(project_path: Option<&str>) -> Value {
             .cmp(right.get("name").and_then(Value::as_str).unwrap_or(""))
     });
     Value::Array(skills)
+}
+
+fn scan_claude_plugin_skill_cache(cache_root: &Path, skills: &mut Vec<Value>) {
+    let Ok(marketplaces) = fs::read_dir(cache_root) else {
+        return;
+    };
+    for marketplace in marketplaces.flatten() {
+        if !marketplace.path().is_dir() {
+            continue;
+        }
+        let marketplace_name = marketplace.file_name().to_string_lossy().to_string();
+        let Ok(plugins) = fs::read_dir(marketplace.path()) else {
+            continue;
+        };
+        for plugin in plugins.flatten() {
+            if !plugin.path().is_dir() {
+                continue;
+            }
+            let plugin_name = plugin.file_name().to_string_lossy().to_string();
+            let Ok(versions) = fs::read_dir(plugin.path()) else {
+                continue;
+            };
+            for version in versions.flatten() {
+                if !version.path().is_dir() {
+                    continue;
+                }
+                scan_claude_skill_directory(
+                    &version.path().join("skills"),
+                    &format!("plugin:{plugin_name}@{marketplace_name}"),
+                    skills,
+                );
+            }
+        }
+    }
 }
 
 fn scan_claude_skill_directory(root: &Path, source: &str, skills: &mut Vec<Value>) {
@@ -7269,9 +8774,16 @@ fn scan_claude_skill_directory(root: &Path, source: &str, skills: &mut Vec<Value
 
 fn push_claude_skill_from_file(skill_file: &Path, source: &str, skills: &mut Vec<Value>) {
     if let Ok(frontmatter) = parse_skill_markdown(skill_file) {
-        let Some(name) = frontmatter.get("name").and_then(Value::as_str) else {
-            return;
-        };
+        let directory_name = skill_file
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|value| value.to_str())
+            .unwrap_or("skill");
+        let name = frontmatter
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(directory_name);
         skills.push(json!({
             "name": name,
             "description": frontmatter.get("description").and_then(Value::as_str),
@@ -7703,16 +9215,11 @@ fn split_plugin_id(plugin_id: &str) -> (String, String) {
     )
 }
 
-fn infer_plugin_skill_source(cache_root: &Path, skill_file: &Path) -> String {
-    let relative = skill_file.strip_prefix(cache_root).unwrap_or(skill_file);
-    let parts: Vec<String> = relative
-        .components()
-        .filter_map(|component| component.as_os_str().to_str().map(ToString::to_string))
-        .collect();
-    if parts.len() >= 2 {
-        return format!("plugin:{}@{}", parts[1], parts[0]);
-    }
-    "plugin:unknown".to_string()
+fn trim_remote_branch_prefix(branch: &str, remote: &str) -> String {
+    branch
+        .strip_prefix(&format!("{remote}/"))
+        .unwrap_or(branch)
+        .to_string()
 }
 
 fn slash_command(
@@ -8187,21 +9694,42 @@ fn slash_source_order(source: &str) -> i32 {
     }
 }
 
+fn resolve_usage_range_days(value: Option<&String>) -> ApiResult<Option<i64>> {
+    let Some(value) = value
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+    else {
+        return Ok(None);
+    };
+    if value == "all" {
+        return Ok(None);
+    }
+    match value {
+        "1" | "7" | "30" | "90" => value.parse::<i64>().map(Some).map_err(|error| {
+            ApiError::bad_request_json(format!("不支持的使用情况统计范围: {error}"))
+        }),
+        _ => Err(ApiError::bad_request_json("不支持的使用情况统计范围")),
+    }
+}
+
 fn read_usage_stats(
     connection: &Connection,
-    _range_days: i64,
+    range_days: Option<i64>,
     project_id: Option<&str>,
 ) -> ApiResult<Value> {
     let project_filter = project_id.filter(|value| !value.trim().is_empty());
-    let totals = read_usage_totals(connection, project_filter)?;
-    let project_rows = read_usage_project_rows(connection, project_filter)?;
-    let thread_rows = read_usage_thread_rows(connection, project_filter)?;
-    let provider_rows = build_usage_provider_rows(&thread_rows);
+    let start_date = range_days.map(build_usage_range_start_date);
+    let totals = read_usage_totals(connection, start_date.as_deref(), project_filter)?;
+    let project_rows = read_usage_project_rows(connection, start_date.as_deref(), project_filter)?;
+    let project_option_rows = read_usage_project_rows(connection, None, None)?;
+    let thread_rows = read_usage_thread_rows(connection, start_date.as_deref(), project_filter)?;
+    let provider_rows =
+        read_usage_provider_rows(connection, start_date.as_deref(), project_filter)?;
     let day_rows = read_usage_day_rows(connection, project_filter)?;
     Ok(json!({
         "generatedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         "totals": totals,
-        "projectOptions": project_rows,
+        "projectOptions": project_option_rows,
         "byProvider": provider_rows,
         "byProject": project_rows,
         "byThread": thread_rows,
@@ -8209,57 +9737,236 @@ fn read_usage_stats(
     }))
 }
 
-fn usage_aggregate_ctes() -> &'static str {
-    r#"
-    WITH message_usage AS (
+fn build_usage_range_start_date(range_days: i64) -> String {
+    let today = chrono::Local::now().date_naive();
+    let start = today - chrono::Duration::days(range_days.saturating_sub(1));
+    start.format("%Y-%m-%d").to_string()
+}
+
+fn usage_aggregate_ctes(start_date: Option<&str>) -> String {
+    if let Some(start_date) = start_date {
+        return format!(
+            r#"
+    WITH turn_usage AS (
       SELECT
         thread_id,
-        COUNT(*) AS messages,
-        COALESCE(SUM(input_tokens), 0) AS inputTokens,
-        COALESCE(SUM(output_tokens), 0) AS outputTokens,
-        COALESCE(SUM(cache_creation_input_tokens), 0) AS cacheCreationInputTokens,
-        COALESCE(SUM(cache_read_input_tokens), 0) AS cacheReadInputTokens,
-        COALESCE(SUM(total_cost_usd), 0) AS totalCostUsd,
-        COALESCE(SUM(duration_ms), 0) AS durationMs,
-        MAX(created_at) AS lastUsedAt
+        turn_id,
+        MAX(COALESCE(input_tokens, 0)) AS inputTokens,
+        MAX(COALESCE(output_tokens, 0)) AS outputTokens,
+        MAX(COALESCE(cache_creation_input_tokens, 0)) AS cacheCreationInputTokens,
+        MAX(COALESCE(cache_read_input_tokens, 0)) AS cacheReadInputTokens,
+        MAX(COALESCE(total_cost_usd, 0)) AS totalCostUsd,
+        MAX(COALESCE(duration_ms, 0)) AS durationMs
+      FROM messages
+      GROUP BY thread_id, turn_id
+    ),
+    turn_dates AS (
+      SELECT
+        thread_id,
+        turn_id,
+        strftime('%Y-%m-%dT%H:%M:%fZ', usageStartedAtMs / 1000.0, 'unixepoch') AS createdAt,
+        date(usageStartedAtMs / 1000.0, 'unixepoch', 'localtime') AS usageDate
+      FROM (
+        SELECT
+          thread_id,
+          turn_id,
+          MIN(
+            CASE
+              WHEN started_at_ms IS NOT NULL THEN started_at_ms
+              ELSE CAST(strftime('%s', created_at) AS INTEGER) * 1000
+            END
+          ) AS usageStartedAtMs
+        FROM messages
+        GROUP BY thread_id, turn_id
+      )
+    ),
+    turn_message_counts AS (
+      SELECT thread_id, turn_id, COUNT(*) AS messages
+      FROM messages
+      GROUP BY thread_id, turn_id
+    ),
+    turn_tool_counts AS (
+      SELECT thread_id, turn_id, COUNT(*) AS toolCalls
+      FROM tool_calls
+      GROUP BY thread_id, turn_id
+    ),
+    filtered_turn_dates AS (
+      SELECT thread_id, turn_id, createdAt, usageDate
+      FROM turn_dates
+      WHERE usageDate IS NOT NULL AND usageDate >= '{}'
+    ),
+    thread_usage AS (
+      SELECT
+        tu.thread_id,
+        SUM(tu.inputTokens) AS inputTokens,
+        SUM(tu.outputTokens) AS outputTokens,
+        SUM(tu.cacheCreationInputTokens) AS cacheCreationInputTokens,
+        SUM(tu.cacheReadInputTokens) AS cacheReadInputTokens,
+        SUM(tu.totalCostUsd) AS totalCostUsd,
+        SUM(tu.durationMs) AS durationMs
+      FROM turn_usage tu
+      INNER JOIN filtered_turn_dates ftd
+        ON ftd.thread_id = tu.thread_id AND ftd.turn_id = tu.turn_id
+      GROUP BY tu.thread_id
+    ),
+    message_counts AS (
+      SELECT tmc.thread_id, SUM(tmc.messages) AS messages
+      FROM turn_message_counts tmc
+      INNER JOIN filtered_turn_dates ftd
+        ON ftd.thread_id = tmc.thread_id AND ftd.turn_id = tmc.turn_id
+      GROUP BY tmc.thread_id
+    ),
+    tool_counts AS (
+      SELECT ttc.thread_id, SUM(ttc.toolCalls) AS toolCalls
+      FROM turn_tool_counts ttc
+      INNER JOIN filtered_turn_dates ftd
+        ON ftd.thread_id = ttc.thread_id AND ftd.turn_id = ttc.turn_id
+      GROUP BY ttc.thread_id
+    ),
+    thread_last_used AS (
+      SELECT thread_id, MAX(createdAt) AS lastUsedAt
+      FROM filtered_turn_dates
+      GROUP BY thread_id
+    ),
+    active_threads AS (
+      SELECT DISTINCT thread_id
+      FROM filtered_turn_dates
+    )
+    "#,
+            start_date
+        );
+    }
+    r#"
+    WITH turn_usage AS (
+      SELECT
+        thread_id,
+        turn_id,
+        MAX(COALESCE(input_tokens, 0)) AS inputTokens,
+        MAX(COALESCE(output_tokens, 0)) AS outputTokens,
+        MAX(COALESCE(cache_creation_input_tokens, 0)) AS cacheCreationInputTokens,
+        MAX(COALESCE(cache_read_input_tokens, 0)) AS cacheReadInputTokens,
+        MAX(COALESCE(total_cost_usd, 0)) AS totalCostUsd,
+        MAX(COALESCE(duration_ms, 0)) AS durationMs
+      FROM messages
+      GROUP BY thread_id, turn_id
+    ),
+    turn_dates AS (
+      SELECT
+        thread_id,
+        turn_id,
+        strftime('%Y-%m-%dT%H:%M:%fZ', usageStartedAtMs / 1000.0, 'unixepoch') AS createdAt,
+        date(usageStartedAtMs / 1000.0, 'unixepoch', 'localtime') AS usageDate
+      FROM (
+        SELECT
+          thread_id,
+          turn_id,
+          MIN(
+            CASE
+              WHEN started_at_ms IS NOT NULL THEN started_at_ms
+              ELSE CAST(strftime('%s', created_at) AS INTEGER) * 1000
+            END
+          ) AS usageStartedAtMs
+        FROM messages
+        GROUP BY thread_id, turn_id
+      )
+    ),
+    turn_message_counts AS (
+      SELECT thread_id, turn_id, COUNT(*) AS messages
+      FROM messages
+      GROUP BY thread_id, turn_id
+    ),
+    turn_tool_counts AS (
+      SELECT thread_id, turn_id, COUNT(*) AS toolCalls
+      FROM tool_calls
+      GROUP BY thread_id, turn_id
+    ),
+    thread_usage AS (
+      SELECT
+        thread_id,
+        SUM(inputTokens) AS inputTokens,
+        SUM(outputTokens) AS outputTokens,
+        SUM(cacheCreationInputTokens) AS cacheCreationInputTokens,
+        SUM(cacheReadInputTokens) AS cacheReadInputTokens,
+        SUM(totalCostUsd) AS totalCostUsd,
+        SUM(durationMs) AS durationMs
+      FROM turn_usage
+      GROUP BY thread_id
+    ),
+    message_counts AS (
+      SELECT thread_id, COUNT(*) AS messages
       FROM messages
       GROUP BY thread_id
     ),
-    tool_usage AS (
+    tool_counts AS (
       SELECT thread_id, COUNT(*) AS toolCalls
       FROM tool_calls
       GROUP BY thread_id
     )
     "#
+    .to_string()
 }
 
-fn read_usage_totals(connection: &Connection, project_id: Option<&str>) -> ApiResult<Value> {
+fn read_usage_totals(
+    connection: &Connection,
+    start_date: Option<&str>,
+    project_id: Option<&str>,
+) -> ApiResult<Value> {
+    let totals_projects_sql = if start_date.is_some() || project_id.is_some() {
+        "COUNT(DISTINCT t.project_id) AS projects"
+    } else {
+        "(SELECT COUNT(*) FROM projects) AS projects"
+    };
+    let from_clause = if start_date.is_some() {
+        format!(
+            r#"
+          FROM active_threads at
+          INNER JOIN threads t ON t.id = at.thread_id
+          LEFT JOIN thread_usage tu ON tu.thread_id = t.id
+          LEFT JOIN message_counts mc ON mc.thread_id = t.id
+          LEFT JOIN tool_counts tc ON tc.thread_id = t.id
+          {}
+        "#,
+            if project_id.is_some() {
+                "WHERE t.project_id = ?"
+            } else {
+                ""
+            }
+        )
+    } else {
+        format!(
+            r#"
+          FROM threads t
+          LEFT JOIN thread_usage tu ON tu.thread_id = t.id
+          LEFT JOIN message_counts mc ON mc.thread_id = t.id
+          LEFT JOIN tool_counts tc ON tc.thread_id = t.id
+          {}
+        "#,
+            if project_id.is_some() {
+                "WHERE t.project_id = ?"
+            } else {
+                ""
+            }
+        )
+    };
     let sql = format!(
         r#"
         {}
         SELECT
-          COUNT(DISTINCT p.id) AS projects,
-          COUNT(DISTINCT t.id) AS threads,
-          COALESCE(SUM(mu.messages), 0) AS messages,
-          COALESCE(SUM(tu.toolCalls), 0) AS toolCalls,
-          COALESCE(SUM(mu.inputTokens), 0) AS inputTokens,
-          COALESCE(SUM(mu.outputTokens), 0) AS outputTokens,
-          COALESCE(SUM(mu.cacheCreationInputTokens), 0) AS cacheCreationInputTokens,
-          COALESCE(SUM(mu.cacheReadInputTokens), 0) AS cacheReadInputTokens,
-          COALESCE(SUM(mu.durationMs), 0) AS durationMs,
-          COALESCE(SUM(mu.totalCostUsd), 0) AS totalCostUsd
-        FROM projects p
-        LEFT JOIN threads t ON t.project_id = p.id
-        LEFT JOIN message_usage mu ON mu.thread_id = t.id
-        LEFT JOIN tool_usage tu ON tu.thread_id = t.id
+          {},
+          COUNT(t.id) AS threads,
+          COALESCE(SUM(mc.messages), 0) AS messages,
+          COALESCE(SUM(tc.toolCalls), 0) AS toolCalls,
+          COALESCE(SUM(tu.inputTokens), 0) AS inputTokens,
+          COALESCE(SUM(tu.outputTokens), 0) AS outputTokens,
+          COALESCE(SUM(tu.cacheCreationInputTokens), 0) AS cacheCreationInputTokens,
+          COALESCE(SUM(tu.cacheReadInputTokens), 0) AS cacheReadInputTokens,
+          COALESCE(SUM(tu.durationMs), 0) AS durationMs,
+          COALESCE(SUM(tu.totalCostUsd), 0) AS totalCostUsd
         {}
         "#,
-        usage_aggregate_ctes(),
-        if project_id.is_some() {
-            "WHERE p.id = ?"
-        } else {
-            ""
-        }
+        usage_aggregate_ctes(start_date),
+        totals_projects_sql,
+        from_clause
     );
     let mut statement = connection
         .prepare(&sql)
@@ -8289,7 +9996,21 @@ fn read_usage_totals(connection: &Connection, project_id: Option<&str>) -> ApiRe
     }
 }
 
-fn read_usage_project_rows(connection: &Connection, project_id: Option<&str>) -> ApiResult<Value> {
+fn read_usage_project_rows(
+    connection: &Connection,
+    start_date: Option<&str>,
+    project_id: Option<&str>,
+) -> ApiResult<Value> {
+    let from_clause = if start_date.is_some() {
+        "FROM active_threads at INNER JOIN threads t ON t.id = at.thread_id INNER JOIN projects p ON p.id = t.project_id"
+    } else {
+        "FROM projects p LEFT JOIN threads t ON t.project_id = p.id"
+    };
+    let last_used = if start_date.is_some() {
+        "tlu.lastUsedAt"
+    } else {
+        "COALESCE(t.updated_at, p.updated_at)"
+    };
     let sql = format!(
         r#"
         {}
@@ -8299,24 +10020,34 @@ fn read_usage_project_rows(connection: &Connection, project_id: Option<&str>) ->
           p.path,
           1 AS projects,
           COUNT(DISTINCT t.id) AS threads,
-          COALESCE(SUM(mu.messages), 0) AS messages,
-          COALESCE(SUM(tu.toolCalls), 0) AS toolCalls,
-          COALESCE(SUM(mu.inputTokens), 0) AS inputTokens,
-          COALESCE(SUM(mu.outputTokens), 0) AS outputTokens,
-          COALESCE(SUM(mu.cacheCreationInputTokens), 0) AS cacheCreationInputTokens,
-          COALESCE(SUM(mu.cacheReadInputTokens), 0) AS cacheReadInputTokens,
-          COALESCE(SUM(mu.durationMs), 0) AS durationMs,
-          COALESCE(SUM(mu.totalCostUsd), 0) AS totalCostUsd,
-          MAX(COALESCE(mu.lastUsedAt, t.updated_at, p.updated_at)) AS lastUsedAt
-        FROM projects p
-        LEFT JOIN threads t ON t.project_id = p.id
-        LEFT JOIN message_usage mu ON mu.thread_id = t.id
-        LEFT JOIN tool_usage tu ON tu.thread_id = t.id
+          COALESCE(SUM(mc.messages), 0) AS messages,
+          COALESCE(SUM(tc.toolCalls), 0) AS toolCalls,
+          COALESCE(SUM(tu.inputTokens), 0) AS inputTokens,
+          COALESCE(SUM(tu.outputTokens), 0) AS outputTokens,
+          COALESCE(SUM(tu.cacheCreationInputTokens), 0) AS cacheCreationInputTokens,
+          COALESCE(SUM(tu.cacheReadInputTokens), 0) AS cacheReadInputTokens,
+          COALESCE(SUM(tu.durationMs), 0) AS durationMs,
+          COALESCE(SUM(tu.totalCostUsd), 0) AS totalCostUsd,
+          MAX({}) AS lastUsedAt
+        {}
+        LEFT JOIN thread_usage tu ON tu.thread_id = t.id
+        LEFT JOIN message_counts mc ON mc.thread_id = t.id
+        LEFT JOIN tool_counts tc ON tc.thread_id = t.id
+        {}
         {}
         GROUP BY p.id, p.name, p.path
-        ORDER BY totalCostUsd DESC, inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens DESC, threads DESC
+        ORDER BY inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens DESC,
+          threads DESC,
+          p.updated_at DESC
         "#,
-        usage_aggregate_ctes(),
+        usage_aggregate_ctes(start_date),
+        last_used,
+        from_clause,
+        if start_date.is_some() {
+            "LEFT JOIN thread_last_used tlu ON tlu.thread_id = t.id"
+        } else {
+            ""
+        },
         if project_id.is_some() {
             "WHERE p.id = ?"
         } else {
@@ -8358,7 +10089,21 @@ fn read_usage_project_rows(connection: &Connection, project_id: Option<&str>) ->
     Ok(Value::Array(collect_rows(rows, "读取使用情况失败")?))
 }
 
-fn read_usage_thread_rows(connection: &Connection, project_id: Option<&str>) -> ApiResult<Value> {
+fn read_usage_thread_rows(
+    connection: &Connection,
+    start_date: Option<&str>,
+    project_id: Option<&str>,
+) -> ApiResult<Value> {
+    let from_clause = if start_date.is_some() {
+        "FROM active_threads at INNER JOIN threads t ON t.id = at.thread_id"
+    } else {
+        "FROM threads t"
+    };
+    let last_used = if start_date.is_some() {
+        "tlu.lastUsedAt"
+    } else {
+        "t.updated_at"
+    };
     let sql = format!(
         r#"
         {}
@@ -8366,31 +10111,42 @@ fn read_usage_thread_rows(connection: &Connection, project_id: Option<&str>) -> 
           t.id,
           t.project_id,
           p.name,
-          t.title,
+          COALESCE(NULLIF(t.title, ''), NULLIF(t.session_id, ''), t.id) AS title,
           COALESCE(t.session_id, ''),
           COALESCE(t.provider, 'unknown'),
           COALESCE(t.model, '未配置'),
           COALESCE(t.working_directory, ''),
           t.updated_at,
-          COALESCE(mu.lastUsedAt, t.updated_at),
+          {} AS lastUsedAt,
           0 AS projects,
           1 AS threads,
-          COALESCE(mu.messages, 0) AS messages,
-          COALESCE(tu.toolCalls, 0) AS toolCalls,
-          COALESCE(mu.inputTokens, 0) AS inputTokens,
-          COALESCE(mu.outputTokens, 0) AS outputTokens,
-          COALESCE(mu.cacheCreationInputTokens, 0) AS cacheCreationInputTokens,
-          COALESCE(mu.cacheReadInputTokens, 0) AS cacheReadInputTokens,
-          COALESCE(mu.durationMs, 0) AS durationMs,
-          COALESCE(mu.totalCostUsd, 0) AS totalCostUsd
-        FROM threads t
-        INNER JOIN projects p ON p.id = t.project_id
-        LEFT JOIN message_usage mu ON mu.thread_id = t.id
-        LEFT JOIN tool_usage tu ON tu.thread_id = t.id
+          COALESCE(mc.messages, 0) AS messages,
+          COALESCE(tc.toolCalls, 0) AS toolCalls,
+          COALESCE(tu.inputTokens, 0) AS inputTokens,
+          COALESCE(tu.outputTokens, 0) AS outputTokens,
+          COALESCE(tu.cacheCreationInputTokens, 0) AS cacheCreationInputTokens,
+          COALESCE(tu.cacheReadInputTokens, 0) AS cacheReadInputTokens,
+          COALESCE(tu.durationMs, 0) AS durationMs,
+          COALESCE(tu.totalCostUsd, 0) AS totalCostUsd
         {}
-        ORDER BY totalCostUsd DESC, inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens DESC, t.updated_at DESC
+        INNER JOIN projects p ON p.id = t.project_id
+        LEFT JOIN thread_usage tu ON tu.thread_id = t.id
+        LEFT JOIN message_counts mc ON mc.thread_id = t.id
+        LEFT JOIN tool_counts tc ON tc.thread_id = t.id
+        {}
+        {}
+        ORDER BY totalCostUsd DESC,
+          inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens DESC,
+          t.updated_at DESC
         "#,
-        usage_aggregate_ctes(),
+        usage_aggregate_ctes(start_date),
+        last_used,
+        from_clause,
+        if start_date.is_some() {
+            "LEFT JOIN thread_last_used tlu ON tlu.thread_id = t.id"
+        } else {
+            ""
+        },
         if project_id.is_some() {
             "WHERE t.project_id = ?"
         } else {
@@ -8441,25 +10197,29 @@ fn read_usage_thread_rows(connection: &Connection, project_id: Option<&str>) -> 
 fn read_usage_day_rows(connection: &Connection, project_id: Option<&str>) -> ApiResult<Value> {
     let sql = format!(
         r#"
+        {}
         SELECT
-          date(m.created_at) AS usageDate,
+          td.usageDate AS usageDate,
           0 AS projects,
-          COUNT(DISTINCT m.thread_id) AS threads,
-          COUNT(m.id) AS messages,
-          COUNT(tc.id) AS toolCalls,
-          COALESCE(SUM(m.input_tokens), 0) AS inputTokens,
-          COALESCE(SUM(m.output_tokens), 0) AS outputTokens,
-          COALESCE(SUM(m.cache_creation_input_tokens), 0) AS cacheCreationInputTokens,
-          COALESCE(SUM(m.cache_read_input_tokens), 0) AS cacheReadInputTokens,
-          COALESCE(SUM(m.duration_ms), 0) AS durationMs,
-          COALESCE(SUM(m.total_cost_usd), 0) AS totalCostUsd
-        FROM messages m
-        INNER JOIN threads t ON t.id = m.thread_id
-        LEFT JOIN tool_calls tc ON tc.thread_id = m.thread_id AND tc.turn_id = m.turn_id
-        WHERE m.created_at IS NOT NULL {}
-        GROUP BY usageDate
-        ORDER BY usageDate ASC
+          COUNT(DISTINCT td.thread_id) AS threads,
+          COALESCE(SUM(tmc.messages), 0) AS messages,
+          COALESCE(SUM(ttc.toolCalls), 0) AS toolCalls,
+          COALESCE(SUM(tu.inputTokens), 0) AS inputTokens,
+          COALESCE(SUM(tu.outputTokens), 0) AS outputTokens,
+          COALESCE(SUM(tu.cacheCreationInputTokens), 0) AS cacheCreationInputTokens,
+          COALESCE(SUM(tu.cacheReadInputTokens), 0) AS cacheReadInputTokens,
+          COALESCE(SUM(tu.durationMs), 0) AS durationMs,
+          COALESCE(SUM(tu.totalCostUsd), 0) AS totalCostUsd
+        FROM turn_dates td
+        INNER JOIN threads t ON t.id = td.thread_id
+        LEFT JOIN turn_usage tu ON tu.thread_id = td.thread_id AND tu.turn_id = td.turn_id
+        LEFT JOIN turn_message_counts tmc ON tmc.thread_id = td.thread_id AND tmc.turn_id = td.turn_id
+        LEFT JOIN turn_tool_counts ttc ON ttc.thread_id = td.thread_id AND ttc.turn_id = td.turn_id
+        WHERE td.usageDate IS NOT NULL {}
+        GROUP BY td.usageDate
+        ORDER BY td.usageDate ASC
         "#,
+        usage_aggregate_ctes(None),
         if project_id.is_some() {
             "AND t.project_id = ?"
         } else {
@@ -8496,51 +10256,304 @@ fn read_usage_day_rows(connection: &Connection, project_id: Option<&str>) -> Api
     Ok(Value::Array(collect_rows(rows, "读取使用情况失败")?))
 }
 
-fn build_usage_provider_rows(thread_rows: &Value) -> Value {
-    let mut groups: std::collections::BTreeMap<String, (Value, Vec<Value>)> =
-        std::collections::BTreeMap::new();
-    for row in thread_rows.as_array().into_iter().flatten() {
-        let provider = row
-            .get("provider")
+fn read_usage_provider_rows(
+    connection: &Connection,
+    start_date: Option<&str>,
+    project_id: Option<&str>,
+) -> ApiResult<Value> {
+    let from_clause = if start_date.is_some() {
+        "FROM active_threads at INNER JOIN threads t ON t.id = at.thread_id"
+    } else {
+        "FROM threads t"
+    };
+    let last_used = if start_date.is_some() {
+        "tlu.lastUsedAt"
+    } else {
+        "t.updated_at"
+    };
+    let sql = format!(
+        r#"
+        {}
+        SELECT
+          t.provider AS provider,
+          COALESCE(t.model, '未配置') AS model,
+          0 AS projects,
+          COUNT(t.id) AS threads,
+          COALESCE(SUM(mc.messages), 0) AS messages,
+          COALESCE(SUM(tc.toolCalls), 0) AS toolCalls,
+          COALESCE(SUM(tu.inputTokens), 0) AS inputTokens,
+          COALESCE(SUM(tu.outputTokens), 0) AS outputTokens,
+          COALESCE(SUM(tu.cacheCreationInputTokens), 0) AS cacheCreationInputTokens,
+          COALESCE(SUM(tu.cacheReadInputTokens), 0) AS cacheReadInputTokens,
+          COALESCE(SUM(tu.durationMs), 0) AS durationMs,
+          COALESCE(SUM(tu.totalCostUsd), 0) AS totalCostUsd,
+          MAX({}) AS lastUsedAt
+        {}
+        LEFT JOIN thread_usage tu ON tu.thread_id = t.id
+        LEFT JOIN message_counts mc ON mc.thread_id = t.id
+        LEFT JOIN tool_counts tc ON tc.thread_id = t.id
+        {}
+        {}
+        GROUP BY t.provider, COALESCE(t.model, '未配置')
+        ORDER BY inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens DESC,
+          threads DESC,
+          provider ASC
+        "#,
+        usage_aggregate_ctes(start_date),
+        last_used,
+        from_clause,
+        if start_date.is_some() {
+            "LEFT JOIN thread_last_used tlu ON tlu.thread_id = t.id"
+        } else {
+            ""
+        },
+        if project_id.is_some() {
+            "WHERE t.project_id = ?"
+        } else {
+            ""
+        }
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| ApiError::internal(format!("读取使用情况失败: {error}")))?;
+    let mapper = |row: &rusqlite::Row<'_>| {
+        let totals = usage_totals_json(
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+            row.get(7)?,
+            row.get(8)?,
+            row.get(9)?,
+            row.get(10)?,
+            row.get(11)?,
+        );
+        Ok(merge_json_objects(
+            json!({
+                "provider": row.get::<_, Option<String>>(0)?.unwrap_or_else(|| "unknown".to_string()),
+                "model": row.get::<_, String>(1)?,
+                "lastUsedAt": row.get::<_, Option<String>>(12)?,
+            }),
+            totals,
+        ))
+    };
+    let rows = if let Some(project_id) = project_id {
+        statement.query_map(params![project_id], mapper)
+    } else {
+        statement.query_map([], mapper)
+    }
+    .map_err(|error| ApiError::internal(format!("读取使用情况失败: {error}")))?;
+    build_usage_provider_rows(collect_rows(rows, "读取使用情况失败")?)
+}
+
+fn build_usage_provider_rows(rows: Vec<Value>) -> ApiResult<Value> {
+    let mut groups: Vec<Value> = Vec::new();
+    for row in rows {
+        let model = row
+            .get("model")
             .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let model = row.get("model").and_then(Value::as_str).unwrap_or("未配置");
-        let key = format!("{provider}:{model}");
+            .unwrap_or("未配置")
+            .to_string();
+        let provider_info = infer_usage_provider(
+            row.get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            &model,
+        );
+        let group_key = format!(
+            "{}:{}:{}",
+            provider_info.provider_key,
+            provider_info.host.clone().unwrap_or_default(),
+            provider_info.provider
+        );
         let model_row = merge_json_objects(
             json!({
                 "model": model,
                 "lastUsedAt": row.get("lastUsedAt").cloned().unwrap_or(Value::Null),
             }),
-            usage_totals_from_value(row),
+            usage_totals_from_value(&row),
         );
-        let entry = groups.entry(key).or_insert_with(|| {
-            (
-                merge_json_objects(
-                    json!({
-                        "provider": provider,
-                        "providerKey": provider,
-                        "host": "",
-                        "inferred": false,
-                        "lastUsedAt": row.get("lastUsedAt").cloned().unwrap_or(Value::Null),
-                    }),
-                    usage_totals_from_value(row),
-                ),
-                Vec::new(),
-            )
-        });
-        entry.1.push(model_row);
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group.get("_key").and_then(Value::as_str) == Some(group_key.as_str()))
+        {
+            merge_usage_totals_into(group, &row);
+            set_latest_usage_date(group, row.get("lastUsedAt"));
+            if let Some(models) = group.get_mut("models").and_then(Value::as_array_mut) {
+                models.push(model_row);
+            }
+        } else {
+            groups.push(merge_json_objects(
+                json!({
+                    "_key": group_key,
+                    "provider": provider_info.provider,
+                    "providerKey": provider_info.provider_key,
+                    "host": provider_info.host,
+                    "inferred": provider_info.inferred,
+                    "lastUsedAt": row.get("lastUsedAt").cloned().unwrap_or(Value::Null),
+                    "models": [model_row],
+                }),
+                usage_totals_from_value(&row),
+            ));
+        }
     }
-    Value::Array(
-        groups
-            .into_values()
-            .map(|(mut provider, models)| {
-                if let Some(object) = provider.as_object_mut() {
-                    object.insert("models".to_string(), Value::Array(models));
-                }
-                provider
-            })
-            .collect(),
-    )
+    for group in &mut groups {
+        if let Some(object) = group.as_object_mut() {
+            object.remove("_key");
+        }
+        if let Some(models) = group.get_mut("models").and_then(Value::as_array_mut) {
+            models.sort_by(sort_usage_values_desc);
+        }
+    }
+    groups.sort_by(sort_usage_values_desc);
+    Ok(Value::Array(groups))
+}
+
+struct UsageProviderInfo {
+    provider: String,
+    provider_key: String,
+    host: Option<String>,
+    inferred: bool,
+}
+
+fn infer_usage_provider(raw_provider: &str, model: &str) -> UsageProviderInfo {
+    let normalized_model = model.trim().to_ascii_lowercase();
+    let normalized_provider = raw_provider.trim().to_ascii_lowercase();
+    if contains_usage_keyword(&normalized_model, &["glm", "zhipu", "bigmodel"]) {
+        return UsageProviderInfo {
+            provider: "智谱 GLM".to_string(),
+            provider_key: "zhipu".to_string(),
+            host: Some("open.bigmodel.cn".to_string()),
+            inferred: true,
+        };
+    }
+    if contains_usage_keyword(&normalized_model, &["mimo"]) {
+        return UsageProviderInfo {
+            provider: "Mimo".to_string(),
+            provider_key: "mimo".to_string(),
+            host: None,
+            inferred: true,
+        };
+    }
+    if contains_usage_keyword(&normalized_model, &["minimax"]) {
+        return UsageProviderInfo {
+            provider: "MiniMax".to_string(),
+            provider_key: "minimax".to_string(),
+            host: Some("api.minimaxi.com".to_string()),
+            inferred: true,
+        };
+    }
+    if contains_usage_keyword(&normalized_model, &["claude", "sonnet", "opus", "haiku"]) {
+        return UsageProviderInfo {
+            provider: "Anthropic / Claude".to_string(),
+            provider_key: "anthropic".to_string(),
+            host: Some("api.anthropic.com".to_string()),
+            inferred: true,
+        };
+    }
+    if contains_usage_keyword(&normalized_model, &["deepseek"]) {
+        return UsageProviderInfo {
+            provider: "DeepSeek".to_string(),
+            provider_key: "deepseek".to_string(),
+            host: Some("api.deepseek.com".to_string()),
+            inferred: true,
+        };
+    }
+    if contains_usage_keyword(&normalized_model, &["qwen", "dashscope", "tongyi"]) {
+        return UsageProviderInfo {
+            provider: "阿里 DashScope".to_string(),
+            provider_key: "dashscope".to_string(),
+            host: Some("dashscope.aliyuncs.com".to_string()),
+            inferred: true,
+        };
+    }
+    if contains_usage_keyword(&normalized_model, &["openrouter"]) {
+        return UsageProviderInfo {
+            provider: "OpenRouter".to_string(),
+            provider_key: "openrouter".to_string(),
+            host: Some("openrouter.ai".to_string()),
+            inferred: true,
+        };
+    }
+    if !normalized_provider.is_empty() && normalized_provider != "claude-code" {
+        return UsageProviderInfo {
+            provider: raw_provider.trim().to_string(),
+            provider_key: normalized_provider,
+            host: None,
+            inferred: false,
+        };
+    }
+    UsageProviderInfo {
+        provider: "Claude Code".to_string(),
+        provider_key: "claude-code".to_string(),
+        host: None,
+        inferred: false,
+    }
+}
+
+fn contains_usage_keyword(value: &str, keywords: &[&str]) -> bool {
+    keywords.iter().any(|keyword| value.contains(keyword))
+}
+
+fn merge_usage_totals_into(target: &mut Value, source: &Value) {
+    for key in [
+        "projects",
+        "threads",
+        "messages",
+        "toolCalls",
+        "inputTokens",
+        "outputTokens",
+        "cacheCreationInputTokens",
+        "cacheReadInputTokens",
+        "totalTokens",
+        "durationMs",
+    ] {
+        let next = target.get(key).and_then(Value::as_i64).unwrap_or(0)
+            + source.get(key).and_then(Value::as_i64).unwrap_or(0);
+        if let Some(object) = target.as_object_mut() {
+            object.insert(key.to_string(), json!(next));
+        }
+    }
+    let next_cost = target
+        .get("totalCostUsd")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0)
+        + source
+            .get("totalCostUsd")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+    if let Some(object) = target.as_object_mut() {
+        object.insert("totalCostUsd".to_string(), json!(next_cost));
+    }
+}
+
+fn set_latest_usage_date(target: &mut Value, candidate: Option<&Value>) {
+    let candidate = candidate.and_then(Value::as_str).unwrap_or("");
+    let current = target
+        .get("lastUsedAt")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !candidate.is_empty() && (current.is_empty() || candidate > current) {
+        if let Some(object) = target.as_object_mut() {
+            object.insert("lastUsedAt".to_string(), json!(candidate));
+        }
+    }
+}
+
+fn sort_usage_values_desc(left: &Value, right: &Value) -> std::cmp::Ordering {
+    let left_tokens = left.get("totalTokens").and_then(Value::as_i64).unwrap_or(0);
+    let right_tokens = right
+        .get("totalTokens")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    right_tokens.cmp(&left_tokens).then_with(|| {
+        right
+            .get("threads")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .cmp(&left.get("threads").and_then(Value::as_i64).unwrap_or(0))
+    })
 }
 
 fn usage_totals_json(
@@ -9054,6 +11067,31 @@ async fn write_run_stdin_message(state: &AppState, run_id: &str, message: &Value
         .map_err(|error| ApiError::internal(format!("写入 Claude stdin 失败: {error}")))
 }
 
+async fn write_run_stdin_message_raw_error(
+    state: &AppState,
+    run_id: &str,
+    message: &Value,
+) -> ApiResult<()> {
+    let stdin = {
+        let runs = state
+            .runs
+            .lock()
+            .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?;
+        let run = runs
+            .get(run_id)
+            .ok_or_else(|| ApiError::bad_request("当前运行不存在或已经结束。"))?;
+        if run.finished {
+            return Err(ApiError::bad_request("当前运行不存在或已经结束。"));
+        }
+        run.stdin
+            .clone()
+            .ok_or_else(|| ApiError::bad_request("当前 Claude 运行不支持 stdin 写回。"))?
+    };
+    write_claude_stdin_message(&stdin, message)
+        .await
+        .map_err(ApiError::internal)
+}
+
 async fn get_or_create_claude_runtime(
     state: &AppState,
     command: &str,
@@ -9307,12 +11345,160 @@ fn handle_runtime_stderr_line(state: &AppState, thread_id: &str, line: &str) {
             .and_then(|runtime| runtime.current_run_id.clone())
     });
     if let Some(run_id) = run_id {
+        if let Some(label) = parse_claude_retry_status_message(trimmed) {
+            push_run_event(
+                state,
+                &run_id,
+                json!({ "type": "phase", "runId": run_id, "phase": "requesting", "label": label }),
+            );
+        }
         push_run_event(
             state,
             &run_id,
             json!({ "type": "stderr", "runId": run_id, "text": trimmed }),
         );
+        enqueue_runtime_reconnect_hint(state, &run_id, trimmed, "stderr");
     }
+}
+
+fn parse_claude_retry_status_message(text: &str) -> Option<String> {
+    let normalized = strip_ansi_control_sequences(text).trim().to_string();
+    let lower = normalized.to_ascii_lowercase();
+    let retry_marker = "retrying in ";
+    let retry_start = lower.find(retry_marker)? + retry_marker.len();
+    let after_retry = normalized.get(retry_start..)?.trim_start();
+    let retry_delay = after_retry.split_whitespace().next()?.trim();
+    if retry_delay.is_empty() {
+        return None;
+    }
+
+    let attempt_marker = "attempt";
+    let attempt_start = lower.find(attempt_marker)? + attempt_marker.len();
+    let after_attempt = normalized.get(attempt_start..)?.trim_start();
+    let attempt_token = after_attempt.split_whitespace().next()?.replace(' ', "");
+    let (attempt, max_attempts) = attempt_token.split_once('/')?;
+    let attempt = attempt.trim().parse::<i64>().ok()?;
+    let max_attempts = max_attempts.trim().parse::<i64>().ok()?;
+    Some(format_retry_status_message(
+        attempt,
+        max_attempts,
+        retry_delay,
+    ))
+}
+
+fn format_retry_status_message(attempt: i64, max_attempts: i64, retry_delay: &str) -> String {
+    if retry_delay == "0s" {
+        format!("连接重试中 {attempt}/{max_attempts}")
+    } else {
+        format!("连接重试中 {attempt}/{max_attempts}，{retry_delay} 后重试")
+    }
+}
+
+fn strip_ansi_control_sequences(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == char::from(27) && chars.peek() == Some(&'[') {
+            chars.next();
+            for next in chars.by_ref() {
+                if ('@'..='~').contains(&next) {
+                    break;
+                }
+            }
+            continue;
+        }
+        output.push(character);
+    }
+    output
+}
+
+fn enqueue_retryable_runtime_error(state: &AppState, run_id: &str, message: &str, source: &str) {
+    if let Some(hint) = enqueue_runtime_reconnect_hint(state, run_id, message, source) {
+        push_run_event(
+            state,
+            run_id,
+            json!({ "type": "retryable-error", "runId": run_id, "message": message, "hint": hint }),
+        );
+    }
+}
+
+fn enqueue_runtime_reconnect_hint(
+    state: &AppState,
+    run_id: &str,
+    message: &str,
+    source: &str,
+) -> Option<Value> {
+    let hint = create_runtime_recovery_hint(message, source)?;
+    let reason = hint
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let hint_message = hint
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let key = format!("{reason}:{hint_message}");
+    let should_emit = {
+        let Ok(mut runs) = state.runs.lock() else {
+            return Some(hint);
+        };
+        let Some(run) = runs.get_mut(run_id) else {
+            return Some(hint);
+        };
+        run.emitted_recovery_hint_keys.insert(key)
+    };
+    if should_emit {
+        push_run_event(
+            state,
+            run_id,
+            json!({ "type": "runtime-reconnect-hint", "runId": run_id, "hint": hint.clone() }),
+        );
+    }
+    Some(hint)
+}
+
+fn create_runtime_recovery_hint(message: &str, source: &str) -> Option<Value> {
+    let normalized = message.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    let lower = normalized.to_ascii_lowercase();
+    let reason = if lower.contains("broken pipe") || lower.contains("epipe") {
+        "broken-pipe"
+    } else if lower.contains("socket hang up")
+        || lower.contains("connection reset")
+        || lower.contains("stream closed")
+        || lower.contains("network error")
+    {
+        "transport-error"
+    } else if lower.contains("runtime ended")
+        || lower.contains("unexpected eof")
+        || lower.contains(" has ended")
+        || lower == "eof"
+    {
+        "runtime-ended"
+    } else if lower.contains("stale")
+        || lower.contains("session expired")
+        || lower.contains("thread expired")
+    {
+        "stale-session"
+    } else if lower.contains("resume") && lower.contains("not exist") {
+        "resume-session-missing"
+    } else {
+        return None;
+    };
+    let suggested_action = match reason {
+        "resume-session-missing" => "recover",
+        "stale-session" => "resend",
+        _ => "retry",
+    };
+    Some(json!({
+        "reason": reason,
+        "message": normalized,
+        "retryable": true,
+        "suggestedAction": suggested_action,
+        "source": source,
+    }))
 }
 
 fn handle_runtime_exit(
@@ -9371,6 +11557,22 @@ fn finish_runtime_run(state: &AppState, thread_id: &str, run_id: &str) {
     mark_run_finished(state, run_id);
 }
 
+fn finish_run_and_close_runtime(state: &AppState, run_id: &str) -> ApiResult<()> {
+    let thread_id = state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?
+        .get(run_id)
+        .map(|run| run.thread_id.clone());
+    if let Some(thread_id) = thread_id {
+        finish_runtime_run(state, &thread_id, run_id);
+        close_thread_runtime(state, &thread_id)?;
+    } else {
+        mark_run_finished(state, run_id);
+    }
+    Ok(())
+}
+
 fn close_thread_runtime(state: &AppState, thread_id: &str) -> ApiResult<bool> {
     let runtime = state
         .runtimes
@@ -9409,21 +11611,6 @@ fn kill_process_tree(child_id: u32) -> ApiResult<bool> {
         .arg(child_id.to_string())
         .status();
     Ok(status.is_ok_and(|status| status.success()))
-}
-
-fn runtime_status_json(runtime: &ClaudeRuntimeRecord) -> Value {
-    json!({
-        "threadId": runtime.thread_id,
-        "pid": runtime.child_id,
-        "alive": !runtime.closed,
-        "activeRun": runtime.current_run_id.is_some(),
-        "runId": runtime.current_run_id,
-        "sessionId": runtime.session_id,
-        "workingDirectory": runtime.working_directory,
-        "permissionMode": runtime.permission_mode,
-        "model": runtime.model,
-        "effort": runtime.effort,
-    })
 }
 
 fn build_claude_context_request_message() -> Value {
@@ -9692,6 +11879,46 @@ fn ensure_run_paused_for_user_input(
     Ok(())
 }
 
+fn ensure_run_supports_runtime_input(
+    state: &AppState,
+    run_id: &str,
+    unsupported_message: &str,
+) -> ApiResult<()> {
+    let runs = state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?;
+    let run = runs
+        .get(run_id)
+        .ok_or_else(|| ApiError::conflict("当前运行不存在或已经结束。"))?;
+    if run.finished {
+        return Err(ApiError::conflict("当前运行不存在或已经结束。"));
+    }
+    if run.stdin.is_none() {
+        return Err(ApiError::conflict(unsupported_message));
+    }
+    Ok(())
+}
+
+fn ensure_run_not_paused_for_guide(state: &AppState, run_id: &str) -> ApiResult<()> {
+    let runs = state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?;
+    let run = runs
+        .get(run_id)
+        .ok_or_else(|| ApiError::conflict("当前运行不存在或已经结束。"))?;
+    if run.finished {
+        return Err(ApiError::conflict("当前运行不存在或已经结束。"));
+    }
+    if run.paused_for_user_input {
+        return Err(ApiError::bad_request(
+            "当前运行正在等待问答或审批，请先处理卡片后再引导。",
+        ));
+    }
+    Ok(())
+}
+
 fn mark_run_human_input_resumed(state: &AppState, run_id: &str, request_id: &str) {
     if let Ok(mut runs) = state.runs.lock() {
         if let Some(run) = runs.get_mut(run_id) {
@@ -9874,7 +12101,12 @@ fn map_claude_json_line(run_id: &str, line: &str, run: &mut ActiveRunRecord) -> 
         .unwrap_or(false);
     let parent_tool_use_id = payload.get("parent_tool_use_id").and_then(Value::as_str);
     if let Some(session_id) = payload.get("session_id").and_then(Value::as_str) {
-        events.push(json!({ "type": "session", "runId": run_id, "sessionId": session_id }));
+        if context_result_error_message(&payload).is_none()
+            && run.session_id.as_deref() != Some(session_id)
+        {
+            run.session_id = Some(session_id.to_string());
+            events.push(json!({ "type": "session", "runId": run_id, "sessionId": session_id }));
+        }
     }
     if payload.get("type").and_then(Value::as_str) == Some("stream_event") {
         if let Some(event) = payload.get("event") {
@@ -9890,9 +12122,11 @@ fn map_claude_json_line(run_id: &str, line: &str, run: &mut ActiveRunRecord) -> 
     }
     if let Some(request) = parse_control_request_user_input(&payload) {
         events.push(json!({ "type": "request-user-input", "runId": run_id, "request": request }));
+        return events;
     }
     if let Some(request) = parse_control_approval_request(&payload) {
         events.push(json!({ "type": "approval-request", "runId": run_id, "request": request }));
+        return events;
     }
     if payload.get("type").and_then(Value::as_str) == Some("system") {
         let mut event = json!({
@@ -9911,6 +12145,31 @@ fn map_claude_json_line(run_id: &str, line: &str, run: &mut ActiveRunRecord) -> 
             }
         }
         events.push(event);
+    }
+    if payload.get("type").and_then(Value::as_str) == Some("system") && !is_sidechain {
+        match payload.get("subtype").and_then(Value::as_str) {
+            Some("api_retry") => {
+                if let Some(label) = parse_claude_api_retry_status_message(&payload) {
+                    events.push(json!({
+                        "type": "phase",
+                        "runId": run_id,
+                        "phase": "requesting",
+                        "label": label,
+                    }));
+                }
+            }
+            Some("status")
+                if payload.get("status").and_then(Value::as_str) == Some("requesting") =>
+            {
+                events.push(json!({
+                    "type": "phase",
+                    "runId": run_id,
+                    "phase": "requesting",
+                    "label": "等待 Claude 响应",
+                }));
+            }
+            _ => {}
+        }
     }
     if payload.get("type").and_then(Value::as_str) == Some("assistant") {
         if let Some(content) = payload
@@ -9932,7 +12191,7 @@ fn map_claude_json_line(run_id: &str, line: &str, run: &mut ActiveRunRecord) -> 
                 if let Some(request) = parse_request_user_input_event(tool_name, input, tool_use_id)
                 {
                     events.push(json!({ "type": "request-user-input", "runId": run_id, "request": request }));
-                    continue;
+                    return events;
                 }
                 if let Some(request) =
                     parse_runtime_approval_request_event(tool_name, input, tool_use_id)
@@ -9940,7 +12199,7 @@ fn map_claude_json_line(run_id: &str, line: &str, run: &mut ActiveRunRecord) -> 
                     events.push(
                         json!({ "type": "approval-request", "runId": run_id, "request": request }),
                     );
-                    continue;
+                    return events;
                 }
             }
         }
@@ -9993,7 +12252,26 @@ fn map_claude_json_line(run_id: &str, line: &str, run: &mut ActiveRunRecord) -> 
             }
         }
     }
-    if payload.get("type").and_then(Value::as_str) == Some("result") {
+    if payload.get("type").and_then(Value::as_str) == Some("result") && !is_sidechain {
+        if let Some(usage) = claude_usage_event(run_id, &payload, "result") {
+            events.push(usage);
+        }
+        if let Some(error_message) = context_result_error_message(&payload) {
+            append_retryable_runtime_error_event(
+                run,
+                &mut events,
+                run_id,
+                &error_message,
+                "result",
+            );
+            run.saw_done = true;
+            events.push(json!({
+                "type": "error",
+                "runId": run_id,
+                "message": error_message,
+            }));
+            return events;
+        }
         run.saw_done = true;
         let result = payload
             .get("result")
@@ -10013,6 +12291,90 @@ fn map_claude_json_line(run_id: &str, line: &str, run: &mut ActiveRunRecord) -> 
         }));
     }
     events
+}
+
+fn claude_usage_event(run_id: &str, payload: &Value, usage_source: &str) -> Option<Value> {
+    let usage = payload.get("usage")?;
+    let mut event = json!({
+        "type": "usage",
+        "runId": run_id,
+        "usageSource": usage_source,
+        "inputTokens": usage.get("input_tokens").and_then(Value::as_i64),
+        "outputTokens": usage.get("output_tokens").and_then(Value::as_i64),
+        "cacheCreationInputTokens": usage.get("cache_creation_input_tokens").and_then(Value::as_i64),
+        "cacheReadInputTokens": usage.get("cache_read_input_tokens").and_then(Value::as_i64),
+    });
+    remove_null_fields(&mut event);
+    if event.as_object().is_some_and(|object| object.len() > 3) {
+        Some(event)
+    } else {
+        None
+    }
+}
+
+fn parse_claude_api_retry_status_message(payload: &Value) -> Option<String> {
+    if payload.get("type").and_then(Value::as_str) != Some("system")
+        || payload.get("subtype").and_then(Value::as_str) != Some("api_retry")
+    {
+        return None;
+    }
+    let attempt = payload.get("attempt").and_then(Value::as_i64)?;
+    let max_attempts = payload.get("max_retries").and_then(Value::as_i64)?;
+    let retry_delay_ms = payload
+        .get("retry_delay_ms")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        .max(0);
+    let retry_delay = format!("{}s", (retry_delay_ms + 999) / 1000);
+    Some(format_retry_status_message(
+        attempt,
+        max_attempts,
+        &retry_delay,
+    ))
+}
+
+fn append_retryable_runtime_error_event(
+    run: &mut ActiveRunRecord,
+    events: &mut Vec<Value>,
+    run_id: &str,
+    message: &str,
+    source: &str,
+) {
+    if let Some(hint) = append_runtime_reconnect_hint_event(run, events, run_id, message, source) {
+        events.push(json!({
+            "type": "retryable-error",
+            "runId": run_id,
+            "message": message,
+            "hint": hint,
+        }));
+    }
+}
+
+fn append_runtime_reconnect_hint_event(
+    run: &mut ActiveRunRecord,
+    events: &mut Vec<Value>,
+    run_id: &str,
+    message: &str,
+    source: &str,
+) -> Option<Value> {
+    let hint = create_runtime_recovery_hint(message, source)?;
+    let reason = hint
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let hint_message = hint
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let key = format!("{reason}:{hint_message}");
+    if run.emitted_recovery_hint_keys.insert(key) {
+        events.push(json!({
+            "type": "runtime-reconnect-hint",
+            "runId": run_id,
+            "hint": hint.clone(),
+        }));
+    }
+    Some(hint)
 }
 
 fn describe_claude_system_event(payload: &Value) -> String {
@@ -10346,6 +12708,7 @@ fn emit_run_event(state: &AppState, run_id: &str, event: Value) {
                 }
             };
             if should_emit {
+                push_run_event(state, run_id, event);
                 push_trace_event(
                     state,
                     run_id,
@@ -10353,7 +12716,6 @@ fn emit_run_event(state: &AppState, run_id: &str, event: Value) {
                     current_timestamp_ms_i64(),
                     None,
                 );
-                push_run_event(state, run_id, event);
             }
         }
         Some("approval-request") => {
@@ -10383,6 +12745,7 @@ fn emit_run_event(state: &AppState, run_id: &str, event: Value) {
                         run.paused_for_user_input = true;
                     }
                 }
+                push_run_event(state, run_id, event);
                 push_trace_event(
                     state,
                     run_id,
@@ -10390,7 +12753,6 @@ fn emit_run_event(state: &AppState, run_id: &str, event: Value) {
                     current_timestamp_ms_i64(),
                     None,
                 );
-                push_run_event(state, run_id, event);
             }
         }
         _ => push_run_event(state, run_id, event),
@@ -10436,6 +12798,7 @@ fn auto_approve_permission_request(state: AppState, run_id: String, event: Value
                         run.paused_for_user_input = true;
                     }
                 }
+                push_run_event(&state, &run_id, event);
                 push_trace_event(
                     &state,
                     &run_id,
@@ -10443,7 +12806,6 @@ fn auto_approve_permission_request(state: AppState, run_id: String, event: Value
                     current_timestamp_ms_i64(),
                     None,
                 );
-                push_run_event(&state, &run_id, event);
             }
         }
     });
