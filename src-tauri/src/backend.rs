@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{Path as AxumPath, Query, State},
-    http::{Method, StatusCode},
+    http::{HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post, put},
     Json, Router,
@@ -14,23 +14,25 @@ use serde_json::{json, Map, Value};
 use std::{
     env, fs,
     net::SocketAddr,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
 const CLAUDE_CLI_RECOMMENDED_VERSION: &str = "2.1.123";
 const CLAUDE_CLI_UPDATE_COMMAND: &str = "claude update";
 const CLAUDE_CLI_INSTALL_COMMAND: &str = "npm install -g @anthropic-ai/claude-code";
 const CLAUDE_CLI_SETUP_URL: &str = "https://docs.anthropic.com/en/docs/claude-code/setup";
+const RUN_RECONNECT_RETENTION_MS: u64 = 10 * 60 * 1000;
 
 #[derive(Clone)]
 struct AppState {
     app_data_dir: Arc<PathBuf>,
     settings_write_lock: Arc<Mutex<()>>,
     workspace_write_lock: Arc<Mutex<()>>,
+    workspace_database_init_lock: Arc<Mutex<()>>,
     runs: Arc<Mutex<std::collections::HashMap<String, ActiveRunRecord>>>,
     runtimes: Arc<Mutex<std::collections::HashMap<String, ClaudeRuntimeRecord>>>,
     context_requests: Arc<Mutex<std::collections::HashMap<String, ClaudeContextRequestRecord>>>,
@@ -416,6 +418,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         app_data_dir: Arc::new(app_data_dir),
         settings_write_lock: Arc::new(Mutex::new(())),
         workspace_write_lock: Arc::new(Mutex::new(())),
+        workspace_database_init_lock: Arc::new(Mutex::new(())),
         runs: Arc::new(Mutex::new(std::collections::HashMap::new())),
         runtimes: Arc::new(Mutex::new(std::collections::HashMap::new())),
         context_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -434,6 +437,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
 
 fn create_router(state: AppState) -> Router {
     Router::new()
+        .route("/api/runtime/identity", get(runtime_identity))
         .route("/api/health", get(health))
         .route("/api/claude/models", get(claude_models))
         .route("/api/settings", get(get_settings))
@@ -656,7 +660,9 @@ fn create_router(state: AppState) -> Router {
         )
         .layer(
             CorsLayer::new()
-                .allow_origin(Any)
+                .allow_origin(AllowOrigin::predicate(|origin, _| {
+                    is_allowed_local_origin(origin)
+                }))
                 .allow_methods([
                     Method::GET,
                     Method::POST,
@@ -667,6 +673,43 @@ fn create_router(state: AppState) -> Router {
                 .allow_headers(Any),
         )
         .with_state(state)
+}
+
+fn is_allowed_local_origin(origin: &HeaderValue) -> bool {
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    if matches!(
+        origin,
+        "http://tauri.localhost" | "https://tauri.localhost" | "tauri://localhost"
+    ) {
+        return true;
+    }
+    let Some((scheme, rest)) = origin.split_once("://") else {
+        return false;
+    };
+    if !matches!(scheme, "http" | "https" | "tauri") {
+        return false;
+    }
+    let host_port = rest
+        .split_once('/')
+        .map(|(host, _)| host)
+        .unwrap_or(rest)
+        .split_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(rest);
+    let host = host_port
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or(host_port);
+    matches!(host, "127.0.0.1" | "localhost")
+}
+
+async fn runtime_identity() -> Json<Value> {
+    Json(json!({
+        "app": "codem",
+        "backend": "rust",
+    }))
 }
 
 async fn health() -> Json<Value> {
@@ -912,7 +955,19 @@ async fn claude_run(
         return build_run_stream_response(state, run_id);
     }
 
-    set_runtime_current_run(&state, &thread_id, Some(run_id.clone()))?;
+    if let Err(error) = claim_runtime_current_run(&state, &thread_id, &run_id) {
+        push_run_event(
+            &state,
+            &run_id,
+            json!({
+                "type": "error",
+                "runId": run_id,
+                "message": error.message,
+            }),
+        );
+        mark_run_finished(&state, &run_id);
+        return build_run_stream_response(state, run_id);
+    }
     set_run_runtime_handles(&state, &run_id, runtime.child_id, runtime.stdin.clone());
     if runtime_reused {
         push_trace_event(
@@ -981,30 +1036,32 @@ async fn claude_run_events(
     AxumPath(run_id): AxumPath<String>,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<Response> {
-    let after = query
+    let replay_after = query
         .get("after")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
-    let events = {
-        let runs = state
-            .runs
-            .lock()
-            .map_err(|error| ApiError::internal(format!("读取运行事件失败: {error}")))?;
-        runs.get(&run_id)
-            .map(|run| {
-                run.events
-                    .iter()
-                    .filter(|event| should_replay_run_event(event))
-                    .skip(after)
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    };
     let stream = async_stream::stream! {
-        for event in events {
-            let line = format!("{}\n", serde_json::to_string(&event).unwrap_or_default());
-            yield Ok::<Bytes, std::convert::Infallible>(Bytes::from(line));
+        let mut index = replay_after;
+        loop {
+            let Some(notify) = run_notify(&state, &run_id) else {
+                break;
+            };
+            let notified = notify.notified();
+            let Some((events, finished)) = snapshot_replay_run_events_after(&state, &run_id, index) else {
+                break;
+            };
+            index += events.len();
+            let had_events = !events.is_empty();
+            for event in events {
+                let line = format!("{}\n", serde_json::to_string(&event).unwrap_or_default());
+                yield Ok::<Bytes, std::convert::Infallible>(Bytes::from(line));
+            }
+            if finished {
+                break;
+            }
+            if !had_events {
+                notified.await;
+            }
         }
     };
     Response::builder()
@@ -1025,12 +1082,7 @@ async fn claude_run_ack(
     State(state): State<AppState>,
     AxumPath(run_id): AxumPath<String>,
 ) -> ApiResult<Json<Value>> {
-    let acknowledged = state
-        .runs
-        .lock()
-        .map_err(|error| ApiError::internal(format!("确认运行事件失败: {error}")))?
-        .get(&run_id)
-        .is_some();
+    let acknowledged = remove_finished_run_record(&state, &run_id);
     Ok(Json(json!({ "acknowledged": acknowledged })))
 }
 
@@ -2741,7 +2793,12 @@ async fn delete_project(
 ) -> ApiResult<Json<Value>> {
     let _guard = lock_workspace_write(&state)?;
     let mut connection = open_initialized_workspace_database(&state)?;
+    let thread_ids = read_project_thread_ids(&connection, &project_id)?;
     remove_project_row(&mut connection, &project_id)?;
+    for thread_id in thread_ids {
+        let _ = close_thread_runtime(&state, &thread_id);
+        remove_run_records_for_thread(&state, &thread_id);
+    }
     let workspace = read_workspace_bootstrap_with_connection(&state, &connection)?;
     Ok(Json(json!({ "ok": true, "workspace": workspace })))
 }
@@ -2804,6 +2861,8 @@ async fn delete_thread(
     let _guard = lock_workspace_write(&state)?;
     let mut connection = open_initialized_workspace_database(&state)?;
     remove_thread_row(&mut connection, &thread_id)?;
+    let _ = close_thread_runtime(&state, &thread_id);
+    remove_run_records_for_thread(&state, &thread_id);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -3988,6 +4047,10 @@ fn open_workspace_database(state: &AppState) -> ApiResult<Connection> {
 }
 
 fn open_initialized_workspace_database(state: &AppState) -> ApiResult<Connection> {
+    let _guard = state
+        .workspace_database_init_lock
+        .lock()
+        .map_err(|error| ApiError::internal(format!("初始化工作区数据库失败: {error}")))?;
     let connection = open_workspace_database(state)?;
     initialize_workspace_database(&connection)?;
     Ok(connection)
@@ -4319,14 +4382,7 @@ fn read_panel_state(connection: &Connection) -> ApiResult<Value> {
 }
 
 fn resolve_accessible_directory(value: &str) -> ApiResult<String> {
-    let raw_path = PathBuf::from(value);
-    let absolute_path = if raw_path.is_absolute() {
-        raw_path
-    } else {
-        env::current_dir()
-            .map_err(|error| ApiError::internal(format!("读取当前目录失败: {error}")))?
-            .join(raw_path)
-    };
+    let absolute_path = PathBuf::from(resolve_absolute_path(value)?);
     let metadata = fs::metadata(&absolute_path).map_err(|_| {
         ApiError::bad_request(format!("目录不存在或不可访问：{}", absolute_path.display()))
     })?;
@@ -4520,6 +4576,17 @@ fn remove_project_row(connection: &mut Connection, project_id: &str) -> ApiResul
     transaction
         .commit()
         .map_err(|error| ApiError::internal(format!("提交项目删除失败: {error}")))
+}
+
+fn read_project_thread_ids(connection: &Connection, project_id: &str) -> ApiResult<Vec<String>> {
+    ensure_project_exists(connection, project_id)?;
+    let mut statement = connection
+        .prepare("SELECT id FROM threads WHERE project_id = ?")
+        .map_err(|error| ApiError::internal(format!("读取项目聊天失败: {error}")))?;
+    let rows = statement
+        .query_map(params![project_id], |row| row.get::<_, String>(0))
+        .map_err(|error| ApiError::internal(format!("读取项目聊天失败: {error}")))?;
+    collect_rows(rows, "读取项目聊天失败")
 }
 
 fn remove_thread_row(connection: &mut Connection, thread_id: &str) -> ApiResult<()> {
@@ -6552,7 +6619,11 @@ fn validate_desktop_file_path(file_path: &str) -> ApiResult<()> {
             return Err(ApiError::bad_request("该路径不被允许。"));
         }
     }
-    if lower.contains("/.env.") || lower.ends_with("/.env") {
+    if lower == ".env"
+        || lower.starts_with(".env.")
+        || lower.contains("/.env.")
+        || lower.ends_with("/.env")
+    {
         return Err(ApiError::bad_request("该路径不被允许。"));
     }
     Ok(())
@@ -6617,7 +6688,7 @@ fn is_path_inside_root(target_path: &str, root_path: &str) -> bool {
 }
 
 fn normalize_path_for_compare(path: &str) -> String {
-    PathBuf::from(path)
+    normalize_path_lexically(Path::new(path))
         .display()
         .to_string()
         .replace('\\', "/")
@@ -6634,7 +6705,25 @@ fn resolve_absolute_path(path: &str) -> ApiResult<String> {
             .map_err(|error| ApiError::internal(format!("读取当前目录失败: {error}")))?
             .join(raw_path)
     };
-    Ok(absolute_path.display().to_string())
+    Ok(normalize_path_lexically(&absolute_path)
+        .display()
+        .to_string())
+}
+
+fn normalize_path_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
 }
 
 fn percent_encode(value: &str) -> String {
@@ -9109,7 +9198,14 @@ fn collect_skill_source_directories(source_path: &Path) -> Vec<PathBuf> {
 
 fn sanitize_skill_directory_name(value: &str) -> ApiResult<String> {
     let sanitized = value.trim();
-    if sanitized.is_empty() || sanitized.chars().any(|ch| "\\/:*?\"<>|".contains(ch)) {
+    if sanitized.is_empty()
+        || sanitized == "."
+        || sanitized == ".."
+        || sanitized.contains("..")
+        || sanitized
+            .chars()
+            .any(|ch| ch.is_control() || "\\/:*?\"<>|".contains(ch))
+    {
         return Err(ApiError::bad_request(format!("非法 Skill 名称：{value}")));
     }
     Ok(sanitized.to_string())
@@ -11263,16 +11359,30 @@ fn snapshot_run_events_after(
     ))
 }
 
+fn snapshot_replay_run_events_after(
+    state: &AppState,
+    run_id: &str,
+    after: usize,
+) -> Option<(Vec<Value>, bool)> {
+    let runs = state.runs.lock().ok()?;
+    let run = runs.get(run_id)?;
+    Some((
+        run.events
+            .iter()
+            .filter(|event| should_replay_run_event(event))
+            .skip(after)
+            .cloned()
+            .collect(),
+        run.finished,
+    ))
+}
+
 fn run_notify(state: &AppState, run_id: &str) -> Option<Arc<tokio::sync::Notify>> {
     let runs = state.runs.lock().ok()?;
     runs.get(run_id).map(|run| run.notify.clone())
 }
 
-fn set_runtime_current_run(
-    state: &AppState,
-    thread_id: &str,
-    run_id: Option<String>,
-) -> ApiResult<()> {
+fn claim_runtime_current_run(state: &AppState, thread_id: &str, run_id: &str) -> ApiResult<()> {
     let mut runtimes = state
         .runtimes
         .lock()
@@ -11280,7 +11390,12 @@ fn set_runtime_current_run(
     let runtime = runtimes
         .get_mut(thread_id)
         .ok_or_else(|| ApiError::bad_request("当前线程没有可用 Claude 会话"))?;
-    runtime.current_run_id = run_id;
+    if runtime.closed || runtime.current_run_id.is_some() {
+        return Err(ApiError::bad_request(
+            "当前会话仍有运行中的 Claude 请求，请等待结束或停止后再发送。",
+        ));
+    }
+    runtime.current_run_id = Some(run_id.to_string());
     Ok(())
 }
 
@@ -11531,19 +11646,49 @@ fn handle_runtime_exit(
             .and_then(|runs| runs.get(&run_id).map(|run| run.saw_done || run.finished))
             .unwrap_or(false);
         if !already_done {
-            let message = match status {
-                Ok(status) if status.success() => "Claude 会话已结束。".to_string(),
-                Ok(status) => format!("Claude 退出码: {status}"),
-                Err(error) => format!("等待 Claude 退出失败: {error}"),
-            };
-            push_run_event(
-                state,
-                &run_id,
-                json!({ "type": "error", "runId": run_id, "message": message }),
-            );
+            match status {
+                Ok(status) if status.success() => {
+                    push_run_event(state, &run_id, runtime_exit_done_event(state, &run_id));
+                }
+                Ok(status) => {
+                    push_run_event(
+                        state,
+                        &run_id,
+                        json!({ "type": "error", "runId": run_id, "message": format!("Claude 退出码: {status}") }),
+                    );
+                }
+                Err(error) => {
+                    push_run_event(
+                        state,
+                        &run_id,
+                        json!({ "type": "error", "runId": run_id, "message": format!("等待 Claude 退出失败: {error}") }),
+                    );
+                }
+            }
         }
         mark_run_finished(state, &run_id);
     }
+}
+
+fn runtime_exit_done_event(state: &AppState, run_id: &str) -> Value {
+    let (session_id, result) = state
+        .runs
+        .lock()
+        .ok()
+        .and_then(|runs| {
+            runs.get(run_id)
+                .map(|run| (run.session_id.clone(), run.collected_result.clone()))
+        })
+        .unwrap_or((None, String::new()));
+    let mut event = json!({
+        "type": "done",
+        "runId": run_id,
+        "result": result,
+    });
+    if let Some(session_id) = session_id {
+        event["sessionId"] = json!(session_id);
+    }
+    event
 }
 
 fn finish_runtime_run(state: &AppState, thread_id: &str, run_id: &str) {
@@ -13120,8 +13265,12 @@ fn push_trace_event(state: &AppState, run_id: &str, name: &str, at_ms: i64, deta
 
 fn mark_run_finished(state: &AppState, run_id: &str) {
     let mut notify = None;
+    let mut should_schedule_cleanup = false;
     if let Ok(mut runs) = state.runs.lock() {
         if let Some(run) = runs.get_mut(run_id) {
+            if !run.finished {
+                should_schedule_cleanup = true;
+            }
             run.finished = true;
             run.child_id = None;
             run.stdin = None;
@@ -13130,6 +13279,33 @@ fn mark_run_finished(state: &AppState, run_id: &str) {
     }
     if let Some(notify) = notify {
         notify.notify_waiters();
+    }
+    if should_schedule_cleanup {
+        schedule_run_record_cleanup(state.clone(), run_id.to_string());
+    }
+}
+
+fn schedule_run_record_cleanup(state: AppState, run_id: String) {
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(RUN_RECONNECT_RETENTION_MS)).await;
+        remove_finished_run_record(&state, &run_id);
+    });
+}
+
+fn remove_finished_run_record(state: &AppState, run_id: &str) -> bool {
+    let Ok(mut runs) = state.runs.lock() else {
+        return false;
+    };
+    if runs.get(run_id).is_some_and(|run| run.finished) {
+        runs.remove(run_id);
+        return true;
+    }
+    false
+}
+
+fn remove_run_records_for_thread(state: &AppState, thread_id: &str) {
+    if let Ok(mut runs) = state.runs.lock() {
+        runs.retain(|_, run| run.thread_id != thread_id);
     }
 }
 
@@ -13380,4 +13556,20 @@ fn home_dir() -> Option<PathBuf> {
         .ok()
         .or_else(|| env::var("HOME").ok())
         .map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_desktop_file_path;
+
+    #[test]
+    fn validate_desktop_file_path_rejects_sensitive_dotenv_at_start() {
+        assert!(validate_desktop_file_path(".env").is_err());
+        assert!(validate_desktop_file_path(".env.local").is_err());
+    }
+
+    #[test]
+    fn validate_desktop_file_path_keeps_normal_environment_names() {
+        assert!(validate_desktop_file_path("C:\\work\\environment.ts").is_ok());
+    }
 }

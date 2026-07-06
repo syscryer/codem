@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -18,6 +18,9 @@ const WINDOW_STATE_FILE_NAME: &str = "window-state.json";
 const DESKTOP_LOG_FILE_NAME: &str = "desktop.log";
 const BACKEND_APP_DATA_DIR_ENV: &str = "CODEM_APP_DATA_DIR";
 const BACKEND_DATA_DIR_NAME: &str = "data";
+#[cfg(target_os = "windows")]
+const WINDOWS_BACKEND_DATA_DIR_NAME: &str = "CodeM";
+const BACKEND_IDENTITY_PATH: &str = "/api/runtime/identity";
 const MIN_WINDOW_WIDTH: u32 = 960;
 const MIN_WINDOW_HEIGHT: u32 = 640;
 #[cfg(target_os = "windows")]
@@ -770,21 +773,71 @@ fn start_rust_backend_thread(app: &tauri::AppHandle, backend_port: u16) -> Resul
 }
 
 fn is_backend_ready(port: u16) -> bool {
+    probe_backend_identity(port).is_ok_and(|response| {
+        has_success_status(&response)
+            && response.contains("\"app\":\"codem\"")
+            && response.contains("\"backend\":\"rust\"")
+    })
+}
+
+fn is_tcp_port_open(port: u16) -> bool {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     TcpStream::connect_timeout(&address, Duration::from_millis(240)).is_ok()
 }
 
+fn probe_backend_identity(port: u16) -> Result<String, String> {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(240))
+        .map_err(|error| error.to_string())?;
+    let timeout = Some(Duration::from_millis(600));
+    stream
+        .set_read_timeout(timeout)
+        .map_err(|error| error.to_string())?;
+    stream
+        .set_write_timeout(timeout)
+        .map_err(|error| error.to_string())?;
+    write!(
+        stream,
+        "GET {BACKEND_IDENTITY_PATH} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    )
+    .map_err(|error| error.to_string())?;
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|error| error.to_string())?;
+    Ok(response)
+}
+
+fn has_success_status(response: &str) -> bool {
+    response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
+}
+
 fn resolve_backend_startup_target(app: &tauri::AppHandle) -> Result<BackendStartupTarget, String> {
     if let Some(port) = configured_backend_port() {
-        set_backend_port(app, port)?;
         if is_backend_ready(port) {
+            set_backend_port(app, port)?;
             log_desktop_event(app, &format!("reusing existing backend port: {port}"));
             return Ok(BackendStartupTarget {
                 port,
                 reuse_existing: true,
             });
         }
+        if is_tcp_port_open(port) {
+            let fallback_port = allocate_backend_port()?;
+            set_backend_port(app, fallback_port)?;
+            log_desktop_event(
+                app,
+                &format!(
+                    "configured backend port {port} is occupied by a non-CodeM backend, starting backend on {fallback_port}"
+                ),
+            );
+            return Ok(BackendStartupTarget {
+                port: fallback_port,
+                reuse_existing: false,
+            });
+        }
 
+        set_backend_port(app, port)?;
         log_desktop_event(
             app,
             &format!("configured backend port not ready, starting backend: {port}"),
@@ -841,10 +894,35 @@ fn backend_app_data_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
         }
     }
 
+    if let Some(directory) = default_backend_app_data_dir() {
+        return Some(directory);
+    }
+
     app.path()
         .app_config_dir()
         .ok()
         .map(|directory| directory.join(BACKEND_DATA_DIR_NAME))
+}
+
+#[cfg(target_os = "windows")]
+fn default_backend_app_data_dir() -> Option<PathBuf> {
+    env_path("LOCALAPPDATA")
+        .or_else(|| env_path("APPDATA"))
+        .or_else(|| env_path("USERPROFILE").map(|home| home.join("AppData").join("Local")))
+        .or_else(|| env_path("HOME").map(|home| home.join("AppData").join("Local")))
+        .map(|directory| directory.join(WINDOWS_BACKEND_DATA_DIR_NAME))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn default_backend_app_data_dir() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.to_string_lossy().trim().is_empty())
+        .map(PathBuf::from)
 }
 
 fn app_logs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -905,8 +983,8 @@ fn current_timestamp_ms() -> u128 {
 mod tests {
     use super::{
         clamp_window_state_to_area, detect_distribution_mode_from_dir, has_minimum_window_size,
-        normalize_window_state, prepare_window_state_for_save, resolve_backend_port_from_value,
-        MonitorWorkArea, WindowState,
+        has_success_status, normalize_window_state, prepare_window_state_for_save,
+        resolve_backend_port_from_value, MonitorWorkArea, WindowState,
     };
     use std::{
         fs,
@@ -924,6 +1002,13 @@ mod tests {
         assert_eq!(resolve_backend_port_from_value(Some("")), None);
         assert_eq!(resolve_backend_port_from_value(Some("0")), None);
         assert_eq!(resolve_backend_port_from_value(Some("not-a-port")), None);
+    }
+
+    #[test]
+    fn has_success_status_accepts_http_200_status_line() {
+        assert!(has_success_status("HTTP/1.1 200 OK\r\n\r\n{}"));
+        assert!(has_success_status("HTTP/1.0 200 OK\r\n\r\n{}"));
+        assert!(!has_success_status("HTTP/1.1 404 Not Found\r\n\r\n{}"));
     }
 
     #[test]
