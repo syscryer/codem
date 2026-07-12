@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::{
     env, fs,
+    io::{BufRead, BufReader as StdBufReader},
     net::SocketAddr,
     path::{Component, Path, PathBuf},
     process::Command,
@@ -146,6 +147,19 @@ struct ThreadDetailRow {
     session_id: Option<String>,
     transcript_path: Option<String>,
     working_directory: String,
+    model: Option<String>,
+    permission_mode: Option<String>,
+}
+
+#[derive(Debug)]
+struct ClaudeSessionMetadata {
+    session_id: String,
+    cwd: String,
+    transcript_path: String,
+    updated_at: String,
+    session_label: Option<String>,
+    last_prompt: Option<String>,
+    first_user_text: Option<String>,
     model: Option<String>,
     permission_mode: Option<String>,
 }
@@ -1596,6 +1610,7 @@ async fn update_open_with_settings(
 }
 
 async fn workspace_bootstrap(State(state): State<AppState>) -> ApiResult<Json<Value>> {
+    let _guard = lock_workspace_write(&state)?;
     read_workspace_bootstrap(&state).map(Json)
 }
 
@@ -2825,7 +2840,7 @@ async fn update_thread(
     Json(payload): Json<Value>,
 ) -> ApiResult<Json<Value>> {
     let _guard = lock_workspace_write(&state)?;
-    let connection = open_initialized_workspace_database(&state)?;
+    let mut connection = open_initialized_workspace_database(&state)?;
     let mut refresh_workspace = false;
 
     if let Some(title) = payload
@@ -2844,7 +2859,7 @@ async fn update_thread(
         refresh_workspace = true;
     }
 
-    update_thread_metadata_from_payload(&connection, &thread_id, &payload)?;
+    update_thread_metadata_from_payload(&mut connection, &thread_id, &payload)?;
 
     if refresh_workspace {
         let workspace = read_workspace_bootstrap_with_connection(&state, &connection)?;
@@ -2948,6 +2963,8 @@ fn read_workspace_bootstrap_with_settings(
     connection: &Connection,
     settings: &Value,
 ) -> ApiResult<Value> {
+    import_claude_sessions(connection)?;
+
     let restore_selection = settings
         .get("general")
         .and_then(|general| general.get("restoreLastSelectionOnLaunch"))
@@ -4024,7 +4041,16 @@ fn configure_tokio_background_command(_command: &mut tokio::process::Command) {}
 
 fn resolve_claude_command() -> Option<String> {
     #[cfg(target_os = "windows")]
-    let lookup = background_command("where.exe").arg("claude").output().ok();
+    let lookup = background_command("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command claude -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
+        ])
+        .output()
+        .ok();
 
     #[cfg(not(target_os = "windows"))]
     let lookup = background_command("which").arg("claude").output().ok();
@@ -4032,12 +4058,37 @@ fn resolve_claude_command() -> Option<String> {
     lookup
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
-        .and_then(|stdout| {
-            stdout
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .map(str::to_string)
+        .and_then(|stdout| select_claude_command_candidate(&stdout, cfg!(target_os = "windows")))
+}
+
+fn select_claude_command_candidate(stdout: &str, windows: bool) -> Option<String> {
+    let candidates = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+
+    if windows {
+        if let Some(candidate) = candidates
+            .iter()
+            .find(|candidate| is_windows_spawnable_command(candidate))
+        {
+            return Some((*candidate).to_string());
+        }
+    }
+
+    candidates.first().map(|candidate| (*candidate).to_string())
+}
+
+fn is_windows_spawnable_command(candidate: &str) -> bool {
+    Path::new(candidate)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "exe" | "cmd" | "bat" | "com"
+            )
         })
 }
 
@@ -4192,6 +4243,342 @@ fn initialize_workspace_database(connection: &Connection) -> ApiResult<()> {
             ensure_column(connection, "projects", "pinned_at", "TEXT")?;
             Ok(())
         })
+}
+
+fn import_claude_sessions(connection: &Connection) -> ApiResult<()> {
+    let Some(home) = home_dir() else {
+        return Ok(());
+    };
+    import_claude_sessions_from_root(connection, &home.join(".claude").join("projects"))
+}
+
+fn import_claude_sessions_from_root(connection: &Connection, root: &Path) -> ApiResult<()> {
+    let project_directories = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(ApiError::internal(format!(
+                "读取 Claude 会话目录失败: {error}"
+            )))
+        }
+    };
+
+    for project_entry in project_directories.filter_map(Result::ok) {
+        if !project_entry
+            .file_type()
+            .ok()
+            .is_some_and(|file_type| file_type.is_dir())
+        {
+            continue;
+        }
+        let transcript_entries = match fs::read_dir(project_entry.path()) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for transcript_entry in transcript_entries.filter_map(Result::ok) {
+            if !transcript_entry
+                .file_type()
+                .ok()
+                .is_some_and(|file_type| file_type.is_file())
+            {
+                continue;
+            }
+            let path = transcript_entry.path();
+            let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if file_name.starts_with("agent-")
+                || !path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+            {
+                continue;
+            }
+
+            let Some(mut metadata) = read_claude_session_metadata(&path) else {
+                continue;
+            };
+            if is_ignored_imported_session(connection, &metadata.session_id)? {
+                continue;
+            }
+            let Ok(cwd) = resolve_absolute_path(&metadata.cwd) else {
+                continue;
+            };
+            if !Path::new(&cwd).exists() {
+                continue;
+            }
+            metadata.cwd = cwd;
+
+            let project_id = upsert_imported_project(connection, &metadata)?;
+            upsert_imported_thread(connection, &project_id, &metadata)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn read_claude_session_metadata(transcript_path: &Path) -> Option<ClaudeSessionMetadata> {
+    let file = fs::File::open(transcript_path).ok()?;
+    let mut session_id = String::new();
+    let mut cwd = String::new();
+    let mut updated_at = String::new();
+    let mut session_label = String::new();
+    let mut last_prompt = String::new();
+    let mut first_user_text = String::new();
+    let mut model = String::new();
+    let mut permission_mode = String::new();
+
+    for line in StdBufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(payload) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if payload
+            .get("isSidechain")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || payload
+                .get("isMeta")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            || is_claude_task_notification_payload(&payload)
+        {
+            continue;
+        }
+
+        if session_id.is_empty() {
+            session_id = first_json_string(&payload, &["sessionId", "session_id"])
+                .unwrap_or_default()
+                .to_string();
+        }
+        if cwd.is_empty() {
+            cwd = first_json_string(&payload, &["cwd"])
+                .unwrap_or_default()
+                .to_string();
+        }
+        if let Some(timestamp) = first_json_string(&payload, &["timestamp"]) {
+            if timestamp > updated_at.as_str() {
+                updated_at = timestamp.to_string();
+            }
+        }
+        if session_label.is_empty() {
+            session_label = first_json_string(&payload, &["sessionName", "displayName", "title"])
+                .map(ToString::to_string)
+                .or_else(|| {
+                    first_json_string(&payload, &["slug"]).map(|value| value.replace('-', " "))
+                })
+                .unwrap_or_default();
+        }
+        if last_prompt.is_empty()
+            && payload.get("type").and_then(Value::as_str) == Some("last-prompt")
+        {
+            last_prompt = normalize_imported_title_text(
+                first_json_string(&payload, &["lastPrompt"]).unwrap_or_default(),
+            );
+        }
+        if permission_mode.is_empty() {
+            permission_mode = first_json_string(&payload, &["permissionMode"])
+                .unwrap_or_default()
+                .to_string();
+        }
+
+        let Some(message) = payload.get("message") else {
+            continue;
+        };
+        if first_user_text.is_empty() && message.get("role").and_then(Value::as_str) == Some("user")
+        {
+            first_user_text = normalize_imported_title_text(&extract_user_text(
+                message.get("content").unwrap_or(&Value::Null),
+            ));
+        }
+        if let Some(message_model) = first_json_string(message, &["model"]) {
+            model = message_model.to_string();
+        }
+    }
+
+    if session_id.is_empty() || cwd.is_empty() {
+        return None;
+    }
+
+    Some(ClaudeSessionMetadata {
+        session_id,
+        cwd,
+        transcript_path: transcript_path.display().to_string(),
+        updated_at: if updated_at.is_empty() {
+            current_timestamp()
+        } else {
+            updated_at
+        },
+        session_label: normalize_optional_string(Some(session_label)),
+        last_prompt: normalize_optional_string(Some(last_prompt)),
+        first_user_text: normalize_optional_string(Some(first_user_text)),
+        model: normalize_optional_string(Some(model)),
+        permission_mode: normalize_optional_string(Some(permission_mode)),
+    })
+}
+
+fn normalize_imported_title_text(value: &str) -> String {
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && !line.starts_with("<local-command-")
+                && !line.starts_with("<command-name>")
+                && !line.starts_with("<command-message>")
+                && !line.starts_with("<command-args>")
+                && !line.starts_with("<system-reminder>")
+                && !line.starts_with("</system-reminder>")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn derive_imported_thread_title(metadata: &ClaudeSessionMetadata) -> String {
+    let title = metadata
+        .session_label
+        .as_deref()
+        .or(metadata.last_prompt.as_deref())
+        .or(metadata.first_user_text.as_deref())
+        .unwrap_or(&metadata.session_id)
+        .trim();
+    let prefix = title.chars().take(28).collect::<String>();
+    if title.chars().count() > 28 {
+        format!("{prefix}...")
+    } else {
+        prefix
+    }
+}
+
+fn is_ignored_imported_session(connection: &Connection, session_id: &str) -> ApiResult<bool> {
+    connection
+        .query_row(
+            "SELECT 1 FROM ignored_imported_sessions WHERE session_id = ?",
+            params![session_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|value| value.is_some())
+        .map_err(|error| ApiError::internal(format!("读取忽略会话失败: {error}")))
+}
+
+fn upsert_imported_project(
+    connection: &Connection,
+    metadata: &ClaudeSessionMetadata,
+) -> ApiResult<String> {
+    let existing = connection
+        .query_row(
+            "SELECT id, updated_at FROM projects WHERE path = ?",
+            params![metadata.cwd],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取导入项目失败: {error}")))?;
+    if let Some((project_id, updated_at)) = existing {
+        if metadata.updated_at > updated_at {
+            connection
+                .execute(
+                    "UPDATE projects SET updated_at = ? WHERE id = ?",
+                    params![metadata.updated_at, project_id],
+                )
+                .map_err(|error| ApiError::internal(format!("更新导入项目失败: {error}")))?;
+        }
+        return Ok(project_id);
+    }
+
+    let project_id = uuid::Uuid::new_v4().to_string();
+    let project_name = Path::new(&metadata.cwd)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&metadata.cwd);
+    connection
+        .execute(
+            r#"
+            INSERT INTO projects (id, path, name, custom_name, created_at, updated_at)
+            VALUES (?, ?, ?, 0, ?, ?)
+            "#,
+            params![
+                project_id,
+                metadata.cwd,
+                project_name,
+                metadata.updated_at,
+                metadata.updated_at
+            ],
+        )
+        .map_err(|error| ApiError::internal(format!("导入 Claude 项目失败: {error}")))?;
+    Ok(project_id)
+}
+
+fn upsert_imported_thread(
+    connection: &Connection,
+    project_id: &str,
+    metadata: &ClaudeSessionMetadata,
+) -> ApiResult<String> {
+    let existing_thread_id = connection
+        .query_row(
+            "SELECT id FROM threads WHERE session_id = ? ORDER BY imported ASC LIMIT 1",
+            params![metadata.session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取导入会话失败: {error}")))?;
+    let title = derive_imported_thread_title(metadata);
+    if let Some(thread_id) = existing_thread_id {
+        connection
+            .execute(
+                r#"
+                UPDATE threads
+                SET transcript_path = ?,
+                    working_directory = ?,
+                    model = COALESCE(NULLIF(?, ''), NULLIF(model, ''), model),
+                    permission_mode = COALESCE(permission_mode, ?),
+                    updated_at = ?,
+                    title = CASE WHEN custom_title = 0 THEN ? ELSE title END
+                WHERE id = ?
+                "#,
+                params![
+                    metadata.transcript_path,
+                    metadata.cwd,
+                    metadata.model,
+                    metadata.permission_mode,
+                    metadata.updated_at,
+                    title,
+                    thread_id
+                ],
+            )
+            .map_err(|error| ApiError::internal(format!("更新导入会话失败: {error}")))?;
+        return Ok(thread_id);
+    }
+
+    let thread_id = uuid::Uuid::new_v4().to_string();
+    connection
+        .execute(
+            r#"
+            INSERT INTO threads (
+              id, project_id, provider, title, custom_title, session_id, transcript_path,
+              working_directory, model, permission_mode, imported, created_at, updated_at
+            )
+            VALUES (?, ?, 'claude-code', ?, 0, ?, ?, ?, ?, ?, 1, ?, ?)
+            "#,
+            params![
+                thread_id,
+                project_id,
+                title,
+                metadata.session_id,
+                metadata.transcript_path,
+                metadata.cwd,
+                metadata.model,
+                metadata.permission_mode,
+                metadata.updated_at,
+                metadata.updated_at
+            ],
+        )
+        .map_err(|error| ApiError::internal(format!("导入 Claude 会话失败: {error}")))?;
+    Ok(thread_id)
 }
 
 fn read_project_rows(connection: &Connection) -> ApiResult<Vec<ProjectRow>> {
@@ -4543,9 +4930,26 @@ fn read_thread_summary(connection: &Connection, thread_id: &str) -> ApiResult<Va
 
 fn remove_project_row(connection: &mut Connection, project_id: &str) -> ApiResult<()> {
     ensure_project_exists(connection, project_id)?;
+    let imported_sessions = {
+        let mut statement = connection
+            .prepare(
+                "SELECT session_id, transcript_path FROM threads WHERE project_id = ? AND session_id IS NOT NULL",
+            )
+            .map_err(|error| ApiError::internal(format!("读取项目会话失败: {error}")))?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .map_err(|error| ApiError::internal(format!("读取项目会话失败: {error}")))?;
+        collect_rows(rows, "读取项目会话失败")?
+    };
+    let now = current_timestamp();
     let transaction = connection
         .transaction()
         .map_err(|error| ApiError::internal(format!("删除项目失败: {error}")))?;
+    for (session_id, transcript_path) in imported_sessions {
+        ignore_imported_session(&transaction, &session_id, transcript_path.as_deref(), &now)?;
+    }
     transaction
         .execute(
             "DELETE FROM tool_calls WHERE thread_id IN (SELECT id FROM threads WHERE project_id = ?)",
@@ -4590,11 +4994,17 @@ fn read_project_thread_ids(connection: &Connection, project_id: &str) -> ApiResu
 }
 
 fn remove_thread_row(connection: &mut Connection, thread_id: &str) -> ApiResult<()> {
-    let project_id: String = connection
+    let (project_id, session_id, transcript_path) = connection
         .query_row(
-            "SELECT project_id FROM threads WHERE id = ?",
+            "SELECT project_id, session_id, transcript_path FROM threads WHERE id = ?",
             params![thread_id],
-            |row| row.get(0),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
         )
         .optional()
         .map_err(|error| ApiError::internal(format!("读取聊天失败: {error}")))?
@@ -4603,6 +5013,9 @@ fn remove_thread_row(connection: &mut Connection, thread_id: &str) -> ApiResult<
     let transaction = connection
         .transaction()
         .map_err(|error| ApiError::internal(format!("删除聊天失败: {error}")))?;
+    if let Some(session_id) = session_id.as_deref() {
+        ignore_imported_session(&transaction, session_id, transcript_path.as_deref(), &now)?;
+    }
     transaction
         .execute(
             "DELETE FROM tool_calls WHERE thread_id = ?",
@@ -4661,11 +5074,13 @@ fn read_thread_detail(connection: &Connection, thread_id: &str) -> ApiResult<Thr
 }
 
 fn update_thread_metadata_from_payload(
-    connection: &Connection,
+    connection: &mut Connection,
     thread_id: &str,
     payload: &Value,
 ) -> ApiResult<()> {
     let thread = read_thread_detail(connection, thread_id)?;
+    let previous_session_id = thread.session_id.clone();
+    let previous_transcript_path = thread.transcript_path.clone();
     let has_session_id = payload.get("sessionId").is_some();
     let has_model = payload.get("model").is_some();
     let has_working_directory = payload.get("workingDirectory").is_some();
@@ -4682,7 +5097,7 @@ fn update_thread_metadata_from_payload(
             .filter(|value| !value.is_empty())
             .map(ToString::to_string)
     } else {
-        thread.session_id
+        thread.session_id.clone()
     };
     let working_directory = if has_working_directory {
         payload
@@ -4703,7 +5118,7 @@ fn update_thread_metadata_from_payload(
     } else if has_session_id {
         None
     } else {
-        thread.transcript_path
+        thread.transcript_path.clone()
     };
     let model = if has_model {
         payload
@@ -4713,7 +5128,7 @@ fn update_thread_metadata_from_payload(
             .filter(|value| !value.is_empty())
             .map(ToString::to_string)
     } else {
-        thread.model
+        thread.model.clone()
     };
     let permission_mode = if has_permission_mode {
         payload
@@ -4722,12 +5137,27 @@ fn update_thread_metadata_from_payload(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToString::to_string)
-            .or(thread.permission_mode)
+            .or(thread.permission_mode.clone())
     } else {
-        thread.permission_mode
+        thread.permission_mode.clone()
     };
     let now = current_timestamp();
-    connection
+    let transaction = connection
+        .transaction()
+        .map_err(|error| ApiError::internal(format!("更新聊天元数据失败: {error}")))?;
+    if previous_session_id.is_some() && previous_session_id != session_id {
+        let previous_session_id = previous_session_id.as_deref().unwrap_or_default();
+        ignore_imported_session(
+            &transaction,
+            previous_session_id,
+            previous_transcript_path.as_deref(),
+            &now,
+        )?;
+        if session_id.is_some() {
+            delete_duplicate_threads_by_session_id(&transaction, previous_session_id, thread_id)?;
+        }
+    }
+    transaction
         .execute(
             r#"
             UPDATE threads
@@ -4750,12 +5180,71 @@ fn update_thread_metadata_from_payload(
             ],
         )
         .map_err(|error| ApiError::internal(format!("更新聊天元数据失败: {error}")))?;
-    connection
+    transaction
         .execute(
             "UPDATE projects SET updated_at = ? WHERE id = ?",
             params![now, thread.project_id],
         )
         .map_err(|error| ApiError::internal(format!("更新项目失败: {error}")))?;
+    transaction
+        .commit()
+        .map_err(|error| ApiError::internal(format!("提交聊天元数据失败: {error}")))
+}
+
+fn ignore_imported_session(
+    transaction: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    transcript_path: Option<&str>,
+    deleted_at: &str,
+) -> ApiResult<()> {
+    transaction
+        .execute(
+            r#"
+            INSERT INTO ignored_imported_sessions (session_id, transcript_path, deleted_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+              transcript_path = excluded.transcript_path,
+              deleted_at = excluded.deleted_at
+            "#,
+            params![session_id, transcript_path, deleted_at],
+        )
+        .map(|_| ())
+        .map_err(|error| ApiError::internal(format!("记录忽略会话失败: {error}")))
+}
+
+fn delete_duplicate_threads_by_session_id(
+    transaction: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    exclude_thread_id: &str,
+) -> ApiResult<()> {
+    let duplicate_ids = {
+        let mut statement = transaction
+            .prepare("SELECT id FROM threads WHERE session_id = ? AND id <> ?")
+            .map_err(|error| ApiError::internal(format!("读取重复会话失败: {error}")))?;
+        let rows = statement
+            .query_map(params![session_id, exclude_thread_id], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|error| ApiError::internal(format!("读取重复会话失败: {error}")))?;
+        collect_rows(rows, "读取重复会话失败")?
+    };
+    for duplicate_id in duplicate_ids {
+        transaction
+            .execute(
+                "DELETE FROM tool_calls WHERE thread_id = ?",
+                params![duplicate_id],
+            )
+            .map_err(|error| ApiError::internal(format!("删除重复工具记录失败: {error}")))?;
+        transaction
+            .execute(
+                "DELETE FROM messages WHERE thread_id = ?",
+                params![duplicate_id],
+            )
+            .map_err(|error| ApiError::internal(format!("删除重复历史失败: {error}")))?;
+        transaction
+            .execute("DELETE FROM threads WHERE id = ?", params![duplicate_id])
+            .map_err(|error| ApiError::internal(format!("删除重复会话失败: {error}")))?;
+    }
     Ok(())
 }
 
@@ -13560,7 +14049,245 @@ fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_desktop_file_path;
+    use super::{
+        import_claude_sessions_from_root, initialize_workspace_database, remove_thread_row,
+        select_claude_command_candidate, validate_desktop_file_path,
+    };
+    use rusqlite::{params, Connection};
+    use serde_json::json;
+    use std::{fs, path::PathBuf};
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("codem-{label}-{}", uuid::Uuid::new_v4().simple()));
+            fs::create_dir_all(&path).expect("create test directory");
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write_claude_transcript(
+        projects_root: &std::path::Path,
+        workspace: &std::path::Path,
+        session_id: &str,
+    ) -> PathBuf {
+        let project_directory = projects_root.join("project-fixture");
+        fs::create_dir_all(&project_directory).expect("create transcript project directory");
+        let transcript_path = project_directory.join(format!("{session_id}.jsonl"));
+        let cwd = workspace.display().to_string();
+        let payloads = [
+            json!({
+                "type": "user",
+                "sessionId": session_id,
+                "cwd": cwd,
+                "timestamp": "2026-07-01T01:00:00.000Z",
+                "permissionMode": "bypassPermissions",
+                "message": { "role": "user", "content": "inspect the current project" }
+            }),
+            json!({
+                "type": "assistant",
+                "sessionId": session_id,
+                "cwd": cwd,
+                "timestamp": "2026-07-01T01:00:01.000Z",
+                "message": { "role": "assistant", "model": "claude-test", "content": [] }
+            }),
+        ];
+        let content = payloads
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&transcript_path, content).expect("write transcript");
+        transcript_path
+    }
+
+    #[test]
+    fn claude_history_import_is_idempotent_and_respects_ignored_sessions() {
+        let fixture = TestDirectory::new("history-import");
+        let projects_root = fixture.0.join("claude-projects");
+        let workspace = fixture.0.join("workspace");
+        fs::create_dir_all(&projects_root).expect("create projects root");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        let transcript_path =
+            write_claude_transcript(&projects_root, &workspace, "session-imported");
+        fs::write(
+            projects_root
+                .join("project-fixture")
+                .join("agent-ignored.jsonl"),
+            fs::read_to_string(&transcript_path).expect("read transcript fixture"),
+        )
+        .expect("write ignored agent transcript");
+        fs::write(
+            projects_root
+                .join("project-fixture")
+                .join("malformed.jsonl"),
+            "{not-json}\n",
+        )
+        .expect("write malformed transcript");
+
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        import_claude_sessions_from_root(&connection, &projects_root).expect("import history");
+        import_claude_sessions_from_root(&connection, &projects_root)
+            .expect("repeat history import");
+
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM projects", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM threads", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let (thread_id, title, model, imported): (String, String, String, i64) = connection
+            .query_row(
+                "SELECT id, title, model, imported FROM threads WHERE session_id = ?",
+                params!["session-imported"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "inspect the current project");
+        assert_eq!(model, "claude-test");
+        assert_eq!(imported, 1);
+
+        connection
+            .execute(
+                "UPDATE projects SET name = 'Custom project', custom_name = 1",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE threads SET title = 'Custom thread', custom_title = 1 WHERE id = ?",
+                params![thread_id],
+            )
+            .unwrap();
+        import_claude_sessions_from_root(&connection, &projects_root)
+            .expect("import with custom titles");
+        assert_eq!(
+            connection
+                .query_row("SELECT name FROM projects", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "Custom project"
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT title FROM threads", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "Custom thread"
+        );
+
+        remove_thread_row(&mut connection, &thread_id).expect("remove imported thread");
+        assert!(transcript_path.exists());
+        import_claude_sessions_from_root(&connection, &projects_root)
+            .expect("import after deletion");
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM threads", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM ignored_imported_sessions",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn claude_history_import_updates_existing_codem_thread_without_duplication() {
+        let fixture = TestDirectory::new("history-existing-thread");
+        let projects_root = fixture.0.join("claude-projects");
+        let workspace = fixture.0.join("workspace");
+        fs::create_dir_all(&projects_root).expect("create projects root");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        let transcript_path =
+            write_claude_transcript(&projects_root, &workspace, "session-existing");
+        let cwd = workspace.display().to_string();
+
+        let connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        connection
+            .execute(
+                "INSERT INTO projects (id, path, name, custom_name, created_at, updated_at) VALUES ('project', ?, 'workspace', 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+                params![cwd],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO threads (id, project_id, provider, title, custom_title, session_id, transcript_path, working_directory, model, permission_mode, imported, created_at, updated_at) VALUES ('thread', 'project', 'claude-code', 'Existing', 0, 'session-existing', NULL, ?, NULL, NULL, 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+                params![cwd],
+            )
+            .unwrap();
+
+        import_claude_sessions_from_root(&connection, &projects_root).expect("import history");
+        let (count, imported, stored_path): (i64, i64, String) = connection
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM threads), imported, transcript_path FROM threads WHERE id = 'thread'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(imported, 0);
+        assert_eq!(stored_path, transcript_path.display().to_string());
+    }
+
+    #[test]
+    fn windows_claude_command_prefers_spawnable_npm_shim() {
+        let lookup = concat!(
+            "C:\\Users\\dev\\AppData\\Roaming\\npm\\claude\r\n",
+            "C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd\r\n",
+            "C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.ps1\r\n",
+        );
+
+        assert_eq!(
+            select_claude_command_candidate(lookup, true).as_deref(),
+            Some("C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd")
+        );
+    }
+
+    #[test]
+    fn windows_claude_command_accepts_native_extensions_case_insensitively() {
+        let lookup = "C:\\Tools\\claude\nC:\\Tools\\claude.EXE\n";
+
+        assert_eq!(
+            select_claude_command_candidate(lookup, true).as_deref(),
+            Some("C:\\Tools\\claude.EXE")
+        );
+    }
+
+    #[test]
+    fn non_windows_claude_command_keeps_first_candidate() {
+        let lookup = "/usr/local/bin/claude\n/opt/homebrew/bin/claude\n";
+
+        assert_eq!(
+            select_claude_command_candidate(lookup, false).as_deref(),
+            Some("/usr/local/bin/claude")
+        );
+    }
 
     #[test]
     fn validate_desktop_file_path_rejects_sensitive_dotenv_at_start() {
