@@ -8,6 +8,9 @@ import type {
 } from './types';
 
 export const DEFAULT_MODEL_VALUE = '__default';
+export const CLAUDE_CODE_PROVIDER_ID = 'claude-code';
+export const GROK_BUILD_PROVIDER_ID = 'grok-build';
+export const OPENAI_CODEX_PROVIDER_ID = 'openai-codex';
 export const CLAUDE_MODEL_SLOT_VALUES = ['sonnet', 'sonnet[1m]', 'opus', 'opus[1m]', 'haiku'] as const;
 
 export const permissionModes = [

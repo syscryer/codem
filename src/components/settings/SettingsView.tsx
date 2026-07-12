@@ -22,10 +22,10 @@ import type {
   ShortcutSettingsUpdate,
 } from '../../hooks/useAppSettings';
 import { AppearanceSettingsSection } from './AppearanceSettings';
+import { AgentModelSettingsSection } from './AgentModelSettings';
 import { BasicSettingsSection } from './BasicSettings';
 import { GlobalPromptSettingsSection } from './GlobalPromptSettings';
 import { McpSettingsSection } from './McpSettings';
-import { ModelSettingsSection } from './ModelSettings';
 import { OpenWithSettingsSection } from './OpenWithSettings';
 import { SettingsEmptySection } from './SettingsEmptySection';
 import { SettingsSidebar } from './SettingsSidebar';
@@ -73,7 +73,7 @@ const sectionTitles: Record<SettingsSection, string> = {
   basic: '基础设置',
   appearance: '外观',
   shortcuts: '快捷键',
-  providers: '模型设置',
+  providers: 'Agent 与模型',
   usage: '使用情况',
   sessions: '会话管理',
   worktree: '工作树',
@@ -139,7 +139,7 @@ export function SettingsView({
 
     if (activeSection === 'providers') {
       return (
-        <ModelSettingsSection
+        <AgentModelSettingsSection
           models={models}
           claudeModels={claudeModels}
           onUpdateModels={onUpdateModels}

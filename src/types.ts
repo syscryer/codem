@@ -6,7 +6,111 @@ export type PermissionMode =
   | 'dontAsk'
   | 'bypassPermissions';
 
-export type ClaudeContentBlock = {
+export type AgentProviderLifecycle = 'active' | 'planned';
+
+export type AgentCapabilitySupport = 'supported' | 'unsupported' | 'runtime-detected';
+
+export type AgentCancelSupport = 'none' | 'hard' | 'soft' | 'runtime-detected';
+
+export type AgentCapabilities = {
+  sessions: {
+    create: AgentCapabilitySupport;
+    resume: AgentCapabilitySupport;
+    list: AgentCapabilitySupport;
+    import: AgentCapabilitySupport;
+  };
+  input: {
+    text: AgentCapabilitySupport;
+    images: AgentCapabilitySupport;
+    fileReferences: AgentCapabilitySupport;
+  };
+  tools: {
+    streaming: AgentCapabilitySupport;
+    approval: AgentCapabilitySupport;
+    userInput: AgentCapabilitySupport;
+    mcp: AgentCapabilitySupport;
+  };
+  runtime: {
+    cancel: AgentCancelSupport;
+    reconnect: AgentCapabilitySupport;
+    concurrentSessions: AgentCapabilitySupport;
+  };
+};
+
+export type AgentProviderDescriptor = {
+  id: string;
+  displayName: string;
+  driverId: string;
+  lifecycle: AgentProviderLifecycle;
+  available: boolean | null;
+  selectable: boolean;
+  capabilities: AgentCapabilities;
+};
+
+export type AgentProviderRegistry = {
+  providers: AgentProviderDescriptor[];
+};
+
+export type AgentAcpAuthMethodSummary = {
+  id: string;
+  name: string;
+};
+
+export type AgentAcpModelSummary = {
+  modelId: string;
+  name: string;
+  contextTokens: number | null;
+};
+
+export type GrokAcpProbeSummary = {
+  initialize: {
+    protocolVersion: number;
+    loadSession: boolean;
+    promptCapabilities: {
+      image: boolean;
+      audio: boolean;
+      embeddedContext: boolean;
+    };
+    mcpCapabilities: {
+      http: boolean;
+      sse: boolean;
+    };
+    authMethods: AgentAcpAuthMethodSummary[];
+    defaultAuthMethodId: string | null;
+    agentVersion: string | null;
+    currentModelId: string | null;
+    models: AgentAcpModelSummary[];
+  };
+  authenticated: boolean;
+  authMethodId: string | null;
+  authError: string | null;
+};
+
+export type GrokAcpProbeResult = {
+  installed: boolean;
+  initialized: boolean;
+  command: string | null;
+  version: string | null;
+  error: string | null;
+  probe: GrokAcpProbeSummary | null;
+};
+
+export type CodexAppServerProbeSummary = {
+  authenticated: boolean;
+  authMode: string | null;
+  requiresOpenaiAuth: boolean;
+};
+
+export type CodexAppServerProbeResult = {
+  installed: boolean;
+  initialized: boolean;
+  command: string | null;
+  version: string | null;
+  error: string | null;
+  probe: CodexAppServerProbeSummary | null;
+};
+
+export type AgentContentBlock = {
   type?: string;
   text?: string;
   id?: string;
@@ -16,6 +120,8 @@ export type ClaudeContentBlock = {
   content?: unknown;
   is_error?: boolean;
 };
+
+export type ClaudeContentBlock = AgentContentBlock;
 
 export type TurnPhase = 'requesting' | 'thinking' | 'computing' | 'tool';
 
@@ -92,6 +198,7 @@ export type RuntimeRecoveryHint = {
 
 export type RequestUserInputOption = {
   label: string;
+  value?: string;
   description?: string;
 };
 
@@ -99,6 +206,7 @@ export type RequestUserInputQuestion = {
   id?: string;
   header?: string;
   question: string;
+  inputType?: 'text' | 'number' | 'integer' | 'boolean' | 'select';
   options?: RequestUserInputOption[];
   multiSelect?: boolean;
   required?: boolean;
@@ -119,17 +227,24 @@ export type RequestUserInputRequest = {
 
 export type ApprovalRequest = {
   requestId?: string;
-  kind?: 'permission' | 'plan-exit';
+  kind?: 'permission' | 'plan-exit' | 'command' | 'file-change' | 'permissions';
   title: string;
   description?: string;
   command?: string[];
   danger?: 'low' | 'medium' | 'high';
+  options?: AgentApprovalOption[];
   historical?: boolean;
+};
+
+export type AgentApprovalOption = {
+  id: string;
+  label: string;
+  kind: string;
 };
 
 export type ApprovalDecision = 'approve' | 'reject';
 
-export type ClaudeEvent =
+export type AgentRunEvent =
   | { type: 'status'; runId: string; message: string }
   | { type: 'session'; runId: string; sessionId: string }
   | { type: 'delta'; runId: string; text: string }
@@ -147,11 +262,14 @@ export type ClaudeEvent =
   | { type: 'tool-stop'; runId: string; blockIndex: number; toolUseId?: string; parentToolUseId?: string; isSidechain?: boolean }
   | { type: 'tool-result'; runId: string; toolUseId?: string; parentToolUseId?: string; isSidechain?: boolean; content: string; isError?: boolean }
   | { type: 'subagent-delta'; runId: string; parentToolUseId?: string; text: string }
-  | { type: 'assistant-snapshot'; runId: string; blocks: ClaudeContentBlock[] }
+  | { type: 'assistant-snapshot'; runId: string; blocks: AgentContentBlock[] }
   | { type: 'raw'; runId: string; raw: unknown }
   | { type: 'stderr'; runId: string; text: string }
-  | ({ type: 'done'; runId: string; sessionId?: string; result: string; totalCostUsd?: number; durationMs?: number } & UsageSnapshot)
+  | ({ type: 'done'; runId: string; sessionId?: string; result: string; stopReason?: string; totalCostUsd?: number; durationMs?: number } & UsageSnapshot)
   | { type: 'error'; runId: string; message: string };
+
+// Keep the production Claude runtime source-compatible while other providers adopt AgentRunEvent.
+export type ClaudeEvent = AgentRunEvent;
 
 export type ToolStep = {
   id: string;
@@ -269,7 +387,7 @@ export type InputContentBlockSummary =
       reason: string;
     };
 
-export type AgentType = 'claude' | 'codex' | 'gemini' | 'opencode';
+export type AgentType = 'claude' | 'grok' | 'codex' | 'gemini' | 'opencode' | 'generic';
 
 export type SlashCardType = 'status' | 'context' | 'cost' | 'compact';
 

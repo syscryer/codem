@@ -17,9 +17,10 @@ import { TooltipLayer } from './components/TooltipLayer';
 import { WorktreeCreateDialog } from './components/WorktreeCreateDialog';
 import { WorkspaceStatus } from './components/WorkspaceStatus';
 import { useClaudeRun } from './hooks/useClaudeRun';
+import { useAgentRun } from './hooks/useAgentRun';
 import { useAppSettings } from './hooks/useAppSettings';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
-import { resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
+import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
 import {
   buildCompactSlashCommandSubmission,
   buildContextSlashCardResult,
@@ -45,6 +46,7 @@ import {
   setWindowMaterial,
 } from './lib/window-material';
 import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
+import { resolveChatRuntimeKind } from './lib/agent-provider-registry';
 import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
 import { fetchGitRemote, pullGitBranch, undoConversationChanges } from './lib/git-api';
 import { fetchThreadRuntimeStatuses } from './lib/thread-runtime-statuses';
@@ -84,7 +86,9 @@ import type {
   ToolStep,
   ProjectSummary,
   GitCreateWorktreeResult,
+  InputContentBlock,
   UndoConversationChange,
+  UserImageAttachment,
   WindowMaterialMode,
 } from './types';
 
@@ -104,6 +108,15 @@ type GitOperationToastContext = {
   target?: string;
   branch?: string;
   command?: string;
+};
+
+type ComposerSubmission = {
+  prompt: string;
+  displayText: string;
+  attachments?: UserImageAttachment[];
+  contentBlocks?: InputContentBlock[];
+  queueId?: string;
+  queueStatus?: 'preparing' | 'ready';
 };
 
 type ClaudeContextApiResponse =
@@ -338,38 +351,40 @@ export default function App() {
   }, [activeProject?.isGitRepo, dockActivePanelId]);
   const wasRunningRef = useRef(false);
   const materialErrorShownRef = useRef(false);
+  const activeThreadRuntimeKind = resolveChatRuntimeKind(activeThreadSummary?.provider ?? '');
   const {
     workspace,
-    permissionMode,
+    permissionMode: claudePermissionMode,
     model,
     effort,
     models,
     claudeModels,
     health,
-    backendRunId,
-    isRunning,
-    runningThreadIds,
-    activeRunsByThreadId,
-    activeTurnIdsByThreadId,
-    queuedPrompts,
+    backendRunId: claudeBackendRunId,
+    isRunning: claudeIsRunning,
+    runningThreadIds: claudeRunningThreadIds,
+    activeRunsByThreadId: claudeActiveRunsByThreadId,
+    activeTurnIdsByThreadId: claudeActiveTurnIdsByThreadId,
+    queuedPrompts: claudeQueuedPrompts,
     removeQueuedPrompt,
     recallQueuedPrompt,
     guideQueuedPrompt,
     clockNowMs,
     setModel,
     setEffort,
-    handlePermissionModeSelect,
-    submitPrompt,
+    handlePermissionModeSelect: handleClaudePermissionModeSelect,
+    submitPrompt: submitClaudePrompt,
     submitPromptToThread,
-    submitRequestUserInput,
+    submitRequestUserInput: submitClaudeRequestUserInput,
     submitRuntimeRecoveryAction,
-    submitApprovalDecision,
-    stopRun,
+    submitApprovalDecision: submitClaudeApprovalDecision,
+    stopRun: stopClaudeRun,
   } = useClaudeRun({
     activeProjectId,
     activeProjectPath: activeProject?.path,
-    activeThreadId,
-    activeThreadSummary,
+    activeThreadId: activeThreadSummary?.provider === CLAUDE_CODE_PROVIDER_ID ? activeThreadId : null,
+    activeThreadSummary:
+      activeThreadSummary?.provider === CLAUDE_CODE_PROVIDER_ID ? activeThreadSummary : null,
     appModelSettings,
     defaultPermissionMode: general.defaultPermissionMode,
     autoGuideQueuedPrompts: general.autoGuideQueuedPrompts,
@@ -386,6 +401,78 @@ export default function App() {
     clearActiveTurnSelection: () => undefined,
     onThreadActivityNotice: handleThreadActivityNotice,
   });
+
+  const {
+    providers: agentProviders,
+    providersLoading: agentProvidersLoading,
+    providersError: agentProvidersError,
+    draftProviderId,
+    permissionMode: genericAgentPermissionMode,
+    selectDraftProvider,
+    resetDraftProvider,
+    handlePermissionModeSelect: handleGenericAgentPermissionModeSelect,
+    isRunning: genericAgentIsRunning,
+    runningThreadIds: genericAgentRunningThreadIds,
+    activeRunsByThreadId: genericAgentActiveRunsByThreadId,
+    activeTurnIdsByThreadId: genericAgentActiveTurnIdsByThreadId,
+    submitPrompt: submitGenericAgentPrompt,
+    submitRequestUserInput: submitGenericAgentRequestUserInput,
+    submitApprovalDecision: submitGenericAgentApprovalDecision,
+    stopRun: stopGenericAgentRun,
+  } = useAgentRun({
+    activeProjectId,
+    activeProjectPath: activeProject?.path,
+    activeThreadId: activeThreadRuntimeKind === 'generic' ? activeThreadId : null,
+    activeThreadSummary:
+      activeThreadRuntimeKind === 'generic' ? activeThreadSummary : null,
+    createThread,
+    renameThread,
+    handlePickProjectDirectory,
+    showToast,
+    updateThreadDetail,
+    updateThreadTurn,
+    appendDebug,
+    schedulePersistThreadHistory,
+    persistThreadMetadata,
+    onThreadActivityNotice: handleThreadActivityNotice,
+  });
+
+  const activeProviderId = activeThreadSummary?.provider || draftProviderId;
+  const activeRuntimeKind = resolveChatRuntimeKind(activeProviderId);
+  const activeUsesClaude = activeRuntimeKind === 'claude';
+  const activeUsesGenericAgent = activeRuntimeKind === 'generic';
+  const activeAgent = activeUsesClaude
+    ? 'claude' as const
+    : activeProviderId === GROK_BUILD_PROVIDER_ID
+      ? 'grok' as const
+      : activeProviderId === OPENAI_CODEX_PROVIDER_ID
+        ? 'codex' as const
+        : 'generic' as const;
+  const activeProviderDisplayName = agentProviders.find((provider) => provider.id === activeProviderId)?.displayName
+    ?? (activeProviderId === OPENAI_CODEX_PROVIDER_ID ? 'OpenAI Codex' : activeProviderId);
+  const permissionMode = activeUsesClaude ? claudePermissionMode : genericAgentPermissionMode;
+  const handlePermissionModeSelect = activeUsesClaude
+    ? handleClaudePermissionModeSelect
+    : handleGenericAgentPermissionModeSelect;
+  const runningThreadIds = useMemo(
+    () => Array.from(new Set([...claudeRunningThreadIds, ...genericAgentRunningThreadIds])),
+    [claudeRunningThreadIds, genericAgentRunningThreadIds],
+  );
+  const activeRunsByThreadId = useMemo(
+    () => ({ ...claudeActiveRunsByThreadId, ...genericAgentActiveRunsByThreadId }),
+    [claudeActiveRunsByThreadId, genericAgentActiveRunsByThreadId],
+  );
+  const activeTurnIdsByThreadId = useMemo(
+    () => ({ ...claudeActiveTurnIdsByThreadId, ...genericAgentActiveTurnIdsByThreadId }),
+    [claudeActiveTurnIdsByThreadId, genericAgentActiveTurnIdsByThreadId],
+  );
+  const isRunning = claudeIsRunning || genericAgentIsRunning;
+  const backendRunId = activeUsesClaude
+    ? claudeBackendRunId
+    : activeUsesGenericAgent && activeThreadId
+      ? genericAgentActiveRunsByThreadId[activeThreadId]?.runId ?? ''
+      : '';
+  const queuedPrompts = activeUsesClaude ? claudeQueuedPrompts : [];
 
   useEffect(() => {
     activeThreadIdRef.current = activeThreadId;
@@ -629,6 +716,75 @@ export default function App() {
     ),
     queueLength: queuedPrompts.length,
   });
+
+  async function handleSubmitPrompt(submission: ComposerSubmission) {
+    if (activeUsesClaude) {
+      return submitClaudePrompt(submission);
+    }
+
+    if (!activeUsesGenericAgent) {
+      showToast('当前 Provider 尚未接入主聊天，请新建聊天并选择可用 Provider。', 'error');
+      return false;
+    }
+
+    const hasUnsupportedInput = Boolean(
+      submission.attachments?.length ||
+      submission.contentBlocks?.some((block) => block.type !== 'text'),
+    );
+    if (hasUnsupportedInput) {
+      showToast(`${activeProviderDisplayName} 首期仅支持文本输入，请新建 Claude Code 聊天使用附件。`, 'info');
+      return false;
+    }
+    return submitGenericAgentPrompt({
+      prompt: submission.prompt,
+      displayText: submission.displayText,
+    });
+  }
+
+  async function handleSubmitRequestUserInput(
+    turn: ConversationTurn,
+    request: RequestUserInputRequest,
+    answers: Record<string, string>,
+  ) {
+    if (activeUsesGenericAgent) {
+      return submitGenericAgentRequestUserInput(turn, request, answers);
+    }
+    if (activeUsesClaude) {
+      return submitClaudeRequestUserInput(turn, request, answers);
+    }
+    showToast('当前 Provider 不支持这个交互。', 'error');
+    return false;
+  }
+
+  async function handleSubmitApprovalDecision(
+    turn: ConversationTurn,
+    request: ApprovalRequest,
+    decision: ApprovalDecision,
+  ) {
+    if (activeUsesGenericAgent) {
+      return submitGenericAgentApprovalDecision(turn, request, decision);
+    }
+    if (activeUsesClaude) {
+      return submitClaudeApprovalDecision(turn, request, decision);
+    }
+    showToast('当前 Provider 不支持这个交互。', 'error');
+    return false;
+  }
+
+  function handleStopRun(threadId = activeThreadId ?? undefined) {
+    const provider = threadId
+      ? projects.flatMap((project) => project.threads).find((thread) => thread.id === threadId)?.provider
+      : activeProviderId;
+    const runtimeKind = resolveChatRuntimeKind(provider ?? '');
+    if (runtimeKind === 'generic') {
+      return stopGenericAgentRun(threadId);
+    }
+    if (runtimeKind === 'claude') {
+      return stopClaudeRun(threadId);
+    }
+    showToast('当前 Provider 没有可停止的运行。', 'error');
+  }
+
   const handleComposerDraftChange = useCallback(
     (value: string) => {
       setComposerDraftsByKey((current) => {
@@ -769,6 +925,7 @@ export default function App() {
       rememberCurrentLocation();
     }
     setAppView({ kind: 'workspace' });
+    resetDraftProvider();
     await enterNewChatDraft(projectId);
   }
 
@@ -1512,20 +1669,27 @@ export default function App() {
                   turn: ConversationTurn,
                   request: RequestUserInputRequest,
                   answers: Record<string, string>,
-                ) => submitRequestUserInput(turn, request, answers)}
+                ) => handleSubmitRequestUserInput(turn, request, answers)}
                 onSubmitRuntimeRecoveryAction={(turn: ConversationTurn, action: RuntimeSuggestedAction) =>
                   submitRuntimeRecoveryAction(turn, action)}
                 onSubmitApprovalDecision={(
                   turn: ConversationTurn,
                   request: ApprovalRequest,
                   decision: ApprovalDecision,
-                ) => submitApprovalDecision(turn, request, decision)}
+                ) => handleSubmitApprovalDecision(turn, request, decision)}
               />
 
               <CurrentTaskDock activeThread={activeThread} />
 
               <Composer
-                agent="claude"
+                agent={activeAgent}
+                providerId={activeProviderId}
+                providers={agentProviders}
+                providersLoading={agentProvidersLoading}
+                providersError={agentProvidersError}
+                canSelectProvider={!activeThreadSummary}
+                allowAttachments={activeUsesClaude}
+                supportsQueue={activeUsesClaude}
                 workspace={workspace}
                 permissionMode={permissionMode}
                 model={model}
@@ -1540,7 +1704,8 @@ export default function App() {
                 queuedPrompts={queuedPrompts}
                 queuedPromptGuideAvailability={queuedPromptGuideAvailability}
                 onDraftChange={handleComposerDraftChange}
-                onSubmitPrompt={submitPrompt}
+                onSelectProvider={selectDraftProvider}
+                onSubmitPrompt={handleSubmitPrompt}
                 onRemoveQueuedPrompt={removeQueuedPrompt}
                 onRecallQueuedPrompt={handleRecallQueuedPrompt}
                 onGuideQueuedPrompt={guideQueuedPrompt}
@@ -1551,7 +1716,7 @@ export default function App() {
                 onSelectEffort={setEffort}
                 onOpenPlugins={() => openSettings('plugins')}
                 onCreateNewChat={() => void handleCreatePrimaryChat()}
-                onStopRun={() => stopRun(activeThreadId ?? undefined)}
+                onStopRun={() => handleStopRun(activeThreadId ?? undefined)}
                 onRunSlashSystemCommand={handleRunSlashSystemCommand}
                 onRefreshClaudeContext={handleRefreshClaudeContext}
               />
@@ -1634,7 +1799,7 @@ export default function App() {
           turn: ConversationTurn,
           request: ApprovalRequest,
           decision: ApprovalDecision,
-        ) => submitApprovalDecision(turn, request, decision)}
+        ) => handleSubmitApprovalDecision(turn, request, decision)}
         onCloseInputDialog={() => setInputDialog(null)}
         onInputDialogValueChange={handleInputDialogValueChange}
         onSubmitInputDialog={submitInputDialog}

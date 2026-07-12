@@ -136,7 +136,7 @@ test('Composer clears submitted content before async attachment and @file resolu
   assert.doesNotMatch(beforeSubmitBody, /flushDraftPersistence\(\)/);
 });
 
-test('Composer only creates a preparing queue item when attachments or @file references need async preparation', () => {
+test('Composer only creates a preparing queue item when enabled attachments or @file references need async preparation', () => {
   const handleSubmitBody = extractFunctionBody(composerSource, 'handleSubmit');
   const preparingIndex = handleSubmitBody.indexOf("queueStatus: 'preparing'");
   const readyIndex = handleSubmitBody.indexOf("queueStatus: 'ready'");
@@ -147,7 +147,11 @@ test('Composer only creates a preparing queue item when attachments or @file ref
   assert.ok(readyIndex > -1);
   assert.ok(resolveIndex > -1);
   assert.ok(uploadIndex > -1);
-  assert.match(handleSubmitBody, /const needsAsyncPreparation = submittedAttachments\.length > 0 \|\| extractAtFileReferences\(submittedDraft\)\.length > 0;/);
+  assert.match(
+    handleSubmitBody,
+    /const needsAsyncPreparation = allowAttachments && \(\s*submittedAttachments\.length > 0 \|\| extractAtFileReferences\(submittedDraft\)\.length > 0\s*\);/,
+  );
+  assert.match(handleSubmitBody, /if \(allowAttachments && workspace\.trim\(\)\) \{/);
   assert.match(handleSubmitBody, /const pendingQueueId = isRunning && needsAsyncPreparation \? crypto\.randomUUID\(\) : '';/);
   assert.ok(preparingIndex < resolveIndex);
   assert.ok(preparingIndex < uploadIndex);
@@ -199,4 +203,11 @@ test('Composer keeps typing local and persists drafts only on explicit boundarie
   assert.match(setDraftBody, /setLocalDraft\(\(current\) => \(current === nextDraft \? current : nextDraft\)\);/);
   assert.doesNotMatch(setDraftBody, /onDraftChange\(nextDraft\)/);
   assert.doesNotMatch(setDraftBody, /flushDraftPersistence\(\)/);
+});
+
+test('Composer exposes an accessible label for the running stop control', () => {
+  assert.match(
+    composerSource,
+    /className="send-button stop"[\s\S]*aria-label=\{isInterrupting \? '正在中断当前回合' : '中断当前回合'\}/,
+  );
 });

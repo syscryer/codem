@@ -608,6 +608,7 @@ dependencies = [
  "tauri-winrt-notification",
  "tokio",
  "tokio-stream",
+ "tower",
  "tower-http",
  "uuid",
  "window-vibrancy",

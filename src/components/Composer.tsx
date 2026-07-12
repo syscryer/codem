@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
-import { ArrowUp, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, Shield, Square, Unlock, X, Zap } from 'lucide-react';
-import { permissionMenuModes } from '../constants';
+import { ArrowUp, Bot, Braces, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, Shield, Square, SquareTerminal, Unlock, X, Zap } from 'lucide-react';
+import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
 import { buildComposerContextUsage, shouldRefreshNativeContextOnOpen } from '../lib/composer-context-usage';
@@ -22,7 +22,7 @@ import { hasClaudeContext1mOptions } from '../lib/claude-model-selection';
 import { applySlashCommandSelection, getNextSlashCommandIndex } from '../lib/slash-command-editor';
 import { getSlashDismissResetKey, resolveSlashCommandSubmission } from '../lib/slash-command-submit';
 import { modelContext1mMenuActionLabel, modelMenuDescriptionLabel, modelMenuPrimaryLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
-import type { AgentType, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
+import type { AgentProviderDescriptor, AgentType, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingComposerAttachment =
   | {
@@ -83,6 +83,13 @@ const claudeEffortOptions: Array<{
 
 type ComposerProps = {
   agent: AgentType;
+  providerId: string;
+  providers: AgentProviderDescriptor[];
+  providersLoading?: boolean;
+  providersError?: string;
+  canSelectProvider: boolean;
+  allowAttachments: boolean;
+  supportsQueue: boolean;
   workspace: string;
   permissionMode: PermissionMode;
   model: string;
@@ -97,6 +104,7 @@ type ComposerProps = {
   queuedPrompts: Array<{ id: string; displayText: string; createdAtMs: number; queueStatus?: 'preparing' | 'ready' }>;
   queuedPromptGuideAvailability: { available: boolean; reason?: string };
   onDraftChange: (value: string) => void;
+  onSelectProvider: (providerId: string) => boolean | void;
   onSubmitPrompt: (submission: {
     prompt: string;
     displayText: string;
@@ -122,6 +130,13 @@ type ComposerProps = {
 
 export function Composer({
   agent,
+  providerId,
+  providers,
+  providersLoading = false,
+  providersError = '',
+  canSelectProvider,
+  allowAttachments,
+  supportsQueue,
   workspace,
   permissionMode,
   model,
@@ -136,6 +151,7 @@ export function Composer({
   queuedPrompts,
   queuedPromptGuideAvailability,
   onDraftChange,
+  onSelectProvider,
   onSubmitPrompt,
   onRemoveQueuedPrompt,
   onRecallQueuedPrompt,
@@ -156,9 +172,11 @@ export function Composer({
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
+  const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
   const permissionMenuRef = useRef<HTMLDivElement | null>(null);
+  const providerMenuRef = useRef<HTMLDivElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const effortMenuRef = useRef<HTMLDivElement | null>(null);
   const addMenuRef = useRef<HTMLDivElement | null>(null);
@@ -181,7 +199,9 @@ export function Composer({
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
   const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
   const activeFileReferenceToken = getActiveFileReferenceToken(draft, selectionStart, selectionEnd);
-  const fileReferenceMenuOpen = Boolean(activeFileReferenceToken && workspace.trim() && !fileReferenceMenuDismissed);
+  const fileReferenceMenuOpen = Boolean(
+    allowAttachments && activeFileReferenceToken && workspace.trim() && !fileReferenceMenuDismissed,
+  );
 
   const {
     commands: slashCommands,
@@ -201,6 +221,7 @@ export function Composer({
   useOutsideDismiss({
     selectors: [
       { selector: '.composer-add-menu', onDismiss: () => setAddMenuOpen(false), anchorRefs: [addMenuRef] },
+      { selector: '.provider-menu', onDismiss: () => setProviderMenuOpen(false), anchorRefs: [providerMenuRef] },
       { selector: '.permission-menu', onDismiss: () => setPermissionMenuOpen(false), anchorRefs: [permissionMenuRef] },
       { selector: '.model-menu', onDismiss: () => setModelMenuOpen(false), anchorRefs: [modelMenuRef] },
       { selector: '.effort-menu', onDismiss: () => setEffortMenuOpen(false), anchorRefs: [effortMenuRef] },
@@ -213,9 +234,18 @@ export function Composer({
   });
   const hasDraft = Boolean(draft.trim());
   const hasPendingContent = hasDraft || attachments.length > 0;
-  const showStopButton = isRunning && !hasPendingContent;
+  const showStopButton = isRunning && (!hasPendingContent || !supportsQueue);
   const nativeContext = claudeContextState?.context;
   const nativeContextSummary = nativeContext?.summary;
+  const selectedProvider = useMemo(
+    () => providers.find((provider) => provider.id === providerId),
+    [providerId, providers],
+  );
+  const providerName = selectedProvider?.displayName ?? providerDisplayName(providerId);
+  const textOnlyInputMessage = `${providerName} 首期仅支持文本输入。`;
+  const providerSelectionDisabled =
+    !canSelectProvider || isRunning || (providersLoading && providers.length === 0);
+  const permissionSelectionDisabled = agent !== 'claude' && isRunning;
   const selectedModelOption = useMemo(
     () => models.find((option) => option.id === model),
     [model, models],
@@ -243,6 +273,29 @@ export function Composer({
   useEffect(() => {
     attachmentsRef.current = attachments;
   }, [attachments]);
+
+  useEffect(() => {
+    if (canSelectProvider) {
+      return;
+    }
+    setProviderMenuOpen(false);
+  }, [canSelectProvider]);
+
+  useEffect(() => {
+    if (!permissionSelectionDisabled) {
+      return;
+    }
+    setPermissionMenuOpen(false);
+  }, [permissionSelectionDisabled]);
+
+  useEffect(() => {
+    if (allowAttachments || attachments.length === 0) {
+      return;
+    }
+    disposeAttachmentPreviews(attachments);
+    setAttachments([]);
+    showToast(`${providerName} 首期仅支持文本，待发送附件已移除。`, 'info');
+  }, [allowAttachments, attachments, providerName, showToast]);
 
   // 桌面端：订阅原生文件拖放事件，把拖入的真实路径转成附件。用 ref 持有最新回调避免闭包过期。
   const appendDesktopPathsRef = useRef<(paths: string[]) => void>(() => {});
@@ -448,6 +501,16 @@ export function Composer({
       return;
     }
 
+    if (isRunning && !supportsQueue) {
+      showToast(`${providerName} 暂不支持运行中排队，请等待当前回复结束。`, 'info');
+      return;
+    }
+
+    if (!allowAttachments && submittedAttachments.length > 0) {
+      showToast(textOnlyInputMessage, 'info');
+      return;
+    }
+
     function restoreSubmittedContent() {
       if (draftScopeKeyRef.current === submitDraftScopeKey) {
         setDraft(submittedDraft);
@@ -463,7 +526,9 @@ export function Composer({
     setSelectionEnd(0);
 
     const trimmedDraft = submittedDraft.trim();
-    const needsAsyncPreparation = submittedAttachments.length > 0 || extractAtFileReferences(submittedDraft).length > 0;
+    const needsAsyncPreparation = allowAttachments && (
+      submittedAttachments.length > 0 || extractAtFileReferences(submittedDraft).length > 0
+    );
     const pendingQueueId = isRunning && needsAsyncPreparation ? crypto.randomUUID() : '';
     if (pendingQueueId) {
       const queued = await onSubmitPrompt({
@@ -486,7 +551,7 @@ export function Composer({
       });
     }
 
-    if (workspace.trim()) {
+    if (allowAttachments && workspace.trim()) {
       const fileReferenceBlocks = await resolveExistingFileReferenceBlocks(submittedDraft, workspace.trim());
       contentBlocks.push(...fileReferenceBlocks);
     }
@@ -606,6 +671,12 @@ export function Composer({
       return;
     }
 
+    if (!allowAttachments) {
+      event.preventDefault();
+      showToast(textOnlyInputMessage, 'info');
+      return;
+    }
+
     event.preventDefault();
     await appendAttachments(files);
   }
@@ -617,10 +688,19 @@ export function Composer({
       return;
     }
 
+    if (!allowAttachments) {
+      showToast(textOnlyInputMessage, 'info');
+      return;
+    }
+
     await appendAttachments(selectedFiles);
   }
 
   async function appendAttachments(files: File[]) {
+    if (!allowAttachments) {
+      showToast(textOnlyInputMessage, 'info');
+      return;
+    }
     const nextAttachments: PendingComposerAttachment[] = [];
 
     try {
@@ -672,6 +752,10 @@ export function Composer({
 
   // 点击"添加附件"：桌面端走原生文件框拿真实路径，Web 端退回 HTML input。
   async function handleAddAttachmentClick() {
+    if (!allowAttachments) {
+      showToast(textOnlyInputMessage, 'info');
+      return;
+    }
     if (isTauriRuntime()) {
       const picked = await pickDesktopFiles(workspace.trim() || undefined);
       if (picked === undefined) {
@@ -689,6 +773,10 @@ export function Composer({
 
   // 桌面端拖拽 / 文件框拿到的真实磁盘路径：图片读为 base64 多模态，其它作为路径引用附件。
   async function appendDesktopPaths(rawPaths: string[]) {
+    if (!allowAttachments) {
+      showToast(textOnlyInputMessage, 'info');
+      return;
+    }
     const validPaths = dedupeAndValidateDesktopPaths(rawPaths);
     if (validPaths.length === 0) {
       showToast('没有可添加的有效文件（已过滤敏感路径）。', 'info');
@@ -1066,7 +1154,15 @@ export function Composer({
           onPaste={(event) => void handlePaste(event)}
           onKeyDown={handleComposerInputKeyDown}
           onBlur={flushDraftPersistence}
-          placeholder={isRunning ? '等待当前回复完成' : '要求后续变更'}
+          placeholder={
+            isRunning && !supportsQueue
+              ? `${providerName} 正在运行`
+              : isRunning
+                ? '等待当前回复完成'
+                : agent !== 'claude'
+                  ? `让 ${providerName} 完成任务`
+                  : '要求后续变更'
+          }
         />
         <div className="composer-toolbar">
           <div className="composer-left-tools">
@@ -1075,6 +1171,7 @@ export function Composer({
               type="file"
               accept={supportedComposerUploadAccept}
               multiple
+              disabled={!allowAttachments}
               className="composer-file-input"
               onChange={(event) => void handleFileSelection(event)}
             />
@@ -1085,13 +1182,15 @@ export function Composer({
                     type="button"
                     className="composer-add-menu-item"
                     role="menuitem"
+                    disabled={!allowAttachments}
+                    title={allowAttachments ? '添加附件' : `${providerName} 首期仅支持文本`}
                     onClick={() => {
                       setAddMenuOpen(false);
                       void handleAddAttachmentClick();
                     }}
-                  >
+                    >
                     <Image size={15} />
-                    <span>添加附件</span>
+                    <span>{allowAttachments ? '添加附件' : '附件仅限 Claude'}</span>
                   </button>
                   <button
                     type="button"
@@ -1117,26 +1216,88 @@ export function Composer({
                 <Plus size={16} />
               </button>
             </div>
+            <div className="permission-picker provider-picker" ref={providerMenuRef}>
+              <PopoverPortal open={providerMenuOpen} anchorRef={providerMenuRef} placement="top-start">
+                <div className="model-menu model-menu-compact provider-menu" role="menu">
+                  <div className="model-menu-title">Agent Provider</div>
+                  {providers.length === 0 ? (
+                    <div className="provider-menu-empty">
+                      {providersLoading ? '正在读取 Provider...' : providersError || '暂无 Provider'}
+                    </div>
+                  ) : providers.map((provider) => {
+                    const selected = provider.id === providerId;
+                    const unavailableReason = providerUnavailableReason(provider);
+                    const disabled = !provider.selectable || provider.available !== true;
+                    return (
+                      <button
+                        key={provider.id}
+                        type="button"
+                        className="model-menu-item provider-menu-item"
+                        role="menuitemradio"
+                        aria-checked={selected}
+                        disabled={disabled}
+                        title={unavailableReason || provider.displayName}
+                        onClick={() => {
+                          const accepted = onSelectProvider(provider.id);
+                          if (accepted !== false) {
+                            setProviderMenuOpen(false);
+                          }
+                        }}
+                      >
+                        <ProviderIcon providerId={provider.id} size={15} />
+                        <span className="model-menu-item-copy">
+                          <span>{provider.displayName}</span>
+                          <small>{unavailableReason || provider.driverId}</small>
+                        </span>
+                        {selected ? <Check className="model-check" size={15} /> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </PopoverPortal>
+
+              <button
+                type="button"
+                className="permission-trigger provider-trigger"
+                aria-expanded={providerMenuOpen}
+                disabled={providerSelectionDisabled}
+                title={
+                  canSelectProvider
+                    ? '选择 Agent Provider'
+                    : 'Provider 在聊天创建后锁定；请新建聊天后选择'
+                }
+                onClick={() => setProviderMenuOpen((value) => !value)}
+              >
+                <ProviderIcon providerId={providerId} size={14} />
+                <span>{selectedProvider?.displayName ?? providerDisplayName(providerId)}</span>
+                {canSelectProvider ? <span className="permission-trigger-chevron" aria-hidden="true" /> : null}
+              </button>
+            </div>
             <div className="permission-picker" ref={permissionMenuRef}>
               <PopoverPortal open={permissionMenuOpen} anchorRef={permissionMenuRef} placement="top-end">
-                <div className="permission-menu" role="menu">
-                  {permissionMenuModes.map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      className="permission-menu-item"
-                      role="menuitemradio"
-                      aria-checked={permissionMode === mode}
-                      onClick={() => {
-                        onSelectPermissionMode(mode);
-                        setPermissionMenuOpen(false);
-                      }}
-                    >
-                      <PermissionModeIcon mode={mode} size={15} />
-                      <span>{permissionLabel(mode)}</span>
-                      {permissionMode === mode ? <Check className="permission-check" size={14} /> : null}
-                    </button>
-                  ))}
+                <div className="permission-menu" role="menu" aria-label="权限模式">
+                  {permissionMenuModes.map((mode) => {
+                    const tooltip = permissionModeTooltip(agent, mode, providerName);
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        className="permission-menu-item"
+                        role="menuitemradio"
+                        aria-checked={permissionMode === mode}
+                        aria-label={tooltip}
+                        title={tooltip}
+                        onClick={() => {
+                          onSelectPermissionMode(mode);
+                          setPermissionMenuOpen(false);
+                        }}
+                      >
+                        <PermissionModeIcon mode={mode} size={15} />
+                        <span>{permissionLabel(mode)}</span>
+                        {permissionMode === mode ? <Check className="permission-check" size={14} /> : null}
+                      </button>
+                    );
+                  })}
                 </div>
               </PopoverPortal>
 
@@ -1144,6 +1305,9 @@ export function Composer({
                 type="button"
                 className="permission-trigger"
                 aria-expanded={permissionMenuOpen}
+                aria-label={`权限模式：${permissionLabel(permissionMode)}`}
+                disabled={permissionSelectionDisabled}
+                title={permissionSelectionDisabled ? `${providerName} 运行中，权限模式已锁定` : undefined}
                 onClick={() => setPermissionMenuOpen((value) => !value)}
               >
                 <PermissionModeIcon mode={permissionMode} size={15} />
@@ -1154,7 +1318,9 @@ export function Composer({
           </div>
 
           <div className="composer-right-tools">
-            <div className="model-picker" ref={modelMenuRef}>
+            {agent === 'claude' ? (
+              <>
+                <div className="model-picker" ref={modelMenuRef}>
               <PopoverPortal open={modelMenuOpen} anchorRef={modelMenuRef} placement="top-end">
                 <div className={`model-menu${modelMenuHasContext1mOptions ? '' : ' model-menu-compact'}`} role="menu">
                   <div className="model-menu-title">模型</div>
@@ -1234,8 +1400,8 @@ export function Composer({
                 <span>{modelTriggerLabel(model, models)}</span>
                 <span className="model-trigger-chevron" aria-hidden="true" />
               </button>
-            </div>
-            <div className="effort-picker" ref={effortMenuRef}>
+                </div>
+                <div className="effort-picker" ref={effortMenuRef}>
               <PopoverPortal open={effortMenuOpen} anchorRef={effortMenuRef} placement="top-end">
                 <div className="effort-menu" role="menu">
                   <div className="model-menu-title">思考级别</div>
@@ -1274,21 +1440,26 @@ export function Composer({
                 <span>{effortLabel(effort)}</span>
                 <span className="model-trigger-chevron" aria-hidden="true" />
               </button>
-            </div>
-            <ComposerContextIndicator
-              usage={contextUsage}
-              nativeContext={claudeContextState?.context}
-              nativeContextStatus={claudeContextState?.status ?? 'idle'}
-              onRefreshClaudeContext={onRefreshClaudeContext}
-              shouldRefreshClaudeContextOnOpen={shouldRefreshClaudeContextOnOpen}
-            />
-            <button type="button" className="plain-icon"><Mic size={15} /></button>
+                </div>
+                <ComposerContextIndicator
+                  usage={contextUsage}
+                  nativeContext={claudeContextState?.context}
+                  nativeContextStatus={claudeContextState?.status ?? 'idle'}
+                  onRefreshClaudeContext={onRefreshClaudeContext}
+                  shouldRefreshClaudeContextOnOpen={shouldRefreshClaudeContextOnOpen}
+                />
+              </>
+            ) : null}
+            <button type="button" className="plain-icon" title="语音输入暂未开放" aria-label="语音输入暂未开放">
+              <Mic size={15} />
+            </button>
             {showStopButton ? (
               <button
                 type="button"
                 className="send-button stop"
                 onClick={() => void onStopRun()}
                 disabled={isInterrupting}
+                aria-label={isInterrupting ? '正在中断当前回合' : '中断当前回合'}
                 title={isInterrupting ? '正在中断当前回合' : '中断当前回合'}
               >
                 {isInterrupting ? <Loader2 size={14} className="spin-icon" /> : <Square size={13} fill="currentColor" />}
@@ -1297,8 +1468,8 @@ export function Composer({
               <button
                 type="submit"
                 className="send-button"
-                disabled={!hasPendingContent}
-                title={isRunning ? '发送到队列' : '发送'}
+                disabled={!hasPendingContent || (isRunning && !supportsQueue)}
+                title={isRunning && supportsQueue ? '发送到队列' : '发送'}
               >
                 <ArrowUp size={18} />
               </button>
@@ -1649,6 +1820,51 @@ function ComposerFileReferenceIcon({ path, isDirectory }: { path: string; isDire
       size={16}
     />
   );
+}
+
+function providerDisplayName(providerId: string) {
+  if (providerId === CLAUDE_CODE_PROVIDER_ID) {
+    return 'Claude Code';
+  }
+  if (providerId === GROK_BUILD_PROVIDER_ID) {
+    return 'Grok Build';
+  }
+  if (providerId === OPENAI_CODEX_PROVIDER_ID) {
+    return 'OpenAI Codex';
+  }
+  return providerId;
+}
+
+function providerUnavailableReason(provider: AgentProviderDescriptor) {
+  if (provider.lifecycle === 'planned') {
+    return provider.id === GROK_BUILD_PROVIDER_ID || provider.id === OPENAI_CODEX_PROVIDER_ID
+      ? '需要开启实验运行'
+      : '规划中';
+  }
+  if (provider.available === false) {
+    return '本机 CLI 不可用';
+  }
+  if (!provider.selectable) {
+    return '当前不可选择';
+  }
+  return '';
+}
+
+function permissionModeTooltip(agent: AgentType, mode: PermissionMode, providerName: string) {
+  if (agent !== 'claude' && mode === 'bypassPermissions') {
+    return `完全访问（YOLO）：跳过 ${providerName} 工具权限确认，仅用于可信目录`;
+  }
+  return permissionLabel(mode);
+}
+
+function ProviderIcon({ providerId, size }: { providerId: string; size: number }) {
+  if (providerId === GROK_BUILD_PROVIDER_ID) {
+    return <SquareTerminal size={size} aria-hidden="true" />;
+  }
+  if (providerId === OPENAI_CODEX_PROVIDER_ID) {
+    return <Braces size={size} aria-hidden="true" />;
+  }
+  return <Bot size={size} aria-hidden="true" />;
 }
 
 function PermissionModeIcon({ mode, size }: { mode: PermissionMode; size: number }) {

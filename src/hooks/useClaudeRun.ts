@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { DEFAULT_MODEL_VALUE, permissionMenuModes } from '../constants';
+import { DEFAULT_MODEL_VALUE } from '../constants';
 import {
   resolveInitialClaudeModelId,
   resolveRunModelSelection,
@@ -26,7 +26,7 @@ import {
   formatMetrics,
   getElapsedDuration,
   hasTurnVisibleOutput,
-  isPermissionMode,
+  isVisiblePermissionMode,
   mergeUsageSnapshot,
   sanitizeVisibleAssistantText,
   settleRunningToolSteps,
@@ -72,7 +72,7 @@ type ThreadMetadataPatch = {
   sessionId?: string | null;
   workingDirectory?: string;
   model?: string | null;
-  permissionMode?: string;
+  permissionMode?: PermissionMode;
 };
 
 type ActiveRunInfo = {
@@ -2670,10 +2670,6 @@ function buildApprovalDecisionToolResultContent(request: ApprovalRequest, decisi
 
 function isPlanApprovalRequest(request: ApprovalRequest) {
   return request.kind === 'plan-exit' || request.title === '计划待确认';
-}
-
-function isVisiblePermissionMode(value: unknown): value is (typeof permissionMenuModes)[number] {
-  return isPermissionMode(value) && permissionMenuModes.includes(value as (typeof permissionMenuModes)[number]);
 }
 
 function normalizeDisplayText(displayText: string | undefined, fallback: string) {

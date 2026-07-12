@@ -12,6 +12,7 @@ import type {
   GitBranchSummary,
   InputDialogState,
   PanelState,
+  PermissionMode,
   ProjectGitSummary,
   ProjectSummary,
   ThreadDetail,
@@ -26,7 +27,7 @@ type ThreadMetadataPatch = {
   sessionId?: string | null;
   workingDirectory?: string;
   model?: string | null;
-  permissionMode?: string;
+  permissionMode?: PermissionMode;
 };
 
 type CreateProjectOptions = {
@@ -35,6 +36,8 @@ type CreateProjectOptions = {
 
 type CreateThreadOptions = {
   showToast?: boolean;
+  providerId?: string;
+  permissionMode?: PermissionMode;
 };
 
 const MAX_DEBUG_EVENTS = 220;
@@ -280,7 +283,9 @@ export function useWorkspaceState() {
     setConfirmDialog({
       kind: 'remove-thread',
       title: '删除聊天',
-      description: `删除聊天“${thread.title}”后，会删除 CodeM 索引、消息记录，以及关联的 Claude Code 原始 session 文件。`,
+      description: thread.provider === 'claude-code'
+        ? `删除聊天“${thread.title}”后，会删除 CodeM 索引、消息记录，以及关联的 Claude Code 原始 session 文件。`
+        : `删除聊天“${thread.title}”后，会删除 CodeM 索引和消息记录，不会删除 Provider 在外部保存的数据。`,
       confirmLabel: '删除聊天',
       threadId: thread.id,
     });
@@ -559,13 +564,18 @@ export function useWorkspaceState() {
     });
   }
 
-  async function createThread(projectId: string, title?: string, _options?: CreateThreadOptions) {
+  async function createThread(projectId: string, title?: string, options?: CreateThreadOptions) {
+    const requestPayload = {
+      ...(title?.trim() ? { title: title.trim() } : {}),
+      ...(options?.providerId ? { providerId: options.providerId } : {}),
+      ...(options?.permissionMode ? { permissionMode: options.permissionMode } : {}),
+    };
     const response = await fetch(`/api/projects/${projectId}/threads`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(title?.trim() ? { title: title.trim() } : {}),
+      body: JSON.stringify(requestPayload),
     });
 
     if (!response.ok) {

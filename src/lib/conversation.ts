@@ -1,4 +1,4 @@
-import { permissionModes } from '../constants';
+import { permissionMenuModes, permissionModes } from '../constants';
 import type {
   AssistantItem,
   ClaudeEvent,
@@ -29,6 +29,10 @@ export function createThreadDetail(summary: ThreadSummary): ThreadDetail {
 
 export function isPermissionMode(value: unknown): value is (typeof permissionModes)[number] {
   return typeof value === 'string' && permissionModes.includes(value as (typeof permissionModes)[number]);
+}
+
+export function isVisiblePermissionMode(value: unknown): value is (typeof permissionMenuModes)[number] {
+  return isPermissionMode(value) && permissionMenuModes.includes(value as (typeof permissionMenuModes)[number]);
 }
 
 export function closeDanglingTurns(turns: ConversationTurn[]) {

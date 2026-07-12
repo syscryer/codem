@@ -1,7 +1,14 @@
+use crate::acp::probe_acp_agent;
+use crate::agent_run::experimental_agent_run_enabled;
+use crate::agent_runtime::{
+    agent_provider_registry, normalize_agent_permission_mode, AgentProviderRegistry,
+    CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+};
+use crate::codex_app_server::probe_codex_app_server;
 use axum::{
     body::Body,
     extract::{Path as AxumPath, Query, State},
-    http::{HeaderValue, Method, StatusCode},
+    http::{header::HeaderName, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post, put},
     Json, Router,
@@ -145,6 +152,7 @@ struct ThreadRow {
 #[derive(Debug)]
 struct ThreadDetailRow {
     project_id: String,
+    provider: String,
     session_id: Option<String>,
     transcript_path: Option<String>,
     working_directory: String,
@@ -220,8 +228,11 @@ struct RenameRequest {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ThreadCreateRequest {
     title: Option<String>,
+    provider_id: Option<String>,
+    permission_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -451,9 +462,13 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
 }
 
 fn create_router(state: AppState) -> Router {
+    let agent_run_router = crate::agent_run::router(resolve_grok_command, resolve_codex_command);
     Router::new()
         .route("/api/runtime/identity", get(runtime_identity))
         .route("/api/health", get(health))
+        .route("/api/agents/providers", get(agent_providers))
+        .route("/api/agents/grok/probe", post(grok_acp_probe))
+        .route("/api/agents/codex/probe", post(codex_app_server_probe))
         .route("/api/claude/models", get(claude_models))
         .route("/api/settings", get(get_settings))
         .route("/api/settings/appearance", put(update_appearance_settings))
@@ -673,6 +688,8 @@ fn create_router(state: AppState) -> Router {
             "/api/threads/{thread_id}/history",
             get(get_thread_history).put(save_thread_history),
         )
+        .with_state(state)
+        .merge(agent_run_router)
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::predicate(|origin, _| {
@@ -685,9 +702,9 @@ fn create_router(state: AppState) -> Router {
                     Method::PATCH,
                     Method::DELETE,
                 ])
+                .expose_headers([HeaderName::from_static("x-codem-agent-run-id")])
                 .allow_headers(Any),
         )
-        .with_state(state)
 }
 
 fn is_allowed_local_origin(origin: &HeaderValue) -> bool {
@@ -738,6 +755,71 @@ async fn health() -> Json<Value> {
             "error": "未找到 claude 命令",
         }),
     })
+}
+
+async fn agent_providers() -> Json<AgentProviderRegistry> {
+    Json(agent_provider_registry(
+        resolve_claude_command().is_some(),
+        experimental_agent_run_enabled(),
+        resolve_grok_command().is_some(),
+        resolve_codex_command().is_some(),
+    ))
+}
+
+async fn grok_acp_probe() -> Json<Value> {
+    let Some(command) = resolve_grok_command() else {
+        return Json(json!({
+            "installed": false,
+            "initialized": false,
+            "error": "未找到 grok 命令",
+        }));
+    };
+    let version = read_grok_cli_version(&command);
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    match probe_acp_agent(&command, &cwd, env!("CARGO_PKG_VERSION")).await {
+        Ok(probe) => Json(json!({
+            "installed": true,
+            "initialized": true,
+            "command": command,
+            "version": version,
+            "probe": probe,
+        })),
+        Err(error) => Json(json!({
+            "installed": true,
+            "initialized": false,
+            "command": command,
+            "version": version,
+            "error": error.public_message(),
+        })),
+    }
+}
+
+async fn codex_app_server_probe() -> Json<Value> {
+    let Some(command) = resolve_codex_command() else {
+        return Json(json!({
+            "installed": false,
+            "initialized": false,
+            "error": "未找到可由 CodeM 启动的 Codex CLI",
+        }));
+    };
+    let version = read_cli_version(&command);
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    match probe_codex_app_server(&command, &cwd, env!("CARGO_PKG_VERSION")).await {
+        Ok(probe) => Json(json!({
+            "installed": true,
+            "initialized": true,
+            "command": command,
+            "version": version,
+            "probe": probe,
+        })),
+        Err(error) => Json(json!({
+            "installed": true,
+            "initialized": false,
+            "command": command,
+            "version": version,
+            "error": error.public_message(),
+        })),
+    }
 }
 
 async fn claude_models() -> Json<Value> {
@@ -2830,7 +2912,21 @@ async fn create_thread(
 ) -> ApiResult<Json<Value>> {
     let _guard = lock_workspace_write(&state)?;
     let connection = open_initialized_workspace_database(&state)?;
-    let thread_id = create_thread_row(&connection, &project_id, payload.title.as_deref())?;
+    let provider = resolve_requested_thread_provider(
+        payload.provider_id.as_deref(),
+        experimental_agent_run_enabled(),
+        resolve_grok_command().is_some(),
+        resolve_codex_command().is_some(),
+    )?;
+    let permission_mode =
+        resolve_thread_create_permission_mode(provider, payload.permission_mode.as_deref())?;
+    let thread_id = create_thread_row(
+        &connection,
+        &project_id,
+        payload.title.as_deref(),
+        provider,
+        permission_mode.as_deref(),
+    )?;
     let thread = read_thread_summary(&connection, &thread_id)?;
     Ok(Json(json!({
         "ok": true,
@@ -4066,6 +4162,148 @@ fn resolve_claude_command() -> Option<String> {
         .and_then(|stdout| select_claude_command_candidate(&stdout, cfg!(target_os = "windows")))
 }
 
+fn resolve_grok_command() -> Option<String> {
+    if let Some(command) = env::var("GROK_CLI_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| {
+            background_command(value)
+                .arg("--version")
+                .output()
+                .is_ok_and(|output| output.status.success())
+        })
+    {
+        return Some(command);
+    }
+
+    #[cfg(target_os = "windows")]
+    let lookup = background_command("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command grok -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
+        ])
+        .output()
+        .ok();
+
+    #[cfg(not(target_os = "windows"))]
+    let lookup = background_command("which").arg("grok").output().ok();
+
+    lookup
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| select_claude_command_candidate(&stdout, cfg!(target_os = "windows")))
+}
+
+fn resolve_codex_command() -> Option<String> {
+    if let Some(command) = env::var("CODEX_CLI_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| command_reports_version(value))
+    {
+        return Some(command);
+    }
+
+    #[cfg(target_os = "windows")]
+    let lookup = background_command("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command codex -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
+        ])
+        .output()
+        .ok();
+
+    #[cfg(not(target_os = "windows"))]
+    let lookup = background_command("which").arg("codex").output().ok();
+
+    lookup
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| {
+            stdout
+                .lines()
+                .map(str::trim)
+                .filter(|candidate| !candidate.is_empty())
+                .filter(|candidate| {
+                    !cfg!(target_os = "windows") || is_windows_spawnable_command(candidate)
+                })
+                .find(|candidate| command_reports_version(candidate))
+                .map(ToString::to_string)
+        })
+}
+
+fn command_reports_version(command: &str) -> bool {
+    let mut child = match background_command(command)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+fn read_cli_version(command: &str) -> Option<String> {
+    let output = background_command(command).arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    value
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(ToString::to_string)
+}
+
+fn read_grok_cli_version(command: &str) -> Option<String> {
+    let output = background_command(command).arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let output_text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    parse_grok_cli_version(&output_text)
+}
+
+fn parse_grok_cli_version(value: &str) -> Option<String> {
+    value
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("grok "))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .map(ToString::to_string)
+}
+
 fn select_claude_command_candidate(stdout: &str, windows: bool) -> Option<String> {
     let candidates = stdout
         .lines()
@@ -4525,8 +4763,8 @@ fn upsert_imported_thread(
 ) -> ApiResult<String> {
     let existing_thread_id = connection
         .query_row(
-            "SELECT id FROM threads WHERE session_id = ? ORDER BY imported ASC LIMIT 1",
-            params![metadata.session_id],
+            "SELECT id FROM threads WHERE provider = ? AND session_id = ? ORDER BY imported ASC LIMIT 1",
+            params![CLAUDE_CODE_PROVIDER_ID, metadata.session_id],
             |row| row.get::<_, String>(0),
         )
         .optional()
@@ -4650,6 +4888,10 @@ fn filter_visible_thread_rows(
 ) -> ApiResult<Vec<ThreadRow>> {
     let mut visible = Vec::new();
     for row in thread_rows {
+        if row.provider != CLAUDE_CODE_PROVIDER_ID {
+            visible.push(row);
+            continue;
+        }
         if row.session_id.is_none() {
             if !row.imported {
                 visible.push(row);
@@ -4857,10 +5099,56 @@ fn ensure_thread_exists(connection: &Connection, thread_id: &str) -> ApiResult<(
         .ok_or_else(|| ApiError::not_found("聊天不存在"))
 }
 
+fn resolve_requested_thread_provider(
+    provider_id: Option<&str>,
+    experimental_agent_run_enabled: bool,
+    grok_available: bool,
+    codex_available: bool,
+) -> ApiResult<&'static str> {
+    let provider_id = provider_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(CLAUDE_CODE_PROVIDER_ID);
+    match provider_id {
+        CLAUDE_CODE_PROVIDER_ID => Ok(CLAUDE_CODE_PROVIDER_ID),
+        GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID if !experimental_agent_run_enabled => {
+            Err(ApiError::bad_request("实验 Agent 运行未开启"))
+        }
+        GROK_BUILD_PROVIDER_ID if !grok_available => Err(ApiError::bad_request("未找到 grok 命令")),
+        GROK_BUILD_PROVIDER_ID => Ok(GROK_BUILD_PROVIDER_ID),
+        OPENAI_CODEX_PROVIDER_ID if !codex_available => {
+            Err(ApiError::bad_request("未找到可由 CodeM 启动的 Codex CLI"))
+        }
+        OPENAI_CODEX_PROVIDER_ID => Ok(OPENAI_CODEX_PROVIDER_ID),
+        _ => Err(ApiError::bad_request("当前 Provider 不可用于新建聊天")),
+    }
+}
+
+fn resolve_thread_create_permission_mode(
+    provider: &str,
+    permission_mode: Option<&str>,
+) -> ApiResult<Option<String>> {
+    if matches!(provider, GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID) {
+        return normalize_agent_permission_mode(permission_mode)
+            .map(|mode| Some(mode.to_string()))
+            .ok_or_else(|| {
+                ApiError::bad_request(
+                    "Agent permissionMode 仅支持 default、auto 或 bypassPermissions",
+                )
+            });
+    }
+    Ok(permission_mode
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string))
+}
+
 fn create_thread_row(
     connection: &Connection,
     project_id: &str,
     title: Option<&str>,
+    provider: &str,
+    permission_mode: Option<&str>,
 ) -> ApiResult<String> {
     let project_path: String = connection
         .query_row(
@@ -4884,9 +5172,18 @@ fn create_thread_row(
               id, project_id, provider, title, custom_title, session_id, transcript_path,
               working_directory, model, permission_mode, imported, created_at, updated_at
             )
-            VALUES (?, ?, 'claude-code', ?, 0, NULL, NULL, ?, NULL, NULL, 0, ?, ?)
+            VALUES (?, ?, ?, ?, 0, NULL, NULL, ?, NULL, ?, 0, ?, ?)
             "#,
-            params![id, project_id, thread_title, project_path, now, now],
+            params![
+                id,
+                project_id,
+                provider,
+                thread_title,
+                project_path,
+                permission_mode,
+                now,
+                now
+            ],
         )
         .map_err(|error| ApiError::internal(format!("创建聊天失败: {error}")))?;
     connection
@@ -4938,11 +5235,11 @@ fn remove_project_row(connection: &mut Connection, project_id: &str) -> ApiResul
     let imported_sessions = {
         let mut statement = connection
             .prepare(
-                "SELECT session_id, transcript_path FROM threads WHERE project_id = ? AND session_id IS NOT NULL",
+                "SELECT session_id, transcript_path FROM threads WHERE project_id = ? AND provider = ? AND session_id IS NOT NULL",
             )
             .map_err(|error| ApiError::internal(format!("读取项目会话失败: {error}")))?;
         let rows = statement
-            .query_map(params![project_id], |row| {
+            .query_map(params![project_id, CLAUDE_CODE_PROVIDER_ID], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
             })
             .map_err(|error| ApiError::internal(format!("读取项目会话失败: {error}")))?;
@@ -4999,15 +5296,16 @@ fn read_project_thread_ids(connection: &Connection, project_id: &str) -> ApiResu
 }
 
 fn remove_thread_row(connection: &mut Connection, thread_id: &str) -> ApiResult<()> {
-    let (project_id, session_id, transcript_path) = connection
+    let (project_id, provider, session_id, transcript_path) = connection
         .query_row(
-            "SELECT project_id, session_id, transcript_path FROM threads WHERE id = ?",
+            "SELECT project_id, provider, session_id, transcript_path FROM threads WHERE id = ?",
             params![thread_id],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             },
         )
@@ -5018,8 +5316,10 @@ fn remove_thread_row(connection: &mut Connection, thread_id: &str) -> ApiResult<
     let transaction = connection
         .transaction()
         .map_err(|error| ApiError::internal(format!("删除聊天失败: {error}")))?;
-    if let Some(session_id) = session_id.as_deref() {
-        ignore_imported_session(&transaction, session_id, transcript_path.as_deref(), &now)?;
+    if provider == CLAUDE_CODE_PROVIDER_ID {
+        if let Some(session_id) = session_id.as_deref() {
+            ignore_imported_session(&transaction, session_id, transcript_path.as_deref(), &now)?;
+        }
     }
     transaction
         .execute(
@@ -5057,7 +5357,7 @@ fn read_thread_detail(connection: &Connection, thread_id: &str) -> ApiResult<Thr
     connection
         .query_row(
             r#"
-            SELECT project_id, session_id, transcript_path, working_directory, model, permission_mode
+            SELECT project_id, provider, session_id, transcript_path, working_directory, model, permission_mode
             FROM threads
             WHERE id = ?
             "#,
@@ -5065,11 +5365,12 @@ fn read_thread_detail(connection: &Connection, thread_id: &str) -> ApiResult<Thr
             |row| {
                 Ok(ThreadDetailRow {
                     project_id: row.get(0)?,
-                    session_id: row.get(1)?,
-                    transcript_path: row.get(2)?,
-                    working_directory: row.get(3)?,
-                    model: row.get(4)?,
-                    permission_mode: row.get(5)?,
+                    provider: row.get(1)?,
+                    session_id: row.get(2)?,
+                    transcript_path: row.get(3)?,
+                    working_directory: row.get(4)?,
+                    model: row.get(5)?,
+                    permission_mode: row.get(6)?,
                 })
             },
         )
@@ -5115,7 +5416,9 @@ fn update_thread_metadata_from_payload(
     } else {
         thread.working_directory
     };
-    let transcript_path = if let Some(session_id) = session_id.as_deref() {
+    let transcript_path = if thread.provider != CLAUDE_CODE_PROVIDER_ID {
+        None
+    } else if let Some(session_id) = session_id.as_deref() {
         Some(resolve_claude_transcript_path(
             &working_directory,
             session_id,
@@ -5136,13 +5439,28 @@ fn update_thread_metadata_from_payload(
         thread.model.clone()
     };
     let permission_mode = if has_permission_mode {
-        payload
+        let requested_permission_mode = payload
             .get("permissionMode")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
-            .or(thread.permission_mode.clone())
+            .map(ToString::to_string);
+        if matches!(
+            thread.provider.as_str(),
+            GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID
+        ) {
+            Some(
+                normalize_agent_permission_mode(requested_permission_mode.as_deref())
+                    .ok_or_else(|| {
+                        ApiError::bad_request(
+                            "Agent permissionMode 仅支持 default、auto 或 bypassPermissions",
+                        )
+                    })?
+                    .to_string(),
+            )
+        } else {
+            requested_permission_mode.or(thread.permission_mode.clone())
+        }
     } else {
         thread.permission_mode.clone()
     };
@@ -5150,7 +5468,10 @@ fn update_thread_metadata_from_payload(
     let transaction = connection
         .transaction()
         .map_err(|error| ApiError::internal(format!("更新聊天元数据失败: {error}")))?;
-    if previous_session_id.is_some() && previous_session_id != session_id {
+    if thread.provider == CLAUDE_CODE_PROVIDER_ID
+        && previous_session_id.is_some()
+        && previous_session_id != session_id
+    {
         let previous_session_id = previous_session_id.as_deref().unwrap_or_default();
         ignore_imported_session(
             &transaction,
@@ -5224,12 +5545,13 @@ fn delete_duplicate_threads_by_session_id(
 ) -> ApiResult<()> {
     let duplicate_ids = {
         let mut statement = transaction
-            .prepare("SELECT id FROM threads WHERE session_id = ? AND id <> ?")
+            .prepare("SELECT id FROM threads WHERE provider = ? AND session_id = ? AND id <> ?")
             .map_err(|error| ApiError::internal(format!("读取重复会话失败: {error}")))?;
         let rows = statement
-            .query_map(params![session_id, exclude_thread_id], |row| {
-                row.get::<_, String>(0)
-            })
+            .query_map(
+                params![CLAUDE_CODE_PROVIDER_ID, session_id, exclude_thread_id],
+                |row| row.get::<_, String>(0),
+            )
             .map_err(|error| ApiError::internal(format!("读取重复会话失败: {error}")))?;
         collect_rows(rows, "读取重复会话失败")?
     };
@@ -5283,14 +5605,18 @@ fn sanitize_project_path(project_path: &str) -> String {
 fn read_thread_history_payload(connection: &mut Connection, thread_id: &str) -> ApiResult<Value> {
     let thread = read_thread_detail(connection, thread_id)?;
     let stored_turns = read_stored_thread_history(connection, thread_id)?;
-    let claude_context = thread
-        .transcript_path
-        .as_deref()
-        .and_then(read_latest_claude_context_snapshot);
+    let claude_context = (thread.provider == CLAUDE_CODE_PROVIDER_ID)
+        .then(|| {
+            thread
+                .transcript_path
+                .as_deref()
+                .and_then(read_latest_claude_context_snapshot)
+        })
+        .flatten();
     let mut turns = stored_turns.clone();
-    if let Some(transcript_path) = thread
-        .transcript_path
-        .as_deref()
+    if let Some(transcript_path) = (thread.provider == CLAUDE_CODE_PROVIDER_ID)
+        .then_some(thread.transcript_path.as_deref())
+        .flatten()
         .filter(|path| Path::new(path).exists())
     {
         let should_parse = if turns.is_empty() {
@@ -5311,9 +5637,14 @@ fn read_thread_history_payload(connection: &mut Connection, thread_id: &str) -> 
             }
         }
     }
+    let visible_turns = if thread.provider == CLAUDE_CODE_PROVIDER_ID {
+        remove_claude_local_command_pollution(turns)
+    } else {
+        turns
+    };
     let mut payload = json!({
         "threadId": thread_id,
-        "turns": remove_claude_local_command_pollution(turns),
+        "turns": visible_turns,
     });
     if let Some(context) = claude_context {
         if let Some(object) = payload.as_object_mut() {
@@ -14055,13 +14386,28 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_project_file_entries, import_claude_sessions_from_root,
-        initialize_workspace_database, remove_thread_row, select_claude_command_candidate,
-        validate_desktop_file_path,
+        compare_project_file_entries, create_router, create_thread_row,
+        import_claude_sessions_from_root, initialize_workspace_database, parse_grok_cli_version,
+        remove_thread_row, resolve_requested_thread_provider,
+        resolve_thread_create_permission_mode, select_claude_command_candidate,
+        update_thread_metadata_from_payload, validate_desktop_file_path, AppState,
+    };
+    use crate::agent_runtime::{
+        CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+    };
+    use axum::{
+        body::Body,
+        http::{header, Method, Request, StatusCode},
     };
     use rusqlite::{params, Connection};
     use serde_json::{json, Value};
-    use std::{fs, path::PathBuf};
+    use std::{
+        collections::HashMap,
+        fs,
+        path::PathBuf,
+        sync::{Arc, Mutex},
+    };
+    use tower::ServiceExt;
 
     struct TestDirectory(PathBuf);
 
@@ -14078,6 +14424,201 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[tokio::test]
+    async fn agent_run_preflight_includes_desktop_cors_headers() {
+        let test_directory = TestDirectory::new("agent-run-cors");
+        let app = create_router(AppState {
+            app_data_dir: Arc::new(test_directory.0.clone()),
+            settings_write_lock: Arc::new(Mutex::new(())),
+            workspace_write_lock: Arc::new(Mutex::new(())),
+            workspace_database_init_lock: Arc::new(Mutex::new(())),
+            runs: Arc::new(Mutex::new(HashMap::new())),
+            runtimes: Arc::new(Mutex::new(HashMap::new())),
+            context_requests: Arc::new(Mutex::new(HashMap::new())),
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/api/agents/run")
+                    .header(header::ORIGIN, "http://127.0.0.1:5173")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "content-type")
+                    .body(Body::empty())
+                    .expect("build preflight request"),
+            )
+            .await
+            .expect("run preflight request");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("http://127.0.0.1:5173")
+        );
+        assert!(response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.split(',').any(|method| method.trim() == "POST")));
+    }
+
+    #[test]
+    fn thread_provider_defaults_to_claude_and_guards_experimental_grok() {
+        assert_eq!(
+            resolve_requested_thread_provider(None, false, false, false).expect("default provider"),
+            CLAUDE_CODE_PROVIDER_ID
+        );
+        assert!(resolve_requested_thread_provider(
+            Some(GROK_BUILD_PROVIDER_ID),
+            false,
+            true,
+            false
+        )
+        .is_err());
+        assert!(resolve_requested_thread_provider(
+            Some(GROK_BUILD_PROVIDER_ID),
+            true,
+            false,
+            false
+        )
+        .is_err());
+        assert_eq!(
+            resolve_requested_thread_provider(Some(GROK_BUILD_PROVIDER_ID), true, true, false)
+                .expect("enabled Grok provider"),
+            GROK_BUILD_PROVIDER_ID
+        );
+        assert!(resolve_requested_thread_provider(
+            Some(OPENAI_CODEX_PROVIDER_ID),
+            true,
+            true,
+            false,
+        )
+        .is_err());
+        assert_eq!(
+            resolve_requested_thread_provider(Some(OPENAI_CODEX_PROVIDER_ID), true, false, true,)
+                .expect("enabled Codex provider"),
+            OPENAI_CODEX_PROVIDER_ID
+        );
+        assert_eq!(
+            resolve_thread_create_permission_mode(GROK_BUILD_PROVIDER_ID, None)
+                .expect("default Grok permission")
+                .as_deref(),
+            Some("default")
+        );
+        assert!(
+            resolve_thread_create_permission_mode(GROK_BUILD_PROVIDER_ID, Some("dontAsk")).is_err()
+        );
+        assert_eq!(
+            resolve_thread_create_permission_mode(OPENAI_CODEX_PROVIDER_ID, Some("auto"))
+                .expect("Codex permission")
+                .as_deref(),
+            Some("auto")
+        );
+    }
+
+    #[test]
+    fn grok_thread_persists_provider_without_creating_claude_transcript_path() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        connection
+            .execute(
+                "INSERT INTO projects (id, path, name, custom_name, created_at, updated_at) VALUES ('project', 'D:/workspace', 'workspace', 0, '2026-07-12T00:00:00.000Z', '2026-07-12T00:00:00.000Z')",
+                [],
+            )
+            .expect("insert project");
+
+        let thread_id = create_thread_row(
+            &connection,
+            "project",
+            Some("Grok chat"),
+            GROK_BUILD_PROVIDER_ID,
+            Some("bypassPermissions"),
+        )
+        .expect("create Grok thread");
+        update_thread_metadata_from_payload(
+            &mut connection,
+            &thread_id,
+            &json!({ "sessionId": "grok-session-1", "permissionMode": "auto" }),
+        )
+        .expect("store Grok session");
+
+        let (provider, session_id, transcript_path, permission_mode): (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = connection
+            .query_row(
+                "SELECT provider, session_id, transcript_path, permission_mode FROM threads WHERE id = ?",
+                params![thread_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read Grok thread");
+        assert_eq!(provider, GROK_BUILD_PROVIDER_ID);
+        assert_eq!(session_id.as_deref(), Some("grok-session-1"));
+        assert_eq!(transcript_path, None);
+        assert_eq!(permission_mode.as_deref(), Some("auto"));
+        assert!(update_thread_metadata_from_payload(
+            &mut connection,
+            &thread_id,
+            &json!({ "permissionMode": "dontAsk" }),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn codex_thread_persists_official_thread_id_without_claude_transcript_path() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        connection
+            .execute(
+                "INSERT INTO projects (id, path, name, custom_name, created_at, updated_at) VALUES ('project', 'D:/workspace', 'workspace', 0, '2026-07-12T00:00:00.000Z', '2026-07-12T00:00:00.000Z')",
+                [],
+            )
+            .expect("insert project");
+
+        let thread_id = create_thread_row(
+            &connection,
+            "project",
+            Some("Codex chat"),
+            OPENAI_CODEX_PROVIDER_ID,
+            Some("default"),
+        )
+        .expect("create Codex thread");
+        update_thread_metadata_from_payload(
+            &mut connection,
+            &thread_id,
+            &json!({ "sessionId": "codex-thread-1", "permissionMode": "auto" }),
+        )
+        .expect("store Codex thread");
+
+        let (provider, session_id, transcript_path, permission_mode): (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = connection
+            .query_row(
+                "SELECT provider, session_id, transcript_path, permission_mode FROM threads WHERE id = ?",
+                params![thread_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read Codex thread");
+        assert_eq!(provider, OPENAI_CODEX_PROVIDER_ID);
+        assert_eq!(session_id.as_deref(), Some("codex-thread-1"));
+        assert_eq!(transcript_path, None);
+        assert_eq!(permission_mode.as_deref(), Some("auto"));
+        assert!(update_thread_metadata_from_payload(
+            &mut connection,
+            &thread_id,
+            &json!({ "permissionMode": "dontAsk" }),
+        )
+        .is_err());
     }
 
     #[test]
@@ -14314,6 +14855,15 @@ mod tests {
             select_claude_command_candidate(lookup, false).as_deref(),
             Some("/usr/local/bin/claude")
         );
+    }
+
+    #[test]
+    fn grok_version_parser_extracts_semantic_version_without_build_hash() {
+        assert_eq!(
+            parse_grok_cli_version("grok 0.2.93 (f00f96316d)\n").as_deref(),
+            Some("0.2.93")
+        );
+        assert_eq!(parse_grok_cli_version("unexpected output"), None);
     }
 
     #[test]
