@@ -1,4 +1,3 @@
-import { getIconForFile, getIconForFolder, getIconForOpenFolder } from 'vscode-icons-js';
 import { codeToTokensBase, type BundledLanguage } from 'shiki';
 
 import type { GitFileStatus, ProjectFileEntry, WorkbenchPreviewKind } from '../types';
@@ -14,8 +13,6 @@ export type HighlightedCodeToken = {
   color?: string;
   fontStyle?: number;
 };
-
-const VSCODE_ICONS_BASE_URL = 'https://cdn.jsdelivr.net/gh/vscode-icons/vscode-icons/icons';
 
 export type WorkbenchFileTreeNode = {
   name: string;
@@ -129,55 +126,6 @@ export function getWorkbenchPreviewKind(filePath: string): WorkbenchPreviewKind 
   return /\.(png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i.test(filePath) ? 'image' : 'code';
 }
 
-export function getWorkbenchFileIconKind(filePath: string, type: 'directory' | 'file') {
-  if (type === 'directory') {
-    return 'folder';
-  }
-
-  const normalizedPath = filePath.toLowerCase();
-  if (/\.(tsx|jsx)$/.test(normalizedPath)) {
-    return 'react';
-  }
-  if (/\.(html|htm|vue|svelte|astro)$/.test(normalizedPath)) {
-    return 'html';
-  }
-  if (/\.(css|scss|sass|less|styl|pcss|postcss)$/.test(normalizedPath)) {
-    return 'style';
-  }
-  if (/\.mdx?$/.test(normalizedPath)) {
-    return 'md';
-  }
-  if (/\.(json|jsonc)$/.test(normalizedPath)) {
-    return 'json';
-  }
-  if (/\.(ya?ml|toml|ini|conf|config)$/.test(normalizedPath) || /(^|\/)(dockerfile|\.env(\..+)?)$/i.test(normalizedPath)) {
-    return 'config';
-  }
-  if (/\.(sql|psql|prisma|db)$/.test(normalizedPath)) {
-    return 'database';
-  }
-  if (/\.(csv|tsv|xlsx?|ods)$/.test(normalizedPath)) {
-    return 'sheet';
-  }
-  if (/\.(png|jpe?g|gif|webp|avif|bmp|ico|svg)$/.test(normalizedPath)) {
-    return 'image';
-  }
-  if (/\.(pdf|docx?|rtf|odt|txt)$/.test(normalizedPath)) {
-    return 'document';
-  }
-  if (/\.(zip|tar|gz|tgz|bz2|7z|rar|jar|war)$/.test(normalizedPath)) {
-    return 'archive';
-  }
-  if (/\.(mp3|wav|ogg|flac|mp4|mov|avi|mkv|webm)$/.test(normalizedPath)) {
-    return 'media';
-  }
-  if (/\.(ts|mts|cts|js|mjs|cjs|py|rb|php|go|rs|java|kt|kts|swift|lua|sh|bash|zsh|fish|ps1|psm1|psd1|c|cc|cpp|cxx|h|hpp|cs)$/.test(normalizedPath)) {
-    return 'script';
-  }
-
-  return 'file';
-}
-
 export function resolveWorkbenchCodeLanguage(filePath: string) {
   const normalizedPath = filePath.toLowerCase();
 
@@ -215,28 +163,6 @@ export function resolveWorkbenchCodeLanguage(filePath: string) {
   if (/\.(graphql|gql)$/.test(normalizedPath)) return 'graphql';
 
   return 'text';
-}
-
-export function resolveWorkbenchFileIcon(
-  filePath: string,
-  type: 'directory' | 'file',
-  options?: { expanded?: boolean },
-) {
-  const normalizedPath = filePath.replace(/\\/g, '/');
-  const name = normalizedPath.split('/').pop() || normalizedPath;
-
-  const iconFileName =
-    type === 'directory'
-      ? options?.expanded
-        ? getIconForOpenFolder(name)
-        : getIconForFolder(name)
-      : getIconForFile(name);
-
-  if (!iconFileName) {
-    return null;
-  }
-
-  return `${VSCODE_ICONS_BASE_URL}/${iconFileName}`;
 }
 
 export async function highlightWorkbenchCode(content: string, filePath: string) {

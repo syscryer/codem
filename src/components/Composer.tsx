@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
-import { ArrowUp, Brain, Check, CornerDownRight, File, FileArchive, FileAudio, FileCode, FileImage, FileSpreadsheet, FileText, Folder, Image, Loader2, Mic, Pencil, Plus, Puzzle, Settings, Shield, Square, Unlock, X, Zap, type LucideIcon } from 'lucide-react';
+import { ArrowUp, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, Shield, Square, Unlock, X, Zap } from 'lucide-react';
 import { permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
 import { buildComposerContextUsage, shouldRefreshNativeContextOnOpen } from '../lib/composer-context-usage';
 import { classifyComposerFile, supportedComposerUploadAccept } from '../lib/composer-input-files';
 import { extractAtFileReferences, shouldSearchFileReferenceQuery } from '../lib/file-reference-paths';
-import { getWorkbenchFileIconKind, resolveWorkbenchFileIcon } from '../lib/workbench-files';
 import { isTauriRuntime } from '../lib/window-material';
 import { pickDesktopFiles } from '../lib/desktop-dialog';
 import { subscribeDesktopDragDrop } from '../lib/desktop-drag-drop';
@@ -18,6 +17,7 @@ import {
 import { PopoverPortal } from './PopoverPortal';
 import { ComposerContextIndicator } from './ComposerContextIndicator';
 import { SlashCommandMenu } from './SlashCommandMenu';
+import { WorkbenchFileIcon } from './WorkbenchFileIcon';
 import { hasClaudeContext1mOptions } from '../lib/claude-model-selection';
 import { applySlashCommandSelection, getNextSlashCommandIndex } from '../lib/slash-command-editor';
 import { getSlashDismissResetKey, resolveSlashCommandSubmission } from '../lib/slash-command-submit';
@@ -1641,59 +1641,14 @@ function getPathDirectoryLabel(filePath: string) {
 }
 
 function ComposerFileReferenceIcon({ path, isDirectory }: { path: string; isDirectory: boolean }) {
-  const [iconFailed, setIconFailed] = useState(false);
-  const iconSrc = resolveWorkbenchFileIcon(path, isDirectory ? 'directory' : 'file');
-  if (!iconFailed && iconSrc) {
-    return (
-      <img
-        className="composer-file-reference-icon"
-        src={iconSrc}
-        alt=""
-        aria-hidden="true"
-        onError={() => setIconFailed(true)}
-      />
-    );
-  }
-
-  // CDN 不可达或被 CSP 拦掉时，用着色后的 lucide 图标兜底，保证条目前面始终能看到清晰可见的图标。
-  const iconKind = getWorkbenchFileIconKind(path, isDirectory ? 'directory' : 'file');
-  const Icon = getComposerFallbackIcon(iconKind);
   return (
-    <Icon
-      className={`composer-file-reference-icon composer-file-reference-icon-fallback composer-file-reference-icon-${iconKind}`}
+    <WorkbenchFileIcon
+      path={path}
+      type={isDirectory ? 'directory' : 'file'}
+      className="composer-file-reference-icon"
       size={16}
-      aria-hidden="true"
     />
   );
-}
-
-function getComposerFallbackIcon(iconKind: string): LucideIcon {
-  switch (iconKind) {
-    case 'folder':
-      return Folder;
-    case 'react':
-    case 'script':
-    case 'html':
-    case 'style':
-      return FileCode;
-    case 'md':
-    case 'document':
-      return FileText;
-    case 'json':
-    case 'config':
-      return Settings;
-    case 'database':
-    case 'sheet':
-      return FileSpreadsheet;
-    case 'image':
-      return FileImage;
-    case 'archive':
-      return FileArchive;
-    case 'media':
-      return FileAudio;
-    default:
-      return File;
-  }
 }
 
 function PermissionModeIcon({ mode, size }: { mode: PermissionMode; size: number }) {

@@ -3397,10 +3397,43 @@ svg {
 }
 
 .workbench-file-icon {
-  width: 16px;
-  height: 16px;
+  --workbench-file-icon-size: 18px;
+  --workbench-file-icon-accent: #64748b;
+  --workbench-file-icon-tone: color-mix(in srgb, var(--workbench-file-icon-accent) 16%, var(--app-surface, #ffffff));
+  position: relative;
+  width: var(--workbench-file-icon-size);
+  height: var(--workbench-file-icon-size);
   flex: 0 0 auto;
-  object-fit: contain;
+  display: inline-grid;
+  place-items: center;
+  color: var(--workbench-file-icon-accent);
+}
+
+.workbench-file-icon svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  stroke-width: 1.15;
+}
+
+.workbench-file-icon-label {
+  position: absolute;
+  right: 1px;
+  bottom: 3px;
+  left: 4px;
+  overflow: hidden;
+  color: var(--workbench-file-icon-accent);
+  font-size: max(4px, calc(var(--workbench-file-icon-size) * 0.3));
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
+  text-align: center;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.workbench-file-icon-folder.is-open {
+  filter: saturate(1.08) brightness(1.04);
 }
 
 .workbench-tree-empty {
@@ -3408,92 +3441,6 @@ svg {
   padding: 5px 10px;
   color: #a0a0a0;
   font-size: 12px;
-}
-
-.workbench-file-badge {
-  min-width: 18px;
-  height: 16px;
-  padding: 0 3px;
-  display: inline-grid;
-  place-items: center;
-  border-radius: 4px;
-  background: #eef2ff;
-  color: #2563eb;
-  font-size: 7px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.workbench-file-badge.react {
-  background: #e0f7ff;
-  color: #0891b2;
-  font-size: 12px;
-}
-
-.workbench-file-badge.html {
-  background: #ffedd5;
-  color: #ea580c;
-}
-
-.workbench-file-badge.style {
-  background: #f3e8ff;
-  color: #9333ea;
-}
-
-.workbench-file-badge.script {
-  background: #e0f2fe;
-  color: #0284c7;
-}
-
-.workbench-file-badge.md {
-  background: transparent;
-  color: #16a34a;
-  font-size: 12px;
-}
-
-.workbench-file-badge.json {
-  background: #fff7ed;
-  color: #ea580c;
-}
-
-.workbench-file-badge.config {
-  background: #ecfccb;
-  color: #4d7c0f;
-}
-
-.workbench-file-badge.database {
-  background: #dcfce7;
-  color: #15803d;
-}
-
-.workbench-file-badge.sheet {
-  background: #dcfce7;
-  color: #166534;
-}
-
-.workbench-file-badge.image {
-  background: #ede9fe;
-  color: #6d28d9;
-}
-
-.workbench-file-badge.document {
-  background: #fef3c7;
-  color: #b45309;
-}
-
-.workbench-file-badge.archive {
-  background: #fee2e2;
-  color: #b91c1c;
-}
-
-.workbench-file-badge.media {
-  background: #dbeafe;
-  color: #1d4ed8;
-}
-
-.workbench-file-badge.file {
-  background: #f1f5f9;
-  color: #94a3b8;
 }
 
 .workbench-review-layout {
@@ -8744,28 +8691,7 @@ body.git-history-resizing {
   width: 16px;
   height: 16px;
   flex: 0 0 auto;
-  object-fit: contain;
 }
-
-.composer-file-reference-icon-fallback {
-  color: #64748b;
-  stroke-width: 2;
-}
-
-.composer-file-reference-icon-folder { color: #b45309; }
-.composer-file-reference-icon-react { color: #0891b2; }
-.composer-file-reference-icon-html { color: #ea580c; }
-.composer-file-reference-icon-style { color: #9333ea; }
-.composer-file-reference-icon-script { color: #0284c7; }
-.composer-file-reference-icon-md { color: #16a34a; }
-.composer-file-reference-icon-json { color: #ea580c; }
-.composer-file-reference-icon-config { color: #4d7c0f; }
-.composer-file-reference-icon-database { color: #15803d; }
-.composer-file-reference-icon-sheet { color: #166534; }
-.composer-file-reference-icon-image { color: #6d28d9; }
-.composer-file-reference-icon-document { color: #b45309; }
-.composer-file-reference-icon-archive { color: #b91c1c; }
-.composer-file-reference-icon-media { color: #1d4ed8; }
 
 .composer-file-reference-badge,
 .composer-file-reference-folder-badge {

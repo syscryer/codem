@@ -9,23 +9,8 @@ import {
   isWorkbenchFileTreeNodeSelected,
   splitWorkbenchChangedFiles,
   toggleWorkbenchFileTreeNodeSelection,
-  getWorkbenchFileIconKind,
-  resolveWorkbenchFileIcon,
   resolveWorkbenchCodeLanguage,
 } from './workbench-files';
-
-test('getWorkbenchFileIconKind covers common file families', () => {
-  assert.equal(getWorkbenchFileIconKind('src/app.tsx', 'file'), 'react');
-  assert.equal(getWorkbenchFileIconKind('public/index.html', 'file'), 'html');
-  assert.equal(getWorkbenchFileIconKind('styles/app.scss', 'file'), 'style');
-  assert.equal(getWorkbenchFileIconKind('scripts/build.py', 'file'), 'script');
-  assert.equal(getWorkbenchFileIconKind('config/docker-compose.yml', 'file'), 'config');
-  assert.equal(getWorkbenchFileIconKind('assets/logo.svg', 'file'), 'image');
-  assert.equal(getWorkbenchFileIconKind('docs/spec.pdf', 'file'), 'document');
-  assert.equal(getWorkbenchFileIconKind('data/report.csv', 'file'), 'sheet');
-  assert.equal(getWorkbenchFileIconKind('db/schema.sql', 'file'), 'database');
-  assert.equal(getWorkbenchFileIconKind('archive/app.zip', 'file'), 'archive');
-});
 
 test('resolveWorkbenchCodeLanguage maps common preview files to highlighter languages', () => {
   assert.equal(resolveWorkbenchCodeLanguage('src/app.tsx'), 'tsx');
@@ -46,21 +31,6 @@ test('getWorkbenchPreviewKind treats common image assets as image previews', () 
   assert.equal(getWorkbenchPreviewKind('assets/logo.ico'), 'image');
   assert.equal(getWorkbenchPreviewKind('assets/logo.bmp'), 'image');
   assert.equal(getWorkbenchPreviewKind('assets/logo.avif'), 'image');
-});
-
-test('resolveWorkbenchFileIcon returns vscode-style icon assets for files and folders', () => {
-  assert.match(
-    resolveWorkbenchFileIcon('src/app.tsx', 'file') ?? '',
-    /file_type_react(ts|js)x?\.svg$/,
-  );
-  assert.match(
-    resolveWorkbenchFileIcon('public/index.html', 'file') ?? '',
-    /file_type_html\.svg$/,
-  );
-  assert.match(
-    resolveWorkbenchFileIcon('src/components', 'directory') ?? '',
-    /folder_type_component.*\.svg$/,
-  );
 });
 
 test('splitWorkbenchChangedFiles separates untracked files from comparable changes', () => {

@@ -170,19 +170,17 @@ test('@文件结果键盘移动时会把当前选中项滚动到可见区', () =
   assert.match(composerSource, /container\.scrollTop = itemBottom - container\.clientHeight;/);
 });
 
-test('@文件结果优先复用工作台的丰富文件图标，加载失败时回退到 lucide 着色图标', () => {
-  assert.match(composerSource, /import \{ getWorkbenchFileIconKind, resolveWorkbenchFileIcon \} from '\.\.\/lib\/workbench-files';/);
-  assert.match(composerSource, /const iconSrc = resolveWorkbenchFileIcon\(path, isDirectory \? 'directory' : 'file'\);/);
-  assert.match(composerSource, /onError=\{\(\) => setIconFailed\(true\)\}/);
-  assert.match(composerSource, /const iconKind = getWorkbenchFileIconKind\(path, isDirectory \? 'directory' : 'file'\);/);
-  assert.match(composerSource, /function getComposerFallbackIcon\(iconKind: string\): LucideIcon \{/);
-  assert.match(composerSource, /composer-file-reference-icon-fallback composer-file-reference-icon-\$\{iconKind\}/);
+test('@文件结果复用工作台的同步本地 SVG 图标', () => {
+  assert.match(composerSource, /import \{ WorkbenchFileIcon \} from '\.\/WorkbenchFileIcon';/);
+  assert.match(composerSource, /<WorkbenchFileIcon\s+path=\{path\}/);
+  assert.match(composerSource, /type=\{isDirectory \? 'directory' : 'file'\}/);
+  assert.doesNotMatch(composerSource, /resolveWorkbenchFileIcon|cdn\.jsdelivr\.net|onError=\{\(\) => setIconFailed/);
 });
 
-test('Tauri CSP 允许从 jsdelivr 加载工作台同款 SVG 图标', () => {
+test('Tauri CSP 不再为工作台文件图标开放 jsdelivr', () => {
   const tauriConfPath = new URL('../../src-tauri/tauri.conf.json', import.meta.url);
   const tauriConfig = readFileSync(tauriConfPath, 'utf8');
-  assert.match(tauriConfig, /img-src[^"]*https:\/\/cdn\.jsdelivr\.net/);
+  assert.doesNotMatch(tauriConfig, /cdn\.jsdelivr\.net/);
 });
 
 test('server exposes a workspace-relative resolve endpoint distinct from fuzzy search', () => {

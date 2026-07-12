@@ -41,6 +41,7 @@ import { GitConflictMergeDialog } from './git-conflict/GitConflictMergeDialog';
 import { GitConflictOverviewDialog } from './git-conflict/GitConflictOverviewDialog';
 import { GitConflictStatusStrip } from './git-conflict/GitConflictStatusStrip';
 import { ImagePreviewDialog, type ImagePreviewItem } from './ImagePreviewDialog';
+import { WorkbenchFileIcon } from './WorkbenchFileIcon';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { fetchWorkspaceFilePreview } from '../lib/file-preview-api';
 import {
@@ -59,11 +60,9 @@ import { deleteProjectFile, fetchProjectFiles } from '../lib/project-files-api';
 import {
   buildWorkbenchFileTree,
   filterWorkbenchNoiseFiles,
-  getWorkbenchFileIconKind,
   highlightWorkbenchCode,
   highlightWorkbenchCodeLine,
   isWorkbenchFileTreeNodeSelected,
-  resolveWorkbenchFileIcon,
   splitWorkbenchChangedFiles,
   toggleWorkbenchFileTreeNodeSelection,
   type HighlightedCodeToken,
@@ -1861,7 +1860,7 @@ function PreviewPane({
                   className={`workbench-preview-tab${active ? ' active' : ''}`}
                   onClick={() => onSelectTab(tab.key)}
                 >
-                  <FileIcon path={tab.path} type="file" />
+                  <WorkbenchFileIcon path={tab.path} type="file" />
                   <span className="workbench-preview-tab-label">
                     {isWorkbenchDiffPreviewRequest(tab) ? (
                       <GitPullRequest className="workbench-preview-review-icon" size={12} />
@@ -1982,7 +1981,7 @@ function PreviewPane({
                           });
                         }}
                       >
-                        <FileIcon path={tab.path} type="file" />
+                        <WorkbenchFileIcon path={tab.path} type="file" />
                         <span className="workbench-preview-overflow-label">
                           {isWorkbenchDiffPreviewRequest(tab) ? (
                             <GitPullRequest className="workbench-preview-review-icon" size={12} />
@@ -2635,7 +2634,7 @@ function renderProjectFileRows({
         ) : (
           <span className="workbench-tree-spacer" />
         )}
-        <FileIcon path={file.path} type={file.type} />
+        <WorkbenchFileIcon path={file.path} type={file.type} expanded={expanded} />
         <span title={file.path}>{file.name}</span>
         {loadingDirectory === file.path ? <RefreshCw className="spin" size={13} /> : null}
       </button>
@@ -3107,7 +3106,7 @@ function renderChangedFileTreeRows({
         >
           {checked ? <CheckSquare size={15} /> : <Square size={15} />}
         </span>
-        <FileIcon path={node.path} type={node.type} expanded={expanded} />
+        <WorkbenchFileIcon path={node.path} type={node.type} expanded={expanded} />
         <span className={statusTone ? `workbench-file-name status-${statusTone}` : 'workbench-file-name'} title={node.path}>
           {node.name}
         </span>
@@ -3215,7 +3214,7 @@ function renderChangedFileFlatRows({
         >
           {checked ? <CheckSquare size={15} /> : <Square size={15} />}
         </span>
-        <FileIcon path={file.path} type="file" />
+        <WorkbenchFileIcon path={file.path} type="file" />
         <span className="workbench-tree-row-main">
           <span className={statusTone ? `workbench-file-name status-${statusTone}` : 'workbench-file-name'} title={file.path}>
             {fileName}
@@ -3240,41 +3239,6 @@ function countWorkbenchFileTreeFiles(nodes: WorkbenchFileTreeNode[]): number {
   }, 0);
 }
 
-export function FileIcon({
-  path,
-  type,
-  expanded = false,
-}: {
-  path: string;
-  type: 'directory' | 'file';
-  expanded?: boolean;
-}) {
-  const [iconFailed, setIconFailed] = useState(false);
-  const iconSrc = resolveWorkbenchFileIcon(path, type, { expanded });
-  const iconKind = getWorkbenchFileIconKind(path, type);
-  if (!iconFailed && iconSrc) {
-    return (
-      <img
-        className={`workbench-file-icon ${type === 'directory' ? 'folder' : 'file'}`}
-        src={iconSrc}
-        alt=""
-        aria-hidden="true"
-        onError={() => setIconFailed(true)}
-      />
-    );
-  }
-
-  if (iconKind === 'folder') {
-    return <Folder size={16} />;
-  }
-
-  return (
-    <span className={`workbench-file-badge ${iconKind}`} aria-hidden="true">
-      {getFileBadgeLabel(iconKind)}
-    </span>
-  );
-}
-
 function getGitStatusTone(fileOrStatus: GitFileStatus | string) {
   const normalizedStatus = typeof fileOrStatus === 'string' ? fileOrStatus.trim().toLowerCase() : fileOrStatus.status.trim().toLowerCase();
   const conflicted = typeof fileOrStatus === 'string' ? false : Boolean(fileOrStatus.conflicted);
@@ -3292,50 +3256,6 @@ function getGitStatusTone(fileOrStatus: GitFileStatus | string) {
   }
 
   return 'modified';
-}
-
-function getFileBadgeLabel(iconKind: string) {
-  if (iconKind === 'react') {
-    return '⚛';
-  }
-  if (iconKind === 'html') {
-    return 'HT';
-  }
-  if (iconKind === 'style') {
-    return 'ST';
-  }
-  if (iconKind === 'md') {
-    return 'M';
-  }
-  if (iconKind === 'json') {
-    return '{}';
-  }
-  if (iconKind === 'script') {
-    return '</>';
-  }
-  if (iconKind === 'config') {
-    return 'CFG';
-  }
-  if (iconKind === 'database') {
-    return 'DB';
-  }
-  if (iconKind === 'sheet') {
-    return 'XL';
-  }
-  if (iconKind === 'image') {
-    return 'IMG';
-  }
-  if (iconKind === 'document') {
-    return 'DOC';
-  }
-  if (iconKind === 'archive') {
-    return 'ZIP';
-  }
-  if (iconKind === 'media') {
-    return 'AV';
-  }
-
-  return '·';
 }
 
 function getDiffLineClass(line: string) {

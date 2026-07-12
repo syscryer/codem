@@ -12,6 +12,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::{
+    cmp::Ordering,
     env, fs,
     io::{BufRead, BufReader as StdBufReader},
     net::SocketAddr,
@@ -1986,17 +1987,21 @@ async fn list_project_files(
             "type": if file_type.is_dir() { "directory" } else { "file" },
         }));
     }
-    files.sort_by(|left, right| {
-        let left_type = left.get("type").and_then(Value::as_str).unwrap_or("");
-        let right_type = right.get("type").and_then(Value::as_str).unwrap_or("");
-        right_type.cmp(left_type).then_with(|| {
-            left.get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .cmp(right.get("name").and_then(Value::as_str).unwrap_or(""))
-        })
-    });
+    files.sort_by(compare_project_file_entries);
     Ok(Json(Value::Array(files)))
+}
+
+fn compare_project_file_entries(left: &Value, right: &Value) -> Ordering {
+    let left_is_directory = left.get("type").and_then(Value::as_str) == Some("directory");
+    let right_is_directory = right.get("type").and_then(Value::as_str) == Some("directory");
+    right_is_directory.cmp(&left_is_directory).then_with(|| {
+        let left_name = left.get("name").and_then(Value::as_str).unwrap_or("");
+        let right_name = right.get("name").and_then(Value::as_str).unwrap_or("");
+        left_name
+            .to_lowercase()
+            .cmp(&right_name.to_lowercase())
+            .then_with(|| left_name.cmp(right_name))
+    })
 }
 
 async fn delete_project_file(
@@ -14050,11 +14055,12 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        import_claude_sessions_from_root, initialize_workspace_database, remove_thread_row,
-        select_claude_command_candidate, validate_desktop_file_path,
+        compare_project_file_entries, import_claude_sessions_from_root,
+        initialize_workspace_database, remove_thread_row, select_claude_command_candidate,
+        validate_desktop_file_path,
     };
     use rusqlite::{params, Connection};
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::{fs, path::PathBuf};
 
     struct TestDirectory(PathBuf);
@@ -14072,6 +14078,27 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn project_file_entries_sort_directories_before_files() {
+        let mut entries = vec![
+            json!({ "name": "README.md", "type": "file" }),
+            json!({ "name": "src", "type": "directory" }),
+            json!({ "name": "Cargo.toml", "type": "file" }),
+            json!({ "name": "Assets", "type": "directory" }),
+            json!({ "name": "build.rs", "type": "file" }),
+        ];
+
+        entries.sort_by(compare_project_file_entries);
+
+        assert_eq!(
+            entries
+                .iter()
+                .filter_map(|entry| entry.get("name").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["Assets", "src", "build.rs", "Cargo.toml", "README.md"]
+        );
     }
 
     fn write_claude_transcript(

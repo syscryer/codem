@@ -62,7 +62,7 @@ import { combineProjectFilePath, highlightWorkbenchCodeLine } from '../lib/workb
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { MemoGitDiffViewer, type GitDiffViewerMode } from './GitDiffViewer';
 import { PopoverPortal } from './PopoverPortal';
-import { FileIcon } from './RightWorkbench';
+import { WorkbenchFileIcon } from './WorkbenchFileIcon';
 import type {
   GitBranchCompareResult,
   GitBranchCreateResult,
@@ -1284,7 +1284,7 @@ export function GitHistoryPanel({
           >
             {formatFileStatusLabel(file.status)}
           </span>
-          <FileIcon path={file.path} type="file" />
+          <WorkbenchFileIcon path={file.path} type="file" />
           <span className="git-history-file-text">
             <span className="git-history-file-name-line">
               <strong title={file.path}>{fileName}</strong>
