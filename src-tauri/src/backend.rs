@@ -143,6 +143,7 @@ struct ThreadRow {
     transcript_path: Option<String>,
     working_directory: String,
     model: Option<String>,
+    reasoning_effort: Option<String>,
     permission_mode: Option<String>,
     imported: bool,
     updated_at: String,
@@ -157,6 +158,7 @@ struct ThreadDetailRow {
     transcript_path: Option<String>,
     working_directory: String,
     model: Option<String>,
+    reasoning_effort: Option<String>,
     permission_mode: Option<String>,
 }
 
@@ -233,6 +235,8 @@ struct ThreadCreateRequest {
     title: Option<String>,
     provider_id: Option<String>,
     permission_mode: Option<String>,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2920,12 +2924,22 @@ async fn create_thread(
     )?;
     let permission_mode =
         resolve_thread_create_permission_mode(provider, payload.permission_mode.as_deref())?;
+    let model = normalize_thread_metadata_value(payload.model.as_deref(), "model")?;
+    let reasoning_effort =
+        normalize_thread_metadata_value(payload.reasoning_effort.as_deref(), "reasoningEffort")?;
+    if provider != OPENAI_CODEX_PROVIDER_ID && reasoning_effort.is_some() {
+        return Err(ApiError::bad_request(
+            "reasoningEffort 目前仅支持 OpenAI Codex 聊天",
+        ));
+    }
     let thread_id = create_thread_row(
         &connection,
         &project_id,
         payload.title.as_deref(),
         provider,
         permission_mode.as_deref(),
+        model.as_deref(),
+        reasoning_effort.as_deref(),
     )?;
     let thread = read_thread_summary(&connection, &thread_id)?;
     Ok(Json(json!({
@@ -4376,6 +4390,7 @@ fn initialize_workspace_database(connection: &Connection) -> ApiResult<()> {
               transcript_path TEXT,
               working_directory TEXT NOT NULL,
               model TEXT,
+              reasoning_effort TEXT,
               permission_mode TEXT,
               imported INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL,
@@ -4482,6 +4497,7 @@ fn initialize_workspace_database(connection: &Connection) -> ApiResult<()> {
             )?;
             ensure_column(connection, "messages", "user_attachments_json", "TEXT")?;
             ensure_column(connection, "messages", "user_content_blocks_json", "TEXT")?;
+            ensure_column(connection, "threads", "reasoning_effort", "TEXT")?;
             ensure_column(connection, "threads", "pinned_at", "TEXT")?;
             ensure_column(connection, "projects", "pinned_at", "TEXT")?;
             Ok(())
@@ -4854,7 +4870,7 @@ fn read_thread_rows(connection: &Connection) -> ApiResult<Vec<ThreadRow>> {
     let mut statement = connection
         .prepare(
             r#"
-            SELECT id, project_id, provider, title, session_id, transcript_path, working_directory, model, permission_mode, imported, updated_at, pinned_at
+            SELECT id, project_id, provider, title, session_id, transcript_path, working_directory, model, reasoning_effort, permission_mode, imported, updated_at, pinned_at
             FROM threads
             ORDER BY updated_at DESC, created_at DESC
             "#,
@@ -4871,10 +4887,11 @@ fn read_thread_rows(connection: &Connection) -> ApiResult<Vec<ThreadRow>> {
                 transcript_path: row.get(5)?,
                 working_directory: row.get(6)?,
                 model: row.get(7)?,
-                permission_mode: row.get(8)?,
-                imported: row.get::<_, i64>(9)? != 0,
-                updated_at: row.get(10)?,
-                pinned_at: row.get(11)?,
+                reasoning_effort: row.get(8)?,
+                permission_mode: row.get(9)?,
+                imported: row.get::<_, i64>(10)? != 0,
+                updated_at: row.get(11)?,
+                pinned_at: row.get(12)?,
             })
         })
         .map_err(|error| ApiError::internal(format!("读取线程列表失败: {error}")))?;
@@ -5143,12 +5160,32 @@ fn resolve_thread_create_permission_mode(
         .map(ToString::to_string))
 }
 
+fn normalize_thread_metadata_value(value: Option<&str>, field: &str) -> ApiResult<Option<String>> {
+    let value = value.map(str::trim).filter(|value| !value.is_empty());
+    if value.is_some_and(|value| value.len() > 512) {
+        return Err(ApiError::bad_request(format!("{field} 过长")));
+    }
+    Ok(value.map(ToString::to_string))
+}
+
+fn read_thread_metadata_payload(value: Option<&Value>, field: &str) -> ApiResult<Option<String>> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => normalize_thread_metadata_value(Some(value), field),
+        Some(_) => Err(ApiError::bad_request(format!(
+            "{field} 必须是字符串或 null"
+        ))),
+    }
+}
+
 fn create_thread_row(
     connection: &Connection,
     project_id: &str,
     title: Option<&str>,
     provider: &str,
     permission_mode: Option<&str>,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
 ) -> ApiResult<String> {
     let project_path: String = connection
         .query_row(
@@ -5170,9 +5207,9 @@ fn create_thread_row(
             r#"
             INSERT INTO threads (
               id, project_id, provider, title, custom_title, session_id, transcript_path,
-              working_directory, model, permission_mode, imported, created_at, updated_at
+              working_directory, model, reasoning_effort, permission_mode, imported, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, 0, NULL, NULL, ?, NULL, ?, 0, ?, ?)
+            VALUES (?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?, ?, 0, ?, ?)
             "#,
             params![
                 id,
@@ -5180,6 +5217,8 @@ fn create_thread_row(
                 provider,
                 thread_title,
                 project_path,
+                model,
+                reasoning_effort,
                 permission_mode,
                 now,
                 now
@@ -5201,7 +5240,7 @@ fn read_thread_summary(connection: &Connection, thread_id: &str) -> ApiResult<Va
     let mut statement = connection
         .prepare(
             r#"
-            SELECT id, project_id, provider, title, session_id, transcript_path, working_directory, model, permission_mode, imported, updated_at, pinned_at
+            SELECT id, project_id, provider, title, session_id, transcript_path, working_directory, model, reasoning_effort, permission_mode, imported, updated_at, pinned_at
             FROM threads
             WHERE id = ?
             "#,
@@ -5218,10 +5257,11 @@ fn read_thread_summary(connection: &Connection, thread_id: &str) -> ApiResult<Va
                 transcript_path: row.get(5)?,
                 working_directory: row.get(6)?,
                 model: row.get(7)?,
-                permission_mode: row.get(8)?,
-                imported: row.get::<_, i64>(9)? != 0,
-                updated_at: row.get(10)?,
-                pinned_at: row.get(11)?,
+                reasoning_effort: row.get(8)?,
+                permission_mode: row.get(9)?,
+                imported: row.get::<_, i64>(10)? != 0,
+                updated_at: row.get(11)?,
+                pinned_at: row.get(12)?,
             })
         })
         .optional()
@@ -5357,7 +5397,7 @@ fn read_thread_detail(connection: &Connection, thread_id: &str) -> ApiResult<Thr
     connection
         .query_row(
             r#"
-            SELECT project_id, provider, session_id, transcript_path, working_directory, model, permission_mode
+            SELECT project_id, provider, session_id, transcript_path, working_directory, model, reasoning_effort, permission_mode
             FROM threads
             WHERE id = ?
             "#,
@@ -5370,7 +5410,8 @@ fn read_thread_detail(connection: &Connection, thread_id: &str) -> ApiResult<Thr
                     transcript_path: row.get(3)?,
                     working_directory: row.get(4)?,
                     model: row.get(5)?,
-                    permission_mode: row.get(6)?,
+                    reasoning_effort: row.get(6)?,
+                    permission_mode: row.get(7)?,
                 })
             },
         )
@@ -5389,9 +5430,15 @@ fn update_thread_metadata_from_payload(
     let previous_transcript_path = thread.transcript_path.clone();
     let has_session_id = payload.get("sessionId").is_some();
     let has_model = payload.get("model").is_some();
+    let has_reasoning_effort = payload.get("reasoningEffort").is_some();
     let has_working_directory = payload.get("workingDirectory").is_some();
     let has_permission_mode = payload.get("permissionMode").is_some();
-    if !(has_session_id || has_model || has_working_directory || has_permission_mode) {
+    if !(has_session_id
+        || has_model
+        || has_reasoning_effort
+        || has_working_directory
+        || has_permission_mode)
+    {
         return Ok(());
     }
 
@@ -5429,15 +5476,20 @@ fn update_thread_metadata_from_payload(
         thread.transcript_path.clone()
     };
     let model = if has_model {
-        payload
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
+        read_thread_metadata_payload(payload.get("model"), "model")?
     } else {
         thread.model.clone()
     };
+    let reasoning_effort = if has_reasoning_effort {
+        read_thread_metadata_payload(payload.get("reasoningEffort"), "reasoningEffort")?
+    } else {
+        thread.reasoning_effort.clone()
+    };
+    if thread.provider != OPENAI_CODEX_PROVIDER_ID && reasoning_effort.is_some() {
+        return Err(ApiError::bad_request(
+            "reasoningEffort 目前仅支持 OpenAI Codex 聊天",
+        ));
+    }
     let permission_mode = if has_permission_mode {
         let requested_permission_mode = payload
             .get("permissionMode")
@@ -5491,6 +5543,7 @@ fn update_thread_metadata_from_payload(
                 transcript_path = ?,
                 working_directory = ?,
                 model = ?,
+                reasoning_effort = ?,
                 permission_mode = ?,
                 updated_at = ?
             WHERE id = ?
@@ -5500,6 +5553,7 @@ fn update_thread_metadata_from_payload(
                 transcript_path,
                 working_directory,
                 model,
+                reasoning_effort,
                 permission_mode,
                 now,
                 thread_id
@@ -14212,6 +14266,9 @@ fn thread_summary_json(thread: &ThreadRow) -> Value {
         if let Some(model) = thread.model.as_ref() {
             object.insert("model".to_string(), json!(model));
         }
+        if let Some(reasoning_effort) = thread.reasoning_effort.as_ref() {
+            object.insert("reasoningEffort".to_string(), json!(reasoning_effort));
+        }
         if let Some(permission_mode) = thread.permission_mode.as_ref() {
             object.insert("permissionMode".to_string(), json!(permission_mode));
         }
@@ -14522,6 +14579,26 @@ mod tests {
     }
 
     #[test]
+    fn workspace_database_adds_reasoning_effort_to_existing_threads_table() {
+        let connection = Connection::open_in_memory().expect("open database");
+        connection
+            .execute("CREATE TABLE threads (id TEXT PRIMARY KEY, model TEXT)", [])
+            .expect("create legacy threads table");
+
+        initialize_workspace_database(&connection).expect("upgrade database");
+
+        let mut statement = connection
+            .prepare("PRAGMA table_info(threads)")
+            .expect("read thread columns");
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query thread columns")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect thread columns");
+        assert!(columns.iter().any(|column| column == "reasoning_effort"));
+    }
+
+    #[test]
     fn grok_thread_persists_provider_without_creating_claude_transcript_path() {
         let mut connection = Connection::open_in_memory().expect("open database");
         initialize_workspace_database(&connection).expect("initialize database");
@@ -14538,6 +14615,8 @@ mod tests {
             Some("Grok chat"),
             GROK_BUILD_PROVIDER_ID,
             Some("bypassPermissions"),
+            Some("grok-model-test"),
+            None,
         )
         .expect("create Grok thread");
         update_thread_metadata_from_payload(
@@ -14588,30 +14667,50 @@ mod tests {
             Some("Codex chat"),
             OPENAI_CODEX_PROVIDER_ID,
             Some("default"),
+            Some("gpt-codex-test"),
+            Some("medium"),
         )
         .expect("create Codex thread");
         update_thread_metadata_from_payload(
             &mut connection,
             &thread_id,
-            &json!({ "sessionId": "codex-thread-1", "permissionMode": "auto" }),
+            &json!({
+                "sessionId": "codex-thread-1",
+                "permissionMode": "auto",
+                "model": "gpt-codex-fast",
+                "reasoningEffort": "high"
+            }),
         )
         .expect("store Codex thread");
 
-        let (provider, session_id, transcript_path, permission_mode): (
+        let (provider, session_id, transcript_path, model, reasoning_effort, permission_mode): (
             String,
+            Option<String>,
+            Option<String>,
             Option<String>,
             Option<String>,
             Option<String>,
         ) = connection
             .query_row(
-                "SELECT provider, session_id, transcript_path, permission_mode FROM threads WHERE id = ?",
+                "SELECT provider, session_id, transcript_path, model, reasoning_effort, permission_mode FROM threads WHERE id = ?",
                 params![thread_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
             )
             .expect("read Codex thread");
         assert_eq!(provider, OPENAI_CODEX_PROVIDER_ID);
         assert_eq!(session_id.as_deref(), Some("codex-thread-1"));
         assert_eq!(transcript_path, None);
+        assert_eq!(model.as_deref(), Some("gpt-codex-fast"));
+        assert_eq!(reasoning_effort.as_deref(), Some("high"));
         assert_eq!(permission_mode.as_deref(), Some("auto"));
         assert!(update_thread_metadata_from_payload(
             &mut connection,

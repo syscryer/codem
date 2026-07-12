@@ -19,7 +19,7 @@ use axum::{
     Json, Router,
 };
 use bytes::Bytes;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -72,6 +72,7 @@ struct AcpRunTask {
     prompt: String,
     requested_session_id: Option<String>,
     permission_mode: &'static str,
+    model: Option<String>,
     cancel: watch::Receiver<bool>,
     control: mpsc::UnboundedReceiver<AgentControlCommand>,
 }
@@ -84,6 +85,8 @@ struct CodexRunTask {
     prompt: String,
     requested_session_id: Option<String>,
     permission_mode: &'static str,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
     cancel: watch::Receiver<bool>,
     control: mpsc::UnboundedReceiver<AgentControlCommand>,
 }
@@ -147,6 +150,40 @@ struct StartAgentRunRequest {
     working_directory: String,
     session_id: Option<String>,
     permission_mode: Option<String>,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentReasoningEffortSummary {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentModelSummary {
+    id: String,
+    label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_window_tokens: Option<u64>,
+    is_default: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_reasoning_effort: Option<String>,
+    supported_reasoning_efforts: Vec<AgentReasoningEffortSummary>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentModelCatalog {
+    provider_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_model_id: Option<String>,
+    models: Vec<AgentModelSummary>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,6 +213,7 @@ pub(crate) fn router(
         },
     };
     Router::new()
+        .route("/api/agents/{provider_id}/models", get(agent_models))
         .route("/api/agents/run", post(start_agent_run))
         .route("/api/agents/run/{run_id}/events", get(agent_run_events))
         .route(
@@ -188,6 +226,116 @@ pub(crate) fn router(
         )
         .route("/api/agents/run/{run_id}", delete(cancel_agent_run))
         .with_state(state)
+}
+
+async fn agent_models(
+    State(state): State<AgentRunState>,
+    AxumPath(provider_id): AxumPath<String>,
+) -> AgentApiResult<Json<AgentModelCatalog>> {
+    if !experimental_agent_run_enabled() {
+        return Err(AgentApiError::forbidden(format!(
+            "实验 Agent 运行未开启，请显式设置 {EXPERIMENTAL_AGENT_RUN_ENV}=1"
+        )));
+    }
+    let cwd =
+        env::current_dir().map_err(|_| AgentApiError::internal("无法读取模型目录工作目录"))?;
+    match provider_id.trim() {
+        GROK_BUILD_PROVIDER_ID => {
+            let command = (state.command_resolvers.grok)()
+                .ok_or_else(|| AgentApiError::bad_request("未找到 grok 命令"))?;
+            let arguments = grok_acp_arguments("default");
+            let mut client = AcpStdioClient::spawn(&command, &arguments, &cwd)
+                .await
+                .map_err(|error| AgentApiError::internal(error.public_message()))?;
+            let result = async {
+                let initialize = client.initialize(env!("CARGO_PKG_VERSION")).await?;
+                let auth_method_id = initialize
+                    .auth_methods
+                    .iter()
+                    .find(|method| method.id == "cached_token")
+                    .map(|method| method.id.as_str())
+                    .ok_or_else(|| {
+                        AcpError::Protocol(
+                            "Grok Build 没有可用缓存认证，请先运行 grok login".to_string(),
+                        )
+                    })?;
+                client.authenticate(auth_method_id).await?;
+                Ok::<_, AcpError>(initialize)
+            }
+            .await;
+            client.shutdown().await;
+            let initialize =
+                result.map_err(|error| AgentApiError::internal(error.public_message()))?;
+            let default_model_id = initialize.current_model_id.clone();
+            let models = initialize
+                .models
+                .into_iter()
+                .map(|model| AgentModelSummary {
+                    is_default: default_model_id.as_deref() == Some(model.model_id.as_str()),
+                    id: model.model_id,
+                    label: model.name,
+                    description: None,
+                    context_window_tokens: model.context_tokens,
+                    default_reasoning_effort: None,
+                    supported_reasoning_efforts: Vec::new(),
+                })
+                .collect();
+            Ok(Json(AgentModelCatalog {
+                provider_id: GROK_BUILD_PROVIDER_ID.to_string(),
+                default_model_id,
+                models,
+            }))
+        }
+        OPENAI_CODEX_PROVIDER_ID => {
+            let command = (state.command_resolvers.codex)().ok_or_else(|| {
+                AgentApiError::bad_request(
+                    "未找到可由 CodeM 启动的 Codex CLI，请安装独立 CLI 或设置 CODEX_CLI_PATH",
+                )
+            })?;
+            let mut client = CodexStdioClient::spawn(&command, &cwd)
+                .await
+                .map_err(|error| AgentApiError::internal(error.public_message()))?;
+            let result = async {
+                client.initialize(env!("CARGO_PKG_VERSION")).await?;
+                client.list_models().await
+            }
+            .await;
+            client.shutdown().await;
+            let codex_models =
+                result.map_err(|error| AgentApiError::internal(error.public_message()))?;
+            let default_model_id = codex_models
+                .iter()
+                .find(|model| model.is_default)
+                .map(|model| model.id.clone());
+            let models = codex_models
+                .into_iter()
+                .map(|model| AgentModelSummary {
+                    id: model.id,
+                    label: model.label,
+                    description: model.description,
+                    context_window_tokens: None,
+                    is_default: model.is_default,
+                    default_reasoning_effort: model.default_reasoning_effort,
+                    supported_reasoning_efforts: model
+                        .supported_reasoning_efforts
+                        .into_iter()
+                        .map(|effort| AgentReasoningEffortSummary {
+                            id: effort.id,
+                            description: effort.description,
+                        })
+                        .collect(),
+                })
+                .collect();
+            Ok(Json(AgentModelCatalog {
+                provider_id: OPENAI_CODEX_PROVIDER_ID.to_string(),
+                default_model_id,
+                models,
+            }))
+        }
+        _ => Err(AgentApiError::bad_request(
+            "当前 Provider 不提供动态模型目录",
+        )),
+    }
 }
 
 async fn start_agent_run(
@@ -231,6 +379,13 @@ async fn start_agent_run(
     }
     let working_directory = resolve_working_directory(&payload.working_directory)?;
     let session_id = normalize_optional_id(payload.session_id, "sessionId")?;
+    let model = normalize_optional_id(payload.model, "model")?;
+    let reasoning_effort = normalize_optional_id(payload.reasoning_effort, "reasoningEffort")?;
+    if driver == AgentDriverKind::GrokAcp && reasoning_effort.is_some() {
+        return Err(AgentApiError::bad_request(
+            "当前 Grok Build 模型目录未提供 reasoning effort 能力",
+        ));
+    }
     let permission_mode = normalize_agent_permission_mode(payload.permission_mode.as_deref())
         .ok_or_else(|| {
             AgentApiError::bad_request("permissionMode 仅支持 default、auto 或 bypassPermissions")
@@ -270,6 +425,7 @@ async fn start_agent_run(
                     prompt,
                     requested_session_id: session_id,
                     permission_mode,
+                    model,
                     cancel: cancel_receiver,
                     control: control_receiver,
                 })
@@ -284,6 +440,8 @@ async fn start_agent_run(
                     prompt,
                     requested_session_id: session_id,
                     permission_mode,
+                    model,
+                    reasoning_effort,
                     cancel: cancel_receiver,
                     control: control_receiver,
                 })
@@ -304,6 +462,7 @@ async fn execute_acp_run(task: AcpRunTask) {
         prompt,
         requested_session_id,
         permission_mode,
+        model,
         cancel,
         mut control,
     } = task;
@@ -352,6 +511,18 @@ async fn execute_acp_run(task: AcpRunTask) {
                 .await
                 .map_err(public_acp_error)?
         };
+        if let Some(model) = model.as_deref() {
+            if should_set_acp_model(
+                Some(model),
+                session.current_model_id.as_deref(),
+                initialize.current_model_id.as_deref(),
+            ) {
+                client
+                    .set_model(&session.session_id, model)
+                    .await
+                    .map_err(public_acp_error)?;
+            }
+        }
         state.push_event(
             &run_id,
             AgentRunEvent::Session {
@@ -427,6 +598,8 @@ async fn execute_codex_run(task: CodexRunTask) {
         prompt,
         requested_session_id,
         permission_mode,
+        model,
+        reasoning_effort,
         cancel,
         mut control,
     } = task;
@@ -480,6 +653,8 @@ async fn execute_codex_run(task: CodexRunTask) {
                 &working_directory,
                 &prompt,
                 permission_mode,
+                model.as_deref(),
+                reasoning_effort.as_deref(),
                 cancel,
                 &mut control,
                 |event| {
@@ -1182,6 +1357,14 @@ fn grok_acp_arguments(permission_mode: &'static str) -> [&'static str; 4] {
     ["--permission-mode", permission_mode, "agent", "stdio"]
 }
 
+fn should_set_acp_model(
+    requested_model: Option<&str>,
+    session_model: Option<&str>,
+    initialize_model: Option<&str>,
+) -> bool {
+    requested_model.is_some_and(|requested| session_model.or(initialize_model) != Some(requested))
+}
+
 pub(crate) fn experimental_agent_run_enabled() -> bool {
     experimental_agent_run_enabled_value(env::var(EXPERIMENTAL_AGENT_RUN_ENV).ok().as_deref())
 }
@@ -1199,7 +1382,8 @@ fn experimental_agent_run_enabled_value(value: Option<&str>) -> bool {
 mod tests {
     use super::{
         cancelled_before_prompt_outcome, experimental_agent_run_enabled_value, grok_acp_arguments,
-        AcpEventMapper, AgentRunRecord, AgentRunState, CodexEventMapper, CommandResolvers,
+        should_set_acp_model, AcpEventMapper, AgentRunRecord, AgentRunState, CodexEventMapper,
+        CommandResolvers,
     };
     use crate::{
         acp::{AcpRuntimeEvent, AcpToolCall, AcpToolCallUpdate},
@@ -1226,6 +1410,26 @@ mod tests {
             grok_acp_arguments("bypassPermissions"),
             ["--permission-mode", "bypassPermissions", "agent", "stdio"]
         );
+    }
+
+    #[test]
+    fn grok_sets_only_a_model_that_differs_from_the_active_session_model() {
+        assert!(!should_set_acp_model(None, Some("grok-default"), None));
+        assert!(!should_set_acp_model(
+            Some("grok-default"),
+            Some("grok-default"),
+            Some("other-default"),
+        ));
+        assert!(!should_set_acp_model(
+            Some("grok-default"),
+            None,
+            Some("grok-default"),
+        ));
+        assert!(should_set_acp_model(
+            Some("grok-fast"),
+            Some("grok-default"),
+            Some("grok-default"),
+        ));
     }
 
     #[test]

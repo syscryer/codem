@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
-import { ArrowUp, Bot, Braces, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, Shield, Square, SquareTerminal, Unlock, X, Zap } from 'lucide-react';
-import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, permissionMenuModes } from '../constants';
+import { ArrowUp, Bot, Braces, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, RefreshCw, Shield, Square, SquareTerminal, Unlock, X, Zap } from 'lucide-react';
+import { CLAUDE_CODE_PROVIDER_ID, DEFAULT_MODEL_VALUE, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
 import { buildComposerContextUsage, shouldRefreshNativeContextOnOpen } from '../lib/composer-context-usage';
@@ -21,8 +21,9 @@ import { WorkbenchFileIcon } from './WorkbenchFileIcon';
 import { hasClaudeContext1mOptions } from '../lib/claude-model-selection';
 import { applySlashCommandSelection, getNextSlashCommandIndex } from '../lib/slash-command-editor';
 import { getSlashDismissResetKey, resolveSlashCommandSubmission } from '../lib/slash-command-submit';
+import { getAgentModelForSelection } from '../lib/agent-model-selection';
 import { modelContext1mMenuActionLabel, modelMenuDescriptionLabel, modelMenuPrimaryLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
-import type { AgentProviderDescriptor, AgentType, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
+import type { AgentModelCatalog, AgentModelOption, AgentProviderDescriptor, AgentType, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingComposerAttachment =
   | {
@@ -95,6 +96,12 @@ type ComposerProps = {
   model: string;
   effort: ClaudeEffortSelection;
   models: ClaudeModelOption[];
+  agentModel: string;
+  agentReasoningEffort: string;
+  agentModelCatalog: AgentModelCatalog | null;
+  agentModelsLoading: boolean;
+  agentModelsError: string;
+  agentModelSelectionWarning: string;
   turns: ConversationTurn[];
   claudeContextState?: ClaudeContextRequestState;
   isRunning: boolean;
@@ -121,6 +128,9 @@ type ComposerProps = {
   onSelectPermissionMode: (mode: PermissionMode) => void;
   onSelectModel: (model: string) => void;
   onSelectEffort: (effort: ClaudeEffortSelection) => void;
+  onSelectAgentModel: (model: string) => void;
+  onSelectAgentReasoningEffort: (effort: string) => void;
+  onRetryAgentModels: () => void;
   onOpenPlugins: () => void;
   onCreateNewChat: () => Promise<void> | void;
   onStopRun: () => void | Promise<void>;
@@ -142,6 +152,12 @@ export function Composer({
   model,
   effort,
   models,
+  agentModel,
+  agentReasoningEffort,
+  agentModelCatalog,
+  agentModelsLoading,
+  agentModelsError,
+  agentModelSelectionWarning,
   turns,
   claudeContextState,
   isRunning,
@@ -161,6 +177,9 @@ export function Composer({
   onSelectPermissionMode,
   onSelectModel,
   onSelectEffort,
+  onSelectAgentModel,
+  onSelectAgentReasoningEffort,
+  onRetryAgentModels,
   onOpenPlugins,
   onCreateNewChat,
   onStopRun,
@@ -246,6 +265,13 @@ export function Composer({
   const providerSelectionDisabled =
     !canSelectProvider || isRunning || (providersLoading && providers.length === 0);
   const permissionSelectionDisabled = agent !== 'claude' && isRunning;
+  const selectedAgentModelOption = agentModelCatalog
+    ? getAgentModelForSelection(agentModelCatalog, agentModel)
+    : undefined;
+  const defaultAgentModelOption = agentModelCatalog
+    ? getAgentModelForSelection(agentModelCatalog, DEFAULT_MODEL_VALUE)
+    : undefined;
+  const agentReasoningEffortOptions = selectedAgentModelOption?.supportedReasoningEfforts ?? [];
   const selectedModelOption = useMemo(
     () => models.find((option) => option.id === model),
     [model, models],
@@ -287,6 +313,14 @@ export function Composer({
     }
     setPermissionMenuOpen(false);
   }, [permissionSelectionDisabled]);
+
+  useEffect(() => {
+    if (!isRunning) {
+      return;
+    }
+    setModelMenuOpen(false);
+    setEffortMenuOpen(false);
+  }, [isRunning]);
 
   useEffect(() => {
     if (allowAttachments || attachments.length === 0) {
@@ -1449,7 +1483,142 @@ export function Composer({
                   shouldRefreshClaudeContextOnOpen={shouldRefreshClaudeContextOnOpen}
                 />
               </>
-            ) : null}
+            ) : (
+              <>
+                <div className="model-picker" ref={modelMenuRef}>
+                  <PopoverPortal open={modelMenuOpen} anchorRef={modelMenuRef} placement="top-end">
+                    <div className="model-menu model-menu-compact" role="menu" aria-label={`${providerName} 模型`}>
+                      <div className="model-menu-title">模型</div>
+                      <button
+                        type="button"
+                        className="model-menu-item"
+                        role="menuitemradio"
+                        aria-checked={agentModel === DEFAULT_MODEL_VALUE}
+                        disabled={isRunning}
+                        onClick={() => {
+                          onSelectAgentModel(DEFAULT_MODEL_VALUE);
+                          setModelMenuOpen(false);
+                        }}
+                      >
+                        <span className="model-menu-item-copy">
+                          <span>默认</span>
+                          <small>
+                            {defaultAgentModelOption
+                              ? `跟随 Provider 当前默认模型（${defaultAgentModelOption.label}）`
+                              : '跟随 Provider 当前默认模型'}
+                          </small>
+                        </span>
+                        {agentModel === DEFAULT_MODEL_VALUE ? <Check className="model-check" size={15} /> : null}
+                      </button>
+                      {agentModelsLoading ? (
+                        <div className="provider-menu-empty">正在读取模型目录...</div>
+                      ) : null}
+                      {agentModelsError ? (
+                        <>
+                          <div className="provider-menu-empty" role="alert">{agentModelsError}</div>
+                          <button
+                            type="button"
+                            className="model-menu-item"
+                            onClick={onRetryAgentModels}
+                          >
+                            <RefreshCw size={14} />
+                            <span>重试</span>
+                          </button>
+                        </>
+                      ) : null}
+                      {agentModelSelectionWarning ? (
+                        <div className="provider-menu-empty" role="status">{agentModelSelectionWarning}</div>
+                      ) : null}
+                      {agentModelCatalog?.models.map((item) => {
+                        const selected = agentModel === item.id;
+                        const description = agentModelDescription(item);
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            className="model-menu-item"
+                            role="menuitemradio"
+                            aria-checked={selected}
+                            disabled={isRunning}
+                            onClick={() => {
+                              onSelectAgentModel(item.id);
+                              setModelMenuOpen(false);
+                            }}
+                          >
+                            <span className="model-menu-item-copy">
+                              <span>{item.label}</span>
+                              {description ? <small>{description}</small> : null}
+                            </span>
+                            {selected ? <Check className="model-check" size={15} /> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </PopoverPortal>
+
+                  <button
+                    type="button"
+                    className="model-trigger"
+                    aria-expanded={modelMenuOpen}
+                    aria-label={`${providerName} model`}
+                    disabled={isRunning}
+                    title={
+                      isRunning
+                        ? `${providerName} 运行中，模型已锁定`
+                        : agentModelSelectionWarning || agentModelsError || `${providerName} model`
+                    }
+                    onClick={() => setModelMenuOpen((value) => !value)}
+                  >
+                    {agentModelsLoading ? <Loader2 size={13} className="spin-icon" /> : null}
+                    <span>{agentModelTriggerLabel(agentModel, selectedAgentModelOption)}</span>
+                    <span className="model-trigger-chevron" aria-hidden="true" />
+                  </button>
+                </div>
+                {agent === 'codex' && agentReasoningEffortOptions.length > 0 ? (
+                  <div className="effort-picker" ref={effortMenuRef}>
+                    <PopoverPortal open={effortMenuOpen} anchorRef={effortMenuRef} placement="top-end">
+                      <div className="effort-menu" role="menu" aria-label="Codex 思考级别">
+                        <div className="model-menu-title">思考级别</div>
+                        {agentReasoningEffortOptions.map((item) => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            className="effort-menu-item"
+                            role="menuitemradio"
+                            aria-checked={agentReasoningEffort === item.id}
+                            disabled={isRunning}
+                            onClick={() => {
+                              onSelectAgentReasoningEffort(item.id);
+                              setEffortMenuOpen(false);
+                            }}
+                          >
+                            <Brain size={14} />
+                            <span className="model-menu-item-copy">
+                              <span>{agentEffortLabel(item.id)}</span>
+                              {item.description ? <small>{item.description}</small> : null}
+                            </span>
+                            {agentReasoningEffort === item.id ? <Check className="model-check" size={15} /> : null}
+                          </button>
+                        ))}
+                      </div>
+                    </PopoverPortal>
+
+                    <button
+                      type="button"
+                      className="effort-trigger"
+                      aria-expanded={effortMenuOpen}
+                      disabled={isRunning}
+                      title={isRunning ? 'Codex 运行中，思考级别已锁定' : 'Codex reasoning effort'}
+                      onClick={() => setEffortMenuOpen((value) => !value)}
+                    >
+                      <Brain size={14} />
+                      <span>{agentEffortLabel(agentReasoningEffort)}</span>
+                      <span className="model-trigger-chevron" aria-hidden="true" />
+                    </button>
+                  </div>
+                ) : null}
+              </>
+            )}
             <button type="button" className="plain-icon" title="语音输入暂未开放" aria-label="语音输入暂未开放">
               <Mic size={15} />
             </button>
@@ -1648,6 +1817,29 @@ function formatAttachmentSize(size: number) {
 
 function effortLabel(effort: ClaudeEffortSelection) {
   return claudeEffortOptions.find((item) => item.value === effort)?.label ?? '默认';
+}
+
+function agentModelTriggerLabel(modelId: string, selectedModel?: AgentModelOption) {
+  return modelId === DEFAULT_MODEL_VALUE ? '默认' : selectedModel?.label ?? modelId;
+}
+
+function agentModelDescription(model: AgentModelOption) {
+  const context = model.contextWindowTokens
+    ? `${model.contextWindowTokens.toLocaleString('en-US')} tokens`
+    : '';
+  return [model.isDefault ? 'Provider 当前默认' : '', model.description, context]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function agentEffortLabel(effort: string) {
+  if (!effort) {
+    return '默认';
+  }
+  if (effort.toLowerCase() === 'xhigh') {
+    return 'XHigh';
+  }
+  return `${effort.charAt(0).toUpperCase()}${effort.slice(1)}`;
 }
 
 function attachmentLabel(attachment: PendingComposerAttachment) {

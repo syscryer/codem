@@ -408,9 +408,18 @@ export default function App() {
     providersError: agentProvidersError,
     draftProviderId,
     permissionMode: genericAgentPermissionMode,
+    model: genericAgentModel,
+    reasoningEffort: genericAgentReasoningEffort,
+    modelCatalog: genericAgentModelCatalog,
+    modelsLoading: genericAgentModelsLoading,
+    modelsError: genericAgentModelsError,
+    modelSelectionWarning: genericAgentModelSelectionWarning,
     selectDraftProvider,
     resetDraftProvider,
     handlePermissionModeSelect: handleGenericAgentPermissionModeSelect,
+    handleModelSelect: handleGenericAgentModelSelect,
+    handleReasoningEffortSelect: handleGenericAgentReasoningEffortSelect,
+    retryModelCatalog: retryGenericAgentModelCatalog,
     isRunning: genericAgentIsRunning,
     runningThreadIds: genericAgentRunningThreadIds,
     activeRunsByThreadId: genericAgentActiveRunsByThreadId,
@@ -1695,6 +1704,12 @@ export default function App() {
                 model={model}
                 effort={effort}
                 models={models}
+                agentModel={genericAgentModel}
+                agentReasoningEffort={genericAgentReasoningEffort}
+                agentModelCatalog={genericAgentModelCatalog}
+                agentModelsLoading={genericAgentModelsLoading}
+                agentModelsError={genericAgentModelsError}
+                agentModelSelectionWarning={genericAgentModelSelectionWarning}
                 turns={activeThread?.turns ?? []}
                 claudeContextState={activeClaudeContextState}
                 isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
@@ -1714,6 +1729,9 @@ export default function App() {
                 onSelectPermissionMode={handlePermissionModeSelect}
                 onSelectModel={setModel}
                 onSelectEffort={setEffort}
+                onSelectAgentModel={handleGenericAgentModelSelect}
+                onSelectAgentReasoningEffort={handleGenericAgentReasoningEffortSelect}
+                onRetryAgentModels={retryGenericAgentModelCatalog}
                 onOpenPlugins={() => openSettings('plugins')}
                 onCreateNewChat={() => void handleCreatePrimaryChat()}
                 onStopRun={() => handleStopRun(activeThreadId ?? undefined)}

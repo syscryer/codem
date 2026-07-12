@@ -27,6 +27,7 @@ type ThreadMetadataPatch = {
   sessionId?: string | null;
   workingDirectory?: string;
   model?: string | null;
+  reasoningEffort?: string | null;
   permissionMode?: PermissionMode;
 };
 
@@ -38,6 +39,8 @@ type CreateThreadOptions = {
   showToast?: boolean;
   providerId?: string;
   permissionMode?: PermissionMode;
+  model?: string;
+  reasoningEffort?: string;
 };
 
 const MAX_DEBUG_EVENTS = 220;
@@ -537,6 +540,9 @@ export function useWorkspaceState() {
                 sessionId: hasOwn(payload, 'sessionId') ? payload.sessionId ?? '' : thread.sessionId,
                 workingDirectory: payload.workingDirectory ?? thread.workingDirectory,
                 model: hasOwn(payload, 'model') ? payload.model ?? undefined : thread.model,
+                reasoningEffort: hasOwn(payload, 'reasoningEffort')
+                  ? payload.reasoningEffort ?? undefined
+                  : thread.reasoningEffort,
                 permissionMode: payload.permissionMode ?? thread.permissionMode,
                 updatedAt: new Date().toISOString(),
                 updatedLabel: '现在',
@@ -558,6 +564,9 @@ export function useWorkspaceState() {
           sessionId: hasOwn(payload, 'sessionId') ? payload.sessionId ?? '' : existing.sessionId,
           workingDirectory: payload.workingDirectory ?? existing.workingDirectory,
           model: hasOwn(payload, 'model') ? payload.model ?? undefined : existing.model,
+          reasoningEffort: hasOwn(payload, 'reasoningEffort')
+            ? payload.reasoningEffort ?? undefined
+            : existing.reasoningEffort,
           permissionMode: payload.permissionMode ?? existing.permissionMode,
         },
       };
@@ -569,6 +578,8 @@ export function useWorkspaceState() {
       ...(title?.trim() ? { title: title.trim() } : {}),
       ...(options?.providerId ? { providerId: options.providerId } : {}),
       ...(options?.permissionMode ? { permissionMode: options.permissionMode } : {}),
+      ...(options?.model ? { model: options.model } : {}),
+      ...(options?.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     };
     const response = await fetch(`/api/projects/${projectId}/threads`, {
       method: 'POST',

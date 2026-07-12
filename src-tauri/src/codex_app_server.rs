@@ -93,6 +93,24 @@ pub struct CodexProbeSummary {
     pub requires_openai_auth: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexReasoningEffortSummary {
+    pub id: String,
+    pub description: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexModelSummary {
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub is_default: bool,
+    pub default_reasoning_effort: Option<String>,
+    pub supported_reasoning_efforts: Vec<CodexReasoningEffortSummary>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct CodexTurnPolicy {
     pub approval_policy: &'static str,
@@ -267,6 +285,56 @@ where
         })
     }
 
+    pub async fn list_models(&mut self) -> Result<Vec<CodexModelSummary>, CodexAppServerError> {
+        let mut models = Vec::new();
+        let mut seen_model_ids = HashSet::new();
+        let mut seen_cursors = HashSet::new();
+        let mut cursor = None::<String>;
+
+        for _ in 0..100 {
+            let result = self
+                .request(
+                    "model/list",
+                    json!({
+                        "cursor": cursor,
+                        "includeHidden": false,
+                        "limit": 100,
+                    }),
+                    REQUEST_TIMEOUT,
+                )
+                .await?;
+            let page = result
+                .get("data")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    CodexAppServerError::Protocol("model/list 响应缺少 data".to_string())
+                })?;
+            for value in page {
+                let Some(model) = summarize_model(value) else {
+                    continue;
+                };
+                if seen_model_ids.insert(model.id.clone()) {
+                    models.push(model);
+                }
+            }
+
+            let next_cursor = optional_non_empty_string(result.get("nextCursor"));
+            let Some(next_cursor) = next_cursor else {
+                return Ok(models);
+            };
+            if !seen_cursors.insert(next_cursor.clone()) {
+                return Err(CodexAppServerError::Protocol(
+                    "model/list 返回了重复游标".to_string(),
+                ));
+            }
+            cursor = Some(next_cursor);
+        }
+
+        Err(CodexAppServerError::Protocol(
+            "model/list 分页超过安全上限".to_string(),
+        ))
+    }
+
     pub async fn start_or_resume_thread(
         &mut self,
         requested_thread_id: Option<&str>,
@@ -304,6 +372,8 @@ where
         cwd: &Path,
         text: &str,
         permission_mode: &str,
+        model: Option<&str>,
+        reasoning_effort: Option<&str>,
         mut cancel: watch::Receiver<bool>,
         control: &mut mpsc::UnboundedReceiver<AgentControlCommand>,
         mut on_event: F,
@@ -321,19 +391,24 @@ where
         }
         let policy = codex_turn_policy(permission_mode, cwd)
             .ok_or_else(|| CodexAppServerError::Protocol("Codex 权限模式不受支持".to_string()))?;
-        let turn_request_id = self
-            .send_request(
-                "turn/start",
-                json!({
-                    "threadId": thread_id,
-                    "input": [{ "type": "text", "text": text }],
-                    "cwd": cwd.to_string_lossy(),
-                    "approvalPolicy": policy.approval_policy,
-                    "sandboxPolicy": policy.sandbox_policy,
-                }),
-            )
-            .await?;
+        let mut turn_params = json!({
+            "threadId": thread_id,
+            "input": [{ "type": "text", "text": text }],
+            "cwd": cwd.to_string_lossy(),
+            "approvalPolicy": policy.approval_policy,
+            "sandboxPolicy": policy.sandbox_policy,
+        });
+        if let Some(params) = turn_params.as_object_mut() {
+            if let Some(model) = model {
+                params.insert("model".to_string(), json!(model));
+            }
+            if let Some(reasoning_effort) = reasoning_effort {
+                params.insert("effort".to_string(), json!(reasoning_effort));
+            }
+        }
+        let turn_request_id = self.send_request("turn/start", turn_params).await?;
         let mut turn_id = None::<String>;
+        let mut turn_started = false;
         let mut collected_text = String::new();
         let mut text_truncated = false;
         let mut last_error = None::<String>;
@@ -353,11 +428,13 @@ where
                 changed = cancel.changed(), if cancel_channel_open && !cancel_sent => {
                     match changed {
                         Ok(()) if *cancel.borrow() => {
-                            if let Some(active_turn_id) = turn_id.as_deref() {
-                                interrupt_request_ids.insert(
-                                    self.send_interrupt(thread_id, active_turn_id).await?
-                                );
-                                cancel_sent = true;
+                            if turn_started {
+                                if let Some(active_turn_id) = turn_id.as_deref() {
+                                    interrupt_request_ids.insert(
+                                        self.send_interrupt(thread_id, active_turn_id).await?
+                                    );
+                                    cancel_sent = true;
+                                }
                             }
                         }
                         Ok(()) => {}
@@ -388,7 +465,7 @@ where
                                 .and_then(Value::as_str)
                                 .map(ToString::to_string)
                                 .or(turn_id);
-                            if *cancel.borrow() && !cancel_sent {
+                            if *cancel.borrow() && turn_started && !cancel_sent {
                                 if let Some(active_turn_id) = turn_id.as_deref() {
                                     interrupt_request_ids.insert(
                                         self.send_interrupt(thread_id, active_turn_id).await?
@@ -412,6 +489,14 @@ where
                             ).await?;
                         }
                         CodexMessage::Notification { method, params } => {
+                            if method == "turn/started"
+                                && params
+                                    .get("threadId")
+                                    .and_then(Value::as_str)
+                                    .is_none_or(|value| value == thread_id)
+                            {
+                                turn_started = true;
+                            }
                             let terminal = process_notification(
                                 &method,
                                 &params,
@@ -425,7 +510,11 @@ where
                                 &mut pending_interactions,
                                 &mut on_event,
                             )?;
-                            if terminal.is_none() && *cancel.borrow() && !cancel_sent {
+                            if terminal.is_none()
+                                && *cancel.borrow()
+                                && turn_started
+                                && !cancel_sent
+                            {
                                 if let Some(active_turn_id) = turn_id.as_deref() {
                                     interrupt_request_ids.insert(
                                         self.send_interrupt(thread_id, active_turn_id).await?
@@ -772,6 +861,10 @@ impl CodexStdioClient {
         self.connection.account_summary().await
     }
 
+    pub async fn list_models(&mut self) -> Result<Vec<CodexModelSummary>, CodexAppServerError> {
+        self.connection.list_models().await
+    }
+
     pub async fn start_or_resume_thread(
         &mut self,
         requested_thread_id: Option<&str>,
@@ -788,6 +881,8 @@ impl CodexStdioClient {
         cwd: &Path,
         text: &str,
         permission_mode: &str,
+        model: Option<&str>,
+        reasoning_effort: Option<&str>,
         cancel: watch::Receiver<bool>,
         control: &mut mpsc::UnboundedReceiver<AgentControlCommand>,
         on_event: F,
@@ -801,6 +896,8 @@ impl CodexStdioClient {
                 cwd,
                 text,
                 permission_mode,
+                model,
+                reasoning_effort,
                 cancel,
                 control,
                 on_event,
@@ -1245,6 +1342,82 @@ fn build_user_input_response(answers: Map<String, Value>) -> Result<Value, Codex
     Ok(json!({ "answers": normalized }))
 }
 
+fn summarize_model(value: &Value) -> Option<CodexModelSummary> {
+    if value
+        .get("hidden")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let id = value.get("id")?.as_str()?.trim();
+    if id.is_empty() || id.len() > 512 {
+        return None;
+    }
+    let label = value
+        .get("displayName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .or_else(|| {
+            value
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|label| !label.is_empty())
+        })
+        .unwrap_or(id);
+    let default_reasoning_effort = optional_non_empty_string(value.get("defaultReasoningEffort"));
+    let mut seen_efforts = HashSet::new();
+    let mut supported_reasoning_efforts = value
+        .get("supportedReasoningEfforts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(MAX_JSON_ARRAY_ITEMS)
+        .filter_map(|effort| {
+            let effort_id = effort.get("reasoningEffort")?.as_str()?.trim();
+            if effort_id.is_empty() || effort_id.len() > 512 || !seen_efforts.insert(effort_id) {
+                return None;
+            }
+            Some(CodexReasoningEffortSummary {
+                id: effort_id.to_string(),
+                description: optional_non_empty_string(effort.get("description"))
+                    .map(|value| bounded_string(&value, MAX_JSON_STRING_BYTES)),
+            })
+        })
+        .collect::<Vec<_>>();
+    if let Some(default_effort) = default_reasoning_effort.as_deref() {
+        if seen_efforts.insert(default_effort) {
+            supported_reasoning_efforts.push(CodexReasoningEffortSummary {
+                id: default_effort.to_string(),
+                description: None,
+            });
+        }
+    }
+
+    Some(CodexModelSummary {
+        id: id.to_string(),
+        label: bounded_string(label, MAX_JSON_STRING_BYTES),
+        description: optional_non_empty_string(value.get("description"))
+            .map(|value| bounded_string(&value, MAX_JSON_STRING_BYTES)),
+        is_default: value
+            .get("isDefault")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        default_reasoning_effort,
+        supported_reasoning_efforts,
+    })
+}
+
+fn optional_non_empty_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
 fn parse_message(line: &str) -> Result<CodexMessage, CodexAppServerError> {
     let payload = serde_json::from_str::<Value>(line)?;
     let object = payload.as_object().ok_or_else(|| {
@@ -1537,6 +1710,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn model_list_paginates_and_keeps_only_public_picker_fields() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client = tokio::spawn(async move { connection.list_models().await });
+
+        let first_page = read_wire(&mut lines).await;
+        assert_eq!(first_page["method"], "model/list");
+        assert_eq!(first_page["params"]["includeHidden"], false);
+        assert_eq!(first_page["params"]["limit"], 100);
+        assert!(first_page["params"]["cursor"].is_null());
+        write_wire(
+            &mut writer,
+            json!({
+                "id": first_page["id"],
+                "result": {
+                    "data": [
+                        {
+                            "id": "gpt-codex-default",
+                            "model": "gpt-codex-default",
+                            "displayName": "GPT Codex Default",
+                            "description": "Default coding model",
+                            "hidden": false,
+                            "isDefault": true,
+                            "defaultReasoningEffort": "medium",
+                            "supportedReasoningEfforts": [
+                                { "reasoningEffort": "low", "description": "Faster" },
+                                { "reasoningEffort": "medium", "description": "Balanced" }
+                            ],
+                            "privateMetadata": "must-not-escape"
+                        },
+                        {
+                            "id": "hidden-model",
+                            "model": "hidden-model",
+                            "displayName": "Hidden",
+                            "description": "Hidden",
+                            "hidden": true,
+                            "isDefault": false,
+                            "defaultReasoningEffort": "high",
+                            "supportedReasoningEfforts": []
+                        }
+                    ],
+                    "nextCursor": "page-2"
+                }
+            }),
+        )
+        .await;
+
+        let second_page = read_wire(&mut lines).await;
+        assert_eq!(second_page["method"], "model/list");
+        assert_eq!(second_page["params"]["cursor"], "page-2");
+        write_wire(
+            &mut writer,
+            json!({
+                "id": second_page["id"],
+                "result": {
+                    "data": [{
+                        "id": "gpt-codex-fast",
+                        "model": "gpt-codex-fast",
+                        "displayName": "GPT Codex Fast",
+                        "description": "Fast coding model",
+                        "hidden": false,
+                        "isDefault": false,
+                        "defaultReasoningEffort": "low",
+                        "supportedReasoningEfforts": []
+                    }],
+                    "nextCursor": null
+                }
+            }),
+        )
+        .await;
+
+        let models = client.await.expect("client task").expect("model catalog");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gpt-codex-default");
+        assert!(models[0].is_default);
+        assert_eq!(
+            models[0].default_reasoning_effort.as_deref(),
+            Some("medium")
+        );
+        assert_eq!(models[0].supported_reasoning_efforts.len(), 2);
+        assert_eq!(models[1].id, "gpt-codex-fast");
+        assert_eq!(models[1].supported_reasoning_efforts[0].id, "low");
+        let serialized = serde_json::to_string(&models).expect("serialize model catalog");
+        assert!(!serialized.contains("privateMetadata"));
+        assert!(!serialized.contains("must-not-escape"));
+    }
+
+    #[tokio::test]
     async fn streams_text_tools_and_resolves_codex_interactions() {
         let (mut connection, mut lines, mut writer) = mock_connection();
         let (cancel_sender, cancel_receiver) = watch::channel(false);
@@ -1550,6 +1810,8 @@ mod tests {
                     &cwd,
                     "inspect the project",
                     "auto",
+                    Some("gpt-codex-test"),
+                    Some("high"),
                     cancel_receiver,
                     &mut control_receiver,
                     |event| {
@@ -1565,6 +1827,8 @@ mod tests {
         assert_eq!(start["params"]["approvalPolicy"], "on-request");
         assert_eq!(start["params"]["sandboxPolicy"]["type"], "workspaceWrite");
         assert_eq!(start["params"]["input"][0]["text"], "inspect the project");
+        assert_eq!(start["params"]["model"], "gpt-codex-test");
+        assert_eq!(start["params"]["effort"], "high");
         write_wire(
             &mut writer,
             json!({ "id": start["id"], "result": { "turn": { "id": "turn-1" } } }),
@@ -1715,6 +1979,8 @@ mod tests {
                     &cwd,
                     "stop me",
                     "default",
+                    None,
+                    None,
                     cancel_receiver,
                     &mut control_receiver,
                     |_| {},
@@ -1724,7 +1990,22 @@ mod tests {
 
         let start = read_wire(&mut lines).await;
         cancel_sender.send(true).expect("request cancellation");
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        write_wire(
+            &mut writer,
+            json!({ "id": start["id"], "result": { "turn": { "id": "turn-1" } } }),
+        )
+        .await;
+        write_wire(
+            &mut writer,
+            json!({ "method": "turn/status/changed", "params": { "threadId": "thread-1", "turnId": "turn-1" } }),
+        )
+        .await;
+        assert!(
+            timeout(Duration::from_millis(20), read_wire(&mut lines))
+                .await
+                .is_err(),
+            "turn/start response alone must not trigger an early interrupt"
+        );
         write_wire(
             &mut writer,
             json!({ "method": "turn/started", "params": { "threadId": "thread-1", "turn": { "id": "turn-1" } } }),

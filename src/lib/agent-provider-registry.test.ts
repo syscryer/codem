@@ -3,11 +3,65 @@ import test from 'node:test';
 import type { AgentRunEvent, ClaudeEvent } from '../types.js';
 import {
   listSelectableAgentProviders,
+  normalizeAgentModelCatalog,
   normalizeAgentProviderRegistry,
   normalizeCodexAppServerProbe,
   normalizeGrokAcpProbe,
   resolveChatRuntimeKind,
 } from './agent-provider-registry.js';
+
+test('agent model catalog keeps dynamic public fields and Codex reasoning options', () => {
+  const catalog = normalizeAgentModelCatalog({
+    providerId: 'openai-codex',
+    defaultModelId: 'gpt-codex-default',
+    models: [{
+      id: 'gpt-codex-default',
+      label: 'GPT Codex Default',
+      description: 'Default coding model',
+      contextWindowTokens: 200000,
+      isDefault: true,
+      defaultReasoningEffort: 'medium',
+      supportedReasoningEfforts: [
+        { id: 'low', description: 'Faster' },
+        { id: 'medium', description: 'Balanced', private: 'drop-me' },
+      ],
+      account: 'drop-me',
+    }],
+    token: 'must-not-survive',
+  });
+
+  assert.equal(catalog.providerId, 'openai-codex');
+  assert.equal(catalog.defaultModelId, 'gpt-codex-default');
+  assert.equal(catalog.models[0]?.defaultReasoningEffort, 'medium');
+  assert.deepEqual(
+    catalog.models[0]?.supportedReasoningEfforts.map((effort) => effort.id),
+    ['low', 'medium'],
+  );
+  assert.doesNotMatch(JSON.stringify(catalog), /drop-me|must-not-survive|account|private/);
+});
+
+test('agent model catalog rejects duplicate model and reasoning ids', () => {
+  const model = {
+    id: 'model-1',
+    label: 'Model 1',
+    isDefault: true,
+    supportedReasoningEfforts: [],
+  };
+  assert.throws(
+    () => normalizeAgentModelCatalog({ providerId: 'grok-build', models: [model, model] }),
+    /ID 重复/,
+  );
+  assert.throws(
+    () => normalizeAgentModelCatalog({
+      providerId: 'openai-codex',
+      models: [{
+        ...model,
+        supportedReasoningEfforts: [{ id: 'high' }, { id: 'high' }],
+      }],
+    }),
+    /ID 重复/,
+  );
+});
 
 const claudeCapabilities = {
   sessions: {

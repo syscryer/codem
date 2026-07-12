@@ -2,6 +2,8 @@ import type {
   AgentCancelSupport,
   AgentCapabilities,
   AgentCapabilitySupport,
+  AgentModelCatalog,
+  AgentModelOption,
   AgentProviderDescriptor,
   AgentProviderLifecycle,
   AgentProviderRegistry,
@@ -28,6 +30,41 @@ export async function fetchAgentProviderRegistry(signal?: AbortSignal): Promise<
     throw new Error('读取 Agent Provider 列表失败');
   }
   return normalizeAgentProviderRegistry(await response.json());
+}
+
+export async function fetchAgentModelCatalog(
+  providerId: string,
+  signal?: AbortSignal,
+): Promise<AgentModelCatalog> {
+  const response = await fetch(`/api/agents/${encodeURIComponent(providerId)}/models`, { signal });
+  if (!response.ok) {
+    let message = '读取 Agent 模型目录失败';
+    try {
+      const payload = await response.json() as { error?: unknown };
+      if (typeof payload.error === 'string' && payload.error.trim()) {
+        message = payload.error.trim();
+      }
+    } catch {
+      // Keep the stable public fallback when the backend response is not JSON.
+    }
+    throw new Error(message);
+  }
+  return normalizeAgentModelCatalog(await response.json());
+}
+
+export function normalizeAgentModelCatalog(value: unknown): AgentModelCatalog {
+  const catalog = requireRecord(value, 'modelCatalog');
+  const providerId = requireString(catalog.providerId, 'modelCatalog.providerId');
+  const models = requireArray(catalog.models, 'modelCatalog.models').map((model, index) =>
+    normalizeAgentModel(model, `modelCatalog.models[${index}]`),
+  );
+  requireUniqueIds(models, 'modelCatalog.models');
+  const defaultModelId = optionalString(catalog.defaultModelId) ?? undefined;
+  return {
+    providerId,
+    ...(defaultModelId ? { defaultModelId } : {}),
+    models,
+  };
 }
 
 export async function probeGrokAgent(signal?: AbortSignal): Promise<GrokAcpProbeResult> {
@@ -160,6 +197,37 @@ function normalizeProvider(value: unknown, index: number): AgentProviderDescript
     available,
     selectable,
     capabilities: normalizeCapabilities(provider.capabilities, `providers[${index}].capabilities`),
+  };
+}
+
+function normalizeAgentModel(value: unknown, path: string): AgentModelOption {
+  const model = requireRecord(value, path);
+  const efforts = requireArray(
+    model.supportedReasoningEfforts,
+    `${path}.supportedReasoningEfforts`,
+  ).map((effort, index) => {
+    const record = requireRecord(effort, `${path}.supportedReasoningEfforts[${index}]`);
+    const description = optionalString(record.description) ?? undefined;
+    return {
+      id: requireString(record.id, `${path}.supportedReasoningEfforts[${index}].id`),
+      ...(description ? { description } : {}),
+    };
+  });
+  requireUniqueIds(efforts, `${path}.supportedReasoningEfforts`);
+  const description = optionalString(model.description) ?? undefined;
+  const defaultReasoningEffort = optionalString(model.defaultReasoningEffort) ?? undefined;
+  const contextWindowTokens = optionalNonNegativeInteger(
+    model.contextWindowTokens,
+    `${path}.contextWindowTokens`,
+  );
+  return {
+    id: requireString(model.id, `${path}.id`),
+    label: requireString(model.label, `${path}.label`),
+    ...(description ? { description } : {}),
+    ...(contextWindowTokens === null ? {} : { contextWindowTokens }),
+    isDefault: requireBoolean(model.isDefault, `${path}.isDefault`),
+    ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
+    supportedReasoningEfforts: efforts,
   };
 }
 

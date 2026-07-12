@@ -354,6 +354,21 @@ where
         summarize_session_result(&result, Some(session_id))
     }
 
+    pub async fn set_model(&mut self, session_id: &str, model_id: &str) -> Result<(), AcpError> {
+        // Grok Build 0.2.x still exposes this ACP compatibility method even though
+        // newer ACP drafts model selection as a config option.
+        self.request(
+            "session/set_model",
+            json!({
+                "sessionId": session_id,
+                "modelId": model_id,
+            }),
+            ACP_REQUEST_TIMEOUT,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn prompt_text(
         &mut self,
         session_id: &str,
@@ -861,6 +876,10 @@ impl AcpStdioClient {
         cwd: &Path,
     ) -> Result<AcpSessionSummary, AcpError> {
         self.connection.load_session(session_id, cwd).await
+    }
+
+    pub async fn set_model(&mut self, session_id: &str, model_id: &str) -> Result<(), AcpError> {
+        self.connection.set_model(session_id, model_id).await
     }
 
     pub async fn prompt_text(
@@ -1904,6 +1923,20 @@ mod tests {
                 }),
             )
             .await;
+
+            let set_model = read_json_line(&mut lines).await;
+            assert_eq!(set_model["method"], "session/set_model");
+            assert_eq!(set_model["params"]["sessionId"], "session-1");
+            assert_eq!(set_model["params"]["modelId"], "model-2");
+            write_json_line(
+                &mut server_writer,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": set_model["id"],
+                    "result": { "currentModelId": "model-2" }
+                }),
+            )
+            .await;
         });
 
         let mut client = AcpConnection::new(client_reader, client_writer);
@@ -1918,6 +1951,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(loaded.session_id, "session-1");
+        client.set_model("session-1", "model-2").await.unwrap();
         server.await.unwrap();
     }
 

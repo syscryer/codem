@@ -51,6 +51,27 @@ export type AgentProviderRegistry = {
   providers: AgentProviderDescriptor[];
 };
 
+export type AgentReasoningEffortOption = {
+  id: string;
+  description?: string;
+};
+
+export type AgentModelOption = {
+  id: string;
+  label: string;
+  description?: string;
+  contextWindowTokens?: number;
+  isDefault: boolean;
+  defaultReasoningEffort?: string;
+  supportedReasoningEfforts: AgentReasoningEffortOption[];
+};
+
+export type AgentModelCatalog = {
+  providerId: string;
+  defaultModelId?: string;
+  models: AgentModelOption[];
+};
+
 export type AgentAcpAuthMethodSummary = {
   id: string;
   name: string;
@@ -721,6 +742,7 @@ export type ThreadSummary = {
   provider: string;
   imported?: boolean;
   model?: string;
+  reasoningEffort?: string;
   permissionMode?: string;
   pinnedAt?: string;
 };
