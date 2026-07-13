@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import type {
   AppearanceSettings,
+  AgentRuntimeSettings,
   ClaudeModelInfo,
   GeneralSettings,
   ModelSettings,
@@ -16,6 +17,7 @@ import type {
 } from '../../types';
 import type {
   AppearanceSettingsUpdate,
+  AgentRuntimeSettingsUpdate,
   GeneralSettingsUpdate,
   ModelSettingsUpdate,
   OpenWithSettingsUpdate,
@@ -44,6 +46,7 @@ type SettingsViewProps = {
   projects: ProjectSummary[];
   runningThreadIds: string[];
   general: GeneralSettings;
+  agentRuntime: AgentRuntimeSettings;
   appearance: AppearanceSettings;
   effectiveWindowMaterial: WindowMaterialMode;
   supportedWindowMaterials: WindowMaterialMode[];
@@ -61,6 +64,7 @@ type SettingsViewProps = {
   onSyncWorkspace: (workspace: WorkspaceBootstrap) => void;
   showToast: (message: string, tone?: ToastState['tone']) => void;
   onUpdateGeneral: (update: GeneralSettingsUpdate) => void | Promise<void>;
+  onUpdateAgentRuntime: (update: AgentRuntimeSettingsUpdate) => void | Promise<void>;
   onUpdateAppearance: (update: AppearanceSettingsUpdate) => void;
   onUpdateSidebarCustomWidth: (width: number | undefined) => void;
   onUpdateModels: (update: ModelSettingsUpdate) => void | Promise<void>;
@@ -92,6 +96,7 @@ export function SettingsView({
   projects,
   runningThreadIds,
   general,
+  agentRuntime,
   appearance,
   effectiveWindowMaterial,
   supportedWindowMaterials,
@@ -109,6 +114,7 @@ export function SettingsView({
   onSyncWorkspace,
   showToast,
   onUpdateGeneral,
+  onUpdateAgentRuntime,
   onUpdateAppearance,
   onUpdateSidebarCustomWidth,
   onUpdateModels,
@@ -141,7 +147,9 @@ export function SettingsView({
       return (
         <AgentModelSettingsSection
           models={models}
+          agentRuntime={agentRuntime}
           claudeModels={claudeModels}
+          onUpdateAgentRuntime={onUpdateAgentRuntime}
           onUpdateModels={onUpdateModels}
         />
       );
@@ -217,6 +225,7 @@ export function SettingsView({
     activeProjectId,
     activeThreadId,
     activeProject,
+    agentRuntime,
     appearance,
     effectiveWindowMaterial,
     claudeModels,
@@ -234,6 +243,7 @@ export function SettingsView({
     onOpenWorktreePath,
     onSyncWorkspace,
     onUpdateGeneral,
+    onUpdateAgentRuntime,
     onUpdateAppearance,
     onUpdateModels,
     onUpdateOpenWith,

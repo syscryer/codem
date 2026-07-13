@@ -2,6 +2,7 @@ import {
   AlertCircle,
   Check,
   CheckCircle2,
+  ChevronDown,
   CircleDashed,
   Clock3,
   FileText,
@@ -18,6 +19,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  AgentProviderId,
   AgentRuntimeSettings,
   AgentProviderDescriptor,
   AgentProviderRegistry,
@@ -26,11 +28,8 @@ import type {
   CodexAppServerProbeResult,
   GrokAcpProbeResult,
 } from '../../types';
-import {
-  defaultAgentRuntimeSettings,
-  fetchAgentRuntimeSettings,
-  saveAgentRuntimeSettings,
-} from '../../lib/settings-api';
+import type { AgentRuntimeSettingsUpdate } from '../../hooks/useAppSettings';
+import { useOutsideDismiss } from '../../hooks/useOutsideDismiss';
 import {
   fetchAgentProviderRegistry,
   probeCodexAgent,
@@ -50,11 +49,22 @@ import {
 } from '../../lib/agent-provider-management';
 import { readClaudeCliVersionInfo } from '../../lib/settings-runtime';
 import { AgentProviderIcon } from '../AgentProviderIcon';
+import { PopoverPortal } from '../PopoverPortal';
 
 type ProviderLoadState = 'loading' | 'ready' | 'error';
 type ProviderProbeState = 'idle' | 'checking' | 'ready' | 'error';
 
-export function AgentProviderSettings({ claudeModels }: { claudeModels: ClaudeModelInfo }) {
+type AgentProviderSettingsProps = {
+  agentRuntime: AgentRuntimeSettings;
+  claudeModels: ClaudeModelInfo;
+  onUpdateAgentRuntime: (update: AgentRuntimeSettingsUpdate) => void | Promise<void>;
+};
+
+export function AgentProviderSettings({
+  agentRuntime,
+  claudeModels,
+  onUpdateAgentRuntime,
+}: AgentProviderSettingsProps) {
   const [registry, setRegistry] = useState<AgentProviderRegistry | null>(null);
   const [loadState, setLoadState] = useState<ProviderLoadState>('loading');
   const [loadError, setLoadError] = useState('');
@@ -66,9 +76,7 @@ export function AgentProviderSettings({ claudeModels }: { claudeModels: ClaudeMo
   const [codexProbeState, setCodexProbeState] = useState<ProviderProbeState>('idle');
   const [codexProbe, setCodexProbe] = useState<CodexAppServerProbeResult | null>(null);
   const [codexProbeError, setCodexProbeError] = useState('');
-  const [agentRuntimeSettings, setAgentRuntimeSettings] = useState<AgentRuntimeSettings>(defaultAgentRuntimeSettings);
   const [agentRuntimeSaving, setAgentRuntimeSaving] = useState(false);
-  const [agentRuntimeError, setAgentRuntimeError] = useState('');
   const registryControllerRef = useRef<AbortController | null>(null);
   const grokControllerRef = useRef<AbortController | null>(null);
   const codexControllerRef = useRef<AbortController | null>(null);
@@ -81,17 +89,15 @@ export function AgentProviderSettings({ claudeModels }: { claudeModels: ClaudeMo
     setLoadError('');
 
     try {
-      const [nextRegistry, nextClaudeCliInfo, nextAgentRuntimeSettings] = await Promise.all([
+      const [nextRegistry, nextClaudeCliInfo] = await Promise.all([
         fetchAgentProviderRegistry(controller.signal),
         readClaudeCliVersionInfo(),
-        fetchAgentRuntimeSettings(),
       ]);
       if (controller.signal.aborted) {
         return;
       }
       setRegistry(nextRegistry);
       setClaudeCliInfo(nextClaudeCliInfo);
-      setAgentRuntimeSettings(nextAgentRuntimeSettings);
       setSelectedProviderId((current) =>
         nextRegistry.providers.some((provider) => provider.id === current)
           ? current
@@ -181,13 +187,21 @@ export function AgentProviderSettings({ claudeModels }: { claudeModels: ClaudeMo
     }
 
     setAgentRuntimeSaving(true);
-    setAgentRuntimeError('');
     try {
-      const saved = await saveAgentRuntimeSettings({ experimentalAgentRunEnabled: enabled });
-      setAgentRuntimeSettings(saved);
+      await onUpdateAgentRuntime({ experimentalAgentRunEnabled: enabled });
       await loadProviders();
-    } catch (error) {
-      setAgentRuntimeError(error instanceof Error ? error.message : '保存实验 Agent 设置失败');
+    } finally {
+      setAgentRuntimeSaving(false);
+    }
+  }
+
+  async function updateDefaultProvider(defaultProviderId: AgentProviderId) {
+    if (agentRuntimeSaving || defaultProviderId === agentRuntime.defaultProviderId) {
+      return;
+    }
+    setAgentRuntimeSaving(true);
+    try {
+      await onUpdateAgentRuntime({ defaultProviderId });
     } finally {
       setAgentRuntimeSaving(false);
     }
@@ -223,25 +237,38 @@ export function AgentProviderSettings({ claudeModels }: { claudeModels: ClaudeMo
       className="settings-panel agent-provider-shell"
       aria-busy={loadState === 'loading'}
     >
-      <div className="agent-provider-experimental-setting">
-        <div>
-          <strong>启用实验性 Agent 运行</strong>
-          <span>
-            {agentRuntimeSettings.experimentalAgentRunEnabled
-              ? '新建的 Grok Build 与 OpenAI Codex 会话可在对应 CLI 可用时使用。'
-              : '关闭时不允许新建实验 Agent 会话，运行中的会话不受影响。'}
-          </span>
-          {agentRuntimeError ? <small role="alert">{agentRuntimeError}</small> : null}
-        </div>
-        <label className="settings-toggle" aria-label="启用实验性 Agent 运行">
-          <input
-            type="checkbox"
-            checked={agentRuntimeSettings.experimentalAgentRunEnabled}
+      <div className="agent-provider-runtime-settings">
+        <div className="agent-provider-default-setting">
+          <div>
+            <strong>默认 Agent</strong>
+            <span>用于以后新建的聊天，已有聊天保持原来的 Provider。</span>
+          </div>
+          <AgentProviderDropdown
+            value={agentRuntime.defaultProviderId}
+            providers={registry?.providers ?? []}
             disabled={agentRuntimeSaving}
-            onChange={(event) => void updateExperimentalAgentRun(event.currentTarget.checked)}
+            onChange={(providerId) => void updateDefaultProvider(providerId)}
           />
-          <span aria-hidden="true" />
-        </label>
+        </div>
+        <div className="agent-provider-experimental-setting">
+          <div>
+            <strong>启用实验性 Agent 运行</strong>
+            <span>
+              {agentRuntime.experimentalAgentRunEnabled
+                ? '新建的 Grok Build 与 OpenAI Codex 会话可在对应 CLI 可用时使用。'
+                : '关闭时不允许新建实验 Agent 会话，运行中的会话不受影响。'}
+            </span>
+          </div>
+          <label className="settings-toggle" aria-label="启用实验性 Agent 运行">
+            <input
+              type="checkbox"
+              checked={agentRuntime.experimentalAgentRunEnabled}
+              disabled={agentRuntimeSaving}
+              onChange={(event) => void updateExperimentalAgentRun(event.currentTarget.checked)}
+            />
+            <span aria-hidden="true" />
+          </label>
+        </div>
       </div>
       <div className="agent-provider-manager">
         <aside className="agent-provider-list" aria-label="Agent Provider">
@@ -308,6 +335,101 @@ export function AgentProviderSettings({ claudeModels }: { claudeModels: ClaudeMo
       </div>
     </div>
   );
+}
+
+function AgentProviderDropdown({
+  value,
+  providers,
+  disabled,
+  onChange,
+}: {
+  value: AgentProviderId;
+  providers: AgentProviderDescriptor[];
+  disabled: boolean;
+  onChange: (providerId: AgentProviderId) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const options = providers.filter(isDefaultAgentProvider);
+  const selected = options.find((provider) => provider.id === value) ?? {
+    id: value,
+    displayName: defaultAgentProviderName(value),
+    lifecycle: 'planned' as const,
+    available: null,
+    selectable: false,
+  };
+
+  useOutsideDismiss({
+    selectors: [
+      { selector: '.agent-provider-default-menu', onDismiss: () => setOpen(false), anchorRefs: [anchorRef] },
+    ],
+  });
+
+  return (
+    <div className="settings-select-anchor agent-provider-default-select" ref={anchorRef}>
+      <button
+        type="button"
+        className={`settings-select-trigger${open ? ' open' : ''}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="选择默认 Agent"
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="agent-provider-default-option-main">
+          <AgentProviderIcon providerId={selected.id} size={16} />
+          <span>{selected.displayName}</span>
+        </span>
+        <ChevronDown size={15} className="settings-select-chevron" />
+      </button>
+      <PopoverPortal open={open} anchorRef={anchorRef} placement="bottom-start" offset={8}>
+        <div className="settings-select-menu agent-provider-default-menu" role="menu" aria-label="选择默认 Agent">
+          {options.map((provider) => {
+            const selectable = provider.lifecycle === 'active' && provider.available === true && provider.selectable;
+            const unavailableLabel = provider.lifecycle === 'planned' ? '未启用' : '不可用';
+            return (
+              <button
+                key={provider.id}
+                type="button"
+                className={`settings-select-menu-item${provider.id === value ? ' current' : ''}`}
+                role="menuitemradio"
+                aria-checked={provider.id === value}
+                disabled={!selectable}
+                onClick={() => {
+                  onChange(provider.id);
+                  setOpen(false);
+                }}
+              >
+                <span className="agent-provider-default-option-main">
+                  <AgentProviderIcon providerId={provider.id} size={16} />
+                  <span>{provider.displayName}</span>
+                </span>
+                {provider.id === value
+                  ? <Check size={15} />
+                  : !selectable
+                    ? <small>{unavailableLabel}</small>
+                    : null}
+              </button>
+            );
+          })}
+        </div>
+      </PopoverPortal>
+    </div>
+  );
+}
+
+function isDefaultAgentProvider(provider: AgentProviderDescriptor): provider is AgentProviderDescriptor & { id: AgentProviderId } {
+  return provider.id === 'claude-code' || provider.id === 'grok-build' || provider.id === 'openai-codex';
+}
+
+function defaultAgentProviderName(providerId: AgentProviderId) {
+  if (providerId === 'grok-build') {
+    return 'Grok Build';
+  }
+  if (providerId === 'openai-codex') {
+    return 'OpenAI Codex';
+  }
+  return 'Claude Code';
 }
 
 function ProviderDetail({

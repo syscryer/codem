@@ -1,7 +1,15 @@
 import { normalizeShortcutValue } from './shortcuts';
-import { CLAUDE_MODEL_SLOT_VALUES, DEFAULT_CUSTOM_ACCENT_COLOR, normalizeAccentHexColor } from '../constants';
+import {
+  CLAUDE_CODE_PROVIDER_ID,
+  CLAUDE_MODEL_SLOT_VALUES,
+  DEFAULT_CUSTOM_ACCENT_COLOR,
+  GROK_BUILD_PROVIDER_ID,
+  normalizeAccentHexColor,
+  OPENAI_CODEX_PROVIDER_ID,
+} from '../constants';
 import { cloneDefaultWorkbenchIgnorePatterns, mergeWorkbenchIgnorePatterns } from './review-ignore-patterns';
 import type {
+  AgentProviderId,
   AgentRuntimeSettings,
   AppSettings,
   AppearanceSettings,
@@ -16,7 +24,6 @@ import type {
   UsageTrendPoint,
   UsageThreadRow,
 } from '../types';
-
 export const defaultGeneralSettings: GeneralSettings = {
   restoreLastSelectionOnLaunch: true,
   autoRefreshGitStatus: true,
@@ -75,6 +82,7 @@ export const defaultOpenWithSettings: OpenWithSettings = {
 
 export const defaultAgentRuntimeSettings: AgentRuntimeSettings = {
   experimentalAgentRunEnabled: false,
+  defaultProviderId: CLAUDE_CODE_PROVIDER_ID,
 };
 
 export const defaultAppSettings: AppSettings = {
@@ -99,11 +107,11 @@ export async function fetchAgentRuntimeSettings(): Promise<AgentRuntimeSettings>
   try {
     const response = await fetch('/api/agents/runtime-settings');
     if (!response.ok) {
-      throw new Error('读取实验 Agent 设置失败');
+      throw new Error('读取 Agent 运行设置失败');
     }
     return normalizeAgentRuntimeSettings(await response.json());
   } catch {
-    throw new Error('读取实验 Agent 设置失败');
+    throw new Error('读取 Agent 运行设置失败');
   }
 }
 
@@ -117,11 +125,11 @@ export async function saveAgentRuntimeSettings(
       body: JSON.stringify(normalizeAgentRuntimeSettings(settings)),
     });
     if (!response.ok) {
-      throw new Error('保存实验 Agent 设置失败');
+      throw new Error('保存 Agent 运行设置失败');
     }
     return normalizeAgentRuntimeSettings(await response.json());
   } catch {
-    throw new Error('保存实验 Agent 设置失败');
+    throw new Error('保存 Agent 运行设置失败');
   }
 }
 
@@ -254,7 +262,19 @@ export function normalizeAgentRuntimeSettings(value: unknown): AgentRuntimeSetti
       record.experimentalAgentRunEnabled,
       defaultAgentRuntimeSettings.experimentalAgentRunEnabled,
     ),
+    defaultProviderId: normalizeAgentProviderId(record.defaultProviderId),
   };
+}
+
+function normalizeAgentProviderId(value: unknown): AgentProviderId {
+  if (
+    value === CLAUDE_CODE_PROVIDER_ID
+    || value === GROK_BUILD_PROVIDER_ID
+    || value === OPENAI_CODEX_PROVIDER_ID
+  ) {
+    return value;
+  }
+  return defaultAgentRuntimeSettings.defaultProviderId;
 }
 
 export function normalizeGeneralSettings(general: unknown): GeneralSettings {

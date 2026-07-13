@@ -43,6 +43,7 @@ struct AppState {
     app_data_dir: Arc<PathBuf>,
     settings_write_lock: Arc<Mutex<()>>,
     experimental_agent_run_enabled: Arc<AtomicBool>,
+    agent_runs: crate::agent_run::AgentRunService,
     workspace_write_lock: Arc<Mutex<()>>,
     workspace_database_init_lock: Arc<Mutex<()>>,
     runs: Arc<Mutex<std::collections::HashMap<String, ActiveRunRecord>>>,
@@ -447,10 +448,17 @@ pub fn run_blocking_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), 
 async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String> {
     fs::create_dir_all(&app_data_dir).map_err(|error| format!("创建应用数据目录失败: {error}"))?;
 
+    let experimental_agent_run_enabled = Arc::new(AtomicBool::new(false));
+    let agent_runs = crate::agent_run::AgentRunService::new(
+        resolve_grok_command,
+        resolve_codex_command,
+        experimental_agent_run_enabled.clone(),
+    );
     let state = AppState {
         app_data_dir: Arc::new(app_data_dir),
         settings_write_lock: Arc::new(Mutex::new(())),
-        experimental_agent_run_enabled: Arc::new(AtomicBool::new(false)),
+        experimental_agent_run_enabled,
+        agent_runs,
         workspace_write_lock: Arc::new(Mutex::new(())),
         workspace_database_init_lock: Arc::new(Mutex::new(())),
         runs: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -476,11 +484,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
 }
 
 fn create_router(state: AppState) -> Router {
-    let agent_run_router = crate::agent_run::router(
-        resolve_grok_command,
-        resolve_codex_command,
-        state.experimental_agent_run_enabled.clone(),
-    );
+    let agent_run_router = crate::agent_run::router(state.agent_runs.clone());
     Router::new()
         .route("/api/runtime/identity", get(runtime_identity))
         .route("/api/health", get(health))
@@ -1715,9 +1719,8 @@ async fn update_open_with_settings(
 }
 
 async fn get_agent_runtime_settings(State(state): State<AppState>) -> Json<Value> {
-    Json(agent_runtime_settings_value(
-        experimental_agent_run_enabled(&state),
-    ))
+    let settings = read_app_settings(&state).unwrap_or_else(|_| default_app_settings());
+    Json(agent_runtime_settings_from_settings(&settings))
 }
 
 async fn update_agent_runtime_settings(
@@ -1729,7 +1732,7 @@ async fn update_agent_runtime_settings(
     state
         .experimental_agent_run_enabled
         .store(enabled, AtomicOrdering::Release);
-    Ok(Json(agent_runtime_settings_value(enabled)))
+    Ok(Json(agent_runtime_settings_from_settings(&settings)))
 }
 
 async fn workspace_bootstrap(State(state): State<AppState>) -> ApiResult<Json<Value>> {
@@ -2940,6 +2943,7 @@ async fn delete_project(
     for thread_id in thread_ids {
         let _ = close_thread_runtime(&state, &thread_id);
         remove_run_records_for_thread(&state, &thread_id);
+        state.agent_runs.forget_thread(&thread_id);
     }
     let workspace = read_workspace_bootstrap_with_connection(&state, &connection)?;
     Ok(Json(json!({ "ok": true, "workspace": workspace })))
@@ -3029,6 +3033,7 @@ async fn delete_thread(
     remove_thread_row(&mut connection, &thread_id)?;
     let _ = close_thread_runtime(&state, &thread_id);
     remove_run_records_for_thread(&state, &thread_id);
+    state.agent_runs.forget_thread(&thread_id);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -3355,6 +3360,12 @@ fn normalize_agent_runtime_settings(value: Option<&Value>) -> Value {
     let record = value.and_then(Value::as_object);
     json!({
         "experimentalAgentRunEnabled": bool_setting(record, "experimentalAgentRunEnabled", false),
+        "defaultProviderId": enum_setting(
+            record,
+            "defaultProviderId",
+            &[CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID],
+            CLAUDE_CODE_PROVIDER_ID,
+        ),
     })
 }
 
@@ -3372,8 +3383,8 @@ fn experimental_agent_run_enabled(state: &AppState) -> bool {
         .load(AtomicOrdering::Acquire)
 }
 
-fn agent_runtime_settings_value(enabled: bool) -> Value {
-    json!({ "experimentalAgentRunEnabled": enabled })
+fn agent_runtime_settings_from_settings(settings: &Value) -> Value {
+    normalize_agent_runtime_settings(settings.get("agentRuntime"))
 }
 
 fn normalize_appearance_settings(value: Option<&Value>) -> Value {
@@ -3998,7 +4009,8 @@ fn default_app_settings() -> Value {
             "reviewIgnorePatternsCustomized": false
         },
         "agentRuntime": {
-            "experimentalAgentRunEnabled": false
+            "experimentalAgentRunEnabled": false,
+            "defaultProviderId": CLAUDE_CODE_PROVIDER_ID
         },
         "appearance": {
             "themeMode": "system",
@@ -14526,9 +14538,9 @@ mod tests {
         compare_project_file_entries, create_router, create_thread_row, default_grok_command_path,
         import_claude_sessions_from_root, initialize_workspace_database,
         normalize_agent_runtime_settings, parse_grok_cli_version, remove_thread_row,
-        resolve_requested_thread_provider, resolve_thread_create_permission_mode,
-        select_claude_command_candidate, update_thread_metadata_from_payload,
-        validate_desktop_file_path, AppState,
+        resolve_codex_command, resolve_grok_command, resolve_requested_thread_provider,
+        resolve_thread_create_permission_mode, select_claude_command_candidate,
+        update_thread_metadata_from_payload, validate_desktop_file_path, AppState,
     };
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
@@ -14567,10 +14579,16 @@ mod tests {
     #[tokio::test]
     async fn agent_run_preflight_includes_desktop_cors_headers() {
         let test_directory = TestDirectory::new("agent-run-cors");
+        let experimental_agent_run_enabled = Arc::new(AtomicBool::new(false));
         let app = create_router(AppState {
             app_data_dir: Arc::new(test_directory.0.clone()),
             settings_write_lock: Arc::new(Mutex::new(())),
-            experimental_agent_run_enabled: Arc::new(AtomicBool::new(false)),
+            experimental_agent_run_enabled: experimental_agent_run_enabled.clone(),
+            agent_runs: crate::agent_run::AgentRunService::new(
+                resolve_grok_command,
+                resolve_codex_command,
+                experimental_agent_run_enabled,
+            ),
             workspace_write_lock: Arc::new(Mutex::new(())),
             workspace_database_init_lock: Arc::new(Mutex::new(())),
             runs: Arc::new(Mutex::new(HashMap::new())),
@@ -14661,14 +14679,32 @@ mod tests {
     }
 
     #[test]
-    fn agent_runtime_settings_default_to_disabled_and_preserve_explicit_value() {
+    fn agent_runtime_settings_default_to_claude_and_preserve_supported_values() {
         assert_eq!(
             normalize_agent_runtime_settings(None),
-            json!({ "experimentalAgentRunEnabled": false })
+            json!({
+                "experimentalAgentRunEnabled": false,
+                "defaultProviderId": CLAUDE_CODE_PROVIDER_ID,
+            })
         );
         assert_eq!(
-            normalize_agent_runtime_settings(Some(&json!({ "experimentalAgentRunEnabled": true }))),
-            json!({ "experimentalAgentRunEnabled": true })
+            normalize_agent_runtime_settings(Some(&json!({
+                "experimentalAgentRunEnabled": true,
+                "defaultProviderId": OPENAI_CODEX_PROVIDER_ID,
+            }))),
+            json!({
+                "experimentalAgentRunEnabled": true,
+                "defaultProviderId": OPENAI_CODEX_PROVIDER_ID,
+            })
+        );
+        assert_eq!(
+            normalize_agent_runtime_settings(Some(&json!({
+                "defaultProviderId": "unknown-provider",
+            }))),
+            json!({
+                "experimentalAgentRunEnabled": false,
+                "defaultProviderId": CLAUDE_CODE_PROVIDER_ID,
+            })
         );
     }
 

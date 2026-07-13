@@ -60,6 +60,14 @@ test('generic Agent events preserve text and tool ordering without duplicating f
 
 test('generic Agent reducer exposes approvals and user input but hides thinking deltas', () => {
   let turn = createTurn();
+  turn = apply(turn, {
+    type: 'phase',
+    runId: 'run-1',
+    phase: 'thinking',
+    label: '思考中',
+  });
+  assert.equal(turn.phase, 'thinking');
+  assert.equal(turn.activity, '思考中');
   turn = apply(turn, { type: 'thinking-delta', runId: 'run-1', text: 'private reasoning' });
   turn = apply(turn, {
     type: 'approval-request',

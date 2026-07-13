@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { DEFAULT_MODEL_VALUE } from '../constants';
+import { CLAUDE_CODE_PROVIDER_ID, DEFAULT_MODEL_VALUE } from '../constants';
 import {
   resolveInitialClaudeModelId,
   resolveRunModelSelection,
@@ -156,7 +156,11 @@ type UseClaudeRunArgs = {
   appModelSettings: ModelSettings;
   defaultPermissionMode: PermissionMode;
   autoGuideQueuedPrompts: boolean;
-  createThread: (projectId: string, title?: string, options?: { showToast?: boolean }) => Promise<ThreadSummary | null>;
+  createThread: (
+    projectId: string,
+    title?: string,
+    options?: { showToast?: boolean; providerId?: string },
+  ) => Promise<ThreadSummary | null>;
   renameThread: (threadId: string, title: string, options?: { showToast?: boolean }) => Promise<ThreadSummary | null>;
   handlePickProjectDirectory: () => Promise<void>;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
@@ -390,7 +394,10 @@ export function useClaudeRun({
 
     try {
       const threadTitle = submission ? buildNewChatTitleFromSubmission(submission) : undefined;
-      return await createThread(activeProjectId, threadTitle, { showToast: false });
+      return await createThread(activeProjectId, threadTitle, {
+        showToast: false,
+        providerId: CLAUDE_CODE_PROVIDER_ID,
+      });
     } catch (error) {
       showToast(error instanceof Error ? error.message : '新建聊天失败', 'error');
       return null;

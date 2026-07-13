@@ -83,6 +83,7 @@ Out of scope:
 - 2026-07-13T09:13:03.720Z `npm run typecheck`: pass
 
 ## Completion Summary
+- 2026-07-13T12:11:51.895Z 完成 Grok 与 Codex 图片、内联文件和文件引用输入适配：统一 contentBlocks 贯通发送队列与脱敏历史，后端完成 ACP/App Server 原生映射和请求限制，相关前端测试、格式检查及真实 Grok/Codex 探针结果已登记；代码已在 ceabf18 提交。
 
 ## Follow-ups
 

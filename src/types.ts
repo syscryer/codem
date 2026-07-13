@@ -661,8 +661,11 @@ export type OpenWithTargetsResponse = {
   selectedTargetId: string;
 };
 
+export type AgentProviderId = 'claude-code' | 'grok-build' | 'openai-codex';
+
 export type AgentRuntimeSettings = {
   experimentalAgentRunEnabled: boolean;
+  defaultProviderId: AgentProviderId;
 };
 
 export type AppSettings = {
@@ -757,6 +760,22 @@ export type ThreadRuntimeStatus = {
   pid?: number;
   alive: boolean;
   activeRun: boolean;
+  runtimeKind?: 'claude' | 'agent';
+  phase?: 'absent' | 'starting' | 'ready' | 'running' | 'closed' | 'failed';
+  providerId?: string;
+  sessionId?: string;
+  currentRunId?: string;
+  lastError?: string;
+};
+
+export type AgentRuntimeStatus = {
+  threadId: string;
+  exists: boolean;
+  phase: 'absent' | 'starting' | 'ready' | 'running' | 'closed' | 'failed';
+  providerId?: string;
+  sessionId?: string;
+  currentRunId?: string;
+  lastError?: string;
 };
 
 export type ProjectSummary = {
@@ -1295,6 +1314,7 @@ export type CloneTask = {
   baseDirectory: string;
   folderName: string;
   targetPath: string;
+  providerId: AgentProviderId;
   status: CloneTaskStatus;
   phase: CloneTaskPhase;
   detail: string;

@@ -418,9 +418,9 @@ where
         &mut self,
         session_id: &str,
         text: &str,
-        mut cancel: watch::Receiver<bool>,
+        cancel: watch::Receiver<bool>,
         control: &mut mpsc::UnboundedReceiver<AgentControlCommand>,
-        mut on_event: F,
+        on_event: F,
     ) -> Result<AcpPromptOutcome, AcpError>
     where
         F: FnMut(AcpRuntimeEvent),
@@ -972,6 +972,10 @@ impl AcpStdioClient {
         self.connection
             .prompt_stream(session_id, prompt, cancel, control, on_event)
             .await
+    }
+
+    pub fn is_running(&mut self) -> bool {
+        self.child.try_wait().is_ok_and(|status| status.is_none())
     }
 
     pub async fn shutdown(mut self) {

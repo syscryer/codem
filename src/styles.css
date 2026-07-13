@@ -9596,19 +9596,22 @@ body.git-history-resizing {
 }
 
 .provider-trigger {
-  max-width: 148px;
-}
-
-.provider-trigger > span:not(.permission-trigger-chevron) {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  width: 26px;
+  min-width: 26px;
+  justify-content: center;
+  padding: 0;
 }
 
 .provider-trigger:disabled {
-  opacity: 0.62;
+  opacity: 1;
   cursor: default;
+}
+
+.provider-trigger :is(
+  .agent-provider-brand-icon-openai-codex,
+  .agent-provider-brand-icon-grok-build
+) {
+  color: var(--app-text-strong, #202020);
 }
 
 .provider-menu.provider-menu {
@@ -12289,29 +12292,40 @@ button.git-conflict-overview-row:focus-visible,
   container-type: inline-size;
 }
 
+.agent-provider-runtime-settings {
+  border-bottom: 1px solid var(--app-border, #ececec);
+  background: color-mix(in srgb, var(--accent, #2374c6) 4%, var(--app-surface, #ffffff));
+}
+
+.agent-provider-default-setting,
 .agent-provider-experimental-setting {
-  min-height: 62px;
+  min-height: 58px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   padding: 11px 14px;
-  border-bottom: 1px solid var(--app-border, #ececec);
-  background: color-mix(in srgb, var(--accent, #2374c6) 4%, var(--app-surface, #ffffff));
 }
 
+.agent-provider-default-setting {
+  border-bottom: 1px solid var(--app-border, #ececec);
+}
+
+.agent-provider-default-setting > div:first-child,
 .agent-provider-experimental-setting > div {
   min-width: 0;
   display: grid;
   gap: 3px;
 }
 
+.agent-provider-default-setting strong,
 .agent-provider-experimental-setting strong {
   color: var(--app-text-strong, #1f1f1f);
   font-size: 13px;
   font-weight: 650;
 }
 
+.agent-provider-default-setting > div:first-child > span,
 .agent-provider-experimental-setting > div > span,
 .agent-provider-experimental-setting small {
   color: var(--app-muted, #77736c);
@@ -12325,6 +12339,55 @@ button.git-conflict-overview-row:focus-visible,
 
 .agent-provider-experimental-setting .settings-toggle {
   flex: 0 0 auto;
+}
+
+.agent-provider-default-select {
+  flex: 0 0 210px;
+  width: 210px;
+}
+
+.agent-provider-default-option-main {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-provider-default-option-main > .agent-provider-brand-icon {
+  flex: 0 0 auto;
+}
+
+.agent-provider-default-option-main > .agent-provider-brand-icon-claude-code {
+  color: #d97757;
+}
+
+.agent-provider-default-option-main > :is(
+  .agent-provider-brand-icon-grok-build,
+  .agent-provider-brand-icon-openai-codex
+) {
+  color: var(--app-text-strong, #202020);
+}
+
+.agent-provider-default-option-main > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-provider-default-menu .settings-select-menu-item:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.agent-provider-default-menu .settings-select-menu-item:disabled:hover {
+  background: transparent;
+  box-shadow: none;
+}
+
+.agent-provider-default-menu .settings-select-menu-item small {
+  color: var(--app-muted, #77736c);
+  font-size: 11px;
 }
 
 .agent-provider-manager {
@@ -12887,6 +12950,21 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 @container agent-provider (max-width: 500px) {
+  .agent-provider-default-setting,
+  .agent-provider-experimental-setting {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .agent-provider-default-select {
+    width: 100%;
+    flex-basis: auto;
+  }
+
+  .agent-provider-experimental-setting .settings-toggle {
+    align-self: flex-end;
+  }
+
   .agent-provider-list-items,
   .agent-provider-facts,
   .agent-provider-capability-groups {

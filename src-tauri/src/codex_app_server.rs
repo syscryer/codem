@@ -147,6 +147,7 @@ pub enum CodexRuntimeEvent {
     Status {
         message: String,
     },
+    Thinking,
     TextDelta {
         text: String,
     },
@@ -978,6 +979,10 @@ impl CodexStdioClient {
             .await
     }
 
+    pub fn is_running(&mut self) -> bool {
+        self.child.try_wait().is_ok_and(|status| status.is_none())
+    }
+
     pub async fn shutdown(mut self) {
         let _ = self.child.start_kill();
         let _ = timeout(Duration::from_secs(2), self.child.wait()).await;
@@ -1040,8 +1045,20 @@ where
                 });
             }
         }
+        "item/reasoning/summaryTextDelta"
+        | "item/reasoning/summaryPartAdded"
+        | "item/reasoning/textDelta"
+        | "item/plan/delta" => {
+            on_event(CodexRuntimeEvent::Thinking);
+        }
         "item/started" => {
             if let Some(item) = params.get("item") {
+                if matches!(
+                    item.get("type").and_then(Value::as_str),
+                    Some("reasoning" | "plan")
+                ) {
+                    on_event(CodexRuntimeEvent::Thinking);
+                }
                 if let Some((tool_id, name, input)) = tool_started_event(item) {
                     if active_tools.insert(tool_id.clone()) {
                         on_event(CodexRuntimeEvent::ToolStarted {
@@ -1938,6 +1955,11 @@ mod tests {
         .await;
         write_wire(
             &mut writer,
+            json!({ "method": "item/reasoning/summaryTextDelta", "params": { "threadId": "thread-1", "turnId": "turn-1", "itemId": "reasoning-1", "summaryIndex": 0, "delta": "private summary" } }),
+        )
+        .await;
+        write_wire(
+            &mut writer,
             json!({ "method": "item/agentMessage/delta", "params": { "threadId": "thread-1", "turnId": "turn-1", "delta": "hello" } }),
         )
         .await;
@@ -1952,6 +1974,10 @@ mod tests {
         )
         .await;
 
+        assert!(matches!(
+            next_event(&mut event_receiver).await,
+            CodexRuntimeEvent::Thinking
+        ));
         assert!(matches!(
             next_event(&mut event_receiver).await,
             CodexRuntimeEvent::TextDelta { text } if text == "hello"

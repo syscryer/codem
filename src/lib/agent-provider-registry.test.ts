@@ -162,7 +162,7 @@ test('enabled Grok is selectable without routing unknown providers to Claude', (
             fileReferences: 'supported',
           },
           runtime: {
-            cancel: 'hard',
+            cancel: 'soft',
             reconnect: 'supported',
             concurrentSessions: 'supported',
           },

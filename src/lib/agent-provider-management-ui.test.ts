@@ -31,6 +31,16 @@ test('settings exposes Agent providers without adding a new navigation section',
   assert.match(agentSettingsSource, />模型与默认值</);
 });
 
+test('provider settings exposes a persistent default Agent selector with brand icons', () => {
+  assert.match(settingsViewSource, /agentRuntime=\{agentRuntime\}/);
+  assert.match(agentSettingsSource, /onUpdateAgentRuntime=\{onUpdateAgentRuntime\}/);
+  assert.match(providerSettingsSource, /<strong>默认 Agent<\/strong>/);
+  assert.match(providerSettingsSource, /value=\{agentRuntime\.defaultProviderId\}/);
+  assert.match(providerSettingsSource, /<AgentProviderIcon providerId=\{provider\.id\} size=\{16\} \/>/);
+  assert.match(providerSettingsSource, /disabled=\{!selectable\}/);
+  assert.match(providerSettingsSource, /await onUpdateAgentRuntime\(\{ defaultProviderId \}\)/);
+});
+
 test('provider management keeps Grok and Codex detection explicit and non-reentrant', () => {
   assert.match(providerSettingsSource, /async function runGrokProbe\(\)/);
   assert.match(providerSettingsSource, /async function runCodexProbe\(\)/);

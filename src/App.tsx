@@ -293,6 +293,7 @@ export default function App() {
   });
   const {
     general,
+    agentRuntime,
     appearance,
     models: appModelSettings,
     shortcuts,
@@ -300,6 +301,7 @@ export default function App() {
     openTargets,
     loading: settingsLoading,
     updateAppearance,
+    updateAgentRuntime,
     updateGeneral,
     updateModels,
     updateShortcuts,
@@ -369,7 +371,7 @@ export default function App() {
     removeQueuedPrompt: removeClaudeQueuedPrompt,
     recallQueuedPrompt: recallClaudeQueuedPrompt,
     guideQueuedPrompt: guideClaudeQueuedPrompt,
-    clockNowMs,
+    clockNowMs: claudeClockNowMs,
     setModel,
     setEffort,
     handlePermissionModeSelect: handleClaudePermissionModeSelect,
@@ -424,6 +426,7 @@ export default function App() {
     runningThreadIds: genericAgentRunningThreadIds,
     activeRunsByThreadId: genericAgentActiveRunsByThreadId,
     activeTurnIdsByThreadId: genericAgentActiveTurnIdsByThreadId,
+    clockNowMs: genericAgentClockNowMs,
     queuedPrompts: genericAgentQueuedPrompts,
     removeQueuedPrompt: removeGenericAgentQueuedPrompt,
     recallQueuedPrompt: recallGenericAgentQueuedPrompt,
@@ -433,6 +436,7 @@ export default function App() {
     submitApprovalDecision: submitGenericAgentApprovalDecision,
     stopRun: stopGenericAgentRun,
   } = useAgentRun({
+    defaultProviderId: agentRuntime.defaultProviderId,
     activeProjectId,
     activeProjectPath: activeProject?.path,
     activeThreadId: activeThreadRuntimeKind === 'generic' ? activeThreadId : null,
@@ -454,6 +458,7 @@ export default function App() {
   const activeRuntimeKind = resolveChatRuntimeKind(activeProviderId);
   const activeUsesClaude = activeRuntimeKind === 'claude';
   const activeUsesGenericAgent = activeRuntimeKind === 'generic';
+  const clockNowMs = activeUsesGenericAgent ? genericAgentClockNowMs : claudeClockNowMs;
   const activeAgent = activeUsesClaude
     ? 'claude' as const
     : activeProviderId === GROK_BUILD_PROVIDER_ID
@@ -975,7 +980,10 @@ export default function App() {
     }
 
     try {
-      return await createThread(activeProjectId, undefined, { showToast: false });
+      return await createThread(activeProjectId, undefined, {
+        showToast: false,
+        providerId: draftProviderId,
+      });
     } catch (error) {
       showToast(error instanceof Error ? error.message : '新建聊天失败', 'error');
       return null;
@@ -1144,7 +1152,14 @@ export default function App() {
     baseDirectory: string;
     folderName: string;
   }) {
-    await cloneRepositoryAndAttach(payload);
+    await cloneRepositoryAndAttach({
+      ...payload,
+      providerId: agentRuntime.defaultProviderId,
+    });
+  }
+
+  async function handleOpenWorktreePath(worktreePath: string) {
+    await openWorktreePath(worktreePath, agentRuntime.defaultProviderId);
   }
 
   function handleUnsupportedWindowAction(action: string) {
@@ -1562,6 +1577,7 @@ export default function App() {
         projects={projects}
         runningThreadIds={runningThreadIds}
         general={general}
+        agentRuntime={agentRuntime}
         appearance={appearance}
         effectiveWindowMaterial={effectiveWindowMaterial}
         supportedWindowMaterials={supportedWindowMaterials}
@@ -1575,10 +1591,11 @@ export default function App() {
         onRemoveProject={openRemoveProjectDialog}
         onRenameThread={openRenameThreadDialog}
         onRemoveThread={openRemoveThreadDialog}
-        onOpenWorktreePath={openWorktreePath}
+        onOpenWorktreePath={handleOpenWorktreePath}
         onSyncWorkspace={syncWorkspace}
         showToast={showToast}
         onUpdateGeneral={updateGeneral}
+        onUpdateAgentRuntime={updateAgentRuntime}
         onUpdateAppearance={updateAppearance}
         onUpdateSidebarCustomWidth={(width) => updateAppearance({ sidebarCustomWidth: width })}
         onUpdateModels={updateModels}
@@ -1762,7 +1779,7 @@ export default function App() {
                 projects={projects}
                 onLoadBranches={loadProjectGitBranches}
                 onSelectBranch={switchProjectGitBranch}
-                onOpenWorktreePath={openWorktreePath}
+                onOpenWorktreePath={handleOpenWorktreePath}
                 onCreateWorktree={(project) => setWorktreeCreateProject(project)}
               />
 

@@ -15,12 +15,14 @@ import {
   normalizeModelSettings,
   normalizeShortcutSettings,
   saveAppearanceSettings,
+  saveAgentRuntimeSettings,
   saveGeneralSettings,
   saveModelSettings,
   saveOpenWithSettings,
   saveShortcutSettings,
 } from '../lib/settings-api';
 import type {
+  AgentRuntimeSettings,
   AppSettings,
   AppearanceSettings,
   GeneralSettings,
@@ -36,6 +38,9 @@ type ShowToast = (message: string, tone?: ToastTone) => void;
 export type AppearanceSettingsUpdate =
   | Partial<AppearanceSettings>
   | ((current: AppearanceSettings) => Partial<AppearanceSettings> | AppearanceSettings);
+export type AgentRuntimeSettingsUpdate =
+  | Partial<AgentRuntimeSettings>
+  | ((current: AgentRuntimeSettings) => Partial<AgentRuntimeSettings> | AgentRuntimeSettings);
 export type GeneralSettingsUpdate =
   | Partial<GeneralSettings>
   | ((current: GeneralSettings) => Partial<GeneralSettings> | GeneralSettings);
@@ -168,6 +173,36 @@ export function useAppSettings(showToast?: ShowToast) {
     [applySettings, getSaveQueue],
   );
 
+  const updateAgentRuntime = useCallback(
+    async (update: AgentRuntimeSettingsUpdate) => {
+      ++requestVersionRef.current;
+      const currentSettings = latestSettingsRef.current;
+      const nextAgentRuntime = resolveAgentRuntimeSettingsUpdate(currentSettings.agentRuntime, update);
+      const optimisticSettings = mergeAppSettings({
+        ...currentSettings,
+        agentRuntime: nextAgentRuntime,
+      });
+
+      applySettings(optimisticSettings);
+      setLoading(false);
+
+      try {
+        const savedAgentRuntime = await saveAgentRuntimeSettings(optimisticSettings.agentRuntime);
+        applySettings({
+          ...latestSettingsRef.current,
+          agentRuntime: savedAgentRuntime,
+        });
+      } catch (error) {
+        applySettings({
+          ...latestSettingsRef.current,
+          agentRuntime: currentSettings.agentRuntime,
+        });
+        toastRef.current?.(error instanceof Error ? error.message : '保存 Agent 运行设置失败', 'error');
+      }
+    },
+    [applySettings],
+  );
+
   const updateGeneral = useCallback(
     async (update: GeneralSettingsUpdate) => {
       ++requestVersionRef.current;
@@ -272,6 +307,7 @@ export function useAppSettings(showToast?: ShowToast) {
     openTargets,
     loading,
     updateAppearance,
+    updateAgentRuntime,
     updateGeneral,
     updateModels,
     updateShortcuts,
@@ -286,6 +322,17 @@ export function resolveGeneralSettingsUpdate(
 ): GeneralSettings {
   const patch = typeof update === 'function' ? update(current) : update;
   return normalizeGeneralSettings({
+    ...current,
+    ...patch,
+  });
+}
+
+export function resolveAgentRuntimeSettingsUpdate(
+  current: AgentRuntimeSettings,
+  update: AgentRuntimeSettingsUpdate,
+): AgentRuntimeSettings {
+  const patch = typeof update === 'function' ? update(current) : update;
+  return normalizeAgentRuntimeSettings({
     ...current,
     ...patch,
   });

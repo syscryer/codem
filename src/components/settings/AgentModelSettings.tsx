@@ -1,7 +1,7 @@
 import { Bot, SlidersHorizontal } from 'lucide-react';
 import { useState } from 'react';
-import type { ClaudeModelInfo, ModelSettings } from '../../types';
-import type { ModelSettingsUpdate } from '../../hooks/useAppSettings';
+import type { AgentRuntimeSettings, ClaudeModelInfo, ModelSettings } from '../../types';
+import type { AgentRuntimeSettingsUpdate, ModelSettingsUpdate } from '../../hooks/useAppSettings';
 import { AgentProviderSettings } from './AgentProviderSettings';
 import { ModelSettingsPanel } from './ModelSettings';
 
@@ -9,13 +9,17 @@ type AgentSettingsTab = 'providers' | 'models';
 
 type AgentModelSettingsSectionProps = {
   models: ModelSettings;
+  agentRuntime: AgentRuntimeSettings;
   claudeModels: ClaudeModelInfo;
+  onUpdateAgentRuntime: (update: AgentRuntimeSettingsUpdate) => void | Promise<void>;
   onUpdateModels: (update: ModelSettingsUpdate) => void | Promise<void>;
 };
 
 export function AgentModelSettingsSection({
   models,
+  agentRuntime,
   claudeModels,
+  onUpdateAgentRuntime,
   onUpdateModels,
 }: AgentModelSettingsSectionProps) {
   const [activeTab, setActiveTab] = useState<AgentSettingsTab>('providers');
@@ -47,7 +51,11 @@ export function AgentModelSettingsSection({
       </header>
 
       <div hidden={activeTab !== 'providers'}>
-        <AgentProviderSettings claudeModels={claudeModels} />
+        <AgentProviderSettings
+          agentRuntime={agentRuntime}
+          claudeModels={claudeModels}
+          onUpdateAgentRuntime={onUpdateAgentRuntime}
+        />
       </div>
       <div hidden={activeTab !== 'models'}>
         <ModelSettingsPanel

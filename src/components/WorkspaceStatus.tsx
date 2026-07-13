@@ -1,6 +1,8 @@
 import { Activity, Check, GitBranchPlus, GitFork, LayoutPanelLeft, Link2, Plus, RefreshCw, Zap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
+import { normalizeAgentRuntimeStatus } from '../lib/thread-runtime-statuses';
 import { fetchProjectWorktrees } from '../lib/worktree-api';
 import {
   buildWorkspaceSessionButtonState,
@@ -9,7 +11,7 @@ import {
 } from '../lib/workspace-session-status';
 import { permissionLabel } from '../lib/ui-labels';
 import { PopoverPortal } from './PopoverPortal';
-import type { GitBranchSummary, GitWorktreeInfo, GitWorktreeList, PermissionMode, ProjectSummary, ThreadDetail, ThreadRuntimeStatus } from '../types';
+import type { AgentRuntimeStatus, GitBranchSummary, GitWorktreeInfo, GitWorktreeList, PermissionMode, ProjectSummary, ThreadDetail, ThreadRuntimeStatus } from '../types';
 
 type WorkspaceStatusProps = {
   activeProject: ProjectSummary | null;
@@ -61,7 +63,10 @@ export function WorkspaceStatus({
   onOpenWorktreePath,
   onCreateWorktree,
 }: WorkspaceStatusProps) {
-  const usesClaudeRuntime = activeThread?.provider === 'claude-code';
+  const usesClaudeRuntime = activeThread?.provider === CLAUDE_CODE_PROVIDER_ID;
+  const usesAgentRuntime = activeThread?.provider === GROK_BUILD_PROVIDER_ID ||
+    activeThread?.provider === OPENAI_CODEX_PROVIDER_ID;
+  const usesManagedRuntime = usesClaudeRuntime || usesAgentRuntime;
   const [menuOpen, setMenuOpen] = useState(false);
   const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
   const [runStatusOpen, setRunStatusOpen] = useState(false);
@@ -116,7 +121,7 @@ export function WorkspaceStatus({
   }, [activeThread?.id]);
 
   useEffect(() => {
-    if (!activeThread?.id || !usesClaudeRuntime) {
+    if (!activeThread?.id || !usesManagedRuntime) {
       setRuntimeStatus(null);
       return;
     }
@@ -125,7 +130,7 @@ export function WorkspaceStatus({
     let cancelled = false;
     async function refreshRuntimeStatus() {
       try {
-        const nextRuntimeStatus = await fetchRuntimeStatusForThread(threadId);
+        const nextRuntimeStatus = await fetchRuntimeStatusForThread(threadId, usesAgentRuntime);
         if (!cancelled) {
           setRuntimeStatus(nextRuntimeStatus);
         }
@@ -142,7 +147,7 @@ export function WorkspaceStatus({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeThread?.id, usesClaudeRuntime]);
+  }, [activeThread?.id, isActiveThreadRunning, usesAgentRuntime, usesManagedRuntime]);
 
   const canSelectBranch = Boolean(activeProject?.isGitRepo && activeProject?.id);
   const canSelectWorktree = Boolean(activeProject?.isGitRepo && activeProject?.id);
@@ -271,7 +276,7 @@ export function WorkspaceStatus({
       return;
     }
 
-    if (!usesClaudeRuntime) {
+    if (!usesManagedRuntime) {
       setRunStatus({ active: false });
       setRuntimeStatus(null);
       setRunStatusError(null);
@@ -281,12 +286,17 @@ export function WorkspaceStatus({
     setRunStatusLoading(true);
     setRunStatusError(null);
     try {
-      const [nextRunStatus, nextRuntimeStatus] = await Promise.all([
-        fetchActiveRunStatus(activeThread.id),
-        fetchRuntimeStatusForThread(activeThread.id),
-      ]);
-      setRunStatus(nextRunStatus);
-      setRuntimeStatus(nextRuntimeStatus);
+      if (usesClaudeRuntime) {
+        const [nextRunStatus, nextRuntimeStatus] = await Promise.all([
+          fetchActiveRunStatus(activeThread.id),
+          fetchRuntimeStatusForThread(activeThread.id, false),
+        ]);
+        setRunStatus(nextRunStatus);
+        setRuntimeStatus(nextRuntimeStatus);
+      } else {
+        setRunStatus({ active: false });
+        setRuntimeStatus(await fetchRuntimeStatusForThread(activeThread.id, true));
+      }
     } catch (error) {
       setRunStatusError(error instanceof Error ? error.message : '读取运行状态失败');
     } finally {
@@ -309,22 +319,22 @@ export function WorkspaceStatus({
   }
 
   async function handleCloseRuntime() {
-    if (!usesClaudeRuntime || !activeThread?.id || !runtimeStatus?.alive || sessionActiveRun) {
+    if (!usesManagedRuntime || !activeThread?.id || !runtimeStatus?.alive || sessionActiveRun) {
       return;
     }
 
     setClosingRuntime(true);
     setRunStatusError(null);
     try {
-      const response = await fetch(`/api/claude/runtime/${encodeURIComponent(activeThread.id)}/close`, {
-        method: 'POST',
-      });
+      const response = usesAgentRuntime
+        ? await fetch(`/api/agents/runtime/${encodeURIComponent(activeThread.id)}`, { method: 'DELETE' })
+        : await fetch(`/api/claude/runtime/${encodeURIComponent(activeThread.id)}/close`, { method: 'POST' });
       if (!response.ok) {
         const message = await response.text();
         throw new Error(message || '重置热连接失败');
       }
 
-      setRuntimeStatus(await fetchRuntimeStatusForThread(activeThread.id));
+      setRuntimeStatus(await fetchRuntimeStatusForThread(activeThread.id, usesAgentRuntime));
     } catch (error) {
       setRunStatusError(error instanceof Error ? error.message : '重置热连接失败');
     } finally {
@@ -495,13 +505,13 @@ export function WorkspaceStatus({
       <span className="status-spacer" />
       <div className="status-run-picker" ref={runStatusRef}>
         <PopoverPortal open={runStatusOpen} anchorRef={runStatusRef} placement="top-end">
-          <div className="status-run-menu" role="dialog" aria-label="Claude 运行状态">
+          <div className="status-run-menu" role="dialog" aria-label={`${providerDisplayName(activeThread?.provider)} 运行状态`}>
             <div className={`status-run-head is-${sessionButtonState.id}`}>
               <span className="status-session-icon" aria-hidden="true">
                 <WorkspaceSessionStateIcon state={sessionButtonState} />
               </span>
               <div className="status-run-head-text">
-                <strong>Claude 会话</strong>
+                <strong>{providerDisplayName(activeThread?.provider)} 会话</strong>
                 <span>{sessionButtonState.label} · {sessionDescription}</span>
               </div>
               <button
@@ -524,6 +534,17 @@ export function WorkspaceStatus({
                     <StatusRunRow label="阶段" value={formatRunPhase(runStatus.currentPhase)} />
                     <StatusRunRow label="活动" value={runStatus.currentActivity || runStatus.lastToolName || '-'} />
                     <StatusRunRow label="事件" value={String(runStatus.eventCount)} />
+                  </section>
+                ) : runtimeStatus?.activeRun ? (
+                  <section className="status-run-section">
+                    <h4>当前运行</h4>
+                    <StatusRunRow
+                      label="Run"
+                      value={compactIdentifier(runtimeStatus.currentRunId ?? '-')}
+                      title={runtimeStatus.currentRunId}
+                    />
+                    <StatusRunRow label="阶段" value={formatAgentRuntimePhase(runtimeStatus.phase)} />
+                    <StatusRunRow label="Provider" value={providerDisplayName(runtimeStatus.providerId)} />
                   </section>
                 ) : null}
 
@@ -557,17 +578,21 @@ export function WorkspaceStatus({
                 <section className="status-run-section">
                   <h4>连接</h4>
                   <StatusRunRow label="后台运行" value={sessionActiveRun ? '是' : '无'} />
-                  {usesClaudeRuntime ? (
+                  {usesManagedRuntime ? (
                     <>
                       <StatusRunRow label="热连接" value={formatHotRuntimeState(sessionActiveRun, sessionRuntimeAlive)} />
-                      <StatusRunRow label="PID" value={runtimeStatus?.pid ? String(runtimeStatus.pid) : '-'} />
+                      {usesClaudeRuntime ? (
+                        <StatusRunRow label="PID" value={runtimeStatus?.pid ? String(runtimeStatus.pid) : '-'} />
+                      ) : (
+                        <StatusRunRow label="运行协议" value={agentRuntimeProtocol(activeThread?.provider)} />
+                      )}
                     </>
                   ) : (
-                    <StatusRunRow label="运行协议" value="ACP" />
+                    <StatusRunRow label="运行协议" value="按需启动" />
                   )}
                 </section>
 
-                {usesClaudeRuntime && sessionButtonState.id === 'hot' ? (
+                {usesManagedRuntime && sessionButtonState.id === 'hot' ? (
                   <section className="status-run-section">
                     <h4>会话配置</h4>
                     <StatusRunRow label="模型" value={runtimeModelLabel(runtimeStatus, activeThread)} />
@@ -583,7 +608,7 @@ export function WorkspaceStatus({
                       复制 session
                     </button>
                   ) : null}
-                  {usesClaudeRuntime && sessionRuntimeAlive && !sessionActiveRun ? (
+                  {usesManagedRuntime && sessionRuntimeAlive && !sessionActiveRun ? (
                     <button type="button" disabled={closingRuntime} onClick={() => void handleCloseRuntime()}>
                       {closingRuntime ? '重置中...' : '重置热连接'}
                     </button>
@@ -691,14 +716,18 @@ function StatusRunRow({ label, value, title }: { label: string; value: string; t
 }
 
 function workspaceSessionDescription(state: WorkspaceSessionButtonState, provider?: string) {
-  if (provider && provider !== 'claude-code') {
+  if (provider && provider !== CLAUDE_CODE_PROVIDER_ID) {
+    const providerName = providerDisplayName(provider);
     if (state.id === 'new') {
       return '首次发送消息后会创建 Provider session。';
     }
-    if (state.id === 'running') {
-      return `${providerDisplayName(provider)} 正在处理当前任务。`;
+    if (state.id === 'hot') {
+      return `${providerName} 进程仍在后台保留，下次发送会直接复用。`;
     }
-    return `已绑定 ${providerDisplayName(provider)} session，下次发送会恢复上下文。`;
+    if (state.id === 'running') {
+      return `${providerName} 正在处理当前任务。`;
+    }
+    return `已绑定 ${providerName} session，下次发送会恢复上下文。`;
   }
   if (state.id === 'new') {
     return '首次发送消息后会创建 Claude session。';
@@ -714,13 +743,20 @@ function workspaceSessionDescription(state: WorkspaceSessionButtonState, provide
 }
 
 function providerDisplayName(provider?: string) {
-  if (!provider || provider === 'claude-code') {
+  if (!provider || provider === CLAUDE_CODE_PROVIDER_ID) {
     return 'Claude Code';
   }
-  if (provider === 'grok-build') {
+  if (provider === GROK_BUILD_PROVIDER_ID) {
     return 'Grok Build';
   }
+  if (provider === OPENAI_CODEX_PROVIDER_ID) {
+    return 'OpenAI Codex';
+  }
   return provider;
+}
+
+function agentRuntimeProtocol(provider?: string) {
+  return provider === OPENAI_CODEX_PROVIDER_ID ? 'Codex app-server' : 'ACP';
 }
 
 function compactIdentifier(value: string) {
@@ -748,6 +784,25 @@ function formatRunPhase(phase?: string) {
     return '工具调用';
   }
 
+  return '-';
+}
+
+function formatAgentRuntimePhase(phase?: ThreadRuntimeStatus['phase']) {
+  if (phase === 'starting') {
+    return '连接中';
+  }
+  if (phase === 'running') {
+    return '运行中';
+  }
+  if (phase === 'ready') {
+    return '热连接';
+  }
+  if (phase === 'failed') {
+    return '连接失败';
+  }
+  if (phase === 'closed') {
+    return '已关闭';
+  }
   return '-';
 }
 
@@ -796,7 +851,16 @@ async function fetchActiveRunStatus(threadId: string): Promise<ActiveRunPayload>
   return (await response.json()) as ActiveRunPayload;
 }
 
-async function fetchRuntimeStatusForThread(threadId: string) {
+async function fetchRuntimeStatusForThread(threadId: string, usesAgentRuntime: boolean) {
+  if (usesAgentRuntime) {
+    const response = await fetch(`/api/agents/runtime/${encodeURIComponent(threadId)}`);
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(message || '读取 Agent 热连接状态失败');
+    }
+    return normalizeAgentRuntimeStatus((await response.json()) as AgentRuntimeStatus);
+  }
+
   const response = await fetch('/api/claude/runtimes');
   if (!response.ok) {
     const message = await response.text();

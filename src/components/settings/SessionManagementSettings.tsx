@@ -7,6 +7,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { CLAUDE_CODE_PROVIDER_ID } from '../../constants';
 import {
   buildSessionProjectSummaries,
   buildSessionManagementRows,
@@ -229,9 +230,9 @@ export function SessionManagementSettingsSection({
 
     setClosingThreadId(row.thread.id);
     try {
-      const response = await fetch(`/api/claude/runtime/${encodeURIComponent(row.thread.id)}/close`, {
-        method: 'POST',
-      });
+      const response = row.thread.provider === CLAUDE_CODE_PROVIDER_ID
+        ? await fetch(`/api/claude/runtime/${encodeURIComponent(row.thread.id)}/close`, { method: 'POST' })
+        : await fetch(`/api/agents/runtime/${encodeURIComponent(row.thread.id)}`, { method: 'DELETE' });
       if (!response.ok) {
         throw new Error(await response.text());
       }

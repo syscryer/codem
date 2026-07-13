@@ -12,6 +12,15 @@ test('normalizeAgentRuntimeSettings keeps experimental Agent runs disabled by de
   assert.equal(defaultAgentRuntimeSettings.experimentalAgentRunEnabled, false);
 });
 
+test('normalizeAgentRuntimeSettings defaults to Claude Code and preserves supported providers', () => {
+  assert.equal(normalizeAgentRuntimeSettings({}).defaultProviderId, 'claude-code');
+  assert.equal(defaultAgentRuntimeSettings.defaultProviderId, 'claude-code');
+  assert.equal(normalizeAgentRuntimeSettings({ defaultProviderId: 'claude-code' }).defaultProviderId, 'claude-code');
+  assert.equal(normalizeAgentRuntimeSettings({ defaultProviderId: 'grok-build' }).defaultProviderId, 'grok-build');
+  assert.equal(normalizeAgentRuntimeSettings({ defaultProviderId: 'openai-codex' }).defaultProviderId, 'openai-codex');
+  assert.equal(normalizeAgentRuntimeSettings({ defaultProviderId: 'unknown-provider' }).defaultProviderId, 'claude-code');
+});
+
 test('normalizeAgentRuntimeSettings preserves an explicit experimental Agent run choice', () => {
   assert.equal(
     normalizeAgentRuntimeSettings({ experimentalAgentRunEnabled: true }).experimentalAgentRunEnabled,

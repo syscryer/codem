@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { normalizeAgentRuntimeStatus } from './thread-runtime-statuses.js';
 
 const appSource = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
 const composerSource = readFileSync(new URL('../components/Composer.tsx', import.meta.url), 'utf8');
 const workspaceSource = readFileSync(new URL('../hooks/useWorkspaceState.ts', import.meta.url), 'utf8');
 const agentRunSource = readFileSync(new URL('../hooks/useAgentRun.ts', import.meta.url), 'utf8');
+const claudeRunSource = readFileSync(new URL('../hooks/useClaudeRun.ts', import.meta.url), 'utf8');
 
 test('new chat persists provider ownership and locks the selector after creation', () => {
   assert.match(workspaceSource, /providerId\?: string/);
@@ -22,8 +24,22 @@ test('App routes Grok and Codex through the generic hook without changing the Cl
   assert.match(appSource, /return submitClaudePrompt\(submission\)/);
   assert.match(appSource, /return submitGenericAgentPrompt\(submission\)/);
   assert.match(agentRunSource, /fetch\('\/api\/agents\/run'/);
+  assert.match(agentRunSource, /threadId: context\.threadId/);
   assert.match(agentRunSource, /contentBlocks: requestContentBlocks/);
+  assert.match(agentRunSource, /setInterval\(\(\) => setClockNowMs\(Date\.now\(\)\), 1000\)/);
+  assert.match(appSource, /activeUsesGenericAgent \? genericAgentClockNowMs : claudeClockNowMs/);
   assert.doesNotMatch(agentRunSource, /\/api\/claude\/run/);
+});
+
+test('default Agent only drives new chat creation paths', () => {
+  assert.match(appSource, /defaultProviderId: agentRuntime\.defaultProviderId/);
+  assert.match(agentRunSource, /setDraftProviderId\(defaultProviderIdRef\.current\)/);
+  assert.match(agentRunSource, /providerId,/);
+  assert.match(claudeRunSource, /providerId: CLAUDE_CODE_PROVIDER_ID/);
+  assert.match(appSource, /providerId: draftProviderId/);
+  assert.match(workspaceSource, /openWorktreePath\(worktreePath: string, providerId: AgentProviderId\)/);
+  assert.match(workspaceSource, /attachClonedProject\(taskId, clonePayload\.projectPath, payload\.providerId\)/);
+  assert.match(workspaceSource, /providerId: task\.providerId/);
 });
 
 test('generic Agent composer follows provider attachment capabilities and supports queued turns', () => {
@@ -62,4 +78,38 @@ test('generic hook does not persist raw events or submitted secret answers', () 
   assert.doesNotMatch(agentRunSource, /submittedAnswers/);
   assert.match(agentRunSource, /原始内容未写入日志/);
   assert.match(agentRunSource, /pendingUserInputRequests: .*\.filter\(/s);
+});
+
+test('generic runtime status maps ready and running actors to hot session state', () => {
+  assert.deepEqual(
+    normalizeAgentRuntimeStatus({
+      threadId: 'thread-ready',
+      exists: true,
+      phase: 'ready',
+      providerId: 'openai-codex',
+      sessionId: 'session-1',
+    }),
+    {
+      threadId: 'thread-ready',
+      alive: true,
+      activeRun: false,
+      runtimeKind: 'agent',
+      phase: 'ready',
+      providerId: 'openai-codex',
+      sessionId: 'session-1',
+      currentRunId: undefined,
+      lastError: undefined,
+    },
+  );
+  assert.equal(normalizeAgentRuntimeStatus({
+    threadId: 'thread-running',
+    exists: true,
+    phase: 'running',
+    currentRunId: 'run-1',
+  }).activeRun, true);
+  assert.equal(normalizeAgentRuntimeStatus({
+    threadId: 'thread-closed',
+    exists: true,
+    phase: 'closed',
+  }).alive, false);
 });

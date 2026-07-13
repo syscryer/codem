@@ -28,6 +28,7 @@ import {
 import { buildNewChatTitleFromSubmission, shouldAutoRenameThreadTitle } from '../lib/new-chat-draft';
 import type { ThreadActivityNoticeKind } from '../lib/thread-activity-notices';
 import type {
+  AgentProviderId,
   AgentProviderDescriptor,
   AgentModelCatalog,
   AgentRunEvent,
@@ -96,6 +97,7 @@ type AgentRunContext = {
 };
 
 type UseAgentRunArgs = {
+  defaultProviderId: AgentProviderId;
   activeProjectId: string | null;
   activeProjectPath?: string;
   activeThreadId: string | null;
@@ -145,6 +147,7 @@ const AGENT_CANCEL_FALLBACK_MS = 6000;
 const DEFAULT_AGENT_PERMISSION_MODE: PermissionMode = 'default';
 
 export function useAgentRun({
+  defaultProviderId,
   activeProjectId,
   activeProjectPath,
   activeThreadId,
@@ -163,7 +166,7 @@ export function useAgentRun({
   const [providers, setProviders] = useState<AgentProviderDescriptor[]>([]);
   const [providersLoading, setProvidersLoading] = useState(true);
   const [providersError, setProvidersError] = useState('');
-  const [draftProviderId, setDraftProviderId] = useState(CLAUDE_CODE_PROVIDER_ID);
+  const [draftProviderId, setDraftProviderId] = useState<string>(defaultProviderId);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(DEFAULT_AGENT_PERMISSION_MODE);
   const [model, setModelState] = useState(DEFAULT_MODEL_VALUE);
   const [reasoningEffort, setReasoningEffortState] = useState('');
@@ -178,6 +181,7 @@ export function useAgentRun({
   const [queuedPromptsByThreadId, setQueuedPromptsByThreadId] = useState<
     Record<string, QueuedAgentPrompt[]>
   >({});
+  const [clockNowMs, setClockNowMs] = useState(Date.now());
   const runContextsByThreadIdRef = useRef(new Map<string, AgentRunContext>());
   const runContextsByRunIdRef = useRef(new Map<string, AgentRunContext>());
   const queuedPromptsByThreadIdRef = useRef<Record<string, QueuedAgentPrompt[]>>({});
@@ -187,6 +191,7 @@ export function useAgentRun({
   const modelRef = useRef(DEFAULT_MODEL_VALUE);
   const reasoningEffortRef = useRef('');
   const modelCatalogCacheRef = useRef(new Map<string, AgentModelCatalog>());
+  const defaultProviderIdRef = useRef(defaultProviderId);
 
   const runningThreadIds = Object.keys(activeRunsByThreadId);
   const activeTurnIdsByThreadId = Object.fromEntries(
@@ -197,6 +202,24 @@ export function useAgentRun({
   const queuedPrompts = activeThreadId
     ? queuedPromptsByThreadId[activeThreadId] ?? []
     : [];
+
+  useEffect(() => {
+    const previousDefaultProviderId = defaultProviderIdRef.current;
+    defaultProviderIdRef.current = defaultProviderId;
+    setDraftProviderId((current) =>
+      current === previousDefaultProviderId ? defaultProviderId : current,
+    );
+  }, [defaultProviderId]);
+
+  useEffect(() => {
+    if (runningThreadIds.length === 0) {
+      return undefined;
+    }
+
+    setClockNowMs(Date.now());
+    const timer = window.setInterval(() => setClockNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [runningThreadIds.length]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -326,7 +349,7 @@ export function useAgentRun({
   }, []);
 
   function resetDraftProvider() {
-    setDraftProviderId(CLAUDE_CODE_PROVIDER_ID);
+    setDraftProviderId(defaultProviderIdRef.current);
     setAgentPermissionMode(DEFAULT_AGENT_PERMISSION_MODE);
     setAgentModel(DEFAULT_MODEL_VALUE);
     setAgentReasoningEffort('');
@@ -856,6 +879,7 @@ export function useAgentRun({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             providerId: context.providerId,
+            threadId: context.threadId,
             prompt,
             contentBlocks: requestContentBlocks,
             workingDirectory,
@@ -1292,6 +1316,7 @@ export function useAgentRun({
     runningThreadIds,
     activeRunsByThreadId,
     activeTurnIdsByThreadId,
+    clockNowMs,
     queuedPrompts,
     removeQueuedPrompt,
     recallQueuedPrompt,

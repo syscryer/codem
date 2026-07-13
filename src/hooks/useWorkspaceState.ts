@@ -5,6 +5,7 @@ import { pickDesktopDirectory } from '../lib/desktop-dialog';
 import { resolveNewChatDraftProjectId } from '../lib/new-chat-draft';
 import { buildWorkspaceSidebarSections } from '../lib/workspace-pinning';
 import type {
+  AgentProviderId,
   CloneTask,
   ConfirmDialogState,
   ConversationTurn,
@@ -679,7 +680,7 @@ export function useWorkspaceState() {
     return payload;
   }
 
-  async function openWorktreePath(worktreePath: string) {
+  async function openWorktreePath(worktreePath: string, providerId: AgentProviderId) {
     const payload = await createProjectFromPath(worktreePath, {
       successMessage: null,
     });
@@ -700,7 +701,10 @@ export function useWorkspaceState() {
       return;
     }
 
-    await createThread(project.id, undefined, { showToast: false });
+    await createThread(project.id, undefined, {
+      showToast: false,
+      providerId,
+    });
   }
 
   async function selectDirectoryPath(initialPath?: string) {
@@ -746,6 +750,7 @@ export function useWorkspaceState() {
     repoUrl: string;
     baseDirectory: string;
     folderName: string;
+    providerId: AgentProviderId;
   }) {
     const repoUrl = payload.repoUrl.trim();
     const baseDirectory = payload.baseDirectory.trim();
@@ -761,6 +766,7 @@ export function useWorkspaceState() {
         baseDirectory,
         folderName,
         targetPath,
+        providerId: payload.providerId,
         status: 'cloning',
         phase: 'clone',
         detail: '正在克隆仓库...',
@@ -775,6 +781,7 @@ export function useWorkspaceState() {
       baseDirectory,
       folderName,
       targetPath,
+      providerId: payload.providerId,
     });
   }
 
@@ -785,6 +792,7 @@ export function useWorkspaceState() {
       baseDirectory: string;
       folderName: string;
       targetPath: string;
+      providerId: AgentProviderId;
     },
   ) {
     updateCloneTask(taskId, {
@@ -813,7 +821,7 @@ export function useWorkspaceState() {
       }
 
       const clonePayload = (await response.json()) as { ok: true; projectPath: string };
-      await attachClonedProject(taskId, clonePayload.projectPath);
+      await attachClonedProject(taskId, clonePayload.projectPath, payload.providerId);
     } catch (error) {
       const message = error instanceof Error ? error.message : '克隆仓库失败';
       const rawLog = isCloneFailure(error) ? error.rawLog : undefined;
@@ -828,7 +836,7 @@ export function useWorkspaceState() {
     }
   }
 
-  async function attachClonedProject(taskId: string, projectPath: string) {
+  async function attachClonedProject(taskId: string, projectPath: string, providerId: AgentProviderId) {
     updateCloneTask(taskId, {
       status: 'attaching',
       phase: 'attach',
@@ -844,7 +852,10 @@ export function useWorkspaceState() {
       });
       const project = projectPayload.workspace.projects.find((item) => item.id === projectPayload.projectId) ?? null;
       if (project && project.threads.length === 0) {
-        await createThread(projectPayload.projectId, undefined, { showToast: false });
+        await createThread(projectPayload.projectId, undefined, {
+          showToast: false,
+          providerId,
+        });
       }
       removeCloneTask(taskId);
       showToast('仓库已克隆并添加到工作区');
@@ -868,7 +879,7 @@ export function useWorkspaceState() {
     }
 
     if (task.phase === 'attach') {
-      void attachClonedProject(taskId, task.targetPath);
+      void attachClonedProject(taskId, task.targetPath, task.providerId);
       return;
     }
 
@@ -877,6 +888,7 @@ export function useWorkspaceState() {
       baseDirectory: task.baseDirectory,
       folderName: task.folderName,
       targetPath: task.targetPath,
+      providerId: task.providerId,
     });
   }
 

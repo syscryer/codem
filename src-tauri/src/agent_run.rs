@@ -69,11 +69,13 @@ enum AgentDriverInput {
 #[derive(Clone)]
 struct AgentRunState {
     records: Arc<Mutex<HashMap<String, AgentRunRecord>>>,
+    runtimes: Arc<Mutex<HashMap<String, AgentRuntimeRecord>>>,
     command_resolvers: CommandResolvers,
     experimental_agent_run_enabled: Arc<AtomicBool>,
 }
 
 struct AgentRunRecord {
+    thread_id: Option<String>,
     events: Vec<AgentRunEvent>,
     finished: bool,
     terminal_emitted: bool,
@@ -107,6 +109,101 @@ struct CodexRunTask {
     reasoning_effort: Option<String>,
     cancel: watch::Receiver<bool>,
     control: mpsc::UnboundedReceiver<AgentControlCommand>,
+}
+
+#[derive(Clone)]
+pub(crate) struct AgentRunService {
+    state: AgentRunState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AgentRuntimeConfig {
+    provider_id: String,
+    driver: AgentDriverKind,
+    command: String,
+    working_directory: PathBuf,
+    permission_mode: &'static str,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AgentRuntimePhase {
+    Starting,
+    Ready,
+    Running,
+    Closed,
+    Failed,
+}
+
+struct AgentRuntimeRecord {
+    runtime_id: String,
+    config: AgentRuntimeConfig,
+    session_id: Option<String>,
+    phase: AgentRuntimePhase,
+    current_run_id: Option<String>,
+    command: Option<mpsc::UnboundedSender<AgentRuntimeCommand>>,
+    shutdown: watch::Sender<bool>,
+    last_error: Option<String>,
+}
+
+struct AgentRuntimeRun {
+    run_id: String,
+    input: AgentDriverInput,
+    cancel: watch::Receiver<bool>,
+    control: mpsc::UnboundedReceiver<AgentControlCommand>,
+}
+
+enum AgentRuntimeCommand {
+    Run(AgentRuntimeRun),
+}
+
+enum RuntimeDispatchAction {
+    Reuse(mpsc::UnboundedSender<AgentRuntimeCommand>),
+    Start {
+        runtime_id: String,
+        commands: mpsc::UnboundedReceiver<AgentRuntimeCommand>,
+        shutdown: watch::Receiver<bool>,
+    },
+}
+
+enum LiveAgentRuntime {
+    Grok {
+        client: AcpStdioClient,
+        session_id: String,
+    },
+    Codex {
+        client: CodexStdioClient,
+        session_id: String,
+    },
+}
+
+struct RuntimeTurnOutcome {
+    session_id: String,
+    text: String,
+    stop_reason: String,
+}
+
+struct RuntimeTurnError {
+    message: String,
+    fatal: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRuntimeStatus {
+    thread_id: String,
+    exists: bool,
+    phase: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -164,6 +261,8 @@ type AgentApiResult<T> = Result<T, AgentApiError>;
 #[serde(rename_all = "camelCase")]
 struct StartAgentRunRequest {
     provider_id: String,
+    #[serde(default)]
+    thread_id: Option<String>,
     #[serde(default)]
     prompt: Option<String>,
     #[serde(default)]
@@ -268,21 +367,47 @@ struct UserInputResponseRequest {
     answers: Map<String, Value>,
 }
 
-pub(crate) fn router(
-    grok_command_resolver: CommandResolver,
-    codex_command_resolver: CommandResolver,
-    experimental_agent_run_enabled: Arc<AtomicBool>,
-) -> Router {
-    let state = AgentRunState {
-        records: Arc::new(Mutex::new(HashMap::new())),
-        command_resolvers: CommandResolvers {
-            grok: grok_command_resolver,
-            codex: codex_command_resolver,
-        },
-        experimental_agent_run_enabled,
-    };
+impl AgentRunService {
+    pub(crate) fn new(
+        grok_command_resolver: fn() -> Option<String>,
+        codex_command_resolver: fn() -> Option<String>,
+        experimental_agent_run_enabled: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            state: AgentRunState {
+                records: Arc::new(Mutex::new(HashMap::new())),
+                runtimes: Arc::new(Mutex::new(HashMap::new())),
+                command_resolvers: CommandResolvers {
+                    grok: grok_command_resolver,
+                    codex: codex_command_resolver,
+                },
+                experimental_agent_run_enabled,
+            },
+        }
+    }
+
+    pub(crate) fn close_thread_runtime(&self, thread_id: &str) -> Result<bool, String> {
+        self.state.close_runtime(thread_id)
+    }
+
+    pub(crate) fn forget_thread(&self, thread_id: &str) {
+        let _ = self.close_thread_runtime(thread_id);
+        self.state.remove_run_records_for_thread(thread_id);
+        if let Ok(mut runtimes) = self.state.runtimes.lock() {
+            runtimes.remove(thread_id);
+        }
+    }
+}
+
+pub(crate) fn router(service: AgentRunService) -> Router {
+    let state = service.state;
     Router::new()
         .route("/api/agents/{provider_id}/models", get(agent_models))
+        .route("/api/agents/runtimes", get(agent_runtime_statuses))
+        .route(
+            "/api/agents/runtime/{thread_id}",
+            get(agent_runtime_status).delete(close_agent_runtime),
+        )
         .route("/api/agents/run", post(start_agent_run))
         .route("/api/agents/run/{run_id}/events", get(agent_run_events))
         .route(
@@ -450,6 +575,7 @@ async fn start_agent_run(
             AgentDriverInput::Codex(build_codex_input(&input_blocks, &working_directory)?)
         }
     };
+    let thread_id = normalize_optional_id(payload.thread_id, "threadId")?;
     let session_id = normalize_optional_id(payload.session_id, "sessionId")?;
     let model = normalize_optional_id(payload.model, "model")?;
     let reasoning_effort = normalize_optional_id(payload.reasoning_effort, "reasoningEffort")?;
@@ -468,6 +594,7 @@ async fn start_agent_run(
     state.insert(
         run_id.clone(),
         AgentRunRecord {
+            thread_id: thread_id.clone(),
             events: Vec::new(),
             finished: false,
             terminal_emitted: false,
@@ -480,49 +607,456 @@ async fn start_agent_run(
         &run_id,
         AgentRunEvent::Status {
             run_id: run_id.clone(),
-            message: format!("正在启动 {provider_name}"),
+            message: if thread_id.is_some() {
+                format!("正在连接 {provider_name} 热会话")
+            } else {
+                format!("正在启动 {provider_name}")
+            },
         },
     );
 
-    let task_state = state.clone();
-    let task_run_id = run_id.clone();
-    tokio::spawn(async move {
-        match driver_input {
-            AgentDriverInput::Grok(input) => {
-                execute_acp_run(AcpRunTask {
-                    state: task_state,
-                    run_id: task_run_id,
-                    command,
-                    working_directory,
-                    input,
-                    requested_session_id: session_id,
-                    permission_mode,
-                    model,
-                    cancel: cancel_receiver,
-                    control: control_receiver,
-                })
-                .await;
-            }
-            AgentDriverInput::Codex(input) => {
-                execute_codex_run(CodexRunTask {
-                    state: task_state,
-                    run_id: task_run_id,
-                    command,
-                    working_directory,
-                    input,
-                    requested_session_id: session_id,
-                    permission_mode,
-                    model,
-                    reasoning_effort,
-                    cancel: cancel_receiver,
-                    control: control_receiver,
-                })
-                .await;
-            }
+    if let Some(thread_id) = thread_id {
+        let config = AgentRuntimeConfig {
+            provider_id: provider_id.to_string(),
+            driver,
+            command,
+            working_directory,
+            permission_mode,
+            model,
+            reasoning_effort,
+        };
+        if let Err(error) = state.dispatch_runtime(
+            thread_id,
+            config,
+            session_id,
+            AgentRuntimeRun {
+                run_id: run_id.clone(),
+                input: driver_input,
+                cancel: cancel_receiver,
+                control: control_receiver,
+            },
+        ) {
+            state.remove_run_record(&run_id);
+            return Err(error);
         }
-    });
+    } else {
+        let task_state = state.clone();
+        let task_run_id = run_id.clone();
+        tokio::spawn(async move {
+            match driver_input {
+                AgentDriverInput::Grok(input) => {
+                    execute_acp_run(AcpRunTask {
+                        state: task_state,
+                        run_id: task_run_id,
+                        command,
+                        working_directory,
+                        input,
+                        requested_session_id: session_id,
+                        permission_mode,
+                        model,
+                        cancel: cancel_receiver,
+                        control: control_receiver,
+                    })
+                    .await;
+                }
+                AgentDriverInput::Codex(input) => {
+                    execute_codex_run(CodexRunTask {
+                        state: task_state,
+                        run_id: task_run_id,
+                        command,
+                        working_directory,
+                        input,
+                        requested_session_id: session_id,
+                        permission_mode,
+                        model,
+                        reasoning_effort,
+                        cancel: cancel_receiver,
+                        control: control_receiver,
+                    })
+                    .await;
+                }
+            }
+        });
+    }
 
     build_event_stream(state, run_id, 0)
+}
+
+async fn run_agent_runtime_actor(
+    state: AgentRunState,
+    thread_id: String,
+    runtime_id: String,
+    config: AgentRuntimeConfig,
+    requested_session_id: Option<String>,
+    first_run: AgentRuntimeRun,
+    mut commands: mpsc::UnboundedReceiver<AgentRuntimeCommand>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let first_run_id = first_run.run_id.clone();
+    let started = tokio::select! {
+        result = start_live_agent_runtime(&config, requested_session_id.as_deref()) => Some(result),
+        _ = wait_for_shutdown(&mut shutdown) => None,
+    };
+    let Some(started) = started else {
+        state.push_terminal(
+            &first_run_id,
+            AgentRunEvent::Error {
+                run_id: first_run_id.clone(),
+                message: "Agent 热会话已关闭".to_string(),
+            },
+        );
+        state.mark_runtime_closed(&thread_id, &runtime_id, Some(&first_run_id));
+        return;
+    };
+    let (mut runtime, resumed) = match started {
+        Ok(runtime) => runtime,
+        Err(message) => {
+            state.push_terminal(
+                &first_run_id,
+                AgentRunEvent::Error {
+                    run_id: first_run_id.clone(),
+                    message: message.clone(),
+                },
+            );
+            state.mark_runtime_failed(&thread_id, &runtime_id, Some(&first_run_id), message);
+            return;
+        }
+    };
+    let session_id = runtime.session_id().to_string();
+    state.activate_runtime_session(&thread_id, &runtime_id, &first_run_id, &session_id);
+
+    let mut current_run = Some(first_run);
+    let mut reused = false;
+    loop {
+        if let Some(run) = current_run.take() {
+            let run_id = run.run_id.clone();
+            state.push_event(
+                &run_id,
+                AgentRunEvent::Session {
+                    run_id: run_id.clone(),
+                    session_id: session_id.clone(),
+                },
+            );
+            state.push_event(
+                &run_id,
+                AgentRunEvent::Status {
+                    run_id: run_id.clone(),
+                    message: runtime_status_message(config.driver, reused, resumed),
+                },
+            );
+            state.push_event(&run_id, agent_phase_event(&run_id, "thinking", "思考中"));
+
+            match runtime.run_turn(&state, &config, run, &mut shutdown).await {
+                RuntimeExecution::Completed(Ok(outcome)) => {
+                    state.finish_runtime_run(&thread_id, &runtime_id, &run_id);
+                    state.push_terminal(
+                        &run_id,
+                        AgentRunEvent::Done {
+                            run_id: run_id.clone(),
+                            session_id: outcome.session_id,
+                            result: outcome.text,
+                            stop_reason: outcome.stop_reason,
+                        },
+                    );
+                }
+                RuntimeExecution::Completed(Err(error)) => {
+                    if error.fatal {
+                        state.mark_runtime_failed(
+                            &thread_id,
+                            &runtime_id,
+                            Some(&run_id),
+                            error.message.clone(),
+                        );
+                        state.push_terminal(
+                            &run_id,
+                            AgentRunEvent::Error {
+                                run_id: run_id.clone(),
+                                message: error.message.clone(),
+                            },
+                        );
+                        runtime.shutdown().await;
+                        return;
+                    }
+                    state.finish_runtime_run(&thread_id, &runtime_id, &run_id);
+                    state.push_terminal(
+                        &run_id,
+                        AgentRunEvent::Error {
+                            run_id: run_id.clone(),
+                            message: error.message,
+                        },
+                    );
+                }
+                RuntimeExecution::Closed => {
+                    state.mark_runtime_closed(&thread_id, &runtime_id, Some(&run_id));
+                    state.push_terminal(
+                        &run_id,
+                        AgentRunEvent::Error {
+                            run_id: run_id.clone(),
+                            message: "Agent 热会话已关闭".to_string(),
+                        },
+                    );
+                    runtime.shutdown().await;
+                    return;
+                }
+            }
+            reused = true;
+        }
+
+        tokio::select! {
+            _ = wait_for_shutdown(&mut shutdown) => {
+                state.mark_runtime_closed(&thread_id, &runtime_id, None);
+                runtime.shutdown().await;
+                return;
+            }
+            command = commands.recv() => {
+                match command {
+                    Some(AgentRuntimeCommand::Run(run)) => current_run = Some(run),
+                    None => {
+                        state.mark_runtime_closed(&thread_id, &runtime_id, None);
+                        runtime.shutdown().await;
+                        return;
+                    }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                if !runtime.is_running() {
+                    state.mark_runtime_failed(
+                        &thread_id,
+                        &runtime_id,
+                        None,
+                        "Agent Provider 子进程已退出".to_string(),
+                    );
+                    runtime.shutdown().await;
+                    return;
+                }
+            }
+        }
+    }
+}
+
+enum RuntimeExecution {
+    Completed(Result<RuntimeTurnOutcome, RuntimeTurnError>),
+    Closed,
+}
+
+impl LiveAgentRuntime {
+    fn session_id(&self) -> &str {
+        match self {
+            Self::Grok { session_id, .. } | Self::Codex { session_id, .. } => session_id,
+        }
+    }
+
+    fn is_running(&mut self) -> bool {
+        match self {
+            Self::Grok { client, .. } => client.is_running(),
+            Self::Codex { client, .. } => client.is_running(),
+        }
+    }
+
+    async fn shutdown(self) {
+        match self {
+            Self::Grok { client, .. } => client.shutdown().await,
+            Self::Codex { client, .. } => client.shutdown().await,
+        }
+    }
+
+    async fn run_turn(
+        &mut self,
+        state: &AgentRunState,
+        config: &AgentRuntimeConfig,
+        run: AgentRuntimeRun,
+        shutdown: &mut watch::Receiver<bool>,
+    ) -> RuntimeExecution {
+        let AgentRuntimeRun {
+            run_id,
+            input,
+            cancel,
+            mut control,
+        } = run;
+        match (self, input) {
+            (Self::Grok { client, session_id }, AgentDriverInput::Grok(input)) => {
+                let mut mapper = AcpEventMapper::new(run_id.clone());
+                let event_state = state.clone();
+                let result = tokio::select! {
+                    result = client.prompt_stream(session_id, &input, cancel, &mut control, |event| {
+                        for event in mapper.map_event(event) {
+                            event_state.push_event(&run_id, event);
+                        }
+                    }) => Some(result),
+                    _ = wait_for_shutdown(shutdown) => None,
+                };
+                for event in mapper.finish_open_tools() {
+                    state.push_event(&run_id, event);
+                }
+                match result {
+                    Some(Ok(outcome)) => RuntimeExecution::Completed(Ok(RuntimeTurnOutcome {
+                        session_id: session_id.clone(),
+                        text: outcome.text,
+                        stop_reason: outcome.stop_reason,
+                    })),
+                    Some(Err(error)) => RuntimeExecution::Completed(Err(RuntimeTurnError {
+                        fatal: acp_error_is_fatal(&error) || !client.is_running(),
+                        message: public_acp_error(error),
+                    })),
+                    None => RuntimeExecution::Closed,
+                }
+            }
+            (Self::Codex { client, session_id }, AgentDriverInput::Codex(input)) => {
+                let mut mapper = CodexEventMapper::new(run_id.clone());
+                let event_state = state.clone();
+                let result = tokio::select! {
+                    result = client.run_turn(
+                        session_id,
+                        &config.working_directory,
+                        &input,
+                        config.permission_mode,
+                        config.model.as_deref(),
+                        config.reasoning_effort.as_deref(),
+                        cancel,
+                        &mut control,
+                        |event| {
+                            for event in mapper.map_event(event) {
+                                event_state.push_event(&run_id, event);
+                            }
+                        },
+                    ) => Some(result),
+                    _ = wait_for_shutdown(shutdown) => None,
+                };
+                for event in mapper.finish_open_tools() {
+                    state.push_event(&run_id, event);
+                }
+                match result {
+                    Some(Ok(outcome)) => RuntimeExecution::Completed(Ok(RuntimeTurnOutcome {
+                        session_id: session_id.clone(),
+                        text: outcome.text,
+                        stop_reason: outcome.stop_reason,
+                    })),
+                    Some(Err(error)) => RuntimeExecution::Completed(Err(RuntimeTurnError {
+                        fatal: codex_error_is_fatal(&error) || !client.is_running(),
+                        message: public_codex_error(error),
+                    })),
+                    None => RuntimeExecution::Closed,
+                }
+            }
+            _ => RuntimeExecution::Completed(Err(RuntimeTurnError {
+                message: "Agent runtime 与输入协议不匹配".to_string(),
+                fatal: true,
+            })),
+        }
+    }
+}
+
+async fn start_live_agent_runtime(
+    config: &AgentRuntimeConfig,
+    requested_session_id: Option<&str>,
+) -> Result<(LiveAgentRuntime, bool), String> {
+    match config.driver {
+        AgentDriverKind::GrokAcp => {
+            let arguments = grok_acp_arguments(config.permission_mode);
+            let mut client =
+                AcpStdioClient::spawn(&config.command, &arguments, &config.working_directory)
+                    .await
+                    .map_err(public_acp_error)?;
+            let initialize = client
+                .initialize(env!("CARGO_PKG_VERSION"))
+                .await
+                .map_err(public_acp_error)?;
+            let auth_method_id = initialize
+                .auth_methods
+                .iter()
+                .find(|method| method.id == "cached_token")
+                .map(|method| method.id.as_str())
+                .ok_or_else(|| "Grok Build 没有可用缓存认证，请先运行 grok login".to_string())?;
+            client
+                .authenticate(auth_method_id)
+                .await
+                .map_err(public_acp_error)?;
+            let session = if let Some(session_id) = requested_session_id {
+                if !initialize.load_session {
+                    return Err("当前 Grok Build ACP 不支持恢复会话".to_string());
+                }
+                client
+                    .load_session(session_id, &config.working_directory)
+                    .await
+                    .map_err(public_acp_error)?
+            } else {
+                client
+                    .new_session(&config.working_directory)
+                    .await
+                    .map_err(public_acp_error)?
+            };
+            if let Some(model) = config.model.as_deref() {
+                if should_set_acp_model(
+                    Some(model),
+                    session.current_model_id.as_deref(),
+                    initialize.current_model_id.as_deref(),
+                ) {
+                    client
+                        .set_model(&session.session_id, model)
+                        .await
+                        .map_err(public_acp_error)?;
+                }
+            }
+            Ok((
+                LiveAgentRuntime::Grok {
+                    client,
+                    session_id: session.session_id,
+                },
+                requested_session_id.is_some(),
+            ))
+        }
+        AgentDriverKind::CodexAppServer => {
+            let mut client = CodexStdioClient::spawn(&config.command, &config.working_directory)
+                .await
+                .map_err(public_codex_error)?;
+            client
+                .initialize(env!("CARGO_PKG_VERSION"))
+                .await
+                .map_err(public_codex_error)?;
+            let session_id = client
+                .start_or_resume_thread(requested_session_id, &config.working_directory)
+                .await
+                .map_err(public_codex_error)?;
+            Ok((
+                LiveAgentRuntime::Codex { client, session_id },
+                requested_session_id.is_some(),
+            ))
+        }
+    }
+}
+
+async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    if *shutdown.borrow() {
+        return;
+    }
+    while shutdown.changed().await.is_ok() {
+        if *shutdown.borrow() {
+            return;
+        }
+    }
+    std::future::pending::<()>().await;
+}
+
+fn runtime_status_message(driver: AgentDriverKind, reused: bool, resumed: bool) -> String {
+    match (driver, reused, resumed) {
+        (AgentDriverKind::GrokAcp, true, _) => "已复用 Grok Build 热会话".to_string(),
+        (AgentDriverKind::GrokAcp, false, true) => "已恢复 Grok Build ACP 会话".to_string(),
+        (AgentDriverKind::GrokAcp, false, false) => "已创建 Grok Build ACP 会话".to_string(),
+        (AgentDriverKind::CodexAppServer, true, _) => "已复用 OpenAI Codex 热会话".to_string(),
+        (AgentDriverKind::CodexAppServer, false, true) => "已恢复 OpenAI Codex 会话".to_string(),
+        (AgentDriverKind::CodexAppServer, false, false) => "已创建 OpenAI Codex 会话".to_string(),
+    }
+}
+
+fn acp_error_is_fatal(error: &AcpError) -> bool {
+    !matches!(error, AcpError::Rpc { .. })
+}
+
+fn codex_error_is_fatal(error: &CodexAppServerError) -> bool {
+    !matches!(
+        error,
+        CodexAppServerError::Rpc { .. } | CodexAppServerError::Execution(_)
+    )
 }
 
 async fn execute_acp_run(task: AcpRunTask) {
@@ -613,6 +1147,7 @@ async fn execute_acp_run(task: AcpRunTask) {
                 },
             },
         );
+        state.push_event(&run_id, agent_phase_event(&run_id, "thinking", "思考中"));
 
         let outcome = if *cancel.borrow() {
             cancelled_before_prompt_outcome()
@@ -711,6 +1246,7 @@ async fn execute_codex_run(task: CodexRunTask) {
                 },
             },
         );
+        state.push_event(&run_id, agent_phase_event(&run_id, "thinking", "思考中"));
 
         let event_state = state.clone();
         let outcome = client
@@ -846,6 +1382,31 @@ async fn cancel_agent_run(
     Ok(Json(json!({ "cancelled": cancelled })))
 }
 
+async fn agent_runtime_status(
+    State(state): State<AgentRunState>,
+    AxumPath(thread_id): AxumPath<String>,
+) -> AgentApiResult<Json<AgentRuntimeStatus>> {
+    let thread_id = required_id(&thread_id, "threadId")?;
+    Ok(Json(state.runtime_status(&thread_id)?))
+}
+
+async fn agent_runtime_statuses(
+    State(state): State<AgentRunState>,
+) -> AgentApiResult<Json<HashMap<String, AgentRuntimeStatus>>> {
+    Ok(Json(state.runtime_statuses()?))
+}
+
+async fn close_agent_runtime(
+    State(state): State<AgentRunState>,
+    AxumPath(thread_id): AxumPath<String>,
+) -> AgentApiResult<Json<Value>> {
+    let thread_id = required_id(&thread_id, "threadId")?;
+    let closed = state
+        .close_runtime(&thread_id)
+        .map_err(AgentApiError::internal)?;
+    Ok(Json(json!({ "closed": closed })))
+}
+
 async fn await_control_ack(receiver: oneshot::Receiver<Result<(), String>>) -> AgentApiResult<()> {
     match tokio::time::timeout(CONTROL_ACK_TIMEOUT, receiver).await {
         Ok(Ok(Ok(()))) => Ok(()),
@@ -902,6 +1463,263 @@ impl AgentRunState {
             .map_err(|_| AgentApiError::internal("锁定 Agent 运行状态失败"))?
             .insert(run_id, record);
         Ok(())
+    }
+
+    fn remove_run_record(&self, run_id: &str) {
+        if let Ok(mut records) = self.records.lock() {
+            records.remove(run_id);
+        }
+    }
+
+    fn dispatch_runtime(
+        &self,
+        thread_id: String,
+        config: AgentRuntimeConfig,
+        requested_session_id: Option<String>,
+        run: AgentRuntimeRun,
+    ) -> AgentApiResult<()> {
+        let run_id = run.run_id.clone();
+        let mut pending_run = Some(run);
+        loop {
+            let action = {
+                let mut runtimes = self
+                    .runtimes
+                    .lock()
+                    .map_err(|_| AgentApiError::internal("锁定 Agent 热会话失败"))?;
+                if let Some(runtime) = runtimes.get_mut(&thread_id) {
+                    if runtime.current_run_id.is_some() {
+                        return Err(AgentApiError::conflict("当前聊天已有 Agent 正在运行"));
+                    }
+                    if runtime_can_reuse(runtime, &config, requested_session_id.as_deref()) {
+                        if let Some(command) = runtime.command.clone() {
+                            runtime.phase = AgentRuntimePhase::Running;
+                            runtime.current_run_id = Some(run_id.clone());
+                            RuntimeDispatchAction::Reuse(command)
+                        } else {
+                            runtime.phase = AgentRuntimePhase::Failed;
+                            runtime.last_error = Some("Agent 热会话命令通道已关闭".to_string());
+                            create_runtime_record(
+                                &mut runtimes,
+                                &thread_id,
+                                &config,
+                                requested_session_id.clone(),
+                                &run_id,
+                            )
+                        }
+                    } else {
+                        let _ = runtime.shutdown.send(true);
+                        runtime.phase = AgentRuntimePhase::Closed;
+                        runtime.current_run_id = None;
+                        runtime.command = None;
+                        runtime.last_error = None;
+                        create_runtime_record(
+                            &mut runtimes,
+                            &thread_id,
+                            &config,
+                            requested_session_id.clone(),
+                            &run_id,
+                        )
+                    }
+                } else {
+                    create_runtime_record(
+                        &mut runtimes,
+                        &thread_id,
+                        &config,
+                        requested_session_id.clone(),
+                        &run_id,
+                    )
+                }
+            };
+
+            match action {
+                RuntimeDispatchAction::Reuse(command) => {
+                    let run = pending_run
+                        .take()
+                        .ok_or_else(|| AgentApiError::internal("Agent 运行调度状态异常"))?;
+                    match command.send(AgentRuntimeCommand::Run(run)) {
+                        Ok(()) => return Ok(()),
+                        Err(error) => {
+                            let AgentRuntimeCommand::Run(run) = error.0;
+                            pending_run = Some(run);
+                            self.mark_runtime_failed(
+                                &thread_id,
+                                &self.runtime_id(&thread_id).unwrap_or_default(),
+                                Some(&run_id),
+                                "Agent 热会话命令通道已关闭".to_string(),
+                            );
+                        }
+                    }
+                }
+                RuntimeDispatchAction::Start {
+                    runtime_id,
+                    commands,
+                    shutdown,
+                } => {
+                    let first_run = pending_run
+                        .take()
+                        .ok_or_else(|| AgentApiError::internal("Agent 运行调度状态异常"))?;
+                    let actor_state = self.clone();
+                    tokio::spawn(run_agent_runtime_actor(
+                        actor_state,
+                        thread_id,
+                        runtime_id,
+                        config,
+                        requested_session_id,
+                        first_run,
+                        commands,
+                        shutdown,
+                    ));
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    fn runtime_id(&self, thread_id: &str) -> Option<String> {
+        self.runtimes
+            .lock()
+            .ok()?
+            .get(thread_id)
+            .map(|runtime| runtime.runtime_id.clone())
+    }
+
+    fn activate_runtime_session(
+        &self,
+        thread_id: &str,
+        runtime_id: &str,
+        run_id: &str,
+        session_id: &str,
+    ) {
+        if let Ok(mut runtimes) = self.runtimes.lock() {
+            if let Some(runtime) = runtimes.get_mut(thread_id) {
+                if runtime.runtime_id == runtime_id
+                    && runtime.current_run_id.as_deref() == Some(run_id)
+                {
+                    runtime.session_id = Some(session_id.to_string());
+                    runtime.phase = AgentRuntimePhase::Running;
+                    runtime.last_error = None;
+                }
+            }
+        }
+    }
+
+    fn finish_runtime_run(&self, thread_id: &str, runtime_id: &str, run_id: &str) {
+        if let Ok(mut runtimes) = self.runtimes.lock() {
+            if let Some(runtime) = runtimes.get_mut(thread_id) {
+                if runtime.runtime_id == runtime_id
+                    && runtime.current_run_id.as_deref() == Some(run_id)
+                {
+                    runtime.current_run_id = None;
+                    if runtime.phase == AgentRuntimePhase::Running {
+                        runtime.phase = AgentRuntimePhase::Ready;
+                    }
+                }
+            }
+        }
+    }
+
+    fn mark_runtime_closed(&self, thread_id: &str, runtime_id: &str, run_id: Option<&str>) {
+        if let Ok(mut runtimes) = self.runtimes.lock() {
+            if let Some(runtime) = runtimes.get_mut(thread_id) {
+                if runtime.runtime_id == runtime_id
+                    && run_id.is_none_or(|run_id| runtime.current_run_id.as_deref() == Some(run_id))
+                {
+                    runtime.phase = AgentRuntimePhase::Closed;
+                    runtime.current_run_id = None;
+                    runtime.command = None;
+                    runtime.last_error = None;
+                }
+            }
+        }
+    }
+
+    fn mark_runtime_failed(
+        &self,
+        thread_id: &str,
+        runtime_id: &str,
+        run_id: Option<&str>,
+        message: String,
+    ) {
+        if let Ok(mut runtimes) = self.runtimes.lock() {
+            if let Some(runtime) = runtimes.get_mut(thread_id) {
+                if runtime.runtime_id == runtime_id
+                    && run_id.is_none_or(|run_id| runtime.current_run_id.as_deref() == Some(run_id))
+                {
+                    runtime.phase = AgentRuntimePhase::Failed;
+                    runtime.current_run_id = None;
+                    runtime.command = None;
+                    runtime.last_error = Some(message);
+                }
+            }
+        }
+    }
+
+    fn close_runtime(&self, thread_id: &str) -> Result<bool, String> {
+        let (shutdown, current_run_id) = {
+            let mut runtimes = self
+                .runtimes
+                .lock()
+                .map_err(|_| "锁定 Agent 热会话失败".to_string())?;
+            let Some(runtime) = runtimes.get_mut(thread_id) else {
+                return Ok(false);
+            };
+            if matches!(
+                runtime.phase,
+                AgentRuntimePhase::Closed | AgentRuntimePhase::Failed
+            ) {
+                return Ok(false);
+            }
+            runtime.phase = AgentRuntimePhase::Closed;
+            runtime.command = None;
+            runtime.last_error = None;
+            (runtime.shutdown.clone(), runtime.current_run_id.take())
+        };
+        if let Some(run_id) = current_run_id {
+            let _ = self.cancel(&run_id);
+        }
+        let _ = shutdown.send(true);
+        Ok(true)
+    }
+
+    fn runtime_status(&self, thread_id: &str) -> AgentApiResult<AgentRuntimeStatus> {
+        let runtimes = self
+            .runtimes
+            .lock()
+            .map_err(|_| AgentApiError::internal("读取 Agent 热会话失败"))?;
+        let Some(runtime) = runtimes.get(thread_id) else {
+            return Ok(AgentRuntimeStatus {
+                thread_id: thread_id.to_string(),
+                exists: false,
+                phase: "absent",
+                provider_id: None,
+                session_id: None,
+                current_run_id: None,
+                last_error: None,
+            });
+        };
+        Ok(agent_runtime_status_from_record(thread_id, runtime))
+    }
+
+    fn runtime_statuses(&self) -> AgentApiResult<HashMap<String, AgentRuntimeStatus>> {
+        let runtimes = self
+            .runtimes
+            .lock()
+            .map_err(|_| AgentApiError::internal("读取 Agent 热会话失败"))?;
+        Ok(runtimes
+            .iter()
+            .map(|(thread_id, runtime)| {
+                (
+                    thread_id.clone(),
+                    agent_runtime_status_from_record(thread_id, runtime),
+                )
+            })
+            .collect())
+    }
+
+    fn remove_run_records_for_thread(&self, thread_id: &str) {
+        if let Ok(mut records) = self.records.lock() {
+            records.retain(|_, record| record.thread_id.as_deref() != Some(thread_id));
+        }
     }
 
     fn push_event(&self, run_id: &str, event: AgentRunEvent) -> bool {
@@ -1005,6 +1823,73 @@ impl AgentRunState {
     }
 }
 
+fn create_runtime_record(
+    runtimes: &mut HashMap<String, AgentRuntimeRecord>,
+    thread_id: &str,
+    config: &AgentRuntimeConfig,
+    requested_session_id: Option<String>,
+    run_id: &str,
+) -> RuntimeDispatchAction {
+    let runtime_id = uuid::Uuid::new_v4().to_string();
+    let (command, commands) = mpsc::unbounded_channel();
+    let (shutdown_sender, shutdown) = watch::channel(false);
+    runtimes.insert(
+        thread_id.to_string(),
+        AgentRuntimeRecord {
+            runtime_id: runtime_id.clone(),
+            config: config.clone(),
+            session_id: requested_session_id,
+            phase: AgentRuntimePhase::Starting,
+            current_run_id: Some(run_id.to_string()),
+            command: Some(command),
+            shutdown: shutdown_sender,
+            last_error: None,
+        },
+    );
+    RuntimeDispatchAction::Start {
+        runtime_id,
+        commands,
+        shutdown,
+    }
+}
+
+fn runtime_can_reuse(
+    runtime: &AgentRuntimeRecord,
+    config: &AgentRuntimeConfig,
+    requested_session_id: Option<&str>,
+) -> bool {
+    runtime.phase == AgentRuntimePhase::Ready
+        && runtime.command.is_some()
+        && runtime.config == *config
+        && requested_session_id
+            .is_none_or(|session_id| runtime.session_id.as_deref() == Some(session_id))
+}
+
+fn runtime_phase_name(phase: AgentRuntimePhase) -> &'static str {
+    match phase {
+        AgentRuntimePhase::Starting => "starting",
+        AgentRuntimePhase::Ready => "ready",
+        AgentRuntimePhase::Running => "running",
+        AgentRuntimePhase::Closed => "closed",
+        AgentRuntimePhase::Failed => "failed",
+    }
+}
+
+fn agent_runtime_status_from_record(
+    thread_id: &str,
+    runtime: &AgentRuntimeRecord,
+) -> AgentRuntimeStatus {
+    AgentRuntimeStatus {
+        thread_id: thread_id.to_string(),
+        exists: true,
+        phase: runtime_phase_name(runtime.phase),
+        provider_id: Some(runtime.config.provider_id.clone()),
+        session_id: runtime.session_id.clone(),
+        current_run_id: runtime.current_run_id.clone(),
+        last_error: runtime.last_error.clone(),
+    }
+}
+
 #[derive(Debug)]
 struct ToolMappingState {
     block_index: u64,
@@ -1015,12 +1900,14 @@ struct AcpEventMapper {
     run_id: String,
     next_block_index: u64,
     tools: HashMap<String, ToolMappingState>,
+    current_phase: Option<&'static str>,
 }
 
 struct CodexEventMapper {
     run_id: String,
     next_block_index: u64,
     tools: HashMap<String, ToolMappingState>,
+    current_phase: Option<&'static str>,
 }
 
 impl CodexEventMapper {
@@ -1029,6 +1916,7 @@ impl CodexEventMapper {
             run_id,
             next_block_index: 0,
             tools: HashMap::new(),
+            current_phase: None,
         }
     }
 
@@ -1038,10 +1926,14 @@ impl CodexEventMapper {
                 run_id: self.run_id.clone(),
                 message,
             }],
-            CodexRuntimeEvent::TextDelta { text } => vec![AgentRunEvent::Delta {
-                run_id: self.run_id.clone(),
-                text,
-            }],
+            CodexRuntimeEvent::Thinking => self.set_phase("thinking", "思考中"),
+            CodexRuntimeEvent::TextDelta { text } => {
+                self.current_phase = Some("computing");
+                vec![AgentRunEvent::Delta {
+                    run_id: self.run_id.clone(),
+                    text,
+                }]
+            }
             CodexRuntimeEvent::ToolStarted {
                 tool_id,
                 name,
@@ -1060,6 +1952,9 @@ impl CodexEventMapper {
                 let block_index =
                     self.ensure_tool_started(&tool_id, "Codex 工具", None, &mut events);
                 self.finish_tool(&tool_id, block_index, is_error, Some(content), &mut events);
+                if !self.has_open_tools() {
+                    events.extend(self.set_phase("thinking", "思考中"));
+                }
                 events
             }
             CodexRuntimeEvent::ApprovalRequest { request } => {
@@ -1074,8 +1969,20 @@ impl CodexEventMapper {
                     request,
                 }]
             }
-            CodexRuntimeEvent::InteractionResolved { .. } => Vec::new(),
+            CodexRuntimeEvent::InteractionResolved { .. } => self.set_phase("thinking", "思考中"),
         }
+    }
+
+    fn set_phase(&mut self, phase: &'static str, label: &'static str) -> Vec<AgentRunEvent> {
+        if self.current_phase == Some(phase) {
+            return Vec::new();
+        }
+        self.current_phase = Some(phase);
+        vec![agent_phase_event(&self.run_id, phase, label)]
+    }
+
+    fn has_open_tools(&self) -> bool {
+        self.tools.values().any(|tool| !tool.stopped)
     }
 
     fn ensure_tool_started(
@@ -1097,6 +2004,7 @@ impl CodexEventMapper {
                 stopped: false,
             },
         );
+        self.current_phase = Some("tool");
         events.push(AgentRunEvent::ToolStart {
             run_id: self.run_id.clone(),
             block_index,
@@ -1169,17 +2077,21 @@ impl AcpEventMapper {
             run_id,
             next_block_index: 0,
             tools: HashMap::new(),
+            current_phase: None,
         }
     }
 
     fn map_event(&mut self, event: AcpRuntimeEvent) -> Vec<AgentRunEvent> {
         match event {
-            AcpRuntimeEvent::TextDelta { text } => vec![AgentRunEvent::Delta {
-                run_id: self.run_id.clone(),
-                text,
-            }],
+            AcpRuntimeEvent::TextDelta { text } => {
+                self.current_phase = Some("computing");
+                vec![AgentRunEvent::Delta {
+                    run_id: self.run_id.clone(),
+                    text,
+                }]
+            }
             AcpRuntimeEvent::ThoughtChunk | AcpRuntimeEvent::InteractionResolved { .. } => {
-                Vec::new()
+                self.set_phase("thinking", "思考中")
             }
             AcpRuntimeEvent::ToolCall { call } => self.map_tool_call(call),
             AcpRuntimeEvent::ToolCallUpdate { update } => self.map_tool_update(update),
@@ -1245,8 +2157,28 @@ impl AcpEventMapper {
         }
     }
 
+    fn set_phase(&mut self, phase: &'static str, label: &'static str) -> Vec<AgentRunEvent> {
+        if self.current_phase == Some(phase) {
+            return Vec::new();
+        }
+        self.current_phase = Some(phase);
+        vec![agent_phase_event(&self.run_id, phase, label)]
+    }
+
+    fn has_open_tools(&self) -> bool {
+        self.tools.values().any(|tool| !tool.stopped)
+    }
+
     fn map_tool_call(&mut self, call: AcpToolCall) -> Vec<AgentRunEvent> {
+        if self
+            .tools
+            .get(&call.tool_call_id)
+            .is_some_and(|tool| tool.stopped)
+        {
+            return Vec::new();
+        }
         let mut events = Vec::new();
+        self.current_phase = Some("tool");
         let block_index = self.ensure_tool_started(
             &call.tool_call_id,
             &call.title,
@@ -1261,12 +2193,23 @@ impl AcpEventMapper {
                 call.content,
                 &mut events,
             );
+            if !self.has_open_tools() {
+                events.extend(self.set_phase("thinking", "思考中"));
+            }
         }
         events
     }
 
     fn map_tool_update(&mut self, update: AcpToolCallUpdate) -> Vec<AgentRunEvent> {
+        if self
+            .tools
+            .get(&update.tool_call_id)
+            .is_some_and(|tool| tool.stopped)
+        {
+            return Vec::new();
+        }
         let mut events = Vec::new();
+        self.current_phase = Some("tool");
         let title = update
             .title
             .as_deref()
@@ -1286,6 +2229,9 @@ impl AcpEventMapper {
                 update.content,
                 &mut events,
             );
+            if !self.has_open_tools() {
+                events.extend(self.set_phase("thinking", "思考中"));
+            }
         }
         events
     }
@@ -1309,6 +2255,7 @@ impl AcpEventMapper {
                 stopped: false,
             },
         );
+        self.current_phase = Some("tool");
         events.push(AgentRunEvent::ToolStart {
             run_id: self.run_id.clone(),
             block_index,
@@ -1372,6 +2319,15 @@ impl AcpEventMapper {
                 tool_use_id,
             })
             .collect()
+    }
+}
+
+fn agent_phase_event(run_id: &str, phase: &str, label: &str) -> AgentRunEvent {
+    AgentRunEvent::Phase {
+        run_id: run_id.to_string(),
+        phase: phase.to_string(),
+        label: label.to_string(),
+        thought_count: None,
     }
 }
 
@@ -1992,8 +2948,10 @@ mod tests {
     use super::{
         build_acp_prompt, build_codex_input, cancelled_before_prompt_outcome,
         experimental_agent_run_enabled, grok_acp_arguments, normalize_agent_input,
-        should_set_acp_model, AcpEventMapper, AgentInputContentBlock, AgentRunRecord,
-        AgentRunState, CodexEventMapper, CommandResolvers, StartAgentRunRequest,
+        runtime_can_reuse, should_set_acp_model, AcpEventMapper, AgentDriverInput, AgentDriverKind,
+        AgentInputContentBlock, AgentRunRecord, AgentRunService, AgentRunState,
+        AgentRuntimeCommand, AgentRuntimeConfig, AgentRuntimePhase, AgentRuntimeRecord,
+        AgentRuntimeRun, CodexEventMapper, CommandResolvers, StartAgentRunRequest,
     };
     use crate::{
         acp::{AcpRuntimeEvent, AcpToolCall, AcpToolCallUpdate},
@@ -2004,10 +2962,34 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::{
         collections::HashMap,
-        path::Path,
+        path::{Path, PathBuf},
         sync::{Arc, Mutex},
     };
     use tokio::sync::{mpsc, watch, Notify};
+
+    fn test_runtime_config() -> AgentRuntimeConfig {
+        AgentRuntimeConfig {
+            provider_id: "grok-build".to_string(),
+            driver: AgentDriverKind::GrokAcp,
+            command: "grok".to_string(),
+            working_directory: PathBuf::from("D:/workspace"),
+            permission_mode: "default",
+            model: Some("grok-default".to_string()),
+            reasoning_effort: None,
+        }
+    }
+
+    fn test_run_state() -> AgentRunState {
+        AgentRunState {
+            records: Arc::new(Mutex::new(HashMap::new())),
+            runtimes: Arc::new(Mutex::new(HashMap::new())),
+            command_resolvers: CommandResolvers {
+                grok: || None,
+                codex: || None,
+            },
+            experimental_agent_run_enabled: Arc::new(AtomicBool::new(false)),
+        }
+    }
 
     #[test]
     fn experimental_agent_run_follows_shared_setting_state() {
@@ -2106,6 +3088,7 @@ mod tests {
     fn start_agent_run_request_accepts_camel_case_content_blocks() {
         let request = serde_json::from_value::<StartAgentRunRequest>(json!({
             "providerId": "grok-build",
+            "threadId": "thread-1",
             "workingDirectory": "D:/workspace",
             "contentBlocks": [{
                 "type": "file_text",
@@ -2120,6 +3103,7 @@ mod tests {
         .expect("deserialize request");
 
         assert!(request.prompt.is_none());
+        assert_eq!(request.thread_id.as_deref(), Some("thread-1"));
         assert!(matches!(
             request.content_blocks.as_deref(),
             Some([AgentInputContentBlock::FileText {
@@ -2128,6 +3112,261 @@ mod tests {
                 ..
             }]) if mime_type == "text/markdown"
         ));
+    }
+
+    #[test]
+    fn hot_runtime_reuse_requires_matching_config_and_session() {
+        let config = test_runtime_config();
+        let (command, _commands) = mpsc::unbounded_channel();
+        let (shutdown, _shutdown) = watch::channel(false);
+        let runtime = AgentRuntimeRecord {
+            runtime_id: "runtime-1".to_string(),
+            config: config.clone(),
+            session_id: Some("session-1".to_string()),
+            phase: AgentRuntimePhase::Ready,
+            current_run_id: None,
+            command: Some(command),
+            shutdown,
+            last_error: None,
+        };
+
+        assert!(runtime_can_reuse(&runtime, &config, None));
+        assert!(runtime_can_reuse(&runtime, &config, Some("session-1")));
+        assert!(!runtime_can_reuse(&runtime, &config, Some("session-2")));
+
+        let mut changed = config.clone();
+        changed.permission_mode = "auto";
+        assert!(!runtime_can_reuse(&runtime, &changed, Some("session-1")));
+    }
+
+    #[test]
+    fn hot_runtime_rejects_a_second_run_for_the_same_thread() {
+        let state = test_run_state();
+        let config = test_runtime_config();
+        let (command, _commands) = mpsc::unbounded_channel();
+        let (shutdown, _shutdown) = watch::channel(false);
+        state.runtimes.lock().unwrap().insert(
+            "thread-1".to_string(),
+            AgentRuntimeRecord {
+                runtime_id: "runtime-1".to_string(),
+                config: config.clone(),
+                session_id: Some("session-1".to_string()),
+                phase: AgentRuntimePhase::Running,
+                current_run_id: Some("run-1".to_string()),
+                command: Some(command),
+                shutdown,
+                last_error: None,
+            },
+        );
+        let (_cancel_sender, cancel) = watch::channel(false);
+        let (_control_sender, control) = mpsc::unbounded_channel();
+
+        let error = state
+            .dispatch_runtime(
+                "thread-1".to_string(),
+                config,
+                Some("session-1".to_string()),
+                AgentRuntimeRun {
+                    run_id: "run-2".to_string(),
+                    input: AgentDriverInput::Grok(Vec::new()),
+                    cancel,
+                    control,
+                },
+            )
+            .expect_err("concurrent run must fail");
+
+        assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn hot_runtime_reuses_the_existing_actor_channel() {
+        let state = test_run_state();
+        let config = test_runtime_config();
+        let (command, mut commands) = mpsc::unbounded_channel();
+        let (shutdown, _shutdown) = watch::channel(false);
+        state.runtimes.lock().unwrap().insert(
+            "thread-1".to_string(),
+            AgentRuntimeRecord {
+                runtime_id: "runtime-1".to_string(),
+                config: config.clone(),
+                session_id: Some("session-1".to_string()),
+                phase: AgentRuntimePhase::Ready,
+                current_run_id: None,
+                command: Some(command),
+                shutdown,
+                last_error: None,
+            },
+        );
+        let (_cancel_sender, cancel) = watch::channel(false);
+        let (_control_sender, control) = mpsc::unbounded_channel();
+
+        state
+            .dispatch_runtime(
+                "thread-1".to_string(),
+                config,
+                Some("session-1".to_string()),
+                AgentRuntimeRun {
+                    run_id: "run-2".to_string(),
+                    input: AgentDriverInput::Grok(Vec::new()),
+                    cancel,
+                    control,
+                },
+            )
+            .expect("reuse runtime");
+
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(AgentRuntimeCommand::Run(AgentRuntimeRun { run_id, .. })) if run_id == "run-2"
+        ));
+        let runtimes = state.runtimes.lock().unwrap();
+        let runtime = runtimes.get("thread-1").unwrap();
+        assert_eq!(runtime.runtime_id, "runtime-1");
+        assert_eq!(runtime.phase, AgentRuntimePhase::Running);
+        assert_eq!(runtime.current_run_id.as_deref(), Some("run-2"));
+    }
+
+    #[test]
+    fn cancelling_a_run_keeps_the_hot_runtime_available() {
+        let state = test_run_state();
+        let config = test_runtime_config();
+        let (command, _commands) = mpsc::unbounded_channel();
+        let (shutdown, shutdown_receiver) = watch::channel(false);
+        state.runtimes.lock().unwrap().insert(
+            "thread-1".to_string(),
+            AgentRuntimeRecord {
+                runtime_id: "runtime-1".to_string(),
+                config,
+                session_id: Some("session-1".to_string()),
+                phase: AgentRuntimePhase::Running,
+                current_run_id: Some("run-1".to_string()),
+                command: Some(command),
+                shutdown,
+                last_error: None,
+            },
+        );
+        let (cancel, cancel_receiver) = watch::channel(false);
+        let (control, _control_receiver) = mpsc::unbounded_channel();
+        state
+            .insert(
+                "run-1".to_string(),
+                AgentRunRecord {
+                    thread_id: Some("thread-1".to_string()),
+                    events: Vec::new(),
+                    finished: false,
+                    terminal_emitted: false,
+                    notify: Arc::new(Notify::new()),
+                    cancel,
+                    control,
+                },
+            )
+            .unwrap();
+
+        assert!(state.cancel("run-1").unwrap());
+        assert!(*cancel_receiver.borrow());
+        assert!(!*shutdown_receiver.borrow());
+        state.finish_runtime_run("thread-1", "runtime-1", "run-1");
+        assert_eq!(state.runtime_status("thread-1").unwrap().phase, "ready");
+    }
+
+    #[test]
+    fn closing_a_hot_runtime_updates_status_and_signals_shutdown() {
+        let state = test_run_state();
+        let config = test_runtime_config();
+        let (command, _commands) = mpsc::unbounded_channel();
+        let (shutdown, shutdown_receiver) = watch::channel(false);
+        state.runtimes.lock().unwrap().insert(
+            "thread-1".to_string(),
+            AgentRuntimeRecord {
+                runtime_id: "runtime-1".to_string(),
+                config,
+                session_id: Some("session-1".to_string()),
+                phase: AgentRuntimePhase::Ready,
+                current_run_id: None,
+                command: Some(command),
+                shutdown,
+                last_error: None,
+            },
+        );
+
+        assert!(state.close_runtime("thread-1").unwrap());
+        assert!(*shutdown_receiver.borrow());
+        let status = state.runtime_status("thread-1").unwrap();
+        assert_eq!(status.phase, "closed");
+        assert_eq!(status.session_id.as_deref(), Some("session-1"));
+    }
+
+    #[test]
+    fn runtime_status_list_exposes_ready_agent_sessions_by_thread() {
+        let state = test_run_state();
+        let config = test_runtime_config();
+        let (command, _commands) = mpsc::unbounded_channel();
+        let (shutdown, _shutdown_receiver) = watch::channel(false);
+        state.runtimes.lock().unwrap().insert(
+            "thread-1".to_string(),
+            AgentRuntimeRecord {
+                runtime_id: "runtime-1".to_string(),
+                config,
+                session_id: Some("session-1".to_string()),
+                phase: AgentRuntimePhase::Ready,
+                current_run_id: None,
+                command: Some(command),
+                shutdown,
+                last_error: None,
+            },
+        );
+
+        let statuses = state.runtime_statuses().unwrap();
+        let status = statuses.get("thread-1").unwrap();
+        assert_eq!(status.phase, "ready");
+        assert_eq!(status.provider_id.as_deref(), Some("grok-build"));
+        assert_eq!(status.session_id.as_deref(), Some("session-1"));
+        assert!(status.current_run_id.is_none());
+    }
+
+    #[test]
+    fn forgetting_a_thread_closes_runtime_and_removes_run_records() {
+        let state = test_run_state();
+        let service = AgentRunService {
+            state: state.clone(),
+        };
+        let config = test_runtime_config();
+        let (command, _commands) = mpsc::unbounded_channel();
+        let (shutdown, shutdown_receiver) = watch::channel(false);
+        state.runtimes.lock().unwrap().insert(
+            "thread-1".to_string(),
+            AgentRuntimeRecord {
+                runtime_id: "runtime-1".to_string(),
+                config,
+                session_id: Some("session-1".to_string()),
+                phase: AgentRuntimePhase::Ready,
+                current_run_id: None,
+                command: Some(command),
+                shutdown,
+                last_error: None,
+            },
+        );
+        let (cancel, _cancel_receiver) = watch::channel(false);
+        let (control, _control_receiver) = mpsc::unbounded_channel();
+        state
+            .insert(
+                "run-1".to_string(),
+                AgentRunRecord {
+                    thread_id: Some("thread-1".to_string()),
+                    events: Vec::new(),
+                    finished: false,
+                    terminal_emitted: false,
+                    notify: Arc::new(Notify::new()),
+                    cancel,
+                    control,
+                },
+            )
+            .unwrap();
+
+        service.forget_thread("thread-1");
+
+        assert!(*shutdown_receiver.borrow());
+        assert!(!state.contains("run-1").unwrap());
+        assert!(!state.runtime_status("thread-1").unwrap().exists);
     }
 
     #[test]
@@ -2199,8 +3438,25 @@ mod tests {
             completed.as_slice(),
             [
                 AgentRunEvent::ToolResult { .. },
-                AgentRunEvent::ToolStop { block_index: 0, .. }
-            ]
+                AgentRunEvent::ToolStop { block_index: 0, .. },
+                AgentRunEvent::Phase { phase, .. }
+            ] if phase == "thinking"
+        ));
+        assert!(matches!(
+            mapper.map_event(AcpRuntimeEvent::ThoughtChunk).as_slice(),
+            []
+        ));
+        assert!(matches!(
+            mapper
+                .map_event(AcpRuntimeEvent::TextDelta {
+                    text: "ok".to_string()
+                })
+                .as_slice(),
+            [AgentRunEvent::Delta { .. }]
+        ));
+        assert!(matches!(
+            mapper.map_event(AcpRuntimeEvent::ThoughtChunk).as_slice(),
+            [AgentRunEvent::Phase { phase, .. }] if phase == "thinking"
         ));
         assert!(duplicate.is_empty());
     }
@@ -2208,6 +3464,7 @@ mod tests {
     #[test]
     fn codex_mapper_preserves_text_tools_and_interactions() {
         let mut mapper = CodexEventMapper::new("run-1".to_string());
+        let initial_thinking = mapper.map_event(CodexRuntimeEvent::Thinking);
         let delta = mapper.map_event(CodexRuntimeEvent::TextDelta {
             text: "hello".to_string(),
         });
@@ -2228,6 +3485,10 @@ mod tests {
         });
 
         assert!(matches!(
+            initial_thinking.as_slice(),
+            [AgentRunEvent::Phase { phase, .. }] if phase == "thinking"
+        ));
+        assert!(matches!(
             delta.as_slice(),
             [AgentRunEvent::Delta { text, .. }] if text == "hello"
         ));
@@ -2239,28 +3500,23 @@ mod tests {
             completed.as_slice(),
             [
                 AgentRunEvent::ToolResult { .. },
-                AgentRunEvent::ToolStop { block_index: 0, .. }
-            ]
+                AgentRunEvent::ToolStop { block_index: 0, .. },
+                AgentRunEvent::Phase { phase, .. }
+            ] if phase == "thinking"
         ));
         assert!(duplicate.is_empty());
     }
 
     #[tokio::test]
     async fn run_state_accepts_only_one_terminal_event() {
-        let state = AgentRunState {
-            records: Arc::new(Mutex::new(HashMap::new())),
-            command_resolvers: CommandResolvers {
-                grok: || None,
-                codex: || None,
-            },
-            experimental_agent_run_enabled: Arc::new(AtomicBool::new(false)),
-        };
+        let state = test_run_state();
         let (cancel, _) = watch::channel(false);
         let (control, _) = mpsc::unbounded_channel();
         state
             .insert(
                 "run-1".to_string(),
                 AgentRunRecord {
+                    thread_id: None,
                     events: Vec::new(),
                     finished: false,
                     terminal_emitted: false,

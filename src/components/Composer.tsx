@@ -1295,17 +1295,20 @@ export function Composer({
                 type="button"
                 className="permission-trigger provider-trigger"
                 aria-expanded={providerMenuOpen}
+                aria-label={
+                  canSelectProvider
+                    ? `选择 Agent Provider，当前为 ${providerName}`
+                    : `当前 Agent Provider：${providerName}`
+                }
                 disabled={providerSelectionDisabled}
                 title={
                   canSelectProvider
-                    ? '选择 Agent Provider'
-                    : 'Provider 在聊天创建后锁定；请新建聊天后选择'
+                    ? `选择 Agent Provider，当前为 ${providerName}`
+                    : `${providerName}；Provider 在聊天创建后锁定，请新建聊天后选择`
                 }
                 onClick={() => setProviderMenuOpen((value) => !value)}
               >
-                <AgentProviderIcon providerId={providerId} size={14} />
-                <span>{selectedProvider?.displayName ?? providerDisplayName(providerId)}</span>
-                {canSelectProvider ? <span className="permission-trigger-chevron" aria-hidden="true" /> : null}
+                <AgentProviderIcon providerId={providerId} size={16} />
               </button>
             </div>
             <div className="permission-picker" ref={permissionMenuRef}>

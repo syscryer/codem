@@ -189,6 +189,13 @@ pub enum AgentRunEvent {
         run_id: String,
         message: String,
     },
+    Phase {
+        run_id: String,
+        phase: String,
+        label: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thought_count: Option<u64>,
+    },
     Session {
         run_id: String,
         session_id: String,
@@ -354,7 +361,7 @@ fn grok_capabilities() -> AgentCapabilities {
             mcp: RuntimeDetected,
         },
         runtime: AgentRuntimeCapabilities {
-            cancel: AgentCancelSupport::Hard,
+            cancel: AgentCancelSupport::Soft,
             reconnect: Supported,
             concurrent_sessions: Supported,
         },
