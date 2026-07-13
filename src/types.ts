@@ -661,8 +661,13 @@ export type OpenWithTargetsResponse = {
   selectedTargetId: string;
 };
 
+export type AgentRuntimeSettings = {
+  experimentalAgentRunEnabled: boolean;
+};
+
 export type AppSettings = {
   general: GeneralSettings;
+  agentRuntime: AgentRuntimeSettings;
   appearance: AppearanceSettings;
   models: ModelSettings;
   shortcuts: ShortcutSettings;

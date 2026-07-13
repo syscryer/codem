@@ -20,21 +20,33 @@ test('App routes Grok and Codex through the generic hook without changing the Cl
   assert.match(appSource, /activeThreadRuntimeKind === 'generic' \? activeThreadId : null/);
   assert.match(appSource, /activeProviderId === OPENAI_CODEX_PROVIDER_ID/);
   assert.match(appSource, /return submitClaudePrompt\(submission\)/);
-  assert.match(appSource, /return submitGenericAgentPrompt\(\{/);
+  assert.match(appSource, /return submitGenericAgentPrompt\(submission\)/);
   assert.match(agentRunSource, /fetch\('\/api\/agents\/run'/);
+  assert.match(agentRunSource, /contentBlocks: requestContentBlocks/);
   assert.doesNotMatch(agentRunSource, /\/api\/claude\/run/);
 });
 
-test('generic Agent composer stays text-only while exposing provider model controls', () => {
-  assert.match(appSource, /allowAttachments=\{activeUsesClaude\}/);
-  assert.match(appSource, /supportsQueue=\{activeUsesClaude\}/);
+test('generic Agent composer follows provider attachment capabilities and supports queued turns', () => {
+  assert.match(appSource, /activeProviderCapabilities\.input\.images === 'supported'/);
+  assert.match(appSource, /activeProviderCapabilities\.input\.fileReferences === 'supported'/);
+  assert.match(appSource, /allowAttachments=\{allowAgentAttachments\}/);
+  assert.match(appSource, /supportsQueue=\{activeUsesClaude \|\| activeUsesGenericAgent\}/);
   assert.match(composerSource, /agent === 'claude' \? \(/);
   assert.match(composerSource, /agentModelCatalog\?\.models\.map/);
   assert.match(composerSource, /agent === 'codex' && agentReasoningEffortOptions\.length > 0/);
   assert.match(composerSource, /onRetryAgentModels/);
-  assert.match(composerSource, /textOnlyInputMessage = `\$\{providerName\} 首期仅支持文本输入/);
+  assert.match(composerSource, /textOnlyInputMessage = `\$\{providerName\} 当前不支持附件输入/);
   assert.match(composerSource, /providerId === OPENAI_CODEX_PROVIDER_ID/);
   assert.match(composerSource, /isRunning && !supportsQueue/);
+  assert.match(agentRunSource, /type QueuedAgentPrompt = AgentPromptSubmission/);
+  assert.match(agentRunSource, /maybeStartQueuedPrompt\(context\)/);
+});
+
+test('generic Agent history stores attachment metadata without transient payloads', () => {
+  assert.match(agentRunSource, /buildRunContentBlocks/);
+  assert.match(agentRunSource, /userAttachments: stripTransientAttachmentData\(submission\.attachments\)/);
+  assert.match(agentRunSource, /userContentBlocks: buildHistoryContentBlocks\(\{/);
+  assert.doesNotMatch(agentRunSource, /userContentBlocks: requestContentBlocks/);
 });
 
 test('generic model and reasoning choices flow through create, metadata, and run requests', () => {

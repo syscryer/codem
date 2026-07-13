@@ -1,6 +1,27 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { defaultGeneralSettings, normalizeGeneralSettings } from './settings-api.js';
+import {
+  defaultAgentRuntimeSettings,
+  defaultGeneralSettings,
+  normalizeAgentRuntimeSettings,
+  normalizeGeneralSettings,
+} from './settings-api.js';
+
+test('normalizeAgentRuntimeSettings keeps experimental Agent runs disabled by default', () => {
+  assert.equal(normalizeAgentRuntimeSettings({}).experimentalAgentRunEnabled, false);
+  assert.equal(defaultAgentRuntimeSettings.experimentalAgentRunEnabled, false);
+});
+
+test('normalizeAgentRuntimeSettings preserves an explicit experimental Agent run choice', () => {
+  assert.equal(
+    normalizeAgentRuntimeSettings({ experimentalAgentRunEnabled: true }).experimentalAgentRunEnabled,
+    true,
+  );
+  assert.equal(
+    normalizeAgentRuntimeSettings({ experimentalAgentRunEnabled: false }).experimentalAgentRunEnabled,
+    false,
+  );
+});
 
 test('normalizeGeneralSettings enables thread system notifications by default for old settings', () => {
   assert.equal(

@@ -1,6 +1,7 @@
 use crate::{
     acp::{
-        AcpError, AcpPromptOutcome, AcpRuntimeEvent, AcpStdioClient, AcpToolCall, AcpToolCallUpdate,
+        AcpEmbeddedResource, AcpError, AcpPromptInput, AcpPromptOutcome, AcpRuntimeEvent,
+        AcpStdioClient, AcpToolCall, AcpToolCallUpdate,
     },
     agent_runtime::{
         normalize_agent_permission_mode, AgentApprovalOption, AgentApprovalRequest,
@@ -8,16 +9,17 @@ use crate::{
         AgentUserInputQuestion, AgentUserInputRequest, GROK_BUILD_PROVIDER_ID,
         OPENAI_CODEX_PROVIDER_ID,
     },
-    codex_app_server::{CodexAppServerError, CodexRuntimeEvent, CodexStdioClient},
+    codex_app_server::{CodexAppServerError, CodexRuntimeEvent, CodexStdioClient, CodexUserInput},
 };
 use axum::{
     body::Body,
-    extract::{Path as AxumPath, Query, State},
+    extract::{DefaultBodyLimit, Path as AxumPath, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
 };
+use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -25,15 +27,25 @@ use std::{
     collections::{BTreeMap, HashMap},
     env, fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 use tokio::sync::{mpsc, oneshot, watch, Notify};
 
-const EXPERIMENTAL_AGENT_RUN_ENV: &str = "CODEM_ENABLE_EXPERIMENTAL_AGENT_RUN";
 const RUN_RETENTION: Duration = Duration::from_secs(10 * 60);
 const CONTROL_ACK_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_PROMPT_BYTES: usize = 1024 * 1024;
+const MAX_INPUT_BLOCKS: usize = 32;
+const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_TOTAL_IMAGE_BYTES: usize = 30 * 1024 * 1024;
+const MAX_AGENT_REQUEST_BYTES: usize = 42 * 1024 * 1024;
+const MAX_PATH_BYTES: usize = 4096;
+const MAX_NAME_BYTES: usize = 512;
+const MAX_MIME_TYPE_BYTES: usize = 255;
+const MAX_REASON_BYTES: usize = 4096;
 
 type CommandResolver = fn() -> Option<String>;
 
@@ -49,10 +61,16 @@ enum AgentDriverKind {
     CodexAppServer,
 }
 
+enum AgentDriverInput {
+    Grok(Vec<AcpPromptInput>),
+    Codex(Vec<CodexUserInput>),
+}
+
 #[derive(Clone)]
 struct AgentRunState {
     records: Arc<Mutex<HashMap<String, AgentRunRecord>>>,
     command_resolvers: CommandResolvers,
+    experimental_agent_run_enabled: Arc<AtomicBool>,
 }
 
 struct AgentRunRecord {
@@ -69,7 +87,7 @@ struct AcpRunTask {
     run_id: String,
     command: String,
     working_directory: PathBuf,
-    prompt: String,
+    input: Vec<AcpPromptInput>,
     requested_session_id: Option<String>,
     permission_mode: &'static str,
     model: Option<String>,
@@ -82,7 +100,7 @@ struct CodexRunTask {
     run_id: String,
     command: String,
     working_directory: PathBuf,
-    prompt: String,
+    input: Vec<CodexUserInput>,
     requested_session_id: Option<String>,
     permission_mode: &'static str,
     model: Option<String>,
@@ -146,12 +164,61 @@ type AgentApiResult<T> = Result<T, AgentApiError>;
 #[serde(rename_all = "camelCase")]
 struct StartAgentRunRequest {
     provider_id: String,
-    prompt: String,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    content_blocks: Option<Vec<AgentInputContentBlock>>,
     working_directory: String,
     session_id: Option<String>,
     permission_mode: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum AgentInputContentBlock {
+    Text {
+        text: String,
+    },
+    Image {
+        id: Option<String>,
+        path: Option<String>,
+        name: Option<String>,
+        mime_type: Option<String>,
+        size: Option<u64>,
+        data: Option<String>,
+    },
+    FileText {
+        id: Option<String>,
+        path: String,
+        name: String,
+        mime_type: Option<String>,
+        size: Option<u64>,
+        text: String,
+        text_bytes: Option<u64>,
+    },
+    FileReference {
+        id: Option<String>,
+        path: String,
+        name: String,
+        mime_type: Option<String>,
+        size: Option<u64>,
+        reason: Option<String>,
+        source: Option<String>,
+    },
+    AttachmentMetadata {
+        id: Option<String>,
+        name: String,
+        mime_type: Option<String>,
+        size: Option<u64>,
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -204,6 +271,7 @@ struct UserInputResponseRequest {
 pub(crate) fn router(
     grok_command_resolver: CommandResolver,
     codex_command_resolver: CommandResolver,
+    experimental_agent_run_enabled: Arc<AtomicBool>,
 ) -> Router {
     let state = AgentRunState {
         records: Arc::new(Mutex::new(HashMap::new())),
@@ -211,6 +279,7 @@ pub(crate) fn router(
             grok: grok_command_resolver,
             codex: codex_command_resolver,
         },
+        experimental_agent_run_enabled,
     };
     Router::new()
         .route("/api/agents/{provider_id}/models", get(agent_models))
@@ -225,6 +294,7 @@ pub(crate) fn router(
             post(agent_run_user_input),
         )
         .route("/api/agents/run/{run_id}", delete(cancel_agent_run))
+        .layer(DefaultBodyLimit::max(MAX_AGENT_REQUEST_BYTES))
         .with_state(state)
 }
 
@@ -232,10 +302,10 @@ async fn agent_models(
     State(state): State<AgentRunState>,
     AxumPath(provider_id): AxumPath<String>,
 ) -> AgentApiResult<Json<AgentModelCatalog>> {
-    if !experimental_agent_run_enabled() {
-        return Err(AgentApiError::forbidden(format!(
-            "实验 Agent 运行未开启，请显式设置 {EXPERIMENTAL_AGENT_RUN_ENV}=1"
-        )));
+    if !experimental_agent_run_enabled(&state.experimental_agent_run_enabled) {
+        return Err(AgentApiError::forbidden(
+            "实验 Agent 运行未开启，请在设置中启用",
+        ));
     }
     let cwd =
         env::current_dir().map_err(|_| AgentApiError::internal("无法读取模型目录工作目录"))?;
@@ -342,10 +412,10 @@ async fn start_agent_run(
     State(state): State<AgentRunState>,
     Json(payload): Json<StartAgentRunRequest>,
 ) -> AgentApiResult<Response> {
-    if !experimental_agent_run_enabled() {
-        return Err(AgentApiError::forbidden(format!(
-            "实验 Agent 运行未开启，请显式设置 {EXPERIMENTAL_AGENT_RUN_ENV}=1"
-        )));
+    if !experimental_agent_run_enabled(&state.experimental_agent_run_enabled) {
+        return Err(AgentApiError::forbidden(
+            "实验 Agent 运行未开启，请在设置中启用",
+        ));
     }
     let provider_id = payload.provider_id.trim();
     let (driver, command, provider_name) = match provider_id {
@@ -370,14 +440,16 @@ async fn start_agent_run(
             ))
         }
     };
-    let prompt = payload.prompt.trim().to_string();
-    if prompt.is_empty() {
-        return Err(AgentApiError::bad_request("prompt 不能为空"));
-    }
-    if prompt.len() > MAX_PROMPT_BYTES {
-        return Err(AgentApiError::bad_request("prompt 超过 1 MiB 限制"));
-    }
+    let input_blocks = normalize_agent_input(payload.prompt.as_deref(), payload.content_blocks)?;
     let working_directory = resolve_working_directory(&payload.working_directory)?;
+    let driver_input = match driver {
+        AgentDriverKind::GrokAcp => {
+            AgentDriverInput::Grok(build_acp_prompt(&input_blocks, &working_directory)?)
+        }
+        AgentDriverKind::CodexAppServer => {
+            AgentDriverInput::Codex(build_codex_input(&input_blocks, &working_directory)?)
+        }
+    };
     let session_id = normalize_optional_id(payload.session_id, "sessionId")?;
     let model = normalize_optional_id(payload.model, "model")?;
     let reasoning_effort = normalize_optional_id(payload.reasoning_effort, "reasoningEffort")?;
@@ -415,14 +487,14 @@ async fn start_agent_run(
     let task_state = state.clone();
     let task_run_id = run_id.clone();
     tokio::spawn(async move {
-        match driver {
-            AgentDriverKind::GrokAcp => {
+        match driver_input {
+            AgentDriverInput::Grok(input) => {
                 execute_acp_run(AcpRunTask {
                     state: task_state,
                     run_id: task_run_id,
                     command,
                     working_directory,
-                    prompt,
+                    input,
                     requested_session_id: session_id,
                     permission_mode,
                     model,
@@ -431,13 +503,13 @@ async fn start_agent_run(
                 })
                 .await;
             }
-            AgentDriverKind::CodexAppServer => {
+            AgentDriverInput::Codex(input) => {
                 execute_codex_run(CodexRunTask {
                     state: task_state,
                     run_id: task_run_id,
                     command,
                     working_directory,
-                    prompt,
+                    input,
                     requested_session_id: session_id,
                     permission_mode,
                     model,
@@ -459,7 +531,7 @@ async fn execute_acp_run(task: AcpRunTask) {
         run_id,
         command,
         working_directory,
-        prompt,
+        input,
         requested_session_id,
         permission_mode,
         model,
@@ -547,17 +619,11 @@ async fn execute_acp_run(task: AcpRunTask) {
         } else {
             let event_state = state.clone();
             client
-                .prompt_text_stream(
-                    &session.session_id,
-                    &prompt,
-                    cancel,
-                    &mut control,
-                    |event| {
-                        for event in mapper.map_event(event) {
-                            event_state.push_event(&run_id, event);
-                        }
-                    },
-                )
+                .prompt_stream(&session.session_id, &input, cancel, &mut control, |event| {
+                    for event in mapper.map_event(event) {
+                        event_state.push_event(&run_id, event);
+                    }
+                })
                 .await
                 .map_err(public_acp_error)?
         };
@@ -595,7 +661,7 @@ async fn execute_codex_run(task: CodexRunTask) {
         run_id,
         command,
         working_directory,
-        prompt,
+        input,
         requested_session_id,
         permission_mode,
         model,
@@ -648,10 +714,10 @@ async fn execute_codex_run(task: CodexRunTask) {
 
         let event_state = state.clone();
         let outcome = client
-            .run_text_turn(
+            .run_turn(
                 &session_id,
                 &working_directory,
-                &prompt,
+                &input,
                 permission_mode,
                 model.as_deref(),
                 reasoning_effort.as_deref(),
@@ -1324,6 +1390,558 @@ fn public_codex_error(error: CodexAppServerError) -> String {
     error.public_message()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NormalizedAgentInputBlock {
+    Text {
+        text: String,
+    },
+    Image {
+        path: Option<String>,
+        name: Option<String>,
+        mime_type: Option<String>,
+        size: Option<u64>,
+        data: Option<String>,
+    },
+    FileText {
+        path: String,
+        name: String,
+        mime_type: Option<String>,
+        size: Option<u64>,
+        text: String,
+    },
+    FileReference {
+        path: String,
+        name: String,
+        mime_type: Option<String>,
+        size: Option<u64>,
+    },
+    AttachmentMetadata {
+        name: String,
+        mime_type: Option<String>,
+        size: Option<u64>,
+        reason: String,
+    },
+}
+
+fn normalize_agent_input(
+    prompt: Option<&str>,
+    content_blocks: Option<Vec<AgentInputContentBlock>>,
+) -> AgentApiResult<Vec<NormalizedAgentInputBlock>> {
+    let prompt = prompt.unwrap_or_default().trim();
+    if prompt.len() > MAX_PROMPT_BYTES {
+        return Err(AgentApiError::bad_request("prompt 超过 1 MiB 限制"));
+    }
+    let blocks = content_blocks.unwrap_or_default();
+    if blocks.len() > MAX_INPUT_BLOCKS {
+        return Err(AgentApiError::bad_request(format!(
+            "contentBlocks 不能超过 {MAX_INPUT_BLOCKS} 项"
+        )));
+    }
+    if blocks.is_empty() {
+        if prompt.is_empty() {
+            return Err(AgentApiError::bad_request(
+                "prompt 和 contentBlocks 不能同时为空",
+            ));
+        }
+        return Ok(vec![NormalizedAgentInputBlock::Text {
+            text: prompt.to_string(),
+        }]);
+    }
+
+    let mut total_text_bytes = 0usize;
+    let mut total_image_bytes = 0usize;
+    let mut normalized = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let block = match block {
+            AgentInputContentBlock::Text { text } => {
+                let text = text.trim().to_string();
+                if text.is_empty() {
+                    return Err(AgentApiError::bad_request("text 输入块不能为空"));
+                }
+                add_input_text_bytes(&mut total_text_bytes, text.len())?;
+                NormalizedAgentInputBlock::Text { text }
+            }
+            AgentInputContentBlock::Image {
+                id,
+                path,
+                name,
+                mime_type,
+                size,
+                data,
+            } => {
+                validate_optional_id(id.as_deref(), "image.id")?;
+                let path = normalize_optional_input_field(path, "image.path", MAX_PATH_BYTES)?;
+                let name = normalize_optional_input_field(name, "image.name", MAX_NAME_BYTES)?;
+                let mime_type = normalize_optional_mime_type(mime_type, "image.mimeType")?;
+                let data = data
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
+                if path.is_none() && data.is_none() {
+                    return Err(AgentApiError::bad_request(
+                        "image 输入块必须包含 path 或 data",
+                    ));
+                }
+                if size.is_some_and(|value| value > MAX_IMAGE_BYTES as u64) {
+                    return Err(AgentApiError::bad_request("图片超过 10 MiB 限制"));
+                }
+                if let Some(mime_type) = mime_type.as_deref() {
+                    validate_image_mime_type(mime_type)?;
+                }
+                if let Some(data) = data.as_deref() {
+                    let mime_type = mime_type.as_deref().ok_or_else(|| {
+                        AgentApiError::bad_request("base64 图片必须提供 mimeType")
+                    })?;
+                    validate_image_mime_type(mime_type)?;
+                    add_input_image_bytes(&mut total_image_bytes, validate_image_base64(data)?)?;
+                } else if let Some(size) = size {
+                    add_input_image_bytes(&mut total_image_bytes, size as usize)?;
+                }
+                NormalizedAgentInputBlock::Image {
+                    path,
+                    name,
+                    mime_type,
+                    size,
+                    data,
+                }
+            }
+            AgentInputContentBlock::FileText {
+                id,
+                path,
+                name,
+                mime_type,
+                size,
+                text,
+                text_bytes: _,
+            } => {
+                validate_optional_id(id.as_deref(), "file_text.id")?;
+                let path = normalize_required_input_field(path, "file_text.path", MAX_PATH_BYTES)?;
+                let name = normalize_required_input_field(name, "file_text.name", MAX_NAME_BYTES)?;
+                let mime_type = normalize_optional_mime_type(mime_type, "file_text.mimeType")?;
+                if text.is_empty() {
+                    return Err(AgentApiError::bad_request("file_text.text 不能为空"));
+                }
+                add_input_text_bytes(&mut total_text_bytes, text.len())?;
+                NormalizedAgentInputBlock::FileText {
+                    path,
+                    name,
+                    mime_type,
+                    size,
+                    text,
+                }
+            }
+            AgentInputContentBlock::FileReference {
+                id,
+                path,
+                name,
+                mime_type,
+                size,
+                reason,
+                source,
+            } => {
+                validate_optional_id(id.as_deref(), "file_reference.id")?;
+                validate_reference_reason(reason.as_deref())?;
+                validate_reference_source(source.as_deref())?;
+                NormalizedAgentInputBlock::FileReference {
+                    path: normalize_required_input_field(
+                        path,
+                        "file_reference.path",
+                        MAX_PATH_BYTES,
+                    )?,
+                    name: normalize_required_input_field(
+                        name,
+                        "file_reference.name",
+                        MAX_NAME_BYTES,
+                    )?,
+                    mime_type: normalize_optional_mime_type(mime_type, "file_reference.mimeType")?,
+                    size,
+                }
+            }
+            AgentInputContentBlock::AttachmentMetadata {
+                id,
+                name,
+                mime_type,
+                size,
+                reason,
+            } => {
+                validate_optional_id(id.as_deref(), "attachment_metadata.id")?;
+                let reason = normalize_required_input_field(
+                    reason,
+                    "attachment_metadata.reason",
+                    MAX_REASON_BYTES,
+                )?;
+                add_input_text_bytes(&mut total_text_bytes, reason.len())?;
+                NormalizedAgentInputBlock::AttachmentMetadata {
+                    name: normalize_required_input_field(
+                        name,
+                        "attachment_metadata.name",
+                        MAX_NAME_BYTES,
+                    )?,
+                    mime_type: normalize_optional_mime_type(
+                        mime_type,
+                        "attachment_metadata.mimeType",
+                    )?,
+                    size,
+                    reason,
+                }
+            }
+        };
+        normalized.push(block);
+    }
+    Ok(normalized)
+}
+
+fn build_acp_prompt(
+    blocks: &[NormalizedAgentInputBlock],
+    working_directory: &Path,
+) -> AgentApiResult<Vec<AcpPromptInput>> {
+    blocks
+        .iter()
+        .map(|block| match block {
+            NormalizedAgentInputBlock::Text { text } => {
+                Ok(AcpPromptInput::Text { text: text.clone() })
+            }
+            NormalizedAgentInputBlock::Image {
+                path,
+                mime_type,
+                data,
+                ..
+            } => {
+                let (mime_type, data) = if let Some(data) = data {
+                    (
+                        mime_type.clone().ok_or_else(|| {
+                            AgentApiError::bad_request("base64 图片缺少 mimeType")
+                        })?,
+                        data.clone(),
+                    )
+                } else {
+                    read_local_image_for_acp(
+                        path.as_deref()
+                            .ok_or_else(|| AgentApiError::bad_request("图片路径不能为空"))?,
+                        mime_type.as_deref(),
+                        working_directory,
+                    )?
+                };
+                Ok(AcpPromptInput::Image { mime_type, data })
+            }
+            NormalizedAgentInputBlock::FileText {
+                path,
+                name,
+                mime_type,
+                text,
+                ..
+            } => Ok(AcpPromptInput::Resource {
+                resource: AcpEmbeddedResource {
+                    uri: input_path_to_uri(path, name),
+                    mime_type: mime_type.clone(),
+                    text: text.clone(),
+                },
+            }),
+            NormalizedAgentInputBlock::FileReference {
+                path,
+                name,
+                mime_type,
+                size,
+            } => Ok(AcpPromptInput::ResourceLink {
+                uri: input_path_to_uri(path, name),
+                name: name.clone(),
+                mime_type: mime_type.clone(),
+                size: *size,
+            }),
+            NormalizedAgentInputBlock::AttachmentMetadata {
+                name,
+                mime_type,
+                size,
+                reason,
+            } => Ok(AcpPromptInput::Text {
+                text: format_attachment_metadata(name, mime_type.as_deref(), *size, reason),
+            }),
+        })
+        .collect()
+}
+
+fn build_codex_input(
+    blocks: &[NormalizedAgentInputBlock],
+    working_directory: &Path,
+) -> AgentApiResult<Vec<CodexUserInput>> {
+    blocks
+        .iter()
+        .map(|block| match block {
+            NormalizedAgentInputBlock::Text { text } => {
+                Ok(CodexUserInput::Text { text: text.clone() })
+            }
+            NormalizedAgentInputBlock::Image {
+                path,
+                mime_type,
+                data,
+                ..
+            } => {
+                if let Some(path) = path {
+                    let path = resolve_local_input_file(path, working_directory, "图片")?;
+                    let metadata = fs::metadata(&path)
+                        .map_err(|_| AgentApiError::bad_request("图片文件不可访问"))?;
+                    if metadata.len() > MAX_IMAGE_BYTES as u64 {
+                        return Err(AgentApiError::bad_request("图片超过 10 MiB 限制"));
+                    }
+                    let resolved_mime_type = mime_type
+                        .clone()
+                        .or_else(|| image_mime_type_from_path(&path))
+                        .ok_or_else(|| AgentApiError::bad_request("无法识别图片 mimeType"))?;
+                    validate_image_mime_type(&resolved_mime_type)?;
+                    return Ok(CodexUserInput::LocalImage {
+                        path: path.to_string_lossy().to_string(),
+                    });
+                }
+                let mime_type = mime_type
+                    .as_deref()
+                    .ok_or_else(|| AgentApiError::bad_request("base64 图片缺少 mimeType"))?;
+                let data = data
+                    .as_deref()
+                    .ok_or_else(|| AgentApiError::bad_request("base64 图片缺少 data"))?;
+                Ok(CodexUserInput::Image {
+                    url: format!("data:{mime_type};base64,{data}"),
+                })
+            }
+            NormalizedAgentInputBlock::FileText {
+                path, name, text, ..
+            } => Ok(CodexUserInput::Text {
+                text: format!("本地文件：{name}\n路径：{path}\n\n{text}"),
+            }),
+            NormalizedAgentInputBlock::FileReference { path, name, .. } => {
+                Ok(CodexUserInput::Text {
+                    text: format!(
+                        "本地文件引用：{name}\n路径：{path}\n请按需使用本地文件工具读取。"
+                    ),
+                })
+            }
+            NormalizedAgentInputBlock::AttachmentMetadata {
+                name,
+                mime_type,
+                size,
+                reason,
+            } => Ok(CodexUserInput::Text {
+                text: format_attachment_metadata(name, mime_type.as_deref(), *size, reason),
+            }),
+        })
+        .collect()
+}
+
+fn add_input_text_bytes(total: &mut usize, bytes: usize) -> AgentApiResult<()> {
+    *total = total
+        .checked_add(bytes)
+        .ok_or_else(|| AgentApiError::bad_request("输入文本体积无效"))?;
+    if *total > MAX_PROMPT_BYTES {
+        return Err(AgentApiError::bad_request(
+            "文本和内联文件总计超过 1 MiB 限制",
+        ));
+    }
+    Ok(())
+}
+
+fn add_input_image_bytes(total: &mut usize, bytes: usize) -> AgentApiResult<()> {
+    *total = total
+        .checked_add(bytes)
+        .ok_or_else(|| AgentApiError::bad_request("图片总体积无效"))?;
+    if *total > MAX_TOTAL_IMAGE_BYTES {
+        return Err(AgentApiError::bad_request("图片总计超过 30 MiB 限制"));
+    }
+    Ok(())
+}
+
+fn validate_optional_id(value: Option<&str>, field: &str) -> AgentApiResult<()> {
+    if let Some(value) = value {
+        normalize_required_input_field(value.to_string(), field, MAX_NAME_BYTES)?;
+    }
+    Ok(())
+}
+
+fn normalize_optional_input_field(
+    value: Option<String>,
+    field: &str,
+    max_bytes: usize,
+) -> AgentApiResult<Option<String>> {
+    value
+        .map(|value| normalize_required_input_field(value, field, max_bytes))
+        .transpose()
+}
+
+fn normalize_required_input_field(
+    value: String,
+    field: &str,
+    max_bytes: usize,
+) -> AgentApiResult<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(AgentApiError::bad_request(format!("{field} 不能为空")));
+    }
+    if value.len() > max_bytes {
+        return Err(AgentApiError::bad_request(format!("{field} 过长")));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(AgentApiError::bad_request(format!("{field} 包含控制字符")));
+    }
+    Ok(value.to_string())
+}
+
+fn normalize_optional_mime_type(
+    value: Option<String>,
+    field: &str,
+) -> AgentApiResult<Option<String>> {
+    normalize_optional_input_field(value, field, MAX_MIME_TYPE_BYTES)
+        .map(|value| value.map(|value| value.to_ascii_lowercase()))
+}
+
+fn validate_image_mime_type(mime_type: &str) -> AgentApiResult<()> {
+    if matches!(
+        mime_type,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    ) {
+        return Ok(());
+    }
+    Err(AgentApiError::bad_request(
+        "图片 mimeType 仅支持 image/png、image/jpeg、image/gif、image/webp",
+    ))
+}
+
+fn validate_reference_reason(value: Option<&str>) -> AgentApiResult<()> {
+    if value.is_none_or(|value| {
+        matches!(
+            value,
+            "too_large" | "binary" | "unsupported" | "provider_unsupported"
+        )
+    }) {
+        return Ok(());
+    }
+    Err(AgentApiError::bad_request("file_reference.reason 不受支持"))
+}
+
+fn validate_reference_source(value: Option<&str>) -> AgentApiResult<()> {
+    if value.is_none_or(|value| matches!(value, "mention" | "attachment")) {
+        return Ok(());
+    }
+    Err(AgentApiError::bad_request("file_reference.source 不受支持"))
+}
+
+fn validate_image_base64(data: &str) -> AgentApiResult<usize> {
+    let max_encoded_bytes = MAX_IMAGE_BYTES.div_ceil(3) * 4;
+    if data.len() > max_encoded_bytes {
+        return Err(AgentApiError::bad_request("图片超过 10 MiB 限制"));
+    }
+    let decoded = general_purpose::STANDARD
+        .decode(data)
+        .map_err(|_| AgentApiError::bad_request("图片 data 不是有效 base64"))?;
+    if decoded.is_empty() {
+        return Err(AgentApiError::bad_request("图片 data 不能为空"));
+    }
+    if decoded.len() > MAX_IMAGE_BYTES {
+        return Err(AgentApiError::bad_request("图片超过 10 MiB 限制"));
+    }
+    Ok(decoded.len())
+}
+
+fn read_local_image_for_acp(
+    path: &str,
+    requested_mime_type: Option<&str>,
+    working_directory: &Path,
+) -> AgentApiResult<(String, String)> {
+    let path = resolve_local_input_file(path, working_directory, "图片")?;
+    let metadata =
+        fs::metadata(&path).map_err(|_| AgentApiError::bad_request("图片文件不可访问"))?;
+    if metadata.len() > MAX_IMAGE_BYTES as u64 {
+        return Err(AgentApiError::bad_request("图片超过 10 MiB 限制"));
+    }
+    let mime_type = requested_mime_type
+        .map(ToString::to_string)
+        .or_else(|| image_mime_type_from_path(&path))
+        .ok_or_else(|| AgentApiError::bad_request("无法识别图片 mimeType"))?;
+    validate_image_mime_type(&mime_type)?;
+    let bytes = fs::read(path).map_err(|_| AgentApiError::bad_request("读取图片文件失败"))?;
+    if bytes.is_empty() {
+        return Err(AgentApiError::bad_request("图片文件为空"));
+    }
+    Ok((mime_type, general_purpose::STANDARD.encode(bytes)))
+}
+
+fn resolve_local_input_file(
+    path: &str,
+    working_directory: &Path,
+    label: &str,
+) -> AgentApiResult<PathBuf> {
+    let path = Path::new(path);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        working_directory.join(path)
+    };
+    let canonical = fs::canonicalize(path)
+        .map_err(|_| AgentApiError::bad_request(format!("{label}文件不存在或不可访问")))?;
+    if !canonical.is_file() {
+        return Err(AgentApiError::bad_request(format!("{label}路径不是文件")));
+    }
+    Ok(canonical)
+}
+
+fn image_mime_type_from_path(path: &Path) -> Option<String> {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => Some("image/png".to_string()),
+        Some("jpg" | "jpeg") => Some("image/jpeg".to_string()),
+        Some("gif") => Some("image/gif".to_string()),
+        Some("webp") => Some("image/webp".to_string()),
+        _ => None,
+    }
+}
+
+fn input_path_to_uri(path: &str, name: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    if normalized.starts_with("//") {
+        return format!(
+            "file://{}",
+            percent_encode_uri_path(normalized.trim_start_matches('/'))
+        );
+    }
+    if Path::new(path).is_absolute() {
+        let path = normalized.trim_start_matches('/');
+        return format!("file:///{}", percent_encode_uri_path(path));
+    }
+    format!(
+        "codem://attachment/{}",
+        percent_encode_uri_path(name.trim_start_matches('/'))
+    )
+}
+
+fn percent_encode_uri_path(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_' | b'.' | b'~' | b'/' | b':')
+        {
+            encoded.push(*byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+fn format_attachment_metadata(
+    name: &str,
+    mime_type: Option<&str>,
+    size: Option<u64>,
+    reason: &str,
+) -> String {
+    let mut metadata = vec![format!("附件：{name}"), format!("状态：{reason}")];
+    if let Some(mime_type) = mime_type {
+        metadata.push(format!("类型：{mime_type}"));
+    }
+    if let Some(size) = size {
+        metadata.push(format!("大小：{size} bytes"));
+    }
+    metadata.join("\n")
+}
+
 fn resolve_working_directory(value: &str) -> AgentApiResult<PathBuf> {
     let value = value.trim();
     if value.is_empty() {
@@ -1365,25 +1983,17 @@ fn should_set_acp_model(
     requested_model.is_some_and(|requested| session_model.or(initialize_model) != Some(requested))
 }
 
-pub(crate) fn experimental_agent_run_enabled() -> bool {
-    experimental_agent_run_enabled_value(env::var(EXPERIMENTAL_AGENT_RUN_ENV).ok().as_deref())
-}
-
-fn experimental_agent_run_enabled_value(value: Option<&str>) -> bool {
-    value.is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes"
-        )
-    })
+fn experimental_agent_run_enabled(value: &AtomicBool) -> bool {
+    value.load(Ordering::Acquire)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        cancelled_before_prompt_outcome, experimental_agent_run_enabled_value, grok_acp_arguments,
-        should_set_acp_model, AcpEventMapper, AgentRunRecord, AgentRunState, CodexEventMapper,
-        CommandResolvers,
+        build_acp_prompt, build_codex_input, cancelled_before_prompt_outcome,
+        experimental_agent_run_enabled, grok_acp_arguments, normalize_agent_input,
+        should_set_acp_model, AcpEventMapper, AgentInputContentBlock, AgentRunRecord,
+        AgentRunState, CodexEventMapper, CommandResolvers, StartAgentRunRequest,
     };
     use crate::{
         acp::{AcpRuntimeEvent, AcpToolCall, AcpToolCallUpdate},
@@ -1391,17 +2001,20 @@ mod tests {
         codex_app_server::CodexRuntimeEvent,
     };
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::{
         collections::HashMap,
+        path::Path,
         sync::{Arc, Mutex},
     };
     use tokio::sync::{mpsc, watch, Notify};
 
     #[test]
-    fn experimental_agent_run_is_disabled_by_default() {
-        assert!(!experimental_agent_run_enabled_value(None));
-        assert!(!experimental_agent_run_enabled_value(Some("0")));
-        assert!(experimental_agent_run_enabled_value(Some("TRUE")));
+    fn experimental_agent_run_follows_shared_setting_state() {
+        let enabled = AtomicBool::new(false);
+        assert!(!experimental_agent_run_enabled(&enabled));
+        enabled.store(true, Ordering::Release);
+        assert!(experimental_agent_run_enabled(&enabled));
     }
 
     #[test]
@@ -1430,6 +2043,110 @@ mod tests {
             Some("grok-default"),
             Some("grok-default"),
         ));
+    }
+
+    #[test]
+    fn unified_agent_input_maps_images_and_files_without_requiring_prompt_text() {
+        let blocks = normalize_agent_input(
+            None,
+            Some(vec![
+                AgentInputContentBlock::Image {
+                    id: Some("image-1".to_string()),
+                    path: None,
+                    name: Some("shot.png".to_string()),
+                    mime_type: Some("image/png".to_string()),
+                    size: Some(5),
+                    data: Some("aGVsbG8=".to_string()),
+                },
+                AgentInputContentBlock::FileText {
+                    id: None,
+                    path: "notes.md".to_string(),
+                    name: "notes.md".to_string(),
+                    mime_type: Some("text/markdown".to_string()),
+                    size: Some(7),
+                    text: "# Notes".to_string(),
+                    text_bytes: None,
+                },
+                AgentInputContentBlock::FileReference {
+                    id: None,
+                    path: "D:\\workspace\\README.md".to_string(),
+                    name: "README.md".to_string(),
+                    mime_type: Some("text/markdown".to_string()),
+                    size: None,
+                    reason: None,
+                    source: Some("mention".to_string()),
+                },
+            ]),
+        )
+        .expect("normalize blocks-only input");
+
+        let acp = serde_json::to_value(
+            build_acp_prompt(&blocks, Path::new("D:/workspace")).expect("ACP mapping"),
+        )
+        .expect("serialize ACP input");
+        assert_eq!(acp[0]["type"], "image");
+        assert_eq!(acp[1]["type"], "resource");
+        assert_eq!(acp[2]["type"], "resource_link");
+
+        let codex = serde_json::to_value(
+            build_codex_input(&blocks, Path::new("D:/workspace")).expect("Codex mapping"),
+        )
+        .expect("serialize Codex input");
+        assert_eq!(codex[0]["type"], "image");
+        assert!(codex[0]["url"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("data:image/png;base64,")));
+        assert_eq!(codex[1]["type"], "text");
+        assert!(codex[2]["text"]
+            .as_str()
+            .is_some_and(|value| value.contains("D:\\workspace\\README.md")));
+    }
+
+    #[test]
+    fn start_agent_run_request_accepts_camel_case_content_blocks() {
+        let request = serde_json::from_value::<StartAgentRunRequest>(json!({
+            "providerId": "grok-build",
+            "workingDirectory": "D:/workspace",
+            "contentBlocks": [{
+                "type": "file_text",
+                "path": "notes.md",
+                "name": "notes.md",
+                "mimeType": "text/markdown",
+                "size": 7,
+                "text": "# Notes",
+                "textBytes": 7
+            }]
+        }))
+        .expect("deserialize request");
+
+        assert!(request.prompt.is_none());
+        assert!(matches!(
+            request.content_blocks.as_deref(),
+            Some([AgentInputContentBlock::FileText {
+                mime_type: Some(mime_type),
+                text_bytes: Some(7),
+                ..
+            }]) if mime_type == "text/markdown"
+        ));
+    }
+
+    #[test]
+    fn unified_agent_input_rejects_invalid_image_base64() {
+        let error = normalize_agent_input(
+            None,
+            Some(vec![AgentInputContentBlock::Image {
+                id: None,
+                path: None,
+                name: Some("shot.png".to_string()),
+                mime_type: Some("image/png".to_string()),
+                size: None,
+                data: Some("not-base64".to_string()),
+            }]),
+        )
+        .expect_err("invalid base64 must fail");
+
+        assert_eq!(error.status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("base64"));
     }
 
     #[test]
@@ -1536,6 +2253,7 @@ mod tests {
                 grok: || None,
                 codex: || None,
             },
+            experimental_agent_run_enabled: Arc::new(AtomicBool::new(false)),
         };
         let (cancel, _) = watch::channel(false);
         let (control, _) = mpsc::unbounded_channel();

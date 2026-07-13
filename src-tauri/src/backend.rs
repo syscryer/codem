@@ -1,5 +1,4 @@
 use crate::acp::probe_acp_agent;
-use crate::agent_run::experimental_agent_run_enabled;
 use crate::agent_runtime::{
     agent_provider_registry, normalize_agent_permission_mode, AgentProviderRegistry,
     CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
@@ -25,7 +24,10 @@ use std::{
     net::SocketAddr,
     path::{Component, Path, PathBuf},
     process::Command,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+        Arc, Mutex,
+    },
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
@@ -40,6 +42,7 @@ const RUN_RECONNECT_RETENTION_MS: u64 = 10 * 60 * 1000;
 struct AppState {
     app_data_dir: Arc<PathBuf>,
     settings_write_lock: Arc<Mutex<()>>,
+    experimental_agent_run_enabled: Arc<AtomicBool>,
     workspace_write_lock: Arc<Mutex<()>>,
     workspace_database_init_lock: Arc<Mutex<()>>,
     runs: Arc<Mutex<std::collections::HashMap<String, ActiveRunRecord>>>,
@@ -447,12 +450,19 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
     let state = AppState {
         app_data_dir: Arc::new(app_data_dir),
         settings_write_lock: Arc::new(Mutex::new(())),
+        experimental_agent_run_enabled: Arc::new(AtomicBool::new(false)),
         workspace_write_lock: Arc::new(Mutex::new(())),
         workspace_database_init_lock: Arc::new(Mutex::new(())),
         runs: Arc::new(Mutex::new(std::collections::HashMap::new())),
         runtimes: Arc::new(Mutex::new(std::collections::HashMap::new())),
         context_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
     };
+    state.experimental_agent_run_enabled.store(
+        read_app_settings(&state)
+            .map(|settings| experimental_agent_run_enabled_from_settings(&settings))
+            .unwrap_or(false),
+        AtomicOrdering::Release,
+    );
     let app = create_router(state);
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(address)
@@ -466,7 +476,11 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
 }
 
 fn create_router(state: AppState) -> Router {
-    let agent_run_router = crate::agent_run::router(resolve_grok_command, resolve_codex_command);
+    let agent_run_router = crate::agent_run::router(
+        resolve_grok_command,
+        resolve_codex_command,
+        state.experimental_agent_run_enabled.clone(),
+    );
     Router::new()
         .route("/api/runtime/identity", get(runtime_identity))
         .route("/api/health", get(health))
@@ -480,6 +494,10 @@ fn create_router(state: AppState) -> Router {
         .route("/api/settings/models", put(update_model_settings))
         .route("/api/settings/shortcuts", put(update_shortcut_settings))
         .route("/api/settings/open-with", put(update_open_with_settings))
+        .route(
+            "/api/agents/runtime-settings",
+            get(get_agent_runtime_settings).put(update_agent_runtime_settings),
+        )
         .route("/api/claude/version-info", get(claude_version_info))
         .route(
             "/api/claude/system-prompt",
@@ -761,10 +779,10 @@ async fn health() -> Json<Value> {
     })
 }
 
-async fn agent_providers() -> Json<AgentProviderRegistry> {
+async fn agent_providers(State(state): State<AppState>) -> Json<AgentProviderRegistry> {
     Json(agent_provider_registry(
         resolve_claude_command().is_some(),
-        experimental_agent_run_enabled(),
+        experimental_agent_run_enabled(&state),
         resolve_grok_command().is_some(),
         resolve_codex_command().is_some(),
     ))
@@ -1694,6 +1712,24 @@ async fn update_open_with_settings(
     Json(payload): Json<Value>,
 ) -> ApiResult<Json<Value>> {
     update_settings_section(&state, "openWith", payload, UpdateMode::Merge).map(Json)
+}
+
+async fn get_agent_runtime_settings(State(state): State<AppState>) -> Json<Value> {
+    Json(agent_runtime_settings_value(
+        experimental_agent_run_enabled(&state),
+    ))
+}
+
+async fn update_agent_runtime_settings(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let settings = update_settings_section(&state, "agentRuntime", payload, UpdateMode::Merge)?;
+    let enabled = experimental_agent_run_enabled_from_settings(&settings);
+    state
+        .experimental_agent_run_enabled
+        .store(enabled, AtomicOrdering::Release);
+    Ok(Json(agent_runtime_settings_value(enabled)))
 }
 
 async fn workspace_bootstrap(State(state): State<AppState>) -> ApiResult<Json<Value>> {
@@ -2918,7 +2954,7 @@ async fn create_thread(
     let connection = open_initialized_workspace_database(&state)?;
     let provider = resolve_requested_thread_provider(
         payload.provider_id.as_deref(),
-        experimental_agent_run_enabled(),
+        experimental_agent_run_enabled(&state),
         resolve_grok_command().is_some(),
         resolve_codex_command().is_some(),
     )?;
@@ -3265,6 +3301,7 @@ fn normalize_app_settings(value: &Value) -> Value {
     let record = value.as_object();
     json!({
         "general": normalize_general_settings(record.and_then(|item| item.get("general"))),
+        "agentRuntime": normalize_agent_runtime_settings(record.and_then(|item| item.get("agentRuntime"))),
         "appearance": normalize_appearance_settings(record.and_then(|item| item.get("appearance"))),
         "models": normalize_model_settings(record.and_then(|item| item.get("models"))),
         "shortcuts": normalize_shortcut_settings(record.and_then(|item| item.get("shortcuts"))),
@@ -3312,6 +3349,31 @@ fn normalize_general_settings(value: Option<&Value>) -> Value {
         "reviewNoisePatterns": review_noise_patterns,
         "reviewIgnorePatternsCustomized": review_ignore_patterns_customized,
     })
+}
+
+fn normalize_agent_runtime_settings(value: Option<&Value>) -> Value {
+    let record = value.and_then(Value::as_object);
+    json!({
+        "experimentalAgentRunEnabled": bool_setting(record, "experimentalAgentRunEnabled", false),
+    })
+}
+
+fn experimental_agent_run_enabled_from_settings(settings: &Value) -> bool {
+    settings
+        .get("agentRuntime")
+        .and_then(|value| value.get("experimentalAgentRunEnabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn experimental_agent_run_enabled(state: &AppState) -> bool {
+    state
+        .experimental_agent_run_enabled
+        .load(AtomicOrdering::Acquire)
+}
+
+fn agent_runtime_settings_value(enabled: bool) -> Value {
+    json!({ "experimentalAgentRunEnabled": enabled })
 }
 
 fn normalize_appearance_settings(value: Option<&Value>) -> Value {
@@ -3935,6 +3997,9 @@ fn default_app_settings() -> Value {
             ],
             "reviewIgnorePatternsCustomized": false
         },
+        "agentRuntime": {
+            "experimentalAgentRunEnabled": false
+        },
         "appearance": {
             "themeMode": "system",
             "density": "comfortable",
@@ -4206,10 +4271,25 @@ fn resolve_grok_command() -> Option<String> {
     #[cfg(not(target_os = "windows"))]
     let lookup = background_command("which").arg("grok").output().ok();
 
-    lookup
+    let path_command = lookup
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
-        .and_then(|stdout| select_claude_command_candidate(&stdout, cfg!(target_os = "windows")))
+        .and_then(|stdout| select_claude_command_candidate(&stdout, cfg!(target_os = "windows")));
+
+    path_command.or_else(resolve_default_grok_command)
+}
+
+fn resolve_default_grok_command() -> Option<String> {
+    let command = default_grok_command_path(&home_dir()?, cfg!(target_os = "windows"));
+    command
+        .is_file()
+        .then(|| command.to_string_lossy().to_string())
+        .filter(|command| command_reports_version(command))
+}
+
+fn default_grok_command_path(home: &Path, windows: bool) -> PathBuf {
+    let command = if windows { "grok.exe" } else { "grok" };
+    home.join(".grok").join("bin").join(command)
 }
 
 fn resolve_codex_command() -> Option<String> {
@@ -14443,11 +14523,12 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_project_file_entries, create_router, create_thread_row,
-        import_claude_sessions_from_root, initialize_workspace_database, parse_grok_cli_version,
-        remove_thread_row, resolve_requested_thread_provider,
-        resolve_thread_create_permission_mode, select_claude_command_candidate,
-        update_thread_metadata_from_payload, validate_desktop_file_path, AppState,
+        compare_project_file_entries, create_router, create_thread_row, default_grok_command_path,
+        import_claude_sessions_from_root, initialize_workspace_database,
+        normalize_agent_runtime_settings, parse_grok_cli_version, remove_thread_row,
+        resolve_requested_thread_provider, resolve_thread_create_permission_mode,
+        select_claude_command_candidate, update_thread_metadata_from_payload,
+        validate_desktop_file_path, AppState,
     };
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
@@ -14462,7 +14543,7 @@ mod tests {
         collections::HashMap,
         fs,
         path::PathBuf,
-        sync::{Arc, Mutex},
+        sync::{atomic::AtomicBool, Arc, Mutex},
     };
     use tower::ServiceExt;
 
@@ -14489,6 +14570,7 @@ mod tests {
         let app = create_router(AppState {
             app_data_dir: Arc::new(test_directory.0.clone()),
             settings_write_lock: Arc::new(Mutex::new(())),
+            experimental_agent_run_enabled: Arc::new(AtomicBool::new(false)),
             workspace_write_lock: Arc::new(Mutex::new(())),
             workspace_database_init_lock: Arc::new(Mutex::new(())),
             runs: Arc::new(Mutex::new(HashMap::new())),
@@ -14575,6 +14657,18 @@ mod tests {
                 .expect("Codex permission")
                 .as_deref(),
             Some("auto")
+        );
+    }
+
+    #[test]
+    fn agent_runtime_settings_default_to_disabled_and_preserve_explicit_value() {
+        assert_eq!(
+            normalize_agent_runtime_settings(None),
+            json!({ "experimentalAgentRunEnabled": false })
+        );
+        assert_eq!(
+            normalize_agent_runtime_settings(Some(&json!({ "experimentalAgentRunEnabled": true }))),
+            json!({ "experimentalAgentRunEnabled": true })
         );
     }
 
@@ -14963,6 +15057,19 @@ mod tests {
             Some("0.2.93")
         );
         assert_eq!(parse_grok_cli_version("unexpected output"), None);
+    }
+
+    #[test]
+    fn default_grok_command_path_matches_official_installer_layout() {
+        let home = PathBuf::from("C:\\Users\\dev");
+        assert_eq!(
+            default_grok_command_path(&home, true),
+            home.join(".grok").join("bin").join("grok.exe")
+        );
+        assert_eq!(
+            default_grok_command_path(&home, false),
+            home.join(".grok").join("bin").join("grok")
+        );
     }
 
     #[test]

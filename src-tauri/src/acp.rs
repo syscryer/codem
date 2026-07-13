@@ -147,6 +147,39 @@ pub struct AcpPromptOutcome {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AcpEmbeddedResource {
+    pub uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "type")]
+pub enum AcpPromptInput {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image")]
+    Image {
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+        data: String,
+    },
+    #[serde(rename = "resource")]
+    Resource { resource: AcpEmbeddedResource },
+    #[serde(rename = "resource_link")]
+    ResourceLink {
+        uri: String,
+        name: String,
+        #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        size: Option<u64>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpPermissionOption {
     pub option_id: String,
     pub name: String,
@@ -392,12 +425,30 @@ where
     where
         F: FnMut(AcpRuntimeEvent),
     {
+        let prompt = [AcpPromptInput::Text {
+            text: text.to_string(),
+        }];
+        self.prompt_stream(session_id, &prompt, cancel, control, on_event)
+            .await
+    }
+
+    pub async fn prompt_stream<F>(
+        &mut self,
+        session_id: &str,
+        prompt: &[AcpPromptInput],
+        mut cancel: watch::Receiver<bool>,
+        control: &mut mpsc::UnboundedReceiver<AgentControlCommand>,
+        mut on_event: F,
+    ) -> Result<AcpPromptOutcome, AcpError>
+    where
+        F: FnMut(AcpRuntimeEvent),
+    {
         let request_id = self
             .send_request(
                 "session/prompt",
                 json!({
                     "sessionId": session_id,
-                    "prompt": [{ "type": "text", "text": text }],
+                    "prompt": prompt,
                 }),
             )
             .await?;
@@ -904,6 +955,22 @@ impl AcpStdioClient {
     {
         self.connection
             .prompt_text_stream(session_id, text, cancel, control, on_event)
+            .await
+    }
+
+    pub async fn prompt_stream<F>(
+        &mut self,
+        session_id: &str,
+        prompt: &[AcpPromptInput],
+        cancel: watch::Receiver<bool>,
+        control: &mut mpsc::UnboundedReceiver<AgentControlCommand>,
+        on_event: F,
+    ) -> Result<AcpPromptOutcome, AcpError>
+    where
+        F: FnMut(AcpRuntimeEvent),
+    {
+        self.connection
+            .prompt_stream(session_id, prompt, cancel, control, on_event)
             .await
     }
 
@@ -1747,8 +1814,8 @@ fn configure_background_command(_command: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::{
-        summarize_initialize_result, AcpConnection, AcpPromptCapabilities, AcpPromptOutcome,
-        AcpRuntimeEvent, AcpStdioClient,
+        summarize_initialize_result, AcpConnection, AcpEmbeddedResource, AcpPromptCapabilities,
+        AcpPromptInput, AcpPromptOutcome, AcpRuntimeEvent, AcpStdioClient,
     };
     use crate::agent_runtime::{AgentControlCommand, AgentPermissionDecision};
     use serde_json::{json, Value};
@@ -1777,6 +1844,51 @@ mod tests {
             .unwrap();
         writer.write_all(b"\n").await.unwrap();
         writer.flush().await.unwrap();
+    }
+
+    #[test]
+    fn acp_prompt_input_serializes_multimodal_blocks_with_protocol_field_names() {
+        let prompt = vec![
+            AcpPromptInput::Image {
+                mime_type: "image/png".to_string(),
+                data: "aGVsbG8=".to_string(),
+            },
+            AcpPromptInput::Resource {
+                resource: AcpEmbeddedResource {
+                    uri: "codem://attachment/README.md".to_string(),
+                    mime_type: Some("text/markdown".to_string()),
+                    text: "# README".to_string(),
+                },
+            },
+            AcpPromptInput::ResourceLink {
+                uri: "file:///D:/workspace/design.png".to_string(),
+                name: "design.png".to_string(),
+                mime_type: Some("image/png".to_string()),
+                size: Some(128),
+            },
+        ];
+
+        assert_eq!(
+            serde_json::to_value(prompt).expect("serialize ACP prompt"),
+            json!([
+                { "type": "image", "mimeType": "image/png", "data": "aGVsbG8=" },
+                {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "codem://attachment/README.md",
+                        "mimeType": "text/markdown",
+                        "text": "# README"
+                    }
+                },
+                {
+                    "type": "resource_link",
+                    "uri": "file:///D:/workspace/design.png",
+                    "name": "design.png",
+                    "mimeType": "image/png",
+                    "size": 128
+                }
+            ])
+        );
     }
 
     #[test]

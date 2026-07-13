@@ -20,6 +20,11 @@ import {
   resolveAgentModelSelection,
 } from '../lib/agent-model-selection';
 import { closeDanglingTurns, isVisiblePermissionMode } from '../lib/conversation';
+import {
+  buildHistoryContentBlocks,
+  buildRunContentBlocks,
+  stripTransientAttachmentData,
+} from '../lib/claude-run-attachments';
 import { buildNewChatTitleFromSubmission, shouldAutoRenameThreadTitle } from '../lib/new-chat-draft';
 import type { ThreadActivityNoticeKind } from '../lib/thread-activity-notices';
 import type {
@@ -30,15 +35,26 @@ import type {
   ApprovalRequest,
   ConversationTurn,
   DebugEvent,
+  InputContentBlock,
   PermissionMode,
   RequestUserInputRequest,
   ThreadDetail,
   ThreadSummary,
+  UserImageAttachment,
 } from '../types';
 
 type AgentPromptSubmission = {
   prompt: string;
   displayText: string;
+  attachments?: UserImageAttachment[];
+  contentBlocks?: InputContentBlock[];
+  queueId?: string;
+  queueStatus?: 'preparing' | 'ready';
+};
+
+type QueuedAgentPrompt = AgentPromptSubmission & {
+  id: string;
+  createdAtMs: number;
 };
 
 type ThreadMetadataPatch = {
@@ -159,8 +175,14 @@ export function useAgentRun({
   const [activeRunsByThreadId, setActiveRunsByThreadId] = useState<
     Record<string, ActiveAgentRunView>
   >({});
+  const [queuedPromptsByThreadId, setQueuedPromptsByThreadId] = useState<
+    Record<string, QueuedAgentPrompt[]>
+  >({});
   const runContextsByThreadIdRef = useRef(new Map<string, AgentRunContext>());
   const runContextsByRunIdRef = useRef(new Map<string, AgentRunContext>());
+  const queuedPromptsByThreadIdRef = useRef<Record<string, QueuedAgentPrompt[]>>({});
+  const threadSummariesByIdRef = useRef(new Map<string, ThreadSummary>());
+  const autoStartAfterPreparationThreadIdsRef = useRef(new Set<string>());
   const permissionModeRef = useRef<PermissionMode>(DEFAULT_AGENT_PERMISSION_MODE);
   const modelRef = useRef(DEFAULT_MODEL_VALUE);
   const reasoningEffortRef = useRef('');
@@ -172,6 +194,9 @@ export function useAgentRun({
   );
   const selectedProviderId = activeThreadSummary?.provider || draftProviderId;
   const currentModelCatalog = modelCatalog?.providerId === selectedProviderId ? modelCatalog : null;
+  const queuedPrompts = activeThreadId
+    ? queuedPromptsByThreadId[activeThreadId] ?? []
+    : [];
 
   useEffect(() => {
     const controller = new AbortController();
@@ -432,6 +457,181 @@ export function useAgentRun({
     }
   }
 
+  function updateQueuedPrompts(
+    updater: (current: Record<string, QueuedAgentPrompt[]>) => Record<string, QueuedAgentPrompt[]>,
+  ) {
+    const next = updater(queuedPromptsByThreadIdRef.current);
+    queuedPromptsByThreadIdRef.current = next;
+    setQueuedPromptsByThreadId(next);
+    return next;
+  }
+
+  function enqueuePrompt(thread: ThreadSummary, submission: AgentPromptSubmission) {
+    const queuedPrompt: QueuedAgentPrompt = {
+      ...submission,
+      id: submission.queueId ?? crypto.randomUUID(),
+      queueStatus: submission.queueStatus ?? 'ready',
+      createdAtMs: Date.now(),
+    };
+    threadSummariesByIdRef.current.set(thread.id, thread);
+    updateQueuedPrompts((current) => ({
+      ...current,
+      [thread.id]: [...(current[thread.id] ?? []), queuedPrompt],
+    }));
+    appendDebug(thread.id, {
+      title: '已排队下一轮提示',
+      content: submission.displayText || '附件消息',
+    });
+    return queuedPrompt;
+  }
+
+  function updateQueuedPrompt(
+    threadId: string,
+    promptId: string,
+    submission: AgentPromptSubmission,
+  ) {
+    const queue = queuedPromptsByThreadIdRef.current[threadId] ?? [];
+    const index = queue.findIndex((prompt) => prompt.id === promptId);
+    if (index === -1) {
+      return null;
+    }
+    const updatedPrompt: QueuedAgentPrompt = {
+      ...queue[index],
+      ...submission,
+      id: promptId,
+      queueStatus: submission.queueStatus ?? 'ready',
+    };
+    updateQueuedPrompts((current) => {
+      const currentQueue = current[threadId] ?? [];
+      const currentIndex = currentQueue.findIndex((prompt) => prompt.id === promptId);
+      if (currentIndex === -1) {
+        return current;
+      }
+      const nextQueue = [...currentQueue];
+      nextQueue[currentIndex] = updatedPrompt;
+      return { ...current, [threadId]: nextQueue };
+    });
+    return updatedPrompt;
+  }
+
+  function removeQueuedPromptFromThread(threadId: string, promptId: string) {
+    const removedPrompt = (queuedPromptsByThreadIdRef.current[threadId] ?? [])
+      .find((prompt) => prompt.id === promptId) ?? null;
+    if (!removedPrompt) {
+      return null;
+    }
+    updateQueuedPrompts((current) => {
+      const queue = current[threadId] ?? [];
+      if (!queue.some((prompt) => prompt.id === promptId)) {
+        return current;
+      }
+      const remaining = queue.filter((prompt) => prompt.id !== promptId);
+      const next = { ...current };
+      if (remaining.length > 0) {
+        next[threadId] = remaining;
+      } else {
+        delete next[threadId];
+      }
+      return next;
+    });
+    if ((queuedPromptsByThreadIdRef.current[threadId] ?? []).length === 0) {
+      autoStartAfterPreparationThreadIdsRef.current.delete(threadId);
+    }
+    return removedPrompt;
+  }
+
+  function shiftQueuedPrompt(threadId: string) {
+    const nextPrompt = queuedPromptsByThreadIdRef.current[threadId]?.[0];
+    if (!nextPrompt) {
+      return null;
+    }
+    removeQueuedPromptFromThread(threadId, nextPrompt.id);
+    return nextPrompt;
+  }
+
+  function restoreQueuedPrompt(threadId: string, prompt: QueuedAgentPrompt) {
+    updateQueuedPrompts((current) => ({
+      ...current,
+      [threadId]: [prompt, ...(current[threadId] ?? [])],
+    }));
+  }
+
+  function removeQueuedPrompt(promptId: string) {
+    if (!activeThreadId || !promptId) {
+      return;
+    }
+    if (!removeQueuedPromptFromThread(activeThreadId, promptId)) {
+      return;
+    }
+    appendDebug(activeThreadId, {
+      title: '已取消排队提示',
+      content: promptId,
+    });
+  }
+
+  function recallQueuedPrompt(promptId: string) {
+    if (!activeThreadId || !promptId) {
+      return null;
+    }
+    const prompt = removeQueuedPromptFromThread(activeThreadId, promptId);
+    if (!prompt) {
+      return null;
+    }
+    appendDebug(activeThreadId, {
+      title: '已召回排队提示',
+      content: promptId,
+    });
+    return prompt.displayText || prompt.prompt;
+  }
+
+  async function guideQueuedPrompt() {
+    showToast('当前 Provider 不支持运行中引导，消息会在本轮完成后自动发送。', 'info');
+    return false;
+  }
+
+  function maybeStartQueuedPrompt(context: AgentRunContext) {
+    const queue = queuedPromptsByThreadIdRef.current[context.threadId] ?? [];
+    if (queue[0]?.queueStatus === 'preparing') {
+      autoStartAfterPreparationThreadIdsRef.current.add(context.threadId);
+      return;
+    }
+    autoStartAfterPreparationThreadIdsRef.current.delete(context.threadId);
+    const nextPrompt = shiftQueuedPrompt(context.threadId);
+    if (!nextPrompt) {
+      return;
+    }
+    const cachedThread = threadSummariesByIdRef.current.get(context.threadId);
+    if (!cachedThread) {
+      restoreQueuedPrompt(context.threadId, nextPrompt);
+      return;
+    }
+    const thread = {
+      ...cachedThread,
+      sessionId: context.sessionId ?? cachedThread.sessionId,
+      workingDirectory: context.workingDirectory,
+    };
+    threadSummariesByIdRef.current.set(thread.id, thread);
+    window.setTimeout(() => {
+      const started = startAgentRun(
+        thread,
+        nextPrompt,
+        context.permissionMode,
+        context.model,
+        context.reasoningEffort,
+      );
+      if (!started) {
+        restoreQueuedPrompt(context.threadId, nextPrompt);
+      }
+    }, 0);
+  }
+
+  function notifyQueuedPromptsRetained(threadId: string) {
+    autoStartAfterPreparationThreadIdsRef.current.delete(threadId);
+    if ((queuedPromptsByThreadIdRef.current[threadId] ?? []).length > 0) {
+      showToast('当前运行未正常完成，队列已保留。', 'info');
+    }
+  }
+
   async function ensureAgentThread(
     submission: AgentPromptSubmission,
     providerId: string,
@@ -461,6 +661,7 @@ export function useAgentRun({
           showToast(error instanceof Error ? error.message : '聊天名称更新失败', 'error');
         });
       }
+      threadSummariesByIdRef.current.set(activeThreadSummary.id, activeThreadSummary);
       return activeThreadSummary;
     }
 
@@ -471,7 +672,7 @@ export function useAgentRun({
     }
 
     try {
-      return await createThread(
+      const thread = await createThread(
         activeProjectId,
         buildNewChatTitleFromSubmission(submission),
         {
@@ -482,6 +683,10 @@ export function useAgentRun({
           ...(runReasoningEffort ? { reasoningEffort: runReasoningEffort } : {}),
         },
       );
+      if (thread) {
+        threadSummariesByIdRef.current.set(thread.id, thread);
+      }
+      return thread;
     } catch (error) {
       showToast(error instanceof Error ? error.message : '新建聊天失败', 'error');
       return null;
@@ -507,6 +712,46 @@ export function useAgentRun({
     if (!thread) {
       return false;
     }
+    const submissionContentBlocks = buildRunContentBlocks({
+      prompt: submission.prompt,
+      attachments: submission.attachments,
+      contentBlocks: submission.contentBlocks,
+    });
+    if (submissionContentBlocks.length === 0 && submission.queueStatus !== 'preparing') {
+      return false;
+    }
+    const activeContext = runContextsByThreadIdRef.current.get(thread.id);
+    if (submission.queueId) {
+      const queuedPrompt = updateQueuedPrompt(thread.id, submission.queueId, submission);
+      if (queuedPrompt) {
+        if (submission.queueStatus === 'preparing' || activeContext) {
+          return true;
+        }
+        const queueHead = queuedPromptsByThreadIdRef.current[thread.id]?.[0];
+        if (
+          queueHead?.id !== queuedPrompt.id ||
+          !autoStartAfterPreparationThreadIdsRef.current.delete(thread.id)
+        ) {
+          return true;
+        }
+        shiftQueuedPrompt(thread.id);
+        const started = startAgentRun(
+          thread,
+          queuedPrompt,
+          runPermissionMode,
+          runModel,
+          runReasoningEffort,
+        );
+        if (!started) {
+          restoreQueuedPrompt(thread.id, queuedPrompt);
+        }
+        return started;
+      }
+    }
+    if (activeContext || submission.queueStatus === 'preparing') {
+      enqueuePrompt(thread, submission);
+      return true;
+    }
     return startAgentRun(
       thread,
       submission,
@@ -524,12 +769,17 @@ export function useAgentRun({
     runReasoningEffort?: string,
   ) {
     const prompt = submission.prompt.trim();
-    if (!prompt) {
+    const requestContentBlocks = buildRunContentBlocks({
+      prompt,
+      attachments: submission.attachments,
+      contentBlocks: submission.contentBlocks,
+    });
+    if (requestContentBlocks.length === 0) {
       return false;
     }
     if (runContextsByThreadIdRef.current.has(thread.id)) {
-      showToast(`${providerDisplayName(thread.provider, providers)} 暂不支持运行中排队，请等待当前回复结束。`, 'info');
-      return false;
+      enqueuePrompt(thread, submission);
+      return true;
     }
 
     const workingDirectory =
@@ -576,6 +826,12 @@ export function useAgentRun({
           {
             id: turnId,
             userText: submission.displayText.trim() || prompt,
+            userAttachments: stripTransientAttachmentData(submission.attachments),
+            userContentBlocks: buildHistoryContentBlocks({
+              prompt,
+              attachments: submission.attachments,
+              contentBlocks: requestContentBlocks,
+            }),
             workspace: workingDirectory,
             assistantText: '',
             tools: [],
@@ -601,6 +857,7 @@ export function useAgentRun({
           body: JSON.stringify({
             providerId: context.providerId,
             prompt,
+            contentBlocks: requestContentBlocks,
             workingDirectory,
             sessionId: context.sessionId,
             permissionMode: context.permissionMode,
@@ -723,6 +980,11 @@ export function useAgentRun({
       context.terminal = true;
       removeRunContext(context);
       emitThreadNotice(context, event.type === 'error' ? 'failed' : 'completed', event.runId);
+      if (event.type === 'done' && !context.cancelRequested) {
+        maybeStartQueuedPrompt(context);
+      } else {
+        notifyQueuedPromptsRetained(context.threadId);
+      }
     }
   }
 
@@ -964,6 +1226,7 @@ export function useAgentRun({
     );
     schedulePersistThreadHistory(context.threadId);
     removeRunContext(context);
+    notifyQueuedPromptsRetained(context.threadId);
   }
 
   function handleAgentRunFailure(context: AgentRunContext, message: string) {
@@ -985,6 +1248,7 @@ export function useAgentRun({
     context.terminal = true;
     removeRunContext(context);
     emitThreadNotice(context, 'failed', event.runId);
+    notifyQueuedPromptsRetained(context.threadId);
   }
 
   function emitThreadNotice(
@@ -1028,6 +1292,10 @@ export function useAgentRun({
     runningThreadIds,
     activeRunsByThreadId,
     activeTurnIdsByThreadId,
+    queuedPrompts,
+    removeQueuedPrompt,
+    recallQueuedPrompt,
+    guideQueuedPrompt,
     submitPrompt,
     submitRequestUserInput,
     submitApprovalDecision,
@@ -1056,7 +1324,7 @@ function getProviderRunError(
     return requestError || `${name} 不在当前 Provider Registry 中。`;
   }
   if (provider.lifecycle !== 'active') {
-    return `${name} 实验运行未开启，请设置 CODEM_ENABLE_EXPERIMENTAL_AGENT_RUN=1 后重启。`;
+    return `${name} 实验运行未开启，请在“Agent 与模型”设置中启用。`;
   }
   if (provider.available !== true) {
     return providerId === OPENAI_CODEX_PROVIDER_ID

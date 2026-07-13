@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
-import { ArrowUp, Bot, Braces, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, RefreshCw, Shield, Square, SquareTerminal, Unlock, X, Zap } from 'lucide-react';
+import { ArrowUp, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, RefreshCw, Shield, Square, Unlock, X, Zap } from 'lucide-react';
 import { CLAUDE_CODE_PROVIDER_ID, DEFAULT_MODEL_VALUE, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
@@ -18,6 +18,7 @@ import { PopoverPortal } from './PopoverPortal';
 import { ComposerContextIndicator } from './ComposerContextIndicator';
 import { SlashCommandMenu } from './SlashCommandMenu';
 import { WorkbenchFileIcon } from './WorkbenchFileIcon';
+import { AgentProviderIcon } from './AgentProviderIcon';
 import { hasClaudeContext1mOptions } from '../lib/claude-model-selection';
 import { applySlashCommandSelection, getNextSlashCommandIndex } from '../lib/slash-command-editor';
 import { getSlashDismissResetKey, resolveSlashCommandSubmission } from '../lib/slash-command-submit';
@@ -261,7 +262,7 @@ export function Composer({
     [providerId, providers],
   );
   const providerName = selectedProvider?.displayName ?? providerDisplayName(providerId);
-  const textOnlyInputMessage = `${providerName} 首期仅支持文本输入。`;
+  const textOnlyInputMessage = `${providerName} 当前不支持附件输入。`;
   const providerSelectionDisabled =
     !canSelectProvider || isRunning || (providersLoading && providers.length === 0);
   const permissionSelectionDisabled = agent !== 'claude' && isRunning;
@@ -328,7 +329,7 @@ export function Composer({
     }
     disposeAttachmentPreviews(attachments);
     setAttachments([]);
-    showToast(`${providerName} 首期仅支持文本，待发送附件已移除。`, 'info');
+    showToast(`${providerName} 当前不支持附件，待发送附件已移除。`, 'info');
   }, [allowAttachments, attachments, providerName, showToast]);
 
   // 桌面端：订阅原生文件拖放事件，把拖入的真实路径转成附件。用 ref 持有最新回调避免闭包过期。
@@ -1217,14 +1218,14 @@ export function Composer({
                     className="composer-add-menu-item"
                     role="menuitem"
                     disabled={!allowAttachments}
-                    title={allowAttachments ? '添加附件' : `${providerName} 首期仅支持文本`}
+                    title={allowAttachments ? '添加附件' : `${providerName} 当前不支持附件`}
                     onClick={() => {
                       setAddMenuOpen(false);
                       void handleAddAttachmentClick();
                     }}
                     >
                     <Image size={15} />
-                    <span>{allowAttachments ? '添加附件' : '附件仅限 Claude'}</span>
+                    <span>{allowAttachments ? '添加附件' : '当前 Provider 不支持附件'}</span>
                   </button>
                   <button
                     type="button"
@@ -1278,7 +1279,7 @@ export function Composer({
                           }
                         }}
                       >
-                        <ProviderIcon providerId={provider.id} size={15} />
+                        <AgentProviderIcon providerId={provider.id} size={15} />
                         <span className="model-menu-item-copy">
                           <span>{provider.displayName}</span>
                           <small>{unavailableReason || provider.driverId}</small>
@@ -1302,7 +1303,7 @@ export function Composer({
                 }
                 onClick={() => setProviderMenuOpen((value) => !value)}
               >
-                <ProviderIcon providerId={providerId} size={14} />
+                <AgentProviderIcon providerId={providerId} size={14} />
                 <span>{selectedProvider?.displayName ?? providerDisplayName(providerId)}</span>
                 {canSelectProvider ? <span className="permission-trigger-chevron" aria-hidden="true" /> : null}
               </button>
@@ -2030,7 +2031,7 @@ function providerDisplayName(providerId: string) {
 function providerUnavailableReason(provider: AgentProviderDescriptor) {
   if (provider.lifecycle === 'planned') {
     return provider.id === GROK_BUILD_PROVIDER_ID || provider.id === OPENAI_CODEX_PROVIDER_ID
-      ? '需要开启实验运行'
+      ? '请在设置中开启实验运行'
       : '规划中';
   }
   if (provider.available === false) {
@@ -2047,16 +2048,6 @@ function permissionModeTooltip(agent: AgentType, mode: PermissionMode, providerN
     return `完全访问（YOLO）：跳过 ${providerName} 工具权限确认，仅用于可信目录`;
   }
   return permissionLabel(mode);
-}
-
-function ProviderIcon({ providerId, size }: { providerId: string; size: number }) {
-  if (providerId === GROK_BUILD_PROVIDER_ID) {
-    return <SquareTerminal size={size} aria-hidden="true" />;
-  }
-  if (providerId === OPENAI_CODEX_PROVIDER_ID) {
-    return <Braces size={size} aria-hidden="true" />;
-  }
-  return <Bot size={size} aria-hidden="true" />;
 }
 
 function PermissionModeIcon({ mode, size }: { mode: PermissionMode; size: number }) {

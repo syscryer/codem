@@ -179,6 +179,17 @@ pub struct CodexTurnOutcome {
     pub cancel_sent: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "type")]
+pub enum CodexUserInput {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image")]
+    Image { url: String },
+    #[serde(rename = "localImage")]
+    LocalImage { path: String },
+}
+
 #[derive(Debug)]
 enum CodexMessage {
     Response {
@@ -374,6 +385,38 @@ where
         permission_mode: &str,
         model: Option<&str>,
         reasoning_effort: Option<&str>,
+        cancel: watch::Receiver<bool>,
+        control: &mut mpsc::UnboundedReceiver<AgentControlCommand>,
+        on_event: F,
+    ) -> Result<CodexTurnOutcome, CodexAppServerError>
+    where
+        F: FnMut(CodexRuntimeEvent),
+    {
+        let input = [CodexUserInput::Text {
+            text: text.to_string(),
+        }];
+        self.run_turn(
+            thread_id,
+            cwd,
+            &input,
+            permission_mode,
+            model,
+            reasoning_effort,
+            cancel,
+            control,
+            on_event,
+        )
+        .await
+    }
+
+    pub async fn run_turn<F>(
+        &mut self,
+        thread_id: &str,
+        cwd: &Path,
+        input: &[CodexUserInput],
+        permission_mode: &str,
+        model: Option<&str>,
+        reasoning_effort: Option<&str>,
         mut cancel: watch::Receiver<bool>,
         control: &mut mpsc::UnboundedReceiver<AgentControlCommand>,
         mut on_event: F,
@@ -393,7 +436,7 @@ where
             .ok_or_else(|| CodexAppServerError::Protocol("Codex 权限模式不受支持".to_string()))?;
         let mut turn_params = json!({
             "threadId": thread_id,
-            "input": [{ "type": "text", "text": text }],
+            "input": input,
             "cwd": cwd.to_string_lossy(),
             "approvalPolicy": policy.approval_policy,
             "sandboxPolicy": policy.sandbox_policy,
@@ -895,6 +938,36 @@ impl CodexStdioClient {
                 thread_id,
                 cwd,
                 text,
+                permission_mode,
+                model,
+                reasoning_effort,
+                cancel,
+                control,
+                on_event,
+            )
+            .await
+    }
+
+    pub async fn run_turn<F>(
+        &mut self,
+        thread_id: &str,
+        cwd: &Path,
+        input: &[CodexUserInput],
+        permission_mode: &str,
+        model: Option<&str>,
+        reasoning_effort: Option<&str>,
+        cancel: watch::Receiver<bool>,
+        control: &mut mpsc::UnboundedReceiver<AgentControlCommand>,
+        on_event: F,
+    ) -> Result<CodexTurnOutcome, CodexAppServerError>
+    where
+        F: FnMut(CodexRuntimeEvent),
+    {
+        self.connection
+            .run_turn(
+                thread_id,
+                cwd,
+                input,
                 permission_mode,
                 model,
                 reasoning_effort,
@@ -1630,6 +1703,30 @@ mod tests {
             .await
             .expect("write mock response");
         writer.flush().await.expect("flush mock response");
+    }
+
+    #[test]
+    fn codex_user_input_serializes_image_variants_from_current_app_server_schema() {
+        let input = vec![
+            CodexUserInput::Text {
+                text: "检查截图".to_string(),
+            },
+            CodexUserInput::LocalImage {
+                path: "D:/workspace/screenshot.png".to_string(),
+            },
+            CodexUserInput::Image {
+                url: "data:image/png;base64,aGVsbG8=".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            serde_json::to_value(input).expect("serialize Codex input"),
+            json!([
+                { "type": "text", "text": "检查截图" },
+                { "type": "localImage", "path": "D:/workspace/screenshot.png" },
+                { "type": "image", "url": "data:image/png;base64,aGVsbG8=" }
+            ])
+        );
     }
 
     async fn next_event(

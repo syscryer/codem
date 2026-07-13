@@ -24,7 +24,6 @@ import {
   X,
   SquarePen,
   SquareSplitHorizontal,
-  SquareTerminal,
   Zap,
 } from 'lucide-react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
@@ -240,11 +239,6 @@ export function SidebarProjects({
       >
         <button type="button" className="sidebar-thread" onClick={() => void onSelectThread(hostProjectId, thread.id)}>
           <span className="sidebar-thread-title">
-            {thread.provider === 'grok-build' ? (
-              <span className="sidebar-thread-provider-icon" title="Grok Build" aria-label="Grok Build">
-                <SquareTerminal size={12} aria-hidden="true" />
-              </span>
-            ) : null}
             <span className="sidebar-thread-title-text">{thread.title}</span>
           </span>
           <span className="sidebar-thread-meta">

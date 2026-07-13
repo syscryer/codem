@@ -366,9 +366,9 @@ export default function App() {
     activeRunsByThreadId: claudeActiveRunsByThreadId,
     activeTurnIdsByThreadId: claudeActiveTurnIdsByThreadId,
     queuedPrompts: claudeQueuedPrompts,
-    removeQueuedPrompt,
-    recallQueuedPrompt,
-    guideQueuedPrompt,
+    removeQueuedPrompt: removeClaudeQueuedPrompt,
+    recallQueuedPrompt: recallClaudeQueuedPrompt,
+    guideQueuedPrompt: guideClaudeQueuedPrompt,
     clockNowMs,
     setModel,
     setEffort,
@@ -424,6 +424,10 @@ export default function App() {
     runningThreadIds: genericAgentRunningThreadIds,
     activeRunsByThreadId: genericAgentActiveRunsByThreadId,
     activeTurnIdsByThreadId: genericAgentActiveTurnIdsByThreadId,
+    queuedPrompts: genericAgentQueuedPrompts,
+    removeQueuedPrompt: removeGenericAgentQueuedPrompt,
+    recallQueuedPrompt: recallGenericAgentQueuedPrompt,
+    guideQueuedPrompt: guideGenericAgentQueuedPrompt,
     submitPrompt: submitGenericAgentPrompt,
     submitRequestUserInput: submitGenericAgentRequestUserInput,
     submitApprovalDecision: submitGenericAgentApprovalDecision,
@@ -457,8 +461,13 @@ export default function App() {
       : activeProviderId === OPENAI_CODEX_PROVIDER_ID
         ? 'codex' as const
         : 'generic' as const;
-  const activeProviderDisplayName = agentProviders.find((provider) => provider.id === activeProviderId)?.displayName
-    ?? (activeProviderId === OPENAI_CODEX_PROVIDER_ID ? 'OpenAI Codex' : activeProviderId);
+  const activeProviderCapabilities = agentProviders.find((provider) => provider.id === activeProviderId)?.capabilities;
+  const allowAgentAttachments = activeUsesClaude || Boolean(
+    activeUsesGenericAgent && activeProviderCapabilities && (
+      activeProviderCapabilities.input.images === 'supported' ||
+      activeProviderCapabilities.input.fileReferences === 'supported'
+    ),
+  );
   const permissionMode = activeUsesClaude ? claudePermissionMode : genericAgentPermissionMode;
   const handlePermissionModeSelect = activeUsesClaude
     ? handleClaudePermissionModeSelect
@@ -481,7 +490,20 @@ export default function App() {
     : activeUsesGenericAgent && activeThreadId
       ? genericAgentActiveRunsByThreadId[activeThreadId]?.runId ?? ''
       : '';
-  const queuedPrompts = activeUsesClaude ? claudeQueuedPrompts : [];
+  const queuedPrompts = activeUsesClaude
+    ? claudeQueuedPrompts
+    : activeUsesGenericAgent
+      ? genericAgentQueuedPrompts
+      : [];
+  const removeQueuedPrompt = activeUsesClaude
+    ? removeClaudeQueuedPrompt
+    : removeGenericAgentQueuedPrompt;
+  const recallQueuedPrompt = activeUsesClaude
+    ? recallClaudeQueuedPrompt
+    : recallGenericAgentQueuedPrompt;
+  const guideQueuedPrompt = activeUsesClaude
+    ? guideClaudeQueuedPrompt
+    : guideGenericAgentQueuedPrompt;
 
   useEffect(() => {
     activeThreadIdRef.current = activeThreadId;
@@ -716,15 +738,20 @@ export default function App() {
   const activeRunTurn = activeRunTurnId
     ? activeThread?.turns.find((turn) => turn.id === activeRunTurnId)
     : undefined;
-  const queuedPromptGuideAvailability = getQueuedPromptGuideAvailability({
-    isRunning: Boolean(activeThreadId && runningThreadIds.includes(activeThreadId)),
-    runId: backendRunId,
-    hasPendingHumanInput: Boolean(
-      activeRunTurn?.pendingUserInputRequests?.length ||
-      activeRunTurn?.pendingApprovalRequests?.length,
-    ),
-    queueLength: queuedPrompts.length,
-  });
+  const queuedPromptGuideAvailability = activeUsesClaude
+    ? getQueuedPromptGuideAvailability({
+        isRunning: Boolean(activeThreadId && runningThreadIds.includes(activeThreadId)),
+        runId: backendRunId,
+        hasPendingHumanInput: Boolean(
+          activeRunTurn?.pendingUserInputRequests?.length ||
+          activeRunTurn?.pendingApprovalRequests?.length,
+        ),
+        queueLength: queuedPrompts.length,
+      })
+    : {
+        available: false,
+        reason: '当前 Provider 不支持运行中引导，队列会在本轮完成后继续。',
+      };
 
   async function handleSubmitPrompt(submission: ComposerSubmission) {
     if (activeUsesClaude) {
@@ -736,18 +763,7 @@ export default function App() {
       return false;
     }
 
-    const hasUnsupportedInput = Boolean(
-      submission.attachments?.length ||
-      submission.contentBlocks?.some((block) => block.type !== 'text'),
-    );
-    if (hasUnsupportedInput) {
-      showToast(`${activeProviderDisplayName} 首期仅支持文本输入，请新建 Claude Code 聊天使用附件。`, 'info');
-      return false;
-    }
-    return submitGenericAgentPrompt({
-      prompt: submission.prompt,
-      displayText: submission.displayText,
-    });
+    return submitGenericAgentPrompt(submission);
   }
 
   async function handleSubmitRequestUserInput(
@@ -1697,8 +1713,8 @@ export default function App() {
                 providersLoading={agentProvidersLoading}
                 providersError={agentProvidersError}
                 canSelectProvider={!activeThreadSummary}
-                allowAttachments={activeUsesClaude}
-                supportsQueue={activeUsesClaude}
+                allowAttachments={allowAgentAttachments}
+                supportsQueue={activeUsesClaude || activeUsesGenericAgent}
                 workspace={workspace}
                 permissionMode={permissionMode}
                 model={model}

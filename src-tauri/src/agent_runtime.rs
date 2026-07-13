@@ -344,8 +344,8 @@ fn grok_capabilities() -> AgentCapabilities {
         },
         input: AgentInputCapabilities {
             text: Supported,
-            images: Unsupported,
-            file_references: Unsupported,
+            images: Supported,
+            file_references: Supported,
         },
         tools: AgentToolCapabilities {
             streaming: Supported,
@@ -373,8 +373,8 @@ fn codex_capabilities() -> AgentCapabilities {
         },
         input: AgentInputCapabilities {
             text: Supported,
-            images: Unsupported,
-            file_references: Unsupported,
+            images: Supported,
+            file_references: Supported,
         },
         tools: AgentToolCapabilities {
             streaming: Supported,
@@ -520,7 +520,11 @@ mod tests {
         assert!(grok.selectable);
         assert_eq!(
             grok.capabilities.input.images,
-            AgentCapabilitySupport::Unsupported
+            AgentCapabilitySupport::Supported
+        );
+        assert_eq!(
+            grok.capabilities.input.file_references,
+            AgentCapabilitySupport::Supported
         );
         assert_eq!(
             grok.capabilities.tools.approval,
@@ -550,7 +554,11 @@ mod tests {
         assert!(codex.selectable);
         assert_eq!(
             codex.capabilities.input.images,
-            AgentCapabilitySupport::Unsupported
+            AgentCapabilitySupport::Supported
+        );
+        assert_eq!(
+            codex.capabilities.input.file_references,
+            AgentCapabilitySupport::Supported
         );
         assert_eq!(
             codex.capabilities.tools.approval,

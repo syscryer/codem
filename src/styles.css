@@ -3409,10 +3409,17 @@ svg {
   color: var(--workbench-file-icon-accent);
 }
 
-.sidebar-thread-provider-icon {
+.agent-provider-brand-icon {
   flex: 0 0 auto;
-  display: inline-flex;
-  opacity: 0.72;
+  display: block;
+}
+
+.agent-provider-brand-icon-claude-code {
+  color: #d97757;
+}
+
+.agent-provider-brand-icon-image {
+  object-fit: contain;
 }
 
 .workbench-file-icon svg {
@@ -12280,6 +12287,44 @@ button.git-conflict-overview-row:focus-visible,
   min-height: 520px;
   container-name: agent-provider;
   container-type: inline-size;
+}
+
+.agent-provider-experimental-setting {
+  min-height: 62px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--app-border, #ececec);
+  background: color-mix(in srgb, var(--accent, #2374c6) 4%, var(--app-surface, #ffffff));
+}
+
+.agent-provider-experimental-setting > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.agent-provider-experimental-setting strong {
+  color: var(--app-text-strong, #1f1f1f);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.agent-provider-experimental-setting > div > span,
+.agent-provider-experimental-setting small {
+  color: var(--app-muted, #77736c);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.agent-provider-experimental-setting small {
+  color: var(--danger, #d33a31);
+}
+
+.agent-provider-experimental-setting .settings-toggle {
+  flex: 0 0 auto;
 }
 
 .agent-provider-manager {

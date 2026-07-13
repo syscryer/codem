@@ -1,12 +1,9 @@
 import {
   AlertCircle,
-  Bot,
-  Braces,
   Check,
   CheckCircle2,
   CircleDashed,
   Clock3,
-  Cpu,
   FileText,
   KeyRound,
   Layers3,
@@ -21,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  AgentRuntimeSettings,
   AgentProviderDescriptor,
   AgentProviderRegistry,
   ClaudeCliVersionInfo,
@@ -28,6 +26,11 @@ import type {
   CodexAppServerProbeResult,
   GrokAcpProbeResult,
 } from '../../types';
+import {
+  defaultAgentRuntimeSettings,
+  fetchAgentRuntimeSettings,
+  saveAgentRuntimeSettings,
+} from '../../lib/settings-api';
 import {
   fetchAgentProviderRegistry,
   probeCodexAgent,
@@ -46,16 +49,10 @@ import {
   type ProviderStatusTone,
 } from '../../lib/agent-provider-management';
 import { readClaudeCliVersionInfo } from '../../lib/settings-runtime';
+import { AgentProviderIcon } from '../AgentProviderIcon';
 
 type ProviderLoadState = 'loading' | 'ready' | 'error';
 type ProviderProbeState = 'idle' | 'checking' | 'ready' | 'error';
-
-const providerIcons: Record<string, LucideIcon> = {
-  'claude-code': Bot,
-  'grok-build': SquareTerminal,
-  'openai-codex': Braces,
-  'codem-agent': Cpu,
-};
 
 export function AgentProviderSettings({ claudeModels }: { claudeModels: ClaudeModelInfo }) {
   const [registry, setRegistry] = useState<AgentProviderRegistry | null>(null);
@@ -69,6 +66,9 @@ export function AgentProviderSettings({ claudeModels }: { claudeModels: ClaudeMo
   const [codexProbeState, setCodexProbeState] = useState<ProviderProbeState>('idle');
   const [codexProbe, setCodexProbe] = useState<CodexAppServerProbeResult | null>(null);
   const [codexProbeError, setCodexProbeError] = useState('');
+  const [agentRuntimeSettings, setAgentRuntimeSettings] = useState<AgentRuntimeSettings>(defaultAgentRuntimeSettings);
+  const [agentRuntimeSaving, setAgentRuntimeSaving] = useState(false);
+  const [agentRuntimeError, setAgentRuntimeError] = useState('');
   const registryControllerRef = useRef<AbortController | null>(null);
   const grokControllerRef = useRef<AbortController | null>(null);
   const codexControllerRef = useRef<AbortController | null>(null);
@@ -81,15 +81,17 @@ export function AgentProviderSettings({ claudeModels }: { claudeModels: ClaudeMo
     setLoadError('');
 
     try {
-      const [nextRegistry, nextClaudeCliInfo] = await Promise.all([
+      const [nextRegistry, nextClaudeCliInfo, nextAgentRuntimeSettings] = await Promise.all([
         fetchAgentProviderRegistry(controller.signal),
         readClaudeCliVersionInfo(),
+        fetchAgentRuntimeSettings(),
       ]);
       if (controller.signal.aborted) {
         return;
       }
       setRegistry(nextRegistry);
       setClaudeCliInfo(nextClaudeCliInfo);
+      setAgentRuntimeSettings(nextAgentRuntimeSettings);
       setSelectedProviderId((current) =>
         nextRegistry.providers.some((provider) => provider.id === current)
           ? current
@@ -173,6 +175,24 @@ export function AgentProviderSettings({ claudeModels }: { claudeModels: ClaudeMo
     }
   }
 
+  async function updateExperimentalAgentRun(enabled: boolean) {
+    if (agentRuntimeSaving) {
+      return;
+    }
+
+    setAgentRuntimeSaving(true);
+    setAgentRuntimeError('');
+    try {
+      const saved = await saveAgentRuntimeSettings({ experimentalAgentRunEnabled: enabled });
+      setAgentRuntimeSettings(saved);
+      await loadProviders();
+    } catch (error) {
+      setAgentRuntimeError(error instanceof Error ? error.message : '保存实验 Agent 设置失败');
+    } finally {
+      setAgentRuntimeSaving(false);
+    }
+  }
+
   if (loadState === 'loading' && !registry) {
     return (
       <div className="settings-panel agent-provider-loading" role="status">
@@ -203,6 +223,26 @@ export function AgentProviderSettings({ claudeModels }: { claudeModels: ClaudeMo
       className="settings-panel agent-provider-shell"
       aria-busy={loadState === 'loading'}
     >
+      <div className="agent-provider-experimental-setting">
+        <div>
+          <strong>启用实验性 Agent 运行</strong>
+          <span>
+            {agentRuntimeSettings.experimentalAgentRunEnabled
+              ? '新建的 Grok Build 与 OpenAI Codex 会话可在对应 CLI 可用时使用。'
+              : '关闭时不允许新建实验 Agent 会话，运行中的会话不受影响。'}
+          </span>
+          {agentRuntimeError ? <small role="alert">{agentRuntimeError}</small> : null}
+        </div>
+        <label className="settings-toggle" aria-label="启用实验性 Agent 运行">
+          <input
+            type="checkbox"
+            checked={agentRuntimeSettings.experimentalAgentRunEnabled}
+            disabled={agentRuntimeSaving}
+            onChange={(event) => void updateExperimentalAgentRun(event.currentTarget.checked)}
+          />
+          <span aria-hidden="true" />
+        </label>
+      </div>
       <div className="agent-provider-manager">
         <aside className="agent-provider-list" aria-label="Agent Provider">
           <div className="agent-provider-list-head">
@@ -226,7 +266,6 @@ export function AgentProviderSettings({ claudeModels }: { claudeModels: ClaudeMo
               </div>
             ) : null}
             {registry?.providers.map((provider) => {
-              const Icon = providerIcons[provider.id] ?? Bot;
               const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe);
               return (
                 <button
@@ -237,7 +276,7 @@ export function AgentProviderSettings({ claudeModels }: { claudeModels: ClaudeMo
                   onClick={() => setSelectedProviderId(provider.id)}
                 >
                   <span className="agent-provider-list-icon" aria-hidden="true">
-                    <Icon size={17} />
+                    <AgentProviderIcon providerId={provider.id} size={17} />
                   </span>
                   <span className="agent-provider-list-copy">
                     <strong>{provider.displayName}</strong>
@@ -298,7 +337,6 @@ function ProviderDetail({
   onProbeCodex: () => Promise<void>;
   onRefresh: () => Promise<void>;
 }) {
-  const Icon = providerIcons[provider.id] ?? Bot;
   const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe);
   const diagnostics = resolveProviderDiagnostics(provider, claudeCliInfo, grokProbe, codexProbe);
   const capabilityGroups = getProviderCapabilityGroups(provider);
@@ -329,7 +367,7 @@ function ProviderDetail({
       <div className="agent-provider-detail-head">
         <div className="agent-provider-detail-title">
           <span className="agent-provider-detail-icon" aria-hidden="true">
-            <Icon size={20} />
+            <AgentProviderIcon providerId={provider.id} size={20} />
           </span>
           <div>
             <h2 id={`agent-provider-${provider.id}`}>{provider.displayName}</h2>

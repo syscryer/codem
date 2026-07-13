@@ -2,6 +2,7 @@ import { normalizeShortcutValue } from './shortcuts';
 import { CLAUDE_MODEL_SLOT_VALUES, DEFAULT_CUSTOM_ACCENT_COLOR, normalizeAccentHexColor } from '../constants';
 import { cloneDefaultWorkbenchIgnorePatterns, mergeWorkbenchIgnorePatterns } from './review-ignore-patterns';
 import type {
+  AgentRuntimeSettings,
   AppSettings,
   AppearanceSettings,
   CustomModel,
@@ -72,8 +73,13 @@ export const defaultOpenWithSettings: OpenWithSettings = {
   customTargets: [],
 };
 
+export const defaultAgentRuntimeSettings: AgentRuntimeSettings = {
+  experimentalAgentRunEnabled: false,
+};
+
 export const defaultAppSettings: AppSettings = {
   general: defaultGeneralSettings,
+  agentRuntime: defaultAgentRuntimeSettings,
   appearance: defaultAppearanceSettings,
   models: defaultModelSettings,
   shortcuts: defaultShortcutSettings,
@@ -86,6 +92,36 @@ export async function fetchAppSettings(): Promise<AppSettings> {
     return await readSettingsResponse(response, '读取设置失败');
   } catch {
     throw new Error('读取设置失败');
+  }
+}
+
+export async function fetchAgentRuntimeSettings(): Promise<AgentRuntimeSettings> {
+  try {
+    const response = await fetch('/api/agents/runtime-settings');
+    if (!response.ok) {
+      throw new Error('读取实验 Agent 设置失败');
+    }
+    return normalizeAgentRuntimeSettings(await response.json());
+  } catch {
+    throw new Error('读取实验 Agent 设置失败');
+  }
+}
+
+export async function saveAgentRuntimeSettings(
+  settings: AgentRuntimeSettings,
+): Promise<AgentRuntimeSettings> {
+  try {
+    const response = await fetch('/api/agents/runtime-settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(normalizeAgentRuntimeSettings(settings)),
+    });
+    if (!response.ok) {
+      throw new Error('保存实验 Agent 设置失败');
+    }
+    return normalizeAgentRuntimeSettings(await response.json());
+  } catch {
+    throw new Error('保存实验 Agent 设置失败');
   }
 }
 
@@ -203,10 +239,21 @@ function normalizeAppSettings(settings: unknown): AppSettings {
   const record = isRecord(settings) ? settings : {};
   return {
     general: normalizeGeneralSettings(record.general),
+    agentRuntime: normalizeAgentRuntimeSettings(record.agentRuntime),
     appearance: normalizeAppearanceSettings(record.appearance),
     models: normalizeModelSettings(record.models),
     shortcuts: normalizeShortcutSettings(record.shortcuts),
     openWith: normalizeOpenWithSettings(record.openWith),
+  };
+}
+
+export function normalizeAgentRuntimeSettings(value: unknown): AgentRuntimeSettings {
+  const record = isRecord(value) ? value : {};
+  return {
+    experimentalAgentRunEnabled: normalizeBoolean(
+      record.experimentalAgentRunEnabled,
+      defaultAgentRuntimeSettings.experimentalAgentRunEnabled,
+    ),
   };
 }
 

@@ -7,6 +7,7 @@ import {
 } from './queued-prompts.js';
 
 const useClaudeRunSource = readFileSync(new URL('../hooks/useClaudeRun.ts', import.meta.url), 'utf8');
+const useAgentRunSource = readFileSync(new URL('../hooks/useAgentRun.ts', import.meta.url), 'utf8');
 const conversationTurnSource = readFileSync(new URL('../components/ConversationTurn.tsx', import.meta.url), 'utf8');
 
 test('resolveQueuedPromptRunOptions prefers the completed run session over stale thread metadata', () => {
@@ -145,6 +146,24 @@ test('useClaudeRun preserves contentBlocks across queue, direct send, and guide 
   assert.match(useClaudeRunSource, /contentBlocks: buildRunContentBlocks\(\{\s*prompt: targetPrompt\.prompt,\s*attachments: targetPrompt\.attachments,\s*contentBlocks: targetPrompt\.contentBlocks,\s*\}\),/);
   assert.match(useClaudeRunSource, /contentBlocks: nextPrompt\.contentBlocks,/);
   assert.match(useClaudeRunSource, /contentBlocks: submission\.contentBlocks,/);
+});
+
+test('useAgentRun preserves contentBlocks across preparing, ready, and automatic queue delivery', () => {
+  assert.match(useAgentRunSource, /type AgentPromptSubmission = \{[\s\S]*contentBlocks\?: InputContentBlock\[\];/);
+  assert.match(useAgentRunSource, /type QueuedAgentPrompt = AgentPromptSubmission/);
+  assert.match(useAgentRunSource, /updateQueuedPrompt\(thread\.id, submission\.queueId, submission\)/);
+  assert.match(useAgentRunSource, /submission\.queueStatus === 'preparing'/);
+  assert.match(useAgentRunSource, /contentBlocks: requestContentBlocks/);
+  assert.match(useAgentRunSource, /maybeStartQueuedPrompt\(context\)/);
+  assert.match(useAgentRunSource, /event\.type === 'done' && !context\.cancelRequested/);
+});
+
+test('useAgentRun retains queued prompts after errors and strips transient history payloads', () => {
+  assert.match(useAgentRunSource, /notifyQueuedPromptsRetained\(context\.threadId\)/);
+  assert.match(useAgentRunSource, /autoStartAfterPreparationThreadIdsRef\.current\.delete\(threadId\)/);
+  assert.match(useAgentRunSource, /userAttachments: stripTransientAttachmentData\(submission\.attachments\)/);
+  assert.match(useAgentRunSource, /userContentBlocks: buildHistoryContentBlocks\(\{/);
+  assert.doesNotMatch(useAgentRunSource, /userContentBlocks: requestContentBlocks/);
 });
 
 test('useClaudeRun avoids duplicating image base64 in run requests once contentBlocks are built', () => {

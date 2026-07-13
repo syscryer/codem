@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  defaultAgentRuntimeSettings,
   defaultAppSettings,
   defaultAppearanceSettings,
   defaultGeneralSettings,
@@ -9,6 +10,7 @@ import {
   fetchAppSettings,
   fetchOpenWithTargets,
   normalizeOpenWithSettings,
+  normalizeAgentRuntimeSettings,
   normalizeGeneralSettings,
   normalizeModelSettings,
   normalizeShortcutSettings,
@@ -59,7 +61,7 @@ type AppearanceSaveQueue = {
 };
 
 export { defaultAppSettings, defaultAppearanceSettings, defaultGeneralSettings };
-export { defaultModelSettings, defaultOpenWithSettings, defaultShortcutSettings };
+export { defaultAgentRuntimeSettings, defaultModelSettings, defaultOpenWithSettings, defaultShortcutSettings };
 
 export function useAppSettings(showToast?: ShowToast) {
   const [settings, setSettings] = useState<AppSettings>(defaultAppSettings);
@@ -262,6 +264,7 @@ export function useAppSettings(showToast?: ShowToast) {
   return {
     settings,
     general: settings.general,
+    agentRuntime: settings.agentRuntime,
     appearance: settings.appearance,
     models: settings.models,
     shortcuts: settings.shortcuts,
@@ -377,6 +380,7 @@ export function createLatestAppearanceSaveQueue(options: AppearanceSaveQueueOpti
 function mergeAppSettings(settings: Partial<AppSettings> | null | undefined): AppSettings {
   return {
     general: normalizeGeneralSettings(settings?.general),
+    agentRuntime: normalizeAgentRuntimeSettings(settings?.agentRuntime),
     appearance: mergeAppearanceSettings(settings?.appearance),
     models: normalizeModelSettings(settings?.models),
     shortcuts: normalizeShortcutSettings(settings?.shortcuts),

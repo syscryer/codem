@@ -158,8 +158,8 @@ test('enabled Grok is selectable without routing unknown providers to Claude', (
           ...claudeCapabilities,
           input: {
             text: 'supported',
-            images: 'unsupported',
-            fileReferences: 'unsupported',
+            images: 'supported',
+            fileReferences: 'supported',
           },
           runtime: {
             cancel: 'hard',
@@ -172,6 +172,8 @@ test('enabled Grok is selectable without routing unknown providers to Claude', (
   });
 
   assert.deepEqual(listSelectableAgentProviders(registry).map((provider) => provider.id), ['grok-build']);
+  assert.equal(registry.providers[0]?.capabilities.input.images, 'supported');
+  assert.equal(registry.providers[0]?.capabilities.input.fileReferences, 'supported');
   assert.equal(resolveChatRuntimeKind('claude-code'), 'claude');
   assert.equal(resolveChatRuntimeKind('grok-build'), 'generic');
   assert.equal(resolveChatRuntimeKind('openai-codex'), 'generic');
