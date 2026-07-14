@@ -27,6 +27,8 @@ type ConversationPaneProps = {
   isNewChatDraft: boolean;
   activeProject: ProjectSummary | null;
   activeProjectName?: string;
+  emptyDraftTitle?: string;
+  emptyDraftDescription?: string;
   collapseIntermediateProcess: boolean;
   clockNowMs: number;
   isRunning: boolean;
@@ -52,6 +54,9 @@ type ConversationPaneProps = {
     request: ApprovalRequest,
     decision: ApprovalDecision,
   ) => Promise<boolean>;
+  onEditUserMessage?: (turn: ConversationTurn) => void;
+  onDeleteTurn?: (turn: ConversationTurn) => void;
+  onRegenerateTurn?: (turn: ConversationTurn) => void;
 };
 
 function useLatestCallback<T extends (...args: never[]) => unknown>(callback: T): T {
@@ -69,6 +74,8 @@ export function ConversationPane({
   isNewChatDraft,
   activeProject,
   activeProjectName,
+  emptyDraftTitle,
+  emptyDraftDescription,
   collapseIntermediateProcess,
   clockNowMs,
   isRunning,
@@ -83,6 +90,9 @@ export function ConversationPane({
   onSubmitRequestUserInput,
   onSubmitRuntimeRecoveryAction,
   onSubmitApprovalDecision,
+  onEditUserMessage,
+  onDeleteTurn,
+  onRegenerateTurn,
 }: ConversationPaneProps) {
   const [showBottomAnchor, setShowBottomAnchor] = useState(false);
   const shouldAutoFollowRef = useRef(true);
@@ -202,10 +212,15 @@ export function ConversationPane({
   }
 
   const emptyConversationCopy = activeThread?.turns.length === 0
-    ? resolveEmptyConversationCopy({
-        threadTitle: activeThread.title,
-        activeProjectName,
-      })
+    ? emptyDraftTitle || emptyDraftDescription
+      ? {
+          title: emptyDraftTitle ?? '开始新会话',
+          description: emptyDraftDescription ?? '输入第一条消息开始。',
+        }
+      : resolveEmptyConversationCopy({
+          threadTitle: activeThread.title,
+          activeProjectName,
+        })
     : null;
 
   return (
@@ -213,8 +228,8 @@ export function ConversationPane({
       <section className="conversation" ref={transcriptRef}>
         {!activeThread && isNewChatDraft ? (
           <div className="empty-state">
-            <h3>{activeProjectName ? `在「${activeProjectName}」中创建会话` : '创建新会话'}</h3>
-            <p>第一句话会落进当前项目，新的会话会从这里自然展开。</p>
+            <h3>{emptyDraftTitle ?? (activeProjectName ? `在「${activeProjectName}」中创建会话` : '创建新会话')}</h3>
+            <p>{emptyDraftDescription ?? '第一句话会落进当前项目，新的会话会从这里自然展开。'}</p>
           </div>
         ) : !activeThread ? (
           <div className="empty-state">
@@ -250,6 +265,9 @@ export function ConversationPane({
               onSubmitRequestUserInput={stableSubmitRequestUserInput}
               onSubmitRuntimeRecoveryAction={stableSubmitRuntimeRecoveryAction}
               onSubmitApprovalDecision={stableSubmitApprovalDecision}
+              onEditUserMessage={onEditUserMessage}
+              onDeleteTurn={onDeleteTurn}
+              onRegenerateTurn={onRegenerateTurn}
             />
           ))
         )}

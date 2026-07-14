@@ -164,7 +164,11 @@ test('Composer restores submitted content when attachment preparation fails befo
   assert.match(handleSubmitBody, /function restoreSubmittedContent\(\) \{/);
   assert.match(
     handleSubmitBody,
-    /if \(!workspace\.trim\(\)\) \{[\s\S]*onRemoveQueuedPrompt\(pendingQueueId\);[\s\S]*restoreSubmittedContent\(\);[\s\S]*return;/,
+    /if \(!workspace\.trim\(\) && variant !== 'ordinary'\) \{[\s\S]*onRemoveQueuedPrompt\(pendingQueueId\);[\s\S]*restoreSubmittedContent\(\);[\s\S]*return;/,
+  );
+  assert.match(
+    handleSubmitBody,
+    /uploadedAttachments = variant === 'ordinary'[\s\S]*\? await buildInlineImageAttachments\(imageAttachments\)[\s\S]*: await uploadImageAttachments\(imageAttachments, workspace\.trim\(\)\);/,
   );
   assert.match(
     handleSubmitBody,

@@ -7,6 +7,7 @@ import {
   Copy,
   Download,
   LoaderCircle,
+  MessageSquareText,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -30,7 +31,7 @@ import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { PopoverPortal } from './PopoverPortal';
 import { resolveSidebarThreadStatus, type SidebarThreadStatusKind } from '../lib/sidebar-thread-status';
 import type { ThreadActivityNoticeMap } from '../lib/thread-activity-notices';
-import type { CloneTask, PanelState, ProjectSummary, ThreadRuntimeStatus, ThreadSummary } from '../types';
+import type { AiChatSummary, CloneTask, PanelState, ProjectSummary, ThreadRuntimeStatus, ThreadSummary } from '../types';
 
 const VISIBLE_THREAD_PREVIEW_LIMIT = 5;
 
@@ -38,6 +39,10 @@ type SidebarProjectsProps = {
   activeProjectId: string | null;
   activeThreadId: string | null;
   isNewChatDraft: boolean;
+  activeOrdinaryChatId: string | null;
+  ordinaryChatIsDraft: boolean;
+  ordinaryChats: AiChatSummary[];
+  runningOrdinaryChatIds: string[];
   runningThreadIds: string[];
   threadActivityNotices: ThreadActivityNoticeMap;
   threadRuntimeStatuses: Record<string, ThreadRuntimeStatus>;
@@ -45,6 +50,11 @@ type SidebarProjectsProps = {
   collapsedProjects: Record<string, boolean>;
   panelState: PanelState;
   onCreatePrimaryChat: () => void;
+  onCreateOrdinaryChat: () => void;
+  onSelectOrdinaryChat: (chatId: string) => void | Promise<void>;
+  onTogglePinOrdinaryChat: (chatId: string, pinned: boolean) => void | Promise<void>;
+  onRenameOrdinaryChat: (chat: AiChatSummary) => void;
+  onDeleteOrdinaryChat: (chat: AiChatSummary) => void;
   onToggleSearch: () => void;
   onToggleAllProjects: () => void;
   onRefreshProjects: () => void | Promise<void>;
@@ -83,6 +93,10 @@ export function SidebarProjects({
   activeProjectId,
   activeThreadId,
   isNewChatDraft,
+  activeOrdinaryChatId,
+  ordinaryChatIsDraft,
+  ordinaryChats,
+  runningOrdinaryChatIds,
   runningThreadIds,
   threadActivityNotices,
   threadRuntimeStatuses,
@@ -90,6 +104,11 @@ export function SidebarProjects({
   collapsedProjects,
   panelState,
   onCreatePrimaryChat,
+  onCreateOrdinaryChat,
+  onSelectOrdinaryChat,
+  onTogglePinOrdinaryChat,
+  onRenameOrdinaryChat,
+  onDeleteOrdinaryChat,
   onToggleSearch,
   onToggleAllProjects,
   onRefreshProjects,
@@ -130,11 +149,14 @@ export function SidebarProjects({
   const [projectMenuAnchor, setProjectMenuAnchor] = useState<{ x: number; y: number } | null>(null);
   const [threadMenuThreadId, setThreadMenuThreadId] = useState<string | null>(null);
   const [threadMenuAnchor, setThreadMenuAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [ordinaryChatMenuId, setOrdinaryChatMenuId] = useState<string | null>(null);
+  const [ordinaryChatMenuAnchor, setOrdinaryChatMenuAnchor] = useState<{ x: number; y: number } | null>(null);
   const [expandedThreadProjects, setExpandedThreadProjects] = useState<Record<string, boolean>>({});
   const panelMenuRef = useRef<HTMLDivElement | null>(null);
   const addProjectMenuRef = useRef<HTMLDivElement | null>(null);
   const projectMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const threadMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const ordinaryChatMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useOutsideDismiss({
     selectors: [
@@ -142,6 +164,7 @@ export function SidebarProjects({
       { selector: '.add-project-menu-popover', onDismiss: () => setAddProjectMenuOpen(false), anchorRefs: [addProjectMenuRef] },
       { selector: '.project-menu-popover', onDismiss: () => setProjectMenuProjectId(null), anchorRefs: [projectMenuTriggerRef] },
       { selector: '.thread-menu-popover', onDismiss: () => setThreadMenuThreadId(null), anchorRefs: [threadMenuTriggerRef] },
+      { selector: '.ordinary-chat-sidebar-menu-popover', onDismiss: () => setOrdinaryChatMenuId(null), anchorRefs: [ordinaryChatMenuTriggerRef] },
     ],
   });
   const runningThreadIdSet = new Set(runningThreadIds);
@@ -150,6 +173,8 @@ export function SidebarProjects({
   function openProjectMenu(projectId: string, anchor?: { x: number; y: number }) {
     setThreadMenuThreadId(null);
     setThreadMenuAnchor(null);
+    setOrdinaryChatMenuId(null);
+    setOrdinaryChatMenuAnchor(null);
     setProjectMenuAnchor(anchor ?? null);
     setProjectMenuProjectId(projectId);
   }
@@ -157,8 +182,19 @@ export function SidebarProjects({
   function openThreadMenu(threadId: string, anchor?: { x: number; y: number }) {
     setProjectMenuProjectId(null);
     setProjectMenuAnchor(null);
+    setOrdinaryChatMenuId(null);
+    setOrdinaryChatMenuAnchor(null);
     setThreadMenuAnchor(anchor ?? null);
     setThreadMenuThreadId(threadId);
+  }
+
+  function openOrdinaryChatMenu(chatId: string, anchor?: { x: number; y: number }) {
+    setProjectMenuProjectId(null);
+    setProjectMenuAnchor(null);
+    setThreadMenuThreadId(null);
+    setThreadMenuAnchor(null);
+    setOrdinaryChatMenuAnchor(anchor ?? null);
+    setOrdinaryChatMenuId(chatId);
   }
 
   function toggleCloneLog(taskId: string) {
@@ -268,6 +304,59 @@ export function SidebarProjects({
             <button type="button" className="workspace-menu-item danger" onClick={() => { setThreadMenuThreadId(null); onOpenRemoveThreadDialog(thread); }}>
               <Trash2 size={14} />
               <span>删除聊天</span>
+            </button>
+          </div>
+        </PopoverPortal>
+      </div>
+    );
+  }
+
+  function renderOrdinaryChatRow(chat: AiChatSummary) {
+    const pinned = Boolean(chat.pinnedAt);
+    const running = runningOrdinaryChatIds.includes(chat.id);
+    return (
+      <div
+        key={chat.id}
+        className={`sidebar-thread-row ordinary-chat-row${chat.id === activeOrdinaryChatId ? ' active' : ''}${running ? ' running' : ''}${pinned ? ' pinned' : ''}`}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          openOrdinaryChatMenu(chat.id, { x: event.clientX, y: event.clientY });
+        }}
+      >
+        <button
+          type="button"
+          className="sidebar-thread"
+          title={chat.lastMessagePreview || chat.title}
+          onClick={() => void onSelectOrdinaryChat(chat.id)}
+        >
+          <span className="sidebar-thread-title">
+            <MessageSquareText size={13} aria-hidden="true" />
+            <span className="sidebar-thread-title-text">{chat.title}</span>
+          </span>
+          <span className="sidebar-thread-meta">
+            {running ? <SidebarThreadStatusIcon status="running" /> : null}
+            {running ? null : <small>{formatOrdinaryChatUpdatedAt(chat.updatedAt)}</small>}
+          </span>
+        </button>
+        <PopoverPortal
+          open={ordinaryChatMenuId === chat.id}
+          anchorRef={ordinaryChatMenuTriggerRef}
+          virtualAnchor={ordinaryChatMenuId === chat.id ? ordinaryChatMenuAnchor : null}
+          placement="bottom-end"
+        >
+          <div className="workspace-menu ordinary-chat-sidebar-menu-popover">
+            <button type="button" className="workspace-menu-item" onClick={() => { setOrdinaryChatMenuId(null); void onTogglePinOrdinaryChat(chat.id, !pinned); }}>
+              {pinned ? <PinOff size={14} /> : <Pin size={14} />}
+              <span>{pinned ? '取消置顶' : '置顶聊天'}</span>
+            </button>
+            <button type="button" className="workspace-menu-item" onClick={() => { setOrdinaryChatMenuId(null); onRenameOrdinaryChat(chat); }}>
+              <Pencil size={14} />
+              <span>重命名聊天</span>
+            </button>
+            <div className="workspace-menu-divider" />
+            <button type="button" className="workspace-menu-item danger" disabled={running} onClick={() => { setOrdinaryChatMenuId(null); onDeleteOrdinaryChat(chat); }}>
+              <Trash2 size={14} />
+              <span>{running ? '生成中不可删除' : '删除聊天'}</span>
             </button>
           </div>
         </PopoverPortal>
@@ -457,7 +546,10 @@ export function SidebarProjects({
     <aside className="app-sidebar">
       <nav className="sidebar-primary">
         <button type="button" onClick={onCreatePrimaryChat}>
-          <span><Plus size={14} /></span> 新建聊天
+          <span><Plus size={14} /></span> 新建任务
+        </button>
+        <button type="button" onClick={onCreateOrdinaryChat}>
+          <span><MessageSquareText size={14} /></span> 新建聊天
         </button>
         <button type="button" onClick={onToggleSearch}>
           <span><Search size={14} /></span> 搜索
@@ -468,6 +560,34 @@ export function SidebarProjects({
       </nav>
 
       <div className="sidebar-scroll-region">
+        <section className="sidebar-ordinary-chats">
+          <div className="sidebar-section-head sidebar-section-toolbar">
+            <span>聊天</span>
+            <div className="sidebar-section-actions">
+              <button type="button" className="sidebar-toolbar-icon" title="新建聊天" onClick={onCreateOrdinaryChat}>
+                <Plus size={13} />
+              </button>
+            </div>
+          </div>
+          <div className="sidebar-thread-list ordinary-chat-list">
+            {ordinaryChatIsDraft ? (
+              <div className="sidebar-thread-row ordinary-chat-row active draft">
+                <button type="button" className="sidebar-thread" onClick={onCreateOrdinaryChat}>
+                  <span className="sidebar-thread-title">
+                    <MessageSquareText size={13} aria-hidden="true" />
+                    <span className="sidebar-thread-title-text">新建聊天</span>
+                  </span>
+                  <span className="sidebar-thread-meta"><small>草稿</small></span>
+                </button>
+              </div>
+            ) : null}
+            {ordinaryChats.map(renderOrdinaryChatRow)}
+            {ordinaryChats.length === 0 && !ordinaryChatIsDraft ? (
+              <div className="sidebar-thread-empty">暂无普通聊天</div>
+            ) : null}
+          </div>
+        </section>
+
         {hasAnyPinned ? (
           <section className="sidebar-pinned">
             <div className="sidebar-section-head">
@@ -690,4 +810,14 @@ function mergeVisibleThreads(
   }
 
   return merged;
+}
+
+function formatOrdinaryChatUpdatedAt(updatedAt: string) {
+  const date = new Date(updatedAt);
+  if (Number.isNaN(date.getTime())) return '';
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) {
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  }
+  return date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
 }

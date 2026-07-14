@@ -139,3 +139,88 @@
 - 当前 `App.tsx` 已承载较多状态，新增工作台状态时需要避免继续膨胀；若改动变大，应拆出 `RightWorkbench` 组件。
 - Git 审查和提交弹窗都读取 Git status/diff，需要避免重复请求导致 UI 抖动；第一版可以接受局部请求，后续再抽共享 hook。
 - 右侧工作台会挤压聊天区，必须确保 composer 和消息滚动不出现横向滚动。
+
+## 当前规划：独立普通 AI 聊天完整链路
+
+### 目标
+
+- 在不依赖 Agent、项目和 CLI session 的前提下提供完整普通 AI 聊天。
+- 保持 CodeM 原有聊天窗口风格，供应商和模型继续放在 Composer 底部选择。
+- 支持多供应商、每供应商多模型、会话内单模型切换、MCP、Skills、知识库、附件和历史恢复。
+- 使用独立 worktree/分支，避开另一个会话正在修改的设置界面。
+
+### 视觉论点
+
+普通聊天应像 CodeM 原生能力自然生长出来：克制、紧凑、以消息和输入为主，不复制 Cherry Studio 页面结构，不增加无意义卡片和装饰。
+
+### 内容结构
+
+- 左侧：新建任务、新建聊天、普通聊天列表、项目 Agent 任务。
+- 中间：复用现有消息流、Markdown、工具步骤、引用和滚动。
+- 底部：附件/知识库/MCP/Skills 在左，普通聊天供应商/模型/发送在右。
+- 右侧：继续复用现有工作台，不新增普通聊天专属侧栏。
+
+### 交互论点
+
+- 新建任务与新建聊天切换使用现有页面过渡，不引入重型动效。
+- 供应商/模型菜单复用 CodeM popover 的快速淡入和键盘导航。
+- 模型切换用轻量分隔提示记录上下文变化，工具和引用沿用现有渐进展开。
+
+### 阶段
+
+| 阶段 | 状态 | 说明 |
+| --- | --- | --- |
+| 1. 隔离与任务建立 | completed | 已创建 `codex/ordinary-chat` worktree/分支和独立 Trellis session |
+| 2. 现状盘点与契约冻结 | completed | 已冻结独立 router/service、`ai_*` 表、通用事件、Composer 布局和工具/知识库边界 |
+| 3. 数据模型与迁移 | completed | 已建立 `ai_*` 表、供应商/模型/聊天 CRUD、消息与运行记录、模型快照和历史读取 |
+| 4. 供应商与协议适配 | completed | 已完成精选模板、加密密钥 vault、模型探测、图片多模态、四类流式 adapter 和工具调用归一化 |
+| 5. 聊天运行时 | completed | 已完成 NDJSON streaming、停止、重连、模型切换、上下文裁剪、自动标题、历史恢复和多聊天并发隔离 |
+| 6. MCP 与 Skills | completed | 已完成 Skills 安全注入、MCP stdio/Streamable HTTP、工具循环、持久化、事件恢复和危险操作审批 |
+| 7. 知识库 | completed | 已完成本地 CRUD、文件/目录/文本导入、切片、向量检索、重建、删除、聊天多选、来源引用和管理弹窗 |
+| 8. 前端普通聊天 | completed | 已完成独立列表、Composer、MCP/Skills/知识库、usage、消息编辑/删除/重试/重新生成、导出和空态 |
+| 9. 设置接线与兼容整合 | completed | 已提供独立可复用 Provider 管理组件并从普通聊天直接打开；设置页薄嵌入留给并行设置会话合并，不阻塞聊天完整使用 |
+| 10. 验证与收口 | completed | Rust/TS/生产构建/前端回归/安全扫描/真实 UI 窄窗烟测均通过，隔离服务已重启到最新版本 |
+| 11. 最终加固审计 | completed | 修复 Anthropic `/v1` 地址重复、运行前置校验脏历史、重连失败卡死和运行记录内存保留问题，并补充回归测试 |
+| 12. 数据一致性加固 | completed | 知识库查询显式传播行错误，配置更新与重建实现事务回滚；模型创建/发现/禁用/删除和旧库修复保持单一启用默认模型，28 个定向测试与全量门禁通过 |
+| 13. 合并主线 | in_progress | 普通聊天与多 Agent 设置分别提交后合并到 `main`，解决 5 个重叠文件并完成合并后验证 |
+
+### 不做事项
+
+- 不做一次提问多个模型同时回答。
+- 不把普通聊天塞进项目 Agent `threads` 语义。
+- 不引入大量中转商和推广供应商。
+- 不在另一个设置会话进行中修改同一设置页面文件。
+
+### 风险
+
+- 当前 Agent `ThreadSummary` 深度绑定 project/provider session，普通聊天必须避免继续堆可空字段导致语义混乱。
+- MCP 工具调用在“非 Agent”模式下仍需要完整循环和审批，不能只做 prompt 注入。
+- 知识库是完整子系统，需要控制依赖体积、索引性能、嵌入隐私和删除一致性。
+- 不同 API 的工具调用与流式结构差异大，必须先统一内部事件再接 UI。
+- 设置界面并行开发可能产生接线冲突，因此核心能力先落独立模块，最后只做薄接线。
+
+### 遇到的错误
+
+| 错误 | 尝试次数 | 解决方案 |
+| --- | --- | --- |
+| `apply_patch` 因 `cargo fmt` 重排导入后上下文不匹配 | 1 | 读取精确片段并拆成按文件小补丁，不重复大型补丁 |
+| `ProviderStreamEvent` 从私有导入路径引用导致 E0603 | 1 | 共享事件统一从 `types` 导入 |
+| 恢复记录的大型补丁因 findings 标题不一致而匹配失败 | 1 | 先定位精确标题与文件尾部，再拆分为小补丁 |
+| 隔离 worktree 未安装 `node_modules`，typecheck 找不到 `tsc` | 1 | 使用 `npm ci` 按 lockfile 安装隔离依赖后再验证 |
+| 新增多模态 builder 后 `cargo fmt --check` 报排版差异 | 1 | 运行 `cargo fmt` 后重新执行格式门禁 |
+| PowerShell 中双引号正则的 `|` 被误解析 | 1 | ripgrep 正则统一使用单引号 |
+| MCP 首轮编译：审批错误类型和 Claude project config 参数类型不匹配 | 1 | 将审批错误显式映射为 message，保留 `.claude.json` 的 `Option<Value>` 传入既有解析函数 |
+| 普通聊天 usage union 无法直接读取 nested usage | 1 | 用 `usage in event` 区分普通聊天 nested usage 和标准 flat usage，再统一映射 |
+| 消息编辑按钮漏导入 `Pencil` | 1 | 补充现有 lucide-react 图标 import 后 typecheck 通过 |
+| Header 导出回调返回 boolean 不符合 void 契约 | 1 | Workspace 用无返回值包装调用，保留 hook 内导出成功布尔值 |
+| Windows `rg` 直接使用 `vite.config.*` 路径通配符报文件名语法错误 | 1 | 改用 `rg --files -g 'vite.config.*'` 获取真实文件名 |
+| Provider manager 被后置 `.dialog-card` 宽度覆盖为 420px | 1 | 使用更明确的 `.dialog-card.ai-provider-manager-dialog`，并复测默认/窄窗无溢出 |
+| 删除最后一轮后普通聊天显示 Agent 空态文案 | 1 | `ConversationPane` 对 ordinary 传入的 empty copy 同时覆盖已有空聊天 |
+| 浏览器读取旧 textbox locator 和等待旧空态各超时一次 | 1 | 立即刷新 DOM snapshot，确认前者是 locator 过期、后者暴露真实空态文案问题 |
+| 样式语义审计脚本缺少 `postcss-selector-parser` | 1 | 不新增依赖，改用本地括号感知的选择器拆分逻辑完成审计 |
+| 进程树检查命令出现 PowerShell 空管道解析错误 | 1 | 将 `foreach` 结果先收集到数组再统一格式化输出 |
+| `styles.css` 出现 6000 余行选择器重组噪音 | 1 | 对比选择器声明确认无既有语义变化，机械收敛为原基线加 928 行普通聊天专属样式 |
+| 最终记录大补丁因 findings 目标行不存在而未应用 | 1 | 改为逐文件小补丁，先读取精确尾部再写入 |
+| 全量 Clippy `-D warnings` 被仓库既有 Agent/backend 告警阻断 | 1 | 记录既有告警类别，并用排除既有类别的 Clippy 门禁验证普通聊天新增代码无额外告警 |
+| 加固改动后 `cargo fmt --check` 发现三处排版差异 | 1 | 运行 `cargo fmt` 后重新执行格式、测试和构建门禁 |
+| 旧 dev exec session 已失效，无法通过 stdin 停止 | 1 | 核对 3101/5174 进程祖先与路径，只停止隔离 worktree 的孤儿进程树后重新启动 |

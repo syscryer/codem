@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
-import { ArrowUp, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, RefreshCw, Shield, Square, Unlock, X, Zap } from 'lucide-react';
+import { ArrowUp, BookOpen, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, RefreshCw, Server, Shield, Sparkles, Square, Unlock, X, Zap } from 'lucide-react';
 import { CLAUDE_CODE_PROVIDER_ID, DEFAULT_MODEL_VALUE, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
@@ -24,7 +24,7 @@ import { applySlashCommandSelection, getNextSlashCommandIndex } from '../lib/sla
 import { getSlashDismissResetKey, resolveSlashCommandSubmission } from '../lib/slash-command-submit';
 import { getAgentModelForSelection } from '../lib/agent-model-selection';
 import { modelContext1mMenuActionLabel, modelMenuDescriptionLabel, modelMenuPrimaryLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
-import type { AgentModelCatalog, AgentModelOption, AgentProviderDescriptor, AgentType, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
+import type { AgentModelCatalog, AgentModelOption, AgentProviderDescriptor, AgentType, AiKnowledgeBaseSummary, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, McpServerSummary, PermissionMode, SkillSummary, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingComposerAttachment =
   | {
@@ -84,6 +84,7 @@ const claudeEffortOptions: Array<{
 ];
 
 type ComposerProps = {
+  variant?: 'agent' | 'ordinary';
   agent: AgentType;
   providerId: string;
   providers: AgentProviderDescriptor[];
@@ -103,6 +104,12 @@ type ComposerProps = {
   agentModelsLoading: boolean;
   agentModelsError: string;
   agentModelSelectionWarning: string;
+  knowledgeBases?: AiKnowledgeBaseSummary[];
+  selectedKnowledgeIds?: string[];
+  skills?: SkillSummary[];
+  selectedSkillIds?: string[];
+  mcpServers?: McpServerSummary[];
+  selectedMcpIds?: string[];
   turns: ConversationTurn[];
   claudeContextState?: ClaudeContextRequestState;
   isRunning: boolean;
@@ -132,6 +139,10 @@ type ComposerProps = {
   onSelectAgentModel: (model: string) => void;
   onSelectAgentReasoningEffort: (effort: string) => void;
   onRetryAgentModels: () => void;
+  onToggleKnowledgeBase?: (knowledgeBaseId: string) => boolean | void | Promise<boolean | void>;
+  onManageKnowledgeBases?: () => void;
+  onToggleSkill?: (skillId: string) => boolean | void | Promise<boolean | void>;
+  onToggleMcpServer?: (serverId: string) => boolean | void | Promise<boolean | void>;
   onOpenPlugins: () => void;
   onCreateNewChat: () => Promise<void> | void;
   onStopRun: () => void | Promise<void>;
@@ -140,6 +151,7 @@ type ComposerProps = {
 };
 
 export function Composer({
+  variant = 'agent',
   agent,
   providerId,
   providers,
@@ -159,6 +171,12 @@ export function Composer({
   agentModelsLoading,
   agentModelsError,
   agentModelSelectionWarning,
+  knowledgeBases = [],
+  selectedKnowledgeIds = [],
+  skills = [],
+  selectedSkillIds = [],
+  mcpServers = [],
+  selectedMcpIds = [],
   turns,
   claudeContextState,
   isRunning,
@@ -181,6 +199,10 @@ export function Composer({
   onSelectAgentModel,
   onSelectAgentReasoningEffort,
   onRetryAgentModels,
+  onToggleKnowledgeBase,
+  onManageKnowledgeBases,
+  onToggleSkill,
+  onToggleMcpServer,
   onOpenPlugins,
   onCreateNewChat,
   onStopRun,
@@ -195,9 +217,15 @@ export function Composer({
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
+  const [knowledgeMenuOpen, setKnowledgeMenuOpen] = useState(false);
+  const [skillMenuOpen, setSkillMenuOpen] = useState(false);
+  const [mcpMenuOpen, setMcpMenuOpen] = useState(false);
   const permissionMenuRef = useRef<HTMLDivElement | null>(null);
   const providerMenuRef = useRef<HTMLDivElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
+  const knowledgeMenuRef = useRef<HTMLDivElement | null>(null);
+  const skillMenuRef = useRef<HTMLDivElement | null>(null);
+  const mcpMenuRef = useRef<HTMLDivElement | null>(null);
   const effortMenuRef = useRef<HTMLDivElement | null>(null);
   const addMenuRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -231,6 +259,7 @@ export function Composer({
     query: slashQuery,
     context: slashContext,
   } = useSlashCommands({
+    enabled: variant !== 'ordinary',
     projectPath: workspace.trim() || undefined,
     activeAgent: agent,
     draft,
@@ -245,6 +274,9 @@ export function Composer({
       { selector: '.permission-menu', onDismiss: () => setPermissionMenuOpen(false), anchorRefs: [permissionMenuRef] },
       { selector: '.model-menu', onDismiss: () => setModelMenuOpen(false), anchorRefs: [modelMenuRef] },
       { selector: '.effort-menu', onDismiss: () => setEffortMenuOpen(false), anchorRefs: [effortMenuRef] },
+      { selector: '.knowledge-menu', onDismiss: () => setKnowledgeMenuOpen(false), anchorRefs: [knowledgeMenuRef] },
+      { selector: '.skill-menu', onDismiss: () => setSkillMenuOpen(false), anchorRefs: [skillMenuRef] },
+      { selector: '.mcp-menu', onDismiss: () => setMcpMenuOpen(false), anchorRefs: [mcpMenuRef] },
       {
         selector: '.composer-file-reference-menu',
         onDismiss: () => setFileReferenceMenuDismissed(true),
@@ -261,7 +293,8 @@ export function Composer({
     () => providers.find((provider) => provider.id === providerId),
     [providerId, providers],
   );
-  const providerName = selectedProvider?.displayName ?? providerDisplayName(providerId);
+  const providerName = selectedProvider?.displayName
+    ?? (providerDisplayName(providerId) || (variant === 'ordinary' ? '未配置供应商' : 'Provider'));
   const textOnlyInputMessage = `${providerName} 当前不支持附件输入。`;
   const providerSelectionDisabled =
     !canSelectProvider || isRunning || (providersLoading && providers.length === 0);
@@ -321,6 +354,9 @@ export function Composer({
     }
     setModelMenuOpen(false);
     setEffortMenuOpen(false);
+    setKnowledgeMenuOpen(false);
+    setSkillMenuOpen(false);
+    setMcpMenuOpen(false);
   }, [isRunning]);
 
   useEffect(() => {
@@ -594,7 +630,7 @@ export function Composer({
     let uploadedAttachments: UserImageAttachment[] | undefined;
     const imageAttachments = submittedAttachments.filter((attachment) => attachment.kind === 'image');
     if (submittedAttachments.length > 0) {
-      if (!workspace.trim()) {
+      if (!workspace.trim() && variant !== 'ordinary') {
         showToast('请先选择工作目录后再添加附件。', 'info');
         if (pendingQueueId) {
           onRemoveQueuedPrompt(pendingQueueId);
@@ -606,7 +642,9 @@ export function Composer({
 
     if (imageAttachments.length > 0) {
       try {
-        uploadedAttachments = await uploadImageAttachments(imageAttachments, workspace.trim());
+        uploadedAttachments = variant === 'ordinary'
+          ? await buildInlineImageAttachments(imageAttachments)
+          : await uploadImageAttachments(imageAttachments, workspace.trim());
       } catch (error) {
         showToast(error instanceof Error ? error.message : '图片粘贴上传失败。', 'error');
         if (pendingQueueId) {
@@ -1190,7 +1228,11 @@ export function Composer({
           onKeyDown={handleComposerInputKeyDown}
           onBlur={flushDraftPersistence}
           placeholder={
-            isRunning && !supportsQueue
+            variant === 'ordinary'
+              ? isRunning
+                ? `${providerName} 正在回复`
+                : '发送消息'
+              : isRunning && !supportsQueue
               ? `${providerName} 正在运行`
               : isRunning
                 ? '等待当前回复完成'
@@ -1237,7 +1279,7 @@ export function Composer({
                     }}
                   >
                     <Puzzle size={15} />
-                    <span>插件管理</span>
+                    <span>{variant === 'ordinary' ? 'AI 供应商配置' : '插件管理'}</span>
                   </button>
                 </div>
               </PopoverPortal>
@@ -1251,10 +1293,155 @@ export function Composer({
                 <Plus size={16} />
               </button>
             </div>
+            {variant === 'ordinary' ? (
+              <div className="permission-picker ordinary-context-picker" ref={knowledgeMenuRef}>
+                <PopoverPortal open={knowledgeMenuOpen} anchorRef={knowledgeMenuRef} placement="top-start">
+                  <div className="model-menu model-menu-compact knowledge-menu" role="menu" aria-label="知识库">
+                    <div className="model-menu-title">知识库</div>
+                    {knowledgeBases.length === 0 ? (
+                      <div className="provider-menu-empty">暂无知识库</div>
+                    ) : knowledgeBases.map((knowledgeBase) => {
+                      const selected = selectedKnowledgeIds.includes(knowledgeBase.id);
+                      return (
+                        <button
+                          key={knowledgeBase.id}
+                          type="button"
+                          className={`model-menu-item${selected ? ' active' : ''}`}
+                          role="menuitemcheckbox"
+                          aria-checked={selected}
+                          disabled={isRunning}
+                          onClick={() => void onToggleKnowledgeBase?.(knowledgeBase.id)}
+                        >
+                          <span className="model-menu-copy">
+                            <strong>{knowledgeBase.name}</strong>
+                            <small>{knowledgeBase.sourceCount} 个来源 · {knowledgeBase.chunkCount} 个片段</small>
+                          </span>
+                          {selected ? <Check size={14} /> : null}
+                        </button>
+                      );
+                    })}
+                    {onManageKnowledgeBases ? (
+                      <>
+                        <div className="workspace-menu-divider" />
+                        <button
+                          type="button"
+                          className="model-menu-item"
+                          onClick={() => {
+                            setKnowledgeMenuOpen(false);
+                            onManageKnowledgeBases();
+                          }}
+                        >
+                          <span className="model-menu-copy"><strong>管理知识库</strong></span>
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
+                </PopoverPortal>
+                <button
+                  type="button"
+                  className={`permission-trigger ordinary-context-trigger${selectedKnowledgeIds.length > 0 ? ' active' : ''}`}
+                  aria-expanded={knowledgeMenuOpen}
+                  aria-label={`知识库，已选择 ${selectedKnowledgeIds.length} 个`}
+                  title={selectedKnowledgeIds.length > 0 ? `已选择 ${selectedKnowledgeIds.length} 个知识库` : '选择知识库'}
+                  disabled={isRunning}
+                  onClick={() => setKnowledgeMenuOpen((value) => !value)}
+                >
+                  <BookOpen size={15} />
+                  {selectedKnowledgeIds.length > 0 ? <span>{selectedKnowledgeIds.length}</span> : null}
+                </button>
+              </div>
+            ) : null}
+            {variant === 'ordinary' ? (
+              <div className="permission-picker ordinary-context-picker" ref={skillMenuRef}>
+                <PopoverPortal open={skillMenuOpen} anchorRef={skillMenuRef} placement="top-start">
+                  <div className="model-menu model-menu-compact knowledge-menu skill-menu" role="menu" aria-label="Skills">
+                    <div className="model-menu-title">Skills</div>
+                    {skills.length === 0 ? (
+                      <div className="provider-menu-empty">暂无可用 Skill</div>
+                    ) : skills.map((skill) => {
+                      const selected = selectedSkillIds.includes(skill.id);
+                      return (
+                        <button
+                          key={skill.id}
+                          type="button"
+                          className={`model-menu-item${selected ? ' active' : ''}`}
+                          role="menuitemcheckbox"
+                          aria-checked={selected}
+                          disabled={isRunning}
+                          onClick={() => void onToggleSkill?.(skill.id)}
+                        >
+                          <span className="model-menu-copy">
+                            <strong>{skill.name}</strong>
+                            <small>{skill.description || skill.source}</small>
+                          </span>
+                          {selected ? <Check size={14} /> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </PopoverPortal>
+                <button
+                  type="button"
+                  className={`permission-trigger ordinary-context-trigger${selectedSkillIds.length > 0 ? ' active' : ''}`}
+                  aria-expanded={skillMenuOpen}
+                  aria-label={`Skills，已选择 ${selectedSkillIds.length} 个`}
+                  title={selectedSkillIds.length > 0 ? `已选择 ${selectedSkillIds.length} 个 Skills` : '选择 Skills'}
+                  disabled={isRunning}
+                  onClick={() => setSkillMenuOpen((value) => !value)}
+                >
+                  <Sparkles size={15} />
+                  {selectedSkillIds.length > 0 ? <span>{selectedSkillIds.length}</span> : null}
+                </button>
+              </div>
+            ) : null}
+            {variant === 'ordinary' ? (
+              <div className="permission-picker ordinary-context-picker" ref={mcpMenuRef}>
+                <PopoverPortal open={mcpMenuOpen} anchorRef={mcpMenuRef} placement="top-start">
+                  <div className="model-menu model-menu-compact knowledge-menu mcp-menu" role="menu" aria-label="MCP 服务">
+                    <div className="model-menu-title">MCP 服务</div>
+                    {mcpServers.length === 0 ? (
+                      <div className="provider-menu-empty">暂无可用 MCP 服务</div>
+                    ) : mcpServers.map((server) => {
+                      const selected = selectedMcpIds.includes(server.id);
+                      return (
+                        <button
+                          key={server.id}
+                          type="button"
+                          className={`model-menu-item${selected ? ' active' : ''}`}
+                          role="menuitemcheckbox"
+                          aria-checked={selected}
+                          disabled={isRunning || server.status === 'error'}
+                          title={server.error || server.source}
+                          onClick={() => void onToggleMcpServer?.(server.id)}
+                        >
+                          <span className="model-menu-copy">
+                            <strong>{server.name}</strong>
+                            <small>{server.command || server.source}</small>
+                          </span>
+                          {selected ? <Check size={14} /> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </PopoverPortal>
+                <button
+                  type="button"
+                  className={`permission-trigger ordinary-context-trigger${selectedMcpIds.length > 0 ? ' active' : ''}`}
+                  aria-expanded={mcpMenuOpen}
+                  aria-label={`MCP 服务，已选择 ${selectedMcpIds.length} 个`}
+                  title={selectedMcpIds.length > 0 ? `已选择 ${selectedMcpIds.length} 个 MCP 服务` : '选择 MCP 服务'}
+                  disabled={isRunning}
+                  onClick={() => setMcpMenuOpen((value) => !value)}
+                >
+                  <Server size={15} />
+                  {selectedMcpIds.length > 0 ? <span>{selectedMcpIds.length}</span> : null}
+                </button>
+              </div>
+            ) : null}
             <div className="permission-picker provider-picker" ref={providerMenuRef}>
               <PopoverPortal open={providerMenuOpen} anchorRef={providerMenuRef} placement="top-start">
                 <div className="model-menu model-menu-compact provider-menu" role="menu">
-                  <div className="model-menu-title">Agent Provider</div>
+                  <div className="model-menu-title">{variant === 'ordinary' ? 'AI 供应商' : 'Agent Provider'}</div>
                   {providers.length === 0 ? (
                     <div className="provider-menu-empty">
                       {providersLoading ? '正在读取 Provider...' : providersError || '暂无 Provider'}
@@ -1297,8 +1484,8 @@ export function Composer({
                 aria-expanded={providerMenuOpen}
                 aria-label={
                   canSelectProvider
-                    ? `选择 Agent Provider，当前为 ${providerName}`
-                    : `当前 Agent Provider：${providerName}`
+                    ? `选择${variant === 'ordinary' ? ' AI 供应商' : ' Agent Provider'}，当前为 ${providerName}`
+                    : `当前${variant === 'ordinary' ? ' AI 供应商' : ' Agent Provider'}：${providerName}`
                 }
                 disabled={providerSelectionDisabled}
                 title={
@@ -1311,7 +1498,7 @@ export function Composer({
                 <AgentProviderIcon providerId={providerId} size={16} />
               </button>
             </div>
-            <div className="permission-picker" ref={permissionMenuRef}>
+            {variant !== 'ordinary' ? <div className="permission-picker" ref={permissionMenuRef}>
               <PopoverPortal open={permissionMenuOpen} anchorRef={permissionMenuRef} placement="top-end">
                 <div className="permission-menu" role="menu" aria-label="权限模式">
                   {permissionMenuModes.map((mode) => {
@@ -1352,7 +1539,7 @@ export function Composer({
                 <span>{permissionLabel(permissionMode)}</span>
                 <span className="permission-trigger-chevron" aria-hidden="true" />
               </button>
-            </div>
+            </div> : null}
           </div>
 
           <div className="composer-right-tools">
@@ -1493,7 +1680,7 @@ export function Composer({
                   <PopoverPortal open={modelMenuOpen} anchorRef={modelMenuRef} placement="top-end">
                     <div className="model-menu model-menu-compact" role="menu" aria-label={`${providerName} 模型`}>
                       <div className="model-menu-title">模型</div>
-                      <button
+                      {variant !== 'ordinary' ? <button
                         type="button"
                         className="model-menu-item"
                         role="menuitemradio"
@@ -1513,7 +1700,7 @@ export function Composer({
                           </small>
                         </span>
                         {agentModel === DEFAULT_MODEL_VALUE ? <Check className="model-check" size={15} /> : null}
-                      </button>
+                      </button> : null}
                       {agentModelsLoading ? (
                         <div className="provider-menu-empty">正在读取模型目录...</div>
                       ) : null}
@@ -1574,7 +1761,7 @@ export function Composer({
                     onClick={() => setModelMenuOpen((value) => !value)}
                   >
                     {agentModelsLoading ? <Loader2 size={13} className="spin-icon" /> : null}
-                    <span>{agentModelTriggerLabel(agentModel, selectedAgentModelOption)}</span>
+                    <span>{variant === 'ordinary' && !agentModel ? '未选择模型' : agentModelTriggerLabel(agentModel, selectedAgentModelOption)}</span>
                     <span className="model-trigger-chevron" aria-hidden="true" />
                   </button>
                 </div>
@@ -1730,6 +1917,35 @@ async function uploadImageAttachments(attachments: PendingComposerAttachment[], 
   }
 
   return uploadedAttachments;
+}
+
+async function buildInlineImageAttachments(attachments: PendingComposerAttachment[]) {
+  const images: UserImageAttachment[] = [];
+  for (const attachment of attachments) {
+    if (attachment.kind !== 'image') continue;
+    if (attachment.desktopImage) {
+      images.push({
+        id: attachment.id,
+        path: attachment.desktopImage.path,
+        name: attachment.desktopImage.name,
+        mimeType: attachment.desktopImage.mimeType,
+        size: attachment.desktopImage.size,
+        data: attachment.desktopImage.data,
+      });
+      continue;
+    }
+    if (!attachment.file) continue;
+    const payload = extractImageDataUrlPayload(await readFileAsDataUrl(attachment.file));
+    images.push({
+      id: attachment.id,
+      path: '',
+      name: attachment.file.name || 'pasted-image.png',
+      mimeType: payload.mimeType || attachment.file.type || 'image/png',
+      size: attachment.file.size,
+      data: payload.data,
+    });
+  }
+  return images;
 }
 
 // 桌面端按真实路径读取图片，返回 base64，供构建多模态 image block。

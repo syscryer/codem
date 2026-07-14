@@ -8,6 +8,10 @@ import { ConversationPane } from './components/ConversationPane';
 import { Dialogs } from './components/Dialogs';
 import { GitDialog } from './components/GitDialog';
 import { GitHistoryPanel } from './components/GitHistoryPanel';
+import { KnowledgeBaseManagerDialog } from './components/KnowledgeBaseManagerDialog';
+import { AiProviderManagerDialog } from './components/AiProviderManagerDialog';
+import { OrdinaryChatDialogs } from './components/OrdinaryChatDialogs';
+import { OrdinaryChatWorkspace } from './components/OrdinaryChatWorkspace';
 import { RightWorkbench } from './components/RightWorkbench';
 import { SessionSearchDialog } from './components/SessionSearchDialog';
 import { SidebarProjects } from './components/SidebarProjects';
@@ -19,6 +23,7 @@ import { WorkspaceStatus } from './components/WorkspaceStatus';
 import { useClaudeRun } from './hooks/useClaudeRun';
 import { useAgentRun } from './hooks/useAgentRun';
 import { useAppSettings } from './hooks/useAppSettings';
+import { useOrdinaryChat } from './hooks/useOrdinaryChat';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
 import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
 import {
@@ -68,6 +73,7 @@ import {
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  AiChatSummary,
   ClaudeContextRequestState,
   ClaudeContextSnapshot,
   ConversationTurn,
@@ -92,10 +98,14 @@ import type {
   WindowMaterialMode,
 } from './types';
 
-type AppView = { kind: 'workspace' } | { kind: 'settings'; section: SettingsSection };
+type AppView =
+  | { kind: 'workspace' }
+  | { kind: 'ordinary-chat' }
+  | { kind: 'settings'; section: SettingsSection };
 
 type AppLocation =
   | { kind: 'workspace'; projectId: string | null; threadId: string | null }
+  | { kind: 'ordinary-chat'; chatId: string | null }
   | { kind: 'settings'; section: SettingsSection };
 
 type NavigationHistory = {
@@ -234,6 +244,7 @@ export default function App() {
     appendRawEvent,
     schedulePersistThreadHistory,
   } = workspaceState;
+  const ordinaryChat = useOrdinaryChat(showToast);
   const [appView, setAppView] = useState<AppView>({
     kind: 'workspace',
   });
@@ -256,6 +267,10 @@ export default function App() {
   const [worktreeCreateProject, setWorktreeCreateProject] = useState<ProjectSummary | null>(null);
   const [threadActivityNotices, setThreadActivityNotices] = useState<ThreadActivityNoticeMap>({});
   const [threadRuntimeStatuses, setThreadRuntimeStatuses] = useState<Record<string, ThreadRuntimeStatus>>({});
+  const [ordinaryChatRenameTarget, setOrdinaryChatRenameTarget] = useState<AiChatSummary | null>(null);
+  const [ordinaryChatDeleteTarget, setOrdinaryChatDeleteTarget] = useState<AiChatSummary | null>(null);
+  const [knowledgeManagerOpen, setKnowledgeManagerOpen] = useState(false);
+  const [aiProviderManagerOpen, setAiProviderManagerOpen] = useState(false);
   const activeThreadIdRef = useRef<string | null>(activeThreadId);
   const windowFocusedRef = useRef(isAppWindowFocused());
   const systemNotificationKeysRef = useRef(new Set<string>());
@@ -561,7 +576,9 @@ export default function App() {
   const currentAppLocation: AppLocation =
     appView.kind === 'settings'
       ? { kind: 'settings', section: appView.section }
-      : { kind: 'workspace', projectId: activeProjectId, threadId: isNewChatDraft ? null : activeThreadId };
+      : appView.kind === 'ordinary-chat'
+        ? { kind: 'ordinary-chat', chatId: ordinaryChat.isNewChatDraft ? null : ordinaryChat.activeChatId }
+        : { kind: 'workspace', projectId: activeProjectId, threadId: isNewChatDraft ? null : activeThreadId };
   const activeSettingsSection = appView.kind === 'settings' ? appView.section : 'appearance';
   const canNavigateBack = navigationHistory.past.length > 0;
   const canNavigateForward = navigationHistory.future.length > 0;
@@ -921,6 +938,44 @@ export default function App() {
     await selectProject(projectId);
   }
 
+  async function handleSelectOrdinaryChat(chatId: string) {
+    const nextLocation: AppLocation = { kind: 'ordinary-chat', chatId };
+    if (!isSameAppLocation(currentAppLocation, nextLocation)) {
+      rememberCurrentLocation();
+    }
+    try {
+      await ordinaryChat.selectChat(chatId);
+      setAppView({ kind: 'ordinary-chat' });
+      setRightWorkbenchOpen(false);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '打开普通聊天失败', 'error');
+    }
+  }
+
+  function handleCreateOrdinaryChat() {
+    if (!ordinaryChat.createNewChatDraft()) return;
+    const nextLocation: AppLocation = { kind: 'ordinary-chat', chatId: null };
+    if (!isSameAppLocation(currentAppLocation, nextLocation)) {
+      rememberCurrentLocation();
+    }
+    setAppView({ kind: 'ordinary-chat' });
+    setRightWorkbenchOpen(false);
+  }
+
+  async function handleRenameOrdinaryChat(chat: AiChatSummary, title: string) {
+    await ordinaryChat.renameChat(chat.id, title);
+    showToast('聊天名称已更新');
+  }
+
+  async function handleDeleteOrdinaryChat(chat: AiChatSummary) {
+    if (ordinaryChat.runningChatIds.includes(chat.id)) {
+      throw new Error('当前聊天正在生成，请先停止后再删除。');
+    }
+    await ordinaryChat.removeChat(chat.id);
+    setAppView({ kind: 'ordinary-chat' });
+    showToast('聊天已删除');
+  }
+
   async function handleRefreshProjects() {
     if (projectsRefreshing) {
       return;
@@ -1214,6 +1269,19 @@ export default function App() {
   function applyLocation(location: AppLocation) {
     if (location.kind === 'settings') {
       setAppView({ kind: 'settings', section: location.section });
+      return;
+    }
+
+    if (location.kind === 'ordinary-chat') {
+      setAppView({ kind: 'ordinary-chat' });
+      setRightWorkbenchOpen(false);
+      if (location.chatId) {
+        void ordinaryChat.selectChat(location.chatId).catch((error) => {
+          showToast(error instanceof Error ? error.message : '打开普通聊天失败', 'error');
+        });
+      } else {
+        ordinaryChat.createNewChatDraft();
+      }
       return;
     }
 
@@ -1609,9 +1677,13 @@ export default function App() {
       >
           {sidebarVisible ? (
             <SidebarProjects
-              activeProjectId={activeProjectId}
-              activeThreadId={activeThreadId}
-              isNewChatDraft={isNewChatDraft}
+              activeProjectId={appView.kind === 'workspace' ? activeProjectId : null}
+              activeThreadId={appView.kind === 'workspace' ? activeThreadId : null}
+              isNewChatDraft={appView.kind === 'workspace' && isNewChatDraft}
+              activeOrdinaryChatId={appView.kind === 'ordinary-chat' ? ordinaryChat.activeChatId : null}
+              ordinaryChatIsDraft={appView.kind === 'ordinary-chat' && ordinaryChat.isNewChatDraft}
+              ordinaryChats={ordinaryChat.chats}
+              runningOrdinaryChatIds={ordinaryChat.runningChatIds}
               runningThreadIds={runningThreadIds}
               threadActivityNotices={threadActivityNotices}
               threadRuntimeStatuses={threadRuntimeStatuses}
@@ -1624,6 +1696,11 @@ export default function App() {
               collapsedProjects={collapsedProjects}
               panelState={panelState}
               onCreatePrimaryChat={() => void handleCreatePrimaryChat()}
+              onCreateOrdinaryChat={handleCreateOrdinaryChat}
+              onSelectOrdinaryChat={handleSelectOrdinaryChat}
+              onTogglePinOrdinaryChat={ordinaryChat.togglePin}
+              onRenameOrdinaryChat={setOrdinaryChatRenameTarget}
+              onDeleteOrdinaryChat={setOrdinaryChatDeleteTarget}
               onToggleSearch={openSessionSearch}
               onToggleAllProjects={toggleAllProjects}
               onRefreshProjects={handleRefreshProjects}
@@ -1656,12 +1733,24 @@ export default function App() {
 
           <div
             ref={chatWorkspaceRef}
-            className={`chat-workspace${rightWorkbenchOpen ? ' workbench-open' : ''}`}
+            className={`chat-workspace${appView.kind === 'workspace' && rightWorkbenchOpen ? ' workbench-open' : ''}`}
             style={{
               '--right-workbench-width': `${effectiveRightWorkbenchWidth}px`,
             } as CSSProperties}
           >
-            <main className="chat-shell">
+            {appView.kind === 'ordinary-chat' ? (
+              <OrdinaryChatWorkspace
+                chat={ordinaryChat}
+                collapseIntermediateProcess={general.collapseIntermediateProcess}
+                showToast={showToast}
+                onOpenAiSettings={() => setAiProviderManagerOpen(true)}
+                onOpenKnowledgeManager={() => setKnowledgeManagerOpen(true)}
+                onRenameChat={setOrdinaryChatRenameTarget}
+                onDeleteChat={setOrdinaryChatDeleteTarget}
+              />
+            ) : (
+              <>
+              <main className="chat-shell">
               <ChatHeader
                 activeProject={activeProject}
                 activeThread={activeThread}
@@ -1827,6 +1916,8 @@ export default function App() {
                 onClose={() => setRightWorkbenchOpen(false)}
               />
             ) : null}
+              </>
+            )}
           </div>
         </div>
 
@@ -1834,10 +1925,13 @@ export default function App() {
         open={searchOpen}
         query={searchQuery}
         projects={projects}
+        ordinaryChats={ordinaryChat.chats}
         activeThreadId={activeThreadId}
+        activeOrdinaryChatId={appView.kind === 'ordinary-chat' ? ordinaryChat.activeChatId : null}
         onClose={closeSessionSearch}
         onQueryChange={setSearchQuery}
         onSelectThread={handleSelectThread}
+        onSelectOrdinaryChat={handleSelectOrdinaryChat}
       />
 
       <Dialogs
@@ -1858,6 +1952,32 @@ export default function App() {
         onConfirmRemoveDialog={handleConfirmDialog}
         onDismissToast={dismissToast}
         onToastDetailOpenChange={setToastDetailOpen}
+      />
+      <OrdinaryChatDialogs
+        renameTarget={ordinaryChatRenameTarget}
+        deleteTarget={ordinaryChatDeleteTarget}
+        onCloseRename={() => setOrdinaryChatRenameTarget(null)}
+        onCloseDelete={() => setOrdinaryChatDeleteTarget(null)}
+        onRename={handleRenameOrdinaryChat}
+        onDelete={handleDeleteOrdinaryChat}
+      />
+      <KnowledgeBaseManagerDialog
+        open={knowledgeManagerOpen}
+        knowledgeBases={ordinaryChat.knowledgeBases}
+        onClose={() => setKnowledgeManagerOpen(false)}
+        onChanged={async () => {
+          await ordinaryChat.refreshBootstrap();
+        }}
+        showToast={showToast}
+      />
+      <AiProviderManagerDialog
+        open={aiProviderManagerOpen}
+        providers={ordinaryChat.providers}
+        onClose={() => setAiProviderManagerOpen(false)}
+        onChanged={async () => {
+          await ordinaryChat.refreshBootstrap();
+        }}
+        showToast={showToast}
       />
       {worktreeCreateProject ? (
         <WorktreeCreateDialog
@@ -2012,6 +2132,10 @@ function isSameAppLocation(left: AppLocation | null, right: AppLocation | null) 
 
   if (left.kind === 'settings' && right.kind === 'settings') {
     return left.section === right.section;
+  }
+
+  if (left.kind === 'ordinary-chat' && right.kind === 'ordinary-chat') {
+    return left.chatId === right.chatId;
   }
 
   if (left.kind === 'workspace' && right.kind === 'workspace') {
