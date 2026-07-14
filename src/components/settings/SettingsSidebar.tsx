@@ -22,6 +22,7 @@ type SettingsSidebarProps = {
   sidebarCustomWidth?: number;
   onUpdateSidebarCustomWidth?: (width: number | undefined) => void;
   onReturnWorkspace: () => void;
+  returnLabel?: string;
 };
 
 const settingsSections: Array<{ id: SettingsSection; label: string; icon: typeof Settings }> = [
@@ -29,6 +30,7 @@ const settingsSections: Array<{ id: SettingsSection; label: string; icon: typeof
   { id: 'appearance', label: '外观', icon: Palette },
   { id: 'shortcuts', label: '快捷键', icon: Keyboard },
   { id: 'providers', label: 'Agent 与模型', icon: Bot },
+  { id: 'aiProviders', label: '普通聊天', icon: MessageSquareText },
   { id: 'usage', label: '使用情况', icon: BarChart3 },
   { id: 'sessions', label: '会话管理', icon: MessageSquareText },
   { id: 'worktree', label: '工作树', icon: TreePine },
@@ -44,6 +46,7 @@ export function SettingsSidebar({
   sidebarCustomWidth,
   onUpdateSidebarCustomWidth,
   onReturnWorkspace,
+  returnLabel = '返回工作区',
 }: SettingsSidebarProps) {
   function handleSidebarResizePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (!onUpdateSidebarCustomWidth) {
@@ -101,7 +104,7 @@ export function SettingsSidebar({
     <aside className="settings-sidebar app-sidebar">
       <button type="button" className="settings-return" onClick={onReturnWorkspace}>
         <RotateCcw size={16} />
-        <span>返回工作区</span>
+        <span>{returnLabel}</span>
       </button>
       <nav className="settings-nav" aria-label="设置分类">
         {settingsSections.map((section) => {

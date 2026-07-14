@@ -9,13 +9,13 @@ mod types;
 
 use axum::{
     extract::{DefaultBodyLimit, Path as AxumPath, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
     Json, Router,
 };
 use serde_json::{json, Value};
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use self::{
     knowledge::{
@@ -29,12 +29,14 @@ use self::{
     storage::{
         clear_chat, create_chat, delete_chat, delete_chat_turn,
         delete_model as delete_model_storage, get_chat, get_stored_provider, insert_provider,
-        list_chats, list_models, list_providers, open_initialized_database, set_chat_pinned,
-        update_chat as update_chat_storage, upsert_model,
+        list_chats, list_models, list_providers, open_initialized_database,
+        repair_provider_defaults, set_chat_pinned, set_default_provider,
+        update_chat as update_chat_storage, upsert_model, upsert_models, ModelWrite,
     },
     types::{
-        CreateChatRequest, SaveModelRequest, SaveProviderRequest, UpdateChatRequest,
-        UpdateModelRequest, UpdateProviderRequest,
+        BatchSaveModelsRequest, CreateChatRequest, ProviderProbeRequest, SaveModelRequest,
+        SaveProviderRequest, StoredProvider, UpdateChatRequest, UpdateModelRequest,
+        UpdateProviderRequest,
     },
 };
 
@@ -89,6 +91,11 @@ pub(crate) fn router(service: OrdinaryChatService) -> Router {
             axum::routing::delete(delete_ai_chat_turn),
         )
         .route("/api/ai/providers/templates", get(provider_templates))
+        .route("/api/ai/providers/probe", post(probe_provider_config))
+        .route(
+            "/api/ai/providers/models/discover",
+            post(discover_draft_provider_models),
+        )
         .route("/api/ai/providers", post(create_provider))
         .route(
             "/api/ai/providers/{provider_id}",
@@ -99,8 +106,20 @@ pub(crate) fn router(service: OrdinaryChatService) -> Router {
             post(test_provider_config),
         )
         .route(
+            "/api/ai/providers/{provider_id}/api-key",
+            get(get_provider_api_key),
+        )
+        .route(
             "/api/ai/providers/{provider_id}/models/refresh",
             post(refresh_provider_models),
+        )
+        .route(
+            "/api/ai/providers/{provider_id}/models/discover",
+            post(discover_saved_provider_models),
+        )
+        .route(
+            "/api/ai/providers/{provider_id}/models/batch",
+            post(create_models_batch),
         )
         .route("/api/ai/providers/{provider_id}/models", post(create_model))
         .route(
@@ -390,6 +409,29 @@ async fn provider_templates() -> Json<Value> {
     Json(json!({ "templates": PROVIDER_TEMPLATES }))
 }
 
+async fn probe_provider_config(
+    Json(payload): Json<ProviderProbeRequest>,
+) -> AiApiResult<Json<Value>> {
+    let (provider, api_key) = temporary_provider_config(payload)?;
+    if api_key.is_empty() {
+        return Err(AiApiError::bad_request("API Key 不能为空"));
+    }
+    let message = test_provider(&provider, &api_key)
+        .await
+        .map_err(AiApiError::bad_request)?;
+    Ok(Json(json!({ "ok": true, "message": message })))
+}
+
+async fn discover_draft_provider_models(
+    Json(payload): Json<ProviderProbeRequest>,
+) -> AiApiResult<Json<Value>> {
+    let (provider, api_key) = temporary_provider_config(payload)?;
+    let models = discover_models(&provider, &api_key)
+        .await
+        .map_err(AiApiError::bad_request)?;
+    Ok(Json(json!({ "models": models })))
+}
+
 async fn create_provider(
     State(state): State<OrdinaryChatState>,
     Json(payload): Json<SaveProviderRequest>,
@@ -398,6 +440,11 @@ async fn create_provider(
     let base_url = validate_base_url(&payload.base_url)?;
     let id = uuid::Uuid::new_v4().to_string();
     let secret_slot = format!("ai-provider:{id}:api-key");
+    let models = normalize_model_requests(payload.models.as_deref().unwrap_or(&[]))?;
+    let enabled = payload.enabled.unwrap_or(true);
+    if payload.is_default == Some(true) && !enabled {
+        return Err(AiApiError::bad_request("只有已启用的供应商才能设为默认"));
+    }
     let connection =
         open_initialized_database(&state.database_path).map_err(AiApiError::internal)?;
     insert_provider(
@@ -407,10 +454,24 @@ async fn create_provider(
         name,
         payload.protocol,
         &base_url,
-        payload.enabled.unwrap_or(true),
+        enabled,
         &secret_slot,
     )
     .map_err(AiApiError::internal)?;
+    if let Err(error) = upsert_models(&connection, &id, &models) {
+        let _ = connection.execute("DELETE FROM ai_providers WHERE id = ?1", [&id]);
+        return Err(AiApiError::internal(error));
+    }
+    let default_result = if payload.is_default == Some(true) {
+        set_default_provider(&connection, &id)
+    } else {
+        repair_provider_defaults(&connection)
+    };
+    if let Err(error) = default_result {
+        let _ = connection.execute("DELETE FROM ai_providers WHERE id = ?1", [&id]);
+        let _ = repair_provider_defaults(&connection);
+        return Err(AiApiError::internal(error));
+    }
     if let Some(api_key) = payload
         .api_key
         .as_deref()
@@ -419,6 +480,7 @@ async fn create_provider(
     {
         if let Err(error) = state.secrets.set(&secret_slot, api_key) {
             let _ = connection.execute("DELETE FROM ai_providers WHERE id = ?1", [&id]);
+            let _ = repair_provider_defaults(&connection);
             return Err(AiApiError::internal(error));
         }
     }
@@ -446,10 +508,19 @@ async fn update_provider(
         .map(validate_base_url)
         .transpose()?
         .unwrap_or(current.base_url.clone());
+    let enabled = payload.enabled.unwrap_or(current.enabled);
+    if payload.is_default == Some(true) && !enabled {
+        return Err(AiApiError::bad_request("只有已启用的供应商才能设为默认"));
+    }
     connection.execute(
         "UPDATE ai_providers SET preset_id = COALESCE(?2, preset_id), name = ?3, protocol = ?4, base_url = ?5, enabled = ?6, updated_at = ?7 WHERE id = ?1",
-        rusqlite::params![provider_id, payload.preset_id, name, payload.protocol.unwrap_or(current.protocol).as_str(), base_url, i64::from(payload.enabled.unwrap_or(current.enabled)), chrono::Utc::now().to_rfc3339()],
+        rusqlite::params![provider_id, payload.preset_id, name, payload.protocol.unwrap_or(current.protocol).as_str(), base_url, i64::from(enabled), chrono::Utc::now().to_rfc3339()],
     ).map_err(|error| AiApiError::internal(format!("更新普通聊天供应商失败: {error}")))?;
+    if payload.is_default == Some(true) {
+        set_default_provider(&connection, &provider_id).map_err(AiApiError::bad_request)?;
+    } else {
+        repair_provider_defaults(&connection).map_err(AiApiError::internal)?;
+    }
     if payload.api_key_touched {
         match payload
             .api_key
@@ -482,6 +553,7 @@ async fn delete_provider(
         .execute("DELETE FROM ai_providers WHERE id = ?1", [&provider_id])
         .map_err(|error| AiApiError::internal(format!("删除普通聊天供应商失败: {error}")))?;
     if changed > 0 {
+        repair_provider_defaults(&connection).map_err(AiApiError::internal)?;
         state
             .secrets
             .delete(&provider.secret_slot)
@@ -508,10 +580,10 @@ async fn test_provider_config(
     Ok(Json(json!({ "ok": true, "message": message })))
 }
 
-async fn refresh_provider_models(
+async fn get_provider_api_key(
     State(state): State<OrdinaryChatState>,
     AxumPath(provider_id): AxumPath<String>,
-) -> AiApiResult<Json<Value>> {
+) -> AiApiResult<Response> {
     let connection =
         open_initialized_database(&state.database_path).map_err(AiApiError::internal)?;
     let provider = get_stored_provider(&connection, &provider_id)
@@ -520,6 +592,25 @@ async fn refresh_provider_models(
         .secrets
         .get(&provider.secret_slot)
         .map_err(AiApiError::bad_request)?;
+    Ok((
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::PRAGMA, "no-cache"),
+        ],
+        Json(json!({ "apiKey": api_key })),
+    )
+        .into_response())
+}
+
+async fn refresh_provider_models(
+    State(state): State<OrdinaryChatState>,
+    AxumPath(provider_id): AxumPath<String>,
+) -> AiApiResult<Json<Value>> {
+    let connection =
+        open_initialized_database(&state.database_path).map_err(AiApiError::internal)?;
+    let provider = get_stored_provider(&connection, &provider_id)
+        .map_err(|_| AiApiError::not_found("普通聊天供应商不存在"))?;
+    let api_key = optional_provider_api_key(&state, &provider.secret_slot)?;
     let models = discover_models(&provider, &api_key)
         .await
         .map_err(AiApiError::bad_request)?;
@@ -538,6 +629,40 @@ async fn refresh_provider_models(
         )
         .map_err(AiApiError::internal)?;
     }
+    Ok(Json(
+        json!({ "models": list_models(&connection, &provider_id).map_err(AiApiError::internal)? }),
+    ))
+}
+
+async fn discover_saved_provider_models(
+    State(state): State<OrdinaryChatState>,
+    AxumPath(provider_id): AxumPath<String>,
+) -> AiApiResult<Json<Value>> {
+    let connection =
+        open_initialized_database(&state.database_path).map_err(AiApiError::internal)?;
+    let provider = get_stored_provider(&connection, &provider_id)
+        .map_err(|_| AiApiError::not_found("普通聊天供应商不存在"))?;
+    let api_key = optional_provider_api_key(&state, &provider.secret_slot)?;
+    let models = discover_models(&provider, &api_key)
+        .await
+        .map_err(AiApiError::bad_request)?;
+    Ok(Json(json!({ "models": models })))
+}
+
+async fn create_models_batch(
+    State(state): State<OrdinaryChatState>,
+    AxumPath(provider_id): AxumPath<String>,
+    Json(payload): Json<BatchSaveModelsRequest>,
+) -> AiApiResult<Json<Value>> {
+    let connection =
+        open_initialized_database(&state.database_path).map_err(AiApiError::internal)?;
+    get_stored_provider(&connection, &provider_id)
+        .map_err(|_| AiApiError::not_found("普通聊天供应商不存在"))?;
+    let models = normalize_model_requests(&payload.models)?;
+    if models.is_empty() {
+        return Err(AiApiError::bad_request("至少选择一个模型"));
+    }
+    upsert_models(&connection, &provider_id, &models).map_err(AiApiError::internal)?;
     Ok(Json(
         json!({ "models": list_models(&connection, &provider_id).map_err(AiApiError::internal)? }),
     ))
@@ -645,6 +770,72 @@ fn provider_response(
     Ok(Json(json!({ "provider": provider })))
 }
 
+fn temporary_provider_config(
+    payload: ProviderProbeRequest,
+) -> AiApiResult<(StoredProvider, String)> {
+    let base_url = validate_base_url(&payload.base_url)?;
+    let api_key = payload.api_key.trim().to_string();
+    Ok((
+        StoredProvider {
+            name: "临时供应商".to_string(),
+            protocol: payload.protocol,
+            base_url,
+            enabled: true,
+            secret_slot: String::new(),
+        },
+        api_key,
+    ))
+}
+
+fn optional_provider_api_key(state: &OrdinaryChatState, secret_slot: &str) -> AiApiResult<String> {
+    if !state
+        .secrets
+        .has(secret_slot)
+        .map_err(AiApiError::bad_request)?
+    {
+        return Ok(String::new());
+    }
+    state
+        .secrets
+        .get(secret_slot)
+        .map_err(AiApiError::bad_request)
+}
+
+fn normalize_model_requests(payloads: &[SaveModelRequest]) -> AiApiResult<Vec<ModelWrite>> {
+    if payloads.len() > 500 {
+        return Err(AiApiError::bad_request("单次最多添加 500 个模型"));
+    }
+    let mut model_ids = HashSet::new();
+    let mut default_count = 0usize;
+    let mut models = Vec::with_capacity(payloads.len());
+    for payload in payloads {
+        let model_id = require_text(&payload.model_id, "模型 ID 不能为空")?.to_string();
+        if !model_ids.insert(model_id.to_lowercase()) {
+            return Err(AiApiError::bad_request(format!("模型 ID 重复：{model_id}")));
+        }
+        let display_name = payload
+            .display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&model_id)
+            .to_string();
+        let is_default = payload.is_default.unwrap_or(false);
+        default_count += usize::from(is_default);
+        models.push(ModelWrite {
+            model_id,
+            display_name,
+            enabled: payload.enabled.unwrap_or(true),
+            is_default,
+            capabilities: payload.capabilities.clone().unwrap_or_else(|| json!({})),
+        });
+    }
+    if default_count > 1 {
+        return Err(AiApiError::bad_request("只能设置一个默认模型"));
+    }
+    Ok(models)
+}
+
 fn require_text<'a>(value: &'a str, message: &str) -> AiApiResult<&'a str> {
     let value = value.trim();
     if value.is_empty() {
@@ -665,3 +856,256 @@ fn validate_base_url(value: &str) -> AiApiResult<String> {
 }
 
 use rusqlite::OptionalExtension;
+
+#[cfg(test)]
+mod tests {
+    use super::OrdinaryChatService;
+    use axum::{
+        body::{to_bytes, Body},
+        response::IntoResponse,
+        routing::get,
+        Json, Router,
+    };
+    use serde_json::{json, Value};
+    use std::{fs, path::PathBuf};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn draft_model_discovery_does_not_persist_provider() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/v1/models", get(mock_models)),
+            )
+            .await
+            .unwrap();
+        });
+        let root = test_directory("draft-model-discovery");
+        let service = OrdinaryChatService::new(root.clone());
+        let response = super::router(service.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/ai/providers/models/discover")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "protocol": "openai_chat",
+                            "baseUrl": format!("http://{address}/v1"),
+                            "apiKey": "test-key"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 2 * 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["models"].as_array().unwrap().len(), 2);
+
+        let bootstrap = super::router(service)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/ai/bootstrap")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(bootstrap.into_body(), 2 * 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(payload["providers"].as_array().unwrap().is_empty());
+        remove_test_directory(root);
+    }
+
+    #[tokio::test]
+    async fn creating_provider_persists_selected_models_and_one_default() {
+        let root = test_directory("create-provider-models");
+        let response = super::router(OrdinaryChatService::new(root.clone()))
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/ai/providers")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "name": "测试供应商",
+                            "protocol": "openai_chat",
+                            "baseUrl": "https://api.example.com/v1",
+                            "models": [
+                                { "modelId": "model-a", "displayName": "模型 A" },
+                                { "modelId": "model-b", "displayName": "模型 B" }
+                            ]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 2 * 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let models = payload["provider"]["models"].as_array().unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(
+            models
+                .iter()
+                .filter(|model| model["isDefault"] == true)
+                .count(),
+            1
+        );
+        remove_test_directory(root);
+    }
+
+    #[tokio::test]
+    async fn saved_minimax_token_plan_without_api_key_discovers_documented_models() {
+        let root = test_directory("saved-minimax-token-plan-models");
+        let service = OrdinaryChatService::new(root.clone());
+        let create_response = super::router(service.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/ai/providers")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "presetId": "minimax-token-plan",
+                            "name": "MiniMax Token Plan",
+                            "protocol": "anthropic_messages",
+                            "baseUrl": "https://api.minimaxi.com/anthropic"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_response.status(), 200);
+        let create_payload: Value = serde_json::from_slice(
+            &to_bytes(create_response.into_body(), 2 * 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let provider_id = create_payload["provider"]["id"].as_str().unwrap();
+
+        let response = super::router(service)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/ai/providers/{provider_id}/models/discover"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 2 * 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let models = payload["models"].as_array().unwrap();
+        assert_eq!(models.len(), 8);
+        assert_eq!(models[0]["modelId"], "MiniMax-M3");
+        assert!(models
+            .iter()
+            .any(|model| model["modelId"] == "MiniMax-M2.7-highspeed"));
+        remove_test_directory(root);
+    }
+
+    #[tokio::test]
+    async fn saved_provider_api_key_is_revealed_only_by_explicit_no_store_endpoint() {
+        let root = test_directory("provider-api-key-reveal");
+        let service = OrdinaryChatService::new(root.clone());
+        let create_response = super::router(service.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/ai/providers")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "name": "测试供应商",
+                            "protocol": "openai_chat",
+                            "baseUrl": "https://api.example.com/v1",
+                            "apiKey": "test-key"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_response.status(), 200);
+        let create_payload: Value = serde_json::from_slice(
+            &to_bytes(create_response.into_body(), 2 * 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let provider_id = create_payload["provider"]["id"].as_str().unwrap();
+
+        let response = super::router(service)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/ai/providers/{provider_id}/api-key"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 2 * 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["apiKey"], "test-key");
+        remove_test_directory(root);
+    }
+
+    async fn mock_models() -> impl IntoResponse {
+        Json(json!({
+            "data": [
+                { "id": "model-b" },
+                { "id": "model-a", "display_name": "模型 A" }
+            ]
+        }))
+    }
+
+    fn test_directory(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("codem-{label}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn remove_test_directory(path: PathBuf) {
+        let _ = fs::remove_dir_all(path);
+    }
+}

@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import type {
   AppearanceSettings,
   AgentRuntimeSettings,
+  AiChatProvider,
   ClaudeModelInfo,
   GeneralSettings,
   ModelSettings,
@@ -25,6 +26,7 @@ import type {
 } from '../../hooks/useAppSettings';
 import { AppearanceSettingsSection } from './AppearanceSettings';
 import { AgentModelSettingsSection } from './AgentModelSettings';
+import { AiProviderSettingsSection } from './AiProviderSettings';
 import { BasicSettingsSection } from './BasicSettings';
 import { GlobalPromptSettingsSection } from './GlobalPromptSettings';
 import { McpSettingsSection } from './McpSettings';
@@ -55,6 +57,7 @@ type SettingsViewProps = {
   openWith: OpenWithSettings;
   openTargets: OpenAppTarget[];
   claudeModels: ClaudeModelInfo;
+  aiChatProviders: AiChatProvider[];
   onSelectSection: (section: SettingsSection) => void;
   onOpenThread: (projectId: string, threadId: string) => void | Promise<void>;
   onRemoveProject: (project: ProjectSummary) => void;
@@ -70,7 +73,9 @@ type SettingsViewProps = {
   onUpdateModels: (update: ModelSettingsUpdate) => void | Promise<void>;
   onUpdateShortcuts: (update: ShortcutSettingsUpdate) => void | Promise<void>;
   onUpdateOpenWith: (update: OpenWithSettingsUpdate) => void | Promise<void>;
+  onRefreshAiChatProviders: () => Promise<void> | void;
   onReturnWorkspace: () => void;
+  returnLabel?: string;
 };
 
 const sectionTitles: Record<SettingsSection, string> = {
@@ -78,6 +83,7 @@ const sectionTitles: Record<SettingsSection, string> = {
   appearance: '外观',
   shortcuts: '快捷键',
   providers: 'Agent 与模型',
+  aiProviders: '普通聊天',
   usage: '使用情况',
   sessions: '会话管理',
   worktree: '工作树',
@@ -105,6 +111,7 @@ export function SettingsView({
   openWith,
   openTargets,
   claudeModels,
+  aiChatProviders,
   onSelectSection,
   onOpenThread,
   onRemoveProject,
@@ -120,7 +127,9 @@ export function SettingsView({
   onUpdateModels,
   onUpdateShortcuts,
   onUpdateOpenWith,
+  onRefreshAiChatProviders,
   onReturnWorkspace,
+  returnLabel,
 }: SettingsViewProps) {
   const content = useMemo(() => {
     if (activeSection === 'basic') {
@@ -208,6 +217,16 @@ export function SettingsView({
       );
     }
 
+    if (activeSection === 'aiProviders') {
+      return (
+        <AiProviderSettingsSection
+          providers={aiChatProviders}
+          onChanged={onRefreshAiChatProviders}
+          showToast={showToast}
+        />
+      );
+    }
+
     if (activeSection === 'worktree') {
       return (
         <WorktreeSettingsSection
@@ -236,6 +255,7 @@ export function SettingsView({
     activeThreadId,
     activeProject,
     agentRuntime,
+    aiChatProviders,
     appearance,
     effectiveWindowMaterial,
     claudeModels,
@@ -258,6 +278,7 @@ export function SettingsView({
     onUpdateModels,
     onUpdateOpenWith,
     onUpdateShortcuts,
+    onRefreshAiChatProviders,
     showToast,
   ]);
 
@@ -269,6 +290,7 @@ export function SettingsView({
         onSelectSection={onSelectSection}
         onUpdateSidebarCustomWidth={onUpdateSidebarCustomWidth}
         onReturnWorkspace={onReturnWorkspace}
+        returnLabel={returnLabel}
       />
       <div className="settings-content">
         {content}

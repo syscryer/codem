@@ -472,7 +472,9 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
             .unwrap_or(false),
         AtomicOrdering::Release,
     );
-    let app = create_router(state).merge(crate::ordinary_chat::router(ordinary_chat));
+    let app = create_router(state)
+        .merge(crate::ordinary_chat::router(ordinary_chat))
+        .layer(desktop_cors_layer());
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(address)
         .await
@@ -723,21 +725,22 @@ fn create_router(state: AppState) -> Router {
         )
         .with_state(state)
         .merge(agent_run_router)
-        .layer(
-            CorsLayer::new()
-                .allow_origin(AllowOrigin::predicate(|origin, _| {
-                    is_allowed_local_origin(origin)
-                }))
-                .allow_methods([
-                    Method::GET,
-                    Method::POST,
-                    Method::PUT,
-                    Method::PATCH,
-                    Method::DELETE,
-                ])
-                .expose_headers([HeaderName::from_static("x-codem-agent-run-id")])
-                .allow_headers(Any),
-        )
+}
+
+fn desktop_cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::predicate(|origin, _| {
+            is_allowed_local_origin(origin)
+        }))
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
+        .expose_headers([HeaderName::from_static("x-codem-agent-run-id")])
+        .allow_headers(Any)
 }
 
 fn is_allowed_local_origin(origin: &HeaderValue) -> bool {
@@ -15469,7 +15472,7 @@ fn home_dir() -> Option<PathBuf> {
 mod tests {
     use super::{
         compare_project_file_entries, create_router, create_thread_row, default_grok_command_path,
-        import_claude_sessions_from_root, initialize_workspace_database,
+        desktop_cors_layer, import_claude_sessions_from_root, initialize_workspace_database,
         install_skill_directory_safely, normalize_agent_plugin_action,
         normalize_agent_runtime_settings, parse_grok_cli_version, remove_thread_row,
         resolve_codex_command, resolve_grok_command, resolve_requested_thread_provider,
@@ -15552,9 +15555,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_run_preflight_includes_desktop_cors_headers() {
+    async fn desktop_cors_covers_agent_and_ordinary_chat_routes() {
         let test_directory = TestDirectory::new("agent-run-cors");
         let experimental_agent_run_enabled = Arc::new(AtomicBool::new(false));
+        let ordinary_chat =
+            crate::ordinary_chat::OrdinaryChatService::new(test_directory.0.clone());
         let app = create_router(AppState {
             app_data_dir: Arc::new(test_directory.0.clone()),
             settings_write_lock: Arc::new(Mutex::new(())),
@@ -15569,8 +15574,11 @@ mod tests {
             runs: Arc::new(Mutex::new(HashMap::new())),
             runtimes: Arc::new(Mutex::new(HashMap::new())),
             context_requests: Arc::new(Mutex::new(HashMap::new())),
-        });
+        })
+        .merge(crate::ordinary_chat::router(ordinary_chat))
+        .layer(desktop_cors_layer());
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method(Method::OPTIONS)
@@ -15597,6 +15605,27 @@ mod tests {
             .get(header::ACCESS_CONTROL_ALLOW_METHODS)
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.split(',').any(|method| method.trim() == "POST")));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/ai/providers/templates")
+                    .header(header::ORIGIN, "http://127.0.0.1:5173")
+                    .body(Body::empty())
+                    .expect("build ordinary chat template request"),
+            )
+            .await
+            .expect("run ordinary chat template request");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("http://127.0.0.1:5173")
+        );
     }
 
     #[test]

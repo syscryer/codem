@@ -26,7 +26,7 @@ export function AgentModelSettingsSection({
 
   return (
     <section className="settings-page-section agent-model-settings">
-      <header className="settings-section-head settings-section-head-row agent-settings-head">
+      <header className="settings-section-head agent-settings-head">
         <h1>Agent 与模型</h1>
         <div className="settings-segmented agent-settings-tabs" aria-label="Agent 与模型页面">
           <button

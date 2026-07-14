@@ -9,7 +9,6 @@ import { Dialogs } from './components/Dialogs';
 import { GitDialog } from './components/GitDialog';
 import { GitHistoryPanel } from './components/GitHistoryPanel';
 import { KnowledgeBaseManagerDialog } from './components/KnowledgeBaseManagerDialog';
-import { AiProviderManagerDialog } from './components/AiProviderManagerDialog';
 import { OrdinaryChatDialogs } from './components/OrdinaryChatDialogs';
 import { OrdinaryChatWorkspace } from './components/OrdinaryChatWorkspace';
 import { RightWorkbench } from './components/RightWorkbench';
@@ -270,7 +269,6 @@ export default function App() {
   const [ordinaryChatRenameTarget, setOrdinaryChatRenameTarget] = useState<AiChatSummary | null>(null);
   const [ordinaryChatDeleteTarget, setOrdinaryChatDeleteTarget] = useState<AiChatSummary | null>(null);
   const [knowledgeManagerOpen, setKnowledgeManagerOpen] = useState(false);
-  const [aiProviderManagerOpen, setAiProviderManagerOpen] = useState(false);
   const activeThreadIdRef = useRef<string | null>(activeThreadId);
   const windowFocusedRef = useRef(isAppWindowFocused());
   const systemNotificationKeysRef = useRef(new Set<string>());
@@ -580,6 +578,10 @@ export default function App() {
         ? { kind: 'ordinary-chat', chatId: ordinaryChat.isNewChatDraft ? null : ordinaryChat.activeChatId }
         : { kind: 'workspace', projectId: activeProjectId, threadId: isNewChatDraft ? null : activeThreadId };
   const activeSettingsSection = appView.kind === 'settings' ? appView.section : 'appearance';
+  const settingsReturnLocation = [...navigationHistory.past]
+    .reverse()
+    .find((location) => location.kind !== 'settings');
+  const settingsReturnLabel = settingsReturnLocation?.kind === 'ordinary-chat' ? '返回聊天' : '返回工作区';
   const canNavigateBack = navigationHistory.past.length > 0;
   const canNavigateForward = navigationHistory.future.length > 0;
   const runtimePlatform = useMemo(() => resolveDesktopPlatform(), []);
@@ -1191,6 +1193,24 @@ export default function App() {
   }
 
   function returnWorkspace() {
+    if (appView.kind === 'settings') {
+      let targetIndex = -1;
+      for (let index = navigationHistory.past.length - 1; index >= 0; index -= 1) {
+        if (navigationHistory.past[index].kind !== 'settings') {
+          targetIndex = index;
+          break;
+        }
+      }
+      if (targetIndex >= 0) {
+        const target = navigationHistory.past[targetIndex];
+        setNavigationHistory({
+          past: navigationHistory.past.slice(0, targetIndex),
+          future: [currentAppLocation, ...navigationHistory.future].slice(0, MAX_NAVIGATION_HISTORY),
+        });
+        applyLocation(target);
+        return;
+      }
+    }
     navigateToLocation({ kind: 'workspace', projectId: activeProjectId, threadId: activeThreadId });
   }
 
@@ -1654,6 +1674,7 @@ export default function App() {
         openWith={openWith}
         openTargets={openTargets}
         claudeModels={claudeModels}
+        aiChatProviders={ordinaryChat.providers}
         onSelectSection={(section) => navigateToLocation({ kind: 'settings', section })}
         onOpenThread={handleSelectThread}
         onRemoveProject={openRemoveProjectDialog}
@@ -1669,7 +1690,11 @@ export default function App() {
         onUpdateModels={updateModels}
         onUpdateShortcuts={updateShortcuts}
         onUpdateOpenWith={updateOpenWith}
+        onRefreshAiChatProviders={async () => {
+          await ordinaryChat.refreshBootstrap();
+        }}
         onReturnWorkspace={returnWorkspace}
+        returnLabel={settingsReturnLabel}
       />
       <div
         className={`codex-shell${sidebarVisible ? '' : ' sidebar-hidden'}`}
@@ -1741,9 +1766,8 @@ export default function App() {
             {appView.kind === 'ordinary-chat' ? (
               <OrdinaryChatWorkspace
                 chat={ordinaryChat}
-                collapseIntermediateProcess={general.collapseIntermediateProcess}
                 showToast={showToast}
-                onOpenAiSettings={() => setAiProviderManagerOpen(true)}
+                onOpenAiSettings={() => openSettings('aiProviders')}
                 onOpenKnowledgeManager={() => setKnowledgeManagerOpen(true)}
                 onRenameChat={setOrdinaryChatRenameTarget}
                 onDeleteChat={setOrdinaryChatDeleteTarget}
@@ -1965,15 +1989,6 @@ export default function App() {
         open={knowledgeManagerOpen}
         knowledgeBases={ordinaryChat.knowledgeBases}
         onClose={() => setKnowledgeManagerOpen(false)}
-        onChanged={async () => {
-          await ordinaryChat.refreshBootstrap();
-        }}
-        showToast={showToast}
-      />
-      <AiProviderManagerDialog
-        open={aiProviderManagerOpen}
-        providers={ordinaryChat.providers}
-        onClose={() => setAiProviderManagerOpen(false)}
         onChanged={async () => {
           await ordinaryChat.refreshBootstrap();
         }}

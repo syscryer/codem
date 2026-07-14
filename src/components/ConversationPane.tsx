@@ -29,7 +29,10 @@ type ConversationPaneProps = {
   activeProjectName?: string;
   emptyDraftTitle?: string;
   emptyDraftDescription?: string;
+  emptyDraftActionLabel?: string;
+  onEmptyDraftAction?: () => void;
   collapseIntermediateProcess: boolean;
+  thinkingLabel?: string;
   clockNowMs: number;
   isRunning: boolean;
   activeTurnId: string;
@@ -76,7 +79,10 @@ export function ConversationPane({
   activeProjectName,
   emptyDraftTitle,
   emptyDraftDescription,
+  emptyDraftActionLabel,
+  onEmptyDraftAction,
   collapseIntermediateProcess,
+  thinkingLabel = 'Thinking',
   clockNowMs,
   isRunning,
   activeTurnId,
@@ -230,6 +236,11 @@ export function ConversationPane({
           <div className="empty-state">
             <h3>{emptyDraftTitle ?? (activeProjectName ? `在「${activeProjectName}」中创建会话` : '创建新会话')}</h3>
             <p>{emptyDraftDescription ?? '第一句话会落进当前项目，新的会话会从这里自然展开。'}</p>
+            {emptyDraftActionLabel && onEmptyDraftAction ? (
+              <button type="button" className="empty-state-action" onClick={onEmptyDraftAction}>
+                {emptyDraftActionLabel}
+              </button>
+            ) : null}
           </div>
         ) : !activeThread ? (
           <div className="empty-state">
@@ -245,6 +256,11 @@ export function ConversationPane({
           <div className="empty-state">
             <h3>{emptyConversationCopy?.title}</h3>
             <p>{emptyConversationCopy?.description}</p>
+            {emptyDraftActionLabel && onEmptyDraftAction ? (
+              <button type="button" className="empty-state-action" onClick={onEmptyDraftAction}>
+                {emptyDraftActionLabel}
+              </button>
+            ) : null}
           </div>
         ) : (
           activeThread.turns.map((turn, index) => (
@@ -258,6 +274,7 @@ export function ConversationPane({
               canUndoChangedFiles={turn.id === latestChangedFilesTurnId && undoneTurnIds[turn.id] !== true}
               activeProject={activeProject}
               collapseIntermediateProcess={collapseIntermediateProcess}
+              thinkingLabel={thinkingLabel}
               onOpenWorkbenchPreview={stableOpenWorkbenchPreview}
               onOpenOutputPath={stableOpenOutputPath}
               onRevealOutputPath={stableRevealOutputPath}

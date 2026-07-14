@@ -2,6 +2,8 @@ import type {
   AiChatBootstrap,
   AiChatDetail,
   AiChatProvider,
+  AiChatProtocol,
+  AiDiscoveredModel,
   AiKnowledgeBaseDetail,
   AiKnowledgeBaseSummary,
   AiKnowledgeCitation,
@@ -194,7 +196,15 @@ export async function createAiProvider(input: {
   protocol: string;
   baseUrl: string;
   enabled?: boolean;
+  isDefault?: boolean;
   apiKey?: string;
+  models?: Array<{
+    modelId: string;
+    displayName?: string;
+    enabled?: boolean;
+    isDefault?: boolean;
+    capabilities?: Record<string, unknown>;
+  }>;
 }) {
   const payload = await requestJson<{ provider: AiChatProvider }>('/api/ai/providers', {
     method: 'POST',
@@ -212,6 +222,7 @@ export async function updateAiProvider(
     protocol?: string;
     baseUrl?: string;
     enabled?: boolean;
+    isDefault?: boolean;
     apiKey?: string;
     apiKeyTouched?: boolean;
   },
@@ -240,6 +251,50 @@ export async function testAiProvider(providerId: string) {
   );
 }
 
+export async function revealAiProviderApiKey(providerId: string) {
+  const payload = await requestJson<{ apiKey: string }>(
+    `/api/ai/providers/${encodeURIComponent(providerId)}/api-key`,
+    { cache: 'no-store' },
+  );
+  return payload.apiKey;
+}
+
+export async function probeAiProvider(input: {
+  protocol: AiChatProtocol;
+  baseUrl: string;
+  apiKey: string;
+}) {
+  return requestJson<{ ok: boolean; message: string }>('/api/ai/providers/probe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function discoverAiProviderDraftModels(input: {
+  protocol: AiChatProtocol;
+  baseUrl: string;
+  apiKey: string;
+}) {
+  const payload = await requestJson<{ models: AiDiscoveredModel[] }>(
+    '/api/ai/providers/models/discover',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  );
+  return payload.models;
+}
+
+export async function discoverAiProviderModels(providerId: string) {
+  const payload = await requestJson<{ models: AiDiscoveredModel[] }>(
+    `/api/ai/providers/${encodeURIComponent(providerId)}/models/discover`,
+    { method: 'POST' },
+  );
+  return payload.models;
+}
+
 export async function refreshAiProviderModels(providerId: string) {
   return requestJson<{ models: AiChatProvider['models'] }>(
     `/api/ai/providers/${encodeURIComponent(providerId)}/models/refresh`,
@@ -263,6 +318,26 @@ export async function createAiModel(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function createAiModelsBatch(
+  providerId: string,
+  models: Array<{
+    modelId: string;
+    displayName?: string;
+    enabled?: boolean;
+    isDefault?: boolean;
+    capabilities?: Record<string, unknown>;
+  }>,
+) {
+  return requestJson<{ models: AiChatProvider['models'] }>(
+    `/api/ai/providers/${encodeURIComponent(providerId)}/models/batch`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ models }),
     },
   );
 }

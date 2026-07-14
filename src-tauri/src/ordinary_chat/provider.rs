@@ -10,11 +10,24 @@ use tokio::sync::watch;
 use url::Url;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+const ANTHROPIC_COMPAT_PATH_SUFFIXES: &[&str] = &[
+    "/api/anthropic",
+    "/apps/anthropic",
+    "/claudecode",
+    "/anthropic",
+    "/step_plan",
+    "/coding",
+    "/claude",
+];
 
 pub(crate) const PROVIDER_TEMPLATES: &[ProviderTemplate] = &[
     ProviderTemplate {
         id: "openai",
         name: "OpenAI",
+        vendor_id: "openai",
+        vendor_name: "OpenAI",
+        channel_id: "standard",
+        channel_name: "标准 API",
         protocol: AiProtocol::OpenaiResponses,
         base_url: "https://api.openai.com/v1",
         api_key_url: "https://platform.openai.com/api-keys",
@@ -25,6 +38,10 @@ pub(crate) const PROVIDER_TEMPLATES: &[ProviderTemplate] = &[
     ProviderTemplate {
         id: "anthropic",
         name: "Anthropic",
+        vendor_id: "anthropic",
+        vendor_name: "Anthropic",
+        channel_id: "standard",
+        channel_name: "标准 API",
         protocol: AiProtocol::AnthropicMessages,
         base_url: "https://api.anthropic.com",
         api_key_url: "https://console.anthropic.com/settings/keys",
@@ -35,6 +52,10 @@ pub(crate) const PROVIDER_TEMPLATES: &[ProviderTemplate] = &[
     ProviderTemplate {
         id: "gemini",
         name: "Google Gemini",
+        vendor_id: "gemini",
+        vendor_name: "Google Gemini",
+        channel_id: "standard",
+        channel_name: "标准 API",
         protocol: AiProtocol::GeminiGenerateContent,
         base_url: "https://generativelanguage.googleapis.com/v1beta",
         api_key_url: "https://aistudio.google.com/app/apikey",
@@ -43,8 +64,54 @@ pub(crate) const PROVIDER_TEMPLATES: &[ProviderTemplate] = &[
         category: "international",
     },
     ProviderTemplate {
+        id: "xai",
+        name: "xAI / Grok",
+        vendor_id: "xai",
+        vendor_name: "xAI / Grok",
+        channel_id: "standard",
+        channel_name: "标准 API",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://api.x.ai/v1",
+        api_key_url: "https://console.x.ai/",
+        docs_url: "https://docs.x.ai/docs/overview",
+        icon: "xai",
+        category: "international",
+    },
+    ProviderTemplate {
+        id: "mistral",
+        name: "Mistral AI",
+        vendor_id: "mistral",
+        vendor_name: "Mistral AI",
+        channel_id: "standard",
+        channel_name: "标准 API",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://api.mistral.ai/v1",
+        api_key_url: "https://console.mistral.ai/api-keys",
+        docs_url: "https://docs.mistral.ai/api/",
+        icon: "mistral",
+        category: "international",
+    },
+    ProviderTemplate {
+        id: "nvidia",
+        name: "NVIDIA NIM",
+        vendor_id: "nvidia",
+        vendor_name: "NVIDIA NIM",
+        channel_id: "standard",
+        channel_name: "标准 API",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://integrate.api.nvidia.com/v1",
+        api_key_url: "https://build.nvidia.com/settings/api-keys",
+        docs_url: "https://docs.api.nvidia.com/nim/reference/",
+        icon: "nvidia",
+        category: "international",
+    },
+    ProviderTemplate {
         id: "deepseek",
         name: "DeepSeek",
+        vendor_id: "deepseek",
+        vendor_name: "DeepSeek",
+        channel_id: "standard",
+        channel_name: "标准 API",
         protocol: AiProtocol::OpenaiChat,
         base_url: "https://api.deepseek.com",
         api_key_url: "https://platform.deepseek.com/api_keys",
@@ -53,8 +120,26 @@ pub(crate) const PROVIDER_TEMPLATES: &[ProviderTemplate] = &[
         category: "china",
     },
     ProviderTemplate {
+        id: "deepseek-anthropic",
+        name: "DeepSeek",
+        vendor_id: "deepseek",
+        vendor_name: "DeepSeek",
+        channel_id: "standard",
+        channel_name: "标准 API",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://api.deepseek.com/anthropic",
+        api_key_url: "https://platform.deepseek.com/api_keys",
+        docs_url: "https://api-docs.deepseek.com",
+        icon: "deepseek",
+        category: "china",
+    },
+    ProviderTemplate {
         id: "minimax",
         name: "MiniMax",
+        vendor_id: "minimax",
+        vendor_name: "MiniMax",
+        channel_id: "standard-cn",
+        channel_name: "国内标准 API",
         protocol: AiProtocol::OpenaiChat,
         base_url: "https://api.minimaxi.com/v1",
         api_key_url: "https://platform.minimaxi.com/user-center/basic-information/interface-key",
@@ -63,8 +148,82 @@ pub(crate) const PROVIDER_TEMPLATES: &[ProviderTemplate] = &[
         category: "china",
     },
     ProviderTemplate {
+        id: "minimax-anthropic",
+        name: "MiniMax",
+        vendor_id: "minimax",
+        vendor_name: "MiniMax",
+        channel_id: "standard-cn",
+        channel_name: "国内标准 API",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://api.minimaxi.com/anthropic",
+        api_key_url: "https://platform.minimaxi.com/user-center/basic-information/interface-key",
+        docs_url: "https://platform.minimaxi.com/docs/api-reference/text-anthropic-api",
+        icon: "minimax",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "minimax-global",
+        name: "MiniMax 国际区",
+        vendor_id: "minimax",
+        vendor_name: "MiniMax",
+        channel_id: "standard-global",
+        channel_name: "国际标准 API",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://api.minimax.io/v1",
+        api_key_url: "https://platform.minimax.io/user-center/basic-information/interface-key",
+        docs_url: "https://platform.minimax.io/docs/api-reference/text-openai-api",
+        icon: "minimax",
+        category: "international",
+    },
+    ProviderTemplate {
+        id: "minimax-global-anthropic",
+        name: "MiniMax 国际区",
+        vendor_id: "minimax",
+        vendor_name: "MiniMax",
+        channel_id: "standard-global",
+        channel_name: "国际标准 API",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://api.minimax.io/anthropic",
+        api_key_url: "https://platform.minimax.io/user-center/basic-information/interface-key",
+        docs_url: "https://platform.minimax.io/docs/api-reference/text-anthropic-api",
+        icon: "minimax",
+        category: "international",
+    },
+    ProviderTemplate {
+        id: "minimax-token-plan",
+        name: "MiniMax Token Plan",
+        vendor_id: "minimax",
+        vendor_name: "MiniMax",
+        channel_id: "token-plan-cn",
+        channel_name: "国内 Token Plan",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://api.minimaxi.com/anthropic",
+        api_key_url: "https://platform.minimaxi.com/subscribe/coding-plan",
+        docs_url: "https://platform.minimaxi.com/docs/guides/text-generation/coding-plan",
+        icon: "minimax",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "minimax-token-plan-global",
+        name: "MiniMax Token Plan 国际区",
+        vendor_id: "minimax",
+        vendor_name: "MiniMax",
+        channel_id: "token-plan-global",
+        channel_name: "国际 Token Plan",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://api.minimax.io/anthropic",
+        api_key_url: "https://platform.minimax.io/subscribe/coding-plan",
+        docs_url: "https://platform.minimax.io/docs/guides/text-generation/coding-plan",
+        icon: "minimax",
+        category: "international",
+    },
+    ProviderTemplate {
         id: "kimi",
         name: "Kimi",
+        vendor_id: "kimi",
+        vendor_name: "Kimi",
+        channel_id: "standard",
+        channel_name: "标准 API",
         protocol: AiProtocol::OpenaiChat,
         base_url: "https://api.moonshot.cn/v1",
         api_key_url: "https://platform.moonshot.cn/console/api-keys",
@@ -73,8 +232,40 @@ pub(crate) const PROVIDER_TEMPLATES: &[ProviderTemplate] = &[
         category: "china",
     },
     ProviderTemplate {
+        id: "kimi-anthropic",
+        name: "Kimi",
+        vendor_id: "kimi",
+        vendor_name: "Kimi",
+        channel_id: "standard",
+        channel_name: "标准 API",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://api.moonshot.cn/anthropic",
+        api_key_url: "https://platform.moonshot.cn/console/api-keys",
+        docs_url: "https://platform.moonshot.cn/docs",
+        icon: "kimi",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "kimi-token-plan",
+        name: "Kimi For Coding",
+        vendor_id: "kimi",
+        vendor_name: "Kimi",
+        channel_id: "coding-plan",
+        channel_name: "Kimi For Coding",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://api.kimi.com/coding/v1",
+        api_key_url: "https://www.kimi.com/code",
+        docs_url: "https://www.kimi.com/code/docs",
+        icon: "kimi",
+        category: "china",
+    },
+    ProviderTemplate {
         id: "zhipu",
         name: "智谱 GLM",
+        vendor_id: "zhipu",
+        vendor_name: "智谱 GLM",
+        channel_id: "standard-cn",
+        channel_name: "中国区标准 API",
         protocol: AiProtocol::OpenaiChat,
         base_url: "https://open.bigmodel.cn/api/paas/v4",
         api_key_url: "https://open.bigmodel.cn/usercenter/apikeys",
@@ -83,8 +274,68 @@ pub(crate) const PROVIDER_TEMPLATES: &[ProviderTemplate] = &[
         category: "china",
     },
     ProviderTemplate {
+        id: "zhipu-anthropic",
+        name: "智谱 GLM",
+        vendor_id: "zhipu",
+        vendor_name: "智谱 GLM",
+        channel_id: "standard-cn",
+        channel_name: "中国区标准 API",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://open.bigmodel.cn/api/anthropic",
+        api_key_url: "https://open.bigmodel.cn/usercenter/apikeys",
+        docs_url: "https://docs.bigmodel.cn",
+        icon: "zhipu",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "zhipu-global",
+        name: "智谱 GLM 国际区",
+        vendor_id: "zhipu",
+        vendor_name: "智谱 GLM",
+        channel_id: "standard-global",
+        channel_name: "国际区标准 API",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://api.z.ai/api/paas/v4",
+        api_key_url: "https://z.ai/manage-apikey/apikey-list",
+        docs_url: "https://docs.z.ai",
+        icon: "zhipu",
+        category: "international",
+    },
+    ProviderTemplate {
+        id: "zhipu-global-anthropic",
+        name: "智谱 GLM 国际区",
+        vendor_id: "zhipu",
+        vendor_name: "智谱 GLM",
+        channel_id: "standard-global",
+        channel_name: "国际区标准 API",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://api.z.ai/api/anthropic",
+        api_key_url: "https://z.ai/manage-apikey/apikey-list",
+        docs_url: "https://docs.z.ai",
+        icon: "zhipu",
+        category: "international",
+    },
+    ProviderTemplate {
+        id: "zhipu-token-plan",
+        name: "智谱 GLM Coding Plan",
+        vendor_id: "zhipu",
+        vendor_name: "智谱 GLM",
+        channel_id: "coding-plan",
+        channel_name: "Coding Plan",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://open.bigmodel.cn/api/coding/paas/v4",
+        api_key_url: "https://www.bigmodel.cn/claude-code",
+        docs_url: "https://docs.bigmodel.cn/cn/coding-plan/overview",
+        icon: "zhipu",
+        category: "china",
+    },
+    ProviderTemplate {
         id: "qwen",
         name: "阿里云百炼 / Qwen",
+        vendor_id: "qwen",
+        vendor_name: "阿里云百炼 / Qwen",
+        channel_id: "standard",
+        channel_name: "标准 API",
         protocol: AiProtocol::OpenaiChat,
         base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
         api_key_url: "https://bailian.console.aliyun.com/?apiKey=1",
@@ -93,10 +344,267 @@ pub(crate) const PROVIDER_TEMPLATES: &[ProviderTemplate] = &[
         category: "china",
     },
     ProviderTemplate {
+        id: "qwen-responses",
+        name: "阿里云百炼 / Qwen",
+        vendor_id: "qwen",
+        vendor_name: "阿里云百炼 / Qwen",
+        channel_id: "standard",
+        channel_name: "标准 API",
+        protocol: AiProtocol::OpenaiResponses,
+        base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api_key_url: "https://bailian.console.aliyun.com/?apiKey=1",
+        docs_url: "https://help.aliyun.com/zh/model-studio",
+        icon: "qwen",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "qwen-anthropic",
+        name: "阿里云百炼 / Qwen",
+        vendor_id: "qwen",
+        vendor_name: "阿里云百炼 / Qwen",
+        channel_id: "standard",
+        channel_name: "标准 API",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://dashscope.aliyuncs.com/apps/anthropic",
+        api_key_url: "https://bailian.console.aliyun.com/?apiKey=1",
+        docs_url: "https://help.aliyun.com/zh/model-studio",
+        icon: "qwen",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "qwen-token-plan",
+        name: "Qwen Coding Plan",
+        vendor_id: "qwen",
+        vendor_name: "阿里云百炼 / Qwen",
+        channel_id: "coding-plan",
+        channel_name: "Coding Plan",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://coding.dashscope.aliyuncs.com/apps/anthropic",
+        api_key_url: "https://bailian.console.aliyun.com/?apiKey=1",
+        docs_url: "https://help.aliyun.com/zh/model-studio/coding-plan",
+        icon: "qwen",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "volcengine",
+        name: "火山方舟 / 豆包",
+        vendor_id: "volcengine",
+        vendor_name: "火山方舟 / 豆包",
+        channel_id: "standard-cn",
+        channel_name: "标准 API",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://ark.cn-beijing.volces.com/api/v3",
+        api_key_url: "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
+        docs_url: "https://www.volcengine.com/docs/82379",
+        icon: "volcengine",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "volcengine-agent-plan",
+        name: "火山方舟 Agent Plan",
+        vendor_id: "volcengine",
+        vendor_name: "火山方舟 / 豆包",
+        channel_id: "coding-plan",
+        channel_name: "Agent Plan",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://ark.cn-beijing.volces.com/api/coding/v3",
+        api_key_url: "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
+        docs_url: "https://www.volcengine.com/docs/82379",
+        icon: "volcengine",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "xiaomi-mimo",
+        name: "Xiaomi MiMo",
+        vendor_id: "xiaomi-mimo",
+        vendor_name: "Xiaomi MiMo",
+        channel_id: "standard",
+        channel_name: "标准 API",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://api.xiaomimimo.com/v1",
+        api_key_url: "https://platform.xiaomimimo.com/#/console/api-keys",
+        docs_url: "https://platform.xiaomimimo.com/#/docs",
+        icon: "xiaomimimo",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "xiaomi-mimo-anthropic",
+        name: "Xiaomi MiMo",
+        vendor_id: "xiaomi-mimo",
+        vendor_name: "Xiaomi MiMo",
+        channel_id: "standard",
+        channel_name: "标准 API",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://api.xiaomimimo.com/anthropic",
+        api_key_url: "https://platform.xiaomimimo.com/#/console/api-keys",
+        docs_url: "https://platform.xiaomimimo.com/#/docs",
+        icon: "xiaomimimo",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "xiaomi-mimo-token-plan",
+        name: "Xiaomi MiMo Token Plan",
+        vendor_id: "xiaomi-mimo",
+        vendor_name: "Xiaomi MiMo",
+        channel_id: "token-plan-cn",
+        channel_name: "Token Plan",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://token-plan-cn.xiaomimimo.com/v1",
+        api_key_url: "https://platform.xiaomimimo.com/#/console/plan-manage",
+        docs_url: "https://platform.xiaomimimo.com/#/token-plan",
+        icon: "xiaomimimo",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "xiaomi-mimo-token-plan-anthropic",
+        name: "Xiaomi MiMo Token Plan",
+        vendor_id: "xiaomi-mimo",
+        vendor_name: "Xiaomi MiMo",
+        channel_id: "token-plan-cn",
+        channel_name: "Token Plan",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://token-plan-cn.xiaomimimo.com/anthropic",
+        api_key_url: "https://platform.xiaomimimo.com/#/console/plan-manage",
+        docs_url: "https://platform.xiaomimimo.com/#/token-plan",
+        icon: "xiaomimimo",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "stepfun",
+        name: "阶跃星辰 Step Plan",
+        vendor_id: "stepfun",
+        vendor_name: "阶跃星辰 / StepFun",
+        channel_id: "step-plan-cn",
+        channel_name: "国内 Step Plan",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://api.stepfun.com/step_plan/v1",
+        api_key_url: "https://platform.stepfun.com/interface-key",
+        docs_url: "https://platform.stepfun.com/step-plan",
+        icon: "stepfun",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "stepfun-global",
+        name: "阶跃星辰 Step Plan 国际区",
+        vendor_id: "stepfun",
+        vendor_name: "阶跃星辰 / StepFun",
+        channel_id: "step-plan-global",
+        channel_name: "国际 Step Plan",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://api.stepfun.ai/step_plan/v1",
+        api_key_url: "https://platform.stepfun.ai/interface-key",
+        docs_url: "https://platform.stepfun.ai/step-plan",
+        icon: "stepfun",
+        category: "international",
+    },
+    ProviderTemplate {
+        id: "baidu-qianfan-coding",
+        name: "百度千帆 Coding Plan",
+        vendor_id: "baidu-qianfan",
+        vendor_name: "百度千帆",
+        channel_id: "coding-plan",
+        channel_name: "Coding Plan",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://qianfan.baidubce.com/v2/coding",
+        api_key_url:
+            "https://console.bce.baidu.com/qianfan/ais/console/applicationConsole/application",
+        docs_url: "https://cloud.baidu.com/product/qianfan_modelbuilder",
+        icon: "baidu",
+        category: "china",
+    },
+    ProviderTemplate {
+        id: "siliconflow",
+        name: "硅基流动 SiliconFlow",
+        vendor_id: "siliconflow",
+        vendor_name: "硅基流动 / SiliconFlow",
+        channel_id: "standard-cn",
+        channel_name: "国内 API",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://api.siliconflow.cn/v1",
+        api_key_url: "https://cloud.siliconflow.cn/account/ak",
+        docs_url: "https://docs.siliconflow.cn/cn/api-reference/chat-completions/chat-completions",
+        icon: "siliconflow",
+        category: "aggregator",
+    },
+    ProviderTemplate {
+        id: "siliconflow-anthropic",
+        name: "硅基流动 SiliconFlow",
+        vendor_id: "siliconflow",
+        vendor_name: "硅基流动 / SiliconFlow",
+        channel_id: "standard-cn",
+        channel_name: "国内 API",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://api.siliconflow.cn",
+        api_key_url: "https://cloud.siliconflow.cn/account/ak",
+        docs_url: "https://docs.siliconflow.cn/cn/api-reference/chat-completions/chat-completions",
+        icon: "siliconflow",
+        category: "aggregator",
+    },
+    ProviderTemplate {
+        id: "siliconflow-global",
+        name: "SiliconFlow 国际区",
+        vendor_id: "siliconflow",
+        vendor_name: "硅基流动 / SiliconFlow",
+        channel_id: "standard-global",
+        channel_name: "国际 API",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://api.siliconflow.com/v1",
+        api_key_url: "https://cloud.siliconflow.com/account/ak",
+        docs_url: "https://docs.siliconflow.com/en/api-reference/chat-completions/chat-completions",
+        icon: "siliconflow",
+        category: "aggregator",
+    },
+    ProviderTemplate {
+        id: "siliconflow-global-anthropic",
+        name: "SiliconFlow 国际区",
+        vendor_id: "siliconflow",
+        vendor_name: "硅基流动 / SiliconFlow",
+        channel_id: "standard-global",
+        channel_name: "国际 API",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://api.siliconflow.com",
+        api_key_url: "https://cloud.siliconflow.com/account/ak",
+        docs_url: "https://docs.siliconflow.com/en/api-reference/chat-completions/chat-completions",
+        icon: "siliconflow",
+        category: "aggregator",
+    },
+    ProviderTemplate {
+        id: "modelscope",
+        name: "魔搭 ModelScope",
+        vendor_id: "modelscope",
+        vendor_name: "魔搭 ModelScope",
+        channel_id: "standard",
+        channel_name: "标准 API",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://api-inference.modelscope.cn/v1",
+        api_key_url: "https://modelscope.cn/my/myaccesstoken",
+        docs_url: "https://modelscope.cn/docs/model-service/API-Inference/intro",
+        icon: "modelscope",
+        category: "aggregator",
+    },
+    ProviderTemplate {
         id: "openrouter",
         name: "OpenRouter",
+        vendor_id: "openrouter",
+        vendor_name: "OpenRouter",
+        channel_id: "standard",
+        channel_name: "标准 API",
         protocol: AiProtocol::OpenaiChat,
         base_url: "https://openrouter.ai/api/v1",
+        api_key_url: "https://openrouter.ai/keys",
+        docs_url: "https://openrouter.ai/docs",
+        icon: "openrouter",
+        category: "aggregator",
+    },
+    ProviderTemplate {
+        id: "openrouter-anthropic",
+        name: "OpenRouter",
+        vendor_id: "openrouter",
+        vendor_name: "OpenRouter",
+        channel_id: "standard",
+        channel_name: "标准 API",
+        protocol: AiProtocol::AnthropicMessages,
+        base_url: "https://openrouter.ai/api",
         api_key_url: "https://openrouter.ai/keys",
         docs_url: "https://openrouter.ai/docs",
         icon: "openrouter",
@@ -108,7 +616,18 @@ pub(crate) async fn discover_models(
     provider: &StoredProvider,
     api_key: &str,
 ) -> Result<Vec<DiscoveredModel>, String> {
+    if let Some(models) = token_plan_models(provider) {
+        if api_key.trim().is_empty() || !token_plan_supports_remote_models(provider) {
+            return Ok(models);
+        }
+    }
+    if api_key.trim().is_empty() {
+        return Err("API Key 不能为空".to_string());
+    }
     let client = Client::new();
+    if provider.protocol == AiProtocol::AnthropicMessages {
+        return discover_anthropic_models(&client, provider, api_key).await;
+    }
     let value = match provider.protocol {
         AiProtocol::OpenaiResponses | AiProtocol::OpenaiChat => {
             let response = client
@@ -123,20 +642,7 @@ pub(crate) async fn discover_models(
                 .await
                 .map_err(public_request_error)?
         }
-        AiProtocol::AnthropicMessages => {
-            let response = client
-                .get(anthropic_models_endpoint(&provider.base_url)?)
-                .header("x-api-key", api_key)
-                .header("anthropic-version", ANTHROPIC_VERSION)
-                .send()
-                .await
-                .map_err(public_request_error)?;
-            ensure_success(response)
-                .await?
-                .json::<Value>()
-                .await
-                .map_err(public_request_error)?
-        }
+        AiProtocol::AnthropicMessages => unreachable!("Anthropic 模型发现已提前处理"),
         AiProtocol::GeminiGenerateContent => {
             let response = client
                 .get(gemini_models_endpoint(&provider.base_url)?)
@@ -154,10 +660,72 @@ pub(crate) async fn discover_models(
     parse_models(provider.protocol, &value)
 }
 
+async fn discover_anthropic_models(
+    client: &Client,
+    provider: &StoredProvider,
+    api_key: &str,
+) -> Result<Vec<DiscoveredModel>, String> {
+    let endpoints = anthropic_models_endpoints(&provider.base_url)?;
+    let mut last_error = None;
+
+    for (index, endpoint) in endpoints.iter().enumerate() {
+        let mut request = client
+            .get(endpoint.clone())
+            .header("x-api-key", api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION);
+        if index > 0 {
+            request = request.bearer_auth(api_key);
+        }
+        let response = request.send().await.map_err(public_request_error)?;
+        let status = response.status();
+        if status.is_success() {
+            let value = response
+                .json::<Value>()
+                .await
+                .map_err(public_request_error)?;
+            match parse_models(AiProtocol::AnthropicMessages, &value) {
+                Ok(models) => return Ok(models),
+                Err(error) => {
+                    last_error = Some(error);
+                    continue;
+                }
+            }
+        }
+        if matches!(status.as_u16(), 404 | 405) {
+            last_error = Some(format!("AI 服务返回错误：HTTP {}", status.as_u16()));
+            continue;
+        }
+        return match ensure_success(response).await {
+            Err(error) => Err(error),
+            Ok(_) => Err("AI 服务返回了无法识别的模型列表响应".to_string()),
+        };
+    }
+
+    Err(last_error.unwrap_or_else(|| "没有可用的模型列表接口".to_string()))
+}
+
 pub(crate) async fn test_provider(
     provider: &StoredProvider,
     api_key: &str,
 ) -> Result<String, String> {
+    if let Some(preset_models) = token_plan_models(provider) {
+        let discovered_models = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            discover_models(provider, api_key),
+        )
+        .await
+        .map_err(|_| "AI 配置测试超时".to_string())??;
+        let model = preset_models
+            .iter()
+            .find(|preset| {
+                discovered_models
+                    .iter()
+                    .any(|discovered| discovered.model_id == preset.model_id)
+            })
+            .or_else(|| discovered_models.first())
+            .ok_or_else(|| "接口没有返回可用模型".to_string())?;
+        return test_token_plan_provider(provider, model, api_key).await;
+    }
     let models = tokio::time::timeout(
         std::time::Duration::from_secs(20),
         discover_models(provider, api_key),
@@ -165,6 +733,161 @@ pub(crate) async fn test_provider(
     .await
     .map_err(|_| "AI 配置测试超时".to_string())??;
     Ok(format!("连接成功，发现 {} 个模型", models.len()))
+}
+
+fn token_plan_models(provider: &StoredProvider) -> Option<Vec<DiscoveredModel>> {
+    let url = Url::parse(&provider.base_url).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    let path = url.path().trim_end_matches('/').to_ascii_lowercase();
+    let models = match (provider.protocol, host.as_str()) {
+        (AiProtocol::AnthropicMessages, "api.minimaxi.com" | "api.minimax.io")
+            if path.ends_with("/anthropic") =>
+        {
+            vec![
+                ("MiniMax-M3", "MiniMax M3"),
+                ("MiniMax-M2.7", "MiniMax M2.7"),
+                ("MiniMax-M2.7-highspeed", "MiniMax M2.7 Highspeed"),
+                ("MiniMax-M2.5", "MiniMax M2.5"),
+                ("MiniMax-M2.5-highspeed", "MiniMax M2.5 Highspeed"),
+                ("MiniMax-M2.1", "MiniMax M2.1"),
+                ("MiniMax-M2.1-highspeed", "MiniMax M2.1 Highspeed"),
+                ("MiniMax-M2", "MiniMax M2"),
+            ]
+        }
+        (AiProtocol::AnthropicMessages, "api.kimi.com") if path.contains("/coding") => {
+            vec![("kimi-for-coding", "Kimi For Coding")]
+        }
+        (AiProtocol::AnthropicMessages, "coding.dashscope.aliyuncs.com")
+            if path.ends_with("/apps/anthropic") =>
+        {
+            vec![
+                ("qwen3-coder-plus", "Qwen3 Coder Plus"),
+                ("qwen3-max", "Qwen3 Max"),
+            ]
+        }
+        (AiProtocol::OpenaiChat, "open.bigmodel.cn" | "api.z.ai")
+            if path.contains("/api/coding/paas/v4") =>
+        {
+            vec![("glm-5.1", "GLM-5.1")]
+        }
+        (AiProtocol::OpenaiChat, "ark.cn-beijing.volces.com")
+            if path.contains("/api/coding/v3") =>
+        {
+            vec![("ark-code-latest", "Ark Code Latest")]
+        }
+        (
+            AiProtocol::OpenaiChat | AiProtocol::AnthropicMessages,
+            "token-plan-cn.xiaomimimo.com",
+        ) => vec![
+            ("mimo-v2.5-pro", "MiMo V2.5 Pro"),
+            ("mimo-v2.5", "MiMo V2.5"),
+        ],
+        (AiProtocol::OpenaiChat, "api.stepfun.com" | "api.stepfun.ai")
+            if path.contains("/step_plan/v1") =>
+        {
+            vec![
+                ("step-3.5-flash-2603", "Step 3.5 Flash 2603"),
+                ("step-3.5-flash", "Step 3.5 Flash"),
+            ]
+        }
+        (AiProtocol::OpenaiChat, "qianfan.baidubce.com") if path.contains("/v2/coding") => {
+            vec![("qianfan-code-latest", "Qianfan Code Latest")]
+        }
+        _ => return None,
+    };
+    Some(
+        models
+            .into_iter()
+            .map(|(model_id, display_name)| DiscoveredModel {
+                model_id: model_id.to_string(),
+                display_name: display_name.to_string(),
+            })
+            .collect(),
+    )
+}
+
+fn token_plan_supports_remote_models(provider: &StoredProvider) -> bool {
+    let Ok(url) = Url::parse(&provider.base_url) else {
+        return false;
+    };
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let path = url.path().trim_end_matches('/').to_ascii_lowercase();
+    matches!(
+        (provider.protocol, host.as_str()),
+        (AiProtocol::AnthropicMessages, "api.minimaxi.com" | "api.minimax.io")
+            if path.ends_with("/anthropic")
+    ) || matches!(
+        (provider.protocol, host.as_str()),
+        (AiProtocol::OpenaiChat, "ark.cn-beijing.volces.com")
+            if path.contains("/api/coding/v3")
+    ) || matches!(
+        (provider.protocol, host.as_str()),
+        (
+            AiProtocol::OpenaiChat | AiProtocol::AnthropicMessages,
+            "token-plan-cn.xiaomimimo.com"
+        )
+    ) || matches!(
+        (provider.protocol, host.as_str()),
+        (AiProtocol::OpenaiChat, "api.stepfun.com" | "api.stepfun.ai")
+            if path.contains("/step_plan/v1")
+    ) || matches!(
+        (provider.protocol, host.as_str()),
+        (AiProtocol::OpenaiChat, "qianfan.baidubce.com")
+            if path.contains("/v2/coding")
+    )
+}
+
+fn minimax_token_plan_thinking(provider: &StoredProvider, model_id: &str) -> Option<Value> {
+    if !token_plan_supports_remote_models(provider) || !model_id.starts_with("MiniMax-") {
+        return None;
+    }
+    Some(serde_json::json!({
+        "type": "enabled",
+        "budget_tokens": 4096,
+    }))
+}
+
+async fn test_token_plan_provider(
+    provider: &StoredProvider,
+    model: &DiscoveredModel,
+    api_key: &str,
+) -> Result<String, String> {
+    let client = Client::new();
+    let request = match provider.protocol {
+        AiProtocol::AnthropicMessages => client
+            .post(normalize_action_endpoint(
+                &provider.base_url,
+                "/v1/messages",
+            )?)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .json(&serde_json::json!({
+                "model": model.model_id,
+                "max_tokens": 1,
+                "messages": [{ "role": "user", "content": "ping" }]
+            })),
+        AiProtocol::OpenaiChat => client
+            .post(normalize_action_endpoint(
+                &provider.base_url,
+                "/chat/completions",
+            )?)
+            .bearer_auth(api_key)
+            .json(&serde_json::json!({
+                "model": model.model_id,
+                "max_tokens": 1,
+                "messages": [{ "role": "user", "content": "ping" }]
+            })),
+        _ => return Err("当前 Token Plan 协议暂不支持连接测试".to_string()),
+    };
+    let response = tokio::time::timeout(std::time::Duration::from_secs(20), request.send())
+        .await
+        .map_err(|_| "AI 配置测试超时".to_string())?
+        .map_err(public_request_error)?;
+    ensure_success(response).await?;
+    Ok(format!(
+        "连接成功，Token Plan 可用（{}）",
+        model.display_name
+    ))
 }
 
 pub(crate) async fn stream_chat<F>(
@@ -288,6 +1011,12 @@ where
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        let reasoning_delta = value
+            .pointer("/choices/0/delta/reasoning_content")
+            .or_else(|| value.pointer("/choices/0/delta/reasoning"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         let usage = value.get("usage").cloned();
         let tool_call_deltas = value
             .pointer("/choices/0/delta/tool_calls")
@@ -318,6 +1047,7 @@ where
             .unwrap_or_default();
         Ok(StreamParseResult::Continue {
             delta,
+            reasoning_delta,
             usage,
             tool_call_deltas,
         })
@@ -373,14 +1103,28 @@ where
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
+                reasoning_delta: String::new(),
                 usage: None,
                 tool_call_deltas: Vec::new(),
             }),
+            "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                Ok(StreamParseResult::Continue {
+                    delta: String::new(),
+                    reasoning_delta: value
+                        .get("delta")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    usage: None,
+                    tool_call_deltas: Vec::new(),
+                })
+            }
             "response.output_item.added"
                 if value.pointer("/item/type").and_then(Value::as_str) == Some("function_call") =>
             {
                 Ok(StreamParseResult::Continue {
                     delta: String::new(),
+                    reasoning_delta: String::new(),
                     usage: None,
                     tool_call_deltas: vec![ProviderToolCallDelta {
                         index: value
@@ -406,6 +1150,7 @@ where
             }
             "response.function_call_arguments.delta" => Ok(StreamParseResult::Continue {
                 delta: String::new(),
+                reasoning_delta: String::new(),
                 usage: None,
                 tool_call_deltas: vec![ProviderToolCallDelta {
                     index: value
@@ -430,6 +1175,7 @@ where
             {
                 Ok(StreamParseResult::Continue {
                     delta: String::new(),
+                    reasoning_delta: String::new(),
                     usage: None,
                     tool_call_deltas: vec![ProviderToolCallDelta {
                         index: value
@@ -462,6 +1208,7 @@ where
             )),
             _ => Ok(StreamParseResult::Continue {
                 delta: String::new(),
+                reasoning_delta: String::new(),
                 usage: None,
                 tool_call_deltas: Vec::new(),
             }),
@@ -492,6 +1239,9 @@ where
         "system": system,
         "messages": messages,
     });
+    if let Some(thinking) = minimax_token_plan_thinking(provider, &model.model_id) {
+        payload["thinking"] = thinking;
+    }
     if !tools.is_empty() {
         payload["tools"] = Value::Array(anthropic_tools(tools));
     }
@@ -518,6 +1268,7 @@ where
             {
                 Ok(StreamParseResult::Continue {
                     delta: String::new(),
+                    reasoning_delta: String::new(),
                     usage: None,
                     tool_call_deltas: vec![ProviderToolCallDelta {
                         index: value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
@@ -554,6 +1305,11 @@ where
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
+                    reasoning_delta: value
+                        .pointer("/delta/thinking")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
                     usage: None,
                     tool_call_deltas: if arguments_delta.is_empty() {
                         Vec::new()
@@ -569,6 +1325,7 @@ where
             }
             "message_delta" => Ok(StreamParseResult::Continue {
                 delta: String::new(),
+                reasoning_delta: String::new(),
                 usage: value.get("usage").cloned(),
                 tool_call_deltas: Vec::new(),
             }),
@@ -579,6 +1336,7 @@ where
             )),
             _ => Ok(StreamParseResult::Continue {
                 delta: String::new(),
+                reasoning_delta: String::new(),
                 usage: None,
                 tool_call_deltas: Vec::new(),
             }),
@@ -640,6 +1398,18 @@ where
             .map(|parts| {
                 parts
                     .iter()
+                    .filter(|part| part.get("thought").and_then(Value::as_bool) != Some(true))
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        let reasoning_delta = value
+            .pointer("/candidates/0/content/parts")
+            .and_then(Value::as_array)
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter(|part| part.get("thought").and_then(Value::as_bool) == Some(true))
                     .filter_map(|part| part.get("text").and_then(Value::as_str))
                     .collect::<String>()
             })
@@ -669,6 +1439,7 @@ where
             .unwrap_or_default();
         Ok(StreamParseResult::Continue {
             delta,
+            reasoning_delta,
             usage: value.get("usageMetadata").cloned(),
             tool_call_deltas,
         })
@@ -679,6 +1450,7 @@ where
 enum StreamParseResult {
     Continue {
         delta: String,
+        reasoning_delta: String,
         usage: Option<Value>,
         tool_call_deltas: Vec<ProviderToolCallDelta>,
     },
@@ -697,6 +1469,7 @@ where
 {
     let mut buffer = Vec::<u8>::new();
     let mut text = String::new();
+    let mut reasoning = String::new();
     let mut usage = None;
     let mut stop_reason = "end_turn".to_string();
     let mut tool_calls = BTreeMap::<usize, ToolCallAccumulator>::new();
@@ -723,6 +1496,7 @@ where
                 match parse(&data)? {
                     StreamParseResult::Continue {
                         delta,
+                        reasoning_delta,
                         usage: next_usage,
                         tool_call_deltas,
                     } => {
@@ -730,7 +1504,11 @@ where
                             text.push_str(&delta);
                             on_event(ProviderStreamEvent::TextDelta(delta));
                         }
-                        if let Some(next_usage) = next_usage {
+                        if !reasoning_delta.is_empty() {
+                            reasoning.push_str(&reasoning_delta);
+                            on_event(ProviderStreamEvent::ReasoningDelta(reasoning_delta));
+                        }
+                        if let Some(next_usage) = next_usage.and_then(normalize_stream_usage) {
                             usage = Some(next_usage.clone());
                             on_event(ProviderStreamEvent::Usage(next_usage));
                         }
@@ -740,7 +1518,7 @@ where
                         }
                     }
                     StreamParseResult::Done(next_usage) => {
-                        if let Some(next_usage) = next_usage {
+                        if let Some(next_usage) = next_usage.and_then(normalize_stream_usage) {
                             usage = Some(next_usage.clone());
                             on_event(ProviderStreamEvent::Usage(next_usage));
                         }
@@ -752,6 +1530,7 @@ where
             if done {
                 return Ok(ProviderStreamOutcome {
                     text,
+                    reasoning,
                     usage,
                     stop_reason: if tool_calls.is_empty() {
                         stop_reason
@@ -765,6 +1544,7 @@ where
     }
     Ok(ProviderStreamOutcome {
         text,
+        reasoning,
         usage,
         stop_reason: if tool_calls.is_empty() {
             stop_reason
@@ -773,6 +1553,10 @@ where
         },
         tool_calls: finalize_tool_calls(tool_calls)?,
     })
+}
+
+fn normalize_stream_usage(usage: Value) -> Option<Value> {
+    usage.is_object().then_some(usage)
 }
 
 #[derive(Default)]
@@ -1245,13 +2029,18 @@ fn normalize_action_endpoint(base_url: &str, action: &str) -> Result<Url, String
     if path.ends_with(action) {
         return Ok(url);
     }
-    let known_actions = ["/responses", "/chat/completions", "/v1/messages"];
+    let known_actions = [
+        "/responses",
+        "/chat/completions",
+        "/v1/messages",
+        "/v1/models",
+    ];
     let base = known_actions
         .iter()
         .find_map(|suffix| path.strip_suffix(suffix))
         .unwrap_or(path);
-    let next = if action == "/v1/messages" && base.ends_with("/v1") {
-        format!("{base}/messages")
+    let next = if action.starts_with("/v1/") && base.ends_with("/v1") {
+        format!("{base}{}", &action[3..])
     } else {
         format!("{base}{action}")
     };
@@ -1317,7 +2106,38 @@ fn openai_models_endpoint(base_url: &str) -> Result<Url, String> {
 }
 
 fn anthropic_models_endpoint(base_url: &str) -> Result<Url, String> {
-    replace_api_path(base_url, &["/messages"], "/models")
+    normalize_action_endpoint(base_url, "/v1/models")
+}
+
+fn anthropic_models_endpoints(base_url: &str) -> Result<Vec<Url>, String> {
+    let primary = anthropic_models_endpoint(base_url)?;
+    let mut endpoints = vec![primary];
+    let mut root =
+        Url::parse(base_url.trim()).map_err(|_| "AI 请求地址不是合法 URL".to_string())?;
+    let mut path = root.path().trim_end_matches('/').to_string();
+    for action in ["/v1/messages", "/v1/models"] {
+        if let Some(prefix) = path.strip_suffix(action) {
+            path = prefix.to_string();
+            break;
+        }
+    }
+    let Some(prefix) = ANTHROPIC_COMPAT_PATH_SUFFIXES
+        .iter()
+        .find_map(|suffix| path.strip_suffix(suffix))
+    else {
+        return Ok(endpoints);
+    };
+
+    root.set_query(None);
+    root.set_fragment(None);
+    for target in ["/v1/models", "/models"] {
+        let mut candidate = root.clone();
+        candidate.set_path(&format!("{prefix}{target}"));
+        if endpoints.iter().all(|endpoint| endpoint != &candidate) {
+            endpoints.push(candidate);
+        }
+    }
+    Ok(endpoints)
 }
 
 fn gemini_models_endpoint(base_url: &str) -> Result<Url, String> {
@@ -1384,26 +2204,123 @@ fn sanitize_error(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        finalize_tool_calls, gemini_contents, merge_tool_call_delta, normalize_action_endpoint,
-        openai_chat_messages, openai_chat_tools, openai_responses_input, parse_models,
-        split_system_messages, stream_chat, ToolCallAccumulator, PROVIDER_TEMPLATES,
+        anthropic_models_endpoint, anthropic_models_endpoints, discover_models,
+        finalize_tool_calls, gemini_contents, merge_tool_call_delta, minimax_token_plan_thinking,
+        normalize_action_endpoint, openai_chat_messages, openai_chat_tools, openai_responses_input,
+        parse_models, split_system_messages, stream_chat, test_token_plan_provider,
+        token_plan_supports_remote_models, ToolCallAccumulator, PROVIDER_TEMPLATES,
     };
     use crate::ordinary_chat::types::{
-        AiProtocol, ModelMessage, ProviderToolCall, ProviderToolCallDelta, ProviderToolDefinition,
-        StoredModel, StoredProvider,
+        AiProtocol, DiscoveredModel, ModelMessage, ProviderToolCall, ProviderToolCallDelta,
+        ProviderToolDefinition, StoredModel, StoredProvider,
     };
-    use axum::{http::Uri, response::IntoResponse, Router};
+    use axum::{
+        http::{StatusCode, Uri},
+        response::IntoResponse,
+        routing::get,
+        Json, Router,
+    };
     use serde_json::json;
     use std::collections::BTreeMap;
 
     #[test]
     fn curated_templates_exclude_partner_marketplace_entries() {
-        assert_eq!(PROVIDER_TEMPLATES.len(), 9);
+        assert_eq!(PROVIDER_TEMPLATES.len(), 42);
+        let vendors = PROVIDER_TEMPLATES
+            .iter()
+            .map(|item| item.vendor_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(vendors.len(), 18);
         assert!(PROVIDER_TEMPLATES.iter().any(|item| item.id == "deepseek"));
         assert!(PROVIDER_TEMPLATES.iter().any(|item| item.id == "minimax"));
         assert!(PROVIDER_TEMPLATES
             .iter()
+            .any(|item| item.id == "minimax-token-plan"));
+        assert!(PROVIDER_TEMPLATES
+            .iter()
+            .any(|item| item.id == "kimi-token-plan"));
+        assert!(PROVIDER_TEMPLATES
+            .iter()
+            .any(|item| item.id == "zhipu-token-plan"));
+        assert!(PROVIDER_TEMPLATES
+            .iter()
+            .any(|item| item.id == "qwen-token-plan"));
+        for id in [
+            "volcengine",
+            "volcengine-agent-plan",
+            "siliconflow",
+            "xiaomi-mimo",
+            "xiaomi-mimo-token-plan",
+            "stepfun",
+            "modelscope",
+            "baidu-qianfan-coding",
+            "xai",
+            "mistral",
+            "nvidia",
+        ] {
+            assert!(PROVIDER_TEMPLATES.iter().any(|item| item.id == id));
+        }
+        assert!(PROVIDER_TEMPLATES
+            .iter()
             .all(|item| item.api_key_url.starts_with("https://")));
+        assert!(PROVIDER_TEMPLATES.iter().all(|item| {
+            !item.api_key_url.contains("utm_")
+                && !item.api_key_url.contains("aff=")
+                && !item.api_key_url.contains("/i/")
+        }));
+
+        let mut combinations = std::collections::BTreeSet::new();
+        for template in PROVIDER_TEMPLATES {
+            assert!(combinations.insert((
+                template.vendor_id,
+                template.channel_id,
+                template.protocol.as_str(),
+            )));
+        }
+
+        assert!(PROVIDER_TEMPLATES.iter().any(|item| {
+            item.vendor_id == "deepseek"
+                && item.channel_id == "standard"
+                && item.protocol == AiProtocol::AnthropicMessages
+        }));
+        assert!(PROVIDER_TEMPLATES.iter().any(|item| {
+            item.vendor_id == "qwen"
+                && item.channel_id == "standard"
+                && item.protocol == AiProtocol::OpenaiResponses
+        }));
+        assert!(PROVIDER_TEMPLATES.iter().any(|item| {
+            item.vendor_id == "minimax"
+                && item.channel_id == "token-plan-global"
+                && item.protocol == AiProtocol::AnthropicMessages
+        }));
+    }
+
+    #[test]
+    fn minimax_token_plan_enables_thinking_only_for_minimax_models() {
+        let provider = StoredProvider {
+            name: "MiniMax Token Plan".to_string(),
+            protocol: AiProtocol::AnthropicMessages,
+            base_url: "https://api.minimaxi.com/anthropic".to_string(),
+            enabled: true,
+            secret_slot: String::new(),
+        };
+        assert_eq!(
+            minimax_token_plan_thinking(&provider, "MiniMax-M3"),
+            Some(json!({ "type": "enabled", "budget_tokens": 4096 }))
+        );
+        assert_eq!(
+            minimax_token_plan_thinking(&provider, "claude-sonnet"),
+            None
+        );
+
+        let anthropic = StoredProvider {
+            name: "Anthropic".to_string(),
+            protocol: AiProtocol::AnthropicMessages,
+            base_url: "https://api.anthropic.com".to_string(),
+            enabled: true,
+            secret_slot: String::new(),
+        };
+        assert_eq!(minimax_token_plan_thinking(&anthropic, "MiniMax-M3"), None);
     }
 
     #[test]
@@ -1426,6 +2343,192 @@ mod tests {
                 .as_str(),
             "https://api.anthropic.com/v1/messages"
         );
+        assert_eq!(
+            anthropic_models_endpoint("https://api.anthropic.com")
+                .unwrap()
+                .as_str(),
+            "https://api.anthropic.com/v1/models"
+        );
+        assert_eq!(
+            anthropic_models_endpoint("https://api.minimaxi.com/anthropic")
+                .unwrap()
+                .as_str(),
+            "https://api.minimaxi.com/anthropic/v1/models"
+        );
+        assert_eq!(
+            anthropic_models_endpoint("https://api.minimaxi.com/anthropic/v1/messages")
+                .unwrap()
+                .as_str(),
+            "https://api.minimaxi.com/anthropic/v1/models"
+        );
+        assert_eq!(
+            anthropic_models_endpoints("https://api.deepseek.com/anthropic")
+                .unwrap()
+                .iter()
+                .map(|endpoint| endpoint.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "https://api.deepseek.com/anthropic/v1/models",
+                "https://api.deepseek.com/v1/models",
+                "https://api.deepseek.com/models",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_model_discovery_falls_back_to_root_models() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().fallback(get(mock_anthropic_model_candidates)),
+            )
+            .await
+            .unwrap();
+        });
+        let provider = StoredProvider {
+            name: "DeepSeek Anthropic".to_string(),
+            protocol: AiProtocol::AnthropicMessages,
+            base_url: format!("http://{address}/anthropic"),
+            enabled: true,
+            secret_slot: String::new(),
+        };
+
+        let models = discover_models(&provider, "test-key").await.unwrap();
+
+        assert_eq!(models.len(), 2);
+        assert!(models
+            .iter()
+            .any(|model| model.model_id == "deepseek-v4-flash"));
+        assert!(models
+            .iter()
+            .any(|model| model.model_id == "deepseek-v4-pro"));
+    }
+
+    #[tokio::test]
+    async fn minimax_token_plan_without_api_key_uses_documented_models() {
+        let provider = StoredProvider {
+            name: "MiniMax Token Plan".to_string(),
+            protocol: AiProtocol::AnthropicMessages,
+            base_url: "https://api.minimaxi.com/anthropic".to_string(),
+            enabled: true,
+            secret_slot: String::new(),
+        };
+        let models = discover_models(&provider, "").await.unwrap();
+        assert_eq!(models.len(), 8);
+        assert_eq!(models[0].model_id, "MiniMax-M3");
+        assert!(models
+            .iter()
+            .any(|model| model.model_id == "MiniMax-M2.7-highspeed"));
+        assert!(token_plan_supports_remote_models(&provider));
+    }
+
+    #[tokio::test]
+    async fn common_token_plans_expose_curated_models() {
+        let cases = [
+            (
+                AiProtocol::AnthropicMessages,
+                "https://api.kimi.com/coding/v1",
+                vec!["kimi-for-coding"],
+            ),
+            (
+                AiProtocol::AnthropicMessages,
+                "https://coding.dashscope.aliyuncs.com/apps/anthropic",
+                vec!["qwen3-coder-plus", "qwen3-max"],
+            ),
+            (
+                AiProtocol::OpenaiChat,
+                "https://open.bigmodel.cn/api/coding/paas/v4",
+                vec!["glm-5.1"],
+            ),
+            (
+                AiProtocol::OpenaiChat,
+                "https://ark.cn-beijing.volces.com/api/coding/v3",
+                vec!["ark-code-latest"],
+            ),
+            (
+                AiProtocol::OpenaiChat,
+                "https://token-plan-cn.xiaomimimo.com/v1",
+                vec!["mimo-v2.5-pro", "mimo-v2.5"],
+            ),
+            (
+                AiProtocol::AnthropicMessages,
+                "https://token-plan-cn.xiaomimimo.com/anthropic",
+                vec!["mimo-v2.5-pro", "mimo-v2.5"],
+            ),
+            (
+                AiProtocol::OpenaiChat,
+                "https://api.stepfun.com/step_plan/v1",
+                vec!["step-3.5-flash-2603", "step-3.5-flash"],
+            ),
+            (
+                AiProtocol::OpenaiChat,
+                "https://qianfan.baidubce.com/v2/coding",
+                vec!["qianfan-code-latest"],
+            ),
+        ];
+        for (protocol, base_url, expected) in cases {
+            let provider = StoredProvider {
+                name: "Token Plan".to_string(),
+                protocol,
+                base_url: base_url.to_string(),
+                enabled: true,
+                secret_slot: String::new(),
+            };
+            let actual = discover_models(&provider, "")
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|model| model.model_id)
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_model_discovery_still_requires_api_key() {
+        let provider = StoredProvider {
+            name: "OpenAI".to_string(),
+            protocol: AiProtocol::OpenaiChat,
+            base_url: "https://api.openai.com/v1".to_string(),
+            enabled: true,
+            secret_slot: String::new(),
+        };
+        let error = discover_models(&provider, "").await.unwrap_err();
+        assert_eq!(error, "API Key 不能为空");
+    }
+
+    #[tokio::test]
+    async fn minimax_token_plan_connection_test_uses_messages_endpoint() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/anthropic/v1/messages",
+                    axum::routing::post(|| async { axum::http::StatusCode::OK }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let provider = StoredProvider {
+            name: "MiniMax Token Plan".to_string(),
+            protocol: AiProtocol::AnthropicMessages,
+            base_url: format!("http://127.0.0.1:{}/anthropic", address.port()),
+            enabled: true,
+            secret_slot: String::new(),
+        };
+        let model = DiscoveredModel {
+            model_id: "MiniMax-M2.7".to_string(),
+            display_name: "MiniMax M2.7".to_string(),
+        };
+        let message = test_token_plan_provider(&provider, &model, "test-key")
+            .await
+            .unwrap();
+        assert!(message.contains("Token Plan 可用"));
     }
 
     #[test]
@@ -1650,30 +2753,53 @@ mod tests {
             );
             assert_eq!(outcome.tool_calls[0].name, "mcp__test__read");
             assert_eq!(outcome.tool_calls[0].arguments["path"], "README.md");
+            assert_eq!(outcome.reasoning, "先检查参数");
+            assert!(outcome.text.is_empty());
+            if protocol.as_str() == "openai_chat" {
+                assert!(outcome.usage.is_none(), "null usage must be ignored");
+            }
         }
     }
 
     async fn mock_provider_stream(uri: Uri) -> impl IntoResponse {
         let body = match uri.path() {
             "/v1/chat/completions" => concat!(
+                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先检查参数\"}}],\"usage\":null}\n\n",
                 "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-chat\",\"function\":{\"name\":\"mcp__test__read\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}]}}]}\n\n",
                 "data: [DONE]\n\n"
             ),
             "/v1/responses" => concat!(
+                "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"先检查参数\"}\n\n",
                 "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call-responses\",\"name\":\"mcp__test__read\",\"arguments\":\"\"}}\n\n",
                 "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"path\\\":\\\"README.md\\\"}\"}\n\n",
                 "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
             ),
             "/v1/messages" => concat!(
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"先检查参数\"}}\n\n",
                 "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call-anthropic\",\"name\":\"mcp__test__read\",\"input\":{}}}\n\n",
                 "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}\n\n",
                 "data: {\"type\":\"message_stop\"}\n\n"
             ),
             path if path.ends_with(":streamGenerateContent") => {
-                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"mcp__test__read\",\"args\":{\"path\":\"README.md\"}}}]}}]}\n\n"
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"thought\":true,\"text\":\"先检查参数\"},{\"functionCall\":{\"name\":\"mcp__test__read\",\"args\":{\"path\":\"README.md\"}}}]}}]}\n\n"
             }
             _ => "data: {\"error\":{\"message\":\"unknown path\"}}\n\n",
         };
         ([("content-type", "text/event-stream")], body)
+    }
+
+    async fn mock_anthropic_model_candidates(uri: Uri) -> impl IntoResponse {
+        if uri.path() == "/models" {
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "data": [
+                        { "id": "deepseek-v4-flash" },
+                        { "id": "deepseek-v4-pro" }
+                    ]
+                })),
+            );
+        }
+        (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" })))
     }
 }

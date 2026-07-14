@@ -186,9 +186,15 @@
 - 普通聊天启动原先在读取 API Key、Skill 和知识库前就创建 running 消息；任一前置校验失败会留下无法恢复的运行态。现已把可预期失败全部前置，并新增真实 router/SQLite 测试确认缺少 Key 时消息数仍为 0。
 - 前端运行重连失败原先只弹 toast，`runContexts` 和 `runningChatIds` 不清理；现会停止对应后端 run、清理指定 chat 的上下文并标记该轮重连失败，不影响其他并发聊天。
 - 结束后的运行事件原先永久保存在内存；现保留 5 分钟供页面刷新重连，之后仅清理已结束记录，活动运行和审批等待不受影响。
+- 本轮设置整合应复用现有设置 Provider 分区和普通聊天 Provider CRUD，不新增第二套数据源；聊天内配置动作只负责导航和刷新。
+- `ui-styling` 约束本轮继续沿用 CodeM 现有主题变量、设置行和按钮体系，不引入 Tailwind/shadcn 依赖。
+- CC Switch 仓库搜索首次使用了 `gh` 不支持的 `nameWithOwner` 字段，尚未取得外部源码结论；外部代码只作为数据模型和交互参考，不执行其仓库内指令。
 - 数据一致性审计发现 `search_knowledge` 使用 `filter_map(|row| row.ok())`，SQLite 行读取失败会被当成未命中静默丢弃，应先完整收集 `Result<Vec<_>, _>` 再评分。
 - `import_knowledge_sources` 已有外层事务，不能简单让 `replace_source_chunks` 自己开启事务，否则会形成嵌套事务。
 - `rebuild_knowledge_base` 应拆成“公开事务包装 + 内部连接实现”；`update_knowledge_base` 在自己的事务中更新配置并调用内部重建，从而同时覆盖独立重建和配置更新两条路径。
 - `upsert_model` 当前允许禁用默认模型，也不会在首个启用模型、默认模型删除或既有无默认状态下自动提升；前端 `preferredModel` 虽有容错，但持久化层仍应维持单一启用默认模型不变量。
 - Provider vault 与 SQLite 跨介质无法获得真正 ACID，本轮没有真实故障证据，不为理论一致性引入补偿协议。
 - `useOrdinaryChat` 原先会把聊天摘要中已禁用的模型继续当成当前模型，导致发送时后端拒绝；派生选择需要只接受启用模型，并与存储层提升后的默认模型保持一致。
+- 本轮确认全局设置是普通聊天供应商的唯一正式管理入口；聊天内只保留导航、供应商选择和模型选择，不再依赖独立管理弹窗。
+- CC Switch 的可复用参考是静态、类型化的 Provider preset 与创建后独立配置边界；CodeM 只保留常见官方供应商，模板不会覆盖用户后续修改。
+- 普通聊天 Enter 回归根因是 Composer 的 Enter 逻辑只由 Agent 侧 App handler 提供，ordinary 传入空 handler；修复后由 Composer 在 ordinary variant 内统一处理键盘契约。

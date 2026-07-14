@@ -16,7 +16,6 @@ import { OrdinaryChatHeader } from './OrdinaryChatHeader';
 
 type OrdinaryChatWorkspaceProps = {
   chat: ReturnTypeUseOrdinaryChat;
-  collapseIntermediateProcess: boolean;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
   onOpenAiSettings: () => void;
   onOpenKnowledgeManager: () => void;
@@ -26,7 +25,6 @@ type OrdinaryChatWorkspaceProps = {
 
 export function OrdinaryChatWorkspace({
   chat,
-  collapseIntermediateProcess,
   showToast,
   onOpenAiSettings,
   onOpenKnowledgeManager,
@@ -50,6 +48,18 @@ export function OrdinaryChatWorkspace({
       id: provider.id,
       displayName: provider.name,
       driverId: provider.protocol,
+      icon: provider.presetId,
+      models: provider.models.filter((model) => model.enabled).map((model) => ({
+        id: model.id,
+        label: model.displayName,
+        description: model.modelId === model.displayName ? undefined : model.modelId,
+        contextWindowTokens:
+          typeof model.capabilities.contextWindowTokens === 'number'
+            ? model.capabilities.contextWindowTokens
+            : undefined,
+        isDefault: model.isDefault,
+        supportedReasoningEfforts: [],
+      })),
       lifecycle: 'active',
       available: provider.enabled && provider.apiKeySaved,
       selectable: provider.enabled && provider.apiKeySaved && provider.models.some((model) => model.enabled),
@@ -85,6 +95,15 @@ export function OrdinaryChatWorkspace({
   }, [chat.selectedProvider]);
 
   const activeTurnId = findActiveTurnId(chat.activeThread?.turns ?? []);
+  const hasUsableProvider = chat.providers.some((provider) => (
+    provider.enabled
+    && provider.apiKeySaved
+    && provider.models.some((model) => model.enabled)
+  ));
+  const needsProviderSetup = !chat.loading && !hasUsableProvider;
+  const providerSetupDescription = chat.providers.length === 0
+    ? '普通聊天不使用 Agent 配置。请先在全局设置中添加一个 AI 供应商和模型。'
+    : '已有供应商尚未完成 API Key、启用状态或模型配置，请前往全局设置检查。';
 
   return (
     <main className="chat-shell ordinary-chat-shell">
@@ -104,9 +123,14 @@ export function OrdinaryChatWorkspace({
         isNewChatDraft={chat.isNewChatDraft}
         activeProject={null}
         activeProjectName="普通聊天"
-        emptyDraftTitle="开始普通聊天"
-        emptyDraftDescription="选择供应商和模型后发送消息；聊天不属于项目，也不会启动 Agent。"
-        collapseIntermediateProcess={collapseIntermediateProcess}
+        emptyDraftTitle={needsProviderSetup ? '配置 AI 供应商后开始聊天' : '开始普通聊天'}
+        emptyDraftDescription={needsProviderSetup
+          ? providerSetupDescription
+          : '选择供应商和模型后发送消息；聊天不属于项目，也不会启动 Agent。'}
+        emptyDraftActionLabel={needsProviderSetup ? '前往全局设置' : undefined}
+        onEmptyDraftAction={needsProviderSetup ? onOpenAiSettings : undefined}
+        collapseIntermediateProcess={false}
+        thinkingLabel="思考"
         clockNowMs={Date.now()}
         isRunning={chat.isRunning}
         activeTurnId={activeTurnId}

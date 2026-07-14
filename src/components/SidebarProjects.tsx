@@ -326,7 +326,6 @@ export function SidebarProjects({
         <button
           type="button"
           className="sidebar-thread"
-          title={chat.lastMessagePreview || chat.title}
           onClick={() => void onSelectOrdinaryChat(chat.id)}
         >
           <span className="sidebar-thread-title">

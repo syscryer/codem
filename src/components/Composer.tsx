@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
-import { ArrowUp, BookOpen, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, RefreshCw, Server, Shield, Sparkles, Square, Unlock, X, Zap } from 'lucide-react';
+import { ArrowUp, BookOpen, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, RefreshCw, Server, ServerCog, Shield, Sparkles, Square, Unlock, X, Zap } from 'lucide-react';
 import { CLAUDE_CODE_PROVIDER_ID, DEFAULT_MODEL_VALUE, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
@@ -19,9 +19,11 @@ import { ComposerContextIndicator } from './ComposerContextIndicator';
 import { SlashCommandMenu } from './SlashCommandMenu';
 import { WorkbenchFileIcon } from './WorkbenchFileIcon';
 import { AgentProviderIcon } from './AgentProviderIcon';
+import { ProviderBrandIcon } from './ProviderBrandIcon';
 import { hasClaudeContext1mOptions } from '../lib/claude-model-selection';
 import { applySlashCommandSelection, getNextSlashCommandIndex } from '../lib/slash-command-editor';
 import { getSlashDismissResetKey, resolveSlashCommandSubmission } from '../lib/slash-command-submit';
+import { shouldSubmitComposerOnEnter } from '../lib/composer-keyboard';
 import { getAgentModelForSelection } from '../lib/agent-model-selection';
 import { modelContext1mMenuActionLabel, modelMenuDescriptionLabel, modelMenuPrimaryLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
 import type { AgentModelCatalog, AgentModelOption, AgentProviderDescriptor, AgentType, AiKnowledgeBaseSummary, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, McpServerSummary, PermissionMode, SkillSummary, SlashCommand, UserImageAttachment } from '../types';
@@ -298,6 +300,8 @@ export function Composer({
   const textOnlyInputMessage = `${providerName} 当前不支持附件输入。`;
   const providerSelectionDisabled =
     !canSelectProvider || isRunning || (providersLoading && providers.length === 0);
+  const ordinarySelectionReady = variant !== 'ordinary'
+    || Boolean(selectedProvider?.selectable && selectedProvider.available === true && agentModel);
   const permissionSelectionDisabled = agent !== 'claude' && isRunning;
   const selectedAgentModelOption = agentModelCatalog
     ? getAgentModelForSelection(agentModelCatalog, agentModel)
@@ -1043,6 +1047,25 @@ export function Composer({
     }
 
     onKeyDown(event);
+    if (
+      variant === 'ordinary'
+      && !event.defaultPrevented
+      && shouldSubmitComposerOnEnter({
+        key: event.key,
+        shiftKey: event.shiftKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        altKey: event.altKey,
+        isComposing: event.nativeEvent.isComposing,
+      })
+    ) {
+      event.preventDefault();
+      if (!ordinarySelectionReady) {
+        showToast('请先在全局设置中配置 AI 供应商和模型', 'info');
+        return;
+      }
+      event.currentTarget.form?.requestSubmit();
+    }
   }
 
   return (
@@ -1438,14 +1461,16 @@ export function Composer({
                 </button>
               </div>
             ) : null}
-            <div className="permission-picker provider-picker" ref={providerMenuRef}>
+            {variant !== 'ordinary' ? <div className="permission-picker provider-picker" ref={providerMenuRef}>
               <PopoverPortal open={providerMenuOpen} anchorRef={providerMenuRef} placement="top-start">
                 <div className="model-menu model-menu-compact provider-menu" role="menu">
-                  <div className="model-menu-title">{variant === 'ordinary' ? 'AI 供应商' : 'Agent Provider'}</div>
+                  <div className="model-menu-title">Agent Provider</div>
                   {providers.length === 0 ? (
-                    <div className="provider-menu-empty">
-                      {providersLoading ? '正在读取 Provider...' : providersError || '暂无 Provider'}
-                    </div>
+                    <>
+                      <div className="provider-menu-empty">
+                        {providersLoading ? '正在读取 Provider...' : providersError || '尚未配置 AI 供应商'}
+                      </div>
+                    </>
                   ) : providers.map((provider) => {
                     const selected = provider.id === providerId;
                     const unavailableReason = providerUnavailableReason(provider);
@@ -1484,8 +1509,8 @@ export function Composer({
                 aria-expanded={providerMenuOpen}
                 aria-label={
                   canSelectProvider
-                    ? `选择${variant === 'ordinary' ? ' AI 供应商' : ' Agent Provider'}，当前为 ${providerName}`
-                    : `当前${variant === 'ordinary' ? ' AI 供应商' : ' Agent Provider'}：${providerName}`
+                    ? `选择 Agent Provider，当前为 ${providerName}`
+                    : `当前 Agent Provider：${providerName}`
                 }
                 disabled={providerSelectionDisabled}
                 title={
@@ -1497,7 +1522,7 @@ export function Composer({
               >
                 <AgentProviderIcon providerId={providerId} size={16} />
               </button>
-            </div>
+            </div> : null}
             {variant !== 'ordinary' ? <div className="permission-picker" ref={permissionMenuRef}>
               <PopoverPortal open={permissionMenuOpen} anchorRef={permissionMenuRef} placement="top-end">
                 <div className="permission-menu" role="menu" aria-label="权限模式">
@@ -1676,11 +1701,23 @@ export function Composer({
               </>
             ) : (
               <>
-                <div className="model-picker" ref={modelMenuRef}>
+                {variant === 'ordinary' ? (
+                  <OrdinaryProviderModelControls
+                    providers={providers}
+                    selectedProviderId={providerId}
+                    selectedModelId={agentModel}
+                    providersLoading={providersLoading}
+                    providersError={providersError}
+                    disabled={isRunning}
+                    onSelectProvider={onSelectProvider}
+                    onSelectModel={onSelectAgentModel}
+                    onOpenSettings={onOpenPlugins}
+                  />
+                ) : <div className="model-picker" ref={modelMenuRef}>
                   <PopoverPortal open={modelMenuOpen} anchorRef={modelMenuRef} placement="top-end">
                     <div className="model-menu model-menu-compact" role="menu" aria-label={`${providerName} 模型`}>
                       <div className="model-menu-title">模型</div>
-                      {variant !== 'ordinary' ? <button
+                      <button
                         type="button"
                         className="model-menu-item"
                         role="menuitemradio"
@@ -1700,7 +1737,7 @@ export function Composer({
                           </small>
                         </span>
                         {agentModel === DEFAULT_MODEL_VALUE ? <Check className="model-check" size={15} /> : null}
-                      </button> : null}
+                      </button>
                       {agentModelsLoading ? (
                         <div className="provider-menu-empty">正在读取模型目录...</div>
                       ) : null}
@@ -1761,10 +1798,10 @@ export function Composer({
                     onClick={() => setModelMenuOpen((value) => !value)}
                   >
                     {agentModelsLoading ? <Loader2 size={13} className="spin-icon" /> : null}
-                    <span>{variant === 'ordinary' && !agentModel ? '未选择模型' : agentModelTriggerLabel(agentModel, selectedAgentModelOption)}</span>
+                    <span>{agentModelTriggerLabel(agentModel, selectedAgentModelOption)}</span>
                     <span className="model-trigger-chevron" aria-hidden="true" />
                   </button>
-                </div>
+                </div>}
                 {agent === 'codex' && agentReasoningEffortOptions.length > 0 ? (
                   <div className="effort-picker" ref={effortMenuRef}>
                     <PopoverPortal open={effortMenuOpen} anchorRef={effortMenuRef} placement="top-end">
@@ -1828,8 +1865,10 @@ export function Composer({
               <button
                 type="submit"
                 className="send-button"
-                disabled={!hasPendingContent || (isRunning && !supportsQueue)}
-                title={isRunning && supportsQueue ? '发送到队列' : '发送'}
+                disabled={!hasPendingContent || (isRunning && !supportsQueue) || !ordinarySelectionReady}
+                title={!ordinarySelectionReady
+                  ? '请先在全局设置中配置 AI 供应商和模型'
+                  : isRunning && supportsQueue ? '发送到队列' : '发送'}
               >
                 <ArrowUp size={18} />
               </button>
@@ -1838,6 +1877,180 @@ export function Composer({
         </div>
       </div>
     </form>
+  );
+}
+
+type OrdinaryProviderModelControlsProps = {
+  providers: AgentProviderDescriptor[];
+  selectedProviderId: string;
+  selectedModelId: string;
+  providersLoading: boolean;
+  providersError: string;
+  disabled: boolean;
+  onSelectProvider: (providerId: string) => boolean | void;
+  onSelectModel: (modelId: string) => void;
+  onOpenSettings: () => void;
+};
+
+function OrdinaryProviderModelControls({
+  providers,
+  selectedProviderId,
+  selectedModelId,
+  providersLoading,
+  providersError,
+  disabled,
+  onSelectProvider,
+  onSelectModel,
+  onOpenSettings,
+}: OrdinaryProviderModelControlsProps) {
+  const [providerOpen, setProviderOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const providerPickerRef = useRef<HTMLDivElement | null>(null);
+  const modelPickerRef = useRef<HTMLDivElement | null>(null);
+  const selectedProvider = providers.find((provider) => provider.id === selectedProviderId);
+  const selectedModel = selectedProvider?.models?.find((model) => model.id === selectedModelId);
+  const providerName = selectedProvider?.displayName ?? '未配置供应商';
+  const modelName = selectedModel?.label ?? '未选择模型';
+  const selectedProviderModels = selectedProvider?.models ?? [];
+
+  useOutsideDismiss({
+    selectors: [
+      {
+        selector: '.ordinary-provider-menu',
+        onDismiss: () => setProviderOpen(false),
+        anchorRefs: [providerPickerRef],
+      },
+      {
+        selector: '.ordinary-model-menu',
+        onDismiss: () => setModelOpen(false),
+        anchorRefs: [modelPickerRef],
+      },
+    ],
+  });
+
+  function selectProvider(providerId: string) {
+    const accepted = onSelectProvider(providerId);
+    if (accepted !== false) setProviderOpen(false);
+  }
+
+  return (
+    <div className="ordinary-provider-model-controls">
+      <div className="permission-picker ordinary-provider-picker" ref={providerPickerRef}>
+        <PopoverPortal open={providerOpen} anchorRef={providerPickerRef} placement="top-end">
+          <div className="model-menu model-menu-compact ordinary-provider-menu" role="menu" aria-label="AI 供应商">
+            <div className="model-menu-title">AI 供应商</div>
+            {providersLoading && providers.length === 0 ? (
+              <div className="provider-menu-empty">正在读取供应商...</div>
+            ) : null}
+            {!providersLoading && providers.length === 0 ? (
+              <div className="provider-menu-empty">{providersError || '尚未配置 AI 供应商'}</div>
+            ) : null}
+            {providers.map((provider) => {
+              const selected = provider.id === selectedProviderId;
+              const unavailableReason = providerUnavailableReason(provider);
+              const providerSelectable = provider.selectable && provider.available === true;
+              return (
+                <button
+                  key={provider.id}
+                  type="button"
+                  className="model-menu-item ordinary-provider-menu-item"
+                  role="menuitemradio"
+                  aria-checked={selected}
+                  disabled={disabled || !providerSelectable}
+                  title={unavailableReason || provider.displayName}
+                  onClick={() => selectProvider(provider.id)}
+                >
+                  <ProviderBrandIcon icon={provider.icon} name={provider.displayName} size={20} />
+                  <span className="model-menu-item-copy">
+                    <span>{provider.displayName}</span>
+                    <small>{unavailableReason || `${provider.models?.length ?? 0} 个可用模型`}</small>
+                  </span>
+                  {selected ? <Check className="model-check" size={15} /> : null}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              className="model-menu-item ordinary-provider-settings"
+              onClick={() => {
+                setProviderOpen(false);
+                onOpenSettings();
+              }}
+            >
+              <ServerCog size={14} />
+              <span>管理 AI 供应商</span>
+            </button>
+          </div>
+        </PopoverPortal>
+        <button
+          type="button"
+          className="permission-trigger ordinary-provider-trigger"
+          aria-expanded={providerOpen}
+          aria-label={`选择 AI 供应商，当前为 ${providerName}`}
+          title={disabled ? `${providerName} 运行中，供应商已锁定` : providerName}
+          disabled={disabled}
+          onClick={() => {
+            setModelOpen(false);
+            setProviderOpen((value) => !value);
+          }}
+        >
+          {providersLoading ? (
+            <Loader2 size={16} className="spin-icon" />
+          ) : (
+            <ProviderBrandIcon icon={selectedProvider?.icon} name={providerName} size={20} />
+          )}
+        </button>
+      </div>
+
+      <div className="model-picker ordinary-model-picker" ref={modelPickerRef}>
+        <PopoverPortal open={modelOpen} anchorRef={modelPickerRef} placement="top-end">
+          <div className="model-menu model-menu-compact ordinary-model-menu" role="menu" aria-label={`${providerName} 模型`}>
+            <div className="model-menu-title">{providerName} 模型</div>
+            {selectedProviderModels.length === 0 ? (
+              <div className="provider-menu-empty">当前供应商暂无可用模型</div>
+            ) : null}
+            {selectedProviderModels.map((model) => {
+              const selected = model.id === selectedModelId;
+              return (
+                <button
+                  key={model.id}
+                  type="button"
+                  className="model-menu-item ordinary-model-menu-item"
+                  role="menuitemradio"
+                  aria-checked={selected}
+                  disabled={disabled}
+                  onClick={() => {
+                    onSelectModel(model.id);
+                    setModelOpen(false);
+                  }}
+                >
+                  <span className="model-menu-item-copy">
+                    <span>{model.label}</span>
+                    {model.description ? <small>{model.description}</small> : null}
+                  </span>
+                  {selected ? <Check className="model-check" size={15} /> : null}
+                </button>
+              );
+            })}
+          </div>
+        </PopoverPortal>
+        <button
+          type="button"
+          className="model-trigger ordinary-model-trigger"
+          aria-expanded={modelOpen}
+          aria-label={`选择 ${providerName} 模型，当前为 ${modelName}`}
+          title={disabled ? `${providerName} 运行中，模型已锁定` : modelName}
+          disabled={disabled || !selectedProvider}
+          onClick={() => {
+            setProviderOpen(false);
+            setModelOpen((value) => !value);
+          }}
+        >
+          <span>{modelName}</span>
+          <span className="model-trigger-chevron" aria-hidden="true" />
+        </button>
+      </div>
+    </div>
   );
 }
 

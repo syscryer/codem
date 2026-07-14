@@ -36,6 +36,10 @@ impl AiProtocol {
 pub(crate) struct ProviderTemplate {
     pub id: &'static str,
     pub name: &'static str,
+    pub vendor_id: &'static str,
+    pub vendor_name: &'static str,
+    pub channel_id: &'static str,
+    pub channel_name: &'static str,
     pub protocol: AiProtocol,
     pub base_url: &'static str,
     pub api_key_url: &'static str,
@@ -53,6 +57,7 @@ pub(crate) struct AiProviderSummary {
     pub protocol: AiProtocol,
     pub base_url: String,
     pub enabled: bool,
+    pub is_default: bool,
     pub api_key_saved: bool,
     pub models: Vec<AiModelSummary>,
     pub created_at: String,
@@ -98,7 +103,17 @@ pub(crate) struct SaveProviderRequest {
     pub protocol: AiProtocol,
     pub base_url: String,
     pub enabled: Option<bool>,
+    pub is_default: Option<bool>,
     pub api_key: Option<String>,
+    pub models: Option<Vec<SaveModelRequest>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderProbeRequest {
+    pub protocol: AiProtocol,
+    pub base_url: String,
+    pub api_key: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,12 +124,13 @@ pub(crate) struct UpdateProviderRequest {
     pub protocol: Option<AiProtocol>,
     pub base_url: Option<String>,
     pub enabled: Option<bool>,
+    pub is_default: Option<bool>,
     pub api_key: Option<String>,
     #[serde(default)]
     pub api_key_touched: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SaveModelRequest {
     pub model_id: String,
@@ -126,6 +142,12 @@ pub(crate) struct SaveModelRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct BatchSaveModelsRequest {
+    pub models: Vec<SaveModelRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateModelRequest {
     pub display_name: Option<String>,
     pub enabled: Option<bool>,
@@ -133,7 +155,8 @@ pub(crate) struct UpdateModelRequest {
     pub capabilities: Option<Value>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DiscoveredModel {
     pub model_id: String,
     pub display_name: String,
@@ -165,6 +188,7 @@ pub(crate) struct AiChatMessage {
     pub item_sort: i64,
     pub role: String,
     pub content: String,
+    pub reasoning_content: String,
     pub content_blocks: Value,
     pub provider_id: Option<String>,
     pub provider_name: Option<String>,
@@ -300,6 +324,7 @@ pub(crate) struct ProviderToolCallDelta {
 #[derive(Clone, Debug)]
 pub(crate) enum ProviderStreamEvent {
     TextDelta(String),
+    ReasoningDelta(String),
     Usage(Value),
     ToolCallDelta(ProviderToolCallDelta),
 }
@@ -307,6 +332,7 @@ pub(crate) enum ProviderStreamEvent {
 #[derive(Clone, Debug)]
 pub(crate) struct ProviderStreamOutcome {
     pub text: String,
+    pub reasoning: String,
     pub usage: Option<Value>,
     pub stop_reason: String,
     pub tool_calls: Vec<ProviderToolCall>,

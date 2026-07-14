@@ -78,6 +78,7 @@ function ConversationTurnViewComponent({
   canUndoChangedFiles,
   activeProject,
   collapseIntermediateProcess,
+  thinkingLabel,
   onOpenWorkbenchPreview,
   onOpenOutputPath,
   onRevealOutputPath,
@@ -97,6 +98,7 @@ function ConversationTurnViewComponent({
   canUndoChangedFiles: boolean;
   activeProject: ProjectSummary | null;
   collapseIntermediateProcess: boolean;
+  thinkingLabel: string;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onOpenOutputPath: (path: string) => Promise<void>;
   onRevealOutputPath: (path: string) => Promise<void>;
@@ -168,6 +170,7 @@ function ConversationTurnViewComponent({
     running ||
     turn.status === 'stopped' ||
     turn.status === 'error' ||
+    canToggleIntermediateProcess ||
     Boolean(turn.durationMs || turn.outputTokens || turn.inputTokens);
   const showLeadingProgressLine = showProgressLine && !running;
   const showTrailingProgressLine = showProgressLine && running;
@@ -250,6 +253,7 @@ function ConversationTurnViewComponent({
               onOpenWorkbenchPreview={onOpenWorkbenchPreview}
               onSubmitRequestUserInput={onSubmitRequestUserInput}
               onPreviewImage={setImagePreview}
+              thinkingLabel={thinkingLabel}
             />
           ) : null}
 
@@ -262,6 +266,7 @@ function ConversationTurnViewComponent({
               onOpenWorkbenchPreview,
               onSubmitRequestUserInput,
               onPreviewImage: setImagePreview,
+              thinkingLabel,
             }))
           ) : (
             running ? (
@@ -501,7 +506,7 @@ function MarkdownMessage({
   );
 }
 
-function ThinkingMessage({ content }: { content: string }) {
+function ThinkingMessage({ content, label }: { content: string; label: string }) {
   const cleanContent = content.trim();
   if (!cleanContent) {
     return null;
@@ -513,7 +518,7 @@ function ThinkingMessage({ content }: { content: string }) {
         <span className="execution-type-icon thinking-type-icon" aria-hidden="true">
           <Sparkles size={13} />
         </span>
-        <span>Thinking</span>
+        <span>{label}</span>
         <span className="thinking-count">{formatThinkingLength(cleanContent)}</span>
       </summary>
       <pre>{cleanContent}</pre>
@@ -687,6 +692,7 @@ type AssistantItemRenderProps = {
     answers: Record<string, string>,
   ) => Promise<boolean>;
   onPreviewImage: (preview: ImagePreviewItem) => void;
+  thinkingLabel: string;
 };
 
 function isIntermediateAssistantItem(item: DisplayAssistantItem) {
@@ -701,6 +707,7 @@ function IntermediateProcessBody({
   onOpenWorkbenchPreview,
   onSubmitRequestUserInput,
   onPreviewImage,
+  thinkingLabel,
 }: Omit<AssistantItemRenderProps, 'item'> & {
   items: DisplayAssistantItem[];
 }) {
@@ -714,6 +721,7 @@ function IntermediateProcessBody({
         onOpenWorkbenchPreview,
         onSubmitRequestUserInput,
         onPreviewImage,
+        thinkingLabel,
       }))}
     </div>
   );
@@ -727,6 +735,7 @@ function renderAssistantItem({
   onOpenWorkbenchPreview,
   onSubmitRequestUserInput,
   onPreviewImage,
+  thinkingLabel,
 }: AssistantItemRenderProps) {
   if (item.type === 'text') {
     return (
@@ -739,7 +748,7 @@ function renderAssistantItem({
   }
 
   if (item.type === 'thinking') {
-    return <ThinkingMessage key={item.id} content={item.text} />;
+    return <ThinkingMessage key={item.id} content={item.text} label={thinkingLabel} />;
   }
 
   if (item.type === 'system-command') {

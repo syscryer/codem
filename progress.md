@@ -372,4 +372,19 @@
 - 合并提交为 `eece0a1`；Rust 全量 86 通过/1 忽略、桌面 9/9、前端 431/431、TypeScript 和生产构建均通过。
 - 主工作区桌面开发模式已重启，5173、3001 health/bootstrap 返回 200；隔离 5174、3101 保持运行。
 - Trellis session 已完成；未推送任何远端。
+
+### 2026-07-14 普通聊天供应商全局设置与发送体验
+
+- 用户要求供应商设置进入全局设置、直接拉取 CC Switch 源码核对内置模板、无供应商时引导到设置页，并修复 Enter 不发送。
+- 已读取 README、Trellis workflow、frontend/backend/guides、组件/状态/会话规范以及规划文件。
+- 已启动 Trellis session `ordinary-ai-chat-provider-settings`，新增阶段 14。
+- 已确定 UI 方向：全局设置作为唯一管理入口，聊天内保留快捷跳转；复用现有主题与设置组件，不引入新 UI 框架。
+- 第一次 `gh search repos` 因 JSON 字段名不兼容失败，未拉取外部代码；下一步改用 `fullName` 查询。
+- 改用正确字段后 GitHub Search API 返回 EOF；未产生文件，下一步直接验证公开仓库 `farion1231/cc-switch`。
 - 服务启动配置检索再次误用了 Windows 不支持的 `vite.config.*` 路径通配符；其他检查正常完成，后续改用 `rg --files -g`。
+- 已将普通聊天 Provider 管理抽为全局设置可复用面板，设置侧栏新增“AI 供应商”，聊天内入口统一导航到该页面；从普通聊天进入设置后可返回原聊天。
+- 已按本地 CC Switch 的静态类型化 preset 思路，把 CodeM 精选官方模板按国际厂商、国内厂商、聚合平台分组，并提供 API Key 与接口文档入口；不引入中转商、推广和市场排序。
+- 无供应商、无 API Key 或无启用模型时，普通聊天空态、供应商菜单、模型菜单和发送按钮均给出明确配置引导；填写 API Key 创建新供应商后会自动尝试获取模型。
+- 修复普通聊天 Enter 不发送：普通 Enter 发送、Shift+Enter 换行、输入法组合态不发送，并增加纯函数回归测试。
+- `npm run typecheck`、`npm run build`、前端 30 项定向测试、Rust 普通聊天 28 项测试和 `git diff --check` 全部通过；真实 UI 已确认全局设置、模板分组、空态引导和返回路径。
+- 本轮验证需要时重启了 Web 开发服务 `5173`；后端 `3001` 保持原进程，未改动用户供应商/聊天数据。

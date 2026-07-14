@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { applyAgentRunEventToTurn } from '../lib/agent-run-events';
+import { appendThinkingItem } from '../lib/conversation';
 import {
   cancelAiChatRun,
   createAiChat,
@@ -46,7 +47,7 @@ type OrdinaryChatSubmission = {
 
 type AiChatRunEvent =
   | AgentRunEvent
-  | { type: 'usage'; runId: string; usage: Record<string, unknown> };
+  | { type: 'usage'; runId: string; usage: unknown };
 
 type RunContext = {
   chatId: string;
@@ -55,6 +56,8 @@ type RunContext = {
   controller: AbortController;
   pendingText: string;
   textFrame: number | null;
+  pendingReasoning: string;
+  reasoningFrame: number | null;
   terminal: boolean;
   cancelRequested: boolean;
 };
@@ -109,7 +112,7 @@ export function useOrdinaryChat(
   const selectedSkillIds = activeChat?.summary.selectedSkillIds ?? draftSkillIds;
 
   const applyDefaultSelection = useCallback((nextProviders: AiChatProvider[]) => {
-    const provider = nextProviders.find((item) => item.enabled && item.models.some((model) => model.enabled));
+    const provider = preferredProvider(nextProviders);
     setDraftProviderId((current) => {
       const currentProvider = nextProviders.find((item) => item.id === current && item.enabled);
       return currentProvider ? current : provider?.id ?? '';
@@ -175,10 +178,14 @@ export function useOrdinaryChat(
   }, []);
 
   const createNewChatDraft = useCallback(() => {
+    const provider = preferredProvider(providers);
+    const model = preferredModel(provider);
     setActiveChatId(null);
     setActiveChat(null);
+    setDraftProviderId(provider?.id ?? '');
+    setDraftModelId(model?.id ?? '');
     return true;
-  }, []);
+  }, [providers]);
 
   const selectProvider = useCallback(async (providerId: string) => {
     if (isRunning) return false;
@@ -279,7 +286,25 @@ export function useOrdinaryChat(
     );
   }, [updateTurn]);
 
+  const flushReasoningDelta = useCallback((context: RunContext) => {
+    if (context.reasoningFrame !== null) {
+      window.cancelAnimationFrame(context.reasoningFrame);
+      context.reasoningFrame = null;
+    }
+    const text = context.pendingReasoning;
+    context.pendingReasoning = '';
+    if (!text) return;
+    updateTurn(context.chatId, context.turnId, (turn) => ({
+      ...turn,
+      status: 'running',
+      phase: 'thinking',
+      activity: '思考中',
+      items: appendThinkingItem(turn.items, text),
+    }));
+  }, [updateTurn]);
+
   const finishRun = useCallback(async (context: RunContext) => {
+    flushReasoningDelta(context);
     flushTextDelta(context);
     if (runContextsRef.current.get(context.chatId) === context) {
       runContextsRef.current.delete(context.chatId);
@@ -298,32 +323,42 @@ export function useOrdinaryChat(
     } catch (nextError) {
       showToast(nextError instanceof Error ? nextError.message : '普通聊天历史刷新失败', 'error');
     }
-  }, [flushTextDelta, refreshBootstrap, showToast]);
+  }, [flushReasoningDelta, flushTextDelta, refreshBootstrap, showToast]);
 
   const handleEvent = useCallback((event: AiChatRunEvent, context: RunContext) => {
     if (context.terminal || runContextsRef.current.get(context.chatId) !== context) return;
     context.runId = event.runId || context.runId;
     if (event.type === 'delta') {
+      flushReasoningDelta(context);
       context.pendingText += event.text;
       if (context.textFrame === null) {
         context.textFrame = window.requestAnimationFrame(() => flushTextDelta(context));
       }
       return;
     }
-    if (event.type === 'usage') {
-      const usageEvent = 'usage' in event
-        ? normalizeAiUsageEvent(event.runId, event.usage)
-        : event;
-      updateTurn(context.chatId, context.turnId, (turn) => applyAgentRunEventToTurn(turn, usageEvent));
+    if (event.type === 'thinking-delta') {
+      flushTextDelta(context);
+      context.pendingReasoning += event.text;
+      if (context.reasoningFrame === null) {
+        context.reasoningFrame = window.requestAnimationFrame(() => flushReasoningDelta(context));
+      }
       return;
     }
+    if (event.type === 'usage') {
+      const usageEvent = 'usage' in event ? normalizeAiUsageEvent(event.runId, event.usage) : event;
+      if (usageEvent) {
+        updateTurn(context.chatId, context.turnId, (turn) => applyAgentRunEventToTurn(turn, usageEvent));
+      }
+      return;
+    }
+    flushReasoningDelta(context);
     flushTextDelta(context);
     updateTurn(context.chatId, context.turnId, (turn) => applyAgentRunEventToTurn(turn, event));
     if (event.type === 'done' || event.type === 'error') {
       context.terminal = true;
       void finishRun(context);
     }
-  }, [finishRun, flushTextDelta, updateTurn]);
+  }, [finishRun, flushReasoningDelta, flushTextDelta, updateTurn]);
 
   const consumeStream = useCallback(async (response: Response, context: RunContext) => {
     if (!response.body) throw new Error('普通聊天事件流不可读');
@@ -376,6 +411,8 @@ export function useOrdinaryChat(
           controller,
           pendingText: '',
           textFrame: null,
+          pendingReasoning: '',
+          reasoningFrame: null,
           terminal: false,
           cancelRequested: false,
         };
@@ -398,6 +435,7 @@ export function useOrdinaryChat(
                 // 重连失败后的清理以解除前端卡死为主，停止失败由后端最终状态恢复。
               }
             }
+            flushReasoningDelta(reconnectContext);
             flushTextDelta(reconnectContext);
             runContextsRef.current.delete(chatId);
             setRunningChatIds((current) => current.filter((id) => id !== chatId));
@@ -413,7 +451,7 @@ export function useOrdinaryChat(
       }
     })();
     return undefined;
-  }, [activeChatId, consumeStream, flushTextDelta, showToast, updateTurn]);
+  }, [activeChatId, consumeStream, flushReasoningDelta, flushTextDelta, showToast, updateTurn]);
 
   const submitPrompt = useCallback(async (
     submission: OrdinaryChatSubmission,
@@ -467,6 +505,8 @@ export function useOrdinaryChat(
       controller,
       pendingText: '',
       textFrame: null,
+      pendingReasoning: '',
+      reasoningFrame: null,
       terminal: false,
       cancelRequested: false,
     };
@@ -767,7 +807,13 @@ function preferredModel(provider: AiChatProvider | null | undefined) {
     ?? null;
 }
 
-function chatDetailToTurns(detail: AiChatDetail): ConversationTurn[] {
+function preferredProvider(providers: AiChatProvider[]) {
+  return providers.find((provider) => provider.isDefault && provider.enabled && provider.models.some((model) => model.enabled))
+    ?? providers.find((provider) => provider.enabled && provider.models.some((model) => model.enabled))
+    ?? null;
+}
+
+export function chatDetailToTurns(detail: AiChatDetail): ConversationTurn[] {
   const grouped = new Map<string, AiChatDetail['messages']>();
   for (const message of detail.messages) {
     const messages = grouped.get(message.turnId) ?? [];
@@ -778,7 +824,19 @@ function chatDetailToTurns(detail: AiChatDetail): ConversationTurn[] {
     const user = messages.find((message) => message.role === 'user');
     const assistant = messages.find((message) => message.role === 'assistant');
     const assistantText = assistant?.content ?? '';
+    const assistantReasoning = assistant?.reasoningContent?.trim() ?? '';
     const status = assistant?.status ?? 'done';
+    const items: ConversationTurn['items'] = [];
+    if (assistantReasoning) {
+      items.push({
+        id: `${assistant?.id ?? turnId}-thinking`,
+        type: 'thinking',
+        text: assistantReasoning,
+      });
+    }
+    if (assistantText) {
+      items.push({ id: `${assistant?.id ?? turnId}-text`, type: 'text', text: assistantText });
+    }
     let turn: ConversationTurn = {
       id: turnId,
       userText: user?.content ?? '',
@@ -786,7 +844,7 @@ function chatDetailToTurns(detail: AiChatDetail): ConversationTurn[] {
       workspace: '',
       assistantText,
       tools: [],
-      items: assistantText ? [{ id: `${assistant?.id ?? turnId}-text`, type: 'text', text: assistantText }] : [],
+      items,
       status,
       activity: status === 'error' ? '运行失败' : undefined,
       providerId: assistant?.providerId ?? user?.providerId,
@@ -831,10 +889,11 @@ function chatDetailToTurns(detail: AiChatDetail): ConversationTurn[] {
         });
       }
     }
-    if (assistant?.usage) {
+    const usageEvent = normalizeAiUsageEvent('', assistant?.usage);
+    if (usageEvent) {
       turn = applyAgentRunEventToTurn(
         turn,
-        normalizeAiUsageEvent('', assistant.usage),
+        usageEvent,
       );
     }
     return {
@@ -856,26 +915,28 @@ function toolCallResultContent(result: unknown) {
   return typeof content === 'string' ? content : JSON.stringify(result);
 }
 
-function normalizeAiUsageEvent(
+export function normalizeAiUsageEvent(
   runId: string,
-  usage: Record<string, unknown>,
-): Extract<AgentRunEvent, { type: 'usage' }> {
+  usage: unknown,
+): Extract<AgentRunEvent, { type: 'usage' }> | null {
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return null;
+  const usageRecord = usage as Record<string, unknown>;
   const inputTokens = firstNumber(
-    usage.input_tokens,
-    usage.prompt_tokens,
-    usage.promptTokenCount,
+    usageRecord.input_tokens,
+    usageRecord.prompt_tokens,
+    usageRecord.promptTokenCount,
   );
   const outputTokens = firstNumber(
-    usage.output_tokens,
-    usage.completion_tokens,
-    usage.candidatesTokenCount,
+    usageRecord.output_tokens,
+    usageRecord.completion_tokens,
+    usageRecord.candidatesTokenCount,
   );
-  const cacheCreationInputTokens = firstNumber(usage.cache_creation_input_tokens);
+  const cacheCreationInputTokens = firstNumber(usageRecord.cache_creation_input_tokens);
   const cacheReadInputTokens = firstNumber(
-    usage.cache_read_input_tokens,
-    usage.cachedContentTokenCount,
-    nestedNumber(usage.prompt_tokens_details, 'cached_tokens'),
-    nestedNumber(usage.input_tokens_details, 'cached_tokens'),
+    usageRecord.cache_read_input_tokens,
+    usageRecord.cachedContentTokenCount,
+    nestedNumber(usageRecord.prompt_tokens_details, 'cached_tokens'),
+    nestedNumber(usageRecord.input_tokens_details, 'cached_tokens'),
   );
   return {
     type: 'usage',

@@ -295,6 +295,7 @@ async fn start_chat_run(
                         &connection,
                         &assistant_message_id,
                         &outcome.text,
+                        &outcome.reasoning,
                         status,
                         outcome.usage.as_ref(),
                         Some(&citations_value),
@@ -317,6 +318,7 @@ async fn start_chat_run(
                     let _ = finish_chat_turn(
                         &connection,
                         &assistant_message_id,
+                        "",
                         "",
                         "error",
                         None,
@@ -357,6 +359,7 @@ async fn execute_chat_loop(
         Some(McpToolRegistry::connect(selected_mcp_ids).await?)
     };
     let mut total_text = String::new();
+    let mut total_reasoning = String::new();
     let mut last_usage = None;
     let mut block_index = 0usize;
 
@@ -367,6 +370,7 @@ async fn execute_chat_loop(
             }
             return Ok(ProviderStreamOutcome {
                 text: total_text,
+                reasoning: total_reasoning,
                 usage: last_usage,
                 stop_reason: "cancelled".to_string(),
                 tool_calls: Vec::new(),
@@ -399,6 +403,10 @@ async fn execute_chat_loop(
                 ProviderStreamEvent::TextDelta(text) => event_state.push_event(
                     &event_run_id,
                     json!({ "type": "delta", "runId": event_run_id, "text": text }),
+                ),
+                ProviderStreamEvent::ReasoningDelta(text) => event_state.push_event(
+                    &event_run_id,
+                    json!({ "type": "thinking-delta", "runId": event_run_id, "text": text }),
                 ),
                 ProviderStreamEvent::Usage(usage) => event_state.push_event(
                     &event_run_id,
@@ -435,6 +443,7 @@ async fn execute_chat_loop(
         )
         .await?;
         total_text.push_str(&outcome.text);
+        total_reasoning.push_str(&outcome.reasoning);
         if outcome.usage.is_some() {
             last_usage = outcome.usage.clone();
         }
@@ -444,6 +453,7 @@ async fn execute_chat_loop(
             }
             return Ok(ProviderStreamOutcome {
                 text: total_text,
+                reasoning: total_reasoning,
                 usage: last_usage,
                 stop_reason: "cancelled".to_string(),
                 tool_calls: Vec::new(),
@@ -455,6 +465,7 @@ async fn execute_chat_loop(
             }
             return Ok(ProviderStreamOutcome {
                 text: total_text,
+                reasoning: total_reasoning,
                 usage: last_usage,
                 stop_reason: outcome.stop_reason,
                 tool_calls: Vec::new(),
@@ -560,6 +571,7 @@ async fn execute_chat_loop(
                     registry.shutdown().await;
                     return Ok(ProviderStreamOutcome {
                         text: total_text,
+                        reasoning: total_reasoning,
                         usage: last_usage,
                         stop_reason: "cancelled".to_string(),
                         tool_calls: Vec::new(),

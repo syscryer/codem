@@ -14,6 +14,15 @@ pub(crate) struct TurnReplay {
     pub model_id: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ModelWrite {
+    pub model_id: String,
+    pub display_name: String,
+    pub enabled: bool,
+    pub is_default: bool,
+    pub capabilities: Value,
+}
+
 pub(crate) fn open_initialized_database(path: &Path) -> Result<Connection, String> {
     let connection =
         Connection::open(path).map_err(|error| format!("打开普通聊天数据库失败: {error}"))?;
@@ -35,6 +44,7 @@ pub(crate) fn initialize_database(connection: &Connection) -> Result<(), String>
               protocol TEXT NOT NULL,
               base_url TEXT NOT NULL,
               enabled INTEGER NOT NULL DEFAULT 1,
+              is_default INTEGER NOT NULL DEFAULT 0,
               secret_slot TEXT NOT NULL UNIQUE,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
@@ -80,6 +90,7 @@ pub(crate) fn initialize_database(connection: &Connection) -> Result<(), String>
               item_sort INTEGER NOT NULL,
               role TEXT NOT NULL,
               content TEXT NOT NULL,
+              reasoning_content TEXT NOT NULL DEFAULT '',
               content_blocks_json TEXT NOT NULL DEFAULT '[]',
               provider_id TEXT,
               provider_name TEXT,
@@ -158,7 +169,53 @@ pub(crate) fn initialize_database(connection: &Connection) -> Result<(), String>
             "#,
         )
         .map_err(|error| format!("初始化普通聊天数据库失败: {error}"))?;
+    ensure_column(
+        connection,
+        "ai_providers",
+        "is_default",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    repair_provider_defaults(connection)?;
+    connection
+        .execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_providers_single_default
+             ON ai_providers(is_default) WHERE is_default = 1",
+            [],
+        )
+        .map_err(sql_error)?;
+    ensure_column(
+        connection,
+        "ai_messages",
+        "reasoning_content",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
     repair_model_defaults(connection)
+}
+
+fn ensure_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), String> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(sql_error)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(sql_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql_error)?;
+    if columns.iter().any(|item| item == column) {
+        return Ok(());
+    }
+    connection
+        .execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )
+        .map_err(sql_error)?;
+    Ok(())
 }
 
 pub(crate) fn list_providers(
@@ -167,8 +224,8 @@ pub(crate) fn list_providers(
 ) -> Result<Vec<AiProviderSummary>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT id, preset_id, name, protocol, base_url, enabled, secret_slot, created_at, updated_at
-             FROM ai_providers ORDER BY enabled DESC, name COLLATE NOCASE ASC",
+            "SELECT id, preset_id, name, protocol, base_url, enabled, is_default, secret_slot, created_at, updated_at
+             FROM ai_providers ORDER BY is_default DESC, enabled DESC, name COLLATE NOCASE ASC",
         )
         .map_err(|error| format!("读取普通聊天供应商失败: {error}"))?;
     let mut rows = statement
@@ -181,7 +238,7 @@ pub(crate) fn list_providers(
     {
         let id: String = row.get(0).map_err(sql_error)?;
         let protocol_text: String = row.get(3).map_err(sql_error)?;
-        let secret_slot: String = row.get(6).map_err(sql_error)?;
+        let secret_slot: String = row.get(7).map_err(sql_error)?;
         let protocol =
             AiProtocol::parse(&protocol_text).ok_or_else(|| format!("供应商 {id} 的协议无效"))?;
         providers.push(AiProviderSummary {
@@ -192,9 +249,10 @@ pub(crate) fn list_providers(
             protocol,
             base_url: row.get(4).map_err(sql_error)?,
             enabled: row.get::<_, i64>(5).map_err(sql_error)? != 0,
+            is_default: row.get::<_, i64>(6).map_err(sql_error)? != 0,
             api_key_saved: has_secret(&secret_slot)?,
-            created_at: row.get(7).map_err(sql_error)?,
-            updated_at: row.get(8).map_err(sql_error)?,
+            created_at: row.get(8).map_err(sql_error)?,
+            updated_at: row.get(9).map_err(sql_error)?,
         });
     }
     Ok(providers)
@@ -319,27 +377,125 @@ pub(crate) fn upsert_model(
     is_default: bool,
     capabilities: &Value,
 ) -> Result<(), String> {
+    upsert_models(
+        connection,
+        provider_id,
+        &[ModelWrite {
+            model_id: model_id.to_string(),
+            display_name: display_name.to_string(),
+            enabled,
+            is_default,
+            capabilities: capabilities.clone(),
+        }],
+    )
+}
+
+pub(crate) fn set_default_provider(
+    connection: &Connection,
+    provider_id: &str,
+) -> Result<(), String> {
+    let enabled = connection
+        .query_row(
+            "SELECT enabled FROM ai_providers WHERE id = ?1",
+            [provider_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(sql_error)?
+        .ok_or_else(|| "普通聊天供应商不存在".to_string())?;
+    if enabled == 0 {
+        return Err("只有已启用的供应商才能设为默认".to_string());
+    }
     let transaction = connection.unchecked_transaction().map_err(sql_error)?;
     let now = Utc::now().to_rfc3339();
-    let existing_id: Option<String> = transaction
+    transaction
+        .execute(
+            "UPDATE ai_providers SET is_default = 0, updated_at = ?1 WHERE is_default = 1",
+            [&now],
+        )
+        .map_err(sql_error)?;
+    transaction
+        .execute(
+            "UPDATE ai_providers SET is_default = 1, updated_at = ?2 WHERE id = ?1",
+            params![provider_id, now],
+        )
+        .map_err(sql_error)?;
+    transaction.commit().map_err(sql_error)
+}
+
+pub(crate) fn repair_provider_defaults(connection: &Connection) -> Result<(), String> {
+    let preferred_id = connection
+        .query_row(
+            "SELECT id FROM ai_providers
+             WHERE enabled = 1
+             ORDER BY is_default DESC, created_at ASC, name COLLATE NOCASE ASC, id ASC
+             LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(sql_error)?;
+    let transaction = connection.unchecked_transaction().map_err(sql_error)?;
+    let now = Utc::now().to_rfc3339();
+    transaction
+        .execute(
+            "UPDATE ai_providers SET is_default = 0, updated_at = ?1 WHERE is_default = 1",
+            [&now],
+        )
+        .map_err(sql_error)?;
+    if let Some(preferred_id) = preferred_id {
+        transaction
+            .execute(
+                "UPDATE ai_providers SET is_default = 1, updated_at = ?2 WHERE id = ?1",
+                params![preferred_id, now],
+            )
+            .map_err(sql_error)?;
+    }
+    transaction.commit().map_err(sql_error)
+}
+
+pub(crate) fn upsert_models(
+    connection: &Connection,
+    provider_id: &str,
+    models: &[ModelWrite],
+) -> Result<(), String> {
+    if models.is_empty() {
+        return Ok(());
+    }
+    let transaction = connection.unchecked_transaction().map_err(sql_error)?;
+    for model in models {
+        upsert_model_row(&transaction, provider_id, model)?;
+    }
+    normalize_default_model(&transaction, provider_id)?;
+    transaction.commit().map_err(sql_error)?;
+    Ok(())
+}
+
+fn upsert_model_row(
+    connection: &Connection,
+    provider_id: &str,
+    model: &ModelWrite,
+) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let existing_id: Option<String> = connection
         .query_row(
             "SELECT id FROM ai_models WHERE provider_id = ?1 AND model_id = ?2",
-            params![provider_id, model_id],
+            params![provider_id, &model.model_id],
             |row| row.get(0),
         )
         .optional()
         .map_err(sql_error)?;
     let id = existing_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let enabled = enabled || is_default;
-    if is_default {
-        transaction
+    let enabled = model.enabled || model.is_default;
+    if model.is_default {
+        connection
             .execute(
                 "UPDATE ai_models SET is_default = 0, updated_at = ?2 WHERE provider_id = ?1",
                 params![provider_id, now],
             )
             .map_err(sql_error)?;
     }
-    transaction
+    connection
         .execute(
             "INSERT INTO ai_models(id, provider_id, model_id, display_name, enabled, is_default, capabilities_json, created_at, updated_at)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
@@ -349,11 +505,9 @@ pub(crate) fn upsert_model(
                is_default = excluded.is_default,
                capabilities_json = excluded.capabilities_json,
                updated_at = excluded.updated_at",
-            params![id, provider_id, model_id, display_name, i64::from(enabled), i64::from(is_default), capabilities.to_string(), now],
+            params![id, provider_id, &model.model_id, &model.display_name, i64::from(enabled), i64::from(model.is_default), model.capabilities.to_string(), now],
         )
         .map_err(|error| format!("保存普通聊天模型失败: {error}"))?;
-    normalize_default_model(&transaction, provider_id)?;
-    transaction.commit().map_err(sql_error)?;
     Ok(())
 }
 
@@ -690,6 +844,7 @@ pub(crate) fn finish_chat_turn(
     connection: &Connection,
     assistant_message_id: &str,
     content: &str,
+    reasoning_content: &str,
     status: &str,
     usage: Option<&Value>,
     citations: Option<&Value>,
@@ -697,11 +852,13 @@ pub(crate) fn finish_chat_turn(
     connection
         .execute(
             "UPDATE ai_messages
-             SET content = ?2, status = ?3, usage_json = ?4, citations_json = ?5, updated_at = ?6
+             SET content = ?2, reasoning_content = ?3, status = ?4, usage_json = ?5,
+                 citations_json = ?6, updated_at = ?7
              WHERE id = ?1",
             params![
                 assistant_message_id,
                 content,
+                reasoning_content,
                 status,
                 usage.map(Value::to_string),
                 citations
@@ -857,7 +1014,7 @@ pub(crate) fn get_chat(connection: &Connection, chat_id: &str) -> Result<AiChatD
         .ok_or_else(|| "普通聊天不存在".to_string())?;
     let mut statement = connection
         .prepare(
-            "SELECT id, chat_id, turn_id, item_sort, role, content, content_blocks_json,
+            "SELECT id, chat_id, turn_id, item_sort, role, content, reasoning_content, content_blocks_json,
                     provider_id, provider_name, model_id, model_name, status, usage_json,
                     citations_json, created_at, updated_at
              FROM ai_messages WHERE chat_id = ?1 ORDER BY created_at ASC, item_sort ASC",
@@ -865,9 +1022,9 @@ pub(crate) fn get_chat(connection: &Connection, chat_id: &str) -> Result<AiChatD
         .map_err(sql_error)?;
     let rows = statement
         .query_map([chat_id], |row| {
-            let content_blocks: String = row.get(6)?;
-            let usage: Option<String> = row.get(12)?;
-            let citations: String = row.get(13)?;
+            let content_blocks: String = row.get(7)?;
+            let usage: Option<String> = row.get(13)?;
+            let citations: String = row.get(14)?;
             Ok(AiChatMessage {
                 id: row.get(0)?,
                 chat_id: row.get(1)?,
@@ -875,16 +1032,17 @@ pub(crate) fn get_chat(connection: &Connection, chat_id: &str) -> Result<AiChatD
                 item_sort: row.get(3)?,
                 role: row.get(4)?,
                 content: row.get(5)?,
+                reasoning_content: row.get(6)?,
                 content_blocks: serde_json::from_str(&content_blocks).unwrap_or_else(|_| json!([])),
-                provider_id: row.get(7)?,
-                provider_name: row.get(8)?,
-                model_id: row.get(9)?,
-                model_name: row.get(10)?,
-                status: row.get(11)?,
+                provider_id: row.get(8)?,
+                provider_name: row.get(9)?,
+                model_id: row.get(10)?,
+                model_name: row.get(11)?,
+                status: row.get(12)?,
                 usage: usage.and_then(|value| serde_json::from_str(&value).ok()),
                 citations: serde_json::from_str(&citations).unwrap_or_else(|_| json!([])),
-                created_at: row.get(14)?,
-                updated_at: row.get(15)?,
+                created_at: row.get(15)?,
+                updated_at: row.get(16)?,
             })
         })
         .map_err(sql_error)?;
@@ -1064,11 +1222,115 @@ mod tests {
     use super::{
         begin_chat_turn, begin_tool_call, clear_chat, create_chat, delete_model, finish_chat_turn,
         finish_tool_call, get_chat, get_stored_model, get_stored_provider, initialize_database,
-        list_chats, list_model_messages, list_models, set_chat_pinned, update_chat, upsert_model,
+        list_chats, list_model_messages, list_models, repair_provider_defaults, set_chat_pinned,
+        set_default_provider, update_chat, upsert_model,
     };
     use crate::ordinary_chat::types::ProviderToolCall;
     use rusqlite::Connection;
     use serde_json::json;
+
+    #[test]
+    fn schema_allows_multiple_provider_instances_with_same_preset() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_database(&connection).unwrap();
+        connection.execute(
+            "INSERT INTO ai_providers(id, preset_id, name, protocol, base_url, enabled, secret_slot, created_at, updated_at)
+             VALUES
+               ('p1', 'deepseek', 'DeepSeek', 'openai_chat', 'https://api.deepseek.com', 1, 'slot-1', 'now', 'now'),
+               ('p2', 'deepseek', 'DeepSeek 2', 'openai_chat', 'https://api.deepseek.com', 1, 'slot-2', 'now', 'now')",
+            [],
+        ).unwrap();
+
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_providers WHERE preset_id = 'deepseek'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn legacy_provider_schema_adds_and_repairs_single_default() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE ai_providers (
+               id TEXT PRIMARY KEY,
+               preset_id TEXT,
+               name TEXT NOT NULL,
+               protocol TEXT NOT NULL,
+               base_url TEXT NOT NULL,
+               enabled INTEGER NOT NULL DEFAULT 1,
+               secret_slot TEXT NOT NULL UNIQUE,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL
+             );
+             INSERT INTO ai_providers(id, name, protocol, base_url, enabled, secret_slot, created_at, updated_at)
+             VALUES
+               ('p1', 'Provider 1', 'openai_chat', 'https://example.com/v1', 1, 'slot-1', '2026-01-01', '2026-01-01'),
+               ('p2', 'Provider 2', 'openai_chat', 'https://example.com/v1', 1, 'slot-2', '2026-01-02', '2026-01-02');",
+        ).unwrap();
+
+        initialize_database(&connection).unwrap();
+
+        let default_id: String = connection
+            .query_row(
+                "SELECT id FROM ai_providers WHERE is_default = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(default_id, "p1");
+    }
+
+    #[test]
+    fn provider_default_switches_and_repairs_after_disable() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_database(&connection).unwrap();
+        connection.execute_batch(
+            "INSERT INTO ai_providers(id, name, protocol, base_url, enabled, secret_slot, created_at, updated_at)
+             VALUES
+               ('p1', 'Provider 1', 'openai_chat', 'https://example.com/v1', 1, 'slot-1', '2026-01-01', '2026-01-01'),
+               ('p2', 'Provider 2', 'openai_chat', 'https://example.com/v1', 1, 'slot-2', '2026-01-02', '2026-01-02');",
+        ).unwrap();
+        repair_provider_defaults(&connection).unwrap();
+        set_default_provider(&connection, "p2").unwrap();
+        let default_id: String = connection
+            .query_row(
+                "SELECT id FROM ai_providers WHERE is_default = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(default_id, "p2");
+
+        connection
+            .execute("UPDATE ai_providers SET enabled = 0 WHERE id = 'p2'", [])
+            .unwrap();
+        repair_provider_defaults(&connection).unwrap();
+        let default_id: String = connection
+            .query_row(
+                "SELECT id FROM ai_providers WHERE is_default = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(default_id, "p1");
+
+        connection
+            .execute("UPDATE ai_providers SET enabled = 0 WHERE id = 'p1'", [])
+            .unwrap();
+        repair_provider_defaults(&connection).unwrap();
+        let default_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_providers WHERE is_default = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(default_count, 0);
+    }
 
     #[test]
     fn schema_supports_multiple_models_and_single_default() {
@@ -1291,10 +1553,27 @@ mod tests {
             None,
         )
         .unwrap();
-        finish_chat_turn(&connection, &assistant_id, "读取完成", "done", None, None).unwrap();
+        finish_chat_turn(
+            &connection,
+            &assistant_id,
+            "读取完成",
+            "先读取文件，再总结内容。",
+            "done",
+            None,
+            None,
+        )
+        .unwrap();
 
         let detail = get_chat(&connection, &chat.summary.id).unwrap();
         assert_eq!(detail.tool_calls.len(), 1);
+        assert_eq!(
+            detail
+                .messages
+                .iter()
+                .find(|message| message.role == "assistant")
+                .map(|message| message.reasoning_content.as_str()),
+            Some("先读取文件，再总结内容。")
+        );
         let history = list_model_messages(&connection, &chat.summary.id).unwrap();
         assert!(history.iter().any(|message| !message.tool_calls.is_empty()));
         assert!(history.iter().any(|message| {
@@ -1340,7 +1619,7 @@ mod tests {
                 None,
             )
             .unwrap();
-            finish_chat_turn(&connection, &assistant_id, "回复", "done", None, None).unwrap();
+            finish_chat_turn(&connection, &assistant_id, "回复", "", "done", None, None).unwrap();
         }
         let replacement_id = begin_chat_turn(
             &connection,
@@ -1354,7 +1633,16 @@ mod tests {
             Some("turn-1"),
         )
         .unwrap();
-        finish_chat_turn(&connection, &replacement_id, "新回复", "done", None, None).unwrap();
+        finish_chat_turn(
+            &connection,
+            &replacement_id,
+            "新回复",
+            "",
+            "done",
+            None,
+            None,
+        )
+        .unwrap();
         let detail = get_chat(&connection, &chat.summary.id).unwrap();
         assert_eq!(detail.messages.len(), 2);
         assert!(detail

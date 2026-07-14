@@ -41,6 +41,8 @@ export type AgentProviderDescriptor = {
   id: string;
   displayName: string;
   driverId: string;
+  icon?: string;
+  models?: AgentModelOption[];
   lifecycle: AgentProviderLifecycle;
   available: boolean | null;
   selectable: boolean;
@@ -499,6 +501,7 @@ export type SettingsSection =
   | 'appearance'
   | 'shortcuts'
   | 'providers'
+  | 'aiProviders'
   | 'usage'
   | 'sessions'
   | 'worktree'
@@ -1202,6 +1205,11 @@ export type AiChatModel = {
   updatedAt: string;
 };
 
+export type AiDiscoveredModel = {
+  modelId: string;
+  displayName: string;
+};
+
 export type AiChatProvider = {
   id: string;
   presetId?: string;
@@ -1209,6 +1217,7 @@ export type AiChatProvider = {
   protocol: AiChatProtocol;
   baseUrl: string;
   enabled: boolean;
+  isDefault: boolean;
   apiKeySaved: boolean;
   models: AiChatModel[];
   createdAt: string;
@@ -1279,6 +1288,7 @@ export type AiChatMessage = {
   itemSort: number;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
+  reasoningContent: string;
   contentBlocks: InputContentBlockSummary[];
   providerId?: string;
   providerName?: string;
@@ -1324,6 +1334,10 @@ export type AiChatBootstrap = {
 export type AiProviderTemplate = {
   id: string;
   name: string;
+  vendorId: string;
+  vendorName: string;
+  channelId: string;
+  channelName: string;
   protocol: AiChatProtocol;
   baseUrl: string;
   apiKeyUrl: string;
