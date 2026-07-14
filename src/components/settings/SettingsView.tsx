@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import type {
   AppearanceSettings,
   AgentRuntimeSettings,
+  AgentProviderDescriptor,
   AiChatProvider,
   ClaudeModelInfo,
   GeneralSettings,
@@ -58,6 +59,9 @@ type SettingsViewProps = {
   openTargets: OpenAppTarget[];
   claudeModels: ClaudeModelInfo;
   aiChatProviders: AiChatProvider[];
+  agentProviders: AgentProviderDescriptor[];
+  agentProvidersLoading: boolean;
+  agentProvidersError: string;
   onSelectSection: (section: SettingsSection) => void;
   onOpenThread: (projectId: string, threadId: string) => void | Promise<void>;
   onRemoveProject: (project: ProjectSummary) => void;
@@ -74,6 +78,7 @@ type SettingsViewProps = {
   onUpdateShortcuts: (update: ShortcutSettingsUpdate) => void | Promise<void>;
   onUpdateOpenWith: (update: OpenWithSettingsUpdate) => void | Promise<void>;
   onRefreshAiChatProviders: () => Promise<void> | void;
+  onRefreshAgentProviders: () => Promise<void> | void;
   onReturnWorkspace: () => void;
   returnLabel?: string;
 };
@@ -112,6 +117,9 @@ export function SettingsView({
   openTargets,
   claudeModels,
   aiChatProviders,
+  agentProviders,
+  agentProvidersLoading,
+  agentProvidersError,
   onSelectSection,
   onOpenThread,
   onRemoveProject,
@@ -128,6 +136,7 @@ export function SettingsView({
   onUpdateShortcuts,
   onUpdateOpenWith,
   onRefreshAiChatProviders,
+  onRefreshAgentProviders,
   onReturnWorkspace,
   returnLabel,
 }: SettingsViewProps) {
@@ -158,8 +167,12 @@ export function SettingsView({
           models={models}
           agentRuntime={agentRuntime}
           claudeModels={claudeModels}
+          providers={agentProviders}
+          providersLoading={agentProvidersLoading}
+          providersError={agentProvidersError}
           onUpdateAgentRuntime={onUpdateAgentRuntime}
           onUpdateModels={onUpdateModels}
+          onRefreshProviders={onRefreshAgentProviders}
         />
       );
     }
@@ -255,6 +268,9 @@ export function SettingsView({
     activeThreadId,
     activeProject,
     agentRuntime,
+    agentProviders,
+    agentProvidersLoading,
+    agentProvidersError,
     aiChatProviders,
     appearance,
     effectiveWindowMaterial,
@@ -279,6 +295,7 @@ export function SettingsView({
     onUpdateOpenWith,
     onUpdateShortcuts,
     onRefreshAiChatProviders,
+    onRefreshAgentProviders,
     showToast,
   ]);
 

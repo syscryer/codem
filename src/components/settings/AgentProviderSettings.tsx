@@ -22,7 +22,6 @@ import type {
   AgentProviderId,
   AgentRuntimeSettings,
   AgentProviderDescriptor,
-  AgentProviderRegistry,
   AgentSettingsDiagnostics,
   ClaudeCliVersionInfo,
   ClaudeModelInfo,
@@ -32,7 +31,6 @@ import type {
 import type { AgentRuntimeSettingsUpdate } from '../../hooks/useAppSettings';
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss';
 import {
-  fetchAgentProviderRegistry,
   fetchAgentSettingsDiagnostics,
   probeCodexAgent,
   probeGrokAgent,
@@ -53,26 +51,32 @@ import { readClaudeCliVersionInfo } from '../../lib/settings-runtime';
 import { AgentProviderIcon } from '../AgentProviderIcon';
 import { PopoverPortal } from '../PopoverPortal';
 
-type ProviderLoadState = 'loading' | 'ready' | 'error';
 type ProviderProbeState = 'idle' | 'checking' | 'ready' | 'error';
 
 type AgentProviderSettingsProps = {
   agentRuntime: AgentRuntimeSettings;
   claudeModels: ClaudeModelInfo;
+  providers: AgentProviderDescriptor[];
+  providersLoading: boolean;
+  providersError: string;
   onUpdateAgentRuntime: (update: AgentRuntimeSettingsUpdate) => void | Promise<void>;
+  onRefreshProviders: () => Promise<void> | void;
 };
 
 export function AgentProviderSettings({
   agentRuntime,
   claudeModels,
+  providers,
+  providersLoading,
+  providersError,
   onUpdateAgentRuntime,
+  onRefreshProviders,
 }: AgentProviderSettingsProps) {
-  const [registry, setRegistry] = useState<AgentProviderRegistry | null>(null);
-  const [loadState, setLoadState] = useState<ProviderLoadState>('loading');
-  const [loadError, setLoadError] = useState('');
   const [selectedProviderId, setSelectedProviderId] = useState('claude-code');
   const [claudeCliInfo, setClaudeCliInfo] = useState<ClaudeCliVersionInfo | null>(null);
   const [settingsDiagnostics, setSettingsDiagnostics] = useState<Partial<Record<AgentProviderId, AgentSettingsDiagnostics>>>({});
+  const [detailsLoading, setDetailsLoading] = useState(true);
+  const [detailsError, setDetailsError] = useState('');
   const [grokProbeState, setGrokProbeState] = useState<ProviderProbeState>('idle');
   const [grokProbe, setGrokProbe] = useState<GrokAcpProbeResult | null>(null);
   const [grokProbeError, setGrokProbeError] = useState('');
@@ -81,60 +85,77 @@ export function AgentProviderSettings({
   const [codexProbeError, setCodexProbeError] = useState('');
   const [agentRuntimeSaving, setAgentRuntimeSaving] = useState(false);
   const [diagnosticCheckingProviderId, setDiagnosticCheckingProviderId] = useState<AgentProviderId | null>(null);
-  const registryControllerRef = useRef<AbortController | null>(null);
+  const detailsControllerRef = useRef<AbortController | null>(null);
   const grokControllerRef = useRef<AbortController | null>(null);
   const codexControllerRef = useRef<AbortController | null>(null);
 
-  const loadProviders = useCallback(async () => {
-    registryControllerRef.current?.abort();
+  const loadProviderDetails = useCallback(async () => {
+    detailsControllerRef.current?.abort();
     const controller = new AbortController();
-    registryControllerRef.current = controller;
-    setLoadState('loading');
-    setLoadError('');
+    detailsControllerRef.current = controller;
+    setDetailsLoading(true);
+    setDetailsError('');
 
-    try {
-      const [nextRegistry, nextClaudeCliInfo, ...nextDiagnostics] = await Promise.all([
-        fetchAgentProviderRegistry(controller.signal),
-        readClaudeCliVersionInfo(),
-        fetchAgentSettingsDiagnostics('claude-code', controller.signal),
-        fetchAgentSettingsDiagnostics('openai-codex', controller.signal),
-        fetchAgentSettingsDiagnostics('grok-build', controller.signal),
-      ]);
-      if (controller.signal.aborted) {
-        return;
-      }
-      setRegistry(nextRegistry);
-      setClaudeCliInfo(nextClaudeCliInfo);
-      setSettingsDiagnostics(Object.fromEntries(
-        nextDiagnostics.map((item) => [item.providerId, item]),
-      ));
-      setSelectedProviderId((current) =>
-        nextRegistry.providers.some((provider) => provider.id === current)
-          ? current
-          : (nextRegistry.providers[0]?.id ?? ''),
-      );
-      setLoadState('ready');
-    } catch (error) {
-      if (controller.signal.aborted) {
-        return;
-      }
-      setLoadError(error instanceof Error ? error.message : '读取 Agent Provider 列表失败');
-      setLoadState('error');
+    const providerIds: AgentProviderId[] = ['claude-code', 'openai-codex', 'grok-build'];
+    const [cliResults, diagnosticResults] = await Promise.all([
+      Promise.allSettled([readClaudeCliVersionInfo()]),
+      Promise.allSettled(
+        providerIds.map((providerId) => fetchAgentSettingsDiagnostics(providerId, controller.signal)),
+      ),
+    ]);
+
+    if (controller.signal.aborted) {
+      return;
     }
+
+    const errors: string[] = [];
+    const cliResult = cliResults[0];
+    if (cliResult.status === 'fulfilled') {
+      setClaudeCliInfo(cliResult.value);
+    } else {
+      errors.push('Claude CLI 版本读取失败');
+    }
+
+    const nextDiagnostics: Partial<Record<AgentProviderId, AgentSettingsDiagnostics>> = {};
+    diagnosticResults.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        nextDiagnostics[providerIds[index]] = result.value;
+      } else {
+        errors.push(`${defaultAgentProviderName(providerIds[index])} 诊断读取失败`);
+      }
+    });
+    setSettingsDiagnostics((current) => ({ ...current, ...nextDiagnostics }));
+    setDetailsError(errors.join('；'));
+    setDetailsLoading(false);
   }, []);
 
+  const refreshProviders = useCallback(async () => {
+    await Promise.allSettled([
+      Promise.resolve().then(() => onRefreshProviders()),
+      loadProviderDetails(),
+    ]);
+  }, [loadProviderDetails, onRefreshProviders]);
+
   useEffect(() => {
-    void loadProviders();
+    void loadProviderDetails();
     return () => {
-      registryControllerRef.current?.abort();
+      detailsControllerRef.current?.abort();
       grokControllerRef.current?.abort();
       codexControllerRef.current?.abort();
     };
-  }, [loadProviders]);
+  }, [loadProviderDetails]);
+
+  useEffect(() => {
+    setSelectedProviderId((current) =>
+      providers.some((provider) => provider.id === current)
+        ? current
+        : (providers[0]?.id ?? current),
+    );
+  }, [providers]);
 
   const selectedProvider = useMemo(
-    () => registry?.providers.find((provider) => provider.id === selectedProviderId) ?? null,
-    [registry, selectedProviderId],
+    () => providers.find((provider) => provider.id === selectedProviderId) ?? null,
+    [providers, selectedProviderId],
   );
 
   async function runGrokProbe() {
@@ -199,7 +220,7 @@ export function AgentProviderSettings({
     setAgentRuntimeSaving(true);
     try {
       await onUpdateAgentRuntime({ experimentalAgentRunEnabled: enabled });
-      await loadProviders();
+      await refreshProviders();
     } finally {
       setAgentRuntimeSaving(false);
     }
@@ -225,40 +246,17 @@ export function AgentProviderSettings({
     try {
       const diagnostics = await fetchAgentSettingsDiagnostics(providerId, undefined, true);
       setSettingsDiagnostics((current) => ({ ...current, [providerId]: diagnostics }));
+    } catch (error) {
+      setDetailsError(error instanceof Error ? error.message : '运行原生诊断失败');
     } finally {
       setDiagnosticCheckingProviderId(null);
     }
   }
 
-  if (loadState === 'loading' && !registry) {
-    return (
-      <div className="settings-panel agent-provider-loading" role="status">
-        <LoaderCircle size={17} className="spin" />
-        <span>正在读取 Agent Provider</span>
-      </div>
-    );
-  }
-
-  if (loadState === 'error' && !registry) {
-    return (
-      <div className="settings-panel agent-provider-load-error" role="alert">
-        <AlertCircle size={18} />
-        <div>
-          <strong>Provider 列表读取失败</strong>
-          <span>{loadError}</span>
-        </div>
-        <button type="button" className="settings-action-button" onClick={() => void loadProviders()}>
-          <RefreshCw size={14} />
-          <span>重试</span>
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div
       className="settings-panel agent-provider-shell"
-      aria-busy={loadState === 'loading'}
+      aria-busy={providersLoading || detailsLoading}
     >
       <div className="agent-provider-runtime-settings">
         <div className="agent-provider-default-setting">
@@ -268,7 +266,7 @@ export function AgentProviderSettings({
           </div>
           <AgentProviderDropdown
             value={agentRuntime.defaultProviderId}
-            providers={registry?.providers ?? []}
+            providers={providers}
             disabled={agentRuntimeSaving}
             onChange={(providerId) => void updateDefaultProvider(providerId)}
           />
@@ -296,26 +294,28 @@ export function AgentProviderSettings({
       <div className="agent-provider-manager">
         <aside className="agent-provider-list" aria-label="Agent Provider">
           <div className="agent-provider-list-head">
-            <span>{registry?.providers.length ?? 0} 个提供商</span>
+            <span>{providersLoading && providers.length === 0 ? '正在读取提供商' : `${providers.length} 个提供商`}</span>
             <button
               type="button"
               className="settings-icon-button"
               title="刷新 Provider 列表"
               aria-label="刷新 Provider 列表"
-              disabled={loadState === 'loading'}
-              onClick={() => void loadProviders()}
+              disabled={providersLoading || detailsLoading}
+              onClick={() => void refreshProviders()}
             >
-              <RefreshCw size={14} className={loadState === 'loading' ? 'spin' : ''} />
+              <RefreshCw size={14} className={providersLoading || detailsLoading ? 'spin' : ''} />
             </button>
           </div>
           <div className="agent-provider-list-items">
-            {loadState === 'error' ? (
-              <div className="agent-provider-list-error" role="alert" title={loadError}>
+            {providersError ? (
+              <div className="agent-provider-list-error" role="alert" title={providersError}>
                 <AlertCircle size={13} />
-                <span>{loadError}</span>
+                <span>{providersError}</span>
+                <button type="button" onClick={() => void refreshProviders()}>重试</button>
               </div>
             ) : null}
-            {registry?.providers.map((provider) => {
+            {providersLoading && providers.length === 0 ? <AgentProviderListSkeleton /> : null}
+            {providers.map((provider) => {
               const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe);
               return (
                 <button
@@ -340,25 +340,83 @@ export function AgentProviderSettings({
         </aside>
 
         {selectedProvider ? (
-          <ProviderDetail
-            provider={selectedProvider}
-            claudeCliInfo={claudeCliInfo}
-            claudeModels={claudeModels}
-            grokProbe={grokProbe}
-            grokProbeState={grokProbeState}
-            grokProbeError={grokProbeError}
-            codexProbe={codexProbe}
-            codexProbeState={codexProbeState}
-            codexProbeError={codexProbeError}
-            settingsDiagnostics={settingsDiagnostics[selectedProvider.id as AgentProviderId] ?? null}
-            onProbeGrok={runGrokProbe}
-            onProbeCodex={runCodexProbe}
-            onRefresh={loadProviders}
-            diagnosticChecking={diagnosticCheckingProviderId === selectedProvider.id}
-            onRunNativeDiagnostic={() => runNativeDiagnostic(selectedProvider.id as AgentProviderId)}
-          />
-        ) : null}
+          <div className="agent-provider-detail-region">
+            {detailsLoading || detailsError ? (
+              <div
+                className={`agent-provider-detail-progress${detailsError ? ' error' : ''}`}
+                role={detailsError ? 'alert' : 'status'}
+              >
+                {detailsError ? <AlertCircle size={13} /> : <LoaderCircle size={13} className="spin" />}
+                <span>{detailsError || '正在后台读取 CLI 与诊断信息'}</span>
+                {detailsError ? (
+                  <button type="button" onClick={() => void loadProviderDetails()}>重试</button>
+                ) : null}
+              </div>
+            ) : null}
+            <ProviderDetail
+              provider={selectedProvider}
+              claudeCliInfo={claudeCliInfo}
+              claudeModels={claudeModels}
+              grokProbe={grokProbe}
+              grokProbeState={grokProbeState}
+              grokProbeError={grokProbeError}
+              codexProbe={codexProbe}
+              codexProbeState={codexProbeState}
+              codexProbeError={codexProbeError}
+              settingsDiagnostics={settingsDiagnostics[selectedProvider.id as AgentProviderId] ?? null}
+              onProbeGrok={runGrokProbe}
+              onProbeCodex={runCodexProbe}
+              onRefresh={refreshProviders}
+              diagnosticChecking={diagnosticCheckingProviderId === selectedProvider.id}
+              onRunNativeDiagnostic={() => runNativeDiagnostic(selectedProvider.id as AgentProviderId)}
+            />
+          </div>
+        ) : providersLoading ? (
+          <AgentProviderDetailSkeleton />
+        ) : (
+          <div className="agent-provider-detail-empty" role={providersError ? 'alert' : 'status'}>
+            <AlertCircle size={18} />
+            <strong>{providersError ? 'Provider 列表读取失败' : '暂无 Agent Provider'}</strong>
+            <span>{providersError || '刷新后重试。'}</span>
+            <button type="button" className="settings-action-button" onClick={() => void refreshProviders()}>
+              <RefreshCw size={14} />
+              <span>重试</span>
+            </button>
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+function AgentProviderListSkeleton() {
+  return (
+    <div className="agent-provider-list-skeleton" aria-hidden="true">
+      {[0, 1, 2].map((item) => (
+        <div className="agent-provider-skeleton-row" key={item}>
+          <span className="agent-provider-skeleton-icon" />
+          <span className="agent-provider-skeleton-copy">
+            <i />
+            <i />
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AgentProviderDetailSkeleton() {
+  return (
+    <div className="agent-provider-detail-skeleton" aria-hidden="true">
+      <div className="agent-provider-detail-skeleton-head">
+        <span className="agent-provider-skeleton-icon large" />
+        <span className="agent-provider-skeleton-copy">
+          <i />
+          <i />
+        </span>
+      </div>
+      <div className="agent-provider-detail-skeleton-badges"><i /><i /><i /></div>
+      <div className="agent-provider-detail-skeleton-lines"><i /><i /><i /><i /></div>
     </div>
   );
 }

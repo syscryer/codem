@@ -421,6 +421,7 @@ export default function App() {
     providers: agentProviders,
     providersLoading: agentProvidersLoading,
     providersError: agentProvidersError,
+    refreshProviders: refreshAgentProviders,
     draftProviderId,
     permissionMode: genericAgentPermissionMode,
     model: genericAgentModel,
@@ -1675,6 +1676,9 @@ export default function App() {
         openTargets={openTargets}
         claudeModels={claudeModels}
         aiChatProviders={ordinaryChat.providers}
+        agentProviders={agentProviders}
+        agentProvidersLoading={agentProvidersLoading}
+        agentProvidersError={agentProvidersError}
         onSelectSection={(section) => navigateToLocation({ kind: 'settings', section })}
         onOpenThread={handleSelectThread}
         onRemoveProject={openRemoveProjectDialog}
@@ -1693,6 +1697,7 @@ export default function App() {
         onRefreshAiChatProviders={async () => {
           await ordinaryChat.refreshBootstrap();
         }}
+        onRefreshAgentProviders={refreshAgentProviders}
         onReturnWorkspace={returnWorkspace}
         returnLabel={settingsReturnLabel}
       />

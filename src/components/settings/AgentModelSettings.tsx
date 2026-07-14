@@ -1,6 +1,6 @@
 import { Bot, SlidersHorizontal } from 'lucide-react';
 import { useState } from 'react';
-import type { AgentRuntimeSettings, ClaudeModelInfo, ModelSettings } from '../../types';
+import type { AgentProviderDescriptor, AgentRuntimeSettings, ClaudeModelInfo, ModelSettings } from '../../types';
 import type { AgentRuntimeSettingsUpdate, ModelSettingsUpdate } from '../../hooks/useAppSettings';
 import { AgentProviderSettings } from './AgentProviderSettings';
 import { ModelSettingsPanel } from './ModelSettings';
@@ -11,16 +11,24 @@ type AgentModelSettingsSectionProps = {
   models: ModelSettings;
   agentRuntime: AgentRuntimeSettings;
   claudeModels: ClaudeModelInfo;
+  providers: AgentProviderDescriptor[];
+  providersLoading: boolean;
+  providersError: string;
   onUpdateAgentRuntime: (update: AgentRuntimeSettingsUpdate) => void | Promise<void>;
   onUpdateModels: (update: ModelSettingsUpdate) => void | Promise<void>;
+  onRefreshProviders: () => Promise<void> | void;
 };
 
 export function AgentModelSettingsSection({
   models,
   agentRuntime,
   claudeModels,
+  providers,
+  providersLoading,
+  providersError,
   onUpdateAgentRuntime,
   onUpdateModels,
+  onRefreshProviders,
 }: AgentModelSettingsSectionProps) {
   const [activeTab, setActiveTab] = useState<AgentSettingsTab>('providers');
 
@@ -54,7 +62,11 @@ export function AgentModelSettingsSection({
         <AgentProviderSettings
           agentRuntime={agentRuntime}
           claudeModels={claudeModels}
+          providers={providers}
+          providersLoading={providersLoading}
+          providersError={providersError}
           onUpdateAgentRuntime={onUpdateAgentRuntime}
+          onRefreshProviders={onRefreshProviders}
         />
       </div>
       <div hidden={activeTab !== 'models'}>

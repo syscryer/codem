@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   CLAUDE_CODE_PROVIDER_ID,
   DEFAULT_MODEL_VALUE,
@@ -192,6 +192,7 @@ export function useAgentRun({
   const reasoningEffortRef = useRef('');
   const modelCatalogCacheRef = useRef(new Map<string, AgentModelCatalog>());
   const defaultProviderIdRef = useRef(defaultProviderId);
+  const providersControllerRef = useRef<AbortController | null>(null);
 
   const runningThreadIds = Object.keys(activeRunsByThreadId);
   const activeTurnIdsByThreadId = Object.fromEntries(
@@ -221,27 +222,33 @@ export function useAgentRun({
     return () => window.clearInterval(timer);
   }, [runningThreadIds.length]);
 
-  useEffect(() => {
+  const refreshProviders = useCallback(async () => {
+    providersControllerRef.current?.abort();
     const controller = new AbortController();
+    providersControllerRef.current = controller;
     setProvidersLoading(true);
     setProvidersError('');
-    void fetchAgentProviderRegistry(controller.signal)
-      .then((registry) => {
+
+    try {
+      const registry = await fetchAgentProviderRegistry(controller.signal);
+      if (!controller.signal.aborted) {
         setProviders(registry.providers);
-      })
-      .catch((error) => {
-        if (controller.signal.aborted) {
-          return;
-        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
         setProvidersError(error instanceof Error ? error.message : '读取 Agent Provider 列表失败');
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) {
-          setProvidersLoading(false);
-        }
-      });
-    return () => controller.abort();
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setProvidersLoading(false);
+      }
+    }
   }, []);
+
+  useEffect(() => {
+    void refreshProviders();
+    return () => providersControllerRef.current?.abort();
+  }, [refreshProviders]);
 
   useEffect(() => {
     if (!activeThreadSummary) {
@@ -1298,6 +1305,7 @@ export function useAgentRun({
     providers,
     providersLoading,
     providersError,
+    refreshProviders,
     draftProviderId,
     permissionMode,
     model,

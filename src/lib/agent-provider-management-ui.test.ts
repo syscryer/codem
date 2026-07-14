@@ -23,6 +23,8 @@ const providerSettingsSource = await readFile(
   new URL('../components/settings/AgentProviderSettings.tsx', import.meta.url),
   'utf8',
 );
+const appSource = await readFile(new URL('../App.tsx', import.meta.url), 'utf8');
+const agentRunSource = await readFile(new URL('../hooks/useAgentRun.ts', import.meta.url), 'utf8');
 
 test('settings exposes Agent providers without adding a new navigation section', () => {
   assert.match(sidebarSource, /id: 'providers', label: 'Agent 与模型'/);
@@ -39,6 +41,16 @@ test('provider settings exposes a persistent default Agent selector with brand i
   assert.match(providerSettingsSource, /<AgentProviderIcon providerId=\{provider\.id\} size=\{16\} \/>/);
   assert.match(providerSettingsSource, /disabled=\{!selectable\}/);
   assert.match(providerSettingsSource, /await onUpdateAgentRuntime\(\{ defaultProviderId \}\)/);
+});
+
+test('provider settings reuses shared registry and progressively loads diagnostics', () => {
+  assert.match(appSource, /agentProviders=\{agentProviders\}/);
+  assert.match(settingsViewSource, /providers=\{agentProviders\}/);
+  assert.match(agentRunSource, /refreshProviders/);
+  assert.match(providerSettingsSource, /Promise\.allSettled/);
+  assert.match(providerSettingsSource, /agent-provider-list-skeleton/);
+  assert.doesNotMatch(providerSettingsSource, /fetchAgentProviderRegistry/);
+  assert.doesNotMatch(providerSettingsSource, /if \(loadState === 'loading' && !registry\)/);
 });
 
 test('provider management keeps Grok and Codex detection explicit and non-reentrant', () => {

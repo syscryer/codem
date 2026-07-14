@@ -12518,41 +12518,9 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .agent-provider-manager {
-  min-height: 0;
+  min-height: 390px;
   display: grid;
   grid-template-columns: minmax(210px, 224px) minmax(0, 1fr);
-}
-
-.agent-provider-loading,
-.agent-provider-load-error {
-  min-height: 520px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 24px;
-  color: var(--app-muted, #77736c);
-}
-
-.agent-provider-load-error {
-  flex-wrap: wrap;
-  color: var(--danger, #d33a31);
-}
-
-.agent-provider-load-error > div {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-
-.agent-provider-load-error strong {
-  color: var(--app-text-strong, #1f1f1f);
-  font-size: 14px;
-}
-
-.agent-provider-load-error span {
-  color: var(--app-muted, #77736c);
-  font-size: 12px;
 }
 
 .agent-provider-list {
@@ -12601,8 +12569,84 @@ button.git-conflict-overview-row:focus-visible,
 .agent-provider-list-error span {
   min-width: 0;
   overflow: hidden;
+  flex: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agent-provider-list-error button,
+.agent-provider-detail-progress button {
+  flex: 0 0 auto;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: currentColor;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.agent-provider-list-error button:hover,
+.agent-provider-detail-progress button:hover {
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+
+.agent-provider-list-skeleton {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 2px;
+}
+
+.agent-provider-skeleton-row {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+}
+
+.agent-provider-skeleton-icon,
+.agent-provider-skeleton-copy i,
+.agent-provider-detail-skeleton-badges i,
+.agent-provider-detail-skeleton-lines i {
+  background: linear-gradient(
+    100deg,
+    var(--app-surface-subtle, #f6f6f6) 24%,
+    color-mix(in srgb, var(--app-muted, #77736c) 11%, var(--app-surface, #ffffff)) 38%,
+    var(--app-surface-subtle, #f6f6f6) 52%
+  );
+  background-size: 220% 100%;
+  animation: agent-provider-skeleton-shimmer 1.35s ease-in-out infinite;
+}
+
+.agent-provider-skeleton-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+}
+
+.agent-provider-skeleton-icon.large {
+  width: 38px;
+  height: 38px;
+}
+
+.agent-provider-skeleton-copy {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.agent-provider-skeleton-copy i {
+  width: min(72%, 112px);
+  height: 9px;
+  border-radius: 999px;
+}
+
+.agent-provider-skeleton-copy i:last-child {
+  width: min(54%, 82px);
+  height: 7px;
 }
 
 .agent-provider-list-item {
@@ -12688,6 +12732,114 @@ button.git-conflict-overview-row:focus-visible,
 .agent-provider-detail {
   min-width: 0;
   padding: 20px 22px 24px;
+}
+
+.agent-provider-detail-region {
+  min-width: 0;
+}
+
+.agent-provider-detail-progress {
+  min-height: 31px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--app-border, #ececec);
+  background: var(--app-surface-subtle, #fafbfd);
+  color: var(--app-muted, #77736c);
+  font-size: 11px;
+}
+
+.agent-provider-detail-progress span {
+  min-width: 0;
+  flex: 1;
+}
+
+.agent-provider-detail-progress.error {
+  background: color-mix(in srgb, var(--danger, #d33a31) 5%, var(--app-surface, #ffffff));
+  color: var(--danger, #d33a31);
+}
+
+.agent-provider-detail-skeleton {
+  min-width: 0;
+  min-height: 360px;
+  padding: 20px 22px 24px;
+}
+
+.agent-provider-detail-skeleton-head {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+}
+
+.agent-provider-detail-skeleton-head .agent-provider-skeleton-copy i:first-child {
+  width: min(38%, 150px);
+  height: 12px;
+}
+
+.agent-provider-detail-skeleton-head .agent-provider-skeleton-copy i:last-child {
+  width: min(52%, 220px);
+}
+
+.agent-provider-detail-skeleton-badges {
+  display: flex;
+  gap: 6px;
+  margin-top: 18px;
+}
+
+.agent-provider-detail-skeleton-badges i {
+  width: 74px;
+  height: 22px;
+  border-radius: 6px;
+}
+
+.agent-provider-detail-skeleton-lines {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px 24px;
+  margin-top: 18px;
+  border-top: 1px solid var(--app-border, #ececec);
+}
+
+.agent-provider-detail-skeleton-lines i {
+  height: 39px;
+  border-bottom: 1px solid var(--app-border, #ececec);
+  background-size: 220% 100%;
+}
+
+.agent-provider-detail-empty {
+  min-width: 0;
+  min-height: 360px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 7px;
+  padding: 24px;
+  color: var(--app-muted, #77736c);
+  text-align: center;
+}
+
+.agent-provider-detail-empty strong {
+  color: var(--app-text-strong, #1f1f1f);
+  font-size: 14px;
+}
+
+.agent-provider-detail-empty > span {
+  max-width: 420px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@keyframes agent-provider-skeleton-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: -100% 0;
+  }
 }
 
 .agent-provider-detail-head {
@@ -13125,8 +13277,14 @@ button.git-conflict-overview-row:focus-visible,
     transition: none;
   }
 
-  .agent-provider-shell .spin,
-  .agent-provider-loading .spin {
+  .agent-provider-shell .spin {
+    animation: none;
+  }
+
+  .agent-provider-skeleton-icon,
+  .agent-provider-skeleton-copy i,
+  .agent-provider-detail-skeleton-badges i,
+  .agent-provider-detail-skeleton-lines i {
     animation: none;
   }
 }
@@ -17888,11 +18046,6 @@ div[data-popover-portal] > * {
 
 .sidebar-ordinary-chats {
   padding: 0 6px 10px 8px;
-}
-
-.sidebar-ordinary-chats + .sidebar-pinned,
-.sidebar-ordinary-chats + .sidebar-projects {
-  border-top: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 72%, transparent);
 }
 
 .ordinary-chat-list {

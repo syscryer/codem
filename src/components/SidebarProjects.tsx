@@ -564,7 +564,7 @@ export function SidebarProjects({
             <span>聊天</span>
             <div className="sidebar-section-actions">
               <button type="button" className="sidebar-toolbar-icon" title="新建聊天" onClick={onCreateOrdinaryChat}>
-                <Plus size={13} />
+                <SquarePen size={14} />
               </button>
             </div>
           </div>
