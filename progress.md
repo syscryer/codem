@@ -366,4 +366,10 @@
 - 只读核对确认普通聊天分支与主线共享提交 `6a4c245`，双方改动尚未提交；主工作区包含已完成的多 Agent 设置改动。
 - 发现 `src-tauri/src/backend.rs`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src/styles.css`、`src/types.ts` 五个重叠文件，决定分别提交后用 Git 合并并逐项保留两边改动。
 - 已启动 Trellis session `ordinary-ai-chat-main-merge`。
+- 普通聊天形成提交 `339a3a2`，主工作区多 Agent 设置形成提交 `06fdd91`。
+- `main` 合并时仅 `Cargo.toml`、`Cargo.lock`、`backend.rs` 产生内容冲突；同时保留 `toml_edit` 和 `toml`，并保留多 Agent MCP 管理与普通聊天 MCP 原始配置解析。
+- 合并后更新 `composer-input-files.test.ts` 的旧源码断言，明确 Agent 附件仍要求工作目录，普通聊天允许无项目内联图片。
+- 合并提交为 `eece0a1`；Rust 全量 86 通过/1 忽略、桌面 9/9、前端 431/431、TypeScript 和生产构建均通过。
+- 主工作区桌面开发模式已重启，5173、3001 health/bootstrap 返回 200；隔离 5174、3101 保持运行。
+- Trellis session 已完成；未推送任何远端。
 - 服务启动配置检索再次误用了 Windows 不支持的 `vite.config.*` 路径通配符；其他检查正常完成，后续改用 `rg --files -g`。
