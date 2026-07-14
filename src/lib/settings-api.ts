@@ -6,6 +6,7 @@ import {
   GROK_BUILD_PROVIDER_ID,
   normalizeAccentHexColor,
   OPENAI_CODEX_PROVIDER_ID,
+  OPENCODE_PROVIDER_ID,
 } from '../constants';
 import { cloneDefaultWorkbenchIgnorePatterns, mergeWorkbenchIgnorePatterns } from './review-ignore-patterns';
 import type {
@@ -278,6 +279,7 @@ function normalizeAgentProviderId(value: unknown): AgentProviderId {
     value === CLAUDE_CODE_PROVIDER_ID
     || value === GROK_BUILD_PROVIDER_ID
     || value === OPENAI_CODEX_PROVIDER_ID
+    || value === OPENCODE_PROVIDER_ID
   ) {
     return value;
   }

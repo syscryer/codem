@@ -261,11 +261,19 @@ pub struct AcpUserInputRequest {
 pub enum AcpRuntimeEvent {
     TextDelta { text: String },
     ThoughtChunk,
+    Usage { usage: AgentUsageSnapshot },
     ToolCall { call: AcpToolCall },
     ToolCallUpdate { update: AcpToolCallUpdate },
     PermissionRequest { request: AcpPermissionRequest },
     UserInputRequest { request: AcpUserInputRequest },
     InteractionResolved { request_id: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AcpPermissionPolicy {
+    Interactive,
+    AutoApproveOnce,
+    AutoApproveAlways,
 }
 
 #[derive(Debug)]
@@ -403,6 +411,25 @@ where
         Ok(())
     }
 
+    pub async fn set_config_option(
+        &mut self,
+        session_id: &str,
+        config_id: &str,
+        value: &str,
+    ) -> Result<(), AcpError> {
+        self.request(
+            "session/set_config_option",
+            json!({
+                "sessionId": session_id,
+                "configId": config_id,
+                "value": value,
+            }),
+            ACP_REQUEST_TIMEOUT,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn prompt_text(
         &mut self,
         session_id: &str,
@@ -437,8 +464,31 @@ where
         &mut self,
         session_id: &str,
         prompt: &[AcpPromptInput],
+        cancel: watch::Receiver<bool>,
+        control: &mut mpsc::UnboundedReceiver<AgentControlCommand>,
+        on_event: F,
+    ) -> Result<AcpPromptOutcome, AcpError>
+    where
+        F: FnMut(AcpRuntimeEvent),
+    {
+        self.prompt_stream_with_permission_policy(
+            session_id,
+            prompt,
+            cancel,
+            control,
+            AcpPermissionPolicy::Interactive,
+            on_event,
+        )
+        .await
+    }
+
+    pub async fn prompt_stream_with_permission_policy<F>(
+        &mut self,
+        session_id: &str,
+        prompt: &[AcpPromptInput],
         mut cancel: watch::Receiver<bool>,
         control: &mut mpsc::UnboundedReceiver<AgentControlCommand>,
+        permission_policy: AcpPermissionPolicy,
         mut on_event: F,
     ) -> Result<AcpPromptOutcome, AcpError>
     where
@@ -489,14 +539,22 @@ where
                     match message? {
                         AcpMessage::Response { id, result, error } if id == json!(request_id) => {
                             let result = finish_response(result, error)?;
-                            outcome.stop_reason = result
+                            let reported_stop_reason = result
                                 .get("stopReason")
                                 .and_then(Value::as_str)
                                 .ok_or_else(|| AcpError::Protocol("session/prompt 缺少 stopReason".to_string()))?
                                 .to_string();
-                            outcome.usage = parse_acp_usage(
-                                result.get("_meta").and_then(|value| value.get("usage")),
+                            outcome.stop_reason = if outcome.cancel_sent {
+                                "cancelled".to_string()
+                            } else {
+                                reported_stop_reason
+                            };
+                            let final_usage = parse_acp_usage(
+                                result
+                                    .get("usage")
+                                    .or_else(|| result.get("_meta").and_then(|value| value.get("usage"))),
                             );
+                            outcome.usage = final_usage;
                             return Ok(outcome);
                         }
                         AcpMessage::Request { id, method, params } => {
@@ -510,6 +568,7 @@ where
                                             request,
                                             &mut cancel,
                                             control,
+                                            permission_policy,
                                             outcome.cancel_sent,
                                             &mut on_event,
                                         )
@@ -551,6 +610,7 @@ where
         request: AcpPermissionRequest,
         cancel: &mut watch::Receiver<bool>,
         control: &mut mpsc::UnboundedReceiver<AgentControlCommand>,
+        permission_policy: AcpPermissionPolicy,
         cancel_already_sent: bool,
         on_event: &mut F,
     ) -> Result<bool, AcpError>
@@ -558,10 +618,12 @@ where
         F: FnMut(AcpRuntimeEvent),
     {
         let request_id = request.request_id.clone();
-        on_event(AcpRuntimeEvent::PermissionRequest {
-            request: request.clone(),
-        });
         if *cancel.borrow() {
+            if permission_policy == AcpPermissionPolicy::Interactive {
+                on_event(AcpRuntimeEvent::PermissionRequest {
+                    request: request.clone(),
+                });
+            }
             if !cancel_already_sent {
                 self.send_cancel_request(&request, &rpc_id).await?;
             } else {
@@ -571,6 +633,23 @@ where
             on_event(AcpRuntimeEvent::InteractionResolved { request_id });
             return Ok(true);
         }
+        if let Some(option_id) = automatic_permission_option(&request.options, permission_policy) {
+            self.respond_result(
+                rpc_id,
+                json!({
+                    "outcome": {
+                        "outcome": "selected",
+                        "optionId": option_id,
+                    },
+                }),
+            )
+            .await?;
+            on_event(AcpRuntimeEvent::InteractionResolved { request_id });
+            return Ok(cancel_already_sent);
+        }
+        on_event(AcpRuntimeEvent::PermissionRequest {
+            request: request.clone(),
+        });
         let mut cancel_channel_open = true;
 
         loop {
@@ -938,6 +1017,17 @@ impl AcpStdioClient {
         self.connection.set_model(session_id, model_id).await
     }
 
+    pub async fn set_config_option(
+        &mut self,
+        session_id: &str,
+        config_id: &str,
+        value: &str,
+    ) -> Result<(), AcpError> {
+        self.connection
+            .set_config_option(session_id, config_id, value)
+            .await
+    }
+
     pub async fn prompt_text(
         &mut self,
         session_id: &str,
@@ -976,6 +1066,30 @@ impl AcpStdioClient {
     {
         self.connection
             .prompt_stream(session_id, prompt, cancel, control, on_event)
+            .await
+    }
+
+    pub async fn prompt_stream_with_permission_policy<F>(
+        &mut self,
+        session_id: &str,
+        prompt: &[AcpPromptInput],
+        cancel: watch::Receiver<bool>,
+        control: &mut mpsc::UnboundedReceiver<AgentControlCommand>,
+        permission_policy: AcpPermissionPolicy,
+        on_event: F,
+    ) -> Result<AcpPromptOutcome, AcpError>
+    where
+        F: FnMut(AcpRuntimeEvent),
+    {
+        self.connection
+            .prompt_stream_with_permission_policy(
+                session_id,
+                prompt,
+                cancel,
+                control,
+                permission_policy,
+                on_event,
+            )
             .await
     }
 
@@ -1020,6 +1134,18 @@ pub async fn probe_acp_agent(
         })
     }
     .await;
+    client.shutdown().await;
+    result
+}
+
+pub async fn probe_acp_initialize(
+    program: &str,
+    arguments: &[&str],
+    cwd: &Path,
+    client_version: &str,
+) -> Result<AcpInitializeSummary, AcpError> {
+    let mut client = AcpStdioClient::spawn(program, arguments, cwd).await?;
+    let result = client.initialize(client_version).await;
     client.shutdown().await;
     result
 }
@@ -1090,12 +1216,16 @@ fn parse_acp_usage(value: Option<&Value>) -> AgentUsageSnapshot {
         return AgentUsageSnapshot::default();
     };
     let full_input = value.get("inputTokens").and_then(Value::as_u64);
-    let cache_read = value.get("cacheReadInputTokens").and_then(Value::as_u64);
+    let cache_read = value
+        .get("cacheReadInputTokens")
+        .or_else(|| value.get("cachedReadTokens"))
+        .and_then(Value::as_u64);
     AgentUsageSnapshot {
         input_tokens: full_input.map(|tokens| tokens.saturating_sub(cache_read.unwrap_or(0))),
         output_tokens: value.get("outputTokens").and_then(Value::as_u64),
         cache_creation_input_tokens: value
             .get("cacheCreationInputTokens")
+            .or_else(|| value.get("cachedWriteTokens"))
             .and_then(Value::as_u64),
         cache_read_input_tokens: cache_read,
         model_context_window: value.get("modelContextWindow").and_then(Value::as_u64),
@@ -1104,6 +1234,30 @@ fn parse_acp_usage(value: Option<&Value>) -> AgentUsageSnapshot {
             .or_else(|| value.get("total_cost_usd"))
             .and_then(Value::as_f64),
     }
+}
+
+fn parse_session_usage_update(value: &Value) -> Option<AgentUsageSnapshot> {
+    let used = value.get("used").and_then(Value::as_u64)?;
+    let size = value.get("size").and_then(Value::as_u64)?;
+    let total_cost_usd = value
+        .get("cost")
+        .and_then(Value::as_object)
+        .filter(|cost| {
+            cost.get("currency")
+                .and_then(Value::as_str)
+                .is_some_and(|currency| currency.eq_ignore_ascii_case("USD"))
+        })
+        .and_then(|cost| cost.get("amount"))
+        .and_then(Value::as_f64)
+        .filter(|amount| amount.is_finite() && *amount >= 0.0);
+    Some(AgentUsageSnapshot {
+        input_tokens: Some(used),
+        output_tokens: None,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+        model_context_window: Some(size),
+        total_cost_usd,
+    })
 }
 
 fn summarize_initialize_result(result: &Value) -> Result<AcpInitializeSummary, AcpError> {
@@ -1216,7 +1370,18 @@ fn summarize_session_result(
         .ok_or_else(|| AcpError::Protocol("session 响应缺少 sessionId".to_string()))?;
     Ok(AcpSessionSummary {
         session_id: session_id.to_string(),
-        current_model_id: optional_string(result.pointer("/models/currentModelId")),
+        current_model_id: optional_string(result.pointer("/models/currentModelId")).or_else(|| {
+            result
+                .get("configOptions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find(|option| {
+                    option.get("id").and_then(Value::as_str) == Some("model")
+                        || option.get("category").and_then(Value::as_str) == Some("model")
+                })
+                .and_then(|option| optional_string(option.get("currentValue")))
+        }),
     })
 }
 
@@ -1454,6 +1619,31 @@ fn select_permission_option(
         .ok_or_else(|| "Provider 没有提供与当前决定匹配的权限选项".to_string())
 }
 
+fn automatic_permission_option<'a>(
+    options: &'a [AcpPermissionOption],
+    policy: AcpPermissionPolicy,
+) -> Option<&'a str> {
+    let priorities: &[&str] = match policy {
+        AcpPermissionPolicy::Interactive => return None,
+        AcpPermissionPolicy::AutoApproveOnce => &["allow_once", "allow_always"],
+        AcpPermissionPolicy::AutoApproveAlways => &["allow_always", "allow_once"],
+    };
+    priorities
+        .iter()
+        .find_map(|kind| {
+            options
+                .iter()
+                .find(|option| option.kind == *kind)
+                .map(|option| option.option_id.as_str())
+        })
+        .or_else(|| {
+            options
+                .iter()
+                .find(|option| option.kind.starts_with("allow_"))
+                .map(|option| option.option_id.as_str())
+        })
+}
+
 fn validate_user_input_answers(
     request: &AcpUserInputRequest,
     answers: Map<String, Value>,
@@ -1624,6 +1814,11 @@ fn collect_session_update(
         "agent_thought_chunk" => {
             outcome.thought_chunk_count += 1;
             return vec![AcpRuntimeEvent::ThoughtChunk];
+        }
+        "usage_update" => {
+            if let Some(usage) = parse_session_usage_update(update) {
+                return vec![AcpRuntimeEvent::Usage { usage }];
+            }
         }
         "tool_call" => {
             if let Some(call) = parse_tool_call(update) {
@@ -1844,7 +2039,8 @@ fn configure_background_command(_command: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_acp_usage, summarize_initialize_result, AcpConnection, AcpEmbeddedResource,
+        collect_session_update, parse_acp_usage, parse_session_usage_update,
+        summarize_initialize_result, AcpConnection, AcpEmbeddedResource, AcpPermissionPolicy,
         AcpPromptCapabilities, AcpPromptInput, AcpPromptOutcome, AcpRuntimeEvent, AcpStdioClient,
     };
 
@@ -1860,6 +2056,54 @@ mod tests {
         assert_eq!(usage.cache_read_input_tokens, Some(20));
         assert_eq!(usage.output_tokens, Some(7));
         assert_eq!(usage.total_cost_usd, Some(0.25));
+    }
+
+    #[test]
+    fn acp_session_usage_update_maps_context_without_polluting_final_usage() {
+        let mut outcome = AcpPromptOutcome {
+            stop_reason: String::new(),
+            text: String::new(),
+            text_truncated: false,
+            thought_chunk_count: 0,
+            update_counts: BTreeMap::new(),
+            client_request_methods: Vec::new(),
+            cancel_sent: false,
+            usage: crate::agent_runtime::AgentUsageSnapshot::default(),
+        };
+        let events = collect_session_update(
+            "session-1",
+            &json!({
+                "sessionId": "session-1",
+                "update": {
+                    "sessionUpdate": "usage_update",
+                    "used": 53000,
+                    "size": 200000,
+                    "cost": { "amount": 0.045, "currency": "USD" }
+                }
+            }),
+            &mut outcome,
+        );
+
+        assert!(matches!(
+            events.as_slice(),
+            [AcpRuntimeEvent::Usage { usage }]
+                if usage.input_tokens == Some(53000)
+                    && usage.model_context_window == Some(200000)
+                    && usage.total_cost_usd == Some(0.045)
+        ));
+        assert_eq!(outcome.update_counts.get("usage_update"), Some(&1));
+        assert_eq!(
+            outcome.usage,
+            crate::agent_runtime::AgentUsageSnapshot::default()
+        );
+
+        let eur = parse_session_usage_update(&json!({
+            "used": 10,
+            "size": 100,
+            "cost": { "amount": 1.2, "currency": "EUR" }
+        }))
+        .unwrap();
+        assert_eq!(eur.total_cost_usd, None);
     }
     use crate::agent_runtime::{AgentControlCommand, AgentPermissionDecision};
     use serde_json::{json, Value};
@@ -2061,7 +2305,11 @@ mod tests {
                     "id": new_session["id"],
                     "result": {
                         "sessionId": "session-1",
-                        "models": { "currentModelId": "model-1" }
+                        "configOptions": [{
+                            "id": "model",
+                            "category": "model",
+                            "currentValue": "provider/model-1"
+                        }]
                     }
                 }),
             )
@@ -2076,6 +2324,21 @@ mod tests {
                     "jsonrpc": "2.0",
                     "id": load_session["id"],
                     "result": { "sessionId": "session-1" }
+                }),
+            )
+            .await;
+
+            let set_config = read_json_line(&mut lines).await;
+            assert_eq!(set_config["method"], "session/set_config_option");
+            assert_eq!(set_config["params"]["sessionId"], "session-1");
+            assert_eq!(set_config["params"]["configId"], "model");
+            assert_eq!(set_config["params"]["value"], "provider/model-2");
+            write_json_line(
+                &mut server_writer,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": set_config["id"],
+                    "result": { "configOptions": [] }
                 }),
             )
             .await;
@@ -2101,13 +2364,93 @@ mod tests {
         client.authenticate("cached_token").await.unwrap();
         let session = client.new_session(Path::new("D:/workspace")).await.unwrap();
         assert_eq!(session.session_id, "session-1");
-        assert_eq!(session.current_model_id.as_deref(), Some("model-1"));
+        assert_eq!(
+            session.current_model_id.as_deref(),
+            Some("provider/model-1")
+        );
         let loaded = client
             .load_session("session-1", Path::new("D:/workspace"))
             .await
             .unwrap();
         assert_eq!(loaded.session_id, "session-1");
+        client
+            .set_config_option("session-1", "model", "provider/model-2")
+            .await
+            .unwrap();
         client.set_model("session-1", "model-2").await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn acp_auto_permission_policy_selects_allow_always_without_exposing_a_card() {
+        let (client_io, server_io) = duplex(16 * 1024);
+        let (client_reader, client_writer) = split(client_io);
+        let (server_reader, mut server_writer) = split(server_io);
+        let server = tokio::spawn(async move {
+            let mut lines = BufReader::new(server_reader).lines();
+            let prompt = read_json_line(&mut lines).await;
+            write_json_line(
+                &mut server_writer,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 77,
+                    "method": "session/request_permission",
+                    "params": {
+                        "sessionId": "session-1",
+                        "toolCall": {
+                            "toolCallId": "tool-1",
+                            "title": "Edit file",
+                            "status": "pending"
+                        },
+                        "options": [
+                            { "optionId": "once", "name": "Allow once", "kind": "allow_once" },
+                            { "optionId": "always", "name": "Always allow", "kind": "allow_always" },
+                            { "optionId": "reject", "name": "Reject", "kind": "reject_once" }
+                        ]
+                    }
+                }),
+            )
+            .await;
+            let permission = read_json_line(&mut lines).await;
+            assert_eq!(permission["id"], 77);
+            assert_eq!(
+                permission["result"]["outcome"],
+                json!({ "outcome": "selected", "optionId": "always" })
+            );
+            write_json_line(
+                &mut server_writer,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": prompt["id"],
+                    "result": { "stopReason": "end_turn" }
+                }),
+            )
+            .await;
+        });
+
+        let (_cancel_sender, cancel_receiver) = watch::channel(false);
+        let (_control_sender, mut control_receiver) = mpsc::unbounded_channel();
+        let mut events = Vec::new();
+        let mut client = AcpConnection::new(client_reader, client_writer);
+        let outcome = client
+            .prompt_stream_with_permission_policy(
+                "session-1",
+                &[AcpPromptInput::Text {
+                    text: "edit".to_string(),
+                }],
+                cancel_receiver,
+                &mut control_receiver,
+                AcpPermissionPolicy::AutoApproveAlways,
+                |event| events.push(event),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.stop_reason, "end_turn");
+        assert!(matches!(
+            events.as_slice(),
+            [AcpRuntimeEvent::InteractionResolved { request_id }] if request_id == "77"
+        ));
         server.await.unwrap();
     }
 
@@ -2161,7 +2504,7 @@ mod tests {
                 json!({
                     "jsonrpc": "2.0",
                     "id": prompt["id"],
-                    "result": { "stopReason": "cancelled" }
+                    "result": { "stopReason": "end_turn" }
                 }),
             )
             .await;

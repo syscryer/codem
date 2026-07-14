@@ -4,6 +4,7 @@ import {
   DEFAULT_MODEL_VALUE,
   GROK_BUILD_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
+  OPENCODE_PROVIDER_ID,
 } from '../constants';
 import {
   applyAgentRunEventToTurn,
@@ -1360,9 +1361,13 @@ function getProviderRunError(
     return `${name} 实验运行未开启，请在“Agent 与模型”设置中启用。`;
   }
   if (provider.available !== true) {
-    return providerId === OPENAI_CODEX_PROVIDER_ID
-      ? '未检测到可由 CodeM 启动的 Codex CLI，请安装独立 CLI、检查 PATH 或设置 CODEX_CLI_PATH 后重启。'
-      : '未检测到可用的 grok CLI，请安装或检查 PATH 后重启。';
+    if (providerId === OPENAI_CODEX_PROVIDER_ID) {
+      return '未检测到可由 CodeM 启动的 Codex CLI，请安装独立 CLI、检查 PATH 或设置 CODEX_CLI_PATH 后重启。';
+    }
+    if (providerId === OPENCODE_PROVIDER_ID) {
+      return '未检测到可由 CodeM 启动的 OpenCode CLI，请安装 OpenCode、检查 PATH 或设置 OPENCODE_CLI_PATH 后重启。';
+    }
+    return '未检测到可用的 grok CLI，请安装或检查 PATH 后重启。';
   }
   if (!provider.selectable) {
     return `${name} 当前不可用于新建聊天。`;
@@ -1376,6 +1381,8 @@ function providerDisplayName(providerId: string, providers: AgentProviderDescrip
       ? 'Grok Build'
       : providerId === OPENAI_CODEX_PROVIDER_ID
         ? 'OpenAI Codex'
+        : providerId === OPENCODE_PROVIDER_ID
+          ? 'OpenCode'
         : providerId);
 }
 

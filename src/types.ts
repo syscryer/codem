@@ -139,6 +139,21 @@ export type GrokAcpProbeResult = {
   probe: GrokAcpProbeSummary | null;
 };
 
+export type OpenCodeAcpProbeSummary = {
+  configured: boolean;
+  modelCount: number;
+  initialize: GrokAcpProbeSummary['initialize'];
+};
+
+export type OpenCodeAcpProbeResult = {
+  installed: boolean;
+  initialized: boolean;
+  command: string | null;
+  version: string | null;
+  error: string | null;
+  probe: OpenCodeAcpProbeSummary | null;
+};
+
 export type CodexAppServerProbeSummary = {
   authenticated: boolean;
   authMode: string | null;
@@ -694,7 +709,7 @@ export type OpenWithTargetsResponse = {
   selectedTargetId: string;
 };
 
-export type AgentProviderId = 'claude-code' | 'grok-build' | 'openai-codex';
+export type AgentProviderId = 'claude-code' | 'grok-build' | 'openai-codex' | 'opencode';
 
 export type AgentRuntimeSettings = {
   experimentalAgentRunEnabled: boolean;

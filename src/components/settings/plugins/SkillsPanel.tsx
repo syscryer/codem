@@ -16,6 +16,7 @@ const providerLabels: Record<AgentProviderId, string> = {
   'claude-code': 'Claude',
   'openai-codex': 'Codex',
   'grok-build': 'Grok',
+  opencode: 'OpenCode',
 };
 
 export function SkillsPanel({ items, providerId, busy, onOpen, onDelete, onCopy }: SkillsPanelProps) {
@@ -59,7 +60,7 @@ export function SkillsPanel({ items, providerId, busy, onOpen, onDelete, onCopy 
             <button type="button" className="settings-icon-button" aria-label="打开 Skill 目录" disabled={busy} onClick={() => onOpen(skill)}>
               <FolderOpen size={15} />
             </button>
-            {(['claude-code', 'openai-codex', 'grok-build'] as AgentProviderId[])
+            {(['claude-code', 'openai-codex', 'grok-build', 'opencode'] as AgentProviderId[])
               .filter((targetProviderId) => targetProviderId !== providerId)
               .map((targetProviderId) => (
                 <button

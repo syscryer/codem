@@ -9639,7 +9639,8 @@ body.git-history-resizing {
 
 .provider-trigger :is(
   .agent-provider-brand-icon-openai-codex,
-  .agent-provider-brand-icon-grok-build
+  .agent-provider-brand-icon-grok-build,
+  .agent-provider-brand-icon-opencode
 ) {
   color: var(--app-text-strong, #202020);
 }
@@ -12490,7 +12491,8 @@ button.git-conflict-overview-row:focus-visible,
 
 .agent-provider-default-option-main > :is(
   .agent-provider-brand-icon-grok-build,
-  .agent-provider-brand-icon-openai-codex
+  .agent-provider-brand-icon-openai-codex,
+  .agent-provider-brand-icon-opencode
 ) {
   color: var(--app-text-strong, #202020);
 }

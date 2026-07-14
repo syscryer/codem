@@ -100,7 +100,9 @@ function normalizeMcpManagementResponse(value: unknown): McpManagementResponse {
   const overview = isRecord(record.overview) ? record.overview : {};
 
   return {
-    providerId: record.providerId === 'openai-codex' || record.providerId === 'grok-build'
+    providerId: record.providerId === 'openai-codex'
+      || record.providerId === 'grok-build'
+      || record.providerId === 'opencode'
       ? record.providerId
       : 'claude-code',
     supportsClaudeJson: Boolean(record.supportsClaudeJson),

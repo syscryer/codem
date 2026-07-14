@@ -145,6 +145,7 @@ function rulesFallbackPath(providerId: AgentProviderId, scope: 'global' | 'proje
   }
   if (providerId === 'openai-codex') return '~/.codex/AGENTS.md';
   if (providerId === 'grok-build') return '~/.grok/AGENTS.md';
+  if (providerId === 'opencode') return '~/.config/opencode/AGENTS.md';
   return '~/.claude/CLAUDE.md';
 }
 

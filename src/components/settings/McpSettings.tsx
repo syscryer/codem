@@ -1182,6 +1182,9 @@ function mcpLocationDescription(providerId: AgentProviderId) {
   if (providerId === 'grok-build') {
     return <>直接管理 <code>~/.grok/config.toml</code> 与项目内 <code>.grok/config.toml</code> 的 <code>mcp_servers</code>。</>;
   }
+  if (providerId === 'opencode') {
+    return <>直接管理 <code>~/.config/opencode/opencode.json</code> 与项目内 <code>.opencode/opencode.json</code> 的 <code>mcp</code>，保存时保留其他 OpenCode 配置。</>;
+  }
   return <>直接管理 <code>~/.claude/mcp.json</code>、项目 <code>.mcp.json</code> 与 <code>~/.claude.json</code>。</>;
 }
 

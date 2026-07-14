@@ -24,7 +24,7 @@ import { useAgentRun } from './hooks/useAgentRun';
 import { useAppSettings } from './hooks/useAppSettings';
 import { useOrdinaryChat } from './hooks/useOrdinaryChat';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
-import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
+import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
 import {
   buildCompactSlashCommandSubmission,
   buildContextSlashCardResult,
@@ -479,6 +479,8 @@ export default function App() {
       ? 'grok' as const
       : activeProviderId === OPENAI_CODEX_PROVIDER_ID
         ? 'codex' as const
+        : activeProviderId === OPENCODE_PROVIDER_ID
+          ? 'opencode' as const
         : 'generic' as const;
   const activeProviderCapabilities = agentProviders.find((provider) => provider.id === activeProviderId)?.capabilities;
   const allowAgentAttachments = activeUsesClaude || Boolean(

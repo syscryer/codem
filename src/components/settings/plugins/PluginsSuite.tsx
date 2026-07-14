@@ -209,7 +209,7 @@ export function PluginsSuite({
               </button>
             </div>
 
-            {tab === 'plugins' ? (
+            {tab === 'plugins' && providerId !== 'opencode' ? (
               <div className="plugins-secondary-tabs" aria-label="插件分类">
                 <button type="button" className={subTab === 'installed' ? 'active' : ''} onClick={() => setSubTab('installed')}>
                   <span>已安装</span>
@@ -233,7 +233,13 @@ export function PluginsSuite({
           </div>
         </div>
 
-        {tab === 'plugins' ? (
+        {providerId === 'opencode' && tab === 'plugins' ? (
+          <div className="plugins-help-panel">
+            <span>OpenCode 当前没有稳定的非交互插件市场管理接口；CodeM 不会改写其插件配置，已安装插件仍由 OpenCode 自行加载。</span>
+          </div>
+        ) : null}
+
+        {tab === 'plugins' && providerId !== 'opencode' ? (
           <>
             <div className="plugins-toolbar">
               <label className="settings-search">
@@ -330,14 +336,14 @@ export function PluginsSuite({
           </>
         )}
 
-        {loading ? <div className="settings-list-empty">正在读取插件数据</div> : null}
-        {!loading && error ? (
+        {loading && (tab !== 'plugins' || providerId !== 'opencode') ? <div className="settings-list-empty">正在读取插件数据</div> : null}
+        {!loading && error && (tab !== 'plugins' || providerId !== 'opencode') ? (
           <div className="plugins-error-panel">
             <strong>{error}</strong>
             {errorDetail && errorDetail !== error ? <small>{errorDetail}</small> : null}
           </div>
         ) : null}
-        {!loading && !error && tab === 'plugins' && subTab === 'installed' ? (
+        {!loading && !error && tab === 'plugins' && providerId !== 'opencode' && subTab === 'installed' ? (
           <InstalledPluginsPanel
             items={filteredInstalled}
             busy={busy}
@@ -361,7 +367,7 @@ export function PluginsSuite({
             }}
           />
         ) : null}
-        {!loading && !error && tab === 'plugins' && subTab === 'discover' ? (
+        {!loading && !error && tab === 'plugins' && providerId !== 'opencode' && subTab === 'discover' ? (
           <DiscoverPluginsPanel
             items={discoverItems}
             busy={busy}
@@ -372,7 +378,7 @@ export function PluginsSuite({
             }}
           />
         ) : null}
-        {!loading && !error && tab === 'plugins' && subTab === 'marketplaces' ? (
+        {!loading && !error && tab === 'plugins' && providerId !== 'opencode' && subTab === 'marketplaces' ? (
           <MarketplacesPanel
             items={filteredMarketplaces}
             busy={busy}
@@ -544,6 +550,9 @@ export function PluginsSuite({
 }
 
 function skillInstallLocationLabel(providerId: AgentProviderId) {
+  if (providerId === 'opencode') {
+    return <>用户级写入 <code>~/.config/opencode/skills</code>；项目级写入当前项目的 <code>.opencode/skills</code>。</>;
+  }
   const directory = providerId === 'openai-codex'
     ? '.codex'
     : providerId === 'grok-build'

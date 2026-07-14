@@ -1,7 +1,8 @@
-use crate::acp::probe_acp_agent;
+use crate::acp::{probe_acp_agent, probe_acp_initialize};
 use crate::agent_runtime::{
     agent_provider_registry, normalize_agent_permission_mode, AgentProviderRegistry,
     CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+    OPENCODE_PROVIDER_ID,
 };
 use crate::codex_app_server::probe_codex_app_server;
 use axum::{
@@ -453,6 +454,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
     let agent_runs = crate::agent_run::AgentRunService::new(
         resolve_grok_command,
         resolve_codex_command,
+        resolve_opencode_command,
         experimental_agent_run_enabled.clone(),
     );
     let state = AppState {
@@ -498,6 +500,7 @@ fn create_router(state: AppState) -> Router {
         )
         .route("/api/agents/grok/probe", post(grok_acp_probe))
         .route("/api/agents/codex/probe", post(codex_app_server_probe))
+        .route("/api/agents/opencode/probe", post(opencode_acp_probe))
         .route("/api/claude/models", get(claude_models))
         .route("/api/settings", get(get_settings))
         .route("/api/settings/appearance", put(update_appearance_settings))
@@ -799,6 +802,7 @@ async fn agent_providers(State(state): State<AppState>) -> Json<AgentProviderReg
         experimental_agent_run_enabled(&state),
         resolve_grok_command().is_some(),
         resolve_codex_command().is_some(),
+        resolve_opencode_command().is_some(),
     ))
 }
 
@@ -816,7 +820,7 @@ async fn agent_settings_diagnostics(
         }
     });
     let home = home_dir().ok_or_else(|| ApiError::internal("无法定位用户目录"))?;
-    let config_directory = home.join(agent_config_directory_name(provider_id));
+    let config_directory = agent_global_config_directory(provider_id, &home);
     let (update_command, diagnostic_command, diagnostic_args) = match provider_id {
         OPENAI_CODEX_PROVIDER_ID => (
             "codex update",
@@ -827,6 +831,11 @@ async fn agent_settings_diagnostics(
             "grok update",
             "grok inspect --json",
             Some(["inspect", "--json"]),
+        ),
+        OPENCODE_PROVIDER_ID => (
+            "opencode upgrade",
+            "opencode debug info",
+            Some(["debug", "info"]),
         ),
         _ => ("claude update", "claude doctor", None),
     };
@@ -867,7 +876,7 @@ async fn agent_settings_diagnostics(
         "diagnosticCommand": diagnostic_command,
         "diagnostic": diagnostic,
         "capabilities": {
-            "plugins": command.is_some(),
+            "plugins": command.is_some() && provider_id != OPENCODE_PROVIDER_ID,
             "mcp": command.is_some(),
             "skills": true,
         }
@@ -3074,6 +3083,7 @@ async fn create_thread(
         experimental_agent_run_enabled(&state),
         resolve_grok_command().is_some(),
         resolve_codex_command().is_some(),
+        resolve_opencode_command().is_some(),
     )?;
     let permission_mode =
         resolve_thread_create_permission_mode(provider, payload.permission_mode.as_deref())?;
@@ -3476,7 +3486,12 @@ fn normalize_agent_runtime_settings(value: Option<&Value>) -> Value {
         "defaultProviderId": enum_setting(
             record,
             "defaultProviderId",
-            &[CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID],
+            &[
+                CLAUDE_CODE_PROVIDER_ID,
+                GROK_BUILD_PROVIDER_ID,
+                OPENAI_CODEX_PROVIDER_ID,
+                OPENCODE_PROVIDER_ID,
+            ],
             CLAUDE_CODE_PROVIDER_ID,
         ),
     })
@@ -4458,6 +4473,147 @@ fn resolve_codex_command() -> Option<String> {
         })
 }
 
+async fn opencode_acp_probe() -> Json<Value> {
+    let Some(command) = resolve_opencode_command() else {
+        return Json(json!({
+            "installed": false,
+            "initialized": false,
+            "error": "未找到可由 CodeM 启动的 OpenCode CLI",
+        }));
+    };
+    let version = read_cli_version(&command);
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    match probe_acp_initialize(&command, &["acp"], &cwd, env!("CARGO_PKG_VERSION")).await {
+        Ok(initialize) => {
+            let model_count = read_opencode_model_ids(&command, &cwd).len();
+            Json(json!({
+                "installed": true,
+                "initialized": true,
+                "command": command,
+                "version": version,
+                "probe": {
+                    "configured": model_count > 0,
+                    "modelCount": model_count,
+                    "initialize": initialize,
+                },
+            }))
+        }
+        Err(error) => Json(json!({
+            "installed": true,
+            "initialized": false,
+            "command": command,
+            "version": version,
+            "error": error.public_message(),
+        })),
+    }
+}
+
+fn resolve_opencode_command() -> Option<String> {
+    if let Some(command) = env::var("OPENCODE_CLI_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| command_reports_version(value))
+    {
+        return Some(command);
+    }
+
+    #[cfg(target_os = "windows")]
+    let lookup = background_command("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command opencode -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
+        ])
+        .output()
+        .ok();
+
+    #[cfg(not(target_os = "windows"))]
+    let lookup = background_command("which").arg("opencode").output().ok();
+
+    let path_command = lookup
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| {
+            stdout
+                .lines()
+                .map(str::trim)
+                .filter(|candidate| !candidate.is_empty())
+                .filter_map(resolve_opencode_command_candidate)
+                .find(|candidate| command_reports_version(candidate))
+        });
+
+    path_command.or_else(resolve_default_opencode_command)
+}
+
+fn resolve_opencode_command_candidate(candidate: &str) -> Option<String> {
+    let path = Path::new(candidate);
+    if !cfg!(target_os = "windows")
+        || path.extension().is_some_and(|extension| {
+            extension
+                .to_str()
+                .is_some_and(|value| value.eq_ignore_ascii_case("exe"))
+        })
+    {
+        return Some(candidate.to_string());
+    }
+
+    let npm_binary = path
+        .parent()?
+        .join("node_modules")
+        .join("opencode-ai")
+        .join("bin")
+        .join("opencode.exe");
+    npm_binary
+        .is_file()
+        .then(|| npm_binary.to_string_lossy().to_string())
+}
+
+fn resolve_default_opencode_command() -> Option<String> {
+    let mut candidates = Vec::new();
+    if let Ok(app_data) = env::var("APPDATA") {
+        candidates.push(
+            PathBuf::from(app_data)
+                .join("npm")
+                .join("node_modules")
+                .join("opencode-ai")
+                .join("bin")
+                .join(if cfg!(target_os = "windows") {
+                    "opencode.exe"
+                } else {
+                    "opencode"
+                }),
+        );
+    }
+    if let Some(home) = home_dir() {
+        candidates.push(
+            home.join(".opencode")
+                .join("bin")
+                .join(if cfg!(target_os = "windows") {
+                    "opencode.exe"
+                } else {
+                    "opencode"
+                }),
+        );
+        candidates.push(
+            home.join(".local")
+                .join("bin")
+                .join(if cfg!(target_os = "windows") {
+                    "opencode.exe"
+                } else {
+                    "opencode"
+                }),
+        );
+    }
+    candidates
+        .into_iter()
+        .filter(|candidate| candidate.is_file())
+        .map(|candidate| candidate.to_string_lossy().to_string())
+        .find(|candidate| command_reports_version(candidate))
+}
+
 fn command_reports_version(command: &str) -> bool {
     let mut child = match background_command(command)
         .arg("--version")
@@ -5326,6 +5482,7 @@ fn resolve_requested_thread_provider(
     experimental_agent_run_enabled: bool,
     grok_available: bool,
     codex_available: bool,
+    opencode_available: bool,
 ) -> ApiResult<&'static str> {
     let provider_id = provider_id
         .map(str::trim)
@@ -5333,7 +5490,9 @@ fn resolve_requested_thread_provider(
         .unwrap_or(CLAUDE_CODE_PROVIDER_ID);
     match provider_id {
         CLAUDE_CODE_PROVIDER_ID => Ok(CLAUDE_CODE_PROVIDER_ID),
-        GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID if !experimental_agent_run_enabled => {
+        GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID | OPENCODE_PROVIDER_ID
+            if !experimental_agent_run_enabled =>
+        {
             Err(ApiError::bad_request("实验 Agent 运行未开启"))
         }
         GROK_BUILD_PROVIDER_ID if !grok_available => Err(ApiError::bad_request("未找到 grok 命令")),
@@ -5342,6 +5501,10 @@ fn resolve_requested_thread_provider(
             Err(ApiError::bad_request("未找到可由 CodeM 启动的 Codex CLI"))
         }
         OPENAI_CODEX_PROVIDER_ID => Ok(OPENAI_CODEX_PROVIDER_ID),
+        OPENCODE_PROVIDER_ID if !opencode_available => Err(ApiError::bad_request(
+            "未找到可由 CodeM 启动的 OpenCode CLI",
+        )),
+        OPENCODE_PROVIDER_ID => Ok(OPENCODE_PROVIDER_ID),
         _ => Err(ApiError::bad_request("当前 Provider 不可用于新建聊天")),
     }
 }
@@ -5350,7 +5513,10 @@ fn resolve_thread_create_permission_mode(
     provider: &str,
     permission_mode: Option<&str>,
 ) -> ApiResult<Option<String>> {
-    if matches!(provider, GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID) {
+    if matches!(
+        provider,
+        GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID | OPENCODE_PROVIDER_ID
+    ) {
         return normalize_agent_permission_mode(permission_mode)
             .map(|mode| Some(mode.to_string()))
             .ok_or_else(|| {
@@ -5704,7 +5870,7 @@ fn update_thread_metadata_from_payload(
             .map(ToString::to_string);
         if matches!(
             thread.provider.as_str(),
-            GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID
+            GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID | OPENCODE_PROVIDER_ID
         ) {
             Some(
                 normalize_agent_permission_mode(requested_permission_mode.as_deref())
@@ -8884,6 +9050,7 @@ fn settings_provider_id(value: Option<&str>) -> ApiResult<&str> {
         None | Some(CLAUDE_CODE_PROVIDER_ID) => Ok(CLAUDE_CODE_PROVIDER_ID),
         Some(GROK_BUILD_PROVIDER_ID) => Ok(GROK_BUILD_PROVIDER_ID),
         Some(OPENAI_CODEX_PROVIDER_ID) => Ok(OPENAI_CODEX_PROVIDER_ID),
+        Some(OPENCODE_PROVIDER_ID) => Ok(OPENCODE_PROVIDER_ID),
         Some(_) => Err(ApiError::bad_request("不支持的 Agent Provider")),
     }
 }
@@ -8892,7 +9059,16 @@ fn agent_config_directory_name(provider_id: &str) -> &'static str {
     match provider_id {
         GROK_BUILD_PROVIDER_ID => ".grok",
         OPENAI_CODEX_PROVIDER_ID => ".codex",
+        OPENCODE_PROVIDER_ID => ".opencode",
         _ => ".claude",
+    }
+}
+
+fn agent_global_config_directory(provider_id: &str, home: &Path) -> PathBuf {
+    if provider_id == OPENCODE_PROVIDER_ID {
+        home.join(".config").join("opencode")
+    } else {
+        home.join(agent_config_directory_name(provider_id))
     }
 }
 
@@ -8921,6 +9097,7 @@ fn resolve_agent_rules_path(
     Ok(match provider_id {
         GROK_BUILD_PROVIDER_ID => home.join(".grok").join("AGENTS.md"),
         OPENAI_CODEX_PROVIDER_ID => home.join(".codex").join("AGENTS.md"),
+        OPENCODE_PROVIDER_ID => home.join(".config").join("opencode").join("AGENTS.md"),
         _ => home.join(".claude").join("CLAUDE.md"),
     })
 }
@@ -9112,7 +9289,11 @@ async fn update_mcp_config(
             return Err(ApiError::bad_request("当前 Agent 不支持该 MCP 配置作用域"));
         }
         let path = resolve_agent_mcp_config_path(provider_id, &scope, project_path)?;
-        write_toml_mcp_config(&path, &config)?;
+        if provider_id == OPENCODE_PROVIDER_ID {
+            write_opencode_mcp_config(&path, &config)?;
+        } else {
+            write_toml_mcp_config(&path, &config)?;
+        }
         return Ok(Json(config));
     }
     match scope.as_str() {
@@ -9152,7 +9333,11 @@ async fn open_mcp_config(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
             ));
         }
         let path = resolve_agent_mcp_config_path(provider_id, scope, project_path)?;
-        ensure_toml_config_file(&path)?;
+        if provider_id == OPENCODE_PROVIDER_ID {
+            ensure_opencode_config_file(&path)?;
+        } else {
+            ensure_toml_config_file(&path)?;
+        }
         path
     };
     open_path_with_system(
@@ -9213,7 +9398,6 @@ async fn plugin_install_skill_from_path(Json(payload): Json<Value>) -> ApiResult
         .get("scope")
         .and_then(Value::as_str)
         .unwrap_or("user");
-    let config_directory = agent_config_directory_name(provider_id);
     let target_root = if scope == "project" {
         let cwd = payload
             .get("cwd")
@@ -9221,12 +9405,21 @@ async fn plugin_install_skill_from_path(Json(payload): Json<Value>) -> ApiResult
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| ApiError::bad_request("project scope 需要 cwd"))?;
-        PathBuf::from(cwd).join(config_directory).join("skills")
+        if provider_id == OPENCODE_PROVIDER_ID {
+            PathBuf::from(cwd).join(".opencode").join("skills")
+        } else {
+            PathBuf::from(cwd)
+                .join(agent_config_directory_name(provider_id))
+                .join("skills")
+        }
     } else {
-        home_dir()
-            .ok_or_else(|| ApiError::internal("无法定位用户目录"))?
-            .join(config_directory)
-            .join("skills")
+        let home = home_dir().ok_or_else(|| ApiError::internal("无法定位用户目录"))?;
+        if provider_id == OPENCODE_PROVIDER_ID {
+            home.join(".config").join("opencode").join("skills")
+        } else {
+            home.join(agent_config_directory_name(provider_id))
+                .join("skills")
+        }
     };
     let overwrite = payload
         .get("overwrite")
@@ -9390,10 +9583,16 @@ fn validate_agent_skill_path(
     }
     let mut roots = Vec::new();
     if let Some(home) = home_dir() {
-        roots.push(
-            home.join(agent_config_directory_name(provider_id))
-                .join("skills"),
-        );
+        if provider_id == OPENCODE_PROVIDER_ID {
+            let opencode_root = home.join(".config").join("opencode");
+            roots.push(opencode_root.join("skills"));
+            roots.push(opencode_root.join("skill"));
+        } else {
+            roots.push(
+                home.join(agent_config_directory_name(provider_id))
+                    .join("skills"),
+            );
+        }
         if include_read_only_roots && provider_id == GROK_BUILD_PROVIDER_ID {
             roots.push(home.join(".grok").join("bundled").join("skills"));
         }
@@ -9402,11 +9601,18 @@ fn validate_agent_skill_path(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        roots.push(
-            PathBuf::from(project_path)
-                .join(agent_config_directory_name(provider_id))
-                .join("skills"),
-        );
+        let project_root = PathBuf::from(project_path);
+        if provider_id == OPENCODE_PROVIDER_ID {
+            let opencode_root = project_root.join(".opencode");
+            roots.push(opencode_root.join("skills"));
+            roots.push(opencode_root.join("skill"));
+        } else {
+            roots.push(
+                project_root
+                    .join(agent_config_directory_name(provider_id))
+                    .join("skills"),
+            );
+        }
     }
     let allowed = roots
         .into_iter()
@@ -9419,6 +9625,7 @@ fn validate_agent_skill_path(
 
 async fn plugin_command(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
     let provider_id = settings_provider_id(payload.get("providerId").and_then(Value::as_str))?;
+    ensure_agent_plugin_management_supported(provider_id)?;
     let kind = required_json_string(&payload, "kind", "kind 不能为空")?;
     let action = required_json_string(&payload, "action", "action 不能为空")?;
     let mut args = vec!["plugin".to_string()];
@@ -9464,6 +9671,15 @@ async fn plugin_command(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
     Ok(Json(result))
 }
 
+fn ensure_agent_plugin_management_supported(provider_id: &str) -> ApiResult<()> {
+    if provider_id == OPENCODE_PROVIDER_ID {
+        return Err(ApiError::bad_request(
+            "OpenCode 当前不提供稳定的插件市场管理接口",
+        ));
+    }
+    Ok(())
+}
+
 async fn slash_commands(
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<Json<Value>> {
@@ -9482,6 +9698,13 @@ fn read_agent_mcp_config_snapshot(
     let global = resolve_agent_mcp_config_path(provider_id, "global", project_path)?;
     let project =
         resolve_agent_mcp_config_path(provider_id, "project", project_path).unwrap_or_default();
+    let read_config = |path: &Path| {
+        if provider_id == OPENCODE_PROVIDER_ID {
+            read_opencode_mcp_config(path)
+        } else {
+            read_toml_mcp_config(path)
+        }
+    };
     Ok(json!({
         "paths": {
             "global": global,
@@ -9489,8 +9712,8 @@ fn read_agent_mcp_config_snapshot(
             "claudeJson": "",
         },
         "configs": {
-            "global": read_toml_mcp_config(&global)?,
-            "project": read_toml_mcp_config(&project)?,
+            "global": read_config(&global)?,
+            "project": read_config(&project)?,
             "claudeJsonGlobal": { "mcpServers": {} },
             "claudeJsonProject": { "mcpServers": {} },
         },
@@ -9504,6 +9727,11 @@ fn resolve_agent_mcp_config_path(
 ) -> ApiResult<PathBuf> {
     let directory = agent_config_directory_name(provider_id);
     if scope == "global" {
+        if provider_id == OPENCODE_PROVIDER_ID {
+            return home_dir()
+                .map(|home| home.join(".config").join("opencode").join("opencode.json"))
+                .ok_or_else(|| ApiError::internal("无法定位用户目录"));
+        }
         return home_dir()
             .map(|home| home.join(directory).join("config.toml"))
             .ok_or_else(|| ApiError::internal("无法定位用户目录"));
@@ -9512,6 +9740,9 @@ fn resolve_agent_mcp_config_path(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ApiError::bad_request("当前没有活动项目"))?;
+    if provider_id == OPENCODE_PROVIDER_ID {
+        return Ok(PathBuf::from(project).join(directory).join("opencode.json"));
+    }
     Ok(PathBuf::from(project).join(directory).join("config.toml"))
 }
 
@@ -9851,6 +10082,159 @@ fn list_agent_mcp_servers_value(provider_id: &str, project_path: Option<&str>) -
         }
     }
     Ok(json!({ "servers": servers, "errors": [] }))
+}
+
+fn read_opencode_mcp_config(path: &Path) -> ApiResult<Value> {
+    if path.as_os_str().is_empty() || !path.exists() {
+        return Ok(json!({ "mcpServers": {} }));
+    }
+    let root = read_json_file_if_exists(path)?
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let mut servers = Map::new();
+    for (name, value) in root
+        .get("mcp")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let Some(raw) = value.as_object() else {
+            continue;
+        };
+        let mut normalized = raw.clone();
+        let enabled = normalized
+            .remove("enabled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true);
+        let native_type = normalized
+            .remove("type")
+            .and_then(|value| value.as_str().map(ToString::to_string));
+        let command = normalized.remove("command");
+        if native_type.as_deref() == Some("remote") || normalized.contains_key("url") {
+            normalized.insert("type".to_string(), json!("http"));
+        } else {
+            normalized.insert("type".to_string(), json!("stdio"));
+            if let Some(command) = command.and_then(|value| value.as_array().cloned()) {
+                if let Some(program) = command.first().and_then(Value::as_str) {
+                    normalized.insert("command".to_string(), json!(program));
+                    if command.len() > 1 {
+                        normalized.insert(
+                            "args".to_string(),
+                            Value::Array(command.into_iter().skip(1).collect()),
+                        );
+                    }
+                }
+            }
+        }
+        if !enabled {
+            normalized.insert("disabled".to_string(), json!(true));
+        }
+        servers.insert(name.clone(), Value::Object(normalized));
+    }
+    Ok(json!({ "mcpServers": servers }))
+}
+
+fn write_opencode_mcp_config(path: &Path, config: &Value) -> ApiResult<()> {
+    let mut root = read_json_file_if_exists(path)?
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    root.entry("$schema".to_string())
+        .or_insert_with(|| json!("https://opencode.ai/config.json"));
+    let existing_servers = root
+        .get("mcp")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut next_servers = Map::new();
+    for (name, value) in config
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let Some(internal) = value.as_object() else {
+            continue;
+        };
+        let mut native = existing_servers
+            .get(name)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for key in [
+            "type", "command", "args", "disabled", "enabled", "url", "env", "headers",
+        ] {
+            native.remove(key);
+        }
+        let disabled = internal
+            .get("disabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if internal.get("type").and_then(Value::as_str) == Some("http")
+            || internal.get("url").and_then(Value::as_str).is_some()
+        {
+            native.insert("type".to_string(), json!("remote"));
+            if let Some(url) = internal.get("url").and_then(Value::as_str) {
+                native.insert("url".to_string(), json!(url));
+            }
+            if let Some(headers) = internal.get("headers").and_then(Value::as_object) {
+                native.insert("headers".to_string(), Value::Object(headers.clone()));
+            }
+        } else {
+            native.insert("type".to_string(), json!("local"));
+            let mut command = Vec::new();
+            if let Some(program) = internal.get("command").and_then(Value::as_str) {
+                command.push(json!(program));
+            }
+            command.extend(
+                internal
+                    .get("args")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(|value| json!(value)),
+            );
+            native.insert("command".to_string(), Value::Array(command));
+            if let Some(environment) = internal.get("env").and_then(Value::as_object) {
+                native.insert("env".to_string(), Value::Object(environment.clone()));
+            }
+        }
+        native.insert("enabled".to_string(), json!(!disabled));
+        for (key, value) in internal {
+            if !matches!(
+                key.as_str(),
+                "type"
+                    | "command"
+                    | "args"
+                    | "disabled"
+                    | "enabled"
+                    | "url"
+                    | "env"
+                    | "headers"
+                    | "auth"
+                    | "envPassthrough"
+                    | "cwd"
+            ) {
+                native.insert(key.clone(), value.clone());
+            }
+        }
+        next_servers.insert(name.clone(), Value::Object(native));
+    }
+    root.insert("mcp".to_string(), Value::Object(next_servers));
+    write_json_file_pretty(path, &Value::Object(root))
+}
+
+fn ensure_opencode_config_file(path: &Path) -> ApiResult<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    write_json_file_pretty(
+        path,
+        &json!({
+            "$schema": "https://opencode.ai/config.json",
+            "mcp": {},
+        }),
+    )
 }
 
 fn read_toml_mcp_config(path: &Path) -> ApiResult<Value> {
@@ -10250,6 +10634,29 @@ fn list_agent_skills_value(provider_id: &str, project_path: Option<&str>) -> Val
     }
 
     let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
+    if provider_id == OPENCODE_PROVIDER_ID {
+        let mut skills = Vec::new();
+        let global_root = home.join(".config").join("opencode");
+        for directory in [global_root.join("skills"), global_root.join("skill")] {
+            scan_claude_skill_directory(&directory, "user", &mut skills);
+        }
+        if let Some(project) = project_path
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let project_root = PathBuf::from(project).join(".opencode");
+            for directory in [project_root.join("skills"), project_root.join("skill")] {
+                scan_claude_skill_directory(&directory, "project", &mut skills);
+            }
+        }
+        skills.sort_by(|left, right| {
+            left.get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .cmp(right.get("name").and_then(Value::as_str).unwrap_or(""))
+        });
+        return Value::Array(skills);
+    }
     let config_directory = agent_config_directory_name(provider_id);
     let mut skills = Vec::new();
     scan_claude_skill_directory(
@@ -10287,8 +10694,36 @@ fn resolve_agent_settings_command(provider_id: &str) -> Option<String> {
     match provider_id {
         GROK_BUILD_PROVIDER_ID => resolve_grok_command(),
         OPENAI_CODEX_PROVIDER_ID => resolve_codex_command(),
+        OPENCODE_PROVIDER_ID => resolve_opencode_command(),
         _ => resolve_claude_command(),
     }
+}
+
+fn read_opencode_model_ids(command: &str, cwd: &Path) -> Vec<String> {
+    let Ok(output) = background_command(command)
+        .arg("models")
+        .current_dir(cwd)
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let mut seen = std::collections::HashSet::new();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && line.len() <= 512
+                && line.contains('/')
+                && !line.chars().any(char::is_control)
+        })
+        .filter(|line| seen.insert((*line).to_string()))
+        .take(1000)
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn normalize_agent_plugin_action<'a>(
@@ -10346,6 +10781,9 @@ fn list_agent_installed_plugins_value(provider_id: &str) -> ApiResult<Value> {
     if provider_id == CLAUDE_CODE_PROVIDER_ID {
         return Ok(list_installed_plugins_value());
     }
+    if provider_id == OPENCODE_PROVIDER_ID {
+        return Ok(json!([]));
+    }
     let payload = run_agent_json_command(provider_id, &["plugin", "list", "--json"])?;
     let items = payload
         .get("installed")
@@ -10364,6 +10802,9 @@ fn list_agent_installed_plugins_value(provider_id: &str) -> ApiResult<Value> {
 fn list_agent_plugin_marketplaces_value(provider_id: &str) -> ApiResult<Value> {
     if provider_id == CLAUDE_CODE_PROVIDER_ID {
         return Ok(list_plugin_marketplaces_value());
+    }
+    if provider_id == OPENCODE_PROVIDER_ID {
+        return Ok(json!([]));
     }
     let available_payload =
         run_agent_json_command(provider_id, &["plugin", "list", "--available", "--json"])?;
@@ -15472,15 +15913,20 @@ fn home_dir() -> Option<PathBuf> {
 mod tests {
     use super::{
         compare_project_file_entries, create_router, create_thread_row, default_grok_command_path,
-        desktop_cors_layer, import_claude_sessions_from_root, initialize_workspace_database,
-        install_skill_directory_safely, normalize_agent_plugin_action,
-        normalize_agent_runtime_settings, parse_grok_cli_version, remove_thread_row,
-        resolve_codex_command, resolve_grok_command, resolve_requested_thread_provider,
+        desktop_cors_layer, ensure_agent_plugin_management_supported,
+        import_claude_sessions_from_root, initialize_workspace_database,
+        install_skill_directory_safely, list_agent_installed_plugins_value,
+        list_agent_plugin_marketplaces_value, list_agent_skills_value,
+        normalize_agent_plugin_action, normalize_agent_runtime_settings, parse_grok_cli_version,
+        read_opencode_mcp_config, remove_thread_row, resolve_codex_command, resolve_grok_command,
+        resolve_opencode_command, resolve_requested_thread_provider,
         resolve_thread_create_permission_mode, select_claude_command_candidate,
-        update_thread_metadata_from_payload, validate_desktop_file_path, AppState,
+        update_thread_metadata_from_payload, validate_desktop_file_path,
+        validate_managed_agent_skill_path, write_opencode_mcp_config, AppState,
     };
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        OPENCODE_PROVIDER_ID,
     };
     use axum::{
         body::Body,
@@ -15546,6 +15992,65 @@ mod tests {
         assert!(
             normalize_agent_plugin_action(OPENAI_CODEX_PROVIDER_ID, "plugin", "disable").is_err()
         );
+        assert!(ensure_agent_plugin_management_supported(OPENCODE_PROVIDER_ID).is_err());
+        assert_eq!(
+            list_agent_installed_plugins_value(OPENCODE_PROVIDER_ID).unwrap(),
+            json!([])
+        );
+        assert_eq!(
+            list_agent_plugin_marketplaces_value(OPENCODE_PROVIDER_ID).unwrap(),
+            json!([])
+        );
+    }
+
+    #[test]
+    fn opencode_skills_use_only_managed_project_roots() {
+        let root = TestDirectory::new("opencode-skill-roots");
+        let plural = root.0.join(".opencode").join("skills").join("plural");
+        let singular = root.0.join(".opencode").join("skill").join("singular");
+        let outside = root.0.join("external");
+        for (path, name) in [
+            (&plural, "plural-skill"),
+            (&singular, "singular-skill"),
+            (&outside, "external-skill"),
+        ] {
+            fs::create_dir_all(path).unwrap();
+            fs::write(
+                path.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: test\n---\n"),
+            )
+            .unwrap();
+        }
+
+        let project_path = root.0.to_string_lossy();
+        let listed = list_agent_skills_value(OPENCODE_PROVIDER_ID, Some(&project_path));
+        let names = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"plural-skill"));
+        assert!(names.contains(&"singular-skill"));
+        assert!(!names.contains(&"external-skill"));
+        assert!(validate_managed_agent_skill_path(
+            OPENCODE_PROVIDER_ID,
+            plural.to_string_lossy().as_ref(),
+            Some(&project_path),
+        )
+        .is_ok());
+        assert!(validate_managed_agent_skill_path(
+            OPENCODE_PROVIDER_ID,
+            singular.to_string_lossy().as_ref(),
+            Some(&project_path),
+        )
+        .is_ok());
+        assert!(validate_managed_agent_skill_path(
+            OPENCODE_PROVIDER_ID,
+            outside.to_string_lossy().as_ref(),
+            Some(&project_path),
+        )
+        .is_err());
     }
 
     impl Drop for TestDirectory {
@@ -15567,6 +16072,7 @@ mod tests {
             agent_runs: crate::agent_run::AgentRunService::new(
                 resolve_grok_command,
                 resolve_codex_command,
+                resolve_opencode_command,
                 experimental_agent_run_enabled,
             ),
             workspace_write_lock: Arc::new(Mutex::new(())),
@@ -15629,28 +16135,87 @@ mod tests {
     }
 
     #[test]
-    fn thread_provider_defaults_to_claude_and_guards_experimental_grok() {
+    fn opencode_mcp_round_trip_preserves_unrelated_config_fields() {
+        let root = TestDirectory::new("opencode-mcp-round-trip");
+        let path = root.0.join("opencode.json");
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&json!({
+                "$schema": "https://opencode.ai/config.json",
+                "model": "minimax-cn-coding-plan/MiniMax-M2.7",
+                "plugin": ["oh-my-openagent"],
+                "mcp": {
+                    "local": {
+                        "type": "local",
+                        "command": ["npx", "-y", "@playwright/mcp"],
+                        "enabled": true,
+                        "timeout": 120000
+                    },
+                    "remote": {
+                        "type": "remote",
+                        "url": "https://example.com/mcp",
+                        "enabled": false,
+                        "headers": { "Authorization": "Bearer {env:MCP_TOKEN}" }
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let normalized = read_opencode_mcp_config(&path).unwrap();
+        assert_eq!(normalized["mcpServers"]["local"]["command"], "npx");
         assert_eq!(
-            resolve_requested_thread_provider(None, false, false, false).expect("default provider"),
+            normalized["mcpServers"]["local"]["args"],
+            json!(["-y", "@playwright/mcp"])
+        );
+        assert_eq!(normalized["mcpServers"]["local"]["timeout"], 120000);
+        assert_eq!(normalized["mcpServers"]["remote"]["disabled"], true);
+
+        write_opencode_mcp_config(&path, &normalized).unwrap();
+        let persisted: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["model"], "minimax-cn-coding-plan/MiniMax-M2.7");
+        assert_eq!(persisted["plugin"], json!(["oh-my-openagent"]));
+        assert_eq!(
+            persisted["mcp"]["local"]["command"],
+            json!(["npx", "-y", "@playwright/mcp"])
+        );
+        assert_eq!(persisted["mcp"]["local"]["timeout"], 120000);
+        assert_eq!(persisted["mcp"]["remote"]["enabled"], false);
+    }
+
+    #[test]
+    fn thread_provider_defaults_to_claude_and_guards_experimental_agents() {
+        assert_eq!(
+            resolve_requested_thread_provider(None, false, false, false, false)
+                .expect("default provider"),
             CLAUDE_CODE_PROVIDER_ID
         );
         assert!(resolve_requested_thread_provider(
             Some(GROK_BUILD_PROVIDER_ID),
             false,
             true,
-            false
+            false,
+            false,
         )
         .is_err());
         assert!(resolve_requested_thread_provider(
             Some(GROK_BUILD_PROVIDER_ID),
             true,
             false,
-            false
+            false,
+            false,
         )
         .is_err());
         assert_eq!(
-            resolve_requested_thread_provider(Some(GROK_BUILD_PROVIDER_ID), true, true, false)
-                .expect("enabled Grok provider"),
+            resolve_requested_thread_provider(
+                Some(GROK_BUILD_PROVIDER_ID),
+                true,
+                true,
+                false,
+                false,
+            )
+            .expect("enabled Grok provider"),
             GROK_BUILD_PROVIDER_ID
         );
         assert!(resolve_requested_thread_provider(
@@ -15658,12 +16223,38 @@ mod tests {
             true,
             true,
             false,
+            false,
         )
         .is_err());
         assert_eq!(
-            resolve_requested_thread_provider(Some(OPENAI_CODEX_PROVIDER_ID), true, false, true,)
-                .expect("enabled Codex provider"),
+            resolve_requested_thread_provider(
+                Some(OPENAI_CODEX_PROVIDER_ID),
+                true,
+                false,
+                true,
+                false,
+            )
+            .expect("enabled Codex provider"),
             OPENAI_CODEX_PROVIDER_ID
+        );
+        assert!(resolve_requested_thread_provider(
+            Some(OPENCODE_PROVIDER_ID),
+            true,
+            true,
+            true,
+            false,
+        )
+        .is_err());
+        assert_eq!(
+            resolve_requested_thread_provider(
+                Some(OPENCODE_PROVIDER_ID),
+                true,
+                false,
+                false,
+                true,
+            )
+            .expect("enabled OpenCode provider"),
+            OPENCODE_PROVIDER_ID
         );
         assert_eq!(
             resolve_thread_create_permission_mode(GROK_BUILD_PROVIDER_ID, None)
@@ -15677,6 +16268,12 @@ mod tests {
         assert_eq!(
             resolve_thread_create_permission_mode(OPENAI_CODEX_PROVIDER_ID, Some("auto"))
                 .expect("Codex permission")
+                .as_deref(),
+            Some("auto")
+        );
+        assert_eq!(
+            resolve_thread_create_permission_mode(OPENCODE_PROVIDER_ID, Some("auto"))
+                .expect("OpenCode permission")
                 .as_deref(),
             Some("auto")
         );

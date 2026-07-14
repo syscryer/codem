@@ -27,6 +27,7 @@ import type {
   ClaudeModelInfo,
   CodexAppServerProbeResult,
   GrokAcpProbeResult,
+  OpenCodeAcpProbeResult,
 } from '../../types';
 import type { AgentRuntimeSettingsUpdate } from '../../hooks/useAppSettings';
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss';
@@ -34,12 +35,14 @@ import {
   fetchAgentSettingsDiagnostics,
   probeCodexAgent,
   probeGrokAgent,
+  probeOpenCodeAgent,
 } from '../../lib/agent-provider-registry';
 import {
   formatProviderCapabilityState,
   formatProviderListMeta,
   getCodexProbeStatusMessage,
   getGrokProbeStatusMessage,
+  getOpenCodeProbeStatusMessage,
   getProviderCapabilityGroups,
   getProviderModels,
   resolveProviderDiagnostics,
@@ -83,11 +86,15 @@ export function AgentProviderSettings({
   const [codexProbeState, setCodexProbeState] = useState<ProviderProbeState>('idle');
   const [codexProbe, setCodexProbe] = useState<CodexAppServerProbeResult | null>(null);
   const [codexProbeError, setCodexProbeError] = useState('');
+  const [openCodeProbeState, setOpenCodeProbeState] = useState<ProviderProbeState>('idle');
+  const [openCodeProbe, setOpenCodeProbe] = useState<OpenCodeAcpProbeResult | null>(null);
+  const [openCodeProbeError, setOpenCodeProbeError] = useState('');
   const [agentRuntimeSaving, setAgentRuntimeSaving] = useState(false);
   const [diagnosticCheckingProviderId, setDiagnosticCheckingProviderId] = useState<AgentProviderId | null>(null);
   const detailsControllerRef = useRef<AbortController | null>(null);
   const grokControllerRef = useRef<AbortController | null>(null);
   const codexControllerRef = useRef<AbortController | null>(null);
+  const openCodeControllerRef = useRef<AbortController | null>(null);
 
   const loadProviderDetails = useCallback(async () => {
     detailsControllerRef.current?.abort();
@@ -96,7 +103,7 @@ export function AgentProviderSettings({
     setDetailsLoading(true);
     setDetailsError('');
 
-    const providerIds: AgentProviderId[] = ['claude-code', 'openai-codex', 'grok-build'];
+    const providerIds: AgentProviderId[] = ['claude-code', 'openai-codex', 'grok-build', 'opencode'];
     const [cliResults, diagnosticResults] = await Promise.all([
       Promise.allSettled([readClaudeCliVersionInfo()]),
       Promise.allSettled(
@@ -142,6 +149,7 @@ export function AgentProviderSettings({
       detailsControllerRef.current?.abort();
       grokControllerRef.current?.abort();
       codexControllerRef.current?.abort();
+      openCodeControllerRef.current?.abort();
     };
   }, [loadProviderDetails]);
 
@@ -212,6 +220,33 @@ export function AgentProviderSettings({
     }
   }
 
+  async function runOpenCodeProbe() {
+    if (openCodeProbeState === 'checking') {
+      return;
+    }
+
+    openCodeControllerRef.current?.abort();
+    const controller = new AbortController();
+    openCodeControllerRef.current = controller;
+    setOpenCodeProbeState('checking');
+    setOpenCodeProbeError('');
+
+    try {
+      const result = await probeOpenCodeAgent(controller.signal);
+      if (controller.signal.aborted) {
+        return;
+      }
+      setOpenCodeProbe(result);
+      setOpenCodeProbeState('ready');
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+      setOpenCodeProbeError(error instanceof Error ? error.message : '检测 OpenCode 失败');
+      setOpenCodeProbeState('error');
+    }
+  }
+
   async function updateExperimentalAgentRun(enabled: boolean) {
     if (agentRuntimeSaving) {
       return;
@@ -276,7 +311,7 @@ export function AgentProviderSettings({
             <strong>启用实验性 Agent 运行</strong>
             <span>
               {agentRuntime.experimentalAgentRunEnabled
-                ? '新建的 Grok Build 与 OpenAI Codex 会话可在对应 CLI 可用时使用。'
+                ? '新建的 Grok Build、OpenAI Codex 与 OpenCode 会话可在对应 CLI 可用时使用。'
                 : '关闭时不允许新建实验 Agent 会话，运行中的会话不受影响。'}
             </span>
           </div>
@@ -316,7 +351,7 @@ export function AgentProviderSettings({
             ) : null}
             {providersLoading && providers.length === 0 ? <AgentProviderListSkeleton /> : null}
             {providers.map((provider) => {
-              const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe);
+              const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe);
               return (
                 <button
                   key={provider.id}
@@ -330,7 +365,7 @@ export function AgentProviderSettings({
                   </span>
                   <span className="agent-provider-list-copy">
                     <strong>{provider.displayName}</strong>
-                    <small>{formatProviderListMeta(provider, claudeCliInfo, grokProbe, codexProbe)}</small>
+                    <small>{formatProviderListMeta(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe)}</small>
                   </span>
                   <ProviderStatusIcon tone={status.tone} label={status.label} compact />
                 </button>
@@ -363,9 +398,13 @@ export function AgentProviderSettings({
               codexProbe={codexProbe}
               codexProbeState={codexProbeState}
               codexProbeError={codexProbeError}
+              openCodeProbe={openCodeProbe}
+              openCodeProbeState={openCodeProbeState}
+              openCodeProbeError={openCodeProbeError}
               settingsDiagnostics={settingsDiagnostics[selectedProvider.id as AgentProviderId] ?? null}
               onProbeGrok={runGrokProbe}
               onProbeCodex={runCodexProbe}
+              onProbeOpenCode={runOpenCodeProbe}
               onRefresh={refreshProviders}
               diagnosticChecking={diagnosticCheckingProviderId === selectedProvider.id}
               onRunNativeDiagnostic={() => runNativeDiagnostic(selectedProvider.id as AgentProviderId)}
@@ -392,7 +431,7 @@ export function AgentProviderSettings({
 function AgentProviderListSkeleton() {
   return (
     <div className="agent-provider-list-skeleton" aria-hidden="true">
-      {[0, 1, 2].map((item) => (
+      {[0, 1, 2, 3].map((item) => (
         <div className="agent-provider-skeleton-row" key={item}>
           <span className="agent-provider-skeleton-icon" />
           <span className="agent-provider-skeleton-copy">
@@ -503,7 +542,10 @@ function AgentProviderDropdown({
 }
 
 function isDefaultAgentProvider(provider: AgentProviderDescriptor): provider is AgentProviderDescriptor & { id: AgentProviderId } {
-  return provider.id === 'claude-code' || provider.id === 'grok-build' || provider.id === 'openai-codex';
+  return provider.id === 'claude-code'
+    || provider.id === 'grok-build'
+    || provider.id === 'openai-codex'
+    || provider.id === 'opencode';
 }
 
 function defaultAgentProviderName(providerId: AgentProviderId) {
@@ -512,6 +554,9 @@ function defaultAgentProviderName(providerId: AgentProviderId) {
   }
   if (providerId === 'openai-codex') {
     return 'OpenAI Codex';
+  }
+  if (providerId === 'opencode') {
+    return 'OpenCode';
   }
   return 'Claude Code';
 }
@@ -526,9 +571,13 @@ function ProviderDetail({
   codexProbe,
   codexProbeState,
   codexProbeError,
+  openCodeProbe,
+  openCodeProbeState,
+  openCodeProbeError,
   settingsDiagnostics,
   onProbeGrok,
   onProbeCodex,
+  onProbeOpenCode,
   onRefresh,
   diagnosticChecking,
   onRunNativeDiagnostic,
@@ -542,15 +591,19 @@ function ProviderDetail({
   codexProbe: CodexAppServerProbeResult | null;
   codexProbeState: ProviderProbeState;
   codexProbeError: string;
+  openCodeProbe: OpenCodeAcpProbeResult | null;
+  openCodeProbeState: ProviderProbeState;
+  openCodeProbeError: string;
   settingsDiagnostics: AgentSettingsDiagnostics | null;
   onProbeGrok: () => Promise<void>;
   onProbeCodex: () => Promise<void>;
+  onProbeOpenCode: () => Promise<void>;
   onRefresh: () => Promise<void>;
   diagnosticChecking: boolean;
   onRunNativeDiagnostic: () => Promise<void>;
 }) {
-  const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe);
-  const diagnostics = resolveProviderDiagnostics(provider, claudeCliInfo, grokProbe, codexProbe);
+  const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe);
+  const diagnostics = resolveProviderDiagnostics(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe);
   const effectiveCliStatus = diagnostics.cli === '未检测' && settingsDiagnostics?.installed
     ? '已安装'
     : diagnostics.cli;
@@ -566,15 +619,24 @@ function ProviderDetail({
     codexProbe,
     codexProbeError,
   );
+  const openCodeStatusMessage = getOpenCodeProbeStatusMessage(
+    openCodeProbeState,
+    openCodeProbe,
+    openCodeProbeError,
+  );
   const probeState = provider.id === 'grok-build'
     ? grokProbeState
     : provider.id === 'openai-codex'
       ? codexProbeState
+      : provider.id === 'opencode'
+        ? openCodeProbeState
       : 'idle';
   const probeResultAvailable = provider.id === 'grok-build'
     ? Boolean(grokProbe?.probe?.authenticated)
     : provider.id === 'openai-codex'
       ? Boolean(codexProbe?.probe?.authenticated)
+      : provider.id === 'opencode'
+        ? Boolean(openCodeProbe?.probe?.configured)
       : false;
 
   return (
@@ -595,13 +657,19 @@ function ProviderDetail({
         </div>
         <div className="agent-provider-detail-actions">
           <ProviderStatusIcon tone={status.tone} label={status.label} />
-          {provider.id === 'grok-build' || provider.id === 'openai-codex' ? (
+          {provider.id === 'grok-build' || provider.id === 'openai-codex' || provider.id === 'opencode' ? (
             <>
               <button
                 type="button"
                 className="settings-action-button"
                 disabled={probeState === 'checking' || diagnosticChecking}
-                onClick={() => void (provider.id === 'grok-build' ? onProbeGrok() : onProbeCodex())}
+                onClick={() => void (
+                  provider.id === 'grok-build'
+                    ? onProbeGrok()
+                    : provider.id === 'openai-codex'
+                      ? onProbeCodex()
+                      : onProbeOpenCode()
+                )}
               >
                 {probeState === 'checking' ? (
                   <LoaderCircle size={14} className="spin" />
@@ -682,8 +750,23 @@ function ProviderDetail({
         </div>
       ) : null}
 
+      {provider.id === 'opencode' ? (
+        <div className="agent-provider-live-status" aria-live="polite">
+          {openCodeProbeState === 'checking' ? <LoaderCircle size={15} className="spin" /> : null}
+          {openCodeProbeState === 'error' || (openCodeProbeState === 'ready' && !probeResultAvailable) ? (
+            <AlertCircle size={15} />
+          ) : null}
+          {openCodeProbeState === 'ready' && probeResultAvailable ? <CheckCircle2 size={15} /> : null}
+          <span>{openCodeStatusMessage}</span>
+        </div>
+      ) : null}
+
       {provider.id === 'grok-build' && grokProbe?.probe ? (
         <DetectedAcpCapabilities probe={grokProbe} />
+      ) : null}
+
+      {provider.id === 'opencode' && openCodeProbe?.probe ? (
+        <DetectedAcpCapabilities probe={openCodeProbe} />
       ) : null}
 
       <div className="agent-provider-section">
@@ -706,7 +789,11 @@ function ProviderDetail({
       <div className="agent-provider-section">
         <div className="agent-provider-section-head">
           <h3>可用模型</h3>
-          <span>{models.length > 0 ? `${models.length} 个` : '尚未检测'}</span>
+          <span>{models.length > 0
+            ? `${models.length} 个`
+            : provider.id === 'opencode' && openCodeProbe?.probe
+              ? `${openCodeProbe.probe.modelCount} 个`
+              : '尚未检测'}</span>
         </div>
         {models.length > 0 ? (
           <div className="agent-provider-models">
@@ -723,7 +810,11 @@ function ProviderDetail({
           </div>
         ) : (
           <div className="agent-provider-empty">
-            {provider.lifecycle === 'planned' ? 'Driver 接入后显示运行时模型' : '当前 Provider 未返回模型'}
+            {provider.lifecycle === 'planned'
+              ? 'Driver 接入后显示运行时模型'
+              : provider.id === 'opencode' && openCodeProbe?.probe
+                ? '完整模型列表会在新建任务的模型菜单中按需读取'
+                : '当前 Provider 未返回模型'}
           </div>
         )}
       </div>
@@ -810,7 +901,7 @@ function CapabilityState({ item }: { item: ProviderCapabilityItem }) {
   );
 }
 
-function DetectedAcpCapabilities({ probe }: { probe: GrokAcpProbeResult }) {
+function DetectedAcpCapabilities({ probe }: { probe: GrokAcpProbeResult | OpenCodeAcpProbeResult }) {
   const initialize = probe.probe?.initialize;
   if (!initialize) {
     return null;

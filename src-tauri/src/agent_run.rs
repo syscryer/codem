@@ -1,13 +1,13 @@
 use crate::{
     acp::{
-        AcpEmbeddedResource, AcpError, AcpPromptInput, AcpPromptOutcome, AcpRuntimeEvent,
-        AcpStdioClient, AcpToolCall, AcpToolCallUpdate,
+        AcpEmbeddedResource, AcpError, AcpPermissionPolicy, AcpPromptInput, AcpPromptOutcome,
+        AcpRuntimeEvent, AcpSessionSummary, AcpStdioClient, AcpToolCall, AcpToolCallUpdate,
     },
     agent_runtime::{
         normalize_agent_permission_mode, AgentApprovalOption, AgentApprovalRequest,
         AgentControlCommand, AgentPermissionDecision, AgentRunEvent, AgentUsageSnapshot,
         AgentUserInputOption, AgentUserInputQuestion, AgentUserInputRequest,
-        GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID,
     },
     codex_app_server::{CodexAppServerError, CodexRuntimeEvent, CodexStdioClient, CodexUserInput},
 };
@@ -53,16 +53,17 @@ type CommandResolver = fn() -> Option<String>;
 struct CommandResolvers {
     grok: CommandResolver,
     codex: CommandResolver,
+    opencode: CommandResolver,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AgentDriverKind {
-    GrokAcp,
+    Acp,
     CodexAppServer,
 }
 
 enum AgentDriverInput {
-    Grok(Vec<AcpPromptInput>),
+    Acp(Vec<AcpPromptInput>),
     Codex(Vec<CodexUserInput>),
 }
 
@@ -88,6 +89,7 @@ struct AcpRunTask {
     state: AgentRunState,
     run_id: String,
     command: String,
+    provider_id: String,
     working_directory: PathBuf,
     input: Vec<AcpPromptInput>,
     requested_session_id: Option<String>,
@@ -169,7 +171,7 @@ enum RuntimeDispatchAction {
 }
 
 enum LiveAgentRuntime {
-    Grok {
+    Acp {
         client: AcpStdioClient,
         session_id: String,
     },
@@ -372,6 +374,7 @@ impl AgentRunService {
     pub(crate) fn new(
         grok_command_resolver: fn() -> Option<String>,
         codex_command_resolver: fn() -> Option<String>,
+        opencode_command_resolver: fn() -> Option<String>,
         experimental_agent_run_enabled: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -381,6 +384,7 @@ impl AgentRunService {
                 command_resolvers: CommandResolvers {
                     grok: grok_command_resolver,
                     codex: codex_command_resolver,
+                    opencode: opencode_command_resolver,
                 },
                 experimental_agent_run_enabled,
             },
@@ -528,10 +532,76 @@ async fn agent_models(
                 models,
             }))
         }
+        OPENCODE_PROVIDER_ID => {
+            let command = (state.command_resolvers.opencode)().ok_or_else(|| {
+                AgentApiError::bad_request("未找到可由 CodeM 启动的 OpenCode CLI")
+            })?;
+            let output = background_agent_command(&command)
+                .arg("models")
+                .current_dir(&cwd)
+                .kill_on_drop(true)
+                .output()
+                .await
+                .map_err(|_| AgentApiError::internal("读取 OpenCode 模型目录失败"))?;
+            if !output.status.success() {
+                return Err(AgentApiError::bad_request(
+                    "OpenCode 模型目录读取失败，请检查 provider 配置",
+                ));
+            }
+            let models = parse_opencode_models(&String::from_utf8_lossy(&output.stdout));
+            if models.is_empty() {
+                return Err(AgentApiError::bad_request(
+                    "OpenCode 当前没有可用模型，请先完成 provider 配置",
+                ));
+            }
+            Ok(Json(AgentModelCatalog {
+                provider_id: OPENCODE_PROVIDER_ID.to_string(),
+                default_model_id: None,
+                models,
+            }))
+        }
         _ => Err(AgentApiError::bad_request(
             "当前 Provider 不提供动态模型目录",
         )),
     }
+}
+
+fn parse_opencode_models(value: &str) -> Vec<AgentModelSummary> {
+    let mut seen = std::collections::HashSet::new();
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && line.len() <= 512
+                && line.contains('/')
+                && !line.chars().any(char::is_control)
+        })
+        .filter(|line| seen.insert((*line).to_string()))
+        .take(1000)
+        .map(|id| {
+            let (provider, label) = id
+                .split_once('/')
+                .map(|(provider, model)| (provider, model))
+                .unwrap_or(("OpenCode", id));
+            AgentModelSummary {
+                id: id.to_string(),
+                label: label.to_string(),
+                description: Some(provider.to_string()),
+                context_window_tokens: None,
+                is_default: false,
+                default_reasoning_effort: None,
+                supported_reasoning_efforts: Vec::new(),
+            }
+        })
+        .collect()
+}
+
+fn background_agent_command(program: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(program);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000);
+    command
 }
 
 async fn start_agent_run(
@@ -546,10 +616,17 @@ async fn start_agent_run(
     let provider_id = payload.provider_id.trim();
     let (driver, command, provider_name) = match provider_id {
         GROK_BUILD_PROVIDER_ID => (
-            AgentDriverKind::GrokAcp,
+            AgentDriverKind::Acp,
             (state.command_resolvers.grok)()
                 .ok_or_else(|| AgentApiError::bad_request("未找到 grok 命令"))?,
             "Grok Build",
+        ),
+        OPENCODE_PROVIDER_ID => (
+            AgentDriverKind::Acp,
+            (state.command_resolvers.opencode)().ok_or_else(|| {
+                AgentApiError::bad_request("未找到可由 CodeM 启动的 OpenCode CLI")
+            })?,
+            "OpenCode",
         ),
         OPENAI_CODEX_PROVIDER_ID => (
             AgentDriverKind::CodexAppServer,
@@ -569,8 +646,8 @@ async fn start_agent_run(
     let input_blocks = normalize_agent_input(payload.prompt.as_deref(), payload.content_blocks)?;
     let working_directory = resolve_working_directory(&payload.working_directory)?;
     let driver_input = match driver {
-        AgentDriverKind::GrokAcp => {
-            AgentDriverInput::Grok(build_acp_prompt(&input_blocks, &working_directory)?)
+        AgentDriverKind::Acp => {
+            AgentDriverInput::Acp(build_acp_prompt(&input_blocks, &working_directory)?)
         }
         AgentDriverKind::CodexAppServer => {
             AgentDriverInput::Codex(build_codex_input(&input_blocks, &working_directory)?)
@@ -580,9 +657,9 @@ async fn start_agent_run(
     let session_id = normalize_optional_id(payload.session_id, "sessionId")?;
     let model = normalize_optional_id(payload.model, "model")?;
     let reasoning_effort = normalize_optional_id(payload.reasoning_effort, "reasoningEffort")?;
-    if driver == AgentDriverKind::GrokAcp && reasoning_effort.is_some() {
+    if driver == AgentDriverKind::Acp && reasoning_effort.is_some() {
         return Err(AgentApiError::bad_request(
-            "当前 Grok Build 模型目录未提供 reasoning effort 能力",
+            "当前 ACP Agent 模型目录未提供 reasoning effort 能力",
         ));
     }
     let permission_mode = normalize_agent_permission_mode(payload.permission_mode.as_deref())
@@ -615,10 +692,11 @@ async fn start_agent_run(
             },
         },
     );
+    let provider_id = provider_id.to_string();
 
     if let Some(thread_id) = thread_id {
         let config = AgentRuntimeConfig {
-            provider_id: provider_id.to_string(),
+            provider_id: provider_id.clone(),
             driver,
             command,
             working_directory,
@@ -645,11 +723,12 @@ async fn start_agent_run(
         let task_run_id = run_id.clone();
         tokio::spawn(async move {
             match driver_input {
-                AgentDriverInput::Grok(input) => {
+                AgentDriverInput::Acp(input) => {
                     execute_acp_run(AcpRunTask {
                         state: task_state,
                         run_id: task_run_id,
                         command,
+                        provider_id,
                         working_directory,
                         input,
                         requested_session_id: session_id,
@@ -742,7 +821,12 @@ async fn run_agent_runtime_actor(
                 &run_id,
                 AgentRunEvent::Status {
                     run_id: run_id.clone(),
-                    message: runtime_status_message(config.driver, reused, resumed),
+                    message: runtime_status_message(
+                        &config.provider_id,
+                        config.driver,
+                        reused,
+                        resumed,
+                    ),
                 },
             );
             state.push_event(&run_id, agent_phase_event(&run_id, "thinking", "思考中"));
@@ -845,20 +929,20 @@ enum RuntimeExecution {
 impl LiveAgentRuntime {
     fn session_id(&self) -> &str {
         match self {
-            Self::Grok { session_id, .. } | Self::Codex { session_id, .. } => session_id,
+            Self::Acp { session_id, .. } | Self::Codex { session_id, .. } => session_id,
         }
     }
 
     fn is_running(&mut self) -> bool {
         match self {
-            Self::Grok { client, .. } => client.is_running(),
+            Self::Acp { client, .. } => client.is_running(),
             Self::Codex { client, .. } => client.is_running(),
         }
     }
 
     async fn shutdown(self) {
         match self {
-            Self::Grok { client, .. } => client.shutdown().await,
+            Self::Acp { client, .. } => client.shutdown().await,
             Self::Codex { client, .. } => client.shutdown().await,
         }
     }
@@ -877,15 +961,22 @@ impl LiveAgentRuntime {
             mut control,
         } = run;
         match (self, input) {
-            (Self::Grok { client, session_id }, AgentDriverInput::Grok(input)) => {
+            (Self::Acp { client, session_id }, AgentDriverInput::Acp(input)) => {
                 let mut mapper = AcpEventMapper::new(run_id.clone());
                 let event_state = state.clone();
                 let result = tokio::select! {
-                    result = client.prompt_stream(session_id, &input, cancel, &mut control, |event| {
-                        for event in mapper.map_event(event) {
-                            event_state.push_event(&run_id, event);
-                        }
-                    }) => Some(result),
+                    result = client.prompt_stream_with_permission_policy(
+                        session_id,
+                        &input,
+                        cancel,
+                        &mut control,
+                        acp_permission_policy(&config.provider_id, config.permission_mode),
+                        |event| {
+                            for event in mapper.map_event(event) {
+                                event_state.push_event(&run_id, event);
+                            }
+                        },
+                    ) => Some(result),
                     _ = wait_for_shutdown(shutdown) => None,
                 };
                 for event in mapper.finish_open_tools() {
@@ -956,54 +1047,25 @@ async fn start_live_agent_runtime(
     requested_session_id: Option<&str>,
 ) -> Result<(LiveAgentRuntime, bool), String> {
     match config.driver {
-        AgentDriverKind::GrokAcp => {
-            let arguments = grok_acp_arguments(config.permission_mode);
-            let mut client =
-                AcpStdioClient::spawn(&config.command, &arguments, &config.working_directory)
-                    .await
-                    .map_err(public_acp_error)?;
-            let initialize = client
-                .initialize(env!("CARGO_PKG_VERSION"))
-                .await
-                .map_err(public_acp_error)?;
-            let auth_method_id = initialize
-                .auth_methods
-                .iter()
-                .find(|method| method.id == "cached_token")
-                .map(|method| method.id.as_str())
-                .ok_or_else(|| "Grok Build 没有可用缓存认证，请先运行 grok login".to_string())?;
-            client
-                .authenticate(auth_method_id)
-                .await
-                .map_err(public_acp_error)?;
-            let session = if let Some(session_id) = requested_session_id {
-                if !initialize.load_session {
-                    return Err("当前 Grok Build ACP 不支持恢复会话".to_string());
-                }
-                client
-                    .load_session(session_id, &config.working_directory)
-                    .await
-                    .map_err(public_acp_error)?
-            } else {
-                client
-                    .new_session(&config.working_directory)
-                    .await
-                    .map_err(public_acp_error)?
-            };
-            if let Some(model) = config.model.as_deref() {
-                if should_set_acp_model(
-                    Some(model),
-                    session.current_model_id.as_deref(),
-                    initialize.current_model_id.as_deref(),
-                ) {
-                    client
-                        .set_model(&session.session_id, model)
-                        .await
-                        .map_err(public_acp_error)?;
-                }
-            }
+        AgentDriverKind::Acp => {
+            let mut client = spawn_acp_client(
+                &config.command,
+                &config.provider_id,
+                config.permission_mode,
+                &config.working_directory,
+            )
+            .await
+            .map_err(public_acp_error)?;
+            let session = prepare_acp_session(
+                &mut client,
+                &config.provider_id,
+                &config.working_directory,
+                requested_session_id,
+                config.model.as_deref(),
+            )
+            .await?;
             Ok((
-                LiveAgentRuntime::Grok {
+                LiveAgentRuntime::Acp {
                     client,
                     session_id: session.session_id,
                 },
@@ -1042,14 +1104,39 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
     std::future::pending::<()>().await;
 }
 
-fn runtime_status_message(driver: AgentDriverKind, reused: bool, resumed: bool) -> String {
-    match (driver, reused, resumed) {
-        (AgentDriverKind::GrokAcp, true, _) => "已复用 Grok Build 热会话".to_string(),
-        (AgentDriverKind::GrokAcp, false, true) => "已恢复 Grok Build ACP 会话".to_string(),
-        (AgentDriverKind::GrokAcp, false, false) => "已创建 Grok Build ACP 会话".to_string(),
-        (AgentDriverKind::CodexAppServer, true, _) => "已复用 OpenAI Codex 热会话".to_string(),
-        (AgentDriverKind::CodexAppServer, false, true) => "已恢复 OpenAI Codex 会话".to_string(),
-        (AgentDriverKind::CodexAppServer, false, false) => "已创建 OpenAI Codex 会话".to_string(),
+fn runtime_status_message(
+    provider_id: &str,
+    driver: AgentDriverKind,
+    reused: bool,
+    resumed: bool,
+) -> String {
+    match (provider_id, driver, reused, resumed) {
+        (GROK_BUILD_PROVIDER_ID, AgentDriverKind::Acp, true, _) => {
+            "已复用 Grok Build 热会话".to_string()
+        }
+        (GROK_BUILD_PROVIDER_ID, AgentDriverKind::Acp, false, true) => {
+            "已恢复 Grok Build ACP 会话".to_string()
+        }
+        (GROK_BUILD_PROVIDER_ID, AgentDriverKind::Acp, false, false) => {
+            "已创建 Grok Build ACP 会话".to_string()
+        }
+        (OPENCODE_PROVIDER_ID, AgentDriverKind::Acp, true, _) => {
+            "已复用 OpenCode 热会话".to_string()
+        }
+        (OPENCODE_PROVIDER_ID, AgentDriverKind::Acp, false, true) => {
+            "已恢复 OpenCode ACP 会话".to_string()
+        }
+        (OPENCODE_PROVIDER_ID, AgentDriverKind::Acp, false, false) => {
+            "已创建 OpenCode ACP 会话".to_string()
+        }
+        (_, AgentDriverKind::CodexAppServer, true, _) => "已复用 OpenAI Codex 热会话".to_string(),
+        (_, AgentDriverKind::CodexAppServer, false, true) => "已恢复 OpenAI Codex 会话".to_string(),
+        (_, AgentDriverKind::CodexAppServer, false, false) => {
+            "已创建 OpenAI Codex 会话".to_string()
+        }
+        (_, AgentDriverKind::Acp, true, _) => "已复用 ACP 热会话".to_string(),
+        (_, AgentDriverKind::Acp, false, true) => "已恢复 ACP 会话".to_string(),
+        (_, AgentDriverKind::Acp, false, false) => "已创建 ACP 会话".to_string(),
     }
 }
 
@@ -1064,40 +1151,36 @@ fn codex_error_is_fatal(error: &CodexAppServerError) -> bool {
     )
 }
 
-async fn execute_acp_run(task: AcpRunTask) {
-    let AcpRunTask {
-        state,
-        run_id,
-        command,
-        working_directory,
-        input,
-        requested_session_id,
-        permission_mode,
-        model,
-        cancel,
-        mut control,
-    } = task;
-    let arguments = grok_acp_arguments(permission_mode);
-    let mut client = match AcpStdioClient::spawn(&command, &arguments, &working_directory).await {
-        Ok(client) => client,
-        Err(error) => {
-            state.push_terminal(
-                &run_id,
-                AgentRunEvent::Error {
-                    run_id: run_id.clone(),
-                    message: error.public_message().to_string(),
-                },
-            );
-            return;
+async fn spawn_acp_client(
+    command: &str,
+    provider_id: &str,
+    permission_mode: &'static str,
+    working_directory: &Path,
+) -> Result<AcpStdioClient, AcpError> {
+    match provider_id {
+        GROK_BUILD_PROVIDER_ID => {
+            let arguments = grok_acp_arguments(permission_mode);
+            AcpStdioClient::spawn(command, &arguments, working_directory).await
         }
-    };
+        OPENCODE_PROVIDER_ID => AcpStdioClient::spawn(command, &["acp"], working_directory).await,
+        _ => Err(AcpError::Protocol(
+            "当前 Provider 没有可用 ACP 启动配置".to_string(),
+        )),
+    }
+}
 
-    let mut mapper = AcpEventMapper::new(run_id.clone());
-    let execution = async {
-        let initialize = client
-            .initialize(env!("CARGO_PKG_VERSION"))
-            .await
-            .map_err(public_acp_error)?;
+async fn prepare_acp_session(
+    client: &mut AcpStdioClient,
+    provider_id: &str,
+    working_directory: &Path,
+    requested_session_id: Option<&str>,
+    model: Option<&str>,
+) -> Result<AcpSessionSummary, String> {
+    let initialize = client
+        .initialize(env!("CARGO_PKG_VERSION"))
+        .await
+        .map_err(public_acp_error)?;
+    if provider_id == GROK_BUILD_PROVIDER_ID {
         let auth_method_id = initialize
             .auth_methods
             .iter()
@@ -1108,32 +1191,93 @@ async fn execute_acp_run(task: AcpRunTask) {
             .authenticate(auth_method_id)
             .await
             .map_err(public_acp_error)?;
-        let session = if let Some(session_id) = requested_session_id.as_deref() {
-            if !initialize.load_session {
-                return Err("当前 Grok Build ACP 不支持恢复会话".to_string());
-            }
-            client
-                .load_session(session_id, &working_directory)
-                .await
-                .map_err(public_acp_error)?
-        } else {
-            client
-                .new_session(&working_directory)
-                .await
-                .map_err(public_acp_error)?
-        };
-        if let Some(model) = model.as_deref() {
-            if should_set_acp_model(
-                Some(model),
-                session.current_model_id.as_deref(),
-                initialize.current_model_id.as_deref(),
-            ) {
-                client
-                    .set_model(&session.session_id, model)
-                    .await
-                    .map_err(public_acp_error)?;
-            }
+    }
+    let session = if let Some(session_id) = requested_session_id {
+        if !initialize.load_session {
+            return Err(format!(
+                "当前 {} ACP 不支持恢复会话",
+                agent_provider_display_name(provider_id)
+            ));
         }
+        client
+            .load_session(session_id, working_directory)
+            .await
+            .map_err(public_acp_error)?
+    } else {
+        client
+            .new_session(working_directory)
+            .await
+            .map_err(public_acp_error)?
+    };
+    if let Some(model) = model {
+        if should_set_acp_model(
+            Some(model),
+            session.current_model_id.as_deref(),
+            initialize.current_model_id.as_deref(),
+        ) {
+            match provider_id {
+                GROK_BUILD_PROVIDER_ID => client.set_model(&session.session_id, model).await,
+                OPENCODE_PROVIDER_ID => {
+                    client
+                        .set_config_option(&session.session_id, "model", model)
+                        .await
+                }
+                _ => unreachable!("ACP profile validated before session initialization"),
+            }
+            .map_err(public_acp_error)?;
+        }
+    }
+    Ok(session)
+}
+
+fn agent_provider_display_name(provider_id: &str) -> &'static str {
+    match provider_id {
+        GROK_BUILD_PROVIDER_ID => "Grok Build",
+        OPENCODE_PROVIDER_ID => "OpenCode",
+        OPENAI_CODEX_PROVIDER_ID => "OpenAI Codex",
+        _ => "Agent Provider",
+    }
+}
+
+async fn execute_acp_run(task: AcpRunTask) {
+    let AcpRunTask {
+        state,
+        run_id,
+        command,
+        provider_id,
+        working_directory,
+        input,
+        requested_session_id,
+        permission_mode,
+        model,
+        cancel,
+        mut control,
+    } = task;
+    let mut client =
+        match spawn_acp_client(&command, &provider_id, permission_mode, &working_directory).await {
+            Ok(client) => client,
+            Err(error) => {
+                state.push_terminal(
+                    &run_id,
+                    AgentRunEvent::Error {
+                        run_id: run_id.clone(),
+                        message: error.public_message().to_string(),
+                    },
+                );
+                return;
+            }
+        };
+
+    let mut mapper = AcpEventMapper::new(run_id.clone());
+    let execution = async {
+        let session = prepare_acp_session(
+            &mut client,
+            &provider_id,
+            &working_directory,
+            requested_session_id.as_deref(),
+            model.as_deref(),
+        )
+        .await?;
         state.push_event(
             &run_id,
             AgentRunEvent::Session {
@@ -1145,11 +1289,12 @@ async fn execute_acp_run(task: AcpRunTask) {
             &run_id,
             AgentRunEvent::Status {
                 run_id: run_id.clone(),
-                message: if requested_session_id.is_some() {
-                    "已恢复 Grok Build ACP 会话".to_string()
-                } else {
-                    "已创建 Grok Build ACP 会话".to_string()
-                },
+                message: runtime_status_message(
+                    &provider_id,
+                    AgentDriverKind::Acp,
+                    false,
+                    requested_session_id.is_some(),
+                ),
             },
         );
         state.push_event(&run_id, agent_phase_event(&run_id, "thinking", "思考中"));
@@ -1159,11 +1304,18 @@ async fn execute_acp_run(task: AcpRunTask) {
         } else {
             let event_state = state.clone();
             client
-                .prompt_stream(&session.session_id, &input, cancel, &mut control, |event| {
-                    for event in mapper.map_event(event) {
-                        event_state.push_event(&run_id, event);
-                    }
-                })
+                .prompt_stream_with_permission_policy(
+                    &session.session_id,
+                    &input,
+                    cancel,
+                    &mut control,
+                    acp_permission_policy(&provider_id, permission_mode),
+                    |event| {
+                        for event in mapper.map_event(event) {
+                            event_state.push_event(&run_id, event);
+                        }
+                    },
+                )
                 .await
                 .map_err(public_acp_error)?
         };
@@ -2108,6 +2260,11 @@ impl AcpEventMapper {
             AcpRuntimeEvent::ThoughtChunk | AcpRuntimeEvent::InteractionResolved { .. } => {
                 self.set_phase("thinking", "思考中")
             }
+            AcpRuntimeEvent::Usage { usage } => vec![AgentRunEvent::Usage {
+                run_id: self.run_id.clone(),
+                usage,
+                usage_source: "context",
+            }],
             AcpRuntimeEvent::ToolCall { call } => self.map_tool_call(call),
             AcpRuntimeEvent::ToolCallUpdate { update } => self.map_tool_update(update),
             AcpRuntimeEvent::PermissionRequest { request } => {
@@ -2946,6 +3103,17 @@ fn grok_acp_arguments(permission_mode: &'static str) -> [&'static str; 4] {
     ["--permission-mode", permission_mode, "agent", "stdio"]
 }
 
+fn acp_permission_policy(provider_id: &str, permission_mode: &'static str) -> AcpPermissionPolicy {
+    if provider_id != OPENCODE_PROVIDER_ID {
+        return AcpPermissionPolicy::Interactive;
+    }
+    match permission_mode {
+        "auto" => AcpPermissionPolicy::AutoApproveOnce,
+        "bypassPermissions" => AcpPermissionPolicy::AutoApproveAlways,
+        _ => AcpPermissionPolicy::Interactive,
+    }
+}
+
 fn should_set_acp_model(
     requested_model: Option<&str>,
     session_model: Option<&str>,
@@ -2961,15 +3129,16 @@ fn experimental_agent_run_enabled(value: &AtomicBool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_acp_prompt, build_codex_input, cancelled_before_prompt_outcome,
-        experimental_agent_run_enabled, grok_acp_arguments, normalize_agent_input,
-        runtime_can_reuse, should_set_acp_model, AcpEventMapper, AgentDriverInput, AgentDriverKind,
-        AgentInputContentBlock, AgentRunRecord, AgentRunService, AgentRunState,
-        AgentRuntimeCommand, AgentRuntimeConfig, AgentRuntimePhase, AgentRuntimeRecord,
-        AgentRuntimeRun, CodexEventMapper, CommandResolvers, StartAgentRunRequest,
+        acp_permission_policy, build_acp_prompt, build_codex_input,
+        cancelled_before_prompt_outcome, experimental_agent_run_enabled, grok_acp_arguments,
+        normalize_agent_input, parse_opencode_models, runtime_can_reuse, should_set_acp_model,
+        AcpEventMapper, AgentDriverInput, AgentDriverKind, AgentInputContentBlock, AgentRunRecord,
+        AgentRunService, AgentRunState, AgentRuntimeCommand, AgentRuntimeConfig, AgentRuntimePhase,
+        AgentRuntimeRecord, AgentRuntimeRun, CodexEventMapper, CommandResolvers,
+        StartAgentRunRequest,
     };
     use crate::{
-        acp::{AcpRuntimeEvent, AcpToolCall, AcpToolCallUpdate},
+        acp::{AcpPermissionPolicy, AcpRuntimeEvent, AcpToolCall, AcpToolCallUpdate},
         agent_runtime::AgentRunEvent,
         codex_app_server::CodexRuntimeEvent,
     };
@@ -2985,7 +3154,7 @@ mod tests {
     fn test_runtime_config() -> AgentRuntimeConfig {
         AgentRuntimeConfig {
             provider_id: "grok-build".to_string(),
-            driver: AgentDriverKind::GrokAcp,
+            driver: AgentDriverKind::Acp,
             command: "grok".to_string(),
             working_directory: PathBuf::from("D:/workspace"),
             permission_mode: "default",
@@ -3001,6 +3170,7 @@ mod tests {
             command_resolvers: CommandResolvers {
                 grok: || None,
                 codex: || None,
+                opencode: || None,
             },
             experimental_agent_run_enabled: Arc::new(AtomicBool::new(false)),
         }
@@ -3020,6 +3190,41 @@ mod tests {
             grok_acp_arguments("bypassPermissions"),
             ["--permission-mode", "bypassPermissions", "agent", "stdio"]
         );
+    }
+
+    #[test]
+    fn opencode_permission_modes_map_to_acp_approval_policies() {
+        assert_eq!(
+            acp_permission_policy("opencode", "default"),
+            AcpPermissionPolicy::Interactive
+        );
+        assert_eq!(
+            acp_permission_policy("opencode", "auto"),
+            AcpPermissionPolicy::AutoApproveOnce
+        );
+        assert_eq!(
+            acp_permission_policy("opencode", "bypassPermissions"),
+            AcpPermissionPolicy::AutoApproveAlways
+        );
+        assert_eq!(
+            acp_permission_policy("grok-build", "bypassPermissions"),
+            AcpPermissionPolicy::Interactive
+        );
+    }
+
+    #[test]
+    fn opencode_model_catalog_parses_stable_provider_model_lines() {
+        let models = parse_opencode_models(
+            "minimax-cn-coding-plan/MiniMax-M2.7\ninvalid\nminimax-cn-coding-plan/MiniMax-M2.7\nopencode/gpt-5.4\n",
+        );
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "minimax-cn-coding-plan/MiniMax-M2.7");
+        assert_eq!(models[0].label, "MiniMax-M2.7");
+        assert_eq!(
+            models[0].description.as_deref(),
+            Some("minimax-cn-coding-plan")
+        );
+        assert_eq!(models[1].id, "opencode/gpt-5.4");
     }
 
     #[test]
@@ -3183,7 +3388,7 @@ mod tests {
                 Some("session-1".to_string()),
                 AgentRuntimeRun {
                     run_id: "run-2".to_string(),
-                    input: AgentDriverInput::Grok(Vec::new()),
+                    input: AgentDriverInput::Acp(Vec::new()),
                     cancel,
                     control,
                 },
@@ -3222,7 +3427,7 @@ mod tests {
                 Some("session-1".to_string()),
                 AgentRuntimeRun {
                     run_id: "run-2".to_string(),
-                    input: AgentDriverInput::Grok(Vec::new()),
+                    input: AgentDriverInput::Acp(Vec::new()),
                     cancel,
                     control,
                 },
@@ -3444,6 +3649,14 @@ mod tests {
                 content: Some("duplicate".to_string()),
             },
         });
+        let usage = mapper.map_event(AcpRuntimeEvent::Usage {
+            usage: crate::agent_runtime::AgentUsageSnapshot {
+                input_tokens: Some(53000),
+                model_context_window: Some(200000),
+                total_cost_usd: Some(0.045),
+                ..Default::default()
+            },
+        });
 
         assert!(matches!(
             start.as_slice(),
@@ -3472,6 +3685,15 @@ mod tests {
         assert!(matches!(
             mapper.map_event(AcpRuntimeEvent::ThoughtChunk).as_slice(),
             [AgentRunEvent::Phase { phase, .. }] if phase == "thinking"
+        ));
+        assert!(matches!(
+            usage.as_slice(),
+            [AgentRunEvent::Usage {
+                usage,
+                usage_source: "context",
+                ..
+            }] if usage.input_tokens == Some(53000)
+                && usage.model_context_window == Some(200000)
         ));
         assert!(duplicate.is_empty());
     }

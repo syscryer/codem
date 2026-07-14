@@ -18,6 +18,7 @@ test('normalizeAgentRuntimeSettings defaults to Claude Code and preserves suppor
   assert.equal(normalizeAgentRuntimeSettings({ defaultProviderId: 'claude-code' }).defaultProviderId, 'claude-code');
   assert.equal(normalizeAgentRuntimeSettings({ defaultProviderId: 'grok-build' }).defaultProviderId, 'grok-build');
   assert.equal(normalizeAgentRuntimeSettings({ defaultProviderId: 'openai-codex' }).defaultProviderId, 'openai-codex');
+  assert.equal(normalizeAgentRuntimeSettings({ defaultProviderId: 'opencode' }).defaultProviderId, 'opencode');
   assert.equal(normalizeAgentRuntimeSettings({ defaultProviderId: 'unknown-provider' }).defaultProviderId, 'claude-code');
 });
 

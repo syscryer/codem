@@ -388,3 +388,118 @@
 - 修复普通聊天 Enter 不发送：普通 Enter 发送、Shift+Enter 换行、输入法组合态不发送，并增加纯函数回归测试。
 - `npm run typecheck`、`npm run build`、前端 30 项定向测试、Rust 普通聊天 28 项测试和 `git diff --check` 全部通过；真实 UI 已确认全局设置、模板分组、空态引导和返回路径。
 - 本轮验证需要时重启了 Web 开发服务 `5173`；后端 `3001` 保持原进程，未改动用户供应商/聊天数据。
+
+## 2026-07-15 OpenCode Agent Provider
+
+- 已检查最近提交风格、双远端地址、暂存差异与常见敏感信息模式。
+- 已提交 `a0220aa feat: 优化聊天入口与 Agent 提供商加载`，并成功推送 Gitee `origin/main` 和 GitHub `github/main`。
+- 已启动 Trellis session `session-20260714-180659-xuxg`，任务为 `.trellis/tasks/opencode-agent-provider.md`。
+- 当前进入阶段 1：调研 OpenCode 的真实 CLI、协议、认证、模型与 session 能力。
+- 操作错误：一次空 `apply_patch` 被工具拒绝，未产生文件变化；已改用带精确上下文的补丁。
+- 已按项目顺序重读 README、Trellis workflow、前后端规范入口和跨层/会话相关规范。
+- 本机 `opencode 1.17.7` 可用，并明确提供 ACP server、provider auth、模型目录、session 续接和 agent 选择命令。
+- 用户指定真实联调沿用既有 MiniMax 测试密钥；已冻结“不落代码、不输出、不提交”的安全约束。
+- `opencode auth list` 确认当前环境已经识别 MiniMax Token Plan，无需落盘测试密钥。
+- 已完成全仓 Agent Provider 引用面扫描；确认后端可复用现有 ACP client，前端和跨层设置需补齐 OpenCode 联合类型及所有 Provider 枚举点。
+- 已阅读 Rust `agent_runtime.rs`、`agent_run.rs` 和 ACP client 关键路径，确认应泛化现有 Grok ACP runtime，而不是复制第二套状态机。
+- 第一次真实 ACP 探测因 Node 24 在 Windows 直接 `spawn(opencode.cmd)` 返回 `EINVAL` 而失败；请求尚未发出，未修改 OpenCode 状态，下一步解析真实入口。
+- 已解析 npm shim 并改为直接启动 `opencode-ai/bin/opencode.exe`，ACP initialize 与 session/new 真实探测成功。
+- 已确认 OpenCode ACP 能力、会话恢复、MCP、图片、模型和 build/plan 模式结构；下一步验证 config option 切换与 MiniMax 实际 prompt。
+- 修正一次仅影响 `.learnings` 的歧义补丁：恢复旧条目状态并精确标记本次 Windows spawn 错误已解决。
+- MiniMax 真实联调通过：OpenCode ACP 切换到 `minimax-cn-coding-plan/MiniMax-M2.7` 后精确返回 `PONG`，有 thought/text/usage 流事件并以 `end_turn` 结束。
+- 已通过 `session/close` 和 `opencode session delete` 清理两条探测 session；未修改 API Key 或 OpenCode provider 配置。
+- 发现 OpenCode 的 OMO 插件重复条目警告，按任务边界不修改用户外部配置。
+- 已完成 OpenCode 配置、MCP、Skills 和插件能力核对，并将完整接入范围、不做事项、15 项验收标准与验证命令写入 Trellis 任务。
+- 阶段 2 完成，开始后端 Provider Registry、命令解析和诊断实现。
+- 后端生产 target 首次 `cargo check` 已通过；OpenCode 定向测试编译发现 7 处旧测试夹具签名，已定位为纯测试同步项。
+- ACP 回归 11 通过/1 失败/1 忽略；失败定位为交互模式取消事件被自动审批重构误改，已按策略分支恢复。
+- OpenCode Skills 首次跨三个函数的大补丁因上下文漂移整体失败且无部分写入；已记录 `ERR-20260715-011`，后续按列出、安装、路径校验拆分精确补丁。
+- 已确认真实联调继续读取现有 MiniMax 环境凭据，不在命令、记录或提交中出现 API Key。
+- 已完成 OpenCode Skills 自有目录的列出、安装与 canonical 路径校验；外部 Claude/Agents Skills 未进入可管理根。
+- OpenCode 插件列表/市场安全返回空集合，变更命令明确拒绝；MCP 写回已避免 extra `enabled` 覆盖规范化启停状态。
+- 抽取插件拒绝 helper 的补丁因函数尾部上下文不一致整体失败且无部分写入；已记录 `ERR-20260715-012`，下一步读取完整函数后分段修改。
+- 已按完整函数上下文成功抽取 OpenCode 插件管理 guard，并补充插件空列表、MCP 启停写回及 `.opencode/skill(s)` 项目路径回归测试。
+- `cargo fmt`、OpenCode Rust 定向测试 5/5 与 `codem-backend` 编译全部通过；后端 Registry、共享 ACP runtime、诊断、模型、MCP、Skills 和插件边界阶段完成。
+- 已按 `frontend-skill` 写明前端视觉/内容/交互论点，并完成所有三 Provider 静态枚举点扫描；开始从共享常量、类型与 API 向页面逐层接线。
+- 前端核心三文件补丁在 `types.ts` 上下文校验失败且无部分写入；已记录 `ERR-20260715-013`，改为逐文件、逐类型块精确修改。
+- 已按小补丁完成 `OPENCODE_PROVIDER_ID`、`AgentProviderId`、OpenCode ACP Probe 类型和设置默认 Provider 归一化，`ERR-20260715-013` 已解决。
+- 已新增 OpenCode Probe API/归一化、generic runtime 识别，以及独立的状态、诊断、版本和安全提示文案；下一步补品牌图标与设置页状态接线。
+- 已从 Lobe Icons 官方 MIT 源核对 OpenCode SVG 路径，准备按现有 24x24 `currentColor` 图标体系接入。
+- OpenCode 品牌图标、设置 Provider tabs 和现有深浅色文字规则已接入；已完成 Agent Provider 设置页状态机与 detail 数据流盘点。
+- Agent Provider 设置页已接入 OpenCode 独立 probe、取消控制、状态/诊断/模型数量/ACP 能力摘要、默认 Provider 与实验开关文案；开始接主聊天和 Composer。
+- 主聊天 App/useAgentRun/Composer、WorkspaceStatus、全局规则、MCP、Skills、Usage 和插件能力提示均已补 OpenCode；首次 `npm run typecheck` 通过。
+- 五组定向前端回归共 46 项全部通过，覆盖 OpenCode probe 脱敏、generic runtime、设置诊断、默认 Provider、Composer/App 路由和 WorkspaceStatus。
+- 复跑 TypeScript 发现 2 个插件分支重复收窄和 2 个只读测试夹具类型错误；已记录 `ERR-20260715-014`，行为测试仍为 46/46。
+- `ERR-20260715-014` 已修复，TypeScript 全量检查重新通过。
+- Rust lib 全量测试 105 通过、1 个真实 Grok 登录测试忽略；`npm test` 因仓库无该脚本立即失败且未执行测试，已记录 `ERR-20260715-015`。
+- 已使用仓库实际测试入口枚举 `src/**/*.test.ts`，前端全量 458/458 通过；`ERR-20260715-015` 已解决。
+- `npm run build` 通过，仅保留仓库既有 Tauri 动静态导入与大 chunk 提示。
+- 服务进程链检查再次触发已知 PowerShell `foreach` 管道解析错误，未停止任何进程；已累计既有 `ERR-20260715-001` 并固定使用中间数组。
+- 修正管道后，进程链检查又因 `$pid` 撞上 PowerShell 只读 `$PID` 失败；未触碰进程，已记录 `ERR-20260715-016` 并改用 `$processId`。
+- 已用 `$processId` 成功核对 3001 backend/cargo 均属于 `D:\ai_proj\codem`，5173 Vite 也属于本仓库；`ERR-20260715-016` 已解决。
+- 已仅停止并重启本仓库 Rust backend，5173 Vite 保持运行；3001 最新服务启动成功。
+- 真实 OpenCode API probe 通过：Registry active/available/selectable，CLI 1.17.7、ACP v1、配置可用、模型数量 199，未返回任何 API Key。
+- CodeM 真实运行脚本第一步误请求 `/api/workspace` 返回 404，尚未创建线程或 session；已记录 `ERR-20260715-017`，改用实际 bootstrap 路由。
+- 已从前端与 Rust Router 确认正确入口为 `/api/workspace/bootstrap`，`ERR-20260715-017` 已解决。
+- CodeM 首轮 OpenCode/MiniMax 真实运行成功：模型 `MiniMax-M2.7` 精确回复 `CODEM_OPENCODE_ONE`，session id 已保存，runtime 为 ready；修正 NDJSON UTF-8 解码后确认事件顺序无 error。
+- 首轮 CodeM 事件未见独立 usage，正在核对 OpenCode ACP update 到共享事件的映射，暂不把真实验收判为完成。
+- 已定位 usage 缺失为共享 ACP client 未识别 `usage_update`，不是 MiniMax 未返回；开始补协议映射与定向回归。
+- 已在 Agent Client Protocol 官方仓库定位 v1 usage schema/RFD，下一步按公开字段实现并复测真实 MiniMax。
+- 已确认 `usage_update` 只代表 context used/size 与累计 cost，并发现 prompt 完成路径还会用空 `_meta.usage` 覆盖先前 usage；实现将同时修复事件映射与 outcome 保留。
+- 已冻结兼容映射：`used -> inputTokens`、`size -> modelContextWindow`、USD cost -> `totalCostUsd`、事件 source 为 context；其他币种不误标为美元。
+- 定位 Rust 测试模块时一次 `rg` 字面换行模式失败，代码未受影响；已记录并改用单行标记搜索。
+- `usage_update` 映射与 outcome 保留已实现，两组定向 Rust 回归通过；后端已重启到最新代码。
+- 真实恢复验证通过：重启后加载原 session，MiniMax 返回目标文本、usage context 27235/204800、无 error、runtime ready。
+- 真实热复用验证通过：第二轮状态明确显示复用 OpenCode 热会话，session 不变，usage context 27290/204800。
+- 真实取消请求两次均返回 cancelled=true、无正文/审批、runtime 可继续复用；但 OpenCode stopReason 仍为 end_turn，正在补“已发送 cancel 时规范化 cancelled”的共享语义。
+- 已将实际发送过 ACP cancel 的结果统一规范化为 cancelled，并补回归；重启后真实取消返回 stopped 语义、无审批卡，终态可恢复。
+- 旧 backend exec session 不支持 Ctrl+C，中断请求被拒绝且服务未变化；已记录 `ERR-20260715-019`，改用 PID 归属核对后停止。
+- 停止 backend/cargo 后 3001 被新 PID 重新监听，推断上层 npm/cmd launcher 仍存活；已记录 `ERR-20260715-020`，先核对完整父链再处理。
+- 新 PID 随即正常退出，复核 3001 已空闲，确认是 shutdown 竞态而非 launcher 重启；`ERR-20260715-020` 已解决。
+- 更新错误状态时两次补丁因错误/重复标题上下文被完整拒绝且无部分写入；已记录 `ERR-20260715-021/022`，并拆为独立小补丁完成修正。
+- Playwright 首次打开页面时 5173 已无监听，返回连接拒绝；已记录 `ERR-20260715-023`，准备启动 dev:web 后继续。
+- 已启动最新 Vite 5173 并复用 Playwright default 会话成功打开 CodeM，`ERR-20260715-023` 已解决。
+- 用户再次确认真实测试继续使用既有 MiniMax API Key；密钥仅由 OpenCode 运行环境读取，不写入代码、日志、Trellis 或提交。
+- 恢复阶段首次记录补丁引用了只存在于 `findings.md` 的取消结论，补丁整体拒绝且无文件变化；已改为逐文件精确更新。
+- 修正 ACP usage 最终语义：`usage_update` 只下发 `usageSource=context`，不再并入 `AcpPromptOutcome.usage`；`done` 只携带 prompt response 的本轮 result usage，避免把会话上下文占用误算成本轮输入 Token。
+- `cargo fmt --check` 与 `acp_session_usage_update_maps_context_without_polluting_final_usage` 定向回归通过。
+- 重启最新后端后，真实 MiniMax 恢复请求再次通过：context usage 为 27542/204800，`done` 只保留显式 result usage（input 0、output 41、无 context window），目标回复命中且 error 为 0。
+- 进程父链检查误重复了已知的 PowerShell 空管道写法，解析即失败且未触碰进程；随后按 `$rows` 中间数组核对并安全重启本仓库 backend。
+- 一次 `rg` 使用 Windows 不支持的 sessions 路径通配符报错；后续改用 `-g '*.md'`。
+- 内置 Browser runtime 两次初始化均报 `Cannot redefine property: process`，没有进入页面；已按技能降级规则改用真实 Chromium Playwright CLI 继续验收。
+- Playwright WSL 包装器首次使用 Git Bash 风格 `/d/...` 路径失败，随后确认当前 `bash` 为 WSL 并改用 `/mnt/d/...`；WSL Chromium 又因未安装 `/opt/google/chrome/chrome` 无法启动，均未进入应用页面。
+- 改用同一 Playwright CLI 的 Windows 原生 `npx.cmd` 后成功打开真实 Chrome；初始快照确认 OpenCode 联调线程、OpenCode Provider、MiniMax-M2.7、自动执行权限和主工作区均正常展示。
+- 1280×1262 真实截图确认主聊天布局、Composer 的 OpenCode/MiniMax 选择器、左侧线程热会话标记和底部状态栏无明显错位或横向溢出；设置入口可正常进入完整设置导航。
+- “Agent 与模型”页面真实快照显示 5 个 Provider，OpenCode 为 `acp` 且状态“可用”；实验性 Agent 文案已同时包含 Grok Build、OpenAI Codex 与 OpenCode，默认 Agent 当前仍为 Claude Code。
+- OpenCode 详情页展示版本 1.17.7、可直接 spawn 的真实 `opencode.exe`、配置目录、更新/诊断命令、会话/输入/工具/运行时能力，以及“检测不读取或展示 API Key”的安全说明；未检测态清晰可辨。
+- 浏览器点击“检测连接”真实通过：OpenCode 标记为“已检测”，ACP v1，支持恢复会话、图片、嵌入上下文、MCP HTTP/SSE，共读取 199 个模型；界面只展示公开能力摘要和模型数量。
+- 默认 Agent 下拉真实包含 Claude Code、Grok Build、OpenAI Codex、OpenCode；仅展开检查，未修改当前 Claude Code 默认值。
+- 已用 Escape 关闭默认 Agent 菜单并进入“插件与技能”，确认验收操作没有保存任何 Provider 设置。
+- “插件与技能”页面提供 Claude Code、OpenAI Codex、Grok Build、OpenCode 四个 Agent tab；已切到 OpenCode，准备核对插件安全边界与 Skills 管理。
+- OpenCode 插件页正确显示“CodeM 不改写插件配置、已安装插件仍由 OpenCode 自行加载”，不展示无效 Marketplace 操作；Skills tab 与导入入口仍保留。
+- OpenCode Skills 页可正常切换并保留搜索、导入、刷新入口；当前 OpenCode 自有 `skill(s)` 目录为空，因此显示“暂无 Skills”，没有把外部 Claude/Agents Skills 误列为可删除项。
+- MCP 管理页同样显示四个 Agent tab；已切到 OpenCode，准备核对其原生 `opencode.json` 路径说明和空/已有配置状态。
+- OpenCode MCP 页正确指向用户级 `~/.config/opencode/opencode.json` 与项目 `.opencode/opencode.json` 的 `mcp`，并明确保存时保留其他配置；当前无服务器时空态和“添加服务器”入口正常。
+- 全局规则页同样提供四个 Agent tab；已切到 OpenCode，验收过程未编辑或保存任何规则内容。
+- OpenCode 用户级全局规则正确定位到 `~/.config/opencode/AGENTS.md`，不存在时显示“保存后创建”；项目级入口仍保留，未产生文件。
+- 使用情况页的 Agent 筛选包含 `opencode`，与 claude-code/openai-codex/grok-build 同级；已点击 OpenCode 过滤，准备核对空/有数据视图。
+- `opencode` Usage 过滤可正常激活；当前 CodeM 历史库尚无通过前端持久化的 OpenCode 使用记录，因此显示 0 会话/Token/费用和规范空态，无布局溢出。
+- 已返回工作区并点击“新建任务”，开始验收新任务创建向导中的 OpenCode Provider 和模型选择；尚未创建或发送新任务。
+- 新任务 Composer 默认仍遵循 Claude Code 全局默认，Provider 按钮可正常展开；正在检查 OpenCode 选项，不输入 prompt、不发送。
+- 新任务 Provider 菜单真实包含 OpenCode `acp`，并与 Claude/Grok/Codex 同级、CodeM Agent 规划中项区分；已在未发送的新任务草稿中选择 OpenCode。
+- 切换后 Composer 文案、权限默认值和模型按钮均切换为 OpenCode 语义；已展开按需模型菜单，准备检查 199 个模型中的 MiniMax 选项。
+- OpenCode 模型菜单真实加载完整目录，并按 `provider/model` 区分同名模型；已在未发送草稿中选择 `minimax-cn-coding-plan/MiniMax-M2.7`。
+- 新任务草稿最终显示 OpenCode + MiniMax-M2.7，发送按钮保持禁用，证明未创建线程或产生额外模型请求；现已切到 760×900 视口做窄屏验收。
+- 760×900 真实截图通过：侧栏按响应式规则隐藏，标题栏、空态、Composer、OpenCode 权限/模型选择和底部状态栏均完整可见，无横向滚动、遮挡或控件挤压。
+- Playwright 浏览器控制台最终检查为 0 error、0 warning；窄屏无提示词时仍保持发送禁用。
+- 窄屏侧边栏开关的可访问名称能随状态从“隐藏侧边栏”切换为“显示侧边栏”，键盘/读屏语义正常。
+- 在 760px 下切换侧边栏状态不会挤压或覆盖 Composer，主内容宽度保持稳定。
+- 已恢复 1280px 宽度，草稿仍保留 OpenCode + MiniMax-M2.7；准备从设置入口进入后再缩窄，以单独检查 Provider 设置页响应式。
+- 已重新进入设置页，草稿切换未写入全局默认；准备打开 Agent 与模型后再缩至 760px。
+- Agent 与模型重新打开后仍显示 OpenCode 可用，默认 Agent 保持 Claude Code；开始窄屏设置页视觉验收。
+- 已在 Provider 设置页选中 OpenCode 并将视口缩至 760×900，准备截图核对列表、详情区和操作按钮的响应式布局。
+- 760×900 OpenCode 设置截图通过：5 个 Provider 列表与详情并排保持可读，检测/诊断按钮完整，长可执行路径省略，能力区纵向滚动，无横向溢出或按钮遮挡。
+- 设置页窄屏复查后浏览器控制台仍为 0 error、0 warning；Playwright `codem-opencode` 会话已正常关闭。
+- 最终门禁全部通过：`cargo fmt --check`、`cargo check --bin codem-backend`、Rust lib 106/106（另 1 个需真实 Grok 登录的 smoke 按设计忽略）、TypeScript、前端 458/458、生产构建和 `git diff --check`。
+- 已删除 CodeM 联调线程 `14f16d41-...` 和 OpenCode session `ses_09dc...`；复核 thread/runtime/session 均不存在。外部 OMO 重复插件警告仍按任务边界不修改用户配置。
+- 提交前扫描 34 个拟提交文件；未发现真实 API Key、Bearer、私钥、AWS Key 或完整 OpenCode session id。唯一命中是脱敏回归测试中的固定哨兵 `must-not-survive`，不是凭据。

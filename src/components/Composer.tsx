@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
 import { ArrowUp, BookOpen, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, RefreshCw, Server, ServerCog, Shield, Sparkles, Square, Unlock, X, Zap } from 'lucide-react';
-import { CLAUDE_CODE_PROVIDER_ID, DEFAULT_MODEL_VALUE, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, permissionMenuModes } from '../constants';
+import { CLAUDE_CODE_PROVIDER_ID, DEFAULT_MODEL_VALUE, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
 import { buildComposerContextUsage, shouldRefreshNativeContextOnOpen } from '../lib/composer-context-usage';
@@ -2457,12 +2457,17 @@ function providerDisplayName(providerId: string) {
   if (providerId === OPENAI_CODEX_PROVIDER_ID) {
     return 'OpenAI Codex';
   }
+  if (providerId === OPENCODE_PROVIDER_ID) {
+    return 'OpenCode';
+  }
   return providerId;
 }
 
 function providerUnavailableReason(provider: AgentProviderDescriptor) {
   if (provider.lifecycle === 'planned') {
-    return provider.id === GROK_BUILD_PROVIDER_ID || provider.id === OPENAI_CODEX_PROVIDER_ID
+    return provider.id === GROK_BUILD_PROVIDER_ID
+      || provider.id === OPENAI_CODEX_PROVIDER_ID
+      || provider.id === OPENCODE_PROVIDER_ID
       ? '请在设置中开启实验运行'
       : '规划中';
   }

@@ -7,6 +7,7 @@ import type {
   ClaudeModelInfo,
   CodexAppServerProbeResult,
   GrokAcpProbeResult,
+  OpenCodeAcpProbeResult,
 } from '../types.js';
 import { modelLabel } from './ui-labels.js';
 
@@ -68,6 +69,7 @@ export function resolveProviderStatus(
   claudeCliInfo: ClaudeCliVersionInfo | null,
   grokProbe: GrokAcpProbeResult | null,
   codexProbe: CodexAppServerProbeResult | null = null,
+  openCodeProbe: OpenCodeAcpProbeResult | null = null,
 ): { label: string; tone: ProviderStatusTone } {
   if (provider.id === 'claude-code') {
     const available = claudeCliInfo?.installed === true || provider.available === true;
@@ -93,6 +95,15 @@ export function resolveProviderStatus(
     }
     return { label: '已检测', tone: 'positive' };
   }
+  if (provider.id === 'opencode' && openCodeProbe) {
+    if (!openCodeProbe.installed) {
+      return { label: '未安装', tone: 'negative' };
+    }
+    if (!openCodeProbe.initialized || !openCodeProbe.probe?.configured) {
+      return { label: '待处理', tone: 'warning' };
+    }
+    return { label: '已检测', tone: 'positive' };
+  }
   return provider.lifecycle === 'planned'
     ? { label: '规划中', tone: 'muted' }
     : { label: provider.available ? '可用' : '不可用', tone: provider.available ? 'positive' : 'negative' };
@@ -103,6 +114,7 @@ export function resolveProviderDiagnostics(
   claudeCliInfo: ClaudeCliVersionInfo | null,
   grokProbe: GrokAcpProbeResult | null,
   codexProbe: CodexAppServerProbeResult | null = null,
+  openCodeProbe: OpenCodeAcpProbeResult | null = null,
 ) {
   if (provider.id === 'claude-code') {
     const installed = claudeCliInfo?.installed === true || provider.available === true;
@@ -131,6 +143,18 @@ export function resolveProviderDiagnostics(
         : '未检测',
       version: codexProbe?.version ?? '未知',
       command: codexProbe?.command ?? '',
+    };
+  }
+  if (provider.id === 'opencode') {
+    return {
+      cli: openCodeProbe ? (openCodeProbe.installed ? '已安装' : '未安装') : '未检测',
+      auth: openCodeProbe?.probe
+        ? (openCodeProbe.probe.configured
+            ? `由 OpenCode 管理 · ${openCodeProbe.probe.modelCount} 个模型`
+            : '未发现可用模型')
+        : '未检测',
+      version: openCodeProbe?.version ?? openCodeProbe?.probe?.initialize.agentVersion ?? '未知',
+      command: openCodeProbe?.command ?? '',
     };
   }
   return {
@@ -172,6 +196,7 @@ export function formatProviderListMeta(
   claudeCliInfo: ClaudeCliVersionInfo | null,
   grokProbe: GrokAcpProbeResult | null,
   codexProbe: CodexAppServerProbeResult | null = null,
+  openCodeProbe: OpenCodeAcpProbeResult | null = null,
 ) {
   if (provider.id === 'claude-code' && claudeCliInfo?.version) {
     return `v${claudeCliInfo.version} · ${provider.driverId}`;
@@ -181,6 +206,9 @@ export function formatProviderListMeta(
   }
   if (provider.id === 'openai-codex' && codexProbe?.version) {
     return `${codexProbe.version} · ${provider.driverId}`;
+  }
+  if (provider.id === 'opencode' && openCodeProbe?.version) {
+    return `v${openCodeProbe.version} · ${provider.driverId}`;
   }
   return provider.driverId;
 }
@@ -254,6 +282,32 @@ export function getCodexProbeStatusMessage(
     return `检测完成：Codex App Server 和本机认证${mode}均可用。`;
   }
   return '尚未检测。检测会启动一次本机 Codex App Server 子进程。';
+}
+
+export function getOpenCodeProbeStatusMessage(
+  state: 'idle' | 'checking' | 'ready' | 'error',
+  result: OpenCodeAcpProbeResult | null,
+  requestError: string,
+) {
+  if (state === 'checking') {
+    return '正在启动 OpenCode ACP 并检测模型配置';
+  }
+  if (state === 'error') {
+    return `${requestError || '检测失败'}。请检查后重新检测。`;
+  }
+  if (state === 'ready' && result) {
+    if (!result.installed) {
+      return `${result.error || '未找到可启动的 OpenCode CLI'}。安装 OpenCode 或设置 OPENCODE_CLI_PATH 后重新检测。`;
+    }
+    if (!result.initialized) {
+      return `${result.error || 'ACP 初始化失败'}。请检查 OpenCode 版本和配置后重新检测。`;
+    }
+    if (!result.probe?.configured) {
+      return 'OpenCode ACP 已可用，但尚未发现模型。请先在 OpenCode 中配置 Provider。';
+    }
+    return `检测完成：OpenCode ACP 可用，当前可读取 ${result.probe.modelCount} 个模型；凭据继续由 OpenCode 管理。`;
+  }
+  return '尚未检测。检测会启动一次本机 OpenCode ACP 子进程，不读取或展示 API Key。';
 }
 
 function formatTokenCount(tokens: number) {

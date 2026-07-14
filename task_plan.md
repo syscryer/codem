@@ -225,3 +225,58 @@
 | 全量 Clippy `-D warnings` 被仓库既有 Agent/backend 告警阻断 | 1 | 记录既有告警类别，并用排除既有类别的 Clippy 门禁验证普通聊天新增代码无额外告警 |
 | 加固改动后 `cargo fmt --check` 发现三处排版差异 | 1 | 运行 `cargo fmt` 后重新执行格式、测试和构建门禁 |
 | 旧 dev exec session 已失效，无法通过 stdin 停止 | 1 | 核对 3101/5174 进程祖先与路径，只停止隔离 worktree 的孤儿进程树后重新启动 |
+
+## 当前规划：OpenCode Agent Provider 完整接入
+
+### 目标
+
+- 将 OpenCode 作为与 Claude Code、OpenAI Codex、Grok Build 并列的独立 Agent Provider。
+- 基于 OpenCode 实际公开协议实现检测、诊断、模型目录、新建/恢复会话、流式事件、取消和设置管理。
+- 保持普通聊天链路完全独立，不把 OpenCode Agent 复用为普通聊天供应商配置。
+
+### 阶段
+
+| 阶段 | 状态 | 说明 |
+| --- | --- | --- |
+| 0. 提交现有成果 | completed | `a0220aa` 已推送 Gitee `origin/main` 与 GitHub `github/main` |
+| 1. OpenCode 能力调研 | completed | 本机 1.17.7、ACP 能力、MiniMax 模型切换/流式 prompt/session close 已真实验证 |
+| 2. 接入契约与任务验收 | completed | Provider id、共享 ACP profile、模型/权限/MCP/Skills 边界和验收标准已写入 Trellis |
+| 3. 后端 Registry 与诊断 | completed | 命令解析、ACP probe、配置/模型/规则诊断、MCP/Skills 与插件安全边界已完成并通过编译 |
+| 4. Agent 运行与模型目录 | completed | 共享 ACP 已接入新建/恢复/热复用、模型 config option、权限、流式事件、取消和 usage |
+| 5. 前端设置与入口 | completed | 图标、列表、默认 Agent、诊断/能力/模型、Composer、MCP/Skills/Usage 已完成 |
+| 6. 自动化与真实验证 | completed | Rust 106/106、前端 458/458、TS/构建、真实 MiniMax、1280/760 浏览器验收全部通过 |
+| 7. 记录、提交与双推送 | completed | Trellis/敏感扫描已完成，按项目规范提交并推送 Gitee/GitHub |
+
+### 当前边界
+
+- 优先复用 OpenCode 官方协议，不通过终端文本抓取模拟流式状态。
+- 不修改普通聊天供应商、知识库、MCP/Skills 的独立运行机制。
+- 若本机未安装或未认证，设置页必须明确展示真实状态，不能伪装可用。
+- 不引入持久缓存掩盖 CLI 状态变化。
+
+### 遇到的错误
+
+| 错误 | 尝试次数 | 解决方案 |
+| --- | --- | --- |
+| 误发空 `apply_patch` | 1 | 工具拒绝且无文件变化；后续只发送包含实际上下文和变更的补丁 |
+| Node 24 直接启动 `opencode.cmd` 返回 `spawn EINVAL` | 1 | 改为解析包装脚本背后的真实 Node/二进制入口，不再直接 spawn `.cmd` |
+| 错误记录状态补丁命中重复字段 | 1 | 使用错误条目标题作为同一 hunk 的唯一上下文并恢复旧状态 |
+| Rust 测试夹具仍使用旧 Provider helper 签名 | 1 | 同步 OpenCode resolver/availability 参数并补新分支断言 |
+| 自动审批改动影响既有 ACP 取消事件顺序 | 1 | 仅自动策略隐藏审批卡，Interactive 取消保留原事件序列 |
+| OpenCode Skills 跨三个函数的大补丁上下文失配 | 1 | 确认无部分写入，改为按列出、安装、路径校验三个精确小补丁 |
+| 插件 guard helper 补丁猜测了未读取的函数尾部 | 1 | 确认无部分写入，先读取完整函数，再拆成替换与插入两段补丁 |
+| 前端核心三文件补丁在 Probe 类型上下文失配 | 1 | 确认无部分写入，按常量、联合类型、Probe 类型、设置归一化拆分补丁 |
+| OpenCode 插件分支重复类型收窄、测试夹具变为 readonly | 1 | 删除外层已保证的重复判断，Probe 夹具显式使用可变结果类型 |
+| 假定存在 `npm test` 脚本 | 1 | 命令未执行测试；改为读取 package scripts 后使用项目实际全量测试入口 |
+| 服务进程链检查再次把 `foreach` 直接接管道 | 2 | 解析阶段失败、未触碰进程；已固定先赋值 `$rows` 再格式化，不再直接接管道 |
+| PowerShell 循环变量 `$pid` 撞上只读 `$PID` | 1 | 赋值阶段失败、未触碰进程；统一改用 `$processId` |
+| 真实联调猜测了不存在的 `/api/workspace` | 1 | 第一步 404、未创建测试数据；从实际 Router 确认 bootstrap 路由后重跑 |
+| 普通 `rg` 模式使用字面 `\n` | 1 | 搜索子命令失败、后续读取正常；改用单行 `#[cfg(test)]` 标记 |
+| unified exec 后端不支持 Ctrl+C | 1 | 请求被拒绝、服务仍运行；改用端口/路径/父命令核对后的 PID 停止 |
+| 停止 backend/cargo 后上层 launcher 重新拉起新 PID | 1 | 未停止新 PID；先核对完整父链，再停止已验证的 dev:server 树 |
+| 错误状态补丁连续两次使用了错误/重复上下文 | 2 | 均整体拒绝；将新增记录、状态更新和计划更新拆成独立小补丁 |
+| Playwright 打开时 5173 已无监听 | 1 | 浏览器请求被拒绝、无页面状态；启动本仓库 dev:web 后复用会话 |
+| 恢复阶段记录补丁引用了只存在于 findings 的取消结论 | 1 | 补丁整体拒绝且无部分写入；改为按文件真实尾部拆分精确补丁 |
+| Windows `rg` 对 `.trellis/workspace/sessions/*.md` 路径通配符报错 | 1 | 其他目标仍正常读取；后续目录枚举统一使用 `-g '*.md'` |
+| 内置 Browser runtime 初始化两次报 `Cannot redefine property: process` | 2 | 未进入页面、未改应用状态；按 Browser 技能降级为真实 Chromium Playwright CLI 验收 |
+| WSL Playwright 路径与 Chrome 运行时不可用 | 2 | 先修正 `/mnt` 路径，再确认 WSL 缺少 Chrome；不安装额外浏览器，改用 Windows 原生 `npx.cmd` 复用本机 Chrome |

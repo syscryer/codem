@@ -12,11 +12,13 @@ import type {
   CodexAppServerProbeResult,
   GrokAcpProbeResult,
   GrokAcpProbeSummary,
+  OpenCodeAcpProbeResult,
 } from '../types.js';
 import {
   CLAUDE_CODE_PROVIDER_ID,
   GROK_BUILD_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
+  OPENCODE_PROVIDER_ID,
 } from '../constants.js';
 
 const CAPABILITY_SUPPORT = new Set<AgentCapabilitySupport>([
@@ -107,6 +109,17 @@ export async function probeCodexAgent(signal?: AbortSignal): Promise<CodexAppSer
   return normalizeCodexAppServerProbe(await response.json());
 }
 
+export async function probeOpenCodeAgent(signal?: AbortSignal): Promise<OpenCodeAcpProbeResult> {
+  const response = await fetch('/api/agents/opencode/probe', {
+    method: 'POST',
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error('检测 OpenCode 失败');
+  }
+  return normalizeOpenCodeAcpProbe(await response.json());
+}
+
 export function normalizeAgentProviderRegistry(value: unknown): AgentProviderRegistry {
   const registry = requireRecord(value, 'registry');
   if (!Array.isArray(registry.providers)) {
@@ -135,7 +148,11 @@ export function resolveChatRuntimeKind(providerId: string) {
   if (providerId === CLAUDE_CODE_PROVIDER_ID) {
     return 'claude' as const;
   }
-  if (providerId === GROK_BUILD_PROVIDER_ID || providerId === OPENAI_CODEX_PROVIDER_ID) {
+  if (
+    providerId === GROK_BUILD_PROVIDER_ID
+    || providerId === OPENAI_CODEX_PROVIDER_ID
+    || providerId === OPENCODE_PROVIDER_ID
+  ) {
     return 'generic' as const;
   }
   return 'unsupported' as const;
@@ -185,6 +202,41 @@ export function normalizeGrokAcpProbe(value: unknown): GrokAcpProbeResult {
   const probe = initialized
     ? normalizeGrokProbeSummary(result.probe, 'grokProbe.probe')
     : null;
+
+  return {
+    installed,
+    initialized,
+    command: optionalString(result.command),
+    version: optionalString(result.version),
+    error: optionalString(result.error),
+    probe,
+  };
+}
+
+export function normalizeOpenCodeAcpProbe(value: unknown): OpenCodeAcpProbeResult {
+  const result = requireRecord(value, 'openCodeProbe');
+  const installed = requireBoolean(result.installed, 'openCodeProbe.installed');
+  const initialized = requireBoolean(result.initialized, 'openCodeProbe.initialized');
+
+  if (!installed && initialized) {
+    throw new Error('OpenCode 未安装时不能处于已初始化状态');
+  }
+
+  let probe: OpenCodeAcpProbeResult['probe'] = null;
+  if (initialized) {
+    const summary = requireRecord(result.probe, 'openCodeProbe.probe');
+    const normalized = normalizeGrokProbeSummary({
+      initialize: summary.initialize,
+      authenticated: true,
+      authMethodId: null,
+      authError: null,
+    }, 'openCodeProbe.probe');
+    probe = {
+      configured: requireBoolean(summary.configured, 'openCodeProbe.probe.configured'),
+      modelCount: requireNonNegativeInteger(summary.modelCount, 'openCodeProbe.probe.modelCount'),
+      initialize: normalized.initialize,
+    };
+  }
 
   return {
     installed,

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import type { AgentProviderDescriptor, ClaudeCliVersionInfo } from '../types.js';
+import type { AgentProviderDescriptor, ClaudeCliVersionInfo, OpenCodeAcpProbeResult } from '../types.js';
 import {
   resolveProviderDiagnostics,
   resolveProviderStatus,
@@ -21,6 +21,10 @@ const agentSettingsSource = await readFile(
 );
 const providerSettingsSource = await readFile(
   new URL('../components/settings/AgentProviderSettings.tsx', import.meta.url),
+  'utf8',
+);
+const providerManagementSource = await readFile(
+  new URL('./agent-provider-management.ts', import.meta.url),
   'utf8',
 );
 const appSource = await readFile(new URL('../App.tsx', import.meta.url), 'utf8');
@@ -53,11 +57,13 @@ test('provider settings reuses shared registry and progressively loads diagnosti
   assert.doesNotMatch(providerSettingsSource, /if \(loadState === 'loading' && !registry\)/);
 });
 
-test('provider management keeps Grok and Codex detection explicit and non-reentrant', () => {
+test('provider management keeps Grok, Codex, and OpenCode detection explicit and non-reentrant', () => {
   assert.match(providerSettingsSource, /async function runGrokProbe\(\)/);
   assert.match(providerSettingsSource, /async function runCodexProbe\(\)/);
+  assert.match(providerSettingsSource, /async function runOpenCodeProbe\(\)/);
   assert.match(providerSettingsSource, /probeGrokAgent\(controller\.signal\)/);
   assert.match(providerSettingsSource, /probeCodexAgent\(controller\.signal\)/);
+  assert.match(providerSettingsSource, /probeOpenCodeAgent\(controller\.signal\)/);
   assert.match(providerSettingsSource, /disabled=\{probeState === 'checking' \|\| diagnosticChecking\}/);
   assert.match(providerSettingsSource, /fetchAgentSettingsDiagnostics\(providerId, undefined, true\)/);
   assert.doesNotMatch(
@@ -65,7 +71,7 @@ test('provider management keeps Grok and Codex detection explicit and non-reentr
       providerSettingsSource.indexOf('useEffect(() =>'),
       providerSettingsSource.indexOf('const selectedProvider ='),
     ),
-    /probe(?:Grok|Codex)Agent/,
+    /probe(?:Grok|Codex|OpenCode)Agent/,
   );
 });
 
@@ -138,4 +144,54 @@ test('Codex diagnostics distinguish CLI, app-server initialization, and authenti
     tone: 'positive',
   });
   assert.equal(resolveProviderDiagnostics(provider, null, null, probe).auth, '已认证');
+});
+
+test('OpenCode diagnostics report ACP and model configuration without exposing credentials', () => {
+  const provider = {
+    id: 'opencode',
+    displayName: 'OpenCode',
+    driverId: 'acp',
+    lifecycle: 'active',
+    available: true,
+    selectable: true,
+    capabilities: {
+      sessions: { create: 'supported', resume: 'supported', list: 'supported', import: 'unsupported' },
+      input: { text: 'supported', images: 'supported', fileReferences: 'supported' },
+      tools: { streaming: 'supported', approval: 'supported', userInput: 'supported', mcp: 'runtime-detected' },
+      runtime: { cancel: 'soft', reconnect: 'supported', concurrentSessions: 'supported' },
+    },
+  } satisfies AgentProviderDescriptor;
+  const probe: OpenCodeAcpProbeResult = {
+    installed: true,
+    initialized: true,
+    command: 'C:/tools/opencode.exe',
+    version: '1.17.7',
+    error: null,
+    probe: {
+      configured: true,
+      modelCount: 42,
+      initialize: {
+        protocolVersion: 1,
+        loadSession: true,
+        promptCapabilities: { image: true, audio: false, embeddedContext: true },
+        mcpCapabilities: { http: true, sse: true },
+        authMethods: [],
+        defaultAuthMethodId: null,
+        agentVersion: '1.17.7',
+        currentModelId: null,
+        models: [],
+      },
+    },
+  };
+
+  assert.deepEqual(resolveProviderStatus(provider, null, null, null, probe), {
+    label: '已检测',
+    tone: 'positive',
+  });
+  assert.equal(
+    resolveProviderDiagnostics(provider, null, null, null, probe).auth,
+    '由 OpenCode 管理 · 42 个模型',
+  );
+  assert.match(providerSettingsSource, /provider\.id === 'opencode'/);
+  assert.match(providerManagementSource, /OPENCODE_CLI_PATH/);
 });

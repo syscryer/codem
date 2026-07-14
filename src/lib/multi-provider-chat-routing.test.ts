@@ -17,10 +17,11 @@ test('new chat persists provider ownership and locks the selector after creation
   assert.match(composerSource, /Provider 在聊天创建后锁定/);
 });
 
-test('App routes Grok and Codex through the generic hook without changing the Claude hook', () => {
+test('App routes Grok, Codex, and OpenCode through the generic hook without changing the Claude hook', () => {
   assert.match(appSource, /resolveChatRuntimeKind\(activeProviderId\)/);
   assert.match(appSource, /activeThreadRuntimeKind === 'generic' \? activeThreadId : null/);
   assert.match(appSource, /activeProviderId === OPENAI_CODEX_PROVIDER_ID/);
+  assert.match(appSource, /activeProviderId === OPENCODE_PROVIDER_ID/);
   assert.match(appSource, /return submitClaudePrompt\(submission\)/);
   assert.match(appSource, /return submitGenericAgentPrompt\(submission\)/);
   assert.match(agentRunSource, /fetch\('\/api\/agents\/run'/);
@@ -53,6 +54,7 @@ test('generic Agent composer follows provider attachment capabilities and suppor
   assert.match(composerSource, /onRetryAgentModels/);
   assert.match(composerSource, /textOnlyInputMessage = `\$\{providerName\} 当前不支持附件输入/);
   assert.match(composerSource, /providerId === OPENAI_CODEX_PROVIDER_ID/);
+  assert.match(composerSource, /providerId === OPENCODE_PROVIDER_ID/);
   assert.match(composerSource, /isRunning && !supportsQueue/);
   assert.match(agentRunSource, /type QueuedAgentPrompt = AgentPromptSubmission/);
   assert.match(agentRunSource, /maybeStartQueuedPrompt\(context\)/);

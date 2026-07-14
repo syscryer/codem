@@ -11,6 +11,7 @@ const providers: Array<{ id: AgentProviderId; label: string }> = [
   { id: 'claude-code', label: 'Claude Code' },
   { id: 'openai-codex', label: 'OpenAI Codex' },
   { id: 'grok-build', label: 'Grok Build' },
+  { id: 'opencode', label: 'OpenCode' },
 ];
 
 export function AgentSettingsProviderTabs({

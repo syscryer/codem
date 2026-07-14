@@ -2,7 +2,7 @@
 
 CodeM 是一个面向本地编码 Agent 的桌面工作台。
 
-它把本机 Claude Code、OpenAI Codex 与 Grok Build CLI 接入统一图形界面，让你可以管理项目、继续热会话、查看运行过程、处理权限确认，并把聊天记录和项目状态保存在本机。
+它把本机 Claude Code、OpenAI Codex、Grok Build 与 OpenCode CLI 接入统一图形界面，让你可以管理项目、继续热会话、查看运行过程、处理权限确认，并把聊天记录和项目状态保存在本机。
 
 > CodeM 直接使用各 Agent 的原生 CLI、会话和配置目录，不接管账号凭据，也不会自动同步不同 Agent 的配置。
 
@@ -48,11 +48,16 @@ CodeM 是一个面向本地编码 Agent 的桌面工作台。
 
 ## 快速开始
 
-先确认本机已经安装并登录 Claude Code，并且终端里可以执行：
+先确认本机至少安装了一个受支持的 Agent CLI。Claude Code 默认可用；Codex、Grok Build 与 OpenCode 需要在“Agent 与模型”中开启实验性 Agent 运行：
 
 ```bash
 claude --help
+codex --version
+grok --version
+opencode --version
 ```
+
+CodeM 不保存这些 CLI 的账号凭据。OpenCode 可通过 `OPENCODE_CLI_PATH` 指定可执行文件，Windows 会自动避开不能直接启动的 npm `.cmd` / `.ps1` 包装脚本。
 
 安装依赖：
 
@@ -99,7 +104,7 @@ npm run desktop:dev
 - 前端：React + Vite
 - 桌面壳：Tauri
 - 后端：Rust + Axum
-- Agent 调用：本机 `claude`、`codex`、`grok` CLI
+- Agent 调用：本机 `claude`、`codex`、`grok`、`opencode` CLI
 - 本地持久化：SQLite（Rust rusqlite）
 
 ## 打包
@@ -127,7 +132,8 @@ npm run package:all                 # 当前系统推荐目标
 
 ## 当前边界
 
-- 目前主要支持 Claude Code，不要把它理解成已经完成的多模型客户端
+- 各 Agent 的模型、权限和工具能力以 Provider Registry 与本机 CLI 实际返回为准
+- OpenCode 通过 ACP 接入会话、流式事件、模型选择、审批、MCP 与 Skills；插件仍由 OpenCode 自行加载，CodeM 当前不管理其插件市场
 - Claude CLI 参数如果未来变动，后端桥接需要同步调整
 - Plan、审批、AI 提问会暂停等待用户决策
 - 线程历史持久化以 CodeM 自己的 SQLite 为主，Claude transcript 作为导入与补录来源

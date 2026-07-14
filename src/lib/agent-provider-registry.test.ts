@@ -7,6 +7,7 @@ import {
   normalizeAgentProviderRegistry,
   normalizeCodexAppServerProbe,
   normalizeGrokAcpProbe,
+  normalizeOpenCodeAcpProbe,
   resolveChatRuntimeKind,
 } from './agent-provider-registry.js';
 
@@ -177,6 +178,7 @@ test('enabled Grok is selectable without routing unknown providers to Claude', (
   assert.equal(resolveChatRuntimeKind('claude-code'), 'claude');
   assert.equal(resolveChatRuntimeKind('grok-build'), 'generic');
   assert.equal(resolveChatRuntimeKind('openai-codex'), 'generic');
+  assert.equal(resolveChatRuntimeKind('opencode'), 'generic');
   assert.equal(resolveChatRuntimeKind('future-provider'), 'unsupported');
 });
 
@@ -340,5 +342,43 @@ test('grok probe rejects initialized responses without a valid public summary', 
   assert.throws(
     () => normalizeGrokAcpProbe({ installed: true, initialized: true, probe: {} }),
     /initialize 无效/,
+  );
+});
+
+test('OpenCode probe keeps only public ACP and model configuration diagnostics', () => {
+  const result = normalizeOpenCodeAcpProbe({
+    installed: true,
+    initialized: true,
+    command: 'C:/tools/opencode.exe',
+    version: '1.17.7',
+    apiKey: 'must-not-survive',
+    probe: {
+      configured: true,
+      modelCount: 42,
+      initialize: {
+        protocolVersion: 1,
+        loadSession: true,
+        promptCapabilities: { image: true, audio: false, embeddedContext: true },
+        mcpCapabilities: { http: true, sse: true },
+        authMethods: [{ id: 'opencode-login', name: 'OpenCode Login' }],
+        defaultAuthMethodId: 'opencode-login',
+        agentVersion: '1.17.7',
+        currentModelId: null,
+        models: [],
+        providerSecrets: ['private'],
+      },
+    },
+  });
+
+  assert.equal(result.probe?.configured, true);
+  assert.equal(result.probe?.modelCount, 42);
+  assert.equal(result.probe?.initialize.promptCapabilities.image, true);
+  assert.doesNotMatch(JSON.stringify(result), /must-not-survive|providerSecrets|private/);
+});
+
+test('OpenCode probe rejects impossible initialized state', () => {
+  assert.throws(
+    () => normalizeOpenCodeAcpProbe({ installed: false, initialized: true }),
+    /不能处于已初始化状态/,
   );
 });

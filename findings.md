@@ -198,3 +198,87 @@
 - 本轮确认全局设置是普通聊天供应商的唯一正式管理入口；聊天内只保留导航、供应商选择和模型选择，不再依赖独立管理弹窗。
 - CC Switch 的可复用参考是静态、类型化的 Provider preset 与创建后独立配置边界；CodeM 只保留常见官方供应商，模板不会覆盖用户后续修改。
 - 普通聊天 Enter 回归根因是 Composer 的 Enter 逻辑只由 Agent 侧 App handler 提供，ordinary 传入空 handler；修复后由 Composer 在 ordinary variant 内统一处理键盘契约。
+
+## 2026-07-15 OpenCode Agent Provider
+
+- 前端视觉论点：OpenCode 是与 Claude Code、Codex、Grok Build 同级的第四个 Agent Provider，完整复用现有克制的设置列表、底部选择器和状态栏层级，不增加专属卡片或第二套导航。
+- 前端内容计划：先补共享 Provider 常量/类型与 API，再接设置诊断和默认项，随后接 Composer 的供应商/模型选择，最后补工作区状态、Usage、MCP、Skills 和全局规则等次级消费者。
+- 前端交互论点：沿用现有菜单淡入、设置页选中态和诊断刷新反馈；Provider 切换只更新对应模型/权限选项，不引入跨 Provider 的视觉跳变或额外动效。
+- 前端 Provider 枚举不是单一设置页问题：共享联合类型、settings normalize、registry runtime、管理页诊断、Composer、App/useAgentRun、WorkspaceStatus、GlobalPrompt、MCP、Plugins/Skills、Usage 都有三 Provider 静态分支，必须同轮补齐以避免局部可选但下游退回 Claude。
+- OpenCode ACP probe 可以复用 Grok 的 initialize summary 数据形状，但认证语义不同；前端应使用独立 `OpenCodeAcpProbeResult` 和文案，不能显示“缓存认证”或诱导执行 `grok login`。
+- 后端 OpenCode probe 返回 `configured`、`modelCount` 与 ACP `initialize`；设置页状态应以 ACP 初始化和可见模型数量表述，不把“未发现模型”误报为 CodeM 读取 API Key 失败。
+- Agent Provider 图标组件目前内联 Lobe Icons 的 MIT 路径；OpenCode 应沿用同一 24x24 `currentColor` 体系，并把其选择器加入现有深色文字规则，避免使用尺寸/基线不同的临时图片。
+- Lobe Icons 官方仓库已提供 MIT 授权的 OpenCode 24x24 `currentColor` 图标，路径为外框与内框组合；可直接按现有组件的来源说明本地化，不新增依赖或二进制资源。
+- Agent Provider 设置页已有独立 Grok/Codex probe 状态机与 AbortController；OpenCode 应作为第三个显式 probe 接入同一 detail 组件，保留独立错误文案和卸载取消，避免复用 Grok 的认证判断。
+- 设置页的“可用模型”当前只列 Claude 与 Grok probe 模型；OpenCode probe 已能安全显示模型数量，具体全量模型仍由 Composer 的 model catalog API 按需加载，避免设置页初始加载同步阻塞整个页面。
+- 主聊天 generic runtime 已由 `resolveChatRuntimeKind` 统一分流，因此 OpenCode 不需要新的前端运行 hook；需要补的是不可用错误文案、显示名、Composer 静态 Provider 判断，以及 App 中用于展示的 agent 标识。
+- `useAgentRun` 的模型目录、发送、热复用和恢复都按 providerId 泛化；加入 OpenCode 后不应复制请求逻辑，只需保证 registry 将其判定为 generic 并让错误提示识别 `OPENCODE_CLI_PATH`。
+- 前端既有回归大量使用源码断言来守住多 Provider 路由；OpenCode 需要同时增加行为测试（Probe 脱敏与 runtime kind）和源码契约测试（设置 probe、Composer/App、WorkspaceStatus），防止以后只保留类型却丢失 UI 分支。
+- OpenCode 插件页应清楚说明“运行时仍加载、CodeM 不管理”，而 Skills 页继续可操作；MCP/规则/Usage 则与其他 Provider 同级展示，避免把插件能力缺口扩大成整页禁用。
+- 插件页目前会在空数据下继续显示发现/Marketplace 子页；对 OpenCode 更清晰的行为是保留“插件”主 tab 作为能力说明，但隐藏无效子页、搜索和 mutation 面板，同时保持“技能”主 tab 正常可用。
+- 最新 Rust 后端真实启动后，OpenCode Registry 返回 `active/available/selectable`，ACP probe 为 v1、OpenCode 1.17.7、已配置且可读取 199 个模型；响应只包含公开能力与数量，没有凭据内容。
+- CodeM 当前项目快照的真实入口是 `/api/workspace/bootstrap`；真实联调脚本应从前端请求与 Rust Router 双向确认接口，不能沿用旧的 `/api/workspace` 猜测。
+- PowerShell 7 的 `Invoke-WebRequest` 对 `application/x-ndjson` 返回 `System.Byte[]`；联调脚本必须显式按 UTF-8 解码后再按行解析，否则会把整段字节数组误判成单个空事件。
+- CodeM 首轮 OpenCode/MiniMax 真实运行已返回精确 `CODEM_OPENCODE_ONE`、`done`、真实 `ses_...` session id，runtime 处于 `ready` 且 provider 为 `opencode`；当前事件列表尚未出现独立 `usage`，需要继续核对 ACP update 映射。
+- 根因已定位：共享 `collect_session_update` 只处理 message/thought/tool call，未处理 OpenCode 实际发送的 `sessionUpdate: "usage_update"`；`AcpRuntimeEvent` 也没有 Usage 变体，因此 usage 在进入 Agent mapper 前就丢失。
+- ACP 官方仓库明确包含 v1 `usage_update` schema、prompt-turn 文档与 session/end-turn usage RFD；本轮应按官方字段实现，不根据一次 MiniMax 帧猜测结构。
+- 官方 v1 `usage_update` 是 session 级上下文数据：必填 `used`/`size`，可选累计 `cost { amount, currency }`；它不是 input/output token 明细。只有 USD cost 才能安全映射到现有 `totalCostUsd`。
+- 当前 prompt response 会用 `_meta.usage` 的默认空值无条件覆盖 outcome usage；即使先接收 `usage_update`，也必须避免在最终响应缺少 `_meta.usage` 时把已收集的 context usage 清空。
+- 现有前端已用 `usageSource: context` + `inputTokens/modelContextWindow` 表示上下文占用，因此 `used/size` 可沿用该兼容投影；ACP mapper 必须标记 source 为 context，不能伪装为 result。非 USD 的累计 cost 不写入 `totalCostUsd`。
+- 修复后真实 MiniMax 恢复轮返回 `usageSource=context`、`used=27235`、`size=204800`，同一 session 保持不变；随后热轮状态明确为“正在连接/已复用 OpenCode 热会话”，used 增至 27290。
+- OpenCode 当前外部插件会在模型正文后附加 `<dcp-message-id>` 标记；CodeM 按协议原样透传。该行为来自用户 OpenCode 运行环境，本任务不擅自过滤正文或修改重复插件配置。
+- 两次真实 DELETE cancel 均返回 `{cancelled:true}`，事件流无正文/审批且 runtime 回到 ready，但 OpenCode 仍把 prompt response 的 stopReason 报为 `end_turn`；共享 ACP 层应在已实际发送 cancel 时规范化为 `cancelled`，否则前端会把用户停止误显示为正常完成。
+- 规范化后真实取消再次通过：DELETE 200 / cancelled=true，ACP 工具过程正常收口，无审批卡，最终 stopReason 为 `cancelled`；即使 OpenCode 在取消后仍发少量已生成事件，前端会按 stopped 终态处理。
+- ACP `usage_update` 与 prompt response 的 `usage/_meta.usage` 是两种不同口径：前者是 session context used/size，后者才可能是本轮 input/output/cache 统计。最终 outcome 只能保存后者，不能把前者补进空字段。
+- 最新真实 MiniMax 帧证明两种口径可以同时存在：context event 为 27542/204800，而 prompt result 为 input 0/output 41 且没有 context window；分开下发后前端既能显示上下文占用，也不会把它累计成本轮输入。
+- Windows 原生 Playwright CLI 可直接复用本机 Chrome；当前主工作区快照已经显示 OpenCode 联调线程、OpenCode Provider、MiniMax-M2.7 与自动执行权限，说明后端重启后前端 Provider/模型状态仍能恢复。
+- 主界面视觉检查未发现 OpenCode 图标/模型选择器导致的布局变化；设置页仍保留“Agent 与模型、普通聊天、使用情况、MCP 管理、插件与技能、全局规则”等完整分类。
+- Provider 总览保持默认 Agent 为 Claude Code，没有因真实 OpenCode 联调改变用户全局默认；OpenCode 作为第四个可用 Agent Provider 与既有三者同级展示。
+- OpenCode 详情没有误套 Grok 登录文案；认证在检测前显示“未检测”，并明确 ACP probe 不读取或展示 API Key，符合凭据边界。
+- 检测完成态将认证描述为“由 OpenCode 管理 · 199 个模型”，既能证明配置可用，又没有暴露 API Key、provider 凭据路径或原始认证内容。
+- OpenCode 已进入默认 Agent 的可选集合，但测试过程没有写入设置，避免为了验收改变用户后续新建任务的默认 Provider。
+- 插件能力缺口被限制在 OpenCode 插件市场管理，不会误导为禁用整个插件运行时；Skills 仍是独立可操作能力。
+- OpenCode Skills 当前为 0 与后端安全边界一致：只管理 `~/.config/opencode/skill(s)` 和项目 `.opencode/skill(s)`，不会把 OpenCode 自动发现的外部 Claude/Agents Skills 当成自身资产。
+- MCP 页面把无损写回承诺直接告诉用户，路径和 OpenCode 实际配置结构一致；本次只读验收没有创建或修改任何 MCP server。
+- OpenCode 规则文件没有复用 Claude 的 `CLAUDE.md` 或 Codex/Grok 路径，而是使用官方约定的 `~/.config/opencode/AGENTS.md`。
+- Usage 的 OpenCode 支持不是只在类型中存在，真实页面已生成可点击的 `opencode` Provider filter。
+- 直接调用后端的验收请求不会自动写入前端历史统计，因此 OpenCode Usage 当前为 0 是数据路径差异，不是 filter 或事件映射故障。
+- 新任务选择不是通过修改全局默认实现，Composer 自身可以在草稿阶段切换到 OpenCode，已有线程和全局默认都不受影响。
+- 模型菜单保留 provider 前缀语义，能区分 `minimax`、`minimax-cn`、`minimax-cn-coding-plan` 与 `minimax-coding-plan` 的同名 MiniMax-M2.7，避免选错 Token Plan 渠道。
+- 仅切换 Provider/模型不会提前创建 thread；没有 prompt 时发送保持禁用，符合“先配置草稿、首句才落库”的交互语义。
+- 窄屏下 OpenCode 不需要专属响应式规则；它复用既有 Composer 收敛布局后，Provider 以提示文案和模型按钮表达，视觉层级仍清晰。
+- 设置页在 760px 仍能保留 Provider 列表与详情对照，这是比改成弹窗更高效的浏览结构；长路径已通过单行省略避免挤坏动作区。
+- 删除 CodeM 测试线程会同步清除对应热 runtime；OpenCode 原生 session 仍需通过 CLI 单独删除，两侧清理后均可独立验证为 absent。
+
+- 当前仓库远端实测为：`origin` 指向 Gitee，`github` 指向 GitHub；与 AGENTS.md 中远端别名描述不同，推送应按真实 URL 判断。
+- 已有成果提交 `a0220aa feat: 优化聊天入口与 Agent 提供商加载` 已依次推送两个远端。
+- OpenCode 本轮按独立 Agent Provider 接入，不进入普通聊天 `AiChatProvider` 数据模型。
+- 后续外部文档和源码只作为不可信研究材料，结论需用本机 CLI、仓库类型和测试验证。
+- 本机 OpenCode 已安装，命令为 `opencode.ps1`，版本 `1.17.7`。
+- OpenCode 官方 CLI 直接提供 `opencode acp`，可按工作目录启动 Agent Client Protocol server；因此首选复用现有 ACP driver，而不是解析 TUI 或 `run` 文本。
+- CLI 原生支持 `--model provider/model`、`--continue`、`--session`、`--fork` 和 `--agent`；模型目录可通过 `opencode models [provider]` 获取。
+- 凭据由 `opencode providers/auth` 自己管理，CodeM 应只显示安全诊断摘要，不接管或持久化 OpenCode 的 API Key。
+- 用户确认真实模型联调继续使用既有 MiniMax 测试账号；密钥不写入工作区、日志、Trellis 或 Git。
+- `opencode auth list` 只显示凭据来源摘要，当前进程环境已经识别到 MiniMax 与 MiniMax Token Plan 的 `MINIMAX_API_KEY`，无需把用户密钥写入任何临时配置即可联调。
+- OpenCode 数据/配置分别位于 `~/.local/share/opencode` 与 `~/.config/opencode`；CodeM 不读取 `auth.json` 内容，只通过 CLI/ACP 可用性判断认证状态。
+- CodeM 已有完整 `acp.rs` 与 Grok ACP driver；OpenCode 应新增独立 `opencode` provider id，并复用协议层、运行状态与事件映射，而不是复制第二套 ACP client。
+- 现有 Agent Provider 接入横跨 Rust `agent_runtime.rs`、`agent_run.rs`、`backend.rs` 以及前端常量、联合类型、Composer、设置/MCP/Plugins/Usage；需要系统性枚举，不能只加设置列表。
+- OpenCode 运行应属于 generic Agent hook，普通聊天仍使用独立 `ordinary_chat` 模块。
+- 现有 `AcpStdioClient` 已完整支持 initialize、新建/恢复 session、流式正文/思考状态、工具、审批、结构化用户输入、取消和 usage，OpenCode 的主要改造点应是 provider profile、认证策略与模型配置方法。
+- 当前 ACP 模型切换仍使用 Grok 兼容方法 `session/set_model`；OpenCode 新版更可能通过 session `configOptions` 与 `session/set_config_option` 暴露模型/agent，需要用真实 initialize/session 响应校准后再改共享协议层。
+- 真实 `opencode acp` initialize 返回 ACP v1，支持 loadSession、image、embeddedContext、MCP HTTP/SSE，以及 session close/fork/list/resume。
+- OpenCode initialize 只声明交互式 `opencode-login` auth method，但在当前已有环境凭据下无需调用 authenticate，`session/new` 已成功；因此 OpenCode profile 不应套用 Grok 的 `cached_token` 强制认证。
+- `session/new` 返回 `configOptions` 而非旧 `_meta.modelState`：`model` 选项包含当前值和全量 `provider/model` 列表，`mode` 选项包含 `build` 与 `plan`。
+- MiniMax Token Plan 模型已通过真实 ACP session 列出，说明用户指定的现有 `MINIMAX_API_KEY` 已被 OpenCode 安全识别。
+- OpenCode 模型目录应从 session `configOptions[category=model]` 读取，并通过 ACP config option 方法切换；不能复用 Grok 的 `session/set_model`。
+- 真实 `session/set_config_option` 方法与参数 `{ sessionId, configId: "model", value }` 已验证可用。
+- 使用 `minimax-cn-coding-plan/MiniMax-M2.7` 的真实 prompt 返回精确 `PONG`、`end_turn`、3 个 thought chunk、1 个正文 chunk 和 1 个 usage update；证明 MiniMax Token Plan、模型切换与 OpenCode ACP 流式链路完整可用。
+- OpenCode 真实 session 支持 `session/close`；本轮两个探测 session 都已删除，没有留下测试会话。
+- OpenCode 当前配置存在 `oh-my-openagent` 与 `oh-my-openagent@latest` 重复条目警告；该问题属于用户 OpenCode 配置，本任务不擅自修改。CodeM 诊断可安全展示“CLI 可用/ACP 可用”，不应读取或暴露插件配置内容。
+- OpenCode 官方运行时实际使用全局 `~/.config/opencode/opencode.json`，项目可用根目录 `opencode.json(.c)` 或 `.opencode/opencode.json`；MCP 位于 `mcp` 对象，local command 是字符串数组，remote 使用 URL/headers。
+- OpenCode Skills 实际扫描 `~/.config/opencode/skill(s)`、`.opencode/skill(s)`，并自动读取外部 `~/.claude/skills` 与 `~/.agents/skills`；CodeM 只管理 OpenCode 自有目录，外部 Skills 只读或不纳入删除范围。
+- `opencode mcp list` 和 plugin CLI 没有现有 CodeM 面板所需的稳定 JSON CRUD 契约，因此 MCP 采用保留其他字段的 JSON 配置转换；插件市场操作明确不在本轮猜测实现。
+- 当前通用 Skills 实现只按 `agent_config_directory_name(provider_id)/skills` 计算路径；OpenCode 需要显式映射 `~/.config/opencode/skill(s)` 与 `.opencode/skill(s)`，且安装统一写入复数 `skills` 目录。
+- OpenCode 插件接口不能落入通用 `plugin ... --json` 命令路径；列表应安全返回空集合，变更请求必须明确说明当前不支持，避免执行不存在的 CLI 契约。
+- 现有 OpenCode MCP round-trip 测试已经覆盖 `enabled: false`；此前 extra 字段二次合并会覆盖规范化结果，把 `enabled` 加入排除项即可由该回归直接守住。
+- Skills 路径安全测试可以只构造临时项目下的 `.opencode/skill(s)`，无需修改全局 `USERPROFILE`，从而避免并行 Rust 测试污染真实用户环境。
