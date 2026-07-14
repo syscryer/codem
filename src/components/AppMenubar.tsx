@@ -171,7 +171,7 @@ export function AppMenubar({
               <div className="desktop-menu-popover" role="menu">
                 {menuId === 'file' ? (
                   <>
-                    <MenuItem label="新建聊天" shortcut={shortcutLabels.newChat} onSelect={() => runAction(onNewChat)} />
+                    <MenuItem label="新建任务" shortcut={shortcutLabels.newChat} onSelect={() => runAction(onNewChat)} />
                     <MenuItem label="打开项目文件夹..." shortcut={shortcutLabels.openFolder} onSelect={() => runAction(onOpenFolder)} />
                     <MenuItem label="克隆仓库..." onSelect={() => runAction(onOpenCloneDialog)} />
                     <MenuSeparator />

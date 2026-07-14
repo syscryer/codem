@@ -448,6 +448,7 @@ pub fn run_blocking_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), 
 async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String> {
     fs::create_dir_all(&app_data_dir).map_err(|error| format!("创建应用数据目录失败: {error}"))?;
 
+    let ordinary_chat = crate::ordinary_chat::OrdinaryChatService::new(app_data_dir.clone());
     let experimental_agent_run_enabled = Arc::new(AtomicBool::new(false));
     let agent_runs = crate::agent_run::AgentRunService::new(
         resolve_grok_command,
@@ -471,7 +472,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
             .unwrap_or(false),
         AtomicOrdering::Release,
     );
-    let app = create_router(state);
+    let app = create_router(state).merge(crate::ordinary_chat::router(ordinary_chat));
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(address)
         .await
@@ -9388,7 +9389,7 @@ fn normalize_claude_project_key(value: &str) -> String {
         .to_string()
 }
 
-fn list_mcp_servers_value(project_path: Option<&str>) -> Value {
+pub(crate) fn list_mcp_servers_value(project_path: Option<&str>) -> Value {
     let mut servers = Vec::new();
     let mut errors = Vec::new();
     let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -9455,6 +9456,80 @@ fn list_mcp_servers_value(project_path: Option<&str>) -> Value {
         &mut errors,
     );
     json!({ "servers": servers, "errors": errors })
+}
+
+pub(crate) fn resolve_mcp_server_config_value(
+    server_id: &str,
+    project_path: Option<&str>,
+) -> Result<Value, String> {
+    let overview = list_mcp_servers_value(project_path);
+    let server = overview
+        .get("servers")
+        .and_then(Value::as_array)
+        .and_then(|servers| {
+            servers
+                .iter()
+                .find(|server| server.get("id").and_then(Value::as_str) == Some(server_id))
+        })
+        .ok_or_else(|| "所选 MCP 服务不存在或配置来源已不可用".to_string())?;
+    let name = server
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "MCP 服务名称无效".to_string())?;
+    let source = server
+        .get("source")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "MCP 服务配置来源无效".to_string())?;
+    let path = PathBuf::from(source);
+
+    let config = if server_id.starts_with("Codex:") {
+        let content =
+            fs::read_to_string(&path).map_err(|error| format!("读取 MCP 配置失败: {error}"))?;
+        let value = content
+            .parse::<toml::Value>()
+            .map_err(|error| format!("解析 MCP 配置失败: {error}"))?;
+        let raw = value
+            .get("mcp_servers")
+            .and_then(toml::Value::as_table)
+            .and_then(|servers| servers.get(name))
+            .ok_or_else(|| "所选 MCP 服务配置已不存在".to_string())?;
+        serde_json::to_value(raw).map_err(|error| format!("转换 MCP 配置失败: {error}"))?
+    } else if server_id.starts_with("Claude CLI project:") {
+        let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let project = project_path
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                env::current_dir()
+                    .ok()
+                    .map(|path| path.to_string_lossy().to_string())
+            });
+        let value =
+            read_json_file_if_exists(&home.join(".claude.json")).map_err(|error| error.message)?;
+        extract_claude_json_project_mcp(&value, project.as_deref())
+            .get("mcpServers")
+            .and_then(Value::as_object)
+            .and_then(|servers| servers.get(name))
+            .cloned()
+            .ok_or_else(|| "所选 MCP 服务配置已不存在".to_string())?
+    } else {
+        read_json_file_if_exists(&path)
+            .map_err(|error| error.message)?
+            .unwrap_or(Value::Null)
+            .get("mcpServers")
+            .and_then(Value::as_object)
+            .and_then(|servers| servers.get(name))
+            .cloned()
+            .ok_or_else(|| "所选 MCP 服务配置已不存在".to_string())?
+    };
+
+    Ok(json!({
+        "id": server_id,
+        "name": name,
+        "source": source,
+        "config": config,
+    }))
 }
 
 fn read_json_mcp_servers(
@@ -9611,7 +9686,7 @@ fn read_codex_toml_mcp_servers(path: &Path, servers: &mut Vec<Value>, errors: &m
     }
 }
 
-fn list_codex_skills_value(project_path: Option<&str>) -> Value {
+pub(crate) fn list_codex_skills_value(project_path: Option<&str>) -> Value {
     let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
     let mut skills = Vec::new();
     let mut errors = Vec::new();

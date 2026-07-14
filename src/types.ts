@@ -459,6 +459,11 @@ export type ConversationTurn = {
   pendingUserInputRequests?: RequestUserInputRequest[];
   pendingApprovalRequests?: ApprovalRequest[];
   recoveryHint?: RuntimeRecoveryHint;
+  providerId?: string;
+  providerName?: string;
+  modelId?: string;
+  modelName?: string;
+  citations?: AiKnowledgeCitation[];
 };
 
 export type DebugEvent = {
@@ -1152,6 +1157,154 @@ export type ThreadDetail = ThreadSummary & {
   claudeContext?: ClaudeContextSnapshot;
   historyLoaded: boolean;
   historyLoading: boolean;
+};
+
+export type AiChatProtocol =
+  | 'openai_responses'
+  | 'openai_chat'
+  | 'anthropic_messages'
+  | 'gemini_generate_content';
+
+export type AiChatModel = {
+  id: string;
+  providerId: string;
+  modelId: string;
+  displayName: string;
+  enabled: boolean;
+  isDefault: boolean;
+  capabilities: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AiChatProvider = {
+  id: string;
+  presetId?: string;
+  name: string;
+  protocol: AiChatProtocol;
+  baseUrl: string;
+  enabled: boolean;
+  apiKeySaved: boolean;
+  models: AiChatModel[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AiChatSummary = {
+  id: string;
+  title: string;
+  providerId?: string;
+  modelId?: string;
+  selectedMcpIds: string[];
+  selectedSkillIds: string[];
+  selectedKnowledgeIds: string[];
+  messageCount: number;
+  lastMessagePreview?: string;
+  createdAt: string;
+  updatedAt: string;
+  pinnedAt?: string;
+};
+
+export type AiKnowledgeBaseSummary = {
+  id: string;
+  name: string;
+  description: string;
+  embeddingMode: 'local-hash' | string;
+  chunkSize: number;
+  chunkOverlap: number;
+  sourceCount: number;
+  chunkCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AiKnowledgeSource = {
+  id: string;
+  knowledgeBaseId: string;
+  kind: 'text' | 'file' | string;
+  name: string;
+  sourcePath?: string;
+  contentHash: string;
+  status: 'indexing' | 'ready' | 'error' | string;
+  errorMessage?: string;
+  chunkCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AiKnowledgeBaseDetail = {
+  summary: AiKnowledgeBaseSummary;
+  sources: AiKnowledgeSource[];
+};
+
+export type AiKnowledgeCitation = {
+  knowledgeBaseId: string;
+  sourceId: string;
+  sourceName: string;
+  sourcePath?: string;
+  chunkIndex: number;
+  content: string;
+  score: number;
+};
+
+export type AiChatMessage = {
+  id: string;
+  chatId: string;
+  turnId: string;
+  itemSort: number;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  contentBlocks: InputContentBlockSummary[];
+  providerId?: string;
+  providerName?: string;
+  modelId?: string;
+  modelName?: string;
+  status: 'pending' | 'running' | 'done' | 'error' | 'stopped';
+  usage?: Record<string, unknown>;
+  citations: AiKnowledgeCitation[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AiChatDetail = {
+  summary: AiChatSummary;
+  messages: AiChatMessage[];
+  toolCalls: AiToolCallRecord[];
+};
+
+export type AiToolCallRecord = {
+  id: string;
+  chatId: string;
+  turnId: string;
+  toolCallId: string;
+  serverId?: string;
+  name: string;
+  input: unknown;
+  result?: unknown;
+  status: 'running' | 'waiting_approval' | 'done' | 'error' | 'rejected' | string;
+  risk: 'safe' | 'dangerous' | string;
+  approval?: ApprovalRequest & { decision?: ApprovalDecision; resolvedAt?: string };
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AiChatBootstrap = {
+  providers: AiChatProvider[];
+  chats: AiChatSummary[];
+  knowledgeBases: AiKnowledgeBaseSummary[];
+  mcpServers: McpServerSummary[];
+  skills: SkillSummary[];
+};
+
+export type AiProviderTemplate = {
+  id: string;
+  name: string;
+  protocol: AiChatProtocol;
+  baseUrl: string;
+  apiKeyUrl: string;
+  docsUrl: string;
+  icon: string;
+  category: 'international' | 'china' | 'aggregator' | string;
 };
 
 export type ClaudeModelInfo = {

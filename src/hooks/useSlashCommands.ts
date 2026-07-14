@@ -6,6 +6,7 @@ import { getCurrentLineSlashContext } from '../lib/slash-command-editor';
 import type { AgentType, SlashCommand, SlashCommandsResponse } from '../types';
 
 type UseSlashCommandsArgs = {
+  enabled?: boolean;
   projectPath?: string;
   activeAgent: AgentType;
   draft: string;
@@ -14,6 +15,7 @@ type UseSlashCommandsArgs = {
 };
 
 export function useSlashCommands({
+  enabled = true,
   projectPath,
   activeAgent,
   draft,
@@ -38,6 +40,11 @@ export function useSlashCommands({
   }, []);
 
   useEffect(() => {
+    if (!enabled) {
+      setCommands([]);
+      setLoading(false);
+      return undefined;
+    }
     const abortController = new AbortController();
 
     async function loadSlashCommands() {
@@ -70,7 +77,7 @@ export function useSlashCommands({
 
     void loadSlashCommands();
     return () => abortController.abort();
-  }, [projectPath, refreshToken]);
+  }, [enabled, projectPath, refreshToken]);
 
   const context = useMemo(
     () => getCurrentLineSlashContext(draft, selectionStart),
@@ -85,7 +92,7 @@ export function useSlashCommands({
     () => getVisibleSlashCommands(commands, query, activeAgent),
     [activeAgent, commands, query],
   );
-  const open = Boolean(context);
+  const open = enabled && Boolean(context);
 
   return {
     commands: visibleCommands,

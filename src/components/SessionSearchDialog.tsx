@@ -1,20 +1,24 @@
 import { Search } from 'lucide-react';
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
-import type { ProjectSummary } from '../types';
+import type { AiChatSummary, ProjectSummary } from '../types';
 
 type SessionSearchDialogProps = {
   open: boolean;
   query: string;
   projects: ProjectSummary[];
+  ordinaryChats: AiChatSummary[];
   activeThreadId: string | null;
+  activeOrdinaryChatId: string | null;
   onClose: () => void;
   onQueryChange: (value: string) => void;
   onSelectThread: (projectId: string, threadId: string) => void | Promise<void>;
+  onSelectOrdinaryChat: (chatId: string) => void | Promise<void>;
 };
 
 type SessionSearchEntry = {
-  threadId: string;
-  projectId: string;
+  kind: 'agent' | 'ordinary';
+  id: string;
+  projectId?: string;
   title: string;
   projectName: string;
   sessionId: string;
@@ -26,14 +30,20 @@ export function SessionSearchDialog({
   open,
   query,
   projects,
+  ordinaryChats,
   activeThreadId,
+  activeOrdinaryChatId,
   onClose,
   onQueryChange,
   onSelectThread,
+  onSelectOrdinaryChat,
 }: SessionSearchDialogProps) {
   const [activeIndex, setActiveIndex] = useState(0);
 
-  const entries = useMemo(() => buildSessionSearchEntries(projects, query), [projects, query]);
+  const entries = useMemo(
+    () => buildSessionSearchEntries(projects, ordinaryChats, query),
+    [ordinaryChats, projects, query],
+  );
 
   useEffect(() => {
     if (!open) {
@@ -64,7 +74,11 @@ export function SessionSearchDialog({
 
   function handleSelect(entry: SessionSearchEntry) {
     onClose();
-    void onSelectThread(entry.projectId, entry.threadId);
+    if (entry.kind === 'ordinary') {
+      void onSelectOrdinaryChat(entry.id);
+      return;
+    }
+    if (entry.projectId) void onSelectThread(entry.projectId, entry.id);
   }
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -128,9 +142,9 @@ export function SessionSearchDialog({
           ) : null}
           {entries.map((entry, index) => (
             <button
-              key={entry.threadId}
+              key={`${entry.kind}-${entry.id}`}
               type="button"
-              className={`session-search-result${index === activeIndex ? ' active' : ''}${entry.threadId === activeThreadId ? ' current' : ''}`}
+              className={`session-search-result${index === activeIndex ? ' active' : ''}${entry.kind === 'agent' && entry.id === activeThreadId ? ' current' : ''}${entry.kind === 'ordinary' && entry.id === activeOrdinaryChatId ? ' current' : ''}`}
               role="option"
               aria-selected={index === activeIndex}
               onMouseEnter={() => setActiveIndex(index)}
@@ -151,9 +165,26 @@ export function SessionSearchDialog({
   );
 }
 
-function buildSessionSearchEntries(projects: ProjectSummary[], query: string) {
+function buildSessionSearchEntries(
+  projects: ProjectSummary[],
+  ordinaryChats: AiChatSummary[],
+  query: string,
+) {
   const normalizedQuery = query.trim().toLowerCase();
-  const entries: SessionSearchEntry[] = [];
+  const entries: SessionSearchEntry[] = ordinaryChats
+    .filter((chat) => {
+      if (!normalizedQuery) return true;
+      return [chat.title, chat.lastMessagePreview].filter(Boolean).join('\n').toLowerCase().includes(normalizedQuery);
+    })
+    .map((chat) => ({
+      kind: 'ordinary' as const,
+      id: chat.id,
+      title: chat.title,
+      projectName: '普通聊天',
+      sessionId: '',
+      workingDirectory: '',
+      updatedAt: chat.updatedAt,
+    }));
 
   for (const project of projects) {
     for (const thread of project.threads) {
@@ -172,7 +203,8 @@ function buildSessionSearchEntries(projects: ProjectSummary[], query: string) {
       }
 
       entries.push({
-        threadId: thread.id,
+        kind: 'agent',
+        id: thread.id,
         projectId: project.id,
         title: thread.title,
         projectName: project.name,

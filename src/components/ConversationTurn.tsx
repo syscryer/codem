@@ -6,6 +6,7 @@ import { ImagePreviewDialog, type ImagePreviewItem } from './ImagePreviewDialog'
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import {
   ArrowUpRight,
+  BookOpen,
   Bot,
   Check,
   ChevronDown,
@@ -21,6 +22,7 @@ import {
   Image,
   ListChecks,
   Maximize2,
+  Pencil,
   RotateCcw,
   Search,
   Sparkles,
@@ -83,6 +85,9 @@ function ConversationTurnViewComponent({
   onSubmitRequestUserInput,
   onSubmitRuntimeRecoveryAction,
   onSubmitApprovalDecision,
+  onEditUserMessage,
+  onDeleteTurn,
+  onRegenerateTurn,
 }: {
   turn: ConversationTurn;
   nowMs: number;
@@ -110,6 +115,9 @@ function ConversationTurnViewComponent({
     request: ApprovalRequest,
     decision: ApprovalDecision,
   ) => Promise<boolean>;
+  onEditUserMessage?: (turn: ConversationTurn) => void;
+  onDeleteTurn?: (turn: ConversationTurn) => void;
+  onRegenerateTurn?: (turn: ConversationTurn) => void;
 }) {
   const [imagePreview, setImagePreview] = useState<ImagePreviewItem | null>(null);
   const [intermediateProcessExpanded, setIntermediateProcessExpanded] = useState(false);
@@ -166,7 +174,7 @@ function ConversationTurnViewComponent({
 
   const assistantCopyText = getAssistantCopyText(turn);
   const messageTime = formatMessageTime(turn.startedAtMs);
-  const showAssistantActions = Boolean(assistantCopyText || messageTime);
+  const showAssistantActions = Boolean(assistantCopyText || messageTime || onRegenerateTurn);
   const hasUserText = Boolean(turn.userText.trim());
   const hasUserContentBlocks = Boolean(turn.userContentBlocks?.length);
   const hasUserAttachments = Boolean(turn.userAttachments?.length);
@@ -188,6 +196,28 @@ function ConversationTurnViewComponent({
           {hasUserText || messageTime ? (
             <div className="turn-actions user-turn-actions" aria-label="用户消息操作">
               {hasUserText ? <InlineCopyButton text={turn.userText} title="复制消息" /> : null}
+              {onEditUserMessage && !running ? (
+                <button
+                  type="button"
+                  className="inline-copy-button"
+                  title="编辑并重新发送"
+                  aria-label="编辑并重新发送"
+                  onClick={() => onEditUserMessage(turn)}
+                >
+                  <Pencil size={14} />
+                </button>
+              ) : null}
+              {onDeleteTurn && !running ? (
+                <button
+                  type="button"
+                  className="inline-copy-button"
+                  title="删除这一轮"
+                  aria-label="删除这一轮"
+                  onClick={() => onDeleteTurn(turn)}
+                >
+                  <Trash2 size={14} />
+                </button>
+              ) : null}
               {messageTime ? <span className="turn-time">{messageTime}</span> : null}
             </div>
           ) : null}
@@ -195,7 +225,9 @@ function ConversationTurnViewComponent({
       </section>
 
       <section className="message assistant-message">
-        <div className="message-label">Claude</div>
+        <div className="message-label" title={turn.modelName || turn.modelId}>
+          {turn.providerName || 'Claude'}
+        </div>
         <div className="assistant-content">
           {showLeadingProgressLine ? (
             <TurnProgressLine
@@ -309,9 +341,22 @@ function ConversationTurnViewComponent({
             <div className={`turn-status ${turn.status}`}>{turn.activity}</div>
           ) : null}
 
+          {turn.citations?.length ? <KnowledgeCitations citations={turn.citations} /> : null}
+
           {showAssistantActions ? (
             <div className="turn-actions" aria-label="消息操作">
               {assistantCopyText ? <InlineCopyButton text={assistantCopyText} title="复制回复" /> : null}
+              {onRegenerateTurn && !running ? (
+                <button
+                  type="button"
+                  className="inline-copy-button"
+                  title={turn.status === 'error' ? '重试' : '按原模型重新生成'}
+                  aria-label={turn.status === 'error' ? '重试' : '按原模型重新生成'}
+                  onClick={() => onRegenerateTurn(turn)}
+                >
+                  <RotateCcw size={14} />
+                </button>
+              ) : null}
               {messageTime ? <span className="turn-time">{messageTime}</span> : null}
             </div>
           ) : null}
@@ -320,6 +365,30 @@ function ConversationTurnViewComponent({
 
       {imagePreview ? <ImagePreviewDialog preview={imagePreview} onClose={() => setImagePreview(null)} /> : null}
     </article>
+  );
+}
+
+function KnowledgeCitations({ citations }: { citations: NonNullable<ConversationTurn['citations']> }) {
+  return (
+    <details className="knowledge-citations">
+      <summary>
+        <BookOpen size={14} aria-hidden="true" />
+        <span>知识库来源</span>
+        <small>{citations.length}</small>
+      </summary>
+      <div className="knowledge-citation-list">
+        {citations.map((citation, index) => (
+          <div key={`${citation.sourceId}-${citation.chunkIndex}-${index}`} className="knowledge-citation-item">
+            <div className="knowledge-citation-head">
+              <strong>[来源 {index + 1}] {citation.sourceName}</strong>
+              <small>{Math.round(citation.score * 100)}%</small>
+            </div>
+            {citation.sourcePath ? <span className="knowledge-citation-path">{citation.sourcePath}</span> : null}
+            <p>{citation.content}</p>
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
