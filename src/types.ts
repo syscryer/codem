@@ -51,6 +51,27 @@ export type AgentProviderRegistry = {
   providers: AgentProviderDescriptor[];
 };
 
+export type AgentSettingsDiagnostics = {
+  providerId: AgentProviderId;
+  installed: boolean;
+  command: string | null;
+  version: string | null;
+  configDirectory: string;
+  skillsDirectory: string;
+  updateCommand: string;
+  diagnosticCommand: string;
+  diagnostic: {
+    available: boolean;
+    success: boolean | null;
+    exitCode?: number | null;
+  };
+  capabilities: {
+    plugins: boolean;
+    mcp: boolean;
+    skills: boolean;
+  };
+};
+
 export type AgentReasoningEffortOption = {
   id: string;
   description?: string;
@@ -631,11 +652,15 @@ export type InstalledPlugin = {
   author?: string;
   homepage?: string;
   category?: string;
+  enabled?: boolean;
+  installed?: boolean;
+  providerId?: AgentProviderId;
 };
 
 export type Marketplace = {
   name: string;
   source?: string;
+  mutationTarget?: string;
   installLocation?: string;
   lastUpdated?: string;
   plugins: Array<{
@@ -650,7 +675,7 @@ export type Marketplace = {
 export type Skill = {
   name: string;
   description?: string;
-  source: 'user' | 'project' | `plugin:${string}`;
+  source: 'user' | 'project' | 'bundled' | `plugin:${string}`;
   path: string;
   disableModelInvocation: boolean;
   userInvocable: boolean;
@@ -1175,6 +1200,8 @@ export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'u
 export type ClaudeEffortSelection = 'default' | ClaudeEffortLevel;
 
 export type ClaudeGlobalPrompt = {
+  providerId: AgentProviderId;
+  scope?: 'global' | 'project';
   path: string;
   content: string;
   exists: boolean;
@@ -1227,6 +1254,8 @@ export type McpConfigFile = {
 };
 
 export type McpManagementResponse = {
+  providerId: AgentProviderId;
+  supportsClaudeJson: boolean;
   paths: {
     global: string;
     project: string;

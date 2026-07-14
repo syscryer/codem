@@ -12346,6 +12346,24 @@ button.git-conflict-overview-row:focus-visible,
   width: 210px;
 }
 
+.agent-settings-provider-tabs {
+  width: fit-content;
+  max-width: 100%;
+  margin-bottom: 14px;
+}
+
+.agent-rules-scope-tabs {
+  width: max-content;
+}
+
+.agent-settings-provider-tabs button {
+  min-width: 0;
+}
+
+.agent-settings-provider-tabs .agent-provider-brand-icon {
+  flex: 0 0 auto;
+}
+
 .agent-provider-default-option-main {
   min-width: 0;
   display: inline-flex;
@@ -14527,6 +14545,20 @@ button.git-conflict-overview-row:focus-visible,
   margin-top: 0;
 }
 
+.plugins-suite-panel .plugins-skills-list .settings-list-row {
+  grid-template-columns: minmax(0, 1fr) 140px;
+}
+
+.plugins-suite-panel .plugins-skills-list .settings-list-actions {
+  width: 140px;
+  grid-template-columns: repeat(4, 30px);
+  justify-content: end;
+}
+
+.plugins-suite-panel .plugins-skills-list .settings-badge {
+  grid-column: 1 / -1;
+}
+
 .plugins-suite-panel .settings-list-row {
   grid-template-columns: minmax(0, 1fr) 104px;
   align-items: center;
@@ -15045,7 +15077,8 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .settings-usage-range-control,
-.settings-usage-project-control {
+.settings-usage-project-control,
+.settings-usage-provider-control {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -15054,8 +15087,13 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .settings-usage-range-control > span,
-.settings-usage-project-control > span {
+.settings-usage-project-control > span,
+.settings-usage-provider-control > span {
   white-space: nowrap;
+}
+
+.settings-usage-agent-filter button {
+  min-width: 34px;
 }
 
 .settings-usage-project-select {
@@ -16807,6 +16845,7 @@ button.git-conflict-overview-row:focus-visible,
 
 .codex-desktop .settings-usage-range-control,
 .codex-desktop .settings-usage-project-control,
+.codex-desktop .settings-usage-provider-control,
 .codex-desktop .settings-usage-scope,
 .codex-desktop .settings-usage-card span,
 .codex-desktop .settings-usage-card small,

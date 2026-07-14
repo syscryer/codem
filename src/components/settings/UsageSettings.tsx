@@ -6,6 +6,8 @@ import { fetchUsageStats } from '../../lib/settings-api';
 import { filterUsageProjects } from '../../lib/usage-project-filter';
 import { buildUsageTrendBuckets, type UsageTrendBucketUnit, type UsageTrendRange } from '../../lib/usage-trend';
 import type { UsageProjectRow, UsageProviderRow, UsageStatsResponse, UsageTotals, UsageTrendPoint } from '../../types';
+import type { AgentProviderId } from '../../types';
+import { AgentProviderIcon } from '../AgentProviderIcon';
 import { PopoverPortal } from '../PopoverPortal';
 
 const emptyTotals: UsageTotals = {
@@ -32,12 +34,17 @@ export function UsageSettingsSection() {
   const [summaryRange, setSummaryRange] = useState<UsageSummaryRange>(30);
   const [trendMetric, setTrendMetric] = useState<TrendMetric>('tokens');
   const [selectedProjectId, setSelectedProjectId] = useState('all');
+  const [selectedProviderId, setSelectedProviderId] = useState<'all' | AgentProviderId>('all');
 
-  async function loadUsage(range: UsageSummaryRange, projectId: string) {
+  async function loadUsage(range: UsageSummaryRange, projectId: string, providerId: 'all' | AgentProviderId) {
     setLoading(true);
     setError('');
     try {
-      setStats(await fetchUsageStats(range, projectId === 'all' ? undefined : projectId));
+      setStats(await fetchUsageStats(
+        range,
+        projectId === 'all' ? undefined : projectId,
+        providerId === 'all' ? undefined : providerId,
+      ));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : '读取使用情况失败');
     } finally {
@@ -46,8 +53,8 @@ export function UsageSettingsSection() {
   }
 
   useEffect(() => {
-    void loadUsage(summaryRange, selectedProjectId);
-  }, [summaryRange, selectedProjectId]);
+    void loadUsage(summaryRange, selectedProjectId, selectedProviderId);
+  }, [summaryRange, selectedProjectId, selectedProviderId]);
 
   const totals = stats?.totals ?? emptyTotals;
   const projectOptions = stats?.projectOptions ?? [];
@@ -79,6 +86,17 @@ export function UsageSettingsSection() {
       <header className="settings-section-head settings-section-head-row">
         <h1>使用情况</h1>
         <div className="settings-usage-head-actions">
+          <div className="settings-usage-provider-control">
+            <span>Agent</span>
+            <div className="settings-segmented settings-usage-agent-filter" aria-label="按 Agent 筛选">
+              <button type="button" className={selectedProviderId === 'all' ? 'active' : ''} onClick={() => setSelectedProviderId('all')}>全部</button>
+              {(['claude-code', 'openai-codex', 'grok-build'] as AgentProviderId[]).map((providerId) => (
+                <button key={providerId} type="button" className={selectedProviderId === providerId ? 'active' : ''} aria-label={providerId} onClick={() => setSelectedProviderId(providerId)}>
+                  <AgentProviderIcon providerId={providerId} size={15} />
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="settings-usage-project-control">
             <span>项目</span>
             <UsageProjectSelect
@@ -102,7 +120,7 @@ export function UsageSettingsSection() {
               ))}
             </div>
           </div>
-          <button type="button" className="settings-action-button settings-usage-refresh-button" disabled={loading} onClick={() => void loadUsage(summaryRange, selectedProjectId)}>
+          <button type="button" className="settings-action-button settings-usage-refresh-button" disabled={loading} onClick={() => void loadUsage(summaryRange, selectedProjectId, selectedProviderId)}>
             <RefreshCw className={loading ? 'spin' : undefined} size={14} />
             <span>刷新</span>
           </button>
@@ -116,7 +134,7 @@ export function UsageSettingsSection() {
           <UsageCard icon={BarChart3} label="Token" value={formatTokenValue(totals.totalTokens)} hint={formatTokenBreakdown(totals)} />
           <UsageCard icon={Wrench} label="工具调用" value={formatNumber(totals.toolCalls)} hint={`${formatNumber(totals.projects)} 个项目`} />
           <UsageCard icon={Clock3} label="耗时" value={formatDuration(totals.durationMs)} hint={`${formatUsageSummaryRange(summaryRange)}内按完成轮次累计`} />
-          <UsageCard icon={Coins} label="费用" value={formatCost(totals.totalCostUsd)} hint={`来自 Claude usage · ${formatUsageSummaryRange(summaryRange)}`} />
+          <UsageCard icon={Coins} label="费用" value={formatCost(totals.totalCostUsd)} hint={`来自 Agent usage · ${formatUsageSummaryRange(summaryRange)}`} />
         </div>
 
         <UsageTrendCard

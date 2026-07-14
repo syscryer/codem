@@ -1,6 +1,6 @@
 use crate::agent_runtime::{
     AgentApprovalOption, AgentApprovalRequest, AgentControlCommand, AgentPermissionDecision,
-    AgentUserInputOption, AgentUserInputQuestion, AgentUserInputRequest,
+    AgentUsageSnapshot, AgentUserInputOption, AgentUserInputQuestion, AgentUserInputRequest,
 };
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -151,6 +151,9 @@ pub enum CodexRuntimeEvent {
     TextDelta {
         text: String,
     },
+    Usage {
+        usage: AgentUsageSnapshot,
+    },
     ToolStarted {
         tool_id: String,
         name: String,
@@ -172,12 +175,13 @@ pub enum CodexRuntimeEvent {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CodexTurnOutcome {
     pub stop_reason: String,
     pub text: String,
     pub text_truncated: bool,
     pub cancel_sent: bool,
+    pub usage: AgentUsageSnapshot,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -431,6 +435,7 @@ where
                 text: String::new(),
                 text_truncated: false,
                 cancel_sent: false,
+                usage: AgentUsageSnapshot::default(),
             });
         }
         let policy = codex_turn_policy(permission_mode, cwd)
@@ -460,6 +465,7 @@ where
         let mut completed_tools = HashSet::<String>::new();
         let mut pending_interactions = HashMap::<String, PendingInteraction>::new();
         let mut cancel_sent = false;
+        let mut usage = AgentUsageSnapshot::default();
         let mut cancel_channel_open = true;
         let mut control_channel_open = true;
         let mut interrupt_request_ids = HashSet::<u64>::new();
@@ -552,6 +558,7 @@ where
                                 &mut active_tools,
                                 &mut completed_tools,
                                 &mut pending_interactions,
+                                &mut usage,
                                 &mut on_event,
                             )?;
                             if terminal.is_none()
@@ -573,12 +580,14 @@ where
                                         text: collected_text,
                                         text_truncated,
                                         cancel_sent,
+                                        usage,
                                     }),
                                     CodexTurnTerminal::Interrupted => Ok(CodexTurnOutcome {
                                         stop_reason: "cancelled".to_string(),
                                         text: collected_text,
                                         text_truncated,
                                         cancel_sent,
+                                        usage,
                                     }),
                                     CodexTurnTerminal::Failed(message) => Err(
                                         CodexAppServerError::Execution(
@@ -1016,6 +1025,7 @@ fn process_notification<F>(
     active_tools: &mut HashSet<String>,
     completed_tools: &mut HashSet<String>,
     pending_interactions: &mut HashMap<String, PendingInteraction>,
+    usage: &mut AgentUsageSnapshot,
     on_event: &mut F,
 ) -> Result<Option<CodexTurnTerminal>, CodexAppServerError>
 where
@@ -1029,6 +1039,16 @@ where
         return Ok(None);
     }
     match method {
+        "thread/tokenUsage/updated" => {
+            if let Some(token_usage) = params.get("tokenUsage") {
+                if let Some(parsed) = parse_codex_usage(token_usage) {
+                    *usage = parsed;
+                    on_event(CodexRuntimeEvent::Usage {
+                        usage: usage.clone(),
+                    });
+                }
+            }
+        }
         "turn/started" => {
             *turn_id = params
                 .get("turn")
@@ -1156,6 +1176,22 @@ where
         _ => {}
     }
     Ok(None)
+}
+
+fn parse_codex_usage(token_usage: &Value) -> Option<AgentUsageSnapshot> {
+    let last = token_usage.get("last")?;
+    let cached_input = last.get("cachedInputTokens").and_then(Value::as_u64);
+    let full_input = last.get("inputTokens").and_then(Value::as_u64);
+    Some(AgentUsageSnapshot {
+        input_tokens: full_input.map(|tokens| tokens.saturating_sub(cached_input.unwrap_or(0))),
+        output_tokens: last.get("outputTokens").and_then(Value::as_u64),
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: cached_input,
+        model_context_window: token_usage
+            .get("modelContextWindow")
+            .and_then(Value::as_u64),
+        total_cost_usd: None,
+    })
 }
 
 fn tool_started_event(item: &Value) -> Option<(String, String, Option<Value>)> {
@@ -1687,6 +1723,28 @@ mod tests {
 
     type MockLines = Lines<BufReader<ReadHalf<DuplexStream>>>;
     type MockWriter = WriteHalf<DuplexStream>;
+
+    #[test]
+    fn codex_usage_uses_last_turn_and_separates_cached_input() {
+        let usage = parse_codex_usage(&json!({
+            "last": {
+                "inputTokens": 120,
+                "cachedInputTokens": 20,
+                "outputTokens": 7
+            },
+            "total": {
+                "inputTokens": 9999,
+                "cachedInputTokens": 8888,
+                "outputTokens": 7777
+            },
+            "modelContextWindow": 353400
+        }))
+        .expect("usage");
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(usage.cache_read_input_tokens, Some(20));
+        assert_eq!(usage.output_tokens, Some(7));
+        assert_eq!(usage.model_context_window, Some(353400));
+    }
 
     fn mock_connection() -> (
         CodexConnection<ReadHalf<DuplexStream>, WriteHalf<DuplexStream>>,

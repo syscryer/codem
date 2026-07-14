@@ -213,6 +213,7 @@ function settleDoneTurn(
     phase: undefined,
     sessionId: event.sessionId || withText.sessionId,
     durationMs,
+    totalCostUsd: event.totalCostUsd ?? withText.totalCostUsd,
     metrics: metrics || withText.metrics,
     activity: stopped ? '已停止' : '运行完成',
     pendingUserInputRequests: [],

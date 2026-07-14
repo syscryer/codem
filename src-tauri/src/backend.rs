@@ -489,6 +489,10 @@ fn create_router(state: AppState) -> Router {
         .route("/api/runtime/identity", get(runtime_identity))
         .route("/api/health", get(health))
         .route("/api/agents/providers", get(agent_providers))
+        .route(
+            "/api/agents/settings-diagnostics",
+            get(agent_settings_diagnostics),
+        )
         .route("/api/agents/grok/probe", post(grok_acp_probe))
         .route("/api/agents/codex/probe", post(codex_app_server_probe))
         .route("/api/claude/models", get(claude_models))
@@ -523,6 +527,8 @@ fn create_router(state: AppState) -> Router {
             "/api/plugins/skills/install-builtin",
             post(plugin_install_builtin_skill),
         )
+        .route("/api/plugins/skills/delete", post(plugin_delete_skill))
+        .route("/api/plugins/skills/open", post(plugin_open_skill))
         .route("/api/plugins/command", post(plugin_command))
         .route("/api/slash-commands", get(slash_commands))
         .route("/api/claude/run", post(claude_run))
@@ -792,6 +798,78 @@ async fn agent_providers(State(state): State<AppState>) -> Json<AgentProviderReg
     ))
 }
 
+async fn agent_settings_diagnostics(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
+    let run_diagnostic = query.get("run").is_some_and(|value| value == "true");
+    let command = resolve_agent_settings_command(provider_id);
+    let version = command.as_deref().and_then(|command| {
+        if provider_id == GROK_BUILD_PROVIDER_ID {
+            read_grok_cli_version(command)
+        } else {
+            read_cli_version(command)
+        }
+    });
+    let home = home_dir().ok_or_else(|| ApiError::internal("无法定位用户目录"))?;
+    let config_directory = home.join(agent_config_directory_name(provider_id));
+    let (update_command, diagnostic_command, diagnostic_args) = match provider_id {
+        OPENAI_CODEX_PROVIDER_ID => (
+            "codex update",
+            "codex doctor --json",
+            Some(["doctor", "--json"]),
+        ),
+        GROK_BUILD_PROVIDER_ID => (
+            "grok update",
+            "grok inspect --json",
+            Some(["inspect", "--json"]),
+        ),
+        _ => ("claude update", "claude doctor", None),
+    };
+    let diagnostic = if run_diagnostic {
+        if let (Some(command), Some(arguments)) = (command.as_deref(), diagnostic_args) {
+            let output = background_command(command).args(arguments).output();
+            match output {
+                Ok(output) => json!({
+                    "available": true,
+                    "success": output.status.success(),
+                    "exitCode": output.status.code(),
+                }),
+                Err(_) => json!({
+                    "available": false,
+                    "success": false,
+                }),
+            }
+        } else {
+            json!({
+                "available": command.is_some(),
+                "success": Value::Null,
+            })
+        }
+    } else {
+        json!({
+            "available": command.is_some(),
+            "success": Value::Null,
+        })
+    };
+    Ok(Json(json!({
+        "providerId": provider_id,
+        "installed": command.is_some(),
+        "command": command,
+        "version": version,
+        "configDirectory": config_directory,
+        "skillsDirectory": config_directory.join("skills"),
+        "updateCommand": update_command,
+        "diagnosticCommand": diagnostic_command,
+        "diagnostic": diagnostic,
+        "capabilities": {
+            "plugins": command.is_some(),
+            "mcp": command.is_some(),
+            "skills": true,
+        }
+    })))
+}
+
 async fn grok_acp_probe() -> Json<Value> {
     let Some(command) = resolve_grok_command() else {
         return Json(json!({
@@ -927,17 +1005,36 @@ async fn claude_version_info() -> Json<Value> {
     }
 }
 
-async fn get_claude_system_prompt() -> Json<Value> {
-    Json(read_claude_global_prompt())
+async fn get_claude_system_prompt(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
+    let scope = query.get("scope").map(String::as_str).unwrap_or("global");
+    let path = resolve_agent_rules_path(
+        provider_id,
+        scope,
+        query.get("projectPath").map(String::as_str),
+    )?;
+    Ok(Json(read_agent_global_prompt(provider_id, scope, &path)))
 }
 
-async fn update_claude_system_prompt(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
+async fn update_claude_system_prompt(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
+    let scope = query.get("scope").map(String::as_str).unwrap_or("global");
+    let path = resolve_agent_rules_path(
+        provider_id,
+        scope,
+        query.get("projectPath").map(String::as_str),
+    )?;
     let content = payload
         .get("content")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    write_claude_system_prompt(content)?;
-    Ok(Json(read_claude_global_prompt()))
+    write_agent_rules(&path, content)?;
+    Ok(Json(read_agent_global_prompt(provider_id, scope, &path)))
 }
 
 async fn claude_run(
@@ -1675,8 +1772,20 @@ async fn usage_stats(
     let range_days =
         resolve_usage_range_days(query.get("range").or_else(|| query.get("rangeDays")))?;
     let project_id = query.get("projectId").map(String::as_str);
+    let provider_id = query
+        .get("providerId")
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty() && *value != "all");
+    if let Some(provider_id) = provider_id {
+        settings_provider_id(Some(provider_id))?;
+    }
     let connection = open_initialized_workspace_database(&state)?;
-    Ok(Json(read_usage_stats(&connection, range_days, project_id)?))
+    Ok(Json(read_usage_stats(
+        &connection,
+        range_days,
+        project_id,
+        provider_id,
+    )?))
 }
 
 async fn get_settings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
@@ -8766,25 +8875,61 @@ fn required_json_string<'a>(payload: &'a Value, key: &str, message: &str) -> Api
         .ok_or_else(|| ApiError::bad_request(message))
 }
 
-fn claude_system_prompt_path() -> Option<PathBuf> {
-    home_dir().map(|home| home.join(".claude").join("CLAUDE.md"))
+fn settings_provider_id(value: Option<&str>) -> ApiResult<&str> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None | Some(CLAUDE_CODE_PROVIDER_ID) => Ok(CLAUDE_CODE_PROVIDER_ID),
+        Some(GROK_BUILD_PROVIDER_ID) => Ok(GROK_BUILD_PROVIDER_ID),
+        Some(OPENAI_CODEX_PROVIDER_ID) => Ok(OPENAI_CODEX_PROVIDER_ID),
+        Some(_) => Err(ApiError::bad_request("不支持的 Agent Provider")),
+    }
 }
 
-fn read_claude_global_prompt() -> Value {
-    let Some(path) = claude_system_prompt_path() else {
-        return json!({
-            "path": "",
-            "content": "",
-            "exists": false,
-            "length": 0,
-        });
-    };
+fn agent_config_directory_name(provider_id: &str) -> &'static str {
+    match provider_id {
+        GROK_BUILD_PROVIDER_ID => ".grok",
+        OPENAI_CODEX_PROVIDER_ID => ".codex",
+        _ => ".claude",
+    }
+}
+
+fn resolve_agent_rules_path(
+    provider_id: &str,
+    scope: &str,
+    project_path: Option<&str>,
+) -> ApiResult<PathBuf> {
+    if scope == "project" {
+        let project_path = project_path
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ApiError::bad_request("项目级规则需要 projectPath"))?;
+        return Ok(
+            PathBuf::from(project_path).join(if provider_id == CLAUDE_CODE_PROVIDER_ID {
+                "CLAUDE.md"
+            } else {
+                "AGENTS.md"
+            }),
+        );
+    }
+    if scope != "global" {
+        return Err(ApiError::bad_request("规则 scope 仅支持 global 或 project"));
+    }
+    let home = home_dir().ok_or_else(|| ApiError::internal("无法定位用户目录"))?;
+    Ok(match provider_id {
+        GROK_BUILD_PROVIDER_ID => home.join(".grok").join("AGENTS.md"),
+        OPENAI_CODEX_PROVIDER_ID => home.join(".codex").join("AGENTS.md"),
+        _ => home.join(".claude").join("CLAUDE.md"),
+    })
+}
+
+fn read_agent_global_prompt(provider_id: &str, scope: &str, path: &Path) -> Value {
     match fs::metadata(&path).and_then(|metadata| {
         let content = fs::read_to_string(&path)?;
         Ok((metadata, content))
     }) {
         Ok((metadata, content)) => {
             let mut result = Map::new();
+            result.insert("providerId".to_string(), json!(provider_id));
+            result.insert("scope".to_string(), json!(scope));
             result.insert("path".to_string(), json!(path.display().to_string()));
             result.insert("content".to_string(), json!(content));
             result.insert("exists".to_string(), json!(true));
@@ -8804,12 +8949,16 @@ fn read_claude_global_prompt() -> Value {
             Value::Object(result)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({
+            "providerId": provider_id,
+            "scope": scope,
             "path": path.display().to_string(),
             "content": "",
             "exists": false,
             "length": 0,
         }),
         Err(_) => json!({
+            "providerId": provider_id,
+            "scope": scope,
             "path": path.display().to_string(),
             "content": "",
             "exists": false,
@@ -8818,15 +8967,13 @@ fn read_claude_global_prompt() -> Value {
     }
 }
 
-fn write_claude_system_prompt(content: &str) -> ApiResult<()> {
-    let path = claude_system_prompt_path()
-        .ok_or_else(|| ApiError::internal("无法定位 Claude 配置目录"))?;
+fn write_agent_rules(path: &Path, content: &str) -> ApiResult<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
-            .map_err(|error| ApiError::internal(format!("创建 Claude 配置目录失败: {error}")))?;
+            .map_err(|error| ApiError::internal(format!("创建 Agent 配置目录失败: {error}")))?;
     }
-    fs::write(path, content)
-        .map_err(|error| ApiError::internal(format!("保存 Claude system prompt 失败: {error}")))
+    write_text_file_atomically(path, content)
+        .map_err(|error| ApiError::internal(format!("保存 Agent 规则失败: {error}")))
 }
 
 fn discover_open_targets() -> Vec<Value> {
@@ -8925,21 +9072,26 @@ fn spawn_detached(command: &str, args: &[&str]) -> ApiResult<()> {
 async fn mcp_servers(
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<Json<Value>> {
-    Ok(Json(list_mcp_servers_value(
+    let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
+    Ok(Json(list_agent_mcp_servers_value(
+        provider_id,
         query.get("projectPath").map(String::as_str),
-    )))
+    )?))
 }
 
 async fn mcp_configs(
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
     let project_path = query.get("projectPath").map(String::as_str);
-    let snapshot = read_mcp_config_snapshot(project_path)?;
+    let snapshot = read_agent_mcp_config_snapshot(provider_id, project_path)?;
     Ok(Json(json!({
+        "providerId": provider_id,
         "paths": snapshot.get("paths").cloned().unwrap_or_else(|| json!({})),
         "configs": snapshot.get("configs").cloned().unwrap_or_else(|| json!({})),
         "hasProject": project_path.is_some_and(|value| !value.trim().is_empty()),
-        "overview": list_mcp_servers_value(project_path),
+        "supportsClaudeJson": provider_id == CLAUDE_CODE_PROVIDER_ID,
+        "overview": list_agent_mcp_servers_value(provider_id, project_path)?,
     })))
 }
 
@@ -8948,8 +9100,17 @@ async fn update_mcp_config(
     Query(query): Query<std::collections::HashMap<String, String>>,
     Json(payload): Json<Value>,
 ) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
     let project_path = query.get("projectPath").map(String::as_str);
     let config = normalize_mcp_config(&payload);
+    if provider_id != CLAUDE_CODE_PROVIDER_ID {
+        if !matches!(scope.as_str(), "global" | "project") {
+            return Err(ApiError::bad_request("当前 Agent 不支持该 MCP 配置作用域"));
+        }
+        let path = resolve_agent_mcp_config_path(provider_id, &scope, project_path)?;
+        write_toml_mcp_config(&path, &config)?;
+        return Ok(Json(config));
+    }
     match scope.as_str() {
         "global" | "project" => {
             let path = resolve_mcp_config_path(&scope, project_path)?;
@@ -8969,6 +9130,7 @@ async fn update_mcp_config(
 }
 
 async fn open_mcp_config(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(payload.get("providerId").and_then(Value::as_str))?;
     let scope = required_json_string(&payload, "scope", "scope 不能为空")?;
     if !matches!(
         scope,
@@ -8977,7 +9139,18 @@ async fn open_mcp_config(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
         return Err(ApiError::bad_request_json("不支持的 MCP 配置作用域"));
     }
     let project_path = payload.get("projectPath").and_then(Value::as_str);
-    let target = ensure_mcp_config_file(scope, project_path)?;
+    let target = if provider_id == CLAUDE_CODE_PROVIDER_ID {
+        ensure_mcp_config_file(scope, project_path)?
+    } else {
+        if !matches!(scope, "global" | "project") {
+            return Err(ApiError::bad_request_json(
+                "当前 Agent 不支持该 MCP 配置作用域",
+            ));
+        }
+        let path = resolve_agent_mcp_config_path(provider_id, scope, project_path)?;
+        ensure_toml_config_file(&path)?;
+        path
+    };
     open_path_with_system(
         target
             .to_str()
@@ -8989,28 +9162,42 @@ async fn open_mcp_config(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
 async fn skills_overview(
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<Json<Value>> {
-    Ok(Json(list_codex_skills_value(
-        query.get("projectPath").map(String::as_str),
-    )))
+    let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
+    Ok(Json(json!({
+        "skills": list_agent_skills_value(
+            provider_id,
+            query.get("projectPath").map(String::as_str),
+        ),
+        "errors": [],
+    })))
 }
 
-async fn installed_plugins() -> ApiResult<Json<Value>> {
-    Ok(Json(list_installed_plugins_value()))
+async fn installed_plugins(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
+    Ok(Json(list_agent_installed_plugins_value(provider_id)?))
 }
 
-async fn plugin_marketplaces() -> ApiResult<Json<Value>> {
-    Ok(Json(list_plugin_marketplaces_value()))
+async fn plugin_marketplaces(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
+    Ok(Json(list_agent_plugin_marketplaces_value(provider_id)?))
 }
 
 async fn plugin_skills(
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<Json<Value>> {
-    Ok(Json(list_claude_plugin_skills_value(
+    let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
+    Ok(Json(list_agent_skills_value(
+        provider_id,
         query.get("projectPath").map(String::as_str),
     )))
 }
 
 async fn plugin_install_skill_from_path(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(payload.get("providerId").and_then(Value::as_str))?;
     let source = required_json_string(&payload, "path", "Skill 来源目录不能为空")?;
     let source_path =
         fs::canonicalize(source).map_err(|_| ApiError::bad_request("Skill 来源目录不存在"))?;
@@ -9022,6 +9209,7 @@ async fn plugin_install_skill_from_path(Json(payload): Json<Value>) -> ApiResult
         .get("scope")
         .and_then(Value::as_str)
         .unwrap_or("user");
+    let config_directory = agent_config_directory_name(provider_id);
     let target_root = if scope == "project" {
         let cwd = payload
             .get("cwd")
@@ -9029,11 +9217,11 @@ async fn plugin_install_skill_from_path(Json(payload): Json<Value>) -> ApiResult
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| ApiError::bad_request("project scope 需要 cwd"))?;
-        PathBuf::from(cwd).join(".claude").join("skills")
+        PathBuf::from(cwd).join(config_directory).join("skills")
     } else {
         home_dir()
             .ok_or_else(|| ApiError::internal("无法定位用户目录"))?
-            .join(".claude")
+            .join(config_directory)
             .join("skills")
     };
     let overwrite = payload
@@ -9063,16 +9251,56 @@ async fn plugin_install_skill_from_path(Json(payload): Json<Value>) -> ApiResult
             if !overwrite {
                 return Err(ApiError::bad_request(format!("Skill 已存在：{name}")));
             }
-            fs::remove_dir_all(&target)
-                .map_err(|error| ApiError::internal(format!("删除旧 Skill 失败: {error}")))?;
         }
-        copy_directory_recursive(&directory, &target)?;
+        install_skill_directory_safely(&directory, &target)?;
         installed.push(json!({ "name": name, "path": target }));
     }
     Ok(Json(json!({ "installed": installed })))
 }
 
+fn install_skill_directory_safely(source: &Path, target: &Path) -> ApiResult<()> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| ApiError::internal("Skill 目标目录无效"))?;
+    let name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("skill");
+    let nonce = uuid::Uuid::new_v4();
+    let staging = parent.join(format!(".{name}.{nonce}.staging"));
+    let backup = parent.join(format!(".{name}.{nonce}.backup"));
+    copy_directory_recursive(source, &staging).inspect_err(|_| {
+        let _ = fs::remove_dir_all(&staging);
+    })?;
+
+    let had_target = target.exists();
+    if had_target {
+        fs::rename(target, &backup).map_err(|error| {
+            let _ = fs::remove_dir_all(&staging);
+            ApiError::internal(format!("备份旧 Skill 失败: {error}"))
+        })?;
+    }
+    if let Err(error) = fs::rename(&staging, target) {
+        let _ = fs::remove_dir_all(&staging);
+        if had_target {
+            let _ = fs::rename(&backup, target);
+        }
+        return Err(ApiError::internal(format!("安装 Skill 失败: {error}")));
+    }
+    if had_target {
+        fs::remove_dir_all(&backup)
+            .map_err(|error| ApiError::internal(format!("清理旧 Skill 备份失败: {error}")))?;
+    }
+    Ok(())
+}
+
 async fn plugin_install_builtin_skill(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(payload.get("providerId").and_then(Value::as_str))?;
+    if provider_id != CLAUDE_CODE_PROVIDER_ID {
+        return Err(ApiError::bad_request(
+            "该内置 Skill 安装器目前只支持 Claude Code",
+        ));
+    }
     let builtin_id = required_json_string(&payload, "id", "内置 Skill id 不能为空")?;
     if builtin_id != "playwright-cli" {
         return Err(ApiError::internal_json("安装内置 Skill 失败"));
@@ -9105,15 +9333,96 @@ async fn plugin_install_builtin_skill(Json(payload): Json<Value>) -> ApiResult<J
     )?))
 }
 
+async fn plugin_delete_skill(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(payload.get("providerId").and_then(Value::as_str))?;
+    let path = required_json_string(&payload, "path", "Skill 路径不能为空")?;
+    let target = validate_managed_agent_skill_path(
+        provider_id,
+        path,
+        payload.get("projectPath").and_then(Value::as_str),
+    )?;
+    fs::remove_dir_all(&target)
+        .map_err(|error| ApiError::internal(format!("删除 Skill 失败: {error}")))?;
+    Ok(Json(json!({ "deleted": true, "path": target })))
+}
+
+async fn plugin_open_skill(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(payload.get("providerId").and_then(Value::as_str))?;
+    let path = required_json_string(&payload, "path", "Skill 路径不能为空")?;
+    let target = validate_agent_skill_path_for_open(
+        provider_id,
+        path,
+        payload.get("projectPath").and_then(Value::as_str),
+    )?;
+    open_path_with_system(&target.to_string_lossy())?;
+    Ok(Json(json!({ "opened": true, "path": target })))
+}
+
+fn validate_managed_agent_skill_path(
+    provider_id: &str,
+    path: &str,
+    project_path: Option<&str>,
+) -> ApiResult<PathBuf> {
+    validate_agent_skill_path(provider_id, path, project_path, false)
+}
+
+fn validate_agent_skill_path_for_open(
+    provider_id: &str,
+    path: &str,
+    project_path: Option<&str>,
+) -> ApiResult<PathBuf> {
+    validate_agent_skill_path(provider_id, path, project_path, true)
+}
+
+fn validate_agent_skill_path(
+    provider_id: &str,
+    path: &str,
+    project_path: Option<&str>,
+    include_read_only_roots: bool,
+) -> ApiResult<PathBuf> {
+    let target = fs::canonicalize(path).map_err(|_| ApiError::bad_request("Skill 目录不存在"))?;
+    if !target.is_dir() {
+        return Err(ApiError::bad_request("Skill 目录不存在"));
+    }
+    let mut roots = Vec::new();
+    if let Some(home) = home_dir() {
+        roots.push(
+            home.join(agent_config_directory_name(provider_id))
+                .join("skills"),
+        );
+        if include_read_only_roots && provider_id == GROK_BUILD_PROVIDER_ID {
+            roots.push(home.join(".grok").join("bundled").join("skills"));
+        }
+    }
+    if let Some(project_path) = project_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        roots.push(
+            PathBuf::from(project_path)
+                .join(agent_config_directory_name(provider_id))
+                .join("skills"),
+        );
+    }
+    let allowed = roots
+        .into_iter()
+        .filter_map(|root| fs::canonicalize(root).ok())
+        .any(|root| target.starts_with(&root) && target != root);
+    allowed
+        .then_some(target)
+        .ok_or_else(|| ApiError::bad_request("Skill 路径不属于当前 Agent 的可管理目录"))
+}
+
 async fn plugin_command(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(payload.get("providerId").and_then(Value::as_str))?;
     let kind = required_json_string(&payload, "kind", "kind 不能为空")?;
     let action = required_json_string(&payload, "action", "action 不能为空")?;
     let mut args = vec!["plugin".to_string()];
     if kind == "marketplace" {
         args.push("marketplace".to_string());
-        args.push(action.to_string());
+        args.push(normalize_agent_plugin_action(provider_id, kind, action)?.to_string());
     } else if kind == "plugin" {
-        args.push(action.to_string());
+        args.push(normalize_agent_plugin_action(provider_id, kind, action)?.to_string());
     } else {
         return Err(ApiError::bad_request("不支持的插件命令类型"));
     }
@@ -9125,7 +9434,7 @@ async fn plugin_command(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
     {
         args.push(target.to_string());
     }
-    if kind == "plugin" {
+    if kind == "plugin" && provider_id == CLAUDE_CODE_PROVIDER_ID {
         if let Some(scope) = payload
             .get("scope")
             .and_then(Value::as_str)
@@ -9143,13 +9452,11 @@ async fn plugin_command(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let command = if cfg!(target_os = "windows") {
-        "claude.exe"
-    } else {
-        "claude"
-    };
-    let mut result = run_external_command_value(command, &arg_refs, cwd.as_ref())?;
-    result["command"] = json!("claude");
+    let command = resolve_agent_settings_command(provider_id)
+        .ok_or_else(|| ApiError::bad_request("未找到 Agent CLI 命令"))?;
+    let mut result = run_external_command_value(&command, &arg_refs, cwd.as_ref())?;
+    result["command"] = json!(command);
+    result["providerId"] = json!(provider_id);
     Ok(Json(result))
 }
 
@@ -9159,6 +9466,49 @@ async fn slash_commands(
     Ok(Json(json!({
         "commands": list_slash_commands_value(query.get("projectPath").map(String::as_str)),
     })))
+}
+
+fn read_agent_mcp_config_snapshot(
+    provider_id: &str,
+    project_path: Option<&str>,
+) -> ApiResult<Value> {
+    if provider_id == CLAUDE_CODE_PROVIDER_ID {
+        return read_mcp_config_snapshot(project_path);
+    }
+    let global = resolve_agent_mcp_config_path(provider_id, "global", project_path)?;
+    let project =
+        resolve_agent_mcp_config_path(provider_id, "project", project_path).unwrap_or_default();
+    Ok(json!({
+        "paths": {
+            "global": global,
+            "project": project,
+            "claudeJson": "",
+        },
+        "configs": {
+            "global": read_toml_mcp_config(&global)?,
+            "project": read_toml_mcp_config(&project)?,
+            "claudeJsonGlobal": { "mcpServers": {} },
+            "claudeJsonProject": { "mcpServers": {} },
+        },
+    }))
+}
+
+fn resolve_agent_mcp_config_path(
+    provider_id: &str,
+    scope: &str,
+    project_path: Option<&str>,
+) -> ApiResult<PathBuf> {
+    let directory = agent_config_directory_name(provider_id);
+    if scope == "global" {
+        return home_dir()
+            .map(|home| home.join(directory).join("config.toml"))
+            .ok_or_else(|| ApiError::internal("无法定位用户目录"));
+    }
+    let project = project_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("当前没有活动项目"))?;
+    Ok(PathBuf::from(project).join(directory).join("config.toml"))
 }
 
 fn read_mcp_config_snapshot(project_path: Option<&str>) -> ApiResult<Value> {
@@ -9457,6 +9807,174 @@ fn list_mcp_servers_value(project_path: Option<&str>) -> Value {
     json!({ "servers": servers, "errors": errors })
 }
 
+fn list_agent_mcp_servers_value(provider_id: &str, project_path: Option<&str>) -> ApiResult<Value> {
+    if provider_id == CLAUDE_CODE_PROVIDER_ID {
+        return Ok(list_mcp_servers_value(project_path));
+    }
+    let snapshot = read_agent_mcp_config_snapshot(provider_id, project_path)?;
+    let mut servers = Vec::new();
+    for (scope, path_key) in [("global", "global"), ("project", "project")] {
+        let source = snapshot
+            .pointer(&format!("/paths/{path_key}"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let Some(items) = snapshot
+            .pointer(&format!("/configs/{scope}/mcpServers"))
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        for (name, raw) in items {
+            let mut server = json!({
+                "id": format!("{provider_id}:{scope}:{name}"),
+                "name": name,
+                "source": source,
+                "status": "unknown",
+                "tools": [],
+                "command": raw.get("command").and_then(Value::as_str),
+                "url": raw.get("url").and_then(Value::as_str),
+            });
+            if raw.get("args").and_then(Value::as_array).is_some() {
+                if let Some(object) = server.as_object_mut() {
+                    object.insert(
+                        "args".to_string(),
+                        redact_sensitive_args(raw.get("args").and_then(Value::as_array)),
+                    );
+                }
+            }
+            remove_null_fields(&mut server);
+            servers.push(server);
+        }
+    }
+    Ok(json!({ "servers": servers, "errors": [] }))
+}
+
+fn read_toml_mcp_config(path: &Path) -> ApiResult<Value> {
+    if path.as_os_str().is_empty() || !path.exists() {
+        return Ok(json!({ "mcpServers": {} }));
+    }
+    let content = fs::read_to_string(path)
+        .map_err(|error| ApiError::internal(format!("读取 TOML 配置失败: {error}")))?;
+    let document = content
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| ApiError::bad_request(format!("解析 TOML 配置失败: {error}")))?;
+    let mut servers = Map::new();
+    if let Some(table) = document
+        .get("mcp_servers")
+        .and_then(toml_edit::Item::as_table_like)
+    {
+        for (name, item) in table.iter() {
+            servers.insert(name.to_string(), toml_item_to_json(item));
+        }
+    }
+    Ok(json!({ "mcpServers": servers }))
+}
+
+fn write_toml_mcp_config(path: &Path, config: &Value) -> ApiResult<()> {
+    let content = fs::read_to_string(path).unwrap_or_default();
+    let mut document = if content.trim().is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        content
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ApiError::bad_request(format!("解析 TOML 配置失败: {error}")))?
+    };
+    let mut servers = toml_edit::Table::new();
+    if let Some(items) = config.get("mcpServers").and_then(Value::as_object) {
+        for (name, value) in items {
+            servers.insert(name, json_to_toml_item(value));
+        }
+    }
+    document["mcp_servers"] = toml_edit::Item::Table(servers);
+    write_text_file_atomically(path, &document.to_string())
+        .map_err(|error| ApiError::internal(format!("写入 TOML 配置失败: {error}")))
+}
+
+fn ensure_toml_config_file(path: &Path) -> ApiResult<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    write_text_file_atomically(path, "")
+        .map_err(|error| ApiError::internal(format!("创建 TOML 配置失败: {error}")))
+}
+
+fn toml_item_to_json(item: &toml_edit::Item) -> Value {
+    if let Some(value) = item.as_value() {
+        return toml_value_to_json(value);
+    }
+    if let Some(table) = item.as_table_like() {
+        let mut object = Map::new();
+        for (key, value) in table.iter() {
+            object.insert(key.to_string(), toml_item_to_json(value));
+        }
+        return Value::Object(object);
+    }
+    Value::Null
+}
+
+fn toml_value_to_json(value: &toml_edit::Value) -> Value {
+    if let Some(value) = value.as_str() {
+        return json!(value);
+    }
+    if let Some(value) = value.as_integer() {
+        return json!(value);
+    }
+    if let Some(value) = value.as_float() {
+        return json!(value);
+    }
+    if let Some(value) = value.as_bool() {
+        return json!(value);
+    }
+    if let Some(array) = value.as_array() {
+        return Value::Array(array.iter().map(toml_value_to_json).collect());
+    }
+    if let Some(table) = value.as_inline_table() {
+        let mut object = Map::new();
+        for (key, value) in table.iter() {
+            object.insert(key.to_string(), toml_value_to_json(value));
+        }
+        return Value::Object(object);
+    }
+    json!(value.to_string())
+}
+
+fn json_to_toml_item(value: &Value) -> toml_edit::Item {
+    if let Some(object) = value.as_object() {
+        let mut table = toml_edit::Table::new();
+        for (key, value) in object {
+            if !value.is_null() {
+                table.insert(key, json_to_toml_item(value));
+            }
+        }
+        return toml_edit::Item::Table(table);
+    }
+    toml_edit::Item::Value(json_to_toml_value(value))
+}
+
+fn json_to_toml_value(value: &Value) -> toml_edit::Value {
+    match value {
+        Value::String(value) => toml_edit::Value::from(value.as_str()),
+        Value::Bool(value) => toml_edit::Value::from(*value),
+        Value::Number(value) if value.is_i64() => {
+            toml_edit::Value::from(value.as_i64().unwrap_or_default())
+        }
+        Value::Number(value) if value.is_u64() => toml_edit::Value::from(
+            i64::try_from(value.as_u64().unwrap_or_default()).unwrap_or(i64::MAX),
+        ),
+        Value::Number(value) => toml_edit::Value::from(value.as_f64().unwrap_or_default()),
+        Value::Array(values) => {
+            let mut array = toml_edit::Array::new();
+            for value in values {
+                if !value.is_object() && !value.is_null() {
+                    array.push(json_to_toml_value(value));
+                }
+            }
+            toml_edit::Value::Array(array)
+        }
+        _ => toml_edit::Value::from(value.to_string()),
+    }
+}
+
 fn read_json_mcp_servers(
     source: &str,
     path: &Path,
@@ -9640,6 +10158,222 @@ fn list_codex_skills_value(project_path: Option<&str>) -> Value {
             .cmp(right.get("name").and_then(Value::as_str).unwrap_or(""))
     });
     json!({ "skills": skills, "errors": errors })
+}
+
+fn list_agent_skills_value(provider_id: &str, project_path: Option<&str>) -> Value {
+    if provider_id == OPENAI_CODEX_PROVIDER_ID {
+        return list_codex_skills_value(project_path)
+            .get("skills")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+    }
+    if provider_id == CLAUDE_CODE_PROVIDER_ID {
+        return list_claude_plugin_skills_value(project_path);
+    }
+
+    let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let config_directory = agent_config_directory_name(provider_id);
+    let mut skills = Vec::new();
+    scan_claude_skill_directory(
+        &home.join(config_directory).join("skills"),
+        "user",
+        &mut skills,
+    );
+    if let Some(project) = project_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        scan_claude_skill_directory(
+            &PathBuf::from(project).join(config_directory).join("skills"),
+            "project",
+            &mut skills,
+        );
+    }
+    if provider_id == GROK_BUILD_PROVIDER_ID {
+        scan_claude_skill_directory(
+            &home.join(".grok").join("bundled").join("skills"),
+            "bundled",
+            &mut skills,
+        );
+    }
+    skills.sort_by(|left, right| {
+        left.get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .cmp(right.get("name").and_then(Value::as_str).unwrap_or(""))
+    });
+    Value::Array(skills)
+}
+
+fn resolve_agent_settings_command(provider_id: &str) -> Option<String> {
+    match provider_id {
+        GROK_BUILD_PROVIDER_ID => resolve_grok_command(),
+        OPENAI_CODEX_PROVIDER_ID => resolve_codex_command(),
+        _ => resolve_claude_command(),
+    }
+}
+
+fn normalize_agent_plugin_action<'a>(
+    provider_id: &str,
+    kind: &str,
+    action: &'a str,
+) -> ApiResult<&'a str> {
+    let normalized = match (provider_id, kind, action) {
+        (OPENAI_CODEX_PROVIDER_ID, "plugin", "install") => "add",
+        (OPENAI_CODEX_PROVIDER_ID, "plugin", "uninstall") => "remove",
+        (OPENAI_CODEX_PROVIDER_ID, "marketplace", "update") => "upgrade",
+        (_, _, value) => value,
+    };
+    let supported = if kind == "marketplace" {
+        matches!(normalized, "add" | "remove" | "update" | "upgrade")
+    } else if provider_id == GROK_BUILD_PROVIDER_ID {
+        matches!(
+            normalized,
+            "install" | "uninstall" | "enable" | "disable" | "update"
+        )
+    } else if provider_id == OPENAI_CODEX_PROVIDER_ID {
+        matches!(normalized, "add" | "remove")
+    } else {
+        matches!(
+            normalized,
+            "install" | "uninstall" | "enable" | "disable" | "update"
+        )
+    };
+    supported
+        .then_some(normalized)
+        .ok_or_else(|| ApiError::bad_request("当前 Agent 不支持该插件操作"))
+}
+
+fn run_agent_json_command(provider_id: &str, arguments: &[&str]) -> ApiResult<Value> {
+    let command = resolve_agent_settings_command(provider_id)
+        .ok_or_else(|| ApiError::bad_request("未找到 Agent CLI 命令"))?;
+    let output = background_command(&command)
+        .args(arguments)
+        .output()
+        .map_err(|error| ApiError::internal(format!("执行 Agent CLI 失败: {error}")))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !output.status.success() {
+        return Err(ApiError::bad_request(if stderr.is_empty() {
+            "Agent CLI 命令执行失败".to_string()
+        } else {
+            stderr
+        }));
+    }
+    serde_json::from_str(&stdout)
+        .map_err(|error| ApiError::internal(format!("解析 Agent CLI JSON 失败: {error}")))
+}
+
+fn list_agent_installed_plugins_value(provider_id: &str) -> ApiResult<Value> {
+    if provider_id == CLAUDE_CODE_PROVIDER_ID {
+        return Ok(list_installed_plugins_value());
+    }
+    let payload = run_agent_json_command(provider_id, &["plugin", "list", "--json"])?;
+    let items = payload
+        .get("installed")
+        .and_then(Value::as_array)
+        .or_else(|| payload.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(Value::Array(
+        items
+            .into_iter()
+            .filter_map(|item| normalize_agent_plugin_item(provider_id, &item, true))
+            .collect(),
+    ))
+}
+
+fn list_agent_plugin_marketplaces_value(provider_id: &str) -> ApiResult<Value> {
+    if provider_id == CLAUDE_CODE_PROVIDER_ID {
+        return Ok(list_plugin_marketplaces_value());
+    }
+    let available_payload =
+        run_agent_json_command(provider_id, &["plugin", "list", "--available", "--json"])?;
+    let items = available_payload
+        .get("available")
+        .and_then(Value::as_array)
+        .or_else(|| available_payload.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut grouped: std::collections::BTreeMap<String, Vec<Value>> =
+        std::collections::BTreeMap::new();
+    for item in items {
+        let marketplace = item
+            .get("marketplaceName")
+            .or_else(|| item.get("marketplace"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        if let Some(plugin) = normalize_agent_plugin_item(provider_id, &item, false) {
+            grouped.entry(marketplace).or_default().push(plugin);
+        }
+    }
+    let marketplace_payload =
+        run_agent_json_command(provider_id, &["plugin", "marketplace", "list", "--json"])?;
+    let marketplaces = marketplace_payload
+        .get("marketplaces")
+        .and_then(Value::as_array)
+        .or_else(|| marketplace_payload.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for marketplace in &marketplaces {
+        let Some(name) = marketplace.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        grouped.entry(name.to_string()).or_default();
+    }
+    Ok(Value::Array(
+        grouped.into_iter().map(|(name, plugins)| {
+            let metadata = marketplaces.iter().find(|item| {
+                item.get("name").and_then(Value::as_str) == Some(name.as_str())
+            });
+            let source = metadata.and_then(|item| {
+                item.get("source")
+                    .and_then(|source| source.get("url").or_else(|| source.as_str().map(|_| source)))
+                    .and_then(Value::as_str)
+                    .or_else(|| item.get("root").and_then(Value::as_str))
+            });
+            json!({
+                "name": name,
+                "source": source,
+                "mutationTarget": if provider_id == GROK_BUILD_PROVIDER_ID { source.unwrap_or(name.as_str()) } else { name.as_str() },
+                "plugins": plugins,
+            })
+        })
+            .collect(),
+    ))
+}
+
+fn normalize_agent_plugin_item(provider_id: &str, item: &Value, installed: bool) -> Option<Value> {
+    let name = item.get("name").and_then(Value::as_str)?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let marketplace = item
+        .get("marketplaceName")
+        .or_else(|| item.get("marketplace"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let id = item
+        .get("pluginId")
+        .or_else(|| item.get("id"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("{name}@{marketplace}"));
+    let mut normalized = json!({
+        "id": id,
+        "name": name,
+        "marketplace": marketplace,
+        "scope": item.get("scope").and_then(Value::as_str).unwrap_or("user"),
+        "version": item.get("version").and_then(Value::as_str),
+        "description": item.get("description").and_then(Value::as_str),
+        "enabled": item.get("enabled").and_then(Value::as_bool).unwrap_or(installed),
+        "installed": installed || item.get("installed").and_then(Value::as_bool).unwrap_or(false),
+        "providerId": provider_id,
+        "installPath": item.get("installPath").and_then(Value::as_str),
+    });
+    remove_null_fields(&mut normalized);
+    Some(normalized)
 }
 
 fn scan_codex_skill_root(
@@ -9959,8 +10693,62 @@ fn write_json_file_pretty(path: &Path, value: &Value) -> ApiResult<()> {
     }
     let content = serde_json::to_string_pretty(value)
         .map_err(|error| ApiError::internal(format!("序列化 JSON 失败: {error}")))?;
-    fs::write(path, format!("{content}\n"))
+    write_text_file_atomically(path, &format!("{content}\n"))
         .map_err(|error| ApiError::internal(format!("写入 JSON 文件失败: {error}")))
+}
+
+fn write_text_file_atomically(path: &Path, content: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("file");
+    let temporary_path = path.with_extension(format!(
+        "{extension}.{}.{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    fs::write(&temporary_path, content)?;
+    replace_file_atomically(&temporary_path, path).inspect_err(|_| {
+        let _ = fs::remove_file(&temporary_path);
+    })
+}
+
+#[cfg(windows)]
+fn replace_file_atomically(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::{
+        core::PCWSTR,
+        Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        },
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    unsafe {
+        MoveFileExW(
+            PCWSTR(source.as_ptr()),
+            PCWSTR(target.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+        .map_err(std::io::Error::other)
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomically(source: &Path, target: &Path) -> std::io::Result<()> {
+    fs::rename(source, target)
 }
 
 fn redact_sensitive_args(args: Option<&Vec<Value>>) -> Value {
@@ -10783,16 +11571,24 @@ fn read_usage_stats(
     connection: &Connection,
     range_days: Option<i64>,
     project_id: Option<&str>,
+    provider_id: Option<&str>,
 ) -> ApiResult<Value> {
     let project_filter = project_id.filter(|value| !value.trim().is_empty());
     let start_date = range_days.map(build_usage_range_start_date);
-    let totals = read_usage_totals(connection, start_date.as_deref(), project_filter)?;
-    let project_rows = read_usage_project_rows(connection, start_date.as_deref(), project_filter)?;
     let project_option_rows = read_usage_project_rows(connection, None, None)?;
     let thread_rows = read_usage_thread_rows(connection, start_date.as_deref(), project_filter)?;
-    let provider_rows =
-        read_usage_provider_rows(connection, start_date.as_deref(), project_filter)?;
-    let day_rows = read_usage_day_rows(connection, project_filter)?;
+    let (totals, project_rows, provider_rows, thread_rows) = if let Some(provider_id) = provider_id
+    {
+        aggregate_usage_rows_for_provider(thread_rows, provider_id)?
+    } else {
+        (
+            read_usage_totals(connection, start_date.as_deref(), project_filter)?,
+            read_usage_project_rows(connection, start_date.as_deref(), project_filter)?,
+            read_usage_provider_rows(connection, start_date.as_deref(), project_filter)?,
+            thread_rows,
+        )
+    };
+    let day_rows = read_usage_day_rows(connection, project_filter, provider_id)?;
     Ok(json!({
         "generatedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         "totals": totals,
@@ -10802,6 +11598,56 @@ fn read_usage_stats(
         "byThread": thread_rows,
         "byDay": day_rows,
     }))
+}
+
+fn aggregate_usage_rows_for_provider(
+    thread_rows: Value,
+    provider_id: &str,
+) -> ApiResult<(Value, Value, Value, Value)> {
+    let filtered = thread_rows
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|row| row.get("provider").and_then(Value::as_str) == Some(provider_id))
+        .collect::<Vec<_>>();
+    let mut totals = usage_totals_json(0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0);
+    let mut project_rows = Vec::<Value>::new();
+    for row in &filtered {
+        merge_usage_totals_into(&mut totals, row);
+        let project_id = row
+            .get("projectId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if let Some(project) = project_rows
+            .iter_mut()
+            .find(|item| item.get("projectId").and_then(Value::as_str) == Some(project_id))
+        {
+            merge_usage_totals_into(project, row);
+            set_latest_usage_date(project, row.get("lastUsedAt"));
+        } else {
+            project_rows.push(merge_json_objects(
+                json!({
+                    "projectId": project_id,
+                    "projectName": row.get("projectName").cloned().unwrap_or(Value::Null),
+                    "projectPath": row.get("workingDirectory").cloned().unwrap_or(Value::Null),
+                    "lastUsedAt": row.get("lastUsedAt").cloned().unwrap_or(Value::Null),
+                }),
+                usage_totals_from_value(row),
+            ));
+        }
+    }
+    if let Some(object) = totals.as_object_mut() {
+        object.insert("projects".to_string(), json!(project_rows.len()));
+    }
+    project_rows.sort_by(sort_usage_values_desc);
+    let provider_rows = build_usage_provider_rows(filtered.clone())?;
+    Ok((
+        totals,
+        Value::Array(project_rows),
+        provider_rows,
+        Value::Array(filtered),
+    ))
 }
 
 fn build_usage_range_start_date(range_days: i64) -> String {
@@ -11261,7 +12107,11 @@ fn read_usage_thread_rows(
     Ok(Value::Array(collect_rows(rows, "读取使用情况失败")?))
 }
 
-fn read_usage_day_rows(connection: &Connection, project_id: Option<&str>) -> ApiResult<Value> {
+fn read_usage_day_rows(
+    connection: &Connection,
+    project_id: Option<&str>,
+    provider_id: Option<&str>,
+) -> ApiResult<Value> {
     let sql = format!(
         r#"
         {}
@@ -11282,13 +12132,18 @@ fn read_usage_day_rows(connection: &Connection, project_id: Option<&str>) -> Api
         LEFT JOIN turn_usage tu ON tu.thread_id = td.thread_id AND tu.turn_id = td.turn_id
         LEFT JOIN turn_message_counts tmc ON tmc.thread_id = td.thread_id AND tmc.turn_id = td.turn_id
         LEFT JOIN turn_tool_counts ttc ON ttc.thread_id = td.thread_id AND ttc.turn_id = td.turn_id
-        WHERE td.usageDate IS NOT NULL {}
+        WHERE td.usageDate IS NOT NULL {} {}
         GROUP BY td.usageDate
         ORDER BY td.usageDate ASC
         "#,
         usage_aggregate_ctes(None),
         if project_id.is_some() {
             "AND t.project_id = ?"
+        } else {
+            ""
+        },
+        if provider_id.is_some() {
+            "AND t.provider = ?"
         } else {
             ""
         }
@@ -11314,10 +12169,13 @@ fn read_usage_day_rows(connection: &Connection, project_id: Option<&str>) -> Api
             totals,
         ))
     };
-    let rows = if let Some(project_id) = project_id {
-        statement.query_map(params![project_id], mapper)
-    } else {
-        statement.query_map([], mapper)
+    let rows = match (project_id, provider_id) {
+        (Some(project_id), Some(provider_id)) => {
+            statement.query_map(params![project_id, provider_id], mapper)
+        }
+        (Some(project_id), None) => statement.query_map(params![project_id], mapper),
+        (None, Some(provider_id)) => statement.query_map(params![provider_id], mapper),
+        (None, None) => statement.query_map([], mapper),
     }
     .map_err(|error| ApiError::internal(format!("读取使用情况失败: {error}")))?;
     Ok(Value::Array(collect_rows(rows, "读取使用情况失败")?))
@@ -14537,6 +15395,7 @@ mod tests {
     use super::{
         compare_project_file_entries, create_router, create_thread_row, default_grok_command_path,
         import_claude_sessions_from_root, initialize_workspace_database,
+        install_skill_directory_safely, normalize_agent_plugin_action,
         normalize_agent_runtime_settings, parse_grok_cli_version, remove_thread_row,
         resolve_codex_command, resolve_grok_command, resolve_requested_thread_provider,
         resolve_thread_create_permission_mode, select_claude_command_candidate,
@@ -14568,6 +15427,47 @@ mod tests {
             fs::create_dir_all(&path).expect("create test directory");
             Self(path)
         }
+    }
+
+    #[test]
+    fn skill_overwrite_switches_staged_directory_without_leaving_backup_files() {
+        let root = TestDirectory::new("skill-atomic-overwrite");
+        let source = root.0.join("source");
+        let target = root.0.join("target");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("SKILL.md"), "new").unwrap();
+        fs::write(target.join("SKILL.md"), "old").unwrap();
+
+        install_skill_directory_safely(&source, &target).unwrap();
+
+        assert_eq!(fs::read_to_string(target.join("SKILL.md")).unwrap(), "new");
+        let leftovers = fs::read_dir(&root.0)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".target."))
+            .count();
+        assert_eq!(leftovers, 0);
+    }
+
+    #[test]
+    fn plugin_actions_follow_each_native_cli_contract() {
+        assert_eq!(
+            normalize_agent_plugin_action(OPENAI_CODEX_PROVIDER_ID, "plugin", "install").unwrap(),
+            "add"
+        );
+        assert_eq!(
+            normalize_agent_plugin_action(OPENAI_CODEX_PROVIDER_ID, "marketplace", "update")
+                .unwrap(),
+            "upgrade"
+        );
+        assert_eq!(
+            normalize_agent_plugin_action(GROK_BUILD_PROVIDER_ID, "plugin", "disable").unwrap(),
+            "disable"
+        );
+        assert!(
+            normalize_agent_plugin_action(OPENAI_CODEX_PROVIDER_ID, "plugin", "disable").is_err()
+        );
     }
 
     impl Drop for TestDirectory {

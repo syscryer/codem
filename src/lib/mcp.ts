@@ -1,4 +1,5 @@
 import type {
+  AgentProviderId,
   McpConfigFile,
   McpManagementResponse,
   McpManagedScope,
@@ -24,9 +25,15 @@ export function normalizeMcpConfig(value: unknown): McpConfigFile {
   };
 }
 
-export async function fetchMcpManagement(projectPath?: string | null): Promise<McpManagementResponse> {
-  const query = projectPath?.trim() ? `?projectPath=${encodeURIComponent(projectPath.trim())}` : '';
-  const response = await fetch(`/api/mcp/configs${query}`);
+export async function fetchMcpManagement(
+  providerId: AgentProviderId,
+  projectPath?: string | null,
+): Promise<McpManagementResponse> {
+  const query = new URLSearchParams({ providerId });
+  if (projectPath?.trim()) {
+    query.set('projectPath', projectPath.trim());
+  }
+  const response = await fetch(`/api/mcp/configs?${query.toString()}`);
   if (!response.ok) {
     throw new Error('读取 MCP 管理配置失败');
   }
@@ -36,10 +43,14 @@ export async function fetchMcpManagement(projectPath?: string | null): Promise<M
 export async function saveMcpConfig(
   scope: McpManagedScope,
   config: McpConfigFile,
+  providerId: AgentProviderId,
   projectPath?: string | null,
 ) {
-  const query = projectPath?.trim() ? `?projectPath=${encodeURIComponent(projectPath.trim())}` : '';
-  const response = await fetch(`/api/mcp/configs/${scope}${query}`, {
+  const query = new URLSearchParams({ providerId });
+  if (projectPath?.trim()) {
+    query.set('projectPath', projectPath.trim());
+  }
+  const response = await fetch(`/api/mcp/configs/${scope}?${query.toString()}`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -59,7 +70,11 @@ export async function saveMcpConfig(
   return normalizeMcpConfig(payload);
 }
 
-export async function openMcpConfig(scope: McpManagedScope, projectPath?: string | null) {
+export async function openMcpConfig(
+  scope: McpManagedScope,
+  providerId: AgentProviderId,
+  projectPath?: string | null,
+) {
   const response = await fetch('/api/mcp/open', {
     method: 'POST',
     headers: {
@@ -67,6 +82,7 @@ export async function openMcpConfig(scope: McpManagedScope, projectPath?: string
     },
     body: JSON.stringify({
       scope,
+      providerId,
       projectPath: projectPath?.trim() || null,
     }),
   });
@@ -84,6 +100,10 @@ function normalizeMcpManagementResponse(value: unknown): McpManagementResponse {
   const overview = isRecord(record.overview) ? record.overview : {};
 
   return {
+    providerId: record.providerId === 'openai-codex' || record.providerId === 'grok-build'
+      ? record.providerId
+      : 'claude-code',
+    supportsClaudeJson: Boolean(record.supportsClaudeJson),
     paths: {
       global: normalizeOptionalString(paths.global),
       project: normalizeOptionalString(paths.project),

@@ -4,9 +4,11 @@ type InstalledPluginsPanelProps = {
   items: InstalledPlugin[];
   busy: boolean;
   onUninstall: (plugin: InstalledPlugin) => void;
+  supportsEnable: boolean;
+  onToggleEnabled: (plugin: InstalledPlugin) => void;
 };
 
-export function InstalledPluginsPanel({ items, busy, onUninstall }: InstalledPluginsPanelProps) {
+export function InstalledPluginsPanel({ items, busy, onUninstall, supportsEnable, onToggleEnabled }: InstalledPluginsPanelProps) {
   return (
     <div className="settings-list settings-list-spaced">
       {items.length === 0 ? <div className="settings-list-empty">暂无已安装插件</div> : null}
@@ -21,6 +23,11 @@ export function InstalledPluginsPanel({ items, busy, onUninstall }: InstalledPlu
           </div>
           <div className="settings-list-actions">
             <span className="settings-badge">{formatScopeLabel(item.scope)}</span>
+            {supportsEnable ? (
+              <button type="button" className="settings-action-button" disabled={busy} onClick={() => onToggleEnabled(item)}>
+                {item.enabled ? '禁用' : '启用'}
+              </button>
+            ) : null}
             <button
               type="button"
               className="settings-action-button danger"

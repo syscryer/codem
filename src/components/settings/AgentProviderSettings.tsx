@@ -23,6 +23,7 @@ import type {
   AgentRuntimeSettings,
   AgentProviderDescriptor,
   AgentProviderRegistry,
+  AgentSettingsDiagnostics,
   ClaudeCliVersionInfo,
   ClaudeModelInfo,
   CodexAppServerProbeResult,
@@ -32,6 +33,7 @@ import type { AgentRuntimeSettingsUpdate } from '../../hooks/useAppSettings';
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss';
 import {
   fetchAgentProviderRegistry,
+  fetchAgentSettingsDiagnostics,
   probeCodexAgent,
   probeGrokAgent,
 } from '../../lib/agent-provider-registry';
@@ -70,6 +72,7 @@ export function AgentProviderSettings({
   const [loadError, setLoadError] = useState('');
   const [selectedProviderId, setSelectedProviderId] = useState('claude-code');
   const [claudeCliInfo, setClaudeCliInfo] = useState<ClaudeCliVersionInfo | null>(null);
+  const [settingsDiagnostics, setSettingsDiagnostics] = useState<Partial<Record<AgentProviderId, AgentSettingsDiagnostics>>>({});
   const [grokProbeState, setGrokProbeState] = useState<ProviderProbeState>('idle');
   const [grokProbe, setGrokProbe] = useState<GrokAcpProbeResult | null>(null);
   const [grokProbeError, setGrokProbeError] = useState('');
@@ -77,6 +80,7 @@ export function AgentProviderSettings({
   const [codexProbe, setCodexProbe] = useState<CodexAppServerProbeResult | null>(null);
   const [codexProbeError, setCodexProbeError] = useState('');
   const [agentRuntimeSaving, setAgentRuntimeSaving] = useState(false);
+  const [diagnosticCheckingProviderId, setDiagnosticCheckingProviderId] = useState<AgentProviderId | null>(null);
   const registryControllerRef = useRef<AbortController | null>(null);
   const grokControllerRef = useRef<AbortController | null>(null);
   const codexControllerRef = useRef<AbortController | null>(null);
@@ -89,15 +93,21 @@ export function AgentProviderSettings({
     setLoadError('');
 
     try {
-      const [nextRegistry, nextClaudeCliInfo] = await Promise.all([
+      const [nextRegistry, nextClaudeCliInfo, ...nextDiagnostics] = await Promise.all([
         fetchAgentProviderRegistry(controller.signal),
         readClaudeCliVersionInfo(),
+        fetchAgentSettingsDiagnostics('claude-code', controller.signal),
+        fetchAgentSettingsDiagnostics('openai-codex', controller.signal),
+        fetchAgentSettingsDiagnostics('grok-build', controller.signal),
       ]);
       if (controller.signal.aborted) {
         return;
       }
       setRegistry(nextRegistry);
       setClaudeCliInfo(nextClaudeCliInfo);
+      setSettingsDiagnostics(Object.fromEntries(
+        nextDiagnostics.map((item) => [item.providerId, item]),
+      ));
       setSelectedProviderId((current) =>
         nextRegistry.providers.some((provider) => provider.id === current)
           ? current
@@ -204,6 +214,19 @@ export function AgentProviderSettings({
       await onUpdateAgentRuntime({ defaultProviderId });
     } finally {
       setAgentRuntimeSaving(false);
+    }
+  }
+
+  async function runNativeDiagnostic(providerId: AgentProviderId) {
+    if (diagnosticCheckingProviderId) {
+      return;
+    }
+    setDiagnosticCheckingProviderId(providerId);
+    try {
+      const diagnostics = await fetchAgentSettingsDiagnostics(providerId, undefined, true);
+      setSettingsDiagnostics((current) => ({ ...current, [providerId]: diagnostics }));
+    } finally {
+      setDiagnosticCheckingProviderId(null);
     }
   }
 
@@ -327,9 +350,12 @@ export function AgentProviderSettings({
             codexProbe={codexProbe}
             codexProbeState={codexProbeState}
             codexProbeError={codexProbeError}
+            settingsDiagnostics={settingsDiagnostics[selectedProvider.id as AgentProviderId] ?? null}
             onProbeGrok={runGrokProbe}
             onProbeCodex={runCodexProbe}
             onRefresh={loadProviders}
+            diagnosticChecking={diagnosticCheckingProviderId === selectedProvider.id}
+            onRunNativeDiagnostic={() => runNativeDiagnostic(selectedProvider.id as AgentProviderId)}
           />
         ) : null}
       </div>
@@ -442,9 +468,12 @@ function ProviderDetail({
   codexProbe,
   codexProbeState,
   codexProbeError,
+  settingsDiagnostics,
   onProbeGrok,
   onProbeCodex,
   onRefresh,
+  diagnosticChecking,
+  onRunNativeDiagnostic,
 }: {
   provider: AgentProviderDescriptor;
   claudeCliInfo: ClaudeCliVersionInfo | null;
@@ -455,12 +484,22 @@ function ProviderDetail({
   codexProbe: CodexAppServerProbeResult | null;
   codexProbeState: ProviderProbeState;
   codexProbeError: string;
+  settingsDiagnostics: AgentSettingsDiagnostics | null;
   onProbeGrok: () => Promise<void>;
   onProbeCodex: () => Promise<void>;
   onRefresh: () => Promise<void>;
+  diagnosticChecking: boolean;
+  onRunNativeDiagnostic: () => Promise<void>;
 }) {
   const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe);
   const diagnostics = resolveProviderDiagnostics(provider, claudeCliInfo, grokProbe, codexProbe);
+  const effectiveCliStatus = diagnostics.cli === '未检测' && settingsDiagnostics?.installed
+    ? '已安装'
+    : diagnostics.cli;
+  const effectiveVersion = diagnostics.version === '未知' && settingsDiagnostics?.version
+    ? settingsDiagnostics.version
+    : diagnostics.version;
+  const effectiveCommand = diagnostics.command || settingsDiagnostics?.command || '';
   const capabilityGroups = getProviderCapabilityGroups(provider);
   const models = getProviderModels(provider.id, claudeModels, grokProbe);
   const grokStatusMessage = getGrokProbeStatusMessage(grokProbeState, grokProbe, grokProbeError);
@@ -499,19 +538,30 @@ function ProviderDetail({
         <div className="agent-provider-detail-actions">
           <ProviderStatusIcon tone={status.tone} label={status.label} />
           {provider.id === 'grok-build' || provider.id === 'openai-codex' ? (
-            <button
-              type="button"
-              className="settings-action-button"
-              disabled={probeState === 'checking'}
-              onClick={() => void (provider.id === 'grok-build' ? onProbeGrok() : onProbeCodex())}
-            >
-              {probeState === 'checking' ? (
-                <LoaderCircle size={14} className="spin" />
-              ) : (
-                <RotateCw size={14} />
-              )}
-              <span>{probeState === 'checking' ? '检测中' : '检测连接'}</span>
-            </button>
+            <>
+              <button
+                type="button"
+                className="settings-action-button"
+                disabled={probeState === 'checking' || diagnosticChecking}
+                onClick={() => void (provider.id === 'grok-build' ? onProbeGrok() : onProbeCodex())}
+              >
+                {probeState === 'checking' ? (
+                  <LoaderCircle size={14} className="spin" />
+                ) : (
+                  <RotateCw size={14} />
+                )}
+                <span>{probeState === 'checking' ? '检测中' : '检测连接'}</span>
+              </button>
+              <button
+                type="button"
+                className="settings-action-button"
+                disabled={probeState === 'checking' || diagnosticChecking}
+                onClick={() => void onRunNativeDiagnostic()}
+              >
+                {diagnosticChecking ? <LoaderCircle size={14} className="spin" /> : <SquareTerminal size={14} />}
+                <span>{diagnosticChecking ? '诊断中' : '运行诊断'}</span>
+              </button>
+            </>
           ) : provider.id === 'claude-code' ? (
             <button type="button" className="settings-action-button" onClick={() => void onRefresh()}>
               <RefreshCw size={14} />
@@ -531,12 +581,24 @@ function ProviderDetail({
       </div>
 
       <dl className="agent-provider-facts">
-        <ProviderFact icon={SquareTerminal} label="CLI" value={diagnostics.cli} />
+        <ProviderFact icon={SquareTerminal} label="CLI" value={effectiveCliStatus} />
         <ProviderFact icon={KeyRound} label="认证" value={diagnostics.auth} />
-        <ProviderFact icon={Layers3} label="版本" value={diagnostics.version} />
+        <ProviderFact icon={Layers3} label="版本" value={effectiveVersion} />
         <ProviderFact icon={Network} label="Driver" value={provider.driverId} code />
-        {diagnostics.command ? (
-          <ProviderFact icon={FileText} label="可执行文件" value={diagnostics.command} code wide />
+        {effectiveCommand ? (
+          <ProviderFact icon={FileText} label="可执行文件" value={effectiveCommand} code wide />
+        ) : null}
+        {settingsDiagnostics ? (
+          <>
+            <ProviderFact icon={FileText} label="配置目录" value={settingsDiagnostics.configDirectory} code wide />
+            <ProviderFact icon={RefreshCw} label="更新命令" value={settingsDiagnostics.updateCommand} code wide />
+            <ProviderFact icon={SquareTerminal} label="诊断命令" value={settingsDiagnostics.diagnosticCommand} code wide />
+            <ProviderFact
+              icon={settingsDiagnostics.diagnostic.success === false ? AlertCircle : CheckCircle2}
+              label="诊断状态"
+              value={formatSettingsDiagnosticStatus(settingsDiagnostics)}
+            />
+          </>
         ) : null}
       </dl>
 
@@ -609,6 +671,21 @@ function ProviderDetail({
       </div>
     </section>
   );
+}
+
+function formatSettingsDiagnosticStatus(diagnostics: AgentSettingsDiagnostics) {
+  if (!diagnostics.diagnostic.available) {
+    return '命令不可用';
+  }
+  if (diagnostics.diagnostic.success === true) {
+    return '检查通过';
+  }
+  if (diagnostics.diagnostic.success === false) {
+    return diagnostics.diagnostic.exitCode == null
+      ? '检查失败'
+      : `检查失败（退出码 ${diagnostics.diagnostic.exitCode}）`;
+  }
+  return '可手动运行';
 }
 
 function ProviderFact({

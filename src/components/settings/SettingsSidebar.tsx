@@ -33,8 +33,8 @@ const settingsSections: Array<{ id: SettingsSection; label: string; icon: typeof
   { id: 'sessions', label: '会话管理', icon: MessageSquareText },
   { id: 'worktree', label: '工作树', icon: TreePine },
   { id: 'mcp', label: 'MCP 管理', icon: Server },
-  { id: 'plugins', label: '插件管理', icon: Puzzle },
-  { id: 'globalPrompts', label: '全局提示词', icon: Braces },
+  { id: 'plugins', label: '插件与技能', icon: Puzzle },
+  { id: 'globalPrompts', label: '全局规则', icon: Braces },
   { id: 'openWith', label: '打开方式', icon: AppWindow },
 ];
 

@@ -46,7 +46,8 @@ test('provider management keeps Grok and Codex detection explicit and non-reentr
   assert.match(providerSettingsSource, /async function runCodexProbe\(\)/);
   assert.match(providerSettingsSource, /probeGrokAgent\(controller\.signal\)/);
   assert.match(providerSettingsSource, /probeCodexAgent\(controller\.signal\)/);
-  assert.match(providerSettingsSource, /disabled=\{probeState === 'checking'\}/);
+  assert.match(providerSettingsSource, /disabled=\{probeState === 'checking' \|\| diagnosticChecking\}/);
+  assert.match(providerSettingsSource, /fetchAgentSettingsDiagnostics\(providerId, undefined, true\)/);
   assert.doesNotMatch(
     providerSettingsSource.slice(
       providerSettingsSource.indexOf('useEffect(() =>'),

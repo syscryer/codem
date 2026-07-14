@@ -82,8 +82,8 @@ const sectionTitles: Record<SettingsSection, string> = {
   sessions: '会话管理',
   worktree: '工作树',
   mcp: 'MCP 管理',
-  plugins: '插件管理',
-  globalPrompts: '全局提示词',
+  plugins: '插件与技能',
+  globalPrompts: '全局规则',
   openWith: '打开方式',
 };
 
@@ -175,7 +175,7 @@ export function SettingsView({
     }
 
     if (activeSection === 'globalPrompts') {
-      return <GlobalPromptSettingsSection />;
+      return <GlobalPromptSettingsSection defaultProviderId={agentRuntime.defaultProviderId} projectPath={activeProject?.path} />;
     }
 
     if (activeSection === 'usage') {
@@ -200,7 +200,12 @@ export function SettingsView({
     }
 
     if (activeSection === 'mcp') {
-      return <McpSettingsSection projectPath={activeProject?.path} />;
+      return (
+        <McpSettingsSection
+          defaultProviderId={agentRuntime.defaultProviderId}
+          projectPath={activeProject?.path}
+        />
+      );
     }
 
     if (activeSection === 'worktree') {
@@ -216,7 +221,12 @@ export function SettingsView({
     }
 
     if (activeSection === 'plugins') {
-      return <PluginsSettingsSection />;
+      return (
+        <PluginsSettingsSection
+          defaultProviderId={agentRuntime.defaultProviderId}
+          projectPath={activeProject?.path}
+        />
+      );
     }
 
     return <SettingsEmptySection title={sectionTitles[activeSection]} />;

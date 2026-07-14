@@ -7,6 +7,8 @@ import type {
   AgentProviderDescriptor,
   AgentProviderLifecycle,
   AgentProviderRegistry,
+  AgentProviderId,
+  AgentSettingsDiagnostics,
   CodexAppServerProbeResult,
   GrokAcpProbeResult,
   GrokAcpProbeSummary,
@@ -30,6 +32,22 @@ export async function fetchAgentProviderRegistry(signal?: AbortSignal): Promise<
     throw new Error('读取 Agent Provider 列表失败');
   }
   return normalizeAgentProviderRegistry(await response.json());
+}
+
+export async function fetchAgentSettingsDiagnostics(
+  providerId: AgentProviderId,
+  signal?: AbortSignal,
+  run = false,
+): Promise<AgentSettingsDiagnostics> {
+  const query = new URLSearchParams({ providerId });
+  if (run) {
+    query.set('run', 'true');
+  }
+  const response = await fetch(`/api/agents/settings-diagnostics?${query.toString()}`, { signal });
+  if (!response.ok) {
+    throw new Error('读取 Agent 设置诊断失败');
+  }
+  return await response.json() as AgentSettingsDiagnostics;
 }
 
 export async function fetchAgentModelCatalog(

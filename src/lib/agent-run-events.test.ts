@@ -109,6 +109,26 @@ test('cancelled generic Agent runs settle as stopped', () => {
   assert.equal(turn.activity, '已停止');
 });
 
+test('generic Agent done events persist usage cost and token snapshots', () => {
+  const turn = apply(createTurn(), {
+    type: 'done',
+    runId: 'run-1',
+    sessionId: 'session-1',
+    result: 'OK',
+    stopReason: 'end_turn',
+    inputTokens: 100,
+    outputTokens: 7,
+    cacheReadInputTokens: 20,
+    totalCostUsd: 0.25,
+    usageSource: 'result',
+  });
+
+  assert.equal(turn.inputTokens, 100);
+  assert.equal(turn.outputTokens, 7);
+  assert.equal(turn.cacheReadInputTokens, 20);
+  assert.equal(turn.totalCostUsd, 0.25);
+});
+
 test('terminal generic Agent events clear stale approval and input cards', () => {
   const waiting = {
     ...createTurn(),

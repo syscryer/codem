@@ -1,11 +1,24 @@
+import { Clipboard, FolderOpen, Trash2 } from 'lucide-react';
 import { useState } from 'react';
-import type { Skill } from '../../../types';
+import type { AgentProviderId, Skill } from '../../../types';
+import { AgentProviderIcon } from '../../AgentProviderIcon';
 
 type SkillsPanelProps = {
   items: Skill[];
+  providerId: AgentProviderId;
+  busy: boolean;
+  onOpen: (skill: Skill) => void;
+  onDelete: (skill: Skill) => void;
+  onCopy: (skill: Skill, targetProviderId: AgentProviderId) => void;
 };
 
-export function SkillsPanel({ items }: SkillsPanelProps) {
+const providerLabels: Record<AgentProviderId, string> = {
+  'claude-code': 'Claude',
+  'openai-codex': 'Codex',
+  'grok-build': 'Grok',
+};
+
+export function SkillsPanel({ items, providerId, busy, onOpen, onDelete, onCopy }: SkillsPanelProps) {
   const [copyStateByPath, setCopyStateByPath] = useState<Record<string, 'copied' | 'failed'>>({});
 
   async function handleCopyPath(skill: Skill) {
@@ -33,14 +46,39 @@ export function SkillsPanel({ items }: SkillsPanelProps) {
             <small title={skill.path}>{skill.path}</small>
           </div>
           <div className="settings-list-actions">
-            <span className="settings-badge">{formatSkillSource(skill.source)}</span>
+            <span className="settings-badge" title={skill.source}>{formatSkillSource(skill.source)}</span>
             <button
               type="button"
-              className="settings-action-button"
+              className="settings-icon-button"
+              aria-label={copyButtonLabel(copyStateByPath[skill.path])}
+              title={copyButtonLabel(copyStateByPath[skill.path])}
               onClick={() => void handleCopyPath(skill)}
             >
-              {copyButtonLabel(copyStateByPath[skill.path])}
+              <Clipboard size={15} />
             </button>
+            <button type="button" className="settings-icon-button" aria-label="打开 Skill 目录" disabled={busy} onClick={() => onOpen(skill)}>
+              <FolderOpen size={15} />
+            </button>
+            {(['claude-code', 'openai-codex', 'grok-build'] as AgentProviderId[])
+              .filter((targetProviderId) => targetProviderId !== providerId)
+              .map((targetProviderId) => (
+                <button
+                  key={targetProviderId}
+                  type="button"
+                  className="settings-icon-button"
+                  aria-label={`复制到 ${providerLabels[targetProviderId]}`}
+                  title={`复制到 ${providerLabels[targetProviderId]}`}
+                  disabled={busy}
+                  onClick={() => onCopy(skill, targetProviderId)}
+                >
+                  <AgentProviderIcon providerId={targetProviderId} size={15} />
+                </button>
+              ))}
+            {skill.source === 'user' || skill.source === 'project' ? (
+              <button type="button" className="settings-icon-button danger" aria-label="删除 Skill" disabled={busy} onClick={() => onDelete(skill)}>
+                <Trash2 size={15} />
+              </button>
+            ) : null}
           </div>
         </div>
       ))}
@@ -94,7 +132,7 @@ function formatSkillSource(source: Skill['source']) {
     return '项目级';
   }
   if (source.startsWith('plugin:')) {
-    return source.replace(/^plugin:/, '');
+    return '插件';
   }
   return source;
 }

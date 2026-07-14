@@ -175,7 +175,7 @@ test('基础设置分组标题不嵌在设置表格内部', () => {
   assert.match(settingsControlsSource, /export function SettingsGroup\(/);
   assert.match(settingsControlsSource, /<h2 className="settings-group-title">\{title\}<\/h2>/);
   assert.match(settingsControlsSource, /<div className="settings-panel">\{children\}<\/div>/);
-  assert.match(basicSettingsSource, /<SettingsGroup title="Git 审查">/);
+  assert.match(basicSettingsSource, /<SettingsGroup title="Git 审查"(?:\s+[^>]*)?>/);
   assert.match(basicSettingsSource, /<\/SettingsGroup>/);
   assert.doesNotMatch(basicSettingsSource, /<h2 className="settings-group-title">Git 审查<\/h2>/);
   assert.doesNotMatch(basicSettingsSource, /settings-panel-subtitle">Git 审查/);

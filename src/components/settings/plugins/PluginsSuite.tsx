@@ -1,16 +1,19 @@
 import { Blocks, Download, FolderOpen, Sparkles, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import type { InstalledPlugin, Marketplace, PluginSubTab, PluginTab, Skill } from '../../../types';
+import type { AgentProviderId, InstalledPlugin, Marketplace, PluginSubTab, PluginTab, Skill } from '../../../types';
 import {
   addMarketplace,
+  deleteSkill,
   fetchInstalledPlugins,
   fetchMarketplaces,
   fetchPluginSkills,
   installBuiltinSkill,
   installPlugin,
   installSkillFromPath,
+  openSkill,
   PLUGINS_CHANGED_EVENT,
   removeMarketplace,
+  runPluginCommand,
   uninstallPlugin,
   updateMarketplace,
   type PluginScope,
@@ -21,6 +24,7 @@ import { DiscoverPluginsPanel } from './DiscoverPluginsPanel';
 import { InstalledPluginsPanel } from './InstalledPluginsPanel';
 import { MarketplacesPanel } from './MarketplacesPanel';
 import { SkillsPanel } from './SkillsPanel';
+import { AgentSettingsProviderTabs } from '../AgentSettingsProviderTabs';
 
 const builtinSkillInstallers = [
   {
@@ -36,7 +40,14 @@ const marketplacePresets = [
   'obra/superpowers-marketplace',
 ];
 
-export function PluginsSuite() {
+export function PluginsSuite({
+  defaultProviderId,
+  projectPath,
+}: {
+  defaultProviderId: AgentProviderId;
+  projectPath?: string;
+}) {
+  const [providerId, setProviderId] = useState<AgentProviderId>(defaultProviderId);
   const [tab, setTab] = useState<PluginTab>('plugins');
   const [subTab, setSubTab] = useState<PluginSubTab>('installed');
   const [query, setQuery] = useState('');
@@ -57,7 +68,7 @@ export function PluginsSuite() {
 
   useEffect(() => {
     void refreshAll();
-  }, []);
+  }, [providerId, projectPath]);
 
   useEffect(() => {
     function handlePluginsChanged() {
@@ -66,7 +77,7 @@ export function PluginsSuite() {
 
     window.addEventListener(PLUGINS_CHANGED_EVENT, handlePluginsChanged);
     return () => window.removeEventListener(PLUGINS_CHANGED_EVENT, handlePluginsChanged);
-  }, []);
+  }, [providerId, projectPath]);
 
   const filteredInstalled = useMemo(() => filterInstalledPlugins(installed, query), [installed, query]);
   const filteredMarketplaces = useMemo(() => filterMarketplaces(marketplaces, query), [marketplaces, query]);
@@ -79,9 +90,9 @@ export function PluginsSuite() {
     setErrorDetail('');
     try {
       const [nextInstalled, nextMarketplaces, nextSkills] = await Promise.all([
-        fetchInstalledPlugins(),
-        fetchMarketplaces(),
-        fetchPluginSkills(null),
+        fetchInstalledPlugins(providerId),
+        fetchMarketplaces(providerId),
+        fetchPluginSkills(providerId, projectPath),
       ]);
       setInstalled(nextInstalled);
       setMarketplaces(nextMarketplaces);
@@ -119,7 +130,7 @@ export function PluginsSuite() {
     }
 
     await performMutation('添加 Marketplace', async () => {
-      await addMarketplace(target);
+      await addMarketplace(providerId, target);
       setMarketplaceInput('');
     });
   }
@@ -132,8 +143,10 @@ export function PluginsSuite() {
 
     const imported = await performMutation('导入 Skill', async () => {
       await installSkillFromPath({
+        providerId,
         path: targetPath,
         scope: skillImportScope,
+        cwd: projectPath,
         overwrite: skillImportOverwrite,
       });
       setSkillImportPath('');
@@ -166,8 +179,19 @@ export function PluginsSuite() {
     <section className="settings-page-section">
       <header className="settings-section-head">
         <h1>插件 & 技能</h1>
-        <p>管理 Claude Code 原生插件与技能；与 CLI 共用同一份配置。</p>
+        <p>管理各 Agent 原生插件与技能；配置仍保存在对应 CLI 的原生目录。</p>
       </header>
+
+      <AgentSettingsProviderTabs
+        value={providerId}
+        disabled={busy}
+        onChange={(nextProviderId) => {
+          setProviderId(nextProviderId);
+          setQuery('');
+          setError('');
+          setErrorDetail('');
+        }}
+      />
 
       <div className="settings-panel settings-editor-panel plugins-suite-panel">
         <div className="plugins-panel-topbar">
@@ -219,7 +243,7 @@ export function PluginsSuite() {
                   placeholder="搜索插件、marketplace、描述"
                 />
               </label>
-              {subTab === 'discover' ? (
+              {subTab === 'discover' && providerId === 'claude-code' ? (
                 <label className="settings-inline-form plugins-inline-select">
                   <span>安装范围</span>
                   <select value={pluginInstallScope} onChange={(event) => setPluginInstallScope(event.target.value as PluginScope)}>
@@ -244,7 +268,7 @@ export function PluginsSuite() {
                     添加 Marketplace
                   </button>
                 </div>
-                <div className="plugins-preset-row" aria-label="常用 Marketplace">
+                {providerId === 'claude-code' ? <div className="plugins-preset-row" aria-label="常用 Marketplace">
                   {marketplacePresets.map((preset) => (
                     <button
                       key={preset}
@@ -256,7 +280,7 @@ export function PluginsSuite() {
                       {preset}
                     </button>
                   ))}
-                </div>
+                </div> : null}
               </div>
             ) : null}
           </>
@@ -281,7 +305,7 @@ export function PluginsSuite() {
               </button>
             </div>
 
-            <div className="plugins-skill-actions">
+            {providerId === 'claude-code' ? <div className="plugins-skill-actions">
               <div className="plugins-builtin-grid">
                 {builtinSkillInstallers.map((item) => (
                   <div key={item.id} className="plugins-builtin-card">
@@ -294,7 +318,7 @@ export function PluginsSuite() {
                       className="settings-action-button"
                       disabled={busy}
                       onClick={() => void performMutation('安装内置 Skill', async () => {
-                        await installBuiltinSkill({ id: item.id });
+                        await installBuiltinSkill({ id: item.id, providerId });
                       })}
                     >
                       安装
@@ -302,7 +326,7 @@ export function PluginsSuite() {
                   </div>
                 ))}
               </div>
-            </div>
+            </div> : null}
           </>
         )}
 
@@ -317,9 +341,22 @@ export function PluginsSuite() {
           <InstalledPluginsPanel
             items={filteredInstalled}
             busy={busy}
+            supportsEnable={providerId !== 'openai-codex'}
+            onToggleEnabled={(item) => {
+              void performMutation(item.enabled ? '禁用插件' : '启用插件', async () => {
+                await runPluginCommand({
+                  providerId,
+                  kind: 'plugin',
+                  action: item.enabled ? 'disable' : 'enable',
+                  target: item.id,
+                  scope: normalizePluginScope(item.scope),
+                  cwd: projectPath,
+                });
+              });
+            }}
             onUninstall={(item) => {
               void performMutation('卸载插件', async () => {
-                await uninstallPlugin(item.id, normalizePluginScope(item.scope));
+                await uninstallPlugin(providerId, item.id, normalizePluginScope(item.scope));
               });
             }}
           />
@@ -330,7 +367,7 @@ export function PluginsSuite() {
             busy={busy}
             onInstall={(item) => {
               void performMutation('安装插件', async () => {
-                await installPlugin(`${item.plugin.name}@${item.marketplace}`, pluginInstallScope);
+                await installPlugin(providerId, `${item.plugin.name}@${item.marketplace}`, pluginInstallScope);
               });
             }}
           />
@@ -341,18 +378,46 @@ export function PluginsSuite() {
             busy={busy}
             onRefresh={(marketplace) => {
               void performMutation('刷新 Marketplace', async () => {
-                await updateMarketplace(marketplace.name);
+                await updateMarketplace(providerId, marketplace.mutationTarget ?? marketplace.name);
               });
             }}
             onRemove={(marketplace) => {
               void performMutation('移除 Marketplace', async () => {
-                await removeMarketplace(marketplace.name);
+                await removeMarketplace(providerId, marketplace.mutationTarget ?? marketplace.name);
               });
             }}
           />
         ) : null}
         {!loading && !error && tab === 'skills' ? (
-          <SkillsPanel items={filteredSkills} />
+          <SkillsPanel
+            items={filteredSkills}
+            providerId={providerId}
+            busy={busy}
+            onOpen={(skill) => {
+              void performMutation('打开 Skill 目录', async () => {
+                await openSkill({ providerId, path: skill.path, projectPath });
+              });
+            }}
+            onDelete={(skill) => {
+              if (!window.confirm(`确定删除 Skill“${skill.name}”吗？`)) {
+                return;
+              }
+              void performMutation('删除 Skill', async () => {
+                await deleteSkill({ providerId, path: skill.path, projectPath });
+              });
+            }}
+            onCopy={(skill, targetProviderId) => {
+              void performMutation(`复制 Skill 到 ${targetProviderId}`, async () => {
+                await installSkillFromPath({
+                  providerId: targetProviderId,
+                  path: skill.path,
+                  scope: skill.source === 'project' ? 'project' : 'user',
+                  cwd: projectPath,
+                  overwrite: false,
+                });
+              });
+            }}
+          />
         ) : null}
       </div>
 
@@ -447,7 +512,7 @@ export function PluginsSuite() {
               <div className="plugins-import-location">
                 <strong>安装位置</strong>
                 <small>
-                  用户级写入 <code>~/.claude/skills</code>；项目级写入当前项目的 <code>.claude/skills</code>。
+                  {skillInstallLocationLabel(providerId)}
                 </small>
               </div>
             </div>
@@ -476,6 +541,15 @@ export function PluginsSuite() {
       ) : null}
     </section>
   );
+}
+
+function skillInstallLocationLabel(providerId: AgentProviderId) {
+  const directory = providerId === 'openai-codex'
+    ? '.codex'
+    : providerId === 'grok-build'
+      ? '.grok'
+      : '.claude';
+  return <>用户级写入 <code>~/{directory}/skills</code>；项目级写入当前项目的 <code>{directory}/skills</code>。</>;
 }
 
 function TabCount({ value }: { value: number }) {

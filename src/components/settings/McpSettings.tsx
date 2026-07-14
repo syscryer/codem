@@ -2,12 +2,14 @@ import { ExternalLink, Plus, RotateCcw, Save, Server, Settings2, ShieldAlert, Tr
 import { useEffect, useMemo, useState } from 'react';
 import { normalizeMcpConfig, fetchMcpManagement, openMcpConfig, saveMcpConfig } from '../../lib/mcp';
 import type {
+  AgentProviderId,
   McpConfigFile,
   McpManagedScope,
   McpManagementResponse,
   McpServerConfig,
   McpServerSummary,
 } from '../../types';
+import { AgentSettingsProviderTabs } from './AgentSettingsProviderTabs';
 
 type EditableServerScope = 'global' | 'project' | 'claude-json-global';
 type ServerScope = EditableServerScope | 'claude-json-project';
@@ -83,7 +85,14 @@ const AUTH_OPTIONS: Array<{ value: EditorState['auth']; label: string }> = [
   { value: 'oauth', label: 'OAuth' },
 ];
 
-export function McpSettingsSection({ projectPath }: { projectPath?: string | null }) {
+export function McpSettingsSection({
+  defaultProviderId,
+  projectPath,
+}: {
+  defaultProviderId: AgentProviderId;
+  projectPath?: string | null;
+}) {
+  const [providerId, setProviderId] = useState<AgentProviderId>(defaultProviderId);
   const [payload, setPayload] = useState<McpManagementResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -95,7 +104,7 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
 
   useEffect(() => {
     void loadManagement();
-  }, [projectPath]);
+  }, [projectPath, providerId]);
 
   const rows = useMemo(() => buildManagedRows(payload), [payload]);
 
@@ -107,7 +116,7 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
     }
 
     try {
-      const nextPayload = await fetchMcpManagement(projectPath);
+      const nextPayload = await fetchMcpManagement(providerId, projectPath);
       setPayload(nextPayload);
       setEditor(null);
       setDirty(false);
@@ -221,7 +230,7 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
       };
 
       for (const [scope, config] of changed) {
-        await saveMcpConfig(scope, config, projectPath);
+        await saveMcpConfig(scope, config, providerId, projectPath);
       }
 
       await loadManagement('MCP 服务器配置已保存。');
@@ -249,7 +258,7 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
         nextServer.disabled = true;
       }
       next.mcpServers[row.name] = nextServer;
-      await saveMcpConfig(row.scope, next, projectPath);
+      await saveMcpConfig(row.scope, next, providerId, projectPath);
       await loadManagement(enabled ? `已启用 ${row.name}。` : `已停用 ${row.name}。`);
     } catch (toggleError) {
       setNotice({ tone: 'error', text: toggleError instanceof Error ? toggleError.message : '更新 MCP 状态失败' });
@@ -269,7 +278,7 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
       const next = normalizeMcpConfig(getConfigForScope(payload, row.scope));
       next.mcpServers = { ...(next.mcpServers ?? {}) };
       delete next.mcpServers[row.name];
-      await saveMcpConfig(row.scope, next, projectPath);
+      await saveMcpConfig(row.scope, next, providerId, projectPath);
       await loadManagement(`已删除 ${row.name}。`);
     } catch (deleteError) {
       setNotice({ tone: 'error', text: deleteError instanceof Error ? deleteError.message : '删除 MCP 服务器失败' });
@@ -281,7 +290,7 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
   async function openConfig(scope: McpManagedScope) {
     setNotice(null);
     try {
-      await openMcpConfig(scope, projectPath);
+      await openMcpConfig(scope, providerId, projectPath);
       setNotice({ tone: 'info', text: '已请求系统打开配置文件。' });
     } catch (openError) {
       setNotice({ tone: 'error', text: openError instanceof Error ? openError.message : '打开配置文件失败' });
@@ -294,13 +303,23 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
         <h1>MCP 管理</h1>
       </header>
 
+      <AgentSettingsProviderTabs
+        value={providerId}
+        disabled={loading || saving}
+        onChange={(nextProviderId) => {
+          setProviderId(nextProviderId);
+          setEditor(null);
+          setNotice(null);
+        }}
+      />
+
       <div className="settings-panel settings-editor-panel mcp-suite-panel">
         <div className="settings-editor-head">
           <div className="settings-row-label">
             <Server size={15} />
             <span>
               <strong>{editor ? '编辑 MCP 服务器' : 'MCP 服务器列表'}</strong>
-              <small>管理 Claude Code 用户级、项目级和全局 MCP 配置。</small>
+              <small>管理当前 Agent 的用户级与项目级原生 MCP 配置。</small>
             </span>
           </div>
           <div className="settings-editor-actions">
@@ -346,14 +365,13 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
         {error ? (
           <div className="plugins-error-panel">
             <strong>{error}</strong>
-            <small>请先确认本机 Claude Code 配置文件可读。</small>
+            <small>请先确认当前 Agent 的配置文件可读。</small>
           </div>
         ) : null}
 
         <div className="plugins-help-panel">
           <span>
-            本页可直接管理 <code>~/.claude/mcp.json</code>、<code>&lt;项目&gt;/.mcp.json</code> 和
-            <code>~/.claude.json</code> 的全局 MCP。<code>Claude Code 项目</code> 仅做只读展示，便于排查覆盖关系。
+            {mcpLocationDescription(providerId)}
           </span>
         </div>
 
@@ -365,7 +383,7 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
             disabled={loading || saving}
           >
             <ExternalLink size={14} />
-            <span>打开用户级 mcp.json</span>
+            <span>打开用户级配置</span>
           </button>
           <button
             type="button"
@@ -374,9 +392,9 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
             disabled={loading || saving || !payload?.hasProject}
           >
             <ExternalLink size={14} />
-            <span>打开项目级 .mcp.json</span>
+            <span>打开项目级配置</span>
           </button>
-          <button
+          {providerId === 'claude-code' ? <button
             type="button"
             className="settings-action-button"
             onClick={() => void openConfig('claude-json-global')}
@@ -384,7 +402,7 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
           >
             <ExternalLink size={14} />
             <span>打开 Claude Code 配置</span>
-          </button>
+          </button> : null}
         </div>
 
         {editor ? (
@@ -393,6 +411,7 @@ export function McpSettingsSection({ projectPath }: { projectPath?: string | nul
             dirty={dirty}
             saving={saving}
             hasProject={Boolean(payload?.hasProject)}
+            providerId={providerId}
             onCancel={() => {
               setEditor(null);
               setDirty(false);
@@ -528,6 +547,7 @@ function EditorPanel({
   dirty,
   saving,
   hasProject,
+  providerId,
   onCancel,
   onUpdate,
 }: {
@@ -535,6 +555,7 @@ function EditorPanel({
   dirty: boolean;
   saving: boolean;
   hasProject: boolean;
+  providerId: AgentProviderId;
   onCancel: () => void;
   onUpdate: (patch: Partial<EditorState>) => void;
 }) {
@@ -568,7 +589,10 @@ function EditorPanel({
               onChange={(event) => onUpdate({ scope: event.currentTarget.value as EditableServerScope })}
               disabled={saving}
             >
-              {EDIT_SCOPE_OPTIONS.filter((option) => option.value !== 'project' || hasProject).map((option) => (
+              {EDIT_SCOPE_OPTIONS.filter((option) =>
+                (option.value !== 'project' || hasProject)
+                && (option.value !== 'claude-json-global' || providerId === 'claude-code'),
+              ).map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </select>
@@ -1149,6 +1173,16 @@ function scopeLabel(scope: ServerScope) {
     return 'Claude Code 全局';
   }
   return 'Claude Code 项目';
+}
+
+function mcpLocationDescription(providerId: AgentProviderId) {
+  if (providerId === 'openai-codex') {
+    return <>直接管理 <code>~/.codex/config.toml</code> 与项目内 <code>.codex/config.toml</code> 的 <code>mcp_servers</code>。</>;
+  }
+  if (providerId === 'grok-build') {
+    return <>直接管理 <code>~/.grok/config.toml</code> 与项目内 <code>.grok/config.toml</code> 的 <code>mcp_servers</code>。</>;
+  }
+  return <>直接管理 <code>~/.claude/mcp.json</code>、项目 <code>.mcp.json</code> 与 <code>~/.claude.json</code>。</>;
 }
 
 function normalizeManagedStatus(status?: McpServerSummary['status']) {

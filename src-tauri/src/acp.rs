@@ -1,4 +1,4 @@
-use crate::agent_runtime::{AgentControlCommand, AgentPermissionDecision};
+use crate::agent_runtime::{AgentControlCommand, AgentPermissionDecision, AgentUsageSnapshot};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::{
@@ -133,7 +133,7 @@ pub struct AcpSessionSummary {
     pub current_model_id: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpPromptOutcome {
     pub stop_reason: String,
@@ -143,6 +143,7 @@ pub struct AcpPromptOutcome {
     pub update_counts: BTreeMap<String, u64>,
     pub client_request_methods: Vec<String>,
     pub cancel_sent: bool,
+    pub usage: AgentUsageSnapshot,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -460,6 +461,7 @@ where
             update_counts: BTreeMap::new(),
             client_request_methods: Vec::new(),
             cancel_sent: false,
+            usage: AgentUsageSnapshot::default(),
         };
         let mut cancel_channel_open = true;
         let deadline = sleep(ACP_PROMPT_TIMEOUT);
@@ -492,6 +494,9 @@ where
                                 .and_then(Value::as_str)
                                 .ok_or_else(|| AcpError::Protocol("session/prompt 缺少 stopReason".to_string()))?
                                 .to_string();
+                            outcome.usage = parse_acp_usage(
+                                result.get("_meta").and_then(|value| value.get("usage")),
+                            );
                             return Ok(outcome);
                         }
                         AcpMessage::Request { id, method, params } => {
@@ -1078,6 +1083,27 @@ fn finish_response(result: Option<Value>, error: Option<AcpRpcError>) -> Result<
         });
     }
     Ok(result.unwrap_or(Value::Null))
+}
+
+fn parse_acp_usage(value: Option<&Value>) -> AgentUsageSnapshot {
+    let Some(value) = value else {
+        return AgentUsageSnapshot::default();
+    };
+    let full_input = value.get("inputTokens").and_then(Value::as_u64);
+    let cache_read = value.get("cacheReadInputTokens").and_then(Value::as_u64);
+    AgentUsageSnapshot {
+        input_tokens: full_input.map(|tokens| tokens.saturating_sub(cache_read.unwrap_or(0))),
+        output_tokens: value.get("outputTokens").and_then(Value::as_u64),
+        cache_creation_input_tokens: value
+            .get("cacheCreationInputTokens")
+            .and_then(Value::as_u64),
+        cache_read_input_tokens: cache_read,
+        model_context_window: value.get("modelContextWindow").and_then(Value::as_u64),
+        total_cost_usd: value
+            .get("totalCostUsd")
+            .or_else(|| value.get("total_cost_usd"))
+            .and_then(Value::as_f64),
+    }
 }
 
 fn summarize_initialize_result(result: &Value) -> Result<AcpInitializeSummary, AcpError> {
@@ -1818,9 +1844,23 @@ fn configure_background_command(_command: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::{
-        summarize_initialize_result, AcpConnection, AcpEmbeddedResource, AcpPromptCapabilities,
-        AcpPromptInput, AcpPromptOutcome, AcpRuntimeEvent, AcpStdioClient,
+        parse_acp_usage, summarize_initialize_result, AcpConnection, AcpEmbeddedResource,
+        AcpPromptCapabilities, AcpPromptInput, AcpPromptOutcome, AcpRuntimeEvent, AcpStdioClient,
     };
+
+    #[test]
+    fn acp_usage_separates_cached_input_and_keeps_cost() {
+        let usage = parse_acp_usage(Some(&json!({
+            "inputTokens": 120,
+            "cacheReadInputTokens": 20,
+            "outputTokens": 7,
+            "totalCostUsd": 0.25
+        })));
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(usage.cache_read_input_tokens, Some(20));
+        assert_eq!(usage.output_tokens, Some(7));
+        assert_eq!(usage.total_cost_usd, Some(0.25));
+    }
     use crate::agent_runtime::{AgentControlCommand, AgentPermissionDecision};
     use serde_json::{json, Value};
     use std::{collections::BTreeMap, path::Path, time::Duration};
@@ -2151,6 +2191,7 @@ mod tests {
                 ]),
                 client_request_methods: Vec::new(),
                 cancel_sent: true,
+                usage: crate::agent_runtime::AgentUsageSnapshot::default(),
             }
         );
         let serialized = serde_json::to_string(&outcome).unwrap();

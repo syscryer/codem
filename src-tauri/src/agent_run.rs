@@ -5,9 +5,9 @@ use crate::{
     },
     agent_runtime::{
         normalize_agent_permission_mode, AgentApprovalOption, AgentApprovalRequest,
-        AgentControlCommand, AgentPermissionDecision, AgentRunEvent, AgentUserInputOption,
-        AgentUserInputQuestion, AgentUserInputRequest, GROK_BUILD_PROVIDER_ID,
-        OPENAI_CODEX_PROVIDER_ID,
+        AgentControlCommand, AgentPermissionDecision, AgentRunEvent, AgentUsageSnapshot,
+        AgentUserInputOption, AgentUserInputQuestion, AgentUserInputRequest,
+        GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
     },
     codex_app_server::{CodexAppServerError, CodexRuntimeEvent, CodexStdioClient, CodexUserInput},
 };
@@ -183,6 +183,7 @@ struct RuntimeTurnOutcome {
     session_id: String,
     text: String,
     stop_reason: String,
+    usage: AgentUsageSnapshot,
 }
 
 struct RuntimeTurnError {
@@ -756,6 +757,8 @@ async fn run_agent_runtime_actor(
                             session_id: outcome.session_id,
                             result: outcome.text,
                             stop_reason: outcome.stop_reason,
+                            usage: outcome.usage,
+                            usage_source: "result",
                         },
                     );
                 }
@@ -893,6 +896,7 @@ impl LiveAgentRuntime {
                         session_id: session_id.clone(),
                         text: outcome.text,
                         stop_reason: outcome.stop_reason,
+                        usage: outcome.usage,
                     })),
                     Some(Err(error)) => RuntimeExecution::Completed(Err(RuntimeTurnError {
                         fatal: acp_error_is_fatal(&error) || !client.is_running(),
@@ -930,6 +934,7 @@ impl LiveAgentRuntime {
                         session_id: session_id.clone(),
                         text: outcome.text,
                         stop_reason: outcome.stop_reason,
+                        usage: outcome.usage,
                     })),
                     Some(Err(error)) => RuntimeExecution::Completed(Err(RuntimeTurnError {
                         fatal: codex_error_is_fatal(&error) || !client.is_running(),
@@ -1178,6 +1183,8 @@ async fn execute_acp_run(task: AcpRunTask) {
                 session_id,
                 result: outcome.text,
                 stop_reason: outcome.stop_reason,
+                usage: outcome.usage,
+                usage_source: "result",
             },
         ),
         Err(message) => state.push_terminal(
@@ -1283,6 +1290,8 @@ async fn execute_codex_run(task: CodexRunTask) {
                 session_id,
                 result: outcome.text,
                 stop_reason: outcome.stop_reason,
+                usage: outcome.usage,
+                usage_source: "result",
             },
         ),
         Err(message) => state.push_terminal(
@@ -1304,6 +1313,7 @@ fn cancelled_before_prompt_outcome() -> AcpPromptOutcome {
         update_counts: BTreeMap::new(),
         client_request_methods: Vec::new(),
         cancel_sent: true,
+        usage: AgentUsageSnapshot::default(),
     }
 }
 
@@ -1934,6 +1944,11 @@ impl CodexEventMapper {
                     text,
                 }]
             }
+            CodexRuntimeEvent::Usage { usage } => vec![AgentRunEvent::Usage {
+                run_id: self.run_id.clone(),
+                usage,
+                usage_source: "result",
+            }],
             CodexRuntimeEvent::ToolStarted {
                 tool_id,
                 name,
@@ -3534,6 +3549,8 @@ mod tests {
                 session_id: "session-1".to_string(),
                 result: "done".to_string(),
                 stop_reason: "end_turn".to_string(),
+                usage: crate::agent_runtime::AgentUsageSnapshot::default(),
+                usage_source: "result",
             }
         ));
         assert!(!state.push_terminal(

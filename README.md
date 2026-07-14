@@ -1,10 +1,10 @@
 # CodeM
 
-CodeM 是一个给 Claude Code 用的本地桌面壳。
+CodeM 是一个面向本地编码 Agent 的桌面工作台。
 
-它把本机 `claude` CLI 包成图形界面，让你可以在一个桌面应用里管理项目、继续会话、查看运行过程、处理权限确认，并把聊天记录和项目状态保存在本机。
+它把本机 Claude Code、OpenAI Codex 与 Grok Build CLI 接入统一图形界面，让你可以管理项目、继续热会话、查看运行过程、处理权限确认，并把聊天记录和项目状态保存在本机。
 
-> 当前阶段 CodeM 主要是 Claude Code 的图形界面，不是独立模型平台。后续可以继续扩展其他 provider，但现在先把 Claude Code 的本地工作流做好。
+> CodeM 直接使用各 Agent 的原生 CLI、会话和配置目录，不接管账号凭据，也不会自动同步不同 Agent 的配置。
 
 ## 界面预览
 
@@ -34,7 +34,7 @@ CodeM 是一个给 Claude Code 用的本地桌面壳。
 
 ## 当前能做什么
 
-- 调用本机 `claude` CLI，并实时展示 Claude Code 的输出
+- 调用本机 `claude`、`codex`、`grok` CLI，并实时展示 Agent 输出
 - 按项目管理聊天，会话可以继续复用 `sessionId`
 - 支持切换工作目录、停止运行、继续输入和队列发送
 - 支持默认、自动执行、完全访问三档权限模式
@@ -99,7 +99,7 @@ npm run desktop:dev
 - 前端：React + Vite
 - 桌面壳：Tauri
 - 后端：Rust + Axum
-- Claude 调用：本机 `claude` CLI
+- Agent 调用：本机 `claude`、`codex`、`grok` CLI
 - 本地持久化：SQLite（Rust rusqlite）
 
 ## 打包

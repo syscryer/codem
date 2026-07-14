@@ -1,4 +1,4 @@
-import type { InstalledPlugin, Marketplace, Skill } from '../types';
+import type { AgentProviderId, InstalledPlugin, Marketplace, Skill } from '../types';
 
 export type PluginScope = 'user' | 'project' | 'local';
 export type SkillScope = 'user' | 'project';
@@ -30,27 +30,31 @@ export function emitPluginsChanged() {
   window.dispatchEvent(new CustomEvent(PLUGINS_CHANGED_EVENT));
 }
 
-export async function fetchInstalledPlugins(): Promise<InstalledPlugin[]> {
-  const response = await fetch('/api/plugins/installed');
+export async function fetchInstalledPlugins(providerId: AgentProviderId): Promise<InstalledPlugin[]> {
+  const response = await fetch(`/api/plugins/installed?providerId=${encodeURIComponent(providerId)}`);
   if (!response.ok) {
     throw new Error('读取已安装插件失败');
   }
   return (await response.json()) as InstalledPlugin[];
 }
 
-export async function fetchMarketplaces(): Promise<Marketplace[]> {
-  const response = await fetch('/api/plugins/marketplaces');
+export async function fetchMarketplaces(providerId: AgentProviderId): Promise<Marketplace[]> {
+  const response = await fetch(`/api/plugins/marketplaces?providerId=${encodeURIComponent(providerId)}`);
   if (!response.ok) {
     throw new Error('读取插件市场失败');
   }
   return (await response.json()) as Marketplace[];
 }
 
-export async function fetchPluginSkills(projectPath?: string | null): Promise<Skill[]> {
-  const query = projectPath?.trim()
-    ? `?projectPath=${encodeURIComponent(projectPath.trim())}`
-    : '';
-  const response = await fetch(`/api/plugins/skills${query}`);
+export async function fetchPluginSkills(
+  providerId: AgentProviderId,
+  projectPath?: string | null,
+): Promise<Skill[]> {
+  const query = new URLSearchParams({ providerId });
+  if (projectPath?.trim()) {
+    query.set('projectPath', projectPath.trim());
+  }
+  const response = await fetch(`/api/plugins/skills?${query.toString()}`);
   if (!response.ok) {
     throw new Error('读取插件 Skills 失败');
   }
@@ -58,6 +62,7 @@ export async function fetchPluginSkills(projectPath?: string | null): Promise<Sk
 }
 
 export async function installSkillFromPath(args: {
+  providerId: AgentProviderId;
   path: string;
   scope: SkillScope;
   cwd?: string | null;
@@ -68,13 +73,36 @@ export async function installSkillFromPath(args: {
   return result;
 }
 
-export async function installBuiltinSkill(args: { id: string; cwd?: string | null }) {
+export async function installBuiltinSkill(args: {
+  id: string;
+  providerId: AgentProviderId;
+  cwd?: string | null;
+}) {
   const result = await postJson<PluginCommandResult>('/api/plugins/skills/install-builtin', args, '安装内置 Skill 失败');
   emitPluginsChanged();
   return result;
 }
 
+export async function deleteSkill(args: {
+  providerId: AgentProviderId;
+  path: string;
+  projectPath?: string | null;
+}) {
+  const result = await postJson<{ deleted: boolean }>('/api/plugins/skills/delete', args, '删除 Skill 失败');
+  emitPluginsChanged();
+  return result;
+}
+
+export async function openSkill(args: {
+  providerId: AgentProviderId;
+  path: string;
+  projectPath?: string | null;
+}) {
+  return postJson<{ opened: boolean }>('/api/plugins/skills/open', args, '打开 Skill 目录失败');
+}
+
 export async function runPluginCommand(args: {
+  providerId: AgentProviderId;
   action: string;
   kind: 'marketplace' | 'plugin';
   target?: string | null;
@@ -88,24 +116,27 @@ export async function runPluginCommand(args: {
   return result;
 }
 
-export async function addMarketplace(target: string) {
+export async function addMarketplace(providerId: AgentProviderId, target: string) {
   return runPluginCommand({
+    providerId,
     kind: 'marketplace',
     action: 'add',
     target,
   });
 }
 
-export async function updateMarketplace(name: string) {
+export async function updateMarketplace(providerId: AgentProviderId, name: string) {
   return runPluginCommand({
+    providerId,
     kind: 'marketplace',
     action: 'update',
     target: name,
   });
 }
 
-export async function removeMarketplace(name: string) {
+export async function removeMarketplace(providerId: AgentProviderId, name: string) {
   return runPluginCommand({
+    providerId,
     kind: 'marketplace',
     action: 'remove',
     target: name,
@@ -113,11 +144,13 @@ export async function removeMarketplace(name: string) {
 }
 
 export async function installPlugin(
+  providerId: AgentProviderId,
   pluginAtMarketplace: string,
   scope: PluginScope,
   cwd?: string | null,
 ) {
   return runPluginCommand({
+    providerId,
     kind: 'plugin',
     action: 'install',
     target: pluginAtMarketplace,
@@ -127,11 +160,13 @@ export async function installPlugin(
 }
 
 export async function uninstallPlugin(
+  providerId: AgentProviderId,
   pluginAtMarketplace: string,
   scope: PluginScope,
   cwd?: string | null,
 ) {
   return runPluginCommand({
+    providerId,
     kind: 'plugin',
     action: 'uninstall',
     target: pluginAtMarketplace,

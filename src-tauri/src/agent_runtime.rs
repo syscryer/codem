@@ -178,6 +178,23 @@ pub struct AgentUserInputRequest {
     pub questions: Vec<AgentUserInputQuestion>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUsageSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_cost_usd: Option<f64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(
     tag = "type",
@@ -203,6 +220,12 @@ pub enum AgentRunEvent {
     Delta {
         run_id: String,
         text: String,
+    },
+    Usage {
+        run_id: String,
+        #[serde(flatten)]
+        usage: AgentUsageSnapshot,
+        usage_source: &'static str,
     },
     RequestUserInput {
         run_id: String,
@@ -236,6 +259,9 @@ pub enum AgentRunEvent {
         session_id: String,
         result: String,
         stop_reason: String,
+        #[serde(flatten)]
+        usage: AgentUsageSnapshot,
+        usage_source: &'static str,
     },
     Error {
         run_id: String,
@@ -581,6 +607,8 @@ mod tests {
             session_id: "session-1".to_string(),
             result: "ok".to_string(),
             stop_reason: "cancelled".to_string(),
+            usage: super::AgentUsageSnapshot::default(),
+            usage_source: "result",
         })
         .unwrap();
         assert_eq!(
@@ -590,7 +618,8 @@ mod tests {
                 "runId": "run-1",
                 "sessionId": "session-1",
                 "result": "ok",
-                "stopReason": "cancelled"
+                "stopReason": "cancelled",
+                "usageSource": "result"
             })
         );
 

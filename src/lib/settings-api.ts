@@ -210,7 +210,11 @@ export async function fetchOpenWithTargets(): Promise<OpenWithTargetsResponse> {
   }
 }
 
-export async function fetchUsageStats(range?: 1 | 7 | 30 | 90 | 'all', projectId?: string): Promise<UsageStatsResponse> {
+export async function fetchUsageStats(
+  range?: 1 | 7 | 30 | 90 | 'all',
+  projectId?: string,
+  providerId?: AgentProviderId,
+): Promise<UsageStatsResponse> {
   try {
     const searchParams = new URLSearchParams();
     if (range && range !== 'all') {
@@ -218,6 +222,9 @@ export async function fetchUsageStats(range?: 1 | 7 | 30 | 90 | 'all', projectId
     }
     if (projectId) {
       searchParams.set('projectId', projectId);
+    }
+    if (providerId) {
+      searchParams.set('providerId', providerId);
     }
     const queryText = searchParams.toString();
     const query = queryText ? `?${queryText}` : '';

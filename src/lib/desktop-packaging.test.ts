@@ -24,13 +24,12 @@ test('macOS private API config enables the matching Tauri cargo feature', () => 
   assert.match(tauriCargoSource, /tauri\s*=\s*\{[^}]*features\s*=\s*\[[^\]]*"macos-private-api"/s);
 });
 
-test('desktop shell cleans managed backend processes on app exit', () => {
+test('desktop shell uses the in-process Rust backend without legacy child cleanup', () => {
   assert.match(tauriMainSource, /\.build\(tauri::generate_context!\(\)\)/);
-  assert.match(tauriMainSource, /\.run\(\|app_handle,\s*event\|/);
-  assert.match(tauriMainSource, /tauri::RunEvent::ExitRequested\s*\{\s*\.\.\s*\}\s*\|\s*tauri::RunEvent::Exit/s);
-  assert.match(tauriMainSource, /cleanup_managed_backend_processes\(app_handle\)/);
-  assert.match(tauriMainSource, /stop_managed_backend_child_process\(&backend_processes\)/);
-  assert.match(tauriMainSource, /stop_managed_backend_pty_process\(&backend_processes\)/);
+  assert.match(tauriMainSource, /\.run\(\|_?app_handle,\s*_?event\|/);
+  assert.doesNotMatch(tauriMainSource, /cleanup_managed_backend_processes/);
+  assert.doesNotMatch(tauriMainSource, /stop_managed_backend_child_process/);
+  assert.doesNotMatch(tauriMainSource, /stop_managed_backend_pty_process/);
 });
 
 test('desktop shell passes an app-scoped data directory to the backend', () => {
