@@ -46,6 +46,14 @@ CodeM 是一个面向本地编码 Agent 的桌面工作台。
 - 支持主题、强调色、窗口材质、界面密度和字体设置
 - 项目、线程、消息和工具调用会持久化到本机 SQLite
 
+## 下载
+
+最新稳定版可以从 [GitHub Releases](https://github.com/syscryer/codem/releases/latest) 下载。
+
+- 普通用户推荐选择 `with-node` 安装包，已经内置 Node.js，无需额外配置运行环境。
+- 已安装 Node.js 且希望减小安装包体积时，可以选择 `no-node` 安装包。
+- Windows 提供安装版和 `portable` 绿色版；macOS 提供 Apple Silicon 安装包；Linux 提供 AppImage、deb 和 rpm。
+
 ## 快速开始
 
 先确认本机至少安装了一个受支持的 Agent CLI。Claude Code 默认可用；Codex、Grok Build 与 OpenCode 需要在“Agent 与模型”中开启实验性 Agent 运行：
@@ -150,3 +158,7 @@ npm run package:all                 # 当前系统推荐目标
 - 行为提案与变更记录：`openspec/README.md`
 - 详细需求与演进路线：`requirements.md`
 - 后续开发路线图：`roadmap.md`
+
+## 开源协议
+
+CodeM 使用 [MIT License](LICENSE) 开源。
