@@ -9731,7 +9731,7 @@ body.git-history-resizing {
 
 .ordinary-model-trigger {
   min-width: 0;
-  max-width: min(220px, 38vw);
+  max-width: min(280px, 38vw);
   padding: 0 5px;
 }
 
@@ -12462,7 +12462,20 @@ button.git-conflict-overview-row:focus-visible,
   margin-bottom: 14px;
 }
 
+.agent-rules-filter-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.agent-rules-filter-row .agent-settings-provider-tabs {
+  margin-bottom: 0;
+}
+
 .agent-rules-scope-tabs {
+  flex: 0 0 auto;
   width: max-content;
 }
 
@@ -18941,33 +18954,48 @@ div[data-popover-portal] > * {
 
 .ai-manager-option-list {
   min-height: 34px;
-  padding: 3px;
   display: flex;
   flex-wrap: wrap;
-  gap: 3px;
-  border: 1px solid var(--app-border, #d9d9d9);
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--app-sidebar, #f5f4f1) 72%, var(--app-surface, #ffffff));
+  align-items: center;
+  gap: 6px;
 }
 
 .ai-manager-option-list button {
   min-width: 0;
-  min-height: 26px;
-  padding: 0 8px;
+  min-height: 34px;
+  padding: 0 10px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  border-color: transparent;
-  background: transparent;
+  border-color: var(--app-border, #d9d9d9);
+  background: var(--app-input-bg, var(--app-surface, #ffffff));
 }
 
 .ai-manager-option-list button:hover {
-  background: var(--app-hover, rgba(70, 70, 70, 0.07));
+  border-color: color-mix(in srgb, var(--accent, #2374c6) 36%, var(--app-border, #d9d9d9));
+  background: color-mix(in srgb, var(--accent, #2374c6) 5%, var(--app-surface, #ffffff));
 }
 
 .ai-manager-option-list button.active {
-  background: var(--app-surface, #ffffff);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--app-text, #262626) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #2374c6) 55%, var(--app-border, #d9d9d9));
+  background: color-mix(in srgb, var(--accent, #2374c6) 9%, var(--app-surface, #ffffff));
+  box-shadow: none;
+}
+
+.ai-manager-channel-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ai-manager-channel-options button {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ai-manager-protocol-options {
+  justify-content: flex-start;
 }
 
 .ai-manager-form-grid label > span {
@@ -19223,6 +19251,25 @@ div[data-popover-portal] > * {
 
 .ai-manager-template-links button:hover {
   background: color-mix(in srgb, var(--accent, #2374c6) 8%, transparent);
+}
+
+.ai-manager-connection-footer {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.ai-manager-connection-footer .ai-manager-template-links,
+.ai-manager-connection-footer .ai-manager-actions {
+  margin-top: 0;
+}
+
+.ai-manager-connection-footer .ai-manager-actions {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .ai-manager-protocols {

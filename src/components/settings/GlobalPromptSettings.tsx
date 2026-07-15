@@ -78,20 +78,22 @@ export function GlobalPromptSettingsSection({ defaultProviderId, projectPath }: 
         <h1>全局规则</h1>
       </header>
 
-      <AgentSettingsProviderTabs
-        value={providerId}
-        disabled={saveState === 'loading' || saveState === 'saving'}
-        onChange={(nextProviderId) => {
-          setProviderId(nextProviderId);
-          setPrompt(null);
-          setContent('');
-          setError('');
-        }}
-      />
+      <div className="agent-rules-filter-row">
+        <AgentSettingsProviderTabs
+          value={providerId}
+          disabled={saveState === 'loading' || saveState === 'saving'}
+          onChange={(nextProviderId) => {
+            setProviderId(nextProviderId);
+            setPrompt(null);
+            setContent('');
+            setError('');
+          }}
+        />
 
-      <div className="settings-segmented agent-rules-scope-tabs" aria-label="规则范围">
-        <button type="button" className={scope === 'global' ? 'active' : ''} onClick={() => setScope('global')}>用户级</button>
-        <button type="button" className={scope === 'project' ? 'active' : ''} disabled={!projectPath} onClick={() => setScope('project')}>项目级</button>
+        <div className="settings-segmented agent-rules-scope-tabs" aria-label="规则范围">
+          <button type="button" className={scope === 'global' ? 'active' : ''} onClick={() => setScope('global')}>用户级</button>
+          <button type="button" className={scope === 'project' ? 'active' : ''} disabled={!projectPath} onClick={() => setScope('project')}>项目级</button>
+        </div>
       </div>
 
       <div className="settings-panel settings-editor-panel">

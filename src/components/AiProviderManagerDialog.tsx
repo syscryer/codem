@@ -582,7 +582,7 @@ export function AiProviderSettingsPanel({
                       <div className="ai-manager-template-config wide">
                         <div className="ai-manager-template-field">
                           <span>渠道</span>
-                          <div className="ai-manager-option-list" role="radiogroup" aria-label="渠道">
+                          <div className="ai-manager-option-list ai-manager-channel-options" role="radiogroup" aria-label="渠道">
                             {activeChannels.map((channel) => (
                               <button
                                 key={channel.id}
@@ -599,7 +599,7 @@ export function AiProviderSettingsPanel({
                         </div>
                         <div className="ai-manager-template-field">
                           <span>接口类型</span>
-                          <div className="ai-manager-option-list" role="radiogroup" aria-label="接口类型">
+                          <div className="ai-manager-option-list ai-manager-protocol-options" role="radiogroup" aria-label="接口类型">
                             {activeChannelTemplates.map((template) => (
                               <button
                                 key={template.id}
@@ -644,25 +644,26 @@ export function AiProviderSettingsPanel({
                       </div>
                     </label>
                   </div>
-                  {activeTemplate ? (
-                    <div className="ai-manager-template-links">
-                      <button type="button" onClick={() => void openExternalUrl(activeTemplate.apiKeyUrl)}>
-                        <KeyRound size={13} />获取 API Key<ExternalLink size={12} />
-                      </button>
-                      <button type="button" onClick={() => void openExternalUrl(activeTemplate.docsUrl)}>
-                        查看接口文档<ExternalLink size={12} />
-                      </button>
+                  <div className={activeTemplate ? 'ai-manager-connection-footer' : undefined}>
+                    {activeTemplate ? (
+                      <div className="ai-manager-template-links">
+                        <button type="button" onClick={() => void openExternalUrl(activeTemplate.apiKeyUrl)}>
+                          <KeyRound size={13} />获取 API Key<ExternalLink size={12} />
+                        </button>
+                        <button type="button" onClick={() => void openExternalUrl(activeTemplate.docsUrl)}>
+                          查看接口文档<ExternalLink size={12} />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="ai-manager-protocols" role="radiogroup" aria-label="API 协议">
+                        {protocolOptions.map((option) => (
+                          <button key={option.value} type="button" role="radio" aria-checked={draft.protocol === option.value} className={draft.protocol === option.value ? 'active' : ''} onClick={() => setDraft({ ...draft, protocol: option.value })}>{option.label}</button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="ai-manager-actions">
+                      <button type="button" className="secondary" disabled={Boolean(busy)} onClick={() => void testCurrentProvider()}>{busy === 'test' ? <Loader2 size={14} className="spin-icon" /> : <Check size={14} />}测试连接</button>
                     </div>
-                  ) : null}
-                  {!activeTemplate ? (
-                    <div className="ai-manager-protocols" role="radiogroup" aria-label="API 协议">
-                      {protocolOptions.map((option) => (
-                        <button key={option.value} type="button" role="radio" aria-checked={draft.protocol === option.value} className={draft.protocol === option.value ? 'active' : ''} onClick={() => setDraft({ ...draft, protocol: option.value })}>{option.label}</button>
-                      ))}
-                    </div>
-                  ) : null}
-                  <div className="ai-manager-actions">
-                    <button type="button" className="secondary" disabled={Boolean(busy)} onClick={() => void testCurrentProvider()}>{busy === 'test' ? <Loader2 size={14} className="spin-icon" /> : <Check size={14} />}测试连接</button>
                   </div>
                   {testMessage ? <div className="ai-manager-success">{testMessage}</div> : null}
                   {error ? <div className="assistant-runtime-error">{error}</div> : null}
