@@ -85,6 +85,72 @@ test('removeProject deletes imported Claude transcripts and keeps workspace clea
   }
 });
 
+test('getWorkspaceBootstrap skips imported sessions whose cwd is not a directory', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-projects-'));
+  const appData = path.join(root, 'appdata');
+  const cwdFile = path.join(root, 'not-a-directory.txt');
+  const claudeProjectDir = path.join(root, '.claude', 'projects', 'bad-cwd-project');
+  const transcriptPath = path.join(claudeProjectDir, 'session-bad-cwd.jsonl');
+
+  try {
+    mkdirSync(claudeProjectDir, { recursive: true });
+    writeFileSync(cwdFile, 'not a project directory\n', 'utf8');
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          sessionId: 'session-bad-cwd',
+          cwd: cwdFile,
+          timestamp: '2026-07-06T04:00:00.000Z',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'hello bad cwd' }],
+          },
+        }),
+      ].join('\n'),
+      'utf8',
+    );
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          const { getWorkspaceBootstrap } = await import('./server/lib/workspace-store.ts');
+          const workspace = getWorkspaceBootstrap();
+          console.log(JSON.stringify({
+            projectCount: workspace.projects.length,
+            activeProjectId: workspace.activeProjectId,
+            activeThreadId: workspace.activeThreadId,
+          }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCALAPPDATA: appData,
+          APPDATA: '',
+          USERPROFILE: root,
+        },
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    assert.deepEqual(JSON.parse(child.stdout.trim()), {
+      projectCount: 0,
+      activeProjectId: null,
+      activeThreadId: null,
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('getWorkspaceBootstrap keeps stored imported sessions visible when transcript is missing', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'codem-workspace-projects-'));
   const appData = path.join(root, 'appdata');

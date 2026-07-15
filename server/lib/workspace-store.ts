@@ -589,6 +589,14 @@ const EMPTY_GIT_DIFF: GitDiffSummary = {
 };
 const GIT_COMMAND_TIMEOUT_MS = 3000;
 
+function createEmptyGitInfo(): GitInfo {
+  return {
+    isGitRepo: false,
+    branch: undefined,
+    diff: EMPTY_GIT_DIFF,
+  };
+}
+
 const APP_DIR = resolveAppDirectory();
 const DATABASE_PATH = path.join(APP_DIR, 'codem.sqlite');
 const db = new DatabaseSync(DATABASE_PATH);
@@ -596,7 +604,11 @@ const db = new DatabaseSync(DATABASE_PATH);
 initializeDatabase();
 
 export function getWorkspaceBootstrap(): WorkspaceBootstrap {
-  importClaudeSessions();
+  try {
+    importClaudeSessions();
+  } catch (error) {
+    logWorkspaceStoreWarning('导入 Claude Code 会话失败，已继续加载本地会话列表', error);
+  }
 
   const panelState = readPanelState();
   const settings = getAppSettings();
@@ -2493,13 +2505,13 @@ function importClaudeSessions() {
     return;
   }
 
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
+  for (const entry of safeReadDirectoryEntries(root, '读取 Claude Code 项目目录失败')) {
     if (!entry.isDirectory()) {
       continue;
     }
 
     const directory = path.join(root, entry.name);
-    for (const fileEntry of readdirSync(directory, { withFileTypes: true })) {
+    for (const fileEntry of safeReadDirectoryEntries(directory, '读取 Claude Code 会话目录失败')) {
       if (!fileEntry.isFile() || !fileEntry.name.endsWith('.jsonl')) {
         continue;
       }
@@ -2508,18 +2520,36 @@ function importClaudeSessions() {
       }
 
       const transcriptPath = path.join(directory, fileEntry.name);
-      const metadata = readClaudeSessionMetadata(transcriptPath);
-      if (!metadata?.cwd || !existsSync(metadata.cwd)) {
-        continue;
-      }
-      if (isIgnoredImportedSession(metadata.sessionId)) {
-        continue;
-      }
+      try {
+        const metadata = readClaudeSessionMetadata(transcriptPath);
+        if (!metadata?.cwd || !isExistingDirectory(metadata.cwd)) {
+          continue;
+        }
+        if (isIgnoredImportedSession(metadata.sessionId)) {
+          continue;
+        }
 
-      const projectId = upsertImportedProject(metadata.cwd, metadata.updatedAt);
-      upsertImportedThread(projectId, metadata);
+        const projectId = upsertImportedProject(metadata.cwd, metadata.updatedAt);
+        upsertImportedThread(projectId, metadata);
+      } catch (error) {
+        logWorkspaceStoreWarning(`跳过异常 Claude Code 会话：${transcriptPath}`, error);
+      }
     }
   }
+}
+
+function safeReadDirectoryEntries(directory: string, failureMessage: string) {
+  try {
+    return readdirSync(directory, { withFileTypes: true });
+  } catch (error) {
+    logWorkspaceStoreWarning(`${failureMessage}：${directory}`, error);
+    return [];
+  }
+}
+
+function logWorkspaceStoreWarning(message: string, error: unknown) {
+  const detail = error instanceof Error ? error.message : String(error);
+  console.warn(`[codem:workspace] ${message}${detail ? `：${detail}` : ''}`);
 }
 
 function isIgnoredImportedSession(sessionId: string) {
@@ -3748,42 +3778,39 @@ function readProjectPath(projectId: string) {
 }
 
 function readGitInfo(projectPath: string, includeDiff = false): GitInfo {
-  if (!existsSync(projectPath)) {
+  try {
+    if (!isExistingDirectory(projectPath)) {
+      return createEmptyGitInfo();
+    }
+
+    const workTreeCheck = childProcess.spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: projectPath,
+      encoding: 'utf8',
+      timeout: GIT_COMMAND_TIMEOUT_MS,
+      windowsHide: true,
+    });
+
+    if (workTreeCheck.status !== 0 || (workTreeCheck.stdout ?? '').trim() !== 'true') {
+      return createEmptyGitInfo();
+    }
+
+    const branchResult = childProcess.spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: projectPath,
+      encoding: 'utf8',
+      timeout: GIT_COMMAND_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    const branch = branchResult.status === 0 ? (branchResult.stdout ?? '').trim() || 'HEAD' : 'HEAD';
+
     return {
-      isGitRepo: false,
-      branch: undefined,
-      diff: EMPTY_GIT_DIFF,
+      isGitRepo: true,
+      branch,
+      diff: includeDiff ? readGitDiff(projectPath) : EMPTY_GIT_DIFF,
     };
+  } catch (error) {
+    logWorkspaceStoreWarning(`读取项目 Git 摘要失败：${projectPath}`, error);
+    return createEmptyGitInfo();
   }
-
-  const workTreeCheck = childProcess.spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
-    cwd: projectPath,
-    encoding: 'utf8',
-    timeout: GIT_COMMAND_TIMEOUT_MS,
-    windowsHide: true,
-  });
-
-  if (workTreeCheck.status !== 0 || workTreeCheck.stdout.trim() !== 'true') {
-    return {
-      isGitRepo: false,
-      branch: undefined,
-      diff: EMPTY_GIT_DIFF,
-    };
-  }
-
-  const branchResult = childProcess.spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-    cwd: projectPath,
-    encoding: 'utf8',
-    timeout: GIT_COMMAND_TIMEOUT_MS,
-    windowsHide: true,
-  });
-  const branch = branchResult.status === 0 ? branchResult.stdout.trim() || 'HEAD' : 'HEAD';
-
-  return {
-    isGitRepo: true,
-    branch,
-    diff: includeDiff ? readGitDiff(projectPath) : EMPTY_GIT_DIFF,
-  };
 }
 
 function readGitDiff(projectPath: string): GitDiffSummary {
@@ -3799,13 +3826,13 @@ function readGitDiff(projectPath: string): GitDiffSummary {
   });
   const diffOutput =
     diffResult.status === 0
-      ? diffResult.stdout
+      ? diffResult.stdout ?? ''
       : childProcess.spawnSync('git', ['diff', '--numstat', '--'], {
           cwd: projectPath,
           encoding: 'utf8',
           timeout: GIT_COMMAND_TIMEOUT_MS,
           windowsHide: true,
-        }).stdout;
+        }).stdout ?? '';
 
   for (const line of diffOutput.split(/\r?\n/)) {
     if (!line.trim()) {
@@ -3870,6 +3897,14 @@ function readUntrackedFiles(projectPath: string) {
   }
 
   return result.stdout.split('\0').filter(Boolean);
+}
+
+function isExistingDirectory(targetPath: string) {
+  try {
+    return statSync(targetPath).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 async function readGitInfoAsync(projectPath: string, includeDiff = false): Promise<GitInfo> {

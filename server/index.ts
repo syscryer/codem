@@ -412,7 +412,12 @@ app.get('/api/slash-commands', (request, response) => {
 });
 
 app.get('/api/workspace/bootstrap', (_request, response) => {
-  response.json(getWorkspaceBootstrap());
+  try {
+    response.json(getWorkspaceBootstrap());
+  } catch (error) {
+    console.error('加载工作区失败', error);
+    response.status(500).send(error instanceof Error ? error.message : '加载工作区失败');
+  }
 });
 
 app.post('/api/workspace/selection', (request, response) => {

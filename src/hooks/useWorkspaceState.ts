@@ -130,6 +130,7 @@ export function useWorkspaceState() {
           }
           if (delayMs === retryDelaysMs[retryDelaysMs.length - 1]) {
             console.error('加载工作区失败', error);
+            showToast(`加载会话列表失败：${error instanceof Error ? error.message : '请查看后端日志'}`, 'error', 6000);
           }
         }
       }
@@ -190,7 +191,7 @@ export function useWorkspaceState() {
   async function loadWorkspace() {
     const response = await fetch('/api/workspace/bootstrap');
     if (!response.ok) {
-      throw new Error((await response.text()) || '加载工作区失败');
+      throw new Error(normalizeWorkspaceLoadErrorText(await response.text()) || '加载工作区失败');
     }
     const payload = (await response.json()) as WorkspaceBootstrap;
     syncWorkspace(payload);
@@ -1504,6 +1505,23 @@ function flushPersistThreadHistory(
 }
 
 type CloneFailure = Error & { rawLog?: string };
+
+function normalizeWorkspaceLoadErrorText(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  try {
+    const payload = JSON.parse(trimmed) as { error?: unknown };
+    if (typeof payload.error === 'string' && payload.error.trim()) {
+      return payload.error.trim();
+    }
+  } catch {}
+
+  const withoutHtmlTags = trimmed.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return withoutHtmlTags.length > 320 ? `${withoutHtmlTags.slice(0, 320)}...` : withoutHtmlTags;
+}
 
 async function readCloneError(response: Response): Promise<CloneFailure> {
   const contentType = response.headers.get('content-type') ?? '';
