@@ -50,6 +50,9 @@ Out of scope:
 
 ## Verification Results
 
+- 2026-07-15T06:51:18.778Z `GitHub Release v0.1.10 assets`: 通过：Windows portable/EXE/MSI、macOS、Linux、updater 签名、latest.json、SHA256SUMS 和源码包均已生成。
+- 2026-07-15T06:51:18.007Z `GitHub Actions run 29394671337`: 通过：Windows、macOS、Linux 构建及 Publish GitHub Release 全部 success。
+
 - 2026-07-15T06:33:54.243Z `git diff --check`: 通过：无 whitespace 错误，仅有 Windows LF/CRLF 提示。
 - 2026-07-15T06:33:53.346Z `npm run package:doctor`: 通过：发布环境检查 Doctor: OK。
 
@@ -57,6 +60,8 @@ Out of scope:
 - 2026-07-15T06:33:51.152Z `node --test scripts/release-workflow.test.mjs`: 通过：Windows portable 仅打包 Rust CodeM.exe，workflow 不再引用 _up_。
 
 ## Completion Summary
+
+- 2026-07-15T06:51:19.540Z v0.1.10 已基于 GitHub main 成功发布；Windows portable 不再依赖旧 _up_，各平台安装包、签名、latest.json 和校验文件齐全。
 - 2026-07-15T06:33:55.280Z 修复 Rust 版 Windows portable 发布：移除旧 _up_ sidecar 依赖，README 对齐 Rust 单包架构，新增 workflow 回归测试；本地验证全部通过。
 
 ## Follow-ups
