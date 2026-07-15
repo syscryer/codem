@@ -326,7 +326,7 @@ export default function App() {
     const activeThreadIdSnapshot = activeThreadIdRef.current;
 
     setThreadActivityNotices((current) =>
-      upsertThreadActivityNotice(current, notice, activeThreadIdSnapshot),
+      upsertThreadActivityNotice(current, notice, activeThreadIdSnapshot, windowFocused),
     );
 
     if (
@@ -928,19 +928,6 @@ export default function App() {
     setAppView({ kind: 'workspace' });
     setThreadActivityNotices((current) => clearThreadActivityNotice(current, threadId));
     await selectThread(projectId, threadId);
-  }
-
-  async function handleSelectProject(projectId: string) {
-    const nextLocation: AppLocation = { kind: 'workspace', projectId, threadId: null };
-    if (!isSameAppLocation(currentAppLocation, nextLocation)) {
-      rememberCurrentLocation();
-    }
-    setAppView({ kind: 'workspace' });
-    if (isNewChatDraft) {
-      await enterNewChatDraft(projectId);
-      return;
-    }
-    await selectProject(projectId);
   }
 
   async function handleSelectOrdinaryChat(chatId: string) {
@@ -1711,7 +1698,6 @@ export default function App() {
             <SidebarProjects
               activeProjectId={appView.kind === 'workspace' ? activeProjectId : null}
               activeThreadId={appView.kind === 'workspace' ? activeThreadId : null}
-              isNewChatDraft={appView.kind === 'workspace' && isNewChatDraft}
               activeOrdinaryChatId={appView.kind === 'ordinary-chat' ? ordinaryChat.activeChatId : null}
               ordinaryChatIsDraft={appView.kind === 'ordinary-chat' && ordinaryChat.isNewChatDraft}
               ordinaryChats={ordinaryChat.chats}
@@ -1750,7 +1736,6 @@ export default function App() {
               onOpenRenameProjectDialog={openRenameProjectDialog}
               onOpenRemoveProjectDialog={openRemoveProjectDialog}
               onToggleProjectCollapse={toggleProjectCollapse}
-              onSelectProject={handleSelectProject}
               onSelectThread={handleSelectThread}
               onOpenRenameThreadDialog={openRenameThreadDialog}
               onCopySessionId={handleCopySessionId}
@@ -1816,6 +1801,7 @@ export default function App() {
                 isNewChatDraft={isNewChatDraft}
                 activeProject={activeProject}
                 activeProjectName={activeProject?.name}
+                providerId={activeProviderId}
                 collapseIntermediateProcess={general.collapseIntermediateProcess}
                 clockNowMs={clockNowMs}
                 isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}

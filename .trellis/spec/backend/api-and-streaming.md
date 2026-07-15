@@ -3,12 +3,14 @@
 ## 核心原则
 
 - frontend 只消费稳定 event contract
-- backend 内部怎么调用 Claude Code CLI，可以演进；但 `/api/claude/run` 的事件语义不要轻易漂移
+- Rust backend 内部怎么调用各 Agent CLI 可以演进；但 Agent 和普通聊天已经公开的事件语义不要轻易漂移
 - 热会话复用是优先路径；遇到人工输入节点时应先保留可写 runtime，通过 tool result 写回决策，只有 runtime 不可写时才用 `sessionId` 冷恢复
+- `backend.rs` 负责路由和通用 API，Agent 状态机放在 `agent_run.rs` / `agent_runtime.rs`，协议适配放在 `acp.rs` / `codex_app_server.rs`，普通聊天运行链保持在 `ordinary_chat/`
 
 ## 约束
 
 - 新增 event type 时，必须同时检查 frontend `useClaudeRun`
+- 普通聊天 event 变更必须同时检查 `useOrdinaryChat`，不能借用 Agent runtime 掩盖协议差异
 - 修改现有 event 字段名时，必须列出受影响分支：
   - status
   - phase

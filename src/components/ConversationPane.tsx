@@ -28,6 +28,7 @@ type ConversationPaneProps = {
   isNewChatDraft: boolean;
   activeProject: ProjectSummary | null;
   activeProjectName?: string;
+  providerId?: string;
   emptyDraftTitle?: string;
   emptyDraftDescription?: string;
   emptyDraftActionLabel?: string;
@@ -78,6 +79,7 @@ export function ConversationPane({
   isNewChatDraft,
   activeProject,
   activeProjectName,
+  providerId,
   emptyDraftTitle,
   emptyDraftDescription,
   emptyDraftActionLabel,
@@ -280,6 +282,7 @@ export function ConversationPane({
                 previousTurns={previousTurns}
                 canUndoChangedFiles={canUndoChangedFiles}
                 activeProject={activeProject}
+                providerId={providerId}
                 collapseIntermediateProcess={collapseIntermediateProcess}
                 thinkingLabel={thinkingLabel}
                 onOpenWorkbenchPreview={stableOpenWorkbenchPreview}

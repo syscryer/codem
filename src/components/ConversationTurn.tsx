@@ -36,6 +36,7 @@ import {
   shouldHideToolStep,
   summarizeToolRow,
 } from '../lib/conversation';
+import { CLAUDE_CODE_PROVIDER_ID } from '../constants';
 import { buildAgentTaskPreview, isAgentTaskToolName, type AgentTaskPreviewData } from '../lib/agent-task-preview';
 import {
   buildChangedFileReviewRequest,
@@ -77,6 +78,7 @@ function ConversationTurnViewComponent({
   previousTurns,
   canUndoChangedFiles,
   activeProject,
+  providerId,
   collapseIntermediateProcess,
   thinkingLabel,
   onOpenWorkbenchPreview,
@@ -97,6 +99,7 @@ function ConversationTurnViewComponent({
   previousTurns: ConversationTurn[];
   canUndoChangedFiles: boolean;
   activeProject: ProjectSummary | null;
+  providerId?: string;
   collapseIntermediateProcess: boolean;
   thinkingLabel: string;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
@@ -256,6 +259,7 @@ function ConversationTurnViewComponent({
               items={intermediateItems}
               turn={turn}
               turnInFlight={running}
+              providerId={providerId}
               requestCardsByToolId={requestCardsByToolId}
               onOpenWorkbenchPreview={onOpenWorkbenchPreview}
               onSubmitRequestUserInput={onSubmitRequestUserInput}
@@ -269,6 +273,7 @@ function ConversationTurnViewComponent({
               item,
               turn,
               turnInFlight: running,
+              providerId,
               requestCardsByToolId,
               onOpenWorkbenchPreview,
               onSubmitRequestUserInput,
@@ -326,6 +331,7 @@ function ConversationTurnViewComponent({
                 request={request}
                 turn={turn}
                 turnInFlight={running}
+                providerId={providerId}
                 onSubmitRequestUserInput={onSubmitRequestUserInput}
               />
             );
@@ -691,6 +697,7 @@ type AssistantItemRenderProps = {
   item: DisplayAssistantItem;
   turn: ConversationTurn;
   turnInFlight: boolean;
+  providerId?: string;
   requestCardsByToolId: Map<string, RequestUserInputRequest>;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onSubmitRequestUserInput: (
@@ -710,6 +717,7 @@ function IntermediateProcessBody({
   items,
   turn,
   turnInFlight,
+  providerId,
   requestCardsByToolId,
   onOpenWorkbenchPreview,
   onSubmitRequestUserInput,
@@ -724,6 +732,7 @@ function IntermediateProcessBody({
         item,
         turn,
         turnInFlight,
+        providerId,
         requestCardsByToolId,
         onOpenWorkbenchPreview,
         onSubmitRequestUserInput,
@@ -738,6 +747,7 @@ function renderAssistantItem({
   item,
   turn,
   turnInFlight,
+  providerId,
   requestCardsByToolId,
   onOpenWorkbenchPreview,
   onSubmitRequestUserInput,
@@ -772,6 +782,7 @@ function renderAssistantItem({
       tool={item.tool}
       turn={turn}
       turnInFlight={turnInFlight}
+      providerId={providerId}
       requestCardsByToolId={requestCardsByToolId}
       onOpenWorkbenchPreview={onOpenWorkbenchPreview}
       onSubmitRequestUserInput={onSubmitRequestUserInput}
@@ -841,6 +852,7 @@ function ToolItemWithAnchoredCards({
   tool,
   turn,
   turnInFlight,
+  providerId,
   requestCardsByToolId,
   onOpenWorkbenchPreview,
   onSubmitRequestUserInput,
@@ -848,6 +860,7 @@ function ToolItemWithAnchoredCards({
   tool: ToolStep;
   turn: ConversationTurn;
   turnInFlight: boolean;
+  providerId?: string;
   requestCardsByToolId: Map<string, RequestUserInputRequest>;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onSubmitRequestUserInput: (
@@ -868,6 +881,7 @@ function ToolItemWithAnchoredCards({
           request={request}
           turn={turn}
           turnInFlight={turnInFlight}
+          providerId={providerId}
           onSubmitRequestUserInput={onSubmitRequestUserInput}
         />
       ) : null}
@@ -1902,11 +1916,13 @@ function RequestUserInputCard({
   request,
   turn,
   turnInFlight,
+  providerId,
   onSubmitRequestUserInput,
 }: {
   request: RequestUserInputRequest;
   turn: ConversationTurn;
   turnInFlight: boolean;
+  providerId?: string;
   onSubmitRequestUserInput: (
     turn: ConversationTurn,
     request: RequestUserInputRequest,
@@ -1914,23 +1930,18 @@ function RequestUserInputCard({
   ) => Promise<boolean>;
 }) {
   const submitted = Boolean(request.submittedAnswers);
-  const [selectedOptions, setSelectedOptions] = useState<Record<string, number[]>>(() =>
-    getRequestUserInputSelectionsFromAnswers(request),
-  );
-  const [notes, setNotes] = useState<Record<string, string>>(() =>
-    getRequestUserInputNotesFromAnswers(request),
-  );
+  const [draft, setDraft] = useState<RequestUserInputDraft>(() => getRequestUserInputDraft(request));
   const [submitError, setSubmitError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const readyToSubmit = !turnInFlight || Boolean(request.readyAtMs);
+  const { selectedOptions, notes } = draft;
 
   useEffect(() => {
     if (!request.submittedAnswers) {
       return;
     }
 
-    setSelectedOptions(getRequestUserInputSelectionsFromAnswers(request));
-    setNotes(getRequestUserInputNotesFromAnswers(request));
+    setDraft(getRequestUserInputDraft(request));
   }, [request]);
 
   const canSubmit = request.questions.some((question, index) => {
@@ -1982,13 +1993,14 @@ function RequestUserInputCard({
           <RequestUserInputQuestionBlock
             key={question.id ?? `${request.requestId ?? 'request'}-question-${index}`}
             question={question}
+            providerId={providerId}
             questionKey={question.id ?? `question-${index}`}
             selectedOptions={selectedOptions[question.id ?? `question-${index}`] ?? []}
             note={notes[question.id ?? `question-${index}`] ?? ''}
             disabled={submitted || submitting}
             onToggleOption={(optionIndex) =>
-              setSelectedOptions((current) =>
-                updateQuestionSelections(
+              setDraft((current) =>
+                updateRequestUserInputSelection(
                   current,
                   question.id ?? `question-${index}`,
                   optionIndex,
@@ -1997,10 +2009,14 @@ function RequestUserInputCard({
               )
             }
             onNoteChange={(value) =>
-              setNotes((current) => ({
-                ...current,
-                [question.id ?? `question-${index}`]: value,
-              }))
+              setDraft((current) =>
+                updateRequestUserInputNote(
+                  current,
+                  question.id ?? `question-${index}`,
+                  value,
+                  Boolean(question.multiSelect),
+                ),
+              )
             }
           />
         ))}
@@ -2038,6 +2054,7 @@ function RequestUserInputCard({
 
 function RequestUserInputQuestionBlock({
   question,
+  providerId,
   questionKey,
   selectedOptions,
   note,
@@ -2046,6 +2063,7 @@ function RequestUserInputQuestionBlock({
   onNoteChange,
 }: {
   question: RequestUserInputQuestion;
+  providerId?: string;
   questionKey: string;
   selectedOptions: number[];
   note: string;
@@ -2053,8 +2071,8 @@ function RequestUserInputQuestionBlock({
   onToggleOption: (optionIndex: number) => void;
   onNoteChange: (value: string) => void;
 }) {
-  const hint = getRequestQuestionHint(question);
-  const showTextarea = !question.options?.length || question.isOther;
+  const hint = getRequestQuestionHint(question, providerId);
+  const showTextarea = shouldShowRequestUserInputTextarea(question, providerId);
 
   return (
     <section className="assistant-runtime-question">
@@ -2081,7 +2099,7 @@ function RequestUserInputQuestionBlock({
           value={note}
           onChange={(event) => onNoteChange(event.target.value)}
           disabled={disabled}
-          placeholder={question.placeholder || '填写你的回答'}
+          placeholder={question.placeholder || (question.options?.length ? '自定义回答' : '填写你的回答')}
           rows={question.options?.length ? 2 : 3}
           aria-label={questionKey}
         />
@@ -3340,7 +3358,7 @@ function getTodoWriteVisibleResult(resultText?: string) {
   return text;
 }
 
-function getRequestQuestionHint(question: RequestUserInputQuestion) {
+function getRequestQuestionHint(question: RequestUserInputQuestion, providerId?: string) {
   const hints: string[] = [];
   if (question.multiSelect) {
     hints.push('可多选');
@@ -3354,8 +3372,8 @@ function getRequestQuestionHint(question: RequestUserInputQuestion) {
 
   if (!question.options?.length) {
     hints.push(question.placeholder || '文本回答');
-  } else if (question.isOther) {
-    hints.push(question.placeholder || '可补充备注');
+  } else if (shouldShowRequestUserInputTextarea(question, providerId)) {
+    hints.push(question.placeholder || '可自定义回答');
   }
 
   return hints.join(' · ');
@@ -3601,6 +3619,61 @@ function updateQuestionSelections(
   };
 }
 
+export function shouldShowRequestUserInputTextarea(
+  question: RequestUserInputQuestion,
+  providerId?: string,
+) {
+  return !question.options?.length || question.isOther === true || providerId === CLAUDE_CODE_PROVIDER_ID;
+}
+
+export type RequestUserInputDraft = {
+  selectedOptions: Record<string, number[]>;
+  notes: Record<string, string>;
+};
+
+export function updateRequestUserInputSelection(
+  draft: RequestUserInputDraft,
+  questionKey: string,
+  optionIndex: number,
+  multiSelect: boolean,
+): RequestUserInputDraft {
+  return {
+    selectedOptions: updateQuestionSelections(
+      draft.selectedOptions,
+      questionKey,
+      optionIndex,
+      multiSelect,
+    ),
+    notes: multiSelect
+      ? draft.notes
+      : {
+          ...draft.notes,
+          [questionKey]: '',
+        },
+  };
+}
+
+export function updateRequestUserInputNote(
+  draft: RequestUserInputDraft,
+  questionKey: string,
+  value: string,
+  multiSelect: boolean,
+): RequestUserInputDraft {
+  return {
+    selectedOptions:
+      !multiSelect && value.trim()
+        ? {
+            ...draft.selectedOptions,
+            [questionKey]: [],
+          }
+        : draft.selectedOptions,
+    notes: {
+      ...draft.notes,
+      [questionKey]: value,
+    },
+  };
+}
+
 function validateRequestUserInput(
   request: RequestUserInputRequest,
   selectedOptions: Record<string, number[]>,
@@ -3626,7 +3699,7 @@ function validateRequestUserInput(
   return '';
 }
 
-function buildRequestUserInputAnswers(
+export function buildRequestUserInputAnswers(
   request: RequestUserInputRequest,
   selectedOptions: Record<string, number[]>,
   notes: Record<string, string>,
@@ -3647,6 +3720,13 @@ function buildRequestUserInputAnswers(
     }
   });
   return answers;
+}
+
+export function getRequestUserInputDraft(request: RequestUserInputRequest): RequestUserInputDraft {
+  return {
+    selectedOptions: getRequestUserInputSelectionsFromAnswers(request),
+    notes: getRequestUserInputNotesFromAnswers(request),
+  };
 }
 
 function getRequestUserInputSelectionsFromAnswers(request: RequestUserInputRequest) {

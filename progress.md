@@ -503,3 +503,26 @@
 - 最终门禁全部通过：`cargo fmt --check`、`cargo check --bin codem-backend`、Rust lib 106/106（另 1 个需真实 Grok 登录的 smoke 按设计忽略）、TypeScript、前端 458/458、生产构建和 `git diff --check`。
 - 已删除 CodeM 联调线程 `14f16d41-...` 和 OpenCode session `ses_09dc...`；复核 thread/runtime/session 均不存在。外部 OMO 重复插件警告仍按任务边界不修改用户配置。
 - 提交前扫描 34 个拟提交文件；未发现真实 API Key、Bearer、私钥、AWS Key 或完整 OpenCode session id。唯一命中是脱敏回归测试中的固定哨兵 `must-not-survive`，不是凭据。
+
+## 2026-07-15 遗留 Node 后端清理
+
+- 用户确认清理已退出运行与发布主线的 Node 后端。
+- 已读取 README、Trellis workflow、前后端规范入口、跨层/重构/复用指南和文件规划技能。
+- 已启动 Trellis session `session-20260715-065111-73bk`，任务为 `.trellis/tasks/remove-legacy-node-backend.md`。
+- 已确认当前未提交的失焦完成提示修复与 Node 清理文件无直接重叠，`CONTEXT.md` 保持不动。
+- 已完成第一轮引用盘点：Node 目录 38 个文件，当前启动/发布链路均为 Rust；少量活动测试与 spike 仍读取旧源码，需先迁移再删除。
+- 第一次多文件规划补丁因 `findings.md` 尾部上下文漂移整体失败，没有产生文件变化；已改为精确尾部的小补丁。
+- 当前进入阶段 1：核对活动引用与 Rust 对等实现。
+- 已确认 Rust 对等路由完整存在；测试迁移策略是不保留跨语言源码正则断言，后端行为由 Rust 测试负责，前端只保留自身 helper/交互测试。
+- 旧引用基线测试 35/35 通过；阶段 1 完成，进入阶段 2 测试与脚本迁移。
+- 新增 Rust workspace 路径与 slash command 目录行为测试；首次定向执行时误传两个 Cargo 过滤参数，命令被 Cargo 拒绝且未运行测试，已改为分别执行。
+- Rust workspace 定向测试 3/3、slash command 目录测试 1/1 通过。
+- 已删除 `server/**` 38 个旧 Node 文件、两个 Node 专属测试和 slash commands spike 脚本；空目录也已移除。
+- 已保留纯前端/session helper 测试并移除 Node 源码正则断言，相关定向 TypeScript 测试 44/44 通过。
+- README、CLAUDE、AGENTS、Trellis workflow/backend spec 已统一为 Rust/Axum/Tokio/rusqlite 当前架构；活动代码和现行文档不再引用旧 Node 实现。
+- 阶段 2 至 4 完成，开始全量验证与运行健康检查。
+- 首轮全量 TypeScript 测试 536/538 通过；失败的两条是 `20e13da` 已移除 Git diff badge secondary 字段后遗漏的旧断言，与 Node 清理无关，已按当前 UI 契约删除过期断言。
+- 依赖审计确认 `concurrently` 和顶层 `esbuild` 无当前脚本引用，已从直接开发依赖移除并更新 lockfile，共移除 26 个不再需要的安装包。
+- 最终门禁通过：Rust fmt；Rust lib 109/109、1 个真实 Grok smoke 按设计忽略、desktop 9/9；TypeScript 538/538；typecheck；生产构建；`git diff --check`。
+- 运行健康检查通过：Rust backend 3001 返回 200，Web 5173 返回 200；现有桌面进程未重启，因为本次未修改运行时代码。
+- 最终保护核对：`server` 目录不存在、38 个旧后端文件处于删除状态、`CONTEXT.md` 仍存在、原有失焦完成提示改动保留、暂存区为空。

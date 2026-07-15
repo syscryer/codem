@@ -8,6 +8,14 @@ import {
   upsertSubagentText,
   upsertToolDelta,
 } from './conversation.js';
+import {
+  buildRequestUserInputAnswers,
+  getRequestUserInputDraft,
+  shouldShowRequestUserInputTextarea,
+  updateRequestUserInputNote,
+  updateRequestUserInputSelection,
+} from '../components/ConversationTurn.js';
+import { CLAUDE_CODE_PROVIDER_ID, OPENCODE_PROVIDER_ID } from '../constants.js';
 import type { ConversationTurn } from '../types.js';
 
 test('normalizeSubagentMessages keeps recent bounded content', () => {
@@ -132,4 +140,83 @@ test('mergeUsageSnapshot keeps the previous context usage when a stream frame re
   assert.equal(patch.outputTokens, 211);
   assert.equal(patch.cacheCreationInputTokens, 43_113);
   assert.equal(patch.cacheReadInputTokens, 0);
+});
+
+test('single-select custom answers and preset options stay mutually exclusive', () => {
+  const initial = {
+    selectedOptions: { framework: [0] },
+    notes: { framework: '' },
+  };
+
+  const custom = updateRequestUserInputNote(initial, 'framework', 'Svelte', false);
+  assert.deepEqual(custom, {
+    selectedOptions: { framework: [] },
+    notes: { framework: 'Svelte' },
+  });
+
+  const selected = updateRequestUserInputSelection(custom, 'framework', 1, false);
+  assert.deepEqual(selected, {
+    selectedOptions: { framework: [1] },
+    notes: { framework: '' },
+  });
+});
+
+test('multi-select answers combine preset options with custom text', () => {
+  const request = {
+    questions: [
+      {
+        id: 'framework',
+        question: '选择框架',
+        options: [{ label: 'React' }, { label: 'Vue' }],
+        multiSelect: true,
+      },
+    ],
+  };
+  const draft = updateRequestUserInputNote(
+    {
+      selectedOptions: { framework: [0, 1] },
+      notes: { framework: '' },
+    },
+    'framework',
+    'Svelte',
+    true,
+  );
+
+  assert.deepEqual(draft.selectedOptions.framework, [0, 1]);
+  assert.deepEqual(buildRequestUserInputAnswers(request, draft.selectedOptions, draft.notes), {
+    framework: 'React\nVue\nSvelte',
+  });
+});
+
+test('submitted custom answers restore alongside selected options', () => {
+  const draft = getRequestUserInputDraft({
+    questions: [
+      {
+        id: 'framework',
+        question: '选择框架',
+        options: [{ label: 'React' }, { label: 'Vue' }],
+        multiSelect: true,
+      },
+    ],
+    submittedAnswers: {
+      framework: 'React\nSvelte',
+    },
+  });
+
+  assert.deepEqual(draft, {
+    selectedOptions: { framework: [0] },
+    notes: { framework: 'Svelte' },
+  });
+});
+
+test('custom answer visibility follows the provider capability boundary', () => {
+  const optionsQuestion = {
+    question: '选择方案',
+    options: [{ label: '方案 A' }, { label: '方案 B' }],
+  };
+
+  assert.equal(shouldShowRequestUserInputTextarea(optionsQuestion, CLAUDE_CODE_PROVIDER_ID), true);
+  assert.equal(shouldShowRequestUserInputTextarea(optionsQuestion, OPENCODE_PROVIDER_ID), false);
+  assert.equal(shouldShowRequestUserInputTextarea({ ...optionsQuestion, isOther: true }, OPENCODE_PROVIDER_ID), true);
+  assert.equal(shouldShowRequestUserInputTextarea({ question: '补充说明' }, OPENCODE_PROVIDER_ID), true);
 });

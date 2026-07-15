@@ -30,15 +30,15 @@ test('buildChangedFilesReviewRequests opens each changed file as a conversation 
       ],
     },
     {
-      path: 'server/index.ts',
-      name: 'index.ts',
+      path: 'src/components/Composer.tsx',
+      name: 'Composer.tsx',
       additions: 2,
       deletions: 0,
       previews: [
         {
           kind: 'write',
-          filePath: 'server/index.ts',
-          fileName: 'index.ts',
+          filePath: 'src/components/Composer.tsx',
+          fileName: 'Composer.tsx',
           beforeText: '',
           afterText: 'const ready = true;',
           additions: 1,
@@ -66,11 +66,15 @@ test('buildChangedFilesReviewRequests opens each changed file as a conversation 
         reviewDiff: ['--- a/src/App.tsx', '+++ b/src/App.tsx', '-old title', '+new title'],
       },
       {
-        key: 'conversation:server/index.ts',
-        path: 'server/index.ts',
-        name: 'index.ts',
+        key: 'conversation:src/components/Composer.tsx',
+        path: 'src/components/Composer.tsx',
+        name: 'Composer.tsx',
         source: 'conversation-card',
-        reviewDiff: ['--- a/server/index.ts', '+++ b/server/index.ts', '+const ready = true;'],
+        reviewDiff: [
+          '--- a/src/components/Composer.tsx',
+          '+++ b/src/components/Composer.tsx',
+          '+const ready = true;',
+        ],
       },
     ],
   );

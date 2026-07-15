@@ -25,7 +25,7 @@
 - 非新功能的小修小改、视觉微调、文案调整或已确认方案后的局部修正，可以不新增任务文件，但仍必须遵守 `.trellis/spec/**` 的边界和风格；如果改动开始扩大，必须补回 `.trellis/tasks/` 记录。
 - 只有新的大功能、风险较高的跨模块改动、需要长时间试验或用户明确要求隔离时，才新建分支或 worktree。
 - frontend 代码范围：`src/**`
-- backend 代码范围：`server/**`
+- backend 代码范围：`src-tauri/src/**`
 - 类型与常量优先集中到 `src/types.ts`、`src/constants.ts`
 - 纯 helper 优先放 `src/lib/**`
 - 共享行为优先放 `src/hooks/**`

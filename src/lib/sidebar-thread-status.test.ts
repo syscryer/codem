@@ -46,6 +46,28 @@ test('resolveSidebarThreadStatus prioritizes completed notices over hot sessions
   );
 });
 
+test('resolveSidebarThreadStatus prioritizes terminal notices over stale polled active runs', () => {
+  assert.equal(
+    resolveSidebarThreadStatus({
+      threadId: 'thread-1',
+      runningThreadIds: new Set(),
+      runtimeStatuses: {
+        'thread-1': { threadId: 'thread-1', pid: 1234, alive: true, activeRun: true },
+      },
+      threadActivityNotices: {
+        'thread-1': {
+          threadId: 'thread-1',
+          kind: 'completed',
+          title: '后台任务已完成',
+          key: 'completed:thread-1:turn-1',
+          updatedAtMs: 100,
+        },
+      },
+    }),
+    'completed',
+  );
+});
+
 test('resolveSidebarThreadStatus marks alive inactive runtimes as hot sessions', () => {
   assert.equal(
     resolveSidebarThreadStatus({

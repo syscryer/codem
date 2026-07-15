@@ -20,8 +20,9 @@ export function upsertThreadActivityNotice(
   current: ThreadActivityNoticeMap,
   notice: ThreadActivityNotice,
   activeThreadId: string | null,
+  windowFocused = true,
 ): ThreadActivityNoticeMap {
-  if (notice.threadId === activeThreadId) {
+  if (windowFocused && notice.threadId === activeThreadId) {
     return current;
   }
 

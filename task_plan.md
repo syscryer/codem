@@ -280,3 +280,35 @@
 | Windows `rg` 对 `.trellis/workspace/sessions/*.md` 路径通配符报错 | 1 | 其他目标仍正常读取；后续目录枚举统一使用 `-g '*.md'` |
 | 内置 Browser runtime 初始化两次报 `Cannot redefine property: process` | 2 | 未进入页面、未改应用状态；按 Browser 技能降级为真实 Chromium Playwright CLI 验收 |
 | WSL Playwright 路径与 Chrome 运行时不可用 | 2 | 先修正 `/mnt` 路径，再确认 WSL 缺少 Chrome；不安装额外浏览器，改用 Windows 原生 `npx.cmd` 复用本机 Chrome |
+
+## 当前规划：清理遗留 Node 后端
+
+### 目标
+
+- 从当前 `main` 删除已退出开发、运行和发布链路的 `server/**` Node Express 后端。
+- 保留 Rust/Tauri 当前功能、前端契约与用户数据不变。
+- 迁移仍有效的测试引用，并让开发文档只描述当前 Rust 架构。
+
+### 阶段
+
+| 阶段 | 状态 | 说明 |
+| --- | --- | --- |
+| 1. 范围与引用盘点 | completed | Node 目录、活动引用、Rust 对等路由和历史文档边界已核对 |
+| 2. 测试与脚本迁移 | completed | Rust 行为测试已补齐，Node 源码断言和失活 spike 已移除 |
+| 3. 删除 Node 后端 | completed | `server/**` 与 Node 专属测试已删除，不保留运行兜底 |
+| 4. 规范与文档收口 | completed | README、AGENTS、CLAUDE、Trellis backend 规范已统一为 Rust 架构 |
+| 5. 全量验证与运行检查 | completed | Rust/前端/类型/构建/diff/桌面健康检查全部通过，Trellis 已记录 |
+
+### 边界
+
+- 不修改 Rust API、SQLite schema、Agent 事件或普通聊天机制。
+- 不删除 `docs/superpowers/**` 等历史设计材料，只修正当前入口文档。
+- 保留当前未提交的失焦完成提示改动和用户 `CONTEXT.md`。
+
+### 遇到的错误
+
+| 错误 | 尝试次数 | 解决方案 |
+| --- | --- | --- |
+| 多文件规划补丁依赖 `findings.md` 漂移尾部而失败 | 1 | 补丁整体未写入；改为先读取各文件精确尾行，再按文件拆分补丁 |
+| 单次 `cargo test` 传入两个测试过滤参数 | 1 | Cargo 只接受一个过滤字符串；按 `workspace_` 和完整 slash command 测试名分别运行 |
+| 全量前端测试发现 Git diff badge 两条既有断言漂移 | 1 | `20e13da` 已移除 secondary 字段和对应 UI；删除遗漏的旧断言，不恢复废弃字段 |

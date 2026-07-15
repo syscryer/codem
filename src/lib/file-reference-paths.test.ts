@@ -10,7 +10,6 @@ import {
   shouldSearchFileReferenceQuery,
 } from './file-reference-paths.js';
 
-const serverSource = readFileSync(new URL('../../server/index.ts', import.meta.url), 'utf8');
 const composerSource = readFileSync(new URL('../components/Composer.tsx', import.meta.url), 'utf8');
 
 test('normalizePathForComparison normalizes Windows paths for dedupe', () => {
@@ -47,27 +46,6 @@ test('extractAtFileReferences reads quoted and unquoted @ paths', () => {
   assert.deepEqual(
     extractAtFileReferences('看看 @src/App.tsx 和 @"src/components/A B.tsx"'),
     ['src/App.tsx', 'src/components/A B.tsx'],
-  );
-});
-
-test('server search endpoint returns lightweight absolute path metadata', () => {
-  assert.match(serverSource, /app\.get\('\/api\/system\/files\/search'/);
-  assert.match(serverSource, /response\.json\(\{\s*files: await searchWorkspaceFiles\(root,\s*query\)\s*\}\)/s);
-  assert.match(
-    serverSource,
-    /const results: FileReferenceSearchResult\[\] = \[\];/,
-  );
-  assert.match(
-    serverSource,
-    /results\.push\(\{\s*path: absolutePath,\s*rel,\s*isDirectory: entry\.isDirectory\(\),\s*\}\);/,
-  );
-});
-
-test('server search uses shared file reference ranking and limits returned results', () => {
-  assert.match(serverSource, /const MAX_WORKSPACE_FILE_SEARCH_RESULTS = 80;/);
-  assert.match(
-    serverSource,
-    /sortFileReferenceSearchResults\(results,\s*normalizedQuery\)\.slice\(0,\s*MAX_WORKSPACE_FILE_SEARCH_RESULTS\)/,
   );
 });
 
@@ -143,9 +121,8 @@ test('shouldSearchFileReferenceQuery requires the first search character', () =>
   assert.equal(shouldSearchFileReferenceQuery('/'), true);
 });
 
-test('empty @ query is blocked before frontend and backend search', () => {
+test('empty @ query is blocked before frontend search', () => {
   assert.match(composerSource, /!shouldSearchFileReferenceQuery\(activeFileReferenceToken\.query\)/);
-  assert.match(serverSource, /if \(!normalizedQuery\) \{\s*return \[\];\s*\}/s);
 });
 
 test('@文件菜单和 slash 菜单一致：mousedown 只阻止失焦，click 再执行选择', () => {
@@ -183,37 +160,10 @@ test('Tauri CSP 不再为工作台文件图标开放 jsdelivr', () => {
   assert.doesNotMatch(tauriConfig, /cdn\.jsdelivr\.net/);
 });
 
-test('server exposes a workspace-relative resolve endpoint distinct from fuzzy search', () => {
-  // 修复点：搜索接口受深度/数量截断限制，无法稳定解析“@相对路径”，需要专门的 resolve 接口。
-  assert.match(serverSource, /app\.get\('\/api\/system\/files\/resolve'/);
-  assert.match(serverSource, /resolveWorkspaceRelativePath\(root,\s*rawPath\)/);
-  assert.match(
-    serverSource,
-    /response\.json\(\{\s*path: resolved\.path,\s*rel: resolved\.rel,\s*isDirectory: stats\.isDirectory\(\),\s*\}\)/s,
-  );
-  assert.match(serverSource, /response\.status\(404\)\.send\('path 在 workspace 中不存在'\)/);
-});
-
-test('resolveWorkspaceRelativePath rejects absolute paths and parent traversal', () => {
-  assert.match(serverSource, /if \(path\.isAbsolute\(stripped\)\) \{\s*return null;\s*\}/);
-  assert.match(
-    serverSource,
-    /if \(slashed\.startsWith\('\.\.\/'\) \|\| slashed === '\.\.' \|\| slashed\.includes\('\/\.\.\/'\) \|\| slashed\.endsWith\('\/\.\.'\)\) \{/,
-  );
-  assert.match(serverSource, /if \(!relative \|\| relative\.startsWith\('\.\.'\) \|\| path\.isAbsolute\(relative\)\) \{/);
-});
-
 test('Composer @reference resolution uses the dedicated resolve endpoint instead of fuzzy search', () => {
   // 修复点：之前 findExistingRelativeFile 走 /files/search 再用完全相等过滤，
   // 受 ranking 和数量截断影响，深路径或截断后的文件解析不到。
   assert.match(composerSource, /\/api\/system\/files\/resolve\?\$\{params\.toString\(\)\}/);
   assert.match(composerSource, /path: reference,/);
   assert.doesNotMatch(composerSource, /\/api\/system\/files\/search\?\$\{params\.toString\(\)\}\)\s*[\r\n]+\s*if \(!response\.ok\) \{[\r\n]+\s*return null;[\r\n]+\s*\}\s*[\r\n]+\s*const payload = await response\.json\(\) as \{ files\?: FileReferenceSearchResult\[\] \}/);
-});
-
-test('searchWorkspaceFiles normalizes backslashes in user query before matching', () => {
-  // 修复点：Windows 用户粘贴路径时常常带反斜杠（e.g. `@server\lib\workspace-store.ts`），
-  // 而 rel 使用正斜杠存储，需要统一归一化。
-  assert.match(serverSource, /function normalizeWorkspaceSearchQuery\(query: string\) \{\s*return query\.replace\(\/\\\\\/g,\s*'\/'\)\.toLowerCase\(\);\s*\}/s);
-  assert.match(serverSource, /const normalizedQuery = normalizeWorkspaceSearchQuery\(query\);/);
 });

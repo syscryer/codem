@@ -282,3 +282,21 @@
 - OpenCode 插件接口不能落入通用 `plugin ... --json` 命令路径；列表应安全返回空集合，变更请求必须明确说明当前不支持，避免执行不存在的 CLI 契约。
 - 现有 OpenCode MCP round-trip 测试已经覆盖 `enabled: false`；此前 extra 字段二次合并会覆盖规范化结果，把 `enabled` 加入排除项即可由该回归直接守住。
 - Skills 路径安全测试可以只构造临时项目下的 `.opencode/skill(s)`，无需修改全局 `USERPROFILE`，从而避免并行 Rust 测试污染真实用户环境。
+
+## 2026-07-15 遗留 Node 后端清理发现
+
+- 当前 `main` 的 `dev:server` 已是 `cargo run --bin codem-backend`，桌面与 release 只构建 Rust/Tauri。
+- `server/**` 共 38 个文件、约 0.85 MB；`package.json` 已无 Express，`tsconfig.node.json` 也不包含 `server/**`，因此旧后端已失活且不受类型检查保护。
+- Rust 后端迁移阶段已有 96/96 路由覆盖和 50/50 真实接口对照记录，可作为删除旧实现的行为基线。
+- 活动引用主要剩余：`scripts/slash-commands-spike.mjs`、`tests/claude-code-interactive.test.ts`、`tests/claude-run-session.test.ts`、`src/lib/file-reference-paths.test.ts`；需要逐项迁移或删除。
+- `src/lib/workbench-preview.test.ts` 和 `src/lib/conversation-changed-files.test.ts` 中的 `server/...` 只是通用项目文件路径夹具，可改成中性示例以免误导。
+- README 下载章节仍写 `with-node/no-node`，与后文 Rust-only 打包说明冲突。
+- 当前 `.trellis/spec/backend/**`、根目录 `AGENTS.md`/`CLAUDE.md` 仍描述 Express 后端，必须随清理同步更新。
+- 历史 `docs/superpowers/**`、旧评审和 openspec 记录属于历史语境，保留可追溯性，不做大规模改写。
+- Rust router 已明确提供 Claude guide、request-user-input、approval-decision、文件 search/resolve 和 slash commands 对等路由。
+- `tests/claude-code-interactive.test.ts` 和 `tests/claude-run-session.test.ts` 的 Node 部分主要是源码正则断言；当前 Rust 编译/单测比把这些正则机械改指向 Rust 源码更可靠。
+- `src/lib/file-reference-paths.test.ts` 同时包含纯 helper/Composer 行为测试和 Node route 源码断言；应保留前者、移除后者，并在 Rust 模块内确认路径安全测试覆盖。
+- `scripts/slash-commands-spike.mjs` 只被 `tests/slash-commands-spike.test.ts` 使用，当前产品运行不引用；Rust `/api/slash-commands` 与前端 hook 已替代该 spike，可一并删除。
+- `ConversationTurn.tsx` 中保留的 `server/` 是从任意用户项目绝对路径提取相对路径的通用目录标记，不依赖 CodeM 已删除的 Node 后端。
+- `WorkspaceStatus.panel.test.ts` 中的 `Codex app-server` 是 OpenAI Codex 协议名称，与 CodeM 旧 Express 后端无关。
+- 全量测试暴露 `20e13da` 删除 Git diff badge 的 `secondary` 字段后未同步 `tests/git-diff.test.ts`；实现和 UI 均不再消费该字段，正确修复是移除两条过期断言。

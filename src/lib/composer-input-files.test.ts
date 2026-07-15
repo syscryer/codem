@@ -88,7 +88,7 @@ test('classifyComposerFile marks large text files as references', () => {
 test('isSmallTextLikeFile recognizes common code extensions', () => {
   assert.equal(
     isSmallTextLikeFile({
-      name: 'server/index.ts',
+      name: 'src/main.ts',
       type: '',
       size: 100,
     }),

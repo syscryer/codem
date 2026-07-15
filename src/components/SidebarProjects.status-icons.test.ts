@@ -24,3 +24,15 @@ test('sidebar thread status icons render before timestamps and hide running time
   assert.match(stylesSource, /\.sidebar-thread-status-icon\.hot\s*\{[\s\S]*color:\s*#8f949a;/);
   assert.match(stylesSource, /\.sidebar-thread-status-icon\.hot\s+svg\s*\{/);
 });
+
+test('project title always toggles collapse while the project chat button owns draft switching', () => {
+  assert.match(
+    componentSource,
+    /className=\{`sidebar-project-title[\s\S]*?onClick=\{\(\) => onToggleProjectCollapse\(project\.id\)\}/,
+  );
+  assert.doesNotMatch(componentSource, /onSelectProject|if \(isNewChatDraft\)/);
+  assert.match(
+    componentSource,
+    /title="新建该项目聊天"[\s\S]*?onClick=\{\(\) => void onCreateThread\(project\.id\)\}/,
+  );
+});

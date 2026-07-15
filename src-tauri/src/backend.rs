@@ -1069,7 +1069,12 @@ async fn claude_run(
         .ok_or_else(|| ApiError::bad_request("workingDirectory 不能为空"))?;
     let working_directory = resolve_accessible_directory(working_directory)?;
     let prompt = build_claude_prompt(&payload);
-    if prompt.trim().is_empty() && payload.tool_result.is_none() {
+    let input_message = build_claude_input_message(
+        &prompt,
+        payload.content_blocks.as_ref(),
+        payload.tool_result.as_ref(),
+    );
+    if !claude_input_message_has_content(&input_message) {
         return Err(ApiError::bad_request("发送内容不能为空"));
     }
     let command =
@@ -1229,12 +1234,7 @@ async fn claude_run(
         }),
     );
 
-    let message = build_claude_input_message(
-        &prompt,
-        payload.content_blocks.as_ref(),
-        payload.tool_result.as_ref(),
-    );
-    if let Err(error) = write_claude_stdin_message(&runtime.stdin, &message).await {
+    if let Err(error) = write_claude_stdin_message(&runtime.stdin, &input_message).await {
         push_run_event(
             &state,
             &run_id,
@@ -1331,11 +1331,8 @@ async fn claude_run_guide(
         .trim()
         .to_string();
     let content_blocks = payload.get("contentBlocks");
-    if prompt.is_empty()
-        && content_blocks
-            .and_then(Value::as_array)
-            .is_none_or(|items| items.is_empty())
-    {
+    let input_message = build_claude_input_message(&prompt, content_blocks, None);
+    if !claude_input_message_has_content(&input_message) {
         return Ok((
             StatusCode::BAD_REQUEST,
             Json(json!({ "submitted": false, "error": "缺少有效引导内容。" })),
@@ -1361,8 +1358,7 @@ async fn claude_run_guide(
             Json(json!({ "submitted": false, "error": error.message })),
         ));
     }
-    let message = build_claude_input_message(&prompt, content_blocks, None);
-    if let Err(error) = write_run_stdin_message_raw_error(&state, &run_id, &message).await {
+    if let Err(error) = write_run_stdin_message_raw_error(&state, &run_id, &input_message).await {
         let message = format!("写入 Claude Code 引导消息失败：{}", error.message);
         enqueue_retryable_runtime_error(&state, &run_id, &message, "process");
         push_run_event(
@@ -13120,16 +13116,62 @@ fn summarize_content_blocks(value: Option<&Value>) -> Option<Value> {
             .map(|block| {
                 let mut summary = block.clone();
                 if let Some(object) = summary.as_object_mut() {
-                    object.remove("data");
-                    if let Some(text) = object.get("text").and_then(Value::as_str) {
-                        object.insert("textBytes".to_string(), json!(text.len()));
-                        object.remove("text");
+                    let block_type = object
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    match block_type.as_deref() {
+                        Some("image") => {
+                            let image_bytes = object
+                                .get("data")
+                                .and_then(Value::as_str)
+                                .or_else(|| {
+                                    object
+                                        .get("source")
+                                        .and_then(|source| source.get("data"))
+                                        .and_then(Value::as_str)
+                                })
+                                .map(estimate_base64_bytes)
+                                .or_else(|| object.get("size").and_then(Value::as_u64))
+                                .unwrap_or_default();
+                            object.remove("data");
+                            object.remove("source");
+                            if image_bytes > 0 {
+                                object.insert("imageBytes".to_string(), json!(image_bytes));
+                            }
+                        }
+                        Some("file_text") => {
+                            let text_bytes = object
+                                .get("text")
+                                .and_then(Value::as_str)
+                                .map(str::len)
+                                .unwrap_or_default();
+                            object.remove("text");
+                            object.insert("textBytes".to_string(), json!(text_bytes));
+                        }
+                        _ => {
+                            object.remove("data");
+                        }
                     }
                 }
                 summary
             })
             .collect(),
     ))
+}
+
+fn estimate_base64_bytes(value: &str) -> u64 {
+    let normalized = value
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect::<Vec<_>>();
+    let padding = normalized
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'=')
+        .count()
+        .min(2);
+    ((normalized.len() * 3) / 4).saturating_sub(padding) as u64
 }
 
 fn normalize_claude_permission_mode(value: Option<&str>) -> String {
@@ -13223,6 +13265,17 @@ fn build_claude_input_message(
         }
     }
 
+    let content = build_claude_content_blocks(prompt, content_blocks);
+    json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": content,
+        },
+    })
+}
+
+fn build_claude_content_blocks(prompt: &str, content_blocks: Option<&Value>) -> Vec<Value> {
     let mut content = Vec::new();
     if let Some(blocks) = content_blocks.and_then(Value::as_array) {
         for block in blocks {
@@ -13231,20 +13284,29 @@ fn build_claude_input_message(
                     if let Some(text) = block
                         .get("text")
                         .and_then(Value::as_str)
-                        .filter(|value| !value.trim().is_empty())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
                     {
                         content.push(json!({ "type": "text", "text": text }));
                     }
                 }
                 Some("image") => {
+                    let mut image_added = false;
                     if let Some(source) = block.get("source") {
                         content.push(json!({ "type": "image", "source": source }));
+                        image_added = true;
                     } else if let (Some(data), Some(media_type)) = (
-                        block.get("data").and_then(Value::as_str),
+                        block
+                            .get("data")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty()),
                         block
                             .get("mimeType")
                             .or_else(|| block.get("mime_type"))
-                            .and_then(Value::as_str),
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty()),
                     ) {
                         content.push(json!({
                             "type": "image",
@@ -13254,28 +13316,153 @@ fn build_claude_input_message(
                                 "data": data,
                             },
                         }));
+                        image_added = true;
+                    }
+                    if let Some(fallback) = build_claude_image_fallback_text(block, image_added) {
+                        content.push(json!({ "type": "text", "text": fallback }));
+                    }
+                }
+                Some("file_text") => {
+                    if let (Some(path), Some(text)) = (
+                        block
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty()),
+                        block
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .filter(|value| !value.is_empty()),
+                    ) {
+                        content.push(json!({
+                            "type": "text",
+                            "text": format!(
+                                "文件 {} 内容：\n\n{text}",
+                                to_model_readable_path(path)
+                            ),
+                        }));
+                    }
+                }
+                Some("file_reference") => {
+                    if let Some(path) = block
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
+                        let mut lines = vec![format!(
+                            "文件已作为路径引用提供：{}",
+                            to_model_readable_path(path)
+                        )];
+                        if let Some(reason) = block
+                            .get("reason")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                        {
+                            lines.push(format!("原因：{reason}"));
+                        }
+                        lines.push("可使用 Read 等工具按需读取该文件内容。".to_string());
+                        content.push(json!({ "type": "text", "text": lines.join("\n") }));
+                    }
+                }
+                Some("attachment_metadata") => {
+                    if let (Some(name), Some(reason)) = (
+                        block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty()),
+                        block
+                            .get("reason")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty()),
+                    ) {
+                        content.push(json!({
+                            "type": "text",
+                            "text": format!("附件未直接发送：{name}\n原因：{reason}"),
+                        }));
                     }
                 }
                 Some("file") | Some("file-reference") | Some("project-file") => {
-                    if let Some(path) = block.get("path").and_then(Value::as_str) {
-                        content
-                            .push(json!({ "type": "text", "text": format!("附件路径：{path}") }));
+                    if let Some(path) = block
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
+                        content.push(json!({
+                            "type": "text",
+                            "text": format!("附件路径：{}", to_model_readable_path(path)),
+                        }));
                     }
                 }
                 _ => {}
             }
         }
     }
-    if content.is_empty() && !prompt.trim().is_empty() {
-        content.push(json!({ "type": "text", "text": prompt }));
+    if content.is_empty() {
+        let prompt = prompt.trim();
+        if !prompt.is_empty() {
+            content.push(json!({ "type": "text", "text": prompt }));
+        }
     }
-    json!({
-        "type": "user",
-        "message": {
-            "role": "user",
-            "content": content,
-        },
-    })
+    content
+}
+
+fn claude_input_message_has_content(message: &Value) -> bool {
+    message
+        .pointer("/message/content")
+        .and_then(Value::as_array)
+        .is_some_and(|content| !content.is_empty())
+}
+
+fn build_claude_image_fallback_text(block: &Value, image_added: bool) -> Option<String> {
+    let path = block
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let mut lines = if image_added {
+        vec!["（以下为图片附件信息，多模态模型可直接查看上面的图片，无需读取文件）".to_string()]
+    } else {
+        vec!["[图片引用]".to_string()]
+    };
+    if let Some(name) = block
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("名称：{name}"));
+    }
+    lines.push(format!("路径：{}", to_model_readable_path(path)));
+    if !image_added {
+        if let Some(media_type) = block
+            .get("mimeType")
+            .or_else(|| block.get("mime_type"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            lines.push(format!("类型：{media_type}"));
+        }
+        if let Some(size) = block.get("size").and_then(Value::as_u64) {
+            lines.push(format!("大小：{size} bytes"));
+        }
+        lines.push("请使用 ViewImage 查看这张图片，不要用 Read 或 Grep 读取图片内容。".to_string());
+    } else {
+        lines.push(
+            "如果你无法直接识别上面的图片，请使用 ViewImage 查看该路径，不要用 Read 或 Grep 读取图片内容。"
+                .to_string(),
+        );
+    }
+    Some(lines.join("\n"))
+}
+
+fn to_model_readable_path(path: &str) -> String {
+    path.replace('\\', "/")
 }
 
 fn build_claude_tool_result_message(request_id: &str, content: &str, is_error: bool) -> Value {
@@ -14498,6 +14685,14 @@ fn normalize_request_user_input_answer_value(question: &Value, answer: &str) -> 
         .trim()
         .to_string();
     if question
+        .get("multiSelect")
+        .or_else(|| question.get("multi_select"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return parts.join(", ");
+    }
+    if question
         .get("isOther")
         .or_else(|| question.get("is_other"))
         .and_then(Value::as_bool)
@@ -14505,14 +14700,6 @@ fn normalize_request_user_input_answer_value(question: &Value, answer: &str) -> 
         && !free_text.is_empty()
     {
         return free_text;
-    }
-    if question
-        .get("multiSelect")
-        .or_else(|| question.get("multi_select"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return selected_labels.join(", ");
     }
     selected_labels
         .first()
@@ -15477,7 +15664,7 @@ fn parse_request_user_input_question(question: &Value, index: usize) -> Option<V
         "multiSelect": question.get("multiSelect").or_else(|| question.get("multi_select")).and_then(Value::as_bool).unwrap_or(false),
         "required": question.get("required").and_then(Value::as_bool).unwrap_or(false),
         "secret": question.get("secret").and_then(Value::as_bool).unwrap_or(false),
-        "isOther": question.get("isOther").or_else(|| question.get("is_other")).and_then(Value::as_bool).unwrap_or(false),
+        "isOther": !options.is_empty() || question.get("isOther").or_else(|| question.get("is_other")).and_then(Value::as_bool).unwrap_or(false),
         "placeholder": first_json_string(question, &["placeholder"]),
     }))
 }
@@ -15912,16 +16099,19 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_project_file_entries, create_router, create_thread_row, default_grok_command_path,
-        desktop_cors_layer, ensure_agent_plugin_management_supported,
-        import_claude_sessions_from_root, initialize_workspace_database,
-        install_skill_directory_safely, list_agent_installed_plugins_value,
-        list_agent_plugin_marketplaces_value, list_agent_skills_value,
-        normalize_agent_plugin_action, normalize_agent_runtime_settings, parse_grok_cli_version,
-        read_opencode_mcp_config, remove_thread_row, resolve_codex_command, resolve_grok_command,
-        resolve_opencode_command, resolve_requested_thread_provider,
-        resolve_thread_create_permission_mode, select_claude_command_candidate,
-        update_thread_metadata_from_payload, validate_desktop_file_path,
+        build_claude_input_message, build_request_user_input_response_answers,
+        claude_input_message_has_content, compare_project_file_entries, create_router,
+        create_thread_row, default_grok_command_path, desktop_cors_layer,
+        ensure_agent_plugin_management_supported, import_claude_sessions_from_root,
+        initialize_workspace_database, install_skill_directory_safely,
+        list_agent_installed_plugins_value, list_agent_plugin_marketplaces_value,
+        list_agent_skills_value, list_slash_commands_value, normalize_agent_plugin_action,
+        normalize_agent_runtime_settings, normalize_request_user_input_answer_value,
+        parse_grok_cli_version, parse_request_user_input_event, read_opencode_mcp_config,
+        remove_thread_row, resolve_codex_command, resolve_grok_command, resolve_opencode_command,
+        resolve_requested_thread_provider, resolve_thread_create_permission_mode,
+        resolve_workspace_relative_path, search_workspace_files, select_claude_command_candidate,
+        summarize_content_blocks, update_thread_metadata_from_payload, validate_desktop_file_path,
         validate_managed_agent_skill_path, write_opencode_mcp_config, AppState,
     };
     use crate::agent_runtime::{
@@ -15951,6 +16141,255 @@ mod tests {
             fs::create_dir_all(&path).expect("create test directory");
             Self(path)
         }
+    }
+
+    #[test]
+    fn claude_input_message_maps_all_supported_content_blocks() {
+        let blocks = json!([
+            {
+                "type": "text",
+                "text": "  请结合这些输入继续  "
+            },
+            {
+                "type": "image",
+                "path": "D:\\workspace\\image.png",
+                "name": "image.png",
+                "mimeType": "image/png",
+                "data": "SGVsbG8="
+            },
+            {
+                "type": "file_reference",
+                "path": "D:\\workspace\\src\\App.tsx",
+                "name": "App.tsx",
+                "reason": "too_large"
+            },
+            {
+                "type": "file_text",
+                "path": "D:\\workspace\\notes\\todo.md",
+                "name": "todo.md",
+                "text": "console.log(\"hi\")"
+            },
+            {
+                "type": "attachment_metadata",
+                "name": "archive.zip",
+                "reason": "binary"
+            }
+        ]);
+
+        let message =
+            build_claude_input_message("legacy prompt should be ignored", Some(&blocks), None);
+
+        assert_eq!(
+            message.pointer("/message/content").unwrap(),
+            &json!([
+                {
+                    "type": "text",
+                    "text": "请结合这些输入继续"
+                },
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "SGVsbG8="
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": "（以下为图片附件信息，多模态模型可直接查看上面的图片，无需读取文件）\n名称：image.png\n路径：D:/workspace/image.png\n如果你无法直接识别上面的图片，请使用 ViewImage 查看该路径，不要用 Read 或 Grep 读取图片内容。"
+                },
+                {
+                    "type": "text",
+                    "text": "文件已作为路径引用提供：D:/workspace/src/App.tsx\n原因：too_large\n可使用 Read 等工具按需读取该文件内容。"
+                },
+                {
+                    "type": "text",
+                    "text": "文件 D:/workspace/notes/todo.md 内容：\n\nconsole.log(\"hi\")"
+                },
+                {
+                    "type": "text",
+                    "text": "附件未直接发送：archive.zip\n原因：binary"
+                }
+            ])
+        );
+        assert!(claude_input_message_has_content(&message));
+    }
+
+    #[test]
+    fn claude_input_message_accepts_base64_image_without_text_or_path() {
+        let blocks = json!([{
+            "type": "image",
+            "mimeType": "image/png",
+            "data": "SGVsbG8="
+        }]);
+
+        let message = build_claude_input_message("", Some(&blocks), None);
+
+        assert!(claude_input_message_has_content(&message));
+        assert_eq!(
+            message.pointer("/message/content").unwrap(),
+            &json!([{
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "SGVsbG8="
+                }
+            }])
+        );
+    }
+
+    #[test]
+    fn claude_input_message_rejects_blocks_without_sendable_content() {
+        let blocks = json!([{
+            "type": "attachment_metadata",
+            "name": "archive.zip"
+        }]);
+
+        let message = build_claude_input_message("", Some(&blocks), None);
+
+        assert!(!claude_input_message_has_content(&message));
+    }
+
+    #[test]
+    fn claude_input_message_keeps_tool_result_precedence() {
+        let blocks = json!([{
+            "type": "text",
+            "text": "普通文本不应混入工具结果"
+        }]);
+        let tool_result = json!({
+            "requestId": "tool-use-1",
+            "content": "approved",
+            "isError": false
+        });
+
+        let message = build_claude_input_message("普通文本", Some(&blocks), Some(&tool_result));
+
+        assert_eq!(
+            message.pointer("/message/content").unwrap(),
+            &json!([{
+                "type": "tool_result",
+                "tool_use_id": "tool-use-1",
+                "content": "approved",
+                "is_error": false
+            }])
+        );
+    }
+
+    #[test]
+    fn request_user_input_option_questions_enable_custom_answers() {
+        let request = parse_request_user_input_event(
+            "AskUserQuestion",
+            &json!({
+                "questions": [{
+                    "id": "framework",
+                    "question": "选择框架",
+                    "options": [{ "label": "React" }, { "label": "Vue" }],
+                    "multiSelect": false
+                }]
+            }),
+            Some("tool-use-1"),
+        )
+        .expect("parse request user input");
+
+        assert_eq!(
+            request.pointer("/questions/0/isOther"),
+            Some(&Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn request_user_input_single_select_keeps_custom_answer() {
+        let question = json!({
+            "id": "framework",
+            "question": "选择框架",
+            "options": [{ "label": "React" }, { "label": "Vue" }],
+            "multiSelect": false,
+            "isOther": true
+        });
+
+        assert_eq!(
+            normalize_request_user_input_answer_value(&question, "Svelte"),
+            "Svelte"
+        );
+    }
+
+    #[test]
+    fn request_user_input_multi_select_keeps_options_and_custom_answer() {
+        let questions = json!([{
+            "id": "framework",
+            "question": "选择框架",
+            "options": [{ "label": "React" }, { "label": "Vue" }],
+            "multiSelect": true,
+            "isOther": true
+        }]);
+        let submitted_answers =
+            serde_json::Map::from_iter([("framework".to_string(), json!("React\nVue\nSvelte"))]);
+
+        let answers = build_request_user_input_response_answers(&questions, &submitted_answers);
+
+        assert_eq!(answers.get("framework"), Some(&json!("React, Vue, Svelte")));
+        assert_eq!(answers.get("选择框架"), Some(&json!("React, Vue, Svelte")));
+    }
+
+    #[test]
+    fn summarize_content_blocks_removes_transient_attachment_payloads() {
+        let blocks = json!([
+            {
+                "type": "text",
+                "text": "用户可见文本"
+            },
+            {
+                "type": "image",
+                "name": "inline.png",
+                "mimeType": "image/png",
+                "data": "SGVsbG8="
+            },
+            {
+                "type": "image",
+                "name": "legacy.png",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "aGk="
+                }
+            },
+            {
+                "type": "file_text",
+                "path": "D:\\workspace\\note.md",
+                "name": "note.md",
+                "text": "中文abc"
+            }
+        ]);
+
+        let summary = summarize_content_blocks(Some(&blocks)).unwrap();
+
+        assert_eq!(
+            summary,
+            json!([
+                {
+                    "type": "text",
+                    "text": "用户可见文本"
+                },
+                {
+                    "type": "image",
+                    "name": "inline.png",
+                    "mimeType": "image/png",
+                    "imageBytes": 5
+                },
+                {
+                    "type": "image",
+                    "name": "legacy.png",
+                    "imageBytes": 2
+                },
+                {
+                    "type": "file_text",
+                    "path": "D:\\workspace\\note.md",
+                    "name": "note.md",
+                    "textBytes": 9
+                }
+            ])
+        );
     }
 
     #[test]
@@ -16470,6 +16909,57 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Assets", "src", "build.rs", "Cargo.toml", "README.md"]
         );
+    }
+
+    #[test]
+    fn workspace_file_search_normalizes_windows_separators_and_ranks_directories_first() {
+        let root = TestDirectory::new("workspace-file-search");
+        let source = root.0.join("src");
+        fs::create_dir_all(source.join("spec")).unwrap();
+        fs::write(source.join("spec.ts"), "export const spec = true;\n").unwrap();
+
+        let root_path = root.0.to_string_lossy();
+        let results = search_workspace_files(&root_path, "src\\spec").unwrap();
+        let relative_paths = results
+            .iter()
+            .filter_map(|item| item.get("rel").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert_eq!(relative_paths, vec!["src/spec", "src/spec.ts"]);
+        assert_eq!(results[0].get("isDirectory"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn workspace_relative_path_resolution_rejects_escape_paths() {
+        let root = TestDirectory::new("workspace-relative-path");
+        let source = root.0.join("src");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("App.tsx"), "export default function App() {}\n").unwrap();
+
+        let root_path = root.0.to_string_lossy();
+        let resolved = resolve_workspace_relative_path(&root_path, "src\\App.tsx").unwrap();
+        assert_eq!(resolved.1, "src/App.tsx");
+        assert!(resolve_workspace_relative_path(&root_path, "../secret.txt").is_none());
+        assert!(resolve_workspace_relative_path(&root_path, "src/../secret.txt").is_none());
+        assert!(resolve_workspace_relative_path(&root_path, &resolved.0).is_none());
+    }
+
+    #[test]
+    fn slash_command_catalog_keeps_required_local_commands_unique() {
+        let commands = list_slash_commands_value(None);
+        let slash_values = commands
+            .iter()
+            .filter_map(|command| command.get("slash").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        let unique_values = slash_values
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+
+        for required in ["/clear", "/status", "/compact", "/context", "/cost"] {
+            assert!(slash_values.contains(&required), "missing {required}");
+        }
+        assert_eq!(slash_values.len(), unique_values.len());
     }
 
     fn write_claude_transcript(

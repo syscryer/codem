@@ -5,9 +5,110 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="/icon.png" />
     <title>CodeM</title>
+    <style>
+      html,
+      body,
+      #root {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        overflow: hidden;
+        background: #f5f6f8;
+      }
+
+      .codem-startup-shell {
+        width: 100%;
+        height: 100%;
+        display: grid;
+        place-items: center;
+        background: #f5f6f8;
+        color: #242424;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", sans-serif;
+      }
+
+      .codem-startup-content {
+        display: grid;
+        justify-items: center;
+        gap: 14px;
+      }
+
+      .codem-startup-icon {
+        width: 48px;
+        height: 48px;
+        border-radius: 8px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.1);
+      }
+
+      .codem-startup-name {
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: 0;
+      }
+
+      .codem-startup-progress {
+        width: 96px;
+        height: 3px;
+        overflow: hidden;
+        border-radius: 2px;
+        background: rgba(36, 36, 36, 0.1);
+      }
+
+      .codem-startup-progress::after {
+        content: "";
+        display: block;
+        width: 38%;
+        height: 100%;
+        border-radius: inherit;
+        background: #8b929b;
+        animation: codem-startup-progress 1.1s ease-in-out infinite;
+      }
+
+      @keyframes codem-startup-progress {
+        from {
+          transform: translateX(-110%);
+        }
+        to {
+          transform: translateX(290%);
+        }
+      }
+
+      @media (prefers-color-scheme: dark) {
+        body,
+        .codem-startup-shell {
+          background: #181818;
+          color: #eeeeee;
+        }
+
+        .codem-startup-progress {
+          background: rgba(255, 255, 255, 0.12);
+        }
+
+        .codem-startup-progress::after {
+          background: #8f969f;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .codem-startup-progress::after {
+          width: 100%;
+          animation: none;
+        }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="codem-startup-shell" data-codem-startup role="status" aria-label="CodeM 正在启动">
+        <div class="codem-startup-content">
+          <img class="codem-startup-icon" src="/icon.png" alt="" />
+          <div class="codem-startup-name">CodeM</div>
+          <div class="codem-startup-progress" aria-hidden="true"></div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
   </html>

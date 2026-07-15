@@ -4,25 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目本质
 
-CodeM 是一个本地 Claude Code 包装器：浏览器 / Tauri 桌面壳调用本机 `claude` CLI,封装为多线程聊天 UI。后端做 CLI 桥接 + SQLite 持久化,前端复用稳定 stream event 契约渲染对话。
+CodeM 是一个本地编码 Agent 桌面工作台：浏览器 / Tauri 桌面壳通过 Rust 后端调用本机 `claude`、`codex`、`grok`、`opencode` CLI，并提供与 Agent 独立的普通 AI 聊天。后端负责 CLI 桥接、流式运行和 SQLite 持久化，前端复用稳定 event contract 渲染对话。
 
 ## 常用命令
 
 ```bash
 npm run dev                  # 并行启动 backend(3001) + web(5173)
 npm run dev:web              # 仅前端 vite
-npm run dev:server           # 仅后端 tsx watch server/index.ts
+npm run dev:server           # 仅 Rust/Axum 后端
 npm run typecheck            # tsc -b,改完必跑的最低门禁
-npm run build                # tsc -b && vite build && esbuild server -> dist-server
+npm run build                # tsc -b && vite build
 npm run desktop:dev          # Tauri 壳;若 3001/5173 未起会自动启动 npm run dev
 npm run desktop:build        # 打包桌面应用(会先 npm run build)
 ```
 
-测试用 Node 内置 runner + tsx loader,无 jest/vitest:
+前端测试使用 Node 内置 runner + tsx loader，后端测试使用 Cargo，无 jest/vitest：
 
 ```bash
-node --test --import tsx <path/to/file.test.ts>
-node --test --import tsx tests/useAppSettings.test.ts server/lib/settings-store.test.ts
+node --import tsx --test <path/to/file.test.ts>
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 后端运行时 / 路由 / Claude CLI 桥接改动需要重启 dev server 后验证:
@@ -35,12 +35,11 @@ Invoke-RestMethod http://127.0.0.1:3001/api/health
 
 ## 高层架构
 
-### 三个独立单元
+### 两个代码边界
 - `src/**` — React 19 + TS strict 前端
-- `server/**` — Express 5 + node:sqlite 后端
-- `src-tauri/**` — Rust + Tauri 2 桌面壳(Mica 透明窗、自定义装饰)
+- `src-tauri/**` — Rust + Axum 后端与 Tauri 2 桌面壳(Mica 透明窗、自定义装饰)
 
-桌面壳通过 `dist-server` 内嵌 backend、`dist` 内嵌前端;dev 模式 Tauri 直接连 `http://127.0.0.1:5173`。
+桌面壳内嵌 Rust backend 和 `dist` 前端；dev 模式 Tauri 直接连接 `http://127.0.0.1:5173`，后端由 `codem-backend` 二进制提供。
 
 ### 前端三大 hook(状态分层在 `.trellis/spec/frontend/state-management.md`)
 - `useWorkspaceState` — projects / threads / panelState / 对话框 / toast / 历史持久化
@@ -49,14 +48,15 @@ Invoke-RestMethod http://127.0.0.1:3001/api/health
 
 `App.tsx` 只做粘合,不要把请求和 streaming 写回组件层。共享类型在 `src/types.ts`,共享常量在 `src/constants.ts`(尤其 `permissionMenuModes` vs `permissionModes`)。`src/lib/conversation.ts` 是把 stream event / Claude JSONL transcript / SQLite stored history 三条路径折叠成统一 `turn.items` 的核心,改它必走 `.trellis/spec/frontend/conversation-rendering-model.md` 检查。
 
-### 后端关键模块(`server/lib/`)
-- `claude-service.ts` — Claude CLI 桥接,优先 stdin + stream-json 热会话 runtime;暂停 / 续跑 / 冷恢复都集中在这里
-- `workspace-store.ts` — SQLite 持久化(projects / threads / messages / tool_calls / panel state / selection)
-- `settings-store.ts` / `claude-global-prompt.ts` / `mcp-inspector.ts` / `skills-scanner.ts` / `usage-stats.ts` — 各设置子能力
-- `slash-commands.ts` — 斜杠命令解析
-- `open-with.ts` / `system-dialog.ts` / `git-clone.ts` — 系统集成
+### 后端关键模块(`src-tauri/src/`)
+- `backend.rs` — Axum 路由、Claude CLI bridge、workspace/SQLite、Git、设置和系统集成
+- `agent_run.rs` / `agent_runtime.rs` — 多 Agent 运行状态机、事件流、暂停、续跑与审批
+- `acp.rs` — Grok Build 与 OpenCode 的 ACP 协议适配
+- `codex_app_server.rs` — OpenAI Codex app-server 协议适配
+- `ordinary_chat/` — 与 Agent 独立的普通聊天 Provider、MCP、Skills、知识库、运行时和持久化
+- `main.rs` — Tauri 桌面壳、窗口生命周期和 Rust backend 启动
 
-`server/index.ts` 仅保留 bootstrap + 路由 + 少量粘合;复杂逻辑放 `lib/`。
+新增后端能力应按职责落入独立模块；不要继续向 `backend.rs` 堆叠可拆分的状态机或协议实现。
 
 ### 跨层契约(改之前必读 `.trellis/spec/backend/api-and-streaming.md`)
 - `/api/claude/run` 的事件语义稳定,新增 event type 必须同步 `useClaudeRun`

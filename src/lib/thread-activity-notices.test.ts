@@ -8,7 +8,7 @@ import {
   type ThreadActivityNoticeMap,
 } from './thread-activity-notices.js';
 
-test('upsertThreadActivityNotice ignores the active thread but marks background threads', () => {
+test('upsertThreadActivityNotice ignores the focused active thread but marks background threads', () => {
   const notices = upsertThreadActivityNotice(
     {},
     {
@@ -36,6 +36,23 @@ test('upsertThreadActivityNotice ignores the active thread but marks background 
   );
 
   assert.deepEqual(unchanged, notices);
+});
+
+test('upsertThreadActivityNotice marks the active thread when the window is unfocused', () => {
+  const notices = upsertThreadActivityNotice(
+    {},
+    {
+      threadId: 'thread-1',
+      kind: 'completed',
+      title: '当前任务已完成',
+      key: 'completed:thread-1:turn-1',
+      updatedAtMs: 200,
+    },
+    'thread-1',
+    false,
+  );
+
+  assert.equal(notices['thread-1']?.kind, 'completed');
 });
 
 test('upsertThreadActivityNotice keeps the highest priority notice for a thread', () => {

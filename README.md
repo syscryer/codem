@@ -50,7 +50,7 @@ CodeM 是一个面向本地编码 Agent 的桌面工作台。
 
 最新稳定版可以从 [GitHub Releases](https://github.com/syscryer/codem/releases/latest) 下载。
 
-- 当前桌面版统一使用 Rust 后端，安装包不依赖系统 Node.js。
+- 当前桌面版统一使用内置 Rust 后端，安装包不依赖系统 Node.js。
 - Windows 提供安装版和 `portable` 绿色版；macOS 提供 Apple Silicon 安装包；Linux 提供 AppImage、deb 和 rpm。
 
 ## 快速开始

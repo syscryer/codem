@@ -18,12 +18,16 @@ export function resolveSidebarThreadStatus({
 }: ResolveSidebarThreadStatusOptions): SidebarThreadStatusKind | null {
   const runtimeStatus = runtimeStatuses[threadId];
 
-  if (runningThreadIds.has(threadId) || runtimeStatus?.activeRun) {
+  if (runningThreadIds.has(threadId)) {
     return 'running';
   }
 
   if (threadActivityNotices[threadId]) {
     return 'completed';
+  }
+
+  if (runtimeStatus?.activeRun) {
+    return 'running';
   }
 
   if (runtimeStatus?.alive) {

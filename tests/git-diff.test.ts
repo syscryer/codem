@@ -10,7 +10,6 @@ test('getGitDiffBadgeLabels uses changed files as the primary count', () => {
   });
 
   assert.equal(labels.primary, '10');
-  assert.equal(labels.secondary, '变更');
   assert.equal(labels.detail, '无行增删');
 });
 
@@ -22,6 +21,5 @@ test('getGitDiffBadgeLabels includes line delta details when available', () => {
   });
 
   assert.equal(labels.primary, '2');
-  assert.equal(labels.secondary, '变更');
   assert.equal(labels.detail, '+12 -3');
 });

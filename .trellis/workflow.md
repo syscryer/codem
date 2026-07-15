@@ -5,7 +5,7 @@
 ## 当前目标
 
 - 为 frontend `src/**` 提供拆分、状态、质量约束
-- 为 backend `server/**` 提供 API、streaming、持久化约束
+- 为 backend `src-tauri/src/**` 提供 API、streaming、持久化约束
 - 为跨层改动提供统一思考入口
 - 为所有中长期任务沉淀 `.trellis/tasks/`
 - 让需求边界、验收标准、实现记录、验证结果和遗留问题有唯一入口
