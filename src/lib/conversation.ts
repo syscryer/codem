@@ -993,7 +993,7 @@ function normalizeInlineThinkingItems(items: AssistantItem[]) {
 
 function splitAssistantInlineThinking(text: string): Array<{ type: 'text' | 'thinking'; text: string }> {
   const segments: Array<{ type: 'text' | 'thinking'; text: string }> = [];
-  const pattern = /<thinking>([\s\S]*?)<\/thinking>/gi;
+  const pattern = /<(think|thinking)>([\s\S]*?)<\/\1>/gi;
   let cursor = 0;
   let match: RegExpExecArray | null;
 
@@ -1003,7 +1003,7 @@ function splitAssistantInlineThinking(text: string): Array<{ type: 'text' | 'thi
       segments.push({ type: 'text', text: before });
     }
 
-    const thinking = match[1]?.trim();
+    const thinking = match[2]?.trim();
     if (thinking) {
       segments.push({ type: 'thinking', text: thinking });
     }
@@ -1026,7 +1026,11 @@ function splitAssistantInlineThinking(text: string): Array<{ type: 'text' | 'thi
 
 export function sanitizeVisibleAssistantText(text: string) {
   return text
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/<(think|thinking)>[\s\S]*?<\/\1>/gi, '')
+    .replace(
+      /(?:\r?\n)?[ \t]*<dcp-message-id>[ \t]*m\d+[ \t]*<\/dcp-message-id>[ \t]*(?:\r?\n)*$/i,
+      '',
+    )
     .replace(/(^|\n)[ \t]*answer for user question[ \t]*(?=\n|$)/gi, '$1')
     .replace(/^\n+/, '')
     .replace(/\n{3,}/g, '\n\n');

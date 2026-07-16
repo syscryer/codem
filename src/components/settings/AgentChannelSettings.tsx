@@ -30,8 +30,11 @@ import {
 } from '../../lib/agent-channel-api';
 import { openExternalUrl } from '../../lib/markdown-link';
 import {
+  agentChannelProtocolHint,
   filterProviderVendors,
   groupProviderTemplateChannels,
+  protocolsForAgent,
+  templateSupportsAgent,
 } from '../../lib/provider-template-search';
 import type {
   AgentChannel,
@@ -151,6 +154,7 @@ export function AgentChannelSettings({
       `${model.displayName} ${model.modelId}`.toLocaleLowerCase().includes(query),
     );
   }, [modelQuery, selectedChannel?.models]);
+  const protocolHint = agentChannelProtocolHint(providerId, draft.protocol);
 
   useEffect(() => {
     if (creating) return;
@@ -449,21 +453,26 @@ export function AgentChannelSettings({
             </button>
           </div>
           <div className="ai-manager-provider-list">
-            {channels.map((channel) => (
-              <button
-                key={channel.id}
-                type="button"
-                className={`ai-manager-provider-row${!creating && channel.id === selectedChannelId ? ' active' : ''}`}
-                onClick={() => selectChannel(channel)}
-              >
-                <AgentProviderIcon providerId={providerId} size={25} />
-                <span><strong>{channel.name}</strong><small>{protocolLabels[channel.protocol]}</small></span>
-                <span className="ai-manager-provider-status">
-                  {channel.isDefault ? <Star size={13} fill="currentColor" /> : null}
-                  <i className={channel.enabled ? 'online' : ''} aria-label={channel.enabled ? '已启用' : '已停用'} />
-                </span>
-              </button>
-            ))}
+            {channels.map((channel) => {
+              const channelTemplate = matchTemplate(templates, channelToDraft(channel));
+              return (
+                <button
+                  key={channel.id}
+                  type="button"
+                  className={`ai-manager-provider-row${!creating && channel.id === selectedChannelId ? ' active' : ''}`}
+                  onClick={() => selectChannel(channel)}
+                >
+                  {channelTemplate
+                    ? <ProviderBrandIcon icon={channelTemplate.icon} name={channelTemplate.vendorName} size={25} />
+                    : <AgentProviderIcon providerId={providerId} size={25} />}
+                  <span><strong>{channel.name}</strong><small>{protocolLabels[channel.protocol]}</small></span>
+                  <span className="ai-manager-provider-status">
+                    {channel.isDefault ? <Star size={13} fill="currentColor" /> : null}
+                    <i className={channel.enabled ? 'online' : ''} aria-label={channel.enabled ? '已启用' : '已停用'} />
+                  </span>
+                </button>
+              );
+            })}
             {channels.length === 0 && !loading ? <div className="provider-menu-empty">还没有 CodeM 渠道</div> : null}
           </div>
         </aside>
@@ -533,6 +542,7 @@ export function AgentChannelSettings({
                               </button>
                             ))}
                       </div>
+                      {protocolHint ? <small className="agent-channel-protocol-note">{protocolHint}</small> : null}
                     </div>
                   </div>
                   <label className="wide"><span>API 地址</span><input value={draft.baseUrl} placeholder="https://api.example.com" onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} /></label>
@@ -838,16 +848,6 @@ function channelToDraft(channel: AgentChannel): ChannelDraft {
     enabled: channel.enabled,
     isDefault: channel.isDefault,
   };
-}
-
-function protocolsForAgent(providerId: AgentProviderId): AiChatProtocol[] {
-  if (providerId === 'claude-code') return ['anthropic_messages'];
-  if (providerId === 'openai-codex') return ['openai_responses', 'openai_chat'];
-  return ['openai_responses', 'openai_chat', 'anthropic_messages'];
-}
-
-function templateSupportsAgent(template: AiProviderTemplate, providerId: AgentProviderId) {
-  return protocolsForAgent(providerId).includes(template.protocol);
 }
 
 function matchTemplate(templates: AiProviderTemplate[], draft: Pick<ChannelDraft, 'protocol' | 'baseUrl'>) {

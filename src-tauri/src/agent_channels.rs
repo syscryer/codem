@@ -360,6 +360,9 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
             );
             CREATE INDEX IF NOT EXISTS idx_agent_channel_models_channel
               ON agent_channel_models(channel_id, enabled, is_default, updated_at);
+            UPDATE agent_channels
+              SET protocol = 'openai_chat'
+              WHERE provider_id = 'opencode' AND protocol = 'openai_responses';
             "#,
         )
         .map_err(|error| format!("初始化 Agent 渠道数据库失败: {error}"))
@@ -401,9 +404,13 @@ fn validate_protocol(provider_id: &str, protocol: AiProtocol) -> AgentChannelApi
             protocol,
             AiProtocol::OpenaiResponses | AiProtocol::OpenaiChat
         ),
-        GROK_BUILD_PROVIDER_ID | OPENCODE_PROVIDER_ID => matches!(
+        GROK_BUILD_PROVIDER_ID => matches!(
             protocol,
             AiProtocol::OpenaiResponses | AiProtocol::OpenaiChat | AiProtocol::AnthropicMessages
+        ),
+        OPENCODE_PROVIDER_ID => matches!(
+            protocol,
+            AiProtocol::OpenaiChat | AiProtocol::AnthropicMessages
         ),
         _ => false,
     };
@@ -1589,10 +1596,19 @@ fn build_runtime(
         }
         OPENCODE_PROVIDER_ID => {
             let provider_key = format!("codem_{}", channel.id.replace('-', "_"));
-            let package = if channel.protocol == AiProtocol::AnthropicMessages {
-                "@ai-sdk/anthropic"
+            let package = match channel.protocol {
+                AiProtocol::AnthropicMessages => "@ai-sdk/anthropic",
+                AiProtocol::OpenaiChat => "@ai-sdk/openai-compatible",
+                _ => {
+                    return Err(
+                        "OpenCode 渠道仅支持 OpenAI Chat 或 Anthropic Messages 接口".to_string()
+                    )
+                }
+            };
+            let runtime_base_url = if channel.protocol == AiProtocol::AnthropicMessages {
+                opencode_anthropic_base_url(&channel.base_url)?
             } else {
-                "@ai-sdk/openai-compatible"
+                channel.base_url.clone()
             };
             let model_values = models
                 .iter()
@@ -1610,7 +1626,7 @@ fn build_runtime(
                         "npm": package,
                         "name": channel.name,
                         "options": {
-                            "baseURL": channel.base_url,
+                            "baseURL": runtime_base_url,
                             "apiKey": "{env:CODEM_AGENT_CHANNEL_API_KEY}"
                         },
                         "models": model_values
@@ -1642,6 +1658,23 @@ fn build_runtime(
         codex_config_args,
         effective_model,
     })
+}
+
+fn opencode_anthropic_base_url(base_url: &str) -> Result<String, String> {
+    let mut url = Url::parse(base_url).map_err(|error| format!("API 地址无效: {error}"))?;
+    let path = url.path().trim_end_matches('/').to_string();
+    let lower_path = path.to_ascii_lowercase();
+    let runtime_path = if lower_path.ends_with("/messages") {
+        path[..path.len() - "/messages".len()].to_string()
+    } else if lower_path.ends_with("/v1") {
+        path
+    } else if path.is_empty() {
+        "/v1".to_string()
+    } else {
+        format!("{path}/v1")
+    };
+    url.set_path(&runtime_path);
+    Ok(url.to_string().trim_end_matches('/').to_string())
 }
 
 fn toml_string(value: &str) -> String {
@@ -1823,6 +1856,50 @@ mod tests {
     }
 
     #[test]
+    fn agent_channel_protocol_matrix_matches_runtime_adapters() {
+        assert!(validate_protocol(CLAUDE_CODE_PROVIDER_ID, AiProtocol::AnthropicMessages).is_ok());
+        assert!(validate_protocol(OPENAI_CODEX_PROVIDER_ID, AiProtocol::OpenaiResponses).is_ok());
+        assert!(validate_protocol(OPENAI_CODEX_PROVIDER_ID, AiProtocol::OpenaiChat).is_ok());
+        assert!(validate_protocol(GROK_BUILD_PROVIDER_ID, AiProtocol::OpenaiResponses).is_ok());
+        assert!(validate_protocol(GROK_BUILD_PROVIDER_ID, AiProtocol::OpenaiChat).is_ok());
+        assert!(validate_protocol(GROK_BUILD_PROVIDER_ID, AiProtocol::AnthropicMessages).is_ok());
+        assert!(validate_protocol(OPENCODE_PROVIDER_ID, AiProtocol::OpenaiChat).is_ok());
+        assert!(validate_protocol(OPENCODE_PROVIDER_ID, AiProtocol::AnthropicMessages).is_ok());
+
+        assert!(validate_protocol(CLAUDE_CODE_PROVIDER_ID, AiProtocol::OpenaiChat).is_err());
+        assert!(validate_protocol(OPENCODE_PROVIDER_ID, AiProtocol::OpenaiResponses).is_err());
+    }
+
+    #[test]
+    fn database_migrates_legacy_opencode_responses_channels_to_chat() {
+        let connection = Connection::open_in_memory().expect("open database");
+        initialize_database(&connection).expect("initialize database");
+        connection
+            .execute(
+                r#"INSERT INTO agent_channels (
+                     id, provider_id, name, protocol, base_url, models_url, enabled,
+                     is_default, secret_slot, created_at, updated_at
+                   ) VALUES ('legacy-opencode', 'opencode', 'Legacy OpenCode',
+                     'openai_responses', 'https://api.example.com/v1', NULL, 1, 1,
+                     'secret:legacy-opencode', '2026-07-16T00:00:00Z',
+                     '2026-07-16T00:00:00Z')"#,
+                [],
+            )
+            .expect("insert legacy OpenCode channel");
+
+        initialize_database(&connection).expect("run channel migration");
+
+        let protocol: String = connection
+            .query_row(
+                "SELECT protocol FROM agent_channels WHERE id = 'legacy-opencode'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read migrated protocol");
+        assert_eq!(protocol, "openai_chat");
+    }
+
+    #[test]
     fn grok_openai_chat_channel_creates_an_isolated_custom_model() {
         let root =
             std::env::temp_dir().join(format!("codem-grok-agent-channel-{}", uuid::Uuid::new_v4()));
@@ -1867,6 +1944,82 @@ mod tests {
         remove_agent_channel_runtime(&root, &channel).expect("remove isolated Grok runtime");
         assert!(!runtime_home.exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn opencode_anthropic_runtime_uses_ai_sdk_versioned_base_url() {
+        for (input, expected) in [
+            (
+                "https://api.minimaxi.com/anthropic",
+                "https://api.minimaxi.com/anthropic/v1",
+            ),
+            (
+                "https://api.deepseek.com/anthropic/",
+                "https://api.deepseek.com/anthropic/v1",
+            ),
+            (
+                "https://proxy.example.com/api/v1",
+                "https://proxy.example.com/api/v1",
+            ),
+            (
+                "https://proxy.example.com/api/v1/messages",
+                "https://proxy.example.com/api/v1",
+            ),
+        ] {
+            assert_eq!(
+                opencode_anthropic_base_url(input).expect("normalize Anthropic base URL"),
+                expected
+            );
+        }
+
+        let channel = StoredAgentChannel {
+            id: "channel".to_string(),
+            provider_id: OPENCODE_PROVIDER_ID.to_string(),
+            name: "MiniMax".to_string(),
+            protocol: AiProtocol::AnthropicMessages,
+            base_url: "https://api.minimaxi.com/anthropic".to_string(),
+            models_url: None,
+            enabled: true,
+            is_default: false,
+            secret_slot: "secret:channel".to_string(),
+            created_at: "2026-07-16T00:00:00Z".to_string(),
+            updated_at: "2026-07-16T00:00:00Z".to_string(),
+        };
+        let models = vec![AgentChannelModelSummary {
+            id: "model".to_string(),
+            channel_id: channel.id.clone(),
+            model_id: "MiniMax-M3".to_string(),
+            display_name: "MiniMax M3".to_string(),
+            enabled: true,
+            is_default: true,
+            capabilities: json!({}),
+            created_at: "2026-07-16T00:00:00Z".to_string(),
+            updated_at: "2026-07-16T00:00:00Z".to_string(),
+        }];
+
+        let runtime = build_runtime(
+            std::env::temp_dir().as_path(),
+            &channel,
+            &models,
+            Some("MiniMax-M3"),
+            "test-key",
+        )
+        .expect("build OpenCode runtime");
+        let config: Value = serde_json::from_str(
+            runtime
+                .env
+                .get("OPENCODE_CONFIG_CONTENT")
+                .expect("OpenCode config content"),
+        )
+        .expect("parse OpenCode config content");
+        assert_eq!(
+            config["provider"]["codem_channel"]["options"]["baseURL"],
+            "https://api.minimaxi.com/anthropic/v1"
+        );
+        assert_eq!(
+            runtime.effective_model.as_deref(),
+            Some("codem_channel/MiniMax-M3")
+        );
     }
 
     #[test]

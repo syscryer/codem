@@ -58,7 +58,23 @@ test('generic Agent events preserve text and tool ordering without duplicating f
   assert.equal(turn.tools[0]?.resultText, 'ok');
 });
 
-test('generic Agent reducer exposes approvals and user input but hides thinking deltas', () => {
+test('generic Agent events hide trailing OpenCode DCP message ids', () => {
+  let turn = createTurn();
+  turn = apply(turn, {
+    type: 'delta',
+    runId: 'run-1',
+    text: '我是 MiniMax-M3。\n\n<dcp-message-id>m0004</dcp-message-id>',
+  });
+
+  assert.equal(turn.assistantText, '我是 MiniMax-M3。\n');
+  assert.deepEqual(turn.items.map((item) => item.type), ['text']);
+  assert.equal(
+    turn.items[0]?.type === 'text' ? turn.items[0].text : '',
+    '我是 MiniMax-M3。\n',
+  );
+});
+
+test('generic Agent reducer preserves public thinking before approvals and user input', () => {
   let turn = createTurn();
   turn = apply(turn, {
     type: 'phase',
@@ -69,6 +85,9 @@ test('generic Agent reducer exposes approvals and user input but hides thinking 
   assert.equal(turn.phase, 'thinking');
   assert.equal(turn.activity, '思考中');
   turn = apply(turn, { type: 'thinking-delta', runId: 'run-1', text: 'private reasoning' });
+  assert.equal(turn.assistantText, '');
+  assert.deepEqual(turn.items.map((item) => item.type), ['thinking']);
+  assert.equal(turn.items[0]?.type === 'thinking' ? turn.items[0].text : '', 'private reasoning');
   turn = apply(turn, {
     type: 'approval-request',
     runId: 'run-1',
@@ -90,7 +109,7 @@ test('generic Agent reducer exposes approvals and user input but hides thinking 
   });
 
   assert.equal(turn.assistantText, '');
-  assert.equal(turn.items.length, 0);
+  assert.equal(turn.items.length, 1);
   assert.equal(turn.pendingApprovalRequests?.[0]?.requestId, 'approval-1');
   assert.equal(turn.pendingUserInputRequests?.[0]?.requestId, 'question-1');
   assert.equal(turn.activity, '等待补充信息');

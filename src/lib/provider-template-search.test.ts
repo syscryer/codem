@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
+  agentChannelProtocolHint,
   filterProviderTemplates,
   filterProviderVendors,
   groupProviderTemplateChannels,
   groupProviderTemplates,
+  protocolsForAgent,
 } from './provider-template-search';
 import type { AiProviderTemplate } from '../types';
 
@@ -95,4 +97,30 @@ test('Agent 渠道设置使用两列厂商下拉并将渠道作为独立按钮�
   assert.match(agentChannelSettingsSource, /selectedVendorChannels\.map/);
   assert.match(agentChannelSettingsSource, /aria-label="Agent 渠道"/);
   assert.match(stylesSource, /\.agent-channel-template-menu \.ai-manager-vendor-options\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2,/);
+});
+
+test('Agent 渠道列表优先显示匹配的厂商图标', () => {
+  assert.match(
+    agentChannelSettingsSource,
+    /const channelTemplate = matchTemplate\(templates, channelToDraft\(channel\)\)/,
+  );
+  assert.match(
+    agentChannelSettingsSource,
+    /<ProviderBrandIcon icon=\{channelTemplate\.icon\} name=\{channelTemplate\.vendorName\} size=\{25\} \/>/,
+  );
+});
+
+test('Agent 渠道接口矩阵使用真实运行协议并让 Grok 默认选择 OpenAI Chat', () => {
+  assert.deepEqual(protocolsForAgent('claude-code'), ['anthropic_messages']);
+  assert.deepEqual(protocolsForAgent('openai-codex'), ['openai_responses', 'openai_chat']);
+  assert.deepEqual(protocolsForAgent('grok-build'), [
+    'openai_chat',
+    'openai_responses',
+    'anthropic_messages',
+  ]);
+  assert.deepEqual(protocolsForAgent('opencode'), ['openai_chat', 'anthropic_messages']);
+  assert.match(
+    agentChannelProtocolHint('grok-build', 'openai_responses'),
+    /上游明确提供 \/responses.*OpenAI Chat/,
+  );
 });

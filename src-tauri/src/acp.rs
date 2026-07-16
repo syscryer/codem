@@ -40,7 +40,9 @@ impl AcpError {
         match self {
             Self::Io(_) => "ACP 子进程通信失败",
             Self::Json(_) => "ACP Provider 返回了无效 JSON",
-            Self::Rpc { .. } => "ACP Provider 拒绝了请求",
+            Self::Rpc { .. } => {
+                "ACP Provider 请求失败，请检查渠道接口类型、API 地址、模型或认证配置"
+            }
             Self::Protocol(_) => "ACP Provider 返回了不兼容的协议消息",
             Self::Timeout(_) => "ACP Provider 响应超时",
         }
@@ -260,7 +262,7 @@ pub struct AcpUserInputRequest {
 )]
 pub enum AcpRuntimeEvent {
     TextDelta { text: String },
-    ThoughtChunk,
+    ThoughtChunk { text: String },
     Usage { usage: AgentUsageSnapshot },
     ToolCall { call: AcpToolCall },
     ToolCallUpdate { update: AcpToolCallUpdate },
@@ -1823,7 +1825,15 @@ fn collect_session_update(
         }
         "agent_thought_chunk" => {
             outcome.thought_chunk_count += 1;
-            return vec![AcpRuntimeEvent::ThoughtChunk];
+            if let Some(text) = update
+                .pointer("/content/text")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+            {
+                return vec![AcpRuntimeEvent::ThoughtChunk {
+                    text: bounded_string(text, MAX_EVENT_TEXT_BYTES),
+                }];
+            }
         }
         "usage_update" => {
             if let Some(usage) = parse_session_usage_update(update) {
@@ -2050,9 +2060,22 @@ fn configure_background_command(_command: &mut Command) {}
 mod tests {
     use super::{
         collect_session_update, parse_acp_usage, parse_session_usage_update,
-        summarize_initialize_result, AcpConnection, AcpEmbeddedResource, AcpPermissionPolicy,
-        AcpPromptCapabilities, AcpPromptInput, AcpPromptOutcome, AcpRuntimeEvent, AcpStdioClient,
+        summarize_initialize_result, AcpConnection, AcpEmbeddedResource, AcpError,
+        AcpPermissionPolicy, AcpPromptCapabilities, AcpPromptInput, AcpPromptOutcome,
+        AcpRuntimeEvent, AcpStdioClient,
     };
+
+    #[test]
+    fn acp_rpc_error_points_to_channel_configuration_without_exposing_details() {
+        let error = AcpError::Rpc {
+            code: -32603,
+            message: "upstream secret response".to_string(),
+        };
+        let public_message = error.public_message();
+        assert!(public_message.contains("渠道接口类型"));
+        assert!(public_message.contains("认证配置"));
+        assert!(!public_message.contains("secret"));
+    }
 
     #[test]
     fn acp_usage_separates_cached_input_and_keeps_cost() {
@@ -2571,7 +2594,7 @@ mod tests {
                         "sessionId": "session-1",
                         "update": {
                             "sessionUpdate": "agent_thought_chunk",
-                            "content": { "type": "text", "text": "private reasoning" }
+                            "content": { "type": "text", "text": "checking project files" }
                         }
                     }
                 }),
@@ -2774,7 +2797,10 @@ mod tests {
         assert_eq!(input_ack.await.unwrap(), Ok(()));
         assert_eq!(outcome.text, "hello");
         assert_eq!(outcome.thought_chunk_count, 1);
-        assert!(matches!(events[0], AcpRuntimeEvent::ThoughtChunk));
+        assert!(matches!(
+            &events[0],
+            AcpRuntimeEvent::ThoughtChunk { text } if text == "checking project files"
+        ));
         assert!(matches!(events[1], AcpRuntimeEvent::ToolCall { .. }));
         assert!(matches!(
             events[2],
@@ -2803,7 +2829,7 @@ mod tests {
         assert!(matches!(events[6], AcpRuntimeEvent::ToolCallUpdate { .. }));
         assert!(matches!(events[7], AcpRuntimeEvent::TextDelta { .. }));
         let serialized_events = serde_json::to_string(&events).unwrap();
-        assert!(!serialized_events.contains("private reasoning"));
+        assert!(serialized_events.contains("checking project files"));
         assert!(!serialized_events.contains("do-not-leak"));
         assert!(!serialized_events.contains("private-proxy"));
         assert!(!serialized_events.contains("private-account"));

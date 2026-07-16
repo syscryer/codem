@@ -1,4 +1,5 @@
 import {
+  appendThinkingItem,
   appendTextItem,
   attachToolResult,
   closeTurnWithoutTerminalEvent,
@@ -58,6 +59,17 @@ export function applyAgentRunEventToTurn(
         phase: 'computing',
       };
     }
+    case 'thinking-delta':
+      if (!event.text) {
+        return current;
+      }
+      return {
+        ...current,
+        status: 'running',
+        items: appendThinkingItem(current.items, event.text),
+        activity: '思考中',
+        phase: 'thinking',
+      };
     case 'phase':
       return {
         ...current,
@@ -153,7 +165,6 @@ export function applyAgentRunEventToTurn(
         pendingApprovalRequests: [],
       };
     }
-    case 'thinking-delta':
     case 'trace':
     case 'claude-event':
     case 'assistant-snapshot':

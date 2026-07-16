@@ -222,6 +222,10 @@ pub enum AgentRunEvent {
         run_id: String,
         text: String,
     },
+    ThinkingDelta {
+        run_id: String,
+        text: String,
+    },
     Usage {
         run_id: String,
         #[serde(flatten)]
@@ -713,5 +717,19 @@ mod tests {
         assert_eq!(approval["runId"], "run-1");
         assert_eq!(approval["request"]["requestId"], "request-1");
         assert_eq!(approval["request"]["options"][0]["id"], "allow-once");
+
+        let thinking = serde_json::to_value(AgentRunEvent::ThinkingDelta {
+            run_id: "run-1".to_string(),
+            text: "checking files".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            thinking,
+            json!({
+                "type": "thinking-delta",
+                "runId": "run-1",
+                "text": "checking files"
+            })
+        );
     }
 }

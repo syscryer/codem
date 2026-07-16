@@ -28,6 +28,7 @@
 
 ```ts
 turn.items = [
+  { type: 'thinking' },
   { type: 'text' },
   { type: 'tool' },
   { type: 'request-user-input' },
@@ -39,6 +40,14 @@ turn.items = [
 `turn.tools` 可以保留为工具索引或兼容字段，但不应单独决定布局位置。
 
 `pendingUserInputRequests` 和 `pendingApprovalRequests` 可以短期保留给“查找待处理请求”和提交流程使用，但不应作为尾部渲染列表。否则会和 `items` 顺序产生重复或错位。
+
+公开思考文本规则：
+
+- backend 的 `thinking-delta` 应追加到 `turn.items` 的 Thinking item，不能追加到 `assistantText`。
+- 连续 thought chunk 合并为同一个 Thinking item；被文本或工具事件隔开后再创建新的 Thinking item，保持真实事件顺序。
+- Thinking 使用统一折叠组件；运行中可以看到内容变化，完成后默认折叠并允许用户展开。
+- 只有 Agent/模型通过公开协议明确返回的思考文本才展示，不从状态、工具参数或最终回答推断思考过程。
+- SQLite 历史恢复必须继续返回 Thinking item，刷新后不能把它降级为 Text item 或重新混入 `assistantText`。
 
 ### 2. AI 提问和审批是 timeline item
 

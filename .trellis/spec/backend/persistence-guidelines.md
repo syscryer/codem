@@ -22,6 +22,8 @@
 - Agent 线程的 `model` / `reasoning_effort` 保存当前快照；每个模型的思考偏好保存到 `thread_model_preferences`
 - Provider 默认模型的偏好键固定为 `__default`，不能替换成运行时动态解析出的模型 id
 - 创建线程时 provider、权限、模型、思考级别和首个模型偏好需要在同一事务中写入
+- Agent timeline 的 `messages.role` 表示消息角色，`messages.item_type` 表示 text/thinking/system-command 等 item 类型；两者不能混用。
+- Thinking item 必须按原 item_sort 持久化和恢复，不得在读取历史时降级为 text，也不得拼入 `assistantText`。
 
 ## 风险点
 
@@ -35,3 +37,4 @@
 - 是否需要数据迁移
 - 是否影响 frontend bootstrap payload
 - 是否会把 API Key、附件正文、base64 或思考原文写入历史/trace
+- text/thinking/tool/system-command 的顺序和类型在刷新后是否与实时 timeline 一致

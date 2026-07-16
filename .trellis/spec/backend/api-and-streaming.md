@@ -15,9 +15,17 @@
   - status
   - phase
   - delta
+  - thinking-delta
   - tool-start / tool-input-delta / tool-stop / tool-result
   - done / error
 - 新增 Claude Code tool 语义映射时，必须同时检查 transcript parser、stored history 和实时 stream 三条路径
+
+## 思考事件规则
+
+- Agent 通过公开协议明确返回的思考文本可以映射为 `thinking-delta`，但不得读取、推断或伪造模型未公开的隐藏思维链。
+- `thinking-delta` 只进入 Thinking timeline item，不得拼入最终回答文本。
+- ACP `agent_thought_chunk` 的文本必须经过事件大小限制，再交给 frontend 按顺序合并。
+- 没有公开思考文本时可以只发送 `phase=thinking`，不能用状态文案冒充思考内容。
 
 ## done / error 规则
 
@@ -65,6 +73,7 @@
 ## Conversation Timeline 规则
 
 - streaming event、Claude JSONL transcript、SQLite stored history 应尽量生成一致的 turn timeline
+- SQLite stored history 必须保留 `thinking` item 类型；`assistantText` 只聚合最终可见 text，不包含 Thinking 内容
 - `request_user_input` / `ask_user_question` / approval 类 tool_use 不应只作为普通工具日志处理，它们需要保留可交互卡片语义
 - 后端改 transcript parser 或 stored history 结构时，需要同步检查 frontend `Conversation Rendering Model`
 

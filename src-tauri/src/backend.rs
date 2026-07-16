@@ -197,6 +197,7 @@ struct MessageRow {
     turn_sort: i64,
     item_sort: i64,
     role: String,
+    item_type: Option<String>,
     content: String,
     status: Option<String>,
     activity: Option<String>,
@@ -5512,6 +5513,7 @@ fn initialize_workspace_database(connection: &Connection) -> ApiResult<()> {
               turn_sort INTEGER NOT NULL,
               item_sort INTEGER NOT NULL,
               role TEXT NOT NULL,
+              item_type TEXT,
               content TEXT NOT NULL,
               status TEXT,
               activity TEXT,
@@ -5574,6 +5576,7 @@ fn initialize_workspace_database(connection: &Connection) -> ApiResult<()> {
             )?;
             ensure_column(connection, "tool_calls", "subtools_json", "TEXT")?;
             ensure_column(connection, "tool_calls", "sub_messages_json", "TEXT")?;
+            ensure_column(connection, "messages", "item_type", "TEXT")?;
             ensure_column(connection, "messages", "phase", "TEXT")?;
             ensure_column(connection, "messages", "started_at_ms", "INTEGER")?;
             ensure_column(connection, "messages", "duration_ms", "INTEGER")?;
@@ -7154,7 +7157,7 @@ fn read_stored_thread_history(connection: &Connection, thread_id: &str) -> ApiRe
                    phase, started_at_ms, duration_ms, input_tokens, output_tokens,
                    cache_creation_input_tokens, cache_read_input_tokens, context_usage_json,
                    total_cost_usd, pending_approval_requests_json, user_attachments_json,
-                   user_content_blocks_json
+                   user_content_blocks_json, item_type
             FROM messages
             WHERE thread_id = ?
             ORDER BY turn_sort ASC, item_sort ASC, CASE role WHEN 'user' THEN 0 ELSE 1 END ASC
@@ -7169,6 +7172,7 @@ fn read_stored_thread_history(connection: &Connection, thread_id: &str) -> ApiRe
                     turn_sort: row.get(1)?,
                     item_sort: row.get(2)?,
                     role: row.get(3)?,
+                    item_type: row.get(21)?,
                     content: row.get(4)?,
                     status: row.get(5)?,
                     activity: row.get(6)?,
@@ -7251,11 +7255,15 @@ fn read_stored_thread_history(connection: &Connection, thread_id: &str) -> ApiRe
                     .push((row.item_sort, item));
             }
         } else if row.role == "assistant" && !row.content.trim().is_empty() {
+            let item_type = match row.item_type.as_deref() {
+                Some("thinking") => "thinking",
+                _ => "text",
+            };
             item_buckets.entry(row.turn_id).or_default().push((
                 row.item_sort,
                 json!({
                     "id": uuid::Uuid::new_v4().to_string(),
-                    "type": "text",
+                    "type": item_type,
                     "text": row.content,
                 }),
             ));
@@ -7343,7 +7351,7 @@ fn apply_message_row_to_turn(turn: &mut Value, row: &MessageRow) {
             "userContentBlocks",
             row.user_content_blocks_json.as_deref(),
         );
-    } else if row.role == "assistant" {
+    } else if row.role == "assistant" && row.item_type.as_deref() != Some("thinking") {
         let assistant_text = turn
             .get("assistantText")
             .and_then(Value::as_str)
@@ -7395,6 +7403,7 @@ fn write_thread_history(
             turn_index as i64,
             0,
             "user",
+            Some("user"),
             turn.get("userText")
                 .and_then(Value::as_str)
                 .unwrap_or_default(),
@@ -7422,7 +7431,7 @@ fn write_thread_history(
         };
         for (item_index, item) in items.unwrap_or(fallback_items).iter().enumerate() {
             match item.get("type").and_then(Value::as_str) {
-                Some("text") | Some("thinking") => {
+                Some(item_type @ ("text" | "thinking")) => {
                     insert_message_row(
                         &transaction,
                         thread_id,
@@ -7430,6 +7439,7 @@ fn write_thread_history(
                         turn_index as i64,
                         item_index as i64,
                         "assistant",
+                        Some(item_type),
                         item.get("text").and_then(Value::as_str).unwrap_or_default(),
                         turn,
                         &created_at,
@@ -7444,6 +7454,7 @@ fn write_thread_history(
                         turn_index as i64,
                         item_index as i64,
                         "system-command",
+                        Some("system-command"),
                         &serde_json::to_string(item).unwrap_or_default(),
                         turn,
                         &created_at,
@@ -7493,6 +7504,7 @@ fn insert_message_row(
     turn_sort: i64,
     item_sort: i64,
     role: &str,
+    item_type: Option<&str>,
     content: &str,
     turn: &Value,
     created_at: &str,
@@ -7502,12 +7514,12 @@ fn insert_message_row(
         .execute(
             r#"
             INSERT INTO messages (
-              id, thread_id, turn_id, turn_sort, item_sort, role, content, status, activity, metrics,
+              id, thread_id, turn_id, turn_sort, item_sort, role, item_type, content, status, activity, metrics,
               session_id, phase, started_at_ms, duration_ms, input_tokens, output_tokens,
               cache_creation_input_tokens, cache_read_input_tokens, context_usage_json, total_cost_usd,
               pending_approval_requests_json, user_attachments_json, user_content_blocks_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
             params![
                 uuid::Uuid::new_v4().to_string(),
@@ -7516,6 +7528,7 @@ fn insert_message_row(
                 turn_sort,
                 item_sort,
                 role,
+                item_type,
                 content,
                 turn.get("status")
                     .and_then(Value::as_str)
@@ -17185,13 +17198,14 @@ mod tests {
         mark_request_user_input_submitted, normalize_agent_plugin_action,
         normalize_agent_runtime_settings, normalize_request_user_input_answer_value,
         parse_grok_cli_version, parse_grok_latest_version, parse_npm_latest_version,
-        parse_request_user_input_event, read_opencode_mcp_config, read_thread_detail,
-        read_thread_summary, remove_thread_row, resolve_codex_command, resolve_grok_command,
-        resolve_opencode_command, resolve_requested_thread_provider,
+        parse_request_user_input_event, read_opencode_mcp_config, read_stored_thread_history,
+        read_thread_detail, read_thread_summary, remove_thread_row, resolve_codex_command,
+        resolve_grok_command, resolve_opencode_command, resolve_requested_thread_provider,
         resolve_thread_create_permission_mode, resolve_workspace_relative_path,
         sanitize_agent_lifecycle_output, search_workspace_files, select_claude_command_candidate,
         summarize_content_blocks, update_thread_metadata_from_payload, validate_desktop_file_path,
-        validate_managed_agent_skill_path, write_opencode_mcp_config, ApiError, AppState,
+        validate_managed_agent_skill_path, write_opencode_mcp_config, write_thread_history,
+        ApiError, AppState,
     };
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
@@ -18016,6 +18030,101 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("collect thread columns");
         assert!(columns.iter().any(|column| column == "reasoning_effort"));
+    }
+
+    #[test]
+    fn workspace_database_adds_item_type_to_existing_messages_table() {
+        let connection = Connection::open_in_memory().expect("open database");
+        connection
+            .execute(
+                "CREATE TABLE messages (id TEXT PRIMARY KEY, thread_id TEXT, turn_sort INTEGER, item_sort INTEGER, role TEXT)",
+                [],
+            )
+            .expect("create legacy messages table");
+
+        initialize_workspace_database(&connection).expect("upgrade database");
+
+        let mut statement = connection
+            .prepare("PRAGMA table_info(messages)")
+            .expect("read message columns");
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query message columns")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect message columns");
+        assert!(columns.iter().any(|column| column == "item_type"));
+    }
+
+    #[test]
+    fn thread_history_round_trip_preserves_thinking_items() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        connection
+            .execute(
+                "INSERT INTO projects (id, path, name, custom_name, created_at, updated_at) VALUES ('project', 'D:/workspace', 'workspace', 0, '2026-07-16T00:00:00.000Z', '2026-07-16T00:00:00.000Z')",
+                [],
+            )
+            .expect("insert project");
+        let thread_id = create_thread_row(
+            &mut connection,
+            "project",
+            Some("OpenCode thinking"),
+            OPENCODE_PROVIDER_ID,
+            Some("bypassPermissions"),
+            Some("MiniMax-M3"),
+            None,
+            None,
+        )
+        .expect("create thread");
+        let turns = vec![json!({
+            "id": "turn-1",
+            "userText": "你是哪个模型",
+            "assistantText": "我是 MiniMax-M3。",
+            "status": "done",
+            "tools": [],
+            "items": [
+                {
+                    "id": "thinking-1",
+                    "type": "thinking",
+                    "text": "先确认当前模型。"
+                },
+                {
+                    "id": "text-1",
+                    "type": "text",
+                    "text": "我是 MiniMax-M3。"
+                }
+            ]
+        })];
+
+        write_thread_history(&mut connection, &thread_id, &turns).expect("write history");
+
+        let stored_types = connection
+            .prepare(
+                "SELECT role, item_type FROM messages WHERE thread_id = ? ORDER BY item_sort, CASE role WHEN 'user' THEN 0 ELSE 1 END",
+            )
+            .expect("read stored item types")
+            .query_map(params![thread_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .expect("query stored item types")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect stored item types");
+        assert_eq!(
+            stored_types,
+            vec![
+                ("user".to_string(), Some("user".to_string())),
+                ("assistant".to_string(), Some("thinking".to_string())),
+                ("assistant".to_string(), Some("text".to_string())),
+            ]
+        );
+
+        let restored = read_stored_thread_history(&connection, &thread_id).expect("read history");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0]["assistantText"], "我是 MiniMax-M3。");
+        assert_eq!(restored[0]["items"][0]["type"], "thinking");
+        assert_eq!(restored[0]["items"][0]["text"], "先确认当前模型。");
+        assert_eq!(restored[0]["items"][1]["type"], "text");
+        assert_eq!(restored[0]["items"][1]["text"], "我是 MiniMax-M3。");
     }
 
     #[test]

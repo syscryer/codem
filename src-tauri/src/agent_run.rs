@@ -1344,17 +1344,8 @@ async fn spawn_acp_client(
     working_directory: &Path,
     environment: &BTreeMap<String, String>,
 ) -> Result<AcpStdioClient, AcpError> {
-    match provider_id {
-        GROK_BUILD_PROVIDER_ID => {
-            let arguments = grok_acp_arguments(permission_mode);
-            AcpStdioClient::spawn_with_env(command, &arguments, working_directory, environment)
-                .await
-        }
-        OPENCODE_PROVIDER_ID => AcpStdioClient::spawn(command, &["acp"], working_directory).await,
-        _ => Err(AcpError::Protocol(
-            "当前 Provider 没有可用 ACP 启动配置".to_string(),
-        )),
-    }
+    let arguments = acp_arguments(provider_id, permission_mode)?;
+    AcpStdioClient::spawn_with_env(command, &arguments, working_directory, environment).await
 }
 
 async fn prepare_acp_session(
@@ -2462,9 +2453,14 @@ impl AcpEventMapper {
                     text,
                 }]
             }
-            AcpRuntimeEvent::ThoughtChunk | AcpRuntimeEvent::InteractionResolved { .. } => {
-                self.set_phase("thinking", "思考中")
+            AcpRuntimeEvent::ThoughtChunk { text } => {
+                self.current_phase = Some("thinking");
+                vec![AgentRunEvent::ThinkingDelta {
+                    run_id: self.run_id.clone(),
+                    text,
+                }]
             }
+            AcpRuntimeEvent::InteractionResolved { .. } => self.set_phase("thinking", "思考中"),
             AcpRuntimeEvent::Usage { usage } => vec![AgentRunEvent::Usage {
                 run_id: self.run_id.clone(),
                 usage,
@@ -3308,6 +3304,19 @@ fn grok_acp_arguments(permission_mode: &'static str) -> [&'static str; 4] {
     ["--permission-mode", permission_mode, "agent", "stdio"]
 }
 
+fn acp_arguments(
+    provider_id: &str,
+    permission_mode: &'static str,
+) -> Result<Vec<&'static str>, AcpError> {
+    match provider_id {
+        GROK_BUILD_PROVIDER_ID => Ok(grok_acp_arguments(permission_mode).to_vec()),
+        OPENCODE_PROVIDER_ID => Ok(vec!["acp"]),
+        _ => Err(AcpError::Protocol(
+            "当前 Provider 没有可用 ACP 启动配置".to_string(),
+        )),
+    }
+}
+
 fn acp_permission_policy(provider_id: &str, permission_mode: &'static str) -> AcpPermissionPolicy {
     if provider_id != OPENCODE_PROVIDER_ID {
         return AcpPermissionPolicy::Interactive;
@@ -3330,7 +3339,7 @@ fn should_set_acp_model(
 #[cfg(test)]
 mod tests {
     use super::{
-        acp_permission_policy, build_acp_prompt, build_codex_input,
+        acp_arguments, acp_permission_policy, build_acp_prompt, build_codex_input,
         cancelled_before_prompt_outcome, grok_acp_arguments, normalize_agent_input,
         parse_opencode_models, read_cached_agent_command, read_cached_agent_model_catalog,
         runtime_can_reuse, should_set_acp_model, store_cached_agent_command,
@@ -3507,6 +3516,18 @@ mod tests {
         assert_eq!(
             grok_acp_arguments("bypassPermissions"),
             ["--permission-mode", "bypassPermissions", "agent", "stdio"]
+        );
+    }
+
+    #[test]
+    fn opencode_acp_uses_the_shared_environment_aware_spawn_path() {
+        assert_eq!(
+            acp_arguments("opencode", "bypassPermissions").expect("OpenCode ACP arguments"),
+            vec!["acp"]
+        );
+        assert_eq!(
+            acp_arguments("grok-build", "auto").expect("Grok ACP arguments"),
+            vec!["--permission-mode", "auto", "agent", "stdio"]
         );
     }
 
@@ -3989,8 +4010,12 @@ mod tests {
             ] if phase == "thinking"
         ));
         assert!(matches!(
-            mapper.map_event(AcpRuntimeEvent::ThoughtChunk).as_slice(),
-            []
+            mapper
+                .map_event(AcpRuntimeEvent::ThoughtChunk {
+                    text: "checking".to_string()
+                })
+                .as_slice(),
+            [AgentRunEvent::ThinkingDelta { text, .. }] if text == "checking"
         ));
         assert!(matches!(
             mapper
@@ -4001,8 +4026,12 @@ mod tests {
             [AgentRunEvent::Delta { .. }]
         ));
         assert!(matches!(
-            mapper.map_event(AcpRuntimeEvent::ThoughtChunk).as_slice(),
-            [AgentRunEvent::Phase { phase, .. }] if phase == "thinking"
+            mapper
+                .map_event(AcpRuntimeEvent::ThoughtChunk {
+                    text: "more".to_string()
+                })
+                .as_slice(),
+            [AgentRunEvent::ThinkingDelta { text, .. }] if text == "more"
         ));
         assert!(matches!(
             usage.as_slice(),
