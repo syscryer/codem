@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { memo, useDeferredValue, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
@@ -491,6 +491,8 @@ function MarkdownMessage({
   content: string;
   onPreviewImage: (preview: MarkdownImagePreviewPayload) => void;
 }) {
+  const deferredContent = useDeferredValue(content);
+
   return (
     <div className="message-body markdown-body">
       <ReactMarkdown
@@ -513,7 +515,7 @@ function MarkdownMessage({
           },
         }}
       >
-        {content}
+        {deferredContent}
       </ReactMarkdown>
     </div>
   );

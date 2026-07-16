@@ -1307,7 +1307,6 @@ export function useAgentRun({
         text,
       }),
     );
-    schedulePersistThreadHistory(context.threadId);
   }
 
   async function stopRun(threadId = activeThreadId ?? undefined) {

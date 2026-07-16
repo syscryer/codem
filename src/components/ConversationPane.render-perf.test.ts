@@ -15,12 +15,27 @@ test('ConversationPane passes stable callbacks to memoized turns', () => {
     'stableSubmitRequestUserInput',
     'stableSubmitRuntimeRecoveryAction',
     'stableSubmitApprovalDecision',
+    'stableEditUserMessage',
+    'stableDeleteTurn',
+    'stableRegenerateTurn',
   ];
 
   for (const callbackName of stableCallbacks) {
     assert.match(source, new RegExp(`const ${callbackName} = useLatestCallback\\(`));
-    assert.match(source, new RegExp(`\\{${callbackName}\\}`));
+    assert.match(source, new RegExp(callbackName));
   }
+});
+
+test('ConversationPane automatically pages older turns near the top and preserves the viewport', () => {
+  assert.match(source, /const INITIAL_VISIBLE_TURN_COUNT = 20;/);
+  assert.match(source, /const VISIBLE_TURN_PAGE_SIZE = 20;/);
+  assert.match(source, /const HISTORY_AUTO_LOAD_THRESHOLD_PX = 240;/);
+  assert.match(source, /const visibleTurns = allTurns\.slice\(firstVisibleTurnIndex\);/);
+  assert.match(source, /transcript\.scrollTop > HISTORY_AUTO_LOAD_THRESHOLD_PX/);
+  assert.match(source, /scrollHeight: transcript\.scrollHeight/);
+  assert.match(source, /transcript\.scrollTop = anchor\.scrollTop \+ Math\.max\(0, addedHeight\)/);
+  assert.doesNotMatch(source, /显示更早消息/);
+  assert.doesNotMatch(source, /activeThread\.turns\.map\(\(turn, index\)/);
 });
 
 test('ConversationPane only ticks nowMs for the live running turn', () => {

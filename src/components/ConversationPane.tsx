@@ -16,7 +16,10 @@ import type {
 } from '../types';
 
 const BOTTOM_ANCHOR_THRESHOLD_PX = 96;
+const HISTORY_AUTO_LOAD_THRESHOLD_PX = 240;
 const EMPTY_PREVIOUS_TURNS: ConversationTurn[] = [];
+const INITIAL_VISIBLE_TURN_COUNT = 20;
+const VISIBLE_TURN_PAGE_SIZE = 20;
 
 type ConversationScrollPosition = {
   scrollTop: number;
@@ -104,9 +107,11 @@ export function ConversationPane({
   onRegenerateTurn,
 }: ConversationPaneProps) {
   const [showBottomAnchor, setShowBottomAnchor] = useState(false);
+  const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURN_COUNT);
   const shouldAutoFollowRef = useRef(true);
   const previousThreadIdRef = useRef<string | null>(null);
   const scrollPositionsByThreadIdRef = useRef<Map<string, ConversationScrollPosition>>(new Map());
+  const historyLoadAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   const latestChangedFilesTurnId = activeThread ? findLatestChangedFilesTurnId(activeThread.turns) : null;
   const stableOpenWorkbenchPreview = useLatestCallback(onOpenWorkbenchPreview);
   const stableOpenOutputPath = useLatestCallback(onOpenOutputPath);
@@ -115,6 +120,26 @@ export function ConversationPane({
   const stableSubmitRequestUserInput = useLatestCallback(onSubmitRequestUserInput);
   const stableSubmitRuntimeRecoveryAction = useLatestCallback(onSubmitRuntimeRecoveryAction);
   const stableSubmitApprovalDecision = useLatestCallback(onSubmitApprovalDecision);
+  const stableEditUserMessage = useLatestCallback(onEditUserMessage ?? (() => undefined));
+  const stableDeleteTurn = useLatestCallback(onDeleteTurn ?? (() => undefined));
+  const stableRegenerateTurn = useLatestCallback(onRegenerateTurn ?? (() => undefined));
+
+  useEffect(() => {
+    setVisibleTurnCount(INITIAL_VISIBLE_TURN_COUNT);
+    historyLoadAnchorRef.current = null;
+  }, [activeThread?.id]);
+
+  useLayoutEffect(() => {
+    const anchor = historyLoadAnchorRef.current;
+    const transcript = transcriptRef.current;
+    if (!anchor || !transcript) {
+      return;
+    }
+
+    const addedHeight = transcript.scrollHeight - anchor.scrollHeight;
+    transcript.scrollTop = anchor.scrollTop + Math.max(0, addedHeight);
+    historyLoadAnchorRef.current = null;
+  }, [visibleTurnCount, transcriptRef]);
 
   function syncBottomAnchorVisibility() {
     const transcript = transcriptRef.current;
@@ -138,6 +163,30 @@ export function ConversationPane({
     );
   }
 
+  function handleTranscriptScroll() {
+    syncBottomAnchorVisibility();
+
+    const transcript = transcriptRef.current;
+    if (
+      !transcript
+      || transcript.scrollTop > HISTORY_AUTO_LOAD_THRESHOLD_PX
+      || historyLoadAnchorRef.current
+    ) {
+      return;
+    }
+
+    const turnCount = activeThread?.turns.length ?? 0;
+    if (visibleTurnCount >= turnCount) {
+      return;
+    }
+
+    historyLoadAnchorRef.current = {
+      scrollHeight: transcript.scrollHeight,
+      scrollTop: transcript.scrollTop,
+    };
+    setVisibleTurnCount((count) => Math.min(turnCount, count + VISIBLE_TURN_PAGE_SIZE));
+  }
+
   useEffect(() => {
     const transcript = transcriptRef.current;
     if (!transcript) {
@@ -146,14 +195,14 @@ export function ConversationPane({
     }
 
     syncBottomAnchorVisibility();
-    transcript.addEventListener('scroll', syncBottomAnchorVisibility, { passive: true });
+    transcript.addEventListener('scroll', handleTranscriptScroll, { passive: true });
     window.addEventListener('resize', syncBottomAnchorVisibility);
 
     return () => {
-      transcript.removeEventListener('scroll', syncBottomAnchorVisibility);
+      transcript.removeEventListener('scroll', handleTranscriptScroll);
       window.removeEventListener('resize', syncBottomAnchorVisibility);
     };
-  }, [activeThread?.id, activeThread?.turns.length, transcriptRef]);
+  }, [activeThread?.id, activeThread?.turns.length, transcriptRef, visibleTurnCount]);
 
   useLayoutEffect(() => {
     const threadId = activeThread?.id ?? null;
@@ -231,6 +280,9 @@ export function ConversationPane({
           activeProjectName,
         })
     : null;
+  const allTurns = activeThread?.turns ?? EMPTY_PREVIOUS_TURNS;
+  const firstVisibleTurnIndex = Math.max(0, allTurns.length - visibleTurnCount);
+  const visibleTurns = allTurns.slice(firstVisibleTurnIndex);
 
   return (
     <div className="conversation-shell">
@@ -266,14 +318,16 @@ export function ConversationPane({
             ) : null}
           </div>
         ) : (
-          activeThread.turns.map((turn, index) => {
-            const canUndoChangedFiles = turn.id === latestChangedFilesTurnId && undoneTurnIds[turn.id] !== true;
-            const previousTurns = canUndoChangedFiles
-              ? activeThread.turns.slice(0, index)
-              : EMPTY_PREVIOUS_TURNS;
+          <>
+            {visibleTurns.map((turn, visibleIndex) => {
+              const index = firstVisibleTurnIndex + visibleIndex;
+              const canUndoChangedFiles = turn.id === latestChangedFilesTurnId && undoneTurnIds[turn.id] !== true;
+              const previousTurns = canUndoChangedFiles
+                ? activeThread.turns.slice(0, index)
+                : EMPTY_PREVIOUS_TURNS;
 
-            return (
-              <ConversationTurnView
+              return (
+                <ConversationTurnView
                 key={turn.id}
                 turn={turn}
                 nowMs={isRunning && turn.id === activeTurnId ? clockNowMs : 0}
@@ -292,12 +346,13 @@ export function ConversationPane({
                 onSubmitRequestUserInput={stableSubmitRequestUserInput}
                 onSubmitRuntimeRecoveryAction={stableSubmitRuntimeRecoveryAction}
                 onSubmitApprovalDecision={stableSubmitApprovalDecision}
-                onEditUserMessage={onEditUserMessage}
-                onDeleteTurn={onDeleteTurn}
-                onRegenerateTurn={onRegenerateTurn}
-              />
-            );
-          })
+                onEditUserMessage={onEditUserMessage ? stableEditUserMessage : undefined}
+                onDeleteTurn={onDeleteTurn ? stableDeleteTurn : undefined}
+                onRegenerateTurn={onRegenerateTurn ? stableRegenerateTurn : undefined}
+                />
+              );
+            })}
+          </>
         )}
         <div ref={bottomRef} />
       </section>
