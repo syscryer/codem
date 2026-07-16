@@ -32,10 +32,10 @@ Out of scope:
 
 ## Acceptance Criteria
 
-- [ ] 所有 CodeM 版本元数据一致为 `0.1.12`。
-- [ ] 发布脚本测试、前端全量测试、类型检查、Rust 全量测试、package doctor 和 diff check 通过。
-- [ ] 版本提交依次推送到 Gitee 和 GitHub，`v0.1.12` 标签仅推送到 GitHub。
-- [ ] GitHub Release workflow 全部成功并生成各平台安装包、签名、`latest.json` 和 `SHA256SUMS.txt`。
+- [x] 所有 CodeM 版本元数据一致为 `0.1.12`。
+- [x] 发布脚本测试、前端全量测试、类型检查、Rust 全量测试、package doctor 和 diff check 通过。
+- [x] 版本提交依次推送到 Gitee 和 GitHub，`v0.1.12` 标签仅推送到 GitHub。
+- [x] GitHub Release workflow 全部成功并生成各平台安装包、签名、`latest.json` 和 `SHA256SUMS.txt`。
 
 ## Verification Commands
 
@@ -48,11 +48,19 @@ Out of scope:
 - 版本一致性检查
 
 ## Implementation Record
+
+- 2026-07-16T16:58:46.306Z GitHub Actions 继续报告 actions/*@v4 的 Node.js 20 弃用提示，runner 已强制使用 Node.js 24，本次构建与发布不受影响；按任务边界留待后续升级 action 主版本。
 - 2026-07-16T16:41:48.296Z 已从 Gitee origin/main 快进拉取到 e985b7c，并确认 GitHub main 同步；发布范围为 v0.1.11 后的 Agent 渠道协议、思考展示和长会话性能优化。CodeM 五处版本元数据已统一升级到 0.1.12，历史标签和本机未跟踪文件保持不动。
 
 - 2026-07-16T16:40:53.941Z Task created by Trellis automation.
 
 ## Verification Results
+- 2026-07-16T16:58:45.529Z `remote refs`: 通过：Gitee main、GitHub main 和 GitHub v0.1.12 均指向发布提交 4f1fd5f。
+
+- 2026-07-16T16:58:44.727Z `GitHub latest.json`: 通过：version=0.1.12，windows-x86_64、darwin-aarch64、linux-x86_64 均指向 v0.1.12 签名资产。
+- 2026-07-16T16:58:43.843Z `GitHub Release v0.1.12 assets`: 通过：正式版包含 19 个资产，Windows EXE/MSI/portable、macOS DMG/app、Linux AppImage/deb/rpm、updater 签名、源码包、latest.json 和 SHA256SUMS.txt 齐全。
+
+- 2026-07-16T16:58:43.014Z `GitHub Actions run 29516909079`: 通过：Windows、macOS、Linux 构建和 Publish GitHub Release 全部 success。
 - 2026-07-16T16:43:27.678Z `版本一致性检查`: 通过：package、package-lock、Tauri、Cargo.toml 和 CodeM Cargo.lock 均为 0.1.12。
 
 - 2026-07-16T16:43:26.867Z `git diff --check`: 通过：无 whitespace 错误，仅有 Windows LF/CRLF 提示。
@@ -65,6 +73,7 @@ Out of scope:
 - 2026-07-16T16:43:22.806Z `node --test scripts/release-workflow.test.mjs scripts/release-assets.test.mjs scripts/generate-latest-json.test.mjs`: 通过：10 项发布工作流、资产收集与 latest.json 测试全部通过。
 
 ## Completion Summary
+- 2026-07-16T16:59:09.016Z 已从两个远端一致的 main 拉取到 e985b7c，并完成 v0.1.12 发布；版本提交 4f1fd5f 已同步 Gitee/GitHub，Windows、macOS、Linux 构建及 Release 发布全部通过，19 个安装、签名、源码、latest.json 和校验资产齐全。
 
 ## Follow-ups
 
