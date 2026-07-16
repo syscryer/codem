@@ -5,9 +5,10 @@ import {
   ChevronDown,
   CircleDashed,
   Clock3,
+  Copy,
+  Download,
   FileText,
   KeyRound,
-  Layers3,
   LoaderCircle,
   Network,
   RefreshCw,
@@ -32,10 +33,12 @@ import type {
 import type { AgentRuntimeSettingsUpdate } from '../../hooks/useAppSettings';
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss';
 import {
+  fetchAgentLatestVersion,
   fetchAgentSettingsDiagnostics,
   probeCodexAgent,
   probeGrokAgent,
   probeOpenCodeAgent,
+  runAgentLifecycleAction,
 } from '../../lib/agent-provider-registry';
 import {
   formatProviderCapabilityState,
@@ -45,6 +48,7 @@ import {
   getOpenCodeProbeStatusMessage,
   getProviderCapabilityGroups,
   getProviderModels,
+  reconcileProviderAvailability,
   resolveProviderDiagnostics,
   resolveProviderStatus,
   type ProviderCapabilityItem,
@@ -64,6 +68,7 @@ type AgentProviderSettingsProps = {
   providersError: string;
   onUpdateAgentRuntime: (update: AgentRuntimeSettingsUpdate) => void | Promise<void>;
   onRefreshProviders: () => Promise<void> | void;
+  showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
 };
 
 export function AgentProviderSettings({
@@ -74,11 +79,14 @@ export function AgentProviderSettings({
   providersError,
   onUpdateAgentRuntime,
   onRefreshProviders,
+  showToast,
 }: AgentProviderSettingsProps) {
   const [selectedProviderId, setSelectedProviderId] = useState('claude-code');
   const [claudeCliInfo, setClaudeCliInfo] = useState<ClaudeCliVersionInfo | null>(null);
   const [settingsDiagnostics, setSettingsDiagnostics] = useState<Partial<Record<AgentProviderId, AgentSettingsDiagnostics>>>({});
-  const [detailsLoading, setDetailsLoading] = useState(true);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState<Partial<Record<AgentProviderId, boolean>>>({});
+  const [diagnosticsErrors, setDiagnosticsErrors] = useState<Partial<Record<AgentProviderId, string>>>({});
+  const [latestVersionLoading, setLatestVersionLoading] = useState<Partial<Record<AgentProviderId, boolean>>>({});
   const [detailsError, setDetailsError] = useState('');
   const [grokProbeState, setGrokProbeState] = useState<ProviderProbeState>('idle');
   const [grokProbe, setGrokProbe] = useState<GrokAcpProbeResult | null>(null);
@@ -91,49 +99,126 @@ export function AgentProviderSettings({
   const [openCodeProbeError, setOpenCodeProbeError] = useState('');
   const [agentRuntimeSaving, setAgentRuntimeSaving] = useState(false);
   const [diagnosticCheckingProviderId, setDiagnosticCheckingProviderId] = useState<AgentProviderId | null>(null);
-  const detailsControllerRef = useRef<AbortController | null>(null);
+  const [lifecycleAction, setLifecycleAction] = useState<{ providerId: AgentProviderId; action: 'install' | 'update' } | null>(null);
+  const registrySyncAttemptsRef = useRef(new Set<string>());
+  const detailsControllersRef = useRef(new Map<AgentProviderId, AbortController>());
   const grokControllerRef = useRef<AbortController | null>(null);
   const codexControllerRef = useRef<AbortController | null>(null);
   const openCodeControllerRef = useRef<AbortController | null>(null);
 
-  const loadProviderDetails = useCallback(async () => {
-    detailsControllerRef.current?.abort();
-    const controller = new AbortController();
-    detailsControllerRef.current = controller;
-    setDetailsLoading(true);
+  const loadProviderDetails = useCallback(async (
+    requestedProviderIds?: AgentProviderId[],
+  ) => {
     setDetailsError('');
 
-    const providerIds: AgentProviderId[] = ['claude-code', 'openai-codex', 'grok-build', 'opencode'];
-    const [cliResults, diagnosticResults] = await Promise.all([
-      Promise.allSettled([readClaudeCliVersionInfo()]),
-      Promise.allSettled(
-        providerIds.map((providerId) => fetchAgentSettingsDiagnostics(providerId, controller.signal)),
-      ),
-    ]);
+    const providerIds = requestedProviderIds ?? (
+      ['claude-code', 'openai-codex', 'grok-build', 'opencode'] satisfies AgentProviderId[]
+    );
+    const loadingState = Object.fromEntries(providerIds.map((providerId) => [providerId, true]));
+    setDiagnosticsLoading((current) => ({ ...current, ...loadingState }));
+    setLatestVersionLoading((current) => ({ ...current, ...loadingState }));
+    setDiagnosticsErrors((current) => {
+      const next = { ...current };
+      providerIds.forEach((providerId) => delete next[providerId]);
+      return next;
+    });
 
-    if (controller.signal.aborted) {
-      return;
-    }
+    const claudeInfoRequest = providerIds.includes('claude-code')
+      ? readClaudeCliVersionInfo()
+          .then((value) => {
+            setClaudeCliInfo(value);
+          })
+          .catch(() => undefined)
+      : Promise.resolve();
 
-    const errors: string[] = [];
-    const cliResult = cliResults[0];
-    if (cliResult.status === 'fulfilled') {
-      setClaudeCliInfo(cliResult.value);
-    } else {
-      errors.push('Claude CLI 版本读取失败');
-    }
+    const providerRequests = providerIds.map(async (providerId) => {
+      detailsControllersRef.current.get(providerId)?.abort();
+      const controller = new AbortController();
+      detailsControllersRef.current.set(providerId, controller);
+      const isCurrentRequest = () => (
+        detailsControllersRef.current.get(providerId) === controller && !controller.signal.aborted
+      );
+      let diagnostics: AgentSettingsDiagnostics;
+      try {
+        diagnostics = await fetchAgentSettingsDiagnostics(providerId, controller.signal);
+        if (!isCurrentRequest()) {
+          return;
+        }
+        setSettingsDiagnostics((current) => {
+          const previous = current[providerId];
+          return {
+            ...current,
+            [providerId]: {
+              ...diagnostics,
+              latestVersion: previous?.latestVersion ?? null,
+              updateAvailable: previous?.updateAvailable ?? false,
+              versionCheckError: null,
+            },
+          };
+        });
+      } catch (error) {
+        if (!isCurrentRequest()) {
+          return;
+        }
+        setDiagnosticsErrors((current) => ({
+          ...current,
+          [providerId]: error instanceof Error
+            ? error.message
+            : `${defaultAgentProviderName(providerId)} 诊断读取失败`,
+        }));
+        setLatestVersionLoading((current) => ({ ...current, [providerId]: false }));
+        return;
+      } finally {
+        if (isCurrentRequest()) {
+          setDiagnosticsLoading((current) => ({ ...current, [providerId]: false }));
+        }
+      }
 
-    const nextDiagnostics: Partial<Record<AgentProviderId, AgentSettingsDiagnostics>> = {};
-    diagnosticResults.forEach((result, index) => {
-      if (result.status === 'fulfilled') {
-        nextDiagnostics[providerIds[index]] = result.value;
-      } else {
-        errors.push(`${defaultAgentProviderName(providerIds[index])} 诊断读取失败`);
+      try {
+        const versionCheck = await fetchAgentLatestVersion(
+          providerId,
+          diagnostics.version,
+          controller.signal,
+        );
+        if (!isCurrentRequest()) {
+          return;
+        }
+        setSettingsDiagnostics((current) => {
+          const previous = current[providerId] ?? diagnostics;
+          return {
+            ...current,
+            [providerId]: {
+              ...previous,
+              latestVersion: versionCheck.latestVersion ?? previous.latestVersion,
+              updateAvailable: versionCheck.latestVersion
+                ? versionCheck.updateAvailable
+                : previous.updateAvailable,
+              versionCheckError: versionCheck.error,
+            },
+          };
+        });
+      } catch (error) {
+        if (!isCurrentRequest()) {
+          return;
+        }
+        setSettingsDiagnostics((current) => {
+          const previous = current[providerId] ?? diagnostics;
+          return {
+            ...current,
+            [providerId]: {
+              ...previous,
+              versionCheckError: error instanceof Error ? error.message : '查询最新版本失败',
+            },
+          };
+        });
+      } finally {
+        if (isCurrentRequest()) {
+          setLatestVersionLoading((current) => ({ ...current, [providerId]: false }));
+        }
       }
     });
-    setSettingsDiagnostics((current) => ({ ...current, ...nextDiagnostics }));
-    setDetailsError(errors.join('；'));
-    setDetailsLoading(false);
+
+    await Promise.allSettled([claudeInfoRequest, ...providerRequests]);
   }, []);
 
   const refreshProviders = useCallback(async () => {
@@ -146,7 +231,8 @@ export function AgentProviderSettings({
   useEffect(() => {
     void loadProviderDetails();
     return () => {
-      detailsControllerRef.current?.abort();
+      detailsControllersRef.current.forEach((controller) => controller.abort());
+      detailsControllersRef.current.clear();
       grokControllerRef.current?.abort();
       codexControllerRef.current?.abort();
       openCodeControllerRef.current?.abort();
@@ -161,9 +247,49 @@ export function AgentProviderSettings({
     );
   }, [providers]);
 
+  const effectiveProviders = useMemo(
+    () => providers.map((provider) => reconcileProviderAvailability(
+      provider,
+      settingsDiagnostics[provider.id as AgentProviderId],
+    )),
+    [providers, settingsDiagnostics],
+  );
+
+  useEffect(() => {
+    providers.forEach((provider) => {
+      if (provider.available === true) {
+        for (const key of registrySyncAttemptsRef.current) {
+          if (key.startsWith(`${provider.id}:`)) {
+            registrySyncAttemptsRef.current.delete(key);
+          }
+        }
+      }
+    });
+    if (providersLoading) {
+      return;
+    }
+    const mismatch = providers.find((provider) => (
+      provider.lifecycle === 'active'
+      && provider.available !== true
+      && settingsDiagnostics[provider.id as AgentProviderId]?.installed === true
+    ));
+    if (!mismatch) {
+      return;
+    }
+    const diagnostics = settingsDiagnostics[mismatch.id as AgentProviderId];
+    const attemptKey = `${mismatch.id}:${diagnostics?.command ?? ''}`;
+    if (registrySyncAttemptsRef.current.has(attemptKey)) {
+      return;
+    }
+    registrySyncAttemptsRef.current.add(attemptKey);
+    void Promise.resolve()
+      .then(() => onRefreshProviders())
+      .catch(() => undefined);
+  }, [onRefreshProviders, providers, providersLoading, settingsDiagnostics]);
+
   const selectedProvider = useMemo(
-    () => providers.find((provider) => provider.id === selectedProviderId) ?? null,
-    [providers, selectedProviderId],
+    () => effectiveProviders.find((provider) => provider.id === selectedProviderId) ?? null,
+    [effectiveProviders, selectedProviderId],
   );
 
   async function runGrokProbe() {
@@ -247,20 +373,6 @@ export function AgentProviderSettings({
     }
   }
 
-  async function updateExperimentalAgentRun(enabled: boolean) {
-    if (agentRuntimeSaving) {
-      return;
-    }
-
-    setAgentRuntimeSaving(true);
-    try {
-      await onUpdateAgentRuntime({ experimentalAgentRunEnabled: enabled });
-      await refreshProviders();
-    } finally {
-      setAgentRuntimeSaving(false);
-    }
-  }
-
   async function updateDefaultProvider(defaultProviderId: AgentProviderId) {
     if (agentRuntimeSaving || defaultProviderId === agentRuntime.defaultProviderId) {
       return;
@@ -280,7 +392,15 @@ export function AgentProviderSettings({
     setDiagnosticCheckingProviderId(providerId);
     try {
       const diagnostics = await fetchAgentSettingsDiagnostics(providerId, undefined, true);
-      setSettingsDiagnostics((current) => ({ ...current, [providerId]: diagnostics }));
+      setSettingsDiagnostics((current) => ({
+        ...current,
+        [providerId]: {
+          ...diagnostics,
+          latestVersion: current[providerId]?.latestVersion ?? null,
+          updateAvailable: current[providerId]?.updateAvailable ?? false,
+          versionCheckError: current[providerId]?.versionCheckError ?? null,
+        },
+      }));
     } catch (error) {
       setDetailsError(error instanceof Error ? error.message : '运行原生诊断失败');
     } finally {
@@ -288,10 +408,56 @@ export function AgentProviderSettings({
     }
   }
 
+  async function runLifecycleAction(providerId: AgentProviderId, action: 'install' | 'update') {
+    if (lifecycleAction) {
+      return;
+    }
+    setLifecycleAction({ providerId, action });
+    setDetailsError('');
+    try {
+      const previousVersion = settingsDiagnostics[providerId]?.version ?? null;
+      const { result, diagnostics } = await runAgentLifecycleAction(providerId, action);
+      setSettingsDiagnostics((current) => ({ ...current, [providerId]: diagnostics }));
+      const probe = providerId === 'grok-build'
+        ? runGrokProbe()
+        : providerId === 'openai-codex'
+          ? runCodexProbe()
+          : providerId === 'opencode'
+            ? runOpenCodeProbe()
+            : Promise.resolve();
+      await Promise.allSettled([
+        Promise.resolve().then(() => onRefreshProviders()),
+        probe,
+      ]);
+      const providerName = defaultAgentProviderName(providerId);
+      const versionLabel = diagnostics.version ? `，当前版本 ${diagnostics.version}` : '';
+      const mirrorLabel = result.usedMirror ? '，已使用国内镜像' : '';
+      if (
+        action === 'update'
+        && diagnostics.updateAvailable
+        && previousVersion
+        && diagnostics.version === previousVersion
+      ) {
+        showToast(
+          `${providerName} 更新命令已完成，但版本仍为 ${diagnostics.version}，请查看安装命令或诊断信息`,
+          'info',
+        );
+      } else {
+        showToast(
+          `${providerName} ${action === 'install' ? '安装' : '更新'}完成${versionLabel}${mirrorLabel}`,
+          'success',
+        );
+      }
+    } catch (error) {
+      setDetailsError(error instanceof Error ? error.message : `${action === 'install' ? '安装' : '更新'} Agent 失败`);
+    } finally {
+      setLifecycleAction(null);
+    }
+  }
+
   return (
     <div
       className="settings-panel agent-provider-shell"
-      aria-busy={providersLoading || detailsLoading}
     >
       <div className="agent-provider-runtime-settings">
         <div className="agent-provider-default-setting">
@@ -301,29 +467,10 @@ export function AgentProviderSettings({
           </div>
           <AgentProviderDropdown
             value={agentRuntime.defaultProviderId}
-            providers={providers}
+            providers={effectiveProviders}
             disabled={agentRuntimeSaving}
             onChange={(providerId) => void updateDefaultProvider(providerId)}
           />
-        </div>
-        <div className="agent-provider-experimental-setting">
-          <div>
-            <strong>启用实验性 Agent 运行</strong>
-            <span>
-              {agentRuntime.experimentalAgentRunEnabled
-                ? '新建的 Grok Build、OpenAI Codex 与 OpenCode 会话可在对应 CLI 可用时使用。'
-                : '关闭时不允许新建实验 Agent 会话，运行中的会话不受影响。'}
-            </span>
-          </div>
-          <label className="settings-toggle" aria-label="启用实验性 Agent 运行">
-            <input
-              type="checkbox"
-              checked={agentRuntime.experimentalAgentRunEnabled}
-              disabled={agentRuntimeSaving}
-              onChange={(event) => void updateExperimentalAgentRun(event.currentTarget.checked)}
-            />
-            <span aria-hidden="true" />
-          </label>
         </div>
       </div>
       <div className="agent-provider-manager">
@@ -335,10 +482,13 @@ export function AgentProviderSettings({
               className="settings-icon-button"
               title="刷新 Provider 列表"
               aria-label="刷新 Provider 列表"
-              disabled={providersLoading || detailsLoading}
+              disabled={providersLoading}
               onClick={() => void refreshProviders()}
             >
-              <RefreshCw size={14} className={providersLoading || detailsLoading ? 'spin' : ''} />
+              <RefreshCw
+                size={14}
+                className={providersLoading || Object.values(diagnosticsLoading).some(Boolean) ? 'spin' : ''}
+              />
             </button>
           </div>
           <div className="agent-provider-list-items">
@@ -350,7 +500,7 @@ export function AgentProviderSettings({
               </div>
             ) : null}
             {providersLoading && providers.length === 0 ? <AgentProviderListSkeleton /> : null}
-            {providers.map((provider) => {
+            {effectiveProviders.map((provider) => {
               const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe);
               return (
                 <button
@@ -376,15 +526,28 @@ export function AgentProviderSettings({
 
         {selectedProvider ? (
           <div className="agent-provider-detail-region">
-            {detailsLoading || detailsError ? (
+            {diagnosticsLoading[selectedProvider.id as AgentProviderId]
+              || diagnosticsErrors[selectedProvider.id as AgentProviderId]
+              || detailsError ? (
               <div
-                className={`agent-provider-detail-progress${detailsError ? ' error' : ''}`}
-                role={detailsError ? 'alert' : 'status'}
+                className={`agent-provider-detail-progress${diagnosticsErrors[selectedProvider.id as AgentProviderId] || detailsError ? ' error' : ''}`}
+                role={diagnosticsErrors[selectedProvider.id as AgentProviderId] || detailsError ? 'alert' : 'status'}
               >
-                {detailsError ? <AlertCircle size={13} /> : <LoaderCircle size={13} className="spin" />}
-                <span>{detailsError || '正在后台读取 CLI 与诊断信息'}</span>
-                {detailsError ? (
-                  <button type="button" onClick={() => void loadProviderDetails()}>重试</button>
+                {diagnosticsErrors[selectedProvider.id as AgentProviderId] || detailsError
+                  ? <AlertCircle size={13} />
+                  : <LoaderCircle size={13} className="spin" />}
+                <span>
+                  {diagnosticsErrors[selectedProvider.id as AgentProviderId]
+                    || detailsError
+                    || `正在读取 ${selectedProvider.displayName} 本机信息`}
+                </span>
+                {diagnosticsErrors[selectedProvider.id as AgentProviderId] || detailsError ? (
+                  <button
+                    type="button"
+                    onClick={() => void loadProviderDetails([selectedProvider.id as AgentProviderId])}
+                  >
+                    重试
+                  </button>
                 ) : null}
               </div>
             ) : null}
@@ -402,12 +565,16 @@ export function AgentProviderSettings({
               openCodeProbeState={openCodeProbeState}
               openCodeProbeError={openCodeProbeError}
               settingsDiagnostics={settingsDiagnostics[selectedProvider.id as AgentProviderId] ?? null}
+              diagnosticsLoading={Boolean(diagnosticsLoading[selectedProvider.id as AgentProviderId])}
+              latestVersionLoading={Boolean(latestVersionLoading[selectedProvider.id as AgentProviderId])}
               onProbeGrok={runGrokProbe}
               onProbeCodex={runCodexProbe}
               onProbeOpenCode={runOpenCodeProbe}
-              onRefresh={refreshProviders}
+              onRefresh={() => loadProviderDetails([selectedProvider.id as AgentProviderId])}
               diagnosticChecking={diagnosticCheckingProviderId === selectedProvider.id}
               onRunNativeDiagnostic={() => runNativeDiagnostic(selectedProvider.id as AgentProviderId)}
+              lifecycleAction={lifecycleAction?.providerId === selectedProvider.id ? lifecycleAction.action : null}
+              onRunLifecycleAction={(action) => void runLifecycleAction(selectedProvider.id as AgentProviderId, action)}
             />
           </div>
         ) : providersLoading ? (
@@ -575,12 +742,16 @@ function ProviderDetail({
   openCodeProbeState,
   openCodeProbeError,
   settingsDiagnostics,
+  diagnosticsLoading,
+  latestVersionLoading,
   onProbeGrok,
   onProbeCodex,
   onProbeOpenCode,
   onRefresh,
   diagnosticChecking,
   onRunNativeDiagnostic,
+  lifecycleAction,
+  onRunLifecycleAction,
 }: {
   provider: AgentProviderDescriptor;
   claudeCliInfo: ClaudeCliVersionInfo | null;
@@ -595,12 +766,16 @@ function ProviderDetail({
   openCodeProbeState: ProviderProbeState;
   openCodeProbeError: string;
   settingsDiagnostics: AgentSettingsDiagnostics | null;
+  diagnosticsLoading: boolean;
+  latestVersionLoading: boolean;
   onProbeGrok: () => Promise<void>;
   onProbeCodex: () => Promise<void>;
   onProbeOpenCode: () => Promise<void>;
   onRefresh: () => Promise<void>;
   diagnosticChecking: boolean;
   onRunNativeDiagnostic: () => Promise<void>;
+  lifecycleAction: 'install' | 'update' | null;
+  onRunLifecycleAction: (action: 'install' | 'update') => void;
 }) {
   const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe);
   const diagnostics = resolveProviderDiagnostics(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe);
@@ -611,6 +786,19 @@ function ProviderDetail({
     ? settingsDiagnostics.version
     : diagnostics.version;
   const effectiveCommand = diagnostics.command || settingsDiagnostics?.command || '';
+  const isInstalled = settingsDiagnostics?.installed ?? provider.available ?? Boolean(effectiveCommand);
+  const currentVersion = formatAgentVersion(settingsDiagnostics?.version ?? effectiveVersion);
+  const latestVersion = settingsDiagnostics?.latestVersion ?? null;
+  const updateAvailable = settingsDiagnostics?.updateAvailable ?? false;
+  const lifecycleStatus = diagnosticsLoading && !settingsDiagnostics
+    ? { label: '检测中', tone: 'installed' }
+    : !isInstalled
+    ? { label: '未安装', tone: 'uninstalled' }
+    : updateAvailable
+      ? { label: '可更新', tone: 'update' }
+      : latestVersion
+        ? { label: '已是最新', tone: 'latest' }
+        : { label: '已安装', tone: 'installed' };
   const capabilityGroups = getProviderCapabilityGroups(provider);
   const models = getProviderModels(provider.id, claudeModels, grokProbe);
   const grokStatusMessage = getGrokProbeStatusMessage(grokProbeState, grokProbe, grokProbeError);
@@ -697,6 +885,64 @@ function ProviderDetail({
         </div>
       </div>
 
+      <div className="agent-provider-lifecycle" aria-live="polite">
+        <div className="agent-provider-lifecycle-main">
+          <span className={`agent-provider-version-status ${lifecycleStatus.tone}`}>
+            {lifecycleStatus.label}
+          </span>
+          <dl className="agent-provider-version-facts">
+            <div>
+              <dt>当前版本</dt>
+              <dd title={currentVersion}>
+                {diagnosticsLoading && !settingsDiagnostics ? (
+                  <span className="agent-provider-version-loading">
+                    <LoaderCircle size={12} className="spin" />
+                    查询中
+                  </span>
+                ) : currentVersion}
+              </dd>
+            </div>
+            <div>
+              <dt>最新版本</dt>
+              <dd title={latestVersion ?? settingsDiagnostics?.versionCheckError ?? ''}>
+                {latestVersionLoading ? (
+                  <span className="agent-provider-version-loading">
+                    <LoaderCircle size={12} className="spin" />
+                    查询中
+                  </span>
+                ) : latestVersion ?? '暂不可查询'}
+              </dd>
+            </div>
+          </dl>
+          {!isInstalled || updateAvailable ? (
+            <button
+              type="button"
+              className="settings-action-button primary agent-provider-lifecycle-action"
+              disabled={Boolean(lifecycleAction) || diagnosticChecking || probeState === 'checking'}
+              onClick={() => onRunLifecycleAction(isInstalled ? 'update' : 'install')}
+            >
+              {lifecycleAction ? (
+                <LoaderCircle size={14} className="spin" />
+              ) : isInstalled ? (
+                <RefreshCw size={14} />
+              ) : (
+                <Download size={14} />
+              )}
+              <span>
+                {lifecycleAction
+                  ? lifecycleAction === 'install' ? '安装中' : '更新中'
+                  : isInstalled ? '更新' : '一键安装'}
+              </span>
+            </button>
+          ) : null}
+        </div>
+        {settingsDiagnostics?.versionCheckError ? (
+          <small className="agent-provider-version-error">
+            {settingsDiagnostics.versionCheckError}
+          </small>
+        ) : null}
+      </div>
+
       <div className="agent-provider-badges" aria-label="Provider 状态">
         <span className={`agent-provider-badge lifecycle-${provider.lifecycle}`}>
           {provider.lifecycle === 'active' ? '已启用' : '规划中'}
@@ -709,7 +955,6 @@ function ProviderDetail({
       <dl className="agent-provider-facts">
         <ProviderFact icon={SquareTerminal} label="CLI" value={effectiveCliStatus} />
         <ProviderFact icon={KeyRound} label="认证" value={diagnostics.auth} />
-        <ProviderFact icon={Layers3} label="版本" value={effectiveVersion} />
         <ProviderFact icon={Network} label="Driver" value={provider.driverId} code />
         {effectiveCommand ? (
           <ProviderFact icon={FileText} label="可执行文件" value={effectiveCommand} code wide />
@@ -717,6 +962,7 @@ function ProviderDetail({
         {settingsDiagnostics ? (
           <>
             <ProviderFact icon={FileText} label="配置目录" value={settingsDiagnostics.configDirectory} code wide />
+            <ProviderFact icon={SquareTerminal} label="安装命令" value={settingsDiagnostics.installCommand} code wide />
             <ProviderFact icon={RefreshCw} label="更新命令" value={settingsDiagnostics.updateCommand} code wide />
             <ProviderFact icon={SquareTerminal} label="诊断命令" value={settingsDiagnostics.diagnosticCommand} code wide />
             <ProviderFact
@@ -837,6 +1083,14 @@ function formatSettingsDiagnosticStatus(diagnostics: AgentSettingsDiagnostics) {
   return '可手动运行';
 }
 
+function formatAgentVersion(value: string | null | undefined) {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return '未安装';
+  }
+  return normalized.match(/\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/)?.[1] ?? normalized;
+}
+
 function ProviderFact({
   icon: Icon,
   label,
@@ -850,10 +1104,35 @@ function ProviderFact({
   code?: boolean;
   wide?: boolean;
 }) {
+  const [copied, setCopied] = useState(false);
+  const canCopy = code && Boolean(value);
+  async function copyValue() {
+    if (!canCopy) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      setCopied(false);
+    }
+  }
   return (
     <div className={`agent-provider-fact${wide ? ' wide' : ''}`}>
       <dt><Icon size={14} />{label}</dt>
-      <dd title={value}>{code ? <code>{value}</code> : value}</dd>
+      <dd title={value}>
+        {code ? <code>{value}</code> : value}
+        {canCopy ? (
+          <button
+            type="button"
+            className="agent-provider-fact-copy"
+            onClick={() => void copyValue()}
+            aria-label={copied ? `${label}已复制` : `复制${label}`}
+            title={copied ? '已复制' : `复制${label}`}
+          >
+            {copied ? <Check size={13} /> : <Copy size={13} />}
+          </button>
+        ) : null}
+      </dd>
     </div>
   );
 }

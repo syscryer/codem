@@ -1,11 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   filterProviderTemplates,
   filterProviderVendors,
+  groupProviderTemplateChannels,
   groupProviderTemplates,
 } from './provider-template-search';
 import type { AiProviderTemplate } from '../types';
+
+const agentChannelSettingsSource = readFileSync(
+  new URL('../components/settings/AgentChannelSettings.tsx', import.meta.url),
+  'utf8',
+);
+const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
 const templates: AiProviderTemplate[] = [
   {
@@ -72,4 +80,19 @@ test('同一厂商的不同接口配置只生成一个厂商入口', () => {
 test('厂商搜索可以命中渠道和接口类型', () => {
   assert.deepEqual(filterProviderVendors(templates, 'Anthropic').map((item) => item.id), ['deepseek']);
   assert.deepEqual(filterProviderVendors(templates, '标准 API').map((item) => item.id), ['deepseek', 'qwen']);
+});
+
+test('同厂商模板可以继续按渠道聚合接口类型', () => {
+  const channels = groupProviderTemplateChannels(templates.filter((item) => item.vendorId === 'deepseek'));
+  assert.equal(channels.length, 1);
+  assert.equal(channels[0]?.name, '标准 API');
+  assert.deepEqual(channels[0]?.templates.map((item) => item.protocol), ['openai_chat', 'anthropic_messages']);
+});
+
+test('Agent 渠道设置使用两列厂商下拉并将渠道作为独立按钮组', () => {
+  assert.match(agentChannelSettingsSource, /filterProviderVendors\(templates, query\)/);
+  assert.match(agentChannelSettingsSource, /className="ai-manager-vendor-options"/);
+  assert.match(agentChannelSettingsSource, /selectedVendorChannels\.map/);
+  assert.match(agentChannelSettingsSource, /aria-label="Agent 渠道"/);
+  assert.match(stylesSource, /\.agent-channel-template-menu \.ai-manager-vendor-options\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2,/);
 });

@@ -1011,6 +1011,11 @@ svg {
   border-radius: 0;
 }
 
+.sidebar-project.context-active .sidebar-project-row {
+  border-radius: 8px;
+  background: var(--sidebar-hover-surface);
+}
+
 .sidebar-project.clone-task {
   gap: 6px;
   padding: 8px 10px 10px;
@@ -1320,6 +1325,11 @@ svg {
 .sidebar-thread-row.active .sidebar-thread {
   background: var(--sidebar-active);
   color: #1f1f1f;
+}
+
+.sidebar-thread-row.context-active:not(.active) .sidebar-thread {
+  background: var(--sidebar-hover-surface);
+  color: var(--app-text-strong, #1f1f1f);
 }
 
 .sidebar-collapse-toggle {
@@ -2668,6 +2678,11 @@ svg {
   color: #202020;
 }
 
+.workbench-preview-tab-shell.context-active:not(.active) .workbench-preview-tab {
+  background: color-mix(in srgb, var(--app-text) 7%, transparent);
+  color: var(--app-text-strong, #202020);
+}
+
 .workbench-preview-tab span {
   min-width: 0;
   overflow: hidden;
@@ -2744,7 +2759,8 @@ svg {
 }
 
 .workbench-preview-tab-shell:hover .workbench-preview-tab-close,
-.workbench-preview-tab-shell.active .workbench-preview-tab-close {
+.workbench-preview-tab-shell.active .workbench-preview-tab-close,
+.workbench-preview-tab-shell.context-active .workbench-preview-tab-close {
   opacity: 1;
   pointer-events: auto;
 }
@@ -2825,6 +2841,11 @@ svg {
 .workbench-preview-overflow-item.active {
   background: rgba(156, 163, 175, 0.12);
   color: #202020;
+}
+
+.workbench-preview-overflow-item.context-active:not(.active) {
+  background: color-mix(in srgb, var(--app-text) 7%, transparent);
+  color: var(--app-text-strong, #202020);
 }
 
 .workbench-preview-overflow-label {
@@ -3304,8 +3325,7 @@ svg {
 }
 
 .workbench-tree-row.context-active {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+  background: color-mix(in srgb, var(--app-text) 7%, transparent);
 }
 
 .workbench-tree-row.flat {
@@ -6745,6 +6765,10 @@ body.git-history-resizing {
   background: var(--app-surface-muted, #f6f6f5);
 }
 
+.git-history-branch-row.context-active:not(.active) {
+  background: color-mix(in srgb, var(--app-text) 7%, transparent);
+}
+
 .git-history-branch-row-main {
   min-width: 0;
   display: inline-flex;
@@ -7772,6 +7796,10 @@ body.git-history-resizing {
   background: rgba(156, 163, 175, 0.08);
 }
 
+.conversation-output-file-item.context-active {
+  background: color-mix(in srgb, var(--app-text) 6%, transparent);
+}
+
 .conversation-output-file-item:focus-visible {
   outline: 2px solid rgba(59, 130, 246, 0.22);
   outline-offset: -2px;
@@ -7987,6 +8015,10 @@ body.git-history-resizing {
 .changed-files-summary-row-shell:focus-within .changed-files-summary-row,
 .changed-files-summary-row:focus-visible {
   background: #fafafa;
+}
+
+.changed-files-summary-row.context-active {
+  background: color-mix(in srgb, var(--app-text) 6%, transparent);
 }
 
 .changed-files-summary-path {
@@ -12407,8 +12439,7 @@ button.git-conflict-overview-row:focus-visible,
   background: var(--app-surface, #ffffff);
 }
 
-.agent-provider-default-setting,
-.agent-provider-experimental-setting {
+.agent-provider-default-setting {
   min-height: 64px;
   display: flex;
   align-items: center;
@@ -12417,38 +12448,22 @@ button.git-conflict-overview-row:focus-visible,
   padding: 12px 16px;
 }
 
-.agent-provider-default-setting {
-  border-bottom: 1px solid var(--app-border, #ececec);
-}
-
-.agent-provider-default-setting > div:first-child,
-.agent-provider-experimental-setting > div {
+.agent-provider-default-setting > div:first-child {
   min-width: 0;
   display: grid;
   gap: 3px;
 }
 
-.agent-provider-default-setting strong,
-.agent-provider-experimental-setting strong {
+.agent-provider-default-setting strong {
   color: var(--app-text-strong, #1f1f1f);
   font-size: 13px;
   font-weight: 650;
 }
 
-.agent-provider-default-setting > div:first-child > span,
-.agent-provider-experimental-setting > div > span,
-.agent-provider-experimental-setting small {
+.agent-provider-default-setting > div:first-child > span {
   color: var(--app-muted, #77736c);
   font-size: 11px;
   line-height: 1.4;
-}
-
-.agent-provider-experimental-setting small {
-  color: var(--danger, #d33a31);
-}
-
-.agent-provider-experimental-setting .settings-toggle {
-  flex: 0 0 auto;
 }
 
 .agent-provider-default-select {
@@ -12907,6 +12922,106 @@ button.git-conflict-overview-row:focus-visible,
   gap: 8px;
 }
 
+.agent-provider-lifecycle {
+  display: grid;
+  gap: 7px;
+  margin-top: 16px;
+  padding: 11px 12px;
+  border: 1px solid var(--app-border, #ececec);
+  border-radius: 6px;
+  background: var(--app-surface-subtle, #fafbfd);
+}
+
+.agent-provider-lifecycle-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.agent-provider-version-status {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0 8px;
+  border: 1px solid var(--app-border, #ececec);
+  border-radius: 999px;
+  background: var(--app-surface, #ffffff);
+  color: var(--app-muted, #77736c);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.agent-provider-version-status.update {
+  border-color: color-mix(in srgb, #b45309 28%, var(--app-border, #ececec));
+  background: color-mix(in srgb, #f59e0b 9%, var(--app-surface, #ffffff));
+  color: color-mix(in srgb, #b45309 88%, var(--app-text, #242424) 12%);
+}
+
+.agent-provider-version-status.latest {
+  border-color: color-mix(in srgb, var(--success, #16a34a) 24%, var(--app-border, #ececec));
+  background: color-mix(in srgb, var(--success, #16a34a) 7%, var(--app-surface, #ffffff));
+  color: color-mix(in srgb, var(--success, #16a34a) 82%, var(--app-text, #242424) 18%);
+}
+
+.agent-provider-version-facts {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  gap: 6px 24px;
+  margin: 0;
+}
+
+.agent-provider-version-facts > div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, max-content);
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-provider-version-facts dt {
+  color: var(--app-muted, #77736c);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.agent-provider-version-facts dd {
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  color: var(--app-text-strong, #1f1f1f);
+  font-family: var(--app-code-font-family, var(--code-font));
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-provider-version-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--app-muted, #77736c);
+  font-family: var(--app-font-family, inherit);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.agent-provider-lifecycle-action {
+  min-width: 82px;
+  flex: 0 0 auto;
+}
+
+.agent-provider-version-error {
+  color: var(--app-muted, #77736c);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .agent-provider-status {
   min-height: 26px;
   display: inline-flex;
@@ -13022,18 +13137,49 @@ button.git-conflict-overview-row:focus-visible,
 
 .agent-provider-fact dd {
   min-width: 0;
-  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
   margin: 0;
   color: var(--app-text, #242424);
   font-size: 12px;
   text-align: right;
+}
+
+.agent-provider-fact dd code {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  font-family: var(--app-code-font-family, var(--code-font));
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-provider-fact dd code {
-  font-family: var(--app-code-font-family, var(--code-font));
-  font-size: 11px;
+.agent-provider-fact-copy {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-muted, #77736c);
+  cursor: pointer;
+}
+
+.agent-provider-fact-copy:hover {
+  background: var(--app-hover, rgba(70, 70, 70, 0.07));
+  color: var(--app-text, #242424);
+}
+
+.agent-provider-fact-copy:focus-visible {
+  outline: none;
+  box-shadow: var(--app-focus-ring, 0 0 0 2px color-mix(in srgb, var(--accent, #2374c6) 28%, transparent));
 }
 
 .agent-provider-live-status {
@@ -13237,8 +13383,7 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 @container agent-provider (max-width: 500px) {
-  .agent-provider-default-setting,
-  .agent-provider-experimental-setting {
+  .agent-provider-default-setting {
     align-items: flex-start;
     flex-direction: column;
   }
@@ -13246,10 +13391,6 @@ button.git-conflict-overview-row:focus-visible,
   .agent-provider-default-select {
     width: 100%;
     flex-basis: auto;
-  }
-
-  .agent-provider-experimental-setting .settings-toggle {
-    align-self: flex-end;
   }
 
   .agent-provider-list-items,
@@ -13264,6 +13405,20 @@ button.git-conflict-overview-row:focus-visible,
 
   .agent-provider-detail-actions {
     justify-content: flex-start;
+  }
+
+  .agent-provider-lifecycle-main {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .agent-provider-version-facts {
+    grid-template-columns: max-content;
+  }
+
+  .agent-provider-lifecycle-action {
+    width: 100%;
+    grid-column: 1 / -1;
   }
 
   .agent-provider-fact.wide {
@@ -16338,7 +16493,7 @@ button.git-conflict-overview-row:focus-visible,
   color: color-mix(in srgb, var(--app-muted) 82%, var(--app-text) 18%);
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover) {
+:is(.codex-desktop, .popover-portal-host) :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover) {
   border-color: color-mix(in srgb, var(--app-border) 82%, transparent);
   background:
     linear-gradient(
@@ -16357,13 +16512,13 @@ button.git-conflict-overview-row:focus-visible,
   -webkit-backdrop-filter: blur(24px) saturate(1.18);
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover)::before {
+:is(.codex-desktop, .popover-portal-host) :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover)::before {
   background:
     radial-gradient(ellipse at 22% 0%, color-mix(in srgb, var(--app-surface) 9%, transparent), transparent 40%),
     linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 6%, transparent), color-mix(in srgb, var(--app-surface-muted) 3%, transparent));
 }
 
-.codex-desktop :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover)::after {
+:is(.codex-desktop, .popover-portal-host) :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover)::after {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 7%, transparent), transparent 34%),
     linear-gradient(90deg, color-mix(in srgb, var(--app-surface) 4%, transparent), transparent 24%, transparent 76%, color-mix(in srgb, var(--app-surface) 3%, transparent));
@@ -16371,13 +16526,13 @@ button.git-conflict-overview-row:focus-visible,
 
 /* 顶部菜单栏的菜单弹出在 sidebar 之上，backdrop-filter 实际透出的是 sidebar 内容；
    单独提高底色不透明度，避免出现 "看穿到 sidebar 文字" 的情况。 */
-.codex-desktop .desktop-menu-popover {
+:is(.codex-desktop, .popover-portal-host) .desktop-menu-popover {
   background:
     linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 96%, transparent), color-mix(in srgb, var(--app-surface-muted) 92%, transparent)),
     color-mix(in srgb, var(--app-surface) 90%, transparent) !important;
 }
 
-.codex-desktop :is(.project-menu-popover, .thread-menu-popover) {
+:is(.codex-desktop, .popover-portal-host) :is(.project-menu-popover, .thread-menu-popover) {
   border-color: color-mix(in srgb, var(--app-border) 86%, transparent);
   background:
     linear-gradient(
@@ -16395,7 +16550,7 @@ button.git-conflict-overview-row:focus-visible,
   -webkit-backdrop-filter: blur(34px) saturate(1.28);
 }
 
-.codex-desktop :is(.project-menu-popover, .thread-menu-popover)::before {
+:is(.codex-desktop, .popover-portal-host) :is(.project-menu-popover, .thread-menu-popover)::before {
   background:
     radial-gradient(ellipse at 18% 0%, color-mix(in srgb, var(--app-surface) 30%, transparent), transparent 44%),
     repeating-linear-gradient(
@@ -16407,14 +16562,14 @@ button.git-conflict-overview-row:focus-visible,
   background-blend-mode: normal, soft-light, normal;
 }
 
-.codex-desktop :is(.project-menu-popover, .thread-menu-popover)::after {
+:is(.codex-desktop, .popover-portal-host) :is(.project-menu-popover, .thread-menu-popover)::after {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 20%, transparent), transparent 38%),
     linear-gradient(110deg, color-mix(in srgb, var(--app-surface) 12%, transparent), transparent 30%, transparent 72%, color-mix(in srgb, var(--app-border) 10%, transparent));
   opacity: 0.62;
 }
 
-.codex-desktop .open-app-dropdown {
+:is(.codex-desktop, .popover-portal-host) .open-app-dropdown {
   border-color: color-mix(in srgb, var(--app-border) 88%, transparent);
   background:
     linear-gradient(145deg, color-mix(in srgb, var(--app-surface) 84%, transparent), color-mix(in srgb, var(--app-surface-muted) 78%, transparent)),
@@ -17507,14 +17662,14 @@ button.git-conflict-overview-row:focus-visible,
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
-.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover {
+:is(.codex-desktop, .popover-portal-host) :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 8px;
   box-shadow: var(--menu-item-hover-shadow);
   color: var(--app-text-strong);
 }
 
-.codex-desktop :is(
+:is(.codex-desktop, .popover-portal-host) :is(
   .workspace-menu-item,
   .open-app-option,
   .model-menu-item,
@@ -17527,7 +17682,7 @@ button.git-conflict-overview-row:focus-visible,
   color: var(--app-text);
 }
 
-.codex-desktop :is(.model-menu-title, .model-menu-item-copy small, .provider-menu-empty) {
+:is(.codex-desktop, .popover-portal-host) :is(.model-menu-title, .model-menu-item-copy small, .provider-menu-empty) {
   color: var(--app-muted);
 }
 
@@ -17537,13 +17692,13 @@ button.git-conflict-overview-row:focus-visible,
   color: var(--app-text-strong);
 }
 
-.codex-desktop .desktop-menu-item:hover {
+:is(.codex-desktop, .popover-portal-host) .desktop-menu-item:hover {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 9px;
   box-shadow: var(--menu-item-hover-shadow);
 }
 
-.codex-desktop .open-app-option.active {
+:is(.codex-desktop, .popover-portal-host) .open-app-option.active {
   background: color-mix(in srgb, var(--app-surface-muted) 32%, transparent);
 }
 
@@ -17575,6 +17730,10 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .codex-desktop :where(.sidebar-primary button, .sidebar-footer button, .sidebar-project-title, .sidebar-thread, .workspace-menu-item, .model-menu-item, .effort-menu-item, .permission-menu-item, .settings-select-menu-item, .composer-input, .toolbar-select, .permission-trigger, .model-trigger, .effort-trigger, .assistant-runtime-card-heading strong, .assistant-runtime-question-text, .assistant-runtime-submit-button, .workspace-status, .settings-return, .settings-nav-item, .settings-segmented button, .settings-accent-picker button, .settings-stepper span, .settings-empty-panel, .dialog-input, .dialog-button, .ghost-button) {
+  font-size: var(--app-ui-font-size, 14px);
+}
+
+.popover-portal-host :where(.workspace-menu-item, .model-menu-item, .effort-menu-item, .permission-menu-item, .settings-select-menu-item) {
   font-size: var(--app-ui-font-size, 14px);
 }
 
@@ -17674,7 +17833,7 @@ button.git-conflict-overview-row:focus-visible,
   color: color-mix(in srgb, #167245 72%, var(--app-text));
 }
 
-.codex-desktop :where(.sidebar-section-head, .sidebar-search input, .workspace-menu-group-title, .sidebar-thread small, .turn-time, .turn-status, .settings-row-label small, .assistant-runtime-footnote, .assistant-runtime-question-hint, .dialog-head p, .status-branch-menu-meta, .status-run-head span) {
+:is(.codex-desktop, .popover-portal-host) :where(.sidebar-section-head, .sidebar-search input, .workspace-menu-group-title, .sidebar-thread small, .turn-time, .turn-status, .settings-row-label small, .assistant-runtime-footnote, .assistant-runtime-question-hint, .dialog-head p, .status-branch-menu-meta, .status-run-head span) {
   font-size: max(11px, calc(var(--app-ui-font-size, 14px) - 1px));
 }
 
@@ -17682,73 +17841,73 @@ button.git-conflict-overview-row:focus-visible,
   font-size: calc(var(--app-ui-font-size, 14px) + 5px);
 }
 
-.codex-desktop .status-branch-menu,
-.codex-desktop .status-run-menu {
+:is(.codex-desktop, .popover-portal-host) .status-branch-menu,
+:is(.codex-desktop, .popover-portal-host) .status-run-menu {
   color: var(--app-text);
 }
 
-.codex-desktop .status-branch-menu-title,
-.codex-desktop .status-branch-menu-state,
-.codex-desktop .status-branch-menu-meta,
-.codex-desktop .status-run-head span,
-.codex-desktop .status-run-state,
-.codex-desktop .status-run-section h4,
-.codex-desktop .status-run-row,
-.codex-desktop .status-run-path,
-.codex-desktop .status-run-prompt {
+:is(.codex-desktop, .popover-portal-host) .status-branch-menu-title,
+:is(.codex-desktop, .popover-portal-host) .status-branch-menu-state,
+:is(.codex-desktop, .popover-portal-host) .status-branch-menu-meta,
+:is(.codex-desktop, .popover-portal-host) .status-run-head span,
+:is(.codex-desktop, .popover-portal-host) .status-run-state,
+:is(.codex-desktop, .popover-portal-host) .status-run-section h4,
+:is(.codex-desktop, .popover-portal-host) .status-run-row,
+:is(.codex-desktop, .popover-portal-host) .status-run-path,
+:is(.codex-desktop, .popover-portal-host) .status-run-prompt {
   color: var(--app-muted);
 }
 
-.codex-desktop .status-run-row strong {
+:is(.codex-desktop, .popover-portal-host) .status-run-row strong {
   color: var(--app-text);
 }
 
-.codex-desktop .status-run-head,
-.codex-desktop .status-run-section,
-.codex-desktop .status-run-actions,
-.codex-desktop .status-run-json {
+:is(.codex-desktop, .popover-portal-host) .status-run-head,
+:is(.codex-desktop, .popover-portal-host) .status-run-section,
+:is(.codex-desktop, .popover-portal-host) .status-run-actions,
+:is(.codex-desktop, .popover-portal-host) .status-run-json {
   border-color: var(--app-border);
 }
 
-.codex-desktop .status-session-icon,
-.codex-desktop .status-run-actions button {
+:is(.codex-desktop, .popover-portal-host) .status-session-icon,
+:is(.codex-desktop, .popover-portal-host) .status-run-actions button {
   background: var(--app-surface-muted);
   border-color: var(--app-border);
   color: var(--app-text);
 }
 
-.codex-desktop .status-run-head.is-idle .status-session-icon {
+:is(.codex-desktop, .popover-portal-host) .status-run-head.is-idle .status-session-icon {
   background: var(--app-surface-muted);
   color: color-mix(in srgb, var(--app-muted) 82%, var(--app-text));
 }
 
-.codex-desktop .status-run-head.is-hot .status-session-icon {
+:is(.codex-desktop, .popover-portal-host) .status-run-head.is-hot .status-session-icon {
   background: color-mix(in srgb, #f5c542 20%, var(--app-surface-muted));
   color: color-mix(in srgb, #8a6500 72%, var(--app-text));
 }
 
-.codex-desktop .status-run-head.is-running .status-session-icon {
+:is(.codex-desktop, .popover-portal-host) .status-run-head.is-running .status-session-icon {
   background: color-mix(in srgb, #22c55e 16%, var(--app-surface-muted));
   color: color-mix(in srgb, #167245 72%, var(--app-text));
 }
 
-.codex-desktop .status-run-actions button:hover:not(:disabled) {
+:is(.codex-desktop, .popover-portal-host) .status-run-actions button:hover:not(:disabled) {
   background: var(--app-hover);
   color: var(--app-text-strong);
 }
 
-.codex-desktop .status-run-actions button:focus-visible {
+:is(.codex-desktop, .popover-portal-host) .status-run-actions button:focus-visible {
   box-shadow: var(--app-focus-ring);
 }
 
-.codex-desktop .status-branch-menu-item {
+:is(.codex-desktop, .popover-portal-host) .status-branch-menu-item {
   color: var(--app-text);
   font-size: 12px;
   font-weight: 450;
 }
 
-.codex-desktop .status-branch-menu-item:hover,
-.codex-desktop .status-run-refresh:hover {
+:is(.codex-desktop, .popover-portal-host) .status-branch-menu-item:hover,
+:is(.codex-desktop, .popover-portal-host) .status-run-refresh:hover {
   background: var(--menu-item-hover-bg);
   border-radius: 8px;
   box-shadow: var(--menu-item-hover-shadow);
@@ -17761,26 +17920,26 @@ button.git-conflict-overview-row:focus-visible,
   color: var(--app-text-strong);
 }
 
-.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover,
-.codex-desktop :is(.open-app-option.active, .status-branch-menu-item.current) {
+:is(.codex-desktop, .popover-portal-host) :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover,
+:is(.codex-desktop, .popover-portal-host) :is(.open-app-option.active, .status-branch-menu-item.current) {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 8px;
   box-shadow: var(--menu-item-hover-shadow);
   color: var(--app-text-strong);
 }
 
-.codex-desktop :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover svg {
+:is(.codex-desktop, .popover-portal-host) :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover svg {
   color: var(--app-text-strong);
 }
 
-.codex-desktop[data-theme-mode="dark"] :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover,
-.codex-desktop[data-theme-mode="dark"] :is(.open-app-option.active, .status-branch-menu-item.current) {
+:is(.codex-desktop, .popover-portal-host)[data-theme-mode="dark"] :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover,
+:is(.codex-desktop, .popover-portal-host)[data-theme-mode="dark"] :is(.open-app-option.active, .status-branch-menu-item.current) {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 8px;
   box-shadow: var(--menu-item-hover-shadow);
 }
 
-.codex-desktop[data-theme-mode="dark"] .desktop-menu-item:hover {
+:is(.codex-desktop, .popover-portal-host)[data-theme-mode="dark"] .desktop-menu-item:hover {
   background: var(--menu-item-hover-bg) !important;
   border-radius: 9px;
   box-shadow: var(--menu-item-hover-shadow);
@@ -18046,6 +18205,15 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 /* Portal 内菜单重置：定位统一由 PopoverPortal 控制 */
+.popover-portal-host {
+  width: max-content;
+  max-width: calc(100vw - 8px);
+  min-height: 0;
+  color: var(--app-text, #242424);
+  background: transparent;
+  isolation: auto;
+}
+
 div[data-popover-portal] > * {
   position: static !important;
   top: auto !important;
@@ -19061,6 +19229,14 @@ div[data-popover-portal] > * {
   box-shadow: 0 14px 36px color-mix(in srgb, var(--app-text, #262626) 16%, transparent);
 }
 
+.agent-channel-template-menu {
+  width: min(480px, calc(100vw - 24px));
+}
+
+.agent-channel-template-menu .ai-manager-vendor-options {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .ai-manager-vendor-search {
   height: 34px;
   padding: 0 9px;
@@ -19655,6 +19831,230 @@ div[data-popover-portal] > * {
   text-align: center;
 }
 
+.agent-channel-settings {
+  min-width: 0;
+}
+
+.agent-channel-provider-bar {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.agent-channel-provider-bar .agent-settings-provider-tabs {
+  margin-bottom: 0;
+}
+
+.agent-channel-refresh {
+  min-height: 30px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--app-border, #d9d9d9);
+  border-radius: 7px;
+  background: var(--app-surface, #ffffff);
+  color: var(--app-text, #333333);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.agent-channel-refresh:hover:not(:disabled) {
+  background: var(--app-hover, rgba(70, 70, 70, 0.07));
+}
+
+.agent-channel-refresh:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.agent-channel-layout {
+  align-items: start;
+  grid-template-columns: 238px minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--app-border, #e1e1e1);
+  border-radius: 8px;
+  background: var(--app-surface, #ffffff);
+}
+
+.agent-channel-sidebar {
+  align-self: stretch;
+  padding: 10px;
+  border-radius: 8px 0 0 8px;
+  background-clip: padding-box;
+}
+
+.agent-channel-sidebar .ai-manager-sidebar-title > div {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.agent-channel-sidebar .ai-manager-sidebar-title small {
+  color: var(--app-text-muted, #777777);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.agent-channel-sidebar .ai-manager-provider-list {
+  max-height: none;
+  overflow: visible;
+}
+
+.agent-channel-sidebar .ai-manager-provider-row {
+  min-height: 56px;
+  border-radius: 7px;
+}
+
+.agent-channel-sidebar .ai-manager-provider-row.active {
+  border-color: transparent;
+  background: var(--app-selected, color-mix(in srgb, var(--accent, #2374c6) 9%, var(--app-surface, #ffffff)));
+}
+
+.agent-channel-content {
+  min-width: 0;
+  padding: 14px;
+  overflow: visible;
+}
+
+.agent-channel-content .ai-manager-section {
+  border-radius: 8px;
+}
+
+.agent-system-channel-card {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--app-border, #e1e1e1);
+  border-radius: 8px;
+  background: var(--app-surface-subtle, #fafbfd);
+}
+
+.agent-system-channel-icon {
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.agent-system-channel-copy,
+.agent-system-channel-title {
+  min-width: 0;
+}
+
+.agent-system-channel-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.agent-system-channel-title strong {
+  font-size: 13px;
+}
+
+.agent-system-channel-title span,
+.agent-system-channel-readonly {
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: var(--app-hover, rgba(70, 70, 70, 0.07));
+  color: var(--app-text-muted, #777777);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.agent-system-channel-title span.ready {
+  color: color-mix(in srgb, #17823b 84%, var(--app-text, #242424));
+}
+
+.agent-system-channel-copy p {
+  margin: 4px 0 0;
+  color: var(--app-text-muted, #777777);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.agent-system-channel-meta {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+  color: var(--app-text-muted, #777777);
+  font-size: 10px;
+}
+
+.agent-system-channel-meta span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-channel-secret-note {
+  color: var(--app-text-muted, #777777);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.agent-channel-connection-footer > .secondary {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  border: 1px solid var(--app-border, #d9d9d9);
+  border-radius: 7px;
+  background: var(--app-surface, #ffffff);
+  color: var(--app-text, #333333);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.agent-channel-empty {
+  min-height: 240px;
+  padding: 24px;
+}
+
+.agent-channel-empty > button {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 12px;
+  padding: 0 11px;
+  border: 1px solid var(--accent, #2374c6);
+  border-radius: 7px;
+  background: var(--accent, #2374c6);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.agent-channel-menu {
+  width: min(306px, calc(100vw - 40px));
+}
+
+.agent-channel-menu .model-menu-item {
+  grid-template-columns: 20px minmax(0, 1fr) 18px;
+}
+
+.agent-channel-trigger {
+  min-width: 26px;
+  justify-content: center;
+  padding: 0 6px;
+}
+
 @media (max-width: 760px) {
   .ai-provider-settings-shell {
     height: calc(100vh - 150px);
@@ -19703,5 +20103,60 @@ div[data-popover-portal] > * {
 
   .ai-model-picker-row {
     min-height: 52px;
+  }
+
+  .agent-channel-provider-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .agent-channel-provider-bar .agent-settings-provider-tabs {
+    width: 100%;
+  }
+
+  .agent-channel-provider-bar .agent-settings-provider-tabs button {
+    flex: 1;
+  }
+
+  .agent-channel-refresh {
+    align-self: flex-end;
+  }
+
+  .agent-channel-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-channel-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--app-border, #e3e3e3);
+    border-radius: 8px 8px 0 0;
+  }
+
+  .agent-channel-sidebar .ai-manager-provider-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .agent-channel-content {
+    padding: 10px;
+  }
+
+  .agent-system-channel-card {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .agent-system-channel-readonly {
+    display: none;
+  }
+
+  .agent-channel-editor .ai-manager-section-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .agent-channel-editor .ai-manager-section-head-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
   }
 }

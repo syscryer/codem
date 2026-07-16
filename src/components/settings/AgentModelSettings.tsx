@@ -1,64 +1,70 @@
-import { Bot, SlidersHorizontal } from 'lucide-react';
+import { Bot, Route } from 'lucide-react';
 import { useState } from 'react';
-import type { AgentProviderDescriptor, AgentRuntimeSettings, ClaudeModelInfo, ModelSettings } from '../../types';
-import type { AgentRuntimeSettingsUpdate, ModelSettingsUpdate } from '../../hooks/useAppSettings';
+import type { AgentChannelBootstrap, AgentProviderDescriptor, AgentRuntimeSettings, ClaudeModelInfo, ToastState } from '../../types';
+import type { AgentRuntimeSettingsUpdate } from '../../hooks/useAppSettings';
+import { AgentChannelSettings } from './AgentChannelSettings';
 import { AgentProviderSettings } from './AgentProviderSettings';
-import { ModelSettingsPanel } from './ModelSettings';
 
-type AgentSettingsTab = 'providers' | 'models';
+type AgentSettingsTab = 'agents' | 'channels';
 
 type AgentModelSettingsSectionProps = {
-  models: ModelSettings;
   agentRuntime: AgentRuntimeSettings;
   claudeModels: ClaudeModelInfo;
   providers: AgentProviderDescriptor[];
   providersLoading: boolean;
   providersError: string;
+  channelBootstrap: AgentChannelBootstrap;
+  channelsLoading: boolean;
+  channelsError: string;
   onUpdateAgentRuntime: (update: AgentRuntimeSettingsUpdate) => void | Promise<void>;
-  onUpdateModels: (update: ModelSettingsUpdate) => void | Promise<void>;
   onRefreshProviders: () => Promise<void> | void;
+  onRefreshChannels: () => Promise<unknown> | unknown;
+  showToast: (message: string, tone?: ToastState['tone']) => void;
 };
 
 export function AgentModelSettingsSection({
-  models,
   agentRuntime,
   claudeModels,
   providers,
   providersLoading,
   providersError,
+  channelBootstrap,
+  channelsLoading,
+  channelsError,
   onUpdateAgentRuntime,
-  onUpdateModels,
   onRefreshProviders,
+  onRefreshChannels,
+  showToast,
 }: AgentModelSettingsSectionProps) {
-  const [activeTab, setActiveTab] = useState<AgentSettingsTab>('providers');
+  const [activeTab, setActiveTab] = useState<AgentSettingsTab>('agents');
 
   return (
     <section className="settings-page-section agent-model-settings">
       <header className="settings-section-head agent-settings-head">
-        <h1>Agent 与模型</h1>
-        <div className="settings-segmented agent-settings-tabs" aria-label="Agent 与模型页面">
+        <h1>Agent 设置</h1>
+        <div className="settings-segmented agent-settings-tabs" aria-label="Agent 设置页面">
           <button
             type="button"
-            className={activeTab === 'providers' ? 'active' : ''}
-            aria-pressed={activeTab === 'providers'}
-            onClick={() => setActiveTab('providers')}
+            className={activeTab === 'agents' ? 'active' : ''}
+            aria-pressed={activeTab === 'agents'}
+            onClick={() => setActiveTab('agents')}
           >
             <Bot size={14} />
-            <span>提供商</span>
+            <span>Agent 管理</span>
           </button>
           <button
             type="button"
-            className={activeTab === 'models' ? 'active' : ''}
-            aria-pressed={activeTab === 'models'}
-            onClick={() => setActiveTab('models')}
+            className={activeTab === 'channels' ? 'active' : ''}
+            aria-pressed={activeTab === 'channels'}
+            onClick={() => setActiveTab('channels')}
           >
-            <SlidersHorizontal size={14} />
-            <span>模型与默认值</span>
+            <Route size={14} />
+            <span>渠道管理</span>
           </button>
         </div>
       </header>
 
-      <div hidden={activeTab !== 'providers'}>
+      <div hidden={activeTab !== 'agents'}>
         <AgentProviderSettings
           agentRuntime={agentRuntime}
           claudeModels={claudeModels}
@@ -67,13 +73,16 @@ export function AgentModelSettingsSection({
           providersError={providersError}
           onUpdateAgentRuntime={onUpdateAgentRuntime}
           onRefreshProviders={onRefreshProviders}
+          showToast={showToast}
         />
       </div>
-      <div hidden={activeTab !== 'models'}>
-        <ModelSettingsPanel
-          models={models}
-          claudeModels={claudeModels}
-          onUpdateModels={onUpdateModels}
+      <div hidden={activeTab !== 'channels'}>
+        <AgentChannelSettings
+          bootstrap={channelBootstrap}
+          loading={channelsLoading}
+          error={channelsError}
+          onChanged={onRefreshChannels}
+          showToast={showToast}
         />
       </div>
     </section>

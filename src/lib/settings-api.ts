@@ -82,7 +82,6 @@ export const defaultOpenWithSettings: OpenWithSettings = {
 };
 
 export const defaultAgentRuntimeSettings: AgentRuntimeSettings = {
-  experimentalAgentRunEnabled: false,
   defaultProviderId: CLAUDE_CODE_PROVIDER_ID,
 };
 
@@ -266,10 +265,6 @@ function normalizeAppSettings(settings: unknown): AppSettings {
 export function normalizeAgentRuntimeSettings(value: unknown): AgentRuntimeSettings {
   const record = isRecord(value) ? value : {};
   return {
-    experimentalAgentRunEnabled: normalizeBoolean(
-      record.experimentalAgentRunEnabled,
-      defaultAgentRuntimeSettings.experimentalAgentRunEnabled,
-    ),
     defaultProviderId: normalizeAgentProviderId(record.defaultProviderId),
   };
 }

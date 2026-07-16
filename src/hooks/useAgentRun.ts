@@ -12,12 +12,20 @@ import {
   isAgentRunTerminalEvent,
 } from '../lib/agent-run-events';
 import {
-  fetchAgentModelCatalog,
   fetchAgentProviderRegistry,
   resolveChatRuntimeKind,
 } from '../lib/agent-provider-registry';
+import { agentModelCatalogCache } from '../lib/agent-model-catalog-cache';
 import {
-  defaultReasoningEffortForSelection,
+  buildAgentChannelModelCatalog,
+  getAgentChannel,
+  isAgentChannelSelectionAvailable,
+  requestAgentChannelId,
+  resolveRunAgentChannelSelection,
+  SYSTEM_AGENT_CHANNEL_ID,
+  threadAgentChannelId,
+} from '../lib/agent-channel-selection';
+import {
   resolveAgentModelSelection,
 } from '../lib/agent-model-selection';
 import { closeDanglingTurns, isVisiblePermissionMode } from '../lib/conversation';
@@ -27,9 +35,15 @@ import {
   stripTransientAttachmentData,
 } from '../lib/claude-run-attachments';
 import { buildNewChatTitleFromSubmission, shouldAutoRenameThreadTitle } from '../lib/new-chat-draft';
+import {
+  collectThreadModelPreferences,
+  reasoningEffortForThreadModel,
+  updateThreadModelReasoningEffort,
+} from '../lib/thread-model-preferences';
 import type { ThreadActivityNoticeKind } from '../lib/thread-activity-notices';
 import type {
   AgentProviderId,
+  AgentChannel,
   AgentProviderDescriptor,
   AgentModelCatalog,
   AgentRunEvent,
@@ -65,6 +79,7 @@ type ThreadMetadataPatch = {
   model?: string | null;
   reasoningEffort?: string | null;
   permissionMode?: PermissionMode;
+  channelId?: string | null;
 };
 
 type ActiveAgentRunView = {
@@ -86,6 +101,7 @@ type AgentRunContext = {
   permissionMode: PermissionMode;
   model?: string;
   reasoningEffort?: string;
+  channelId?: string;
   startedAtMs: number;
   abortController: AbortController;
   pendingText: string;
@@ -99,6 +115,9 @@ type AgentRunContext = {
 
 type UseAgentRunArgs = {
   defaultProviderId: AgentProviderId;
+  defaultPermissionMode: PermissionMode;
+  agentChannels: AgentChannel[];
+  agentChannelsLoading: boolean;
   activeProjectId: string | null;
   activeProjectPath?: string;
   activeThreadId: string | null;
@@ -112,6 +131,7 @@ type UseAgentRunArgs = {
       permissionMode?: PermissionMode;
       model?: string;
       reasoningEffort?: string;
+      channelId?: string;
     },
   ) => Promise<ThreadSummary | null>;
   renameThread: (
@@ -145,10 +165,11 @@ type UseAgentRunArgs = {
 };
 
 const AGENT_CANCEL_FALLBACK_MS = 6000;
-const DEFAULT_AGENT_PERMISSION_MODE: PermissionMode = 'default';
-
 export function useAgentRun({
   defaultProviderId,
+  defaultPermissionMode,
+  agentChannels,
+  agentChannelsLoading,
   activeProjectId,
   activeProjectPath,
   activeThreadId,
@@ -164,18 +185,21 @@ export function useAgentRun({
   persistThreadMetadata,
   onThreadActivityNotice,
 }: UseAgentRunArgs) {
+  const initialProviderId = activeThreadSummary?.provider || defaultProviderId;
   const [providers, setProviders] = useState<AgentProviderDescriptor[]>([]);
   const [providersLoading, setProvidersLoading] = useState(true);
   const [providersError, setProvidersError] = useState('');
   const [draftProviderId, setDraftProviderId] = useState<string>(defaultProviderId);
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(DEFAULT_AGENT_PERMISSION_MODE);
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode);
   const [model, setModelState] = useState(DEFAULT_MODEL_VALUE);
   const [reasoningEffort, setReasoningEffortState] = useState('');
-  const [modelCatalog, setModelCatalog] = useState<AgentModelCatalog | null>(null);
+  const [channelId, setChannelIdState] = useState(SYSTEM_AGENT_CHANNEL_ID);
+  const [modelCatalog, setModelCatalog] = useState<AgentModelCatalog | null>(
+    () => agentModelCatalogCache.peek(initialProviderId)?.catalog ?? null,
+  );
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
   const [modelSelectionWarning, setModelSelectionWarning] = useState('');
-  const [modelCatalogReloadKey, setModelCatalogReloadKey] = useState(0);
   const [activeRunsByThreadId, setActiveRunsByThreadId] = useState<
     Record<string, ActiveAgentRunView>
   >({});
@@ -188,11 +212,13 @@ export function useAgentRun({
   const queuedPromptsByThreadIdRef = useRef<Record<string, QueuedAgentPrompt[]>>({});
   const threadSummariesByIdRef = useRef(new Map<string, ThreadSummary>());
   const autoStartAfterPreparationThreadIdsRef = useRef(new Set<string>());
-  const permissionModeRef = useRef<PermissionMode>(DEFAULT_AGENT_PERMISSION_MODE);
+  const permissionModeRef = useRef<PermissionMode>(defaultPermissionMode);
   const modelRef = useRef(DEFAULT_MODEL_VALUE);
   const reasoningEffortRef = useRef('');
-  const modelCatalogCacheRef = useRef(new Map<string, AgentModelCatalog>());
+  const channelIdRef = useRef(SYSTEM_AGENT_CHANNEL_ID);
+  const modelPreferencesRef = useRef(collectThreadModelPreferences(activeThreadSummary));
   const defaultProviderIdRef = useRef(defaultProviderId);
+  const selectedProviderIdRef = useRef(initialProviderId);
   const providersControllerRef = useRef<AbortController | null>(null);
 
   const runningThreadIds = Object.keys(activeRunsByThreadId);
@@ -200,7 +226,18 @@ export function useAgentRun({
     Object.entries(activeRunsByThreadId).map(([threadId, run]) => [threadId, run.turnId]),
   );
   const selectedProviderId = activeThreadSummary?.provider || draftProviderId;
-  const currentModelCatalog = modelCatalog?.providerId === selectedProviderId ? modelCatalog : null;
+  selectedProviderIdRef.current = selectedProviderId;
+  const nativeModelCatalog = modelCatalog?.providerId === selectedProviderId ? modelCatalog : null;
+  const selectedChannel = getAgentChannel(agentChannels, selectedProviderId, channelId);
+  const currentModelCatalog = channelId === SYSTEM_AGENT_CHANNEL_ID
+    ? nativeModelCatalog
+    : selectedChannel
+      ? buildAgentChannelModelCatalog(
+          selectedProviderId as AgentProviderId,
+          selectedChannel,
+          nativeModelCatalog,
+        )
+      : null;
   const queuedPrompts = activeThreadId
     ? queuedPromptsByThreadId[activeThreadId] ?? []
     : [];
@@ -252,15 +289,65 @@ export function useAgentRun({
   }, [refreshProviders]);
 
   useEffect(() => {
-    if (!activeThreadSummary) {
+    if (providersLoading || resolveChatRuntimeKind(defaultProviderId) !== 'generic') {
       return;
     }
+    const defaultProvider = providers.find((provider) => provider.id === defaultProviderId);
+    if (!defaultProvider?.selectable || defaultProvider.available !== true) {
+      return;
+    }
+    void agentModelCatalogCache.load(defaultProviderId).catch(() => undefined);
+  }, [defaultProviderId, providers, providersLoading]);
+
+  useEffect(() => {
     setAgentPermissionMode(
-      isVisiblePermissionMode(activeThreadSummary.permissionMode)
+      isVisiblePermissionMode(activeThreadSummary?.permissionMode)
         ? activeThreadSummary.permissionMode
-        : DEFAULT_AGENT_PERMISSION_MODE,
+        : defaultPermissionMode,
     );
-  }, [activeThreadSummary?.id, activeThreadSummary?.permissionMode]);
+  }, [activeThreadSummary?.id, activeThreadSummary?.permissionMode, defaultPermissionMode]);
+
+  useEffect(() => {
+    const nextChannelId = threadAgentChannelId(activeThreadSummary?.agentChannelId);
+    channelIdRef.current = nextChannelId;
+    setChannelIdState(nextChannelId);
+  }, [activeThreadSummary?.id, activeThreadSummary?.agentChannelId, selectedProviderId]);
+
+  useEffect(() => {
+    const selectedChannelId = channelIdRef.current;
+    if (
+      agentChannelsLoading
+      || selectedChannelId === SYSTEM_AGENT_CHANNEL_ID
+      || (activeThreadId && runContextsByThreadIdRef.current.has(activeThreadId))
+      || isAgentChannelSelectionAvailable(agentChannels, selectedProviderId, selectedChannelId)
+    ) {
+      return;
+    }
+
+    channelIdRef.current = SYSTEM_AGENT_CHANNEL_ID;
+    modelPreferencesRef.current = {};
+    setChannelIdState(SYSTEM_AGENT_CHANNEL_ID);
+    setAgentModel(DEFAULT_MODEL_VALUE);
+    setAgentReasoningEffort('');
+    setModelSelectionWarning('');
+    if (activeThreadId) {
+      void persistThreadMetadata(activeThreadId, {
+        channelId: null,
+        sessionId: null,
+        model: null,
+        reasoningEffort: null,
+      }).catch((error) => {
+        showToast(error instanceof Error ? error.message : '清理失效 Agent 渠道失败', 'error');
+      });
+    }
+  }, [
+    activeThreadId,
+    agentChannels,
+    agentChannelsLoading,
+    persistThreadMetadata,
+    selectedProviderId,
+    showToast,
+  ]);
 
   useEffect(() => {
     if (resolveChatRuntimeKind(selectedProviderId) !== 'generic') {
@@ -270,41 +357,43 @@ export function useAgentRun({
       setModelSelectionWarning('');
       return;
     }
-    const cached = modelCatalogCacheRef.current.get(selectedProviderId);
-    if (cached) {
-      setModelCatalog(cached);
+    const snapshot = agentModelCatalogCache.peek(selectedProviderId);
+    const usesCodeMChannel = channelId !== SYSTEM_AGENT_CHANNEL_ID;
+    if (snapshot) {
+      setModelCatalog(snapshot.catalog);
       setModelsLoading(false);
       setModelsError('');
-      return;
+      if (!snapshot.stale) {
+        return;
+      }
+    } else {
+      setModelCatalog(null);
+      setModelsLoading(!usesCodeMChannel);
+      setModelsError('');
     }
 
-    const controller = new AbortController();
-    setModelCatalog(null);
-    setModelsLoading(true);
-    setModelsError('');
-    void fetchAgentModelCatalog(selectedProviderId, controller.signal)
+    let cancelled = false;
+    void agentModelCatalogCache.load(selectedProviderId)
       .then((catalog) => {
-        if (controller.signal.aborted) {
-          return;
+        if (!cancelled) {
+          setModelCatalog(catalog);
+          setModelsError('');
         }
-        if (catalog.providerId !== selectedProviderId) {
-          throw new Error('模型目录 Provider 与当前聊天不一致');
-        }
-        modelCatalogCacheRef.current.set(selectedProviderId, catalog);
-        setModelCatalog(catalog);
       })
       .catch((error) => {
-        if (!controller.signal.aborted) {
+        if (!cancelled && !snapshot && !usesCodeMChannel) {
           setModelsError(error instanceof Error ? error.message : '读取 Agent 模型目录失败');
         }
       })
       .finally(() => {
-        if (!controller.signal.aborted) {
+        if (!cancelled) {
           setModelsLoading(false);
         }
       });
-    return () => controller.abort();
-  }, [modelCatalogReloadKey, selectedProviderId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [channelId, selectedProviderId]);
 
   useEffect(() => {
     if (!currentModelCatalog) {
@@ -314,10 +403,16 @@ export function useAgentRun({
       return;
     }
     const threadMatchesCatalog = activeThreadSummary?.provider === currentModelCatalog.providerId;
+    const preferences = collectThreadModelPreferences(
+      threadMatchesCatalog ? activeThreadSummary : undefined,
+    );
+    const savedModelId = threadMatchesCatalog ? activeThreadSummary?.model : undefined;
+    const savedReasoningEffort = reasoningEffortForThreadModel(preferences, savedModelId);
+    modelPreferencesRef.current = preferences;
     const resolved = resolveAgentModelSelection(
       currentModelCatalog,
-      threadMatchesCatalog ? activeThreadSummary?.model : undefined,
-      threadMatchesCatalog ? activeThreadSummary?.reasoningEffort : undefined,
+      savedModelId,
+      savedReasoningEffort,
     );
     setAgentModel(resolved.modelId);
     setAgentReasoningEffort(resolved.reasoningEffort);
@@ -327,8 +422,21 @@ export function useAgentRun({
       );
     } else if (resolved.staleReasoningEffort) {
       setModelSelectionWarning(
-        `已保存的思考级别 ${resolved.staleReasoningEffort} 当前不受该模型支持，已临时回落到模型默认值。`,
+        `已保存的思考级别 ${resolved.staleReasoningEffort} 当前不受该模型支持，已更新为模型默认值。`,
       );
+      modelPreferencesRef.current = updateThreadModelReasoningEffort(
+        preferences,
+        resolved.modelId,
+        resolved.reasoningEffort,
+      );
+      if (activeThreadId) {
+        void persistThreadMetadata(activeThreadId, {
+          model: resolved.modelId === DEFAULT_MODEL_VALUE ? null : resolved.modelId,
+          reasoningEffort: resolved.reasoningEffort || null,
+        }).catch((error) => {
+          showToast(error instanceof Error ? error.message : '更新 Agent 思考级别失败', 'error');
+        });
+      }
     } else {
       setModelSelectionWarning('');
     }
@@ -337,6 +445,9 @@ export function useAgentRun({
     activeThreadSummary?.model,
     activeThreadSummary?.provider,
     activeThreadSummary?.reasoningEffort,
+    activeThreadSummary?.modelPreferences,
+    channelId,
+    activeThreadId,
     currentModelCatalog,
   ]);
 
@@ -357,18 +468,21 @@ export function useAgentRun({
   }, []);
 
   function resetDraftProvider() {
-    setDraftProviderId(defaultProviderIdRef.current);
-    setAgentPermissionMode(DEFAULT_AGENT_PERMISSION_MODE);
-    setAgentModel(DEFAULT_MODEL_VALUE);
-    setAgentReasoningEffort('');
+    const providerId = defaultProviderIdRef.current;
+    setDraftProviderId(providerId);
+    channelIdRef.current = SYSTEM_AGENT_CHANNEL_ID;
+    setChannelIdState(SYSTEM_AGENT_CHANNEL_ID);
+    setAgentPermissionMode(defaultPermissionMode);
+    resetDraftModelSelection(providerId);
     setModelSelectionWarning('');
   }
 
   function selectDraftProvider(providerId: string) {
     if (providerId === CLAUDE_CODE_PROVIDER_ID) {
       setDraftProviderId(providerId);
-      setAgentModel(DEFAULT_MODEL_VALUE);
-      setAgentReasoningEffort('');
+      channelIdRef.current = SYSTEM_AGENT_CHANNEL_ID;
+      setChannelIdState(SYSTEM_AGENT_CHANNEL_ID);
+      resetDraftModelSelection(providerId);
       setModelSelectionWarning('');
       return true;
     }
@@ -379,9 +493,10 @@ export function useAgentRun({
       return false;
     }
     if (draftProviderId !== providerId) {
-      setAgentPermissionMode(DEFAULT_AGENT_PERMISSION_MODE);
-      setAgentModel(DEFAULT_MODEL_VALUE);
-      setAgentReasoningEffort('');
+      setAgentPermissionMode(defaultPermissionMode);
+      channelIdRef.current = SYSTEM_AGENT_CHANNEL_ID;
+      setChannelIdState(SYSTEM_AGENT_CHANNEL_ID);
+      resetDraftModelSelection(providerId);
       setModelSelectionWarning('');
     }
     setDraftProviderId(providerId);
@@ -403,20 +518,55 @@ export function useAgentRun({
     setReasoningEffortState(nextEffort);
   }
 
+  function resetDraftModelSelection(providerId: string) {
+    modelPreferencesRef.current = {};
+    const snapshot = resolveChatRuntimeKind(providerId) === 'generic'
+      ? agentModelCatalogCache.peek(providerId)
+      : undefined;
+    const cached = snapshot?.catalog;
+    if (!cached) {
+      setAgentModel(DEFAULT_MODEL_VALUE);
+      setAgentReasoningEffort('');
+      return;
+    }
+    setModelCatalog(cached);
+    const resolved = resolveAgentModelSelection(cached);
+    setAgentModel(resolved.modelId);
+    setAgentReasoningEffort(resolved.reasoningEffort);
+    if (snapshot.stale) {
+      void agentModelCatalogCache.load(providerId).then((catalog) => {
+        if (selectedProviderIdRef.current === providerId) {
+          setModelCatalog(catalog);
+        }
+      }).catch(() => undefined);
+    }
+  }
+
   function handleModelSelect(nextModel: string) {
     if (activeThreadId && runContextsByThreadIdRef.current.has(activeThreadId)) {
       showToast('当前 Agent 正在运行，模型已锁定。', 'info');
       return;
     }
     if (!currentModelCatalog && nextModel === DEFAULT_MODEL_VALUE) {
+      const previousModel = modelRef.current;
+      const previousEffort = reasoningEffortRef.current;
+      const previousPreferences = modelPreferencesRef.current;
       setAgentModel(DEFAULT_MODEL_VALUE);
       setAgentReasoningEffort('');
+      modelPreferencesRef.current = updateThreadModelReasoningEffort(
+        previousPreferences,
+        DEFAULT_MODEL_VALUE,
+        null,
+      );
       setModelSelectionWarning('');
       if (activeThreadId) {
         void persistThreadMetadata(activeThreadId, {
           model: null,
           reasoningEffort: null,
         }).catch((error) => {
+          setAgentModel(previousModel);
+          setAgentReasoningEffort(previousEffort);
+          modelPreferencesRef.current = previousPreferences;
           showToast(error instanceof Error ? error.message : '保存 Agent 模型失败', 'error');
         });
       }
@@ -433,15 +583,34 @@ export function useAgentRun({
       showToast('所选模型已不在当前 Provider 目录中。', 'error');
       return;
     }
-    const nextEffort = defaultReasoningEffortForSelection(currentModelCatalog, nextModel);
+    const previousModel = modelRef.current;
+    const previousEffort = reasoningEffortRef.current;
+    const previousPreferences = modelPreferencesRef.current;
+    const savedEffort = reasoningEffortForThreadModel(previousPreferences, nextModel);
+    const resolved = resolveAgentModelSelection(currentModelCatalog, nextModel, savedEffort);
+    const nextEffort = resolved.reasoningEffort;
+    if (resolved.staleReasoningEffort) {
+      showToast(
+        `已保存的思考级别 ${resolved.staleReasoningEffort} 当前不可用，已更新为模型默认值。`,
+        'info',
+      );
+    }
     setAgentModel(nextModel);
     setAgentReasoningEffort(nextEffort);
+    modelPreferencesRef.current = updateThreadModelReasoningEffort(
+      previousPreferences,
+      nextModel,
+      nextEffort,
+    );
     setModelSelectionWarning('');
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, {
         model: nextModel === DEFAULT_MODEL_VALUE ? null : nextModel,
         reasoningEffort: nextEffort || null,
       }).catch((error) => {
+        setAgentModel(previousModel);
+        setAgentReasoningEffort(previousEffort);
+        modelPreferencesRef.current = previousPreferences;
         showToast(error instanceof Error ? error.message : '保存 Agent 模型失败', 'error');
       });
     }
@@ -459,20 +628,97 @@ export function useAgentRun({
       showToast('当前模型不支持所选思考级别。', 'error');
       return;
     }
+    const previousEffort = reasoningEffortRef.current;
+    const previousPreferences = modelPreferencesRef.current;
     setAgentReasoningEffort(nextEffort);
+    modelPreferencesRef.current = updateThreadModelReasoningEffort(
+      previousPreferences,
+      modelRef.current,
+      nextEffort,
+    );
     setModelSelectionWarning('');
     if (activeThreadId) {
-      void persistThreadMetadata(activeThreadId, { reasoningEffort: nextEffort }).catch((error) => {
+      void persistThreadMetadata(activeThreadId, {
+        model: modelRef.current === DEFAULT_MODEL_VALUE ? null : modelRef.current,
+        reasoningEffort: nextEffort,
+      }).catch((error) => {
+        setAgentReasoningEffort(previousEffort);
+        modelPreferencesRef.current = previousPreferences;
         showToast(error instanceof Error ? error.message : '保存 Agent 思考级别失败', 'error');
       });
     }
   }
 
   function retryModelCatalog() {
-    modelCatalogCacheRef.current.delete(selectedProviderId);
-    setModelCatalog(null);
+    const providerId = selectedProviderId;
+    const snapshot = agentModelCatalogCache.peek(providerId);
+    if (snapshot) {
+      setModelCatalog(snapshot.catalog);
+    }
+    setModelsLoading(true);
     setModelsError('');
-    setModelCatalogReloadKey((value) => value + 1);
+    void agentModelCatalogCache.load(providerId, { force: true })
+      .then((catalog) => {
+        if (selectedProviderIdRef.current === providerId) {
+          setModelCatalog(catalog);
+          setModelsError('');
+        }
+      })
+      .catch((error) => {
+        if (selectedProviderIdRef.current === providerId) {
+          setModelsError(error instanceof Error ? error.message : '读取 Agent 模型目录失败');
+        }
+      })
+      .finally(() => {
+        if (selectedProviderIdRef.current === providerId) {
+          setModelsLoading(false);
+        }
+      });
+  }
+
+  function handleChannelSelect(nextChannelId: string) {
+    if (activeThreadId && runContextsByThreadIdRef.current.has(activeThreadId)) {
+      showToast('当前 Agent 正在运行，渠道已锁定。', 'info');
+      return false;
+    }
+    if (nextChannelId !== SYSTEM_AGENT_CHANNEL_ID) {
+      const nextChannel = getAgentChannel(agentChannels, selectedProviderId, nextChannelId);
+      if (!nextChannel?.enabled) {
+        showToast('所选 Agent 渠道不可用。', 'error');
+        return false;
+      }
+    }
+    if (nextChannelId === channelIdRef.current) {
+      return true;
+    }
+
+    const previousChannelId = channelIdRef.current;
+    const previousModel = modelRef.current;
+    const previousEffort = reasoningEffortRef.current;
+    const previousPreferences = modelPreferencesRef.current;
+    channelIdRef.current = nextChannelId;
+    modelPreferencesRef.current = {};
+    setChannelIdState(nextChannelId);
+    setAgentModel(DEFAULT_MODEL_VALUE);
+    setAgentReasoningEffort('');
+    setModelSelectionWarning('');
+
+    if (activeThreadId) {
+      void persistThreadMetadata(activeThreadId, {
+        channelId: requestAgentChannelId(nextChannelId) ?? null,
+        sessionId: null,
+        model: null,
+        reasoningEffort: null,
+      }).catch((error) => {
+        channelIdRef.current = previousChannelId;
+        modelPreferencesRef.current = previousPreferences;
+        setChannelIdState(previousChannelId);
+        setAgentModel(previousModel);
+        setAgentReasoningEffort(previousEffort);
+        showToast(error instanceof Error ? error.message : '保存 Agent 渠道失败', 'error');
+      });
+    }
+    return true;
   }
 
   function handlePermissionModeSelect(mode: PermissionMode) {
@@ -480,9 +726,11 @@ export function useAgentRun({
       showToast('当前 Agent Provider 不支持该权限模式。', 'error');
       return;
     }
+    const previousMode = permissionModeRef.current;
     setAgentPermissionMode(mode);
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, { permissionMode: mode }).catch((error) => {
+        setAgentPermissionMode(previousMode);
         showToast(error instanceof Error ? error.message : '保存 Agent 权限模式失败', 'error');
       });
     }
@@ -669,6 +917,7 @@ export function useAgentRun({
     runPermissionMode: PermissionMode,
     runModel?: string,
     runReasoningEffort?: string,
+    runChannelId?: string,
   ) {
     const providerError = getProviderRunError(
       providerId,
@@ -712,6 +961,7 @@ export function useAgentRun({
           permissionMode: runPermissionMode,
           ...(runModel ? { model: runModel } : {}),
           ...(runReasoningEffort ? { reasoningEffort: runReasoningEffort } : {}),
+          ...(runChannelId ? { channelId: runChannelId } : {}),
         },
       );
       if (thread) {
@@ -733,12 +983,14 @@ export function useAgentRun({
     const runPermissionMode = permissionModeRef.current;
     const runModel = modelRef.current === DEFAULT_MODEL_VALUE ? undefined : modelRef.current;
     const runReasoningEffort = reasoningEffortRef.current || undefined;
+    const runChannelId = requestAgentChannelId(channelIdRef.current);
     const thread = await ensureAgentThread(
       submission,
       providerId,
       runPermissionMode,
       runModel,
       runReasoningEffort,
+      runChannelId,
     );
     if (!thread) {
       return false;
@@ -824,6 +1076,12 @@ export function useAgentRun({
     const startedAtMs = Date.now();
     const controller = new AbortController();
     const providerName = providerDisplayName(thread.provider, providers);
+    const channelSelection = resolveRunAgentChannelSelection({
+      threadId: thread.id,
+      activeThreadId,
+      persistedChannelId: thread.agentChannelId,
+      selectedChannelId: channelIdRef.current,
+    });
     const context: AgentRunContext = {
       providerId: thread.provider,
       providerName,
@@ -832,10 +1090,13 @@ export function useAgentRun({
       turnId,
       runId: '',
       workingDirectory,
-      sessionId: thread.sessionId.trim() || undefined,
+      sessionId: channelSelection.reuseSession
+        ? thread.sessionId.trim() || undefined
+        : undefined,
       permissionMode: runPermissionMode,
       model: runModel,
       reasoningEffort: runReasoningEffort,
+      channelId: channelSelection.channelId,
       startedAtMs,
       abortController: controller,
       pendingText: '',
@@ -895,6 +1156,7 @@ export function useAgentRun({
             permissionMode: context.permissionMode,
             model: context.model,
             reasoningEffort: context.reasoningEffort,
+            channelId: context.channelId,
           }),
           signal: controller.signal,
         });
@@ -1311,6 +1573,7 @@ export function useAgentRun({
     permissionMode,
     model,
     reasoningEffort,
+    channelId,
     modelCatalog: currentModelCatalog,
     modelsLoading,
     modelsError,
@@ -1320,6 +1583,7 @@ export function useAgentRun({
     handlePermissionModeSelect,
     handleModelSelect,
     handleReasoningEffortSelect,
+    handleChannelSelect,
     retryModelCatalog,
     isRunning: runningThreadIds.length > 0,
     runningThreadIds,
@@ -1358,7 +1622,7 @@ function getProviderRunError(
     return requestError || `${name} 不在当前 Provider Registry 中。`;
   }
   if (provider.lifecycle !== 'active') {
-    return `${name} 实验运行未开启，请在“Agent 与模型”设置中启用。`;
+    return `${name} 尚未开放，当前不能用于新建任务。`;
   }
   if (provider.available !== true) {
     if (providerId === OPENAI_CODEX_PROVIDER_ID) {

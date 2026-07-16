@@ -65,6 +65,9 @@
 - 运行中的后续 prompt 队列按 thread id 隔离；删除队列项只影响未执行内容
 - 权限菜单展示值只使用 `permissionMenuModes`，历史隐藏值需要回落到 `default`
 - `model` 选择跟随当前线程；非运行线程切换时可以刷新模型列表
+- 通用 Agent 模型目录使用短 TTL 进程缓存并预热默认 Provider；刷新时保留旧目录，不持久化到 SQLite
+- 新会话权限从基础设置的 `defaultPermissionMode` 初始化；已有会话优先使用自己的权限元数据
+- 思考级别按当前线程和模型分别恢复，Provider 默认模型使用稳定键 `__default`
 - 热会话运行中不要强制同步外部 provider 配置，避免改变当前运行
 
 ## 更新原则

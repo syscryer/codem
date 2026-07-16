@@ -262,7 +262,7 @@ export function SidebarProjects({
     return (
       <div
         key={thread.id}
-        className={`sidebar-thread-row ${thread.id === activeThreadId ? 'active' : ''}${isRunningThread ? ' running' : ''}${isPinned ? ' pinned' : ''}`}
+        className={`sidebar-thread-row ${thread.id === activeThreadId ? 'active' : ''}${threadMenuThreadId === thread.id ? ' context-active' : ''}${isRunningThread ? ' running' : ''}${isPinned ? ' pinned' : ''}`}
         onContextMenu={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -313,7 +313,7 @@ export function SidebarProjects({
     return (
       <div
         key={chat.id}
-        className={`sidebar-thread-row ordinary-chat-row${chat.id === activeOrdinaryChatId ? ' active' : ''}${running ? ' running' : ''}${pinned ? ' pinned' : ''}`}
+        className={`sidebar-thread-row ordinary-chat-row${chat.id === activeOrdinaryChatId ? ' active' : ''}${ordinaryChatMenuId === chat.id ? ' context-active' : ''}${running ? ' running' : ''}${pinned ? ' pinned' : ''}`}
         onContextMenu={(event) => {
           event.preventDefault();
           openOrdinaryChatMenu(chat.id, { x: event.clientX, y: event.clientY });
@@ -375,7 +375,7 @@ export function SidebarProjects({
     return (
       <div
         key={project.id}
-        className={`sidebar-project ${project.id === activeProjectId ? 'active' : ''}${isPinnedProject ? ' pinned' : ''}`}
+        className={`sidebar-project ${project.id === activeProjectId ? 'active' : ''}${projectMenuProjectId === project.id ? ' context-active' : ''}${isPinnedProject ? ' pinned' : ''}`}
         onContextMenu={(event) => {
           event.preventDefault();
           openProjectMenu(project.id, { x: event.clientX, y: event.clientY });

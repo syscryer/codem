@@ -3,6 +3,7 @@ import type {
   AgentCancelSupport,
   AgentCapabilitySupport,
   AgentProviderDescriptor,
+  AgentSettingsDiagnostics,
   ClaudeCliVersionInfo,
   ClaudeModelInfo,
   CodexAppServerProbeResult,
@@ -24,6 +25,24 @@ export type ProviderModelSummary = {
   detail?: string;
   current?: boolean;
 };
+
+export function reconcileProviderAvailability(
+  provider: AgentProviderDescriptor,
+  diagnostics: AgentSettingsDiagnostics | null | undefined,
+): AgentProviderDescriptor {
+  if (
+    provider.lifecycle !== 'active'
+    || provider.available === true
+    || diagnostics?.installed !== true
+  ) {
+    return provider;
+  }
+  return {
+    ...provider,
+    available: true,
+    selectable: true,
+  };
+}
 
 export function getProviderCapabilityGroups(provider: AgentProviderDescriptor) {
   return [

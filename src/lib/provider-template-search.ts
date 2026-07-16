@@ -7,6 +7,12 @@ export type AiProviderVendor = {
   templates: AiProviderTemplate[];
 };
 
+export type AiProviderTemplateChannel = {
+  id: string;
+  name: string;
+  templates: AiProviderTemplate[];
+};
+
 const protocolSearchLabels: Record<AiProviderTemplate['protocol'], string> = {
   openai_responses: 'OpenAI Responses',
   openai_chat: 'OpenAI Chat',
@@ -48,6 +54,23 @@ export function filterProviderVendors(templates: AiProviderTemplate[], query: st
       protocolSearchLabels[template.protocol],
     ])].some((value) => value.toLocaleLowerCase().includes(normalizedQuery)),
   );
+}
+
+export function groupProviderTemplateChannels(templates: AiProviderTemplate[]) {
+  const channels = new Map<string, AiProviderTemplateChannel>();
+  for (const template of templates) {
+    const channel = channels.get(template.channelId);
+    if (channel) {
+      channel.templates.push(template);
+      continue;
+    }
+    channels.set(template.channelId, {
+      id: template.channelId,
+      name: template.channelName,
+      templates: [template],
+    });
+  }
+  return [...channels.values()];
 }
 
 export function filterProviderTemplates(templates: AiProviderTemplate[], query: string) {

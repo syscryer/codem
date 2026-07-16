@@ -196,11 +196,12 @@ test('submitPromptToThread queues without toast and optionally guides immediatel
 });
 
 test('useClaudeRun starts the run request before refreshing Claude model options', () => {
-  assert.match(useClaudeRunSource, /const previousModels = models;/);
-  assert.match(useClaudeRunSource, /const latestModels = previousModels;/);
+  assert.match(useClaudeRunSource, /const runChannel = context\.channelId/);
+  assert.match(useClaudeRunSource, /const latestModels = context\.channelId/);
+  assert.match(useClaudeRunSource, /const previousModels = latestModels;/);
   assert.match(
     useClaudeRunSource,
-    /resolveRunModelSelection\(\s*runModelCandidate,\s*latestModels,\s*appModelSettings\.defaultModelId,\s*previousModels,\s*\)/,
+    /resolveRunModelSelection\(\s*runModelCandidate,\s*latestModels,\s*fallbackModelId,\s*previousModels,\s*\)/,
   );
   assert.match(useClaudeRunSource, /model: requestModel,/);
   const startRunSource = extractFunctionBody(useClaudeRunSource, 'startRun');

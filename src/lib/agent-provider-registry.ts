@@ -8,6 +8,8 @@ import type {
   AgentProviderLifecycle,
   AgentProviderRegistry,
   AgentProviderId,
+  AgentLifecycleActionResult,
+  AgentLatestVersionCheck,
   AgentSettingsDiagnostics,
   CodexAppServerProbeResult,
   GrokAcpProbeResult,
@@ -52,11 +54,76 @@ export async function fetchAgentSettingsDiagnostics(
   return await response.json() as AgentSettingsDiagnostics;
 }
 
+export async function fetchAgentLatestVersion(
+  providerId: AgentProviderId,
+  currentVersion: string | null,
+  signal?: AbortSignal,
+): Promise<AgentLatestVersionCheck> {
+  const query = new URLSearchParams({ providerId });
+  if (currentVersion) {
+    query.set('currentVersion', currentVersion);
+  }
+  const response = await fetch(`/api/agents/latest-version?${query.toString()}`, { signal });
+  if (!response.ok) {
+    throw new Error('查询 Agent 最新版本失败');
+  }
+  return await response.json() as AgentLatestVersionCheck;
+}
+
+export async function runAgentLifecycleAction(
+  providerId: AgentProviderId,
+  action: 'install' | 'update',
+): Promise<{ result: AgentLifecycleActionResult; diagnostics: AgentSettingsDiagnostics }> {
+  const response = await fetch('/api/agents/lifecycle', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ providerId, action }),
+  });
+  if (!response.ok) {
+    let message = `${action === 'install' ? '安装' : '更新'} Agent 失败`;
+    try {
+      const payload = await response.json() as { error?: unknown };
+      if (typeof payload.error === 'string' && payload.error.trim()) {
+        message = payload.error.trim();
+      }
+    } catch {
+      // 保留稳定错误文案
+    }
+    throw new Error(message);
+  }
+  const result = await response.json() as AgentLifecycleActionResult;
+  const diagnostics = await fetchAgentSettingsDiagnostics(providerId);
+  try {
+    const versionCheck = await fetchAgentLatestVersion(providerId, diagnostics.version);
+    return {
+      result,
+      diagnostics: {
+        ...diagnostics,
+        latestVersion: versionCheck.latestVersion,
+        updateAvailable: versionCheck.updateAvailable,
+        versionCheckError: versionCheck.error,
+      },
+    };
+  } catch (error) {
+    return {
+      result,
+      diagnostics: {
+        ...diagnostics,
+        versionCheckError: error instanceof Error ? error.message : '查询最新版本失败',
+      },
+    };
+  }
+}
+
 export async function fetchAgentModelCatalog(
   providerId: string,
-  signal?: AbortSignal,
+  options?: { signal?: AbortSignal; refresh?: boolean },
 ): Promise<AgentModelCatalog> {
-  const response = await fetch(`/api/agents/${encodeURIComponent(providerId)}/models`, { signal });
+  const refreshQuery = options?.refresh ? '?refresh=true' : '';
+  const response = await fetch(
+    `/api/agents/${encodeURIComponent(providerId)}/models${refreshQuery}`,
+    { signal: options?.signal },
+  );
   if (!response.ok) {
     let message = '读取 Agent 模型目录失败';
     try {

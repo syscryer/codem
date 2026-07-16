@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
-import { ArrowUp, BookOpen, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, RefreshCw, Server, ServerCog, Shield, Sparkles, Square, Unlock, X, Zap } from 'lucide-react';
+import { ArrowUp, BookOpen, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, RefreshCw, Route, Server, ServerCog, Shield, Sparkles, Square, Unlock, X, Zap } from 'lucide-react';
 import { CLAUDE_CODE_PROVIDER_ID, DEFAULT_MODEL_VALUE, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
@@ -25,8 +25,9 @@ import { applySlashCommandSelection, getNextSlashCommandIndex } from '../lib/sla
 import { getSlashDismissResetKey, resolveSlashCommandSubmission } from '../lib/slash-command-submit';
 import { shouldSubmitComposerOnEnter } from '../lib/composer-keyboard';
 import { getAgentModelForSelection } from '../lib/agent-model-selection';
+import { enabledAgentChannels, SYSTEM_AGENT_CHANNEL_ID } from '../lib/agent-channel-selection';
 import { modelContext1mMenuActionLabel, modelMenuDescriptionLabel, modelMenuPrimaryLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
-import type { AgentModelCatalog, AgentModelOption, AgentProviderDescriptor, AgentType, AiKnowledgeBaseSummary, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, McpServerSummary, PermissionMode, SkillSummary, SlashCommand, UserImageAttachment } from '../types';
+import type { AgentChannel, AgentModelCatalog, AgentModelOption, AgentProviderDescriptor, AgentType, AiKnowledgeBaseSummary, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, McpServerSummary, PermissionMode, SkillSummary, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingComposerAttachment =
   | {
@@ -92,6 +93,8 @@ type ComposerProps = {
   providers: AgentProviderDescriptor[];
   providersLoading?: boolean;
   providersError?: string;
+  agentChannels?: AgentChannel[];
+  agentChannelId?: string;
   canSelectProvider: boolean;
   allowAttachments: boolean;
   supportsQueue: boolean;
@@ -122,6 +125,7 @@ type ComposerProps = {
   queuedPromptGuideAvailability: { available: boolean; reason?: string };
   onDraftChange: (value: string) => void;
   onSelectProvider: (providerId: string) => boolean | void;
+  onSelectAgentChannel?: (channelId: string) => boolean | void;
   onSubmitPrompt: (submission: {
     prompt: string;
     displayText: string;
@@ -159,6 +163,8 @@ export function Composer({
   providers,
   providersLoading = false,
   providersError = '',
+  agentChannels = [],
+  agentChannelId = SYSTEM_AGENT_CHANNEL_ID,
   canSelectProvider,
   allowAttachments,
   supportsQueue,
@@ -189,6 +195,7 @@ export function Composer({
   queuedPromptGuideAvailability,
   onDraftChange,
   onSelectProvider,
+  onSelectAgentChannel = () => false,
   onSubmitPrompt,
   onRemoveQueuedPrompt,
   onRecallQueuedPrompt,
@@ -217,6 +224,7 @@ export function Composer({
   const [dragActive, setDragActive] = useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
+  const [agentChannelMenuOpen, setAgentChannelMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
   const [knowledgeMenuOpen, setKnowledgeMenuOpen] = useState(false);
@@ -224,6 +232,7 @@ export function Composer({
   const [mcpMenuOpen, setMcpMenuOpen] = useState(false);
   const permissionMenuRef = useRef<HTMLDivElement | null>(null);
   const providerMenuRef = useRef<HTMLDivElement | null>(null);
+  const agentChannelMenuRef = useRef<HTMLDivElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const knowledgeMenuRef = useRef<HTMLDivElement | null>(null);
   const skillMenuRef = useRef<HTMLDivElement | null>(null);
@@ -273,6 +282,7 @@ export function Composer({
     selectors: [
       { selector: '.composer-add-menu', onDismiss: () => setAddMenuOpen(false), anchorRefs: [addMenuRef] },
       { selector: '.provider-menu', onDismiss: () => setProviderMenuOpen(false), anchorRefs: [providerMenuRef] },
+      { selector: '.agent-channel-menu', onDismiss: () => setAgentChannelMenuOpen(false), anchorRefs: [agentChannelMenuRef] },
       { selector: '.permission-menu', onDismiss: () => setPermissionMenuOpen(false), anchorRefs: [permissionMenuRef] },
       { selector: '.model-menu', onDismiss: () => setModelMenuOpen(false), anchorRefs: [modelMenuRef] },
       { selector: '.effort-menu', onDismiss: () => setEffortMenuOpen(false), anchorRefs: [effortMenuRef] },
@@ -297,6 +307,12 @@ export function Composer({
   );
   const providerName = selectedProvider?.displayName
     ?? (providerDisplayName(providerId) || (variant === 'ordinary' ? '未配置供应商' : 'Provider'));
+  const availableAgentChannels = useMemo(
+    () => enabledAgentChannels(agentChannels, providerId),
+    [agentChannels, providerId],
+  );
+  const selectedAgentChannel = availableAgentChannels.find((channel) => channel.id === agentChannelId);
+  const agentChannelName = selectedAgentChannel?.name ?? '系统当前配置';
   const textOnlyInputMessage = `${providerName} 当前不支持附件输入。`;
   const providerSelectionDisabled =
     !canSelectProvider || isRunning || (providersLoading && providers.length === 0);
@@ -356,6 +372,7 @@ export function Composer({
     if (!isRunning) {
       return;
     }
+    setAgentChannelMenuOpen(false);
     setModelMenuOpen(false);
     setEffortMenuOpen(false);
     setKnowledgeMenuOpen(false);
@@ -1521,6 +1538,73 @@ export function Composer({
                 onClick={() => setProviderMenuOpen((value) => !value)}
               >
                 <AgentProviderIcon providerId={providerId} size={16} />
+              </button>
+            </div> : null}
+            {variant !== 'ordinary' ? <div className="permission-picker agent-channel-picker" ref={agentChannelMenuRef}>
+              <PopoverPortal open={agentChannelMenuOpen} anchorRef={agentChannelMenuRef} placement="top-start">
+                <div className="model-menu model-menu-compact agent-channel-menu" role="menu" aria-label={`${providerName} 渠道`}>
+                  <div className="model-menu-title">渠道</div>
+                  <button
+                    type="button"
+                    className="model-menu-item"
+                    role="menuitemradio"
+                    aria-checked={agentChannelId === SYSTEM_AGENT_CHANNEL_ID}
+                    disabled={isRunning}
+                    onClick={() => {
+                      const accepted = onSelectAgentChannel(SYSTEM_AGENT_CHANNEL_ID);
+                      if (accepted !== false) {
+                        setAgentChannelMenuOpen(false);
+                      }
+                    }}
+                  >
+                    <Route size={15} />
+                    <span className="model-menu-item-copy">
+                      <span>系统当前配置</span>
+                      <small>跟随本机 {providerName} 当前配置</small>
+                    </span>
+                    {agentChannelId === SYSTEM_AGENT_CHANNEL_ID ? <Check className="model-check" size={15} /> : null}
+                  </button>
+                  {availableAgentChannels.map((channel) => (
+                    <button
+                      key={channel.id}
+                      type="button"
+                      className="model-menu-item"
+                      role="menuitemradio"
+                      aria-checked={agentChannelId === channel.id}
+                      disabled={isRunning}
+                      onClick={() => {
+                        const accepted = onSelectAgentChannel(channel.id);
+                        if (accepted !== false) {
+                          setAgentChannelMenuOpen(false);
+                        }
+                      }}
+                    >
+                      <Route size={15} />
+                      <span className="model-menu-item-copy">
+                        <span>{channel.name}</span>
+                        <small>{channel.models.filter((item) => item.enabled).length} 个模型</small>
+                      </span>
+                      {agentChannelId === channel.id ? <Check className="model-check" size={15} /> : null}
+                    </button>
+                  ))}
+                  {availableAgentChannels.length === 0 ? (
+                    <div className="provider-menu-empty">暂无 CodeM 渠道，可在全局设置中新增</div>
+                  ) : null}
+                </div>
+              </PopoverPortal>
+
+              <button
+                type="button"
+                className={`permission-trigger agent-channel-trigger${agentChannelId !== SYSTEM_AGENT_CHANNEL_ID ? ' active' : ''}`}
+                aria-expanded={agentChannelMenuOpen}
+                aria-label={`渠道：${agentChannelName}`}
+                disabled={isRunning}
+                title={isRunning ? `${providerName} 运行中，渠道已锁定` : `渠道：${agentChannelName}`}
+                onClick={() => setAgentChannelMenuOpen((value) => !value)}
+              >
+                <Route size={15} />
+                <span>{agentChannelName}</span>
+                <span className="permission-trigger-chevron" aria-hidden="true" />
               </button>
             </div> : null}
             {variant !== 'ordinary' ? <div className="permission-picker" ref={permissionMenuRef}>

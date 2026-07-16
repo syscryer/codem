@@ -40,10 +40,25 @@ import {
   upsertToolStepDeep,
 } from '../lib/conversation';
 import { resolveQueuedPromptRunOptions } from '../lib/queued-prompts';
+import {
+  buildClaudeChannelModels,
+  getAgentChannel,
+  isAgentChannelSelectionAvailable,
+  requestAgentChannelId,
+  resolveRunAgentChannelSelection,
+  SYSTEM_AGENT_CHANNEL_ID,
+  threadAgentChannelId,
+} from '../lib/agent-channel-selection';
 import { buildNewChatTitleFromSubmission, shouldAutoRenameThreadTitle } from '../lib/new-chat-draft';
+import {
+  collectThreadModelPreferences,
+  reasoningEffortForThreadModel,
+  updateThreadModelReasoningEffort,
+} from '../lib/thread-model-preferences';
 import type { ThreadActivityNoticeKind } from '../lib/thread-activity-notices';
 import type {
   AssistantItem,
+  AgentChannel,
   ApprovalDecision,
   ApprovalRequest,
   ClaudeEvent,
@@ -72,7 +87,9 @@ type ThreadMetadataPatch = {
   sessionId?: string | null;
   workingDirectory?: string;
   model?: string | null;
+  reasoningEffort?: string | null;
   permissionMode?: PermissionMode;
+  channelId?: string | null;
 };
 
 type ActiveRunInfo = {
@@ -87,6 +104,7 @@ type ActiveRunInfo = {
   permissionMode: PermissionMode;
   model?: string;
   effort?: ClaudeEffortLevel;
+  channelId?: string;
   startedAtMs: number;
   eventCount: number;
   finished: boolean;
@@ -118,6 +136,7 @@ type RunContext = {
   model: string;
   effort: ClaudeEffortSelection;
   permissionMode: PermissionMode;
+  channelId?: string;
   terminalNoticeKind?: 'completed' | 'failed';
 };
 
@@ -156,10 +175,19 @@ type UseClaudeRunArgs = {
   appModelSettings: ModelSettings;
   defaultPermissionMode: PermissionMode;
   autoGuideQueuedPrompts: boolean;
+  agentChannels: AgentChannel[];
+  agentChannelsLoading: boolean;
   createThread: (
     projectId: string,
     title?: string,
-    options?: { showToast?: boolean; providerId?: string },
+    options?: {
+      showToast?: boolean;
+      providerId?: string;
+      permissionMode?: PermissionMode;
+      model?: string;
+      reasoningEffort?: string;
+      channelId?: string;
+    },
   ) => Promise<ThreadSummary | null>;
   renameThread: (threadId: string, title: string, options?: { showToast?: boolean }) => Promise<ThreadSummary | null>;
   handlePickProjectDirectory: () => Promise<void>;
@@ -197,6 +225,8 @@ export function useClaudeRun({
   appModelSettings,
   defaultPermissionMode,
   autoGuideQueuedPrompts,
+  agentChannels,
+  agentChannelsLoading,
   createThread,
   renameThread,
   handlePickProjectDirectory,
@@ -214,6 +244,7 @@ export function useClaudeRun({
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode);
   const [model, setModelState] = useState(DEFAULT_MODEL_VALUE);
   const [effort, setEffortState] = useState<ClaudeEffortSelection>('default');
+  const [channelId, setChannelIdState] = useState(SYSTEM_AGENT_CHANNEL_ID);
   const [claudeModels, setClaudeModels] = useState<ClaudeModelInfo>({ available: false, models: [] });
   const [health, setHealth] = useState<{ available: boolean; command?: string; error?: string }>({
     available: false,
@@ -231,8 +262,12 @@ export function useClaudeRun({
   const guidingPromptIdsRef = useRef<Set<string>>(new Set());
   const activeTurnIdRef = useRef('');
   const modelSelectionResetKeyRef = useRef('');
+  const channelSelectionResetKeyRef = useRef('');
+  const permissionModeRef = useRef<PermissionMode>(defaultPermissionMode);
   const modelRef = useRef(DEFAULT_MODEL_VALUE);
   const effortRef = useRef<ClaudeEffortSelection>('default');
+  const channelIdRef = useRef(SYSTEM_AGENT_CHANNEL_ID);
+  const modelPreferencesRef = useRef(collectThreadModelPreferences(activeThreadSummary));
 
   const runningThreadIds = Object.keys(activeRunsByThreadId);
   const isRunning = runningThreadIds.length > 0;
@@ -243,9 +278,21 @@ export function useClaudeRun({
     Object.entries(activeRunsByThreadId).map(([threadId, run]) => [threadId, run.turnId]),
   );
   const queuedPrompts = activeThreadId ? queuedPromptsByThreadId[activeThreadId] ?? [] : [];
-  const models = useMemo(
+  const nativeModels = useMemo(
     () => mergeModelOptions(claudeModels.models, appModelSettings.customModels, appModelSettings.modelCapabilities),
     [claudeModels.models, appModelSettings.customModels, appModelSettings.modelCapabilities],
+  );
+  const selectedChannel = useMemo(
+    () => getAgentChannel(agentChannels, CLAUDE_CODE_PROVIDER_ID, channelId),
+    [agentChannels, channelId],
+  );
+  const models = useMemo(
+    () => channelId === SYSTEM_AGENT_CHANNEL_ID
+      ? nativeModels
+      : selectedChannel
+        ? buildClaudeChannelModels(selectedChannel, nativeModels)
+        : [],
+    [channelId, nativeModels, selectedChannel],
   );
 
   useEffect(() => {
@@ -254,9 +301,57 @@ export function useClaudeRun({
   }, []);
 
   useEffect(() => {
+    const resetKey = `${activeThreadSummary?.id ?? ''}\n${activeThreadSummary?.agentChannelId ?? ''}`;
+    if (channelSelectionResetKeyRef.current === resetKey) {
+      return;
+    }
+    channelSelectionResetKeyRef.current = resetKey;
+    const nextChannelId = threadAgentChannelId(activeThreadSummary?.agentChannelId);
+    channelIdRef.current = nextChannelId;
+    setChannelIdState(nextChannelId);
+  }, [activeThreadSummary?.id, activeThreadSummary?.agentChannelId]);
+
+  useEffect(() => {
+    const selectedChannelId = channelIdRef.current;
+    if (
+      agentChannelsLoading
+      || selectedChannelId === SYSTEM_AGENT_CHANNEL_ID
+      || (activeThreadId && runContextsByThreadIdRef.current.has(activeThreadId))
+      || isAgentChannelSelectionAvailable(
+        agentChannels,
+        CLAUDE_CODE_PROVIDER_ID,
+        selectedChannelId,
+      )
+    ) {
+      return;
+    }
+
+    channelIdRef.current = SYSTEM_AGENT_CHANNEL_ID;
+    modelRef.current = DEFAULT_MODEL_VALUE;
+    effortRef.current = 'default';
+    modelPreferencesRef.current = {};
+    setChannelIdState(SYSTEM_AGENT_CHANNEL_ID);
+    setModelState(DEFAULT_MODEL_VALUE);
+    setEffortState('default');
+    if (activeThreadId) {
+      void persistThreadMetadata(activeThreadId, {
+        channelId: null,
+        sessionId: null,
+        model: null,
+        reasoningEffort: null,
+      }).catch((error) => {
+        showToast(error instanceof Error ? error.message : '清理失效 Claude Code 渠道失败', 'error');
+      });
+    }
+  }, [activeThreadId, agentChannels, agentChannelsLoading, persistThreadMetadata, showToast]);
+
+  useEffect(() => {
     const resetKey = [
       activeThreadSummary?.id ?? '',
+      channelId,
       activeThreadSummary?.model ?? '',
+      activeThreadSummary?.reasoningEffort ?? '',
+      JSON.stringify(activeThreadSummary?.modelPreferences ?? {}),
       appModelSettings.defaultModelId,
       models
         .map((option) => `${option.id}:${option.model ?? ''}:${option.supportsContext1m ? '1m' : ''}:${option.context1mModel ?? ''}:${option.contextWindowTokens ?? ''}`)
@@ -267,10 +362,40 @@ export function useClaudeRun({
     }
 
     modelSelectionResetKeyRef.current = resetKey;
-    const nextModel = resolveInitialClaudeModelId(activeThreadSummary?.model, models, appModelSettings.defaultModelId);
+    const nextModel = resolveInitialClaudeModelId(
+      activeThreadSummary?.model,
+      models,
+      channelId === SYSTEM_AGENT_CHANNEL_ID ? appModelSettings.defaultModelId : DEFAULT_MODEL_VALUE,
+    );
+    let nextPreferences = collectThreadModelPreferences(activeThreadSummary);
+    const savedEffort = reasoningEffortForThreadModel(nextPreferences, nextModel);
+    const nextEffort = normalizeClaudeEffortSelection(savedEffort);
+    if (savedEffort && nextEffort === 'default') {
+      nextPreferences = updateThreadModelReasoningEffort(nextPreferences, nextModel, null);
+      if (activeThreadSummary?.id) {
+        showToast(`已保存的思考级别 ${savedEffort} 当前不可用，已更新为默认值。`, 'info');
+        void persistThreadMetadata(activeThreadSummary.id, {
+          model: nextModel === DEFAULT_MODEL_VALUE ? null : nextModel,
+          reasoningEffort: null,
+        }).catch((error) => {
+          showToast(error instanceof Error ? error.message : '更新 Claude Code 思考级别失败', 'error');
+        });
+      }
+    }
+    modelPreferencesRef.current = nextPreferences;
     modelRef.current = nextModel;
+    effortRef.current = nextEffort;
     setModelState(nextModel);
-  }, [activeThreadSummary?.id, activeThreadSummary?.model, appModelSettings.defaultModelId, models]);
+    setEffortState(nextEffort);
+  }, [
+    activeThreadSummary?.id,
+    activeThreadSummary?.model,
+    activeThreadSummary?.reasoningEffort,
+    activeThreadSummary?.modelPreferences,
+    channelId,
+    appModelSettings.defaultModelId,
+    models,
+  ]);
 
   useEffect(() => {
     if (!activeThreadSummary || activeThreadIsRunning) {
@@ -292,11 +417,11 @@ export function useClaudeRun({
   }, [activeThreadSummary]);
 
   useEffect(() => {
-    setPermissionMode(
-      isVisiblePermissionMode(activeThreadSummary?.permissionMode)
-        ? activeThreadSummary.permissionMode
-        : defaultPermissionMode,
-    );
+    const nextPermissionMode = isVisiblePermissionMode(activeThreadSummary?.permissionMode)
+      ? activeThreadSummary.permissionMode
+      : defaultPermissionMode;
+    permissionModeRef.current = nextPermissionMode;
+    setPermissionMode(nextPermissionMode);
   }, [activeThreadSummary?.id, activeThreadSummary?.permissionMode, defaultPermissionMode]);
 
   useEffect(() => {
@@ -397,6 +522,12 @@ export function useClaudeRun({
       return await createThread(activeProjectId, threadTitle, {
         showToast: false,
         providerId: CLAUDE_CODE_PROVIDER_ID,
+        permissionMode: permissionModeRef.current,
+        ...(modelRef.current !== DEFAULT_MODEL_VALUE ? { model: modelRef.current } : {}),
+        ...(effortRef.current !== 'default' ? { reasoningEffort: effortRef.current } : {}),
+        ...(requestAgentChannelId(channelIdRef.current)
+          ? { channelId: requestAgentChannelId(channelIdRef.current) }
+          : {}),
       });
     } catch (error) {
       showToast(error instanceof Error ? error.message : '新建聊天失败', 'error');
@@ -976,9 +1107,18 @@ export function useClaudeRun({
 
     const runWorkingDirectory =
       options?.workingDirectory?.trim() || thread.workingDirectory;
-    const rawRunSessionId =
-      options?.sessionId && options.sessionId.trim() ? options.sessionId.trim() : undefined;
-    const runPermissionMode = options?.permissionModeOverride ?? permissionMode;
+    const channelSelection = resolveRunAgentChannelSelection({
+      threadId: thread.id,
+      activeThreadId,
+      persistedChannelId: thread.agentChannelId,
+      selectedChannelId: channelIdRef.current,
+    });
+    const rawRunSessionId = channelSelection.reuseSession
+      && options?.sessionId
+      && options.sessionId.trim()
+      ? options.sessionId.trim()
+      : undefined;
+    const runPermissionMode = options?.permissionModeOverride ?? permissionModeRef.current;
     const runEffort = normalizeClaudeEffortSelection(options?.effortOverride ?? effortRef.current);
     const turnContentBlocks = buildHistoryContentBlocks({
       prompt: trimmedPrompt,
@@ -1008,6 +1148,7 @@ export function useClaudeRun({
       model: modelRef.current || DEFAULT_MODEL_VALUE,
       effort: runEffort,
       permissionMode: runPermissionMode,
+      channelId: channelSelection.channelId,
     };
     registerRunContext(context);
     options?.onStarted?.();
@@ -1038,17 +1179,30 @@ export function useClaudeRun({
       thread,
     );
 
-    const previousModels = models;
-    const latestModels = previousModels;
+    const runChannel = context.channelId
+      ? getAgentChannel(agentChannels, CLAUDE_CODE_PROVIDER_ID, context.channelId)
+      : undefined;
+    const latestModels = context.channelId
+      ? runChannel
+        ? buildClaudeChannelModels(runChannel, nativeModels)
+        : []
+      : nativeModels;
+    const previousModels = latestModels;
     if (!runContextsByThreadIdRef.current.has(context.threadId)) {
       return true;
     }
 
-    const runModelCandidate = options?.modelOverride ?? modelRef.current;
+    const fallbackModelId = context.channelId
+      ? DEFAULT_MODEL_VALUE
+      : appModelSettings.defaultModelId;
+    const runModelCandidate = options?.modelOverride
+      ?? (thread.id === activeThreadId
+        ? modelRef.current
+        : resolveInitialClaudeModelId(thread.model, latestModels, fallbackModelId));
     const { selectedModelId: runModel, requestModel, staleProviderModel } = resolveRunModelSelection(
       runModelCandidate,
       latestModels,
-      appModelSettings.defaultModelId,
+      fallbackModelId,
       previousModels,
     );
     const runSessionId = staleProviderModel && !options?.toolResult ? undefined : rawRunSessionId;
@@ -1062,6 +1216,12 @@ export function useClaudeRun({
       void persistThreadMetadata(thread.id, {
         model: null,
         sessionId: null,
+      }).catch((error) => {
+        appendDebug(thread.id, {
+          title: '失效模型清理失败',
+          content: error instanceof Error ? error.message : '清理失效模型失败',
+          tone: 'error',
+        });
       });
     }
     const requestEffort = resolveRequestEffort(runEffort);
@@ -1085,6 +1245,7 @@ export function useClaudeRun({
             permissionMode: runPermissionMode,
             model: requestModel,
             effort: requestEffort,
+            channelId: context.channelId,
             sessionId: runSessionId,
             toolResult: options?.toolResult,
             contentBlocks: requestContentBlocks,
@@ -1202,6 +1363,7 @@ export function useClaudeRun({
         model: resolveInitialClaudeModelId(activeRun.model, models, model),
         effort: normalizeClaudeEffortSelection(activeRun.effort),
         permissionMode: activeRun.permissionMode || permissionMode,
+        channelId: activeRun.channelId || requestAgentChannelId(threadAgentChannelId(thread.agentChannelId)),
       };
       context = reconnectContext;
       registerRunContext(reconnectContext);
@@ -1433,7 +1595,13 @@ export function useClaudeRun({
         ...turn,
         sessionId: event.sessionId,
       }));
-      void persistThreadMetadata(context.threadId, { sessionId: event.sessionId });
+      void persistThreadMetadata(context.threadId, { sessionId: event.sessionId }).catch((error) => {
+        appendRunningDebug(context, {
+          title: 'Session 保存失败',
+          content: error instanceof Error ? error.message : '保存 Claude Code session 失败',
+          tone: 'error',
+        });
+      });
       appendRunningDebug(context, {
         title: 'Session 已绑定',
         content: event.sessionId,
@@ -1721,13 +1889,20 @@ export function useClaudeRun({
       if (context.threadId) {
         const metadataPatch: ThreadMetadataPatch = {
           model: context.model === DEFAULT_MODEL_VALUE ? null : context.model,
+          reasoningEffort: context.effort === 'default' ? null : context.effort,
           permissionMode: context.permissionMode,
           workingDirectory: context.workingDirectory,
         };
         if (event.sessionId) {
           metadataPatch.sessionId = event.sessionId;
         }
-        void persistThreadMetadata(context.threadId, metadataPatch);
+        void persistThreadMetadata(context.threadId, metadataPatch).catch((error) => {
+          appendDebug(context.threadId, {
+            title: 'Claude Code 会话设置保存失败',
+            content: error instanceof Error ? error.message : '保存 Claude Code 会话设置失败',
+            tone: 'error',
+          });
+        });
       }
       schedulePersistThreadHistory(context.threadId);
       emitRunSettledNotice(context, 'completed', event.runId);
@@ -1803,28 +1978,114 @@ export function useClaudeRun({
   }
 
   function handlePermissionModeSelect(mode: PermissionMode) {
+    const previousMode = permissionModeRef.current;
+    permissionModeRef.current = mode;
     setPermissionMode(mode);
 
     if (activeThreadId) {
-      void persistThreadMetadata(activeThreadId, { permissionMode: mode });
-    }
-  }
-
-  function handleModelSelect(nextModel: string) {
-    modelRef.current = nextModel;
-    setModelState(nextModel);
-
-    if (activeThreadId) {
-      void persistThreadMetadata(activeThreadId, {
-        model: nextModel === DEFAULT_MODEL_VALUE ? null : nextModel,
+      void persistThreadMetadata(activeThreadId, { permissionMode: mode }).catch((error) => {
+        permissionModeRef.current = previousMode;
+        setPermissionMode(previousMode);
+        showToast(error instanceof Error ? error.message : '保存 Claude Code 权限模式失败', 'error');
       });
     }
   }
 
+  function handleModelSelect(nextModel: string) {
+    const previousModel = modelRef.current;
+    const previousEffort = effortRef.current;
+    const nextEffort = normalizeClaudeEffortSelection(
+      reasoningEffortForThreadModel(modelPreferencesRef.current, nextModel),
+    );
+    modelRef.current = nextModel;
+    effortRef.current = nextEffort;
+    setModelState(nextModel);
+    setEffortState(nextEffort);
+
+    if (activeThreadId) {
+      void persistThreadMetadata(activeThreadId, {
+        model: nextModel === DEFAULT_MODEL_VALUE ? null : nextModel,
+        reasoningEffort: nextEffort === 'default' ? null : nextEffort,
+      }).catch((error) => {
+        modelRef.current = previousModel;
+        effortRef.current = previousEffort;
+        setModelState(previousModel);
+        setEffortState(previousEffort);
+        showToast(error instanceof Error ? error.message : '保存 Claude Code 模型失败', 'error');
+      });
+    }
+  }
+
+  function handleChannelSelect(nextChannelId: string) {
+    if (activeThreadId && runContextsByThreadIdRef.current.has(activeThreadId)) {
+      showToast('当前 Claude Code 正在运行，渠道已锁定。', 'info');
+      return false;
+    }
+    if (nextChannelId !== SYSTEM_AGENT_CHANNEL_ID) {
+      const nextChannel = getAgentChannel(agentChannels, CLAUDE_CODE_PROVIDER_ID, nextChannelId);
+      if (!nextChannel?.enabled) {
+        showToast('所选 Claude Code 渠道不可用。', 'error');
+        return false;
+      }
+    }
+    if (nextChannelId === channelIdRef.current) {
+      return true;
+    }
+
+    const previousChannelId = channelIdRef.current;
+    const previousModel = modelRef.current;
+    const previousEffort = effortRef.current;
+    const previousPreferences = modelPreferencesRef.current;
+    channelIdRef.current = nextChannelId;
+    modelRef.current = DEFAULT_MODEL_VALUE;
+    effortRef.current = 'default';
+    modelPreferencesRef.current = {};
+    setChannelIdState(nextChannelId);
+    setModelState(DEFAULT_MODEL_VALUE);
+    setEffortState('default');
+
+    if (activeThreadId) {
+      void persistThreadMetadata(activeThreadId, {
+        channelId: requestAgentChannelId(nextChannelId) ?? null,
+        sessionId: null,
+        model: null,
+        reasoningEffort: null,
+      }).catch((error) => {
+        channelIdRef.current = previousChannelId;
+        modelRef.current = previousModel;
+        effortRef.current = previousEffort;
+        modelPreferencesRef.current = previousPreferences;
+        setChannelIdState(previousChannelId);
+        setModelState(previousModel);
+        setEffortState(previousEffort);
+        showToast(error instanceof Error ? error.message : '保存 Claude Code 渠道失败', 'error');
+      });
+    }
+    return true;
+  }
+
   function handleEffortSelect(nextEffort: ClaudeEffortSelection) {
     const normalizedEffort = normalizeClaudeEffortSelection(nextEffort);
+    const previousEffort = effortRef.current;
+    const previousPreferences = modelPreferencesRef.current;
+    modelPreferencesRef.current = updateThreadModelReasoningEffort(
+      previousPreferences,
+      modelRef.current,
+      normalizedEffort,
+    );
     effortRef.current = normalizedEffort;
     setEffortState(normalizedEffort);
+    if (activeThreadId) {
+      void persistThreadMetadata(activeThreadId, {
+        model: modelRef.current === DEFAULT_MODEL_VALUE ? null : modelRef.current,
+        reasoningEffort: normalizedEffort === 'default' ? null : normalizedEffort,
+      }).catch((error) => {
+        modelPreferencesRef.current = previousPreferences;
+        effortRef.current = previousEffort;
+        setEffortState(previousEffort);
+        showToast(error instanceof Error ? error.message : '保存 Claude Code 思考级别失败', 'error');
+      });
+    }
   }
 
   async function stopRun(threadId = activeThreadId ?? undefined) {
@@ -2163,6 +2424,7 @@ export function useClaudeRun({
     permissionMode,
     model,
     effort,
+    channelId,
     models,
     claudeModels,
     health,
@@ -2179,6 +2441,7 @@ export function useClaudeRun({
     setPermissionMode,
     setModel: handleModelSelect,
     setEffort: handleEffortSelect,
+    setChannelId: handleChannelSelect,
     handlePermissionModeSelect,
     submitPrompt,
     submitPromptToThread,

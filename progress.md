@@ -526,3 +526,20 @@
 - 最终门禁通过：Rust fmt；Rust lib 109/109、1 个真实 Grok smoke 按设计忽略、desktop 9/9；TypeScript 538/538；typecheck；生产构建；`git diff --check`。
 - 运行健康检查通过：Rust backend 3001 返回 200，Web 5173 返回 200；现有桌面进程未重启，因为本次未修改运行时代码。
 - 最终保护核对：`server` 目录不存在、38 个旧后端文件处于删除状态、`CONTEXT.md` 仍存在、原有失焦完成提示改动保留、暂存区为空。
+
+## 2026-07-16 Agent 安装更新与版本感知
+
+- 已读取项目 README、Trellis workflow、前后端规范入口、文件规划技能和 UI 样式技能。
+- 已确认工作区存在多个并行未提交任务，本轮限定 Agent 设置相关文件，`styles.css` 只处理本任务精确 hunk。
+- 已启动 Trellis session `session-20260716-035458-o1iu`，任务为 `.trellis/tasks/agent-lifecycle-version-and-mirror-fallback.md`。
+- 已查看用户给出的两张参考截图并冻结版本展示、更新提示、安装反馈和实验开关移除范围。
+- 已对照 CC Switch 的工具版本探测、版本比较、升级后复探和安装来源锚定策略。
+- 已确认 CodeM 当前白名单生命周期接口可复用，缺口集中在远程版本查询、更新可用状态、镜像网络失败重试和正式化门禁移除。
+- 中断恢复后已重新核对两张参考图、当前任务文件和前后端规范；确认继续按“紧凑版本状态带 + 条件动作按钮”收口，不照搬 CC Switch 的大卡片高度。
+- 恢复后的快速基线门禁：`npm run typecheck` 与 `git diff --check` 通过；`cargo fmt --check` 仅报告 `agent_run.rs`、`backend.rs` 的排版差异，代码尚未格式化，待定向测试补齐后统一执行 `cargo fmt`。
+- 已补 5 个生命周期策略回归，连同既有 2 个用例共 `7/7` 通过：npm latest、Grok 官方 update JSON、CLI 版本提取、npm/pnpm/bun 镜像白名单，以及 404/401/权限/脚本错误不触发镜像重试。
+- 已执行 `cargo fmt`，初始格式门禁失败已解决；定向测试仅出现仓库既有 `AgentApiError::forbidden` 未使用告警。
+- 真实桌面后端诊断已返回：Claude `2.1.207 -> 2.1.211`、Codex `0.144.1 -> 0.144.5`、OpenCode `1.17.7 -> 1.18.2` 均判定可更新；Grok 当前 `0.2.99`，官方更新器返回 `program not found`。
+- Playwright 宽屏与 900px 初验布局无溢出、控制台 0 error/0 warning；同时发现诊断加载期已安装 Provider 短暂显示“未安装”和 Grok 裸英文错误，正在做最后收口。
+- 已修复加载期误报与 Grok 错误上下文；最终刷新验证显示 Claude 加载期为“已安装 / 当前版本未知 / 正在查询”，稳定后为 `2.1.207 -> 2.1.211` 并提供更新按钮。
+- 最终门禁通过：Rust lib 135/135、桌面 main 9/9、前端 494/494、TypeScript、cargo check、Rust fmt 和 diff check；Playwright 1440x1000/900x900 均无布局问题，稳定刷新后控制台 0 error/0 warning。

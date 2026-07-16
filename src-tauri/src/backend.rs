@@ -25,10 +25,7 @@ use std::{
     net::SocketAddr,
     path::{Component, Path, PathBuf},
     process::Command,
-    sync::{
-        atomic::{AtomicBool, Ordering as AtomicOrdering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
@@ -36,6 +33,12 @@ use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 const CLAUDE_CLI_RECOMMENDED_VERSION: &str = "2.1.123";
 const CLAUDE_CLI_UPDATE_COMMAND: &str = "claude update";
 const CLAUDE_CLI_INSTALL_COMMAND: &str = "npm install -g @anthropic-ai/claude-code";
+const CODEX_CLI_INSTALL_COMMAND: &str = "npm install -g @openai/codex@latest";
+const GROK_CLI_INSTALL_COMMAND: &str = "irm https://x.ai/cli/install.ps1 | iex";
+const OPENCODE_CLI_INSTALL_COMMAND: &str = "npm install -g opencode-ai@latest";
+const NPM_REGISTRY_URL: &str = "https://registry.npmjs.org";
+const NPM_MIRROR_REGISTRY_URL: &str = "https://registry.npmmirror.com";
+const NPM_CONFIG_USER_AGENT_ENV: &str = "npm_config_user_agent";
 const CLAUDE_CLI_SETUP_URL: &str = "https://docs.anthropic.com/en/docs/claude-code/setup";
 const RUN_RECONNECT_RETENTION_MS: u64 = 10 * 60 * 1000;
 
@@ -43,7 +46,8 @@ const RUN_RECONNECT_RETENTION_MS: u64 = 10 * 60 * 1000;
 struct AppState {
     app_data_dir: Arc<PathBuf>,
     settings_write_lock: Arc<Mutex<()>>,
-    experimental_agent_run_enabled: Arc<AtomicBool>,
+    agent_channels: crate::agent_channels::AgentChannelService,
+    agent_lifecycle_running: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
     agent_runs: crate::agent_run::AgentRunService,
     workspace_write_lock: Arc<Mutex<()>>,
     workspace_database_init_lock: Arc<Mutex<()>>,
@@ -64,6 +68,7 @@ struct ActiveRunRecord {
     permission_mode: String,
     model: Option<String>,
     effort: Option<String>,
+    channel_id: Option<String>,
     started_at_ms: i64,
     events: Vec<Value>,
     finished: bool,
@@ -99,6 +104,8 @@ struct ClaudeRuntimeRecord {
     permission_mode: String,
     model: Option<String>,
     effort: Option<String>,
+    channel_id: Option<String>,
+    channel_fingerprint: Option<String>,
     session_id: Option<String>,
     child_id: u32,
     stdin: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
@@ -150,6 +157,8 @@ struct ThreadRow {
     model: Option<String>,
     reasoning_effort: Option<String>,
     permission_mode: Option<String>,
+    agent_channel_id: Option<String>,
+    agent_channel_fingerprint: Option<String>,
     imported: bool,
     updated_at: String,
     pinned_at: Option<String>,
@@ -165,6 +174,8 @@ struct ThreadDetailRow {
     model: Option<String>,
     reasoning_effort: Option<String>,
     permission_mode: Option<String>,
+    agent_channel_id: Option<String>,
+    agent_channel_fingerprint: Option<String>,
 }
 
 #[derive(Debug)]
@@ -242,6 +253,7 @@ struct ThreadCreateRequest {
     permission_mode: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    channel_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -306,8 +318,34 @@ struct ClaudeRunRequest {
     permission_mode: Option<String>,
     model: Option<String>,
     effort: Option<String>,
+    channel_id: Option<String>,
     tool_result: Option<Value>,
     content_blocks: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentLifecycleRequest {
+    provider_id: Option<String>,
+    action: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AgentLifecyclePlan {
+    display_command: String,
+    program: String,
+    args: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AgentLatestVersionCheck {
+    latest_version: Option<String>,
+    error: Option<String>,
+}
+
+enum AgentLifecycleProcessError {
+    Timeout,
+    Start(String),
 }
 
 #[derive(Deserialize)]
@@ -413,6 +451,11 @@ impl ApiError {
             json_body: false,
         }
     }
+
+    fn into_json_body(mut self) -> Self {
+        self.json_body = true;
+        self
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -449,18 +492,26 @@ pub fn run_blocking_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), 
 async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String> {
     fs::create_dir_all(&app_data_dir).map_err(|error| format!("创建应用数据目录失败: {error}"))?;
 
-    let ordinary_chat = crate::ordinary_chat::OrdinaryChatService::new(app_data_dir.clone());
-    let experimental_agent_run_enabled = Arc::new(AtomicBool::new(false));
+    let secrets = crate::ordinary_chat::secrets::SecretStore::new(app_data_dir.clone());
+    let ordinary_chat = crate::ordinary_chat::OrdinaryChatService::with_secrets(
+        app_data_dir.clone(),
+        secrets.clone(),
+    );
+    let agent_channels =
+        crate::agent_channels::AgentChannelService::new(app_data_dir.clone(), secrets);
     let agent_runs = crate::agent_run::AgentRunService::new(
         resolve_grok_command,
         resolve_codex_command,
         resolve_opencode_command,
-        experimental_agent_run_enabled.clone(),
+        agent_channels.clone(),
     );
     let state = AppState {
         app_data_dir: Arc::new(app_data_dir),
         settings_write_lock: Arc::new(Mutex::new(())),
-        experimental_agent_run_enabled,
+        agent_channels: agent_channels.clone(),
+        agent_lifecycle_running: Arc::new(
+            tokio::sync::Mutex::new(std::collections::HashSet::new()),
+        ),
         agent_runs,
         workspace_write_lock: Arc::new(Mutex::new(())),
         workspace_database_init_lock: Arc::new(Mutex::new(())),
@@ -468,14 +519,9 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         runtimes: Arc::new(Mutex::new(std::collections::HashMap::new())),
         context_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
     };
-    state.experimental_agent_run_enabled.store(
-        read_app_settings(&state)
-            .map(|settings| experimental_agent_run_enabled_from_settings(&settings))
-            .unwrap_or(false),
-        AtomicOrdering::Release,
-    );
     let app = create_router(state)
         .merge(crate::ordinary_chat::router(ordinary_chat))
+        .merge(crate::agent_channels::router(agent_channels))
         .layer(desktop_cors_layer());
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(address)
@@ -498,6 +544,8 @@ fn create_router(state: AppState) -> Router {
             "/api/agents/settings-diagnostics",
             get(agent_settings_diagnostics),
         )
+        .route("/api/agents/latest-version", get(agent_latest_version))
+        .route("/api/agents/lifecycle", post(agent_lifecycle_action))
         .route("/api/agents/grok/probe", post(grok_acp_probe))
         .route("/api/agents/codex/probe", post(codex_app_server_probe))
         .route("/api/agents/opencode/probe", post(opencode_acp_probe))
@@ -799,45 +847,53 @@ async fn health() -> Json<Value> {
 async fn agent_providers(State(state): State<AppState>) -> Json<AgentProviderRegistry> {
     Json(agent_provider_registry(
         resolve_claude_command().is_some(),
-        experimental_agent_run_enabled(&state),
-        resolve_grok_command().is_some(),
-        resolve_codex_command().is_some(),
-        resolve_opencode_command().is_some(),
+        state
+            .agent_runs
+            .resolve_command(GROK_BUILD_PROVIDER_ID, false)
+            .is_some(),
+        state
+            .agent_runs
+            .resolve_command(OPENAI_CODEX_PROVIDER_ID, false)
+            .is_some(),
+        state
+            .agent_runs
+            .resolve_command(OPENCODE_PROVIDER_ID, false)
+            .is_some(),
     ))
 }
 
 async fn agent_settings_diagnostics(
+    State(state): State<AppState>,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<Json<Value>> {
     let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
     let run_diagnostic = query.get("run").is_some_and(|value| value == "true");
-    let command = resolve_agent_settings_command(provider_id);
-    let version = command.as_deref().and_then(|command| {
+    let command = if provider_id == CLAUDE_CODE_PROVIDER_ID {
+        resolve_claude_command()
+    } else {
+        state.agent_runs.resolve_command(provider_id, true)
+    };
+    let version_output = command.as_deref().and_then(|command| {
         if provider_id == GROK_BUILD_PROVIDER_ID {
             read_grok_cli_version(command)
         } else {
             read_cli_version(command)
         }
     });
+    let version = version_output
+        .as_deref()
+        .and_then(extract_agent_semantic_version)
+        .or(version_output);
     let home = home_dir().ok_or_else(|| ApiError::internal("无法定位用户目录"))?;
     let config_directory = agent_global_config_directory(provider_id, &home);
-    let (update_command, diagnostic_command, diagnostic_args) = match provider_id {
-        OPENAI_CODEX_PROVIDER_ID => (
-            "codex update",
-            "codex doctor --json",
-            Some(["doctor", "--json"]),
-        ),
-        GROK_BUILD_PROVIDER_ID => (
-            "grok update",
-            "grok inspect --json",
-            Some(["inspect", "--json"]),
-        ),
-        OPENCODE_PROVIDER_ID => (
-            "opencode upgrade",
-            "opencode debug info",
-            Some(["debug", "info"]),
-        ),
-        _ => ("claude update", "claude doctor", None),
+    let install_command = build_agent_lifecycle_plan(provider_id, "install", None)?.display_command;
+    let update_command =
+        build_agent_lifecycle_plan(provider_id, "update", command.as_deref())?.display_command;
+    let (diagnostic_command, diagnostic_args) = match provider_id {
+        OPENAI_CODEX_PROVIDER_ID => ("codex doctor --json", Some(["doctor", "--json"])),
+        GROK_BUILD_PROVIDER_ID => ("grok inspect --json", Some(["inspect", "--json"])),
+        OPENCODE_PROVIDER_ID => ("opencode debug info", Some(["debug", "info"])),
+        _ => ("claude doctor", None),
     };
     let diagnostic = if run_diagnostic {
         if let (Some(command), Some(arguments)) = (command.as_deref(), diagnostic_args) {
@@ -870,9 +926,13 @@ async fn agent_settings_diagnostics(
         "installed": command.is_some(),
         "command": command,
         "version": version,
+        "latestVersion": Value::Null,
+        "updateAvailable": false,
+        "versionCheckError": Value::Null,
         "configDirectory": config_directory,
         "skillsDirectory": config_directory.join("skills"),
         "updateCommand": update_command,
+        "installCommand": install_command,
         "diagnosticCommand": diagnostic_command,
         "diagnostic": diagnostic,
         "capabilities": {
@@ -881,6 +941,607 @@ async fn agent_settings_diagnostics(
             "skills": true,
         }
     })))
+}
+
+async fn agent_latest_version(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
+    let current_version = query
+        .get("currentVersion")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let command = (provider_id == GROK_BUILD_PROVIDER_ID)
+        .then(|| resolve_agent_settings_command(provider_id))
+        .flatten();
+    let latest_version_check = read_agent_latest_version(provider_id, command.as_deref()).await;
+    let update_available = current_version
+        .zip(latest_version_check.latest_version.as_deref())
+        .is_some_and(|(current, latest)| compare_semantic_versions(current, latest) < 0);
+    Ok(Json(json!({
+        "providerId": provider_id,
+        "latestVersion": latest_version_check.latest_version,
+        "updateAvailable": update_available,
+        "error": latest_version_check.error,
+    })))
+}
+
+async fn read_agent_latest_version(
+    provider_id: &str,
+    installed_command: Option<&str>,
+) -> AgentLatestVersionCheck {
+    if provider_id == GROK_BUILD_PROVIDER_ID {
+        let Some(command) = installed_command else {
+            return AgentLatestVersionCheck {
+                latest_version: None,
+                error: Some("安装后可通过 Grok Build 官方更新器查询最新版本".to_string()),
+            };
+        };
+        return read_grok_latest_version(command).await;
+    }
+
+    let package = match provider_id {
+        CLAUDE_CODE_PROVIDER_ID => "@anthropic-ai/claude-code",
+        OPENAI_CODEX_PROVIDER_ID => "@openai/codex",
+        OPENCODE_PROVIDER_ID => "opencode-ai",
+        _ => {
+            return AgentLatestVersionCheck {
+                latest_version: None,
+                error: Some("当前 Agent 暂不支持版本查询".to_string()),
+            };
+        }
+    };
+    let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(4))
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => {
+            return AgentLatestVersionCheck {
+                latest_version: None,
+                error: Some("无法初始化版本查询".to_string()),
+            };
+        }
+    };
+
+    for registry in [NPM_REGISTRY_URL, NPM_MIRROR_REGISTRY_URL] {
+        if let Ok(version) = fetch_npm_latest_version(&client, registry, package).await {
+            return AgentLatestVersionCheck {
+                latest_version: Some(version),
+                error: None,
+            };
+        }
+    }
+
+    if provider_id == OPENCODE_PROVIDER_ID {
+        if let Ok(version) = fetch_github_latest_version(&client, "anomalyco/opencode").await {
+            return AgentLatestVersionCheck {
+                latest_version: Some(version),
+                error: None,
+            };
+        }
+    }
+
+    AgentLatestVersionCheck {
+        latest_version: None,
+        error: Some("官方源和国内镜像均无法查询最新版本".to_string()),
+    }
+}
+
+async fn fetch_npm_latest_version(
+    client: &reqwest::Client,
+    registry: &str,
+    package: &str,
+) -> Result<String, ()> {
+    let mut url = url::Url::parse(registry).map_err(|_| ())?;
+    url.path_segments_mut()
+        .map_err(|_| ())?
+        .extend(["-", "package", package, "dist-tags"]);
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| ())?
+        .error_for_status()
+        .map_err(|_| ())?;
+    let payload = response.json::<Value>().await.map_err(|_| ())?;
+    parse_npm_latest_version(&payload).ok_or(())
+}
+
+fn parse_npm_latest_version(payload: &Value) -> Option<String> {
+    payload
+        .get("latest")
+        .or_else(|| {
+            payload
+                .get("dist-tags")
+                .and_then(|value| value.get("latest"))
+        })
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+async fn fetch_github_latest_version(
+    client: &reqwest::Client,
+    repository: &str,
+) -> Result<String, ()> {
+    let response = client
+        .get(format!(
+            "https://api.github.com/repos/{repository}/releases/latest"
+        ))
+        .header("User-Agent", "CodeM")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|_| ())?
+        .error_for_status()
+        .map_err(|_| ())?;
+    let payload = response.json::<Value>().await.map_err(|_| ())?;
+    payload
+        .get("tag_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.strip_prefix('v').unwrap_or(value).to_string())
+        .ok_or(())
+}
+
+async fn read_grok_latest_version(command: &str) -> AgentLatestVersionCheck {
+    let mut process = background_tokio_command(command);
+    process.args(["update", "--check", "--json"]);
+    configure_agent_lifecycle_environment(GROK_BUILD_PROVIDER_ID, &mut process);
+    process.kill_on_drop(true);
+    let output =
+        match tokio::time::timeout(std::time::Duration::from_secs(20), process.output()).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(_)) => {
+                return AgentLatestVersionCheck {
+                    latest_version: None,
+                    error: Some("无法启动 Grok Build 版本查询".to_string()),
+                };
+            }
+            Err(_) => {
+                return AgentLatestVersionCheck {
+                    latest_version: None,
+                    error: Some("Grok Build 版本查询超时".to_string()),
+                };
+            }
+        };
+    let output_text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() {
+        return AgentLatestVersionCheck {
+            latest_version: None,
+            error: Some("Grok Build 官方更新器查询失败".to_string()),
+        };
+    }
+    parse_grok_latest_version(&output_text).unwrap_or(AgentLatestVersionCheck {
+        latest_version: None,
+        error: Some("Grok Build 返回了无法识别的版本信息".to_string()),
+    })
+}
+
+fn parse_grok_latest_version(value: &str) -> Option<AgentLatestVersionCheck> {
+    let payload = value
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with('{') && line.ends_with('}'))?;
+    let payload = serde_json::from_str::<Value>(payload).ok()?;
+    let latest_version = payload
+        .get("latestVersion")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let error = payload
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("Grok Build 官方更新器查询失败：{value}"));
+    Some(AgentLatestVersionCheck {
+        latest_version,
+        error,
+    })
+}
+
+async fn agent_lifecycle_action(
+    State(state): State<AppState>,
+    Json(payload): Json<AgentLifecycleRequest>,
+) -> ApiResult<Json<Value>> {
+    let provider_id =
+        settings_provider_id(payload.provider_id.as_deref()).map_err(ApiError::into_json_body)?;
+    let action = match payload.action.as_deref().map(str::trim) {
+        Some("install") => "install",
+        Some("update") => "update",
+        _ => return Err(ApiError::bad_request_json("不支持的 Agent 操作")),
+    };
+    let key = provider_id.to_string();
+    {
+        let mut running = state.agent_lifecycle_running.lock().await;
+        if !running.insert(key.clone()) {
+            return Err(ApiError::conflict("该 Agent 正在执行安装或更新").into_json_body());
+        }
+    }
+
+    let result = execute_agent_lifecycle_action(provider_id, action)
+        .await
+        .map_err(ApiError::into_json_body);
+    if result.is_ok() {
+        state.agent_runs.resolve_command(provider_id, true);
+    }
+    state.agent_lifecycle_running.lock().await.remove(&key);
+    result.map(Json)
+}
+
+async fn execute_agent_lifecycle_action(provider_id: &str, action: &str) -> ApiResult<Value> {
+    let command = resolve_agent_settings_command(provider_id);
+    if action == "update" && command.is_none() {
+        return Err(ApiError::bad_request("Agent 尚未安装，请先执行安装"));
+    }
+
+    let plan = build_agent_lifecycle_plan(provider_id, action, command.as_deref())?;
+    let mirror_eligible = lifecycle_plan_supports_npm_mirror(&plan);
+    let primary = run_agent_lifecycle_plan(provider_id, &plan, None).await;
+    let retry_with_mirror = match &primary {
+        Ok(output) => {
+            !output.status.success()
+                && mirror_eligible
+                && is_agent_lifecycle_network_failure(&agent_lifecycle_output_text(output))
+        }
+        Err(AgentLifecycleProcessError::Timeout) => mirror_eligible,
+        Err(AgentLifecycleProcessError::Start(_)) => false,
+    };
+    let (output, used_mirror) = if retry_with_mirror {
+        let output = run_agent_lifecycle_plan(provider_id, &plan, Some(NPM_MIRROR_REGISTRY_URL))
+            .await
+            .map_err(|error| match error {
+                AgentLifecycleProcessError::Timeout => {
+                    ApiError::internal("国内镜像重试超时，请检查网络后重试")
+                }
+                AgentLifecycleProcessError::Start(error) => {
+                    ApiError::internal(format!("启动国内镜像重试失败: {error}"))
+                }
+            })?;
+        (output, true)
+    } else {
+        let output = primary.map_err(|error| match error {
+            AgentLifecycleProcessError::Timeout => {
+                ApiError::internal("Agent 安装或更新超时，请查看安装命令输出")
+            }
+            AgentLifecycleProcessError::Start(error) => {
+                ApiError::internal(format!("启动 Agent 安装或更新失败: {error}"))
+            }
+        })?;
+        (output, false)
+    };
+    let output_text = agent_lifecycle_output_text(&output);
+    let summary = sanitize_agent_lifecycle_output(&output_text);
+    if !output.status.success() {
+        return Err(ApiError::internal(format!(
+            "Agent {}失败{}（退出码 {:?}）：{}",
+            if action == "install" {
+                "安装"
+            } else {
+                "更新"
+            },
+            if used_mirror {
+                "，国内镜像重试仍未成功"
+            } else {
+                ""
+            },
+            output.status.code(),
+            summary
+        )));
+    }
+    let command = resolve_agent_settings_command(provider_id);
+    let version = command.as_deref().and_then(|command| {
+        if provider_id == GROK_BUILD_PROVIDER_ID {
+            read_grok_cli_version(command)
+        } else {
+            read_cli_version(command)
+        }
+    });
+    Ok(json!({
+        "providerId": provider_id,
+        "action": action,
+        "installed": command.is_some(),
+        "command": command,
+        "version": version,
+        "output": summary,
+        "usedMirror": used_mirror,
+        "mirrorRegistry": if used_mirror { Some(NPM_MIRROR_REGISTRY_URL) } else { None },
+    }))
+}
+
+async fn run_agent_lifecycle_plan(
+    provider_id: &str,
+    plan: &AgentLifecyclePlan,
+    registry: Option<&str>,
+) -> Result<std::process::Output, AgentLifecycleProcessError> {
+    let mut process = background_tokio_command(&plan.program);
+    process.args(&plan.args);
+    configure_agent_lifecycle_environment(provider_id, &mut process);
+    if let Some(registry) = registry {
+        process.env("NPM_CONFIG_REGISTRY", registry);
+    }
+    process.kill_on_drop(true);
+    process.stdout(std::process::Stdio::piped());
+    process.stderr(std::process::Stdio::piped());
+    tokio::time::timeout(std::time::Duration::from_secs(15 * 60), process.output())
+        .await
+        .map_err(|_| AgentLifecycleProcessError::Timeout)?
+        .map_err(|error| AgentLifecycleProcessError::Start(error.to_string()))
+}
+
+fn configure_agent_lifecycle_environment(provider_id: &str, process: &mut tokio::process::Command) {
+    if provider_id == GROK_BUILD_PROVIDER_ID {
+        process.env_remove(NPM_CONFIG_USER_AGENT_ENV);
+    }
+}
+
+fn lifecycle_plan_supports_npm_mirror(plan: &AgentLifecyclePlan) -> bool {
+    Path::new(&plan.program)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "npm" | "pnpm" | "bun"))
+        .unwrap_or(false)
+}
+
+fn agent_lifecycle_output_text(output: &std::process::Output) -> String {
+    format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    )
+}
+
+fn is_agent_lifecycle_network_failure(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    [
+        "eai_again",
+        "econnreset",
+        "econnrefused",
+        "etimedout",
+        "enotfound",
+        "socket hang up",
+        "network timeout",
+        "network request to",
+        "fetch failed",
+        "could not resolve host",
+        "unable to get local issuer certificate",
+        "self signed certificate",
+        "tls handshake",
+        "ssl error",
+        "proxy error",
+        "connect timeout",
+        "connection reset",
+        "connection timed out",
+        "failed to download",
+    ]
+    .iter()
+    .any(|marker| value.contains(marker))
+}
+
+fn build_agent_lifecycle_plan(
+    provider_id: &str,
+    action: &str,
+    installed_command: Option<&str>,
+) -> ApiResult<AgentLifecyclePlan> {
+    if action == "install" && provider_id == GROK_BUILD_PROVIDER_ID {
+        #[cfg(target_os = "windows")]
+        return Ok(lifecycle_plan(
+            "powershell.exe",
+            [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                GROK_CLI_INSTALL_COMMAND,
+            ],
+            GROK_CLI_INSTALL_COMMAND,
+        ));
+        #[cfg(not(target_os = "windows"))]
+        return Ok(lifecycle_plan(
+            "sh",
+            ["-c", "curl -fsSL https://x.ai/cli/install.sh | bash"],
+            "curl -fsSL https://x.ai/cli/install.sh | bash",
+        ));
+    }
+    if action == "update" {
+        if let Some(command) = installed_command {
+            if provider_id == GROK_BUILD_PROVIDER_ID {
+                return Ok(lifecycle_plan(
+                    command,
+                    ["update"],
+                    &format!("{} update", quote_display_command(command)),
+                ));
+            }
+            if provider_id == CLAUDE_CODE_PROVIDER_ID && is_native_claude_command(command) {
+                return Ok(lifecycle_plan(
+                    command,
+                    ["update"],
+                    &format!("{} update", quote_display_command(command)),
+                ));
+            }
+            if provider_id == OPENCODE_PROVIDER_ID && is_native_opencode_command(command) {
+                return Ok(lifecycle_plan(
+                    command,
+                    ["upgrade"],
+                    &format!("{} upgrade", quote_display_command(command)),
+                ));
+            }
+            if let Some(plan) = package_manager_lifecycle_plan(provider_id, command) {
+                return Ok(plan);
+            }
+        }
+    }
+    let (package, display) = match provider_id {
+        CLAUDE_CODE_PROVIDER_ID => (
+            "@anthropic-ai/claude-code@latest",
+            CLAUDE_CLI_INSTALL_COMMAND,
+        ),
+        OPENAI_CODEX_PROVIDER_ID => ("@openai/codex@latest", CODEX_CLI_INSTALL_COMMAND),
+        OPENCODE_PROVIDER_ID => ("opencode-ai@latest", OPENCODE_CLI_INSTALL_COMMAND),
+        GROK_BUILD_PROVIDER_ID if action == "update" => {
+            return Ok(lifecycle_plan("grok", ["update"], "grok update"));
+        }
+        GROK_BUILD_PROVIDER_ID => return Err(ApiError::bad_request("不支持的 Grok Build 操作")),
+        _ => return Err(ApiError::bad_request("不支持的 Agent Provider")),
+    };
+    Ok(lifecycle_plan(
+        if cfg!(target_os = "windows") {
+            "npm.cmd"
+        } else {
+            "npm"
+        },
+        ["install", "-g", package],
+        display,
+    ))
+}
+
+fn package_manager_lifecycle_plan(provider_id: &str, command: &str) -> Option<AgentLifecyclePlan> {
+    let package = match provider_id {
+        CLAUDE_CODE_PROVIDER_ID => "@anthropic-ai/claude-code",
+        OPENAI_CODEX_PROVIDER_ID => "@openai/codex",
+        OPENCODE_PROVIDER_ID => "opencode-ai",
+        _ => return None,
+    };
+    let normalized = command.replace('\\', "/").to_ascii_lowercase();
+    if normalized.contains("/volta/") {
+        let manager = find_nearby_executable(command, &["volta.exe", "volta.cmd", "volta"])?;
+        return Some(lifecycle_plan(
+            manager.to_string_lossy().as_ref(),
+            ["install", package],
+            &format!(
+                "{} install {package}",
+                quote_display_command(manager.to_string_lossy().as_ref())
+            ),
+        ));
+    }
+    if normalized.contains("/.bun/") {
+        let manager = find_nearby_executable(command, &["bun.exe", "bun"])?;
+        return Some(lifecycle_plan(
+            manager.to_string_lossy().as_ref(),
+            ["add", "-g", &format!("{package}@latest")],
+            &format!(
+                "{} add -g {package}@latest",
+                quote_display_command(manager.to_string_lossy().as_ref())
+            ),
+        ));
+    }
+    if normalized.contains("/pnpm/") {
+        let manager = find_nearby_executable(command, &["pnpm.exe", "pnpm.cmd", "pnpm"])?;
+        return Some(lifecycle_plan(
+            manager.to_string_lossy().as_ref(),
+            ["add", "-g", &format!("{package}@latest")],
+            &format!(
+                "{} add -g {package}@latest",
+                quote_display_command(manager.to_string_lossy().as_ref())
+            ),
+        ));
+    }
+    if normalized.contains("/homebrew/") || normalized.contains("/cellar/") {
+        let manager = find_nearby_executable(command, &["brew"])?;
+        let formula = match provider_id {
+            OPENAI_CODEX_PROVIDER_ID => "codex",
+            OPENCODE_PROVIDER_ID => "opencode",
+            _ => "claude-code",
+        };
+        return Some(lifecycle_plan(
+            manager.to_string_lossy().as_ref(),
+            ["upgrade", formula],
+            &format!(
+                "{} upgrade {formula}",
+                quote_display_command(manager.to_string_lossy().as_ref())
+            ),
+        ));
+    }
+    let manager = find_nearby_executable(command, &["npm.cmd", "npm.exe", "npm"])?;
+    Some(lifecycle_plan(
+        manager.to_string_lossy().as_ref(),
+        ["install", "-g", &format!("{package}@latest")],
+        &format!(
+            "{} install -g {package}@latest",
+            quote_display_command(manager.to_string_lossy().as_ref())
+        ),
+    ))
+}
+
+fn lifecycle_plan<I, S>(program: &str, args: I, display_command: &str) -> AgentLifecyclePlan
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    AgentLifecyclePlan {
+        display_command: display_command.to_string(),
+        program: program.to_string(),
+        args: args
+            .into_iter()
+            .map(|value| value.as_ref().to_string())
+            .collect(),
+    }
+}
+
+fn find_nearby_executable(command: &str, names: &[&str]) -> Option<PathBuf> {
+    let path = Path::new(command);
+    for directory in path.ancestors().skip(1).take(8) {
+        for name in names {
+            let candidate = directory.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn is_native_claude_command(command: &str) -> bool {
+    let normalized = command.replace('\\', "/").to_ascii_lowercase();
+    normalized.contains("/.local/bin/claude") || normalized.contains("/claude/versions/")
+}
+
+fn is_native_opencode_command(command: &str) -> bool {
+    let normalized = command.replace('\\', "/").to_ascii_lowercase();
+    normalized.contains("/.opencode/bin/") || normalized.contains("/.local/bin/opencode")
+}
+
+fn quote_display_command(value: &str) -> String {
+    if value.contains(' ') {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
+}
+
+fn sanitize_agent_lifecycle_output(value: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    if [
+        "authorization",
+        "api_key",
+        "apikey",
+        "bearer ",
+        "sk-",
+        "secret",
+        "password",
+        "token",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+    {
+        return "命令输出包含敏感字段，已隐藏".to_string();
+    }
+    let result: String = value
+        .chars()
+        .filter(|character| !character.is_control() || *character == '\n')
+        .collect();
+    result.trim().chars().take(4000).collect()
 }
 
 async fn grok_acp_probe() -> Json<Value> {
@@ -1082,6 +1743,28 @@ async fn claude_run(
     let run_id = uuid::Uuid::new_v4().to_string();
     let started_at_ms = current_timestamp_ms_i64();
     let permission_mode = normalize_claude_permission_mode(payload.permission_mode.as_deref());
+    let channel_runtime = state
+        .agent_channels
+        .resolve_runtime(
+            CLAUDE_CODE_PROVIDER_ID,
+            payload.channel_id.as_deref(),
+            payload.model.as_deref(),
+        )
+        .map_err(ApiError::bad_request)?;
+    let channel_id = channel_runtime
+        .as_ref()
+        .map(|runtime| runtime.channel_id.clone());
+    let channel_fingerprint = channel_runtime
+        .as_ref()
+        .map(|runtime| runtime.fingerprint.clone());
+    state
+        .agent_channels
+        .persist_thread_runtime(
+            &thread_id,
+            channel_id.as_deref(),
+            channel_fingerprint.as_deref(),
+        )
+        .map_err(ApiError::internal)?;
     let notify = Arc::new(tokio::sync::Notify::new());
     let record = ActiveRunRecord {
         run_id: run_id.clone(),
@@ -1094,6 +1777,7 @@ async fn claude_run(
         permission_mode: permission_mode.clone(),
         model: payload.model.clone(),
         effort: payload.effort.clone(),
+        channel_id: channel_id.clone(),
         started_at_ms,
         events: Vec::new(),
         finished: false,
@@ -1146,6 +1830,7 @@ async fn claude_run(
         &working_directory,
         &permission_mode,
         &payload,
+        channel_runtime.as_ref(),
     )
     .await
     {
@@ -1846,10 +2531,6 @@ async fn update_agent_runtime_settings(
     Json(payload): Json<Value>,
 ) -> ApiResult<Json<Value>> {
     let settings = update_settings_section(&state, "agentRuntime", payload, UpdateMode::Merge)?;
-    let enabled = experimental_agent_run_enabled_from_settings(&settings);
-    state
-        .experimental_agent_run_enabled
-        .store(enabled, AtomicOrdering::Release);
     Ok(Json(agent_runtime_settings_from_settings(&settings)))
 }
 
@@ -3073,32 +3754,37 @@ async fn create_thread(
     Json(payload): Json<ThreadCreateRequest>,
 ) -> ApiResult<Json<Value>> {
     let _guard = lock_workspace_write(&state)?;
-    let connection = open_initialized_workspace_database(&state)?;
-    let provider = resolve_requested_thread_provider(
-        payload.provider_id.as_deref(),
-        experimental_agent_run_enabled(&state),
-        resolve_grok_command().is_some(),
-        resolve_codex_command().is_some(),
-        resolve_opencode_command().is_some(),
-    )?;
+    let mut connection = open_initialized_workspace_database(&state)?;
+    let provider =
+        resolve_requested_thread_provider(payload.provider_id.as_deref(), |provider_id| {
+            state
+                .agent_runs
+                .resolve_command(provider_id, false)
+                .is_some()
+        })?;
     let permission_mode =
         resolve_thread_create_permission_mode(provider, payload.permission_mode.as_deref())?;
     let model = normalize_thread_metadata_value(payload.model.as_deref(), "model")?;
     let reasoning_effort =
         normalize_thread_metadata_value(payload.reasoning_effort.as_deref(), "reasoningEffort")?;
-    if provider != OPENAI_CODEX_PROVIDER_ID && reasoning_effort.is_some() {
+    if !provider_supports_reasoning_effort(provider) && reasoning_effort.is_some() {
         return Err(ApiError::bad_request(
-            "reasoningEffort 目前仅支持 OpenAI Codex 聊天",
+            "reasoningEffort 目前仅支持 Claude Code 或 OpenAI Codex 聊天",
         ));
     }
+    let channel_id = state
+        .agent_channels
+        .validate_selection(provider, payload.channel_id.as_deref())
+        .map_err(ApiError::bad_request)?;
     let thread_id = create_thread_row(
-        &connection,
+        &mut connection,
         &project_id,
         payload.title.as_deref(),
         provider,
         permission_mode.as_deref(),
         model.as_deref(),
         reasoning_effort.as_deref(),
+        channel_id.as_deref(),
     )?;
     let thread = read_thread_summary(&connection, &thread_id)?;
     Ok(Json(json!({
@@ -3116,6 +3802,7 @@ async fn update_thread(
     let _guard = lock_workspace_write(&state)?;
     let mut connection = open_initialized_workspace_database(&state)?;
     let mut refresh_workspace = false;
+    let channel_changed = payload.get("channelId").is_some();
 
     if let Some(title) = payload
         .get("title")
@@ -3133,7 +3820,16 @@ async fn update_thread(
         refresh_workspace = true;
     }
 
-    update_thread_metadata_from_payload(&mut connection, &thread_id, &payload)?;
+    update_thread_metadata_from_payload(
+        &mut connection,
+        &thread_id,
+        &payload,
+        &state.agent_channels,
+    )?;
+    if channel_changed {
+        let _ = close_thread_runtime(&state, &thread_id);
+        state.agent_runs.forget_thread(&thread_id);
+    }
 
     if refresh_workspace {
         let workspace = read_workspace_bootstrap_with_connection(&state, &connection)?;
@@ -3250,6 +3946,7 @@ fn read_workspace_bootstrap_with_settings(
     let project_rows = read_project_rows(connection)?;
     let thread_rows = read_thread_rows(connection)?;
     let thread_rows = filter_visible_thread_rows(connection, thread_rows)?;
+    let model_preferences_by_thread = read_all_thread_model_preferences(connection)?;
     let mut active_project_id = if restore_selection {
         read_state_value(&connection, "activeProjectId")?
     } else {
@@ -3272,7 +3969,7 @@ fn read_workspace_bootstrap_with_settings(
     let active_project_id_ref = active_project_id.as_deref();
     let projects: Vec<Value> = project_rows
         .iter()
-        .map(|project| {
+        .map(|project| -> ApiResult<Value> {
             let git_info = if Some(project.id.as_str()) == active_project_id_ref {
                 read_git_info(&project.path, true)
             } else {
@@ -3285,7 +3982,9 @@ fn read_workspace_bootstrap_with_settings(
             let project_threads: Vec<Value> = thread_rows
                 .iter()
                 .filter(|thread| thread.project_id == project.id)
-                .map(thread_summary_json)
+                .map(|thread| {
+                    thread_summary_json(thread, model_preferences_by_thread.get(&thread.id))
+                })
                 .collect();
             let mut project_json = json!({
                 "id": project.id,
@@ -3305,9 +4004,9 @@ fn read_workspace_bootstrap_with_settings(
                 }
             }
             remove_null_fields(&mut project_json);
-            project_json
+            Ok(project_json)
         })
-        .collect();
+        .collect::<ApiResult<Vec<_>>>()?;
 
     let active_project_threads = active_project_id
         .as_ref()
@@ -3478,7 +4177,6 @@ fn normalize_general_settings(value: Option<&Value>) -> Value {
 fn normalize_agent_runtime_settings(value: Option<&Value>) -> Value {
     let record = value.and_then(Value::as_object);
     json!({
-        "experimentalAgentRunEnabled": bool_setting(record, "experimentalAgentRunEnabled", false),
         "defaultProviderId": enum_setting(
             record,
             "defaultProviderId",
@@ -3491,20 +4189,6 @@ fn normalize_agent_runtime_settings(value: Option<&Value>) -> Value {
             CLAUDE_CODE_PROVIDER_ID,
         ),
     })
-}
-
-fn experimental_agent_run_enabled_from_settings(settings: &Value) -> bool {
-    settings
-        .get("agentRuntime")
-        .and_then(|value| value.get("experimentalAgentRunEnabled"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-fn experimental_agent_run_enabled(state: &AppState) -> bool {
-    state
-        .experimental_agent_run_enabled
-        .load(AtomicOrdering::Acquire)
 }
 
 fn agent_runtime_settings_from_settings(settings: &Value) -> Value {
@@ -4133,7 +4817,6 @@ fn default_app_settings() -> Value {
             "reviewIgnorePatternsCustomized": false
         },
         "agentRuntime": {
-            "experimentalAgentRunEnabled": false,
             "defaultProviderId": CLAUDE_CODE_PROVIDER_ID
         },
         "appearance": {
@@ -4305,6 +4988,9 @@ fn parse_claude_cli_version(output: &str) -> Option<String> {
 fn compare_semantic_versions(left: &str, right: &str) -> i8 {
     let parse = |value: &str| -> Vec<i64> {
         value
+            .split(['-', '+'])
+            .next()
+            .unwrap_or(value)
             .split('.')
             .map(|piece| piece.parse::<i64>().unwrap_or(0))
             .collect()
@@ -4324,10 +5010,54 @@ fn compare_semantic_versions(left: &str, right: &str) -> i8 {
     0
 }
 
+fn extract_agent_semantic_version(value: &str) -> Option<String> {
+    value.split_whitespace().find_map(|token| {
+        let candidate = token
+            .trim_matches(|character: char| {
+                !character.is_ascii_alphanumeric() && !matches!(character, '.' | '-' | '+')
+            })
+            .strip_prefix('v')
+            .unwrap_or(token.trim_matches(|character: char| {
+                !character.is_ascii_alphanumeric() && !matches!(character, '.' | '-' | '+')
+            }));
+        let core = candidate.split(['-', '+']).next().unwrap_or(candidate);
+        let pieces = core.split('.').collect::<Vec<_>>();
+        (pieces.len() == 3
+            && pieces.iter().all(|piece| {
+                !piece.is_empty() && piece.chars().all(|value| value.is_ascii_digit())
+            }))
+        .then(|| candidate.to_string())
+    })
+}
+
 fn background_command(program: &str) -> Command {
     let mut command = Command::new(program);
     configure_background_command(&mut command);
     command
+}
+
+fn command_output_with_timeout(
+    command: &mut Command,
+    timeout: std::time::Duration,
+) -> Option<std::process::Output> {
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn().ok()?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
 }
 
 fn background_tokio_command(program: &str) -> tokio::process::Command {
@@ -4357,16 +5087,17 @@ fn configure_tokio_background_command(_command: &mut tokio::process::Command) {}
 
 fn resolve_claude_command() -> Option<String> {
     #[cfg(target_os = "windows")]
-    let lookup = background_command("powershell.exe")
-        .args([
+    let lookup = {
+        let mut command = background_command("powershell.exe");
+        command.args([
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
             "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command claude -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
-        ])
-        .output()
-        .ok();
+        ]);
+        command_output_with_timeout(&mut command, std::time::Duration::from_secs(3))
+    };
 
     #[cfg(not(target_os = "windows"))]
     let lookup = background_command("which").arg("claude").output().ok();
@@ -4382,27 +5113,23 @@ fn resolve_grok_command() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .filter(|value| {
-            background_command(value)
-                .arg("--version")
-                .output()
-                .is_ok_and(|output| output.status.success())
-        })
+        .filter(|value| command_reports_version(value))
     {
         return Some(command);
     }
 
     #[cfg(target_os = "windows")]
-    let lookup = background_command("powershell.exe")
-        .args([
+    let lookup = {
+        let mut command = background_command("powershell.exe");
+        command.args([
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
             "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command grok -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
-        ])
-        .output()
-        .ok();
+        ]);
+        command_output_with_timeout(&mut command, std::time::Duration::from_secs(3))
+    };
 
     #[cfg(not(target_os = "windows"))]
     let lookup = background_command("which").arg("grok").output().ok();
@@ -4439,16 +5166,17 @@ fn resolve_codex_command() -> Option<String> {
     }
 
     #[cfg(target_os = "windows")]
-    let lookup = background_command("powershell.exe")
-        .args([
+    let lookup = {
+        let mut command = background_command("powershell.exe");
+        command.args([
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
             "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command codex -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
-        ])
-        .output()
-        .ok();
+        ]);
+        command_output_with_timeout(&mut command, std::time::Duration::from_secs(3))
+    };
 
     #[cfg(not(target_os = "windows"))]
     let lookup = background_command("which").arg("codex").output().ok();
@@ -4515,16 +5243,17 @@ fn resolve_opencode_command() -> Option<String> {
     }
 
     #[cfg(target_os = "windows")]
-    let lookup = background_command("powershell.exe")
-        .args([
+    let lookup = {
+        let mut command = background_command("powershell.exe");
+        command.args([
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
             "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command opencode -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
-        ])
-        .output()
-        .ok();
+        ]);
+        command_output_with_timeout(&mut command, std::time::Duration::from_secs(3))
+    };
 
     #[cfg(not(target_os = "windows"))]
     let lookup = background_command("which").arg("opencode").output().ok();
@@ -4637,7 +5366,9 @@ fn command_reports_version(command: &str) -> bool {
 }
 
 fn read_cli_version(command: &str) -> Option<String> {
-    let output = background_command(command).arg("--version").output().ok()?;
+    let mut process = background_command(command);
+    process.arg("--version");
+    let output = command_output_with_timeout(&mut process, std::time::Duration::from_secs(3))?;
     if !output.status.success() {
         return None;
     }
@@ -4654,7 +5385,9 @@ fn read_cli_version(command: &str) -> Option<String> {
 }
 
 fn read_grok_cli_version(command: &str) -> Option<String> {
-    let output = background_command(command).arg("--version").output().ok()?;
+    let mut process = background_command(command);
+    process.arg("--version");
+    let output = command_output_with_timeout(&mut process, std::time::Duration::from_secs(3))?;
     if !output.status.success() {
         return None;
     }
@@ -4749,10 +5482,19 @@ fn initialize_workspace_database(connection: &Connection) -> ApiResult<()> {
               model TEXT,
               reasoning_effort TEXT,
               permission_mode TEXT,
+              agent_channel_id TEXT,
+              agent_channel_fingerprint TEXT,
               imported INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               pinned_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS thread_model_preferences (
+              thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+              model_id TEXT NOT NULL,
+              reasoning_effort TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (thread_id, model_id)
             );
             CREATE TABLE IF NOT EXISTS app_state (
               key TEXT PRIMARY KEY,
@@ -4855,8 +5597,28 @@ fn initialize_workspace_database(connection: &Connection) -> ApiResult<()> {
             ensure_column(connection, "messages", "user_attachments_json", "TEXT")?;
             ensure_column(connection, "messages", "user_content_blocks_json", "TEXT")?;
             ensure_column(connection, "threads", "reasoning_effort", "TEXT")?;
+            ensure_column(connection, "threads", "agent_channel_id", "TEXT")?;
+            ensure_column(connection, "threads", "agent_channel_fingerprint", "TEXT")?;
             ensure_column(connection, "threads", "pinned_at", "TEXT")?;
             ensure_column(connection, "projects", "pinned_at", "TEXT")?;
+            connection
+                .execute(
+                    r#"
+                    INSERT OR IGNORE INTO thread_model_preferences (
+                      thread_id, model_id, reasoning_effort, updated_at
+                    )
+                    SELECT
+                      id,
+                      COALESCE(NULLIF(TRIM(model), ''), '__default'),
+                      TRIM(reasoning_effort),
+                      CURRENT_TIMESTAMP
+                    FROM threads
+                    WHERE reasoning_effort IS NOT NULL
+                      AND TRIM(reasoning_effort) <> ''
+                    "#,
+                    [],
+                )
+                .map_err(|error| ApiError::internal(format!("迁移线程模型偏好失败: {error}")))?;
             Ok(())
         })
 }
@@ -5227,7 +5989,9 @@ fn read_thread_rows(connection: &Connection) -> ApiResult<Vec<ThreadRow>> {
     let mut statement = connection
         .prepare(
             r#"
-            SELECT id, project_id, provider, title, session_id, transcript_path, working_directory, model, reasoning_effort, permission_mode, imported, updated_at, pinned_at
+            SELECT id, project_id, provider, title, session_id, transcript_path, working_directory,
+                   model, reasoning_effort, permission_mode, agent_channel_id,
+                   agent_channel_fingerprint, imported, updated_at, pinned_at
             FROM threads
             ORDER BY updated_at DESC, created_at DESC
             "#,
@@ -5246,9 +6010,11 @@ fn read_thread_rows(connection: &Connection) -> ApiResult<Vec<ThreadRow>> {
                 model: row.get(7)?,
                 reasoning_effort: row.get(8)?,
                 permission_mode: row.get(9)?,
-                imported: row.get::<_, i64>(10)? != 0,
-                updated_at: row.get(11)?,
-                pinned_at: row.get(12)?,
+                agent_channel_id: row.get(10)?,
+                agent_channel_fingerprint: row.get(11)?,
+                imported: row.get::<_, i64>(12)? != 0,
+                updated_at: row.get(13)?,
+                pinned_at: row.get(14)?,
             })
         })
         .map_err(|error| ApiError::internal(format!("读取线程列表失败: {error}")))?;
@@ -5473,34 +6239,35 @@ fn ensure_thread_exists(connection: &Connection, thread_id: &str) -> ApiResult<(
         .ok_or_else(|| ApiError::not_found("聊天不存在"))
 }
 
-fn resolve_requested_thread_provider(
+fn resolve_requested_thread_provider<F>(
     provider_id: Option<&str>,
-    experimental_agent_run_enabled: bool,
-    grok_available: bool,
-    codex_available: bool,
-    opencode_available: bool,
-) -> ApiResult<&'static str> {
+    provider_available: F,
+) -> ApiResult<&'static str>
+where
+    F: FnOnce(&str) -> bool,
+{
     let provider_id = provider_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or(CLAUDE_CODE_PROVIDER_ID);
     match provider_id {
         CLAUDE_CODE_PROVIDER_ID => Ok(CLAUDE_CODE_PROVIDER_ID),
-        GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID | OPENCODE_PROVIDER_ID
-            if !experimental_agent_run_enabled =>
-        {
-            Err(ApiError::bad_request("实验 Agent 运行未开启"))
+        GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID | OPENCODE_PROVIDER_ID => {
+            if provider_available(provider_id) {
+                return Ok(match provider_id {
+                    GROK_BUILD_PROVIDER_ID => GROK_BUILD_PROVIDER_ID,
+                    OPENAI_CODEX_PROVIDER_ID => OPENAI_CODEX_PROVIDER_ID,
+                    OPENCODE_PROVIDER_ID => OPENCODE_PROVIDER_ID,
+                    _ => unreachable!(),
+                });
+            }
+            Err(ApiError::bad_request(match provider_id {
+                GROK_BUILD_PROVIDER_ID => "未找到 grok 命令",
+                OPENAI_CODEX_PROVIDER_ID => "未找到可由 CodeM 启动的 Codex CLI",
+                OPENCODE_PROVIDER_ID => "未找到可由 CodeM 启动的 OpenCode CLI",
+                _ => unreachable!(),
+            }))
         }
-        GROK_BUILD_PROVIDER_ID if !grok_available => Err(ApiError::bad_request("未找到 grok 命令")),
-        GROK_BUILD_PROVIDER_ID => Ok(GROK_BUILD_PROVIDER_ID),
-        OPENAI_CODEX_PROVIDER_ID if !codex_available => {
-            Err(ApiError::bad_request("未找到可由 CodeM 启动的 Codex CLI"))
-        }
-        OPENAI_CODEX_PROVIDER_ID => Ok(OPENAI_CODEX_PROVIDER_ID),
-        OPENCODE_PROVIDER_ID if !opencode_available => Err(ApiError::bad_request(
-            "未找到可由 CodeM 启动的 OpenCode CLI",
-        )),
-        OPENCODE_PROVIDER_ID => Ok(OPENCODE_PROVIDER_ID),
         _ => Err(ApiError::bad_request("当前 Provider 不可用于新建聊天")),
     }
 }
@@ -5545,14 +6312,132 @@ fn read_thread_metadata_payload(value: Option<&Value>, field: &str) -> ApiResult
     }
 }
 
-fn create_thread_row(
+fn provider_supports_reasoning_effort(provider: &str) -> bool {
+    matches!(provider, CLAUDE_CODE_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID)
+}
+
+fn thread_model_preference_key(model: Option<&str>) -> String {
+    model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("__default")
+        .to_string()
+}
+
+fn read_thread_model_reasoning_effort(
     connection: &Connection,
+    thread_id: &str,
+    model: Option<&str>,
+) -> ApiResult<Option<String>> {
+    let model_id = thread_model_preference_key(model);
+    connection
+        .query_row(
+            "SELECT reasoning_effort FROM thread_model_preferences WHERE thread_id = ? AND model_id = ?",
+            params![thread_id, model_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取线程模型偏好失败: {error}")))
+}
+
+fn read_thread_model_preferences_for_thread(
+    connection: &Connection,
+    thread_id: &str,
+) -> ApiResult<Map<String, Value>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT model_id, reasoning_effort FROM thread_model_preferences WHERE thread_id = ? ORDER BY model_id",
+        )
+        .map_err(|error| ApiError::internal(format!("读取线程模型偏好失败: {error}")))?;
+    let rows = statement
+        .query_map(params![thread_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| ApiError::internal(format!("读取线程模型偏好失败: {error}")))?;
+    let mut preferences = Map::new();
+    for row in rows {
+        let (model_id, reasoning_effort) =
+            row.map_err(|error| ApiError::internal(format!("读取线程模型偏好失败: {error}")))?;
+        preferences.insert(model_id, json!(reasoning_effort));
+    }
+    Ok(preferences)
+}
+
+fn read_all_thread_model_preferences(
+    connection: &Connection,
+) -> ApiResult<std::collections::HashMap<String, Map<String, Value>>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT thread_id, model_id, reasoning_effort FROM thread_model_preferences ORDER BY thread_id, model_id",
+        )
+        .map_err(|error| ApiError::internal(format!("读取线程模型偏好失败: {error}")))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|error| ApiError::internal(format!("读取线程模型偏好失败: {error}")))?;
+    let mut preferences_by_thread = std::collections::HashMap::new();
+    for row in rows {
+        let (thread_id, model_id, reasoning_effort) =
+            row.map_err(|error| ApiError::internal(format!("读取线程模型偏好失败: {error}")))?;
+        preferences_by_thread
+            .entry(thread_id)
+            .or_insert_with(Map::new)
+            .insert(model_id, json!(reasoning_effort));
+    }
+    Ok(preferences_by_thread)
+}
+
+fn sync_thread_model_preference(
+    connection: &Connection,
+    thread_id: &str,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
+    updated_at: &str,
+) -> ApiResult<()> {
+    let model_id = thread_model_preference_key(model);
+    if let Some(reasoning_effort) = reasoning_effort
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        connection
+            .execute(
+                r#"
+                INSERT INTO thread_model_preferences (
+                  thread_id, model_id, reasoning_effort, updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(thread_id, model_id) DO UPDATE SET
+                  reasoning_effort = excluded.reasoning_effort,
+                  updated_at = excluded.updated_at
+                "#,
+                params![thread_id, model_id, reasoning_effort, updated_at],
+            )
+            .map_err(|error| ApiError::internal(format!("保存线程模型偏好失败: {error}")))?;
+    } else {
+        connection
+            .execute(
+                "DELETE FROM thread_model_preferences WHERE thread_id = ? AND model_id = ?",
+                params![thread_id, model_id],
+            )
+            .map_err(|error| ApiError::internal(format!("清理线程模型偏好失败: {error}")))?;
+    }
+    Ok(())
+}
+
+fn create_thread_row(
+    connection: &mut Connection,
     project_id: &str,
     title: Option<&str>,
     provider: &str,
     permission_mode: Option<&str>,
     model: Option<&str>,
     reasoning_effort: Option<&str>,
+    agent_channel_id: Option<&str>,
 ) -> ApiResult<String> {
     let project_path: String = connection
         .query_row(
@@ -5569,14 +6454,18 @@ fn create_thread_row(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("新建聊天");
-    connection
+    let transaction = connection
+        .transaction()
+        .map_err(|error| ApiError::internal(format!("创建聊天事务失败: {error}")))?;
+    transaction
         .execute(
             r#"
             INSERT INTO threads (
               id, project_id, provider, title, custom_title, session_id, transcript_path,
-              working_directory, model, reasoning_effort, permission_mode, imported, created_at, updated_at
+              working_directory, model, reasoning_effort, permission_mode, agent_channel_id,
+              agent_channel_fingerprint, imported, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?, ?, 0, ?, ?)
+            VALUES (?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?, ?, ?, NULL, 0, ?, ?)
             "#,
             params![
                 id,
@@ -5587,19 +6476,24 @@ fn create_thread_row(
                 model,
                 reasoning_effort,
                 permission_mode,
+                agent_channel_id,
                 now,
                 now
             ],
         )
         .map_err(|error| ApiError::internal(format!("创建聊天失败: {error}")))?;
-    connection
+    sync_thread_model_preference(&transaction, &id, model, reasoning_effort, &now)?;
+    transaction
         .execute(
             "UPDATE projects SET updated_at = ? WHERE id = ?",
             params![now, project_id],
         )
         .map_err(|error| ApiError::internal(format!("更新项目失败: {error}")))?;
-    write_state_value(connection, "activeProjectId", project_id)?;
-    write_state_value(connection, "activeThreadId", &id)?;
+    write_state_value(&transaction, "activeProjectId", project_id)?;
+    write_state_value(&transaction, "activeThreadId", &id)?;
+    transaction
+        .commit()
+        .map_err(|error| ApiError::internal(format!("提交聊天创建失败: {error}")))?;
     Ok(id)
 }
 
@@ -5607,7 +6501,9 @@ fn read_thread_summary(connection: &Connection, thread_id: &str) -> ApiResult<Va
     let mut statement = connection
         .prepare(
             r#"
-            SELECT id, project_id, provider, title, session_id, transcript_path, working_directory, model, reasoning_effort, permission_mode, imported, updated_at, pinned_at
+            SELECT id, project_id, provider, title, session_id, transcript_path, working_directory,
+                   model, reasoning_effort, permission_mode, agent_channel_id,
+                   agent_channel_fingerprint, imported, updated_at, pinned_at
             FROM threads
             WHERE id = ?
             "#,
@@ -5626,15 +6522,18 @@ fn read_thread_summary(connection: &Connection, thread_id: &str) -> ApiResult<Va
                 model: row.get(7)?,
                 reasoning_effort: row.get(8)?,
                 permission_mode: row.get(9)?,
-                imported: row.get::<_, i64>(10)? != 0,
-                updated_at: row.get(11)?,
-                pinned_at: row.get(12)?,
+                agent_channel_id: row.get(10)?,
+                agent_channel_fingerprint: row.get(11)?,
+                imported: row.get::<_, i64>(12)? != 0,
+                updated_at: row.get(13)?,
+                pinned_at: row.get(14)?,
             })
         })
         .optional()
         .map_err(|error| ApiError::internal(format!("读取聊天失败: {error}")))?
         .ok_or_else(|| ApiError::not_found("聊天不存在"))?;
-    Ok(thread_summary_json(&thread))
+    let preferences = read_thread_model_preferences_for_thread(connection, thread_id)?;
+    Ok(thread_summary_json(&thread, Some(&preferences)))
 }
 
 fn remove_project_row(connection: &mut Connection, project_id: &str) -> ApiResult<()> {
@@ -5764,7 +6663,8 @@ fn read_thread_detail(connection: &Connection, thread_id: &str) -> ApiResult<Thr
     connection
         .query_row(
             r#"
-            SELECT project_id, provider, session_id, transcript_path, working_directory, model, reasoning_effort, permission_mode
+            SELECT project_id, provider, session_id, transcript_path, working_directory, model,
+                   reasoning_effort, permission_mode, agent_channel_id, agent_channel_fingerprint
             FROM threads
             WHERE id = ?
             "#,
@@ -5779,6 +6679,8 @@ fn read_thread_detail(connection: &Connection, thread_id: &str) -> ApiResult<Thr
                     model: row.get(5)?,
                     reasoning_effort: row.get(6)?,
                     permission_mode: row.get(7)?,
+                    agent_channel_id: row.get(8)?,
+                    agent_channel_fingerprint: row.get(9)?,
                 })
             },
         )
@@ -5791,6 +6693,7 @@ fn update_thread_metadata_from_payload(
     connection: &mut Connection,
     thread_id: &str,
     payload: &Value,
+    agent_channels: &crate::agent_channels::AgentChannelService,
 ) -> ApiResult<()> {
     let thread = read_thread_detail(connection, thread_id)?;
     let previous_session_id = thread.session_id.clone();
@@ -5800,11 +6703,13 @@ fn update_thread_metadata_from_payload(
     let has_reasoning_effort = payload.get("reasoningEffort").is_some();
     let has_working_directory = payload.get("workingDirectory").is_some();
     let has_permission_mode = payload.get("permissionMode").is_some();
+    let has_channel_id = payload.get("channelId").is_some();
     if !(has_session_id
         || has_model
         || has_reasoning_effort
         || has_working_directory
-        || has_permission_mode)
+        || has_permission_mode
+        || has_channel_id)
     {
         return Ok(());
     }
@@ -5849,12 +6754,14 @@ fn update_thread_metadata_from_payload(
     };
     let reasoning_effort = if has_reasoning_effort {
         read_thread_metadata_payload(payload.get("reasoningEffort"), "reasoningEffort")?
+    } else if has_model {
+        read_thread_model_reasoning_effort(connection, thread_id, model.as_deref())?
     } else {
         thread.reasoning_effort.clone()
     };
-    if thread.provider != OPENAI_CODEX_PROVIDER_ID && reasoning_effort.is_some() {
+    if !provider_supports_reasoning_effort(&thread.provider) && reasoning_effort.is_some() {
         return Err(ApiError::bad_request(
-            "reasoningEffort 目前仅支持 OpenAI Codex 聊天",
+            "reasoningEffort 目前仅支持 Claude Code 或 OpenAI Codex 聊天",
         ));
     }
     let permission_mode = if has_permission_mode {
@@ -5883,10 +6790,36 @@ fn update_thread_metadata_from_payload(
     } else {
         thread.permission_mode.clone()
     };
+    let agent_channel_id = if has_channel_id {
+        let requested = match payload.get("channelId") {
+            Some(Value::Null) => None,
+            Some(Value::String(value)) => Some(value.as_str()),
+            _ => return Err(ApiError::bad_request("channelId 必须是字符串或 null")),
+        };
+        agent_channels
+            .validate_selection(&thread.provider, requested)
+            .map_err(ApiError::bad_request)?
+    } else {
+        thread.agent_channel_id.clone()
+    };
+    let agent_channel_fingerprint = if has_channel_id && agent_channel_id != thread.agent_channel_id
+    {
+        None
+    } else {
+        thread.agent_channel_fingerprint.clone()
+    };
     let now = current_timestamp();
     let transaction = connection
         .transaction()
         .map_err(|error| ApiError::internal(format!("更新聊天元数据失败: {error}")))?;
+    if has_channel_id && agent_channel_id != thread.agent_channel_id {
+        transaction
+            .execute(
+                "DELETE FROM thread_model_preferences WHERE thread_id = ?",
+                params![thread_id],
+            )
+            .map_err(|error| ApiError::internal(format!("清理旧渠道模型偏好失败: {error}")))?;
+    }
     if thread.provider == CLAUDE_CODE_PROVIDER_ID
         && previous_session_id.is_some()
         && previous_session_id != session_id
@@ -5912,6 +6845,8 @@ fn update_thread_metadata_from_payload(
                 model = ?,
                 reasoning_effort = ?,
                 permission_mode = ?,
+                agent_channel_id = ?,
+                agent_channel_fingerprint = ?,
                 updated_at = ?
             WHERE id = ?
             "#,
@@ -5922,11 +6857,22 @@ fn update_thread_metadata_from_payload(
                 model,
                 reasoning_effort,
                 permission_mode,
+                agent_channel_id,
+                agent_channel_fingerprint,
                 now,
                 thread_id
             ],
         )
         .map_err(|error| ApiError::internal(format!("更新聊天元数据失败: {error}")))?;
+    if has_model || has_reasoning_effort {
+        sync_thread_model_preference(
+            &transaction,
+            thread_id,
+            model.as_deref(),
+            reasoning_effort.as_deref(),
+            &now,
+        )?;
+    }
     transaction
         .execute(
             "UPDATE projects SET updated_at = ? WHERE id = ?",
@@ -7351,10 +8297,104 @@ fn mark_request_user_input_submitted(turn: &mut Value, request_id: &str, result_
     };
     for request in requests {
         if request.get("requestId").and_then(Value::as_str) == Some(request_id) {
+            let submitted_answers =
+                parse_request_user_input_submitted_answers(request, result_text);
             request["submittedAtMs"] = json!(current_timestamp_ms_i64());
-            request["submittedAnswers"] = json!(result_text);
+            request["submittedAnswers"] = Value::Object(submitted_answers);
         }
     }
+}
+
+fn parse_request_user_input_submitted_answers(
+    request: &Value,
+    result_text: &str,
+) -> Map<String, Value> {
+    let structured_answers = serde_json::from_str::<Value>(result_text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("answers")
+                .and_then(Value::as_object)
+                .cloned()
+                .or_else(|| value.as_object().cloned())
+        });
+    let Some(questions) = request.get("questions").and_then(Value::as_array) else {
+        return Map::new();
+    };
+
+    questions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, question)| {
+            let key = first_json_string(question, &["id", "name", "key"])
+                .map(ToString::to_string)
+                .unwrap_or_else(|| format!("question-{index}"));
+            let question_text =
+                first_json_string(question, &["question", "text", "prompt", "message"]);
+            let answer = structured_answers
+                .as_ref()
+                .and_then(|answers| {
+                    answers
+                        .get(&key)
+                        .or_else(|| question_text.and_then(|text| answers.get(text)))
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                })
+                .or_else(|| {
+                    question_text
+                        .and_then(|text| parse_native_request_user_input_answer(result_text, text))
+                })?;
+            let answer = normalize_request_user_input_history_answer(question, &answer);
+            (!answer.is_empty()).then(|| (key, json!(answer)))
+        })
+        .collect()
+}
+
+fn parse_native_request_user_input_answer(result_text: &str, question: &str) -> Option<String> {
+    let question_marker = format!("{}=", serde_json::to_string(question).ok()?);
+    let answer_source = result_text.split_once(&question_marker)?.1;
+    let mut deserializer = serde_json::Deserializer::from_str(answer_source);
+    String::deserialize(&mut deserializer)
+        .ok()
+        .map(|answer| answer.trim().to_string())
+        .filter(|answer| !answer.is_empty())
+}
+
+fn normalize_request_user_input_history_answer(question: &Value, answer: &str) -> String {
+    let answer = answer.trim();
+    if !question
+        .get("multiSelect")
+        .or_else(|| question.get("multi_select"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return answer.to_string();
+    }
+
+    let option_labels = question
+        .get("options")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|option| first_json_string(option, &["label", "title", "value"]))
+        .collect::<std::collections::HashSet<_>>();
+    let mut selected_options = Vec::new();
+    let mut custom_parts = Vec::new();
+    for part in answer
+        .split(", ")
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        if option_labels.contains(part) {
+            selected_options.push(part.to_string());
+        } else {
+            custom_parts.push(part);
+        }
+    }
+    if !custom_parts.is_empty() {
+        selected_options.push(custom_parts.join(", "));
+    }
+    selected_options.join("\n")
 }
 
 fn upsert_pending_request(turn: &mut Value, key: &str, request: Value) {
@@ -13730,6 +14770,7 @@ async fn get_or_create_claude_runtime(
     working_directory: &str,
     permission_mode: &str,
     payload: &ClaudeRunRequest,
+    channel_runtime: Option<&crate::agent_channels::AgentChannelRuntime>,
 ) -> ApiResult<(ClaudeRuntimeRecord, bool)> {
     let existing = state
         .runtimes
@@ -13747,16 +14788,25 @@ async fn get_or_create_claude_runtime(
         if runtime.current_run_id.is_some() || has_context_request {
             return Ok((runtime, false));
         }
-        if is_claude_runtime_compatible(&runtime, working_directory, permission_mode, payload) {
+        if is_claude_runtime_compatible(
+            &runtime,
+            working_directory,
+            permission_mode,
+            payload,
+            channel_runtime,
+        ) {
             return Ok((runtime, true));
         }
         close_thread_runtime(state, thread_id)?;
     }
 
     let mut args = build_claude_run_args(payload, permission_mode);
-    let mut child = background_tokio_command(command)
-        .args(args.drain(..))
-        .current_dir(working_directory)
+    let mut process = background_tokio_command(command);
+    process.args(args.drain(..)).current_dir(working_directory);
+    if let Some(channel_runtime) = channel_runtime {
+        process.envs(&channel_runtime.env);
+    }
+    let mut child = process
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .stdin(std::process::Stdio::piped())
@@ -13781,6 +14831,8 @@ async fn get_or_create_claude_runtime(
         permission_mode: permission_mode.to_string(),
         model: payload.model.clone(),
         effort: payload.effort.clone(),
+        channel_id: channel_runtime.map(|runtime| runtime.channel_id.clone()),
+        channel_fingerprint: channel_runtime.map(|runtime| runtime.fingerprint.clone()),
         session_id: payload.session_id.clone(),
         child_id,
         stdin,
@@ -13829,12 +14881,15 @@ fn is_claude_runtime_compatible(
     working_directory: &str,
     permission_mode: &str,
     payload: &ClaudeRunRequest,
+    channel_runtime: Option<&crate::agent_channels::AgentChannelRuntime>,
 ) -> bool {
     if runtime.closed
         || runtime.working_directory != working_directory
         || runtime.permission_mode != permission_mode
         || runtime.model != payload.model
         || runtime.effort != payload.effort
+        || runtime.channel_id != channel_runtime.map(|runtime| runtime.channel_id.clone())
+        || runtime.channel_fingerprint != channel_runtime.map(|runtime| runtime.fingerprint.clone())
     {
         return false;
     }
@@ -15870,6 +16925,7 @@ fn active_run_json(run: &ActiveRunRecord) -> Value {
         "permissionMode": run.permission_mode,
         "model": run.model,
         "effort": run.effort,
+        "channelId": run.channel_id,
         "startedAtMs": run.started_at_ms,
         "eventCount": run.events.len(),
         "finished": run.finished,
@@ -15906,7 +16962,10 @@ fn write_state_value(connection: &Connection, key: &str, value: impl AsRef<str>)
         .map_err(|error| ApiError::internal(format!("保存工作区状态失败: {error}")))
 }
 
-fn thread_summary_json(thread: &ThreadRow) -> Value {
+fn thread_summary_json(
+    thread: &ThreadRow,
+    model_preferences: Option<&Map<String, Value>>,
+) -> Value {
     let mut value = json!({
         "id": thread.id,
         "projectId": thread.project_id,
@@ -15925,8 +16984,23 @@ fn thread_summary_json(thread: &ThreadRow) -> Value {
         if let Some(reasoning_effort) = thread.reasoning_effort.as_ref() {
             object.insert("reasoningEffort".to_string(), json!(reasoning_effort));
         }
+        if let Some(model_preferences) = model_preferences.filter(|value| !value.is_empty()) {
+            object.insert(
+                "modelPreferences".to_string(),
+                Value::Object(model_preferences.clone()),
+            );
+        }
         if let Some(permission_mode) = thread.permission_mode.as_ref() {
             object.insert("permissionMode".to_string(), json!(permission_mode));
+        }
+        if let Some(agent_channel_id) = thread.agent_channel_id.as_ref() {
+            object.insert("agentChannelId".to_string(), json!(agent_channel_id));
+        }
+        if let Some(agent_channel_fingerprint) = thread.agent_channel_fingerprint.as_ref() {
+            object.insert(
+                "agentChannelFingerprint".to_string(),
+                json!(agent_channel_fingerprint),
+            );
         }
         if let Some(pinned_at) = thread.pinned_at.as_ref() {
             object.insert("pinnedAt".to_string(), json!(pinned_at));
@@ -16099,20 +17173,25 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_claude_input_message, build_request_user_input_response_answers,
-        claude_input_message_has_content, compare_project_file_entries, create_router,
+        build_agent_lifecycle_plan, build_claude_input_message,
+        build_request_user_input_response_answers, claude_input_message_has_content,
+        compare_project_file_entries, configure_agent_lifecycle_environment, create_router,
         create_thread_row, default_grok_command_path, desktop_cors_layer,
-        ensure_agent_plugin_management_supported, import_claude_sessions_from_root,
-        initialize_workspace_database, install_skill_directory_safely,
-        list_agent_installed_plugins_value, list_agent_plugin_marketplaces_value,
-        list_agent_skills_value, list_slash_commands_value, normalize_agent_plugin_action,
+        ensure_agent_plugin_management_supported, extract_agent_semantic_version,
+        import_claude_sessions_from_root, initialize_workspace_database,
+        install_skill_directory_safely, is_agent_lifecycle_network_failure, lifecycle_plan,
+        lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
+        list_agent_plugin_marketplaces_value, list_agent_skills_value, list_slash_commands_value,
+        mark_request_user_input_submitted, normalize_agent_plugin_action,
         normalize_agent_runtime_settings, normalize_request_user_input_answer_value,
-        parse_grok_cli_version, parse_request_user_input_event, read_opencode_mcp_config,
-        remove_thread_row, resolve_codex_command, resolve_grok_command, resolve_opencode_command,
-        resolve_requested_thread_provider, resolve_thread_create_permission_mode,
-        resolve_workspace_relative_path, search_workspace_files, select_claude_command_candidate,
+        parse_grok_cli_version, parse_grok_latest_version, parse_npm_latest_version,
+        parse_request_user_input_event, read_opencode_mcp_config, read_thread_detail,
+        read_thread_summary, remove_thread_row, resolve_codex_command, resolve_grok_command,
+        resolve_opencode_command, resolve_requested_thread_provider,
+        resolve_thread_create_permission_mode, resolve_workspace_relative_path,
+        sanitize_agent_lifecycle_output, search_workspace_files, select_claude_command_candidate,
         summarize_content_blocks, update_thread_metadata_from_payload, validate_desktop_file_path,
-        validate_managed_agent_skill_path, write_opencode_mcp_config, AppState,
+        validate_managed_agent_skill_path, write_opencode_mcp_config, ApiError, AppState,
     };
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
@@ -16128,7 +17207,7 @@ mod tests {
         collections::HashMap,
         fs,
         path::PathBuf,
-        sync::{atomic::AtomicBool, Arc, Mutex},
+        sync::{Arc, Mutex},
     };
     use tower::ServiceExt;
 
@@ -16141,6 +17220,158 @@ mod tests {
             fs::create_dir_all(&path).expect("create test directory");
             Self(path)
         }
+    }
+
+    #[test]
+    fn agent_lifecycle_plans_only_cover_supported_providers() {
+        let cases = [
+            (CLAUDE_CODE_PROVIDER_ID, "@anthropic-ai/claude-code"),
+            (OPENAI_CODEX_PROVIDER_ID, "@openai/codex"),
+            (OPENCODE_PROVIDER_ID, "opencode-ai"),
+        ];
+        for (provider_id, expected_package) in cases {
+            let plan = build_agent_lifecycle_plan(provider_id, "install", None)
+                .expect("build install plan");
+            assert!(plan.display_command.contains(expected_package));
+            assert!(!plan.program.trim().is_empty());
+            assert!(!plan.args.is_empty());
+        }
+        assert!(build_agent_lifecycle_plan("unknown-agent", "install", None).is_err());
+    }
+
+    #[test]
+    fn agent_lifecycle_output_is_bounded_and_hides_credentials() {
+        assert_eq!(
+            sanitize_agent_lifecycle_output("request failed: Authorization Bearer sk-secret"),
+            "命令输出包含敏感字段，已隐藏"
+        );
+        assert_eq!(
+            sanitize_agent_lifecycle_output(&"a".repeat(5000)).len(),
+            4000
+        );
+    }
+
+    #[test]
+    fn agent_lifecycle_npm_latest_version_parser_reads_dist_tag() {
+        assert_eq!(
+            parse_npm_latest_version(&json!({ "latest": " 2.1.211 " })).as_deref(),
+            Some("2.1.211")
+        );
+        assert_eq!(
+            parse_npm_latest_version(&json!({
+                "dist-tags": { "latest": "2.1.210" }
+            }))
+            .as_deref(),
+            Some("2.1.210")
+        );
+        assert_eq!(
+            parse_npm_latest_version(&json!({ "dist-tags": { "next": "2.2.0" } })),
+            None
+        );
+        assert_eq!(
+            parse_npm_latest_version(&json!({ "dist-tags": { "latest": "  " } })),
+            None
+        );
+    }
+
+    #[test]
+    fn agent_lifecycle_grok_latest_version_parser_reads_official_update_payload() {
+        let result = parse_grok_latest_version(
+            "Checking for updates...\n{\"currentVersion\":\"0.2.99\",\"latestVersion\":\"0.2.101\",\"updateAvailable\":true,\"installer\":\"internal\",\"channel\":\"stable\",\"autoUpdate\":true,\"error\":null}\n",
+        )
+        .expect("parse Grok update payload");
+
+        assert_eq!(result.latest_version.as_deref(), Some("0.2.101"));
+        assert_eq!(result.error, None);
+
+        let failed = parse_grok_latest_version(
+            "{\"currentVersion\":\"0.2.99\",\"latestVersion\":null,\"updateAvailable\":false,\"error\":\"program not found\"}",
+        )
+        .expect("parse Grok update error");
+        assert_eq!(
+            failed.error.as_deref(),
+            Some("Grok Build 官方更新器查询失败：program not found")
+        );
+    }
+
+    #[test]
+    fn agent_lifecycle_removes_parent_npm_user_agent_only_for_grok() {
+        let mut grok = tokio::process::Command::new("grok");
+        grok.env(super::NPM_CONFIG_USER_AGENT_ENV, "npm/11.4.2");
+        configure_agent_lifecycle_environment(GROK_BUILD_PROVIDER_ID, &mut grok);
+        let grok_user_agent = grok
+            .as_std()
+            .get_envs()
+            .find(|(name, _)| *name == super::NPM_CONFIG_USER_AGENT_ENV)
+            .expect("Grok npm user-agent override");
+        assert_eq!(grok_user_agent.1, None);
+
+        let mut codex = tokio::process::Command::new("codex");
+        codex.env(super::NPM_CONFIG_USER_AGENT_ENV, "npm/11.4.2");
+        configure_agent_lifecycle_environment(OPENAI_CODEX_PROVIDER_ID, &mut codex);
+        let codex_user_agent = codex
+            .as_std()
+            .get_envs()
+            .find(|(name, _)| *name == super::NPM_CONFIG_USER_AGENT_ENV)
+            .and_then(|(_, value)| value)
+            .and_then(|value| value.to_str());
+        assert_eq!(codex_user_agent, Some("npm/11.4.2"));
+    }
+
+    #[test]
+    fn agent_lifecycle_version_parser_extracts_cli_semantic_versions() {
+        assert_eq!(
+            extract_agent_semantic_version("claude 2.1.211 (Claude Code)").as_deref(),
+            Some("2.1.211")
+        );
+        assert_eq!(
+            extract_agent_semantic_version("codex-cli v0.144.5").as_deref(),
+            Some("0.144.5")
+        );
+        assert_eq!(
+            extract_agent_semantic_version("opencode version 1.18.2-beta.1").as_deref(),
+            Some("1.18.2-beta.1")
+        );
+        assert_eq!(extract_agent_semantic_version("version unknown"), None);
+    }
+
+    #[test]
+    fn agent_lifecycle_npm_mirror_retry_only_accepts_supported_package_managers() {
+        for program in ["npm.cmd", "pnpm.exe", "bun"] {
+            let plan = lifecycle_plan(program, ["install"], "install Agent");
+            assert!(lifecycle_plan_supports_npm_mirror(&plan), "{program}");
+        }
+        for program in ["volta.exe", "powershell.exe", "grok.exe", "brew"] {
+            let plan = lifecycle_plan(program, ["install"], "install Agent");
+            assert!(!lifecycle_plan_supports_npm_mirror(&plan), "{program}");
+        }
+    }
+
+    #[test]
+    fn agent_lifecycle_mirror_retry_requires_a_network_failure() {
+        for message in [
+            "npm ERR! code ECONNRESET",
+            "request failed: connect timeout",
+            "fetch failed: could not resolve host",
+            "failed to download package",
+        ] {
+            assert!(is_agent_lifecycle_network_failure(message), "{message}");
+        }
+        for message in [
+            "npm ERR! code E404 package not found",
+            "npm ERR! code E401 unauthorized",
+            "npm ERR! code EACCES permission denied",
+            "preinstall script failed",
+        ] {
+            assert!(!is_agent_lifecycle_network_failure(message), "{message}");
+        }
+    }
+
+    #[test]
+    fn api_errors_can_be_forced_to_json_for_lifecycle_requests() {
+        let error = ApiError::internal("failed").into_json_body();
+        assert!(error.json_body);
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]
@@ -16333,6 +17564,58 @@ mod tests {
     }
 
     #[test]
+    fn request_user_input_history_restores_native_custom_answer() {
+        let mut turn = json!({
+            "pendingUserInputRequests": [{
+                "requestId": "tool-use-1",
+                "questions": [{
+                    "id": "question-0",
+                    "question": "收到了 Other 文本「我填写了其他内容」+ 「继续」，下一步做什么？",
+                    "options": [{ "label": "A · 回到 m-xterm" }, { "label": "B · 贴进 memory" }],
+                    "multiSelect": false
+                }]
+            }]
+        });
+
+        mark_request_user_input_submitted(
+            &mut turn,
+            "tool-use-1",
+            "Your questions have been answered: \"收到了 Other 文本「我填写了其他内容」+ 「继续」，下一步做什么？\"=\"现在只是为了测试 除了选项之外其他 回答\". You can now continue with these answers in mind.",
+        );
+
+        assert_eq!(
+            turn.pointer("/pendingUserInputRequests/0/submittedAnswers/question-0"),
+            Some(&json!("现在只是为了测试 除了选项之外其他 回答"))
+        );
+    }
+
+    #[test]
+    fn request_user_input_history_restores_structured_multi_select_answer() {
+        let mut turn = json!({
+            "pendingUserInputRequests": [{
+                "requestId": "tool-use-1",
+                "questions": [{
+                    "id": "framework",
+                    "question": "选择框架",
+                    "options": [{ "label": "React" }, { "label": "Vue" }],
+                    "multiSelect": true
+                }]
+            }]
+        });
+
+        mark_request_user_input_submitted(
+            &mut turn,
+            "tool-use-1",
+            r#"{"questions":[],"answers":{"framework":"React, Vue, Svelte","选择框架":"React, Vue, Svelte"}}"#,
+        );
+
+        assert_eq!(
+            turn.pointer("/pendingUserInputRequests/0/submittedAnswers/framework"),
+            Some(&json!("React\nVue\nSvelte"))
+        );
+    }
+
+    #[test]
     fn summarize_content_blocks_removes_transient_attachment_payloads() {
         let blocks = json!([
             {
@@ -16501,18 +17784,23 @@ mod tests {
     #[tokio::test]
     async fn desktop_cors_covers_agent_and_ordinary_chat_routes() {
         let test_directory = TestDirectory::new("agent-run-cors");
-        let experimental_agent_run_enabled = Arc::new(AtomicBool::new(false));
+        let secrets = crate::ordinary_chat::secrets::SecretStore::new(test_directory.0.clone());
+        let agent_channels =
+            crate::agent_channels::AgentChannelService::new(test_directory.0.clone(), secrets);
         let ordinary_chat =
             crate::ordinary_chat::OrdinaryChatService::new(test_directory.0.clone());
         let app = create_router(AppState {
             app_data_dir: Arc::new(test_directory.0.clone()),
             settings_write_lock: Arc::new(Mutex::new(())),
-            experimental_agent_run_enabled: experimental_agent_run_enabled.clone(),
+            agent_channels: agent_channels.clone(),
+            agent_lifecycle_running: Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
             agent_runs: crate::agent_run::AgentRunService::new(
                 resolve_grok_command,
                 resolve_codex_command,
                 resolve_opencode_command,
-                experimental_agent_run_enabled,
+                agent_channels,
             ),
             workspace_write_lock: Arc::new(Mutex::new(())),
             workspace_database_init_lock: Arc::new(Mutex::new(())),
@@ -16624,74 +17912,39 @@ mod tests {
     }
 
     #[test]
-    fn thread_provider_defaults_to_claude_and_guards_experimental_agents() {
+    fn thread_provider_defaults_to_claude_and_requires_installed_agents() {
         assert_eq!(
-            resolve_requested_thread_provider(None, false, false, false, false)
-                .expect("default provider"),
+            resolve_requested_thread_provider(None, |_| {
+                panic!("Claude Code 不应触发通用 Agent 命令探测")
+            })
+            .expect("default provider"),
             CLAUDE_CODE_PROVIDER_ID
         );
-        assert!(resolve_requested_thread_provider(
-            Some(GROK_BUILD_PROVIDER_ID),
-            false,
-            true,
-            false,
-            false,
-        )
-        .is_err());
-        assert!(resolve_requested_thread_provider(
-            Some(GROK_BUILD_PROVIDER_ID),
-            true,
-            false,
-            false,
-            false,
-        )
-        .is_err());
+        assert!(
+            resolve_requested_thread_provider(Some(GROK_BUILD_PROVIDER_ID), |_| false,).is_err()
+        );
         assert_eq!(
-            resolve_requested_thread_provider(
-                Some(GROK_BUILD_PROVIDER_ID),
-                true,
-                true,
-                false,
-                false,
-            )
+            resolve_requested_thread_provider(Some(GROK_BUILD_PROVIDER_ID), |provider_id| {
+                provider_id == GROK_BUILD_PROVIDER_ID
+            },)
             .expect("enabled Grok provider"),
             GROK_BUILD_PROVIDER_ID
         );
-        assert!(resolve_requested_thread_provider(
-            Some(OPENAI_CODEX_PROVIDER_ID),
-            true,
-            true,
-            false,
-            false,
-        )
-        .is_err());
+        assert!(
+            resolve_requested_thread_provider(Some(OPENAI_CODEX_PROVIDER_ID), |_| false,).is_err()
+        );
         assert_eq!(
-            resolve_requested_thread_provider(
-                Some(OPENAI_CODEX_PROVIDER_ID),
-                true,
-                false,
-                true,
-                false,
-            )
+            resolve_requested_thread_provider(Some(OPENAI_CODEX_PROVIDER_ID), |provider_id| {
+                provider_id == OPENAI_CODEX_PROVIDER_ID
+            },)
             .expect("enabled Codex provider"),
             OPENAI_CODEX_PROVIDER_ID
         );
-        assert!(resolve_requested_thread_provider(
-            Some(OPENCODE_PROVIDER_ID),
-            true,
-            true,
-            true,
-            false,
-        )
-        .is_err());
+        assert!(resolve_requested_thread_provider(Some(OPENCODE_PROVIDER_ID), |_| false,).is_err());
         assert_eq!(
-            resolve_requested_thread_provider(
-                Some(OPENCODE_PROVIDER_ID),
-                true,
-                false,
-                false,
-                true,
-            )
+            resolve_requested_thread_provider(Some(OPENCODE_PROVIDER_ID), |provider_id| {
+                provider_id == OPENCODE_PROVIDER_ID
+            },)
             .expect("enabled OpenCode provider"),
             OPENCODE_PROVIDER_ID
         );
@@ -16723,7 +17976,6 @@ mod tests {
         assert_eq!(
             normalize_agent_runtime_settings(None),
             json!({
-                "experimentalAgentRunEnabled": false,
                 "defaultProviderId": CLAUDE_CODE_PROVIDER_ID,
             })
         );
@@ -16733,7 +17985,6 @@ mod tests {
                 "defaultProviderId": OPENAI_CODEX_PROVIDER_ID,
             }))),
             json!({
-                "experimentalAgentRunEnabled": true,
                 "defaultProviderId": OPENAI_CODEX_PROVIDER_ID,
             })
         );
@@ -16742,7 +17993,6 @@ mod tests {
                 "defaultProviderId": "unknown-provider",
             }))),
             json!({
-                "experimentalAgentRunEnabled": false,
                 "defaultProviderId": CLAUDE_CODE_PROVIDER_ID,
             })
         );
@@ -16769,9 +18019,114 @@ mod tests {
     }
 
     #[test]
+    fn workspace_database_adds_thread_model_preferences_and_migrates_current_effort() {
+        let connection = Connection::open_in_memory().expect("open database");
+        connection
+            .execute(
+                "CREATE TABLE threads (id TEXT PRIMARY KEY, model TEXT, reasoning_effort TEXT)",
+                [],
+            )
+            .expect("create legacy threads table");
+        connection
+            .execute(
+                "INSERT INTO threads (id, model, reasoning_effort) VALUES ('thread-a', 'model-a', 'high'), ('thread-default', NULL, 'medium')",
+                [],
+            )
+            .expect("insert legacy thread preferences");
+
+        initialize_workspace_database(&connection).expect("upgrade database");
+
+        let migrated = connection
+            .prepare(
+                "SELECT thread_id, model_id, reasoning_effort FROM thread_model_preferences ORDER BY thread_id",
+            )
+            .expect("read preference table")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .expect("query preferences")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect preferences");
+        assert_eq!(
+            migrated,
+            vec![
+                (
+                    "thread-a".to_string(),
+                    "model-a".to_string(),
+                    "high".to_string(),
+                ),
+                (
+                    "thread-default".to_string(),
+                    "__default".to_string(),
+                    "medium".to_string(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn thread_model_preferences_follow_model_switches() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let channel_root = TestDirectory::new("thread-model-channel-service");
+        let channel_service = crate::agent_channels::AgentChannelService::new(
+            channel_root.0.clone(),
+            crate::ordinary_chat::secrets::SecretStore::new(channel_root.0.clone()),
+        );
+        connection
+            .execute(
+                "INSERT INTO projects (id, path, name, custom_name, created_at, updated_at) VALUES ('project', 'D:/workspace', 'workspace', 0, '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z')",
+                [],
+            )
+            .expect("insert project");
+
+        let thread_id = create_thread_row(
+            &mut connection,
+            "project",
+            Some("Codex preferences"),
+            OPENAI_CODEX_PROVIDER_ID,
+            Some("bypassPermissions"),
+            Some("model-a"),
+            Some("high"),
+            None,
+        )
+        .expect("create thread");
+        update_thread_metadata_from_payload(
+            &mut connection,
+            &thread_id,
+            &json!({ "model": "model-b", "reasoningEffort": "low" }),
+            &channel_service,
+        )
+        .expect("select model b");
+        update_thread_metadata_from_payload(
+            &mut connection,
+            &thread_id,
+            &json!({ "model": "model-a" }),
+            &channel_service,
+        )
+        .expect("restore model a");
+
+        let detail = read_thread_detail(&connection, &thread_id).expect("read thread detail");
+        assert_eq!(detail.model.as_deref(), Some("model-a"));
+        assert_eq!(detail.reasoning_effort.as_deref(), Some("high"));
+        let summary = read_thread_summary(&connection, &thread_id).expect("read summary");
+        assert_eq!(summary["modelPreferences"]["model-a"], "high");
+        assert_eq!(summary["modelPreferences"]["model-b"], "low");
+    }
+
+    #[test]
     fn grok_thread_persists_provider_without_creating_claude_transcript_path() {
         let mut connection = Connection::open_in_memory().expect("open database");
         initialize_workspace_database(&connection).expect("initialize database");
+        let channel_root = TestDirectory::new("grok-thread-channel-service");
+        let channel_service = crate::agent_channels::AgentChannelService::new(
+            channel_root.0.clone(),
+            crate::ordinary_chat::secrets::SecretStore::new(channel_root.0.clone()),
+        );
         connection
             .execute(
                 "INSERT INTO projects (id, path, name, custom_name, created_at, updated_at) VALUES ('project', 'D:/workspace', 'workspace', 0, '2026-07-12T00:00:00.000Z', '2026-07-12T00:00:00.000Z')",
@@ -16780,12 +18135,13 @@ mod tests {
             .expect("insert project");
 
         let thread_id = create_thread_row(
-            &connection,
+            &mut connection,
             "project",
             Some("Grok chat"),
             GROK_BUILD_PROVIDER_ID,
             Some("bypassPermissions"),
             Some("grok-model-test"),
+            None,
             None,
         )
         .expect("create Grok thread");
@@ -16793,6 +18149,7 @@ mod tests {
             &mut connection,
             &thread_id,
             &json!({ "sessionId": "grok-session-1", "permissionMode": "auto" }),
+            &channel_service,
         )
         .expect("store Grok session");
 
@@ -16816,6 +18173,7 @@ mod tests {
             &mut connection,
             &thread_id,
             &json!({ "permissionMode": "dontAsk" }),
+            &channel_service,
         )
         .is_err());
     }
@@ -16824,6 +18182,11 @@ mod tests {
     fn codex_thread_persists_official_thread_id_without_claude_transcript_path() {
         let mut connection = Connection::open_in_memory().expect("open database");
         initialize_workspace_database(&connection).expect("initialize database");
+        let channel_root = TestDirectory::new("codex-thread-channel-service");
+        let channel_service = crate::agent_channels::AgentChannelService::new(
+            channel_root.0.clone(),
+            crate::ordinary_chat::secrets::SecretStore::new(channel_root.0.clone()),
+        );
         connection
             .execute(
                 "INSERT INTO projects (id, path, name, custom_name, created_at, updated_at) VALUES ('project', 'D:/workspace', 'workspace', 0, '2026-07-12T00:00:00.000Z', '2026-07-12T00:00:00.000Z')",
@@ -16832,13 +18195,14 @@ mod tests {
             .expect("insert project");
 
         let thread_id = create_thread_row(
-            &connection,
+            &mut connection,
             "project",
             Some("Codex chat"),
             OPENAI_CODEX_PROVIDER_ID,
             Some("default"),
             Some("gpt-codex-test"),
             Some("medium"),
+            None,
         )
         .expect("create Codex thread");
         update_thread_metadata_from_payload(
@@ -16850,6 +18214,7 @@ mod tests {
                 "model": "gpt-codex-fast",
                 "reasoningEffort": "high"
             }),
+            &channel_service,
         )
         .expect("store Codex thread");
 
@@ -16886,6 +18251,7 @@ mod tests {
             &mut connection,
             &thread_id,
             &json!({ "permissionMode": "dontAsk" }),
+            &channel_service,
         )
         .is_err());
     }

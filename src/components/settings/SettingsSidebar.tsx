@@ -29,7 +29,7 @@ const settingsSections: Array<{ id: SettingsSection; label: string; icon: typeof
   { id: 'basic', label: '基础设置', icon: Settings },
   { id: 'appearance', label: '外观', icon: Palette },
   { id: 'shortcuts', label: '快捷键', icon: Keyboard },
-  { id: 'providers', label: 'Agent 与模型', icon: Bot },
+  { id: 'providers', label: 'Agent 设置', icon: Bot },
   { id: 'aiProviders', label: '普通聊天', icon: MessageSquareText },
   { id: 'usage', label: '使用情况', icon: BarChart3 },
   { id: 'sessions', label: '会话管理', icon: MessageSquareText },

@@ -954,9 +954,19 @@ pub struct AcpStdioClient {
 
 impl AcpStdioClient {
     pub async fn spawn(program: &str, arguments: &[&str], cwd: &Path) -> Result<Self, AcpError> {
+        Self::spawn_with_env(program, arguments, cwd, &BTreeMap::new()).await
+    }
+
+    pub async fn spawn_with_env(
+        program: &str,
+        arguments: &[&str],
+        cwd: &Path,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<Self, AcpError> {
         let mut command = Command::new(program);
         command
             .args(arguments)
+            .envs(environment)
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

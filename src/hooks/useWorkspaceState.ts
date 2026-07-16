@@ -30,6 +30,7 @@ type ThreadMetadataPatch = {
   model?: string | null;
   reasoningEffort?: string | null;
   permissionMode?: PermissionMode;
+  channelId?: string | null;
 };
 
 type PendingWorkspaceLogBatch = {
@@ -47,6 +48,7 @@ type CreateThreadOptions = {
   permissionMode?: PermissionMode;
   model?: string;
   reasoningEffort?: string;
+  channelId?: string;
 };
 
 const MAX_DEBUG_EVENTS = 220;
@@ -571,8 +573,6 @@ export function useWorkspaceState() {
   }
 
   async function persistThreadMetadata(threadId: string, payload: ThreadMetadataPatch) {
-    updateThreadSummaryLocal(threadId, payload);
-
     const response = await fetch(`/api/threads/${threadId}`, {
       method: 'PATCH',
       headers: {
@@ -581,11 +581,16 @@ export function useWorkspaceState() {
       body: JSON.stringify(payload),
     });
 
-    if (response.ok) {
-      const result = (await response.json()) as { workspace?: WorkspaceBootstrap };
-      if (result.workspace) {
-        syncWorkspace(result.workspace);
-      }
+    if (!response.ok) {
+      const message = (await response.text()).trim();
+      throw new Error(message || '保存聊天设置失败');
+    }
+
+    const result = (await response.json()) as { workspace?: WorkspaceBootstrap };
+    if (result.workspace) {
+      syncWorkspace(result.workspace);
+    } else {
+      updateThreadSummaryLocal(threadId, payload);
     }
   }
 
@@ -604,6 +609,9 @@ export function useWorkspaceState() {
                   ? payload.reasoningEffort ?? undefined
                   : thread.reasoningEffort,
                 permissionMode: payload.permissionMode ?? thread.permissionMode,
+                agentChannelId: hasOwn(payload, 'channelId')
+                  ? payload.channelId ?? undefined
+                  : thread.agentChannelId,
                 updatedAt: new Date().toISOString(),
                 updatedLabel: '现在',
               }
@@ -628,6 +636,9 @@ export function useWorkspaceState() {
             ? payload.reasoningEffort ?? undefined
             : existing.reasoningEffort,
           permissionMode: payload.permissionMode ?? existing.permissionMode,
+          agentChannelId: hasOwn(payload, 'channelId')
+            ? payload.channelId ?? undefined
+            : existing.agentChannelId,
         },
       };
     });
@@ -640,6 +651,7 @@ export function useWorkspaceState() {
       ...(options?.permissionMode ? { permissionMode: options.permissionMode } : {}),
       ...(options?.model ? { model: options.model } : {}),
       ...(options?.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
+      ...(options?.channelId ? { channelId: options.channelId } : {}),
     };
     const response = await fetch(`/api/projects/${projectId}/threads`, {
       method: 'POST',

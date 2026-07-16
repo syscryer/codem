@@ -19,6 +19,9 @@
 - thread 删除时，需要确认级联清理范围一致
 - 本地 rename 只改 CodeM 自己的索引，不默认反写 Claude Code 源数据
 - 普通聊天和 Agent 使用独立表与运行机制，不通过可空字段混成同一模型
+- Agent 线程的 `model` / `reasoning_effort` 保存当前快照；每个模型的思考偏好保存到 `thread_model_preferences`
+- Provider 默认模型的偏好键固定为 `__default`，不能替换成运行时动态解析出的模型 id
+- 创建线程时 provider、权限、模型、思考级别和首个模型偏好需要在同一事务中写入
 
 ## 风险点
 

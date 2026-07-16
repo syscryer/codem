@@ -157,19 +157,19 @@ test('桌面标题栏收起侧边栏按钮单独降低一档颜色', () => {
 test('侧边栏项目和会话菜单使用局部 Acrylic 玻璃，不影响全局玻璃菜单', () => {
   assert.match(
     stylesSource,
-    /\.codex-desktop\s+:is\(\.project-menu-popover,\s*\.thread-menu-popover\)\s*\{[^}]*background:\s*linear-gradient\(\s*145deg,\s*color-mix\(in srgb,\s*var\(--app-surface\)\s*86%,\s*transparent\),\s*color-mix\(in srgb,\s*var\(--app-surface-muted\)\s*78%,\s*transparent\)\s*\),\s*color-mix\(in srgb,\s*var\(--app-surface\)\s*70%,\s*transparent\)\s*!important;[^}]*backdrop-filter:\s*blur\(34px\)\s+saturate\(1\.28\);/s,
+    /:is\(\.codex-desktop,\s*\.popover-portal-host\)\s+:is\(\.project-menu-popover,\s*\.thread-menu-popover\)\s*\{[^}]*background:\s*linear-gradient\(\s*145deg,\s*color-mix\(in srgb,\s*var\(--app-surface\)\s*86%,\s*transparent\),\s*color-mix\(in srgb,\s*var\(--app-surface-muted\)\s*78%,\s*transparent\)\s*\),\s*color-mix\(in srgb,\s*var\(--app-surface\)\s*70%,\s*transparent\)\s*!important;[^}]*backdrop-filter:\s*blur\(34px\)\s+saturate\(1\.28\);/s,
   );
   assert.match(
     stylesSource,
-    /\.codex-desktop\s+:is\(\.project-menu-popover,\s*\.thread-menu-popover\)::before\s*\{[^}]*repeating-linear-gradient\(\s*45deg,\s*color-mix\(in srgb,\s*var\(--app-surface\)\s*10%,\s*transparent\)\s+0\s+1px,\s*transparent\s+1px\s+3px\s*\)[^}]*linear-gradient\(145deg,\s*color-mix\(in srgb,\s*var\(--app-surface\)\s*34%,\s*transparent\),\s*color-mix\(in srgb,\s*var\(--app-surface-muted\)\s*22%,\s*transparent\)\)/s,
+    /:is\(\.codex-desktop,\s*\.popover-portal-host\)\s+:is\(\.project-menu-popover,\s*\.thread-menu-popover\)::before\s*\{[^}]*repeating-linear-gradient\(\s*45deg,\s*color-mix\(in srgb,\s*var\(--app-surface\)\s*10%,\s*transparent\)\s+0\s+1px,\s*transparent\s+1px\s+3px\s*\)[^}]*linear-gradient\(145deg,\s*color-mix\(in srgb,\s*var\(--app-surface\)\s*34%,\s*transparent\),\s*color-mix\(in srgb,\s*var\(--app-surface-muted\)\s*22%,\s*transparent\)\)/s,
   );
   assert.match(
     stylesSource,
-    /\.codex-desktop\s+:is\(\.project-menu-popover,\s*\.thread-menu-popover\)::after\s*\{[^}]*opacity:\s*0\.62;/s,
+    /:is\(\.codex-desktop,\s*\.popover-portal-host\)\s+:is\(\.project-menu-popover,\s*\.thread-menu-popover\)::after\s*\{[^}]*opacity:\s*0\.62;/s,
   );
   assert.match(
     stylesSource,
-    /\.codex-desktop\s+:is\(\.workspace-menu,\s*\.open-app-dropdown,[^)]*\.desktop-menu-popover\)\s*\{[^}]*color-mix\(in srgb,\s*var\(--app-surface\)\s*22%,\s*transparent\)\s*!important;/s,
+    /:is\(\.codex-desktop,\s*\.popover-portal-host\)\s+:is\(\.workspace-menu,\s*\.open-app-dropdown,[^)]*\.desktop-menu-popover\)\s*\{[^}]*color-mix\(in srgb,\s*var\(--app-surface\)\s*22%,\s*transparent\)\s*!important;/s,
   );
 });
 

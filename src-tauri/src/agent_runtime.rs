@@ -272,49 +272,36 @@ pub enum AgentRunEvent {
 
 pub fn agent_provider_registry(
     claude_available: bool,
-    experimental_agent_run_enabled: bool,
     grok_available: bool,
     codex_available: bool,
     opencode_available: bool,
 ) -> AgentProviderRegistry {
-    let grok_provider = if experimental_agent_run_enabled {
-        AgentProviderDescriptor {
-            id: GROK_BUILD_PROVIDER_ID,
-            display_name: "Grok Build",
-            driver_id: "acp",
-            lifecycle: AgentProviderLifecycle::Active,
-            available: Some(grok_available),
-            selectable: grok_available,
-            capabilities: grok_capabilities(),
-        }
-    } else {
-        planned_provider(GROK_BUILD_PROVIDER_ID, "Grok Build", "acp")
+    let grok_provider = AgentProviderDescriptor {
+        id: GROK_BUILD_PROVIDER_ID,
+        display_name: "Grok Build",
+        driver_id: "acp",
+        lifecycle: AgentProviderLifecycle::Active,
+        available: Some(grok_available),
+        selectable: grok_available,
+        capabilities: grok_capabilities(),
     };
-    let codex_provider = if experimental_agent_run_enabled {
-        AgentProviderDescriptor {
-            id: OPENAI_CODEX_PROVIDER_ID,
-            display_name: "OpenAI Codex",
-            driver_id: "codex-json-rpc",
-            lifecycle: AgentProviderLifecycle::Active,
-            available: Some(codex_available),
-            selectable: codex_available,
-            capabilities: codex_capabilities(),
-        }
-    } else {
-        planned_provider(OPENAI_CODEX_PROVIDER_ID, "OpenAI Codex", "codex-json-rpc")
+    let codex_provider = AgentProviderDescriptor {
+        id: OPENAI_CODEX_PROVIDER_ID,
+        display_name: "OpenAI Codex",
+        driver_id: "codex-json-rpc",
+        lifecycle: AgentProviderLifecycle::Active,
+        available: Some(codex_available),
+        selectable: codex_available,
+        capabilities: codex_capabilities(),
     };
-    let opencode_provider = if experimental_agent_run_enabled {
-        AgentProviderDescriptor {
-            id: OPENCODE_PROVIDER_ID,
-            display_name: "OpenCode",
-            driver_id: "acp",
-            lifecycle: AgentProviderLifecycle::Active,
-            available: Some(opencode_available),
-            selectable: opencode_available,
-            capabilities: opencode_capabilities(),
-        }
-    } else {
-        planned_provider(OPENCODE_PROVIDER_ID, "OpenCode", "acp")
+    let opencode_provider = AgentProviderDescriptor {
+        id: OPENCODE_PROVIDER_ID,
+        display_name: "OpenCode",
+        driver_id: "acp",
+        lifecycle: AgentProviderLifecycle::Active,
+        available: Some(opencode_available),
+        selectable: opencode_available,
+        capabilities: opencode_capabilities(),
     };
 
     AgentProviderRegistry {
@@ -510,7 +497,7 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_keeps_provider_ids_unique() {
-        let registry = agent_provider_registry(true, false, false, false, false);
+        let registry = agent_provider_registry(true, false, false, false);
         let ids = registry
             .providers
             .iter()
@@ -533,27 +520,30 @@ mod tests {
     }
 
     #[test]
-    fn agent_runtime_registry_keeps_claude_as_the_only_active_provider() {
-        let registry = agent_provider_registry(true, false, false, false, false);
+    fn agent_runtime_registry_keeps_supported_agents_active() {
+        let registry = agent_provider_registry(true, false, false, false);
         let active = registry
             .providers
             .iter()
             .filter(|provider| provider.lifecycle == AgentProviderLifecycle::Active)
             .collect::<Vec<_>>();
 
-        assert_eq!(active.len(), 1);
-        assert_eq!(active[0].id, CLAUDE_CODE_PROVIDER_ID);
-        assert_eq!(active[0].available, Some(true));
-        assert!(active[0].selectable);
+        assert_eq!(active.len(), 4);
+        let claude = active
+            .iter()
+            .find(|provider| provider.id == CLAUDE_CODE_PROVIDER_ID)
+            .expect("Claude provider");
+        assert_eq!(claude.available, Some(true));
+        assert!(claude.selectable);
         assert_eq!(
-            active[0].capabilities.tools.approval,
+            claude.capabilities.tools.approval,
             AgentCapabilitySupport::Supported
         );
     }
 
     #[test]
     fn agent_runtime_registry_never_selects_planned_providers() {
-        let registry = agent_provider_registry(false, false, false, false, false);
+        let registry = agent_provider_registry(false, false, false, false);
 
         for provider in registry
             .providers
@@ -578,8 +568,8 @@ mod tests {
     }
 
     #[test]
-    fn agent_runtime_registry_enables_grok_only_when_experiment_and_cli_are_available() {
-        let unavailable = agent_provider_registry(true, true, false, false, false);
+    fn agent_runtime_registry_selects_grok_when_cli_is_available() {
+        let unavailable = agent_provider_registry(true, false, false, false);
         let grok = unavailable
             .providers
             .iter()
@@ -589,7 +579,7 @@ mod tests {
         assert_eq!(grok.available, Some(false));
         assert!(!grok.selectable);
 
-        let available = agent_provider_registry(true, true, true, false, false);
+        let available = agent_provider_registry(true, true, false, false);
         let grok = available
             .providers
             .iter()
@@ -612,8 +602,8 @@ mod tests {
     }
 
     #[test]
-    fn agent_runtime_registry_enables_codex_only_when_experiment_and_cli_are_available() {
-        let unavailable = agent_provider_registry(true, true, true, false, false);
+    fn agent_runtime_registry_selects_codex_when_cli_is_available() {
+        let unavailable = agent_provider_registry(true, true, false, false);
         let codex = unavailable
             .providers
             .iter()
@@ -623,7 +613,7 @@ mod tests {
         assert_eq!(codex.available, Some(false));
         assert!(!codex.selectable);
 
-        let available = agent_provider_registry(true, true, false, true, false);
+        let available = agent_provider_registry(true, false, true, false);
         let codex = available
             .providers
             .iter()
@@ -647,8 +637,8 @@ mod tests {
     }
 
     #[test]
-    fn agent_runtime_registry_enables_opencode_only_when_experiment_and_cli_are_available() {
-        let unavailable = agent_provider_registry(true, true, true, true, false);
+    fn agent_runtime_registry_selects_opencode_when_cli_is_available() {
+        let unavailable = agent_provider_registry(true, true, true, false);
         let opencode = unavailable
             .providers
             .iter()
@@ -658,7 +648,7 @@ mod tests {
         assert_eq!(opencode.available, Some(false));
         assert!(!opencode.selectable);
 
-        let available = agent_provider_registry(true, true, false, false, true);
+        let available = agent_provider_registry(true, false, false, true);
         let opencode = available
             .providers
             .iter()

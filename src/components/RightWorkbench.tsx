@@ -1841,7 +1841,7 @@ function PreviewPane({
             return (
               <div
                 key={tab.key}
-                className={`workbench-preview-tab-shell${active ? ' active' : ''}`}
+                className={`workbench-preview-tab-shell${active ? ' active' : ''}${contextMenu?.key === tab.key ? ' context-active' : ''}`}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   setContextMenu({
@@ -1967,7 +1967,7 @@ function PreviewPane({
                       <button
                         key={`overflow-${tab.key}`}
                         type="button"
-                        className={`workbench-preview-overflow-item${active ? ' active' : ''}`}
+                        className={`workbench-preview-overflow-item${active ? ' active' : ''}${contextMenu?.key === tab.key ? ' context-active' : ''}`}
                         onClick={() => onSelectTab(tab.key)}
                         onContextMenu={(event) => {
                           event.preventDefault();

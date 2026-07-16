@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentRunEvent, ClaudeEvent } from '../types.js';
 import {
+  fetchAgentLatestVersion,
   listSelectableAgentProviders,
   normalizeAgentModelCatalog,
   normalizeAgentProviderRegistry,
@@ -10,6 +11,30 @@ import {
   normalizeOpenCodeAcpProbe,
   resolveChatRuntimeKind,
 } from './agent-provider-registry.js';
+
+test('latest Agent version query uses an independent endpoint and current version', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    requestedUrl = String(input);
+    return new Response(JSON.stringify({
+      providerId: 'openai-codex',
+      latestVersion: '0.144.5',
+      updateAvailable: true,
+      error: null,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    const result = await fetchAgentLatestVersion('openai-codex', '0.144.1');
+    assert.equal(result.latestVersion, '0.144.5');
+    assert.equal(result.updateAvailable, true);
+    assert.match(requestedUrl, /^\/api\/agents\/latest-version\?/);
+    assert.match(requestedUrl, /providerId=openai-codex/);
+    assert.match(requestedUrl, /currentVersion=0\.144\.1/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test('agent model catalog keeps dynamic public fields and Codex reasoning options', () => {
   const catalog = normalizeAgentModelCatalog({

@@ -10,6 +10,7 @@ type TooltipAnchorRect = {
   left: number;
   width: number;
   height: number;
+  anchorX: number;
 };
 
 type TooltipState = {
@@ -31,6 +32,7 @@ const TOOLTIP_GAP = 8;
 export function TooltipLayer() {
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const activeTargetRef = useRef<HTMLElement | null>(null);
+  const activePointerXRef = useRef<number | null>(null);
   const versionRef = useRef(0);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const [position, setPosition] = useState<TooltipPosition>({
@@ -42,11 +44,12 @@ export function TooltipLayer() {
 
   const hideTooltip = useCallback(() => {
     activeTargetRef.current = null;
+    activePointerXRef.current = null;
     setTooltip(null);
     setPosition((current) => ({ ...current, ready: false }));
   }, []);
 
-  const showTooltipForTarget = useCallback((target: HTMLElement) => {
+  const showTooltipForTarget = useCallback((target: HTMLElement, pointerClientX?: number) => {
     normalizeTooltipElement(target);
     const text = target.dataset.tooltip?.trim();
     if (!text) {
@@ -54,11 +57,16 @@ export function TooltipLayer() {
       return;
     }
 
+    const targetRect = target.getBoundingClientRect();
+    const pointerX = typeof pointerClientX === 'number' && Number.isFinite(pointerClientX)
+      ? pointerClientX
+      : null;
     activeTargetRef.current = target;
+    activePointerXRef.current = pointerX;
     setPosition((current) => ({ ...current, ready: false }));
     setTooltip({
       text,
-      rect: toTooltipAnchorRect(target.getBoundingClientRect()),
+      rect: toTooltipAnchorRect(targetRect, activePointerXRef.current),
       version: ++versionRef.current,
     });
   }, [hideTooltip]);
@@ -97,7 +105,7 @@ export function TooltipLayer() {
         return;
       }
 
-      showTooltipForTarget(target);
+      showTooltipForTarget(target, event.clientX);
     }
 
     function handlePointerOut(event: PointerEvent) {
@@ -117,6 +125,9 @@ export function TooltipLayer() {
     function handleFocusIn(event: FocusEvent) {
       const target = findTooltipTarget(event.target);
       if (target) {
+        if (target === activeTargetRef.current && activePointerXRef.current !== null) {
+          return;
+        }
         showTooltipForTarget(target);
       }
     }
@@ -178,7 +189,7 @@ export function TooltipLayer() {
 
         setTooltip({
           text,
-          rect: toTooltipAnchorRect(target.getBoundingClientRect()),
+          rect: toTooltipAnchorRect(target.getBoundingClientRect(), activePointerXRef.current),
           version: ++versionRef.current,
         });
       });
@@ -208,7 +219,7 @@ export function TooltipLayer() {
     const preferredTop = placement === 'top'
       ? tooltip.rect.top - tooltipHeight - TOOLTIP_GAP
       : tooltip.rect.bottom + TOOLTIP_GAP;
-    const preferredLeft = tooltip.rect.left + tooltip.rect.width / 2 - tooltipWidth / 2;
+    const preferredLeft = tooltip.rect.anchorX - tooltipWidth / 2;
 
     setPosition({
       left: clamp(preferredLeft, TOOLTIP_MARGIN, viewportWidth - tooltipWidth - TOOLTIP_MARGIN),
@@ -299,7 +310,7 @@ function findTooltipTarget(target: EventTarget | null) {
   return tooltipTarget.dataset.tooltipDisabled === 'true' ? null : tooltipTarget;
 }
 
-function toTooltipAnchorRect(rect: DOMRect): TooltipAnchorRect {
+function toTooltipAnchorRect(rect: DOMRect, pointerClientX?: number | null): TooltipAnchorRect {
   return {
     top: rect.top,
     right: rect.right,
@@ -307,7 +318,19 @@ function toTooltipAnchorRect(rect: DOMRect): TooltipAnchorRect {
     left: rect.left,
     width: rect.width,
     height: rect.height,
+    anchorX: resolveTooltipAnchorX(rect.left, rect.right, pointerClientX),
   };
+}
+
+export function resolveTooltipAnchorX(
+  targetLeft: number,
+  targetRight: number,
+  pointerClientX?: number | null,
+) {
+  if (pointerClientX === null || pointerClientX === undefined || !Number.isFinite(pointerClientX)) {
+    return targetLeft + (targetRight - targetLeft) / 2;
+  }
+  return clamp(pointerClientX, targetLeft, targetRight);
 }
 
 function clamp(value: number, min: number, max: number) {

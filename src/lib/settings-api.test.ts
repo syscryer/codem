@@ -7,11 +7,6 @@ import {
   normalizeGeneralSettings,
 } from './settings-api.js';
 
-test('normalizeAgentRuntimeSettings keeps experimental Agent runs disabled by default', () => {
-  assert.equal(normalizeAgentRuntimeSettings({}).experimentalAgentRunEnabled, false);
-  assert.equal(defaultAgentRuntimeSettings.experimentalAgentRunEnabled, false);
-});
-
 test('normalizeAgentRuntimeSettings defaults to Claude Code and preserves supported providers', () => {
   assert.equal(normalizeAgentRuntimeSettings({}).defaultProviderId, 'claude-code');
   assert.equal(defaultAgentRuntimeSettings.defaultProviderId, 'claude-code');
@@ -20,16 +15,9 @@ test('normalizeAgentRuntimeSettings defaults to Claude Code and preserves suppor
   assert.equal(normalizeAgentRuntimeSettings({ defaultProviderId: 'openai-codex' }).defaultProviderId, 'openai-codex');
   assert.equal(normalizeAgentRuntimeSettings({ defaultProviderId: 'opencode' }).defaultProviderId, 'opencode');
   assert.equal(normalizeAgentRuntimeSettings({ defaultProviderId: 'unknown-provider' }).defaultProviderId, 'claude-code');
-});
-
-test('normalizeAgentRuntimeSettings preserves an explicit experimental Agent run choice', () => {
-  assert.equal(
-    normalizeAgentRuntimeSettings({ experimentalAgentRunEnabled: true }).experimentalAgentRunEnabled,
-    true,
-  );
-  assert.equal(
-    normalizeAgentRuntimeSettings({ experimentalAgentRunEnabled: false }).experimentalAgentRunEnabled,
-    false,
+  assert.deepEqual(
+    normalizeAgentRuntimeSettings({ experimentalAgentRunEnabled: false, defaultProviderId: 'opencode' }),
+    { defaultProviderId: 'opencode' },
   );
 });
 

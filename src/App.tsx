@@ -21,6 +21,7 @@ import { WorktreeCreateDialog } from './components/WorktreeCreateDialog';
 import { WorkspaceStatus } from './components/WorkspaceStatus';
 import { useClaudeRun } from './hooks/useClaudeRun';
 import { useAgentRun } from './hooks/useAgentRun';
+import { useAgentChannels } from './hooks/useAgentChannels';
 import { useAppSettings } from './hooks/useAppSettings';
 import { useOrdinaryChat } from './hooks/useOrdinaryChat';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
@@ -244,6 +245,7 @@ export default function App() {
     schedulePersistThreadHistory,
   } = workspaceState;
   const ordinaryChat = useOrdinaryChat(showToast);
+  const agentChannels = useAgentChannels();
   const [appView, setAppView] = useState<AppView>({
     kind: 'workspace',
   });
@@ -385,8 +387,10 @@ export default function App() {
     recallQueuedPrompt: recallClaudeQueuedPrompt,
     guideQueuedPrompt: guideClaudeQueuedPrompt,
     clockNowMs: claudeClockNowMs,
+    channelId: claudeAgentChannelId,
     setModel,
     setEffort,
+    setChannelId: setClaudeAgentChannelId,
     handlePermissionModeSelect: handleClaudePermissionModeSelect,
     submitPrompt: submitClaudePrompt,
     submitPromptToThread,
@@ -401,6 +405,8 @@ export default function App() {
     activeThreadSummary:
       activeThreadSummary?.provider === CLAUDE_CODE_PROVIDER_ID ? activeThreadSummary : null,
     appModelSettings,
+    agentChannels: agentChannels.bootstrap.channels,
+    agentChannelsLoading: agentChannels.loading,
     defaultPermissionMode: general.defaultPermissionMode,
     autoGuideQueuedPrompts: general.autoGuideQueuedPrompts,
     createThread,
@@ -426,6 +432,7 @@ export default function App() {
     permissionMode: genericAgentPermissionMode,
     model: genericAgentModel,
     reasoningEffort: genericAgentReasoningEffort,
+    channelId: genericAgentChannelId,
     modelCatalog: genericAgentModelCatalog,
     modelsLoading: genericAgentModelsLoading,
     modelsError: genericAgentModelsError,
@@ -435,6 +442,7 @@ export default function App() {
     handlePermissionModeSelect: handleGenericAgentPermissionModeSelect,
     handleModelSelect: handleGenericAgentModelSelect,
     handleReasoningEffortSelect: handleGenericAgentReasoningEffortSelect,
+    handleChannelSelect: handleGenericAgentChannelSelect,
     retryModelCatalog: retryGenericAgentModelCatalog,
     isRunning: genericAgentIsRunning,
     runningThreadIds: genericAgentRunningThreadIds,
@@ -451,6 +459,9 @@ export default function App() {
     stopRun: stopGenericAgentRun,
   } = useAgentRun({
     defaultProviderId: agentRuntime.defaultProviderId,
+    defaultPermissionMode: general.defaultPermissionMode,
+    agentChannels: agentChannels.bootstrap.channels,
+    agentChannelsLoading: agentChannels.loading,
     activeProjectId,
     activeProjectPath: activeProject?.path,
     activeThreadId: activeThreadRuntimeKind === 'generic' ? activeThreadId : null,
@@ -1668,6 +1679,9 @@ export default function App() {
         agentProviders={agentProviders}
         agentProvidersLoading={agentProvidersLoading}
         agentProvidersError={agentProvidersError}
+        agentChannelBootstrap={agentChannels.bootstrap}
+        agentChannelsLoading={agentChannels.loading}
+        agentChannelsError={agentChannels.error}
         onSelectSection={(section) => navigateToLocation({ kind: 'settings', section })}
         onOpenThread={handleSelectThread}
         onRemoveProject={openRemoveProjectDialog}
@@ -1687,6 +1701,7 @@ export default function App() {
           await ordinaryChat.refreshBootstrap();
         }}
         onRefreshAgentProviders={refreshAgentProviders}
+        onRefreshAgentChannels={agentChannels.refresh}
         onReturnWorkspace={returnWorkspace}
         returnLabel={settingsReturnLabel}
       />
@@ -1835,6 +1850,8 @@ export default function App() {
                 providers={agentProviders}
                 providersLoading={agentProvidersLoading}
                 providersError={agentProvidersError}
+                agentChannels={agentChannels.bootstrap.channels}
+                agentChannelId={activeUsesClaude ? claudeAgentChannelId : genericAgentChannelId}
                 canSelectProvider={!activeThreadSummary}
                 allowAttachments={allowAgentAttachments}
                 supportsQueue={activeUsesClaude || activeUsesGenericAgent}
@@ -1859,6 +1876,7 @@ export default function App() {
                 queuedPromptGuideAvailability={queuedPromptGuideAvailability}
                 onDraftChange={handleComposerDraftChange}
                 onSelectProvider={selectDraftProvider}
+                onSelectAgentChannel={activeUsesClaude ? setClaudeAgentChannelId : handleGenericAgentChannelSelect}
                 onSubmitPrompt={handleSubmitPrompt}
                 onRemoveQueuedPrompt={removeQueuedPrompt}
                 onRecallQueuedPrompt={handleRecallQueuedPrompt}

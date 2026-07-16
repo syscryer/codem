@@ -34,7 +34,10 @@ test('App routes Grok, Codex, and OpenCode through the generic hook without chan
 
 test('default Agent only drives new chat creation paths', () => {
   assert.match(appSource, /defaultProviderId: agentRuntime\.defaultProviderId/);
-  assert.match(agentRunSource, /setDraftProviderId\(defaultProviderIdRef\.current\)/);
+  assert.match(
+    agentRunSource,
+    /const providerId = defaultProviderIdRef\.current;[\s\S]*setDraftProviderId\(providerId\);[\s\S]*resetDraftModelSelection\(providerId\)/,
+  );
   assert.match(agentRunSource, /providerId,/);
   assert.match(claudeRunSource, /providerId: CLAUDE_CODE_PROVIDER_ID/);
   assert.match(appSource, /providerId: draftProviderId/);

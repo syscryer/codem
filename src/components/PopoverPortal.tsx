@@ -4,6 +4,35 @@ import { createPortal } from 'react-dom';
 type Placement = 'bottom-start' | 'bottom-end' | 'top-start' | 'top-end';
 type VirtualAnchor = { x: number; y: number };
 
+const POPOVER_CONTEXT_ATTRIBUTES = [
+  'data-theme-mode',
+  'data-platform',
+  'data-window-material',
+  'data-density',
+  'data-sidebar-width',
+] as const;
+
+function syncPopoverThemeContext(portal: HTMLDivElement, root: HTMLElement) {
+  for (const attribute of POPOVER_CONTEXT_ATTRIBUTES) {
+    const value = root.getAttribute(attribute);
+    if (value === null) {
+      portal.removeAttribute(attribute);
+    } else {
+      portal.setAttribute(attribute, value);
+    }
+  }
+
+  const rootStyle = getComputedStyle(root);
+  for (const property of Array.from(rootStyle)) {
+    if (property.startsWith('--')) {
+      portal.style.setProperty(property, rootStyle.getPropertyValue(property));
+    }
+  }
+  portal.style.colorScheme = rootStyle.colorScheme;
+  portal.style.fontFamily = rootStyle.fontFamily;
+  portal.style.fontSize = rootStyle.fontSize;
+}
+
 type PopoverPortalProps = {
   children: ReactNode;
   open: boolean;
@@ -24,6 +53,28 @@ export function PopoverPortal({
   matchAnchorWidth = false,
 }: PopoverPortalProps) {
   const portalRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+
+    const portal = portalRef.current;
+    const root = document.querySelector<HTMLElement>('.codex-desktop');
+    if (!portal || !root) return;
+
+    const syncThemeContext = () => syncPopoverThemeContext(portal, root);
+    syncThemeContext();
+
+    const observer = new MutationObserver(syncThemeContext);
+    observer.observe(root, { attributes: true });
+
+    const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
+    colorScheme.addEventListener('change', syncThemeContext);
+
+    return () => {
+      observer.disconnect();
+      colorScheme.removeEventListener('change', syncThemeContext);
+    };
+  }, [open]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -101,12 +152,15 @@ export function PopoverPortal({
 
   if (!open) return null;
 
-  const container = document.querySelector('.codex-desktop') ?? document.body;
-
   return createPortal(
-    <div ref={portalRef} data-popover-portal="" style={{ position: 'fixed', zIndex: 9999 }}>
+    <div
+      ref={portalRef}
+      className="popover-portal-host"
+      data-popover-portal=""
+      style={{ position: 'fixed', zIndex: 9999 }}
+    >
       {children}
     </div>,
-    container,
+    document.body,
   );
 }

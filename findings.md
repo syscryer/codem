@@ -300,3 +300,17 @@
 - `ConversationTurn.tsx` 中保留的 `server/` 是从任意用户项目绝对路径提取相对路径的通用目录标记，不依赖 CodeM 已删除的 Node 后端。
 - `WorkspaceStatus.panel.test.ts` 中的 `Codex app-server` 是 OpenAI Codex 协议名称，与 CodeM 旧 Express 后端无关。
 - 全量测试暴露 `20e13da` 删除 Git diff badge 的 `secondary` 字段后未同步 `tests/git-diff.test.ts`；实现和 UI 均不再消费该字段，正确修复是移除两条过期断言。
+
+## 2026-07-16 Agent 安装更新与版本感知
+
+- 用户截图的目标状态包含“当前版本 / 最新版本 / 可升级”，比当前仅展示“可用 / 已安装”的信息更完整。
+- 未安装状态同样需要展示最新可安装版本；安装/更新成功后必须重新探测，不能只弹成功消息。
+- 国内源策略限定为 npm 类 Agent 的官方下载网络失败重试；Grok Build 使用独立脚本，需要单独核对可信版本源与下载路径。
+- Agent 已转为正式功能，设置中的“实验性 Agent”开关及相关说明应完整移除，而不是只隐藏控件。
+- CC Switch 将本地版本与远程最新版本分开探测：Claude/Codex/OpenCode 读取 npm `dist-tags.latest`，OpenCode 的 npm 查询失败时再读取 GitHub Release。
+- CC Switch 在升级命令结束后重新探测版本；如果版本未变化且仍低于最新版本，则提示需要人工处理，不误报升级成功。
+- CodeM 已能识别 npm/pnpm/bun/volta/Homebrew/native 安装来源并生成白名单更新计划，本轮应在此基础上增加版本与镜像策略，不回退为一条固定 npm 命令。
+- 正式化需要同时删除后端 Provider Registry、建聊和 Agent run 的实验开关门禁；仅删除设置开关会留下运行层拦截。
+- CC Switch 参考图把“可升级”作为卡片级状态，同时并列展示当前版本和最新版本；CodeM 应保留现有紧凑两列布局，将版本事实收进详情状态带，只在未安装或确有更新时展示主动作，避免每张卡都常驻无效安装按钮。
+- 真实页面首次进入时，远程版本查询尚未完成会让已可用 Provider 短暂落到“未安装”；初始安装态应先信任 Provider Registry 的 `available`，诊断完成后再以 `installed` 为准。
+- Grok `update --check --json` 在本机返回结构化 `error: "program not found"`；UI 不应裸露无上下文英文错误，应明确标注这是 Grok 官方更新器查询失败，同时保留原始原因供排障。

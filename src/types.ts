@@ -58,9 +58,13 @@ export type AgentSettingsDiagnostics = {
   installed: boolean;
   command: string | null;
   version: string | null;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  versionCheckError: string | null;
   configDirectory: string;
   skillsDirectory: string;
   updateCommand: string;
+  installCommand: string;
   diagnosticCommand: string;
   diagnostic: {
     available: boolean;
@@ -137,6 +141,24 @@ export type GrokAcpProbeResult = {
   version: string | null;
   error: string | null;
   probe: GrokAcpProbeSummary | null;
+};
+
+export type AgentLatestVersionCheck = {
+  providerId: AgentProviderId;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  error: string | null;
+};
+
+export type AgentLifecycleActionResult = {
+  providerId: AgentProviderId;
+  action: 'install' | 'update';
+  installed: boolean;
+  command: string | null;
+  version: string | null;
+  output: string;
+  usedMirror: boolean;
+  mirrorRegistry: string | null;
 };
 
 export type OpenCodeAcpProbeSummary = {
@@ -711,8 +733,61 @@ export type OpenWithTargetsResponse = {
 
 export type AgentProviderId = 'claude-code' | 'grok-build' | 'openai-codex' | 'opencode';
 
+export type AgentChannelModel = {
+  id: string;
+  channelId: string;
+  modelId: string;
+  displayName: string;
+  enabled: boolean;
+  isDefault: boolean;
+  capabilities: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AgentChannel = {
+  id: string;
+  providerId: AgentProviderId;
+  name: string;
+  protocol: AiChatProtocol;
+  baseUrl: string;
+  modelsUrl?: string;
+  enabled: boolean;
+  isDefault: boolean;
+  apiKeySaved: boolean;
+  models: AgentChannelModel[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AgentSystemChannel = {
+  id: 'system';
+  providerId: AgentProviderId;
+  name: string;
+  source: 'system' | 'cc-switch' | string;
+  configured: boolean;
+  configPath?: string;
+  baseUrl?: string;
+  model?: string;
+  protocol?: AiChatProtocol;
+  ccSwitchProviderName?: string;
+  detail: string;
+};
+
+export type AgentCcSwitchStatus = {
+  detected: boolean;
+  databasePath?: string;
+  currentProviders: Record<string, string>;
+};
+
+export type AgentChannelBootstrap = {
+  channels: AgentChannel[];
+  systemChannels: AgentSystemChannel[];
+  ccSwitch: AgentCcSwitchStatus;
+  templates: AiProviderTemplate[];
+};
+
 export type AgentRuntimeSettings = {
-  experimentalAgentRunEnabled: boolean;
   defaultProviderId: AgentProviderId;
 };
 
@@ -799,7 +874,10 @@ export type ThreadSummary = {
   imported?: boolean;
   model?: string;
   reasoningEffort?: string;
+  modelPreferences?: Record<string, string>;
   permissionMode?: string;
+  agentChannelId?: string;
+  agentChannelFingerprint?: string;
   pinnedAt?: string;
 };
 

@@ -56,6 +56,9 @@ Out of scope:
 - Playwright 打开 `http://127.0.0.1:5173` 验证现有内联提问卡片。
 
 ## Implementation Record
+- 2026-07-15T12:04:53.965Z 已修复 Rust 历史提问结果归一化：mark_request_user_input_submitted 不再把 tool_result 原文作为 submittedAnswers，而是兼容 Claude 原生问答文本和 CodeM JSON answers，按问题 ID 输出对象；多选答案恢复选项与自定义文本。新增两条 Rust 回归测试。
+
+- 2026-07-15T11:58:33.160Z 定位真实历史回显根因：Claude transcript 的 tool_result 使用 Your questions have been answered 文本格式，Rust mark_request_user_input_submitted 却将整段字符串写入 submittedAnswers，违反前端 Record<string,string> 契约。决定在 Rust 历史解析层兼容原生文本与 CodeM JSON answers，并映射回问题稳定 ID。
 
 - 2026-07-15T11:32:35.674Z 用户截图确认输入框仍缺失。真实 bootstrap 证明 Provider 为 claude-code；进程核对发现截图来自已安装版 C:\Users\csm\AppData\Local\CodeM\codem.exe，而非当前仓库桌面开发版。重新启动 npm run desktop:dev，生成独立 com.mnl.codem.dev 实例。
 - 2026-07-15T10:48:45.206Z 修复旧 Claude 提问事件不显示自定义回答：将 activeProviderId 透传到 ConversationPane、ConversationTurn 与提问卡片，显示规则同时考虑 Claude Provider、isOther 和无选项文本题；普通聊天与其他 Agent 保持隔离。
@@ -66,6 +69,11 @@ Out of scope:
 - 2026-07-15T10:20:03.078Z Task created by Trellis automation.
 
 ## Verification Results
+
+- 2026-07-15T12:05:21.861Z `真实历史 API + Playwright http://127.0.0.1:5174 我填写了其他内容和现在只是为了测试 除了选项之外其他 回答；控制台 0 error。`: 通过：截图对应 session 0ff3ae5e 的两条 submittedAnswers 均恢复为对象；浏览器 textarea 分别回显
+- 2026-07-15T12:05:11.113Z `npm run typecheck；node --import tsx --test src/lib/conversation.test.ts；node --import tsx --test src/components/ConversationPane.render-perf.test.ts；cargo fmt --manifest-path src-tauri/Cargo.toml --check；git diff --check`: 通过：TypeScript 类型检查通过；会话 8/8；渲染性能 3/3；Rust 格式检查通过；diff check 无空白错误，仅 Windows LF/CRLF 提示。
+
+- 2026-07-15T12:05:02.656Z `cargo test --manifest-path src-tauri/Cargo.toml`: 通过：Rust lib 119 passed、1 ignored（需真实 Grok 环境）；desktop 9 passed；doc tests 通过。新增历史自定义回答与结构化多选恢复测试均通过。
 - 2026-07-15T11:32:37.594Z `Playwright http://127.0.0.1:5174 历史提问卡片`: 通过：截图对应的 4 个选项问题存在 textbox question-0，placeholder 为自定义回答；三问题卡片也分别存在 question-0/1/2；控制台 0 error。
 
 - 2026-07-15T11:32:36.615Z `进程与端口核对`: 通过：安装版 PID 34404；当前源码开发版 PID 43004，ExecutablePath 为 D:\ai_proj\codem\src-tauri\target\debug\codem.exe；开发版监听 backend 3002、web 5174。
@@ -84,6 +92,8 @@ Out of scope:
 - 2026-07-15T10:32:48.179Z `node --import tsx --test src/lib/conversation.test.ts`: 通过：7/7，覆盖单选互斥、多选组合和已提交答案恢复。
 
 ## Completion Summary
+
+- 2026-07-15T12:05:30.145Z 修复历史提问卡片自定义回答不回显：Rust 历史解析将 Claude 原生问答文本和 CodeM JSON 结果统一还原为 submittedAnswers 对象，多选保留选项与自定义文本；真实会话 API、浏览器 DOM、定向与全量测试均验证通过。
 - 2026-07-15T11:32:38.464Z 确认自定义回答源码实现有效，用户截图未更新的真实原因是测试窗口属于旧安装版。已启动当前仓库 CodeM Dev（3002/5174），在相同历史提问卡片中验证 textarea 与提示文字均存在；安装版未关闭，避免打断用户当前操作。
 
 - 2026-07-15T10:48:50.559Z Claude 结构化提问的自定义回答已兼容旧事件：当前 Provider 明确传入提问卡片，Claude 选项题无需 isOther 也会显示输入框；其他 Agent 未声明 isOther 时不显示。定向测试、性能约束测试、类型检查和 diff 检查均通过。

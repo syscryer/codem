@@ -1130,7 +1130,7 @@ export function GitHistoryPanel({
         <button
           key={branch.name}
           type="button"
-          className={`git-history-branch-row${active ? ' active' : ''}`}
+          className={`git-history-branch-row${active ? ' active' : ''}${branchContextMenu?.branch.name === branch.name ? ' context-active' : ''}`}
           title={branchTooltip}
           onClick={() => {
             setCompareState(null);

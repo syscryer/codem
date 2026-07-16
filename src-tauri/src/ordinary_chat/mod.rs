@@ -1,11 +1,11 @@
 mod knowledge;
 mod mcp;
-mod provider;
+pub(crate) mod provider;
 mod runtime;
-mod secrets;
+pub(crate) mod secrets;
 mod skills;
 mod storage;
-mod types;
+pub(crate) mod types;
 
 use axum::{
     extract::{DefaultBodyLimit, Path as AxumPath, State},
@@ -62,7 +62,10 @@ type AiApiResult<T> = Result<T, AiApiError>;
 
 impl OrdinaryChatService {
     pub(crate) fn new(app_data_dir: PathBuf) -> Self {
-        let secrets = SecretStore::new(app_data_dir.clone());
+        Self::with_secrets(app_data_dir.clone(), SecretStore::new(app_data_dir))
+    }
+
+    pub(crate) fn with_secrets(app_data_dir: PathBuf, secrets: SecretStore) -> Self {
         Self {
             state: OrdinaryChatState {
                 database_path: Arc::new(app_data_dir.join("codem.sqlite")),

@@ -55,7 +55,7 @@ CodeM 是一个面向本地编码 Agent 的桌面工作台。
 
 ## 快速开始
 
-先确认本机至少安装了一个受支持的 Agent CLI。Claude Code 默认可用；Codex、Grok Build 与 OpenCode 需要在“Agent 与模型”中开启实验性 Agent 运行：
+先确认本机至少安装了一个受支持的 Agent CLI。Claude Code、Codex、Grok Build 与 OpenCode 都可以在“Agent 设置”中检测、安装或更新：
 
 ```bash
 claude --help

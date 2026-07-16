@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import type {
   AppearanceSettings,
+  AgentChannelBootstrap,
   AgentRuntimeSettings,
   AgentProviderDescriptor,
   AiChatProvider,
@@ -62,6 +63,9 @@ type SettingsViewProps = {
   agentProviders: AgentProviderDescriptor[];
   agentProvidersLoading: boolean;
   agentProvidersError: string;
+  agentChannelBootstrap: AgentChannelBootstrap;
+  agentChannelsLoading: boolean;
+  agentChannelsError: string;
   onSelectSection: (section: SettingsSection) => void;
   onOpenThread: (projectId: string, threadId: string) => void | Promise<void>;
   onRemoveProject: (project: ProjectSummary) => void;
@@ -79,6 +83,7 @@ type SettingsViewProps = {
   onUpdateOpenWith: (update: OpenWithSettingsUpdate) => void | Promise<void>;
   onRefreshAiChatProviders: () => Promise<void> | void;
   onRefreshAgentProviders: () => Promise<void> | void;
+  onRefreshAgentChannels: () => Promise<unknown> | unknown;
   onReturnWorkspace: () => void;
   returnLabel?: string;
 };
@@ -87,7 +92,7 @@ const sectionTitles: Record<SettingsSection, string> = {
   basic: '基础设置',
   appearance: '外观',
   shortcuts: '快捷键',
-  providers: 'Agent 与模型',
+  providers: 'Agent 设置',
   aiProviders: '普通聊天',
   usage: '使用情况',
   sessions: '会话管理',
@@ -120,6 +125,9 @@ export function SettingsView({
   agentProviders,
   agentProvidersLoading,
   agentProvidersError,
+  agentChannelBootstrap,
+  agentChannelsLoading,
+  agentChannelsError,
   onSelectSection,
   onOpenThread,
   onRemoveProject,
@@ -137,6 +145,7 @@ export function SettingsView({
   onUpdateOpenWith,
   onRefreshAiChatProviders,
   onRefreshAgentProviders,
+  onRefreshAgentChannels,
   onReturnWorkspace,
   returnLabel,
 }: SettingsViewProps) {
@@ -164,15 +173,18 @@ export function SettingsView({
     if (activeSection === 'providers') {
       return (
         <AgentModelSettingsSection
-          models={models}
           agentRuntime={agentRuntime}
           claudeModels={claudeModels}
           providers={agentProviders}
           providersLoading={agentProvidersLoading}
           providersError={agentProvidersError}
+          channelBootstrap={agentChannelBootstrap}
+          channelsLoading={agentChannelsLoading}
+          channelsError={agentChannelsError}
           onUpdateAgentRuntime={onUpdateAgentRuntime}
-          onUpdateModels={onUpdateModels}
           onRefreshProviders={onRefreshAgentProviders}
+          onRefreshChannels={onRefreshAgentChannels}
+          showToast={showToast}
         />
       );
     }
@@ -271,6 +283,9 @@ export function SettingsView({
     agentProviders,
     agentProvidersLoading,
     agentProvidersError,
+    agentChannelBootstrap,
+    agentChannelsLoading,
+    agentChannelsError,
     aiChatProviders,
     appearance,
     effectiveWindowMaterial,
@@ -296,6 +311,7 @@ export function SettingsView({
     onUpdateShortcuts,
     onRefreshAiChatProviders,
     onRefreshAgentProviders,
+    onRefreshAgentChannels,
     showToast,
   ]);
 

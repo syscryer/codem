@@ -1157,7 +1157,7 @@ function ConversationOutputFileCard({
 
   return (
     <article
-      className="conversation-output-file-item"
+      className={`conversation-output-file-item${contextMenu ? ' context-active' : ''}`}
       role="button"
       tabIndex={0}
       onClick={handlePrimaryOpen}
@@ -1452,7 +1452,7 @@ function ChangedFilesSummaryCard({
             <article key={file.path} className={`changed-file-block${expanded ? ' expanded' : ''}`}>
               <div className="changed-files-summary-row-shell">
                 <div
-                  className="changed-files-summary-row"
+                  className={`changed-files-summary-row${contextMenu?.file.path === file.path ? ' context-active' : ''}`}
                   role="button"
                   tabIndex={0}
                   aria-expanded={expanded}

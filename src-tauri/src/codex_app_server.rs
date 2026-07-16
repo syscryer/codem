@@ -5,7 +5,7 @@ use crate::agent_runtime::{
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     path::Path,
     process::Stdio,
@@ -876,9 +876,22 @@ pub struct CodexStdioClient {
 
 impl CodexStdioClient {
     pub async fn spawn(program: &str, cwd: &Path) -> Result<Self, CodexAppServerError> {
+        Self::spawn_with_options(program, cwd, &[], &BTreeMap::new()).await
+    }
+
+    pub async fn spawn_with_options(
+        program: &str,
+        cwd: &Path,
+        config_overrides: &[String],
+        environment: &BTreeMap<String, String>,
+    ) -> Result<Self, CodexAppServerError> {
         let mut command = Command::new(program);
+        for config in config_overrides {
+            command.arg("-c").arg(config);
+        }
         command
             .arg("app-server")
+            .envs(environment)
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

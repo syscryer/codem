@@ -3,6 +3,7 @@ use crate::{
         AcpEmbeddedResource, AcpError, AcpPermissionPolicy, AcpPromptInput, AcpPromptOutcome,
         AcpRuntimeEvent, AcpSessionSummary, AcpStdioClient, AcpToolCall, AcpToolCallUpdate,
     },
+    agent_channels::AgentChannelService,
     agent_runtime::{
         normalize_agent_permission_mode, AgentApprovalOption, AgentApprovalRequest,
         AgentControlCommand, AgentPermissionDecision, AgentRunEvent, AgentUsageSnapshot,
@@ -27,11 +28,8 @@ use std::{
     collections::{BTreeMap, HashMap},
     env, fs,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
-    time::Duration,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, oneshot, watch, Notify};
 
@@ -46,6 +44,8 @@ const MAX_PATH_BYTES: usize = 4096;
 const MAX_NAME_BYTES: usize = 512;
 const MAX_MIME_TYPE_BYTES: usize = 255;
 const MAX_REASON_BYTES: usize = 4096;
+const MODEL_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const AGENT_COMMAND_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
 type CommandResolver = fn() -> Option<String>;
 
@@ -71,8 +71,22 @@ enum AgentDriverInput {
 struct AgentRunState {
     records: Arc<Mutex<HashMap<String, AgentRunRecord>>>,
     runtimes: Arc<Mutex<HashMap<String, AgentRuntimeRecord>>>,
+    model_catalog_cache: Arc<Mutex<HashMap<String, CachedAgentModelCatalog>>>,
+    command_cache: Arc<Mutex<HashMap<String, CachedAgentCommand>>>,
     command_resolvers: CommandResolvers,
-    experimental_agent_run_enabled: Arc<AtomicBool>,
+    agent_channels: AgentChannelService,
+}
+
+#[derive(Clone)]
+struct CachedAgentModelCatalog {
+    catalog: AgentModelCatalog,
+    loaded_at: Instant,
+}
+
+#[derive(Clone)]
+struct CachedAgentCommand {
+    command: String,
+    resolved_at: Instant,
 }
 
 struct AgentRunRecord {
@@ -95,6 +109,7 @@ struct AcpRunTask {
     requested_session_id: Option<String>,
     permission_mode: &'static str,
     model: Option<String>,
+    environment: BTreeMap<String, String>,
     cancel: watch::Receiver<bool>,
     control: mpsc::UnboundedReceiver<AgentControlCommand>,
 }
@@ -109,6 +124,8 @@ struct CodexRunTask {
     permission_mode: &'static str,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    environment: BTreeMap<String, String>,
+    codex_config_args: Vec<String>,
     cancel: watch::Receiver<bool>,
     control: mpsc::UnboundedReceiver<AgentControlCommand>,
 }
@@ -127,6 +144,10 @@ struct AgentRuntimeConfig {
     permission_mode: &'static str,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    channel_id: Option<String>,
+    channel_fingerprint: Option<String>,
+    environment: BTreeMap<String, String>,
+    codex_config_args: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -265,6 +286,8 @@ type AgentApiResult<T> = Result<T, AgentApiError>;
 struct StartAgentRunRequest {
     provider_id: String,
     #[serde(default)]
+    channel_id: Option<String>,
+    #[serde(default)]
     thread_id: Option<String>,
     #[serde(default)]
     prompt: Option<String>,
@@ -355,6 +378,12 @@ struct AgentModelCatalog {
     models: Vec<AgentModelSummary>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct AgentModelsQuery {
+    #[serde(default)]
+    refresh: bool,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ApprovalDecisionRequest {
@@ -375,18 +404,20 @@ impl AgentRunService {
         grok_command_resolver: fn() -> Option<String>,
         codex_command_resolver: fn() -> Option<String>,
         opencode_command_resolver: fn() -> Option<String>,
-        experimental_agent_run_enabled: Arc<AtomicBool>,
+        agent_channels: AgentChannelService,
     ) -> Self {
         Self {
             state: AgentRunState {
                 records: Arc::new(Mutex::new(HashMap::new())),
                 runtimes: Arc::new(Mutex::new(HashMap::new())),
+                model_catalog_cache: Arc::new(Mutex::new(HashMap::new())),
+                command_cache: Arc::new(Mutex::new(HashMap::new())),
                 command_resolvers: CommandResolvers {
                     grok: grok_command_resolver,
                     codex: codex_command_resolver,
                     opencode: opencode_command_resolver,
                 },
-                experimental_agent_run_enabled,
+                agent_channels,
             },
         }
     }
@@ -401,6 +432,10 @@ impl AgentRunService {
         if let Ok(mut runtimes) = self.state.runtimes.lock() {
             runtimes.remove(thread_id);
         }
+    }
+
+    pub(crate) fn resolve_command(&self, provider_id: &str, refresh: bool) -> Option<String> {
+        resolve_agent_command(&self.state, provider_id, refresh)
     }
 }
 
@@ -431,17 +466,21 @@ pub(crate) fn router(service: AgentRunService) -> Router {
 async fn agent_models(
     State(state): State<AgentRunState>,
     AxumPath(provider_id): AxumPath<String>,
+    Query(query): Query<AgentModelsQuery>,
 ) -> AgentApiResult<Json<AgentModelCatalog>> {
-    if !experimental_agent_run_enabled(&state.experimental_agent_run_enabled) {
-        return Err(AgentApiError::forbidden(
-            "实验 Agent 运行未开启，请在设置中启用",
-        ));
+    let provider_id = provider_id.trim();
+    if !query.refresh {
+        if let Some(catalog) =
+            read_cached_agent_model_catalog(&state.model_catalog_cache, provider_id, Instant::now())
+        {
+            return Ok(Json(catalog));
+        }
     }
     let cwd =
         env::current_dir().map_err(|_| AgentApiError::internal("无法读取模型目录工作目录"))?;
-    match provider_id.trim() {
+    let result = match provider_id {
         GROK_BUILD_PROVIDER_ID => {
-            let command = (state.command_resolvers.grok)()
+            let command = resolve_agent_command(&state, provider_id, query.refresh)
                 .ok_or_else(|| AgentApiError::bad_request("未找到 grok 命令"))?;
             let arguments = grok_acp_arguments("default");
             let mut client = AcpStdioClient::spawn(&command, &arguments, &cwd)
@@ -487,11 +526,12 @@ async fn agent_models(
             }))
         }
         OPENAI_CODEX_PROVIDER_ID => {
-            let command = (state.command_resolvers.codex)().ok_or_else(|| {
-                AgentApiError::bad_request(
-                    "未找到可由 CodeM 启动的 Codex CLI，请安装独立 CLI 或设置 CODEX_CLI_PATH",
-                )
-            })?;
+            let command =
+                resolve_agent_command(&state, provider_id, query.refresh).ok_or_else(|| {
+                    AgentApiError::bad_request(
+                        "未找到可由 CodeM 启动的 Codex CLI，请安装独立 CLI 或设置 CODEX_CLI_PATH",
+                    )
+                })?;
             let mut client = CodexStdioClient::spawn(&command, &cwd)
                 .await
                 .map_err(|error| AgentApiError::internal(error.public_message()))?;
@@ -533,9 +573,10 @@ async fn agent_models(
             }))
         }
         OPENCODE_PROVIDER_ID => {
-            let command = (state.command_resolvers.opencode)().ok_or_else(|| {
-                AgentApiError::bad_request("未找到可由 CodeM 启动的 OpenCode CLI")
-            })?;
+            let command =
+                resolve_agent_command(&state, provider_id, query.refresh).ok_or_else(|| {
+                    AgentApiError::bad_request("未找到可由 CodeM 启动的 OpenCode CLI")
+                })?;
             let output = background_agent_command(&command)
                 .arg("models")
                 .current_dir(&cwd)
@@ -563,6 +604,106 @@ async fn agent_models(
         _ => Err(AgentApiError::bad_request(
             "当前 Provider 不提供动态模型目录",
         )),
+    };
+    if let Ok(Json(catalog)) = &result {
+        store_cached_agent_model_catalog(
+            &state.model_catalog_cache,
+            provider_id,
+            catalog.clone(),
+            Instant::now(),
+        );
+    }
+    result
+}
+
+fn read_cached_agent_model_catalog(
+    cache: &Mutex<HashMap<String, CachedAgentModelCatalog>>,
+    provider_id: &str,
+    now: Instant,
+) -> Option<AgentModelCatalog> {
+    let mut cache = cache.lock().ok()?;
+    let entry = cache.get(provider_id)?;
+    if now.saturating_duration_since(entry.loaded_at) >= MODEL_CATALOG_CACHE_TTL {
+        cache.remove(provider_id);
+        return None;
+    }
+    Some(entry.catalog.clone())
+}
+
+fn store_cached_agent_model_catalog(
+    cache: &Mutex<HashMap<String, CachedAgentModelCatalog>>,
+    provider_id: &str,
+    catalog: AgentModelCatalog,
+    loaded_at: Instant,
+) {
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(
+            provider_id.to_string(),
+            CachedAgentModelCatalog { catalog, loaded_at },
+        );
+    }
+}
+
+fn resolve_agent_command(
+    state: &AgentRunState,
+    provider_id: &str,
+    refresh: bool,
+) -> Option<String> {
+    if refresh {
+        if let Ok(mut cache) = state.command_cache.lock() {
+            cache.remove(provider_id);
+        }
+    } else {
+        if let Some(command) =
+            read_cached_agent_command(&state.command_cache, provider_id, Instant::now())
+        {
+            return Some(command);
+        }
+    }
+
+    let command = match provider_id {
+        GROK_BUILD_PROVIDER_ID => (state.command_resolvers.grok)(),
+        OPENAI_CODEX_PROVIDER_ID => (state.command_resolvers.codex)(),
+        OPENCODE_PROVIDER_ID => (state.command_resolvers.opencode)(),
+        _ => None,
+    }?;
+    store_cached_agent_command(
+        &state.command_cache,
+        provider_id,
+        command.clone(),
+        Instant::now(),
+    );
+    Some(command)
+}
+
+fn read_cached_agent_command(
+    cache: &Mutex<HashMap<String, CachedAgentCommand>>,
+    provider_id: &str,
+    now: Instant,
+) -> Option<String> {
+    let mut cache = cache.lock().ok()?;
+    let entry = cache.get(provider_id)?;
+    if now.saturating_duration_since(entry.resolved_at) >= AGENT_COMMAND_CACHE_TTL {
+        cache.remove(provider_id);
+        return None;
+    }
+    Some(entry.command.clone())
+}
+
+fn store_cached_agent_command(
+    cache: &Mutex<HashMap<String, CachedAgentCommand>>,
+    provider_id: &str,
+    command: String,
+    resolved_at: Instant,
+) {
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(
+            provider_id.to_string(),
+            CachedAgentCommand {
+                command,
+                resolved_at,
+            },
+        );
     }
 }
 
@@ -608,29 +749,24 @@ async fn start_agent_run(
     State(state): State<AgentRunState>,
     Json(payload): Json<StartAgentRunRequest>,
 ) -> AgentApiResult<Response> {
-    if !experimental_agent_run_enabled(&state.experimental_agent_run_enabled) {
-        return Err(AgentApiError::forbidden(
-            "实验 Agent 运行未开启，请在设置中启用",
-        ));
-    }
     let provider_id = payload.provider_id.trim();
     let (driver, command, provider_name) = match provider_id {
         GROK_BUILD_PROVIDER_ID => (
             AgentDriverKind::Acp,
-            (state.command_resolvers.grok)()
+            resolve_agent_command(&state, provider_id, false)
                 .ok_or_else(|| AgentApiError::bad_request("未找到 grok 命令"))?,
             "Grok Build",
         ),
         OPENCODE_PROVIDER_ID => (
             AgentDriverKind::Acp,
-            (state.command_resolvers.opencode)().ok_or_else(|| {
+            resolve_agent_command(&state, provider_id, false).ok_or_else(|| {
                 AgentApiError::bad_request("未找到可由 CodeM 启动的 OpenCode CLI")
             })?,
             "OpenCode",
         ),
         OPENAI_CODEX_PROVIDER_ID => (
             AgentDriverKind::CodexAppServer,
-            (state.command_resolvers.codex)().ok_or_else(|| {
+            resolve_agent_command(&state, provider_id, false).ok_or_else(|| {
                 AgentApiError::bad_request(
                     "未找到可由 CodeM 启动的 Codex CLI，请安装独立 CLI 或设置 CODEX_CLI_PATH",
                 )
@@ -655,7 +791,44 @@ async fn start_agent_run(
     };
     let thread_id = normalize_optional_id(payload.thread_id, "threadId")?;
     let session_id = normalize_optional_id(payload.session_id, "sessionId")?;
-    let model = normalize_optional_id(payload.model, "model")?;
+    let requested_model = normalize_optional_id(payload.model, "model")?;
+    let channel_id = normalize_optional_id(payload.channel_id, "channelId")?;
+    let channel_runtime = state
+        .agent_channels
+        .resolve_runtime(
+            provider_id,
+            channel_id.as_deref(),
+            requested_model.as_deref(),
+        )
+        .map_err(AgentApiError::bad_request)?;
+    let model = channel_runtime
+        .as_ref()
+        .and_then(|runtime| runtime.effective_model.clone())
+        .or(requested_model);
+    let channel_id = channel_runtime
+        .as_ref()
+        .map(|runtime| runtime.channel_id.clone());
+    let channel_fingerprint = channel_runtime
+        .as_ref()
+        .map(|runtime| runtime.fingerprint.clone());
+    let environment = channel_runtime
+        .as_ref()
+        .map(|runtime| runtime.env.clone())
+        .unwrap_or_default();
+    let codex_config_args = channel_runtime
+        .as_ref()
+        .map(|runtime| runtime.codex_config_args.clone())
+        .unwrap_or_default();
+    if let Some(thread_id) = thread_id.as_deref() {
+        state
+            .agent_channels
+            .persist_thread_runtime(
+                thread_id,
+                channel_id.as_deref(),
+                channel_fingerprint.as_deref(),
+            )
+            .map_err(AgentApiError::internal)?;
+    }
     let reasoning_effort = normalize_optional_id(payload.reasoning_effort, "reasoningEffort")?;
     if driver == AgentDriverKind::Acp && reasoning_effort.is_some() {
         return Err(AgentApiError::bad_request(
@@ -703,6 +876,10 @@ async fn start_agent_run(
             permission_mode,
             model,
             reasoning_effort,
+            channel_id,
+            channel_fingerprint,
+            environment,
+            codex_config_args,
         };
         if let Err(error) = state.dispatch_runtime(
             thread_id,
@@ -734,6 +911,7 @@ async fn start_agent_run(
                         requested_session_id: session_id,
                         permission_mode,
                         model,
+                        environment,
                         cancel: cancel_receiver,
                         control: control_receiver,
                     })
@@ -750,6 +928,8 @@ async fn start_agent_run(
                         permission_mode,
                         model,
                         reasoning_effort,
+                        environment,
+                        codex_config_args,
                         cancel: cancel_receiver,
                         control: control_receiver,
                     })
@@ -1053,6 +1233,7 @@ async fn start_live_agent_runtime(
                 &config.provider_id,
                 config.permission_mode,
                 &config.working_directory,
+                &config.environment,
             )
             .await
             .map_err(public_acp_error)?;
@@ -1073,9 +1254,14 @@ async fn start_live_agent_runtime(
             ))
         }
         AgentDriverKind::CodexAppServer => {
-            let mut client = CodexStdioClient::spawn(&config.command, &config.working_directory)
-                .await
-                .map_err(public_codex_error)?;
+            let mut client = CodexStdioClient::spawn_with_options(
+                &config.command,
+                &config.working_directory,
+                &config.codex_config_args,
+                &config.environment,
+            )
+            .await
+            .map_err(public_codex_error)?;
             client
                 .initialize(env!("CARGO_PKG_VERSION"))
                 .await
@@ -1156,11 +1342,13 @@ async fn spawn_acp_client(
     provider_id: &str,
     permission_mode: &'static str,
     working_directory: &Path,
+    environment: &BTreeMap<String, String>,
 ) -> Result<AcpStdioClient, AcpError> {
     match provider_id {
         GROK_BUILD_PROVIDER_ID => {
             let arguments = grok_acp_arguments(permission_mode);
-            AcpStdioClient::spawn(command, &arguments, working_directory).await
+            AcpStdioClient::spawn_with_env(command, &arguments, working_directory, environment)
+                .await
         }
         OPENCODE_PROVIDER_ID => AcpStdioClient::spawn(command, &["acp"], working_directory).await,
         _ => Err(AcpError::Protocol(
@@ -1250,23 +1438,31 @@ async fn execute_acp_run(task: AcpRunTask) {
         requested_session_id,
         permission_mode,
         model,
+        environment,
         cancel,
         mut control,
     } = task;
-    let mut client =
-        match spawn_acp_client(&command, &provider_id, permission_mode, &working_directory).await {
-            Ok(client) => client,
-            Err(error) => {
-                state.push_terminal(
-                    &run_id,
-                    AgentRunEvent::Error {
-                        run_id: run_id.clone(),
-                        message: error.public_message().to_string(),
-                    },
-                );
-                return;
-            }
-        };
+    let mut client = match spawn_acp_client(
+        &command,
+        &provider_id,
+        permission_mode,
+        &working_directory,
+        &environment,
+    )
+    .await
+    {
+        Ok(client) => client,
+        Err(error) => {
+            state.push_terminal(
+                &run_id,
+                AgentRunEvent::Error {
+                    run_id: run_id.clone(),
+                    message: error.public_message().to_string(),
+                },
+            );
+            return;
+        }
+    };
 
     let mut mapper = AcpEventMapper::new(run_id.clone());
     let execution = async {
@@ -1360,10 +1556,19 @@ async fn execute_codex_run(task: CodexRunTask) {
         permission_mode,
         model,
         reasoning_effort,
+        environment,
+        codex_config_args,
         cancel,
         mut control,
     } = task;
-    let mut client = match CodexStdioClient::spawn(&command, &working_directory).await {
+    let mut client = match CodexStdioClient::spawn_with_options(
+        &command,
+        &working_directory,
+        &codex_config_args,
+        &environment,
+    )
+    .await
+    {
         Ok(client) => client,
         Err(error) => {
             state.push_terminal(
@@ -3122,34 +3327,44 @@ fn should_set_acp_model(
     requested_model.is_some_and(|requested| session_model.or(initialize_model) != Some(requested))
 }
 
-fn experimental_agent_run_enabled(value: &AtomicBool) -> bool {
-    value.load(Ordering::Acquire)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         acp_permission_policy, build_acp_prompt, build_codex_input,
-        cancelled_before_prompt_outcome, experimental_agent_run_enabled, grok_acp_arguments,
-        normalize_agent_input, parse_opencode_models, runtime_can_reuse, should_set_acp_model,
-        AcpEventMapper, AgentDriverInput, AgentDriverKind, AgentInputContentBlock, AgentRunRecord,
+        cancelled_before_prompt_outcome, grok_acp_arguments, normalize_agent_input,
+        parse_opencode_models, read_cached_agent_command, read_cached_agent_model_catalog,
+        runtime_can_reuse, should_set_acp_model, store_cached_agent_command,
+        store_cached_agent_model_catalog, AcpEventMapper, AgentDriverInput, AgentDriverKind,
+        AgentInputContentBlock, AgentModelCatalog, AgentModelSummary, AgentRunRecord,
         AgentRunService, AgentRunState, AgentRuntimeCommand, AgentRuntimeConfig, AgentRuntimePhase,
         AgentRuntimeRecord, AgentRuntimeRun, CodexEventMapper, CommandResolvers,
-        StartAgentRunRequest,
+        StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL, MODEL_CATALOG_CACHE_TTL,
     };
     use crate::{
         acp::{AcpPermissionPolicy, AcpRuntimeEvent, AcpToolCall, AcpToolCallUpdate},
+        agent_channels::AgentChannelService,
         agent_runtime::AgentRunEvent,
         codex_app_server::CodexRuntimeEvent,
     };
     use serde_json::json;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::{
-        collections::HashMap,
+        collections::{BTreeMap, HashMap},
         path::{Path, PathBuf},
         sync::{Arc, Mutex},
+        time::Instant,
     };
     use tokio::sync::{mpsc, watch, Notify};
+
+    static COMMAND_RESOLVER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static COMMAND_RESOLVER_AVAILABLE: AtomicBool = AtomicBool::new(true);
+
+    fn counting_codex_command_resolver() -> Option<String> {
+        COMMAND_RESOLVER_CALLS.fetch_add(1, Ordering::SeqCst);
+        COMMAND_RESOLVER_AVAILABLE
+            .load(Ordering::SeqCst)
+            .then(|| "C:/tools/codex.exe".to_string())
+    }
 
     fn test_runtime_config() -> AgentRuntimeConfig {
         AgentRuntimeConfig {
@@ -3160,28 +3375,131 @@ mod tests {
             permission_mode: "default",
             model: Some("grok-default".to_string()),
             reasoning_effort: None,
+            channel_id: None,
+            channel_fingerprint: None,
+            environment: BTreeMap::new(),
+            codex_config_args: Vec::new(),
         }
+    }
+
+    fn test_agent_channel_service() -> AgentChannelService {
+        let root =
+            std::env::temp_dir().join(format!("codem-agent-run-test-{}", std::process::id()));
+        AgentChannelService::new(
+            root.clone(),
+            crate::ordinary_chat::secrets::SecretStore::new(root),
+        )
     }
 
     fn test_run_state() -> AgentRunState {
         AgentRunState {
             records: Arc::new(Mutex::new(HashMap::new())),
             runtimes: Arc::new(Mutex::new(HashMap::new())),
+            model_catalog_cache: Arc::new(Mutex::new(HashMap::new())),
+            command_cache: Arc::new(Mutex::new(HashMap::new())),
             command_resolvers: CommandResolvers {
                 grok: || None,
                 codex: || None,
                 opencode: || None,
             },
-            experimental_agent_run_enabled: Arc::new(AtomicBool::new(false)),
+            agent_channels: test_agent_channel_service(),
         }
     }
 
     #[test]
-    fn experimental_agent_run_follows_shared_setting_state() {
-        let enabled = AtomicBool::new(false);
-        assert!(!experimental_agent_run_enabled(&enabled));
-        enabled.store(true, Ordering::Release);
-        assert!(experimental_agent_run_enabled(&enabled));
+    fn agent_model_catalog_cache_reuses_fresh_entries_and_expires_old_ones() {
+        let cache = Mutex::new(HashMap::new());
+        let loaded_at = Instant::now();
+        let catalog = AgentModelCatalog {
+            provider_id: "openai-codex".to_string(),
+            default_model_id: Some("gpt-default".to_string()),
+            models: vec![AgentModelSummary {
+                id: "gpt-default".to_string(),
+                label: "GPT Default".to_string(),
+                description: None,
+                context_window_tokens: None,
+                is_default: true,
+                default_reasoning_effort: None,
+                supported_reasoning_efforts: Vec::new(),
+            }],
+        };
+
+        store_cached_agent_model_catalog(&cache, "openai-codex", catalog.clone(), loaded_at);
+        assert_eq!(
+            read_cached_agent_model_catalog(&cache, "openai-codex", loaded_at)
+                .and_then(|cached| cached.default_model_id),
+            Some("gpt-default".to_string())
+        );
+        assert!(read_cached_agent_model_catalog(
+            &cache,
+            "openai-codex",
+            loaded_at + MODEL_CATALOG_CACHE_TTL,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn agent_command_cache_reuses_fresh_entries_and_expires_old_ones() {
+        let cache = Mutex::new(HashMap::new());
+        let resolved_at = Instant::now();
+        store_cached_agent_command(
+            &cache,
+            "openai-codex",
+            "C:/tools/codex.exe".to_string(),
+            resolved_at,
+        );
+
+        assert_eq!(
+            read_cached_agent_command(&cache, "openai-codex", resolved_at),
+            Some("C:/tools/codex.exe".to_string())
+        );
+        assert_eq!(
+            read_cached_agent_command(
+                &cache,
+                "openai-codex",
+                resolved_at + AGENT_COMMAND_CACHE_TTL,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn agent_command_resolution_reuses_cache_until_forced_refresh() {
+        COMMAND_RESOLVER_CALLS.store(0, Ordering::SeqCst);
+        COMMAND_RESOLVER_AVAILABLE.store(true, Ordering::SeqCst);
+        let service = AgentRunService::new(
+            || None,
+            counting_codex_command_resolver,
+            || None,
+            test_agent_channel_service(),
+        );
+
+        assert_eq!(
+            service.resolve_command("openai-codex", false).as_deref(),
+            Some("C:/tools/codex.exe")
+        );
+        assert_eq!(
+            service.resolve_command("openai-codex", false).as_deref(),
+            Some("C:/tools/codex.exe")
+        );
+        assert_eq!(COMMAND_RESOLVER_CALLS.load(Ordering::SeqCst), 1);
+
+        COMMAND_RESOLVER_AVAILABLE.store(false, Ordering::SeqCst);
+        assert_eq!(
+            service.resolve_command("openai-codex", false).as_deref(),
+            Some("C:/tools/codex.exe")
+        );
+        assert_eq!(COMMAND_RESOLVER_CALLS.load(Ordering::SeqCst), 1);
+
+        assert_eq!(service.resolve_command("openai-codex", true), None);
+        assert_eq!(COMMAND_RESOLVER_CALLS.load(Ordering::SeqCst), 2);
+
+        COMMAND_RESOLVER_AVAILABLE.store(true, Ordering::SeqCst);
+        assert_eq!(
+            service.resolve_command("openai-codex", false).as_deref(),
+            Some("C:/tools/codex.exe")
+        );
+        assert_eq!(COMMAND_RESOLVER_CALLS.load(Ordering::SeqCst), 3);
     }
 
     #[test]
