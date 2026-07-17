@@ -32,10 +32,10 @@ Out of scope:
 
 ## Acceptance Criteria
 
-- [ ] 所有 CodeM 版本元数据一致为 `0.1.15`。
-- [ ] 发布脚本测试、前端全量测试、类型检查、Rust 全量测试、package doctor、cargo fmt 和 diff check 通过。
-- [ ] 版本提交依次推送到 Gitee 和 GitHub，`v0.1.15` 标签仅推送到 GitHub。
-- [ ] GitHub Release workflow 全部成功并生成各平台安装包、签名、`latest.json` 和 `SHA256SUMS.txt`。
+- [x] 所有 CodeM 版本元数据一致为 `0.1.15`。
+- [x] 发布脚本测试、前端全量测试、类型检查、Rust 全量测试、package doctor、cargo fmt 和 diff check 通过。
+- [x] 版本提交依次推送到 Gitee 和 GitHub，`v0.1.15` 标签仅推送到 GitHub。
+- [x] GitHub Release workflow 全部成功并生成各平台安装包、签名、`latest.json` 和 `SHA256SUMS.txt`。
 
 ## Verification Commands
 
@@ -49,6 +49,8 @@ Out of scope:
 - 版本一致性检查
 
 ## Implementation Record
+
+- 2026-07-17T18:03:32.389Z GitHub Actions Release 运行 29600607934 全部成功，macos-arm64、linux-x64、windows-x64 与 Publish GitHub Release 均通过；正式 Release 已发布，共 19 个资产，latest.json 版本为 0.1.15，包含 windows-x86_64、darwin-aarch64、linux-x86_64 三个平台。Actions 的 Node.js 20 弃用警告为非阻断项，保留为后续升级事项。
 - 2026-07-17T17:28:47.965Z 已确认本地、Gitee origin/main 与 GitHub github/main 均指向 10345ff，最新正式版为 v0.1.14；本次发布范围为深色主题一致性、深色窗口材质限制和应用更新提醒，五处版本元数据已升级到 0.1.15，CONTEXT.md 保持未跟踪。
 
 - 2026-07-17T17:27:32.743Z Task created by Trellis automation.
@@ -68,6 +70,7 @@ Out of scope:
 - 2026-07-17T17:33:22.429Z `node --test scripts/release-workflow.test.mjs scripts/release-assets.test.mjs scripts/generate-latest-json.test.mjs`: 通过，10/10
 
 ## Completion Summary
+- 2026-07-17T18:03:32.437Z CodeM v0.1.15 已完成版本同步、全部本地门禁、Gitee/GitHub main 推送、GitHub 标签发布与 Release 核验；版本提交为 409f648，Release workflow 29600607934 成功，19 个资产和三平台 latest.json 均已确认。
 
 ## Follow-ups
 
