@@ -32,10 +32,10 @@ Out of scope:
 
 ## Acceptance Criteria
 
-- [ ] 所有 CodeM 版本元数据一致为 `0.1.14`。
-- [ ] 发布脚本测试、前端全量测试、类型检查、Rust 全量测试、package doctor、cargo fmt 和 diff check 通过。
-- [ ] 版本提交依次推送到 Gitee 和 GitHub，`v0.1.14` 标签仅推送到 GitHub。
-- [ ] GitHub Release workflow 全部成功并生成各平台安装包、签名、`latest.json` 和 `SHA256SUMS.txt`。
+- [x] 所有 CodeM 版本元数据一致为 `0.1.14`。
+- [x] 发布脚本测试、前端全量测试、类型检查、Rust 全量测试、package doctor、cargo fmt 和 diff check 通过。
+- [x] 版本提交依次推送到 Gitee 和 GitHub，`v0.1.14` 标签仅推送到 GitHub。
+- [x] GitHub Release workflow 全部成功并生成各平台安装包、签名、`latest.json` 和 `SHA256SUMS.txt`。
 
 ## Verification Commands
 
@@ -49,6 +49,7 @@ Out of scope:
 - 版本一致性检查
 
 ## Implementation Record
+- 2026-07-17T14:59:33.448Z GitHub Actions 继续报告 actions/*@v4 与 softprops/action-gh-release@v2 的 Node.js 20 弃用提示，runner 已强制使用 Node.js 24，本次构建与发布不受影响；按任务边界留待后续升级 action 主版本。
 
 - 2026-07-17T14:42:55.878Z GitHub/Gitee main 已统一到 1cf5483，发布范围覆盖运行清理与结果持久化、macOS Claude 原生安装及代理适配、窗口材质幂等和 WebKit 合成资源释放；五处版本元数据已升级到 0.1.14，CONTEXT.md 保持未跟踪。
 - 2026-07-17T14:41:38.082Z 发布前确认 GitHub main 与本地为 844ea7b，Gitee main 落后一笔 macOS 修复提交；工作区仅有 backend.rs 一行 Windows 代理环境变量大小写兼容测试修正，定向 Rust 测试与 cargo fmt --check 已通过，将先独立提交后再发布 v0.1.14。
@@ -56,6 +57,12 @@ Out of scope:
 - 2026-07-17T14:41:02.897Z Task created by Trellis automation.
 
 ## Verification Results
+
+- 2026-07-17T14:59:37.531Z `remote refs`: 通过：Gitee main、GitHub main 和 GitHub v0.1.14 均指向发布提交 8891424。
+- 2026-07-17T14:59:36.535Z `GitHub latest.json`: 通过：version=0.1.14，windows-x86_64、darwin-aarch64、linux-x86_64 均指向 v0.1.14 签名资产。
+
+- 2026-07-17T14:59:35.488Z `GitHub Release v0.1.14 assets`: 通过：正式版非草稿、非预发布，包含 19 个资产，Windows EXE/MSI/portable、macOS DMG/app、Linux AppImage/deb/rpm、updater 签名、源码包、latest.json 和 SHA256SUMS.txt 齐全。
+- 2026-07-17T14:59:34.473Z `GitHub Actions run 29589343580`: 通过：macOS arm64 7 分 27 秒、Linux x64 9 分 43 秒、Windows x64 12 分 3 秒及 Publish GitHub Release 全部 success。
 
 - 2026-07-17T14:44:59.354Z `版本一致性检查`: 通过：package、package-lock、Tauri、Cargo.toml 和 CodeM Cargo.lock 均为 0.1.14。
 - 2026-07-17T14:44:58.339Z `git diff --check`: 通过：无 whitespace 错误，仅有 Windows LF/CRLF 提示。
@@ -70,6 +77,7 @@ Out of scope:
 - 2026-07-17T14:44:52.174Z `node --test scripts/release-workflow.test.mjs scripts/release-assets.test.mjs scripts/generate-latest-json.test.mjs`: 通过：10 项发布工作流、资产收集与 latest.json 测试全部通过。
 
 ## Completion Summary
+- 2026-07-17T14:59:54.339Z 已完成 CodeM v0.1.14 发布；发布前同步 GitHub/Gitee 主线并提交代理环境变量测试兼容修正，发布提交 8891424 已同步两端，Windows、macOS、Linux 构建及 Release 全部通过，19 个安装、签名、源码、latest.json 和校验资产齐全。
 
 ## Follow-ups
 
