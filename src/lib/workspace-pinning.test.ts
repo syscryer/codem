@@ -148,7 +148,7 @@ test('会话搜索使用独立中央弹层而不是侧栏内联搜索框', () =>
 
 test('设置页切换时保留工作台节点，避免会话滚动位置丢失', () => {
   assert.match(appSource, /<SettingsView[\s\S]*hidden=\{appView\.kind !== 'settings'\}/);
-  assert.match(appSource, /<div[\s\S]*className=\{`codex-shell\$\{sidebarVisible \? '' : ' sidebar-hidden'\}`\}[\s\S]*hidden=\{appView\.kind === 'settings'\}/);
+  assert.match(appSource, /<PersistentHiddenView hidden=\{appView\.kind === 'settings'\}>[\s\S]*<div className=\{`codex-shell\$\{sidebarVisible \? '' : ' sidebar-hidden'\}`\}>/);
   assert.match(stylesSource, /\.settings-view\[hidden\],\s*\.codex-shell\[hidden\]\s*\{[\s\S]*display:\s*none\s*!important;/);
 });
 

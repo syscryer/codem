@@ -84,7 +84,7 @@ test('expanded toast details pause automatic dismissal until collapsed or closed
   const appSource = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
 
   assert.match(workspaceStateSource, /if \(!toast \|\| toast\.detailOpen\) \{/);
-  assert.match(workspaceStateSource, /function setToastDetailOpen\(toastId: string, detailOpen: boolean\)/);
+  assert.match(workspaceStateSource, /const setToastDetailOpen = useCallback\(\(toastId: string, detailOpen: boolean\) => \{/);
   assert.match(dialogsSource, /onToastDetailOpenChange\(toast\.id, nextExpandedToastId === toast\.id\)/);
   assert.match(appSource, /onToastDetailOpenChange=\{setToastDetailOpen\}/);
 });

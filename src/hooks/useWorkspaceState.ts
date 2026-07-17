@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import { EMPTY_PANEL_STATE } from '../constants';
 import {
   createThreadDetail,
@@ -264,7 +264,7 @@ export function useWorkspaceState() {
     });
   }
 
-  function showToast(message: string, tone: ToastState['tone'] = 'success', options?: number | ToastOptions) {
+  const showToast = useCallback((message: string, tone: ToastState['tone'] = 'success', options?: number | ToastOptions) => {
     const normalizedOptions = typeof options === 'number' ? { durationMs: options } : options;
     setToast({
       id: crypto.randomUUID(),
@@ -275,15 +275,15 @@ export function useWorkspaceState() {
       detailOpen: false,
       durationMs: normalizedOptions?.durationMs ?? (normalizedOptions?.detail ? 9000 : undefined),
     });
-  }
+  }, []);
 
-  function dismissToast() {
+  const dismissToast = useCallback(() => {
     setToast(null);
-  }
+  }, []);
 
-  function setToastDetailOpen(toastId: string, detailOpen: boolean) {
+  const setToastDetailOpen = useCallback((toastId: string, detailOpen: boolean) => {
     setToast((current) => (current?.id === toastId ? { ...current, detailOpen } : current));
-  }
+  }, []);
 
   function openRenameProjectDialog(project: ProjectSummary) {
     setInputDialog({

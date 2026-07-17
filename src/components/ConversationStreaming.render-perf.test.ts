@@ -7,9 +7,11 @@ const agentRunSource = readFileSync(new URL('../hooks/useAgentRun.ts', import.me
 const claudeRunSource = readFileSync(new URL('../hooks/useClaudeRun.ts', import.meta.url), 'utf8');
 const workspaceSource = readFileSync(new URL('../hooks/useWorkspaceState.ts', import.meta.url), 'utf8');
 
-test('streaming markdown yields expensive parsing behind deferred content', () => {
+test('streaming markdown memoizes expensive parsing behind deferred content', () => {
   assert.match(turnSource, /const deferredContent = useDeferredValue\(content\);/);
-  assert.match(turnSource, /\{deferredContent\}\s*<\/ReactMarkdown>/);
+  assert.match(turnSource, /const DeferredMarkdownContent = memo\(function DeferredMarkdownContent/);
+  assert.match(turnSource, /<DeferredMarkdownContent content=\{deferredContent\}/);
+  assert.match(turnSource, /\{content\}\s*<\/ReactMarkdown>/);
 });
 
 test('generic agent deltas do not schedule a full-history persist every animation frame', () => {

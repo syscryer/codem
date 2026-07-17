@@ -33,12 +33,23 @@ use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 const CLAUDE_CLI_RECOMMENDED_VERSION: &str = "2.1.123";
 const CLAUDE_CLI_UPDATE_COMMAND: &str = "claude update";
 const CLAUDE_CLI_INSTALL_COMMAND: &str = "npm install -g @anthropic-ai/claude-code";
+const CLAUDE_CLI_MACOS_INSTALL_COMMAND: &str =
+    "/usr/bin/curl -fsSL https://claude.ai/install.sh | /bin/bash";
 const CODEX_CLI_INSTALL_COMMAND: &str = "npm install -g @openai/codex@latest";
 const GROK_CLI_INSTALL_COMMAND: &str = "irm https://x.ai/cli/install.ps1 | iex";
 const OPENCODE_CLI_INSTALL_COMMAND: &str = "npm install -g opencode-ai@latest";
 const NPM_REGISTRY_URL: &str = "https://registry.npmjs.org";
 const NPM_MIRROR_REGISTRY_URL: &str = "https://registry.npmmirror.com";
 const NPM_CONFIG_USER_AGENT_ENV: &str = "npm_config_user_agent";
+#[cfg(any(target_os = "macos", test))]
+const AGENT_LIFECYCLE_PROXY_ENV_NAMES: &[&str] = &[
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+];
 const CLAUDE_CLI_SETUP_URL: &str = "https://docs.anthropic.com/en/docs/claude-code/setup";
 const RUN_RECONNECT_RETENTION_MS: u64 = 10 * 60 * 1000;
 
@@ -1286,6 +1297,151 @@ fn configure_agent_lifecycle_environment(provider_id: &str, process: &mut tokio:
     if provider_id == GROK_BUILD_PROVIDER_ID {
         process.env_remove(NPM_CONFIG_USER_AGENT_ENV);
     }
+    #[cfg(target_os = "macos")]
+    if provider_id == CLAUDE_CODE_PROVIDER_ID
+        && !current_process_has_proxy_environment()
+        && !command_has_proxy_environment(process)
+    {
+        let proxy_environment = resolve_macos_system_proxy_environment();
+        apply_agent_lifecycle_proxy_environment(process, &proxy_environment, false);
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn proxy_environment_name(name: &std::ffi::OsStr) -> bool {
+    AGENT_LIFECYCLE_PROXY_ENV_NAMES
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(std::ffi::OsStr::new(candidate)))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn proxy_environment_value_present(value: &std::ffi::OsStr) -> bool {
+    !value.to_string_lossy().trim().is_empty()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn current_process_has_proxy_environment() -> bool {
+    env::vars_os().any(|(name, value)| {
+        proxy_environment_name(&name) && proxy_environment_value_present(&value)
+    })
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn command_has_proxy_environment(process: &tokio::process::Command) -> bool {
+    process.as_std().get_envs().any(|(name, value)| {
+        proxy_environment_name(name) && value.is_some_and(proxy_environment_value_present)
+    })
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn apply_agent_lifecycle_proxy_environment(
+    process: &mut tokio::process::Command,
+    proxy_environment: &[(String, String)],
+    inherited_proxy_present: bool,
+) -> bool {
+    if inherited_proxy_present
+        || command_has_proxy_environment(process)
+        || proxy_environment.is_empty()
+    {
+        return false;
+    }
+    for (name, value) in proxy_environment {
+        process.env(name, value);
+    }
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_macos_system_proxy_environment() -> Vec<(String, String)> {
+    let mut command = background_command("/usr/sbin/scutil");
+    command.arg("--proxy");
+    let Some(output) = command_output_with_timeout(&mut command, std::time::Duration::from_secs(2))
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    parse_macos_system_proxy_environment(&String::from_utf8_lossy(&output.stdout))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_system_proxy_environment(value: &str) -> Vec<(String, String)> {
+    let mut settings = std::collections::HashMap::new();
+    for line in value.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if !matches!(
+            name,
+            "HTTPEnable"
+                | "HTTPProxy"
+                | "HTTPPort"
+                | "HTTPSEnable"
+                | "HTTPSProxy"
+                | "HTTPSPort"
+                | "SOCKSEnable"
+                | "SOCKSProxy"
+                | "SOCKSPort"
+        ) {
+            continue;
+        }
+        settings.insert(name, value.trim());
+    }
+
+    let mut result = Vec::new();
+    if settings.get("HTTPEnable") == Some(&"1") {
+        if let Some(url) = macos_system_proxy_url(
+            "http",
+            settings.get("HTTPProxy").copied(),
+            settings.get("HTTPPort").copied(),
+        ) {
+            result.push(("http_proxy".to_string(), url.clone()));
+            result.push(("HTTP_PROXY".to_string(), url));
+        }
+    }
+    if settings.get("HTTPSEnable") == Some(&"1") {
+        if let Some(url) = macos_system_proxy_url(
+            "http",
+            settings.get("HTTPSProxy").copied(),
+            settings.get("HTTPSPort").copied(),
+        ) {
+            result.push(("https_proxy".to_string(), url.clone()));
+            result.push(("HTTPS_PROXY".to_string(), url));
+        }
+    }
+    if settings.get("SOCKSEnable") == Some(&"1") {
+        if let Some(url) = macos_system_proxy_url(
+            "socks5h",
+            settings.get("SOCKSProxy").copied(),
+            settings.get("SOCKSPort").copied(),
+        ) {
+            result.push(("all_proxy".to_string(), url.clone()));
+            result.push(("ALL_PROXY".to_string(), url));
+        }
+    }
+    result
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_system_proxy_url(scheme: &str, host: Option<&str>, port: Option<&str>) -> Option<String> {
+    let host = host?.trim();
+    if host.is_empty()
+        || host.len() > 255
+        || host
+            .chars()
+            .any(|value| value.is_control() || value.is_whitespace())
+    {
+        return None;
+    }
+    let port = port?.trim().parse::<u16>().ok()?;
+    let host = if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    Some(format!("{scheme}://{host}:{port}"))
 }
 
 fn lifecycle_plan_supports_npm_mirror(plan: &AgentLifecyclePlan) -> bool {
@@ -1336,6 +1492,18 @@ fn build_agent_lifecycle_plan(
     action: &str,
     installed_command: Option<&str>,
 ) -> ApiResult<AgentLifecyclePlan> {
+    if action == "install" && provider_id == CLAUDE_CODE_PROVIDER_ID {
+        return Ok(claude_install_lifecycle_plan(
+            cfg!(target_os = "macos"),
+            cfg!(target_os = "windows"),
+        ));
+    }
+    if action == "update" && provider_id == CLAUDE_CODE_PROVIDER_ID && installed_command.is_none() {
+        return Ok(claude_uninstalled_update_lifecycle_plan(
+            cfg!(target_os = "macos"),
+            cfg!(target_os = "windows"),
+        ));
+    }
     if action == "install" && provider_id == GROK_BUILD_PROVIDER_ID {
         #[cfg(target_os = "windows")]
         return Ok(lifecycle_plan(
@@ -1406,6 +1574,36 @@ fn build_agent_lifecycle_plan(
         ["install", "-g", package],
         display,
     ))
+}
+
+fn claude_install_lifecycle_plan(macos: bool, windows: bool) -> AgentLifecyclePlan {
+    if macos {
+        return lifecycle_plan(
+            "/bin/sh",
+            ["-c", CLAUDE_CLI_MACOS_INSTALL_COMMAND],
+            CLAUDE_CLI_MACOS_INSTALL_COMMAND,
+        );
+    }
+    lifecycle_plan(
+        if windows { "npm.cmd" } else { "npm" },
+        ["install", "-g", "@anthropic-ai/claude-code@latest"],
+        CLAUDE_CLI_INSTALL_COMMAND,
+    )
+}
+
+fn claude_uninstalled_update_lifecycle_plan(macos: bool, windows: bool) -> AgentLifecyclePlan {
+    if macos {
+        return lifecycle_plan("claude", ["update"], CLAUDE_CLI_UPDATE_COMMAND);
+    }
+    claude_install_lifecycle_plan(false, windows)
+}
+
+fn claude_install_display_command() -> &'static str {
+    if cfg!(target_os = "macos") {
+        CLAUDE_CLI_MACOS_INSTALL_COMMAND
+    } else {
+        CLAUDE_CLI_INSTALL_COMMAND
+    }
 }
 
 fn package_manager_lifecycle_plan(provider_id: &str, command: &str) -> Option<AgentLifecyclePlan> {
@@ -1618,6 +1816,7 @@ async fn claude_models() -> Json<Value> {
 }
 
 async fn claude_version_info() -> Json<Value> {
+    let install_command = claude_install_display_command();
     let Some(command) = resolve_claude_command() else {
         return Json(json!({
             "installed": false,
@@ -1626,7 +1825,7 @@ async fn claude_version_info() -> Json<Value> {
             "recommendedVersion": CLAUDE_CLI_RECOMMENDED_VERSION,
             "command": Value::Null,
             "updateCommand": CLAUDE_CLI_UPDATE_COMMAND,
-            "installCommand": CLAUDE_CLI_INSTALL_COMMAND,
+            "installCommand": install_command,
             "setupUrl": CLAUDE_CLI_SETUP_URL,
             "versionError": "未找到 claude 命令",
         }));
@@ -1650,7 +1849,7 @@ async fn claude_version_info() -> Json<Value> {
                     "recommendedVersion": CLAUDE_CLI_RECOMMENDED_VERSION,
                     "command": command,
                     "updateCommand": CLAUDE_CLI_UPDATE_COMMAND,
-                    "installCommand": CLAUDE_CLI_INSTALL_COMMAND,
+                    "installCommand": install_command,
                     "setupUrl": CLAUDE_CLI_SETUP_URL,
                     "versionError": if output_text.is_empty() { "读取 Claude CLI 版本失败".to_string() } else { output_text },
                 }));
@@ -1663,7 +1862,7 @@ async fn claude_version_info() -> Json<Value> {
                 "recommendedVersion": CLAUDE_CLI_RECOMMENDED_VERSION,
                 "command": command,
                 "updateCommand": CLAUDE_CLI_UPDATE_COMMAND,
-                "installCommand": CLAUDE_CLI_INSTALL_COMMAND,
+                "installCommand": install_command,
                 "setupUrl": CLAUDE_CLI_SETUP_URL,
             }))
         }
@@ -1674,7 +1873,7 @@ async fn claude_version_info() -> Json<Value> {
             "recommendedVersion": CLAUDE_CLI_RECOMMENDED_VERSION,
             "command": command,
             "updateCommand": CLAUDE_CLI_UPDATE_COMMAND,
-            "installCommand": CLAUDE_CLI_INSTALL_COMMAND,
+            "installCommand": install_command,
             "setupUrl": CLAUDE_CLI_SETUP_URL,
             "versionError": error.to_string(),
         })),
@@ -17271,8 +17470,10 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_agent_lifecycle_plan, build_claude_input_message,
-        build_request_user_input_response_answers, claude_input_message_has_content,
+        apply_agent_lifecycle_proxy_environment, build_agent_lifecycle_plan,
+        build_claude_input_message, build_request_user_input_response_answers,
+        claude_input_message_has_content, claude_install_display_command,
+        claude_install_lifecycle_plan, claude_uninstalled_update_lifecycle_plan,
         compare_project_file_entries, configure_agent_lifecycle_environment, create_router,
         create_thread_row, default_claude_command_paths, default_grok_command_path,
         desktop_cors_layer, ensure_agent_plugin_management_supported,
@@ -17283,9 +17484,9 @@ mod tests {
         list_agent_skills_value, list_slash_commands_value, mark_request_user_input_submitted,
         normalize_agent_plugin_action, normalize_agent_runtime_settings,
         normalize_request_user_input_answer_value, parse_grok_cli_version,
-        parse_grok_latest_version, parse_npm_latest_version, parse_request_user_input_event,
-        read_opencode_mcp_config, read_stored_thread_history, read_thread_detail,
-        read_thread_summary, remove_thread_row, resolve_codex_command,
+        parse_grok_latest_version, parse_macos_system_proxy_environment, parse_npm_latest_version,
+        parse_request_user_input_event, read_opencode_mcp_config, read_stored_thread_history,
+        read_thread_detail, read_thread_summary, remove_thread_row, resolve_codex_command,
         resolve_first_runnable_command, resolve_grok_command, resolve_opencode_command,
         resolve_requested_thread_provider, resolve_thread_create_permission_mode,
         resolve_workspace_relative_path, sanitize_agent_lifecycle_output, search_workspace_files,
@@ -17325,8 +17526,18 @@ mod tests {
 
     #[test]
     fn agent_lifecycle_plans_only_cover_supported_providers() {
+        let claude_plan = build_agent_lifecycle_plan(CLAUDE_CODE_PROVIDER_ID, "install", None)
+            .expect("build Claude install plan");
+        let expected_claude_plan =
+            claude_install_lifecycle_plan(cfg!(target_os = "macos"), cfg!(target_os = "windows"));
+        assert_eq!(claude_plan.program, expected_claude_plan.program);
+        assert_eq!(claude_plan.args, expected_claude_plan.args);
+        assert_eq!(
+            claude_plan.display_command,
+            expected_claude_plan.display_command
+        );
+
         let cases = [
-            (CLAUDE_CODE_PROVIDER_ID, "@anthropic-ai/claude-code"),
             (OPENAI_CODEX_PROVIDER_ID, "@openai/codex"),
             (OPENCODE_PROVIDER_ID, "opencode-ai"),
         ];
@@ -17338,6 +17549,67 @@ mod tests {
             assert!(!plan.args.is_empty());
         }
         assert!(build_agent_lifecycle_plan("unknown-agent", "install", None).is_err());
+    }
+
+    #[test]
+    fn macos_claude_install_uses_official_native_installer_without_path_lookup() {
+        let plan = claude_install_lifecycle_plan(true, false);
+
+        assert_eq!(plan.program, "/bin/sh");
+        assert_eq!(
+            plan.args,
+            vec![
+                "-c".to_string(),
+                "/usr/bin/curl -fsSL https://claude.ai/install.sh | /bin/bash".to_string(),
+            ]
+        );
+        assert_eq!(
+            plan.display_command,
+            "/usr/bin/curl -fsSL https://claude.ai/install.sh | /bin/bash"
+        );
+        assert!(!lifecycle_plan_supports_npm_mirror(&plan));
+    }
+
+    #[test]
+    fn windows_claude_install_keeps_existing_npm_plan() {
+        let plan = claude_install_lifecycle_plan(false, true);
+
+        assert_eq!(plan.program, "npm.cmd");
+        assert_eq!(
+            plan.args,
+            vec![
+                "install".to_string(),
+                "-g".to_string(),
+                "@anthropic-ai/claude-code@latest".to_string(),
+            ]
+        );
+        assert_eq!(
+            plan.display_command,
+            "npm install -g @anthropic-ai/claude-code"
+        );
+        assert!(lifecycle_plan_supports_npm_mirror(&plan));
+
+        let update_plan = claude_uninstalled_update_lifecycle_plan(false, true);
+        assert_eq!(update_plan.program, "npm.cmd");
+        assert_eq!(update_plan.args, plan.args);
+        assert_eq!(update_plan.display_command, plan.display_command);
+    }
+
+    #[test]
+    fn macos_uninstalled_claude_update_displays_native_update_command() {
+        let plan = claude_uninstalled_update_lifecycle_plan(true, false);
+
+        assert_eq!(plan.program, "claude");
+        assert_eq!(plan.args, vec!["update".to_string()]);
+        assert_eq!(plan.display_command, "claude update");
+        assert_eq!(
+            claude_install_display_command(),
+            if cfg!(target_os = "macos") {
+                "/usr/bin/curl -fsSL https://claude.ai/install.sh | /bin/bash"
+            } else {
+                "npm install -g @anthropic-ai/claude-code"
+            }
+        );
     }
 
     #[test]
@@ -17417,6 +17689,116 @@ mod tests {
             .and_then(|(_, value)| value)
             .and_then(|value| value.to_str());
         assert_eq!(codex_user_agent, Some("npm/11.4.2"));
+    }
+
+    #[test]
+    fn macos_system_proxy_parser_supports_http_https_and_socks() {
+        let proxy_environment = parse_macos_system_proxy_environment(
+            r#"<dictionary> {
+  HTTPEnable : 1
+  HTTPPort : 7890
+  HTTPProxy : 127.0.0.1
+  HTTPSEnable : 1
+  HTTPSPort : 7890
+  HTTPSProxy : 127.0.0.1
+  SOCKSEnable : 1
+  SOCKSPort : 7891
+  SOCKSProxy : ::1
+}"#,
+        );
+
+        assert_eq!(
+            proxy_environment,
+            vec![
+                (
+                    "http_proxy".to_string(),
+                    "http://127.0.0.1:7890".to_string()
+                ),
+                (
+                    "HTTP_PROXY".to_string(),
+                    "http://127.0.0.1:7890".to_string()
+                ),
+                (
+                    "https_proxy".to_string(),
+                    "http://127.0.0.1:7890".to_string()
+                ),
+                (
+                    "HTTPS_PROXY".to_string(),
+                    "http://127.0.0.1:7890".to_string()
+                ),
+                ("all_proxy".to_string(), "socks5h://[::1]:7891".to_string()),
+                ("ALL_PROXY".to_string(), "socks5h://[::1]:7891".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn macos_system_proxy_parser_ignores_disabled_or_invalid_entries() {
+        assert!(parse_macos_system_proxy_environment(
+            r#"<dictionary> {
+  HTTPEnable : 0
+  HTTPPort : 7890
+  HTTPProxy : 127.0.0.1
+  HTTPSEnable : 1
+  HTTPSPort : invalid
+  HTTPSProxy : proxy.local
+  SOCKSEnable : 1
+  SOCKSPort : 7890
+  SOCKSProxy : invalid host
+}"#,
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn agent_lifecycle_proxy_keeps_explicit_environment_and_applies_system_fallback() {
+        let proxy_environment = vec![
+            (
+                "https_proxy".to_string(),
+                "http://127.0.0.1:7890".to_string(),
+            ),
+            (
+                "HTTPS_PROXY".to_string(),
+                "http://127.0.0.1:7890".to_string(),
+            ),
+        ];
+
+        let mut inherited = tokio::process::Command::new("claude");
+        assert!(!apply_agent_lifecycle_proxy_environment(
+            &mut inherited,
+            &proxy_environment,
+            true,
+        ));
+        assert!(!inherited.as_std().get_envs().any(|_| true));
+
+        let mut explicit = tokio::process::Command::new("claude");
+        explicit.env("HTTPS_PROXY", "http://explicit-proxy:8080");
+        assert!(!apply_agent_lifecycle_proxy_environment(
+            &mut explicit,
+            &proxy_environment,
+            false,
+        ));
+        let explicit_proxy = explicit
+            .as_std()
+            .get_envs()
+            .find(|(name, _)| *name == "HTTPS_PROXY")
+            .and_then(|(_, value)| value)
+            .and_then(|value| value.to_str());
+        assert_eq!(explicit_proxy, Some("http://explicit-proxy:8080"));
+
+        let mut fallback = tokio::process::Command::new("claude");
+        assert!(apply_agent_lifecycle_proxy_environment(
+            &mut fallback,
+            &proxy_environment,
+            false,
+        ));
+        let fallback_proxy = fallback
+            .as_std()
+            .get_envs()
+            .find(|(name, _)| *name == "HTTPS_PROXY")
+            .and_then(|(_, value)| value)
+            .and_then(|value| value.to_str());
+        assert_eq!(fallback_proxy, Some("http://127.0.0.1:7890"));
     }
 
     #[test]
@@ -18811,6 +19193,29 @@ mod tests {
         assert_eq!(
             default_claude_command_paths(&home, None, false),
             vec![home.join(".local").join("bin").join("claude")]
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn native_claude_command_is_runnable_without_being_on_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let test_directory = TestDirectory::new("claude-native-fallback");
+        let native_command = test_directory.0.join(".local").join("bin").join("claude");
+        fs::create_dir_all(native_command.parent().unwrap()).expect("create native directory");
+        fs::write(&native_command, "#!/bin/sh\necho '9.9.9 (Claude Code)'\n")
+            .expect("write native command");
+        fs::set_permissions(&native_command, fs::Permissions::from_mode(0o755))
+            .expect("make native command executable");
+
+        assert_eq!(
+            resolve_first_runnable_command(default_claude_command_paths(
+                &test_directory.0,
+                None,
+                false,
+            )),
+            Some(native_command.to_string_lossy().to_string())
         );
     }
 

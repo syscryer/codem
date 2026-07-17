@@ -1,5 +1,35 @@
 import type { AgentRuntimeStatus, ThreadRuntimeStatus } from '../types';
 
+const runtimeStatusFields = [
+  'threadId',
+  'pid',
+  'alive',
+  'activeRun',
+  'runtimeKind',
+  'phase',
+  'providerId',
+  'sessionId',
+  'currentRunId',
+  'lastError',
+] as const satisfies ReadonlyArray<keyof ThreadRuntimeStatus>;
+
+export function areThreadRuntimeStatusesEqual(
+  current: Record<string, ThreadRuntimeStatus>,
+  next: Record<string, ThreadRuntimeStatus>,
+) {
+  const currentThreadIds = Object.keys(current);
+  const nextThreadIds = Object.keys(next);
+  if (currentThreadIds.length !== nextThreadIds.length) {
+    return false;
+  }
+
+  return currentThreadIds.every((threadId) => {
+    const currentStatus = current[threadId];
+    const nextStatus = next[threadId];
+    return Boolean(nextStatus) && runtimeStatusFields.every((field) => currentStatus[field] === nextStatus[field]);
+  });
+}
+
 export async function fetchThreadRuntimeStatuses() {
   const [claudeStatuses, agentStatuses] = await Promise.all([
     fetchClaudeRuntimeStatuses(),

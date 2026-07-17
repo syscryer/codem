@@ -187,6 +187,13 @@ test('设置页内容层位于根材质层之上并复用对话侧栏宽度', ()
   );
 });
 
+test('macOS 设置页显示时标题栏拖拽区域覆盖整窗', () => {
+  assert.match(
+    stylesSource,
+    /\.codex-desktop\[data-platform="macos"\]:has\(\.settings-view:not\(\[hidden\]\)\)\s+\.desktop-menubar\s*\{[^}]*width:\s*100%;[^}]*\}/s,
+  );
+});
+
 test('设置页左侧面板复用对话左侧栏材质和交互色', () => {
   assert.match(
     stylesSource,

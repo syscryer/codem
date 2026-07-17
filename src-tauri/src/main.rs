@@ -137,7 +137,19 @@ struct BackendPortState {
 #[derive(Default)]
 #[allow(dead_code)]
 struct WindowMaterialState {
-    current: Mutex<i32>,
+    current: Mutex<Option<i32>>,
+}
+
+fn should_apply_window_material(current: Option<i32>, requested: i32) -> bool {
+    current != Some(requested)
+}
+
+fn clear_vibrancy_layers<E>(mut clear: impl FnMut() -> Result<bool, E>) -> Result<usize, E> {
+    let mut cleared = 0;
+    while clear()? {
+        cleared += 1;
+    }
+    Ok(cleared)
 }
 
 #[derive(Clone, Copy)]
@@ -982,9 +994,10 @@ fn current_timestamp_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_window_state_to_area, detect_distribution_mode_from_dir, has_minimum_window_size,
-        has_success_status, normalize_window_state, prepare_window_state_for_save,
-        resolve_backend_port_from_value, MonitorWorkArea, WindowState,
+        clamp_window_state_to_area, clear_vibrancy_layers, detect_distribution_mode_from_dir,
+        has_minimum_window_size, has_success_status, normalize_window_state,
+        prepare_window_state_for_save, resolve_backend_port_from_value,
+        should_apply_window_material, MonitorWorkArea, WindowState,
     };
     use std::{
         fs,
@@ -1009,6 +1022,34 @@ mod tests {
         assert!(has_success_status("HTTP/1.1 200 OK\r\n\r\n{}"));
         assert!(has_success_status("HTTP/1.0 200 OK\r\n\r\n{}"));
         assert!(!has_success_status("HTTP/1.1 404 Not Found\r\n\r\n{}"));
+    }
+
+    #[test]
+    fn window_material_state_requires_initial_and_changed_applications() {
+        assert!(should_apply_window_material(None, 0));
+        assert!(!should_apply_window_material(Some(0), 0));
+        assert!(should_apply_window_material(Some(1), 0));
+    }
+
+    #[test]
+    fn clear_vibrancy_layers_removes_every_layer_and_stops() {
+        let mut remaining_layers = 3;
+        let mut calls = 0;
+
+        let cleared = clear_vibrancy_layers(|| {
+            calls += 1;
+            if remaining_layers == 0 {
+                Ok::<bool, ()>(false)
+            } else {
+                remaining_layers -= 1;
+                Ok(true)
+            }
+        })
+        .expect("clear simulated vibrancy layers");
+
+        assert_eq!(cleared, 3);
+        assert_eq!(remaining_layers, 0);
+        assert_eq!(calls, 4);
     }
 
     #[test]
@@ -1273,7 +1314,10 @@ mod platform {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{material_info, ThreadNotificationRequest, WindowMaterial, WindowMaterialState};
+    use super::{
+        clear_vibrancy_layers, material_info, should_apply_window_material,
+        ThreadNotificationRequest, WindowMaterial, WindowMaterialState,
+    };
     use std::process::Command;
     use tauri::Manager;
     use window_vibrancy::{
@@ -1292,7 +1336,11 @@ mod platform {
 
     pub fn current_window_material(app: &tauri::AppHandle) -> Result<WindowMaterial, String> {
         let state = app.state::<WindowMaterialState>();
-        let material = *state.current.lock().map_err(|error| error.to_string())?;
+        let material = state
+            .current
+            .lock()
+            .map_err(|error| error.to_string())?
+            .unwrap_or(default_window_material_id());
         Ok(material_info(material))
     }
 
@@ -1300,12 +1348,24 @@ mod platform {
         app: &tauri::AppHandle,
         material: i32,
     ) -> Result<WindowMaterial, String> {
+        if !matches!(material, 0 | 1) {
+            return Err("当前平台仅支持自动和无两种窗口材质".to_string());
+        }
+
+        let state = app.state::<WindowMaterialState>();
+        let mut current = state.current.lock().map_err(|error| error.to_string())?;
+        if !should_apply_window_material(*current, material) {
+            return Ok(material_info(material));
+        }
+
         let window = app
             .get_webview_window("main")
             .ok_or_else(|| "未找到主窗口".to_string())?;
 
         match material {
             0 => {
+                clear_vibrancy_layers(|| clear_vibrancy(&window))
+                    .map_err(|error| format!("清理 macOS 玻璃效果失败: {error}"))?;
                 apply_vibrancy(
                     &window,
                     NSVisualEffectMaterial::Sidebar,
@@ -1315,18 +1375,13 @@ mod platform {
                 .map_err(|error| format!("应用 macOS 玻璃效果失败: {error}"))?;
             }
             1 => {
-                clear_vibrancy(&window)
+                clear_vibrancy_layers(|| clear_vibrancy(&window))
                     .map_err(|error| format!("关闭 macOS 玻璃效果失败: {error}"))?;
             }
-            _ => {
-                return Err("当前平台仅支持自动和无两种窗口材质".to_string());
-            }
+            _ => unreachable!(),
         }
 
-        let state = app.state::<WindowMaterialState>();
-        if let Ok(mut current) = state.current.lock() {
-            *current = material;
-        }
+        *current = Some(material);
 
         Ok(material_info(material))
     }

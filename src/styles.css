@@ -497,13 +497,16 @@ svg {
   width: var(--sidebar-width, 300px);
   border-top-left-radius: var(--desktop-window-radius);
   color: color-mix(in srgb, #ffffff 78%, var(--app-text) 22%);
-  -webkit-app-region: drag;
   user-select: none;
   -webkit-user-select: none;
 }
 
 .codex-desktop[data-platform="macos"]:has(.codex-shell.sidebar-hidden) .desktop-menubar {
   width: 170px;
+}
+
+.codex-desktop[data-platform="macos"]:has(.settings-view:not([hidden])) .desktop-menubar {
+  width: 100%;
 }
 
 .desktop-menubar-leading,
@@ -17508,34 +17511,8 @@ button.git-conflict-overview-row:focus-visible,
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   cursor: default;
-  -webkit-app-region: drag;
   user-select: none;
   -webkit-user-select: none;
-}
-
-.codex-desktop[data-platform="macos"] :is(
-  button,
-  input,
-  textarea,
-  select,
-  a,
-  [role="button"],
-  [role="menu"],
-  [role="menuitem"],
-  [role="menuitemradio"],
-  [data-popover-portal],
-  .desktop-menu-popover,
-  .workspace-menu,
-  .open-app-dropdown,
-  .model-menu,
-  .effort-menu,
-  .permission-menu,
-  .composer-add-menu,
-  .status-branch-menu,
-  .status-run-menu,
-  .settings-select-menu
-) {
-  -webkit-app-region: no-drag;
 }
 
 .codex-desktop[data-platform="macos"] .chat-header::before {
@@ -17544,7 +17521,6 @@ button.git-conflict-overview-row:focus-visible,
 
 .codex-desktop[data-platform="macos"] .thread-title {
   gap: 10px;
-  -webkit-app-region: drag;
 }
 
 .codex-desktop[data-platform="macos"] .thread-title h2 {
@@ -17553,7 +17529,6 @@ button.git-conflict-overview-row:focus-visible,
   font-size: 15px;
   font-weight: 640;
   line-height: 1.2;
-  -webkit-app-region: drag;
 }
 
 .codex-desktop[data-platform="macos"] .thread-project {

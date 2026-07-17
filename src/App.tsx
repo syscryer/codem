@@ -11,6 +11,7 @@ import { GitHistoryPanel } from './components/GitHistoryPanel';
 import { KnowledgeBaseManagerDialog } from './components/KnowledgeBaseManagerDialog';
 import { OrdinaryChatDialogs } from './components/OrdinaryChatDialogs';
 import { OrdinaryChatWorkspace } from './components/OrdinaryChatWorkspace';
+import { PersistentHiddenView } from './components/PersistentHiddenView';
 import { RightWorkbench } from './components/RightWorkbench';
 import { SessionSearchDialog } from './components/SessionSearchDialog';
 import { SidebarProjects } from './components/SidebarProjects';
@@ -54,7 +55,7 @@ import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
 import { resolveChatRuntimeKind } from './lib/agent-provider-registry';
 import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
 import { fetchGitRemote, pullGitBranch, undoConversationChanges } from './lib/git-api';
-import { fetchThreadRuntimeStatuses } from './lib/thread-runtime-statuses';
+import { areThreadRuntimeStatusesEqual, fetchThreadRuntimeStatuses } from './lib/thread-runtime-statuses';
 import {
   buildGitOperationToastDetail,
   normalizeGitOperationToastMessage,
@@ -368,6 +369,7 @@ export default function App() {
   }, [activeProject?.isGitRepo, dockActivePanelId]);
   const wasRunningRef = useRef(false);
   const materialErrorShownRef = useRef(false);
+  const appliedWindowMaterialRef = useRef<WindowMaterialMode | null>(null);
   const activeThreadRuntimeKind = resolveChatRuntimeKind(activeThreadSummary?.provider ?? '');
   const {
     workspace,
@@ -552,7 +554,9 @@ export default function App() {
     async function refreshThreadRuntimeStatuses() {
       const statuses = await fetchThreadRuntimeStatuses();
       if (!cancelled) {
-        setThreadRuntimeStatuses(statuses);
+        setThreadRuntimeStatuses((current) =>
+          areThreadRuntimeStatusesEqual(current, statuses) ? current : statuses,
+        );
       }
     }
 
@@ -642,11 +646,22 @@ export default function App() {
       return;
     }
 
+    const requestedMaterial = effectiveWindowMaterial;
+    if (appliedWindowMaterialRef.current === requestedMaterial) {
+      return;
+    }
+
+    appliedWindowMaterialRef.current = requestedMaterial;
     let cancelled = false;
-    void setWindowMaterial(effectiveWindowMaterial).then((handled) => {
-      if (!handled && !cancelled && !materialErrorShownRef.current) {
-        materialErrorShownRef.current = true;
-        showToast('窗口材质应用失败，请确认当前 Windows 版本支持该材质。', 'error');
+    void setWindowMaterial(requestedMaterial).then((handled) => {
+      if (!handled) {
+        if (appliedWindowMaterialRef.current === requestedMaterial) {
+          appliedWindowMaterialRef.current = null;
+        }
+        if (!cancelled && !materialErrorShownRef.current) {
+          materialErrorShownRef.current = true;
+          showToast('窗口材质应用失败，请确认当前系统支持该材质。', 'error');
+        }
       }
     });
 
@@ -1705,10 +1720,8 @@ export default function App() {
         onReturnWorkspace={returnWorkspace}
         returnLabel={settingsReturnLabel}
       />
-      <div
-        className={`codex-shell${sidebarVisible ? '' : ' sidebar-hidden'}`}
-        hidden={appView.kind === 'settings'}
-      >
+      <PersistentHiddenView hidden={appView.kind === 'settings'}>
+        <div className={`codex-shell${sidebarVisible ? '' : ' sidebar-hidden'}`}>
           {sidebarVisible ? (
             <SidebarProjects
               activeProjectId={appView.kind === 'workspace' ? activeProjectId : null}
@@ -1955,6 +1968,7 @@ export default function App() {
             )}
           </div>
         </div>
+      </PersistentHiddenView>
 
       <SessionSearchDialog
         open={searchOpen}

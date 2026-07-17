@@ -493,6 +493,16 @@ function MarkdownMessage({
 }) {
   const deferredContent = useDeferredValue(content);
 
+  return <DeferredMarkdownContent content={deferredContent} onPreviewImage={onPreviewImage} />;
+}
+
+const DeferredMarkdownContent = memo(function DeferredMarkdownContent({
+  content,
+  onPreviewImage,
+}: {
+  content: string;
+  onPreviewImage: (preview: MarkdownImagePreviewPayload) => void;
+}) {
   return (
     <div className="message-body markdown-body">
       <ReactMarkdown
@@ -515,11 +525,11 @@ function MarkdownMessage({
           },
         }}
       >
-        {deferredContent}
+        {content}
       </ReactMarkdown>
     </div>
   );
-}
+});
 
 function ThinkingMessage({ content, label }: { content: string; label: string }) {
   const cleanContent = content.trim();
