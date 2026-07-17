@@ -17795,7 +17795,7 @@ mod tests {
         let fallback_proxy = fallback
             .as_std()
             .get_envs()
-            .find(|(name, _)| *name == "HTTPS_PROXY")
+            .find(|(name, _)| name.eq_ignore_ascii_case(std::ffi::OsStr::new("HTTPS_PROXY")))
             .and_then(|(_, value)| value)
             .and_then(|value| value.to_str());
         assert_eq!(fallback_proxy, Some("http://127.0.0.1:7890"));
