@@ -1,7 +1,10 @@
-import { ArrowLeft, ArrowRight, Check, Minus, Square, X } from 'lucide-react';
-import { useRef, useState, type MouseEvent, type PointerEvent } from 'react';
+import { ArrowLeft, ArrowRight, Check, Download, LoaderCircle, Minus, RefreshCw, Square, X } from 'lucide-react';
+import { useEffect, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
+import { renderMarkdownLink } from '../lib/markdown-link';
 import { getWindowMaterialLabel, isTauriRuntime } from '../lib/window-material';
 import { PopoverPortal } from './PopoverPortal';
 import type { DesktopPlatform, WindowMaterialMode } from '../types';
@@ -10,6 +13,7 @@ type AppMenuId = 'file' | 'edit' | 'view' | 'window' | 'help';
 
 type AppMenubarProps = {
   platform: DesktopPlatform;
+  appUpdateNotice: AppUpdateTitlebarNotice | null;
   sidebarVisible: boolean;
   windowMaterial: WindowMaterialMode;
   supportedWindowMaterials: WindowMaterialMode[];
@@ -27,6 +31,15 @@ type AppMenubarProps = {
   onShowAbout: () => void;
   onShowShortcuts: () => void;
   onUnsupportedWindowAction: (action: string) => void;
+};
+
+type AppUpdateTitlebarNotice = {
+  version?: string;
+  releaseDate?: string;
+  releaseNotes?: string;
+  phase: 'available' | 'downloading' | 'downloaded' | 'installing' | 'failed';
+  message?: string;
+  onAction: () => void | Promise<void>;
 };
 
 const menuLabels: Record<AppMenuId, string> = {
@@ -71,6 +84,7 @@ const macShortcutLabels = {
 
 export function AppMenubar({
   platform,
+  appUpdateNotice,
   sidebarVisible,
   windowMaterial,
   supportedWindowMaterials,
@@ -90,11 +104,51 @@ export function AppMenubar({
   onUnsupportedWindowAction,
 }: AppMenubarProps) {
   const [openMenu, setOpenMenu] = useState<AppMenuId | null>(null);
+  const [updateCardOpen, setUpdateCardOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const updateTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const updateCloseTimerRef = useRef<number | null>(null);
+  const previousUpdatePhaseRef = useRef<AppUpdateTitlebarNotice['phase'] | null>(null);
 
   useOutsideDismiss({
-    selectors: [{ selector: '.desktop-menu-popover', onDismiss: () => setOpenMenu(null), anchorRefs: [triggerRef] }],
+    selectors: [
+      { selector: '.desktop-menu-popover', onDismiss: () => setOpenMenu(null), anchorRefs: [triggerRef] },
+      { selector: '.app-update-popover', onDismiss: () => setUpdateCardOpen(false), anchorRefs: [updateTriggerRef] },
+    ],
   });
+
+  useEffect(() => {
+    return () => {
+      if (updateCloseTimerRef.current !== null) {
+        window.clearTimeout(updateCloseTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (appUpdateNotice?.phase === 'downloaded' && previousUpdatePhaseRef.current !== 'downloaded') {
+      openUpdateCard();
+    }
+    previousUpdatePhaseRef.current = appUpdateNotice?.phase ?? null;
+  }, [appUpdateNotice?.phase]);
+
+  function openUpdateCard() {
+    if (updateCloseTimerRef.current !== null) {
+      window.clearTimeout(updateCloseTimerRef.current);
+      updateCloseTimerRef.current = null;
+    }
+    setUpdateCardOpen(true);
+  }
+
+  function scheduleUpdateCardClose() {
+    if (updateCloseTimerRef.current !== null) {
+      window.clearTimeout(updateCloseTimerRef.current);
+    }
+    updateCloseTimerRef.current = window.setTimeout(() => {
+      updateCloseTimerRef.current = null;
+      setUpdateCardOpen(false);
+    }, 180);
+  }
 
   function runAction(action: () => void | Promise<void>) {
     setOpenMenu(null);
@@ -285,6 +339,69 @@ export function AppMenubar({
     </div>
   );
 
+  const updateEntry = appUpdateNotice ? (
+    <div className="title-update-entry" onMouseEnter={openUpdateCard} onMouseLeave={scheduleUpdateCardClose}>
+      <button
+        ref={updateTriggerRef}
+        type="button"
+        className={`title-update-pill ${appUpdateNotice.phase}`}
+        aria-label={formatUpdatePillAriaLabel(appUpdateNotice)}
+        disabled={appUpdateNotice.phase === 'downloading' || appUpdateNotice.phase === 'installing'}
+        onFocus={openUpdateCard}
+        onClick={() => {
+          openUpdateCard();
+          void appUpdateNotice.onAction();
+        }}
+      >
+        {appUpdateNotice.phase === 'downloading' || appUpdateNotice.phase === 'installing' ? (
+          <LoaderCircle className="spin" size={13} />
+        ) : appUpdateNotice.phase === 'failed' ? (
+          <RefreshCw size={13} />
+        ) : (
+          <Download size={13} />
+        )}
+        <span>{formatUpdatePillLabel(appUpdateNotice.phase)}</span>
+      </button>
+      <PopoverPortal open={updateCardOpen} anchorRef={updateTriggerRef} placement="bottom-end" offset={8}>
+        <div className="app-update-popover" onMouseEnter={openUpdateCard} onMouseLeave={scheduleUpdateCardClose}>
+          <div className="app-update-popover-head">
+            <strong>{appUpdateNotice.version ? `v${appUpdateNotice.version} 更新日志` : 'CodeM 更新日志'}</strong>
+            <span>{formatUpdateReleaseMeta(appUpdateNotice.releaseDate)}</span>
+          </div>
+          <div className="app-update-popover-content markdown-body">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                a({ href, title, children }) {
+                  return renderMarkdownLink({ href, title, children });
+                },
+              }}
+            >
+              {appUpdateNotice.releaseNotes?.trim() || '此版本包含功能改进与问题修复。'}
+            </ReactMarkdown>
+          </div>
+          <div className="app-update-popover-footer">
+            <span role="status">{formatUpdateStatusMessage(appUpdateNotice)}</span>
+            <button
+              type="button"
+              onClick={() => void appUpdateNotice.onAction()}
+              disabled={appUpdateNotice.phase === 'downloading' || appUpdateNotice.phase === 'installing'}
+            >
+              {appUpdateNotice.phase === 'downloading' || appUpdateNotice.phase === 'installing' ? (
+                <LoaderCircle className="spin" size={14} />
+              ) : appUpdateNotice.phase === 'failed' ? (
+                <RefreshCw size={14} />
+              ) : (
+                <Download size={14} />
+              )}
+              <span>{formatUpdateActionLabel(appUpdateNotice.phase)}</span>
+            </button>
+          </div>
+        </div>
+      </PopoverPortal>
+    </div>
+  ) : null;
+
   if (isMacos) {
     return (
       <header
@@ -296,6 +413,8 @@ export function AppMenubar({
         <div className="desktop-menubar-leading">
           {navigation}
         </div>
+        <div className="window-title-spacer" />
+        {updateEntry}
       </header>
     );
   }
@@ -310,9 +429,61 @@ export function AppMenubar({
       {navigation}
       {menu}
       <div className="window-title-spacer" />
+      {updateEntry}
       {windowControls}
     </header>
   );
+}
+
+function formatUpdatePillLabel(phase: AppUpdateTitlebarNotice['phase']) {
+  if (phase === 'downloading') return '下载中';
+  if (phase === 'downloaded') return '立即更新';
+  if (phase === 'installing') return '安装中';
+  if (phase === 'failed') return '重试更新';
+  return '更新';
+}
+
+function formatUpdatePillAriaLabel(notice: AppUpdateTitlebarNotice) {
+  if (notice.phase === 'available') {
+    return notice.version ? `下载 CodeM v${notice.version} 更新` : '下载 CodeM 更新';
+  }
+  if (notice.phase === 'downloaded') {
+    return notice.version ? `更新 CodeM 到 v${notice.version}` : '更新 CodeM';
+  }
+  return formatUpdatePillLabel(notice.phase);
+}
+
+function formatUpdateStatusMessage(notice: AppUpdateTitlebarNotice) {
+  if (notice.phase === 'installing') return notice.message ?? '正在准备更新...';
+  if (notice.phase === 'downloading') return notice.message ?? '正在后台下载更新...';
+  if (notice.phase === 'downloaded') return notice.message ?? '更新包已下载，可以安装并重启。';
+  if (notice.phase === 'failed') return notice.message ?? '更新失败，请检查网络后重试。';
+  return '点击后在后台下载，不会影响当前工作';
+}
+
+function formatUpdateActionLabel(phase: AppUpdateTitlebarNotice['phase']) {
+  if (phase === 'failed') return '重新尝试';
+  if (phase === 'downloading') return '下载中...';
+  if (phase === 'downloaded') return '安装并重启';
+  if (phase === 'installing') return '安装中...';
+  return '后台下载';
+}
+
+function formatUpdateReleaseMeta(value?: string) {
+  if (!value) {
+    return '来自 GitHub Release';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '来自 GitHub Release';
+  }
+
+  return `${new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  }).format(date)} · GitHub Release`;
 }
 
 function SidebarToggleIcon({ visible }: { visible: boolean }) {

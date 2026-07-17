@@ -88,6 +88,34 @@ export function normalizeWindowMaterial(
   return supportedMaterials[0] ?? 'auto';
 }
 
+export function isDarkThemeActive(themeMode: ThemeMode, systemDarkMode: boolean) {
+  return themeMode === 'dark' || (themeMode === 'system' && systemDarkMode);
+}
+
+export function getThemeWindowMaterials(
+  themeMode: ThemeMode,
+  systemDarkMode: boolean,
+  supportedMaterials: readonly WindowMaterialMode[],
+): WindowMaterialMode[] {
+  if (!isDarkThemeActive(themeMode, systemDarkMode)) {
+    return [...supportedMaterials];
+  }
+
+  return [normalizeWindowMaterial('auto', supportedMaterials)];
+}
+
+export function resolveEffectiveWindowMaterial(
+  themeMode: ThemeMode,
+  systemDarkMode: boolean,
+  material: WindowMaterialMode,
+  supportedMaterials: readonly WindowMaterialMode[],
+) {
+  return normalizeWindowMaterial(
+    isDarkThemeActive(themeMode, systemDarkMode) ? 'auto' : material,
+    supportedMaterials,
+  );
+}
+
 export function getWindowMaterialLabel(material: WindowMaterialMode) {
   return windowMaterialLabels[material];
 }

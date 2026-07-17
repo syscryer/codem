@@ -11,6 +11,7 @@ const DEFAULT_CLAUDE_CLI_RECOMMENDED_VERSION = '2.1.123';
 export type AppUpdateInfo = {
   status: 'available' | 'latest' | 'failed' | 'unsupported';
   version?: string;
+  date?: string;
   message?: string;
   update?: Update;
 };
@@ -95,6 +96,7 @@ export async function checkForAppUpdate(options: AppUpdateCheckOptions = {}): Pr
     return {
       status: 'available',
       version: normalizeString(update.version) || undefined,
+      date: normalizeString(update.date) || undefined,
       message: normalizeString(update.body) || undefined,
       update,
     };
@@ -113,24 +115,52 @@ export async function installAppUpdate(
   update: Update,
   onProgress?: (message: string) => void,
 ): Promise<void> {
+  try {
+    await downloadAppUpdate(update, onProgress);
+    await installDownloadedUpdate(update, onProgress);
+  } finally {
+    await closeAppUpdate(update);
+  }
+}
+
+export async function downloadAppUpdate(
+  update: Update,
+  onProgress?: (message: string) => void,
+): Promise<void> {
   const progress: UpdateDownloadProgressState = {
     downloaded: 0,
     total: 0,
   };
 
+  onProgress?.('正在后台下载更新...');
+  await update.download((event) => {
+    onProgress?.(formatUpdateDownloadProgress(event, progress));
+  });
+}
+
+export async function installDownloadedAppUpdate(
+  update: Update,
+  onProgress?: (message: string) => void,
+): Promise<void> {
   try {
-    onProgress?.('正在准备更新...');
-    await update.downloadAndInstall((event) => {
-      onProgress?.(formatUpdateDownloadProgress(event, progress));
-    });
-    onProgress?.('更新安装完成，正在重启应用...');
-    const { relaunch } = await import('@tauri-apps/plugin-process');
-    await relaunch();
+    await installDownloadedUpdate(update, onProgress);
   } finally {
-    await update.close().catch((error) => {
-      console.error('释放更新资源失败', error);
-    });
+    await closeAppUpdate(update);
   }
+}
+
+async function installDownloadedUpdate(update: Update, onProgress?: (message: string) => void) {
+  onProgress?.('正在安装更新...');
+  await update.install();
+  onProgress?.('更新安装完成，正在重启应用...');
+  const { relaunch } = await import('@tauri-apps/plugin-process');
+  await relaunch();
+}
+
+async function closeAppUpdate(update: Update) {
+  await update.close().catch((error) => {
+    console.error('释放更新资源失败', error);
+  });
 }
 
 export function formatUpdateDownloadProgress(
@@ -145,7 +175,7 @@ export function formatUpdateDownloadProgress(
     state.downloaded += event.data.chunkLength;
   }
   if (event.event === 'Finished') {
-    return '更新包下载完成，正在安装...';
+    return '更新包下载完成';
   }
   if (state.total <= 0) {
     return '正在下载更新包...';

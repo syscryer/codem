@@ -4,8 +4,11 @@ import { readFileSync } from 'node:fs';
 
 import {
   getPlatformWindowMaterials,
+  getThemeWindowMaterials,
   getWindowMaterialLabel,
+  isDarkThemeActive,
   normalizeWindowMaterial,
+  resolveEffectiveWindowMaterial,
   resolveNativeWindowTheme,
 } from './window-material.js';
 import { defaultAppearanceSettings } from './settings-api.js';
@@ -39,6 +42,41 @@ test('Windows 保留默认和可选材质，但不再暴露无选项', () => {
 
 test('macOS 只保留默认窗口材质', () => {
   assert.deepEqual(getPlatformWindowMaterials('macos'), ['auto']);
+});
+
+test('深色主题只允许默认窗口材质', () => {
+  const supported = ['auto', 'mica', 'acrylic', 'micaAlt'] as const;
+
+  assert.equal(isDarkThemeActive('dark', false), true);
+  assert.equal(isDarkThemeActive('system', true), true);
+  assert.equal(isDarkThemeActive('system', false), false);
+  assert.deepEqual(getThemeWindowMaterials('dark', false, supported), ['auto']);
+  assert.deepEqual(getThemeWindowMaterials('system', true, supported), ['auto']);
+  assert.equal(resolveEffectiveWindowMaterial('dark', false, 'mica', supported), 'auto');
+  assert.equal(resolveEffectiveWindowMaterial('system', true, 'acrylic', supported), 'auto');
+});
+
+test('浅色主题保留已配置的窗口材质', () => {
+  const supported = ['auto', 'mica', 'acrylic', 'micaAlt'] as const;
+
+  assert.deepEqual(getThemeWindowMaterials('light', false, supported), [...supported]);
+  assert.equal(resolveEffectiveWindowMaterial('light', false, 'micaAlt', supported), 'micaAlt');
+  assert.equal(resolveEffectiveWindowMaterial('system', false, 'acrylic', supported), 'acrylic');
+});
+
+test('应用监听系统深色变化且不会覆盖浅色材质偏好', () => {
+  assert.match(appSource, /matchMedia\('\(prefers-color-scheme: dark\)'\)/);
+  assert.match(appSource, /colorScheme\.addEventListener\('change', syncSystemTheme\)/);
+  assert.match(appSource, /getThemeWindowMaterials\(appearance\.themeMode, systemDarkMode, supportedWindowMaterials\)/);
+  assert.match(appSource, /appearance\.windowMaterial === normalizedConfiguredWindowMaterial/);
+  assert.doesNotMatch(
+    appSource,
+    /appearance\.windowMaterial === effectiveWindowMaterial[\s\S]*?updateAppearance\(\{ windowMaterial: effectiveWindowMaterial \}\)/,
+  );
+  assert.match(
+    settingsViewSource,
+    /windowMaterialLocked=\{windowMaterialLocked\}/,
+  );
 });
 
 test('原生窗口主题映射保留显式主题并让系统模式继续跟随系统', () => {

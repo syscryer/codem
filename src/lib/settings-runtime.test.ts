@@ -20,3 +20,11 @@ test('formatUpdateDownloadProgress reports percentage when total size is known',
   assert.equal(message, '正在下载更新包... 25%');
   assert.deepEqual(state, { downloaded: 25, total: 100 });
 });
+
+test('formatUpdateDownloadProgress stops at downloaded before explicit installation', () => {
+  const state = { downloaded: 100, total: 100 };
+
+  const message = formatUpdateDownloadProgress({ event: 'Finished' }, state);
+
+  assert.equal(message, '更新包下载完成');
+});

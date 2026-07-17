@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { APP_UPDATE_CHECK_INTERVAL_MS } from '../constants.js';
 import {
   defaultAgentRuntimeSettings,
   defaultGeneralSettings,
@@ -58,6 +60,37 @@ test('normalizeGeneralSettings enables automatic app update checks by default', 
 test('normalizeGeneralSettings preserves explicit automatic app update choice', () => {
   assert.equal(normalizeGeneralSettings({ autoCheckAppUpdate: false }).autoCheckAppUpdate, false);
   assert.equal(normalizeGeneralSettings({ autoCheckAppUpdate: true }).autoCheckAppUpdate, true);
+});
+
+test('app checks updates at a low-frequency interval and exposes a direct top-right action', () => {
+  const appSource = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+  const menubarSource = readFileSync(new URL('../components/AppMenubar.tsx', import.meta.url), 'utf8');
+  const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  const periodicCheckSource = appSource.match(
+    /useEffect\(\(\) => \{\s+if \(settingsLoading \|\| !general\.autoCheckAppUpdate\)[\s\S]*?\}, \[general\.autoCheckAppUpdate, settingsLoading\]\);/,
+  )?.[0];
+
+  assert.equal(APP_UPDATE_CHECK_INTERVAL_MS, 7_200_000);
+  assert.ok(periodicCheckSource);
+  assert.match(appSource, /general\.autoCheckAppUpdate/);
+  assert.match(periodicCheckSource, /checkForAppUpdate\(\{ silent: true \}\)/);
+  assert.match(periodicCheckSource, /window\.setTimeout\([\s\S]*?APP_UPDATE_CHECK_INTERVAL_MS/);
+  assert.match(periodicCheckSource, /window\.clearTimeout\(nextCheckTimer\)/);
+  assert.match(periodicCheckSource, /activeUpdate !== null && activeUpdate\.phase !== 'failed'/);
+  assert.match(periodicCheckSource, /updateBecameActive[\s\S]*?result\?\.update\?\.close\(\)/);
+  assert.doesNotMatch(periodicCheckSource, /window\.setInterval\(/);
+  assert.match(appSource, /phase: 'available'/);
+  assert.match(appSource, /downloadAppUpdate\(update,/);
+  assert.match(appSource, /phase: 'downloaded'/);
+  assert.match(appSource, /installDownloadedAppUpdate\(update,/);
+  assert.match(appSource, /releaseNotes: appUpdateRuntime\.info\.message/);
+  assert.match(appSource, /releaseDate: appUpdateRuntime\.info\.date/);
+  assert.match(menubarSource, /className={`title-update-pill \$\{appUpdateNotice\.phase\}`}/);
+  assert.match(menubarSource, /onMouseEnter=\{openUpdateCard\}/);
+  assert.match(menubarSource, /appUpdateNotice\.onAction\(\)/);
+  assert.match(menubarSource, /v\$\{appUpdateNotice\.version\} 更新日志/);
+  assert.match(stylesSource, /\.title-update-pill/);
+  assert.match(stylesSource, /\.app-update-popover/);
 });
 
 test('normalizeGeneralSettings keeps intermediate process expansion off by default', () => {

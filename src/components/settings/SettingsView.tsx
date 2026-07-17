@@ -54,6 +54,7 @@ type SettingsViewProps = {
   appearance: AppearanceSettings;
   effectiveWindowMaterial: WindowMaterialMode;
   supportedWindowMaterials: WindowMaterialMode[];
+  windowMaterialLocked: boolean;
   models: ModelSettings;
   shortcuts: ShortcutSettings;
   openWith: OpenWithSettings;
@@ -116,6 +117,7 @@ export function SettingsView({
   appearance,
   effectiveWindowMaterial,
   supportedWindowMaterials,
+  windowMaterialLocked,
   models,
   shortcuts,
   openWith,
@@ -165,6 +167,7 @@ export function SettingsView({
           appearance={appearance}
           effectiveWindowMaterial={effectiveWindowMaterial}
           supportedWindowMaterials={supportedWindowMaterials}
+          windowMaterialLocked={windowMaterialLocked}
           onUpdateAppearance={onUpdateAppearance}
         />
       );
@@ -298,6 +301,7 @@ export function SettingsView({
     runningThreadIds,
     shortcuts,
     supportedWindowMaterials,
+    windowMaterialLocked,
     onOpenThread,
     onRenameThread,
     onRemoveThread,

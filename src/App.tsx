@@ -26,7 +26,7 @@ import { useAgentChannels } from './hooks/useAgentChannels';
 import { useAppSettings } from './hooks/useAppSettings';
 import { useOrdinaryChat } from './hooks/useOrdinaryChat';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
-import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
+import { APP_UPDATE_CHECK_INTERVAL_MS, CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
 import {
   buildCompactSlashCommandSubmission,
   buildContextSlashCardResult,
@@ -46,8 +46,11 @@ import { modelLabel, permissionLabel } from './lib/ui-labels';
 import {
   getPlatformWindowMaterials,
   getSupportedWindowMaterials,
+  getThemeWindowMaterials,
+  isDarkThemeActive,
   isTauriRuntime,
   normalizeWindowMaterial,
+  resolveEffectiveWindowMaterial,
   resolveDesktopPlatform,
   setNativeWindowTheme,
   setWindowMaterial,
@@ -64,6 +67,12 @@ import {
 import { resolveTerminalDockPanelIdOnRun, shouldRenderTerminalDock } from './lib/terminal-dock-state';
 import { calculateRightWorkbenchResizeWidth, clampRightWorkbenchWidth } from './lib/workbench-layout';
 import { showThreadSystemNotification } from './lib/thread-system-notifications';
+import {
+  checkForAppUpdate,
+  downloadAppUpdate,
+  installDownloadedAppUpdate,
+  type AppUpdateInfo,
+} from './lib/settings-runtime';
 import {
   clearThreadActivityNotice,
   shouldRequestTaskbarAttention,
@@ -113,6 +122,12 @@ type AppLocation =
 type NavigationHistory = {
   past: AppLocation[];
   future: AppLocation[];
+};
+
+type AppUpdateRuntimeState = {
+  info: AppUpdateInfo;
+  phase: 'available' | 'downloading' | 'downloaded' | 'installing' | 'failed';
+  message?: string;
 };
 
 type GitOperationToastContext = {
@@ -273,6 +288,13 @@ export default function App() {
   const [ordinaryChatRenameTarget, setOrdinaryChatRenameTarget] = useState<AiChatSummary | null>(null);
   const [ordinaryChatDeleteTarget, setOrdinaryChatDeleteTarget] = useState<AiChatSummary | null>(null);
   const [knowledgeManagerOpen, setKnowledgeManagerOpen] = useState(false);
+  const [systemDarkMode, setSystemDarkMode] = useState(() => (
+    typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-color-scheme: dark)').matches
+  ));
+  const [appUpdateRuntime, setAppUpdateRuntime] = useState<AppUpdateRuntimeState | null>(null);
+  const appUpdateRuntimeRef = useRef<AppUpdateRuntimeState | null>(null);
   const activeThreadIdRef = useRef<string | null>(activeThreadId);
   const windowFocusedRef = useRef(isAppWindowFocused());
   const systemNotificationKeysRef = useRef(new Set<string>());
@@ -324,6 +346,128 @@ export default function App() {
     updateShortcuts,
     updateOpenWith,
   } = useAppSettings(showToast);
+
+  useEffect(() => {
+    appUpdateRuntimeRef.current = appUpdateRuntime;
+  }, [appUpdateRuntime]);
+
+  useEffect(() => {
+    if (settingsLoading || !general.autoCheckAppUpdate) {
+      return;
+    }
+
+    let cancelled = false;
+    let nextCheckTimer: number | null = null;
+
+    function scheduleNextCheck() {
+      if (cancelled) {
+        return;
+      }
+
+      nextCheckTimer = window.setTimeout(() => {
+        nextCheckTimer = null;
+        void runScheduledCheck();
+      }, APP_UPDATE_CHECK_INTERVAL_MS);
+    }
+
+    async function runScheduledCheck() {
+      const activeUpdate = appUpdateRuntimeRef.current;
+      const shouldSkipRequest = activeUpdate !== null && activeUpdate.phase !== 'failed';
+
+      if (!shouldSkipRequest) {
+        const result = await checkForAppUpdate({ silent: true });
+        if (cancelled) {
+          await result?.update?.close().catch(() => undefined);
+          return;
+        }
+        const updateBecameActive = appUpdateRuntimeRef.current !== null
+          && appUpdateRuntimeRef.current.phase !== 'failed';
+        if (updateBecameActive) {
+          await result?.update?.close().catch(() => undefined);
+          scheduleNextCheck();
+          return;
+        }
+        if (result?.status === 'available' && result.update) {
+          setAppUpdateRuntime({ info: result, phase: 'available' });
+        }
+      }
+
+      scheduleNextCheck();
+    }
+
+    void runScheduledCheck();
+
+    return () => {
+      cancelled = true;
+      if (nextCheckTimer !== null) {
+        window.clearTimeout(nextCheckTimer);
+      }
+    };
+  }, [general.autoCheckAppUpdate, settingsLoading]);
+
+  async function handleAppUpdateAction() {
+    const current = appUpdateRuntime;
+    if (!current || current.phase === 'downloading' || current.phase === 'installing') {
+      return;
+    }
+
+    let updateInfo = current.info;
+    if (current.phase === 'failed') {
+      setAppUpdateRuntime({ ...current, phase: 'downloading', message: '正在重新检查可用版本...' });
+      const refreshed = await checkForAppUpdate();
+      if (refreshed?.status !== 'available' || !refreshed.update) {
+        setAppUpdateRuntime({
+          info: refreshed ?? { status: 'failed', message: '暂未发现可安装的新版本' },
+          phase: 'failed',
+          message: refreshed?.message ?? '暂未发现可安装的新版本',
+        });
+        return;
+      }
+      updateInfo = refreshed;
+    }
+
+    const update = updateInfo.update;
+    if (!update) {
+      return;
+    }
+
+    if (current.phase === 'available' || current.phase === 'failed') {
+      setAppUpdateRuntime({ info: updateInfo, phase: 'downloading', message: '正在后台下载更新...' });
+      try {
+        await downloadAppUpdate(update, (message) => {
+          setAppUpdateRuntime({ info: updateInfo, phase: 'downloading', message });
+        });
+        setAppUpdateRuntime({ info: updateInfo, phase: 'downloaded', message: '更新包已下载，可以安装并重启。' });
+      } catch (error) {
+        await update.close().catch(() => undefined);
+        setAppUpdateRuntime({
+          info: updateInfo,
+          phase: 'failed',
+          message: error instanceof Error ? error.message : '下载更新失败',
+        });
+      }
+      return;
+    }
+
+    if (current.phase !== 'downloaded') {
+      return;
+    }
+
+    setAppUpdateRuntime({ info: updateInfo, phase: 'installing', message: '正在准备更新...' });
+    try {
+      await installDownloadedAppUpdate(update, (message) => {
+        setAppUpdateRuntime((state) => (
+          state ? { ...state, phase: 'installing', message } : state
+        ));
+      });
+    } catch (error) {
+      setAppUpdateRuntime({
+        info: updateInfo,
+        phase: 'failed',
+        message: error instanceof Error ? error.message : '安装更新失败',
+      });
+    }
+  }
 
   const handleThreadActivityNotice = useCallback((notice: ThreadActivityNotice) => {
     const windowFocused = windowFocusedRef.current;
@@ -611,11 +755,38 @@ export default function App() {
   const uiFontStack = resolveUiFontStack(appearance);
   const chatFontStack = resolveChatFontStack(appearance);
   const codeFontStack = resolveCodeFontStack(appearance);
-  const effectiveWindowMaterial = normalizeWindowMaterial(appearance.windowMaterial, supportedWindowMaterials);
+  const darkThemeActive = isDarkThemeActive(appearance.themeMode, systemDarkMode);
+  const visibleWindowMaterials = useMemo(
+    () => getThemeWindowMaterials(appearance.themeMode, systemDarkMode, supportedWindowMaterials),
+    [appearance.themeMode, supportedWindowMaterials, systemDarkMode],
+  );
+  const normalizedConfiguredWindowMaterial = normalizeWindowMaterial(
+    appearance.windowMaterial,
+    supportedWindowMaterials,
+  );
+  const effectiveWindowMaterial = resolveEffectiveWindowMaterial(
+    appearance.themeMode,
+    systemDarkMode,
+    appearance.windowMaterial,
+    supportedWindowMaterials,
+  );
   const effectiveRightWorkbenchWidth =
     rightWorkbenchOpen && chatWorkspaceWidth > 0
       ? clampRightWorkbenchWidth(rightWorkbenchWidth, chatWorkspaceWidth)
       : rightWorkbenchWidth;
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') {
+      return;
+    }
+
+    const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
+    const syncSystemTheme = () => setSystemDarkMode(colorScheme.matches);
+    syncSystemTheme();
+    colorScheme.addEventListener('change', syncSystemTheme);
+
+    return () => colorScheme.removeEventListener('change', syncSystemTheme);
+  }, []);
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -635,12 +806,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (settingsLoading || appearance.windowMaterial === effectiveWindowMaterial) {
+    if (settingsLoading || appearance.windowMaterial === normalizedConfiguredWindowMaterial) {
       return;
     }
 
-    updateAppearance({ windowMaterial: effectiveWindowMaterial });
-  }, [appearance.windowMaterial, effectiveWindowMaterial, settingsLoading, updateAppearance]);
+    updateAppearance({ windowMaterial: normalizedConfiguredWindowMaterial });
+  }, [appearance.windowMaterial, normalizedConfiguredWindowMaterial, settingsLoading, updateAppearance]);
 
   useEffect(() => {
     if (settingsLoading || runtimePlatform !== 'macos' || !isTauriRuntime()) {
@@ -1662,9 +1833,17 @@ export default function App() {
     >
       <AppMenubar
         platform={runtimePlatform}
+        appUpdateNotice={appUpdateRuntime ? {
+          version: appUpdateRuntime.info.version,
+          releaseDate: appUpdateRuntime.info.date,
+          releaseNotes: appUpdateRuntime.info.message,
+          phase: appUpdateRuntime.phase,
+          message: appUpdateRuntime.message,
+          onAction: handleAppUpdateAction,
+        } : null}
         sidebarVisible={sidebarVisible}
         windowMaterial={effectiveWindowMaterial}
-        supportedWindowMaterials={supportedWindowMaterials}
+        supportedWindowMaterials={visibleWindowMaterials}
         canNavigateBack={canNavigateBack}
         canNavigateForward={canNavigateForward}
         onToggleSidebar={() => setSidebarVisible((value) => !value)}
@@ -1693,7 +1872,8 @@ export default function App() {
         agentRuntime={agentRuntime}
         appearance={appearance}
         effectiveWindowMaterial={effectiveWindowMaterial}
-        supportedWindowMaterials={supportedWindowMaterials}
+        supportedWindowMaterials={visibleWindowMaterials}
+        windowMaterialLocked={darkThemeActive && supportedWindowMaterials.length > 1}
         models={appModelSettings}
         shortcuts={shortcuts}
         openWith={openWith}

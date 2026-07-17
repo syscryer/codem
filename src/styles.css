@@ -461,7 +461,7 @@ svg {
   overflow: visible;
   isolation: isolate;
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
   align-items: center;
   height: var(--desktop-menubar-height);
   /* 右侧不留 padding，让关闭按钮的 hover 色带能直接贴到窗口右边沿。 */
@@ -476,7 +476,7 @@ svg {
 }
 
 .desktop-menubar.is-macos {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0;
   padding: 0 14px;
 }
@@ -11918,6 +11918,190 @@ button.git-conflict-overview-row:focus-visible,
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+.title-update-entry {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-right: 10px;
+}
+
+.title-update-pill {
+  min-width: 74px;
+  height: 25px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent, #2374c6);
+  color: var(--app-surface, #ffffff);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 680;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--accent, #2374c6) 22%, transparent);
+  transition: filter 140ms ease, opacity 140ms ease, transform 140ms ease;
+}
+
+.title-update-pill:hover:not(:disabled) {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}
+
+.title-update-pill:disabled {
+  cursor: default;
+  opacity: 0.76;
+}
+
+.title-update-pill.failed {
+  background: color-mix(in srgb, var(--accent, #2374c6) 68%, var(--app-muted, #6f675d));
+}
+
+.app-update-popover {
+  width: min(470px, calc(100vw - 24px));
+  max-height: min(570px, calc(100vh - 56px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border: 1px solid var(--app-border, #e8e2d8);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--app-surface, #ffffff) 94%, transparent);
+  color: var(--app-text, #25211b);
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.22), 0 8px 20px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(20px) saturate(1.16);
+  -webkit-backdrop-filter: blur(20px) saturate(1.16);
+  overflow: hidden;
+  animation: app-update-popover-enter 160ms ease-out;
+}
+
+.app-update-popover-head {
+  display: grid;
+  gap: 3px;
+  padding: 16px 18px 13px;
+  border-bottom: 1px solid var(--app-border, #e8e2d8);
+}
+
+.app-update-popover-head strong {
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.app-update-popover-head span {
+  color: var(--app-muted, #6f675d);
+  font-size: 12px;
+}
+
+.app-update-popover-content {
+  min-height: 110px;
+  max-height: 390px;
+  padding: 14px 18px 18px;
+  color: var(--app-text, #25211b);
+  font-size: 13px;
+  line-height: 1.65;
+  overflow: auto;
+}
+
+.app-update-popover-content > :first-child {
+  margin-top: 0;
+}
+
+.app-update-popover-content > :last-child {
+  margin-bottom: 0;
+}
+
+.app-update-popover-content h1,
+.app-update-popover-content h2,
+.app-update-popover-content h3 {
+  margin: 16px 0 8px;
+  font-size: 14px;
+}
+
+.app-update-popover-content ul,
+.app-update-popover-content ol {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+
+.app-update-popover-content li + li {
+  margin-top: 5px;
+}
+
+.app-update-popover-footer {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 14px 12px 18px;
+  border-top: 1px solid var(--app-border, #e8e2d8);
+  background: color-mix(in srgb, var(--app-surface-muted, #f5f5f4) 62%, transparent);
+}
+
+.app-update-popover-footer > span {
+  min-width: 0;
+  color: var(--app-muted, #6f675d);
+  font-size: 11.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.app-update-popover-footer > button {
+  flex: 0 0 auto;
+  min-height: 31px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent, #2374c6) 36%, var(--app-border, #e8e2d8));
+  border-radius: 8px;
+  background: var(--accent, #2374c6);
+  color: var(--app-surface, #ffffff);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 660;
+  cursor: pointer;
+}
+
+.app-update-popover-footer > button:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.app-update-popover-footer > button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+@keyframes app-update-popover-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-5px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 720px) {
+  .title-update-entry {
+    margin-right: 4px;
+  }
+
+  .title-update-pill {
+    min-width: 58px;
+    padding: 0 9px;
+  }
+
+  .app-update-popover-footer {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 

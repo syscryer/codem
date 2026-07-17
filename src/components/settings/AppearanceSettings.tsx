@@ -27,6 +27,7 @@ type AppearanceSettingsSectionProps = {
   appearance: AppearanceSettings;
   effectiveWindowMaterial: WindowMaterialMode;
   supportedWindowMaterials: WindowMaterialMode[];
+  windowMaterialLocked: boolean;
   onUpdateAppearance: (update: AppearanceSettingsUpdate) => void;
 };
 
@@ -44,6 +45,7 @@ export function AppearanceSettingsSection({
   appearance,
   effectiveWindowMaterial,
   supportedWindowMaterials,
+  windowMaterialLocked,
   onUpdateAppearance,
 }: AppearanceSettingsSectionProps) {
   const [accentDraft, setAccentDraft] = useState(() => appearance.accentColorCustom);
@@ -98,9 +100,11 @@ export function AppearanceSettingsSection({
     update({ [field]: nextValue } as Pick<AppearanceSettings, typeof field>);
   }
 
-  const windowMaterialDescription = supportedWindowMaterials.length > 1
-    ? '根据当前平台展示可用的桌面窗口材质'
-    : '当前平台不支持切换窗口材质';
+  const windowMaterialDescription = windowMaterialLocked
+    ? '深色主题固定使用默认窗口材质'
+    : supportedWindowMaterials.length > 1
+      ? '根据当前平台展示可用的桌面窗口材质'
+      : '当前平台不支持切换窗口材质';
 
   return (
     <section className="settings-page-section settings-appearance-section">
