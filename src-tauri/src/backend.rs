@@ -5195,7 +5195,13 @@ fn resolve_grok_command() -> Option<String> {
     let path_command = lookup
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
-        .and_then(|stdout| select_claude_command_candidate(&stdout, cfg!(target_os = "windows")));
+        .and_then(|stdout| {
+            select_runnable_command_candidate(
+                &stdout,
+                cfg!(target_os = "windows"),
+                command_reports_version,
+            )
+        });
 
     path_command.or_else(resolve_default_grok_command)
 }
@@ -5466,23 +5472,18 @@ fn parse_grok_cli_version(value: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn select_claude_command_candidate(stdout: &str, windows: bool) -> Option<String> {
-    let candidates = stdout
+fn select_runnable_command_candidate(
+    stdout: &str,
+    windows: bool,
+    is_runnable: impl Fn(&str) -> bool,
+) -> Option<String> {
+    stdout
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-
-    if windows {
-        if let Some(candidate) = candidates
-            .iter()
-            .find(|candidate| is_windows_spawnable_command(candidate))
-        {
-            return Some((*candidate).to_string());
-        }
-    }
-
-    candidates.first().map(|candidate| (*candidate).to_string())
+        .filter(|candidate| !windows || is_windows_spawnable_command(candidate))
+        .find(|candidate| is_runnable(candidate))
+        .map(ToString::to_string)
 }
 
 fn is_windows_spawnable_command(candidate: &str) -> bool {
@@ -17288,7 +17289,7 @@ mod tests {
         resolve_first_runnable_command, resolve_grok_command, resolve_opencode_command,
         resolve_requested_thread_provider, resolve_thread_create_permission_mode,
         resolve_workspace_relative_path, sanitize_agent_lifecycle_output, search_workspace_files,
-        select_claude_command_candidate, should_emit_claude_raw_event, should_store_run_event,
+        select_runnable_command_candidate, should_emit_claude_raw_event, should_store_run_event,
         summarize_content_blocks, update_thread_metadata_from_payload, validate_desktop_file_path,
         validate_managed_agent_skill_path, write_opencode_mcp_config, write_thread_history,
         ApiError, AppState,
@@ -18745,7 +18746,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_claude_command_prefers_spawnable_npm_shim() {
+    fn windows_command_candidates_prefer_spawnable_npm_shim() {
         let lookup = concat!(
             "C:\\Users\\dev\\AppData\\Roaming\\npm\\claude\r\n",
             "C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd\r\n",
@@ -18753,28 +18754,45 @@ mod tests {
         );
 
         assert_eq!(
-            select_claude_command_candidate(lookup, true).as_deref(),
+            select_runnable_command_candidate(lookup, true, |_| true).as_deref(),
             Some("C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd")
         );
     }
 
     #[test]
-    fn windows_claude_command_accepts_native_extensions_case_insensitively() {
+    fn windows_command_candidates_accept_native_extensions_case_insensitively() {
         let lookup = "C:\\Tools\\claude\nC:\\Tools\\claude.EXE\n";
 
         assert_eq!(
-            select_claude_command_candidate(lookup, true).as_deref(),
+            select_runnable_command_candidate(lookup, true, |_| true).as_deref(),
             Some("C:\\Tools\\claude.EXE")
         );
     }
 
     #[test]
-    fn non_windows_claude_command_keeps_first_candidate() {
+    fn non_windows_command_candidates_keep_first_runnable_candidate() {
         let lookup = "/usr/local/bin/claude\n/opt/homebrew/bin/claude\n";
 
         assert_eq!(
-            select_claude_command_candidate(lookup, false).as_deref(),
+            select_runnable_command_candidate(lookup, false, |_| true).as_deref(),
             Some("/usr/local/bin/claude")
+        );
+    }
+
+    #[test]
+    fn grok_path_command_candidates_require_version_check() {
+        let lookup = "C:\\Tools\\broken-grok.exe\nC:\\Tools\\grok.exe\n";
+
+        assert_eq!(
+            select_runnable_command_candidate(lookup, true, |candidate| {
+                candidate.ends_with("\\grok.exe")
+            })
+            .as_deref(),
+            Some("C:\\Tools\\grok.exe")
+        );
+        assert_eq!(
+            select_runnable_command_candidate(lookup, true, |_| false),
+            None
         );
     }
 

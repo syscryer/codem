@@ -133,6 +133,42 @@ export function hasTurnVisibleOutput(turn: ConversationTurn) {
   );
 }
 
+export function mergeLoadedThreadTurns(
+  loadedTurns: ConversationTurn[],
+  currentTurns: ConversationTurn[],
+  options: { force: boolean; preserveCurrentChanges: boolean },
+) {
+  const loadedTurnIds = new Set(loadedTurns.map((turn) => turn.id));
+  const currentTurnsById = new Map(currentTurns.map((turn) => [turn.id, turn]));
+
+  return [
+    ...loadedTurns.map((loadedTurn) => {
+      const currentTurn = currentTurnsById.get(loadedTurn.id);
+      if (!currentTurn) {
+        return loadedTurn;
+      }
+      if (currentTurn.status === 'pending' || currentTurn.status === 'running') {
+        return currentTurn;
+      }
+
+      const currentHasVisibleOutput = hasTurnVisibleOutput(currentTurn);
+      const loadedHasVisibleOutput = hasTurnVisibleOutput(loadedTurn);
+      if (currentHasVisibleOutput !== loadedHasVisibleOutput) {
+        return currentHasVisibleOutput ? currentTurn : loadedTurn;
+      }
+      return options.preserveCurrentChanges ? currentTurn : loadedTurn;
+    }),
+    ...currentTurns.filter(
+      (turn) =>
+        !loadedTurnIds.has(turn.id) &&
+        (options.preserveCurrentChanges ||
+          !options.force ||
+          turn.status === 'pending' ||
+          turn.status === 'running'),
+    ),
+  ];
+}
+
 export function createToolStep(event: Extract<ClaudeEvent, { type: 'tool-start' }>): ToolStep {
   const inputText = truncateSidechainToolText(formatInitialToolInput(event.input), event.isSidechain);
   const id = event.toolUseId ?? `${event.runId}-${event.blockIndex}`;

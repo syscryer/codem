@@ -1,6 +1,12 @@
 import { startTransition, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import { EMPTY_PANEL_STATE } from '../constants';
-import { createThreadDetail, metricsFromTurn, normalizeTurnsForPersist, repairConversationTurn } from '../lib/conversation';
+import {
+  createThreadDetail,
+  mergeLoadedThreadTurns,
+  metricsFromTurn,
+  normalizeTurnsForPersist,
+  repairConversationTurn,
+} from '../lib/conversation';
 import { pickDesktopDirectory } from '../lib/desktop-dialog';
 import { resolveNewChatDraftProjectId } from '../lib/new-chat-draft';
 import { buildWorkspaceSidebarSections } from '../lib/workspace-pinning';
@@ -176,6 +182,7 @@ export function useWorkspaceState() {
 
   useEffect(() => {
     return () => {
+      clearPersistHistoryStates(persistHistoryStateRef);
       if (pendingLogFlushTimerRef.current !== null) {
         window.clearTimeout(pendingLogFlushTimerRef.current);
         pendingLogFlushTimerRef.current = null;
@@ -340,6 +347,7 @@ export function useWorkspaceState() {
     });
 
     const currentDetail = threadDetailsRef.current[threadId];
+    const turnsAtRequest = currentDetail?.turns;
     if (currentDetail?.historyLoading || (currentDetail?.historyLoaded && !force)) {
       return;
     }
@@ -383,15 +391,10 @@ export function useWorkspaceState() {
           }
           return repaired;
         });
-        const repairedTurnIds = new Set(repairedTurns.map((turn) => turn.id));
-        const currentTurnsById = new Map(existing.turns.map((turn) => [turn.id, turn]));
-        const mergedTurns = [
-          ...repairedTurns.map((turn) => {
-            const current = currentTurnsById.get(turn.id);
-            return current && isLiveTurn(current) ? current : turn;
-          }),
-          ...existing.turns.filter((turn) => !repairedTurnIds.has(turn.id) && (!force || isLiveTurn(turn))),
-        ];
+        const mergedTurns = mergeLoadedThreadTurns(repairedTurns, existing.turns, {
+          force,
+          preserveCurrentChanges: turnsAtRequest !== undefined && existing.turns !== turnsAtRequest,
+        });
 
         return {
           ...current,
@@ -432,8 +435,11 @@ export function useWorkspaceState() {
     }
 
     const state = getPersistHistoryState(persistHistoryStateRef, threadId);
+    const retryCycleActive = state.inFlight || state.retryTimerId !== null;
+    if (!retryCycleActive) {
+      state.retryCount = 0;
+    }
     state.pending = true;
-    state.retryCount = 0;
     state.urgent ||= options?.urgent === true;
 
     if (state.retryTimerId !== null) {
@@ -1097,6 +1103,11 @@ export function useWorkspaceState() {
     }
 
     const nextActiveThreadId = pickNextThreadAfterRemoval(projects, activeProjectId, activeThreadId, removedThreadId);
+    removePersistHistoryState(persistHistoryStateRef, removedThreadId);
+    pendingLogBatchesRef.current.delete(removedThreadId);
+    const nextThreadDetailsRef = { ...threadDetailsRef.current };
+    delete nextThreadDetailsRef[removedThreadId];
+    threadDetailsRef.current = nextThreadDetailsRef;
     setProjects((current) =>
       current.map((project) => ({
         ...project,
@@ -1104,12 +1115,12 @@ export function useWorkspaceState() {
       })),
     );
     setActiveThreadId(nextActiveThreadId);
-    await persistSelection(activeProjectId, nextActiveThreadId);
     setThreadDetails((current) => {
       const next = { ...current };
       delete next[removedThreadId];
       return next;
     });
+    await persistSelection(activeProjectId, nextActiveThreadId);
     setConfirmDialog(null);
     showToast('聊天已删除');
   }
@@ -1450,6 +1461,30 @@ function getPersistHistoryState(persistHistoryStateRef: PersistHistoryStateRef, 
   return next;
 }
 
+function removePersistHistoryState(persistHistoryStateRef: PersistHistoryStateRef, threadId: string) {
+  const state = persistHistoryStateRef.current.get(threadId);
+  if (!state) {
+    return;
+  }
+  if (state.timerId !== null) {
+    window.clearTimeout(state.timerId);
+  }
+  if (state.retryTimerId !== null) {
+    window.clearTimeout(state.retryTimerId);
+  }
+  state.timerId = null;
+  state.retryTimerId = null;
+  state.pending = false;
+  state.urgent = false;
+  persistHistoryStateRef.current.delete(threadId);
+}
+
+function clearPersistHistoryStates(persistHistoryStateRef: PersistHistoryStateRef) {
+  for (const threadId of persistHistoryStateRef.current.keys()) {
+    removePersistHistoryState(persistHistoryStateRef, threadId);
+  }
+}
+
 function getPersistHistoryFlushDelayMs(state: PersistHistoryState) {
   if (state.urgent) {
     return 0;
@@ -1527,6 +1562,7 @@ function flushPersistThreadHistory(
       state.inFlight = false;
       if (state.pending && state.retryTimerId === null) {
         const scheduledState = getPersistHistoryState(persistHistoryStateRef, threadId);
+        scheduledState.retryCount = 0;
         if (scheduledState.timerId !== null) {
           window.clearTimeout(scheduledState.timerId);
         }

@@ -122,6 +122,7 @@ type RunContext = {
   turnId: string;
   runId: string;
   abortController: AbortController | null;
+  reconnectAbortController: AbortController | null;
   interrupting: boolean;
   interruptRequested: boolean;
   interruptFallbackTimer: number | null;
@@ -260,6 +261,8 @@ export function useClaudeRun({
 
   const runContextsByThreadIdRef = useRef(new Map<string, RunContext>());
   const runContextsByRunIdRef = useRef(new Map<string, RunContext>());
+  const reconnectAbortControllersRef = useRef(new Map<string, AbortController>());
+  const unmountedRef = useRef(false);
   const reconnectingThreadIdsRef = useRef(new Set<string>());
   const threadSummariesByIdRef = useRef(new Map<string, ThreadSummary>());
   const queuedPromptsByThreadIdRef = useRef<Record<string, QueuedPrompt[]>>({});
@@ -451,12 +454,37 @@ export function useClaudeRun({
   }, [activeThreadSummary?.id]);
 
   useEffect(() => {
+    unmountedRef.current = false;
     return () => {
-      for (const context of runContextsByThreadIdRef.current.values()) {
+      unmountedRef.current = true;
+      const contexts = new Set([
+        ...runContextsByThreadIdRef.current.values(),
+        ...runContextsByRunIdRef.current.values(),
+      ]);
+      for (const context of contexts) {
+        context.abortController?.abort();
+        context.abortController = null;
+        context.reconnectAbortController?.abort();
+        context.reconnectAbortController = null;
         if (context.assistantTextFrame !== null) {
           window.cancelAnimationFrame(context.assistantTextFrame);
+          context.assistantTextFrame = null;
+        }
+        if (context.incrementalTurnFrame !== null) {
+          window.cancelAnimationFrame(context.incrementalTurnFrame);
+          context.incrementalTurnFrame = null;
+        }
+        if (context.interruptFallbackTimer !== null) {
+          window.clearTimeout(context.interruptFallbackTimer);
+          context.interruptFallbackTimer = null;
         }
       }
+      for (const controller of reconnectAbortControllersRef.current.values()) {
+        controller.abort();
+      }
+      runContextsByThreadIdRef.current.clear();
+      runContextsByRunIdRef.current.clear();
+      reconnectAbortControllersRef.current.clear();
     };
   }, []);
 
@@ -1172,6 +1200,7 @@ export function useClaudeRun({
       turnId,
       runId: '',
       abortController: null,
+      reconnectAbortController: null,
       interrupting: false,
       interruptRequested: false,
       interruptFallbackTimer: null,
@@ -1322,6 +1351,9 @@ export function useClaudeRun({
           emitRunSettledNotice(context, 'failed');
         }
       } catch (error) {
+        if (unmountedRef.current) {
+          return;
+        }
         flushQueuedAssistantTextNow(context);
         updateRunningTurn(context, (turn) => ({
           ...turn,
@@ -1354,7 +1386,9 @@ export function useClaudeRun({
         notifyQueuedPromptsRetained(context.threadId);
       } finally {
         context.abortController = null;
-        removeRunContext(context);
+        if (!unmountedRef.current) {
+          removeRunContext(context);
+        }
       }
     })();
 
@@ -1367,10 +1401,14 @@ export function useClaudeRun({
     }
 
     reconnectingThreadIdsRef.current.add(thread.id);
+    const reconnectController = new AbortController();
+    reconnectAbortControllersRef.current.set(thread.id, reconnectController);
     let context: RunContext | null = null;
     let retainContext = false;
     try {
-      const activeResponse = await fetch(`/api/claude/runs/active/${encodeURIComponent(thread.id)}`);
+      const activeResponse = await fetch(`/api/claude/runs/active/${encodeURIComponent(thread.id)}`, {
+        signal: reconnectController.signal,
+      });
       if (activeResponse.status === 404) {
         return;
       }
@@ -1389,6 +1427,7 @@ export function useClaudeRun({
         turnId: activeRun.turnId,
         runId: activeRun.runId,
         abortController: null,
+        reconnectAbortController: reconnectController,
         interrupting: false,
         interruptRequested: false,
         interruptFallbackTimer: null,
@@ -1442,7 +1481,10 @@ export function useClaudeRun({
         content: `${activeRun.runId}\n${activeRun.eventCount} buffered events`,
       });
 
-      const eventsResponse = await fetch(`/api/claude/run/${encodeURIComponent(activeRun.runId)}/events?after=0`);
+      const eventsResponse = await fetch(
+        `/api/claude/run/${encodeURIComponent(activeRun.runId)}/events?after=0`,
+        { signal: reconnectController.signal },
+      );
       if (!eventsResponse.ok || !eventsResponse.body) {
         showToast('后台运行仍在，但事件流重连失败。', 'error');
         retainContext = true;
@@ -1462,13 +1504,22 @@ export function useClaudeRun({
       if (sawTerminalEvent || activeRun.finished) {
         await fetch(`/api/claude/run/${encodeURIComponent(activeRun.runId)}/ack`, {
           method: 'POST',
+          signal: reconnectController.signal,
         }).catch(() => undefined);
       }
     } catch (error) {
-      showToast(error instanceof Error ? error.message : '后台运行重连失败', 'error');
+      if (!unmountedRef.current && !reconnectController.signal.aborted) {
+        showToast(error instanceof Error ? error.message : '后台运行重连失败', 'error');
+      }
     } finally {
       reconnectingThreadIdsRef.current.delete(thread.id);
-      if (context && !retainContext) {
+      if (reconnectAbortControllersRef.current.get(thread.id) === reconnectController) {
+        reconnectAbortControllersRef.current.delete(thread.id);
+      }
+      if (context?.reconnectAbortController === reconnectController) {
+        context.reconnectAbortController = null;
+      }
+      if (context && !retainContext && !unmountedRef.current) {
         removeRunContext(context);
       }
     }
@@ -2184,6 +2235,8 @@ export function useClaudeRun({
     const hardCancelRun = async () => {
       const hadLocalStream = Boolean(context.abortController);
       context.abortController?.abort();
+      context.reconnectAbortController?.abort();
+      context.reconnectAbortController = null;
       try {
         await fetch(`/api/claude/run/${currentRunId}`, {
           method: 'DELETE',

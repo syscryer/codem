@@ -22,6 +22,47 @@ test('urgent history checkpoints bypass the interval without starting parallel w
   assert.match(workspaceSource, /if \(state\.urgent\) \{\s*return 0;\s*\}/);
 });
 
+test('active history retries keep their retry budget when new events arrive', () => {
+  assert.match(
+    workspaceSource,
+    /const retryCycleActive = state\.inFlight \|\| state\.retryTimerId !== null;/,
+  );
+  assert.match(
+    workspaceSource,
+    /if \(!retryCycleActive\) \{\s*state\.retryCount = 0;\s*\}\s*state\.pending = true;/,
+  );
+  assert.match(
+    workspaceSource,
+    /if \(state\.pending && state\.retryTimerId === null\) \{\s*const scheduledState[^;]+;\s*scheduledState\.retryCount = 0;/,
+  );
+});
+
+test('removing a thread releases pending history and log state', () => {
+  const cleanupIndex = workspaceSource.indexOf(
+    'removePersistHistoryState(persistHistoryStateRef, removedThreadId);',
+  );
+  const selectionPersistIndex = workspaceSource.indexOf(
+    'await persistSelection(activeProjectId, nextActiveThreadId);',
+    cleanupIndex,
+  );
+
+  assert.notEqual(cleanupIndex, -1);
+  assert.ok(selectionPersistIndex > cleanupIndex);
+  assert.match(workspaceSource, /pendingLogBatchesRef\.current\.delete\(removedThreadId\);/);
+  assert.match(workspaceSource, /window\.clearTimeout\(state\.timerId\);/);
+  assert.match(workspaceSource, /window\.clearTimeout\(state\.retryTimerId\);/);
+  assert.match(workspaceSource, /persistHistoryStateRef\.current\.delete\(threadId\);/);
+});
+
+test('history loading preserves turns changed after the request started', () => {
+  assert.match(workspaceSource, /const turnsAtRequest = currentDetail\?\.turns;/);
+  assert.match(
+    workspaceSource,
+    /preserveCurrentChanges: turnsAtRequest !== undefined && existing\.turns !== turnsAtRequest/,
+  );
+  assert.match(workspaceSource, /mergeLoadedThreadTurns\(repairedTurns, existing\.turns,/);
+});
+
 test('terminal and human interaction states request urgent persistence', () => {
   for (const eventType of ['request-user-input', 'approval-request', 'error', 'done']) {
     const eventStart = claudeRunSource.indexOf(`if (event.type === '${eventType}')`);

@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import {
   attachToolResult,
   createToolStep,
+  mergeLoadedThreadTurns,
   mergeUsageSnapshot,
   normalizeSubagentMessages,
   repairConversationTurn,
@@ -36,6 +37,120 @@ function inlineThinkingTurn(content: string): ConversationTurn {
     status: 'done',
   };
 }
+
+function completedTextTurn(id: string, text: string): ConversationTurn {
+  return {
+    id,
+    userText: '用户问题',
+    workspace: 'D:\\project\\codem',
+    assistantText: text,
+    tools: [],
+    items: text ? [{ id: `${id}-text`, type: 'text', text }] : [],
+    status: text ? 'done' : 'stopped',
+    activity: text ? '运行完成' : '运行结束但没有返回正文',
+  };
+}
+
+function completedAgentToolTurn(
+  id: string,
+  toolStatus: 'done' | 'error',
+  resultText: string,
+): ConversationTurn {
+  const tool: ConversationTurn['tools'][number] = {
+    id: `${id}-agent`,
+    name: 'Agent',
+    title: 'Agent',
+    status: toolStatus,
+    resultText,
+    isError: toolStatus === 'error',
+  };
+  return {
+    ...completedTextTurn(id, ''),
+    status: 'done',
+    activity: '运行完成',
+    tools: [tool],
+    items: [{ id: `${id}-agent-item`, type: 'tool', tool }],
+  };
+}
+
+test('late history snapshots cannot replace a completed local turn with stopped empty output', () => {
+  const staleHistoryTurn = completedTextTurn('turn-1', '');
+  const completedLocalTurn = completedTextTurn('turn-1', '这是已经完成的回答');
+
+  const merged = mergeLoadedThreadTurns(
+    [staleHistoryTurn],
+    [completedLocalTurn],
+    { force: true, preserveCurrentChanges: false },
+  );
+
+  assert.equal(merged[0], completedLocalTurn);
+});
+
+test('history merge keeps changed local turns and still restores older history turns', () => {
+  const olderHistoryTurn = completedTextTurn('turn-old', '历史回答');
+  const staleCurrentTurn = completedTextTurn('turn-current', '请求发出时的旧回答');
+  const completedCurrentTurn = completedTextTurn('turn-current', '刚完成的回答');
+
+  const merged = mergeLoadedThreadTurns(
+    [olderHistoryTurn, staleCurrentTurn],
+    [completedCurrentTurn],
+    { force: true, preserveCurrentChanges: true },
+  );
+
+  assert.deepEqual(merged, [olderHistoryTurn, completedCurrentTurn]);
+});
+
+test('history merge appends completed turns created while a force refresh was in flight', () => {
+  const olderHistoryTurn = completedTextTurn('turn-old', '历史回答');
+  const newlyCompletedTurn = completedTextTurn('turn-new', '请求期间完成的新回答');
+
+  const merged = mergeLoadedThreadTurns(
+    [olderHistoryTurn],
+    [newlyCompletedTurn],
+    { force: true, preserveCurrentChanges: true },
+  );
+
+  assert.deepEqual(merged, [olderHistoryTurn, newlyCompletedTurn]);
+});
+
+test('force refresh still accepts loaded completed turns when local turns did not change', () => {
+  const cachedTurn = completedTextTurn('turn-1', '旧缓存');
+  const loadedTurn = completedTextTurn('turn-1', '后端恢复的最新回答');
+
+  const merged = mergeLoadedThreadTurns(
+    [loadedTurn],
+    [cachedTurn],
+    { force: true, preserveCurrentChanges: false },
+  );
+
+  assert.equal(merged[0], loadedTurn);
+});
+
+test('empty history snapshots cannot remove completed child-agent tool results', () => {
+  const staleHistoryTurn = completedTextTurn('turn-agent', '');
+  const completedAgentTurn = completedAgentToolTurn('turn-agent', 'done', '2 个子代理已完成');
+
+  const merged = mergeLoadedThreadTurns(
+    [staleHistoryTurn],
+    [completedAgentTurn],
+    { force: true, preserveCurrentChanges: false },
+  );
+
+  assert.equal(merged[0], completedAgentTurn);
+});
+
+test('child-agent status updates win when history returns during the run', () => {
+  const staleAgentTurn = completedAgentToolTurn('turn-agent', 'error', '1 个子代理中断');
+  const completedAgentTurn = completedAgentToolTurn('turn-agent', 'done', '2 个子代理已完成');
+
+  const merged = mergeLoadedThreadTurns(
+    [staleAgentTurn],
+    [completedAgentTurn],
+    { force: true, preserveCurrentChanges: true },
+  );
+
+  assert.equal(merged[0], completedAgentTurn);
+});
 
 test('OpenCode think tags become a collapsible Thinking item instead of visible answer text', () => {
   const repaired = repairConversationTurn(
