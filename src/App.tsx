@@ -49,6 +49,7 @@ import {
   isTauriRuntime,
   normalizeWindowMaterial,
   resolveDesktopPlatform,
+  setNativeWindowTheme,
   setWindowMaterial,
 } from './lib/window-material';
 import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
@@ -640,6 +641,14 @@ export default function App() {
 
     updateAppearance({ windowMaterial: effectiveWindowMaterial });
   }, [appearance.windowMaterial, effectiveWindowMaterial, settingsLoading, updateAppearance]);
+
+  useEffect(() => {
+    if (settingsLoading || runtimePlatform !== 'macos' || !isTauriRuntime()) {
+      return;
+    }
+
+    void setNativeWindowTheme(appearance.themeMode);
+  }, [appearance.themeMode, runtimePlatform, settingsLoading]);
 
   useEffect(() => {
     if (settingsLoading || !isTauriRuntime()) {

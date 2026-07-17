@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 
-import { getPlatformWindowMaterials, getWindowMaterialLabel, normalizeWindowMaterial } from './window-material.js';
+import {
+  getPlatformWindowMaterials,
+  getWindowMaterialLabel,
+  normalizeWindowMaterial,
+  resolveNativeWindowTheme,
+} from './window-material.js';
 import { defaultAppearanceSettings } from './settings-api.js';
 
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
@@ -34,6 +39,45 @@ test('Windows 保留默认和可选材质，但不再暴露无选项', () => {
 
 test('macOS 只保留默认窗口材质', () => {
   assert.deepEqual(getPlatformWindowMaterials('macos'), ['auto']);
+});
+
+test('原生窗口主题映射保留显式主题并让系统模式继续跟随系统', () => {
+  assert.equal(resolveNativeWindowTheme('light'), 'light');
+  assert.equal(resolveNativeWindowTheme('dark'), 'dark');
+  assert.equal(resolveNativeWindowTheme('system'), null);
+});
+
+test('应用只在 macOS 桌面运行时同步原生窗口主题', () => {
+  assert.match(
+    appSource,
+    /runtimePlatform !== 'macos' \|\| !isTauriRuntime\(\)[\s\S]*setNativeWindowTheme\(appearance\.themeMode\)/,
+  );
+});
+
+test('macOS 深色材质为侧栏提供稳定暗色基底', () => {
+  assert.match(
+    stylesSource,
+    /\.codex-desktop\[data-theme-mode="dark"\]\[data-platform="macos"\]\s*\{[^}]*--app-material-fill:\s*rgba\(24,\s*24,\s*26,\s*0\.5\);[^}]*--sidebar-surface:\s*rgba\(25,\s*27,\s*31,\s*0\.72\);/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.codex-desktop\[data-theme-mode="system"\]\[data-platform="macos"\]\s*\{[^}]*--app-material-fill:\s*rgba\(24,\s*24,\s*26,\s*0\.5\);[^}]*--sidebar-surface:\s*rgba\(25,\s*27,\s*31,\s*0\.72\);/s,
+  );
+});
+
+test('设置页和工作区常用控件使用主题变量而非浅色底', () => {
+  assert.match(
+    stylesSource,
+    /\.codex-desktop :is\(\.pill-button, \.open-app-trigger, \.settings-action-button, \.settings-icon-button\)\s*\{[^}]*border-color:\s*var\(--app-border\);[^}]*background:\s*var\(--app-surface\);[^}]*color:\s*var\(--app-text\);/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.codex-desktop :is\(\.settings-input, \.settings-text-input, \.settings-textarea, \.settings-font-follow-text\)\s*\{[^}]*background:\s*var\(--app-surface-muted\);[^}]*color:\s*var\(--app-text\);/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.codex-desktop \.settings-select\s*\{[^}]*--settings-select-bg:\s*var\(--app-surface-muted\);[^}]*linear-gradient\(180deg,\s*var\(--settings-select-bg\),\s*var\(--settings-select-bg\)\)/s,
+  );
 });
 
 test('自动材质文案改为默认', () => {

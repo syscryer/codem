@@ -1,4 +1,4 @@
-import type { DesktopPlatform, WindowMaterialMode } from '../types';
+import type { DesktopPlatform, ThemeMode, WindowMaterialMode } from '../types';
 
 const windowMaterialIds: Record<WindowMaterialMode, number> = {
   auto: 0,
@@ -90,6 +90,24 @@ export function normalizeWindowMaterial(
 
 export function getWindowMaterialLabel(material: WindowMaterialMode) {
   return windowMaterialLabels[material];
+}
+
+export function resolveNativeWindowTheme(themeMode: ThemeMode): 'light' | 'dark' | null {
+  return themeMode === 'system' ? null : themeMode;
+}
+
+export async function setNativeWindowTheme(themeMode: ThemeMode) {
+  if (!isTauriRuntime()) {
+    return false;
+  }
+
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    await getCurrentWindow().setTheme(resolveNativeWindowTheme(themeMode));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function getSupportedWindowMaterials(): Promise<WindowMaterialMode[]> {

@@ -324,10 +324,10 @@ svg {
 }
 
 .codex-desktop[data-theme-mode="dark"][data-platform="macos"] {
-  --app-material-fill: rgba(30, 30, 32, 0.22);
+  --app-material-fill: rgba(24, 24, 26, 0.5);
   --app-material-glow: rgba(255, 255, 255, 0.06);
   --app-material-blur: 0px;
-  --sidebar-surface: rgba(32, 34, 38, 0.24);
+  --sidebar-surface: rgba(25, 27, 31, 0.72);
   --sidebar-border-color: rgba(255, 255, 255, 0.1);
   --sidebar-sheen-top: rgba(255, 255, 255, 0.12);
   --sidebar-sheen-edge: rgba(255, 255, 255, 0.06);
@@ -412,6 +412,24 @@ svg {
     --app-material-line: rgba(255, 255, 255, 0.07);
     --app-material-glow: rgba(255, 255, 255, 0.04);
     --app-material-blur: 64px;
+  }
+
+  .codex-desktop[data-theme-mode="system"][data-platform="macos"] {
+    --app-material-fill: rgba(24, 24, 26, 0.5);
+    --app-material-glow: rgba(255, 255, 255, 0.06);
+    --app-material-blur: 0px;
+    --sidebar-surface: rgba(25, 27, 31, 0.72);
+    --sidebar-border-color: rgba(255, 255, 255, 0.1);
+    --sidebar-sheen-top: rgba(255, 255, 255, 0.12);
+    --sidebar-sheen-edge: rgba(255, 255, 255, 0.06);
+    --sidebar-hover-surface: rgba(255, 255, 255, 0.1);
+    --sidebar-active-surface: rgba(255, 255, 255, 0.14);
+    --sidebar-project-active-surface: rgba(255, 255, 255, 0.08);
+    --sidebar-elevated-surface: rgba(255, 255, 255, 0.08);
+    --sidebar-elevated-border: rgba(255, 255, 255, 0.1);
+    --sidebar-glass-shadow:
+      inset -1px 0 0 rgba(255, 255, 255, 0.06),
+      12px 0 40px rgba(0, 0, 0, 0.24);
   }
 }
 
@@ -16671,6 +16689,66 @@ button.git-conflict-overview-row:focus-visible,
   color: var(--app-text);
 }
 
+.codex-desktop :is(.pill-button, .open-app-trigger, .settings-action-button, .settings-icon-button) {
+  border-color: var(--app-border);
+  background: var(--app-surface);
+  color: var(--app-text);
+}
+
+.codex-desktop :is(.open-app-main, .open-app-toggle, .icon-button) {
+  color: var(--app-muted);
+}
+
+.codex-desktop .open-app-toggle {
+  border-left-color: var(--app-border);
+}
+
+.codex-desktop .open-app-trigger:hover,
+.codex-desktop .open-app-menu:has(.open-app-toggle[aria-expanded="true"]) .open-app-trigger,
+.codex-desktop .pill-button:hover:not(:disabled) {
+  background: var(--app-hover);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .settings-action-button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.codex-desktop .settings-action-button.danger {
+  color: var(--danger);
+}
+
+.codex-desktop :is(.settings-panel-title, .settings-group-title) {
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .settings-panel-title,
+.codex-desktop .settings-panel-subtitle {
+  border-bottom-color: var(--app-border);
+}
+
+.codex-desktop .settings-panel-subtitle {
+  background: color-mix(in srgb, var(--accent) 4%, var(--app-surface));
+  color: var(--app-muted);
+}
+
+.codex-desktop .settings-row-label svg,
+.codex-desktop .settings-inline-value {
+  color: var(--app-muted);
+}
+
+.codex-desktop :is(.settings-input, .settings-text-input, .settings-textarea, .settings-font-follow-text) {
+  border-color: var(--app-border);
+  background: var(--app-surface-muted);
+  color: var(--app-text);
+}
+
+.codex-desktop .settings-font-follow-text {
+  color: var(--app-muted);
+}
+
 .codex-desktop .appearance-preview-sidebar,
 .codex-desktop .settings-segmented,
 .codex-desktop .settings-accent-picker button,
@@ -16693,9 +16771,14 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .codex-desktop .settings-select {
+  --settings-select-bg: var(--app-surface-muted);
   color: var(--app-text);
   border-color: var(--app-border);
-  background-color: var(--app-surface-muted);
+  background-color: var(--settings-select-bg);
+  background-image:
+    linear-gradient(180deg, var(--settings-select-bg), var(--settings-select-bg)),
+    linear-gradient(45deg, transparent 50%, var(--app-muted) 50%),
+    linear-gradient(135deg, var(--app-muted) 50%, transparent 50%);
 }
 
 .codex-desktop .settings-select-trigger {
@@ -16744,8 +16827,8 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .codex-desktop .settings-select:hover {
+  --settings-select-bg: color-mix(in srgb, var(--app-surface) 86%, var(--app-surface-muted) 14%);
   border-color: color-mix(in srgb, var(--app-border) 78%, var(--accent) 22%);
-  background-color: color-mix(in srgb, var(--app-surface) 86%, var(--app-surface-muted) 14%);
 }
 
 .codex-desktop :is(
@@ -17937,6 +18020,390 @@ button.git-conflict-overview-row:focus-visible,
   .codex-desktop[data-theme-mode="system"] .settings-accent-swatch {
     background: var(--accent-swatch-dark);
   }
+}
+
+/* 聊天内容和后续设置页统一跟随桌面主题变量，避免深色模式出现浅色残留。 */
+.codex-desktop .markdown-inline-image {
+  background: var(--app-surface-muted);
+}
+
+.codex-desktop .markdown-body blockquote {
+  border-left-color: var(--app-border-strong);
+  background: var(--app-surface-subtle);
+  color: var(--app-muted);
+}
+
+.codex-desktop .markdown-body code {
+  background: var(--app-surface-muted);
+  color: var(--app-text);
+}
+
+.codex-desktop .markdown-body .code-block-shell pre code {
+  background: transparent;
+  color: inherit;
+}
+
+.codex-desktop .code-copy-button {
+  background: color-mix(in srgb, var(--app-surface) 88%, transparent);
+  color: var(--app-text);
+  box-shadow: 0 1px 5px color-mix(in srgb, var(--app-text) 10%, transparent);
+}
+
+.codex-desktop .markdown-body th,
+.codex-desktop .markdown-body td {
+  border-color: var(--app-border);
+}
+
+.codex-desktop .markdown-body th {
+  background: var(--app-surface-muted);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .markdown-body hr {
+  border-top-color: var(--app-border);
+}
+
+.codex-desktop :is(
+  .conversation-output-files-card,
+  .changed-files-summary-card,
+  .changed-file-diff-body
+) {
+  border-color: var(--app-border);
+  background: var(--app-surface-subtle);
+  color: var(--app-text);
+}
+
+.codex-desktop .conversation-output-file-item,
+.codex-desktop .conversation-output-files-toggle,
+.codex-desktop .changed-files-summary-head,
+.codex-desktop .changed-file-block,
+.codex-desktop .changed-file-diff-fragment + .changed-file-diff-fragment {
+  border-color: var(--app-border);
+}
+
+.codex-desktop .conversation-output-file-item:hover,
+.codex-desktop .conversation-output-files-toggle:hover {
+  background: var(--app-hover);
+}
+
+.codex-desktop .conversation-output-file-icon {
+  background: var(--app-surface-muted);
+  color: var(--app-muted);
+}
+
+.codex-desktop .conversation-output-file-name {
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .conversation-output-file-subtitle,
+.codex-desktop .conversation-output-files-toggle {
+  color: var(--app-muted);
+}
+
+.codex-desktop .conversation-output-files-toggle {
+  background: var(--app-surface-subtle);
+}
+
+.codex-desktop :is(
+  .tool-preview-open-button,
+  .tool-preview-link-button,
+  .conversation-output-file-menu-button
+) {
+  border-color: var(--app-border);
+  background: var(--app-surface);
+  color: var(--app-text);
+}
+
+.codex-desktop :is(
+  .tool-preview-open-button,
+  .tool-preview-link-button,
+  .conversation-output-file-menu-button
+):hover {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--app-border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--app-surface));
+  color: color-mix(in srgb, var(--accent) 84%, var(--app-text));
+}
+
+.codex-desktop .changed-files-summary-title strong,
+.codex-desktop .changed-files-summary-path {
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .changed-files-summary-head,
+.codex-desktop .changed-files-summary-actions,
+.codex-desktop .changed-file-chevron,
+.codex-desktop .changed-file-review-button,
+.codex-desktop .changed-files-summary-more {
+  color: var(--app-muted);
+}
+
+.codex-desktop .changed-files-summary-row-shell:hover .changed-files-summary-row,
+.codex-desktop .changed-files-summary-row-shell:focus-within .changed-files-summary-row,
+.codex-desktop .changed-files-summary-row:focus-visible,
+.codex-desktop .changed-file-review-button:hover,
+.codex-desktop .changed-file-review-button:focus-visible {
+  background: var(--app-hover);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .changed-files-summary-more {
+  border-top-color: var(--app-border);
+}
+
+.codex-desktop .changed-files-summary-more:hover,
+.codex-desktop .changed-files-summary-more:focus-visible {
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .changed-file-diff-fragment-head {
+  background: var(--app-surface-muted);
+  color: var(--app-muted);
+}
+
+.codex-desktop .changed-file-diff-line,
+.codex-desktop .changed-file-diff-line.context {
+  background: var(--app-surface-subtle);
+  color: var(--app-text);
+}
+
+.codex-desktop .changed-file-diff-line-no {
+  color: var(--app-muted);
+}
+
+.codex-desktop .changed-file-diff-line.add {
+  background: color-mix(in srgb, var(--success) 12%, var(--app-surface-subtle));
+  color: color-mix(in srgb, var(--success) 76%, var(--app-text));
+}
+
+.codex-desktop .changed-file-diff-line.add .changed-file-diff-line-no {
+  border-left-color: var(--success);
+  color: color-mix(in srgb, var(--success) 78%, var(--app-text));
+}
+
+.codex-desktop .changed-file-diff-line.remove {
+  background: color-mix(in srgb, var(--danger) 12%, var(--app-surface-subtle));
+  color: color-mix(in srgb, var(--danger) 76%, var(--app-text));
+}
+
+.codex-desktop .changed-file-diff-line.remove .changed-file-diff-line-no {
+  border-left-color: var(--danger);
+  color: color-mix(in srgb, var(--danger) 78%, var(--app-text));
+}
+
+.codex-desktop :is(
+  .settings-open-target-row,
+  .settings-list-row,
+  .worktree-current-root,
+  .session-project-list,
+  .plugins-primary-tabs,
+  .plugins-help-panel
+) {
+  border-color: var(--app-border);
+  background: var(--app-surface-subtle);
+  color: var(--app-text);
+}
+
+.codex-desktop :is(
+  .mcp-editor-section,
+  .plugins-skill-actions .plugins-input-grid,
+  .plugins-builtin-card,
+  .plugins-import-option,
+  .plugins-import-location
+) {
+  border-color: var(--app-border);
+  background: var(--app-surface-subtle);
+  color: var(--app-text);
+}
+
+.codex-desktop .settings-search {
+  border-color: var(--app-border);
+  background: var(--app-surface-muted);
+  color: var(--app-muted);
+}
+
+.codex-desktop .settings-search input {
+  color: var(--app-text);
+}
+
+.codex-desktop :is(
+  .settings-open-target-row strong,
+  .settings-list-row strong,
+  .worktree-current-root code,
+  .worktree-row-title strong,
+  .session-project-item strong,
+  .session-detail-title strong,
+  .mcp-list-row .mcp-row-title strong,
+  .plugins-import-head h2,
+  .plugins-import-option strong,
+  .plugins-import-location strong,
+  .settings-editor-title strong,
+  .plugins-builtin-card strong
+) {
+  color: var(--app-text-strong);
+}
+
+.codex-desktop :is(
+  .settings-open-target-row small,
+  .settings-list-row small,
+  .settings-list-empty,
+  .worktree-current-root,
+  .worktree-row-path,
+  .session-project-item small,
+  .session-detail-title span,
+  .session-project-usage,
+  .session-row-usage small,
+  .session-row-path,
+  .session-row-meta,
+  .mcp-list-row .mcp-row-summary,
+  .plugins-primary-tabs button,
+  .plugins-secondary-tabs button,
+  .plugins-import-head p,
+  .plugins-import-option small,
+  .plugins-import-location small,
+  .plugins-builtin-card small,
+  .settings-editor-title small,
+  .settings-editor-status
+) {
+  color: var(--app-muted);
+}
+
+.codex-desktop .settings-list-empty {
+  border-color: var(--app-border);
+}
+
+.codex-desktop .settings-list-row > .session-list-actions .settings-icon-button,
+.codex-desktop .plugins-suite-panel .settings-list-actions .settings-action-button {
+  border-color: var(--app-border);
+  background: var(--app-surface);
+  color: var(--app-text);
+}
+
+.codex-desktop .plugins-suite-panel .settings-list-actions .settings-action-button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.codex-desktop .settings-list-row > .session-list-actions .settings-icon-button.danger {
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--app-border));
+  color: color-mix(in srgb, var(--danger) 84%, var(--app-text));
+}
+
+.codex-desktop .settings-list-row > .session-list-actions .settings-icon-button.danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 46%, var(--app-border));
+  background: color-mix(in srgb, var(--danger) 10%, var(--app-surface));
+}
+
+.codex-desktop .session-project-item {
+  color: var(--app-text);
+}
+
+.codex-desktop .session-project-item:hover {
+  background: var(--app-hover);
+}
+
+.codex-desktop .session-project-item.active {
+  background: var(--app-surface);
+  box-shadow: 0 0 0 1px var(--app-border);
+}
+
+.codex-desktop .session-project-item em,
+.codex-desktop .plugins-tab-count,
+.codex-desktop .settings-badge,
+.codex-desktop .plugins-suite-panel .settings-badge,
+.codex-desktop .mcp-row-badges .settings-badge {
+  background: color-mix(in srgb, var(--app-border) 64%, var(--app-surface-muted));
+  color: var(--app-muted);
+}
+
+.codex-desktop .session-project-flag,
+.codex-desktop .settings-badge.available,
+.codex-desktop .mcp-row-badges .settings-badge.available {
+  background: color-mix(in srgb, var(--success) 14%, var(--app-surface));
+  color: color-mix(in srgb, var(--success) 76%, var(--app-text));
+}
+
+.codex-desktop .session-project-flag.warning,
+.codex-desktop .mcp-warning-inline {
+  background: color-mix(in srgb, #d97706 10%, transparent);
+  color: color-mix(in srgb, #d97706 72%, var(--app-text));
+}
+
+.codex-desktop .settings-badge.error,
+.codex-desktop .mcp-row-badges .settings-badge.error {
+  background: color-mix(in srgb, var(--danger) 14%, var(--app-surface));
+  color: color-mix(in srgb, var(--danger) 78%, var(--app-text));
+}
+
+.codex-desktop .session-row-usage strong,
+.codex-desktop .session-row-usage.is-empty small {
+  color: var(--app-muted);
+}
+
+.codex-desktop .session-row-usage.has-value strong {
+  color: color-mix(in srgb, var(--success) 82%, var(--app-text));
+}
+
+.codex-desktop .mcp-list-actions .settings-toggle input:not(:checked) + span {
+  border-color: var(--app-border);
+  background: color-mix(in srgb, var(--app-border) 74%, var(--app-surface-muted) 26%);
+}
+
+.codex-desktop .plugins-primary-tabs button.active {
+  background: var(--app-surface);
+  color: var(--app-text-strong);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--app-text) 12%, transparent);
+}
+
+.codex-desktop .plugins-secondary-tabs {
+  border-bottom-color: var(--app-border);
+}
+
+.codex-desktop .plugins-secondary-tabs button.active {
+  border-bottom-color: var(--app-text-strong);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .plugins-primary-tabs button.active .plugins-tab-count {
+  background: var(--app-surface-muted);
+  color: var(--app-text);
+}
+
+.codex-desktop :is(
+  .plugins-input-grid > select,
+  .plugins-inline-select select,
+  .plugins-import-select
+) {
+  border-color: var(--app-border);
+  background: var(--app-surface-muted);
+  color: var(--app-text);
+}
+
+.codex-desktop .plugins-preset-button {
+  border-color: var(--app-border);
+  background: var(--app-surface-muted);
+  color: var(--app-muted);
+}
+
+.codex-desktop .plugins-preset-button:hover {
+  background: var(--app-hover);
+  color: var(--app-text-strong);
+}
+
+.codex-desktop .plugins-help-panel code,
+.codex-desktop .plugins-import-location code {
+  background: var(--app-surface-muted);
+  color: var(--app-text);
+}
+
+.codex-desktop .plugins-error-panel {
+  border-color: color-mix(in srgb, var(--danger) 34%, var(--app-border));
+  background: color-mix(in srgb, var(--danger) 10%, var(--app-surface));
+  color: color-mix(in srgb, var(--danger) 82%, var(--app-text));
+}
+
+.codex-desktop .plugins-error-panel small {
+  color: color-mix(in srgb, var(--danger) 62%, var(--app-muted));
 }
 
 .codex-desktop[data-density="compact"] .sidebar-primary {
