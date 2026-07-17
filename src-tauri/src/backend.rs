@@ -84,6 +84,7 @@ struct ActiveRunRecord {
     paused_for_user_input: bool,
     block_type_by_index: std::collections::HashMap<i64, String>,
     tool_input_accumulators: std::collections::HashMap<i64, ToolInputAccumulator>,
+    last_phase_event: Option<Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -1794,6 +1795,7 @@ async fn claude_run(
         paused_for_user_input: false,
         block_type_by_index: std::collections::HashMap::new(),
         tool_input_accumulators: std::collections::HashMap::new(),
+        last_phase_event: None,
     };
     state
         .runs
@@ -5103,10 +5105,65 @@ fn resolve_claude_command() -> Option<String> {
     #[cfg(not(target_os = "windows"))]
     let lookup = background_command("which").arg("claude").output().ok();
 
-    lookup
+    let path_command = lookup
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
-        .and_then(|stdout| select_claude_command_candidate(&stdout, cfg!(target_os = "windows")))
+        .and_then(|stdout| {
+            stdout
+                .lines()
+                .map(str::trim)
+                .filter(|candidate| !candidate.is_empty())
+                .filter(|candidate| {
+                    !cfg!(target_os = "windows") || is_windows_spawnable_command(candidate)
+                })
+                .find(|candidate| command_reports_version(candidate))
+                .map(ToString::to_string)
+        });
+
+    path_command.or_else(resolve_default_claude_command)
+}
+
+fn resolve_default_claude_command() -> Option<String> {
+    let home = home_dir()?;
+    let app_data = if cfg!(target_os = "windows") {
+        env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .or_else(|| Some(home.join("AppData").join("Roaming")))
+    } else {
+        None
+    };
+
+    resolve_first_runnable_command(default_claude_command_paths(
+        &home,
+        app_data.as_deref(),
+        cfg!(target_os = "windows"),
+    ))
+}
+
+fn resolve_first_runnable_command(candidates: impl IntoIterator<Item = PathBuf>) -> Option<String> {
+    candidates
+        .into_iter()
+        .filter(|candidate| candidate.is_file())
+        .map(|candidate| candidate.to_string_lossy().to_string())
+        .find(|candidate| command_reports_version(candidate))
+}
+
+fn default_claude_command_paths(
+    home: &Path,
+    app_data: Option<&Path>,
+    windows: bool,
+) -> Vec<PathBuf> {
+    let mut candidates =
+        vec![home
+            .join(".local")
+            .join("bin")
+            .join(if windows { "claude.exe" } else { "claude" })];
+    if windows {
+        if let Some(app_data) = app_data {
+            candidates.push(app_data.join("npm").join("claude.cmd"));
+        }
+    }
+    candidates
 }
 
 fn resolve_grok_command() -> Option<String> {
@@ -15842,7 +15899,10 @@ fn map_claude_json_line(run_id: &str, line: &str, run: &mut ActiveRunRecord) -> 
             return vec![json!({ "type": "stderr", "runId": run_id, "text": line })];
         }
     };
-    let mut events = vec![json!({ "type": "raw", "runId": run_id, "raw": payload })];
+    let mut events = Vec::new();
+    if should_emit_claude_raw_event(&payload) {
+        events.push(json!({ "type": "raw", "runId": run_id, "raw": payload }));
+    }
     let is_sidechain = payload
         .get("isSidechain")
         .and_then(Value::as_bool)
@@ -16039,6 +16099,10 @@ fn map_claude_json_line(run_id: &str, line: &str, run: &mut ActiveRunRecord) -> 
         }));
     }
     events
+}
+
+fn should_emit_claude_raw_event(payload: &Value) -> bool {
+    payload.get("type").and_then(Value::as_str) != Some("stream_event")
 }
 
 fn claude_usage_event(run_id: &str, payload: &Value, usage_source: &str) -> Option<Value> {
@@ -16822,6 +16886,9 @@ fn push_run_event(state: &AppState, run_id: &str, event: Value) {
     let mut notify: Option<Arc<tokio::sync::Notify>> = None;
     if let Ok(mut runs) = state.runs.lock() {
         if let Some(run) = runs.get_mut(run_id) {
+            if !should_store_run_event(&mut run.last_phase_event, &event) {
+                return;
+            }
             if event.get("type").and_then(Value::as_str) == Some("session") {
                 if let Some(session_id) = event.get("sessionId").and_then(Value::as_str) {
                     run.session_id = Some(session_id.to_string());
@@ -16842,6 +16909,23 @@ fn push_run_event(state: &AppState, run_id: &str, event: Value) {
     if let Some(notify) = notify {
         notify.notify_waiters();
     }
+}
+
+fn should_store_run_event(last_phase_event: &mut Option<Value>, event: &Value) -> bool {
+    if event.get("type").and_then(Value::as_str) != Some("phase") {
+        return true;
+    }
+
+    let phase_event = json!({
+        "phase": event.get("phase"),
+        "label": event.get("label"),
+        "thoughtCount": event.get("thoughtCount"),
+    });
+    if last_phase_event.as_ref() == Some(&phase_event) {
+        return false;
+    }
+    *last_phase_event = Some(phase_event);
+    true
 }
 
 fn push_trace_event(state: &AppState, run_id: &str, name: &str, at_ms: i64, detail: Option<&str>) {
@@ -17189,20 +17273,22 @@ mod tests {
         build_agent_lifecycle_plan, build_claude_input_message,
         build_request_user_input_response_answers, claude_input_message_has_content,
         compare_project_file_entries, configure_agent_lifecycle_environment, create_router,
-        create_thread_row, default_grok_command_path, desktop_cors_layer,
-        ensure_agent_plugin_management_supported, extract_agent_semantic_version,
-        import_claude_sessions_from_root, initialize_workspace_database,
-        install_skill_directory_safely, is_agent_lifecycle_network_failure, lifecycle_plan,
-        lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
-        list_agent_plugin_marketplaces_value, list_agent_skills_value, list_slash_commands_value,
-        mark_request_user_input_submitted, normalize_agent_plugin_action,
-        normalize_agent_runtime_settings, normalize_request_user_input_answer_value,
-        parse_grok_cli_version, parse_grok_latest_version, parse_npm_latest_version,
-        parse_request_user_input_event, read_opencode_mcp_config, read_stored_thread_history,
-        read_thread_detail, read_thread_summary, remove_thread_row, resolve_codex_command,
-        resolve_grok_command, resolve_opencode_command, resolve_requested_thread_provider,
-        resolve_thread_create_permission_mode, resolve_workspace_relative_path,
-        sanitize_agent_lifecycle_output, search_workspace_files, select_claude_command_candidate,
+        create_thread_row, default_claude_command_paths, default_grok_command_path,
+        desktop_cors_layer, ensure_agent_plugin_management_supported,
+        extract_agent_semantic_version, import_claude_sessions_from_root,
+        initialize_workspace_database, install_skill_directory_safely,
+        is_agent_lifecycle_network_failure, lifecycle_plan, lifecycle_plan_supports_npm_mirror,
+        list_agent_installed_plugins_value, list_agent_plugin_marketplaces_value,
+        list_agent_skills_value, list_slash_commands_value, mark_request_user_input_submitted,
+        normalize_agent_plugin_action, normalize_agent_runtime_settings,
+        normalize_request_user_input_answer_value, parse_grok_cli_version,
+        parse_grok_latest_version, parse_npm_latest_version, parse_request_user_input_event,
+        read_opencode_mcp_config, read_stored_thread_history, read_thread_detail,
+        read_thread_summary, remove_thread_row, resolve_codex_command,
+        resolve_first_runnable_command, resolve_grok_command, resolve_opencode_command,
+        resolve_requested_thread_provider, resolve_thread_create_permission_mode,
+        resolve_workspace_relative_path, sanitize_agent_lifecycle_output, search_workspace_files,
+        select_claude_command_candidate, should_emit_claude_raw_event, should_store_run_event,
         summarize_content_blocks, update_thread_metadata_from_payload, validate_desktop_file_path,
         validate_managed_agent_skill_path, write_opencode_mcp_config, write_thread_history,
         ApiError, AppState,
@@ -17687,6 +17773,46 @@ mod tests {
                 }
             ])
         );
+    }
+
+    #[test]
+    fn claude_stream_events_skip_duplicate_raw_payloads() {
+        assert!(!should_emit_claude_raw_event(&json!({
+            "type": "stream_event",
+            "event": { "type": "content_block_delta" }
+        })));
+        assert!(should_emit_claude_raw_event(&json!({
+            "type": "system",
+            "subtype": "init"
+        })));
+    }
+
+    #[test]
+    fn repeated_phase_events_are_not_retained_until_phase_changes() {
+        let mut last_phase_event = None;
+        let thinking = json!({
+            "type": "phase",
+            "runId": "run-1",
+            "phase": "thinking",
+            "label": "思考中"
+        });
+
+        assert!(should_store_run_event(&mut last_phase_event, &thinking));
+        assert!(!should_store_run_event(&mut last_phase_event, &thinking));
+        assert!(should_store_run_event(
+            &mut last_phase_event,
+            &json!({ "type": "thinking-delta", "text": "继续" }),
+        ));
+        assert!(!should_store_run_event(&mut last_phase_event, &thinking));
+        assert!(should_store_run_event(
+            &mut last_phase_event,
+            &json!({
+                "type": "phase",
+                "runId": "run-1",
+                "phase": "computing",
+                "label": "生成回复中"
+            }),
+        ));
     }
 
     #[test]
@@ -18649,6 +18775,48 @@ mod tests {
         assert_eq!(
             select_claude_command_candidate(lookup, false).as_deref(),
             Some("/usr/local/bin/claude")
+        );
+    }
+
+    #[test]
+    fn default_claude_command_paths_cover_native_and_windows_npm_installers() {
+        let home = PathBuf::from("C:\\Users\\dev");
+        let app_data = home.join("AppData").join("Roaming");
+
+        assert_eq!(
+            default_claude_command_paths(&home, Some(&app_data), true),
+            vec![
+                home.join(".local").join("bin").join("claude.exe"),
+                app_data.join("npm").join("claude.cmd"),
+            ]
+        );
+        assert_eq!(
+            default_claude_command_paths(&home, None, false),
+            vec![home.join(".local").join("bin").join("claude")]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_npm_claude_command_is_runnable_without_being_on_path() {
+        let test_directory = TestDirectory::new("claude-npm-fallback");
+        let home = test_directory.0.join("home");
+        let app_data = test_directory.0.join("app-data");
+        let invalid_native = home.join(".local").join("bin").join("claude.exe");
+        let npm_command = app_data.join("npm").join("claude.cmd");
+        fs::create_dir_all(invalid_native.parent().unwrap()).expect("create native directory");
+        fs::create_dir_all(npm_command.parent().unwrap()).expect("create npm directory");
+        fs::write(&invalid_native, "not an executable").expect("write invalid native candidate");
+        fs::write(&npm_command, "@echo off\r\necho 9.9.9 (Claude Code)\r\n")
+            .expect("write npm command");
+
+        assert_eq!(
+            resolve_first_runnable_command(default_claude_command_paths(
+                &home,
+                Some(&app_data),
+                true,
+            )),
+            Some(npm_command.to_string_lossy().to_string())
         );
     }
 

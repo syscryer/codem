@@ -101,6 +101,7 @@ export function AgentProviderSettings({
   const [diagnosticCheckingProviderId, setDiagnosticCheckingProviderId] = useState<AgentProviderId | null>(null);
   const [lifecycleAction, setLifecycleAction] = useState<{ providerId: AgentProviderId; action: 'install' | 'update' } | null>(null);
   const registrySyncAttemptsRef = useRef(new Set<string>());
+  const claudeInfoRequestIdRef = useRef(0);
   const detailsControllersRef = useRef(new Map<AgentProviderId, AbortController>());
   const grokControllerRef = useRef<AbortController | null>(null);
   const codexControllerRef = useRef<AbortController | null>(null);
@@ -123,10 +124,15 @@ export function AgentProviderSettings({
       return next;
     });
 
+    const claudeInfoRequestId = providerIds.includes('claude-code')
+      ? ++claudeInfoRequestIdRef.current
+      : claudeInfoRequestIdRef.current;
     const claudeInfoRequest = providerIds.includes('claude-code')
       ? readClaudeCliVersionInfo()
           .then((value) => {
-            setClaudeCliInfo(value);
+            if (claudeInfoRequestIdRef.current === claudeInfoRequestId) {
+              setClaudeCliInfo(value);
+            }
           })
           .catch(() => undefined)
       : Promise.resolve();
@@ -231,6 +237,7 @@ export function AgentProviderSettings({
   useEffect(() => {
     void loadProviderDetails();
     return () => {
+      claudeInfoRequestIdRef.current += 1;
       detailsControllersRef.current.forEach((controller) => controller.abort());
       detailsControllersRef.current.clear();
       grokControllerRef.current?.abort();
@@ -427,6 +434,7 @@ export function AgentProviderSettings({
             : Promise.resolve();
       await Promise.allSettled([
         Promise.resolve().then(() => onRefreshProviders()),
+        loadProviderDetails([providerId]),
         probe,
       ]);
       const providerName = defaultAgentProviderName(providerId);

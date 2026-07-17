@@ -51,6 +51,22 @@ type CreateThreadOptions = {
   channelId?: string;
 };
 
+type PersistThreadHistoryOptions = {
+  urgent?: boolean;
+};
+
+type PersistHistoryState = {
+  timerId: number | null;
+  retryTimerId: number | null;
+  inFlight: boolean;
+  pending: boolean;
+  urgent: boolean;
+  retryCount: number;
+  lastPersistedAtMs: number;
+};
+
+type PersistHistoryStateRef = MutableRefObject<Map<string, PersistHistoryState>>;
+
 const MAX_DEBUG_EVENTS = 220;
 const MAX_RAW_EVENTS = 220;
 const MAX_DEBUG_CONTENT_CHARS = 12_000;
@@ -58,6 +74,7 @@ const MAX_RAW_EVENT_CHARS = 16_000;
 const WORKSPACE_LOG_FLUSH_MS = 100;
 const LOG_TRUNCATION_MARKER = '\n...[已截断]...\n';
 const PERSIST_HISTORY_DEBOUNCE_MS = 750;
+const PERSIST_HISTORY_CHECKPOINT_INTERVAL_MS = 10_000;
 const PERSIST_HISTORY_RETRY_DELAY_MS = 500;
 const PERSIST_HISTORY_MAX_RETRIES = 2;
 
@@ -87,18 +104,7 @@ export function useWorkspaceState() {
   const activeProjectIdRef = useRef<string | null>(null);
   const newChatDraftRef = useRef(false);
   const directoryPickerPromiseRef = useRef<Promise<string | null> | null>(null);
-  const persistHistoryStateRef = useRef<
-    Map<
-      string,
-      {
-        timerId: number | null;
-        retryTimerId: number | null;
-        inFlight: boolean;
-        pending: boolean;
-        retryCount: number;
-      }
-    >
-  >(new Map());
+  const persistHistoryStateRef = useRef<Map<string, PersistHistoryState>>(new Map());
   const pendingLogBatchesRef = useRef<Map<string, PendingWorkspaceLogBatch>>(new Map());
   const pendingLogFlushTimerRef = useRef<number | null>(null);
 
@@ -417,7 +423,10 @@ export function useWorkspaceState() {
     }
   }
 
-  function schedulePersistThreadHistory(threadId: string | null) {
+  function schedulePersistThreadHistory(
+    threadId: string | null,
+    options?: PersistThreadHistoryOptions,
+  ) {
     if (!threadId) {
       return;
     }
@@ -425,12 +434,23 @@ export function useWorkspaceState() {
     const state = getPersistHistoryState(persistHistoryStateRef, threadId);
     state.pending = true;
     state.retryCount = 0;
+    state.urgent ||= options?.urgent === true;
 
     if (state.retryTimerId !== null) {
+      if (!state.urgent) {
+        return;
+      }
       window.clearTimeout(state.retryTimerId);
       state.retryTimerId = null;
     }
 
+    if (state.inFlight) {
+      return;
+    }
+
+    if (state.timerId !== null && !state.urgent) {
+      return;
+    }
     if (state.timerId !== null) {
       window.clearTimeout(state.timerId);
     }
@@ -438,7 +458,7 @@ export function useWorkspaceState() {
     state.timerId = window.setTimeout(() => {
       state.timerId = null;
       void flushPersistThreadHistory(threadId, threadDetailsRef, persistHistoryStateRef, persistThreadHistory);
-    }, PERSIST_HISTORY_DEBOUNCE_MS);
+    }, getPersistHistoryFlushDelayMs(state));
   }
 
   function updateThreadDetail(
@@ -453,6 +473,9 @@ export function useWorkspaceState() {
       }
 
       const nextThread = updater(existing);
+      if (nextThread === existing) {
+        return current;
+      }
       const next = {
         ...current,
         [threadId]: nextThread,
@@ -473,10 +496,20 @@ export function useWorkspaceState() {
   ) {
     updateThreadDetail(
       threadId,
-      (thread) => ({
-        ...thread,
-        turns: thread.turns.map((turn) => (turn.id === turnId ? repairConversationTurn(updater(turn)) : turn)),
-      }),
+      (thread) => {
+        const turnIndex = thread.turns.findIndex((turn) => turn.id === turnId);
+        if (turnIndex < 0) {
+          return thread;
+        }
+        const currentTurn = thread.turns[turnIndex];
+        const nextTurn = repairConversationTurn(updater(currentTurn));
+        if (nextTurn === currentTurn) {
+          return thread;
+        }
+        const turns = [...thread.turns];
+        turns[turnIndex] = nextTurn;
+        return { ...thread, turns };
+      },
       fallbackSummary,
     );
   }
@@ -1398,21 +1431,7 @@ export function useWorkspaceState() {
   };
 }
 
-function getPersistHistoryState(
-  persistHistoryStateRef: MutableRefObject<
-    Map<
-      string,
-      {
-        timerId: number | null;
-        retryTimerId: number | null;
-        inFlight: boolean;
-        pending: boolean;
-        retryCount: number;
-      }
-    >
-  >,
-  threadId: string,
-) {
+function getPersistHistoryState(persistHistoryStateRef: PersistHistoryStateRef, threadId: string) {
   const current = persistHistoryStateRef.current.get(threadId);
   if (current) {
     return current;
@@ -1423,10 +1442,26 @@ function getPersistHistoryState(
     retryTimerId: null,
     inFlight: false,
     pending: false,
+    urgent: false,
     retryCount: 0,
+    lastPersistedAtMs: 0,
   };
   persistHistoryStateRef.current.set(threadId, next);
   return next;
+}
+
+function getPersistHistoryFlushDelayMs(state: PersistHistoryState) {
+  if (state.urgent) {
+    return 0;
+  }
+  if (state.lastPersistedAtMs === 0) {
+    return PERSIST_HISTORY_DEBOUNCE_MS;
+  }
+  const checkpointDelay = Math.max(
+    0,
+    state.lastPersistedAtMs + PERSIST_HISTORY_CHECKPOINT_INTERVAL_MS - Date.now(),
+  );
+  return Math.max(PERSIST_HISTORY_DEBOUNCE_MS, checkpointDelay);
 }
 
 function isTransientPersistError(error: unknown) {
@@ -1444,18 +1479,7 @@ function isTransientPersistError(error: unknown) {
 function flushPersistThreadHistory(
   threadId: string,
   threadDetailsRef: MutableRefObject<Record<string, ThreadDetail>>,
-  persistHistoryStateRef: MutableRefObject<
-    Map<
-      string,
-      {
-        timerId: number | null;
-        retryTimerId: number | null;
-        inFlight: boolean;
-        pending: boolean;
-        retryCount: number;
-      }
-    >
-  >,
+  persistHistoryStateRef: PersistHistoryStateRef,
   persistThreadHistory: (threadId: string, turns: ConversationTurn[]) => Promise<void>,
 ) {
   const state = getPersistHistoryState(persistHistoryStateRef, threadId);
@@ -1469,16 +1493,20 @@ function flushPersistThreadHistory(
     return;
   }
 
+  const wasUrgent = state.urgent;
   state.inFlight = true;
   state.pending = false;
+  state.urgent = false;
 
   void persistThreadHistory(threadId, thread.turns)
     .then(() => {
       state.retryCount = 0;
+      state.lastPersistedAtMs = Date.now();
     })
     .catch((error) => {
       if (isTransientPersistError(error) && state.retryCount < PERSIST_HISTORY_MAX_RETRIES) {
         state.pending = true;
+        state.urgent ||= wasUrgent;
         state.retryCount += 1;
         if (state.retryTimerId !== null) {
           window.clearTimeout(state.retryTimerId);
@@ -1511,7 +1539,7 @@ function flushPersistThreadHistory(
             persistHistoryStateRef,
             persistThreadHistory,
           );
-        }, PERSIST_HISTORY_DEBOUNCE_MS);
+        }, getPersistHistoryFlushDelayMs(scheduledState));
       }
     });
 }

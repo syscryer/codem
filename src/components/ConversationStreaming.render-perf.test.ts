@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const turnSource = readFileSync(new URL('./ConversationTurn.tsx', import.meta.url), 'utf8');
 const agentRunSource = readFileSync(new URL('../hooks/useAgentRun.ts', import.meta.url), 'utf8');
+const claudeRunSource = readFileSync(new URL('../hooks/useClaudeRun.ts', import.meta.url), 'utf8');
 const workspaceSource = readFileSync(new URL('../hooks/useWorkspaceState.ts', import.meta.url), 'utf8');
 
 test('streaming markdown yields expensive parsing behind deferred content', () => {
@@ -22,6 +23,24 @@ test('generic agent deltas do not schedule a full-history persist every animatio
   assert.doesNotMatch(flushTextDelta, /schedulePersistThreadHistory/);
 });
 
-test('history persistence debounce leaves room for interaction during bursty updates', () => {
+test('Claude high-frequency structured deltas are merged once per animation frame', () => {
+  assert.match(claudeRunSource, /pendingIncrementalTurnUpdates/);
+  assert.match(claudeRunSource, /requestAnimationFrame\(\(\) =>\s*flushQueuedIncrementalTurnUpdates/);
+
+  for (const eventType of ['thinking-delta', 'tool-input-delta', 'subagent-delta']) {
+    const eventStart = claudeRunSource.indexOf(`if (event.type === '${eventType}')`);
+    const nextEvent = claudeRunSource.indexOf("if (event.type === '", eventStart + 1);
+    const eventBody = claudeRunSource.slice(eventStart, nextEvent);
+    assert.notEqual(eventStart, -1);
+    assert.match(eventBody, /queueIncrementalTurnUpdate\(/);
+  }
+});
+
+test('history persistence throttles checkpoints while urgent states bypass the interval', () => {
   assert.match(workspaceSource, /const PERSIST_HISTORY_DEBOUNCE_MS = 750;/);
+  assert.match(workspaceSource, /const PERSIST_HISTORY_CHECKPOINT_INTERVAL_MS = 10_000;/);
+  assert.match(workspaceSource, /if \(state\.urgent\) \{\s*return 0;\s*\}/);
+  assert.match(workspaceSource, /state\.lastPersistedAtMs = Date\.now\(\);/);
+  assert.match(claudeRunSource, /schedulePersistThreadHistory\(context\.threadId, \{ urgent: true \}\)/);
+  assert.match(agentRunSource, /isAgentRunTerminalEvent\(event\) \|\|/);
 });

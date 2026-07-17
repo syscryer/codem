@@ -153,7 +153,10 @@ type UseAgentRunArgs = {
     fallbackSummary?: ThreadSummary,
   ) => void;
   appendDebug: (threadId: string, event: Omit<DebugEvent, 'id'>) => void;
-  schedulePersistThreadHistory: (threadId: string | null) => void;
+  schedulePersistThreadHistory: (
+    threadId: string | null,
+    options?: { urgent?: boolean },
+  ) => void;
   persistThreadMetadata: (threadId: string, payload: ThreadMetadataPatch) => Promise<void>;
   onThreadActivityNotice?: (notice: {
     threadId: string;
@@ -1268,7 +1271,12 @@ export function useAgentRun({
     if (event.type === 'approval-request' || event.type === 'request-user-input') {
       emitThreadNotice(context, 'approval', event.runId);
     }
-    schedulePersistThreadHistory(context.threadId);
+    schedulePersistThreadHistory(context.threadId, {
+      urgent:
+        isAgentRunTerminalEvent(event) ||
+        event.type === 'approval-request' ||
+        event.type === 'request-user-input',
+    });
 
     if (isAgentRunTerminalEvent(event)) {
       context.terminal = true;
@@ -1396,7 +1404,7 @@ export function useAgentRun({
       activity: '继续执行中',
       phase: 'requesting',
     }));
-    schedulePersistThreadHistory(context.threadId);
+    schedulePersistThreadHistory(context.threadId, { urgent: true });
     return true;
   }
 
@@ -1432,7 +1440,7 @@ export function useAgentRun({
       activity: decision === 'approve' ? '继续执行中' : '已拒绝操作，等待调整',
       phase: 'requesting',
     }));
-    schedulePersistThreadHistory(context.threadId);
+    schedulePersistThreadHistory(context.threadId, { urgent: true });
     return true;
   }
 
@@ -1517,7 +1525,7 @@ export function useAgentRun({
     updateThreadTurn(context.threadId, context.turnId, (turn) =>
       closeAgentTurnWithoutTerminalEvent(turn, activity),
     );
-    schedulePersistThreadHistory(context.threadId);
+    schedulePersistThreadHistory(context.threadId, { urgent: true });
     removeRunContext(context);
     notifyQueuedPromptsRetained(context.threadId);
   }
@@ -1537,7 +1545,7 @@ export function useAgentRun({
       content: message,
       tone: 'error',
     });
-    schedulePersistThreadHistory(context.threadId);
+    schedulePersistThreadHistory(context.threadId, { urgent: true });
     context.terminal = true;
     removeRunContext(context);
     emitThreadNotice(context, 'failed', event.runId);

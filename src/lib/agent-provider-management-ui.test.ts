@@ -81,6 +81,8 @@ test('provider settings reuses shared registry and progressively loads diagnosti
 test('Agent lifecycle refreshes diagnostics and the matching runtime probe', () => {
   assert.match(agentSettingsSource, /showToast=\{showToast\}/);
   assert.match(providerSettingsSource, /Promise\.resolve\(\)\.then\(\(\) => onRefreshProviders\(\)\)/);
+  assert.match(providerSettingsSource, /loadProviderDetails\(\[providerId\]\)/);
+  assert.match(providerSettingsSource, /claudeInfoRequestIdRef\.current === claudeInfoRequestId/);
   assert.match(providerSettingsSource, /providerId === 'grok-build'[\s\S]*runGrokProbe\(\)/);
   assert.match(providerSettingsSource, /providerId === 'openai-codex'[\s\S]*runCodexProbe\(\)/);
   assert.match(providerSettingsSource, /providerId === 'opencode'[\s\S]*runOpenCodeProbe\(\)/);

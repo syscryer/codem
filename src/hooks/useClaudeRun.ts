@@ -129,6 +129,8 @@ type RunContext = {
   workingDirectory: string;
   pendingAssistantText: string;
   assistantTextFrame: number | null;
+  pendingIncrementalTurnUpdates: Array<(turn: ConversationTurn) => ConversationTurn>;
+  incrementalTurnFrame: number | null;
   traceStartedAtMs: number;
   firstClientDeltaAtMs: number;
   firstTextApplyAtMs: number;
@@ -205,7 +207,10 @@ type UseClaudeRunArgs = {
   ) => void;
   appendDebug: (threadId: string, event: Omit<DebugEvent, 'id'>) => void;
   appendRawEvent: (threadId: string, line: string) => void;
-  schedulePersistThreadHistory: (threadId: string | null) => void;
+  schedulePersistThreadHistory: (
+    threadId: string | null,
+    options?: { urgent?: boolean },
+  ) => void;
   persistThreadMetadata: (threadId: string, payload: ThreadMetadataPatch) => Promise<void>;
   clearActiveTurnSelection: () => void;
   onThreadActivityNotice?: (notice: {
@@ -612,10 +617,8 @@ export function useClaudeRun({
   }
 
   function removeRunContext(context: RunContext) {
-    if (context.assistantTextFrame !== null) {
-      window.cancelAnimationFrame(context.assistantTextFrame);
-      context.assistantTextFrame = null;
-    }
+    flushQueuedAssistantTextNow(context);
+    flushQueuedIncrementalTurnUpdatesNow(context);
 
     clearRunInterruptState(context);
 
@@ -1073,6 +1076,41 @@ export function useClaudeRun({
     context.assistantTextFrame = window.requestAnimationFrame(() => flushQueuedAssistantText(context));
   }
 
+  function flushQueuedIncrementalTurnUpdates(context: RunContext) {
+    const updates = context.pendingIncrementalTurnUpdates.splice(0);
+    context.incrementalTurnFrame = null;
+    if (updates.length === 0) {
+      return;
+    }
+
+    updateRunningTurn(context, (turn) =>
+      updates.reduce((current, update) => update(current), turn),
+    );
+  }
+
+  function flushQueuedIncrementalTurnUpdatesNow(context: RunContext) {
+    if (context.incrementalTurnFrame !== null) {
+      window.cancelAnimationFrame(context.incrementalTurnFrame);
+      context.incrementalTurnFrame = null;
+    }
+
+    flushQueuedIncrementalTurnUpdates(context);
+  }
+
+  function queueIncrementalTurnUpdate(
+    context: RunContext,
+    update: (turn: ConversationTurn) => ConversationTurn,
+  ) {
+    context.pendingIncrementalTurnUpdates.push(update);
+    if (context.incrementalTurnFrame !== null) {
+      return;
+    }
+
+    context.incrementalTurnFrame = window.requestAnimationFrame(() =>
+      flushQueuedIncrementalTurnUpdates(context),
+    );
+  }
+
   async function startRun(
     thread: ThreadSummary,
     promptText: string,
@@ -1141,6 +1179,8 @@ export function useClaudeRun({
       workingDirectory: runWorkingDirectory,
       pendingAssistantText: '',
       assistantTextFrame: null,
+      pendingIncrementalTurnUpdates: [],
+      incrementalTurnFrame: null,
       traceStartedAtMs: submitAtMs,
       firstClientDeltaAtMs: 0,
       firstTextApplyAtMs: 0,
@@ -1268,7 +1308,7 @@ export function useClaudeRun({
             durationMs: turn.durationMs ?? getElapsedDuration(turn),
             activity: message || '后端没有返回可读流。',
           }));
-          schedulePersistThreadHistory(context.threadId);
+          schedulePersistThreadHistory(context.threadId, { urgent: true });
           emitRunSettledNotice(context, 'failed');
           return;
         }
@@ -1278,7 +1318,7 @@ export function useClaudeRun({
         if (!sawTerminalEvent) {
           flushQueuedAssistantTextNow(context);
           updateRunningTurn(context, closeTurnAfterUnexpectedStreamEnd);
-          schedulePersistThreadHistory(context.threadId);
+          schedulePersistThreadHistory(context.threadId, { urgent: true });
           emitRunSettledNotice(context, 'failed');
         }
       } catch (error) {
@@ -1307,7 +1347,7 @@ export function useClaudeRun({
                     undefined,
                 ),
         }));
-        schedulePersistThreadHistory(context.threadId);
+        schedulePersistThreadHistory(context.threadId, { urgent: true });
         if (!(error instanceof DOMException && error.name === 'AbortError')) {
           emitRunSettledNotice(context, 'failed');
         }
@@ -1356,6 +1396,8 @@ export function useClaudeRun({
         workingDirectory: activeRun.workingDirectory || thread.workingDirectory,
         pendingAssistantText: '',
         assistantTextFrame: null,
+        pendingIncrementalTurnUpdates: [],
+        incrementalTurnFrame: null,
         traceStartedAtMs: startedAtMs,
         firstClientDeltaAtMs: 0,
         firstTextApplyAtMs: 0,
@@ -1507,28 +1549,41 @@ export function useClaudeRun({
     }
 
     if (
+      event.type === 'thinking-delta' ||
+      event.type === 'tool-input-delta' ||
+      event.type === 'subagent-delta'
+    ) {
+      flushQueuedAssistantTextNow(context);
+    }
+
+    if (
       event.type === 'request-user-input' ||
       event.type === 'approval-request' ||
       event.type === 'runtime-reconnect-hint' ||
       event.type === 'retryable-error' ||
-      event.type === 'thinking-delta' ||
       event.type === 'tool-start' ||
-      event.type === 'tool-input-delta' ||
       event.type === 'tool-stop' ||
       event.type === 'tool-result' ||
       event.type === 'done' ||
       event.type === 'error'
     ) {
       flushQueuedAssistantTextNow(context);
+      flushQueuedIncrementalTurnUpdatesNow(context);
     }
 
     if ('runId' in event && event.runId) {
       updateRunContextRunId(context, event.runId);
-      updateRunningTurn(context, (turn) => ({
-        ...turn,
-        backendRunId: event.runId,
-        status: turn.status === 'pending' ? 'running' : turn.status,
-      }));
+      updateRunningTurn(context, (turn) => {
+        const status = turn.status === 'pending' ? 'running' : turn.status;
+        if (turn.backendRunId === event.runId && turn.status === status) {
+          return turn;
+        }
+        return {
+          ...turn,
+          backendRunId: event.runId,
+          status,
+        };
+      });
     }
 
     if (event.type === 'trace') {
@@ -1538,7 +1593,7 @@ export function useClaudeRun({
           activity: turn.activity || '等待补充输入',
           pendingUserInputRequests: markLatestPendingUserInputRequestReady(turn.pendingUserInputRequests, event.atMs),
         }));
-        schedulePersistThreadHistory(context.threadId);
+        schedulePersistThreadHistory(context.threadId, { urgent: true });
       }
 
       appendRunningDebug(context, {
@@ -1571,13 +1626,25 @@ export function useClaudeRun({
     }
 
     if (event.type === 'phase') {
-      updateRunningTurn(context, (turn) => ({
-        ...turn,
-        status: turn.status === 'pending' ? 'running' : turn.status,
-        phase: event.phase,
-        activity: event.label,
-        thoughtCount: event.thoughtCount ?? turn.thoughtCount,
-      }));
+      updateRunningTurn(context, (turn) => {
+        const status = turn.status === 'pending' ? 'running' : turn.status;
+        const thoughtCount = event.thoughtCount ?? turn.thoughtCount;
+        if (
+          turn.status === status &&
+          turn.phase === event.phase &&
+          turn.activity === event.label &&
+          turn.thoughtCount === thoughtCount
+        ) {
+          return turn;
+        }
+        return {
+          ...turn,
+          status,
+          phase: event.phase,
+          activity: event.label,
+          thoughtCount,
+        };
+      });
       return;
     }
 
@@ -1631,7 +1698,7 @@ export function useClaudeRun({
         activity: event.request.title || '等待补充输入',
         pendingUserInputRequests: upsertRequestUserInput(turn.pendingUserInputRequests, event.request),
       }));
-      schedulePersistThreadHistory(context.threadId);
+      schedulePersistThreadHistory(context.threadId, { urgent: true });
       appendRunningDebug(context, {
         title: '请求用户输入',
         content: formatJson(event.request),
@@ -1646,7 +1713,7 @@ export function useClaudeRun({
         activity: event.request.title || '等待批准',
         pendingApprovalRequests: upsertApprovalRequest(turn.pendingApprovalRequests, event.request),
       }));
-      schedulePersistThreadHistory(context.threadId);
+      schedulePersistThreadHistory(context.threadId, { urgent: true });
       appendRunningDebug(context, {
         title: '批准请求',
         content: formatJson(event.request),
@@ -1693,7 +1760,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'thinking-delta') {
-      updateRunningTurn(context, (turn) => {
+      queueIncrementalTurnUpdate(context, (turn) => {
         const toolIsRunning = hasRunningTool(turn);
         return {
           ...turn,
@@ -1724,7 +1791,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'tool-input-delta') {
-      updateRunningTurn(context, (turn) => {
+      queueIncrementalTurnUpdate(context, (turn) => {
         const tools = event.parentToolUseId ? upsertToolDeltaDeep(turn.tools, event) : upsertToolDelta(turn.tools, event);
         const toolIndex = event.parentToolUseId ? -1 : findLatestToolIndex(tools, event.blockIndex, event.toolUseId);
         const tool = event.parentToolUseId
@@ -1784,7 +1851,9 @@ export function useClaudeRun({
             : turn.pendingApprovalRequests,
         };
       });
-      schedulePersistThreadHistory(context.threadId);
+      schedulePersistThreadHistory(context.threadId, {
+        urgent: approvalRequestForNotice !== null,
+      });
       if (approvalRequestForNotice && isActionableApprovalNotice(approvalRequestForNotice)) {
         emitThreadActivityNotice(context, 'approval', event.runId);
       }
@@ -1792,7 +1861,7 @@ export function useClaudeRun({
     }
 
     if (event.type === 'subagent-delta') {
-      updateRunningTurn(context, (turn) => {
+      queueIncrementalTurnUpdate(context, (turn) => {
         const tools = upsertSubagentText(turn.tools, event.parentToolUseId, event.text);
         const parentTool = findParentToolForEvent(tools, event);
         return {
@@ -1836,7 +1905,7 @@ export function useClaudeRun({
         content: event.message,
         tone: 'error',
       });
-      schedulePersistThreadHistory(context.threadId);
+      schedulePersistThreadHistory(context.threadId, { urgent: true });
       emitRunSettledNotice(context, 'failed', event.runId);
       return;
     }
@@ -1904,7 +1973,7 @@ export function useClaudeRun({
           });
         });
       }
-      schedulePersistThreadHistory(context.threadId);
+      schedulePersistThreadHistory(context.threadId, { urgent: true });
       emitRunSettledNotice(context, 'completed', event.runId);
     }
   }
@@ -2103,7 +2172,7 @@ export function useClaudeRun({
         ...closeTurnWithoutTerminalEvent(turn),
         items: settleRunningSystemCommandItems(turn.items, 'error', '上下文压缩已停止。'),
       }));
-      schedulePersistThreadHistory(context.threadId);
+      schedulePersistThreadHistory(context.threadId, { urgent: true });
       removeRunContext(context);
       return;
     }
@@ -2137,7 +2206,7 @@ export function useClaudeRun({
             durationMs: turn.durationMs ?? getElapsedDuration(turn),
             activity: '已停止当前运行',
           }));
-          schedulePersistThreadHistory(context.threadId);
+          schedulePersistThreadHistory(context.threadId, { urgent: true });
           removeRunContext(context);
         }
       }
@@ -2230,7 +2299,7 @@ export function useClaudeRun({
         title: '已提交运行中提问答案',
         content: formatJson({ requestId: request.requestId, answers }),
       });
-      schedulePersistThreadHistory(activeThreadId);
+      schedulePersistThreadHistory(activeThreadId, { urgent: true });
       return true;
     }
 
@@ -2255,7 +2324,7 @@ export function useClaudeRun({
       title: '已提交补充输入',
       content: formatJson({ requestId: request.requestId, answers }),
     });
-    schedulePersistThreadHistory(activeThreadId);
+    schedulePersistThreadHistory(activeThreadId, { urgent: true });
     return true;
   }
 
@@ -2304,7 +2373,7 @@ export function useClaudeRun({
         reusedSessionId: sessionId ?? null,
       }),
     });
-    schedulePersistThreadHistory(activeThreadId);
+    schedulePersistThreadHistory(activeThreadId, { urgent: true });
     showToast(getRecoveryToastMessage(action), 'success');
     return true;
   }
@@ -2368,7 +2437,7 @@ export function useClaudeRun({
           mode: 'stdin_tool_result',
         }),
       });
-      schedulePersistThreadHistory(threadId);
+      schedulePersistThreadHistory(threadId, { urgent: true });
       return true;
     }
 
@@ -2412,7 +2481,7 @@ export function useClaudeRun({
             command: request.command,
           }),
         });
-        schedulePersistThreadHistory(threadId);
+        schedulePersistThreadHistory(threadId, { urgent: true });
       },
     });
 
