@@ -81,6 +81,20 @@ export function threadAgentChannelId(channelId?: string | null) {
   return channelId?.trim() || SYSTEM_AGENT_CHANNEL_ID;
 }
 
+export function shouldPreservePendingAgentChannelSelection({
+  selectedChannelId,
+  pendingChannelId,
+  hasSelectedChannel,
+}: {
+  selectedChannelId: string;
+  pendingChannelId: string | null;
+  hasSelectedChannel: boolean;
+}) {
+  return !hasSelectedChannel
+    && selectedChannelId !== SYSTEM_AGENT_CHANNEL_ID
+    && pendingChannelId === selectedChannelId;
+}
+
 export function requestAgentChannelId(channelId: string) {
   return channelId === SYSTEM_AGENT_CHANNEL_ID ? undefined : channelId;
 }

@@ -11,6 +11,7 @@ import {
   defaultAgentChannelId,
   isAgentChannelSelectionAvailable,
   resolveRunAgentChannelSelection,
+  shouldPreservePendingAgentChannelSelection,
   SYSTEM_AGENT_CHANNEL_ID,
   threadAgentChannelId,
 } from './agent-channel-selection.js';
@@ -100,6 +101,33 @@ test('Provider default resolves to an enabled CodeM channel or system', () => {
 
 test('persisted empty thread channels remain system channels', () => {
   assert.equal(threadAgentChannelId(null), SYSTEM_AGENT_CHANNEL_ID);
+});
+
+test('newly saved channel stays selected while bootstrap refresh is still stale', () => {
+  assert.equal(
+    shouldPreservePendingAgentChannelSelection({
+      selectedChannelId: 'new-channel',
+      pendingChannelId: 'new-channel',
+      hasSelectedChannel: false,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldPreservePendingAgentChannelSelection({
+      selectedChannelId: 'new-channel',
+      pendingChannelId: 'new-channel',
+      hasSelectedChannel: true,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldPreservePendingAgentChannelSelection({
+      selectedChannelId: 'other-channel',
+      pendingChannelId: 'new-channel',
+      hasSelectedChannel: false,
+    }),
+    false,
+  );
 });
 
 test('persisted channel template id keeps the configured vendor icon stable', () => {

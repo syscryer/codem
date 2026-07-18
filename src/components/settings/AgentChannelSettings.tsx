@@ -30,7 +30,11 @@ import {
   updateAgentChannelModel,
 } from '../../lib/agent-channel-api';
 import { openExternalUrl } from '../../lib/markdown-link';
-import { agentChannelTemplate, systemAgentChannelTemplate } from '../../lib/agent-channel-selection';
+import {
+  agentChannelTemplate,
+  shouldPreservePendingAgentChannelSelection,
+  systemAgentChannelTemplate,
+} from '../../lib/agent-channel-selection';
 import {
   agentChannelProtocolHint,
   filterProviderVendors,
@@ -123,6 +127,7 @@ export function AgentChannelSettings({
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [confirmDeleteChannelId, setConfirmDeleteChannelId] = useState('');
   const [confirmDeleteModelId, setConfirmDeleteModelId] = useState('');
+  const pendingSelectedChannelIdRef = useRef<string | null>(null);
 
   const channels = useMemo(
     () => bootstrap.channels.filter((channel) => channel.providerId === providerId),
@@ -167,6 +172,7 @@ export function AgentChannelSettings({
   useEffect(() => {
     if (!focusRequest) return;
     const nextProviderId = focusRequest.providerId;
+    pendingSelectedChannelIdRef.current = null;
     setProviderId(nextProviderId);
     setSelectedChannelId(bootstrap.defaultChannelIds[nextProviderId] || 'system');
     setCreating(false);
@@ -184,6 +190,13 @@ export function AgentChannelSettings({
     }
     const nextChannel = channels.find((channel) => channel.id === selectedChannelId);
     if (!nextChannel) {
+      if (shouldPreservePendingAgentChannelSelection({
+        selectedChannelId,
+        pendingChannelId: pendingSelectedChannelIdRef.current,
+        hasSelectedChannel: false,
+      })) {
+        return;
+      }
       const fallbackId = bootstrap.defaultChannelIds[providerId] || 'system';
       setSelectedChannelId(
         fallbackId === 'system' || channels.some((channel) => channel.id === fallbackId)
@@ -192,6 +205,9 @@ export function AgentChannelSettings({
       );
       setDraft(emptyDraft(providerId));
       return;
+    }
+    if (pendingSelectedChannelIdRef.current === selectedChannelId) {
+      pendingSelectedChannelIdRef.current = null;
     }
     setDraft(channelToDraft(nextChannel));
     setSelectedTemplateId(
@@ -209,6 +225,7 @@ export function AgentChannelSettings({
   }
 
   function selectProvider(nextProviderId: AgentProviderId) {
+    pendingSelectedChannelIdRef.current = null;
     setProviderId(nextProviderId);
     setSelectedChannelId(bootstrap.defaultChannelIds[nextProviderId] || 'system');
     setCreating(false);
@@ -220,6 +237,7 @@ export function AgentChannelSettings({
   }
 
   function selectChannel(channel: AgentChannel) {
+    pendingSelectedChannelIdRef.current = null;
     setSelectedChannelId(channel.id);
     setCreating(false);
     setDraft(channelToDraft(channel));
@@ -232,6 +250,7 @@ export function AgentChannelSettings({
   }
 
   function selectSystemChannel() {
+    pendingSelectedChannelIdRef.current = null;
     setSelectedChannelId('system');
     setCreating(false);
     setDraft(emptyDraft(providerId));
@@ -242,6 +261,7 @@ export function AgentChannelSettings({
   }
 
   function startNewChannel() {
+    pendingSelectedChannelIdRef.current = null;
     setCreating(true);
     setSelectedChannelId('');
     setDraft(emptyDraft(providerId));
@@ -321,6 +341,7 @@ export function AgentChannelSettings({
         });
         channel = result.channel;
       }
+      pendingSelectedChannelIdRef.current = channel.id;
       setSelectedChannelId(channel.id);
       setCreating(false);
       setDraft(channelToDraft(channel));
