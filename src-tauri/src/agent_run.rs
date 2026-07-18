@@ -491,7 +491,7 @@ async fn agent_models(
             let arguments = grok_acp_arguments("default");
             let mut client = AcpStdioClient::spawn(&command, &arguments, &cwd)
                 .await
-                .map_err(|error| AgentApiError::internal(error.public_message()))?;
+                .map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
             let result = async {
                 let initialize = client.initialize(env!("CARGO_PKG_VERSION")).await?;
                 let auth_method_id = initialize
@@ -510,7 +510,7 @@ async fn agent_models(
             .await;
             client.shutdown().await;
             let initialize =
-                result.map_err(|error| AgentApiError::internal(error.public_message()))?;
+                result.map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
             let default_model_id = initialize.current_model_id.clone();
             let models = initialize
                 .models
@@ -540,7 +540,7 @@ async fn agent_models(
                 })?;
             let mut client = CodexStdioClient::spawn(&command, &cwd)
                 .await
-                .map_err(|error| AgentApiError::internal(error.public_message()))?;
+                .map_err(|error| AgentApiError::internal(public_codex_error(error)))?;
             let result = async {
                 client.initialize(env!("CARGO_PKG_VERSION")).await?;
                 client.list_models().await
@@ -548,7 +548,7 @@ async fn agent_models(
             .await;
             client.shutdown().await;
             let codex_models =
-                result.map_err(|error| AgentApiError::internal(error.public_message()))?;
+                result.map_err(|error| AgentApiError::internal(public_codex_error(error)))?;
             let default_model_id = codex_models
                 .iter()
                 .find(|model| model.is_default)
@@ -1536,7 +1536,7 @@ async fn execute_acp_run(task: AcpRunTask) {
                 &run_id,
                 AgentRunEvent::Error {
                     run_id: run_id.clone(),
-                    message: error.public_message().to_string(),
+                    message: public_acp_error(error),
                 },
             );
             return;
@@ -1675,7 +1675,7 @@ async fn execute_codex_run(task: CodexRunTask) {
                 &run_id,
                 AgentRunEvent::Error {
                     run_id: run_id.clone(),
-                    message: error.public_message(),
+                    message: public_codex_error(error),
                 },
             );
             return;
@@ -2831,16 +2831,97 @@ fn public_acp_error(error: AcpError) -> String {
     match error {
         AcpError::Rpc { code, message } => format!(
             "ACP Provider 请求失败（RPC {code}）：{}",
-            truncate_public_error_detail(&message),
+            sanitize_public_error_detail(&message),
         ),
         AcpError::Protocol(message) => format!(
             "ACP Provider 协议错误：{}",
-            truncate_public_error_detail(&message),
+            sanitize_public_error_detail(&message),
         ),
-        AcpError::Timeout(operation) => format!("ACP Provider 响应超时：{operation}"),
-        AcpError::Io(_) => "ACP 子进程通信失败".to_string(),
-        AcpError::Json(_) => "ACP Provider 返回了无效 JSON".to_string(),
+        AcpError::Timeout(operation) => {
+            format!(
+                "ACP Provider 响应超时：{}",
+                sanitize_public_error_detail(operation)
+            )
+        }
+        AcpError::Io(error) => format!(
+            "ACP 子进程通信失败：{}",
+            sanitize_public_error_detail(&error.to_string())
+        ),
+        AcpError::Json(error) => format!(
+            "ACP Provider 返回了无效 JSON：{}",
+            sanitize_public_error_detail(&error.to_string())
+        ),
     }
+}
+
+fn sanitize_public_error_detail(message: &str) -> String {
+    let sanitized = message
+        .lines()
+        .map(sanitize_public_error_line)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if sanitized.is_empty() {
+        "未提供错误详情".to_string()
+    } else {
+        truncate_public_error_detail(&sanitized)
+    }
+}
+
+fn sanitize_public_error_line(line: &str) -> String {
+    let mut sanitized = Vec::new();
+    let mut redact_next = false;
+    for token in line.split_whitespace() {
+        if redact_next {
+            sanitized.push("<redacted>".to_string());
+            redact_next = false;
+            continue;
+        }
+        let normalized = token
+            .trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            .to_ascii_lowercase();
+        if matches!(
+            normalized.as_str(),
+            "authorization" | "bearer" | "token" | "access_token" | "api_key" | "apikey" | "secret"
+        ) {
+            sanitized.push(token.to_string());
+            redact_next = true;
+            continue;
+        }
+        let lower = token.to_ascii_lowercase();
+        let sensitive_assignment = [
+            "authorization=",
+            "authorization:",
+            "token=",
+            "token:",
+            "access_token=",
+            "access_token:",
+            "api_key=",
+            "api_key:",
+            "apikey=",
+            "apikey:",
+            "secret=",
+            "secret:",
+        ]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix));
+        let has_multiple_characters = token
+            .chars()
+            .next()
+            .is_some_and(|first| token.chars().any(|character| character != first));
+        let looks_like_secret = lower.starts_with("sk-")
+            || (token.chars().count() >= 48
+                && has_multiple_characters
+                && token.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                }));
+        sanitized.push(if sensitive_assignment || looks_like_secret {
+            "<redacted>".to_string()
+        } else {
+            token.to_string()
+        });
+    }
+    sanitized.join(" ")
 }
 
 fn grok_acp_error_with_runtime_detail(
@@ -2853,22 +2934,43 @@ fn grok_acp_error_with_runtime_detail(
         return None;
     };
     if config.provider_id != GROK_BUILD_PROVIDER_ID
-        || config.channel_id.is_none()
         || *code != -32603
         || !message.trim().eq_ignore_ascii_case("internal error")
     {
         return None;
     }
-    let runtime_home = config.environment.get("GROK_HOME")?.trim();
-    if runtime_home.is_empty() {
-        return None;
-    }
+    let runtime_home = grok_runtime_home(config)?;
     let log_tail = read_bounded_file_tail(
-        &Path::new(runtime_home).join("logs").join("unified.jsonl"),
+        &runtime_home.join("logs").join("unified.jsonl"),
         MAX_GROK_LOG_TAIL_BYTES,
     )?;
     let detail = find_grok_runtime_error_detail(&log_tail, session_id, turn_started_at)?;
     Some(format!("ACP Provider 请求失败（RPC -32603）：{detail}"))
+}
+
+fn grok_runtime_home(config: &AgentRuntimeConfig) -> Option<PathBuf> {
+    if let Some(runtime_home) = config
+        .environment
+        .get("GROK_HOME")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(PathBuf::from(runtime_home));
+    }
+    if config.channel_id.is_some() {
+        return None;
+    }
+    std::env::var_os("GROK_HOME")
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .map(|value| PathBuf::from(value).join(".grok").into_os_string())
+        })
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|value| PathBuf::from(value).join(".grok").into_os_string())
+        })
+        .map(PathBuf::from)
 }
 
 fn read_bounded_file_tail(path: &Path, max_bytes: u64) -> Option<String> {
@@ -2939,54 +3041,42 @@ fn sanitize_grok_runtime_error_detail(message: &str) -> Option<String> {
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())?;
-    let mut sanitized = Vec::new();
-    let mut redact_next = false;
-    for token in first_line.split_whitespace() {
-        if redact_next {
-            sanitized.push("<redacted>".to_string());
-            redact_next = false;
-            continue;
-        }
-        let normalized = token
-            .trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '_')
-            .to_ascii_lowercase();
-        let sensitive_label = matches!(
-            normalized.as_str(),
-            "authorization" | "bearer" | "token" | "access_token" | "api_key" | "apikey" | "secret"
-        );
-        if sensitive_label {
-            sanitized.push(token.to_string());
-            redact_next = true;
-            continue;
-        }
-        let lower = token.to_ascii_lowercase();
-        let sensitive_assignment = [
-            "authorization=",
-            "token=",
-            "access_token=",
-            "api_key=",
-            "apikey=",
-            "secret=",
-        ]
-        .iter()
-        .any(|prefix| lower.starts_with(prefix));
-        let looks_like_secret = lower.starts_with("sk-")
-            || (token.chars().count() >= 48
-                && token.chars().all(|character| {
-                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
-                }));
-        sanitized.push(if sensitive_assignment || looks_like_secret {
-            "<redacted>".to_string()
-        } else {
-            token.to_string()
-        });
-    }
-    let detail = sanitized.join(" ");
+    let detail = sanitize_public_error_line(first_line);
     (!detail.is_empty()).then(|| truncate_public_error_detail(&detail))
 }
 
 fn public_codex_error(error: CodexAppServerError) -> String {
-    error.public_message()
+    match error {
+        CodexAppServerError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            format!(
+                "Codex CLI 无法由 CodeM 启动：{}",
+                sanitize_public_error_detail(&error.to_string())
+            )
+        }
+        CodexAppServerError::Io(error) => format!(
+            "Codex App Server 子进程通信失败：{}",
+            sanitize_public_error_detail(&error.to_string())
+        ),
+        CodexAppServerError::Json(error) => format!(
+            "Codex App Server 返回了无效 JSON：{}",
+            sanitize_public_error_detail(&error.to_string())
+        ),
+        CodexAppServerError::Rpc { code, message } => format!(
+            "Codex App Server 请求失败（RPC {code}）：{}",
+            sanitize_public_error_detail(&message)
+        ),
+        CodexAppServerError::Execution(message) => {
+            format!("Codex 执行失败：{}", sanitize_public_error_detail(&message))
+        }
+        CodexAppServerError::Protocol(message) => format!(
+            "Codex App Server 协议错误：{}",
+            sanitize_public_error_detail(&message)
+        ),
+        CodexAppServerError::Timeout(operation) => format!(
+            "Codex App Server 响应超时：{}",
+            sanitize_public_error_detail(operation)
+        ),
+    }
 }
 
 fn truncate_public_error_detail(message: &str) -> String {
@@ -3644,7 +3734,7 @@ mod tests {
         acp_arguments, acp_permission_policy, build_acp_prompt, build_codex_input,
         cancelled_before_prompt_outcome, find_grok_runtime_error_detail, grok_acp_arguments,
         grok_acp_error_with_runtime_detail, grok_uses_channel_credentials, normalize_agent_input,
-        parse_opencode_models, public_acp_error, read_cached_agent_command,
+        parse_opencode_models, public_acp_error, public_codex_error, read_cached_agent_command,
         read_cached_agent_model_catalog, runtime_can_reuse, sanitize_grok_runtime_error_detail,
         should_retry_grok_channel_prompt, should_set_acp_model, store_cached_agent_command,
         store_cached_agent_model_catalog, AcpEventMapper, AgentDriverInput, AgentDriverKind,
@@ -3660,10 +3750,10 @@ mod tests {
         },
         agent_channels::AgentChannelService,
         agent_runtime::AgentRunEvent,
-        codex_app_server::CodexRuntimeEvent,
+        codex_app_server::{CodexAppServerError, CodexRuntimeEvent},
     };
     use chrono::Utc;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::{
         collections::{BTreeMap, HashMap},
@@ -4350,7 +4440,30 @@ mod tests {
     }
 
     #[test]
-    fn grok_internal_error_uses_current_channel_session_log_detail() {
+    fn public_agent_errors_keep_details_for_each_transport_error() {
+        let io_message = public_acp_error(AcpError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "connection reset by peer api_key=sk-sensitive-value",
+        )));
+        assert!(io_message.contains("connection reset by peer"));
+        assert!(!io_message.contains("sk-sensitive-value"));
+
+        let json_message = public_acp_error(AcpError::Json(
+            serde_json::from_str::<Value>("{invalid").expect_err("invalid JSON"),
+        ));
+        assert!(json_message.contains("line"));
+
+        let timeout_message = public_acp_error(AcpError::Timeout("session/prompt"));
+        assert!(timeout_message.contains("session/prompt"));
+
+        let codex_message = public_codex_error(CodexAppServerError::Execution(
+            "upstream rejected request".to_string(),
+        ));
+        assert!(codex_message.contains("upstream rejected request"));
+    }
+
+    #[test]
+    fn grok_internal_error_uses_system_channel_session_log_detail() {
         let root =
             std::env::temp_dir().join(format!("codem-grok-error-log-{}", uuid::Uuid::new_v4()));
         let logs = root.join("logs");
@@ -4367,7 +4480,6 @@ mod tests {
         });
         std::fs::write(logs.join("unified.jsonl"), format!("{matching}\n")).unwrap();
         let mut config = test_runtime_config();
-        config.channel_id = Some("channel-1".to_string());
         config
             .environment
             .insert("GROK_HOME".to_string(), root.to_string_lossy().to_string());
