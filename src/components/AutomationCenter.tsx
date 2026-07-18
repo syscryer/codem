@@ -1,5 +1,4 @@
 import {
-  CalendarClock,
   Check,
   ChevronDown,
   Clock3,
@@ -26,6 +25,9 @@ import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { fetchAgentModelCatalog } from '../lib/agent-provider-registry';
 import { SYSTEM_AGENT_CHANNEL_ID } from '../lib/agent-channel-selection';
 import {
+  currentAutomationDate,
+  automationScheduleError,
+  defaultCustomAutomationDate,
   defaultAutomationSchedule,
   formatAutomationNextRun,
   formatAutomationSchedule,
@@ -100,6 +102,7 @@ const SCHEDULE_OPTIONS: Array<{ value: AutomationSchedule['kind']; label: string
   { value: 'weekdays', label: '工作日' },
   { value: 'weekly', label: '每周' },
   { value: 'monthly', label: '每月' },
+  { value: 'custom', label: '自定义' },
 ];
 
 const WEEKDAYS = [
@@ -183,6 +186,11 @@ export function AutomationCenter({
       || automation.prompt.toLocaleLowerCase().includes(normalized)
     ));
   }, [automations, query]);
+
+  const projectById = useMemo(
+    () => new Map(projects.map((project) => [project.id, project])),
+    [projects],
+  );
 
   const selectedAutomation = selectedId
     ? automations.find((automation) => automation.id === selectedId) ?? null
@@ -340,6 +348,10 @@ export function AutomationCenter({
       updateSchedule({ kind, time: '09:00', monthDay: 1, timezone });
       return;
     }
+    if (kind === 'custom') {
+      updateSchedule({ kind, date: defaultCustomAutomationDate(), time: '09:00', timezone });
+      return;
+    }
     updateSchedule({ kind, time: '09:00', timezone });
   }
 
@@ -368,14 +380,25 @@ export function AutomationCenter({
     if (!selectedAutomation) {
       return;
     }
-    if (!window.confirm(`确定删除自动化“${selectedAutomation.name}”吗？运行会话仍会保留。`)) {
+    await deleteAutomation(selectedAutomation);
+  }
+
+  async function deleteAutomation(automation: AutomationDefinition) {
+    if (!window.confirm(`确定删除自动化“${automation.name}”吗？运行会话仍会保留。`)) {
       return;
     }
-    await onDelete(selectedAutomation.id);
+    await onDelete(automation.id);
   }
 
   const selectedNextRun = selectedAutomation?.nextRunAtMs;
-  const formValid = Boolean(draft.name.trim() && draft.prompt.trim() && draft.projectId && draft.providerId);
+  const scheduleError = automationScheduleError(draft.schedule);
+  const formValid = Boolean(
+    draft.name.trim()
+      && draft.prompt.trim()
+      && draft.projectId
+      && draft.providerId
+      && !scheduleError,
+  );
   const saveBusy = savingId === (selectedAutomation?.id ?? '__new__');
 
   return (
@@ -426,25 +449,55 @@ export function AutomationCenter({
               </div>
             ) : filteredAutomations.map((automation) => {
               const latestRun = runs.find((run) => run.automationId === automation.id);
+              const project = projectById.get(automation.projectId);
               return (
-                <button
+                <div
                   key={automation.id}
-                  type="button"
-                  className={`automation-list-item${automation.id === selectedId ? ' active' : ''}`}
-                  onClick={() => selectAutomation(automation)}
+                  className={`automation-list-item-row${automation.id === selectedId ? ' active' : ''}`}
                 >
-                  <span className="automation-list-icon">
-                    <AgentProviderIcon providerId={automation.providerId} size={18} />
-                  </span>
-                  <span className="automation-list-copy">
-                    <strong>{automation.name}</strong>
-                    <small>{formatAutomationSchedule(automation.schedule)}</small>
-                  </span>
-                  <span className={`automation-state-dot${automation.enabled ? ' enabled' : ''}`} aria-label={automation.enabled ? '已启用' : '已停用'} />
-                  {latestRun && isActiveRun(latestRun) ? (
-                    <span className="automation-running-badge">运行中</span>
-                  ) : null}
-                </button>
+                  <button
+                    type="button"
+                    className={`automation-list-item${automation.id === selectedId ? ' active' : ''}`}
+                    onClick={() => selectAutomation(automation)}
+                  >
+                    <span className="automation-list-icon">
+                      <AgentProviderIcon providerId={automation.providerId} size={18} />
+                    </span>
+                    <span className="automation-list-copy">
+                      <strong>{automation.name}</strong>
+                      <small className="automation-list-project" title={project?.path || '项目不可用'}>
+                        {project?.name || '项目不可用'}
+                      </small>
+                      <small className="automation-list-path" title={project?.path || '路径不可用'}>
+                        {project?.path || '路径不可用'}
+                      </small>
+                      <small className="automation-list-next-run">
+                        {formatAutomationSchedule(automation.schedule)} · 下次 {formatAutomationNextRun(automation.nextRunAtMs)}
+                      </small>
+                    </span>
+                    <span
+                      className={`automation-state-dot${automation.enabled ? ' enabled' : ''}`}
+                      aria-label={automation.enabled ? '已启用' : '已停用'}
+                      title={automation.enabled ? '已启用' : '已停用'}
+                    />
+                    {latestRun && isActiveRun(latestRun) ? (
+                      <span className="automation-running-badge">运行中</span>
+                    ) : null}
+                  </button>
+                  <button
+                    type="button"
+                    className="automation-list-delete"
+                    aria-label={`删除自动化：${automation.name}`}
+                    title="删除自动化"
+                    disabled={deletingId === automation.id}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void deleteAutomation(automation);
+                    }}
+                  >
+                    {deletingId === automation.id ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}
+                  </button>
+                </div>
               );
             })}
           </div>
@@ -566,7 +619,6 @@ export function AutomationCenter({
                   <h3>执行计划</h3>
                   <p>{draft.enabled ? `保存后下次运行：${selectedNextRun ? formatAutomationNextRun(selectedNextRun) : '自动计算'}` : '停用期间不会自动执行，仍可立即运行。'}</p>
                 </div>
-                <CalendarClock size={19} />
               </div>
               <div className="automation-schedule-tabs" role="tablist" aria-label="执行频率">
                 {SCHEDULE_OPTIONS.map((option) => (
@@ -586,6 +638,7 @@ export function AutomationCenter({
                 onIntervalUnitChange={setIntervalUnit}
                 onChange={updateSchedule}
               />
+              {scheduleError ? <small className="automation-field-hint error">{scheduleError}</small> : null}
               <small className="automation-timezone">按本机时区 {draft.schedule.timezone} 运行；应用退出期间不会唤醒执行。</small>
             </div>
 
@@ -822,6 +875,23 @@ function ScheduleEditor({
             })}
           />
           <span>日</span>
+        </label>
+        <TimeField value={schedule.time} onChange={(time) => onChange({ ...schedule, time })} />
+      </div>
+    );
+  }
+
+  if (schedule.kind === 'custom') {
+    return (
+      <div className="automation-schedule-row">
+        <label className="automation-inline-field">
+          <span>执行日期</span>
+          <input
+            type="date"
+            value={schedule.date}
+            min={currentAutomationDate()}
+            onChange={(event) => onChange({ ...schedule, date: event.currentTarget.value })}
+          />
         </label>
         <TimeField value={schedule.time} onChange={(time) => onChange({ ...schedule, time })} />
       </div>

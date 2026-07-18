@@ -15,6 +15,15 @@ export function defaultAutomationSchedule(): AutomationSchedule {
   };
 }
 
+export function defaultCustomAutomationDate(from = new Date()) {
+  const date = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 1);
+  return formatLocalDate(date);
+}
+
+export function currentAutomationDate(from = new Date()) {
+  return formatLocalDate(from);
+}
+
 export function calculateNextAutomationRun(schedule: AutomationSchedule, fromMs: number) {
   const from = new Date(fromMs);
   if (!Number.isFinite(from.getTime())) {
@@ -50,6 +59,14 @@ export function calculateNextAutomationRun(schedule: AutomationSchedule, fromMs:
     return nextMatchingDate(from, hours, minutes, (date) => weekdays.has(date.getDay())).getTime();
   }
 
+  if (schedule.kind === 'custom') {
+    const candidate = parseCustomDateTime(schedule.date, schedule.time);
+    if (candidate.getTime() <= fromMs) {
+      throw new Error('自定义执行时间必须晚于当前时间');
+    }
+    return candidate.getTime();
+  }
+
   const monthDay = Math.min(31, Math.max(1, Math.round(schedule.monthDay)));
   for (let monthOffset = 0; monthOffset < 24; monthOffset += 1) {
     const firstOfMonth = new Date(from.getFullYear(), from.getMonth() + monthOffset, 1, hours, minutes, 0, 0);
@@ -74,6 +91,20 @@ export function calculateNextAutomationRun(schedule: AutomationSchedule, fromMs:
   throw new Error('无法计算自动化下次运行时间');
 }
 
+export function automationScheduleError(schedule: AutomationSchedule, fromMs = Date.now()) {
+  if (schedule.kind !== 'custom') {
+    return '';
+  }
+  try {
+    calculateNextAutomationRun(schedule, fromMs);
+    return '';
+  } catch (error) {
+    return error instanceof Error && error.message.trim()
+      ? error.message.trim()
+      : '自定义执行时间无效';
+  }
+}
+
 export function formatAutomationSchedule(schedule: AutomationSchedule) {
   if (schedule.kind === 'interval') {
     if (schedule.intervalMinutes % 60 === 0) {
@@ -94,6 +125,9 @@ export function formatAutomationSchedule(schedule: AutomationSchedule) {
       .map(weekdayLabel)
       .join('、');
     return `每周${labels || '一'} ${schedule.time}`;
+  }
+  if (schedule.kind === 'custom') {
+    return `自定义 ${schedule.date} ${schedule.time}`;
   }
   return `每月 ${schedule.monthDay} 日 ${schedule.time}`;
 }
@@ -149,7 +183,24 @@ export function normalizeAutomationSchedule(value: unknown): AutomationSchedule 
       timezone: optionalString(record.timezone) || timezone,
     };
   }
+  if (kind === 'custom') {
+    return {
+      kind,
+      date: validDate(record.date) ? record.date : defaultCustomAutomationDate(),
+      time: validTime(record.time) ? record.time : '09:00',
+      timezone: optionalString(record.timezone) || timezone,
+    };
+  }
   return defaultAutomationSchedule();
+}
+
+function parseCustomDateTime(date: string, time: string) {
+  if (!validDate(date) || !validTime(time)) {
+    throw new Error('自定义执行时间格式无效');
+  }
+  const [year, month, day] = date.split('-').map(Number);
+  const { hours, minutes } = parseAutomationTime(time);
+  return new Date(year, month - 1, day, hours, minutes, 0, 0);
 }
 
 function nextMatchingDate(
@@ -189,6 +240,24 @@ function validTime(value: unknown): value is string {
   }
   const [hours, minutes] = value.split(':').map(Number);
   return hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59;
+}
+
+function validDate(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+  const [year, month, day] = value.split('-').map(Number);
+  const candidate = new Date(year, month - 1, day);
+  return candidate.getFullYear() === year
+    && candidate.getMonth() === month - 1
+    && candidate.getDate() === day;
+}
+
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function weekdayLabel(weekday: number) {

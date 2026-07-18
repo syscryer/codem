@@ -47,7 +47,7 @@ export async function deleteAutomation(id: string) {
   }
 }
 
-export async function claimScheduledAutomation(id: string, nowMs: number, nextRunAtMs: number) {
+export async function claimScheduledAutomation(id: string, nowMs: number, nextRunAtMs?: number) {
   const payload = await requestJson<ClaimedAutomationRun>(
     `/api/automations/${encodeURIComponent(id)}/claim`,
     jsonRequest('POST', { nowMs, nextRunAtMs }),

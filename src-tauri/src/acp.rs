@@ -1816,6 +1816,9 @@ fn collect_session_update(
     match update_type {
         "agent_message_chunk" => {
             if let Some(text) = update.pointer("/content/text").and_then(Value::as_str) {
+                if is_structured_todo_update(text) {
+                    return Vec::new();
+                }
                 outcome.text_truncated |=
                     append_bounded(&mut outcome.text, text, MAX_AGENT_MESSAGE_BYTES);
                 return vec![AcpRuntimeEvent::TextDelta {
@@ -1853,6 +1856,19 @@ fn collect_session_update(
         _ => {}
     }
     Vec::new()
+}
+
+fn is_structured_todo_update(text: &str) -> bool {
+    let Ok(Value::Object(root)) = serde_json::from_str::<Value>(text.trim()) else {
+        return false;
+    };
+    let Some(update) = root.get("TodosUpdated").and_then(Value::as_object) else {
+        return false;
+    };
+    let Some(state) = update.get("state").and_then(Value::as_object) else {
+        return false;
+    };
+    state.get("todos").is_some() && state.get("type").and_then(Value::as_str) == Some("Todo")
 }
 
 fn parse_tool_call(value: &Value) -> Option<AcpToolCall> {
@@ -2137,6 +2153,57 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(eur.total_cost_usd, None);
+    }
+
+    #[test]
+    fn acp_session_update_hides_structured_todo_message_but_keeps_normal_json() {
+        let mut outcome = AcpPromptOutcome {
+            stop_reason: String::new(),
+            text: String::new(),
+            text_truncated: false,
+            thought_chunk_count: 0,
+            update_counts: BTreeMap::new(),
+            client_request_methods: Vec::new(),
+            cancel_sent: false,
+            usage: crate::agent_runtime::AgentUsageSnapshot::default(),
+        };
+        let todo_update = json!({
+            "TodosUpdated": {
+                "state": {
+                    "todos": {
+                        "1": { "content": "检查项目", "status": "in_progress" }
+                    },
+                    "summary_for_prompt": "[in_progress] 1: 检查项目",
+                    "type": "Todo"
+                }
+            }
+        })
+        .to_string();
+        let params = json!({
+            "sessionId": "session-1",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": todo_update }
+            }
+        });
+
+        assert!(collect_session_update("session-1", &params, &mut outcome).is_empty());
+        assert!(outcome.text.is_empty());
+
+        let normal_json = json!({ "answer": "这是用户要求的 JSON" }).to_string();
+        let normal_params = json!({
+            "sessionId": "session-1",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": normal_json }
+            }
+        });
+        let events = collect_session_update("session-1", &normal_params, &mut outcome);
+        assert!(matches!(
+            events.as_slice(),
+            [AcpRuntimeEvent::TextDelta { text }] if *text == normal_json
+        ));
+        assert!(outcome.text.contains("用户要求的 JSON"));
     }
     use crate::agent_runtime::{AgentControlCommand, AgentPermissionDecision};
     use serde_json::{json, Value};

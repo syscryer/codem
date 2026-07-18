@@ -97,7 +97,8 @@ struct SaveAutomationRequest {
 #[serde(rename_all = "camelCase")]
 struct ClaimAutomationRequest {
     now_ms: i64,
-    next_run_at_ms: i64,
+    #[serde(default)]
+    next_run_at_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -311,16 +312,14 @@ impl AutomationService {
         automation_id: &str,
         request: ClaimAutomationRequest,
     ) -> AutomationResult<ClaimedAutomationRun> {
-        if request.now_ms <= 0 || request.next_run_at_ms <= request.now_ms {
-            return Err(AutomationApiError::bad_request(
-                "下次运行时间必须晚于当前时间",
-            ));
+        if request.now_ms <= 0 {
+            return Err(AutomationApiError::bad_request("运行时间无效"));
         }
         self.create_run(
             automation_id,
             "scheduled",
             request.now_ms,
-            Some(request.next_run_at_ms),
+            request.next_run_at_ms,
         )
     }
 
@@ -366,13 +365,23 @@ impl AutomationService {
         if count_active_runs_from(&transaction, automation_id, now_ms - STALE_RUN_AFTER_MS)? > 0 {
             return Err(AutomationApiError::conflict("自动化已有运行中的任务"));
         }
-        if let Some(next_run_at_ms) = next_run_at_ms {
-            let changed = transaction
-                .execute(
+        if trigger == "scheduled" {
+            let one_time =
+                automation.schedule.get("kind").and_then(Value::as_str) == Some("custom");
+            let changed = if one_time {
+                1usize
+            } else {
+                let next_run_at_ms = next_run_at_ms
+                    .filter(|value| *value > now_ms)
+                    .ok_or_else(|| {
+                        AutomationApiError::bad_request("下次运行时间必须晚于当前时间")
+                    })?;
+                transaction.execute(
                     "UPDATE automations SET next_run_at_ms = ?, updated_at = ? WHERE id = ? AND enabled = 1 AND next_run_at_ms <= ?",
                     params![next_run_at_ms, current_timestamp(), automation_id, now_ms],
                 )
-                .map_err(|error| AutomationApiError::internal(format!("领取自动化失败: {error}")))?;
+                .map_err(|error| AutomationApiError::internal(format!("领取自动化失败: {error}")))?
+            };
             if changed == 0 {
                 return Err(AutomationApiError::conflict("自动化已被其他窗口领取"));
             }
@@ -418,8 +427,21 @@ impl AutomationService {
         let _guard = self.write_lock.lock().map_err(|lock_error| {
             AutomationApiError::internal(format!("自动化写入锁异常: {lock_error}"))
         })?;
-        let connection = self.open_database()?;
-        let changed = connection
+        let mut connection = self.open_database()?;
+        let transaction = connection.transaction().map_err(|db_error| {
+            AutomationApiError::internal(format!("启动自动化运行事务失败: {db_error}"))
+        })?;
+        let (automation_id, trigger, previous_status): (String, String, String) = transaction
+            .query_row(
+                "SELECT automation_id, trigger, status FROM automation_runs WHERE id = ?",
+                params![run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => AutomationApiError::not_found("自动化运行不存在"),
+                other => AutomationApiError::internal(format!("读取自动化运行失败: {other}")),
+            })?;
+        let changed = transaction
             .execute(
                 r#"
                 UPDATE automation_runs SET
@@ -447,6 +469,25 @@ impl AutomationService {
         if changed == 0 {
             return Err(AutomationApiError::not_found("自动化运行不存在"));
         }
+        if status == "completed" && previous_status != "completed" && trigger == "scheduled" {
+            let automation = read_automation_from(&transaction, &automation_id)?;
+            if automation.enabled
+                && automation.schedule.get("kind").and_then(Value::as_str) == Some("custom")
+            {
+                transaction
+                    .execute(
+                        "UPDATE automations SET next_run_at_ms = NULL, enabled = 0, updated_at = ? WHERE id = ? AND enabled = 1",
+                        params![current_timestamp(), automation_id],
+                    )
+                    .map_err(|db_error| {
+                        AutomationApiError::internal(format!("停用一次性自动化失败: {db_error}"))
+                    })?;
+            }
+        }
+        transaction.commit().map_err(|db_error| {
+            AutomationApiError::internal(format!("提交自动化运行事务失败: {db_error}"))
+        })?;
+        let connection = self.open_database()?;
         read_run(&connection, run_id)
     }
 }
@@ -951,7 +992,7 @@ mod tests {
                 &created.id,
                 ClaimAutomationRequest {
                     now_ms: 1_500,
-                    next_run_at_ms: 5_000,
+                    next_run_at_ms: Some(5_000),
                 },
             )
             .unwrap();
@@ -962,7 +1003,7 @@ mod tests {
             &created.id,
             ClaimAutomationRequest {
                 now_ms: 1_500,
-                next_run_at_ms: 5_000,
+                next_run_at_ms: Some(5_000),
             },
         );
         assert!(duplicate.is_err());
@@ -978,6 +1019,84 @@ mod tests {
             .unwrap();
         assert_eq!(claimed.run.trigger, "manual");
         assert_eq!(claimed.automation.next_run_at_ms, Some(8_000));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn custom_schedule_retries_after_failure_and_disables_after_completion() {
+        let (service, root) = service_with_project();
+        let mut one_time = request(1_000);
+        one_time.schedule = json!({
+            "kind": "custom",
+            "date": "2026-07-19",
+            "time": "10:30",
+            "timezone": "Asia/Shanghai"
+        });
+        let created = service.create(one_time).unwrap();
+        let claimed = service
+            .claim_scheduled(
+                &created.id,
+                ClaimAutomationRequest {
+                    now_ms: 1_500,
+                    next_run_at_ms: None,
+                },
+            )
+            .unwrap();
+
+        assert!(claimed.automation.enabled);
+        assert_eq!(claimed.automation.next_run_at_ms, Some(1_000));
+        assert!(service
+            .claim_scheduled(
+                &created.id,
+                ClaimAutomationRequest {
+                    now_ms: 2_000,
+                    next_run_at_ms: None,
+                },
+            )
+            .is_err());
+
+        service
+            .update_run(
+                &claimed.run.id,
+                UpdateAutomationRunRequest {
+                    status: "failed".to_string(),
+                    thread_id: None,
+                    error: Some("Agent 启动失败".to_string()),
+                    now_ms: Some(1_600),
+                },
+            )
+            .unwrap();
+        let retried = service
+            .claim_scheduled(
+                &created.id,
+                ClaimAutomationRequest {
+                    now_ms: 2_000,
+                    next_run_at_ms: None,
+                },
+            )
+            .unwrap();
+        assert!(retried.automation.enabled);
+
+        service
+            .update_run(
+                &retried.run.id,
+                UpdateAutomationRunRequest {
+                    status: "completed".to_string(),
+                    thread_id: None,
+                    error: None,
+                    now_ms: Some(2_100),
+                },
+            )
+            .unwrap();
+        let persisted = service
+            .bootstrap()
+            .unwrap()
+            .automations
+            .into_iter()
+            .find(|automation| automation.id == created.id)
+            .unwrap();
+        assert!(!persisted.enabled);
+        assert_eq!(persisted.next_run_at_ms, None);
         let _ = fs::remove_dir_all(root);
     }
 }

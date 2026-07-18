@@ -760,6 +760,12 @@ export type AutomationSchedule =
       time: string;
       monthDay: number;
       timezone: string;
+    }
+  | {
+      kind: 'custom';
+      date: string;
+      time: string;
+      timezone: string;
     };
 
 export type AutomationDefinition = {

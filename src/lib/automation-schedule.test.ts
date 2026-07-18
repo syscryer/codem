@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  automationScheduleError,
   calculateNextAutomationRun,
+  defaultCustomAutomationDate,
   formatAutomationSchedule,
   normalizeAutomationSchedule,
 } from './automation-schedule.js';
@@ -60,4 +62,60 @@ test('schedule normalization and labels keep invalid persisted values usable', (
   assert.equal(normalized.kind, 'weekly');
   assert.equal(normalized.time, '09:00');
   assert.equal(formatAutomationSchedule(normalized), '每周一 09:00');
+});
+
+test('custom schedule uses one future local date and keeps its label', () => {
+  const from = new Date(2026, 6, 18, 10, 0, 0, 0);
+  const schedule = {
+    kind: 'custom' as const,
+    date: '2026-07-19',
+    time: '10:30',
+    timezone: 'Asia/Shanghai',
+  };
+
+  assert.equal(
+    calculateNextAutomationRun(schedule, from.getTime()),
+    new Date(2026, 6, 19, 10, 30, 0, 0).getTime(),
+  );
+  assert.equal(formatAutomationSchedule(schedule), '自定义 2026-07-19 10:30');
+  assert.equal(defaultCustomAutomationDate(from), '2026-07-19');
+  assert.throws(
+    () => calculateNextAutomationRun(schedule, new Date(2026, 6, 20, 10, 0, 0, 0).getTime()),
+    /必须晚于当前时间/,
+  );
+});
+
+test('custom schedule normalization repairs invalid date and time', () => {
+  const normalized = normalizeAutomationSchedule({
+    kind: 'custom',
+    date: '2026-02-31',
+    time: '25:90',
+    timezone: 'Asia/Shanghai',
+  });
+
+  assert.equal(normalized.kind, 'custom');
+  assert.match(normalized.date, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(normalized.time, '09:00');
+});
+
+test('custom schedule validation reports an elapsed time without throwing', () => {
+  const from = new Date(2026, 6, 18, 10, 0, 0, 0).getTime();
+  assert.equal(
+    automationScheduleError({
+      kind: 'custom',
+      date: '2026-07-18',
+      time: '09:00',
+      timezone: 'Asia/Shanghai',
+    }, from),
+    '自定义执行时间必须晚于当前时间',
+  );
+  assert.equal(
+    automationScheduleError({
+      kind: 'custom',
+      date: '2026-07-19',
+      time: '09:00',
+      timezone: 'Asia/Shanghai',
+    }, from),
+    '',
+  );
 });

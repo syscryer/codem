@@ -39,10 +39,48 @@ test('automation editor uses custom menus and shared theme tokens', () => {
   assert.match(centerSource, /AgentProviderIcon/);
   assert.match(stylesSource, /\.automation-center[\s\S]*var\(--app-bg\)/);
   assert.match(stylesSource, /\.automation-primary-button[\s\S]*var\(--accent\)/);
+  assert.match(
+    stylesSource,
+    /\.automation-list-item\.active\s*\{[\s\S]*var\(--app-border-strong\)[\s\S]*var\(--app-surface-muted\)/,
+  );
+  assert.doesNotMatch(stylesSource, /\.automation-list-item\.active\s*\{[^}]*var\(--app-selected\)/);
+});
+
+test('automation list exposes an independent confirmed delete action', () => {
+  assert.match(centerSource, /automation-list-item-row/);
+  assert.match(centerSource, /className="automation-list-delete"/);
+  assert.match(centerSource, /aria-label=\{`删除自动化：\$\{automation\.name\}`\}/);
+  assert.match(centerSource, /event\.stopPropagation\(\)/);
+  assert.match(centerSource, /window\.confirm\(`确定删除自动化/);
+  assert.match(stylesSource, /\.automation-list-delete\s*\{[\s\S]*var\(--app-danger\)/);
+});
+
+test('automation list previews project context and the next execution', () => {
+  assert.match(centerSource, /projectById/);
+  assert.match(centerSource, /automation-list-project/);
+  assert.match(centerSource, /automation-list-path/);
+  assert.match(centerSource, /automation-list-next-run/);
+  assert.match(centerSource, /formatAutomationNextRun\(automation\.nextRunAtMs\)/);
+  assert.match(stylesSource, /grid-template-columns: minmax\(278px, 350px\)/);
+});
+
+test('automation editor exposes one-time custom schedule without a decorative calendar action', () => {
+  assert.match(centerSource, /value: 'custom', label: '自定义'/);
+  assert.match(centerSource, /type="date"/);
+  assert.match(centerSource, /defaultCustomAutomationDate/);
+  assert.doesNotMatch(centerSource, /CalendarClock/);
+  assert.match(hookSource, /automation\.schedule\.kind === 'custom'[\s\S]*\? undefined/);
 });
 
 test('automation terminal notices update completed, failed, and waiting states', () => {
   assert.match(hookSource, /notice\.kind === 'approval'[\s\S]*'waiting'/);
   assert.match(hookSource, /notice\.kind === 'completed'[\s\S]*'completed'/);
   assert.match(hookSource, /markRun\(run, status/);
+});
+
+test('custom schedules are validated before saving', () => {
+  assert.match(centerSource, /const scheduleError = automationScheduleError\(draft\.schedule\)/);
+  assert.match(centerSource, /&& !scheduleError/);
+  assert.match(centerSource, /className="automation-field-hint error"/);
+  assert.match(centerSource, /\{scheduleError\}/);
 });

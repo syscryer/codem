@@ -305,7 +305,9 @@ export function useAutomations({
       for (const automation of dueAutomations) {
         claimInFlightRef.current.add(automation.id);
         try {
-          const nextRunAtMs = calculateNextAutomationRun(automation.schedule, nowMs);
+          const nextRunAtMs = automation.schedule.kind === 'custom'
+            ? undefined
+            : calculateNextAutomationRun(automation.schedule, nowMs);
           const claimed = await claimScheduledAutomation(automation.id, nowMs, nextRunAtMs);
           await executeClaimedRun(claimed);
         } catch (claimError) {
