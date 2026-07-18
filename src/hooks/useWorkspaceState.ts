@@ -55,6 +55,7 @@ type CreateThreadOptions = {
   model?: string;
   reasoningEffort?: string;
   channelId?: string;
+  activate?: boolean;
 };
 
 type PersistThreadHistoryOptions = {
@@ -691,6 +692,7 @@ export function useWorkspaceState() {
       ...(options?.model ? { model: options.model } : {}),
       ...(options?.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
       ...(options?.channelId ? { channelId: options.channelId } : {}),
+      ...(options?.activate === false ? { activate: false } : {}),
     };
     const response = await fetch(`/api/projects/${projectId}/threads`, {
       method: 'POST',
@@ -725,11 +727,13 @@ export function useWorkspaceState() {
       ...current,
       [createdThread.id]: current[createdThread.id] ?? createThreadDetail(createdThread),
     }));
-    activeProjectIdRef.current = projectId;
-    setActiveProjectId(projectId);
-    setActiveThreadId(payload.threadId);
-    newChatDraftRef.current = false;
-    setIsNewChatDraft(false);
+    if (options?.activate !== false) {
+      activeProjectIdRef.current = projectId;
+      setActiveProjectId(projectId);
+      setActiveThreadId(payload.threadId);
+      newChatDraftRef.current = false;
+      setIsNewChatDraft(false);
+    }
     return createdThread;
   }
 

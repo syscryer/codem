@@ -733,6 +733,82 @@ export type OpenWithTargetsResponse = {
 
 export type AgentProviderId = 'claude-code' | 'grok-build' | 'openai-codex' | 'opencode';
 
+export type AutomationSchedule =
+  | {
+      kind: 'interval';
+      intervalMinutes: number;
+      timezone: string;
+    }
+  | {
+      kind: 'daily';
+      time: string;
+      timezone: string;
+    }
+  | {
+      kind: 'weekdays';
+      time: string;
+      timezone: string;
+    }
+  | {
+      kind: 'weekly';
+      time: string;
+      weekdays: number[];
+      timezone: string;
+    }
+  | {
+      kind: 'monthly';
+      time: string;
+      monthDay: number;
+      timezone: string;
+    };
+
+export type AutomationDefinition = {
+  id: string;
+  name: string;
+  prompt: string;
+  projectId: string;
+  providerId: AgentProviderId;
+  channelId?: string;
+  model?: string;
+  reasoningEffort?: string;
+  permissionMode: PermissionMode;
+  schedule: AutomationSchedule;
+  nextRunAtMs?: number;
+  enabled: boolean;
+  executionEnvironment: 'local';
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AutomationRunStatus =
+  | 'claimed'
+  | 'running'
+  | 'waiting'
+  | 'completed'
+  | 'failed'
+  | 'stopped';
+
+export type AutomationRun = {
+  id: string;
+  automationId: string;
+  threadId?: string;
+  status: AutomationRunStatus;
+  trigger: 'scheduled' | 'manual';
+  scheduledForMs: number;
+  startedAtMs?: number;
+  finishedAtMs?: number;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AutomationBootstrap = {
+  automations: AutomationDefinition[];
+  runs: AutomationRun[];
+};
+
+export type AutomationSaveInput = Omit<AutomationDefinition, 'id' | 'createdAt' | 'updatedAt'>;
+
 export type AgentChannelModel = {
   id: string;
   channelId: string;

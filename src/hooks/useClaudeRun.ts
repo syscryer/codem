@@ -2097,6 +2097,29 @@ export function useClaudeRun({
     return submitPromptToThread(thread, submission);
   }
 
+  function submitAutomationPromptToThread(
+    thread: ThreadSummary,
+    prompt: string,
+    options: {
+      permissionMode: PermissionMode;
+      model?: string;
+      reasoningEffort?: string;
+    },
+  ) {
+    let started = false;
+    void startRun(thread, prompt, {
+      workingDirectory: thread.workingDirectory,
+      displayText: prompt,
+      permissionModeOverride: options.permissionMode,
+      modelOverride: options.model,
+      effortOverride: normalizeClaudeEffortSelection(options.reasoningEffort),
+      onStarted: () => {
+        started = true;
+      },
+    });
+    return started;
+  }
+
   function handlePermissionModeSelect(mode: PermissionMode) {
     const previousMode = permissionModeRef.current;
     permissionModeRef.current = mode;
@@ -2567,6 +2590,7 @@ export function useClaudeRun({
     handlePermissionModeSelect,
     submitPrompt,
     submitPromptToThread,
+    submitAutomationPromptToThread,
     removeQueuedPrompt,
     recallQueuedPrompt,
     guideQueuedPrompt,

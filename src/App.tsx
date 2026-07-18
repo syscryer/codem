@@ -1,6 +1,7 @@
 import { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GitCommitHorizontal, ListChecks } from 'lucide-react';
 import { AppMenubar } from './components/AppMenubar';
+import { AutomationCenter } from './components/AutomationCenter';
 import { ChatHeader } from './components/ChatHeader';
 import { CloneRepositoryDialog } from './components/CloneRepositoryDialog';
 import { Composer } from './components/Composer';
@@ -24,6 +25,7 @@ import { useClaudeRun } from './hooks/useClaudeRun';
 import { useAgentRun } from './hooks/useAgentRun';
 import { useAgentChannels } from './hooks/useAgentChannels';
 import { useAppSettings } from './hooks/useAppSettings';
+import { useAutomations } from './hooks/useAutomations';
 import { useOrdinaryChat } from './hooks/useOrdinaryChat';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
 import { APP_UPDATE_CHECK_INTERVAL_MS, CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
@@ -112,11 +114,13 @@ import type {
 type AppView =
   | { kind: 'workspace' }
   | { kind: 'ordinary-chat' }
+  | { kind: 'automation' }
   | { kind: 'settings'; section: SettingsSection };
 
 type AppLocation =
   | { kind: 'workspace'; projectId: string | null; threadId: string | null }
   | { kind: 'ordinary-chat'; chatId: string | null }
+  | { kind: 'automation' }
   | { kind: 'settings'; section: SettingsSection };
 
 type NavigationHistory = {
@@ -299,6 +303,7 @@ export default function App() {
   const windowFocusedRef = useRef(isAppWindowFocused());
   const systemNotificationKeysRef = useRef(new Set<string>());
   const taskbarAttentionRequestedRef = useRef(false);
+  const automationNoticeHandlerRef = useRef<(notice: ThreadActivityNotice) => void>(() => undefined);
   const terminalDock = useTerminalDockState();
   const terminalDockAvailable = isTauriRuntime();
   const [terminalRunRequest, setTerminalRunRequest] = useState<TerminalRunRequest | null>(null);
@@ -470,6 +475,7 @@ export default function App() {
   }
 
   const handleThreadActivityNotice = useCallback((notice: ThreadActivityNotice) => {
+    automationNoticeHandlerRef.current(notice);
     const windowFocused = windowFocusedRef.current;
     const activeThreadIdSnapshot = activeThreadIdRef.current;
 
@@ -541,6 +547,7 @@ export default function App() {
     handlePermissionModeSelect: handleClaudePermissionModeSelect,
     submitPrompt: submitClaudePrompt,
     submitPromptToThread,
+    submitAutomationPromptToThread: submitClaudeAutomationPrompt,
     submitRequestUserInput: submitClaudeRequestUserInput,
     submitRuntimeRecoveryAction,
     submitApprovalDecision: submitClaudeApprovalDecision,
@@ -601,6 +608,7 @@ export default function App() {
     recallQueuedPrompt: recallGenericAgentQueuedPrompt,
     guideQueuedPrompt: guideGenericAgentQueuedPrompt,
     submitPrompt: submitGenericAgentPrompt,
+    submitAutomationPromptToThread: submitGenericAutomationPrompt,
     submitRequestUserInput: submitGenericAgentRequestUserInput,
     submitApprovalDecision: submitGenericAgentApprovalDecision,
     stopRun: stopGenericAgentRun,
@@ -625,6 +633,15 @@ export default function App() {
     persistThreadMetadata,
     onThreadActivityNotice: handleThreadActivityNotice,
   });
+
+  const automation = useAutomations({
+    projects,
+    createThread,
+    submitClaudePrompt: submitClaudeAutomationPrompt,
+    submitAgentPrompt: submitGenericAutomationPrompt,
+    showToast,
+  });
+  automationNoticeHandlerRef.current = automation.handleThreadActivityNotice;
 
   const activeProviderId = activeThreadSummary?.provider || draftProviderId;
   const activeRuntimeKind = resolveChatRuntimeKind(activeProviderId);
@@ -737,6 +754,8 @@ export default function App() {
   const currentAppLocation: AppLocation =
     appView.kind === 'settings'
       ? { kind: 'settings', section: appView.section }
+      : appView.kind === 'automation'
+        ? { kind: 'automation' }
       : appView.kind === 'ordinary-chat'
         ? { kind: 'ordinary-chat', chatId: ordinaryChat.isNewChatDraft ? null : ordinaryChat.activeChatId }
         : { kind: 'workspace', projectId: activeProjectId, threadId: isNewChatDraft ? null : activeThreadId };
@@ -744,7 +763,11 @@ export default function App() {
   const settingsReturnLocation = [...navigationHistory.past]
     .reverse()
     .find((location) => location.kind !== 'settings');
-  const settingsReturnLabel = settingsReturnLocation?.kind === 'ordinary-chat' ? '返回聊天' : '返回工作区';
+  const settingsReturnLabel = settingsReturnLocation?.kind === 'ordinary-chat'
+    ? '返回聊天'
+    : settingsReturnLocation?.kind === 'automation'
+      ? '返回自动化'
+      : '返回工作区';
   const canNavigateBack = navigationHistory.past.length > 0;
   const canNavigateForward = navigationHistory.future.length > 0;
   const runtimePlatform = useMemo(() => resolveDesktopPlatform(), []);
@@ -1388,6 +1411,10 @@ export default function App() {
     navigateToLocation({ kind: 'settings', section });
   }
 
+  function openAutomations() {
+    navigateToLocation({ kind: 'automation' });
+  }
+
   function returnWorkspace() {
     if (appView.kind === 'settings') {
       let targetIndex = -1;
@@ -1498,6 +1525,12 @@ export default function App() {
       } else {
         ordinaryChat.createNewChatDraft();
       }
+      return;
+    }
+
+    if (location.kind === 'automation') {
+      setAppView({ kind: 'automation' });
+      setRightWorkbenchOpen(false);
       return;
     }
 
@@ -1917,6 +1950,7 @@ export default function App() {
               activeThreadId={appView.kind === 'workspace' ? activeThreadId : null}
               activeOrdinaryChatId={appView.kind === 'ordinary-chat' ? ordinaryChat.activeChatId : null}
               ordinaryChatIsDraft={appView.kind === 'ordinary-chat' && ordinaryChat.isNewChatDraft}
+              automationsActive={appView.kind === 'automation'}
               ordinaryChats={ordinaryChat.chats}
               runningOrdinaryChatIds={ordinaryChat.runningChatIds}
               runningThreadIds={runningThreadIds}
@@ -1941,6 +1975,7 @@ export default function App() {
               onRefreshProjects={handleRefreshProjects}
               refreshingProjects={projectsRefreshing}
               onOpenPlugins={() => openSettings('plugins')}
+              onOpenAutomations={openAutomations}
               onPanelStateChange={handlePanelStateChange}
               onPickProjectDirectory={handlePickProjectDirectory}
               onOpenCloneDialog={() => setCloneDialogOpen(true)}
@@ -1972,7 +2007,32 @@ export default function App() {
               '--right-workbench-width': `${effectiveRightWorkbenchWidth}px`,
             } as CSSProperties}
           >
-            {appView.kind === 'ordinary-chat' ? (
+            {appView.kind === 'automation' ? (
+              <AutomationCenter
+                automations={automation.automations}
+                runs={automation.runs}
+                projects={projects}
+                providers={agentProviders}
+                channels={agentChannels.bootstrap.channels}
+                claudeModels={claudeModels.models}
+                defaultProviderId={agentRuntime.defaultProviderId}
+                defaultPermissionMode={general.defaultPermissionMode}
+                loading={automation.loading}
+                error={automation.error}
+                savingId={automation.savingId}
+                deletingId={automation.deletingId}
+                startingId={automation.startingId}
+                onRefresh={automation.refresh}
+                onSave={automation.save}
+                onDelete={automation.remove}
+                onRunNow={automation.runNow}
+                onOpenThread={(projectId, threadId) => navigateToLocation({
+                  kind: 'workspace',
+                  projectId,
+                  threadId,
+                })}
+              />
+            ) : appView.kind === 'ordinary-chat' ? (
               <OrdinaryChatWorkspace
                 chat={ordinaryChat}
                 showToast={showToast}
@@ -2365,6 +2425,10 @@ function isSameAppLocation(left: AppLocation | null, right: AppLocation | null) 
 
   if (left.kind === 'ordinary-chat' && right.kind === 'ordinary-chat') {
     return left.chatId === right.chatId;
+  }
+
+  if (left.kind === 'automation' && right.kind === 'automation') {
+    return true;
   }
 
   if (left.kind === 'workspace' && right.kind === 'workspace') {

@@ -1,0 +1,63 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import {
+  calculateNextAutomationRun,
+  formatAutomationSchedule,
+  normalizeAutomationSchedule,
+} from './automation-schedule.js';
+
+test('interval automation advances from the actual claim time', () => {
+  const from = new Date(2026, 6, 18, 10, 0, 0, 0).getTime();
+  assert.equal(
+    calculateNextAutomationRun(
+      { kind: 'interval', intervalMinutes: 90, timezone: 'Asia/Shanghai' },
+      from,
+    ),
+    from + 90 * 60_000,
+  );
+});
+
+test('daily and weekday schedules move past an elapsed local time', () => {
+  const fridayMorning = new Date(2026, 6, 17, 10, 30, 0, 0).getTime();
+  assert.equal(
+    new Date(calculateNextAutomationRun(
+      { kind: 'daily', time: '09:00', timezone: 'Asia/Shanghai' },
+      fridayMorning,
+    )).getDate(),
+    18,
+  );
+  const weekday = new Date(calculateNextAutomationRun(
+    { kind: 'weekdays', time: '09:00', timezone: 'Asia/Shanghai' },
+    fridayMorning,
+  ));
+  assert.equal(weekday.getDay(), 1);
+  assert.equal(weekday.getDate(), 20);
+});
+
+test('weekly schedule supports selected weekdays', () => {
+  const mondayAfterRun = new Date(2026, 6, 20, 11, 0, 0, 0).getTime();
+  const next = new Date(calculateNextAutomationRun(
+    { kind: 'weekly', time: '10:00', weekdays: [1, 3], timezone: 'Asia/Shanghai' },
+    mondayAfterRun,
+  ));
+  assert.equal(next.getDay(), 3);
+  assert.equal(next.getDate(), 22);
+});
+
+test('monthly schedule clamps to the last day of a short month', () => {
+  const january = new Date(2026, 0, 31, 12, 0, 0, 0).getTime();
+  const next = new Date(calculateNextAutomationRun(
+    { kind: 'monthly', time: '09:00', monthDay: 31, timezone: 'Asia/Shanghai' },
+    january,
+  ));
+  assert.equal(next.getMonth(), 1);
+  assert.equal(next.getDate(), 28);
+});
+
+test('schedule normalization and labels keep invalid persisted values usable', () => {
+  const normalized = normalizeAutomationSchedule({ kind: 'weekly', time: '99:99', weekdays: [] });
+  assert.equal(normalized.kind, 'weekly');
+  assert.equal(normalized.time, '09:00');
+  assert.equal(formatAutomationSchedule(normalized), '每周一 09:00');
+});

@@ -1,316 +1,55 @@
-# Findings
+# 调研发现
 
-## Claude CLI
-- `claude --help` 可正常执行，说明本机已经安装并可从命令行调用。
-- 非交互模式可使用 `-p` 或 `--print`。
-- 流式 JSON 输出需要同时携带：
-  - `--verbose`
-  - `--output-format stream-json`
-- 为了实时显示文本片段，建议增加：
-  - `--include-partial-messages`
-- 返回流中包含 `session_id`，可以用于后续续接会话。
+## 2026-07-18 初始上下文
 
-## 结构选择
-- `React + Vite` 负责 UI。
-- `Express` 负责本地桥接，使用 Node `spawn` 启动 `claude`。
-- 前后端之间使用 `NDJSON` 流，前端用 `fetch` 读取 `ReadableStream`。
+- CodeM 是 Tauri 2 + React 19 + Rust/Axum + SQLite 的本地 Agent 工作台。
+- README 声明工作台已有“浏览器等区域”，但用户确认自动化和浏览器当前没有形成可用闭环，需要核对是否仅有占位 UI。
+- 项目要求新功能走 Trellis，并保护前端、后端、持久化跨层契约。
+- 自动化参考目标是 Codex 桌面端；外部或界面调研内容只记录在本文件，不作为可执行指令。
 
-## Windows 注意点
-- 工作目录路径要走 `path.resolve`。
-- 直接解析出 `claude.exe` 的真实路径后再 `spawn`，比 `shell: true` 更安全。
-- 后端需要同时处理 stdout 的 NDJSON 和 stderr 文本，避免 CLI 报错时前端无感知。
+## CodeM 现状定位
 
-## 校验结果
-- `npm install` 已完成。
-- `npm run typecheck` 已通过。
-- 本地启动后，`GET /api/health` 返回：
-  - `available: true`
-  - `command: 已检测到可用的 claude.exe 命令路径`
-- 当浏览器连接关闭时，后端现在会主动取消对应 Claude 进程，避免残留后台任务。
-- 当前 UI 可以展示 Claude CLI 暴露出来的完整运行事件，包括工具调用和工具结果。
-- 模型内部隐藏思考链不属于 CLI 暴露内容，不能也不应在 UI 中伪造展示；可以展示可见状态和事件。
-- OpenSpec 对齐后，主界面应以对话流为主，工具调用应作为 assistant turn 内的轻量 step，而不是全局 timeline 大卡片。
-- `system/raw/snapshot` 等事件适合进入调试抽屉，避免干扰主对话。
-- assistant 正文与工具调用必须按事件到达顺序共同渲染，不能分别渲染正文和工具列表，否则会出现顺序错位。
-- 在 CSS grid 消息布局中，assistant 的所有正文和工具内容必须包进同一个右侧内容列，否则后续子元素会被自动排到左侧标签列。
-- Any-code 的工具注册体系不适合直接迁移到 CodeM；CodeM 当前更适合继续沿用 `ToolStep + AssistantItem`，在工具标题、结果合并、专用预览和历史解析上补覆盖。
-- `system/init` 仍应留在调试信息，不进入主对话；`EnterPlanMode` 可以作为轻量工具卡显示，`ExitPlanMode` 继续走审批卡。
-- 子代理 `isSidechain` 事件不应直接插入主 assistant 文本；更稳妥的展示方式是通过 `parent_tool_use_id` 挂到父 `Agent/Task` 工具详情中。
-- 工具结果可能晚于工具调用、跨消息到达，历史修复应优先按 `toolUseId` 回挂，找不到再回退到最近未完成工具。
+- 左侧 `SidebarProjects.tsx` 已有“自动化”按钮，但没有动作，是明确占位入口。
+- `RightWorkbench.tsx` 已有浏览器标签与工具栏壳，内容固定为“空白页”，同样是占位实现。
+- `AppLocation` 当前只覆盖 workspace、ordinary-chat、settings；自动化需要新增顶层页面位置与前进/后退语义。
+- 自动化是新的持久化领域，应新增独立 Rust module 和 SQLite 表，不继续把长流程堆入 `backend.rs`。
+- 前端建议拆为独立页面组件、API helper 和状态 hook；`App.tsx` 只负责页面装配与导航桥接。
+- 自动化执行应复用现有 Agent 运行入口与 thread 数据，不复制一套 CLI 协议状态机。
 
-## Claude 会话来源与历史解析
+## Codex 自动化模型
 
-- Claude Code 会话的权威来源是 `~/.claude/projects/**/*.jsonl`。
-- 已绑定 `session_id` 的线程如果 jsonl 不存在，不应从 SQLite 旧缓存推断历史、标题或可见性；这会制造重复线程和过期会话。
-- SQLite 中的 `messages` / `tool_calls` 只作为可刷新缓存和本地未绑定草稿的存储；对已绑定 session，历史应可由 jsonl 重建。
-- `agent-*.jsonl` 是子 Agent 内部会话，不应作为主线程导入；实时流中的 `isSidechain` 事件也不应进入主对话。
-- transcript 中 `isMeta`、技能注入 prompt、continuation prompt 以及旧格式 `<thinking>` 文本都不是用户可见主对话内容。
-- 工具结果必须绑定到真实 tool use；空 `done` 和空 assistant 文本不能被当作成功输出。
+- Codex 自动化的稳定字段包括：`name`、`prompt`、`projectId`、`executionEnvironment`、`destination`、`model`、`reasoningEffort`、`rrule`、`status`。
+- 新建自动化是独立本地任务；执行环境支持当前项目目录或隔离 worktree。CodeM 首版应先支持当前项目目录，保留执行环境字段以便后续扩展。
+- 自动化应优先更新既有记录而不是复制；启停是显式状态，删除为独立动作。
+- Windows 界面快照被系统以 `GetCursorPos 0x80070005` 拒绝，未继续操作 Codex 窗口。
 
-## 右侧工作台需求发现
+## 持久化与运行边界
 
-- 用户明确区分了两个入口：文件夹图标是文件视图单按钮；最右侧分栏图标才是右侧面板的收缩开关。
-- 右侧面板不是 Git 专用，而是可扩展工作台，可承载 `概览`、`文件`、`浏览器` 等工具页。
-- `文件` 页默认展示 `所有文件`，也可以切换到 `已更改文件`。
-- `已更改文件` 的目标形态接近 IDE 的 Changes/Diff 面板：左侧 diff 预览，右侧已更改文件树。
-- `浏览器` 页第一版可以先是空白页 + URL 输入，不需要立即接真实页面加载。
-- 顶栏文件夹按钮更适合作为 `所有文件` 入口，点击后打开右侧工作台并切到 `文件 / 所有文件`。
-- 顶栏 `+60 -6` 更适合作为 Git 审查入口，点击后打开右侧工作台并切到 `文件 / 已更改文件`。
-- 提交弹窗与右侧工作台职责不同：工作台用于常驻审查与工具查看；提交弹窗用于最终提交/推送表单。
-- 第一版不应把“文本编辑器保存”纳入范围，否则会引入文件写入、冲突保护、未保存状态等复杂问题。
-- 布局上需要保证工作台关闭时聊天区吃满；打开时聊天区不出现横向滚动，底部 composer 仍可正常使用。
-- AI 写入/修改文件后的文件卡片也应进入右侧工作台预览，而不是只提供外部打开；这能让“写申请材料/写规划文档”这类任务形成即时预览闭环。
-- 文件预览适合采用工作台内动态 tab：固定 tab 是 `概览/审查/浏览器`，文件 tab 是用户打开的文档，例如 `right-workbench.md`、`task_plan.md`。
-- Markdown 是第一优先级预览类型，应渲染为阅读视图；普通文本可以只读代码预览；二进制和过大文件显示不可预览。
-- 文件预览第一版仍不做保存，避免引入真实编辑器复杂度。
-- 所有文件视图不应一次性递归扫描完整仓库，尤其要避免 `node_modules` 这类目录造成卡顿；更适合按文件夹懒加载一级内容。
-- 已更改文件不需要读取真实目录树，可以将 Git status 返回的路径组装成虚拟目录树，这样更快也更接近 Codex/IDE 的变更视图。
-- 右侧工作台更适合采用“左侧预览 tab + 右侧文件树”的结构，文件树负责导航，预览区负责 diff、Markdown 和代码阅读。
+- 本机 Codex `automation.toml` 还包含 `version`、`id`、`kind`、`target`、`cwds`、`created_at`、`updated_at`，与接口字段一致。
+- CodeM `AgentRunService` 把事件保存在内存 run record 中，提供运行与事件读取能力，但线程 timeline 的 SQLite 写入由现有前端 hook 驱动。
+- 自动化如果完全放在 Rust 调度，需要新增“事件归并并写历史”的后台消费者，工作量和回归面明显更大。
+- 桌面前端是应用常驻进程，首版可由前端低频调度到点任务，调用现有创建线程和 Agent run 流程；配置、运行租约和结果索引仍由 Rust/SQLite 管理，避免重复触发。
+- 这种方案满足“应用运行时自动执行”，也与 Codex 本地自动化的运行边界一致；应用关闭期间不补跑是首版明确边界。
 
-## Rust 后端真实接口对照发现
+## 可复用接口结论
 
-- 原版项目目录为 `D:\cursor_project\codem`，当前 Rust 重构目录为 `D:\ai_proj\codem`。
-- 当前用户要求不是只验证路由存在，而是用原版接口行为做逐接口真实对照。
-- 第一轮接口对照脚本有缺陷：`POST /api/projects` 返回字段是 `projectId`，`POST /api/projects/:id/threads` 返回字段是 `threadId`，脚本只取 `project.id/id`，导致大量请求落到 `/api/projects/undefined/...` 和 `/api/threads/undefined/...`。
-- 路由覆盖已达到 old=96、rust=96、missing=[]、extra=[]，但行为差异仍需继续修。
-- 初筛真差异包括：`/api/claude/version-info` 字段不兼容、`/api/claude/system-prompt` GET 缺少 metadata、settings 更新未按旧版 normalize、临时目录文件预览权限策略不一致、错误响应文本/JSON 格式不一致。
-- 最终对照脚本固定使用旧版 `http://127.0.0.1:39201` 和 Rust `http://127.0.0.1:39202`，结果写入 `%TEMP%\codem-api-compare-fixtures\api-compare-results.json`。
-- 最终 50 个真实接口全部通过：workspace、project/thread、Git、Claude run、MCP/configs、plugins/skills、settings、file/image/attachments 均完成状态码和结构对照。
-- 对照过程中确认旧版 workspace 会隐藏绑定了不存在 transcript 且没有本地历史的 session 线程；Rust 已补同样的可见性过滤。
-- Claude run 兼容点不只包括首个 status，还包括旧版开头 trace 事件和 system payload 的 `claude-event` 包装事件。
-- Git history/log 旧版即使单提交也会返回最小 graph segment，Rust 已补 `segmentsBefore` 和 `segmentsAfter`。
-- MCP 列表旧版不会为缺失 args 的服务输出空 `args: []`；Rust 已改为仅原配置存在 args 时输出。
+- Claude hook 已公开 `submitPromptToThread(thread, submission)`，内部 `startRun` 支持权限、模型、思考覆盖；增加一个小型自动化入口即可指定保存的运行参数。
+- 通用 Agent hook 的 `startAgentRun(thread, ...)` 已具备后台线程能力但未导出；可包装为 `submitAutomationPromptToThread`，不改普通提交路径。
+- 现有 `createThread` 总会更新后端 `activeProjectId/activeThreadId` 并切换前端选择；需要增加 `activate: false` 语义，自动化创建会话时只更新项目线程集合。
+- 自动化后端可作为独立 `automation.rs` service 挂到 Router，共用 `codem.sqlite`，无需扩大 `AppState` 或继续堆积 `backend.rs`。
+- `chrono` 已存在，可用于后端时间戳；计划的下次执行时间由共享前端纯函数生成，后端负责校验单调递增和原子领取。
 
-## 独立普通 AI 聊天需求发现
+## 前端设计复用
 
-- 用户确认聊天窗口继续使用 CodeM 原有风格，Cherry Studio 只参考供应商、模型和知识库交互。
-- 左侧同时保留“新建任务”和“新建聊天”；普通聊天列表位于主导航下、项目列表上，且不归属项目。
-- Agent 项目会话继续留在项目下面，普通聊天和 Agent 任务必须在数据、运行时和 UI 语义上分开。
-- 供应商和模型都在 Composer 底部选择，不放到聊天 Header。
-- 一个供应商允许启用多个模型，但每次发送只选择一个模型回答。
-- 同一普通聊天后续可以切换其他供应商或模型；切换只影响下一轮，历史保留真实模型快照，新模型延续现有上下文。
-- 用户明确不需要一次提问多个模型同时回答。
-- 普通聊天需要完整版，而不是最小聊天壳：附件、MCP、Skills、知识库、历史、安全、恢复和性能都进入任务范围。
-- mXterm 已有 Rust `ai_assistant` 可参考 API Key 安全存储、供应商测试、模型获取、流式聊天和独立会话表，但当前是一配置一模型，不能原样复用。
-- Cherry Studio 的公开模型选择器将 Provider 与 Model 分表，支持按供应商分组、搜索、收藏和多选；CodeM 当前只采用分组/搜索/启用模型思想，不采用多模型同时回答。
-- Cherry Studio 的知识库选择发生在 Composer 工具区，可多选知识库并保存到聊天作用域；这与 CodeM 已确认的输入区布局一致。
-- CC Switch 预设适合参考“模板预填 + 自定义入口”，但其大量合作伙伴/中转商、推广链接和 Agent 专用配置不适合进入普通聊天。
-- 首批模板应以常见官方厂商为主，模板只保存公开元数据，模型尽量实时拉取，不能用更新覆盖用户自定义字段。
-- 当前主工作区有未完成 `multi-agent-settings-native-management` Trellis session 和设置相关脏文件；本任务已使用独立 worktree 避免覆盖。
-- CodeM Rust 依赖目前没有 HTTP client、凭据 vault、URL 解析、向量索引或 tokenizer；普通聊天不能只靠现有 Agent 子进程链路，需要新增受控依赖或实现对应基础设施。
-- mXterm 的 AI assistant 使用 `reqwest` 调官方/兼容 API，并通过本地加密 secret store 保存 API Key；其方案可作为安全与流式解析参考，但 CodeM 需要改造成 HTTP backend API，而不是仅 Tauri command。
-- CodeM 已有成熟的 Agent runtime event、content blocks、approval card 和流式 NDJSON 基础，可以复用事件语义与前端渲染，不应复用 Agent provider session 数据表。
-- Rust 后端适合新增独立 `ordinary_chat` 模块：模块持有自己的 service、运行记录和数据库初始化锁，通过 `backend.rs` 的 `create_router` 薄合并，避免继续把实现塞进超过一万行的 `backend.rs`。
-- 普通聊天可以继续使用同一个 `%LOCALAPPDATA%/CodeM/codem.sqlite`，但应建立独立 `ai_*` 表和外键，不给 Agent `threads` 增加大量可空字段。
-- 前端 `AppView` 当前只有 workspace/settings；普通聊天应新增一等 `chat` location，而不是伪造 project/thread。`SidebarProjects` 可演进为同时接收普通聊天列表与项目列表，但普通聊天状态应由独立 hook 管理。
-- `ConversationTurn`、`AssistantItem`、`ApprovalRequestCard` 和 content blocks 已能承载普通聊天的大部分展示语义；新增运行 hook 时应复用这些类型并只扩展知识库引用、模型快照等必要字段。
-- `ConversationTurn` 当前缺少每轮供应商/模型快照、知识库引用和普通聊天工具审批定位字段；这些应作为可选通用字段扩展，保持 Agent 历史兼容。
-- 普通聊天路由模块可以暴露与现有 `AgentRunEvent` 同构的 NDJSON 事件，使 `ConversationTurn` 渲染和 `agent-run-events` 归并逻辑可复用，但运行 hook、停止/审批 URL 和持久化仍独立。
-- 现有 `/api/mcp/servers` 和 `/api/skills` 主要是 Inspector/管理接口，没有直接模型 API 可调用的 MCP client；普通聊天需要实现真正的 MCP initialize、tools/list、tools/call 与生命周期管理。
-- Skills 列表已有多来源扫描和 frontmatter 解析，但运行时需要按选中 ID 安全解析正文；后续应抽共享只读 resolver，避免前后端传递整份 Skill 内容。
-- mXterm 的模型 API 代码可直接借鉴模型列表、endpoint 归一化、SSE 分帧、错误脱敏和 OpenAI/Anthropic 请求构造；其聊天只处理文本，不包含工具调用、图片或多轮模型快照，因此只能作为 adapter 基线。
-- mXterm 的 `mcp.rs` 是对外提供 mXterm 工具的 MCP server，并不是通用 MCP client；CodeM 普通聊天仍需自行实现 stdio 与 HTTP MCP client。
-- 普通聊天 adapter 应从第一天支持结构化 content blocks 和 tools，而不是先移植 mXterm 纯文本接口后再重写。
-- `agent_run` 已提供可复制的运行记录、通知、NDJSON 重连、取消和前端 rAF 批量 delta 模式；普通聊天可采用同一运行骨架，但直接 API 每轮无常驻 provider session，历史由 CodeM 归一化重发。
-- 前端可新建 `useOrdinaryChatRun`，复用 `applyAgentRunEventToTurn` 和 `consume NDJSON` 结构；不能把普通聊天硬塞进 `useAgentRun`，否则会重新引入工作目录、权限和 Agent Provider 假设。
-- 普通聊天每轮运行需要把当前 provider/model 快照写入 turn，终态持久化由普通聊天 API 自己负责，前端只做乐观显示与刷新同步。
-- 第一批 Rust 基础模块编译和测试通过：`ordinary_chat` 已独立合并 router，`ai_*` schema 覆盖供应商、模型、聊天、消息、工具和知识库；加密 vault 文件不含明文 API Key。
-- `reqwest 0.13.4 + aes-gcm 0.10` 在当前 Windows/Tauri 工程可正常编译；精选模板和 OpenAI/Anthropic/Gemini 模型列表解析测试通过。
-- 本地 vault 使用独立随机 key 加密 secrets 文件并保留更新备份，当前保护目标是避免 SQLite、日志、导出和普通文件直接出现明文；后续仍需补错误路径和并发写入测试。
-- `ConversationPane` 可以直接复用：普通聊天只需把持久化消息映射为兼容 `ThreadDetail/ConversationTurn`，文件变更和运行恢复回调传无操作实现。
-- `Composer` 的附件、@文件、草稿、停止按钮、Provider/模型 popover 已经齐全，适合增加 `variant='ordinary'` 和少量上下文工具 props；复制一份 Composer 会造成附件与输入语义分叉。
-- 普通聊天前端可以把 AI 供应商映射为现有 Provider descriptor、把已启用模型映射为 AgentModelCatalog，从而复用底部选择器；需要显式隐藏权限和 reasoning 控件，并把标题从 Agent Provider 改为 AI 供应商。
-- 普通聊天运行中应锁定本轮模型，运行结束后才允许切换，避免 UI 展示值与已发请求不一致。
-- `ChatHeader` 深度绑定项目、Git、终端和 Agent thread 菜单，不适合用空 props 伪装；普通聊天应新增轻量 Header，但复用 `chat-header/thread-title/workspace-menu` 样式。
-- `Composer` 可通过新增 ordinary variant 复用附件和底部菜单；普通聊天 Provider descriptor 能复用现有类型，模型能映射为 AgentModelCatalog，但权限控件必须由显式 prop 隐藏，不能靠 CSS 或假权限值。
-- 2026-07-14 恢复检查确认当前工作仍位于隔离 worktree `D:\ai_proj\codem-worktrees\ordinary-chat`、分支 `codex/ordinary-chat`，原工作区设置页改动未带入。
-- 当前后端已经完成聊天 CRUD、运行历史、四类文本流式协议、停止/重连、上下文裁剪和自动标题；前端 ordinary chat API/hook/workspace/header 已开始，但尚未执行 typecheck。
-- 当前 UI 决策保持不变：普通聊天列表位于左侧主导航下方、项目列表上方；不是项目子项，也不复用 Agent thread 语义。
-- 隔离 worktree 当前没有 `node_modules`，首次 `npm run typecheck` 失败原因是系统找不到 `tsc`，不是新增前端代码的类型错误；需要先按 `package-lock.json` 执行 `npm ci`。
-- 前端规范再次确认：ordinary chat 远程请求和运行状态保留在独立 hook，App 只做顶层桥接；普通聊天可见内容继续进入 `turn.items`，不能用第二套 timeline。
-- `App.tsx` 当前只存在 workspace/settings 两类 location；ordinary chat 需要新增一等 location，并让前进/后退能恢复具体 chatId 或新建草稿。
-- `SidebarProjects` 已集中承担主导航、置顶和项目线程列表，适合扩展 ordinary chat props 与行渲染；入口文案应把现有“新建聊天”改为“新建任务”，再新增“新建聊天”。
-- ordinary chat 分组应在 `sidebar-scroll-region` 内先于项目分组渲染；普通聊天置顶保留在自己的分组顶部，避免与项目/Agent 的“置顶”语义混在一起。
-- `Dialogs` 只接受 workspace 的 `InputDialogState/ConfirmDialogState`，直接复用会把 ordinary chat 操作塞回 Agent workspace 状态；更清晰的做法是新增一个轻量 ordinary chat 对话框组件，复用现有 `dialog-*` 样式。
-- `AiChatSummary` 已包含标题、更新时间、置顶时间、消息数和最后消息摘要，足够支撑左侧列表、排序与菜单；无需伪造 `ThreadSummary`。
-- 普通聊天 header 已实现置顶/重命名/删除菜单，App 只需提供统一的 rename/delete dialog 动作，侧边栏与 header 共用同一入口。
-- 现有设置 section 已有 `providers`，普通聊天 Composer 的“配置供应商”入口可先导航到该 section；最终只做薄接线并在合并另一设置会话后核对具体内容。
-- 顶部应用菜单目前仍写“新建聊天”，其动作实际创建 Agent thread；为保持产品语义，需同步改为“新建任务”，不能只改侧边栏。
-- App 与 Sidebar 首轮接线后 typecheck 通过：ordinary chat 已是一等 location，前进/后退可以记录 chatId，普通聊天页面不再伪装 project/thread。
-- 左侧普通聊天分组已位于项目区上方，草稿态单独显示；普通聊天置顶在自身列表中排序展示，不并入 Agent 的项目置顶区。
-- 当前为避免已有单 run hook 在切换时污染可见 turns，运行期间暂时阻止切换到其他普通聊天；这只是安全门，后续必须改为按 chatId 隔离 live turns 才满足完整验收。
-- 后端 `AiInputContentBlock::Image` 已完整接收 path/mime/data，但四类 Provider builder 当前统一调用 `message_text`，图片内容被忽略；多模态缺口集中在协议 payload 构造层，不需要改前端 content block 模型。
-- OpenAI Chat、Responses、Anthropic、Gemini 需要分别生成 image_url/input_image/source/inlineData 结构；历史中已脱敏去除 data 的图片只能在发送当轮使用，重试若要保留图片必须通过安全路径重新读取或保存受控附件引用。
-- 现有普通聊天运行后端已经按 chatId 防止同一聊天并发，但前端 hook 只有一个全局 `turns` 和单 run context；要允许运行中切换会话，前端至少需要 `turnsByChatId` 与 active detail 条件更新。
-- 前端附件 base64 是裸数据而不是 data URL；Provider builder 需要自行加 `data:{mime};base64,`（OpenAI），Anthropic/Gemini 则传分离的 mime 和 data。
-- `message.content` 已保存用户显示文本，contentBlocks 的 text block 不应再次拼接；现有 `message_text` 只追加 file_text/file_reference，适合作为多模态 payload 的文本部分。
-- 四类 Provider 图片映射已落地并由单元测试锁定：OpenAI Chat 使用 `image_url`，Responses 使用 `input_image`，Anthropic 使用 base64 source，Gemini 使用 `inlineData`。
-- 图片 payload 同时兼容裸 base64 与 data URL，并拒绝非 `image/*` mime；历史脱敏块没有 data 时不会伪造图片请求。
-- 知识库已采用明确的本地索引模式：UTF-8 文本/Markdown/代码文件和目录导入，1200 字符重叠切片，256 维 SHA-256 特征哈希向量与余弦检索；不依赖聊天供应商或额外嵌入 API。
-- 知识库命中在运行前作为低优先级 system context 注入，并明确防止把检索内容当指令；assistant message 持久化 citations，刷新后仍可展示具体来源。
-- Composer 普通聊天附件不再要求项目工作目录：普通模式下浏览器图片直接以内联 base64 构建 image block，桌面路径图片继续复用受控读取结果。
-- 为避免设置页并行冲突，知识库管理使用独立弹窗，覆盖创建、文件/目录/粘贴导入、来源删除、重建和知识库删除。
-- Skills 复用现有全局扫描结果，普通聊天只保存选中 ID；运行时重新解析本地 SKILL.md、校验文件名和 512 KB 上限，并注入内容与 SHA-256 版本摘要，trace/历史不保存 Skill 全文。
-- 浏览器真实烟测确认左侧“新建任务/新建聊天”、聊天分组、普通聊天空态、Composer 知识库/Skills/供应商/模型控件和知识库管理弹窗均正常出现；普通聊天视觉保持 CodeM 原有克制布局。
-- 实际 UI 暴露的两处文案问题已修正：普通聊天空态不再写“落进当前项目”，未配置供应商/模型会明确显示“未配置供应商/未选择模型”。
-- 主工作区 5173/3001 被并行设置会话占用，本任务使用 5174/3101 启动隔离服务完成验证，没有停止或覆盖对方进程。
-- 2026-07-14 再次恢复时，README 仍把 CodeM 描述为以 Claude Code 为主的桌面壳；普通聊天必须继续保持独立模块和清晰产品语义，避免把 Provider API 能力反向混入 Agent session。
-- Trellis workflow 要求跨层完整功能在实现节点持续 `record`、验证后 `verify`，只有 MCP、消息级动作和设置薄接线等验收全部完成后才能 `complete`。
-- 前端规范再次确认：普通聊天运行态应继续保留在独立 hook，消息/审批展示复用现有 conversation rendering contract；新增 MCP 选择和消息动作不能把 `App.tsx` 变成运行时实现容器。
-- 后端入口文档仍以旧 Node 范围描述，但当前仓库普通聊天已经落在 Rust `src-tauri`；实现时仍需遵守其 REST/streaming/persistence 约束，并以现有 Rust 架构为事实基线。
-- Thinking Guides 明确把运行事件、bootstrap、聊天 timeline 和热会话恢复视为跨层高风险区域；MCP 工具事件、审批恢复和消息重放必须同步核对前端、API、持久化三层。
-- 记忆索引中没有本普通聊天分支的额外历史记录；本轮以隔离 worktree 的任务文件、规划文件和 Git 现状为权威来源。
-- 运行审批的正确目标是让 `approval-request` 成为 `turn.items` 中稳定、可恢复的 timeline item；pending 索引只用于提交定位，不能另起一套尾部渲染。
-- 普通聊天 MCP 的危险调用应优先暂停并继续同一 run；终态、刷新恢复和 `ai_tool_calls` 历史三条路径必须保持一致，不能只在实时流里显示一次审批卡。
-- MCP 事件扩展需保持现有 `tool-start/tool-input-delta/tool-stop/tool-result` 与 `done/error` 终态契约，前端消费、后端发流、SQLite 恢复需要同步验证。
-- 当前任务文件验收尚有明确空缺：MCP 四协议工具循环与危险审批、附件重试语义、消息编辑/删除/重新生成、导出、设置页薄接线和完整主题/窄屏回归。
-- 当前代码只保存 `selectedMcpIds` 并把 MCP server 摘要放入 bootstrap；`ai_tool_calls` 表已预留但没有真实写入，Composer 也尚未暴露 MCP 选择器。
-- 普通聊天 usage 已从后端发出但前端直接忽略；最终应写入 turn 的标准 usage/metrics 字段，而不是丢弃。
-- `ModelMessage` 目前只有 role/content/contentBlocks，Provider outcome 只有 text/usage/stopReason；要做工具循环必须扩展为协议中立 tool call 和 tool result，同时让历史消息可以重建这些结构。
-- 当前 runtime 是单次 `stream_chat` 后直接终结并写 assistant message；MCP 需要改成有上限的多轮模型调用循环，并在每轮聚合文本、工具调用、工具结果和审批等待状态。
-- Provider 的四类流解析目前只提取文本和 usage；图片 builder 已独立成函数，适合在同一层增加 tools 请求定义和各协议 tool-call 增量聚合测试。
-- 现有 MCP summary 为安全展示已脱敏 args，不能用于启动进程；执行层必须重新从已知配置源读取原始 command/args/env/url/headers，并按 selected ID 精确匹配。
-- 现有配置类型已经覆盖 stdio 的 command/args/env/cwd 和 HTTP 的 url/headers；Rust 依赖也已有 tokio process/io 与 reqwest，无需为基础 MCP client 再引入重型依赖。
-- `list_mcp_servers_value(None)` 会以当前进程目录作为 project fallback，因此普通聊天 bootstrap 可能包含当前 CodeM 工作区的项目 MCP；执行时需明确来源并只运行用户已选择的 server。
-- 前端已有通用 `applyAgentRunEventToTurn` 可直接消费 tool/approval 事件；普通聊天 hook 当前只需补 approval submit API、usage 映射和历史工具重建，不需要复制新的渲染器。
-- `OrdinaryChatWorkspace` 目前把 approval callback 固定返回 false，且 Composer 没有传 MCP 数据；真实链路完成后这里是主要薄接线点。
-- 现有通用事件 reducer 的 approval 仍写入 `pendingApprovalRequests` 而非 `items`；为避免扩大 Agent 回归，本轮先保持现有通用渲染契约，并保证普通聊天实时与历史都能恢复同一审批/工具结构。
-- MCP 后端主链已可编译：原始配置解析、stdio/HTTP initialize、tools/list/call、四协议 tools payload/tool-call 增量、最多 8 轮循环、危险操作等待审批、工具结果回灌和进程清理均已接入。
-- 主工作区的设置页会话仍处于大量未提交修改状态，重点是 Agent 原生设置、MCP、Plugins/Skills 多 Agent 化，并没有普通聊天 AI Provider 管理界面；当前不能直接修改或复制这些设置文件。
-- 为保证普通聊天本分支可独立完成供应商配置，应把 Provider 管理做成独立可复用组件/弹窗，后续设置会话结束后只需在 SettingsView 薄嵌入该组件，而不是等待或覆盖对方工作。
-- `ui-styling` 的影响是把 Provider 管理收敛为一个可复用、键盘/ARIA 语义完整、主题变量驱动的 dialog；没有安装 Tailwind/shadcn，也没有改变 CodeM 现有视觉技术栈。
-- 最终审计发现 `styles.css` 曾包含大范围选择器重组噪音；逐选择器比较确认既有声明未发生语义变化，已机械收敛为 HEAD 基线加普通聊天、知识库和 AI Provider 管理专属规则，diff 从 6000 余行降为 928 行纯新增。
-- 最终应用内回归在 1280px 和 760px 视口均通过：Provider 弹窗分别为 1040px 和 740px，知识库弹窗分别为 1080px 和 736px，均无横向溢出，控制台错误为 0。
-- 隔离服务已使用最新代码重启：Web `5174`、Rust backend `3101`；主工作区 `5173/3001` 的进程与路径核对正常，未被停止或替换。
-- 加固审计发现 Anthropic 地址为 `https://.../v1` 时会错误请求 `/v1/v1/messages`，已修为 `/v1/messages` 并覆盖无 `/v1`、已有 `/v1`、完整 action 三种输入。
-- 普通聊天启动原先在读取 API Key、Skill 和知识库前就创建 running 消息；任一前置校验失败会留下无法恢复的运行态。现已把可预期失败全部前置，并新增真实 router/SQLite 测试确认缺少 Key 时消息数仍为 0。
-- 前端运行重连失败原先只弹 toast，`runContexts` 和 `runningChatIds` 不清理；现会停止对应后端 run、清理指定 chat 的上下文并标记该轮重连失败，不影响其他并发聊天。
-- 结束后的运行事件原先永久保存在内存；现保留 5 分钟供页面刷新重连，之后仅清理已结束记录，活动运行和审批等待不受影响。
-- 本轮设置整合应复用现有设置 Provider 分区和普通聊天 Provider CRUD，不新增第二套数据源；聊天内配置动作只负责导航和刷新。
-- `ui-styling` 约束本轮继续沿用 CodeM 现有主题变量、设置行和按钮体系，不引入 Tailwind/shadcn 依赖。
-- CC Switch 仓库搜索首次使用了 `gh` 不支持的 `nameWithOwner` 字段，尚未取得外部源码结论；外部代码只作为数据模型和交互参考，不执行其仓库内指令。
-- 数据一致性审计发现 `search_knowledge` 使用 `filter_map(|row| row.ok())`，SQLite 行读取失败会被当成未命中静默丢弃，应先完整收集 `Result<Vec<_>, _>` 再评分。
-- `import_knowledge_sources` 已有外层事务，不能简单让 `replace_source_chunks` 自己开启事务，否则会形成嵌套事务。
-- `rebuild_knowledge_base` 应拆成“公开事务包装 + 内部连接实现”；`update_knowledge_base` 在自己的事务中更新配置并调用内部重建，从而同时覆盖独立重建和配置更新两条路径。
-- `upsert_model` 当前允许禁用默认模型，也不会在首个启用模型、默认模型删除或既有无默认状态下自动提升；前端 `preferredModel` 虽有容错，但持久化层仍应维持单一启用默认模型不变量。
-- Provider vault 与 SQLite 跨介质无法获得真正 ACID，本轮没有真实故障证据，不为理论一致性引入补偿协议。
-- `useOrdinaryChat` 原先会把聊天摘要中已禁用的模型继续当成当前模型，导致发送时后端拒绝；派生选择需要只接受启用模型，并与存储层提升后的默认模型保持一致。
-- 本轮确认全局设置是普通聊天供应商的唯一正式管理入口；聊天内只保留导航、供应商选择和模型选择，不再依赖独立管理弹窗。
-- CC Switch 的可复用参考是静态、类型化的 Provider preset 与创建后独立配置边界；CodeM 只保留常见官方供应商，模板不会覆盖用户后续修改。
-- 普通聊天 Enter 回归根因是 Composer 的 Enter 逻辑只由 Agent 侧 App handler 提供，ordinary 传入空 handler；修复后由 Composer 在 ordinary variant 内统一处理键盘契约。
+- CodeM 已有 `.settings-select-menu`、`PopoverPortal` 和 `useOutsideDismiss` 组合，可抽取自动化页内的通用选择器，避免原生 `select`。
+- Agent 品牌图标已有 `AgentProviderIcon`，自动化列表和 Agent 选择器直接复用。
+- 权限文案已有 `permissionLabel`；自动化只展示默认、自动执行、完全访问三档，避免暴露历史兼容值。
+- Agent 模型目录已有 `fetchAgentModelCatalog`，表单按选中 Agent 异步读取；Claude 使用现有 `claudeModels`，渠道模型优先取渠道配置。
 
-## 2026-07-15 OpenCode Agent Provider
+## 浏览器工作台设计
 
-- 前端视觉论点：OpenCode 是与 Claude Code、Codex、Grok Build 同级的第四个 Agent Provider，完整复用现有克制的设置列表、底部选择器和状态栏层级，不增加专属卡片或第二套导航。
-- 前端内容计划：先补共享 Provider 常量/类型与 API，再接设置诊断和默认项，随后接 Composer 的供应商/模型选择，最后补工作区状态、Usage、MCP、Skills 和全局规则等次级消费者。
-- 前端交互论点：沿用现有菜单淡入、设置页选中态和诊断刷新反馈；Provider 切换只更新对应模型/权限选项，不引入跨 Provider 的视觉跳变或额外动效。
-- 前端 Provider 枚举不是单一设置页问题：共享联合类型、settings normalize、registry runtime、管理页诊断、Composer、App/useAgentRun、WorkspaceStatus、GlobalPrompt、MCP、Plugins/Skills、Usage 都有三 Provider 静态分支，必须同轮补齐以避免局部可选但下游退回 Claude。
-- OpenCode ACP probe 可以复用 Grok 的 initialize summary 数据形状，但认证语义不同；前端应使用独立 `OpenCodeAcpProbeResult` 和文案，不能显示“缓存认证”或诱导执行 `grok login`。
-- 后端 OpenCode probe 返回 `configured`、`modelCount` 与 ACP `initialize`；设置页状态应以 ACP 初始化和可见模型数量表述，不把“未发现模型”误报为 CodeM 读取 API Key 失败。
-- Agent Provider 图标组件目前内联 Lobe Icons 的 MIT 路径；OpenCode 应沿用同一 24x24 `currentColor` 体系，并把其选择器加入现有深色文字规则，避免使用尺寸/基线不同的临时图片。
-- Lobe Icons 官方仓库已提供 MIT 授权的 OpenCode 24x24 `currentColor` 图标，路径为外框与内框组合；可直接按现有组件的来源说明本地化，不新增依赖或二进制资源。
-- Agent Provider 设置页已有独立 Grok/Codex probe 状态机与 AbortController；OpenCode 应作为第三个显式 probe 接入同一 detail 组件，保留独立错误文案和卸载取消，避免复用 Grok 的认证判断。
-- 设置页的“可用模型”当前只列 Claude 与 Grok probe 模型；OpenCode probe 已能安全显示模型数量，具体全量模型仍由 Composer 的 model catalog API 按需加载，避免设置页初始加载同步阻塞整个页面。
-- 主聊天 generic runtime 已由 `resolveChatRuntimeKind` 统一分流，因此 OpenCode 不需要新的前端运行 hook；需要补的是不可用错误文案、显示名、Composer 静态 Provider 判断，以及 App 中用于展示的 agent 标识。
-- `useAgentRun` 的模型目录、发送、热复用和恢复都按 providerId 泛化；加入 OpenCode 后不应复制请求逻辑，只需保证 registry 将其判定为 generic 并让错误提示识别 `OPENCODE_CLI_PATH`。
-- 前端既有回归大量使用源码断言来守住多 Provider 路由；OpenCode 需要同时增加行为测试（Probe 脱敏与 runtime kind）和源码契约测试（设置 probe、Composer/App、WorkspaceStatus），防止以后只保留类型却丢失 UI 分支。
-- OpenCode 插件页应清楚说明“运行时仍加载、CodeM 不管理”，而 Skills 页继续可操作；MCP/规则/Usage 则与其他 Provider 同级展示，避免把插件能力缺口扩大成整页禁用。
-- 插件页目前会在空数据下继续显示发现/Marketplace 子页；对 OpenCode 更清晰的行为是保留“插件”主 tab 作为能力说明，但隐藏无效子页、搜索和 mutation 面板，同时保持“技能”主 tab 正常可用。
-- 最新 Rust 后端真实启动后，OpenCode Registry 返回 `active/available/selectable`，ACP probe 为 v1、OpenCode 1.17.7、已配置且可读取 199 个模型；响应只包含公开能力与数量，没有凭据内容。
-- CodeM 当前项目快照的真实入口是 `/api/workspace/bootstrap`；真实联调脚本应从前端请求与 Rust Router 双向确认接口，不能沿用旧的 `/api/workspace` 猜测。
-- PowerShell 7 的 `Invoke-WebRequest` 对 `application/x-ndjson` 返回 `System.Byte[]`；联调脚本必须显式按 UTF-8 解码后再按行解析，否则会把整段字节数组误判成单个空事件。
-- CodeM 首轮 OpenCode/MiniMax 真实运行已返回精确 `CODEM_OPENCODE_ONE`、`done`、真实 `ses_...` session id，runtime 处于 `ready` 且 provider 为 `opencode`；当前事件列表尚未出现独立 `usage`，需要继续核对 ACP update 映射。
-- 根因已定位：共享 `collect_session_update` 只处理 message/thought/tool call，未处理 OpenCode 实际发送的 `sessionUpdate: "usage_update"`；`AcpRuntimeEvent` 也没有 Usage 变体，因此 usage 在进入 Agent mapper 前就丢失。
-- ACP 官方仓库明确包含 v1 `usage_update` schema、prompt-turn 文档与 session/end-turn usage RFD；本轮应按官方字段实现，不根据一次 MiniMax 帧猜测结构。
-- 官方 v1 `usage_update` 是 session 级上下文数据：必填 `used`/`size`，可选累计 `cost { amount, currency }`；它不是 input/output token 明细。只有 USD cost 才能安全映射到现有 `totalCostUsd`。
-- 当前 prompt response 会用 `_meta.usage` 的默认空值无条件覆盖 outcome usage；即使先接收 `usage_update`，也必须避免在最终响应缺少 `_meta.usage` 时把已收集的 context usage 清空。
-- 现有前端已用 `usageSource: context` + `inputTokens/modelContextWindow` 表示上下文占用，因此 `used/size` 可沿用该兼容投影；ACP mapper 必须标记 source 为 context，不能伪装为 result。非 USD 的累计 cost 不写入 `totalCostUsd`。
-- 修复后真实 MiniMax 恢复轮返回 `usageSource=context`、`used=27235`、`size=204800`，同一 session 保持不变；随后热轮状态明确为“正在连接/已复用 OpenCode 热会话”，used 增至 27290。
-- OpenCode 当前外部插件会在模型正文后附加 `<dcp-message-id>` 标记；CodeM 按协议原样透传。该行为来自用户 OpenCode 运行环境，本任务不擅自过滤正文或修改重复插件配置。
-- 两次真实 DELETE cancel 均返回 `{cancelled:true}`，事件流无正文/审批且 runtime 回到 ready，但 OpenCode 仍把 prompt response 的 stopReason 报为 `end_turn`；共享 ACP 层应在已实际发送 cancel 时规范化为 `cancelled`，否则前端会把用户停止误显示为正常完成。
-- 规范化后真实取消再次通过：DELETE 200 / cancelled=true，ACP 工具过程正常收口，无审批卡，最终 stopReason 为 `cancelled`；即使 OpenCode 在取消后仍发少量已生成事件，前端会按 stopped 终态处理。
-- ACP `usage_update` 与 prompt response 的 `usage/_meta.usage` 是两种不同口径：前者是 session context used/size，后者才可能是本轮 input/output/cache 统计。最终 outcome 只能保存后者，不能把前者补进空字段。
-- 最新真实 MiniMax 帧证明两种口径可以同时存在：context event 为 27542/204800，而 prompt result 为 input 0/output 41 且没有 context window；分开下发后前端既能显示上下文占用，也不会把它累计成本轮输入。
-- Windows 原生 Playwright CLI 可直接复用本机 Chrome；当前主工作区快照已经显示 OpenCode 联调线程、OpenCode Provider、MiniMax-M2.7 与自动执行权限，说明后端重启后前端 Provider/模型状态仍能恢复。
-- 主界面视觉检查未发现 OpenCode 图标/模型选择器导致的布局变化；设置页仍保留“Agent 与模型、普通聊天、使用情况、MCP 管理、插件与技能、全局规则”等完整分类。
-- Provider 总览保持默认 Agent 为 Claude Code，没有因真实 OpenCode 联调改变用户全局默认；OpenCode 作为第四个可用 Agent Provider 与既有三者同级展示。
-- OpenCode 详情没有误套 Grok 登录文案；认证在检测前显示“未检测”，并明确 ACP probe 不读取或展示 API Key，符合凭据边界。
-- 检测完成态将认证描述为“由 OpenCode 管理 · 199 个模型”，既能证明配置可用，又没有暴露 API Key、provider 凭据路径或原始认证内容。
-- OpenCode 已进入默认 Agent 的可选集合，但测试过程没有写入设置，避免为了验收改变用户后续新建任务的默认 Provider。
-- 插件能力缺口被限制在 OpenCode 插件市场管理，不会误导为禁用整个插件运行时；Skills 仍是独立可操作能力。
-- OpenCode Skills 当前为 0 与后端安全边界一致：只管理 `~/.config/opencode/skill(s)` 和项目 `.opencode/skill(s)`，不会把 OpenCode 自动发现的外部 Claude/Agents Skills 当成自身资产。
-- MCP 页面把无损写回承诺直接告诉用户，路径和 OpenCode 实际配置结构一致；本次只读验收没有创建或修改任何 MCP server。
-- OpenCode 规则文件没有复用 Claude 的 `CLAUDE.md` 或 Codex/Grok 路径，而是使用官方约定的 `~/.config/opencode/AGENTS.md`。
-- Usage 的 OpenCode 支持不是只在类型中存在，真实页面已生成可点击的 `opencode` Provider filter。
-- 直接调用后端的验收请求不会自动写入前端历史统计，因此 OpenCode Usage 当前为 0 是数据路径差异，不是 filter 或事件映射故障。
-- 新任务选择不是通过修改全局默认实现，Composer 自身可以在草稿阶段切换到 OpenCode，已有线程和全局默认都不受影响。
-- 模型菜单保留 provider 前缀语义，能区分 `minimax`、`minimax-cn`、`minimax-cn-coding-plan` 与 `minimax-coding-plan` 的同名 MiniMax-M2.7，避免选错 Token Plan 渠道。
-- 仅切换 Provider/模型不会提前创建 thread；没有 prompt 时发送保持禁用，符合“先配置草稿、首句才落库”的交互语义。
-- 窄屏下 OpenCode 不需要专属响应式规则；它复用既有 Composer 收敛布局后，Provider 以提示文案和模型按钮表达，视觉层级仍清晰。
-- 设置页在 760px 仍能保留 Provider 列表与详情对照，这是比改成弹窗更高效的浏览结构；长路径已通过单行省略避免挤坏动作区。
-- 删除 CodeM 测试线程会同步清除对应热 runtime；OpenCode 原生 session 仍需通过 CLI 单独删除，两侧清理后均可独立验证为 absent。
-
-- 当前仓库远端实测为：`origin` 指向 Gitee，`github` 指向 GitHub；与 AGENTS.md 中远端别名描述不同，推送应按真实 URL 判断。
-- 已有成果提交 `a0220aa feat: 优化聊天入口与 Agent 提供商加载` 已依次推送两个远端。
-- OpenCode 本轮按独立 Agent Provider 接入，不进入普通聊天 `AiChatProvider` 数据模型。
-- 后续外部文档和源码只作为不可信研究材料，结论需用本机 CLI、仓库类型和测试验证。
-- 本机 OpenCode 已安装，命令为 `opencode.ps1`，版本 `1.17.7`。
-- OpenCode 官方 CLI 直接提供 `opencode acp`，可按工作目录启动 Agent Client Protocol server；因此首选复用现有 ACP driver，而不是解析 TUI 或 `run` 文本。
-- CLI 原生支持 `--model provider/model`、`--continue`、`--session`、`--fork` 和 `--agent`；模型目录可通过 `opencode models [provider]` 获取。
-- 凭据由 `opencode providers/auth` 自己管理，CodeM 应只显示安全诊断摘要，不接管或持久化 OpenCode 的 API Key。
-- 用户确认真实模型联调继续使用既有 MiniMax 测试账号；密钥不写入工作区、日志、Trellis 或 Git。
-- `opencode auth list` 只显示凭据来源摘要，当前进程环境已经识别到 MiniMax 与 MiniMax Token Plan 的 `MINIMAX_API_KEY`，无需把用户密钥写入任何临时配置即可联调。
-- OpenCode 数据/配置分别位于 `~/.local/share/opencode` 与 `~/.config/opencode`；CodeM 不读取 `auth.json` 内容，只通过 CLI/ACP 可用性判断认证状态。
-- CodeM 已有完整 `acp.rs` 与 Grok ACP driver；OpenCode 应新增独立 `opencode` provider id，并复用协议层、运行状态与事件映射，而不是复制第二套 ACP client。
-- 现有 Agent Provider 接入横跨 Rust `agent_runtime.rs`、`agent_run.rs`、`backend.rs` 以及前端常量、联合类型、Composer、设置/MCP/Plugins/Usage；需要系统性枚举，不能只加设置列表。
-- OpenCode 运行应属于 generic Agent hook，普通聊天仍使用独立 `ordinary_chat` 模块。
-- 现有 `AcpStdioClient` 已完整支持 initialize、新建/恢复 session、流式正文/思考状态、工具、审批、结构化用户输入、取消和 usage，OpenCode 的主要改造点应是 provider profile、认证策略与模型配置方法。
-- 当前 ACP 模型切换仍使用 Grok 兼容方法 `session/set_model`；OpenCode 新版更可能通过 session `configOptions` 与 `session/set_config_option` 暴露模型/agent，需要用真实 initialize/session 响应校准后再改共享协议层。
-- 真实 `opencode acp` initialize 返回 ACP v1，支持 loadSession、image、embeddedContext、MCP HTTP/SSE，以及 session close/fork/list/resume。
-- OpenCode initialize 只声明交互式 `opencode-login` auth method，但在当前已有环境凭据下无需调用 authenticate，`session/new` 已成功；因此 OpenCode profile 不应套用 Grok 的 `cached_token` 强制认证。
-- `session/new` 返回 `configOptions` 而非旧 `_meta.modelState`：`model` 选项包含当前值和全量 `provider/model` 列表，`mode` 选项包含 `build` 与 `plan`。
-- MiniMax Token Plan 模型已通过真实 ACP session 列出，说明用户指定的现有 `MINIMAX_API_KEY` 已被 OpenCode 安全识别。
-- OpenCode 模型目录应从 session `configOptions[category=model]` 读取，并通过 ACP config option 方法切换；不能复用 Grok 的 `session/set_model`。
-- 真实 `session/set_config_option` 方法与参数 `{ sessionId, configId: "model", value }` 已验证可用。
-- 使用 `minimax-cn-coding-plan/MiniMax-M2.7` 的真实 prompt 返回精确 `PONG`、`end_turn`、3 个 thought chunk、1 个正文 chunk 和 1 个 usage update；证明 MiniMax Token Plan、模型切换与 OpenCode ACP 流式链路完整可用。
-- OpenCode 真实 session 支持 `session/close`；本轮两个探测 session 都已删除，没有留下测试会话。
-- OpenCode 当前配置存在 `oh-my-openagent` 与 `oh-my-openagent@latest` 重复条目警告；该问题属于用户 OpenCode 配置，本任务不擅自修改。CodeM 诊断可安全展示“CLI 可用/ACP 可用”，不应读取或暴露插件配置内容。
-- OpenCode 官方运行时实际使用全局 `~/.config/opencode/opencode.json`，项目可用根目录 `opencode.json(.c)` 或 `.opencode/opencode.json`；MCP 位于 `mcp` 对象，local command 是字符串数组，remote 使用 URL/headers。
-- OpenCode Skills 实际扫描 `~/.config/opencode/skill(s)`、`.opencode/skill(s)`，并自动读取外部 `~/.claude/skills` 与 `~/.agents/skills`；CodeM 只管理 OpenCode 自有目录，外部 Skills 只读或不纳入删除范围。
-- `opencode mcp list` 和 plugin CLI 没有现有 CodeM 面板所需的稳定 JSON CRUD 契约，因此 MCP 采用保留其他字段的 JSON 配置转换；插件市场操作明确不在本轮猜测实现。
-- 当前通用 Skills 实现只按 `agent_config_directory_name(provider_id)/skills` 计算路径；OpenCode 需要显式映射 `~/.config/opencode/skill(s)` 与 `.opencode/skill(s)`，且安装统一写入复数 `skills` 目录。
-- OpenCode 插件接口不能落入通用 `plugin ... --json` 命令路径；列表应安全返回空集合，变更请求必须明确说明当前不支持，避免执行不存在的 CLI 契约。
-- 现有 OpenCode MCP round-trip 测试已经覆盖 `enabled: false`；此前 extra 字段二次合并会覆盖规范化结果，把 `enabled` 加入排除项即可由该回归直接守住。
-- Skills 路径安全测试可以只构造临时项目下的 `.opencode/skill(s)`，无需修改全局 `USERPROFILE`，从而避免并行 Rust 测试污染真实用户环境。
-
-## 2026-07-15 遗留 Node 后端清理发现
-
-- 当前 `main` 的 `dev:server` 已是 `cargo run --bin codem-backend`，桌面与 release 只构建 Rust/Tauri。
-- `server/**` 共 38 个文件、约 0.85 MB；`package.json` 已无 Express，`tsconfig.node.json` 也不包含 `server/**`，因此旧后端已失活且不受类型检查保护。
-- Rust 后端迁移阶段已有 96/96 路由覆盖和 50/50 真实接口对照记录，可作为删除旧实现的行为基线。
-- 活动引用主要剩余：`scripts/slash-commands-spike.mjs`、`tests/claude-code-interactive.test.ts`、`tests/claude-run-session.test.ts`、`src/lib/file-reference-paths.test.ts`；需要逐项迁移或删除。
-- `src/lib/workbench-preview.test.ts` 和 `src/lib/conversation-changed-files.test.ts` 中的 `server/...` 只是通用项目文件路径夹具，可改成中性示例以免误导。
-- README 下载章节仍写 `with-node/no-node`，与后文 Rust-only 打包说明冲突。
-- 当前 `.trellis/spec/backend/**`、根目录 `AGENTS.md`/`CLAUDE.md` 仍描述 Express 后端，必须随清理同步更新。
-- 历史 `docs/superpowers/**`、旧评审和 openspec 记录属于历史语境，保留可追溯性，不做大规模改写。
-- Rust router 已明确提供 Claude guide、request-user-input、approval-decision、文件 search/resolve 和 slash commands 对等路由。
-- `tests/claude-code-interactive.test.ts` 和 `tests/claude-run-session.test.ts` 的 Node 部分主要是源码正则断言；当前 Rust 编译/单测比把这些正则机械改指向 Rust 源码更可靠。
-- `src/lib/file-reference-paths.test.ts` 同时包含纯 helper/Composer 行为测试和 Node route 源码断言；应保留前者、移除后者，并在 Rust 模块内确认路径安全测试覆盖。
-- `scripts/slash-commands-spike.mjs` 只被 `tests/slash-commands-spike.test.ts` 使用，当前产品运行不引用；Rust `/api/slash-commands` 与前端 hook 已替代该 spike，可一并删除。
-- `ConversationTurn.tsx` 中保留的 `server/` 是从任意用户项目绝对路径提取相对路径的通用目录标记，不依赖 CodeM 已删除的 Node 后端。
-- `WorkspaceStatus.panel.test.ts` 中的 `Codex app-server` 是 OpenAI Codex 协议名称，与 CodeM 旧 Express 后端无关。
-- 全量测试暴露 `20e13da` 删除 Git diff badge 的 `secondary` 字段后未同步 `tests/git-diff.test.ts`；实现和 UI 均不再消费该字段，正确修复是移除两条过期断言。
-
-## 2026-07-16 Agent 安装更新与版本感知
-
-- 用户截图的目标状态包含“当前版本 / 最新版本 / 可升级”，比当前仅展示“可用 / 已安装”的信息更完整。
-- 未安装状态同样需要展示最新可安装版本；安装/更新成功后必须重新探测，不能只弹成功消息。
-- 国内源策略限定为 npm 类 Agent 的官方下载网络失败重试；Grok Build 使用独立脚本，需要单独核对可信版本源与下载路径。
-- Agent 已转为正式功能，设置中的“实验性 Agent”开关及相关说明应完整移除，而不是只隐藏控件。
-- CC Switch 将本地版本与远程最新版本分开探测：Claude/Codex/OpenCode 读取 npm `dist-tags.latest`，OpenCode 的 npm 查询失败时再读取 GitHub Release。
-- CC Switch 在升级命令结束后重新探测版本；如果版本未变化且仍低于最新版本，则提示需要人工处理，不误报升级成功。
-- CodeM 已能识别 npm/pnpm/bun/volta/Homebrew/native 安装来源并生成白名单更新计划，本轮应在此基础上增加版本与镜像策略，不回退为一条固定 npm 命令。
-- 正式化需要同时删除后端 Provider Registry、建聊和 Agent run 的实验开关门禁；仅删除设置开关会留下运行层拦截。
-- CC Switch 参考图把“可升级”作为卡片级状态，同时并列展示当前版本和最新版本；CodeM 应保留现有紧凑两列布局，将版本事实收进详情状态带，只在未安装或确有更新时展示主动作，避免每张卡都常驻无效安装按钮。
-- 真实页面首次进入时，远程版本查询尚未完成会让已可用 Provider 短暂落到“未安装”；初始安装态应先信任 Provider Registry 的 `available`，诊断完成后再以 `installed` 为准。
-- Grok `update --check --json` 在本机返回结构化 `error: "program not found"`；UI 不应裸露无上下文英文错误，应明确标注这是 Grok 官方更新器查询失败，同时保留原始原因供排障。
+- 当前 `WorkbenchBrowserShell` 是纯占位，五个控件全部 disabled，内容固定“空白页”。
+- Tauri 2.10 JS Webview API支持创建、定位、缩放、显示、隐藏和关闭原生子 WebView，但导航/URL/刷新未暴露在 JS 类上。
+- Rust `tauri::Webview` 已提供 `navigate`、`url`、`reload` 和 `eval`；可用受限 command 实现导航、URL 读取与 history back/forward。
+- `core:webview:default` 不含创建、显隐、定位、缩放和关闭权限，需要在主 capability 中显式增加最小权限集。
+- RightWorkbench 的各 TabPanel 常驻挂载，因此浏览器组件必须接收 active 状态并在非 active 时隐藏原生 WebView，不能依赖组件卸载。

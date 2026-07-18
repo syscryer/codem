@@ -1047,6 +1047,28 @@ export function useAgentRun({
     );
   }
 
+  function submitAutomationPromptToThread(
+    thread: ThreadSummary,
+    prompt: string,
+    options: {
+      permissionMode: PermissionMode;
+      model?: string;
+      reasoningEffort?: string;
+    },
+  ) {
+    if (resolveChatRuntimeKind(thread.provider) !== 'generic') {
+      return false;
+    }
+    threadSummariesByIdRef.current.set(thread.id, thread);
+    return startAgentRun(
+      thread,
+      { prompt, displayText: prompt },
+      options.permissionMode,
+      options.model,
+      options.reasoningEffort,
+    );
+  }
+
   function startAgentRun(
     thread: ThreadSummary,
     submission: AgentPromptSubmission,
@@ -1602,6 +1624,7 @@ export function useAgentRun({
     recallQueuedPrompt,
     guideQueuedPrompt,
     submitPrompt,
+    submitAutomationPromptToThread,
     submitRequestUserInput,
     submitApprovalDecision,
     stopRun,

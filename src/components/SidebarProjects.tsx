@@ -40,6 +40,7 @@ type SidebarProjectsProps = {
   activeThreadId: string | null;
   activeOrdinaryChatId: string | null;
   ordinaryChatIsDraft: boolean;
+  automationsActive: boolean;
   ordinaryChats: AiChatSummary[];
   runningOrdinaryChatIds: string[];
   runningThreadIds: string[];
@@ -59,6 +60,7 @@ type SidebarProjectsProps = {
   onRefreshProjects: () => void | Promise<void>;
   refreshingProjects: boolean;
   onOpenPlugins: () => void;
+  onOpenAutomations: () => void;
   onPanelStateChange: (nextState: Partial<PanelState>) => void | Promise<void>;
   onPickProjectDirectory: () => void | Promise<void>;
   onOpenCloneDialog: () => void;
@@ -92,6 +94,7 @@ export function SidebarProjects({
   activeThreadId,
   activeOrdinaryChatId,
   ordinaryChatIsDraft,
+  automationsActive,
   ordinaryChats,
   runningOrdinaryChatIds,
   runningThreadIds,
@@ -111,6 +114,7 @@ export function SidebarProjects({
   onRefreshProjects,
   refreshingProjects,
   onOpenPlugins,
+  onOpenAutomations,
   onPanelStateChange,
   onPickProjectDirectory,
   onOpenCloneDialog,
@@ -545,7 +549,9 @@ export function SidebarProjects({
           <kbd>Ctrl+G</kbd>
         </button>
         <button type="button" onClick={onOpenPlugins}><span><Blocks size={14} /></span> 插件</button>
-        <button type="button"><span><Clock3 size={14} /></span> 自动化</button>
+        <button type="button" className={automationsActive ? 'active' : ''} onClick={onOpenAutomations}>
+          <span><Clock3 size={14} /></span> 自动化
+        </button>
       </nav>
 
       <div className="sidebar-scroll-region">

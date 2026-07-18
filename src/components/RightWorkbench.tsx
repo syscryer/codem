@@ -1,5 +1,7 @@
 import {
   AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
   ArrowDown,
   ArrowUp,
   Check,
@@ -32,7 +34,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
@@ -99,6 +101,27 @@ import {
   resolveWorkbenchPreviewFilePath,
 } from '../lib/workbench-preview';
 import { resolveWorkbenchNavigatorVisibility } from '../lib/workbench-navigator-visibility';
+import {
+  closeWorkbenchBrowserWebview,
+  controlWorkbenchBrowserWebview,
+  ensureWorkbenchBrowserWebview,
+  hideWorkbenchBrowserWebview,
+  navigateWorkbenchBrowserWebview,
+  readWorkbenchBrowserWebviewUrl,
+  syncWorkbenchBrowserWebviewBounds,
+} from '../lib/workbench-browser-runtime';
+import {
+  browserTitleFromUrl,
+  createDefaultWorkbenchBrowserState,
+  createWorkbenchBrowserTab,
+  MAX_WORKBENCH_BROWSER_TABS,
+  normalizeWorkbenchBrowserInput,
+  normalizeWorkbenchBrowserState,
+  WORKBENCH_BROWSER_STORAGE_KEY,
+  type WorkbenchBrowserState,
+  type WorkbenchBrowserTab,
+} from '../lib/workbench-browser';
+import { isTauriRuntime } from '../lib/window-material';
 import type {
   GitFileStatus,
   GitOperationState,
@@ -284,7 +307,7 @@ export function RightWorkbench({
           />
         </WorkbenchTabPanel>
         <WorkbenchTabPanel active={activeTab === 'browser'}>
-          <MemoWorkbenchBrowserShell />
+          <MemoWorkbenchBrowserShell active={activeTab === 'browser'} />
         </WorkbenchTabPanel>
       </div>
     </aside>
@@ -3403,17 +3426,239 @@ function WorkbenchEmpty({
   );
 }
 
-function WorkbenchBrowserShell() {
+function WorkbenchBrowserShell({ active }: { active: boolean }) {
+  const browserResizeGutter = 8;
+  const [browserState, setBrowserState] = useState<WorkbenchBrowserState>(() => {
+    if (typeof window === 'undefined') {
+      return createDefaultWorkbenchBrowserState();
+    }
+    try {
+      return normalizeWorkbenchBrowserState(JSON.parse(window.localStorage.getItem(WORKBENCH_BROWSER_STORAGE_KEY) ?? ''));
+    } catch {
+      return createDefaultWorkbenchBrowserState();
+    }
+  });
+  const [address, setAddress] = useState('');
+  const [error, setError] = useState('');
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
+  const webviewsRef = useRef(new Map<string, Awaited<ReturnType<typeof ensureWorkbenchBrowserWebview>>>());
+  const browserTabsRef = useRef(browserState.tabs);
+  browserTabsRef.current = browserState.tabs;
+  const activeTab = browserState.tabs.find((tab) => tab.id === browserState.activeTabId) ?? browserState.tabs[0];
+
+  useEffect(() => {
+    window.localStorage.setItem(WORKBENCH_BROWSER_STORAGE_KEY, JSON.stringify(browserState));
+    setAddress(activeTab?.url ?? '');
+  }, [activeTab?.id, activeTab?.url, browserState]);
+
+  const getBounds = useCallback(() => {
+    const element = surfaceRef.current;
+    if (!element) return null;
+    const rect = element.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.round(rect.left + browserResizeGutter)),
+      y: Math.max(0, Math.round(rect.top)),
+      width: Math.max(1, Math.round(rect.width - browserResizeGutter)),
+      height: Math.max(1, Math.round(rect.height)),
+    };
+  }, []);
+
+  const hideInactiveWebviews = useCallback(async (keepId?: string) => {
+    await Promise.all(
+      browserTabsRef.current
+        .filter((tab) => tab.id !== keepId && tab.url)
+        .map(async (tab) => {
+          await hideWorkbenchBrowserWebview(tab.id);
+          webviewsRef.current.delete(tab.id);
+        }),
+    );
+  }, []);
+
+  const syncActiveWebview = useCallback(async () => {
+    const currentTab = browserTabsRef.current.find((tab) => tab.id === browserState.activeTabId);
+    if (!active || !currentTab?.url || !isTauriRuntime()) {
+      await hideInactiveWebviews();
+      return;
+    }
+    const bounds = getBounds();
+    if (!bounds) return;
+    await hideInactiveWebviews(currentTab.id);
+    const webview = await ensureWorkbenchBrowserWebview(currentTab.id, currentTab.url, bounds);
+    if (webview) {
+      webviewsRef.current.set(currentTab.id, webview);
+      await syncWorkbenchBrowserWebviewBounds(webview, bounds);
+    }
+  }, [active, browserState.activeTabId, getBounds, hideInactiveWebviews]);
+
+  useEffect(() => {
+    void syncActiveWebview().catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+    return () => {
+      void hideInactiveWebviews();
+    };
+  }, [syncActiveWebview, hideInactiveWebviews]);
+
+  useEffect(() => {
+    const element = surfaceRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      const bounds = getBounds();
+      const webview = activeTab ? webviewsRef.current.get(activeTab.id) : null;
+      if (bounds && webview) void syncWorkbenchBrowserWebviewBounds(webview, bounds);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [activeTab?.id, getBounds]);
+
+  useEffect(() => {
+    if (!active || !isTauriRuntime()) return;
+    const handleResize = () => {
+      const bounds = getBounds();
+      const webview = activeTab ? webviewsRef.current.get(activeTab.id) : null;
+      if (bounds && webview) void syncWorkbenchBrowserWebviewBounds(webview, bounds);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [active, activeTab?.id, getBounds]);
+
+  useEffect(() => {
+    if (!active || !activeTab?.url || !isTauriRuntime()) return;
+    const timer = window.setInterval(() => {
+      void readWorkbenchBrowserWebviewUrl(activeTab.id).then((url) => {
+        setBrowserState((state) => {
+          const tab = state.tabs.find((item) => item.id === activeTab.id);
+          if (!tab || !url || tab.url === url) return state;
+          return {
+            ...state,
+            tabs: state.tabs.map((item) => item.id === activeTab.id
+              ? { ...item, url, title: browserTitleFromUrl(url) }
+              : item),
+          };
+        });
+      }).catch(() => undefined);
+    }, 800);
+    return () => window.clearInterval(timer);
+  }, [active, activeTab?.id, activeTab?.url]);
+
+  const updateActiveTab = useCallback((update: Partial<WorkbenchBrowserTab>) => {
+    setBrowserState((state) => ({
+      ...state,
+      tabs: state.tabs.map((tab) => tab.id === state.activeTabId ? { ...tab, ...update } : tab),
+    }));
+  }, []);
+
+  const submitAddress = useCallback(async (event: FormEvent) => {
+    event.preventDefault();
+    if (!activeTab) return;
+    setError('');
+    let url: string;
+    try {
+      url = normalizeWorkbenchBrowserInput(address);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      return;
+    }
+    updateActiveTab({ url, title: browserTitleFromUrl(url) });
+    if (!isTauriRuntime()) return;
+    try {
+      const bounds = getBounds();
+      if (!bounds) return;
+      const webview = await ensureWorkbenchBrowserWebview(activeTab.id, url, bounds);
+      if (webview) webviewsRef.current.set(activeTab.id, webview);
+      await navigateWorkbenchBrowserWebview(activeTab.id, url);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, [activeTab, address, getBounds, updateActiveTab]);
+
+  const runBrowserAction = useCallback(async (action: 'back' | 'forward' | 'reload') => {
+    if (!activeTab?.url || !isTauriRuntime()) return;
+    setError('');
+    try {
+      await controlWorkbenchBrowserWebview(activeTab.id, action);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, [activeTab]);
+
+  const createTab = useCallback(() => {
+    if (browserState.tabs.length >= MAX_WORKBENCH_BROWSER_TABS) return;
+    const tab = createWorkbenchBrowserTab();
+    setBrowserState((state) => ({ tabs: [...state.tabs, tab], activeTabId: tab.id }));
+    setError('');
+  }, [browserState.tabs.length]);
+
+  const closeTab = useCallback(async (tabId: string) => {
+    await closeWorkbenchBrowserWebview(tabId).catch(() => undefined);
+    webviewsRef.current.delete(tabId);
+    setBrowserState((state) => {
+      if (state.tabs.length === 1) {
+        const tab = createWorkbenchBrowserTab();
+        return { tabs: [tab], activeTabId: tab.id };
+      }
+      const index = state.tabs.findIndex((tab) => tab.id === tabId);
+      const tabs = state.tabs.filter((tab) => tab.id !== tabId);
+      return {
+        tabs,
+        activeTabId: state.activeTabId === tabId ? tabs[Math.max(0, index - 1)].id : state.activeTabId,
+      };
+    });
+  }, []);
+
   return (
     <section className="workbench-panel workbench-browser-panel">
-      <div className="workbench-browser-toolbar">
-        <button type="button" disabled>←</button>
-        <button type="button" disabled>→</button>
-        <button type="button" disabled>↻</button>
-        <input type="text" placeholder="输入 URL" disabled />
-        <button type="button" disabled>↗</button>
+      <div className="workbench-browser-tabs" role="tablist" aria-label="浏览器标签页">
+        {browserState.tabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={tab.id === browserState.activeTabId}
+            className={`workbench-browser-tab${tab.id === browserState.activeTabId ? ' active' : ''}`}
+            onClick={() => setBrowserState((state) => ({ ...state, activeTabId: tab.id }))}
+          >
+            <Globe2 size={13} />
+            <span>{tab.title}</span>
+            <X size={12} onClick={(event) => { event.stopPropagation(); void closeTab(tab.id); }} />
+          </button>
+        ))}
+        <button type="button" className="workbench-browser-tab-add" title="新建标签页" onClick={createTab} disabled={browserState.tabs.length >= MAX_WORKBENCH_BROWSER_TABS}>
+          <Plus size={14} />
+        </button>
       </div>
-      <div className="workbench-browser-empty">空白页</div>
+      <div className="workbench-browser-toolbar">
+        <button type="button" title="后退" onClick={() => void runBrowserAction('back')} disabled={!activeTab?.url}><ArrowLeft size={15} /></button>
+        <button type="button" title="前进" onClick={() => void runBrowserAction('forward')} disabled={!activeTab?.url}><ArrowRight size={15} /></button>
+        <button type="button" title="刷新" onClick={() => void runBrowserAction('reload')} disabled={!activeTab?.url}><RefreshCw size={14} /></button>
+        <form className="workbench-browser-address" onSubmit={submitAddress}>
+          <Globe2 size={14} aria-hidden="true" />
+          <input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="输入网址或搜索内容" aria-label="浏览器地址" />
+        </form>
+        <button type="button" title="在系统浏览器打开" onClick={() => {
+          if (!activeTab?.url) return;
+          if (isTauriRuntime()) {
+            void import('@tauri-apps/api/core').then(({ invoke }) => invoke('open_external_url', { url: activeTab.url }));
+          } else {
+            window.open(activeTab.url, '_blank', 'noopener,noreferrer');
+          }
+        }} disabled={!activeTab?.url}><ExternalLink size={14} /></button>
+      </div>
+      <div ref={surfaceRef} className="workbench-browser-surface">
+        {!isTauriRuntime() && (
+          <div className="workbench-browser-empty">
+            <Globe2 size={28} />
+            <strong>浏览器仅支持桌面版</strong>
+            <span>请使用 CodeM 桌面版打开网页；当前地址可通过右上角外部浏览器操作。</span>
+          </div>
+        )}
+        {isTauriRuntime() && !activeTab?.url && (
+          <div className="workbench-browser-empty">
+            <Globe2 size={28} />
+            <strong>开始浏览</strong>
+            <span>输入网址或搜索内容，网页会在当前标签页打开。</span>
+          </div>
+        )}
+        {error && <div className="workbench-browser-error" role="alert">{error}</div>}
+      </div>
     </section>
   );
 }

@@ -184,6 +184,71 @@ fn open_external_url(url: String) -> Result<(), String> {
     platform::open_external_url(url.as_str())
 }
 
+fn parse_browser_webview_url(value: &str) -> Result<Url, String> {
+    let parsed = Url::parse(value.trim()).map_err(|error| format!("浏览器地址无效: {error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("内置浏览器仅支持 HTTP 和 HTTPS 地址".to_string());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("请勿在网址中直接包含账号或密码".to_string());
+    }
+    Ok(parsed)
+}
+
+fn validate_browser_webview_label(label: &str) -> Result<(), String> {
+    if label.starts_with("codem-browser-")
+        && label.len() <= 96
+        && label
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        Ok(())
+    } else {
+        Err("浏览器视图标识无效".to_string())
+    }
+}
+
+fn browser_webview(app: &AppHandle, label: &str) -> Result<tauri::Webview<tauri::Wry>, String> {
+    validate_browser_webview_label(label)?;
+    app.webviews()
+        .get(label)
+        .cloned()
+        .ok_or_else(|| "浏览器视图不存在".to_string())
+}
+
+#[tauri::command]
+fn browser_webview_navigate(app: AppHandle, label: String, url: String) -> Result<(), String> {
+    let url = parse_browser_webview_url(&url)?;
+    browser_webview(&app, &label)?
+        .navigate(url)
+        .map_err(|error| format!("打开网页失败: {error}"))
+}
+
+#[tauri::command]
+fn browser_webview_control(app: AppHandle, label: String, action: String) -> Result<(), String> {
+    let webview = browser_webview(&app, &label)?;
+    match action.as_str() {
+        "back" => webview
+            .eval("history.back()")
+            .map_err(|error| format!("浏览器后退失败: {error}")),
+        "forward" => webview
+            .eval("history.forward()")
+            .map_err(|error| format!("浏览器前进失败: {error}")),
+        "reload" => webview
+            .reload()
+            .map_err(|error| format!("刷新网页失败: {error}")),
+        _ => Err("不支持的浏览器操作".to_string()),
+    }
+}
+
+#[tauri::command]
+fn browser_webview_url(app: AppHandle, label: String) -> Result<String, String> {
+    browser_webview(&app, &label)?
+        .url()
+        .map(|url| url.to_string())
+        .map_err(|error| format!("读取浏览器地址失败: {error}"))
+}
+
 #[tauri::command]
 fn ensure_pty_session(
     app: AppHandle,
@@ -439,6 +504,9 @@ fn main() {
             pick_files,
             get_backend_base_url,
             open_external_url,
+            browser_webview_navigate,
+            browser_webview_control,
+            browser_webview_url,
             show_thread_notification,
             get_app_runtime_info
         ])
@@ -996,8 +1064,8 @@ mod tests {
     use super::{
         clamp_window_state_to_area, clear_vibrancy_layers, detect_distribution_mode_from_dir,
         has_minimum_window_size, has_success_status, normalize_window_state,
-        prepare_window_state_for_save, resolve_backend_port_from_value,
-        should_apply_window_material, MonitorWorkArea, WindowState,
+        parse_browser_webview_url, prepare_window_state_for_save, resolve_backend_port_from_value,
+        should_apply_window_material, validate_browser_webview_label, MonitorWorkArea, WindowState,
     };
     use std::{
         fs,
@@ -1022,6 +1090,22 @@ mod tests {
         assert!(has_success_status("HTTP/1.1 200 OK\r\n\r\n{}"));
         assert!(has_success_status("HTTP/1.0 200 OK\r\n\r\n{}"));
         assert!(!has_success_status("HTTP/1.1 404 Not Found\r\n\r\n{}"));
+    }
+
+    #[test]
+    fn browser_webview_url_only_accepts_http_without_embedded_credentials() {
+        assert!(parse_browser_webview_url("https://example.com/docs").is_ok());
+        assert!(parse_browser_webview_url("http://127.0.0.1:5173").is_ok());
+        assert!(parse_browser_webview_url("file:///C:/secret.txt").is_err());
+        assert!(parse_browser_webview_url("javascript:alert(1)").is_err());
+        assert!(parse_browser_webview_url("https://user:pass@example.com").is_err());
+    }
+
+    #[test]
+    fn browser_webview_label_cannot_target_the_main_app_webview() {
+        assert!(validate_browser_webview_label("codem-browser-tab-12345678").is_ok());
+        assert!(validate_browser_webview_label("main").is_err());
+        assert!(validate_browser_webview_label("codem-browser-../main").is_err());
     }
 
     #[test]

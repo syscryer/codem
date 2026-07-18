@@ -267,6 +267,8 @@ struct ThreadCreateRequest {
     model: Option<String>,
     reasoning_effort: Option<String>,
     channel_id: Option<String>,
+    #[serde(default = "default_true")]
+    activate: bool,
 }
 
 #[derive(Deserialize)]
@@ -505,6 +507,7 @@ pub fn run_blocking_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), 
 async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String> {
     fs::create_dir_all(&app_data_dir).map_err(|error| format!("创建应用数据目录失败: {error}"))?;
 
+    let automation = crate::automation::AutomationService::new(app_data_dir.clone());
     let secrets = crate::ordinary_chat::secrets::SecretStore::new(app_data_dir.clone());
     let ordinary_chat = crate::ordinary_chat::OrdinaryChatService::with_secrets(
         app_data_dir.clone(),
@@ -533,6 +536,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         context_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
     };
     let app = create_router(state)
+        .merge(crate::automation::router(automation))
         .merge(crate::ordinary_chat::router(ordinary_chat))
         .merge(crate::agent_channels::router(agent_channels))
         .layer(desktop_cors_layer());
@@ -3987,6 +3991,7 @@ async fn create_thread(
         model.as_deref(),
         reasoning_effort.as_deref(),
         channel_id.as_deref(),
+        payload.activate,
     )?;
     let thread = read_thread_summary(&connection, &thread_id)?;
     Ok(Json(json!({
@@ -6698,6 +6703,7 @@ fn create_thread_row(
     model: Option<&str>,
     reasoning_effort: Option<&str>,
     agent_channel_id: Option<&str>,
+    activate: bool,
 ) -> ApiResult<String> {
     let project_path: String = connection
         .query_row(
@@ -6749,12 +6755,18 @@ fn create_thread_row(
             params![now, project_id],
         )
         .map_err(|error| ApiError::internal(format!("更新项目失败: {error}")))?;
-    write_state_value(&transaction, "activeProjectId", project_id)?;
-    write_state_value(&transaction, "activeThreadId", &id)?;
+    if activate {
+        write_state_value(&transaction, "activeProjectId", project_id)?;
+        write_state_value(&transaction, "activeThreadId", &id)?;
+    }
     transaction
         .commit()
         .map_err(|error| ApiError::internal(format!("提交聊天创建失败: {error}")))?;
     Ok(id)
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn read_thread_summary(connection: &Connection, thread_id: &str) -> ApiResult<Value> {
@@ -18583,6 +18595,7 @@ mod tests {
             Some("MiniMax-M3"),
             None,
             None,
+            true,
         )
         .expect("create thread");
         let turns = vec![json!({
@@ -18711,6 +18724,7 @@ mod tests {
             Some("model-a"),
             Some("high"),
             None,
+            true,
         )
         .expect("create thread");
         update_thread_metadata_from_payload(
@@ -18761,6 +18775,7 @@ mod tests {
             Some("grok-model-test"),
             None,
             None,
+            true,
         )
         .expect("create Grok thread");
         update_thread_metadata_from_payload(
@@ -18821,6 +18836,7 @@ mod tests {
             Some("gpt-codex-test"),
             Some("medium"),
             None,
+            true,
         )
         .expect("create Codex thread");
         update_thread_metadata_from_payload(
