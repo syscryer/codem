@@ -1536,7 +1536,7 @@ fn resolve_system_proxy_environment() -> Vec<(String, String)> {
 
 #[cfg(target_os = "windows")]
 fn resolve_windows_system_proxy_environment() -> Vec<(String, String)> {
-    let output = Command::new("reg")
+    let output = background_command("reg")
         .args([
             "query",
             "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
@@ -2102,7 +2102,7 @@ fn executable_on_path(program: &str) -> bool {
     } else {
         "which"
     };
-    Command::new(lookup)
+    background_command(lookup)
         .arg(program)
         .output()
         .is_ok_and(|output| output.status.success())
