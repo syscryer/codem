@@ -1155,11 +1155,11 @@ impl LiveAgentRuntime {
                 let mut mapper = AcpEventMapper::new(run_id.clone());
                 let event_state = state.clone();
                 let turn_started_at = Utc::now();
-                let result = tokio::select! {
+                let mut result = tokio::select! {
                     result = client.prompt_stream_with_permission_policy(
                         session_id,
                         &input,
-                        cancel,
+                        cancel.clone(),
                         &mut control,
                         acp_permission_policy(&config.provider_id, config.permission_mode),
                         |event| {
@@ -1170,6 +1170,40 @@ impl LiveAgentRuntime {
                     ) => Some(result),
                     _ = wait_for_shutdown(shutdown) => None,
                 };
+                let retry = result.as_ref().is_some_and(|result| {
+                    result.as_ref().is_err_and(|error| {
+                        should_retry_grok_channel_prompt(
+                            &config.provider_id,
+                            &config.environment,
+                            &mapper,
+                            error,
+                        )
+                    })
+                });
+                if retry {
+                    state.push_event(
+                        &run_id,
+                        AgentRunEvent::Status {
+                            run_id: run_id.clone(),
+                            message: "第三方接口返回了临时异常，正在重试".to_string(),
+                        },
+                    );
+                    result = tokio::select! {
+                        result = client.prompt_stream_with_permission_policy(
+                            session_id,
+                            &input,
+                            cancel,
+                            &mut control,
+                            acp_permission_policy(&config.provider_id, config.permission_mode),
+                            |event| {
+                                for event in mapper.map_event(event) {
+                                    event_state.push_event(&run_id, event);
+                                }
+                            },
+                        ) => Some(result),
+                        _ = wait_for_shutdown(shutdown) => None,
+                    };
+                }
                 for event in mapper.finish_open_tools() {
                     state.push_event(&run_id, event);
                 }
@@ -1261,6 +1295,7 @@ async fn start_live_agent_runtime(
                 &config.working_directory,
                 requested_session_id,
                 config.model.as_deref(),
+                &config.environment,
             )
             .await?;
             Ok((
@@ -1372,12 +1407,13 @@ async fn prepare_acp_session(
     working_directory: &Path,
     requested_session_id: Option<&str>,
     model: Option<&str>,
+    environment: &BTreeMap<String, String>,
 ) -> Result<(AcpSessionSummary, bool), String> {
     let initialize = client
         .initialize(env!("CARGO_PKG_VERSION"))
         .await
         .map_err(public_acp_error)?;
-    if provider_id == GROK_BUILD_PROVIDER_ID {
+    if provider_id == GROK_BUILD_PROVIDER_ID && !grok_uses_channel_credentials(environment) {
         let auth_method_id = initialize
             .auth_methods
             .iter()
@@ -1443,6 +1479,33 @@ async fn prepare_acp_session(
     Ok((session, resumed))
 }
 
+fn grok_uses_channel_credentials(environment: &BTreeMap<String, String>) -> bool {
+    environment
+        .get("CODEM_AGENT_CHANNEL_API_KEY")
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn should_retry_grok_channel_prompt(
+    provider_id: &str,
+    environment: &BTreeMap<String, String>,
+    mapper: &AcpEventMapper,
+    error: &AcpError,
+) -> bool {
+    provider_id == GROK_BUILD_PROVIDER_ID
+        && grok_uses_channel_credentials(environment)
+        && mapper.can_retry_failed_prompt()
+        && matches!(error, AcpError::Rpc { code: -32603, .. })
+}
+
+fn agent_provider_display_name(provider_id: &str) -> &'static str {
+    match provider_id {
+        GROK_BUILD_PROVIDER_ID => "Grok Build",
+        OPENCODE_PROVIDER_ID => "OpenCode",
+        OPENAI_CODEX_PROVIDER_ID => "OpenAI Codex",
+        _ => "Agent Provider",
+    }
+}
+
 async fn execute_acp_run(task: AcpRunTask) {
     let AcpRunTask {
         state,
@@ -1488,6 +1551,7 @@ async fn execute_acp_run(task: AcpRunTask) {
             &working_directory,
             requested_session_id.as_deref(),
             model.as_deref(),
+            &environment,
         )
         .await?;
         state.push_event(
@@ -1510,11 +1574,11 @@ async fn execute_acp_run(task: AcpRunTask) {
             cancelled_before_prompt_outcome()
         } else {
             let event_state = state.clone();
-            client
+            let mut outcome = client
                 .prompt_stream_with_permission_policy(
                     &session.session_id,
                     &input,
-                    cancel,
+                    cancel.clone(),
                     &mut control,
                     acp_permission_policy(&provider_id, permission_mode),
                     |event| {
@@ -1523,8 +1587,33 @@ async fn execute_acp_run(task: AcpRunTask) {
                         }
                     },
                 )
-                .await
-                .map_err(public_acp_error)?
+                .await;
+            if outcome.as_ref().is_err_and(|error| {
+                should_retry_grok_channel_prompt(&provider_id, &environment, &mapper, error)
+            }) {
+                state.push_event(
+                    &run_id,
+                    AgentRunEvent::Status {
+                        run_id: run_id.clone(),
+                        message: "第三方接口返回了临时异常，正在重试".to_string(),
+                    },
+                );
+                outcome = client
+                    .prompt_stream_with_permission_policy(
+                        &session.session_id,
+                        &input,
+                        cancel,
+                        &mut control,
+                        acp_permission_policy(&provider_id, permission_mode),
+                        |event| {
+                            for event in mapper.map_event(event) {
+                                event_state.push_event(&run_id, event);
+                            }
+                        },
+                    )
+                    .await;
+            }
+            outcome.map_err(public_acp_error)?
         };
         Ok::<_, String>((session.session_id, outcome))
     }
@@ -2279,6 +2368,7 @@ struct AcpEventMapper {
     next_block_index: u64,
     tools: HashMap<String, ToolMappingState>,
     current_phase: Option<&'static str>,
+    observed_activity: bool,
 }
 
 struct CodexEventMapper {
@@ -2461,10 +2551,12 @@ impl AcpEventMapper {
             next_block_index: 0,
             tools: HashMap::new(),
             current_phase: None,
+            observed_activity: false,
         }
     }
 
     fn map_event(&mut self, event: AcpRuntimeEvent) -> Vec<AgentRunEvent> {
+        self.observed_activity = true;
         match event {
             AcpRuntimeEvent::TextDelta { text } => {
                 self.current_phase = Some("computing");
@@ -2560,6 +2652,10 @@ impl AcpEventMapper {
 
     fn has_open_tools(&self) -> bool {
         self.tools.values().any(|tool| !tool.stopped)
+    }
+
+    fn can_retry_failed_prompt(&self) -> bool {
+        !self.observed_activity && self.tools.is_empty()
     }
 
     fn map_tool_call(&mut self, call: AcpToolCall) -> Vec<AgentRunEvent> {
@@ -3547,15 +3643,15 @@ mod tests {
     use super::{
         acp_arguments, acp_permission_policy, build_acp_prompt, build_codex_input,
         cancelled_before_prompt_outcome, find_grok_runtime_error_detail, grok_acp_arguments,
-        grok_acp_error_with_runtime_detail, normalize_agent_input, parse_opencode_models,
-        public_acp_error, read_cached_agent_command, read_cached_agent_model_catalog,
-        runtime_can_reuse, sanitize_grok_runtime_error_detail, should_set_acp_model,
-        store_cached_agent_command, store_cached_agent_model_catalog, AcpEventMapper,
-        AgentDriverInput, AgentDriverKind, AgentInputContentBlock, AgentModelCatalog,
-        AgentModelSummary, AgentRunRecord, AgentRunService, AgentRunState, AgentRuntimeCommand,
-        AgentRuntimeConfig, AgentRuntimePhase, AgentRuntimeRecord, AgentRuntimeRun,
-        CodexEventMapper, CommandResolvers, StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL,
-        MODEL_CATALOG_CACHE_TTL,
+        grok_acp_error_with_runtime_detail, grok_uses_channel_credentials, normalize_agent_input,
+        parse_opencode_models, public_acp_error, read_cached_agent_command,
+        read_cached_agent_model_catalog, runtime_can_reuse, sanitize_grok_runtime_error_detail,
+        should_retry_grok_channel_prompt, should_set_acp_model, store_cached_agent_command,
+        store_cached_agent_model_catalog, AcpEventMapper, AgentDriverInput, AgentDriverKind,
+        AgentInputContentBlock, AgentModelCatalog, AgentModelSummary, AgentRunRecord,
+        AgentRunService, AgentRunState, AgentRuntimeCommand, AgentRuntimeConfig, AgentRuntimePhase,
+        AgentRuntimeRecord, AgentRuntimeRun, CodexEventMapper, CommandResolvers,
+        StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL, MODEL_CATALOG_CACHE_TTL,
     };
     use crate::{
         acp::{
@@ -3729,6 +3825,47 @@ mod tests {
             grok_acp_arguments("bypassPermissions"),
             ["--permission-mode", "bypassPermissions", "agent", "stdio"]
         );
+    }
+
+    #[test]
+    fn grok_channel_credentials_skip_cached_login_requirement() {
+        assert!(!grok_uses_channel_credentials(&BTreeMap::new()));
+        let mut environment = BTreeMap::new();
+        environment.insert(
+            "CODEM_AGENT_CHANNEL_API_KEY".to_string(),
+            "channel-secret".to_string(),
+        );
+        assert!(grok_uses_channel_credentials(&environment));
+    }
+
+    #[test]
+    fn grok_channel_internal_error_retries_only_before_runtime_activity() {
+        let mut environment = BTreeMap::new();
+        environment.insert(
+            "CODEM_AGENT_CHANNEL_API_KEY".to_string(),
+            "channel-secret".to_string(),
+        );
+        let error = AcpError::Rpc {
+            code: -32603,
+            message: "Internal error".to_string(),
+        };
+        let mut mapper = AcpEventMapper::new("run-1".to_string());
+        assert!(should_retry_grok_channel_prompt(
+            "grok-build",
+            &environment,
+            &mapper,
+            &error,
+        ));
+
+        mapper.map_event(AcpRuntimeEvent::TextDelta {
+            text: "partial".to_string(),
+        });
+        assert!(!should_retry_grok_channel_prompt(
+            "grok-build",
+            &environment,
+            &mapper,
+            &error,
+        ));
     }
 
     #[test]

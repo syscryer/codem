@@ -440,7 +440,12 @@ export function AgentProviderSettings({
       const providerName = defaultAgentProviderName(providerId);
       const versionLabel = diagnostics.version ? `，当前版本 ${diagnostics.version}` : '';
       const mirrorLabel = result.usedMirror ? '，已使用国内镜像' : '';
-      if (
+      if (!result.installed || !diagnostics.installed) {
+        showToast(
+          `${providerName} ${action === 'install' ? '安装' : '更新'}命令已完成，但 CodeM 仍未检测到可执行文件，请点击“重新检测”或查看诊断信息`,
+          'error',
+        );
+      } else if (
         action === 'update'
         && diagnostics.updateAvailable
         && previousVersion
@@ -457,7 +462,11 @@ export function AgentProviderSettings({
         );
       }
     } catch (error) {
-      setDetailsError(error instanceof Error ? error.message : `${action === 'install' ? '安装' : '更新'} Agent 失败`);
+      const message = error instanceof Error
+        ? error.message
+        : `${action === 'install' ? '安装' : '更新'} Agent 失败`;
+      setDetailsError(message);
+      showToast(message, 'error');
     } finally {
       setLifecycleAction(null);
     }

@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import type {
   AppearanceSettings,
+  AgentNetworkProxySettings,
   AgentChannelBootstrap,
   AgentChannelSettingsFocus,
   AgentRuntimeSettings,
@@ -26,6 +27,7 @@ import type {
   ModelSettingsUpdate,
   OpenWithSettingsUpdate,
   ShortcutSettingsUpdate,
+  AgentNetworkProxySettingsUpdate,
 } from '../../hooks/useAppSettings';
 import { AppearanceSettingsSection } from './AppearanceSettings';
 import { AgentModelSettingsSection } from './AgentModelSettings';
@@ -41,6 +43,7 @@ import { PluginsSettingsSection } from './PluginsSettings';
 import { ShortcutsSettingsSection } from './ShortcutsSettings';
 import { UsageSettingsSection } from './UsageSettings';
 import { WorktreeSettingsSection } from './WorktreeSettings';
+import { NetworkProxySettingsSection } from './NetworkProxySettings';
 
 type SettingsViewProps = {
   hidden?: boolean;
@@ -59,6 +62,7 @@ type SettingsViewProps = {
   models: ModelSettings;
   shortcuts: ShortcutSettings;
   openWith: OpenWithSettings;
+  networkProxy: AgentNetworkProxySettings;
   openTargets: OpenAppTarget[];
   claudeModels: ClaudeModelInfo;
   aiChatProviders: AiChatProvider[];
@@ -84,6 +88,7 @@ type SettingsViewProps = {
   onUpdateModels: (update: ModelSettingsUpdate) => void | Promise<void>;
   onUpdateShortcuts: (update: ShortcutSettingsUpdate) => void | Promise<void>;
   onUpdateOpenWith: (update: OpenWithSettingsUpdate) => void | Promise<void>;
+  onUpdateNetworkProxy: (update: AgentNetworkProxySettingsUpdate) => void | Promise<void>;
   onRefreshAiChatProviders: () => Promise<void> | void;
   onRefreshAgentProviders: () => Promise<void> | void;
   onRefreshAgentChannels: () => Promise<unknown> | unknown;
@@ -104,6 +109,7 @@ const sectionTitles: Record<SettingsSection, string> = {
   plugins: '插件与技能',
   globalPrompts: '全局规则',
   openWith: '打开方式',
+  networkProxy: '网络代理',
 };
 
 export function SettingsView({
@@ -123,6 +129,7 @@ export function SettingsView({
   models,
   shortcuts,
   openWith,
+  networkProxy,
   openTargets,
   claudeModels,
   aiChatProviders,
@@ -148,6 +155,7 @@ export function SettingsView({
   onUpdateModels,
   onUpdateShortcuts,
   onUpdateOpenWith,
+  onUpdateNetworkProxy,
   onRefreshAiChatProviders,
   onRefreshAgentProviders,
   onRefreshAgentChannels,
@@ -213,6 +221,10 @@ export function SettingsView({
           onUpdateOpenWith={onUpdateOpenWith}
         />
       );
+    }
+
+    if (activeSection === 'networkProxy') {
+      return <NetworkProxySettingsSection settings={networkProxy} onUpdate={onUpdateNetworkProxy} showToast={showToast} />;
     }
 
     if (activeSection === 'globalPrompts') {
@@ -301,6 +313,7 @@ export function SettingsView({
     general,
     models,
     openWith,
+    networkProxy,
     openTargets,
     projects,
     runningThreadIds,
@@ -317,6 +330,7 @@ export function SettingsView({
     onUpdateAppearance,
     onUpdateModels,
     onUpdateOpenWith,
+    onUpdateNetworkProxy,
     onUpdateShortcuts,
     onRefreshAiChatProviders,
     onRefreshAgentProviders,

@@ -16,6 +16,7 @@ import type {
   AppearanceSettings,
   CustomModel,
   GeneralSettings,
+  AgentNetworkProxySettings,
   ModelSettings,
   OpenAppTarget,
   OpenWithSettings,
@@ -25,6 +26,16 @@ import type {
   UsageTrendPoint,
   UsageThreadRow,
 } from '../types';
+
+export const defaultAgentNetworkProxySettings: AgentNetworkProxySettings = {
+  enabled: false,
+  protocol: 'http',
+  host: '',
+  port: 7890,
+  username: '',
+  password: '',
+  noProxy: 'localhost,127.0.0.1,::1',
+};
 export const defaultGeneralSettings: GeneralSettings = {
   restoreLastSelectionOnLaunch: true,
   autoRefreshGitStatus: true,
@@ -92,6 +103,7 @@ export const defaultAppSettings: AppSettings = {
   models: defaultModelSettings,
   shortcuts: defaultShortcutSettings,
   openWith: defaultOpenWithSettings,
+  networkProxy: defaultAgentNetworkProxySettings,
 };
 
 export async function fetchAppSettings(): Promise<AppSettings> {
@@ -156,6 +168,21 @@ export async function saveGeneralSettings(general: GeneralSettings): Promise<App
     return await readSettingsResponse(response, '保存基础设置失败');
   } catch {
     throw new Error('保存基础设置失败');
+  }
+}
+
+export async function saveAgentNetworkProxySettings(
+  settings: AgentNetworkProxySettings,
+): Promise<AppSettings> {
+  try {
+    const response = await fetch('/api/settings/network-proxy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(normalizeAgentNetworkProxySettings(settings)),
+    });
+    return await readSettingsResponse(response, '保存网络代理设置失败');
+  } catch {
+    throw new Error('保存网络代理设置失败');
   }
 }
 
@@ -259,6 +286,24 @@ function normalizeAppSettings(settings: unknown): AppSettings {
     models: normalizeModelSettings(record.models),
     shortcuts: normalizeShortcutSettings(record.shortcuts),
     openWith: normalizeOpenWithSettings(record.openWith),
+    networkProxy: normalizeAgentNetworkProxySettings(record.networkProxy),
+  };
+}
+
+export function normalizeAgentNetworkProxySettings(value: unknown): AgentNetworkProxySettings {
+  const record = isRecord(value) ? value : {};
+  const protocol = record.protocol === 'https' || record.protocol === 'socks5' ? record.protocol : 'http';
+  const portValue = typeof record.port === 'number' ? record.port : Number(record.port);
+  return {
+    enabled: normalizeBoolean(record.enabled, defaultAgentNetworkProxySettings.enabled),
+    protocol,
+    host: normalizeLimitedString(record.host, 255),
+    port: Number.isInteger(portValue) && portValue >= 1 && portValue <= 65535
+      ? portValue
+      : defaultAgentNetworkProxySettings.port,
+    username: normalizeLimitedString(record.username, 128),
+    password: normalizeLimitedString(record.password, 256),
+    noProxy: normalizeLimitedString(record.noProxy, 2000),
   };
 }
 

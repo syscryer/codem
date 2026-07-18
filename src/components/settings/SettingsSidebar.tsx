@@ -12,6 +12,7 @@ import {
   Settings,
   Puzzle,
   TreePine,
+  Network,
 } from 'lucide-react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { SettingsSection } from '../../types';
@@ -38,6 +39,7 @@ const settingsSections: Array<{ id: SettingsSection; label: string; icon: typeof
   { id: 'plugins', label: '插件与技能', icon: Puzzle },
   { id: 'globalPrompts', label: '全局规则', icon: Braces },
   { id: 'openWith', label: '打开方式', icon: AppWindow },
+  { id: 'networkProxy', label: '网络代理', icon: Network },
 ];
 
 export function SettingsSidebar({

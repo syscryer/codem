@@ -36,12 +36,17 @@ const CLAUDE_CLI_INSTALL_COMMAND: &str = "npm install -g @anthropic-ai/claude-co
 const CLAUDE_CLI_MACOS_INSTALL_COMMAND: &str =
     "/usr/bin/curl -fsSL https://claude.ai/install.sh | /bin/bash";
 const CODEX_CLI_INSTALL_COMMAND: &str = "npm install -g @openai/codex@latest";
+#[cfg(target_os = "windows")]
 const GROK_CLI_INSTALL_COMMAND: &str = "irm https://x.ai/cli/install.ps1 | iex";
+#[cfg(target_os = "windows")]
+const GROK_CLI_WINDOWS_INSTALL_SCRIPT: &str =
+    "$ErrorActionPreference = 'Stop'; irm https://x.ai/cli/install.ps1 | iex";
+const GROK_CLI_MACOS_INSTALL_COMMAND: &str = "curl -fsSL https://x.ai/cli/install.sh | bash";
 const OPENCODE_CLI_INSTALL_COMMAND: &str = "npm install -g opencode-ai@latest";
 const NPM_REGISTRY_URL: &str = "https://registry.npmjs.org";
 const NPM_MIRROR_REGISTRY_URL: &str = "https://registry.npmmirror.com";
 const NPM_CONFIG_USER_AGENT_ENV: &str = "npm_config_user_agent";
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 const AGENT_LIFECYCLE_PROXY_ENV_NAMES: &[&str] = &[
     "http_proxy",
     "https_proxy",
@@ -574,6 +579,14 @@ fn create_router(state: AppState) -> Router {
         .route("/api/settings/shortcuts", put(update_shortcut_settings))
         .route("/api/settings/open-with", put(update_open_with_settings))
         .route(
+            "/api/settings/network-proxy",
+            put(update_network_proxy_settings),
+        )
+        .route(
+            "/api/agents/network-proxy/test",
+            post(test_agent_network_proxy),
+        )
+        .route(
             "/api/agents/runtime-settings",
             get(get_agent_runtime_settings).put(update_agent_runtime_settings),
         )
@@ -914,7 +927,19 @@ async fn agent_settings_diagnostics(
     };
     let diagnostic = if run_diagnostic {
         if let (Some(command), Some(arguments)) = (command.as_deref(), diagnostic_args) {
-            let output = background_command(command).args(arguments).output();
+            let settings = read_app_settings(&state).unwrap_or_else(|_| default_app_settings());
+            let mut process = background_command(command);
+            process.args(arguments);
+            let proxy = configured_agent_proxy_environment(&settings).or_else(|| {
+                let system = resolve_system_proxy_environment();
+                (!system.is_empty()).then_some(system)
+            });
+            if let Some(proxy) = proxy {
+                for (name, value) in proxy {
+                    process.env(name, value);
+                }
+            }
+            let output = process.output();
             match output {
                 Ok(output) => json!({
                     "available": true,
@@ -961,6 +986,7 @@ async fn agent_settings_diagnostics(
 }
 
 async fn agent_latest_version(
+    State(state): State<AppState>,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<Json<Value>> {
     let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
@@ -972,7 +998,17 @@ async fn agent_latest_version(
     let command = (provider_id == GROK_BUILD_PROVIDER_ID)
         .then(|| resolve_agent_settings_command(provider_id))
         .flatten();
-    let latest_version_check = read_agent_latest_version(provider_id, command.as_deref()).await;
+    let settings = read_app_settings(&state).unwrap_or_else(|_| default_app_settings());
+    let proxy_environment = configured_agent_proxy_environment(&settings).or_else(|| {
+        let system = resolve_system_proxy_environment();
+        (!system.is_empty()).then_some(system)
+    });
+    let latest_version_check = read_agent_latest_version(
+        provider_id,
+        command.as_deref(),
+        proxy_environment.as_deref(),
+    )
+    .await;
     let update_available = current_version
         .zip(latest_version_check.latest_version.as_deref())
         .is_some_and(|(current, latest)| compare_semantic_versions(current, latest) < 0);
@@ -987,6 +1023,7 @@ async fn agent_latest_version(
 async fn read_agent_latest_version(
     provider_id: &str,
     installed_command: Option<&str>,
+    proxy_environment: Option<&[(String, String)]>,
 ) -> AgentLatestVersionCheck {
     if provider_id == GROK_BUILD_PROVIDER_ID {
         let Some(command) = installed_command else {
@@ -995,7 +1032,7 @@ async fn read_agent_latest_version(
                 error: Some("安装后可通过 Grok Build 官方更新器查询最新版本".to_string()),
             };
         };
-        return read_grok_latest_version(command).await;
+        return read_grok_latest_version(command, proxy_environment).await;
     }
 
     let package = match provider_id {
@@ -1009,35 +1046,39 @@ async fn read_agent_latest_version(
             };
         }
     };
-    let client = match reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(4))
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => {
-            return AgentLatestVersionCheck {
-                latest_version: None,
-                error: Some("无法初始化版本查询".to_string()),
-            };
+    let proxy_url = proxy_environment.and_then(|environment| {
+        environment
+            .iter()
+            .find(|(name, _)| name == "https_proxy" || name == "HTTPS_PROXY")
+            .map(|(_, value)| value.clone())
+    });
+    for proxy in [None, proxy_url.as_deref()] {
+        let mut client_builder = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(4))
+            .timeout(std::time::Duration::from_secs(8));
+        if let Some(proxy) = proxy {
+            if let Ok(proxy) = reqwest::Proxy::all(proxy) {
+                client_builder = client_builder.proxy(proxy);
+            }
         }
-    };
-
-    for registry in [NPM_REGISTRY_URL, NPM_MIRROR_REGISTRY_URL] {
-        if let Ok(version) = fetch_npm_latest_version(&client, registry, package).await {
-            return AgentLatestVersionCheck {
-                latest_version: Some(version),
-                error: None,
-            };
+        let Ok(client) = client_builder.build() else {
+            continue;
+        };
+        for registry in [NPM_REGISTRY_URL, NPM_MIRROR_REGISTRY_URL] {
+            if let Ok(version) = fetch_npm_latest_version(&client, registry, package).await {
+                return AgentLatestVersionCheck {
+                    latest_version: Some(version),
+                    error: None,
+                };
+            }
         }
-    }
-
-    if provider_id == OPENCODE_PROVIDER_ID {
-        if let Ok(version) = fetch_github_latest_version(&client, "anomalyco/opencode").await {
-            return AgentLatestVersionCheck {
-                latest_version: Some(version),
-                error: None,
-            };
+        if provider_id == OPENCODE_PROVIDER_ID {
+            if let Ok(version) = fetch_github_latest_version(&client, "anomalyco/opencode").await {
+                return AgentLatestVersionCheck {
+                    latest_version: Some(version),
+                    error: None,
+                };
+            }
         }
     }
 
@@ -1106,10 +1147,16 @@ async fn fetch_github_latest_version(
         .ok_or(())
 }
 
-async fn read_grok_latest_version(command: &str) -> AgentLatestVersionCheck {
+async fn read_grok_latest_version(
+    command: &str,
+    proxy_environment: Option<&[(String, String)]>,
+) -> AgentLatestVersionCheck {
     let mut process = background_tokio_command(command);
     process.args(["update", "--check", "--json"]);
     configure_agent_lifecycle_environment(GROK_BUILD_PROVIDER_ID, &mut process);
+    if let Some(proxy_environment) = proxy_environment {
+        apply_proxy_environment(&mut process, proxy_environment);
+    }
     process.kill_on_drop(true);
     let output =
         match tokio::time::timeout(std::time::Duration::from_secs(20), process.output()).await {
@@ -1187,7 +1234,8 @@ async fn agent_lifecycle_action(
         }
     }
 
-    let result = execute_agent_lifecycle_action(provider_id, action)
+    let settings = read_app_settings(&state).unwrap_or_else(|_| default_app_settings());
+    let result = execute_agent_lifecycle_action(provider_id, action, &settings)
         .await
         .map_err(ApiError::into_json_body);
     if result.is_ok() {
@@ -1197,15 +1245,24 @@ async fn agent_lifecycle_action(
     result.map(Json)
 }
 
-async fn execute_agent_lifecycle_action(provider_id: &str, action: &str) -> ApiResult<Value> {
+async fn execute_agent_lifecycle_action(
+    provider_id: &str,
+    action: &str,
+    settings: &Value,
+) -> ApiResult<Value> {
     let command = resolve_agent_settings_command(provider_id);
     if action == "update" && command.is_none() {
         return Err(ApiError::bad_request("Agent 尚未安装，请先执行安装"));
     }
 
     let plan = build_agent_lifecycle_plan(provider_id, action, command.as_deref())?;
+    if !lifecycle_program_available(&plan.program) {
+        return Err(ApiError::bad_request(
+            "未检测到 npm、pnpm 或 bun。请先安装 Node.js 或任一受支持的包管理器后重试",
+        ));
+    }
     let mirror_eligible = lifecycle_plan_supports_npm_mirror(&plan);
-    let primary = run_agent_lifecycle_plan(provider_id, &plan, None).await;
+    let primary = run_agent_lifecycle_plan(provider_id, &plan, None, None).await;
     let retry_with_mirror = match &primary {
         Ok(output) => {
             !output.status.success()
@@ -1215,18 +1272,49 @@ async fn execute_agent_lifecycle_action(provider_id: &str, action: &str) -> ApiR
         Err(AgentLifecycleProcessError::Timeout) => mirror_eligible,
         Err(AgentLifecycleProcessError::Start(_)) => false,
     };
-    let (output, used_mirror) = if retry_with_mirror {
-        let output = run_agent_lifecycle_plan(provider_id, &plan, Some(NPM_MIRROR_REGISTRY_URL))
+    let configured_proxy = configured_agent_proxy_environment(settings);
+    let system_proxy = if configured_proxy.is_none() {
+        resolve_system_proxy_environment()
+    } else {
+        Vec::new()
+    };
+    let proxy_retry = if configured_proxy.is_some() {
+        configured_proxy.as_deref()
+    } else if !system_proxy.is_empty() {
+        Some(system_proxy.as_slice())
+    } else {
+        None
+    };
+    let retry_with_proxy = matches!(&primary, Err(AgentLifecycleProcessError::Timeout))
+        || primary.as_ref().is_ok_and(|output| {
+            !output.status.success()
+                && is_agent_lifecycle_network_failure(&agent_lifecycle_output_text(output))
+        });
+    let (output, used_mirror, used_proxy) = if retry_with_proxy && proxy_retry.is_some() {
+        let output = run_agent_lifecycle_plan(provider_id, &plan, None, proxy_retry)
             .await
             .map_err(|error| match error {
                 AgentLifecycleProcessError::Timeout => {
-                    ApiError::internal("国内镜像重试超时，请检查网络后重试")
+                    ApiError::internal("代理重试超时，请检查代理连接")
                 }
                 AgentLifecycleProcessError::Start(error) => {
-                    ApiError::internal(format!("启动国内镜像重试失败: {error}"))
+                    ApiError::internal(format!("启动代理重试失败: {error}"))
                 }
             })?;
-        (output, true)
+        (output, false, true)
+    } else if retry_with_mirror && mirror_eligible {
+        let output =
+            run_agent_lifecycle_plan(provider_id, &plan, Some(NPM_MIRROR_REGISTRY_URL), None)
+                .await
+                .map_err(|error| match error {
+                    AgentLifecycleProcessError::Timeout => {
+                        ApiError::internal("国内镜像重试超时，请检查网络后重试")
+                    }
+                    AgentLifecycleProcessError::Start(error) => {
+                        ApiError::internal(format!("启动国内镜像重试失败: {error}"))
+                    }
+                })?;
+        (output, true, false)
     } else {
         let output = primary.map_err(|error| match error {
             AgentLifecycleProcessError::Timeout => {
@@ -1236,7 +1324,7 @@ async fn execute_agent_lifecycle_action(provider_id: &str, action: &str) -> ApiR
                 ApiError::internal(format!("启动 Agent 安装或更新失败: {error}"))
             }
         })?;
-        (output, false)
+        (output, false, false)
     };
     let output_text = agent_lifecycle_output_text(&output);
     let summary = sanitize_agent_lifecycle_output(&output_text);
@@ -1257,7 +1345,21 @@ async fn execute_agent_lifecycle_action(provider_id: &str, action: &str) -> ApiR
             summary
         )));
     }
-    let command = resolve_agent_settings_command(provider_id);
+    // Native installers can replace their symlink just after the updater exits.
+    // Give the filesystem a short settle window before declaring the update missing.
+    let command = resolve_agent_lifecycle_command_after_success(provider_id).await;
+    if command.is_none() {
+        let output_detail = if summary.is_empty() {
+            "安装命令没有输出可供诊断".to_string()
+        } else {
+            format!("安装输出：{summary}")
+        };
+        return Err(ApiError::internal(format!(
+            "Agent {}命令已退出，但 CodeM 未检测到可执行文件。请确认安装目录已写入当前用户目录，并点击重新检测。{}",
+            if action == "install" { "安装" } else { "更新" },
+            output_detail
+        )));
+    }
     let version = command.as_deref().and_then(|command| {
         if provider_id == GROK_BUILD_PROVIDER_ID {
             read_grok_cli_version(command)
@@ -1273,25 +1375,52 @@ async fn execute_agent_lifecycle_action(provider_id: &str, action: &str) -> ApiR
         "version": version,
         "output": summary,
         "usedMirror": used_mirror,
+        "networkPath": if used_proxy { "codem-proxy" } else if used_mirror { "npm-mirror" } else { "direct" },
         "mirrorRegistry": if used_mirror { Some(NPM_MIRROR_REGISTRY_URL) } else { None },
     }))
+}
+
+async fn resolve_agent_lifecycle_command_after_success(provider_id: &str) -> Option<String> {
+    for attempt in 0..10 {
+        if let Some(command) = resolve_agent_settings_command(provider_id) {
+            return Some(command);
+        }
+        if attempt < 9 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
+    None
 }
 
 async fn run_agent_lifecycle_plan(
     provider_id: &str,
     plan: &AgentLifecyclePlan,
     registry: Option<&str>,
+    proxy_environment: Option<&[(String, String)]>,
 ) -> Result<std::process::Output, AgentLifecycleProcessError> {
     let mut process = background_tokio_command(&plan.program);
     process.args(&plan.args);
     configure_agent_lifecycle_environment(provider_id, &mut process);
+    if let Some(proxy_environment) = proxy_environment {
+        apply_proxy_environment(&mut process, proxy_environment);
+    }
     if let Some(registry) = registry {
         process.env("NPM_CONFIG_REGISTRY", registry);
     }
     process.kill_on_drop(true);
     process.stdout(std::process::Stdio::piped());
     process.stderr(std::process::Stdio::piped());
-    tokio::time::timeout(std::time::Duration::from_secs(15 * 60), process.output())
+    let timeout = if (provider_id == CLAUDE_CODE_PROVIDER_ID
+        && plan.args.iter().any(|argument| argument == "update"))
+        || (provider_id == GROK_BUILD_PROVIDER_ID && plan.program == "bash")
+    {
+        // Network-bound native actions can wait indefinitely on a blocked direct connection.
+        // A short timeout lets the existing CodeM/system proxy retry take over.
+        std::time::Duration::from_secs(30)
+    } else {
+        std::time::Duration::from_secs(15 * 60)
+    };
+    tokio::time::timeout(timeout, process.output())
         .await
         .map_err(|_| AgentLifecycleProcessError::Timeout)?
         .map_err(|error| AgentLifecycleProcessError::Start(error.to_string()))
@@ -1301,43 +1430,226 @@ fn configure_agent_lifecycle_environment(provider_id: &str, process: &mut tokio:
     if provider_id == GROK_BUILD_PROVIDER_ID {
         process.env_remove(NPM_CONFIG_USER_AGENT_ENV);
     }
-    #[cfg(target_os = "macos")]
-    if provider_id == CLAUDE_CODE_PROVIDER_ID
-        && !current_process_has_proxy_environment()
-        && !command_has_proxy_environment(process)
-    {
-        let proxy_environment = resolve_macos_system_proxy_environment();
-        apply_agent_lifecycle_proxy_environment(process, &proxy_environment, false);
+}
+
+fn apply_proxy_environment(
+    process: &mut tokio::process::Command,
+    proxy_environment: &[(String, String)],
+) {
+    for (name, value) in proxy_environment {
+        process.env(name, value);
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+fn configured_agent_proxy_environment(settings: &Value) -> Option<Vec<(String, String)>> {
+    let record = settings.get("networkProxy")?.as_object()?;
+    if !record
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let protocol = record
+        .get("protocol")
+        .and_then(Value::as_str)
+        .unwrap_or("http");
+    let host = record.get("host").and_then(Value::as_str)?.trim();
+    let port = record.get("port").and_then(Value::as_u64)?.to_string();
+    if host.is_empty()
+        || host
+            .chars()
+            .any(|value| value.is_control() || value.is_whitespace())
+    {
+        return None;
+    }
+    let scheme = if protocol == "socks5" {
+        "socks5h"
+    } else {
+        protocol
+    };
+    let mut url = url::Url::parse(&format!("{scheme}://{host}:{port}")).ok()?;
+    let username = record
+        .get("username")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let password = record.get("password").and_then(Value::as_str).unwrap_or("");
+    if !username.is_empty() {
+        url.set_username(username).ok()?;
+        url.set_password(Some(password)).ok()?;
+    }
+    let proxy = url.to_string();
+    let no_proxy = record
+        .get("noProxy")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let mut result = vec![
+        ("http_proxy".to_string(), proxy.clone()),
+        ("https_proxy".to_string(), proxy.clone()),
+        ("all_proxy".to_string(), proxy.clone()),
+        ("HTTP_PROXY".to_string(), proxy.clone()),
+        ("HTTPS_PROXY".to_string(), proxy.clone()),
+        ("ALL_PROXY".to_string(), proxy),
+    ];
+    if !no_proxy.is_empty() {
+        result.push(("no_proxy".to_string(), no_proxy.clone()));
+        result.push(("NO_PROXY".to_string(), no_proxy));
+    }
+    Some(result)
+}
+
+fn resolve_system_proxy_environment() -> Vec<(String, String)> {
+    if let Some(proxy) = env::var("HTTPS_PROXY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return vec![
+            ("https_proxy".to_string(), proxy.clone()),
+            ("HTTPS_PROXY".to_string(), proxy),
+        ];
+    }
+    if let Some(proxy) = env::var("HTTP_PROXY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return vec![
+            ("http_proxy".to_string(), proxy.clone()),
+            ("HTTP_PROXY".to_string(), proxy),
+        ];
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return resolve_macos_system_proxy_environment();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return resolve_windows_system_proxy_environment();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Vec::new()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_system_proxy_environment() -> Vec<(String, String)> {
+    let output = Command::new("reg")
+        .args([
+            "query",
+            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+            "/v",
+            "ProxyServer",
+        ])
+        .output()
+        .ok();
+    let Some(value) = output.and_then(|output| String::from_utf8(output.stdout).ok()) else {
+        return Vec::new();
+    };
+    let Some(proxy) = value.lines().find_map(|line| {
+        line.split_once("REG_SZ")
+            .map(|(_, value)| value.trim().to_string())
+    }) else {
+        return Vec::new();
+    };
+    let proxy = proxy
+        .split(';')
+        .find_map(|part| {
+            part.strip_prefix("https=")
+                .or_else(|| part.strip_prefix("http="))
+        })
+        .unwrap_or(&proxy)
+        .trim();
+    if proxy.is_empty() {
+        return Vec::new();
+    }
+    let proxy = if proxy.contains("://") {
+        proxy.to_string()
+    } else {
+        format!("http://{proxy}")
+    };
+    vec![
+        ("http_proxy".to_string(), proxy.clone()),
+        ("https_proxy".to_string(), proxy.clone()),
+        ("HTTP_PROXY".to_string(), proxy.clone()),
+        ("HTTPS_PROXY".to_string(), proxy),
+    ]
+}
+
+async fn test_agent_network_proxy(State(state): State<AppState>) -> ApiResult<Json<Value>> {
+    let settings = read_app_settings(&state)?;
+    let proxy_environment = configured_agent_proxy_environment(&settings).or_else(|| {
+        let system = resolve_system_proxy_environment();
+        (!system.is_empty()).then_some(system)
+    });
+    let Some(environment) = proxy_environment else {
+        return Ok(Json(
+            json!({ "success": false, "error": "未配置 CodeM 代理，且未检测到系统代理" }),
+        ));
+    };
+    let proxy_url = environment
+        .iter()
+        .find(|(name, _)| name == "https_proxy" || name == "HTTPS_PROXY")
+        .map(|(_, value)| value.clone());
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(8));
+    if let Some(proxy_url) = proxy_url {
+        builder = builder.proxy(
+            reqwest::Proxy::all(proxy_url)
+                .map_err(|error| ApiError::bad_request(format!("代理地址无效: {error}")))?,
+        );
+    }
+    let client = builder
+        .build()
+        .map_err(|error| ApiError::internal(format!("初始化代理测试失败: {error}")))?;
+    let started = std::time::Instant::now();
+    let response = client
+        .get("https://registry.npmjs.org/-/package/@openai%2Fcodex/dist-tags")
+        .send()
+        .await;
+    match response {
+        Ok(response) if response.status().is_success() => Ok(Json(
+            json!({ "success": true, "latencyMs": started.elapsed().as_millis() }),
+        )),
+        Ok(response) => Ok(Json(
+            json!({ "success": false, "error": format!("代理返回 HTTP {}", response.status()) }),
+        )),
+        Err(error) => Ok(Json(
+            json!({ "success": false, "error": format!("代理连接失败: {error}") }),
+        )),
+    }
+}
+
+#[cfg(test)]
 fn proxy_environment_name(name: &std::ffi::OsStr) -> bool {
     AGENT_LIFECYCLE_PROXY_ENV_NAMES
         .iter()
         .any(|candidate| name.eq_ignore_ascii_case(std::ffi::OsStr::new(candidate)))
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 fn proxy_environment_value_present(value: &std::ffi::OsStr) -> bool {
     !value.to_string_lossy().trim().is_empty()
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 fn current_process_has_proxy_environment() -> bool {
     env::vars_os().any(|(name, value)| {
         proxy_environment_name(&name) && proxy_environment_value_present(&value)
     })
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 fn command_has_proxy_environment(process: &tokio::process::Command) -> bool {
     process.as_std().get_envs().any(|(name, value)| {
         proxy_environment_name(name) && value.is_some_and(proxy_environment_value_present)
     })
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 fn apply_agent_lifecycle_proxy_environment(
     process: &mut tokio::process::Command,
     proxy_environment: &[(String, String)],
@@ -1476,6 +1788,10 @@ fn is_agent_lifecycle_network_failure(value: &str) -> bool {
         "network timeout",
         "network request to",
         "fetch failed",
+        "failed to fetch",
+        "failed to reach",
+        "failed to connect",
+        "couldn't connect",
         "could not resolve host",
         "unable to get local issuer certificate",
         "self signed certificate",
@@ -1486,6 +1802,8 @@ fn is_agent_lifecycle_network_failure(value: &str) -> bool {
         "connection reset",
         "connection timed out",
         "failed to download",
+        "telemetrysafeerror",
+        "downloads.claude.ai",
     ]
     .iter()
     .any(|marker| value.contains(marker))
@@ -1497,6 +1815,9 @@ fn build_agent_lifecycle_plan(
     installed_command: Option<&str>,
 ) -> ApiResult<AgentLifecyclePlan> {
     if action == "install" && provider_id == CLAUDE_CODE_PROVIDER_ID {
+        if cfg!(target_os = "windows") {
+            return package_manager_install_plan(provider_id);
+        }
         return Ok(claude_install_lifecycle_plan(
             cfg!(target_os = "macos"),
             cfg!(target_os = "windows"),
@@ -1517,15 +1838,15 @@ fn build_agent_lifecycle_plan(
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                GROK_CLI_INSTALL_COMMAND,
+                GROK_CLI_WINDOWS_INSTALL_SCRIPT,
             ],
             GROK_CLI_INSTALL_COMMAND,
         ));
         #[cfg(not(target_os = "windows"))]
         return Ok(lifecycle_plan(
-            "sh",
-            ["-c", "curl -fsSL https://x.ai/cli/install.sh | bash"],
-            "curl -fsSL https://x.ai/cli/install.sh | bash",
+            "bash",
+            ["-o", "pipefail", "-c", GROK_CLI_MACOS_INSTALL_COMMAND],
+            GROK_CLI_MACOS_INSTALL_COMMAND,
         ));
     }
     if action == "update" {
@@ -1569,7 +1890,76 @@ fn build_agent_lifecycle_plan(
         GROK_BUILD_PROVIDER_ID => return Err(ApiError::bad_request("不支持的 Grok Build 操作")),
         _ => return Err(ApiError::bad_request("不支持的 Agent Provider")),
     };
+    if let Some(plan) = package_manager_install_plan_for_package(provider_id, package, display) {
+        return Ok(plan);
+    }
     Ok(lifecycle_plan(
+        if cfg!(target_os = "windows") {
+            "npm.cmd"
+        } else {
+            "npm"
+        },
+        ["install", "-g", package],
+        display,
+    ))
+}
+
+fn package_manager_install_plan(provider_id: &str) -> ApiResult<AgentLifecyclePlan> {
+    let (package, display) = match provider_id {
+        CLAUDE_CODE_PROVIDER_ID => (
+            "@anthropic-ai/claude-code@latest",
+            CLAUDE_CLI_INSTALL_COMMAND,
+        ),
+        _ => return Err(ApiError::bad_request("不支持的 Agent Provider")),
+    };
+    package_manager_install_plan_for_package(provider_id, package, display).ok_or_else(|| {
+        ApiError::bad_request(
+            "未检测到 npm、pnpm 或 bun。请先安装 Node.js 或任一受支持的包管理器后重试",
+        )
+    })
+}
+
+fn package_manager_install_plan_for_package(
+    provider_id: &str,
+    package: &str,
+    display: &str,
+) -> Option<AgentLifecyclePlan> {
+    let suffix = if cfg!(target_os = "windows") {
+        ".cmd"
+    } else {
+        ""
+    };
+    for (manager, args, command) in [
+        (
+            format!("npm{suffix}"),
+            vec!["install", "-g", package],
+            format!("npm install -g {package}"),
+        ),
+        (
+            format!("pnpm{suffix}"),
+            vec!["add", "-g", package],
+            format!("pnpm add -g {package}"),
+        ),
+        (
+            "bun".to_string(),
+            vec!["add", "-g", package],
+            format!("bun add -g {package}"),
+        ),
+    ] {
+        if executable_on_path(&manager) {
+            return Some(lifecycle_plan(
+                &manager,
+                args,
+                if manager.starts_with("npm") {
+                    display
+                } else {
+                    &command
+                },
+            ));
+        }
+    }
+    let _ = provider_id;
+    Some(lifecycle_plan(
         if cfg!(target_os = "windows") {
             "npm.cmd"
         } else {
@@ -1704,6 +2094,22 @@ fn find_nearby_executable(command: &str, names: &[&str]) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn executable_on_path(program: &str) -> bool {
+    let lookup = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
+    Command::new(lookup)
+        .arg(program)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn lifecycle_program_available(program: &str) -> bool {
+    Path::new(program).is_absolute() || executable_on_path(program)
 }
 
 fn is_native_claude_command(command: &str) -> bool {
@@ -2727,6 +3133,13 @@ async fn update_open_with_settings(
     Json(payload): Json<Value>,
 ) -> ApiResult<Json<Value>> {
     update_settings_section(&state, "openWith", payload, UpdateMode::Merge).map(Json)
+}
+
+async fn update_network_proxy_settings(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    update_settings_section(&state, "networkProxy", payload, UpdateMode::Replace).map(Json)
 }
 
 async fn get_agent_runtime_settings(State(state): State<AppState>) -> Json<Value> {
@@ -4338,6 +4751,7 @@ fn normalize_app_settings(value: &Value) -> Value {
         "models": normalize_model_settings(record.and_then(|item| item.get("models"))),
         "shortcuts": normalize_shortcut_settings(record.and_then(|item| item.get("shortcuts"))),
         "openWith": normalize_open_with_settings(record.and_then(|item| item.get("openWith"))),
+        "networkProxy": normalize_network_proxy_settings(record.and_then(|item| item.get("networkProxy"))),
     })
 }
 
@@ -4380,6 +4794,26 @@ fn normalize_general_settings(value: Option<&Value>) -> Value {
         "reviewDefaultDisplayMode": enum_setting(record, "reviewDefaultDisplayMode", &["tree", "flat"], "tree"),
         "reviewNoisePatterns": review_noise_patterns,
         "reviewIgnorePatternsCustomized": review_ignore_patterns_customized,
+    })
+}
+
+fn normalize_network_proxy_settings(value: Option<&Value>) -> Value {
+    let record = value.and_then(Value::as_object);
+    let protocol = enum_setting(record, "protocol", &["http", "https", "socks5"], "http");
+    let port = record
+        .and_then(|item| item.get("port"))
+        .and_then(Value::as_u64)
+        .filter(|port| (1..=65535).contains(port))
+        .unwrap_or(7890);
+    json!({
+        "enabled": bool_setting(record, "enabled", false),
+        "protocol": protocol,
+        "host": limited_string(record.and_then(|item| item.get("host")), 255).unwrap_or_default(),
+        "port": port,
+        "username": limited_string(record.and_then(|item| item.get("username")), 128).unwrap_or_default(),
+        "password": limited_string(record.and_then(|item| item.get("password")), 256).unwrap_or_default(),
+        "noProxy": limited_string(record.and_then(|item| item.get("noProxy")), 2000)
+            .unwrap_or_else(|| "localhost,127.0.0.1,::1".to_string()),
     })
 }
 
@@ -5063,6 +5497,15 @@ fn default_app_settings() -> Value {
             "selectedTargetId": "vscode",
             "customTargets": []
         }
+        ,"networkProxy": {
+            "enabled": false,
+            "protocol": "http",
+            "host": "",
+            "port": 7890,
+            "username": "",
+            "password": "",
+            "noProxy": "localhost,127.0.0.1,::1"
+        }
     })
 }
 
@@ -5413,11 +5856,31 @@ fn resolve_grok_command() -> Option<String> {
 }
 
 fn resolve_default_grok_command() -> Option<String> {
-    let command = default_grok_command_path(&home_dir()?, cfg!(target_os = "windows"));
-    command
-        .is_file()
-        .then(|| command.to_string_lossy().to_string())
-        .filter(|command| command_reports_version(command))
+    let home = home_dir()?;
+    let windows = cfg!(target_os = "windows");
+    let mut candidates = vec![default_grok_command_path(&home, windows)];
+    if let Some(bin_dir) = env::var_os("GROK_BIN_DIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        candidates.push(bin_dir.join(if windows { "grok.exe" } else { "grok" }));
+    }
+    candidates.extend([
+        home.join(".local")
+            .join("bin")
+            .join(if windows { "grok.exe" } else { "grok" }),
+        home.join("bin")
+            .join(if windows { "grok.exe" } else { "grok" }),
+    ]);
+    if !windows {
+        candidates.extend([
+            PathBuf::from("/usr/local/bin/grok"),
+            PathBuf::from("/opt/homebrew/bin/grok"),
+        ]);
+    } else if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+        candidates.push(PathBuf::from(local_app_data).join("Grok").join("grok.exe"));
+    }
+    resolve_first_runnable_command(candidates)
 }
 
 fn default_grok_command_path(home: &Path, windows: bool) -> PathBuf {
@@ -17566,6 +18029,19 @@ mod tests {
     }
 
     #[test]
+    fn grok_install_plan_fails_when_the_download_pipeline_fails() {
+        let plan = build_agent_lifecycle_plan(GROK_BUILD_PROVIDER_ID, "install", None)
+            .expect("build Grok install plan");
+        if cfg!(target_os = "windows") {
+            assert_eq!(plan.program, "powershell.exe");
+        } else {
+            assert_eq!(plan.program, "bash");
+            assert_eq!(plan.args.first().map(String::as_str), Some("-o"));
+            assert_eq!(plan.args.get(1).map(String::as_str), Some("pipefail"));
+        }
+    }
+
+    #[test]
     fn macos_claude_install_uses_official_native_installer_without_path_lookup() {
         let plan = claude_install_lifecycle_plan(true, false);
 
@@ -17851,6 +18327,8 @@ mod tests {
             "request failed: connect timeout",
             "fetch failed: could not resolve host",
             "failed to download package",
+            "TelemetrySafeError: Failed to fetch versions from https://downloads.claude.ai/claude-code-releases/latest",
+            "curl: (28) Failed to connect to x.ai port 443 after 75021 ms: Couldn't connect to server",
         ] {
             assert!(is_agent_lifecycle_network_failure(message), "{message}");
         }

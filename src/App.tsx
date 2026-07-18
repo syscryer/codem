@@ -345,6 +345,7 @@ export default function App() {
     models: appModelSettings,
     shortcuts,
     openWith,
+    networkProxy,
     openTargets,
     loading: settingsLoading,
     updateAppearance,
@@ -353,6 +354,7 @@ export default function App() {
     updateModels,
     updateShortcuts,
     updateOpenWith,
+    updateNetworkProxy,
   } = useAppSettings(showToast);
 
   useEffect(() => {
@@ -1923,6 +1925,7 @@ export default function App() {
         models={appModelSettings}
         shortcuts={shortcuts}
         openWith={openWith}
+        networkProxy={networkProxy}
         openTargets={openTargets}
         claudeModels={claudeModels}
         aiChatProviders={ordinaryChat.providers}
@@ -1951,6 +1954,7 @@ export default function App() {
         onUpdateModels={updateModels}
         onUpdateShortcuts={updateShortcuts}
         onUpdateOpenWith={updateOpenWith}
+        onUpdateNetworkProxy={updateNetworkProxy}
         onRefreshAiChatProviders={async () => {
           await ordinaryChat.refreshBootstrap();
         }}

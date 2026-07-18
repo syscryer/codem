@@ -545,7 +545,20 @@ export type SettingsSection =
   | 'mcp'
   | 'plugins'
   | 'globalPrompts'
-  | 'openWith';
+  | 'openWith'
+  | 'networkProxy';
+
+export type AgentNetworkProxyProtocol = 'http' | 'https' | 'socks5';
+
+export type AgentNetworkProxySettings = {
+  enabled: boolean;
+  protocol: AgentNetworkProxyProtocol;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  noProxy: string;
+};
 
 export type PluginTab = 'plugins' | 'skills';
 export type PluginSubTab = 'installed' | 'discover' | 'marketplaces';
@@ -887,6 +900,7 @@ export type AppSettings = {
   models: ModelSettings;
   shortcuts: ShortcutSettings;
   openWith: OpenWithSettings;
+  networkProxy: AgentNetworkProxySettings;
 };
 
 export type UsageTotals = {

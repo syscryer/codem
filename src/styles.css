@@ -12737,6 +12737,16 @@ button.git-conflict-overview-row:focus-visible,
   color: var(--app-text);
 }
 
+.codex-desktop .agent-model-settings .settings-action-button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.codex-desktop .agent-model-settings .settings-action-button.primary :is(span, svg) {
+  color: inherit;
+}
+
 .codex-desktop .agent-model-settings .settings-select {
   background-image:
     linear-gradient(180deg, var(--app-surface-muted), var(--app-surface-muted)),
@@ -13882,6 +13892,31 @@ button.git-conflict-overview-row:focus-visible,
   display: flex;
   justify-content: flex-end;
   flex-wrap: wrap;
+}
+
+.settings-text-input,
+.settings-number-input {
+  min-width: 220px;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid #dcdcdc;
+  border-radius: 7px;
+  background: var(--app-surface, #fff);
+  color: var(--text-primary, #242424);
+  font: inherit;
+  font-size: 12px;
+}
+
+.settings-number-input { min-width: 100px; width: 100px; }
+.settings-text-input:focus,
+.settings-number-input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 30%, transparent); border-color: var(--accent); }
+.settings-proxy-credentials { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.settings-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.settings-actions button { display: inline-flex; align-items: center; gap: 6px; }
+.codex-desktop :is(.settings-text-input, .settings-number-input) {
+  border-color: var(--app-border);
+  background: var(--app-surface);
+  color: var(--app-text);
 }
 
 .settings-row-stack {

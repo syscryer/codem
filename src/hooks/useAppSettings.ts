@@ -6,6 +6,7 @@ import {
   defaultGeneralSettings,
   defaultModelSettings,
   defaultOpenWithSettings,
+  defaultAgentNetworkProxySettings,
   defaultShortcutSettings,
   fetchAppSettings,
   fetchOpenWithTargets,
@@ -20,9 +21,12 @@ import {
   saveModelSettings,
   saveOpenWithSettings,
   saveShortcutSettings,
+  saveAgentNetworkProxySettings,
+  normalizeAgentNetworkProxySettings,
 } from '../lib/settings-api';
 import type {
   AgentRuntimeSettings,
+  AgentNetworkProxySettings,
   AppSettings,
   AppearanceSettings,
   GeneralSettings,
@@ -53,6 +57,9 @@ export type ShortcutSettingsUpdate =
 export type OpenWithSettingsUpdate =
   | Partial<OpenWithSettings>
   | ((current: OpenWithSettings) => Partial<OpenWithSettings> | OpenWithSettings);
+export type AgentNetworkProxySettingsUpdate =
+  | Partial<AgentNetworkProxySettings>
+  | ((current: AgentNetworkProxySettings) => Partial<AgentNetworkProxySettings> | AgentNetworkProxySettings);
 
 type AppearanceSaveQueueOptions = {
   save: (appearance: AppearanceSettings) => Promise<AppSettings>;
@@ -67,6 +74,7 @@ type AppearanceSaveQueue = {
 
 export { defaultAppSettings, defaultAppearanceSettings, defaultGeneralSettings };
 export { defaultAgentRuntimeSettings, defaultModelSettings, defaultOpenWithSettings, defaultShortcutSettings };
+export { defaultAgentNetworkProxySettings };
 
 export function useAppSettings(showToast?: ShowToast) {
   const [settings, setSettings] = useState<AppSettings>(defaultAppSettings);
@@ -226,6 +234,25 @@ export function useAppSettings(showToast?: ShowToast) {
     [applySettings],
   );
 
+  const updateNetworkProxy = useCallback(
+    async (update: AgentNetworkProxySettingsUpdate) => {
+      ++requestVersionRef.current;
+      const currentSettings = latestSettingsRef.current;
+      const patch = typeof update === 'function' ? update(currentSettings.networkProxy) : update;
+      const nextNetworkProxy = normalizeAgentNetworkProxySettings({ ...currentSettings.networkProxy, ...patch });
+      applySettings(mergeAppSettings({ ...currentSettings, networkProxy: nextNetworkProxy }));
+      setLoading(false);
+      try {
+        const savedSettings = await saveAgentNetworkProxySettings(nextNetworkProxy);
+        applySettings(savedSettings);
+      } catch (error) {
+        applySettings({ ...latestSettingsRef.current, networkProxy: currentSettings.networkProxy });
+        toastRef.current?.(error instanceof Error ? error.message : '保存网络代理设置失败', 'error');
+      }
+    },
+    [applySettings],
+  );
+
   const updateModels = useCallback(
     async (update: ModelSettingsUpdate) => {
       ++requestVersionRef.current;
@@ -304,6 +331,7 @@ export function useAppSettings(showToast?: ShowToast) {
     models: settings.models,
     shortcuts: settings.shortcuts,
     openWith: settings.openWith,
+    networkProxy: settings.networkProxy,
     openTargets,
     loading,
     updateAppearance,
@@ -312,6 +340,7 @@ export function useAppSettings(showToast?: ShowToast) {
     updateModels,
     updateShortcuts,
     updateOpenWith,
+    updateNetworkProxy,
     refreshOpenTargets,
   };
 }
@@ -432,6 +461,7 @@ function mergeAppSettings(settings: Partial<AppSettings> | null | undefined): Ap
     models: normalizeModelSettings(settings?.models),
     shortcuts: normalizeShortcutSettings(settings?.shortcuts),
     openWith: normalizeOpenWithSettings(settings?.openWith),
+    networkProxy: normalizeAgentNetworkProxySettings(settings?.networkProxy),
   };
 }
 
