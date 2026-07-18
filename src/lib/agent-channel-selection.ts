@@ -86,11 +86,13 @@ export function requestAgentChannelId(channelId: string) {
 }
 
 export function resolveRunAgentChannelSelection({
+  providerId: _providerId,
   threadId,
   activeThreadId,
   persistedChannelId,
   selectedChannelId,
 }: {
+  providerId: string;
   threadId: string;
   activeThreadId: string | null;
   persistedChannelId?: string | null;
@@ -100,9 +102,13 @@ export function resolveRunAgentChannelSelection({
   const selected = threadId === activeThreadId
     ? threadAgentChannelId(selectedChannelId)
     : persisted;
+  const channelChanged = selected !== persisted;
   return {
     channelId: requestAgentChannelId(selected),
-    reuseSession: selected === persisted,
+    channelChanged,
+    // Grok scopes its runtime home to the CodeM thread, so a runtime restart
+    // can load the same ACP session after a channel change.
+    reuseSession: true,
   };
 }
 

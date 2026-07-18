@@ -229,6 +229,8 @@ impl AgentChannelService {
         provider_id: &str,
         channel_id: Option<&str>,
         selected_model: Option<&str>,
+        session_scope: Option<&str>,
+        requested_session_id: Option<&str>,
     ) -> Result<Option<AgentChannelRuntime>, String> {
         let Some(channel_id) = normalize_channel_id(channel_id) else {
             return Ok(None);
@@ -250,6 +252,8 @@ impl AgentChannelService {
             &models,
             selected_model,
             &api_key,
+            session_scope,
+            requested_session_id,
         )
         .map(Some)
     }
@@ -1675,6 +1679,8 @@ fn build_runtime(
     models: &[AgentChannelModelSummary],
     selected_model: Option<&str>,
     api_key: &str,
+    session_scope: Option<&str>,
+    requested_session_id: Option<&str>,
 ) -> Result<AgentChannelRuntime, String> {
     let selected_model = selected_model
         .map(str::trim)
@@ -1743,7 +1749,13 @@ fn build_runtime(
             if let Some(models_url) = channel.models_url.as_deref() {
                 env.insert("GROK_MODELS_LIST_URL".to_string(), models_url.to_string());
             }
-            let (home, aliases) = prepare_grok_runtime_home(app_data_dir, channel, models)?;
+            let (home, aliases) = prepare_grok_runtime_home(
+                app_data_dir,
+                channel,
+                models,
+                session_scope,
+                requested_session_id,
+            )?;
             env.insert("GROK_HOME".to_string(), home.to_string_lossy().to_string());
             if let Some(model) = selected_model.as_deref() {
                 effective_model = aliases
@@ -1854,9 +1866,18 @@ fn prepare_grok_runtime_home(
     app_data_dir: &Path,
     channel: &StoredAgentChannel,
     models: &[AgentChannelModelSummary],
+    session_scope: Option<&str>,
+    requested_session_id: Option<&str>,
 ) -> Result<(PathBuf, BTreeMap<String, String>), String> {
     let source_home = home_dir().map(|path| path.join(".grok"));
-    prepare_grok_runtime_home_from_source(app_data_dir, channel, models, source_home.as_deref())
+    prepare_grok_runtime_home_from_source(
+        app_data_dir,
+        channel,
+        models,
+        source_home.as_deref(),
+        session_scope,
+        requested_session_id,
+    )
 }
 
 fn prepare_grok_runtime_home_from_source(
@@ -1864,13 +1885,19 @@ fn prepare_grok_runtime_home_from_source(
     channel: &StoredAgentChannel,
     models: &[AgentChannelModelSummary],
     source_home: Option<&Path>,
+    session_scope: Option<&str>,
+    requested_session_id: Option<&str>,
 ) -> Result<(PathBuf, BTreeMap<String, String>), String> {
-    let runtime_home = app_data_dir
-        .join("agent-runtimes")
-        .join("grok")
-        .join(&channel.id);
+    let grok_root = app_data_dir.join("agent-runtimes").join("grok");
+    let runtime_home = session_scope
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| grok_root.join("threads").join(sanitize_identifier(value)))
+        .unwrap_or_else(|| grok_root.join(&channel.id));
     fs::create_dir_all(&runtime_home)
         .map_err(|error| format!("创建 Grok 渠道运行目录失败: {error}"))?;
+    if let Some(session_id) = requested_session_id.filter(|value| !value.trim().is_empty()) {
+        migrate_grok_session_from_legacy_channel(&grok_root, &runtime_home, session_id)?;
+    }
     let mut config = source_home
         .map(|path| path.join("config.toml"))
         .filter(|path| path.is_file())
@@ -1912,6 +1939,59 @@ fn prepare_grok_runtime_home_from_source(
         sync_grok_runtime_assets(source_home, &runtime_home)?;
     }
     Ok((runtime_home, aliases))
+}
+
+fn migrate_grok_session_from_legacy_channel(
+    grok_root: &Path,
+    runtime_home: &Path,
+    session_id: &str,
+) -> Result<(), String> {
+    let target_sessions = runtime_home.join("sessions");
+    if find_grok_session_workspace(&target_sessions, session_id).is_some() {
+        return Ok(());
+    }
+    let entries =
+        fs::read_dir(grok_root).map_err(|error| format!("读取 Grok 运行目录失败: {error}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("读取 Grok 运行目录项失败: {error}"))?;
+        let source_home = entry.path();
+        if !source_home.is_dir() || source_home == runtime_home || entry.file_name() == "threads" {
+            continue;
+        }
+        let source_sessions = source_home.join("sessions");
+        let Some(workspace) = find_grok_session_workspace(&source_sessions, session_id) else {
+            continue;
+        };
+        let target_workspace = target_sessions.join(
+            workspace
+                .file_name()
+                .ok_or_else(|| "Grok 会话工作区目录名无效".to_string())?,
+        );
+        copy_directory(&workspace, &target_workspace, 0)?;
+        let source_index = source_sessions.join("session_search.sqlite");
+        if source_index.is_file() {
+            fs::create_dir_all(&target_sessions)
+                .map_err(|error| format!("创建 Grok 会话目录失败: {error}"))?;
+            fs::copy(&source_index, target_sessions.join("session_search.sqlite"))
+                .map_err(|error| format!("迁移 Grok 会话索引失败: {error}"))?;
+        }
+        return Ok(());
+    }
+    Ok(())
+}
+
+fn find_grok_session_workspace(sessions_root: &Path, session_id: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(sessions_root).ok()?;
+    for entry in entries.flatten() {
+        let workspace = entry.path();
+        if !workspace.is_dir() {
+            continue;
+        }
+        if workspace.join(session_id).is_dir() {
+            return Some(workspace);
+        }
+    }
+    None
 }
 
 fn sanitize_identifier(value: &str) -> String {
@@ -2088,7 +2168,7 @@ mod tests {
         }];
 
         let (runtime_home, aliases) =
-            prepare_grok_runtime_home_from_source(&root, &channel, &models, None)
+            prepare_grok_runtime_home_from_source(&root, &channel, &models, None, None, None)
                 .expect("prepare isolated Grok runtime");
         let config = fs::read_to_string(runtime_home.join("config.toml"))
             .expect("read isolated Grok config");
@@ -2102,6 +2182,47 @@ mod tests {
         assert!(config.contains("base_url = \"https://api.deepseek.com\""));
         remove_agent_channel_runtime(&root, &channel).expect("remove isolated Grok runtime");
         assert!(!runtime_home.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn grok_legacy_session_migrates_into_thread_scoped_runtime_home() {
+        let root = std::env::temp_dir()
+            .join(format!("codem-grok-session-migration-{}", uuid::Uuid::new_v4()));
+        let legacy_workspace = root
+            .join("agent-runtimes")
+            .join("grok")
+            .join("legacy-channel")
+            .join("sessions")
+            .join("encoded-workspace")
+            .join("session-1");
+        fs::create_dir_all(&legacy_workspace).expect("create legacy session");
+        fs::write(legacy_workspace.join("chat_history.jsonl"), "legacy")
+            .expect("write legacy session");
+
+        let target_home = root
+            .join("agent-runtimes")
+            .join("grok")
+            .join("threads")
+            .join("thread-1");
+        migrate_grok_session_from_legacy_channel(
+            &root.join("agent-runtimes").join("grok"),
+            &target_home,
+            "session-1",
+        )
+        .expect("migrate legacy session");
+
+        assert_eq!(
+            fs::read_to_string(
+                target_home
+                    .join("sessions")
+                    .join("encoded-workspace")
+                    .join("session-1")
+                    .join("chat_history.jsonl")
+            )
+            .expect("read migrated session"),
+            "legacy"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2163,6 +2284,8 @@ mod tests {
             &models,
             Some("MiniMax-M3"),
             "test-key",
+            None,
+            None,
         )
         .expect("build OpenCode runtime");
         let config: Value = serde_json::from_str(

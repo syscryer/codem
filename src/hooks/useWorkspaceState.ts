@@ -93,6 +93,10 @@ function hasLiveTurns(turns: ConversationTurn[]) {
   return turns.some(isLiveTurn);
 }
 
+function normalizeAgentChannelId(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
 export function useWorkspaceState() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [panelState, setPanelState] = useState<PanelState>(EMPTY_PANEL_STATE);
@@ -640,21 +644,28 @@ export function useWorkspaceState() {
         ...project,
         threads: project.threads.map((thread) =>
           thread.id === threadId
-            ? {
-                ...thread,
-                sessionId: hasOwn(payload, 'sessionId') ? payload.sessionId ?? '' : thread.sessionId,
-                workingDirectory: payload.workingDirectory ?? thread.workingDirectory,
-                model: hasOwn(payload, 'model') ? payload.model ?? undefined : thread.model,
-                reasoningEffort: hasOwn(payload, 'reasoningEffort')
-                  ? payload.reasoningEffort ?? undefined
-                  : thread.reasoningEffort,
-                permissionMode: payload.permissionMode ?? thread.permissionMode,
-                agentChannelId: hasOwn(payload, 'channelId')
-                  ? payload.channelId ?? undefined
-                  : thread.agentChannelId,
-                updatedAt: new Date().toISOString(),
-                updatedLabel: '现在',
-              }
+            ? (() => {
+                const channelChanged = hasOwn(payload, 'channelId')
+                  && normalizeAgentChannelId(payload.channelId) !== normalizeAgentChannelId(thread.agentChannelId);
+                return {
+                  ...thread,
+                  sessionId: hasOwn(payload, 'sessionId') ? payload.sessionId ?? '' : thread.sessionId,
+                  workingDirectory: payload.workingDirectory ?? thread.workingDirectory,
+                  model: hasOwn(payload, 'model') ? payload.model ?? undefined : thread.model,
+                  reasoningEffort: hasOwn(payload, 'reasoningEffort')
+                    ? payload.reasoningEffort ?? undefined
+                    : thread.reasoningEffort,
+                  permissionMode: payload.permissionMode ?? thread.permissionMode,
+                  agentChannelId: hasOwn(payload, 'channelId')
+                    ? payload.channelId ?? undefined
+                    : thread.agentChannelId,
+                  agentChannelFingerprint: channelChanged
+                    ? undefined
+                    : thread.agentChannelFingerprint,
+                  updatedAt: new Date().toISOString(),
+                  updatedLabel: '现在',
+                };
+              })()
             : thread,
         ),
       })),
@@ -665,6 +676,8 @@ export function useWorkspaceState() {
         return current;
       }
 
+      const channelChanged = hasOwn(payload, 'channelId')
+        && normalizeAgentChannelId(payload.channelId) !== normalizeAgentChannelId(existing.agentChannelId);
       return {
         ...current,
         [threadId]: {
@@ -679,6 +692,7 @@ export function useWorkspaceState() {
           agentChannelId: hasOwn(payload, 'channelId')
             ? payload.channelId ?? undefined
             : existing.agentChannelId,
+          agentChannelFingerprint: channelChanged ? undefined : existing.agentChannelFingerprint,
         },
       };
     });

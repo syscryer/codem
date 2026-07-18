@@ -1954,6 +1954,8 @@ async fn claude_run(
             CLAUDE_CODE_PROVIDER_ID,
             payload.channel_id.as_deref(),
             payload.model.as_deref(),
+            None,
+            payload.session_id.as_deref(),
         )
         .map_err(ApiError::bad_request)?;
     let channel_id = channel_runtime

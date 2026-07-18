@@ -356,7 +356,6 @@ export function useAgentRun({
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, {
         channelId: null,
-        sessionId: null,
         model: null,
         reasoningEffort: null,
       }).catch((error) => {
@@ -739,7 +738,6 @@ export function useAgentRun({
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, {
         channelId: requestAgentChannelId(nextChannelId) ?? null,
-        sessionId: null,
         model: null,
         reasoningEffort: null,
       }).catch((error) => {
@@ -1132,6 +1130,7 @@ export function useAgentRun({
     const controller = new AbortController();
     const providerName = providerDisplayName(thread.provider, providers);
     const channelSelection = resolveRunAgentChannelSelection({
+      providerId: thread.provider,
       threadId: thread.id,
       activeThreadId,
       persistedChannelId: thread.agentChannelId,

@@ -22,11 +22,13 @@ use axum::{
 };
 use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::{
     collections::{BTreeMap, HashMap},
     env, fs,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -36,6 +38,7 @@ use tokio::sync::{mpsc, oneshot, watch, Notify};
 const RUN_RETENTION: Duration = Duration::from_secs(10 * 60);
 const CONTROL_ACK_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_PROMPT_BYTES: usize = 1024 * 1024;
+const MAX_CONVERSATION_CONTEXT_BYTES: usize = 128 * 1024;
 const MAX_INPUT_BLOCKS: usize = 32;
 const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES: usize = 30 * 1024 * 1024;
@@ -44,6 +47,7 @@ const MAX_PATH_BYTES: usize = 4096;
 const MAX_NAME_BYTES: usize = 512;
 const MAX_MIME_TYPE_BYTES: usize = 255;
 const MAX_REASON_BYTES: usize = 4096;
+const MAX_GROK_LOG_TAIL_BYTES: u64 = 512 * 1024;
 const MODEL_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const AGENT_COMMAND_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
@@ -298,6 +302,8 @@ struct StartAgentRunRequest {
     permission_mode: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    #[serde(default)]
+    conversation_context: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -781,16 +787,18 @@ async fn start_agent_run(
     };
     let input_blocks = normalize_agent_input(payload.prompt.as_deref(), payload.content_blocks)?;
     let working_directory = resolve_working_directory(&payload.working_directory)?;
+    let thread_id = normalize_optional_id(payload.thread_id, "threadId")?;
+    let session_id = normalize_optional_id(payload.session_id, "sessionId")?;
     let driver_input = match driver {
-        AgentDriverKind::Acp => {
-            AgentDriverInput::Acp(build_acp_prompt(&input_blocks, &working_directory)?)
-        }
+        AgentDriverKind::Acp => AgentDriverInput::Acp(build_acp_prompt(
+            &input_blocks,
+            &working_directory,
+            payload.conversation_context.as_deref(),
+        )?),
         AgentDriverKind::CodexAppServer => {
             AgentDriverInput::Codex(build_codex_input(&input_blocks, &working_directory)?)
         }
     };
-    let thread_id = normalize_optional_id(payload.thread_id, "threadId")?;
-    let session_id = normalize_optional_id(payload.session_id, "sessionId")?;
     let requested_model = normalize_optional_id(payload.model, "model")?;
     let channel_id = normalize_optional_id(payload.channel_id, "channelId")?;
     let channel_runtime = state
@@ -799,6 +807,8 @@ async fn start_agent_run(
             provider_id,
             channel_id.as_deref(),
             requested_model.as_deref(),
+            thread_id.as_deref(),
+            session_id.as_deref(),
         )
         .map_err(AgentApiError::bad_request)?;
     let model = channel_runtime
@@ -1144,6 +1154,7 @@ impl LiveAgentRuntime {
             (Self::Acp { client, session_id }, AgentDriverInput::Acp(input)) => {
                 let mut mapper = AcpEventMapper::new(run_id.clone());
                 let event_state = state.clone();
+                let turn_started_at = Utc::now();
                 let result = tokio::select! {
                     result = client.prompt_stream_with_permission_policy(
                         session_id,
@@ -1169,10 +1180,17 @@ impl LiveAgentRuntime {
                         stop_reason: outcome.stop_reason,
                         usage: outcome.usage,
                     })),
-                    Some(Err(error)) => RuntimeExecution::Completed(Err(RuntimeTurnError {
-                        fatal: acp_error_is_fatal(&error) || !client.is_running(),
-                        message: public_acp_error(error),
-                    })),
+                    Some(Err(error)) => {
+                        let fatal = acp_error_is_fatal(&error) || !client.is_running();
+                        let message = grok_acp_error_with_runtime_detail(
+                            config,
+                            session_id,
+                            turn_started_at,
+                            &error,
+                        )
+                        .unwrap_or_else(|| public_acp_error(error));
+                        RuntimeExecution::Completed(Err(RuntimeTurnError { fatal, message }))
+                    }
                     None => RuntimeExecution::Closed,
                 }
             }
@@ -1237,7 +1255,7 @@ async fn start_live_agent_runtime(
             )
             .await
             .map_err(public_acp_error)?;
-            let session = prepare_acp_session(
+            let (session, resumed) = prepare_acp_session(
                 &mut client,
                 &config.provider_id,
                 &config.working_directory,
@@ -1250,7 +1268,7 @@ async fn start_live_agent_runtime(
                     client,
                     session_id: session.session_id,
                 },
-                requested_session_id.is_some(),
+                resumed,
             ))
         }
         AgentDriverKind::CodexAppServer => {
@@ -1354,7 +1372,7 @@ async fn prepare_acp_session(
     working_directory: &Path,
     requested_session_id: Option<&str>,
     model: Option<&str>,
-) -> Result<AcpSessionSummary, String> {
+) -> Result<(AcpSessionSummary, bool), String> {
     let initialize = client
         .initialize(env!("CARGO_PKG_VERSION"))
         .await
@@ -1371,22 +1389,38 @@ async fn prepare_acp_session(
             .await
             .map_err(public_acp_error)?;
     }
-    let session = if let Some(session_id) = requested_session_id {
-        if !initialize.load_session {
-            return Err(format!(
-                "当前 {} ACP 不支持恢复会话",
-                agent_provider_display_name(provider_id)
-            ));
+    let (session, resumed) = if let Some(session_id) = requested_session_id {
+        if initialize.load_session {
+            match client.load_session(session_id, working_directory).await {
+                Ok(session) => (session, true),
+                // A provider can advertise loadSession while keeping sessions
+                // in channel-local storage. Start a fresh session if that old
+                // session is unavailable, so a channel switch stays usable.
+                Err(_) => (
+                    client
+                        .new_session(working_directory)
+                        .await
+                        .map_err(public_acp_error)?,
+                    false,
+                ),
+            }
+        } else {
+            (
+                client
+                    .new_session(working_directory)
+                    .await
+                    .map_err(public_acp_error)?,
+                false,
+            )
         }
-        client
-            .load_session(session_id, working_directory)
-            .await
-            .map_err(public_acp_error)?
     } else {
-        client
-            .new_session(working_directory)
-            .await
-            .map_err(public_acp_error)?
+        (
+            client
+                .new_session(working_directory)
+                .await
+                .map_err(public_acp_error)?,
+            false,
+        )
     };
     if let Some(model) = model {
         if should_set_acp_model(
@@ -1406,16 +1440,7 @@ async fn prepare_acp_session(
             .map_err(public_acp_error)?;
         }
     }
-    Ok(session)
-}
-
-fn agent_provider_display_name(provider_id: &str) -> &'static str {
-    match provider_id {
-        GROK_BUILD_PROVIDER_ID => "Grok Build",
-        OPENCODE_PROVIDER_ID => "OpenCode",
-        OPENAI_CODEX_PROVIDER_ID => "OpenAI Codex",
-        _ => "Agent Provider",
-    }
+    Ok((session, resumed))
 }
 
 async fn execute_acp_run(task: AcpRunTask) {
@@ -1457,7 +1482,7 @@ async fn execute_acp_run(task: AcpRunTask) {
 
     let mut mapper = AcpEventMapper::new(run_id.clone());
     let execution = async {
-        let session = prepare_acp_session(
+        let (session, resumed) = prepare_acp_session(
             &mut client,
             &provider_id,
             &working_directory,
@@ -1476,12 +1501,7 @@ async fn execute_acp_run(task: AcpRunTask) {
             &run_id,
             AgentRunEvent::Status {
                 run_id: run_id.clone(),
-                message: runtime_status_message(
-                    &provider_id,
-                    AgentDriverKind::Acp,
-                    false,
-                    requested_session_id.is_some(),
-                ),
+                message: runtime_status_message(&provider_id, AgentDriverKind::Acp, false, resumed),
             },
         );
         state.push_event(&run_id, agent_phase_event(&run_id, "thinking", "思考中"));
@@ -2727,6 +2747,148 @@ fn public_acp_error(error: AcpError) -> String {
     }
 }
 
+fn grok_acp_error_with_runtime_detail(
+    config: &AgentRuntimeConfig,
+    session_id: &str,
+    turn_started_at: DateTime<Utc>,
+    error: &AcpError,
+) -> Option<String> {
+    let AcpError::Rpc { code, message } = error else {
+        return None;
+    };
+    if config.provider_id != GROK_BUILD_PROVIDER_ID
+        || config.channel_id.is_none()
+        || *code != -32603
+        || !message.trim().eq_ignore_ascii_case("internal error")
+    {
+        return None;
+    }
+    let runtime_home = config.environment.get("GROK_HOME")?.trim();
+    if runtime_home.is_empty() {
+        return None;
+    }
+    let log_tail = read_bounded_file_tail(
+        &Path::new(runtime_home).join("logs").join("unified.jsonl"),
+        MAX_GROK_LOG_TAIL_BYTES,
+    )?;
+    let detail = find_grok_runtime_error_detail(&log_tail, session_id, turn_started_at)?;
+    Some(format!("ACP Provider 请求失败（RPC -32603）：{detail}"))
+}
+
+fn read_bounded_file_tail(path: &Path, max_bytes: u64) -> Option<String> {
+    let mut file = fs::File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    let start = length.saturating_sub(max_bytes);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::with_capacity((length - start).min(max_bytes) as usize);
+    file.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    if start == 0 {
+        return Some(text.into_owned());
+    }
+    let (_, complete_lines) = text.split_once('\n')?;
+    Some(complete_lines.to_string())
+}
+
+fn find_grok_runtime_error_detail(
+    log_tail: &str,
+    session_id: &str,
+    turn_started_at: DateTime<Utc>,
+) -> Option<String> {
+    let earliest = turn_started_at - chrono::Duration::seconds(3);
+    let latest = Utc::now() + chrono::Duration::seconds(3);
+    for line in log_tail.lines().rev() {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if entry.get("sid").and_then(Value::as_str) != Some(session_id) {
+            continue;
+        }
+        let Some(message_type) = entry.get("msg").and_then(Value::as_str) else {
+            continue;
+        };
+        if !matches!(
+            message_type,
+            "turn.terminal_failure" | "shell.turn.inference_failed"
+        ) {
+            continue;
+        }
+        let Some(timestamp) = entry
+            .get("ts")
+            .and_then(Value::as_str)
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc))
+        else {
+            continue;
+        };
+        if timestamp < earliest || timestamp > latest {
+            continue;
+        }
+        let Some(message) = entry
+            .get("ctx")
+            .and_then(|value| value.get("message"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        if let Some(detail) = sanitize_grok_runtime_error_detail(message) {
+            return Some(detail);
+        }
+    }
+    None
+}
+
+fn sanitize_grok_runtime_error_detail(message: &str) -> Option<String> {
+    let first_line = message
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    let mut sanitized = Vec::new();
+    let mut redact_next = false;
+    for token in first_line.split_whitespace() {
+        if redact_next {
+            sanitized.push("<redacted>".to_string());
+            redact_next = false;
+            continue;
+        }
+        let normalized = token
+            .trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            .to_ascii_lowercase();
+        let sensitive_label = matches!(
+            normalized.as_str(),
+            "authorization" | "bearer" | "token" | "access_token" | "api_key" | "apikey" | "secret"
+        );
+        if sensitive_label {
+            sanitized.push(token.to_string());
+            redact_next = true;
+            continue;
+        }
+        let lower = token.to_ascii_lowercase();
+        let sensitive_assignment = [
+            "authorization=",
+            "token=",
+            "access_token=",
+            "api_key=",
+            "apikey=",
+            "secret=",
+        ]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix));
+        let looks_like_secret = lower.starts_with("sk-")
+            || (token.chars().count() >= 48
+                && token.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                }));
+        sanitized.push(if sensitive_assignment || looks_like_secret {
+            "<redacted>".to_string()
+        } else {
+            token.to_string()
+        });
+    }
+    let detail = sanitized.join(" ");
+    (!detail.is_empty()).then(|| truncate_public_error_detail(&detail))
+}
+
 fn public_codex_error(error: CodexAppServerError) -> String {
     error.public_message()
 }
@@ -2945,70 +3107,91 @@ fn normalize_agent_input(
 fn build_acp_prompt(
     blocks: &[NormalizedAgentInputBlock],
     working_directory: &Path,
+    conversation_context: Option<&str>,
 ) -> AgentApiResult<Vec<AcpPromptInput>> {
-    blocks
-        .iter()
-        .map(|block| match block {
-            NormalizedAgentInputBlock::Text { text } => {
-                Ok(AcpPromptInput::Text { text: text.clone() })
-            }
-            NormalizedAgentInputBlock::Image {
-                path,
-                mime_type,
-                data,
-                ..
-            } => {
-                let (mime_type, data) = if let Some(data) = data {
-                    (
-                        mime_type.clone().ok_or_else(|| {
-                            AgentApiError::bad_request("base64 图片缺少 mimeType")
-                        })?,
-                        data.clone(),
-                    )
-                } else {
-                    read_local_image_for_acp(
-                        path.as_deref()
-                            .ok_or_else(|| AgentApiError::bad_request("图片路径不能为空"))?,
-                        mime_type.as_deref(),
-                        working_directory,
-                    )?
-                };
-                Ok(AcpPromptInput::Image { mime_type, data })
-            }
-            NormalizedAgentInputBlock::FileText {
-                path,
-                name,
-                mime_type,
-                text,
-                ..
-            } => Ok(AcpPromptInput::Resource {
-                resource: AcpEmbeddedResource {
+    if let Some(context) = conversation_context {
+        if context.trim().is_empty() {
+            return Ok(build_acp_prompt(blocks, working_directory, None)?);
+        }
+        if context.len() > MAX_CONVERSATION_CONTEXT_BYTES {
+            return Err(AgentApiError::bad_request(
+                "conversationContext 超过 128 KiB 限制",
+            ));
+        }
+    }
+
+    let mut prompt = Vec::with_capacity(blocks.len() + usize::from(conversation_context.is_some()));
+    if let Some(context) = conversation_context.filter(|value| !value.trim().is_empty()) {
+        prompt.push(AcpPromptInput::Text {
+            text: context.to_string(),
+        });
+    }
+    prompt.extend(
+        blocks
+            .iter()
+            .map(|block| match block {
+                NormalizedAgentInputBlock::Text { text } => {
+                    Ok(AcpPromptInput::Text { text: text.clone() })
+                }
+                NormalizedAgentInputBlock::Image {
+                    path,
+                    mime_type,
+                    data,
+                    ..
+                } => {
+                    let (mime_type, data) = if let Some(data) = data {
+                        (
+                            mime_type.clone().ok_or_else(|| {
+                                AgentApiError::bad_request("base64 图片缺少 mimeType")
+                            })?,
+                            data.clone(),
+                        )
+                    } else {
+                        read_local_image_for_acp(
+                            path.as_deref()
+                                .ok_or_else(|| AgentApiError::bad_request("图片路径不能为空"))?,
+                            mime_type.as_deref(),
+                            working_directory,
+                        )?
+                    };
+                    Ok(AcpPromptInput::Image { mime_type, data })
+                }
+                NormalizedAgentInputBlock::FileText {
+                    path,
+                    name,
+                    mime_type,
+                    text,
+                    ..
+                } => Ok(AcpPromptInput::Resource {
+                    resource: AcpEmbeddedResource {
+                        uri: input_path_to_uri(path, name),
+                        mime_type: mime_type.clone(),
+                        text: text.clone(),
+                    },
+                }),
+                NormalizedAgentInputBlock::FileReference {
+                    path,
+                    name,
+                    mime_type,
+                    size,
+                } => Ok(AcpPromptInput::ResourceLink {
                     uri: input_path_to_uri(path, name),
+                    name: name.clone(),
                     mime_type: mime_type.clone(),
-                    text: text.clone(),
-                },
-            }),
-            NormalizedAgentInputBlock::FileReference {
-                path,
-                name,
-                mime_type,
-                size,
-            } => Ok(AcpPromptInput::ResourceLink {
-                uri: input_path_to_uri(path, name),
-                name: name.clone(),
-                mime_type: mime_type.clone(),
-                size: *size,
-            }),
-            NormalizedAgentInputBlock::AttachmentMetadata {
-                name,
-                mime_type,
-                size,
-                reason,
-            } => Ok(AcpPromptInput::Text {
-                text: format_attachment_metadata(name, mime_type.as_deref(), *size, reason),
-            }),
-        })
-        .collect()
+                    size: *size,
+                }),
+                NormalizedAgentInputBlock::AttachmentMetadata {
+                    name,
+                    mime_type,
+                    size,
+                    reason,
+                } => Ok(AcpPromptInput::Text {
+                    text: format_attachment_metadata(name, mime_type.as_deref(), *size, reason),
+                }),
+            })
+            .collect::<AgentApiResult<Vec<_>>>()?,
+    );
+    Ok(prompt)
 }
 
 fn build_codex_input(
@@ -3363,9 +3546,10 @@ fn should_set_acp_model(
 mod tests {
     use super::{
         acp_arguments, acp_permission_policy, build_acp_prompt, build_codex_input,
-        cancelled_before_prompt_outcome, grok_acp_arguments, normalize_agent_input,
-        parse_opencode_models, public_acp_error, read_cached_agent_command,
-        read_cached_agent_model_catalog, runtime_can_reuse, should_set_acp_model,
+        cancelled_before_prompt_outcome, find_grok_runtime_error_detail, grok_acp_arguments,
+        grok_acp_error_with_runtime_detail, normalize_agent_input, parse_opencode_models,
+        public_acp_error, read_cached_agent_command, read_cached_agent_model_catalog,
+        runtime_can_reuse, sanitize_grok_runtime_error_detail, should_set_acp_model,
         store_cached_agent_command, store_cached_agent_model_catalog, AcpEventMapper,
         AgentDriverInput, AgentDriverKind, AgentInputContentBlock, AgentModelCatalog,
         AgentModelSummary, AgentRunRecord, AgentRunService, AgentRunState, AgentRuntimeCommand,
@@ -3374,11 +3558,15 @@ mod tests {
         MODEL_CATALOG_CACHE_TTL,
     };
     use crate::{
-        acp::{AcpError, AcpPermissionPolicy, AcpRuntimeEvent, AcpToolCall, AcpToolCallUpdate},
+        acp::{
+            AcpError, AcpPermissionPolicy, AcpPromptInput, AcpRuntimeEvent, AcpToolCall,
+            AcpToolCallUpdate,
+        },
         agent_channels::AgentChannelService,
         agent_runtime::AgentRunEvent,
         codex_app_server::CodexRuntimeEvent,
     };
+    use chrono::Utc;
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::{
@@ -3646,7 +3834,7 @@ mod tests {
         .expect("normalize blocks-only input");
 
         let acp = serde_json::to_value(
-            build_acp_prompt(&blocks, Path::new("D:/workspace")).expect("ACP mapping"),
+            build_acp_prompt(&blocks, Path::new("D:/workspace"), None).expect("ACP mapping"),
         )
         .expect("serialize ACP input");
         assert_eq!(acp[0]["type"], "image");
@@ -3668,11 +3856,36 @@ mod tests {
     }
 
     #[test]
+    fn acp_prompt_prepends_conversation_context_without_changing_user_blocks() {
+        let blocks = normalize_agent_input(Some("继续处理"), None).expect("normalize prompt");
+        let acp = build_acp_prompt(
+            &blocks,
+            Path::new("D:/workspace"),
+            Some("[CodeM 会话续接上下文]\n之前的回答"),
+        )
+        .expect("build ACP continuity prompt");
+        assert_eq!(acp.len(), 2);
+        assert_eq!(
+            acp[0],
+            AcpPromptInput::Text {
+                text: "[CodeM 会话续接上下文]\n之前的回答".to_string(),
+            }
+        );
+        assert_eq!(
+            acp[1],
+            AcpPromptInput::Text {
+                text: "继续处理".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn start_agent_run_request_accepts_camel_case_content_blocks() {
         let request = serde_json::from_value::<StartAgentRunRequest>(json!({
             "providerId": "grok-build",
             "threadId": "thread-1",
             "workingDirectory": "D:/workspace",
+            "conversationContext": "[CodeM 会话续接上下文]",
             "contentBlocks": [{
                 "type": "file_text",
                 "path": "notes.md",
@@ -3687,6 +3900,10 @@ mod tests {
 
         assert!(request.prompt.is_none());
         assert_eq!(request.thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(
+            request.conversation_context.as_deref(),
+            Some("[CodeM 会话续接上下文]")
+        );
         assert!(matches!(
             request.content_blocks.as_deref(),
             Some([AgentInputContentBlock::FileText {
@@ -3993,6 +4210,104 @@ mod tests {
         let truncated = public_acp_error(AcpError::Protocol(long_detail));
         assert!(truncated.ends_with('…'));
         assert!(truncated.chars().count() <= "ACP Provider 协议错误：".chars().count() + 2_001);
+    }
+
+    #[test]
+    fn grok_internal_error_uses_current_channel_session_log_detail() {
+        let root =
+            std::env::temp_dir().join(format!("codem-grok-error-log-{}", uuid::Uuid::new_v4()));
+        let logs = root.join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let started_at = Utc::now();
+        let matching = json!({
+            "ts": (started_at + chrono::Duration::milliseconds(1)).to_rfc3339(),
+            "sid": "session-current",
+            "lvl": "warn",
+            "msg": "turn.terminal_failure",
+            "ctx": {
+                "message": "API error (status 429 Too Many Requests): All credentials for model grok-4.5 are cooling down\n\nRequest URL: https://api.example.com/v1/chat/completions"
+            }
+        });
+        std::fs::write(logs.join("unified.jsonl"), format!("{matching}\n")).unwrap();
+        let mut config = test_runtime_config();
+        config.channel_id = Some("channel-1".to_string());
+        config
+            .environment
+            .insert("GROK_HOME".to_string(), root.to_string_lossy().to_string());
+
+        let message = grok_acp_error_with_runtime_detail(
+            &config,
+            "session-current",
+            started_at,
+            &AcpError::Rpc {
+                code: -32603,
+                message: "Internal error".to_string(),
+            },
+        )
+        .expect("matching Grok error detail");
+
+        assert!(message.contains("429 Too Many Requests"));
+        assert!(message.contains("cooling down"));
+        assert!(!message.contains("Request URL"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn grok_log_detail_rejects_other_sessions_and_stale_turns() {
+        let started_at = Utc::now();
+        let log = [
+            json!({
+                "ts": (started_at - chrono::Duration::minutes(1)).to_rfc3339(),
+                "sid": "session-current",
+                "msg": "turn.terminal_failure",
+                "ctx": { "message": "stale error" }
+            }),
+            json!({
+                "ts": started_at.to_rfc3339(),
+                "sid": "session-other",
+                "msg": "turn.terminal_failure",
+                "ctx": { "message": "other session error" }
+            }),
+        ]
+        .into_iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+        assert!(find_grok_runtime_error_detail(&log, "session-current", started_at).is_none());
+    }
+
+    #[test]
+    fn grok_log_detail_redacts_credentials_before_display() {
+        let detail = sanitize_grok_runtime_error_detail(
+            "upstream rejected Authorization: Bearer sk-secret-value api_key=another-secret abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+        )
+        .expect("sanitized detail");
+
+        assert!(detail.contains("<redacted>"));
+        assert!(!detail.contains("sk-secret-value"));
+        assert!(!detail.contains("another-secret"));
+        assert!(!detail.contains("abcdefghijklmnopqrstuvwxyz"));
+    }
+
+    #[test]
+    fn grok_log_enrichment_only_handles_generic_internal_rpc_errors() {
+        let mut config = test_runtime_config();
+        config.channel_id = Some("channel-1".to_string());
+        config
+            .environment
+            .insert("GROK_HOME".to_string(), "D:/missing".to_string());
+
+        assert!(grok_acp_error_with_runtime_detail(
+            &config,
+            "session-1",
+            Utc::now(),
+            &AcpError::Rpc {
+                code: 429,
+                message: "Too Many Requests".to_string(),
+            },
+        )
+        .is_none());
     }
 
     #[test]

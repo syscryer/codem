@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {
+  CLAUDE_CODE_PROVIDER_ID,
+  GROK_BUILD_PROVIDER_ID,
+  OPENAI_CODEX_PROVIDER_ID,
+} from '../constants.js';
 import type { AgentChannel, AiProviderTemplate } from '../types.js';
 import {
   agentChannelTemplate,
@@ -108,23 +113,64 @@ test('persisted channel template id keeps the configured vendor icon stable', ()
 test('active thread runs use the current UI channel before persistence finishes', () => {
   assert.deepEqual(
     resolveRunAgentChannelSelection({
+      providerId: CLAUDE_CODE_PROVIDER_ID,
       threadId: 'active-thread',
       activeThreadId: 'active-thread',
       persistedChannelId: null,
       selectedChannelId: 'enabled-channel',
     }),
-    { channelId: 'enabled-channel', reuseSession: false },
+    { channelId: 'enabled-channel', channelChanged: true, reuseSession: true },
+  );
+});
+
+test('switching channels within one Agent Provider keeps the resumable session', () => {
+  assert.deepEqual(
+    resolveRunAgentChannelSelection({
+      providerId: CLAUDE_CODE_PROVIDER_ID,
+      threadId: 'active-thread',
+      activeThreadId: 'active-thread',
+      persistedChannelId: 'enabled-channel',
+      selectedChannelId: SYSTEM_AGENT_CHANNEL_ID,
+    }),
+    { channelId: undefined, channelChanged: true, reuseSession: true },
+  );
+});
+
+test('Grok keeps its ACP session when its channel changes', () => {
+  assert.deepEqual(
+    resolveRunAgentChannelSelection({
+      providerId: GROK_BUILD_PROVIDER_ID,
+      threadId: 'active-thread',
+      activeThreadId: 'active-thread',
+      persistedChannelId: 'grok-a',
+      selectedChannelId: 'grok-b',
+    }),
+    { channelId: 'grok-b', channelChanged: true, reuseSession: true },
+  );
+});
+
+test('Codex keeps its session when its channel changes', () => {
+  assert.deepEqual(
+    resolveRunAgentChannelSelection({
+      providerId: OPENAI_CODEX_PROVIDER_ID,
+      threadId: 'active-thread',
+      activeThreadId: 'active-thread',
+      persistedChannelId: 'codex-a',
+      selectedChannelId: 'codex-b',
+    }),
+    { channelId: 'codex-b', channelChanged: true, reuseSession: true },
   );
 });
 
 test('background queued runs keep the persisted thread channel', () => {
   assert.deepEqual(
     resolveRunAgentChannelSelection({
+      providerId: CLAUDE_CODE_PROVIDER_ID,
       threadId: 'background-thread',
       activeThreadId: 'active-thread',
       persistedChannelId: 'enabled-channel',
       selectedChannelId: SYSTEM_AGENT_CHANNEL_ID,
     }),
-    { channelId: 'enabled-channel', reuseSession: true },
+    { channelId: 'enabled-channel', channelChanged: false, reuseSession: true },
   );
 });

@@ -365,7 +365,6 @@ export function useClaudeRun({
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, {
         channelId: null,
-        sessionId: null,
         model: null,
         reasoningEffort: null,
       }).catch((error) => {
@@ -1195,6 +1194,7 @@ export function useClaudeRun({
     const runWorkingDirectory =
       options?.workingDirectory?.trim() || thread.workingDirectory;
     const channelSelection = resolveRunAgentChannelSelection({
+      providerId: CLAUDE_CODE_PROVIDER_ID,
       threadId: thread.id,
       activeThreadId,
       persistedChannelId: thread.agentChannelId,
@@ -2211,7 +2211,6 @@ export function useClaudeRun({
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, {
         channelId: requestAgentChannelId(nextChannelId) ?? null,
-        sessionId: null,
         model: null,
         reasoningEffort: null,
       }).catch((error) => {
