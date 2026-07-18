@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import type {
   AppearanceSettings,
   AgentChannelBootstrap,
+  AgentChannelSettingsFocus,
   AgentRuntimeSettings,
   AgentProviderDescriptor,
   AiChatProvider,
@@ -67,6 +68,7 @@ type SettingsViewProps = {
   agentChannelBootstrap: AgentChannelBootstrap;
   agentChannelsLoading: boolean;
   agentChannelsError: string;
+  agentChannelFocus: AgentChannelSettingsFocus | null;
   onSelectSection: (section: SettingsSection) => void;
   onOpenThread: (projectId: string, threadId: string) => void | Promise<void>;
   onRemoveProject: (project: ProjectSummary) => void;
@@ -130,6 +132,7 @@ export function SettingsView({
   agentChannelBootstrap,
   agentChannelsLoading,
   agentChannelsError,
+  agentChannelFocus,
   onSelectSection,
   onOpenThread,
   onRemoveProject,
@@ -184,6 +187,7 @@ export function SettingsView({
           channelBootstrap={agentChannelBootstrap}
           channelsLoading={agentChannelsLoading}
           channelsError={agentChannelsError}
+          channelFocus={agentChannelFocus}
           onUpdateAgentRuntime={onUpdateAgentRuntime}
           onRefreshProviders={onRefreshAgentProviders}
           onRefreshChannels={onRefreshAgentChannels}
@@ -289,6 +293,7 @@ export function SettingsView({
     agentChannelBootstrap,
     agentChannelsLoading,
     agentChannelsError,
+    agentChannelFocus,
     aiChatProviders,
     appearance,
     effectiveWindowMaterial,

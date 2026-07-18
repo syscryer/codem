@@ -86,6 +86,8 @@ import {
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  AgentChannelSettingsFocus,
+  AgentProviderId,
   AiChatSummary,
   ClaudeContextRequestState,
   ClaudeContextSnapshot,
@@ -270,6 +272,7 @@ export default function App() {
   const [appView, setAppView] = useState<AppView>({
     kind: 'workspace',
   });
+  const [agentChannelSettingsFocus, setAgentChannelSettingsFocus] = useState<AgentChannelSettingsFocus | null>(null);
   const [navigationHistory, setNavigationHistory] = useState<NavigationHistory>({ past: [], future: [] });
   const [gitDialogMode, setGitDialogMode] = useState<'push' | 'branch' | null>(null);
   const [rightWorkbenchOpen, setRightWorkbenchOpen] = useState(false);
@@ -560,6 +563,7 @@ export default function App() {
       activeThreadSummary?.provider === CLAUDE_CODE_PROVIDER_ID ? activeThreadSummary : null,
     appModelSettings,
     agentChannels: agentChannels.bootstrap.channels,
+    defaultAgentChannelIds: agentChannels.bootstrap.defaultChannelIds,
     agentChannelsLoading: agentChannels.loading,
     defaultPermissionMode: general.defaultPermissionMode,
     autoGuideQueuedPrompts: general.autoGuideQueuedPrompts,
@@ -616,6 +620,7 @@ export default function App() {
     defaultProviderId: agentRuntime.defaultProviderId,
     defaultPermissionMode: general.defaultPermissionMode,
     agentChannels: agentChannels.bootstrap.channels,
+    defaultAgentChannelIds: agentChannels.bootstrap.defaultChannelIds,
     agentChannelsLoading: agentChannels.loading,
     activeProjectId,
     activeProjectPath: activeProject?.path,
@@ -1483,6 +1488,14 @@ export default function App() {
     applyLocation(location);
   }
 
+  function openAgentChannelSettings(providerId: string) {
+    setAgentChannelSettingsFocus((current) => ({
+      requestId: (current?.requestId ?? 0) + 1,
+      providerId: providerId as AgentProviderId,
+    }));
+    navigateToLocation({ kind: 'settings', section: 'providers' });
+  }
+
   function navigateBack() {
     const previous = navigationHistory.past.at(-1);
     if (!previous) {
@@ -1919,7 +1932,11 @@ export default function App() {
         agentChannelBootstrap={agentChannels.bootstrap}
         agentChannelsLoading={agentChannels.loading}
         agentChannelsError={agentChannels.error}
-        onSelectSection={(section) => navigateToLocation({ kind: 'settings', section })}
+        agentChannelFocus={agentChannelSettingsFocus}
+        onSelectSection={(section) => {
+          setAgentChannelSettingsFocus(null);
+          navigateToLocation({ kind: 'settings', section });
+        }}
         onOpenThread={handleSelectThread}
         onRemoveProject={openRemoveProjectDialog}
         onRenameThread={openRenameThreadDialog}
@@ -2014,6 +2031,7 @@ export default function App() {
                 projects={projects}
                 providers={agentProviders}
                 channels={agentChannels.bootstrap.channels}
+                defaultChannelIds={agentChannels.bootstrap.defaultChannelIds}
                 claudeModels={claudeModels.models}
                 defaultProviderId={agentRuntime.defaultProviderId}
                 defaultPermissionMode={general.defaultPermissionMode}
@@ -2113,6 +2131,8 @@ export default function App() {
                 providersLoading={agentProvidersLoading}
                 providersError={agentProvidersError}
                 agentChannels={agentChannels.bootstrap.channels}
+                agentSystemChannels={agentChannels.bootstrap.systemChannels}
+                agentChannelTemplates={agentChannels.bootstrap.templates}
                 agentChannelId={activeUsesClaude ? claudeAgentChannelId : genericAgentChannelId}
                 canSelectProvider={!activeThreadSummary}
                 allowAttachments={allowAgentAttachments}
@@ -2139,6 +2159,7 @@ export default function App() {
                 onDraftChange={handleComposerDraftChange}
                 onSelectProvider={selectDraftProvider}
                 onSelectAgentChannel={activeUsesClaude ? setClaudeAgentChannelId : handleGenericAgentChannelSelect}
+                onManageAgentChannels={openAgentChannelSettings}
                 onSubmitPrompt={handleSubmitPrompt}
                 onRemoveQueuedPrompt={removeQueuedPrompt}
                 onRecallQueuedPrompt={handleRecallQueuedPrompt}

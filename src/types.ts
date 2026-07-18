@@ -834,6 +834,7 @@ export type AgentChannel = {
   protocol: AiChatProtocol;
   baseUrl: string;
   modelsUrl?: string;
+  templateId?: string;
   enabled: boolean;
   isDefault: boolean;
   apiKeySaved: boolean;
@@ -867,6 +868,12 @@ export type AgentChannelBootstrap = {
   systemChannels: AgentSystemChannel[];
   ccSwitch: AgentCcSwitchStatus;
   templates: AiProviderTemplate[];
+  defaultChannelIds: Record<AgentProviderId, string>;
+};
+
+export type AgentChannelSettingsFocus = {
+  requestId: number;
+  providerId: AgentProviderId;
 };
 
 export type AgentRuntimeSettings = {

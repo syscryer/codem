@@ -13,6 +13,7 @@ export type SaveAgentChannelInput = {
   protocol: AiChatProtocol;
   baseUrl: string;
   modelsUrl?: string;
+  templateId?: string;
   enabled?: boolean;
   isDefault?: boolean;
   apiKey?: string;
@@ -57,6 +58,13 @@ export async function deleteAgentChannel(channelId: string) {
   return requestJson<{ ok: true }>(
     `/api/agents/channels/${encodeURIComponent(channelId)}`,
     { method: 'DELETE' },
+  );
+}
+
+export async function setDefaultAgentChannel(providerId: AgentProviderId, channelId: string) {
+  return requestJson<{ providerId: AgentProviderId; channelId: string }>(
+    '/api/agents/channels/default',
+    jsonRequest('PUT', { providerId, channelId }),
   );
 }
 

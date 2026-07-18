@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyAgentRunEventToTurn } from './agent-run-events.js';
+import {
+  applyAgentRunEventToTurn,
+  shouldSettleAgentStreamAsStopped,
+} from './agent-run-events.js';
 import type { AgentRunEvent, ConversationTurn } from '../types.js';
 
 function createTurn(): ConversationTurn {
@@ -170,4 +173,24 @@ test('terminal generic Agent events clear stale approval and input cards', () =>
   assert.deepEqual(done.pendingUserInputRequests, []);
   assert.deepEqual(failed.pendingApprovalRequests, []);
   assert.deepEqual(failed.pendingUserInputRequests, []);
+});
+
+test('generic Agent errors preserve the provider detail for the conversation view', () => {
+  const failed = apply(createTurn(), {
+    type: 'error',
+    runId: 'run-1',
+    message: 'ACP Provider 请求失败（RPC 429）：All credentials for model grok-4.5 are cooling down',
+  });
+
+  assert.equal(failed.status, 'error');
+  assert.equal(
+    failed.activity,
+    'ACP Provider 请求失败（RPC 429）：All credentials for model grok-4.5 are cooling down',
+  );
+});
+
+test('cancelled generic Agent streams remain stopped when EOF has no terminal event', () => {
+  assert.equal(shouldSettleAgentStreamAsStopped(true, false), true);
+  assert.equal(shouldSettleAgentStreamAsStopped(false, true), true);
+  assert.equal(shouldSettleAgentStreamAsStopped(false, false), false);
 });

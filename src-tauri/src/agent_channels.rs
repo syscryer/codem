@@ -13,7 +13,7 @@ use axum::{
     extract::{Path as AxumPath, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
     Json, Router,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -53,6 +53,7 @@ struct AgentChannelSummary {
     protocol: AiProtocol,
     base_url: String,
     models_url: Option<String>,
+    template_id: Option<String>,
     enabled: bool,
     is_default: bool,
     api_key_saved: bool,
@@ -107,6 +108,7 @@ struct StoredAgentChannel {
     protocol: AiProtocol,
     base_url: String,
     models_url: Option<String>,
+    template_id: Option<String>,
     enabled: bool,
     is_default: bool,
     secret_slot: String,
@@ -122,6 +124,7 @@ struct SaveAgentChannelRequest {
     protocol: AiProtocol,
     base_url: String,
     models_url: Option<String>,
+    template_id: Option<String>,
     enabled: Option<bool>,
     is_default: Option<bool>,
     api_key: Option<String>,
@@ -135,11 +138,19 @@ struct UpdateAgentChannelRequest {
     protocol: Option<AiProtocol>,
     base_url: Option<String>,
     models_url: Option<String>,
+    template_id: Option<String>,
     enabled: Option<bool>,
     is_default: Option<bool>,
     api_key: Option<String>,
     #[serde(default)]
     api_key_touched: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetDefaultAgentChannelRequest {
+    provider_id: String,
+    channel_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -298,6 +309,7 @@ pub(crate) fn router(service: AgentChannelService) -> Router {
     Router::new()
         .route("/api/agents/channels/bootstrap", get(channels_bootstrap))
         .route("/api/agents/channels", post(create_channel))
+        .route("/api/agents/channels/default", put(set_default_channel))
         .route(
             "/api/agents/channels/{channel_id}",
             patch(update_channel).delete(delete_channel),
@@ -338,6 +350,7 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
               protocol TEXT NOT NULL,
               base_url TEXT NOT NULL,
               models_url TEXT,
+              template_id TEXT,
               enabled INTEGER NOT NULL DEFAULT 1,
               is_default INTEGER NOT NULL DEFAULT 0,
               secret_slot TEXT NOT NULL UNIQUE,
@@ -365,7 +378,33 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
               WHERE provider_id = 'opencode' AND protocol = 'openai_responses';
             "#,
         )
-        .map_err(|error| format!("初始化 Agent 渠道数据库失败: {error}"))
+        .map_err(|error| format!("初始化 Agent 渠道数据库失败: {error}"))?;
+    ensure_agent_channel_column(connection, "template_id", "TEXT")
+}
+
+fn ensure_agent_channel_column(
+    connection: &Connection,
+    column_name: &str,
+    column_type: &str,
+) -> Result<(), String> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(agent_channels)")
+        .map_err(|error| format!("读取 Agent 渠道表结构失败: {error}"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("读取 Agent 渠道字段失败: {error}"))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| format!("解析 Agent 渠道字段失败: {error}"))?;
+    if columns.iter().any(|column| column == column_name) {
+        return Ok(());
+    }
+    connection
+        .execute(
+            &format!("ALTER TABLE agent_channels ADD COLUMN {column_name} {column_type}"),
+            [],
+        )
+        .map_err(|error| format!("升级 Agent 渠道表结构失败: {error}"))?;
+    Ok(())
 }
 
 fn normalize_channel_id(value: Option<&str>) -> Option<&str> {
@@ -443,6 +482,13 @@ fn normalize_optional_url(
         Some(value) => validate_url(value, field).map(Some),
         None => Ok(None),
     }
+}
+
+fn normalize_optional_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn system_channel_summaries() -> Vec<SystemChannelSummary> {
@@ -607,7 +653,7 @@ fn system_channel_summary(
     SystemChannelSummary {
         id: "system",
         provider_id,
-        name: "系统当前配置",
+        name: "系统渠道",
         source,
         configured,
         config_path: path.map(|path| path.to_string_lossy().to_string()),
@@ -695,13 +741,50 @@ async fn channels_bootstrap(
     let connection = service
         .open_database()
         .map_err(AgentChannelApiError::internal)?;
+    for provider_id in [
+        CLAUDE_CODE_PROVIDER_ID,
+        OPENAI_CODEX_PROVIDER_ID,
+        GROK_BUILD_PROVIDER_ID,
+        OPENCODE_PROVIDER_ID,
+    ] {
+        repair_default_channel(&connection, provider_id)
+            .map_err(AgentChannelApiError::internal)?;
+    }
     let channels =
         list_channels(&connection, &service.secrets).map_err(AgentChannelApiError::internal)?;
+    let default_channel_ids = default_channel_ids(&connection)
+        .map_err(AgentChannelApiError::internal)?;
     Ok(Json(json!({
         "channels": channels,
         "systemChannels": system_channel_summaries(),
         "ccSwitch": cc_switch_status(),
         "templates": PROVIDER_TEMPLATES,
+        "defaultChannelIds": default_channel_ids,
+    })))
+}
+
+async fn set_default_channel(
+    State(service): State<AgentChannelService>,
+    Json(payload): Json<SetDefaultAgentChannelRequest>,
+) -> AgentChannelApiResult<Json<Value>> {
+    let provider_id = validate_provider_id(payload.provider_id.trim())?.to_string();
+    let channel_id = payload.channel_id.trim();
+    if channel_id.is_empty() {
+        return Err(AgentChannelApiError::bad_request("请选择默认渠道"));
+    }
+    let mut connection = service
+        .open_database()
+        .map_err(AgentChannelApiError::internal)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| AgentChannelApiError::internal(format!("设置默认渠道失败: {error}")))?;
+    set_default_channel_selection(&transaction, &provider_id, channel_id)?;
+    transaction
+        .commit()
+        .map_err(|error| AgentChannelApiError::internal(format!("保存默认渠道失败: {error}")))?;
+    Ok(Json(json!({
+        "providerId": provider_id,
+        "channelId": channel_id,
     })))
 }
 
@@ -714,6 +797,7 @@ async fn create_channel(
     let name = require_text(&payload.name, "渠道名称不能为空")?.to_string();
     let base_url = validate_url(&payload.base_url, "API 地址")?;
     let models_url = normalize_optional_url(payload.models_url.as_deref(), "模型列表地址")?;
+    let template_id = normalize_optional_text(payload.template_id.as_deref());
     let enabled = payload.enabled.unwrap_or(true);
     let requested_default = payload.is_default.unwrap_or(false);
     let id = uuid::Uuid::new_v4().to_string();
@@ -739,9 +823,9 @@ async fn create_channel(
     transaction
         .execute(
             r#"INSERT INTO agent_channels (
-                id, provider_id, name, protocol, base_url, models_url, enabled, is_default,
-                secret_slot, created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+                id, provider_id, name, protocol, base_url, models_url, template_id, enabled,
+                is_default, secret_slot, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
             params![
                 id,
                 provider_id,
@@ -749,6 +833,7 @@ async fn create_channel(
                 payload.protocol.as_str(),
                 base_url,
                 models_url,
+                template_id,
                 enabled,
                 is_default,
                 secret_slot,
@@ -812,6 +897,10 @@ async fn update_channel(
         Some(value) => normalize_optional_url(Some(value), "模型列表地址")?,
         None => current.models_url.clone(),
     };
+    let template_id = match payload.template_id.as_deref() {
+        Some(value) => normalize_optional_text(Some(value)),
+        None => current.template_id.clone(),
+    };
     let enabled = payload.enabled.unwrap_or(current.enabled);
     let is_default = enabled && payload.is_default.unwrap_or(current.is_default);
     let now = current_timestamp();
@@ -829,14 +918,15 @@ async fn update_channel(
     transaction
         .execute(
             r#"UPDATE agent_channels SET
-                name = ?, protocol = ?, base_url = ?, models_url = ?, enabled = ?,
-                is_default = ?, updated_at = ?
+                name = ?, protocol = ?, base_url = ?, models_url = ?, template_id = ?,
+                enabled = ?, is_default = ?, updated_at = ?
               WHERE id = ?"#,
             params![
                 name,
                 protocol.as_str(),
                 base_url,
                 models_url,
+                template_id,
                 enabled,
                 is_default,
                 now,
@@ -1161,8 +1251,8 @@ fn get_stored_channel(
 ) -> Result<Option<StoredAgentChannel>, String> {
     connection
         .query_row(
-            r#"SELECT id, provider_id, name, protocol, base_url, models_url, enabled,
-                      is_default, secret_slot, created_at, updated_at
+            r#"SELECT id, provider_id, name, protocol, base_url, models_url, template_id,
+                      enabled, is_default, secret_slot, created_at, updated_at
                FROM agent_channels WHERE id = ?"#,
             params![channel_id],
             map_stored_channel,
@@ -1187,11 +1277,12 @@ fn map_stored_channel(row: &Row<'_>) -> rusqlite::Result<StoredAgentChannel> {
         protocol,
         base_url: row.get(4)?,
         models_url: row.get(5)?,
-        enabled: row.get(6)?,
-        is_default: row.get(7)?,
-        secret_slot: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        template_id: row.get(6)?,
+        enabled: row.get(7)?,
+        is_default: row.get(8)?,
+        secret_slot: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }
 
@@ -1201,8 +1292,8 @@ fn list_channels(
 ) -> Result<Vec<AgentChannelSummary>, String> {
     let mut statement = connection
         .prepare(
-            r#"SELECT id, provider_id, name, protocol, base_url, models_url, enabled,
-                      is_default, secret_slot, created_at, updated_at
+            r#"SELECT id, provider_id, name, protocol, base_url, models_url, template_id,
+                      enabled, is_default, secret_slot, created_at, updated_at
                FROM agent_channels
                ORDER BY provider_id, is_default DESC, updated_at DESC"#,
         )
@@ -1222,6 +1313,7 @@ fn list_channels(
             protocol: channel.protocol,
             base_url: channel.base_url,
             models_url: channel.models_url,
+            template_id: channel.template_id,
             enabled: channel.enabled,
             is_default: channel.is_default,
             api_key_saved,
@@ -1373,8 +1465,8 @@ fn repair_default_channel(connection: &Connection, provider_id: &str) -> Result<
     let default_channel_id: Option<String> = connection
         .query_row(
             r#"SELECT id FROM agent_channels
-               WHERE provider_id = ? AND enabled = 1
-               ORDER BY is_default DESC, updated_at DESC, id ASC
+               WHERE provider_id = ? AND enabled = 1 AND is_default = 1
+               ORDER BY updated_at DESC, id ASC
                LIMIT 1"#,
             params![provider_id],
             |row| row.get(0),
@@ -1397,6 +1489,72 @@ fn repair_default_channel(connection: &Connection, provider_id: &str) -> Result<
         )
         .map_err(|error| format!("修复默认渠道失败: {error}"))?;
     Ok(())
+}
+
+fn set_default_channel_selection(
+    connection: &Connection,
+    provider_id: &str,
+    channel_id: &str,
+) -> AgentChannelApiResult<()> {
+    if channel_id != "system" {
+        let is_valid = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_channels WHERE id = ? AND provider_id = ? AND enabled = 1)",
+                params![channel_id, provider_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AgentChannelApiError::internal(format!("校验默认渠道失败: {error}")))?;
+        if !is_valid {
+            return Err(AgentChannelApiError::bad_request(
+                "默认渠道不存在、已停用或不属于当前 Agent",
+            ));
+        }
+    }
+    let now = current_timestamp();
+    connection
+        .execute(
+            "UPDATE agent_channels SET is_default = 0, updated_at = ? WHERE provider_id = ? AND is_default = 1",
+            params![now, provider_id],
+        )
+        .map_err(|error| AgentChannelApiError::internal(format!("清理默认渠道失败: {error}")))?;
+    if channel_id != "system" {
+        let updated = connection
+            .execute(
+                "UPDATE agent_channels SET is_default = 1, updated_at = ? WHERE id = ? AND provider_id = ? AND enabled = 1",
+                params![now, channel_id, provider_id],
+            )
+            .map_err(|error| AgentChannelApiError::internal(format!("设置默认渠道失败: {error}")))?;
+        debug_assert_eq!(updated, 1);
+    }
+    repair_default_channel(connection, provider_id).map_err(AgentChannelApiError::internal)
+}
+
+fn default_channel_ids(connection: &Connection) -> Result<BTreeMap<String, String>, String> {
+    let mut defaults = BTreeMap::from([
+        (CLAUDE_CODE_PROVIDER_ID.to_string(), "system".to_string()),
+        (OPENAI_CODEX_PROVIDER_ID.to_string(), "system".to_string()),
+        (GROK_BUILD_PROVIDER_ID.to_string(), "system".to_string()),
+        (OPENCODE_PROVIDER_ID.to_string(), "system".to_string()),
+    ]);
+    let mut statement = connection
+        .prepare(
+            r#"SELECT provider_id, id FROM agent_channels
+               WHERE enabled = 1 AND is_default = 1"#,
+        )
+        .map_err(|error| format!("读取默认渠道失败: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("读取默认渠道失败: {error}"))?;
+    for row in rows {
+        let (provider_id, channel_id) =
+            row.map_err(|error| format!("解析默认渠道失败: {error}"))?;
+        if defaults.contains_key(&provider_id) {
+            defaults.insert(provider_id, channel_id);
+        }
+    }
+    Ok(defaults)
 }
 
 fn repair_default_model(connection: &Connection, channel_id: &str) -> Result<(), String> {
@@ -1910,6 +2068,7 @@ mod tests {
             protocol: AiProtocol::OpenaiChat,
             base_url: "https://api.deepseek.com".to_string(),
             models_url: Some("https://api.deepseek.com/models".to_string()),
+            template_id: Some("deepseek".to_string()),
             enabled: true,
             is_default: false,
             secret_slot: "secret:channel".to_string(),
@@ -1979,6 +2138,7 @@ mod tests {
             protocol: AiProtocol::AnthropicMessages,
             base_url: "https://api.minimaxi.com/anthropic".to_string(),
             models_url: None,
+            template_id: Some("minimax".to_string()),
             enabled: true,
             is_default: false,
             secret_slot: "secret:channel".to_string(),
@@ -2023,7 +2183,7 @@ mod tests {
     }
 
     #[test]
-    fn default_channel_is_unique_and_never_disabled() {
+    fn default_channel_is_unique_and_falls_back_to_system() {
         let connection = Connection::open_in_memory().expect("open database");
         initialize_database(&connection).expect("initialize database");
         insert_channel(
@@ -2057,7 +2217,56 @@ mod tests {
             .expect("query defaults")
             .collect::<rusqlite::Result<Vec<_>>>()
             .expect("collect defaults");
-        assert_eq!(defaults, vec!["enabled-newer"]);
+        assert!(defaults.is_empty());
+
+        set_default_channel_selection(
+            &connection,
+            CLAUDE_CODE_PROVIDER_ID,
+            "enabled-newer",
+        )
+        .expect("set CodeM default channel");
+        let selected = default_channel_ids(&connection).expect("read default channel ids");
+        assert_eq!(
+            selected.get(CLAUDE_CODE_PROVIDER_ID).map(String::as_str),
+            Some("enabled-newer")
+        );
+
+        for invalid_id in ["missing", "disabled-default"] {
+            let error = set_default_channel_selection(
+                &connection,
+                CLAUDE_CODE_PROVIDER_ID,
+                invalid_id,
+            )
+            .expect_err("invalid default channel should be rejected");
+            assert_eq!(error.status, StatusCode::BAD_REQUEST);
+            let still_selected: String = connection
+                .query_row(
+                    "SELECT id FROM agent_channels WHERE provider_id = ? AND is_default = 1",
+                    params![CLAUDE_CODE_PROVIDER_ID],
+                    |row| row.get(0),
+                )
+                .expect("read unchanged default");
+            assert_eq!(still_selected, "enabled-newer");
+        }
+
+        connection
+            .execute(
+                r#"INSERT INTO agent_channels (
+                     id, provider_id, name, protocol, base_url, models_url, enabled,
+                     is_default, secret_slot, created_at, updated_at
+                   ) VALUES ('other-provider', 'opencode', 'Other Provider', 'openai_chat',
+                     'https://api.example.com', NULL, 1, 0, 'secret:other-provider',
+                     '2026-07-16T00:00:00Z', '2026-07-16T00:00:00Z')"#,
+                [],
+            )
+            .expect("insert other provider channel");
+        let error = set_default_channel_selection(
+            &connection,
+            CLAUDE_CODE_PROVIDER_ID,
+            "other-provider",
+        )
+        .expect_err("cross-provider default channel should be rejected");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
 
         connection
             .execute(
@@ -2066,7 +2275,7 @@ mod tests {
             )
             .expect("disable default");
         repair_default_channel(&connection, CLAUDE_CODE_PROVIDER_ID)
-            .expect("repair replacement default");
+            .expect("fall back to system");
         let replacement: Option<String> = connection
             .query_row(
                 "SELECT id FROM agent_channels WHERE is_default = 1",
@@ -2075,7 +2284,21 @@ mod tests {
             )
             .optional()
             .expect("read replacement");
-        assert_eq!(replacement.as_deref(), Some("enabled-older"));
+        assert_eq!(replacement, None);
+
+        set_default_channel_selection(
+            &connection,
+            CLAUDE_CODE_PROVIDER_ID,
+            "enabled-older",
+        )
+        .expect("set replacement default");
+        set_default_channel_selection(&connection, CLAUDE_CODE_PROVIDER_ID, "system")
+            .expect("set system default");
+        let selected = default_channel_ids(&connection).expect("read system default");
+        assert_eq!(
+            selected.get(CLAUDE_CODE_PROVIDER_ID).map(String::as_str),
+            Some("system")
+        );
 
         connection
             .execute("UPDATE agent_channels SET enabled = 0", [])

@@ -196,6 +196,10 @@ export function isAgentRunTerminalEvent(event: AgentRunEvent) {
   return event.type === 'done' || event.type === 'error';
 }
 
+export function shouldSettleAgentStreamAsStopped(cancelRequested: boolean, aborted: boolean) {
+  return cancelRequested || aborted;
+}
+
 function settleDoneTurn(
   turn: ConversationTurn,
   event: Extract<AgentRunEvent, { type: 'done' }>,

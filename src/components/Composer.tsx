@@ -25,9 +25,9 @@ import { applySlashCommandSelection, getNextSlashCommandIndex } from '../lib/sla
 import { getSlashDismissResetKey, resolveSlashCommandSubmission } from '../lib/slash-command-submit';
 import { shouldSubmitComposerOnEnter } from '../lib/composer-keyboard';
 import { getAgentModelForSelection } from '../lib/agent-model-selection';
-import { enabledAgentChannels, SYSTEM_AGENT_CHANNEL_ID } from '../lib/agent-channel-selection';
+import { agentChannelTemplate, enabledAgentChannels, SYSTEM_AGENT_CHANNEL_ID, systemAgentChannelTemplate } from '../lib/agent-channel-selection';
 import { modelContext1mMenuActionLabel, modelMenuDescriptionLabel, modelMenuPrimaryLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
-import type { AgentChannel, AgentModelCatalog, AgentModelOption, AgentProviderDescriptor, AgentType, AiKnowledgeBaseSummary, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, McpServerSummary, PermissionMode, SkillSummary, SlashCommand, UserImageAttachment } from '../types';
+import type { AgentChannel, AgentModelCatalog, AgentModelOption, AgentProviderDescriptor, AgentSystemChannel, AgentType, AiKnowledgeBaseSummary, AiProviderTemplate, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, McpServerSummary, PermissionMode, SkillSummary, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingComposerAttachment =
   | {
@@ -94,6 +94,8 @@ type ComposerProps = {
   providersLoading?: boolean;
   providersError?: string;
   agentChannels?: AgentChannel[];
+  agentSystemChannels?: AgentSystemChannel[];
+  agentChannelTemplates?: AiProviderTemplate[];
   agentChannelId?: string;
   canSelectProvider: boolean;
   allowAttachments: boolean;
@@ -126,6 +128,7 @@ type ComposerProps = {
   onDraftChange: (value: string) => void;
   onSelectProvider: (providerId: string) => boolean | void;
   onSelectAgentChannel?: (channelId: string) => boolean | void;
+  onManageAgentChannels?: (providerId: string) => void;
   onSubmitPrompt: (submission: {
     prompt: string;
     displayText: string;
@@ -164,6 +167,8 @@ export function Composer({
   providersLoading = false,
   providersError = '',
   agentChannels = [],
+  agentSystemChannels = [],
+  agentChannelTemplates = [],
   agentChannelId = SYSTEM_AGENT_CHANNEL_ID,
   canSelectProvider,
   allowAttachments,
@@ -196,6 +201,7 @@ export function Composer({
   onDraftChange,
   onSelectProvider,
   onSelectAgentChannel = () => false,
+  onManageAgentChannels,
   onSubmitPrompt,
   onRemoveQueuedPrompt,
   onRecallQueuedPrompt,
@@ -312,7 +318,12 @@ export function Composer({
     [agentChannels, providerId],
   );
   const selectedAgentChannel = availableAgentChannels.find((channel) => channel.id === agentChannelId);
-  const agentChannelName = selectedAgentChannel?.name ?? '系统当前配置';
+  const systemAgentChannel = agentSystemChannels.find((channel) => channel.providerId === providerId);
+  const systemAgentChannelBrand = systemAgentChannelTemplate(systemAgentChannel, agentChannelTemplates);
+  const selectedAgentChannelTemplate = selectedAgentChannel
+    ? agentChannelTemplate(selectedAgentChannel, agentChannelTemplates)
+    : systemAgentChannelBrand;
+  const agentChannelName = selectedAgentChannel?.name ?? '系统';
   const textOnlyInputMessage = `${providerName} 当前不支持附件输入。`;
   const providerSelectionDisabled =
     !canSelectProvider || isRunning || (providersLoading && providers.length === 0);
@@ -1557,15 +1568,18 @@ export function Composer({
                       }
                     }}
                   >
-                    <Route size={15} />
+                    {systemAgentChannelBrand
+                      ? <ProviderBrandIcon icon={systemAgentChannelBrand.icon} name={systemAgentChannelBrand.vendorName} size={22} />
+                      : <Route size={15} />}
                     <span className="model-menu-item-copy">
-                      <span>系统当前配置</span>
+                      <span>系统渠道</span>
                       <small>跟随本机 {providerName} 当前配置</small>
                     </span>
                     {agentChannelId === SYSTEM_AGENT_CHANNEL_ID ? <Check className="model-check" size={15} /> : null}
                   </button>
-                  {availableAgentChannels.map((channel) => (
-                    <button
+                  {availableAgentChannels.map((channel) => {
+                    const channelTemplate = agentChannelTemplate(channel, agentChannelTemplates);
+                    return <button
                       key={channel.id}
                       type="button"
                       className="model-menu-item"
@@ -1579,17 +1593,31 @@ export function Composer({
                         }
                       }}
                     >
-                      <Route size={15} />
+                      {channelTemplate
+                        ? <ProviderBrandIcon icon={channelTemplate.icon} name={channelTemplate.vendorName} size={22} />
+                        : <Route size={15} />}
                       <span className="model-menu-item-copy">
                         <span>{channel.name}</span>
                         <small>{channel.models.filter((item) => item.enabled).length} 个模型</small>
                       </span>
                       {agentChannelId === channel.id ? <Check className="model-check" size={15} /> : null}
-                    </button>
-                  ))}
+                    </button>;
+                  })}
                   {availableAgentChannels.length === 0 ? (
                     <div className="provider-menu-empty">暂无 CodeM 渠道，可在全局设置中新增</div>
                   ) : null}
+                  <button
+                    type="button"
+                    className="model-menu-item agent-channel-manage-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setAgentChannelMenuOpen(false);
+                      onManageAgentChannels?.(providerId);
+                    }}
+                  >
+                    <ServerCog size={15} />
+                    <span className="model-menu-item-copy"><span>管理渠道</span><small>打开 {providerName} 渠道设置</small></span>
+                  </button>
                 </div>
               </PopoverPortal>
 
@@ -1602,7 +1630,9 @@ export function Composer({
                 title={isRunning ? `${providerName} 运行中，渠道已锁定` : `渠道：${agentChannelName}`}
                 onClick={() => setAgentChannelMenuOpen((value) => !value)}
               >
-                <Route size={15} />
+                {selectedAgentChannelTemplate
+                  ? <ProviderBrandIcon icon={selectedAgentChannelTemplate.icon} name={selectedAgentChannelTemplate.vendorName} size={22} />
+                  : <Route size={15} />}
                 <span>{agentChannelName}</span>
                 <span className="permission-trigger-chevron" aria-hidden="true" />
               </button>
@@ -1799,7 +1829,7 @@ export function Composer({
                   />
                 ) : <div className="model-picker" ref={modelMenuRef}>
                   <PopoverPortal open={modelMenuOpen} anchorRef={modelMenuRef} placement="top-end">
-                    <div className="model-menu model-menu-compact" role="menu" aria-label={`${providerName} 模型`}>
+                    <div className="model-menu model-menu-compact agent-model-menu" role="menu" aria-label={`${providerName} 模型`}>
                       <div className="model-menu-title">模型</div>
                       <button
                         type="button"
@@ -1816,8 +1846,8 @@ export function Composer({
                           <span>默认</span>
                           <small>
                             {defaultAgentModelOption
-                              ? `跟随 Provider 当前默认模型（${defaultAgentModelOption.label}）`
-                              : '跟随 Provider 当前默认模型'}
+                              ? `当前：${defaultAgentModelOption.label}`
+                              : '跟随渠道默认'}
                           </small>
                         </span>
                         {agentModel === DEFAULT_MODEL_VALUE ? <Check className="model-check" size={15} /> : null}
@@ -1852,13 +1882,14 @@ export function Composer({
                             role="menuitemradio"
                             aria-checked={selected}
                             disabled={isRunning}
+                            title={item.label}
                             onClick={() => {
                               onSelectAgentModel(item.id);
                               setModelMenuOpen(false);
                             }}
                           >
                             <span className="model-menu-item-copy">
-                              <span>{item.label}</span>
+                              <span title={item.label}>{item.label}</span>
                               {description ? <small>{description}</small> : null}
                             </span>
                             {selected ? <Check className="model-check" size={15} /> : null}
@@ -2342,11 +2373,21 @@ function agentModelTriggerLabel(modelId: string, selectedModel?: AgentModelOptio
 
 function agentModelDescription(model: AgentModelOption) {
   const context = model.contextWindowTokens
-    ? `${model.contextWindowTokens.toLocaleString('en-US')} tokens`
+    ? `${compactTokenCount(model.contextWindowTokens)} 上下文`
     : '';
-  return [model.isDefault ? 'Provider 当前默认' : '', model.description, context]
+  return [model.isDefault ? '渠道默认' : '', context]
     .filter(Boolean)
     .join(' · ');
+}
+
+function compactTokenCount(tokens: number) {
+  if (tokens >= 1_000_000) {
+    return `${Number((tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1))}M`;
+  }
+  if (tokens >= 1_000) {
+    return `${Number((tokens / 1_000).toFixed(tokens % 1_000 === 0 ? 0 : 1))}K`;
+  }
+  return String(tokens);
 }
 
 function agentEffortLabel(effort: string) {

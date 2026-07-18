@@ -42,6 +42,7 @@ import {
 import { resolveQueuedPromptRunOptions } from '../lib/queued-prompts';
 import {
   buildClaudeChannelModels,
+  defaultAgentChannelId,
   getAgentChannel,
   isAgentChannelSelectionAvailable,
   requestAgentChannelId,
@@ -59,6 +60,7 @@ import type { ThreadActivityNoticeKind } from '../lib/thread-activity-notices';
 import type {
   AssistantItem,
   AgentChannel,
+  AgentProviderId,
   ApprovalDecision,
   ApprovalRequest,
   ClaudeEvent,
@@ -179,6 +181,7 @@ type UseClaudeRunArgs = {
   defaultPermissionMode: PermissionMode;
   autoGuideQueuedPrompts: boolean;
   agentChannels: AgentChannel[];
+  defaultAgentChannelIds: Record<AgentProviderId, string>;
   agentChannelsLoading: boolean;
   createThread: (
     projectId: string,
@@ -232,6 +235,7 @@ export function useClaudeRun({
   defaultPermissionMode,
   autoGuideQueuedPrompts,
   agentChannels,
+  defaultAgentChannelIds,
   agentChannelsLoading,
   createThread,
   renameThread,
@@ -294,6 +298,11 @@ export function useClaudeRun({
     () => getAgentChannel(agentChannels, CLAUDE_CODE_PROVIDER_ID, channelId),
     [agentChannels, channelId],
   );
+  const claudeDefaultChannelId = defaultAgentChannelId(
+    agentChannels,
+    CLAUDE_CODE_PROVIDER_ID,
+    defaultAgentChannelIds[CLAUDE_CODE_PROVIDER_ID],
+  );
   const models = useMemo(
     () => channelId === SYSTEM_AGENT_CHANNEL_ID
       ? nativeModels
@@ -309,15 +318,27 @@ export function useClaudeRun({
   }, []);
 
   useEffect(() => {
-    const resetKey = `${activeThreadSummary?.id ?? ''}\n${activeThreadSummary?.agentChannelId ?? ''}`;
+    if (!activeThreadSummary && agentChannelsLoading) {
+      return;
+    }
+    const resetKey = activeThreadSummary
+      ? `${activeThreadSummary.id}\n${activeThreadSummary.agentChannelId ?? ''}`
+      : `draft\n${claudeDefaultChannelId}`;
     if (channelSelectionResetKeyRef.current === resetKey) {
       return;
     }
     channelSelectionResetKeyRef.current = resetKey;
-    const nextChannelId = threadAgentChannelId(activeThreadSummary?.agentChannelId);
+    const nextChannelId = activeThreadSummary
+      ? threadAgentChannelId(activeThreadSummary.agentChannelId)
+      : claudeDefaultChannelId;
     channelIdRef.current = nextChannelId;
     setChannelIdState(nextChannelId);
-  }, [activeThreadSummary?.id, activeThreadSummary?.agentChannelId]);
+  }, [
+    activeThreadSummary?.agentChannelId,
+    activeThreadSummary?.id,
+    agentChannelsLoading,
+    claudeDefaultChannelId,
+  ]);
 
   useEffect(() => {
     const selectedChannelId = channelIdRef.current;

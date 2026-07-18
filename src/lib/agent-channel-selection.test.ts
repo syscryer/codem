@@ -1,11 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { AgentChannel } from '../types.js';
+import type { AgentChannel, AiProviderTemplate } from '../types.js';
 import {
+  agentChannelTemplate,
+  defaultAgentChannelId,
   isAgentChannelSelectionAvailable,
   resolveRunAgentChannelSelection,
   SYSTEM_AGENT_CHANNEL_ID,
+  threadAgentChannelId,
 } from './agent-channel-selection.js';
+
+const templates = [{
+  id: 'deepseek',
+  name: 'DeepSeek',
+  vendorId: 'deepseek',
+  vendorName: 'DeepSeek',
+  channelId: 'standard',
+  channelName: '标准 API',
+  protocol: 'anthropic_messages',
+  baseUrl: 'https://api.deepseek.com/anthropic',
+  apiKeyUrl: 'https://platform.deepseek.com',
+  docsUrl: 'https://api-docs.deepseek.com',
+  icon: 'deepseek',
+  category: 'china',
+}] satisfies AiProviderTemplate[];
 
 const channels = [
   {
@@ -60,6 +78,31 @@ test('CodeM channel must exist, match the Agent, and be enabled', () => {
     isAgentChannelSelectionAvailable(channels, 'claude-code', 'missing-channel'),
     false,
   );
+});
+
+test('Provider default resolves to an enabled CodeM channel or system', () => {
+  assert.equal(defaultAgentChannelId(channels, 'claude-code'), 'enabled-channel');
+  assert.equal(
+    defaultAgentChannelId(channels, 'claude-code', 'enabled-channel'),
+    'enabled-channel',
+  );
+  assert.equal(
+    defaultAgentChannelId(channels, 'claude-code', 'disabled-channel'),
+    SYSTEM_AGENT_CHANNEL_ID,
+  );
+  assert.equal(defaultAgentChannelId([], 'claude-code'), SYSTEM_AGENT_CHANNEL_ID);
+});
+
+test('persisted empty thread channels remain system channels', () => {
+  assert.equal(threadAgentChannelId(null), SYSTEM_AGENT_CHANNEL_ID);
+});
+
+test('persisted channel template id keeps the configured vendor icon stable', () => {
+  assert.equal(agentChannelTemplate({
+    ...channels[0],
+    templateId: 'deepseek',
+    baseUrl: 'https://proxy.example.com',
+  }, templates)?.icon, 'deepseek');
 });
 
 test('active thread runs use the current UI channel before persistence finishes', () => {

@@ -23,7 +23,7 @@ import {
 } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { fetchAgentModelCatalog } from '../lib/agent-provider-registry';
-import { SYSTEM_AGENT_CHANNEL_ID } from '../lib/agent-channel-selection';
+import { defaultAgentChannelId, SYSTEM_AGENT_CHANNEL_ID } from '../lib/agent-channel-selection';
 import {
   currentAutomationDate,
   automationScheduleError,
@@ -37,6 +37,7 @@ import type {
   AgentChannel,
   AgentModelOption,
   AgentProviderDescriptor,
+  AgentProviderId,
   AutomationDefinition,
   AutomationRun,
   AutomationSaveInput,
@@ -54,6 +55,7 @@ type AutomationCenterProps = {
   projects: ProjectSummary[];
   providers: AgentProviderDescriptor[];
   channels: AgentChannel[];
+  defaultChannelIds: Record<AgentProviderId, string>;
   claudeModels: ClaudeModelOption[];
   defaultProviderId: string;
   defaultPermissionMode: PermissionMode;
@@ -131,6 +133,7 @@ export function AutomationCenter({
   projects,
   providers,
   channels,
+  defaultChannelIds,
   claudeModels = [],
   defaultProviderId,
   defaultPermissionMode,
@@ -151,11 +154,14 @@ export function AutomationCenter({
     projects,
     defaultProviderId,
     defaultPermissionMode,
+    channels,
+    defaultChannelIds,
   ));
   const [modelOptions, setModelOptions] = useState<AgentModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
   const [intervalUnit, setIntervalUnit] = useState<'minutes' | 'hours'>('hours');
+  const previousDefaultChannelIdsRef = useRef(defaultChannelIds);
 
   const providerOptions = useMemo<SelectOption[]>(() => {
     const registryProviders = providers
@@ -205,7 +211,7 @@ export function AutomationCenter({
   const channelOptions = useMemo<SelectOption[]>(() => [
     {
       value: SYSTEM_AGENT_CHANNEL_ID,
-      label: '跟随 Agent 默认配置',
+      label: '系统渠道',
       description: '使用 Agent 当前生效的系统或 CC Switch 配置',
     },
     ...channels
@@ -253,9 +259,15 @@ export function AutomationCenter({
       setIntervalUnit(intervalUnitFor(first.schedule));
     } else {
       setSelectedId(null);
-      setDraft(createEmptyDraft(projects, defaultProviderId, defaultPermissionMode));
+      setDraft(createEmptyDraft(
+        projects,
+        defaultProviderId,
+        defaultPermissionMode,
+        channels,
+        defaultChannelIds,
+      ));
     }
-  }, [automations, defaultPermissionMode, defaultProviderId, loading, projects, selectedId]);
+  }, [automations, channels, defaultChannelIds, defaultPermissionMode, defaultProviderId, loading, projects, selectedId]);
 
   useEffect(() => {
     if (selectedId && !automations.some((automation) => automation.id === selectedId)) {
@@ -263,15 +275,46 @@ export function AutomationCenter({
       setSelectedId(next?.id ?? null);
       setDraft(next
         ? draftFromAutomation(next)
-        : createEmptyDraft(projects, defaultProviderId, defaultPermissionMode));
+        : createEmptyDraft(
+            projects,
+            defaultProviderId,
+            defaultPermissionMode,
+            channels,
+            defaultChannelIds,
+          ));
     }
-  }, [automations, defaultPermissionMode, defaultProviderId, projects, selectedId]);
+  }, [automations, channels, defaultChannelIds, defaultPermissionMode, defaultProviderId, projects, selectedId]);
 
   useEffect(() => {
     if (!draft.projectId && projects[0]) {
       setDraft((current) => current.projectId ? current : { ...current, projectId: projects[0].id });
     }
   }, [draft.projectId, projects]);
+
+  useEffect(() => {
+    const previousDefaults = previousDefaultChannelIdsRef.current;
+    previousDefaultChannelIdsRef.current = defaultChannelIds;
+    if (selectedId !== null) return;
+    const providerId = draft.providerId as AgentProviderId;
+    const previousDefault = defaultAgentChannelId(
+      channels,
+      providerId,
+      previousDefaults[providerId],
+    );
+    const nextDefault = defaultAgentChannelId(
+      channels,
+      providerId,
+      defaultChannelIds[providerId],
+    );
+    if (draft.channelId === previousDefault && previousDefault !== nextDefault) {
+      setDraft((current) => ({
+        ...current,
+        channelId: nextDefault,
+        model: DEFAULT_MODEL_VALUE,
+        reasoningEffort: '',
+      }));
+    }
+  }, [channels, defaultChannelIds, draft.channelId, draft.providerId, selectedId]);
 
   useEffect(() => {
     if (draft.channelId !== SYSTEM_AGENT_CHANNEL_ID) {
@@ -321,7 +364,13 @@ export function AutomationCenter({
 
   function createNewAutomation() {
     setSelectedId(null);
-    setDraft(createEmptyDraft(projects, defaultProviderId, defaultPermissionMode));
+    setDraft(createEmptyDraft(
+      projects,
+      defaultProviderId,
+      defaultPermissionMode,
+      channels,
+      defaultChannelIds,
+    ));
     setIntervalUnit('hours');
   }
 
@@ -575,7 +624,11 @@ export function AutomationCenter({
                   options={providerOptions}
                   onChange={(providerId) => updateDraft({
                     providerId,
-                    channelId: SYSTEM_AGENT_CHANNEL_ID,
+                    channelId: defaultAgentChannelId(
+                      channels,
+                      providerId,
+                      defaultChannelIds[providerId as AgentProviderId],
+                    ),
                     model: DEFAULT_MODEL_VALUE,
                     reasoningEffort: '',
                   })}
@@ -914,13 +967,16 @@ function createEmptyDraft(
   projects: ProjectSummary[],
   defaultProviderId: string,
   defaultPermissionMode: PermissionMode,
+  channels: AgentChannel[],
+  defaultChannelIds: Record<AgentProviderId, string>,
 ): AutomationFormDraft {
+  const providerId = (defaultProviderId || CLAUDE_CODE_PROVIDER_ID) as AgentProviderId;
   return {
     name: '',
     prompt: '',
     projectId: projects[0]?.id ?? '',
-    providerId: defaultProviderId || CLAUDE_CODE_PROVIDER_ID,
-    channelId: SYSTEM_AGENT_CHANNEL_ID,
+    providerId,
+    channelId: defaultAgentChannelId(channels, providerId, defaultChannelIds[providerId]),
     model: DEFAULT_MODEL_VALUE,
     reasoningEffort: '',
     permissionMode: defaultPermissionMode,

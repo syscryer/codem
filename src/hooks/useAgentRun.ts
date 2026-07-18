@@ -10,6 +10,7 @@ import {
   applyAgentRunEventToTurn,
   closeAgentTurnWithoutTerminalEvent,
   isAgentRunTerminalEvent,
+  shouldSettleAgentStreamAsStopped,
 } from '../lib/agent-run-events';
 import {
   fetchAgentProviderRegistry,
@@ -18,6 +19,7 @@ import {
 import { agentModelCatalogCache } from '../lib/agent-model-catalog-cache';
 import {
   buildAgentChannelModelCatalog,
+  defaultAgentChannelId,
   getAgentChannel,
   isAgentChannelSelectionAvailable,
   requestAgentChannelId,
@@ -117,6 +119,7 @@ type UseAgentRunArgs = {
   defaultProviderId: AgentProviderId;
   defaultPermissionMode: PermissionMode;
   agentChannels: AgentChannel[];
+  defaultAgentChannelIds: Record<AgentProviderId, string>;
   agentChannelsLoading: boolean;
   activeProjectId: string | null;
   activeProjectPath?: string;
@@ -172,6 +175,7 @@ export function useAgentRun({
   defaultProviderId,
   defaultPermissionMode,
   agentChannels,
+  defaultAgentChannelIds,
   agentChannelsLoading,
   activeProjectId,
   activeProjectPath,
@@ -232,6 +236,11 @@ export function useAgentRun({
   selectedProviderIdRef.current = selectedProviderId;
   const nativeModelCatalog = modelCatalog?.providerId === selectedProviderId ? modelCatalog : null;
   const selectedChannel = getAgentChannel(agentChannels, selectedProviderId, channelId);
+  const selectedProviderDefaultChannelId = defaultAgentChannelId(
+    agentChannels,
+    selectedProviderId,
+    defaultAgentChannelIds[selectedProviderId as AgentProviderId],
+  );
   const currentModelCatalog = channelId === SYSTEM_AGENT_CHANNEL_ID
     ? nativeModelCatalog
     : selectedChannel
@@ -311,10 +320,21 @@ export function useAgentRun({
   }, [activeThreadSummary?.id, activeThreadSummary?.permissionMode, defaultPermissionMode]);
 
   useEffect(() => {
-    const nextChannelId = threadAgentChannelId(activeThreadSummary?.agentChannelId);
+    if (!activeThreadSummary && agentChannelsLoading) {
+      return;
+    }
+    const nextChannelId = activeThreadSummary
+      ? threadAgentChannelId(activeThreadSummary.agentChannelId)
+      : selectedProviderDefaultChannelId;
     channelIdRef.current = nextChannelId;
     setChannelIdState(nextChannelId);
-  }, [activeThreadSummary?.id, activeThreadSummary?.agentChannelId, selectedProviderId]);
+  }, [
+    activeThreadSummary?.agentChannelId,
+    activeThreadSummary?.id,
+    agentChannelsLoading,
+    selectedProviderId,
+    selectedProviderDefaultChannelId,
+  ]);
 
   useEffect(() => {
     const selectedChannelId = channelIdRef.current;
@@ -472,19 +492,29 @@ export function useAgentRun({
 
   function resetDraftProvider() {
     const providerId = defaultProviderIdRef.current;
+    const nextChannelId = defaultAgentChannelId(
+      agentChannels,
+      providerId,
+      defaultAgentChannelIds[providerId],
+    );
     setDraftProviderId(providerId);
-    channelIdRef.current = SYSTEM_AGENT_CHANNEL_ID;
-    setChannelIdState(SYSTEM_AGENT_CHANNEL_ID);
+    channelIdRef.current = nextChannelId;
+    setChannelIdState(nextChannelId);
     setAgentPermissionMode(defaultPermissionMode);
     resetDraftModelSelection(providerId);
     setModelSelectionWarning('');
   }
 
   function selectDraftProvider(providerId: string) {
+    const nextChannelId = defaultAgentChannelId(
+      agentChannels,
+      providerId,
+      defaultAgentChannelIds[providerId as AgentProviderId],
+    );
     if (providerId === CLAUDE_CODE_PROVIDER_ID) {
       setDraftProviderId(providerId);
-      channelIdRef.current = SYSTEM_AGENT_CHANNEL_ID;
-      setChannelIdState(SYSTEM_AGENT_CHANNEL_ID);
+      channelIdRef.current = nextChannelId;
+      setChannelIdState(nextChannelId);
       resetDraftModelSelection(providerId);
       setModelSelectionWarning('');
       return true;
@@ -497,8 +527,8 @@ export function useAgentRun({
     }
     if (draftProviderId !== providerId) {
       setAgentPermissionMode(defaultPermissionMode);
-      channelIdRef.current = SYSTEM_AGENT_CHANNEL_ID;
-      setChannelIdState(SYSTEM_AGENT_CHANNEL_ID);
+      channelIdRef.current = nextChannelId;
+      setChannelIdState(nextChannelId);
       resetDraftModelSelection(providerId);
       setModelSelectionWarning('');
     }
@@ -1194,7 +1224,14 @@ export function useAgentRun({
         }
         await consumeAgentEventStream(response, context);
         if (!context.terminal && runContextsByThreadIdRef.current.get(context.threadId) === context) {
-          settleRunWithoutTerminal(context, 'Agent 事件流已结束');
+          if (shouldSettleAgentStreamAsStopped(context.cancelRequested, controller.signal.aborted)) {
+            settleRunWithoutTerminal(context, '已停止');
+          } else {
+            handleAgentRunFailure(
+              context,
+              `${providerName} 事件流意外结束，未收到完成结果。请检查 CLI、渠道配置或运行日志。`,
+            );
+          }
         }
       } catch (error) {
         if (context.terminal || runContextsByThreadIdRef.current.get(context.threadId) !== context) {

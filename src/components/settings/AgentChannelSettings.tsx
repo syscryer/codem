@@ -24,11 +24,13 @@ import {
   deleteAgentChannelModel,
   discoverAgentChannelModels,
   revealAgentChannelApiKey,
+  setDefaultAgentChannel,
   testAgentChannel,
   updateAgentChannel,
   updateAgentChannelModel,
 } from '../../lib/agent-channel-api';
 import { openExternalUrl } from '../../lib/markdown-link';
+import { agentChannelTemplate, systemAgentChannelTemplate } from '../../lib/agent-channel-selection';
 import {
   agentChannelProtocolHint,
   filterProviderVendors,
@@ -39,13 +41,13 @@ import {
 import type {
   AgentChannel,
   AgentChannelBootstrap,
+  AgentChannelSettingsFocus,
   AgentChannelModel,
   AgentProviderId,
   AiChatProtocol,
   AiDiscoveredModel,
   AiProviderTemplate,
 } from '../../types';
-import { AgentProviderIcon } from '../AgentProviderIcon';
 import { AiModelPickerDialog } from '../AiModelPickerDialog';
 import { PopoverPortal } from '../PopoverPortal';
 import { ProviderBrandIcon } from '../ProviderBrandIcon';
@@ -55,6 +57,7 @@ type AgentChannelSettingsProps = {
   bootstrap: AgentChannelBootstrap;
   loading: boolean;
   error: string;
+  focusRequest?: AgentChannelSettingsFocus | null;
   onChanged: () => Promise<unknown> | unknown;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
 };
@@ -63,7 +66,6 @@ type ChannelDraft = {
   name: string;
   protocol: AiChatProtocol;
   baseUrl: string;
-  modelsUrl: string;
   apiKey: string;
   apiKeyTouched: boolean;
   enabled: boolean;
@@ -77,6 +79,7 @@ type BusyAction =
   | 'discover-models'
   | 'model'
   | 'delete'
+  | 'default'
   | '';
 
 const providerLabels: Record<AgentProviderId, string> = {
@@ -97,11 +100,14 @@ export function AgentChannelSettings({
   bootstrap,
   loading,
   error: bootstrapError,
+  focusRequest,
   onChanged,
   showToast,
 }: AgentChannelSettingsProps) {
   const [providerId, setProviderId] = useState<AgentProviderId>('claude-code');
-  const [selectedChannelId, setSelectedChannelId] = useState('');
+  const [selectedChannelId, setSelectedChannelId] = useState(
+    () => bootstrap.defaultChannelIds['claude-code'] || 'system',
+  );
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<ChannelDraft>(() => emptyDraft('claude-code'));
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
@@ -115,7 +121,7 @@ export function AgentChannelSettings({
   const [newModelName, setNewModelName] = useState('');
   const [discoveredModels, setDiscoveredModels] = useState<AiDiscoveredModel[] | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
-  const [confirmDeleteChannel, setConfirmDeleteChannel] = useState(false);
+  const [confirmDeleteChannelId, setConfirmDeleteChannelId] = useState('');
   const [confirmDeleteModelId, setConfirmDeleteModelId] = useState('');
 
   const channels = useMemo(
@@ -155,35 +161,56 @@ export function AgentChannelSettings({
     );
   }, [modelQuery, selectedChannel?.models]);
   const protocolHint = agentChannelProtocolHint(providerId, draft.protocol);
+  const defaultChannelId = bootstrap.defaultChannelIds[providerId] || 'system';
+  const systemTemplate = systemAgentChannelTemplate(systemChannel, templates) ?? null;
+
+  useEffect(() => {
+    if (!focusRequest) return;
+    const nextProviderId = focusRequest.providerId;
+    setProviderId(nextProviderId);
+    setSelectedChannelId(bootstrap.defaultChannelIds[nextProviderId] || 'system');
+    setCreating(false);
+    setDraft(emptyDraft(nextProviderId));
+    setSelectedTemplateId('');
+    setApiKeyVisible(false);
+    setRevealedSavedApiKey(false);
+    resetMessages();
+  }, [focusRequest?.requestId]);
 
   useEffect(() => {
     if (creating) return;
-    const nextChannel = channels.find((channel) => channel.id === selectedChannelId)
-      ?? channels.find((channel) => channel.isDefault)
-      ?? channels[0]
-      ?? null;
+    if (selectedChannelId === 'system') {
+      return;
+    }
+    const nextChannel = channels.find((channel) => channel.id === selectedChannelId);
     if (!nextChannel) {
-      setSelectedChannelId('');
+      const fallbackId = bootstrap.defaultChannelIds[providerId] || 'system';
+      setSelectedChannelId(
+        fallbackId === 'system' || channels.some((channel) => channel.id === fallbackId)
+          ? fallbackId
+          : 'system',
+      );
       setDraft(emptyDraft(providerId));
       return;
     }
-    if (nextChannel.id !== selectedChannelId) {
-      setSelectedChannelId(nextChannel.id);
-    }
     setDraft(channelToDraft(nextChannel));
-    setSelectedTemplateId(matchTemplate(templates, channelToDraft(nextChannel))?.id ?? '');
-  }, [channels, creating, providerId, selectedChannelId, templates]);
+    setSelectedTemplateId(
+      nextChannel.templateId
+      ?? matchTemplate(templates, channelToDraft(nextChannel))?.id
+      ?? '',
+    );
+  }, [bootstrap.defaultChannelIds, channels, creating, providerId, selectedChannelId, templates]);
 
   function resetMessages() {
     setLocalError('');
     setTestMessage('');
-    setConfirmDeleteChannel(false);
+    setConfirmDeleteChannelId('');
     setConfirmDeleteModelId('');
   }
 
   function selectProvider(nextProviderId: AgentProviderId) {
     setProviderId(nextProviderId);
-    setSelectedChannelId('');
+    setSelectedChannelId(bootstrap.defaultChannelIds[nextProviderId] || 'system');
     setCreating(false);
     setDraft(emptyDraft(nextProviderId));
     setSelectedTemplateId('');
@@ -196,7 +223,19 @@ export function AgentChannelSettings({
     setSelectedChannelId(channel.id);
     setCreating(false);
     setDraft(channelToDraft(channel));
-    setSelectedTemplateId(matchTemplate(templates, channelToDraft(channel))?.id ?? '');
+    setSelectedTemplateId(
+      channel.templateId ?? matchTemplate(templates, channelToDraft(channel))?.id ?? '',
+    );
+    setApiKeyVisible(false);
+    setRevealedSavedApiKey(false);
+    resetMessages();
+  }
+
+  function selectSystemChannel() {
+    setSelectedChannelId('system');
+    setCreating(false);
+    setDraft(emptyDraft(providerId));
+    setSelectedTemplateId('');
     setApiKeyVisible(false);
     setRevealedSavedApiKey(false);
     resetMessages();
@@ -262,7 +301,7 @@ export function AgentChannelSettings({
           name,
           protocol: draft.protocol,
           baseUrl,
-          modelsUrl: draft.modelsUrl.trim(),
+          templateId: selectedTemplateId,
           enabled: draft.enabled,
           isDefault: draft.isDefault,
           apiKey: draft.apiKey,
@@ -275,7 +314,7 @@ export function AgentChannelSettings({
           name,
           protocol: draft.protocol,
           baseUrl,
-          modelsUrl: draft.modelsUrl.trim() || undefined,
+          templateId: selectedTemplateId,
           enabled: draft.enabled,
           isDefault: draft.isDefault,
           apiKey: draft.apiKey.trim() || undefined,
@@ -416,17 +455,33 @@ export function AgentChannelSettings({
     }
   }
 
-  async function removeChannel() {
-    if (!selectedChannel) return;
+  async function removeChannel(channel: AgentChannel) {
     setBusy('delete');
     try {
-      await deleteAgentChannel(selectedChannel.id);
-      setSelectedChannelId('');
-      setConfirmDeleteChannel(false);
+      await deleteAgentChannel(channel.id);
+      if (selectedChannelId === channel.id) {
+        setSelectedChannelId('system');
+      }
+      setConfirmDeleteChannelId('');
       await onChanged();
       showToast('Agent 渠道已删除', 'success');
     } catch (deleteError) {
       setLocalError(deleteError instanceof Error ? deleteError.message : '删除 Agent 渠道失败');
+    } finally {
+      setBusy('');
+    }
+  }
+
+
+  async function makeDefault(channelId: string) {
+    setBusy('default');
+    setLocalError('');
+    try {
+      await setDefaultAgentChannel(providerId, channelId);
+      await onChanged();
+      showToast(channelId === 'system' ? '已将系统渠道设为默认' : '已设置默认渠道', 'success');
+    } catch (defaultError) {
+      setLocalError(defaultError instanceof Error ? defaultError.message : '设置默认渠道失败');
     } finally {
       setBusy('');
     }
@@ -447,40 +502,88 @@ export function AgentChannelSettings({
       <div className="ai-manager-layout agent-channel-layout">
         <aside className="ai-manager-sidebar agent-channel-sidebar">
           <div className="ai-manager-sidebar-title">
-            <div><span>CodeM 渠道</span><small>{channels.length} 个配置</small></div>
+            <div><span>渠道</span><small>{channels.length + 1} 个配置</small></div>
             <button type="button" className="ai-manager-add-provider-button" aria-label="新增 Agent 渠道" title="新增 Agent 渠道" onClick={startNewChannel}>
               <Plus size={17} />
             </button>
           </div>
           <div className="ai-manager-provider-list">
+            <div className={`ai-manager-provider-row agent-channel-list-row${!creating && selectedChannelId === 'system' ? ' active' : ''}`}>
+              <button type="button" className="agent-channel-list-main" onClick={selectSystemChannel}>
+                {systemTemplate
+                  ? <ProviderBrandIcon icon={systemTemplate.icon} name={systemTemplate.vendorName} size={30} />
+                  : <Route size={22} />}
+                <span className="agent-channel-list-copy">
+                  <strong>系统渠道</strong>
+                  <small>{systemChannel?.ccSwitchProviderName || '跟随 Agent 当前配置'}</small>
+                  <em title={systemChannel?.baseUrl}>{systemChannel?.baseUrl || '由 Agent 管理 API 地址'}</em>
+                  <b title={systemChannel?.model}>{systemChannel?.model ? `默认模型：${systemChannel.model}` : '默认模型：跟随 Agent'}</b>
+                </span>
+              </button>
+              <span className="agent-channel-list-status">
+                {defaultChannelId === 'system' ? <Star size={13} fill="currentColor" aria-label="默认渠道" /> : null}
+                <i className={systemChannel?.configured ? 'online' : ''} aria-label={systemChannel?.configured ? '已配置' : '使用 Agent 默认值'} />
+              </span>
+            </div>
             {channels.map((channel) => {
-              const channelTemplate = matchTemplate(templates, channelToDraft(channel));
+              const channelTemplate = agentChannelTemplate(channel, templates);
+              const defaultModel = channel.models.find((model) => model.enabled && model.isDefault)
+                ?? channel.models.find((model) => model.enabled);
               return (
-                <button
+                <div
                   key={channel.id}
-                  type="button"
-                  className={`ai-manager-provider-row${!creating && channel.id === selectedChannelId ? ' active' : ''}`}
-                  onClick={() => selectChannel(channel)}
+                  className={`ai-manager-provider-row agent-channel-list-row${!creating && channel.id === selectedChannelId ? ' active' : ''}`}
                 >
-                  {channelTemplate
-                    ? <ProviderBrandIcon icon={channelTemplate.icon} name={channelTemplate.vendorName} size={25} />
-                    : <AgentProviderIcon providerId={providerId} size={25} />}
-                  <span><strong>{channel.name}</strong><small>{protocolLabels[channel.protocol]}</small></span>
-                  <span className="ai-manager-provider-status">
+                  <button type="button" className="agent-channel-list-main" onClick={() => selectChannel(channel)}>
+                    {channelTemplate
+                      ? <ProviderBrandIcon icon={channelTemplate.icon} name={channelTemplate.vendorName} size={30} />
+                      : <Route size={22} />}
+                    <span className="agent-channel-list-copy">
+                      <strong>{channel.name}</strong>
+                      <small>{protocolLabels[channel.protocol]}</small>
+                      <em title={channel.baseUrl}>{channel.baseUrl}</em>
+                      <b title={defaultModel?.displayName || defaultModel?.modelId}>默认模型：{defaultModel?.displayName || defaultModel?.modelId || '未设置'}</b>
+                    </span>
+                  </button>
+                  <span className="agent-channel-list-status">
                     {channel.isDefault ? <Star size={13} fill="currentColor" /> : null}
                     <i className={channel.enabled ? 'online' : ''} aria-label={channel.enabled ? '已启用' : '已停用'} />
                   </span>
-                </button>
+                  <button
+                    type="button"
+                    className={`agent-channel-list-delete${confirmDeleteChannelId === channel.id ? ' confirming' : ''}`}
+                    disabled={Boolean(busy)}
+                    aria-label={confirmDeleteChannelId === channel.id ? `确认删除 ${channel.name}` : `删除 ${channel.name}`}
+                    title={confirmDeleteChannelId === channel.id ? '再次点击确认删除' : '删除渠道'}
+                    onClick={() => {
+                      if (confirmDeleteChannelId === channel.id) {
+                        void removeChannel(channel);
+                      } else {
+                        setConfirmDeleteChannelId(channel.id);
+                      }
+                    }}
+                  >
+                    {confirmDeleteChannelId === channel.id ? '确认' : <Trash2 size={14} />}
+                  </button>
+                </div>
               );
             })}
-            {channels.length === 0 && !loading ? <div className="provider-menu-empty">还没有 CodeM 渠道</div> : null}
+            {channels.length === 0 && !loading ? <div className="provider-menu-empty">还没有 CodeM 渠道，可继续使用系统渠道</div> : null}
           </div>
         </aside>
 
         <div className="ai-manager-content agent-channel-content">
-          <SystemChannelCard systemChannel={systemChannel} ccSwitchDetected={bootstrap.ccSwitch.detected} />
-
-          {(selectedChannel || creating) ? (
+          {!creating && selectedChannelId === 'system' ? (
+            <SystemChannelDetails
+              systemChannel={systemChannel}
+              template={systemTemplate}
+              ccSwitchDetected={bootstrap.ccSwitch.detected}
+              isDefault={defaultChannelId === 'system'}
+              busy={Boolean(busy)}
+              error={displayedError}
+              onMakeDefault={() => void makeDefault('system')}
+            />
+          ) : (selectedChannel || creating) ? (
             <>
               <section className="ai-manager-section agent-channel-editor">
                 <div className="ai-manager-section-head">
@@ -489,8 +592,16 @@ export function AgentChannelSettings({
                     <p>此配置只注入 CodeM 启动的 Agent 子进程，不修改系统或 CC Switch。</p>
                   </div>
                   <div className="ai-manager-section-head-actions">
-                    <button type="button" className={`ai-manager-default-provider-button${draft.isDefault ? ' active' : ''}`} onClick={() => setDraft({ ...draft, isDefault: !draft.isDefault })}>
-                      <Star size={14} fill={draft.isDefault ? 'currentColor' : 'none'} />{draft.isDefault ? '默认渠道' : '设为默认'}
+                    <button
+                      type="button"
+                      className={`ai-manager-default-provider-button${(creating ? draft.isDefault : selectedChannel?.isDefault) ? ' active' : ''}`}
+                      disabled={Boolean(busy) || (!creating && selectedChannel?.isDefault)}
+                      onClick={() => creating
+                        ? setDraft({ ...draft, isDefault: !draft.isDefault })
+                        : selectedChannel && void makeDefault(selectedChannel.id)}
+                    >
+                      <Star size={14} fill={(creating ? draft.isDefault : selectedChannel?.isDefault) ? 'currentColor' : 'none'} />
+                      {(creating ? draft.isDefault : selectedChannel?.isDefault) ? '默认渠道' : '设为默认'}
                     </button>
                     <button type="button" className={`ai-manager-enable-button${draft.enabled ? ' active' : ''}`} onClick={() => setDraft({ ...draft, enabled: !draft.enabled })}>
                       <span />{draft.enabled ? '已启用' : '已停用'}
@@ -546,7 +657,6 @@ export function AgentChannelSettings({
                     </div>
                   </div>
                   <label className="wide"><span>API 地址</span><input value={draft.baseUrl} placeholder="https://api.example.com" onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} /></label>
-                  <label className="wide"><span>模型列表地址（可选）</span><input value={draft.modelsUrl} placeholder="留空时根据 API 地址自动获取" onChange={(event) => setDraft({ ...draft, modelsUrl: event.target.value })} /></label>
                   <label className="wide">
                     <span>API Key</span>
                     <div className="ai-manager-secret-input">
@@ -613,17 +723,10 @@ export function AgentChannelSettings({
                   <input value={newModelName} placeholder="显示名称（可选）" onChange={(event) => setNewModelName(event.target.value)} />
                   <button type="button" disabled={!newModelId.trim() || Boolean(busy)} onClick={() => void addModel()}><Plus size={14} />添加</button>
                 </div>
-                {selectedChannel ? (
-                  <div className="ai-manager-danger-zone">
-                    {confirmDeleteChannel ? (
-                      <><span>删除后，使用此渠道的任务需要重新选择渠道。</span><button type="button" className="danger" disabled={Boolean(busy)} onClick={() => void removeChannel()}>确认删除</button><button type="button" className="secondary" onClick={() => setConfirmDeleteChannel(false)}>取消</button></>
-                    ) : <button type="button" className="danger" onClick={() => setConfirmDeleteChannel(true)}><Trash2 size={14} />删除渠道</button>}
-                  </div>
-                ) : null}
               </section>
             </>
           ) : (
-            <div className="ai-manager-empty agent-channel-empty"><Route size={30} /><h3>为 {providerLabels[providerId]} 新增渠道</h3><p>系统当前配置始终可用；只有需要在 CodeM 内切换独立渠道时才需要新增。</p><button type="button" onClick={startNewChannel}><Plus size={14} />新增渠道</button></div>
+            <div className="ai-manager-empty agent-channel-empty"><Route size={30} /><h3>为 {providerLabels[providerId]} 新增渠道</h3><p>系统渠道始终可用；只有需要在 CodeM 内切换独立渠道时才需要新增。</p><button type="button" onClick={startNewChannel}><Plus size={14} />新增渠道</button></div>
           )}
         </div>
       </div>
@@ -642,28 +745,72 @@ export function AgentChannelSettings({
   );
 }
 
-function SystemChannelCard({
+function SystemChannelDetails({
   systemChannel,
+  template,
   ccSwitchDetected,
+  isDefault,
+  busy,
+  error,
+  onMakeDefault,
 }: {
   systemChannel: AgentChannelBootstrap['systemChannels'][number] | null;
+  template: AiProviderTemplate | null;
   ccSwitchDetected: boolean;
+  isDefault: boolean;
+  busy: boolean;
+  error: string;
+  onMakeDefault: () => void;
 }) {
   return (
-    <section className="agent-system-channel-card">
-      <div className="agent-system-channel-icon"><AgentProviderIcon providerId={systemChannel?.providerId ?? 'claude-code'} size={26} /></div>
-      <div className="agent-system-channel-copy">
-        <div className="agent-system-channel-title"><strong>系统当前配置</strong><span className={systemChannel?.configured ? 'ready' : ''}>{systemChannel?.configured ? '已配置' : '使用 Agent 默认值'}</span></div>
-        <p>{systemChannel?.detail ?? '正在读取当前 Agent 配置。'}</p>
-        <div className="agent-system-channel-meta">
-          {systemChannel?.ccSwitchProviderName ? <span>CC Switch: {systemChannel.ccSwitchProviderName}</span> : null}
-          {systemChannel?.baseUrl ? <span>{systemChannel.baseUrl}</span> : null}
-          {systemChannel?.model ? <span>模型: {systemChannel.model}</span> : null}
-          {ccSwitchDetected && !systemChannel?.ccSwitchProviderName ? <span>已检测到 CC Switch，当前 Agent 未标记渠道</span> : null}
+    <section className="ai-manager-section agent-system-channel-details">
+      <div className="ai-manager-section-head">
+        <div className="agent-system-channel-heading">
+          <span className="agent-system-channel-icon">
+            {template
+              ? <ProviderBrandIcon icon={template.icon} name={template.vendorName} size={38} />
+              : <Route size={24} />}
+          </span>
+          <div>
+            <h3>系统渠道</h3>
+            <p>{systemChannel?.detail ?? '正在读取当前 Agent 配置。'}</p>
+          </div>
+        </div>
+        <div className="ai-manager-section-head-actions">
+          <span className="agent-system-channel-readonly">只读</span>
+          <button
+            type="button"
+            className={`ai-manager-default-provider-button${isDefault ? ' active' : ''}`}
+            disabled={busy || isDefault}
+            onClick={onMakeDefault}
+          >
+            <Star size={14} fill={isDefault ? 'currentColor' : 'none'} />
+            {isDefault ? '默认渠道' : '设为默认'}
+          </button>
         </div>
       </div>
-      <span className="agent-system-channel-readonly">只读</span>
+      <div className="agent-system-channel-readonly-grid">
+        <SystemChannelField label="配置来源" value={systemChannel?.ccSwitchProviderName ? `CC Switch · ${systemChannel.ccSwitchProviderName}` : 'Agent 系统配置'} />
+        <SystemChannelField label="接口类型" value={systemChannel?.protocol ? protocolLabels[systemChannel.protocol] : '由 Agent 决定'} />
+        <SystemChannelField label="API 地址" value={systemChannel?.baseUrl || '由 Agent 当前配置决定'} wide />
+        <SystemChannelField label="当前默认模型" value={systemChannel?.model || '跟随 Agent 默认模型'} />
+        <SystemChannelField label="配置状态" value={systemChannel?.configured ? '已检测到配置' : '使用 Agent 默认值'} />
+        <SystemChannelField label="配置路径" value={systemChannel?.configPath || '未检测到独立配置文件'} wide />
+      </div>
+      {ccSwitchDetected && !systemChannel?.ccSwitchProviderName ? (
+        <p className="agent-system-channel-note">已检测到 CC Switch，但当前 Agent 没有标记活动渠道。</p>
+      ) : null}
+      {error ? <div className="assistant-runtime-error">{error}</div> : null}
     </section>
+  );
+}
+
+function SystemChannelField({ label, value, wide = false }: { label: string; value: string; wide?: boolean }) {
+  return (
+    <div className={`agent-system-channel-field${wide ? ' wide' : ''}`}>
+      <span>{label}</span>
+      <strong title={value}>{value}</strong>
+    </div>
   );
 }
 
@@ -829,7 +976,6 @@ function emptyDraft(providerId: AgentProviderId): ChannelDraft {
     name: '',
     protocol: protocolsForAgent(providerId)[0],
     baseUrl: '',
-    modelsUrl: '',
     apiKey: '',
     apiKeyTouched: false,
     enabled: true,
@@ -842,7 +988,6 @@ function channelToDraft(channel: AgentChannel): ChannelDraft {
     name: channel.name,
     protocol: channel.protocol,
     baseUrl: channel.baseUrl,
-    modelsUrl: channel.modelsUrl ?? '',
     apiKey: '',
     apiKeyTouched: false,
     enabled: channel.enabled,

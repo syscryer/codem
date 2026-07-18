@@ -3,6 +3,8 @@ import type {
   AgentModelCatalog,
   AgentModelOption,
   AgentProviderId,
+  AgentSystemChannel,
+  AiProviderTemplate,
   ClaudeModelOption,
 } from '../types';
 
@@ -21,6 +23,49 @@ export function getAgentChannel(
 
 export function enabledAgentChannels(channels: AgentChannel[], providerId: string) {
   return channels.filter((channel) => channel.providerId === providerId && channel.enabled);
+}
+
+export function agentChannelTemplate(
+  channel: AgentChannel,
+  templates: AiProviderTemplate[],
+) {
+  const persisted = channel.templateId
+    ? templates.find((template) => template.id === channel.templateId)
+    : undefined;
+  if (persisted) return persisted;
+  const baseUrl = normalizedChannelBaseUrl(channel.baseUrl);
+  return templates.find(
+    (template) => template.protocol === channel.protocol
+      && normalizedChannelBaseUrl(template.baseUrl) === baseUrl,
+  );
+}
+
+export function systemAgentChannelTemplate(
+  channel: AgentSystemChannel | undefined | null,
+  templates: AiProviderTemplate[],
+) {
+  if (!channel) return undefined;
+  const baseUrl = channel.baseUrl ? normalizedChannelBaseUrl(channel.baseUrl) : '';
+  const providerName = channel.ccSwitchProviderName?.toLocaleLowerCase() ?? '';
+  return templates.find((template) => Boolean(baseUrl)
+    && normalizedChannelBaseUrl(template.baseUrl) === baseUrl
+    && (!channel.protocol || channel.protocol === template.protocol))
+    ?? templates.find((template) => providerName.includes(template.vendorName.toLocaleLowerCase()))
+    ?? templates.find((template) => providerName.includes(template.vendorId.toLocaleLowerCase()));
+}
+
+export function defaultAgentChannelId(
+  channels: AgentChannel[],
+  providerId: string,
+  configuredChannelId?: string | null,
+) {
+  const candidate = configuredChannelId?.trim()
+    || channels.find(
+      (channel) => channel.providerId === providerId && channel.enabled && channel.isDefault,
+    )?.id;
+  return candidate && isAgentChannelSelectionAvailable(channels, providerId, candidate)
+    ? candidate
+    : SYSTEM_AGENT_CHANNEL_ID;
 }
 
 export function isAgentChannelSelectionAvailable(
@@ -124,6 +169,10 @@ export function buildAgentChannelModelCatalog(
 function capabilityNumber(capabilities: Record<string, unknown>, key: string) {
   const value = capabilities[key];
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function normalizedChannelBaseUrl(baseUrl: string) {
+  return baseUrl.trim().replace(/\/+$/, '').toLocaleLowerCase();
 }
 
 function capabilityString(capabilities: Record<string, unknown>, key: string) {

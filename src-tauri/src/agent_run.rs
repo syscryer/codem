@@ -2712,11 +2712,34 @@ fn is_terminal_event(event: &AgentRunEvent) -> bool {
 }
 
 fn public_acp_error(error: AcpError) -> String {
-    error.public_message().to_string()
+    match error {
+        AcpError::Rpc { code, message } => format!(
+            "ACP Provider 请求失败（RPC {code}）：{}",
+            truncate_public_error_detail(&message),
+        ),
+        AcpError::Protocol(message) => format!(
+            "ACP Provider 协议错误：{}",
+            truncate_public_error_detail(&message),
+        ),
+        AcpError::Timeout(operation) => format!("ACP Provider 响应超时：{operation}"),
+        AcpError::Io(_) => "ACP 子进程通信失败".to_string(),
+        AcpError::Json(_) => "ACP Provider 返回了无效 JSON".to_string(),
+    }
 }
 
 fn public_codex_error(error: CodexAppServerError) -> String {
     error.public_message()
+}
+
+fn truncate_public_error_detail(message: &str) -> String {
+    const MAX_DETAIL_CHARS: usize = 2_000;
+    let detail = message.trim();
+    if detail.chars().count() <= MAX_DETAIL_CHARS {
+        return detail.to_string();
+    }
+    let mut truncated = detail.chars().take(MAX_DETAIL_CHARS).collect::<String>();
+    truncated.push_str("…");
+    truncated
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3341,16 +3364,17 @@ mod tests {
     use super::{
         acp_arguments, acp_permission_policy, build_acp_prompt, build_codex_input,
         cancelled_before_prompt_outcome, grok_acp_arguments, normalize_agent_input,
-        parse_opencode_models, read_cached_agent_command, read_cached_agent_model_catalog,
-        runtime_can_reuse, should_set_acp_model, store_cached_agent_command,
-        store_cached_agent_model_catalog, AcpEventMapper, AgentDriverInput, AgentDriverKind,
-        AgentInputContentBlock, AgentModelCatalog, AgentModelSummary, AgentRunRecord,
-        AgentRunService, AgentRunState, AgentRuntimeCommand, AgentRuntimeConfig, AgentRuntimePhase,
-        AgentRuntimeRecord, AgentRuntimeRun, CodexEventMapper, CommandResolvers,
-        StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL, MODEL_CATALOG_CACHE_TTL,
+        parse_opencode_models, public_acp_error, read_cached_agent_command,
+        read_cached_agent_model_catalog, runtime_can_reuse, should_set_acp_model,
+        store_cached_agent_command, store_cached_agent_model_catalog, AcpEventMapper,
+        AgentDriverInput, AgentDriverKind, AgentInputContentBlock, AgentModelCatalog,
+        AgentModelSummary, AgentRunRecord, AgentRunService, AgentRunState, AgentRuntimeCommand,
+        AgentRuntimeConfig, AgentRuntimePhase, AgentRuntimeRecord, AgentRuntimeRun,
+        CodexEventMapper, CommandResolvers, StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL,
+        MODEL_CATALOG_CACHE_TTL,
     };
     use crate::{
-        acp::{AcpPermissionPolicy, AcpRuntimeEvent, AcpToolCall, AcpToolCallUpdate},
+        acp::{AcpError, AcpPermissionPolicy, AcpRuntimeEvent, AcpToolCall, AcpToolCallUpdate},
         agent_channels::AgentChannelService,
         agent_runtime::AgentRunEvent,
         codex_app_server::CodexRuntimeEvent,
@@ -3953,6 +3977,22 @@ mod tests {
         assert_eq!(outcome.stop_reason, "cancelled");
         assert!(outcome.text.is_empty());
         assert!(outcome.cancel_sent);
+    }
+
+    #[test]
+    fn public_acp_error_keeps_bounded_rpc_detail_for_agent_runs() {
+        let error = AcpError::Rpc {
+            code: 429,
+            message: "All credentials for model grok-4.5 are cooling down".to_string(),
+        };
+        let message = public_acp_error(error);
+        assert!(message.contains("429"));
+        assert!(message.contains("cooling down"));
+
+        let long_detail = "x".repeat(2_500);
+        let truncated = public_acp_error(AcpError::Protocol(long_detail));
+        assert!(truncated.ends_with('…'));
+        assert!(truncated.chars().count() <= "ACP Provider 协议错误：".chars().count() + 2_001);
     }
 
     #[test]

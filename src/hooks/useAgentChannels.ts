@@ -7,6 +7,12 @@ const EMPTY_BOOTSTRAP: AgentChannelBootstrap = {
   systemChannels: [],
   ccSwitch: { detected: false, currentProviders: {} },
   templates: [],
+  defaultChannelIds: {
+    'claude-code': 'system',
+    'openai-codex': 'system',
+    'grok-build': 'system',
+    opencode: 'system',
+  },
 };
 
 export function useAgentChannels() {
@@ -46,6 +52,7 @@ export function useAgentChannels() {
     systemChannels: bootstrap.systemChannels,
     ccSwitch: bootstrap.ccSwitch,
     templates: bootstrap.templates,
+    defaultChannelIds: bootstrap.defaultChannelIds,
     loading,
     error,
     refresh,

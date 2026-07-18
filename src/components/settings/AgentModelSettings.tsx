@@ -1,6 +1,6 @@
 import { Bot, Route } from 'lucide-react';
-import { useState } from 'react';
-import type { AgentChannelBootstrap, AgentProviderDescriptor, AgentRuntimeSettings, ClaudeModelInfo, ToastState } from '../../types';
+import { useEffect, useState } from 'react';
+import type { AgentChannelBootstrap, AgentChannelSettingsFocus, AgentProviderDescriptor, AgentRuntimeSettings, ClaudeModelInfo, ToastState } from '../../types';
 import type { AgentRuntimeSettingsUpdate } from '../../hooks/useAppSettings';
 import { AgentChannelSettings } from './AgentChannelSettings';
 import { AgentProviderSettings } from './AgentProviderSettings';
@@ -16,6 +16,7 @@ type AgentModelSettingsSectionProps = {
   channelBootstrap: AgentChannelBootstrap;
   channelsLoading: boolean;
   channelsError: string;
+  channelFocus: AgentChannelSettingsFocus | null;
   onUpdateAgentRuntime: (update: AgentRuntimeSettingsUpdate) => void | Promise<void>;
   onRefreshProviders: () => Promise<void> | void;
   onRefreshChannels: () => Promise<unknown> | unknown;
@@ -31,12 +32,17 @@ export function AgentModelSettingsSection({
   channelBootstrap,
   channelsLoading,
   channelsError,
+  channelFocus,
   onUpdateAgentRuntime,
   onRefreshProviders,
   onRefreshChannels,
   showToast,
 }: AgentModelSettingsSectionProps) {
   const [activeTab, setActiveTab] = useState<AgentSettingsTab>('agents');
+
+  useEffect(() => {
+    if (channelFocus) setActiveTab('channels');
+  }, [channelFocus]);
 
   return (
     <section className="settings-page-section agent-model-settings">
@@ -81,6 +87,7 @@ export function AgentModelSettingsSection({
           bootstrap={channelBootstrap}
           loading={channelsLoading}
           error={channelsError}
+          focusRequest={channelFocus}
           onChanged={onRefreshChannels}
           showToast={showToast}
         />
