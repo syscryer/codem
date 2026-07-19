@@ -1,7 +1,7 @@
 use super::types::{
-    AiProtocol, DiscoveredModel, ModelMessage, ProviderStreamEvent, ProviderStreamOutcome,
-    ProviderTemplate, ProviderToolCall, ProviderToolCallDelta, ProviderToolDefinition, StoredModel,
-    StoredProvider,
+    AiChatModelPreference, AiProtocol, DiscoveredModel, ModelMessage, ProviderStreamEvent,
+    ProviderStreamOutcome, ProviderTemplate, ProviderToolCall, ProviderToolCallDelta,
+    ProviderToolDefinition, StoredModel, StoredProvider,
 };
 use reqwest::Client;
 use serde_json::Value;
@@ -847,6 +847,215 @@ fn minimax_token_plan_thinking(provider: &StoredProvider, model_id: &str) -> Opt
     }))
 }
 
+fn reasoning_effort<'a>(
+    provider: &StoredProvider,
+    model: &StoredModel,
+    options: &'a AiChatModelPreference,
+) -> Option<&'a str> {
+    if !options.thinking_enabled || !supports_reasoning(provider, model) {
+        return None;
+    }
+    match options.reasoning_effort.as_str() {
+        "low" | "medium" | "high" | "xhigh" => Some(options.reasoning_effort.as_str()),
+        _ => Some("medium"),
+    }
+}
+
+fn reasoning_budget(effort: &str) -> u64 {
+    match effort {
+        "low" => 2_048,
+        "high" => 16_384,
+        "xhigh" => 32_768,
+        _ => 8_192,
+    }
+}
+
+fn supports_reasoning(provider: &StoredProvider, model: &StoredModel) -> bool {
+    if let Some(explicit) = explicit_capability(&model.capabilities, &["reasoning", "thinking"]) {
+        return explicit;
+    }
+    let model_id = model.model_id.trim().to_ascii_lowercase();
+    match provider.protocol {
+        AiProtocol::OpenaiResponses => {
+            model_id.starts_with("o1-")
+                || model_id == "o1"
+                || model_id.starts_with("o3-")
+                || model_id == "o3"
+                || model_id.starts_with("o4-")
+                || model_id == "o4"
+                || model_id.starts_with("gpt-5")
+                || model_id.contains("codex")
+                || model_id.contains("reasoning")
+        }
+        AiProtocol::OpenaiChat => {
+            model_id.contains("grok-3-mini")
+                || model_id.contains("grok-4")
+                || model_id.contains("reasoning-effort")
+                || model_id.contains("deepseek")
+        }
+        AiProtocol::AnthropicMessages => {
+            model_id.contains("claude-3-7")
+                || model_id.contains("claude-sonnet-4")
+                || model_id.contains("claude-opus-4")
+                || model_id.contains("claude-haiku-4")
+                || model_id.contains("claude-4")
+                || model_id.starts_with("minimax-m2")
+                || model_id.starts_with("minimax-m3")
+                || model_id.contains("deepseek")
+        }
+        AiProtocol::GeminiGenerateContent => {
+            model_id.contains("gemini-2.5") || model_id.contains("gemini-3")
+        }
+    }
+}
+
+fn supports_native_web_search(provider: &StoredProvider, model: &StoredModel) -> bool {
+    if let Some(explicit) =
+        explicit_capability(&model.capabilities, &["webSearch", "nativeWebSearch"])
+    {
+        return explicit;
+    }
+    let Ok(url) = Url::parse(provider.base_url.trim()) else {
+        return false;
+    };
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let model_id = model.model_id.to_ascii_lowercase();
+    match provider.protocol {
+        AiProtocol::OpenaiResponses => host == "api.openai.com",
+        AiProtocol::OpenaiChat => host == "api.openai.com" && model_id.contains("search-preview"),
+        AiProtocol::AnthropicMessages => host == "api.anthropic.com" && model_id.contains("claude"),
+        AiProtocol::GeminiGenerateContent => host == "generativelanguage.googleapis.com",
+    }
+}
+
+fn explicit_capability(capabilities: &Value, keys: &[&str]) -> Option<bool> {
+    keys.iter()
+        .find_map(|key| capabilities.get(*key).and_then(Value::as_bool))
+}
+
+fn append_unique_tool(payload: &mut Value, tool: Value, tool_type: &str) {
+    let tools = payload.get_mut("tools").and_then(Value::as_array_mut);
+    if let Some(tools) = tools {
+        if !tools
+            .iter()
+            .any(|candidate| candidate.get("type").and_then(Value::as_str) == Some(tool_type))
+        {
+            tools.push(tool);
+        }
+    } else {
+        payload["tools"] = Value::Array(vec![tool]);
+    }
+}
+
+fn apply_openai_chat_runtime_options(
+    payload: &mut Value,
+    provider: &StoredProvider,
+    model: &StoredModel,
+    options: &AiChatModelPreference,
+) {
+    if let Some(effort) = reasoning_effort(provider, model, options) {
+        payload["reasoning_effort"] = Value::String(effort.to_string());
+    }
+    if options.web_search_enabled && supports_native_web_search(provider, model) {
+        payload["web_search_options"] = serde_json::json!({ "search_context_size": "medium" });
+    }
+}
+
+fn apply_openai_responses_runtime_options(
+    payload: &mut Value,
+    provider: &StoredProvider,
+    model: &StoredModel,
+    options: &AiChatModelPreference,
+) {
+    if let Some(effort) = reasoning_effort(provider, model, options) {
+        payload["reasoning"] = serde_json::json!({ "effort": effort, "summary": "auto" });
+    }
+    if options.web_search_enabled && supports_native_web_search(provider, model) {
+        append_unique_tool(
+            payload,
+            serde_json::json!({ "type": "web_search" }),
+            "web_search",
+        );
+    }
+}
+
+fn apply_anthropic_runtime_options(
+    payload: &mut Value,
+    provider: &StoredProvider,
+    model: &StoredModel,
+    options: &AiChatModelPreference,
+) {
+    if let Some(effort) = reasoning_effort(provider, model, options) {
+        if is_deepseek_target(provider, model) {
+            payload["thinking"] = serde_json::json!({ "type": "enabled" });
+            if !payload.get("output_config").is_some_and(Value::is_object) {
+                payload["output_config"] = serde_json::json!({});
+            }
+            payload["output_config"]["effort"] = Value::String(effort.to_string());
+        } else {
+            let budget = reasoning_budget(effort);
+            payload["thinking"] = serde_json::json!({
+                "type": "enabled",
+                "budget_tokens": budget,
+            });
+            payload["max_tokens"] = Value::from((budget + 4_096).max(8_192));
+        }
+    }
+    if options.web_search_enabled && supports_native_web_search(provider, model) {
+        append_unique_tool(
+            payload,
+            serde_json::json!({
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 5,
+            }),
+            "web_search_20250305",
+        );
+    }
+}
+
+fn is_deepseek_target(provider: &StoredProvider, model: &StoredModel) -> bool {
+    provider.base_url.to_ascii_lowercase().contains("deepseek")
+        || model.model_id.to_ascii_lowercase().contains("deepseek")
+}
+
+fn apply_gemini_runtime_options(
+    payload: &mut Value,
+    provider: &StoredProvider,
+    model: &StoredModel,
+    options: &AiChatModelPreference,
+) {
+    if let Some(effort) = reasoning_effort(provider, model, options) {
+        if !payload
+            .get("generationConfig")
+            .is_some_and(Value::is_object)
+        {
+            payload["generationConfig"] = serde_json::json!({});
+        }
+        let generation_config = payload
+            .get_mut("generationConfig")
+            .and_then(Value::as_object_mut)
+            .expect("Gemini payload generationConfig must be an object");
+        generation_config.insert(
+            "thinkingConfig".to_string(),
+            serde_json::json!({
+                "thinkingBudget": reasoning_budget(effort),
+                "includeThoughts": true,
+            }),
+        );
+    }
+    if options.web_search_enabled && supports_native_web_search(provider, model) {
+        let search_tool = serde_json::json!({ "googleSearch": {} });
+        if let Some(tools) = payload.get_mut("tools").and_then(Value::as_array_mut) {
+            if !tools.iter().any(|tool| tool.get("googleSearch").is_some()) {
+                tools.push(search_tool);
+            }
+        } else {
+            payload["tools"] = Value::Array(vec![search_tool]);
+        }
+    }
+}
+
 async fn test_token_plan_provider(
     provider: &StoredProvider,
     model: &DiscoveredModel,
@@ -896,6 +1105,7 @@ pub(crate) async fn stream_chat<F>(
     api_key: &str,
     messages: &[ModelMessage],
     tools: &[ProviderToolDefinition],
+    runtime_options: &AiChatModelPreference,
     cancel: watch::Receiver<bool>,
     mut on_event: F,
 ) -> Result<ProviderStreamOutcome, String>
@@ -915,6 +1125,7 @@ where
                 api_key,
                 messages,
                 tools,
+                runtime_options,
                 cancel,
                 &mut on_event,
             )
@@ -928,6 +1139,7 @@ where
                 api_key,
                 messages,
                 tools,
+                runtime_options,
                 cancel,
                 &mut on_event,
             )
@@ -941,6 +1153,7 @@ where
                 api_key,
                 messages,
                 tools,
+                runtime_options,
                 cancel,
                 &mut on_event,
             )
@@ -954,6 +1167,7 @@ where
                 api_key,
                 messages,
                 tools,
+                runtime_options,
                 cancel,
                 &mut on_event,
             )
@@ -969,6 +1183,7 @@ async fn stream_openai_chat<F>(
     api_key: &str,
     messages: &[ModelMessage],
     tools: &[ProviderToolDefinition],
+    runtime_options: &AiChatModelPreference,
     cancel: watch::Receiver<bool>,
     on_event: &mut F,
 ) -> Result<ProviderStreamOutcome, String>
@@ -986,6 +1201,7 @@ where
         payload["tools"] = Value::Array(openai_chat_tools(tools));
         payload["tool_choice"] = Value::String("auto".to_string());
     }
+    apply_openai_chat_runtime_options(&mut payload, provider, model, runtime_options);
     let response = client
         .post(endpoint)
         .bearer_auth(api_key)
@@ -1062,6 +1278,7 @@ async fn stream_openai_responses<F>(
     api_key: &str,
     messages: &[ModelMessage],
     tools: &[ProviderToolDefinition],
+    runtime_options: &AiChatModelPreference,
     cancel: watch::Receiver<bool>,
     on_event: &mut F,
 ) -> Result<ProviderStreamOutcome, String>
@@ -1078,6 +1295,7 @@ where
         payload["tools"] = Value::Array(openai_responses_tools(tools));
         payload["tool_choice"] = Value::String("auto".to_string());
     }
+    apply_openai_responses_runtime_options(&mut payload, provider, model, runtime_options);
     let response = client
         .post(endpoint)
         .bearer_auth(api_key)
@@ -1224,6 +1442,7 @@ async fn stream_anthropic<F>(
     api_key: &str,
     messages: &[ModelMessage],
     tools: &[ProviderToolDefinition],
+    runtime_options: &AiChatModelPreference,
     cancel: watch::Receiver<bool>,
     on_event: &mut F,
 ) -> Result<ProviderStreamOutcome, String>
@@ -1239,12 +1458,10 @@ where
         "system": system,
         "messages": messages,
     });
-    if let Some(thinking) = minimax_token_plan_thinking(provider, &model.model_id) {
-        payload["thinking"] = thinking;
-    }
     if !tools.is_empty() {
         payload["tools"] = Value::Array(anthropic_tools(tools));
     }
+    apply_anthropic_runtime_options(&mut payload, provider, model, runtime_options);
     let response = client
         .post(endpoint)
         .header("x-api-key", api_key)
@@ -1352,6 +1569,7 @@ async fn stream_gemini<F>(
     api_key: &str,
     messages: &[ModelMessage],
     tools: &[ProviderToolDefinition],
+    runtime_options: &AiChatModelPreference,
     cancel: watch::Receiver<bool>,
     on_event: &mut F,
 ) -> Result<ProviderStreamOutcome, String>
@@ -1375,6 +1593,7 @@ where
         payload["tools"] = serde_json::json!([{ "functionDeclarations": gemini_tools(tools) }]);
         payload["toolConfig"] = serde_json::json!({ "functionCallingConfig": { "mode": "AUTO" } });
     }
+    apply_gemini_runtime_options(&mut payload, provider, model, runtime_options);
     let response = client
         .post(endpoint)
         .header("x-goog-api-key", api_key)
@@ -1579,7 +1798,8 @@ fn merge_tool_call_delta(
     }
     if !delta.arguments_delta.is_empty() {
         if !current.arguments.is_empty()
-            && serde_json::from_str::<Value>(&delta.arguments_delta).is_ok()
+            && serde_json::from_str::<Value>(&delta.arguments_delta)
+                .is_ok_and(|value| value.is_object())
         {
             current.arguments = delta.arguments_delta.clone();
         } else {
@@ -2204,15 +2424,16 @@ fn sanitize_error(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        anthropic_models_endpoint, anthropic_models_endpoints, discover_models,
+        anthropic_models_endpoint, anthropic_models_endpoints, apply_anthropic_runtime_options,
+        apply_gemini_runtime_options, apply_openai_responses_runtime_options, discover_models,
         finalize_tool_calls, gemini_contents, merge_tool_call_delta, minimax_token_plan_thinking,
         normalize_action_endpoint, openai_chat_messages, openai_chat_tools, openai_responses_input,
         parse_models, split_system_messages, stream_chat, test_token_plan_provider,
         token_plan_supports_remote_models, ToolCallAccumulator, PROVIDER_TEMPLATES,
     };
     use crate::ordinary_chat::types::{
-        AiProtocol, DiscoveredModel, ModelMessage, ProviderToolCall, ProviderToolCallDelta,
-        ProviderToolDefinition, StoredModel, StoredProvider,
+        AiChatModelPreference, AiProtocol, DiscoveredModel, ModelMessage, ProviderToolCall,
+        ProviderToolCallDelta, ProviderToolDefinition, StoredModel, StoredProvider,
     };
     use axum::{
         http::{StatusCode, Uri},
@@ -2691,6 +2912,143 @@ mod tests {
         assert_eq!(calls[0].arguments["path"], "README.md");
     }
 
+    #[test]
+    fn keeps_json_scalar_fragments_as_incremental_tool_arguments() {
+        let mut calls = BTreeMap::<usize, ToolCallAccumulator>::new();
+        for fragment in ["{\"search_query\":\"Rust ", "202", "5", " new features\"}"] {
+            merge_tool_call_delta(
+                &mut calls,
+                &ProviderToolCallDelta {
+                    index: 0,
+                    id: Some("call-deepseek".to_string()),
+                    name: Some("mcp__web_search".to_string()),
+                    arguments_delta: fragment.to_string(),
+                },
+            );
+        }
+
+        let calls = finalize_tool_calls(calls).unwrap();
+        assert_eq!(calls[0].arguments["search_query"], "Rust 2025 new features");
+    }
+
+    #[test]
+    fn complete_object_snapshot_replaces_partial_tool_arguments() {
+        let mut calls = BTreeMap::<usize, ToolCallAccumulator>::new();
+        for fragment in ["{\"path\":", "{\"path\":\"README.md\"}"] {
+            merge_tool_call_delta(
+                &mut calls,
+                &ProviderToolCallDelta {
+                    index: 0,
+                    id: Some("call-snapshot".to_string()),
+                    name: Some("mcp__read".to_string()),
+                    arguments_delta: fragment.to_string(),
+                },
+            );
+        }
+
+        let calls = finalize_tool_calls(calls).unwrap();
+        assert_eq!(calls[0].arguments["path"], "README.md");
+    }
+
+    #[test]
+    fn runtime_options_map_to_protocol_native_fields() {
+        let options = AiChatModelPreference {
+            thinking_enabled: true,
+            reasoning_effort: "high".to_string(),
+            web_search_enabled: true,
+        };
+
+        let openai_provider = StoredProvider {
+            name: "OpenAI".to_string(),
+            protocol: AiProtocol::OpenaiResponses,
+            base_url: "https://api.openai.com/v1".to_string(),
+            enabled: true,
+            secret_slot: "slot".to_string(),
+        };
+        let reasoning_model = StoredModel {
+            id: "model-row".to_string(),
+            model_id: "o3".to_string(),
+            display_name: "o3".to_string(),
+            capabilities: json!({}),
+        };
+        let mut responses = json!({ "model": "o3" });
+        apply_openai_responses_runtime_options(
+            &mut responses,
+            &openai_provider,
+            &reasoning_model,
+            &options,
+        );
+        assert_eq!(responses["reasoning"]["effort"], "high");
+        assert_eq!(responses["tools"][0]["type"], "web_search");
+
+        let anthropic_provider = StoredProvider {
+            name: "Anthropic".to_string(),
+            protocol: AiProtocol::AnthropicMessages,
+            base_url: "https://api.anthropic.com".to_string(),
+            enabled: true,
+            secret_slot: "slot".to_string(),
+        };
+        let anthropic_model = StoredModel {
+            id: "model-row".to_string(),
+            model_id: "claude-3-7-sonnet-latest".to_string(),
+            display_name: "Claude".to_string(),
+            capabilities: json!({}),
+        };
+        let mut anthropic = json!({ "max_tokens": 8192 });
+        apply_anthropic_runtime_options(
+            &mut anthropic,
+            &anthropic_provider,
+            &anthropic_model,
+            &options,
+        );
+        assert_eq!(anthropic["thinking"]["budget_tokens"], 16384);
+        assert_eq!(anthropic["tools"][0]["name"], "web_search");
+
+        let deepseek_model = StoredModel {
+            id: "deepseek-row".to_string(),
+            model_id: "deepseek-v4-flash".to_string(),
+            display_name: "DeepSeek V4 Flash".to_string(),
+            capabilities: json!({}),
+        };
+        let mut deepseek = json!({ "max_tokens": 8192 });
+        apply_anthropic_runtime_options(
+            &mut deepseek,
+            &StoredProvider {
+                name: "DeepSeek".to_string(),
+                protocol: AiProtocol::AnthropicMessages,
+                base_url: "https://api.deepseek.com/anthropic".to_string(),
+                enabled: true,
+                secret_slot: "slot".to_string(),
+            },
+            &deepseek_model,
+            &options,
+        );
+        assert_eq!(deepseek["thinking"]["type"], "enabled");
+        assert_eq!(deepseek["output_config"]["effort"], "high");
+        assert!(deepseek["thinking"]["budget_tokens"].is_null());
+
+        let gemini_provider = StoredProvider {
+            name: "Gemini".to_string(),
+            protocol: AiProtocol::GeminiGenerateContent,
+            base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            enabled: true,
+            secret_slot: "slot".to_string(),
+        };
+        let gemini_model = StoredModel {
+            id: "model-row".to_string(),
+            model_id: "gemini-2.5-pro".to_string(),
+            display_name: "Gemini".to_string(),
+            capabilities: json!({}),
+        };
+        let mut gemini = json!({});
+        apply_gemini_runtime_options(&mut gemini, &gemini_provider, &gemini_model, &options);
+        assert_eq!(
+            gemini["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            16384
+        );
+        assert!(gemini["tools"][0]["googleSearch"].is_object());
+    }
+
     #[tokio::test]
     async fn parses_tool_calls_from_all_streaming_protocols() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2740,6 +3098,7 @@ mod tests {
                 "test-key",
                 &messages,
                 &tools,
+                &AiChatModelPreference::default(),
                 cancel,
                 |_| {},
             )

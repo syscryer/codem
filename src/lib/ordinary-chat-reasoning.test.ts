@@ -26,6 +26,7 @@ function detail(reasoningContent: string): AiChatDetail {
       selectedMcpIds: [],
       selectedSkillIds: [],
       selectedKnowledgeIds: [],
+      modelPreferences: {},
       messageCount: 2,
       createdAt: '2026-07-14T00:00:00.000Z',
       updatedAt: '2026-07-14T00:00:01.000Z',
@@ -57,6 +58,21 @@ test('ordinary chat history omits empty reasoning blocks', () => {
   const [turn] = chatDetailToTurns(detail(''));
 
   assert.deepEqual(turn?.items.map((item) => item.type), ['text']);
+});
+
+test('ordinary chat history restores the persisted provider error detail', () => {
+  const chat = detail('');
+  const assistant = chat.messages.find((item) => item.role === 'assistant');
+  assert.ok(assistant);
+  assistant.status = 'error';
+  assistant.content = '';
+  assistant.errorMessage = 'Provider 请求失败（HTTP 400）：thinking 参数不受支持';
+
+  const [turn] = chatDetailToTurns(chat);
+
+  assert.equal(turn?.status, 'error');
+  assert.equal(turn?.activity, '运行失败');
+  assert.equal(turn?.errorMessage, assistant.errorMessage);
 });
 
 test('ordinary chat ignores null usage frames from OpenAI-compatible providers', () => {

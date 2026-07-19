@@ -10,6 +10,7 @@ import type {
   ConversationTurn,
   RequestUserInputRequest,
 } from '../types';
+import { ordinaryChatReasoningOptions, ordinaryChatSupportsWebSearch } from '../lib/ordinary-chat-capabilities';
 import { Composer } from './Composer';
 import { ConversationPane } from './ConversationPane';
 import { OrdinaryChatHeader } from './OrdinaryChatHeader';
@@ -93,6 +94,9 @@ export function OrdinaryChatWorkspace({
       models,
     };
   }, [chat.selectedProvider]);
+
+  const reasoningOptions = ordinaryChatReasoningOptions(chat.selectedProvider, chat.selectedModel);
+  const webSearchAvailable = ordinaryChatSupportsWebSearch(chat.selectedProvider, chat.selectedModel);
 
   const activeTurnId = findActiveTurnId(chat.activeThread?.turns ?? []);
   const hasUsableProvider = chat.providers.some((provider) => (
@@ -202,10 +206,13 @@ export function OrdinaryChatWorkspace({
         agentModelSelectionWarning=""
         knowledgeBases={chat.knowledgeBases}
         selectedKnowledgeIds={chat.selectedKnowledgeIds}
-        skills={chat.skills}
-        selectedSkillIds={chat.selectedSkillIds}
         mcpServers={chat.mcpServers}
         selectedMcpIds={chat.selectedMcpIds}
+        ordinaryThinkingEnabled={chat.selectedRuntimeOptions.thinkingEnabled}
+        ordinaryReasoningEffort={chat.selectedRuntimeOptions.reasoningEffort}
+        ordinaryReasoningOptions={reasoningOptions}
+        ordinaryWebSearchEnabled={chat.selectedRuntimeOptions.webSearchEnabled}
+        ordinaryWebSearchAvailable={webSearchAvailable}
         turns={chat.activeThread?.turns ?? []}
         isRunning={chat.isRunning}
         draftScopeKey={chat.activeChatId ?? 'ordinary-chat-draft'}
@@ -240,8 +247,14 @@ export function OrdinaryChatWorkspace({
         onRetryAgentModels={() => void chat.refreshBootstrap()}
         onToggleKnowledgeBase={chat.toggleKnowledgeBase}
         onManageKnowledgeBases={onOpenKnowledgeManager}
-        onToggleSkill={chat.toggleSkill}
         onToggleMcpServer={chat.toggleMcpServer}
+        onToggleOrdinaryThinking={() => chat.updateRuntimeOptions({
+          thinkingEnabled: !chat.selectedRuntimeOptions.thinkingEnabled,
+        })}
+        onSelectOrdinaryReasoningEffort={(effort) => chat.updateRuntimeOptions({ reasoningEffort: effort })}
+        onToggleOrdinaryWebSearch={() => chat.updateRuntimeOptions({
+          webSearchEnabled: !chat.selectedRuntimeOptions.webSearchEnabled,
+        })}
         onOpenPlugins={onOpenAiSettings}
         onCreateNewChat={() => {
           chat.createNewChatDraft();

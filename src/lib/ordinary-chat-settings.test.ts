@@ -15,6 +15,16 @@ const backendSource = readFileSync(new URL('../../src-tauri/src/ordinary_chat/mo
 const providerCatalogSource = readFileSync(new URL('../../src-tauri/src/ordinary_chat/provider.rs', import.meta.url), 'utf8');
 const providerIconSource = readFileSync(new URL('../components/ProviderBrandIcon.tsx', import.meta.url), 'utf8');
 
+test('普通聊天不再暴露或加载 Agent Skills，并提供思考等级与联网搜索控制', () => {
+  assert.doesNotMatch(composerSource, /aria-label="Skills"/);
+  assert.doesNotMatch(ordinaryWorkspaceSource, /onToggleSkill/);
+  assert.doesNotMatch(ordinaryChatHookSource, /load.*Skills|setSkills|toggleSkill/);
+  assert.match(composerSource, /ordinaryThinkingEnabled/);
+  assert.match(composerSource, /ordinaryReasoningOptions/);
+  assert.match(composerSource, /ordinaryWebSearchAvailable/);
+  assert.doesNotMatch(backendSource, /list_codex_skills_value/);
+});
+
 test('普通聊天供应商保留兼容页面但不再占用设置主菜单', () => {
   assert.match(settingsViewSource, /activeSection === 'aiProviders'/);
   assert.match(settingsViewSource, /AiProviderSettingsSection/);

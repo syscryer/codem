@@ -17,6 +17,8 @@ const EMBEDDING_DIMENSIONS: usize = 256;
 const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_DIRECTORY_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_DIRECTORY_FILES: usize = 500;
+const MAX_PREVIEW_CHARS_PER_KNOWLEDGE_BASE: usize = 900;
+const MAX_PREVIEW_CHARS_TOTAL: usize = 2_400;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -413,6 +415,72 @@ pub(crate) fn search_knowledge(
         .take(limit.clamp(1, 20))
         .map(|(_, value)| value)
         .collect())
+}
+
+pub(crate) fn selected_knowledge_context(
+    connection: &Connection,
+    knowledge_base_ids: &[String],
+    include_previews: bool,
+) -> Result<Vec<Value>, String> {
+    if knowledge_base_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let summaries = list_knowledge_bases(connection)?;
+    let mut preview_chars = 0usize;
+    let mut selected = Vec::new();
+    for knowledge_base_id in knowledge_base_ids {
+        let Some(summary) = summaries
+            .iter()
+            .find(|item| item.get("id").and_then(Value::as_str) == Some(knowledge_base_id))
+        else {
+            continue;
+        };
+        let mut source_statement = connection
+            .prepare(
+                "SELECT name FROM ai_knowledge_sources
+                 WHERE knowledge_base_id = ?1 AND status = 'ready'
+                 ORDER BY updated_at DESC, name COLLATE NOCASE ASC LIMIT 5",
+            )
+            .map_err(database_error)?;
+        let source_names = source_statement
+            .query_map([knowledge_base_id], |row| row.get::<_, String>(0))
+            .map_err(database_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(database_error)?;
+        let preview = if include_previews && preview_chars < MAX_PREVIEW_CHARS_TOTAL {
+            connection
+                .query_row(
+                    "SELECT s.name, c.content
+                     FROM ai_knowledge_chunks c
+                     JOIN ai_knowledge_sources s ON s.id = c.source_id
+                     WHERE c.knowledge_base_id = ?1 AND s.status = 'ready'
+                     ORDER BY s.updated_at DESC, c.chunk_index ASC LIMIT 1",
+                    [knowledge_base_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(database_error)?
+                .map(|(source_name, content)| {
+                    let available = MAX_PREVIEW_CHARS_TOTAL.saturating_sub(preview_chars);
+                    let limit = available.min(MAX_PREVIEW_CHARS_PER_KNOWLEDGE_BASE);
+                    let content = content.chars().take(limit).collect::<String>();
+                    preview_chars += content.chars().count();
+                    json!({ "sourceName": source_name, "content": content })
+                })
+        } else {
+            None
+        };
+        selected.push(json!({
+            "id": knowledge_base_id,
+            "name": summary.get("name").cloned().unwrap_or(Value::Null),
+            "description": summary.get("description").cloned().unwrap_or(Value::Null),
+            "sourceCount": summary.get("sourceCount").cloned().unwrap_or(Value::from(0)),
+            "chunkCount": summary.get("chunkCount").cloned().unwrap_or(Value::from(0)),
+            "sourceNames": source_names,
+            "preview": preview,
+        }));
+    }
+    Ok(selected)
 }
 
 pub(crate) fn search_request(
@@ -838,8 +906,9 @@ fn database_error(error: rusqlite::Error) -> String {
 mod tests {
     use super::{
         create_knowledge_base, import_knowledge_sources, local_embedding, rebuild_knowledge_base,
-        search_knowledge, split_text, update_knowledge_base, CreateKnowledgeBaseRequest,
-        ImportKnowledgeSourceRequest, UpdateKnowledgeBaseRequest,
+        search_knowledge, selected_knowledge_context, split_text, update_knowledge_base,
+        CreateKnowledgeBaseRequest, ImportKnowledgeSourceRequest, UpdateKnowledgeBaseRequest,
+        MAX_PREVIEW_CHARS_PER_KNOWLEDGE_BASE,
     };
     use crate::ordinary_chat::storage::initialize_database;
     use rusqlite::{params, Connection};
@@ -861,6 +930,55 @@ mod tests {
         let vector = local_embedding("CodeM 普通聊天知识库检索");
         let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn selected_knowledge_context_exposes_metadata_and_bounded_preview() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_database(&connection).unwrap();
+        assert!(selected_knowledge_context(&connection, &[], true)
+            .unwrap()
+            .is_empty());
+        let knowledge_base = create_knowledge_base(
+            &connection,
+            CreateKnowledgeBaseRequest {
+                name: "配置知识库".to_string(),
+                description: "内部服务配置".to_string(),
+            },
+        )
+        .unwrap();
+        let knowledge_base_id = knowledge_base["summary"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        import_knowledge_sources(
+            &mut connection,
+            &knowledge_base_id,
+            ImportKnowledgeSourceRequest {
+                path: None,
+                text: Some("app.port=8080\n".repeat(120)),
+                name: Some("application.conf".to_string()),
+            },
+        )
+        .unwrap();
+
+        let context =
+            selected_knowledge_context(&connection, std::slice::from_ref(&knowledge_base_id), true)
+                .unwrap();
+        assert_eq!(context[0]["name"], "配置知识库");
+        assert_eq!(context[0]["sourceCount"], 1);
+        assert_eq!(context[0]["sourceNames"][0], "application.conf");
+        let preview = context[0]["preview"]["content"].as_str().unwrap();
+        assert!(preview.contains("app.port=8080"));
+        assert!(preview.chars().count() <= MAX_PREVIEW_CHARS_PER_KNOWLEDGE_BASE);
+
+        let metadata_only = selected_knowledge_context(
+            &connection,
+            std::slice::from_ref(&knowledge_base_id),
+            false,
+        )
+        .unwrap();
+        assert!(metadata_only[0]["preview"].is_null());
     }
 
     #[test]

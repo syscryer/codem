@@ -2,6 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { applyAgentRunEventToTurn } from '../lib/agent-run-events';
 import { appendThinkingItem } from '../lib/conversation';
 import {
+  aiChatModelPreference,
+  loadAiChatModelPreferences,
+  saveAiChatModelPreferences,
+  updateAiChatModelPreference,
+} from '../lib/ordinary-chat-capabilities';
+import {
   cancelAiChatRun,
   createAiChat,
   deleteAiChat,
@@ -25,13 +31,13 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   AiChatDetail,
+  AiChatModelPreference,
   AiChatProvider,
   AiChatSummary,
   AiKnowledgeBaseSummary,
   ConversationTurn,
   InputContentBlock,
   McpServerSummary,
-  SkillSummary,
   ThreadDetail,
   UserImageAttachment,
 } from '../types';
@@ -74,7 +80,6 @@ export function useOrdinaryChat(
   const [chats, setChats] = useState<AiChatSummary[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<AiKnowledgeBaseSummary[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerSummary[]>([]);
-  const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [activeChat, setActiveChat] = useState<AiChatDetail | null>(null);
   const [turnsByChatId, setTurnsByChatId] = useState<Record<string, ConversationTurn[]>>({});
@@ -84,7 +89,9 @@ export function useOrdinaryChat(
   const [draftModelId, setDraftModelId] = useState('');
   const [draftKnowledgeIds, setDraftKnowledgeIds] = useState<string[]>([]);
   const [draftMcpIds, setDraftMcpIds] = useState<string[]>([]);
-  const [draftSkillIds, setDraftSkillIds] = useState<string[]>([]);
+  const [draftModelPreferences, setDraftModelPreferences] = useState<Record<string, AiChatModelPreference>>(
+    loadAiChatModelPreferences,
+  );
   const [runningChatIds, setRunningChatIds] = useState<string[]>([]);
   const runContextsRef = useRef(new Map<string, RunContext>());
   const activeChatIdRef = useRef<string | null>(null);
@@ -109,7 +116,8 @@ export function useOrdinaryChat(
     ?? preferredModel(selectedProvider);
   const selectedKnowledgeIds = activeChat?.summary.selectedKnowledgeIds ?? draftKnowledgeIds;
   const selectedMcpIds = activeChat?.summary.selectedMcpIds ?? draftMcpIds;
-  const selectedSkillIds = activeChat?.summary.selectedSkillIds ?? draftSkillIds;
+  const modelPreferences = { ...draftModelPreferences, ...(activeChat?.summary.modelPreferences ?? {}) };
+  const selectedRuntimeOptions = aiChatModelPreference(modelPreferences, selectedModelId);
 
   const applyDefaultSelection = useCallback((nextProviders: AiChatProvider[]) => {
     const provider = preferredProvider(nextProviders);
@@ -131,7 +139,6 @@ export function useOrdinaryChat(
     setChats(bootstrap.chats);
     setKnowledgeBases(bootstrap.knowledgeBases ?? []);
     setMcpServers(bootstrap.mcpServers ?? []);
-    setSkills(bootstrap.skills ?? []);
     applyDefaultSelection(bootstrap.providers);
     return bootstrap;
   }, [applyDefaultSelection]);
@@ -147,7 +154,6 @@ export function useOrdinaryChat(
         setChats(bootstrap.chats);
         setKnowledgeBases(bootstrap.knowledgeBases ?? []);
         setMcpServers(bootstrap.mcpServers ?? []);
-        setSkills(bootstrap.skills ?? []);
         applyDefaultSelection(bootstrap.providers);
         setError('');
       } catch (nextError) {
@@ -236,20 +242,22 @@ export function useOrdinaryChat(
     return true;
   }, [activeChatId, knowledgeBases, refreshBootstrap, selectedKnowledgeIds]);
 
-  const toggleSkill = useCallback(async (skillId: string) => {
-    if (!skills.some((item) => item.id === skillId)) return false;
-    const nextIds = selectedSkillIds.includes(skillId)
-      ? selectedSkillIds.filter((id) => id !== skillId)
-      : [...selectedSkillIds, skillId];
-    if (!activeChatId) {
-      setDraftSkillIds(nextIds);
-      return true;
+  const updateRuntimeOptions = useCallback(async (patch: Partial<AiChatModelPreference>) => {
+    if (isRunning || !selectedModelId) return false;
+    const nextPreferences = updateAiChatModelPreference(modelPreferences, selectedModelId, patch);
+    setDraftModelPreferences(nextPreferences);
+    saveAiChatModelPreferences(nextPreferences);
+    if (activeChatId && activeChat) {
+      try {
+        const detail = await updateAiChat(activeChatId, { modelPreferences: nextPreferences });
+        setActiveChat(detail);
+      } catch (nextError) {
+        showToast(nextError instanceof Error ? nextError.message : '保存普通聊天设置失败', 'error');
+        return false;
+      }
     }
-    const detail = await updateAiChat(activeChatId, { selectedSkillIds: nextIds });
-    setActiveChat(detail);
-    await refreshBootstrap();
     return true;
-  }, [activeChatId, refreshBootstrap, selectedSkillIds, skills]);
+  }, [activeChat, activeChatId, isRunning, modelPreferences, selectedModelId, showToast]);
 
   const toggleMcpServer = useCallback(async (serverId: string) => {
     if (!mcpServers.some((item) => item.id === serverId)) return false;
@@ -353,7 +361,15 @@ export function useOrdinaryChat(
     }
     flushReasoningDelta(context);
     flushTextDelta(context);
-    updateTurn(context.chatId, context.turnId, (turn) => applyAgentRunEventToTurn(turn, event));
+    updateTurn(context.chatId, context.turnId, (turn) => {
+      const nextTurn = applyAgentRunEventToTurn(turn, event);
+      if (event.type !== 'error') return nextTurn;
+      return {
+        ...nextTurn,
+        activity: '运行失败',
+        errorMessage: event.message.trim() || undefined,
+      };
+    });
     if (event.type === 'done' || event.type === 'error') {
       context.terminal = true;
       void finishRun(context);
@@ -443,7 +459,7 @@ export function useOrdinaryChat(
               ...turn,
               status: 'error',
               activity: '运行重连失败',
-              metrics: message,
+              errorMessage: message,
             }));
           }
           showToast(message, 'error');
@@ -469,6 +485,10 @@ export function useOrdinaryChat(
       showToast('请先配置并选择普通聊天供应商和模型', 'error');
       return false;
     }
+    const runtimeOptions = aiChatModelPreference(
+      { ...draftModelPreferences, ...(activeChat?.summary.modelPreferences ?? {}) },
+      model.id,
+    );
     const prompt = submission.prompt.trim();
     const contentBlocks = buildRunContentBlocks({
       prompt,
@@ -483,17 +503,16 @@ export function useOrdinaryChat(
     }
     if (!chat) {
       chat = await createAiChat({ providerId: provider.id, modelId: model.id });
-      if (draftKnowledgeIds.length > 0 || draftSkillIds.length > 0 || draftMcpIds.length > 0) {
+      if (selectedModelId) {
         chat = await updateAiChat(chat.summary.id, {
           selectedKnowledgeIds: draftKnowledgeIds,
-          selectedSkillIds: draftSkillIds,
           selectedMcpIds: draftMcpIds,
+          modelPreferences: updateAiChatModelPreference({}, model.id, runtimeOptions),
         });
       }
       setActiveChatId(chat.summary.id);
       setActiveChat(chat);
       setDraftKnowledgeIds([]);
-      setDraftSkillIds([]);
       setDraftMcpIds([]);
     }
     const turnId = replay?.sourceTurn.id ?? crypto.randomUUID();
@@ -560,6 +579,7 @@ export function useOrdinaryChat(
         turnId,
         prompt,
         contentBlocks,
+        runtimeOptions,
         operation: replay?.operation,
         sourceTurnId: replay?.sourceTurn.id,
       }, controller.signal);
@@ -572,13 +592,17 @@ export function useOrdinaryChat(
           ...turn,
           status: context.cancelRequested ? 'stopped' : 'error',
           activity: context.cancelRequested ? '已停止' : '运行失败',
-          metrics: nextError instanceof Error ? nextError.message : '普通聊天运行失败',
+          errorMessage: context.cancelRequested
+            ? undefined
+            : nextError instanceof Error
+              ? nextError.message
+              : '普通聊天运行失败',
         }));
         await finishRun(context);
       }
       return false;
     }
-  }, [activeChat, consumeStream, draftKnowledgeIds, draftMcpIds, draftSkillIds, finishRun, providers, selectedModel, selectedProvider, showToast, updateTurn]);
+  }, [activeChat, consumeStream, draftKnowledgeIds, draftMcpIds, draftModelPreferences, finishRun, providers, selectedModel, selectedProvider, showToast, updateTurn]);
 
   const regenerateTurn = useCallback(async (turn: ConversationTurn) => submitPrompt(
     {
@@ -754,7 +778,6 @@ export function useOrdinaryChat(
     chats,
     knowledgeBases,
     mcpServers,
-    skills,
     activeChatId,
     activeChat,
     activeThread,
@@ -765,7 +788,8 @@ export function useOrdinaryChat(
     selectedModel,
     selectedKnowledgeIds,
     selectedMcpIds,
-    selectedSkillIds,
+    selectedRuntimeOptions,
+    reasoningPreference: selectedRuntimeOptions.reasoningEffort,
     isRunning,
     runningChatIds,
     loading,
@@ -777,7 +801,7 @@ export function useOrdinaryChat(
     selectModel,
     toggleKnowledgeBase,
     toggleMcpServer,
-    toggleSkill,
+    updateRuntimeOptions,
     submitPrompt,
     regenerateTurn,
     editAndResendTurn,
@@ -847,6 +871,7 @@ export function chatDetailToTurns(detail: AiChatDetail): ConversationTurn[] {
       items,
       status,
       activity: status === 'error' ? '运行失败' : undefined,
+      errorMessage: status === 'error' ? assistant?.errorMessage : undefined,
       providerId: assistant?.providerId ?? user?.providerId,
       providerName: assistant?.providerName ?? user?.providerName,
       modelId: assistant?.modelId ?? user?.modelId,

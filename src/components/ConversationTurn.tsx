@@ -356,7 +356,12 @@ function ConversationTurnViewComponent({
           ) : null}
 
           {turn.status === 'error' && turn.activity ? (
-            <div className={`turn-status ${turn.status}`}>{turn.activity}</div>
+            <div className="turn-error-summary" role="alert">
+              <div className={`turn-status ${turn.status}`}>{turn.activity}</div>
+              {turn.errorMessage && turn.errorMessage !== turn.activity ? (
+                <div className="turn-error-detail">{turn.errorMessage}</div>
+              ) : null}
+            </div>
           ) : null}
 
           {turn.citations?.length ? <KnowledgeCitations citations={turn.citations} /> : null}

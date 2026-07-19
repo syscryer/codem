@@ -3,7 +3,6 @@ mod mcp;
 pub(crate) mod provider;
 mod runtime;
 pub(crate) mod secrets;
-mod skills;
 pub(crate) mod storage;
 pub(crate) mod types;
 
@@ -14,8 +13,8 @@ use axum::{
     routing::{get, patch, post},
     Json, Router,
 };
-use serde_json::{json, Value};
 use rusqlite::OptionalExtension;
+use serde_json::{json, Value};
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use self::{
@@ -202,13 +201,11 @@ async fn ai_bootstrap(State(state): State<OrdinaryChatState>) -> AiApiResult<Jso
     let chats = list_chats(&connection).map_err(AiApiError::internal)?;
     let knowledge_bases = list_knowledge_bases(&connection).map_err(AiApiError::internal)?;
     let mcp = crate::backend::list_mcp_servers_value(None);
-    let skills = crate::backend::list_codex_skills_value(None);
     Ok(Json(json!({
         "providers": providers,
         "chats": chats,
         "knowledgeBases": knowledge_bases,
-        "mcpServers": mcp.get("servers").cloned().unwrap_or_else(|| Value::Array(Vec::new())),
-        "skills": skills.get("skills").cloned().unwrap_or_else(|| Value::Array(Vec::new()))
+        "mcpServers": mcp.get("servers").cloned().unwrap_or_else(|| Value::Array(Vec::new()))
     })))
 }
 
@@ -363,6 +360,7 @@ async fn update_ai_chat(
         payload.selected_mcp_ids.as_deref(),
         payload.selected_skill_ids.as_deref(),
         payload.selected_knowledge_ids.as_deref(),
+        payload.model_preferences.as_ref(),
     )
     .map_err(AiApiError::bad_request)?;
     Ok(Json(json!({ "chat": chat })))

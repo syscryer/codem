@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
-import { ArrowUp, BookOpen, Brain, Check, CornerDownRight, Image, Loader2, Mic, Pencil, Plus, Puzzle, RefreshCw, Route, Server, ServerCog, Shield, Sparkles, Square, Unlock, X, Zap } from 'lucide-react';
+import { ArrowUp, BookOpen, Brain, Check, ChevronDown, CornerDownRight, Globe, Image, Lightbulb, Loader2, Mic, Pencil, Plus, Puzzle, RefreshCw, Route, Server, ServerCog, Shield, Square, Unlock, X, Zap } from 'lucide-react';
 import { CLAUDE_CODE_PROVIDER_ID, DEFAULT_MODEL_VALUE, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
@@ -27,7 +27,7 @@ import { shouldSubmitComposerOnEnter } from '../lib/composer-keyboard';
 import { getAgentModelForSelection } from '../lib/agent-model-selection';
 import { agentChannelTemplate, enabledAgentChannels, SYSTEM_AGENT_CHANNEL_ID, systemAgentChannelTemplate } from '../lib/agent-channel-selection';
 import { modelContext1mMenuActionLabel, modelMenuDescriptionLabel, modelMenuPrimaryLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
-import type { AgentChannel, AgentModelCatalog, AgentModelOption, AgentProviderDescriptor, AgentSystemChannel, AgentType, AiKnowledgeBaseSummary, AiProviderTemplate, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, McpServerSummary, PermissionMode, SkillSummary, SlashCommand, UserImageAttachment } from '../types';
+import type { AgentChannel, AgentModelCatalog, AgentModelOption, AgentProviderDescriptor, AgentSystemChannel, AgentType, AiChatReasoningEffort, AiKnowledgeBaseSummary, AiProviderTemplate, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, McpServerSummary, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingComposerAttachment =
   | {
@@ -113,10 +113,13 @@ type ComposerProps = {
   agentModelSelectionWarning: string;
   knowledgeBases?: AiKnowledgeBaseSummary[];
   selectedKnowledgeIds?: string[];
-  skills?: SkillSummary[];
-  selectedSkillIds?: string[];
   mcpServers?: McpServerSummary[];
   selectedMcpIds?: string[];
+  ordinaryThinkingEnabled?: boolean;
+  ordinaryReasoningEffort?: AiChatReasoningEffort;
+  ordinaryReasoningOptions?: AiChatReasoningEffort[];
+  ordinaryWebSearchEnabled?: boolean;
+  ordinaryWebSearchAvailable?: boolean;
   turns: ConversationTurn[];
   claudeContextState?: ClaudeContextRequestState;
   isRunning: boolean;
@@ -150,8 +153,10 @@ type ComposerProps = {
   onRetryAgentModels: () => void;
   onToggleKnowledgeBase?: (knowledgeBaseId: string) => boolean | void | Promise<boolean | void>;
   onManageKnowledgeBases?: () => void;
-  onToggleSkill?: (skillId: string) => boolean | void | Promise<boolean | void>;
   onToggleMcpServer?: (serverId: string) => boolean | void | Promise<boolean | void>;
+  onToggleOrdinaryThinking?: () => boolean | void | Promise<boolean | void>;
+  onSelectOrdinaryReasoningEffort?: (effort: AiChatReasoningEffort) => boolean | void | Promise<boolean | void>;
+  onToggleOrdinaryWebSearch?: () => boolean | void | Promise<boolean | void>;
   onOpenPlugins: () => void;
   onCreateNewChat: () => Promise<void> | void;
   onStopRun: () => void | Promise<void>;
@@ -186,10 +191,13 @@ export function Composer({
   agentModelSelectionWarning,
   knowledgeBases = [],
   selectedKnowledgeIds = [],
-  skills = [],
-  selectedSkillIds = [],
   mcpServers = [],
   selectedMcpIds = [],
+  ordinaryThinkingEnabled = false,
+  ordinaryReasoningEffort = 'medium',
+  ordinaryReasoningOptions = [],
+  ordinaryWebSearchEnabled = false,
+  ordinaryWebSearchAvailable = false,
   turns,
   claudeContextState,
   isRunning,
@@ -216,8 +224,10 @@ export function Composer({
   onRetryAgentModels,
   onToggleKnowledgeBase,
   onManageKnowledgeBases,
-  onToggleSkill,
   onToggleMcpServer,
+  onToggleOrdinaryThinking,
+  onSelectOrdinaryReasoningEffort,
+  onToggleOrdinaryWebSearch,
   onOpenPlugins,
   onCreateNewChat,
   onStopRun,
@@ -234,14 +244,14 @@ export function Composer({
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
   const [knowledgeMenuOpen, setKnowledgeMenuOpen] = useState(false);
-  const [skillMenuOpen, setSkillMenuOpen] = useState(false);
+  const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false);
   const [mcpMenuOpen, setMcpMenuOpen] = useState(false);
   const permissionMenuRef = useRef<HTMLDivElement | null>(null);
   const providerMenuRef = useRef<HTMLDivElement | null>(null);
   const agentChannelMenuRef = useRef<HTMLDivElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const knowledgeMenuRef = useRef<HTMLDivElement | null>(null);
-  const skillMenuRef = useRef<HTMLDivElement | null>(null);
+  const reasoningMenuRef = useRef<HTMLDivElement | null>(null);
   const mcpMenuRef = useRef<HTMLDivElement | null>(null);
   const effortMenuRef = useRef<HTMLDivElement | null>(null);
   const addMenuRef = useRef<HTMLDivElement | null>(null);
@@ -293,7 +303,7 @@ export function Composer({
       { selector: '.model-menu', onDismiss: () => setModelMenuOpen(false), anchorRefs: [modelMenuRef] },
       { selector: '.effort-menu', onDismiss: () => setEffortMenuOpen(false), anchorRefs: [effortMenuRef] },
       { selector: '.knowledge-menu', onDismiss: () => setKnowledgeMenuOpen(false), anchorRefs: [knowledgeMenuRef] },
-      { selector: '.skill-menu', onDismiss: () => setSkillMenuOpen(false), anchorRefs: [skillMenuRef] },
+      { selector: '.ordinary-reasoning-menu', onDismiss: () => setReasoningMenuOpen(false), anchorRefs: [reasoningMenuRef] },
       { selector: '.mcp-menu', onDismiss: () => setMcpMenuOpen(false), anchorRefs: [mcpMenuRef] },
       {
         selector: '.composer-file-reference-menu',
@@ -387,7 +397,7 @@ export function Composer({
     setModelMenuOpen(false);
     setEffortMenuOpen(false);
     setKnowledgeMenuOpen(false);
-    setSkillMenuOpen(false);
+    setReasoningMenuOpen(false);
     setMcpMenuOpen(false);
   }, [isRunning]);
 
@@ -1403,47 +1413,69 @@ export function Composer({
               </div>
             ) : null}
             {variant === 'ordinary' ? (
-              <div className="permission-picker ordinary-context-picker" ref={skillMenuRef}>
-                <PopoverPortal open={skillMenuOpen} anchorRef={skillMenuRef} placement="top-start">
-                  <div className="model-menu model-menu-compact knowledge-menu skill-menu" role="menu" aria-label="Skills">
-                    <div className="model-menu-title">Skills</div>
-                    {skills.length === 0 ? (
-                      <div className="provider-menu-empty">暂无可用 Skill</div>
-                    ) : skills.map((skill) => {
-                      const selected = selectedSkillIds.includes(skill.id);
-                      return (
+                <div className="permission-picker ordinary-context-picker" ref={reasoningMenuRef}>
+                  {ordinaryReasoningOptions.length > 0 ? (
+                    <PopoverPortal open={reasoningMenuOpen} anchorRef={reasoningMenuRef} placement="top-start">
+                    <div className="model-menu model-menu-compact knowledge-menu ordinary-reasoning-menu" role="menu" aria-label="思考等级">
+                      <div className="model-menu-title">思考等级</div>
+                      {ordinaryReasoningOptions.map((effort) => (
                         <button
-                          key={skill.id}
+                          key={effort}
                           type="button"
-                          className={`model-menu-item${selected ? ' active' : ''}`}
-                          role="menuitemcheckbox"
-                          aria-checked={selected}
-                          disabled={isRunning}
-                          onClick={() => void onToggleSkill?.(skill.id)}
+                          className={`model-menu-item${ordinaryThinkingEnabled && ordinaryReasoningEffort === effort ? ' active' : ''}`}
+                          role="menuitemradio"
+                          aria-checked={ordinaryThinkingEnabled && ordinaryReasoningEffort === effort}
+                          disabled={isRunning || !ordinaryThinkingEnabled}
+                          onClick={() => {
+                            void onSelectOrdinaryReasoningEffort?.(effort);
+                            setReasoningMenuOpen(false);
+                          }}
                         >
-                          <span className="model-menu-copy">
-                            <strong>{skill.name}</strong>
-                            <small>{skill.description || skill.source}</small>
-                          </span>
-                          {selected ? <Check size={14} /> : null}
+                          <span className="model-menu-copy"><strong>{formatOrdinaryReasoningEffort(effort)}</strong></span>
+                          {ordinaryThinkingEnabled && ordinaryReasoningEffort === effort ? <Check size={14} /> : null}
                         </button>
-                      );
-                    })}
-                  </div>
-                </PopoverPortal>
-                <button
-                  type="button"
-                  className={`permission-trigger ordinary-context-trigger${selectedSkillIds.length > 0 ? ' active' : ''}`}
-                  aria-expanded={skillMenuOpen}
-                  aria-label={`Skills，已选择 ${selectedSkillIds.length} 个`}
-                  title={selectedSkillIds.length > 0 ? `已选择 ${selectedSkillIds.length} 个 Skills` : '选择 Skills'}
-                  disabled={isRunning}
-                  onClick={() => setSkillMenuOpen((value) => !value)}
-                >
-                  <Sparkles size={15} />
-                  {selectedSkillIds.length > 0 ? <span>{selectedSkillIds.length}</span> : null}
-                </button>
-              </div>
+                      ))}
+                    </div>
+                    </PopoverPortal>
+                  ) : null}
+                  <button
+                    type="button"
+                    className={`permission-trigger ordinary-context-trigger ordinary-thinking-trigger${ordinaryThinkingEnabled ? ' active' : ''}`}
+                    aria-expanded={reasoningMenuOpen}
+                    aria-label={ordinaryReasoningOptions.length === 0
+                      ? '当前模型不支持思考'
+                      : ordinaryThinkingEnabled
+                        ? `思考已开启，${formatOrdinaryReasoningEffort(ordinaryReasoningEffort)}`
+                        : '开启思考'}
+                    title={ordinaryReasoningOptions.length === 0
+                      ? '当前供应商和模型不支持可控思考'
+                      : ordinaryThinkingEnabled
+                        ? `思考：${formatOrdinaryReasoningEffort(ordinaryReasoningEffort)}，点击切换等级`
+                        : '开启思考'}
+                    disabled={isRunning || ordinaryReasoningOptions.length === 0}
+                    onClick={() => {
+                      if (ordinaryThinkingEnabled) setReasoningMenuOpen((value) => !value);
+                      else void onToggleOrdinaryThinking?.();
+                    }}
+                  >
+                    <Lightbulb size={15} />
+                    {ordinaryThinkingEnabled ? <span>{formatOrdinaryReasoningEffort(ordinaryReasoningEffort)}</span> : null}
+                    {ordinaryThinkingEnabled ? <ChevronDown size={12} className="ordinary-context-chevron" /> : null}
+                  </button>
+                </div>
+            ) : null}
+            {variant === 'ordinary' ? (
+              <button
+                type="button"
+                className={`permission-trigger ordinary-context-trigger ordinary-web-search-trigger${ordinaryWebSearchEnabled ? ' active' : ''}`}
+                aria-label={ordinaryWebSearchAvailable ? (ordinaryWebSearchEnabled ? '联网搜索已开启' : '开启联网搜索') : '当前模型不支持联网搜索'}
+                title={ordinaryWebSearchAvailable ? (ordinaryWebSearchEnabled ? '关闭联网搜索' : '开启联网搜索') : '当前供应商和模型不支持原生联网搜索'}
+                disabled={isRunning || !ordinaryWebSearchAvailable}
+                onClick={() => void onToggleOrdinaryWebSearch?.()}
+              >
+                <Globe size={15} />
+                {ordinaryWebSearchEnabled ? <span>联网</span> : null}
+              </button>
             ) : null}
             {variant === 'ordinary' ? (
               <div className="permission-picker ordinary-context-picker" ref={mcpMenuRef}>
@@ -2603,6 +2635,15 @@ function providerUnavailableReason(provider: AgentProviderDescriptor) {
     return '当前不可选择';
   }
   return '';
+}
+
+function formatOrdinaryReasoningEffort(effort: AiChatReasoningEffort) {
+  switch (effort) {
+    case 'low': return '低';
+    case 'high': return '高';
+    case 'xhigh': return '极高';
+    default: return '中';
+  }
 }
 
 function permissionModeTooltip(agent: AgentType, mode: PermissionMode, providerName: string) {

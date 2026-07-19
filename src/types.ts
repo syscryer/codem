@@ -504,6 +504,7 @@ export type ConversationTurn = {
   items: AssistantItem[];
   status: 'pending' | 'running' | 'done' | 'error' | 'stopped';
   activity?: string;
+  errorMessage?: string;
   metrics?: string;
   sessionId?: string;
   phase?: TurnPhase;
@@ -1428,11 +1429,20 @@ export type AiChatSummary = {
   selectedMcpIds: string[];
   selectedSkillIds: string[];
   selectedKnowledgeIds: string[];
+  modelPreferences: Record<string, AiChatModelPreference>;
   messageCount: number;
   lastMessagePreview?: string;
   createdAt: string;
   updatedAt: string;
   pinnedAt?: string;
+};
+
+export type AiChatReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+
+export type AiChatModelPreference = {
+  thinkingEnabled: boolean;
+  reasoningEffort: AiChatReasoningEffort;
+  webSearchEnabled: boolean;
 };
 
 export type AiKnowledgeBaseSummary = {
@@ -1491,6 +1501,7 @@ export type AiChatMessage = {
   modelId?: string;
   modelName?: string;
   status: 'pending' | 'running' | 'done' | 'error' | 'stopped';
+  errorMessage?: string;
   usage?: Record<string, unknown>;
   citations: AiKnowledgeCitation[];
   createdAt: string;
@@ -1524,7 +1535,6 @@ export type AiChatBootstrap = {
   chats: AiChatSummary[];
   knowledgeBases: AiKnowledgeBaseSummary[];
   mcpServers: McpServerSummary[];
-  skills: SkillSummary[];
 };
 
 export type AiProviderTemplate = {

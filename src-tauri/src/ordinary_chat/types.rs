@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -172,11 +173,37 @@ pub(crate) struct AiChatSummary {
     pub selected_mcp_ids: Vec<String>,
     pub selected_skill_ids: Vec<String>,
     pub selected_knowledge_ids: Vec<String>,
+    pub model_preferences: BTreeMap<String, AiChatModelPreference>,
     pub message_count: usize,
     pub last_message_preview: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub pinned_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiChatModelPreference {
+    #[serde(default)]
+    pub thinking_enabled: bool,
+    #[serde(default = "default_reasoning_effort")]
+    pub reasoning_effort: String,
+    #[serde(default)]
+    pub web_search_enabled: bool,
+}
+
+impl Default for AiChatModelPreference {
+    fn default() -> Self {
+        Self {
+            thinking_enabled: false,
+            reasoning_effort: default_reasoning_effort(),
+            web_search_enabled: false,
+        }
+    }
+}
+
+fn default_reasoning_effort() -> String {
+    "medium".to_string()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -195,6 +222,7 @@ pub(crate) struct AiChatMessage {
     pub model_id: Option<String>,
     pub model_name: Option<String>,
     pub status: String,
+    pub error_message: Option<String>,
     pub usage: Option<Value>,
     pub citations: Value,
     pub created_at: String,
@@ -226,6 +254,7 @@ pub(crate) struct UpdateChatRequest {
     pub selected_mcp_ids: Option<Vec<String>>,
     pub selected_skill_ids: Option<Vec<String>>,
     pub selected_knowledge_ids: Option<Vec<String>>,
+    pub model_preferences: Option<BTreeMap<String, AiChatModelPreference>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -283,6 +312,8 @@ pub(crate) struct StartChatRunRequest {
     pub turn_id: String,
     pub prompt: Option<String>,
     pub content_blocks: Option<Vec<AiInputContentBlock>>,
+    #[serde(default)]
+    pub runtime_options: AiChatModelPreference,
     pub operation: Option<String>,
     pub source_turn_id: Option<String>,
 }

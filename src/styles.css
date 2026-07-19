@@ -8718,7 +8718,30 @@ body.git-history-resizing {
 }
 
 .turn-status.error {
-  color: #dc2626;
+  color: var(--danger, #d33a31);
+}
+
+.turn-error-summary {
+  display: grid;
+  gap: 6px;
+  width: min(100%, 760px);
+  margin-top: 8px;
+}
+
+.turn-error-summary .turn-status {
+  margin-top: 0;
+}
+
+.turn-error-detail {
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--danger, #d33a31) 22%, var(--app-border, #e2e8f0));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger, #d33a31) 5%, var(--app-surface, #ffffff));
+  color: color-mix(in srgb, var(--danger, #d33a31) 78%, var(--app-text, #242424));
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .turn-status.stopped {
@@ -9684,7 +9707,7 @@ body.git-history-resizing {
 
 .model-menu-title {
   padding: 0 18px 8px;
-  color: #969696;
+  color: var(--app-muted, #77736c);
   font-size: 13px;
   line-height: 1.2;
 }
@@ -9700,7 +9723,7 @@ body.git-history-resizing {
   padding: 8px 18px;
   border: 0;
   background: transparent;
-  color: #27272a;
+  color: var(--app-text, #242424);
   cursor: pointer;
   font-size: 15px;
   font-weight: 400;
@@ -9740,7 +9763,7 @@ body.git-history-resizing {
 }
 
 .model-menu-item-copy small {
-  color: #898989;
+  color: var(--app-muted, #77736c);
   font-size: 12px;
   font-weight: 400;
   line-height: 1.35;
@@ -9748,8 +9771,8 @@ body.git-history-resizing {
 
 .model-menu-item:hover,
 .effort-menu-item:hover {
-  background: linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.08)),
-    rgba(142, 142, 147, 0.18);
+  background: var(--menu-item-hover-bg, rgba(15, 23, 42, 0.045));
+  box-shadow: var(--menu-item-hover-shadow, inset 0 0 0 1px rgba(15, 23, 42, 0.045));
   border-radius: 8px;
 }
 
@@ -17423,8 +17446,8 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 :is(.workspace-menu-item, .open-app-option, .model-menu-item, .effort-menu-item, .permission-menu-item, .composer-add-menu-item, .status-branch-menu-item, .settings-select-menu-item):hover {
-  background: linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.08)),
-    rgba(142, 142, 147, 0.18);
+  background: var(--menu-item-hover-bg, rgba(15, 23, 42, 0.045));
+  box-shadow: var(--menu-item-hover-shadow, inset 0 0 0 1px rgba(15, 23, 42, 0.045));
   border-radius: 8px;
 }
 
@@ -19100,10 +19123,83 @@ div[data-popover-portal] > * {
   background: color-mix(in srgb, var(--app-accent, #2563eb) 10%, transparent);
 }
 
+.ordinary-context-chevron {
+  opacity: 0.55;
+  margin-left: -1px;
+}
+
+.ordinary-thinking-trigger.active {
+  color: color-mix(in srgb, var(--app-accent, #2563eb) 82%, #8b5cf6 18%);
+}
+
+.ordinary-web-search-trigger.active {
+  color: #0f766e;
+  background: color-mix(in srgb, #0f766e 10%, transparent);
+}
+
 .knowledge-menu {
   width: min(340px, calc(100vw - 32px));
   max-height: 360px;
   overflow: auto;
+}
+
+.mcp-menu {
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(360px, calc(100vh - 120px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-scrollbar-thumb-hover, rgba(82, 82, 82, 0.18)) transparent;
+}
+
+.mcp-menu::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.mcp-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mcp-menu::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--app-scrollbar-thumb-hover, rgba(82, 82, 82, 0.18));
+  background-clip: padding-box;
+}
+
+.mcp-menu .model-menu-item {
+  min-height: 56px;
+  grid-template-columns: minmax(0, 1fr) 22px;
+  gap: 12px;
+  padding: 9px 12px;
+  border-radius: 10px;
+}
+
+.mcp-menu .model-menu-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.mcp-menu .model-menu-copy strong,
+.mcp-menu .model-menu-copy small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.mcp-menu .model-menu-copy strong {
+  color: var(--app-text-strong, #1f1f1f);
+  line-height: 1.3;
+}
+
+.mcp-menu .model-menu-copy small {
+  color: var(--app-muted, #77736c);
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .knowledge-citations {

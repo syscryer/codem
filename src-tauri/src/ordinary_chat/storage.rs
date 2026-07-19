@@ -1,11 +1,12 @@
 use super::types::{
-    AiChatDetail, AiChatMessage, AiChatSummary, AiModelSummary, AiProtocol, AiProviderSummary,
-    AiToolCallRecord, ModelMessage, ProviderToolCall, StoredModel, StoredProvider,
+    AiChatDetail, AiChatMessage, AiChatModelPreference, AiChatSummary, AiModelSummary, AiProtocol,
+    AiProviderSummary, AiToolCallRecord, ModelMessage, ProviderToolCall, StoredModel,
+    StoredProvider,
 };
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 pub(crate) struct TurnReplay {
     pub user_content: String,
@@ -75,6 +76,7 @@ pub(crate) fn initialize_database(connection: &Connection) -> Result<(), String>
               selected_mcp_json TEXT NOT NULL DEFAULT '[]',
               selected_skills_json TEXT NOT NULL DEFAULT '[]',
               selected_knowledge_json TEXT NOT NULL DEFAULT '[]',
+              model_preferences_json TEXT NOT NULL DEFAULT '{}',
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               pinned_at TEXT
@@ -97,6 +99,7 @@ pub(crate) fn initialize_database(connection: &Connection) -> Result<(), String>
               model_id TEXT,
               model_name TEXT,
               status TEXT NOT NULL,
+              error_message TEXT,
               usage_json TEXT,
               citations_json TEXT NOT NULL DEFAULT '[]',
               created_at TEXT NOT NULL,
@@ -188,6 +191,13 @@ pub(crate) fn initialize_database(connection: &Connection) -> Result<(), String>
         "ai_messages",
         "reasoning_content",
         "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(connection, "ai_messages", "error_message", "TEXT")?;
+    ensure_column(
+        connection,
+        "ai_chats",
+        "model_preferences_json",
+        "TEXT NOT NULL DEFAULT '{}'",
     )?;
     repair_model_defaults(connection)
 }
@@ -589,6 +599,7 @@ pub(crate) fn list_chats(connection: &Connection) -> Result<Vec<AiChatSummary>, 
             "SELECT
                c.id, c.title, c.provider_id, c.model_id,
                c.selected_mcp_json, c.selected_skills_json, c.selected_knowledge_json,
+               c.model_preferences_json,
                c.created_at, c.updated_at, c.pinned_at,
                COUNT(m.id),
                (SELECT content FROM ai_messages latest WHERE latest.chat_id = c.id AND TRIM(latest.content) <> '' ORDER BY latest.created_at DESC, latest.item_sort DESC LIMIT 1)
@@ -846,6 +857,7 @@ pub(crate) fn finish_chat_turn(
     content: &str,
     reasoning_content: &str,
     status: &str,
+    error_message: Option<&str>,
     usage: Option<&Value>,
     citations: Option<&Value>,
 ) -> Result<(), String> {
@@ -853,7 +865,7 @@ pub(crate) fn finish_chat_turn(
         .execute(
             "UPDATE ai_messages
              SET content = ?2, reasoning_content = ?3, status = ?4, usage_json = ?5,
-                 citations_json = ?6, updated_at = ?7
+                 citations_json = ?6, error_message = ?7, updated_at = ?8
              WHERE id = ?1",
             params![
                 assistant_message_id,
@@ -864,6 +876,7 @@ pub(crate) fn finish_chat_turn(
                 citations
                     .map(Value::to_string)
                     .unwrap_or_else(|| "[]".to_string()),
+                error_message,
                 Utc::now().to_rfc3339()
             ],
         )
@@ -1015,7 +1028,7 @@ pub(crate) fn get_chat(connection: &Connection, chat_id: &str) -> Result<AiChatD
     let mut statement = connection
         .prepare(
             "SELECT id, chat_id, turn_id, item_sort, role, content, reasoning_content, content_blocks_json,
-                    provider_id, provider_name, model_id, model_name, status, usage_json,
+                    provider_id, provider_name, model_id, model_name, status, error_message, usage_json,
                     citations_json, created_at, updated_at
              FROM ai_messages WHERE chat_id = ?1 ORDER BY created_at ASC, item_sort ASC",
         )
@@ -1023,8 +1036,8 @@ pub(crate) fn get_chat(connection: &Connection, chat_id: &str) -> Result<AiChatD
     let rows = statement
         .query_map([chat_id], |row| {
             let content_blocks: String = row.get(7)?;
-            let usage: Option<String> = row.get(13)?;
-            let citations: String = row.get(14)?;
+            let usage: Option<String> = row.get(14)?;
+            let citations: String = row.get(15)?;
             Ok(AiChatMessage {
                 id: row.get(0)?,
                 chat_id: row.get(1)?,
@@ -1039,10 +1052,11 @@ pub(crate) fn get_chat(connection: &Connection, chat_id: &str) -> Result<AiChatD
                 model_id: row.get(10)?,
                 model_name: row.get(11)?,
                 status: row.get(12)?,
+                error_message: row.get(13)?,
                 usage: usage.and_then(|value| serde_json::from_str(&value).ok()),
                 citations: serde_json::from_str(&citations).unwrap_or_else(|_| json!([])),
-                created_at: row.get(15)?,
-                updated_at: row.get(16)?,
+                created_at: row.get(16)?,
+                updated_at: row.get(17)?,
             })
         })
         .map_err(sql_error)?;
@@ -1082,6 +1096,7 @@ pub(crate) fn update_chat(
     selected_mcp_ids: Option<&[String]>,
     selected_skill_ids: Option<&[String]>,
     selected_knowledge_ids: Option<&[String]>,
+    model_preferences: Option<&BTreeMap<String, AiChatModelPreference>>,
 ) -> Result<AiChatDetail, String> {
     let current = get_chat(connection, chat_id)?;
     let next_provider = provider_id.or(current.summary.provider_id.as_deref());
@@ -1098,11 +1113,16 @@ pub(crate) fn update_chat(
         selected_knowledge_ids.unwrap_or(&current.summary.selected_knowledge_ids),
     )
     .map_err(|error| format!("序列化知识库选择失败: {error}"))?;
+    let model_preferences = model_preferences.unwrap_or(&current.summary.model_preferences);
+    validate_model_preferences(model_preferences)?;
+    let model_preferences_json = serde_json::to_string(model_preferences)
+        .map_err(|error| format!("序列化普通聊天模型偏好失败: {error}"))?;
     connection
         .execute(
             "UPDATE ai_chats SET title = ?2, custom_title = CASE WHEN ?3 IS NULL THEN custom_title ELSE 1 END,
                     provider_id = ?4, model_id = ?5, selected_mcp_json = ?6,
-                    selected_skills_json = ?7, selected_knowledge_json = ?8, updated_at = ?9
+                    selected_skills_json = ?7, selected_knowledge_json = ?8,
+                    model_preferences_json = ?9, updated_at = ?10
              WHERE id = ?1",
             params![
                 chat_id,
@@ -1113,6 +1133,7 @@ pub(crate) fn update_chat(
                 mcp_json,
                 skills_json,
                 knowledge_json,
+                model_preferences_json,
                 Utc::now().to_rfc3339()
             ],
         )
@@ -1197,6 +1218,7 @@ fn chat_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AiChatSumm
     let mcp_json: String = row.get(4)?;
     let skills_json: String = row.get(5)?;
     let knowledge_json: String = row.get(6)?;
+    let model_preferences_json: String = row.get(7)?;
     Ok(AiChatSummary {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -1205,12 +1227,33 @@ fn chat_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AiChatSumm
         selected_mcp_ids: serde_json::from_str(&mcp_json).unwrap_or_default(),
         selected_skill_ids: serde_json::from_str(&skills_json).unwrap_or_default(),
         selected_knowledge_ids: serde_json::from_str(&knowledge_json).unwrap_or_default(),
-        created_at: row.get(7)?,
-        updated_at: row.get(8)?,
-        pinned_at: row.get(9)?,
-        message_count: row.get::<_, i64>(10)?.max(0) as usize,
-        last_message_preview: row.get(11)?,
+        model_preferences: serde_json::from_str(&model_preferences_json).unwrap_or_default(),
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        pinned_at: row.get(10)?,
+        message_count: row.get::<_, i64>(11)?.max(0) as usize,
+        last_message_preview: row.get(12)?,
     })
+}
+
+fn validate_model_preferences(
+    preferences: &BTreeMap<String, AiChatModelPreference>,
+) -> Result<(), String> {
+    if preferences.len() > 100 {
+        return Err("普通聊天模型偏好数量过多".to_string());
+    }
+    for (model_id, preference) in preferences {
+        if model_id.trim().is_empty() {
+            return Err("普通聊天模型偏好缺少 modelId".to_string());
+        }
+        if !matches!(
+            preference.reasoning_effort.as_str(),
+            "low" | "medium" | "high" | "xhigh"
+        ) {
+            return Err("普通聊天思考等级无效".to_string());
+        }
+    }
+    Ok(())
 }
 
 fn sql_error(error: rusqlite::Error) -> String {
@@ -1282,6 +1325,48 @@ mod tests {
             )
             .unwrap();
         assert_eq!(default_id, "p1");
+    }
+
+    #[test]
+    fn legacy_message_schema_adds_error_detail_without_losing_history() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE ai_messages (
+               id TEXT PRIMARY KEY,
+               chat_id TEXT NOT NULL,
+               turn_id TEXT NOT NULL,
+               item_sort INTEGER NOT NULL,
+               role TEXT NOT NULL,
+               content TEXT NOT NULL,
+               reasoning_content TEXT NOT NULL DEFAULT '',
+               content_blocks_json TEXT NOT NULL DEFAULT '[]',
+               provider_id TEXT,
+               provider_name TEXT,
+               model_id TEXT,
+               model_name TEXT,
+               status TEXT NOT NULL,
+               usage_json TEXT,
+               citations_json TEXT NOT NULL DEFAULT '[]',
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL
+             );
+             INSERT INTO ai_messages(
+               id, chat_id, turn_id, item_sort, role, content, status, created_at, updated_at
+             ) VALUES('message-1', 'chat-1', 'turn-1', 1, 'assistant', '旧回复', 'done', 'now', 'now');",
+        )
+        .unwrap();
+
+        initialize_database(&connection).unwrap();
+
+        let (content, error_message): (String, Option<String>) = connection
+            .query_row(
+                "SELECT content, error_message FROM ai_messages WHERE id = 'message-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(content, "旧回复");
+        assert_eq!(error_message, None);
     }
 
     #[test]
@@ -1469,6 +1554,7 @@ mod tests {
             Some(&["mcp-1".to_string()]),
             Some(&["skill-1".to_string()]),
             Some(&["kb-1".to_string()]),
+            None,
         )
         .unwrap();
         assert_eq!(updated.summary.title, "已重命名");
@@ -1561,6 +1647,7 @@ mod tests {
             "done",
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1579,6 +1666,86 @@ mod tests {
         assert!(history.iter().any(|message| {
             message.role == "tool" && message.tool_call_id.as_deref() == Some("call-1")
         }));
+    }
+
+    #[test]
+    fn failed_chat_turn_persists_and_clears_error_detail() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_database(&connection).unwrap();
+        connection.execute(
+            "INSERT INTO ai_providers(id, name, protocol, base_url, enabled, secret_slot, created_at, updated_at)
+             VALUES('p1', 'Provider', 'openai_chat', 'https://example.com/v1', 1, 'slot', 'now', 'now')",
+            [],
+        ).unwrap();
+        upsert_model(
+            &connection,
+            "p1",
+            "api-model",
+            "Model",
+            true,
+            true,
+            &json!({}),
+        )
+        .unwrap();
+        let model_id: String = connection
+            .query_row("SELECT id FROM ai_models LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        let chat = create_chat(&connection, "新的聊天", Some("p1"), Some(&model_id)).unwrap();
+        let provider = get_stored_provider(&connection, "p1").unwrap();
+        let model = get_stored_model(&connection, "p1", &model_id).unwrap();
+        let assistant_id = begin_chat_turn(
+            &connection,
+            &chat.summary.id,
+            "turn-1",
+            "你好",
+            &json!([{ "type": "text", "text": "你好" }]),
+            &provider,
+            "p1",
+            &model,
+            None,
+        )
+        .unwrap();
+
+        finish_chat_turn(
+            &connection,
+            &assistant_id,
+            "",
+            "",
+            "error",
+            Some("Provider 请求失败（HTTP 400）：thinking 参数不受支持"),
+            None,
+            None,
+        )
+        .unwrap();
+        let detail = get_chat(&connection, &chat.summary.id).unwrap();
+        let assistant = detail
+            .messages
+            .iter()
+            .find(|message| message.role == "assistant")
+            .unwrap();
+        assert_eq!(
+            assistant.error_message.as_deref(),
+            Some("Provider 请求失败（HTTP 400）：thinking 参数不受支持")
+        );
+
+        finish_chat_turn(
+            &connection,
+            &assistant_id,
+            "恢复后的回复",
+            "",
+            "done",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let detail = get_chat(&connection, &chat.summary.id).unwrap();
+        let assistant = detail
+            .messages
+            .iter()
+            .find(|message| message.role == "assistant")
+            .unwrap();
+        assert_eq!(assistant.error_message, None);
     }
 
     #[test]
@@ -1619,7 +1786,17 @@ mod tests {
                 None,
             )
             .unwrap();
-            finish_chat_turn(&connection, &assistant_id, "回复", "", "done", None, None).unwrap();
+            finish_chat_turn(
+                &connection,
+                &assistant_id,
+                "回复",
+                "",
+                "done",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
         }
         let replacement_id = begin_chat_turn(
             &connection,
@@ -1639,6 +1816,7 @@ mod tests {
             "新回复",
             "",
             "done",
+            None,
             None,
             None,
         )

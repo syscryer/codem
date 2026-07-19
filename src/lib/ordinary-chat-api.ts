@@ -1,6 +1,7 @@
 import type {
   AiChatBootstrap,
   AiChatDetail,
+  AiChatModelPreference,
   AiChatProvider,
   AiChatProtocol,
   AiDiscoveredModel,
@@ -52,8 +53,8 @@ export async function updateAiChat(
     providerId?: string;
     modelId?: string;
     selectedMcpIds?: string[];
-    selectedSkillIds?: string[];
     selectedKnowledgeIds?: string[];
+    modelPreferences?: Record<string, AiChatModelPreference>;
   },
 ) {
   const payload = await requestJson<ChatResponse>(`/api/ai/chats/${encodeURIComponent(chatId)}`, {
@@ -374,6 +375,7 @@ export async function startAiChatRun(input: {
   turnId: string;
   prompt: string;
   contentBlocks: InputContentBlock[];
+  runtimeOptions: AiChatModelPreference;
   operation?: 'regenerate' | 'retry' | 'edit';
   sourceTurnId?: string;
 }, signal: AbortSignal) {
