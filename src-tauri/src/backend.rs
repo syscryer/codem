@@ -518,6 +518,8 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         app_data_dir.clone(),
         secrets.clone(),
     );
+    let provider_import =
+        crate::provider_import::ProviderImportService::new(app_data_dir.clone(), secrets.clone());
     let agent_channels =
         crate::agent_channels::AgentChannelService::new(app_data_dir.clone(), secrets);
     let agent_runs = crate::agent_run::AgentRunService::new(
@@ -543,6 +545,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
     let app = create_router(state)
         .merge(crate::automation::router(automation))
         .merge(crate::ordinary_chat::router(ordinary_chat))
+        .merge(crate::provider_import::router(provider_import))
         .merge(crate::agent_channels::router(agent_channels))
         .layer(desktop_cors_layer());
     let address = SocketAddr::from(([127, 0, 0, 1], port));
@@ -14608,7 +14611,20 @@ fn build_usage_provider_rows(rows: Vec<Value>) -> ApiResult<Value> {
             merge_usage_totals_into(group, &row);
             set_latest_usage_date(group, row.get("lastUsedAt"));
             if let Some(models) = group.get_mut("models").and_then(Value::as_array_mut) {
-                models.push(model_row);
+                if let Some(existing_model) = models.iter_mut().find(|candidate| {
+                    candidate
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(|candidate_model| {
+                            candidate_model.trim().eq_ignore_ascii_case(model.trim())
+                        })
+                        .unwrap_or(false)
+                }) {
+                    merge_usage_totals_into(existing_model, &row);
+                    set_latest_usage_date(existing_model, row.get("lastUsedAt"));
+                } else {
+                    models.push(model_row);
+                }
             }
         } else {
             groups.push(merge_json_objects(
@@ -14971,7 +14987,11 @@ fn normalize_claude_permission_mode(value: Option<&str>) -> String {
     }
 }
 
-fn build_claude_run_args(payload: &ClaudeRunRequest, permission_mode: &str) -> Vec<String> {
+fn build_claude_run_args(
+    payload: &ClaudeRunRequest,
+    permission_mode: &str,
+    channel_runtime: Option<&crate::agent_channels::AgentChannelRuntime>,
+) -> Vec<String> {
     let mut args = vec![
         "-p".to_string(),
         "".to_string(),
@@ -14991,14 +15011,24 @@ fn build_claude_run_args(payload: &ClaudeRunRequest, permission_mode: &str) -> V
         args.push("--permission-mode".to_string());
         args.push(permission_mode.to_string());
     }
-    if let Some(model) = payload
+    let model = payload
         .model
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
+        .or_else(|| {
+            channel_runtime
+                .and_then(|runtime| runtime.effective_model.as_deref())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        });
+    if let Some(model) = model {
         args.push("--model".to_string());
         args.push(model.to_string());
+    }
+    if let Some(settings) = claude_channel_settings(channel_runtime) {
+        args.push("--settings".to_string());
+        args.push(settings);
     }
     if let Some(effort) = payload
         .effort
@@ -15024,6 +15054,40 @@ fn build_claude_run_args(payload: &ClaudeRunRequest, permission_mode: &str) -> V
         args.push(session_id.to_string());
     }
     args
+}
+
+fn claude_channel_settings(
+    channel_runtime: Option<&crate::agent_channels::AgentChannelRuntime>,
+) -> Option<String> {
+    let runtime = channel_runtime?;
+    let mut env = serde_json::Map::new();
+    for key in ["ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"] {
+        if let Some(value) = runtime.env.get(key) {
+            env.insert(key.to_string(), json!(value));
+        }
+    }
+    if env.is_empty() {
+        return None;
+    }
+    env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), json!(""));
+    env.insert("ANTHROPIC_API_KEY".to_string(), json!(""));
+    Some(
+        json!({
+            "env": env,
+            "apiKeyHelper": claude_channel_api_key_helper_command(),
+        })
+        .to_string(),
+    )
+}
+
+#[cfg(windows)]
+fn claude_channel_api_key_helper_command() -> &'static str {
+    "cmd /d /s /c echo %CODEM_AGENT_CHANNEL_API_KEY%"
+}
+
+#[cfg(not(windows))]
+fn claude_channel_api_key_helper_command() -> &'static str {
+    "printf '%s' \"$CODEM_AGENT_CHANNEL_API_KEY\""
 }
 
 fn build_claude_input_message(
@@ -15547,7 +15611,7 @@ async fn get_or_create_claude_runtime(
         close_thread_runtime(state, thread_id)?;
     }
 
-    let mut args = build_claude_run_args(payload, permission_mode);
+    let mut args = build_claude_run_args(payload, permission_mode, channel_runtime);
     let mut process = background_tokio_command(command);
     process.args(args.drain(..)).current_dir(working_directory);
     if let Some(channel_runtime) = channel_runtime {
@@ -17949,26 +18013,27 @@ mod tests {
     use super::{
         apply_agent_lifecycle_proxy_environment, build_agent_lifecycle_plan,
         build_claude_input_message, build_request_user_input_response_answers,
-        claude_input_message_has_content, claude_install_display_command,
-        claude_install_lifecycle_plan, claude_uninstalled_update_lifecycle_plan,
-        compare_project_file_entries, configure_agent_lifecycle_environment, create_router,
-        create_thread_row, default_claude_command_paths, default_grok_command_path,
-        desktop_cors_layer, ensure_agent_plugin_management_supported,
-        extract_agent_semantic_version, import_claude_sessions_from_root,
-        initialize_workspace_database, install_skill_directory_safely,
-        is_agent_lifecycle_network_failure, lifecycle_plan, lifecycle_plan_supports_npm_mirror,
-        list_agent_installed_plugins_value, list_agent_plugin_marketplaces_value,
-        list_agent_skills_value, list_slash_commands_value, mark_request_user_input_submitted,
-        normalize_agent_plugin_action, normalize_agent_runtime_settings,
-        normalize_request_user_input_answer_value, parse_grok_cli_version,
-        parse_grok_latest_version, parse_macos_system_proxy_environment, parse_npm_latest_version,
-        parse_request_user_input_event, read_opencode_mcp_config, read_stored_thread_history,
-        read_thread_detail, read_thread_summary, remove_thread_row, resolve_codex_command,
-        resolve_first_runnable_command, resolve_grok_command, resolve_opencode_command,
-        resolve_requested_thread_provider, resolve_thread_create_permission_mode,
-        resolve_workspace_relative_path, sanitize_agent_lifecycle_output, search_workspace_files,
-        select_runnable_command_candidate, should_emit_claude_raw_event, should_store_run_event,
-        summarize_content_blocks, update_thread_metadata_from_payload, validate_desktop_file_path,
+        build_usage_provider_rows, claude_input_message_has_content,
+        claude_install_display_command, claude_install_lifecycle_plan,
+        claude_uninstalled_update_lifecycle_plan, compare_project_file_entries,
+        configure_agent_lifecycle_environment, create_router, create_thread_row,
+        default_claude_command_paths, default_grok_command_path, desktop_cors_layer,
+        ensure_agent_plugin_management_supported, extract_agent_semantic_version,
+        import_claude_sessions_from_root, initialize_workspace_database,
+        install_skill_directory_safely, is_agent_lifecycle_network_failure, lifecycle_plan,
+        lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
+        list_agent_plugin_marketplaces_value, list_agent_skills_value, list_slash_commands_value,
+        mark_request_user_input_submitted, normalize_agent_plugin_action,
+        normalize_agent_runtime_settings, normalize_request_user_input_answer_value,
+        parse_grok_cli_version, parse_grok_latest_version, parse_macos_system_proxy_environment,
+        parse_npm_latest_version, parse_request_user_input_event, read_opencode_mcp_config,
+        read_stored_thread_history, read_thread_detail, read_thread_summary, remove_thread_row,
+        resolve_codex_command, resolve_first_runnable_command, resolve_grok_command,
+        resolve_opencode_command, resolve_requested_thread_provider,
+        resolve_thread_create_permission_mode, resolve_workspace_relative_path,
+        sanitize_agent_lifecycle_output, search_workspace_files, select_runnable_command_candidate,
+        should_emit_claude_raw_event, should_store_run_event, summarize_content_blocks,
+        update_thread_metadata_from_payload, validate_desktop_file_path,
         validate_managed_agent_skill_path, write_opencode_mcp_config, write_thread_history,
         ApiError, AppState,
     };
@@ -18419,6 +18484,67 @@ mod tests {
             ])
         );
         assert!(claude_input_message_has_content(&message));
+    }
+
+    #[test]
+    fn custom_claude_channel_args_pin_channel_settings_without_exposing_secrets() {
+        let payload = super::ClaudeRunRequest {
+            thread_id: Some("thread-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
+            prompt: Some("继续".to_string()),
+            working_directory: Some("D:/workspace".to_string()),
+            session_id: Some("session-1".to_string()),
+            permission_mode: Some("bypassPermissions".to_string()),
+            model: None,
+            effort: None,
+            channel_id: Some("channel-1".to_string()),
+            tool_result: None,
+            content_blocks: None,
+        };
+        let runtime = crate::agent_channels::AgentChannelRuntime {
+            channel_id: "channel-1".to_string(),
+            fingerprint: "fingerprint".to_string(),
+            env: std::collections::BTreeMap::from([
+                (
+                    "ANTHROPIC_BASE_URL".to_string(),
+                    "https://api.minimaxi.com/anthropic".to_string(),
+                ),
+                ("ANTHROPIC_MODEL".to_string(), "MiniMax-M3".to_string()),
+                (
+                    "ANTHROPIC_AUTH_TOKEN".to_string(),
+                    "secret-token".to_string(),
+                ),
+            ]),
+            codex_config_args: Vec::new(),
+            effective_model: Some("MiniMax-M3".to_string()),
+        };
+
+        let args = super::build_claude_run_args(&payload, "bypassPermissions", Some(&runtime));
+        let model_index = args
+            .iter()
+            .position(|arg| arg == "--model")
+            .expect("model arg");
+        assert_eq!(
+            args.get(model_index + 1).map(String::as_str),
+            Some("MiniMax-M3")
+        );
+        let settings_index = args
+            .iter()
+            .position(|arg| arg == "--settings")
+            .expect("settings arg");
+        let settings: Value =
+            serde_json::from_str(&args[settings_index + 1]).expect("settings JSON");
+        assert_eq!(
+            settings["env"]["ANTHROPIC_BASE_URL"],
+            "https://api.minimaxi.com/anthropic"
+        );
+        assert_eq!(settings["env"]["ANTHROPIC_MODEL"], "MiniMax-M3");
+        assert_eq!(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "");
+        assert_eq!(settings["env"]["ANTHROPIC_API_KEY"], "");
+        assert_eq!(
+            settings["apiKeyHelper"],
+            super::claude_channel_api_key_helper_command()
+        );
     }
 
     #[test]
@@ -19770,5 +19896,65 @@ mod tests {
     #[test]
     fn validate_desktop_file_path_keeps_normal_environment_names() {
         assert!(validate_desktop_file_path("C:\\work\\environment.ts").is_ok());
+    }
+
+    #[test]
+    fn usage_provider_rows_merge_duplicate_models_from_thread_rows() {
+        let rows = vec![
+            json!({
+                "provider": "claude-code",
+                "model": "glm-5.2",
+                "projects": 0,
+                "threads": 1,
+                "messages": 4,
+                "toolCalls": 2,
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheCreationInputTokens": 30,
+                "cacheReadInputTokens": 40,
+                "totalTokens": 190,
+                "durationMs": 1_000,
+                "totalCostUsd": 0.1,
+                "lastUsedAt": "2026-07-18T01:00:00.000Z",
+            }),
+            json!({
+                "provider": "claude-code",
+                "model": "GLM-5.2",
+                "projects": 0,
+                "threads": 1,
+                "messages": 6,
+                "toolCalls": 3,
+                "inputTokens": 200,
+                "outputTokens": 50,
+                "cacheCreationInputTokens": 60,
+                "cacheReadInputTokens": 70,
+                "totalTokens": 380,
+                "durationMs": 2_000,
+                "totalCostUsd": 0.2,
+                "lastUsedAt": "2026-07-18T02:00:00.000Z",
+            }),
+        ];
+
+        let result = build_usage_provider_rows(rows).expect("build usage provider rows");
+        let providers = result.as_array().expect("provider rows");
+        assert_eq!(providers.len(), 1);
+        assert_eq!(
+            providers[0].get("totalTokens").and_then(Value::as_i64),
+            Some(570)
+        );
+        let models = providers[0]
+            .get("models")
+            .and_then(Value::as_array)
+            .expect("model rows");
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            models[0].get("totalTokens").and_then(Value::as_i64),
+            Some(570)
+        );
+        assert_eq!(models[0].get("threads").and_then(Value::as_i64), Some(2));
+        assert_eq!(
+            models[0].get("lastUsedAt").and_then(Value::as_str),
+            Some("2026-07-18T02:00:00.000Z")
+        );
     }
 }

@@ -7,6 +7,7 @@ import {
   Clock3,
   Copy,
   Download,
+  ExternalLink,
   FileText,
   KeyRound,
   LoaderCircle,
@@ -46,6 +47,7 @@ import {
   getCodexProbeStatusMessage,
   getGrokProbeStatusMessage,
   getOpenCodeProbeStatusMessage,
+  getProviderInstallDocsUrl,
   getProviderCapabilityGroups,
   getProviderModels,
   reconcileProviderAvailability,
@@ -54,6 +56,7 @@ import {
   type ProviderCapabilityItem,
   type ProviderStatusTone,
 } from '../../lib/agent-provider-management';
+import { openExternalUrl } from '../../lib/markdown-link';
 import { readClaudeCliVersionInfo } from '../../lib/settings-runtime';
 import { AgentProviderIcon } from '../AgentProviderIcon';
 import { PopoverPortal } from '../PopoverPortal';
@@ -843,6 +846,9 @@ function ProviderDetail({
       : provider.id === 'opencode'
         ? Boolean(openCodeProbe?.probe?.configured)
       : false;
+  const installDocsUrl = provider.id === 'claude-code'
+    ? claudeCliInfo?.setupUrl ?? getProviderInstallDocsUrl(provider.id as AgentProviderId)
+    : getProviderInstallDocsUrl(provider.id as AgentProviderId);
 
   return (
     <section
@@ -862,6 +868,16 @@ function ProviderDetail({
         </div>
         <div className="agent-provider-detail-actions">
           <ProviderStatusIcon tone={status.tone} label={status.label} />
+          {installDocsUrl ? (
+            <button
+              type="button"
+              className="settings-action-button"
+              onClick={() => void openExternalUrl(installDocsUrl)}
+            >
+              <ExternalLink size={14} />
+              <span>安装文档</span>
+            </button>
+          ) : null}
           {provider.id === 'grok-build' || provider.id === 'openai-codex' || provider.id === 'opencode' ? (
             <>
               <button

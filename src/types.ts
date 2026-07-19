@@ -1542,6 +1542,51 @@ export type AiProviderTemplate = {
   category: 'international' | 'china' | 'aggregator' | string;
 };
 
+export type ExternalProviderSource = 'ccswitch' | 'cherry_studio';
+export type ExternalProviderTargetKind = 'agent' | 'ordinary_chat';
+
+export type ExternalProviderModel = {
+  modelId: string;
+  displayName: string;
+};
+
+export type ExternalProviderImportItem = {
+  sourceId: string;
+  targetScope: string;
+  name: string;
+  protocol: AiChatProtocol;
+  baseUrl: string;
+  apiKeyAvailable: boolean;
+  models: ExternalProviderModel[];
+  presetId?: string;
+  enabled: boolean;
+  warning: string;
+  imported: boolean;
+  updateAvailable: boolean;
+  importable: boolean;
+  reason: string;
+  targetId?: string;
+  targetName?: string;
+  targetExists: boolean;
+  conflictTargetId?: string;
+  conflictTargetName?: string;
+};
+
+export type ExternalProviderScanResponse = {
+  source: ExternalProviderSource;
+  detected: boolean;
+  dataPath?: string;
+  message: string;
+  items: ExternalProviderImportItem[];
+};
+
+export type ExternalProviderImportResult = {
+  sourceId: string;
+  targetId: string;
+  targetName: string;
+  overwritten: boolean;
+};
+
 export type ClaudeModelInfo = {
   available: boolean;
   models: ClaudeModelOption[];

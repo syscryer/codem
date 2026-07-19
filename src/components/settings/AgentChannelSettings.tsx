@@ -1,6 +1,8 @@
 import {
   Check,
   ChevronDown,
+  Copy,
+  Download,
   Eye,
   EyeOff,
   ExternalLink,
@@ -29,6 +31,7 @@ import {
   updateAgentChannel,
   updateAgentChannelModel,
 } from '../../lib/agent-channel-api';
+import { copyAgentChannelToChat } from '../../lib/provider-import-api';
 import { openExternalUrl } from '../../lib/markdown-link';
 import {
   agentChannelTemplate,
@@ -48,11 +51,14 @@ import type {
   AgentChannelSettingsFocus,
   AgentChannelModel,
   AgentProviderId,
+  AiChatProvider,
   AiChatProtocol,
   AiDiscoveredModel,
   AiProviderTemplate,
 } from '../../types';
 import { AiModelPickerDialog } from '../AiModelPickerDialog';
+import { AiProviderSettingsPanel } from '../AiProviderManagerDialog';
+import { ExternalProviderImportDialog } from '../ExternalProviderImportDialog';
 import { PopoverPortal } from '../PopoverPortal';
 import { ProviderBrandIcon } from '../ProviderBrandIcon';
 import { AgentSettingsProviderTabs } from './AgentSettingsProviderTabs';
@@ -63,6 +69,8 @@ type AgentChannelSettingsProps = {
   error: string;
   focusRequest?: AgentChannelSettingsFocus | null;
   onChanged: () => Promise<unknown> | unknown;
+  aiChatProviders: AiChatProvider[];
+  onAiChatProvidersChanged: () => Promise<void> | void;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
 };
 
@@ -84,6 +92,7 @@ type BusyAction =
   | 'model'
   | 'delete'
   | 'default'
+  | 'copy'
   | '';
 
 const providerLabels: Record<AgentProviderId, string> = {
@@ -106,9 +115,12 @@ export function AgentChannelSettings({
   error: bootstrapError,
   focusRequest,
   onChanged,
+  aiChatProviders,
+  onAiChatProvidersChanged,
   showToast,
 }: AgentChannelSettingsProps) {
   const [providerId, setProviderId] = useState<AgentProviderId>('claude-code');
+  const [ordinaryChatActive, setOrdinaryChatActive] = useState(false);
   const [selectedChannelId, setSelectedChannelId] = useState(
     () => bootstrap.defaultChannelIds['claude-code'] || 'system',
   );
@@ -127,6 +139,8 @@ export function AgentChannelSettings({
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [confirmDeleteChannelId, setConfirmDeleteChannelId] = useState('');
   const [confirmDeleteModelId, setConfirmDeleteModelId] = useState('');
+  const [confirmCopyChannelId, setConfirmCopyChannelId] = useState('');
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
   const pendingSelectedChannelIdRef = useRef<string | null>(null);
 
   const channels = useMemo(
@@ -173,6 +187,7 @@ export function AgentChannelSettings({
     if (!focusRequest) return;
     const nextProviderId = focusRequest.providerId;
     pendingSelectedChannelIdRef.current = null;
+    setOrdinaryChatActive(false);
     setProviderId(nextProviderId);
     setSelectedChannelId(bootstrap.defaultChannelIds[nextProviderId] || 'system');
     setCreating(false);
@@ -222,6 +237,7 @@ export function AgentChannelSettings({
     setTestMessage('');
     setConfirmDeleteChannelId('');
     setConfirmDeleteModelId('');
+    setConfirmCopyChannelId('');
   }
 
   function selectProvider(nextProviderId: AgentProviderId) {
@@ -508,18 +524,75 @@ export function AgentChannelSettings({
     }
   }
 
+  async function copyToOrdinaryChat(channel: AgentChannel) {
+    const conflict = aiChatProviders.find((provider) =>
+      provider.name.trim().toLocaleLowerCase() === channel.name.trim().toLocaleLowerCase(),
+    );
+    if (conflict && confirmCopyChannelId !== channel.id) {
+      setConfirmCopyChannelId(channel.id);
+      setLocalError(`普通聊天已存在同名供应商“${conflict.name}”，再次点击将覆盖该配置。`);
+      return;
+    }
+    setBusy('copy');
+    setLocalError('');
+    try {
+      await copyAgentChannelToChat({
+        channelId: channel.id,
+        ...(conflict ? { overwriteProviderId: conflict.id } : {}),
+      });
+      setConfirmCopyChannelId('');
+      await onAiChatProvidersChanged();
+      showToast(conflict ? '已覆盖同名普通聊天供应商' : '已复制到普通聊天', 'success');
+    } catch (copyError) {
+      setLocalError(copyError instanceof Error ? copyError.message : '复制到普通聊天失败');
+    } finally {
+      setBusy('');
+    }
+  }
+
   const displayedError = localError || bootstrapError;
 
   return (
     <div className="agent-channel-settings">
       <div className="agent-channel-provider-bar">
-        <AgentSettingsProviderTabs value={providerId} onChange={selectProvider} disabled={Boolean(busy)} />
-        <button type="button" className="secondary agent-channel-refresh" disabled={loading || Boolean(busy)} onClick={() => void onChanged()}>
-          <RefreshCw size={14} className={loading ? 'spin-icon' : ''} />
-          刷新状态
-        </button>
+        <AgentSettingsProviderTabs
+          value={ordinaryChatActive ? 'ordinary-chat' : providerId}
+          onChange={(nextProviderId) => {
+            setOrdinaryChatActive(false);
+            selectProvider(nextProviderId);
+          }}
+          includeOrdinaryChat
+          onSelectOrdinaryChat={() => {
+            setOrdinaryChatActive(true);
+            resetMessages();
+          }}
+          disabled={Boolean(busy)}
+        />
+        <div className="agent-channel-provider-actions">
+          {ordinaryChatActive ? (
+            <button type="button" className="settings-action-button agent-channel-import-button" disabled={Boolean(busy)} onClick={() => setImportDialogOpen(true)}>
+              <Download size={14} />从 Cherry Studio 导入
+            </button>
+          ) : providerId !== 'grok-build' ? (
+            <button type="button" className="settings-action-button agent-channel-import-button" disabled={Boolean(busy)} onClick={() => setImportDialogOpen(true)}>
+              <Download size={14} />导入渠道
+            </button>
+          ) : null}
+          <button type="button" className="secondary agent-channel-refresh" disabled={loading || Boolean(busy)} onClick={() => void (ordinaryChatActive ? onAiChatProvidersChanged() : onChanged())}>
+            <RefreshCw size={14} className={!ordinaryChatActive && loading ? 'spin-icon' : ''} />
+            刷新状态
+          </button>
+        </div>
       </div>
 
+      {ordinaryChatActive ? (
+        <AiProviderSettingsPanel
+          channelLayout
+          providers={aiChatProviders}
+          onChanged={onAiChatProvidersChanged}
+          showToast={showToast}
+        />
+      ) : (
       <div className="ai-manager-layout agent-channel-layout">
         <aside className="ai-manager-sidebar agent-channel-sidebar">
           <div className="ai-manager-sidebar-title">
@@ -613,6 +686,17 @@ export function AgentChannelSettings({
                     <p>此配置只注入 CodeM 启动的 Agent 子进程，不修改系统或 CC Switch。</p>
                   </div>
                   <div className="ai-manager-section-head-actions">
+                    {!creating && selectedChannel ? (
+                      <button
+                        type="button"
+                        className={`settings-action-button agent-channel-copy-button${confirmCopyChannelId === selectedChannel.id ? ' confirming' : ''}`}
+                        disabled={Boolean(busy)}
+                        onClick={() => void copyToOrdinaryChat(selectedChannel)}
+                      >
+                        {busy === 'copy' ? <Loader2 size={14} className="spin-icon" /> : <Copy size={14} />}
+                        {confirmCopyChannelId === selectedChannel.id ? '确认覆盖到聊天' : '复制到聊天'}
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className={`ai-manager-default-provider-button${(creating ? draft.isDefault : selectedChannel?.isDefault) ? ' active' : ''}`}
@@ -751,6 +835,7 @@ export function AgentChannelSettings({
           )}
         </div>
       </div>
+      )}
 
       {modelPickerOpen && discoveredModels ? (
         <AiModelPickerDialog
@@ -760,6 +845,16 @@ export function AgentChannelSettings({
           existingModelIds={new Set((selectedChannel?.models ?? []).map((model) => model.modelId.toLocaleLowerCase()))}
           onClose={() => { setModelPickerOpen(false); setDiscoveredModels(null); }}
           onConfirm={(models) => void confirmModelSelection(models)}
+        />
+      ) : null}
+      {importDialogOpen ? (
+        <ExternalProviderImportDialog
+          open
+          targetKind={ordinaryChatActive ? 'ordinary_chat' : 'agent'}
+          initialAgentProviderId={ordinaryChatActive ? undefined : providerId}
+          onClose={() => setImportDialogOpen(false)}
+          onChanged={ordinaryChatActive ? onAiChatProvidersChanged : onChanged}
+          showToast={showToast}
         />
       ) : null}
     </div>

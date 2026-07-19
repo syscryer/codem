@@ -60,6 +60,35 @@ test('buildUsageTrendBuckets returns a single current-day point for today range'
   assert.deepEqual(result.points.map((point) => [point.date, point.totalTokens]), [['2026-06-02', 300]]);
 });
 
+test('buildUsageTrendBuckets uses the browser local date across the UTC day boundary', () => {
+  const previousTimezone = process.env.TZ;
+  process.env.TZ = 'Asia/Singapore';
+  try {
+    const source: UsageTrendPoint[] = [
+      {
+        date: '2026-06-01',
+        ...emptyPointTotals,
+        totalTokens: 100,
+      },
+      {
+        date: '2026-06-02',
+        ...emptyPointTotals,
+        totalTokens: 300,
+      },
+    ];
+
+    const result = buildUsageTrendBuckets(source, 1, new Date('2026-06-01T16:30:00.000Z'));
+
+    assert.deepEqual(result.points.map((point) => [point.date, point.totalTokens]), [['2026-06-02', 300]]);
+  } finally {
+    if (previousTimezone === undefined) {
+      delete process.env.TZ;
+    } else {
+      process.env.TZ = previousTimezone;
+    }
+  }
+});
+
 test('buildUsageTrendBuckets aggregates all-time ranges by week when history is wider than 90 days', () => {
   const source: UsageTrendPoint[] = [
     {

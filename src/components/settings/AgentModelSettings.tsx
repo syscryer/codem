@@ -1,6 +1,6 @@
 import { Bot, Route } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { AgentChannelBootstrap, AgentChannelSettingsFocus, AgentProviderDescriptor, AgentRuntimeSettings, ClaudeModelInfo, ToastState } from '../../types';
+import type { AgentChannelBootstrap, AgentChannelSettingsFocus, AgentProviderDescriptor, AgentRuntimeSettings, AiChatProvider, ClaudeModelInfo, ToastState } from '../../types';
 import type { AgentRuntimeSettingsUpdate } from '../../hooks/useAppSettings';
 import { AgentChannelSettings } from './AgentChannelSettings';
 import { AgentProviderSettings } from './AgentProviderSettings';
@@ -17,9 +17,11 @@ type AgentModelSettingsSectionProps = {
   channelsLoading: boolean;
   channelsError: string;
   channelFocus: AgentChannelSettingsFocus | null;
+  aiChatProviders: AiChatProvider[];
   onUpdateAgentRuntime: (update: AgentRuntimeSettingsUpdate) => void | Promise<void>;
   onRefreshProviders: () => Promise<void> | void;
   onRefreshChannels: () => Promise<unknown> | unknown;
+  onRefreshAiChatProviders: () => Promise<void> | void;
   showToast: (message: string, tone?: ToastState['tone']) => void;
 };
 
@@ -33,9 +35,11 @@ export function AgentModelSettingsSection({
   channelsLoading,
   channelsError,
   channelFocus,
+  aiChatProviders,
   onUpdateAgentRuntime,
   onRefreshProviders,
   onRefreshChannels,
+  onRefreshAiChatProviders,
   showToast,
 }: AgentModelSettingsSectionProps) {
   const [activeTab, setActiveTab] = useState<AgentSettingsTab>('agents');
@@ -89,6 +93,8 @@ export function AgentModelSettingsSection({
           error={channelsError}
           focusRequest={channelFocus}
           onChanged={onRefreshChannels}
+          aiChatProviders={aiChatProviders}
+          onAiChatProvidersChanged={onRefreshAiChatProviders}
           showToast={showToast}
         />
       </div>

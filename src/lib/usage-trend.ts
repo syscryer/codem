@@ -143,7 +143,7 @@ function addBucket(date: Date, unit: UsageTrendBucketUnit) {
 
 function parseDateInput(value: Date | string) {
   if (value instanceof Date) {
-    return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
+    return new Date(Date.UTC(value.getFullYear(), value.getMonth(), value.getDate()));
   }
 
   return parseIsoDate(value.slice(0, 10));

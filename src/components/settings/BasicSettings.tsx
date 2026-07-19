@@ -1,7 +1,7 @@
-import { Bell, Code2, Download, ExternalLink, GitBranch, GitPullRequest, History, ListCollapse, LoaderCircle, RefreshCw, RotateCcw, Rows3, Search, Send, Shield, TerminalSquare } from 'lucide-react';
+import { Bell, Download, ExternalLink, GitBranch, GitPullRequest, History, ListCollapse, LoaderCircle, RefreshCw, RotateCcw, Rows3, Search, Send, Shield } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { permissionMenuModes } from '../../constants';
-import type { AppRuntimeInfo, AppUpdateCheckState, ClaudeCliVersionInfo, GeneralSettings } from '../../types';
+import type { AppRuntimeInfo, AppUpdateCheckState, GeneralSettings } from '../../types';
 import type { GeneralSettingsUpdate } from '../../hooks/useAppSettings';
 import { permissionLabel } from '../../lib/ui-labels';
 import { defaultGeneralSettings } from '../../hooks/useAppSettings';
@@ -11,7 +11,6 @@ import {
   checkForAppUpdate,
   getAppRuntimeInfo,
   installAppUpdate,
-  readClaudeCliVersionInfo,
   type AppUpdateInfo,
 } from '../../lib/settings-runtime';
 import { SegmentedControl, SettingsGroup, SettingsRow } from './SettingsControls';
@@ -62,8 +61,6 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
   const [updateCheckState, setUpdateCheckState] = useState<AppUpdateCheckState>('idle');
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
   const [updateInstallMessage, setUpdateInstallMessage] = useState<string | null>(null);
-  const [claudeCliInfo, setClaudeCliInfo] = useState<ClaudeCliVersionInfo | null>(null);
-  const [claudeCliChecking, setClaudeCliChecking] = useState(false);
   const updateInstalling = updateCheckState === 'installing';
 
   useEffect(() => {
@@ -83,24 +80,6 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
     }
 
     void loadRuntimeInfo();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadClaudeCliInfo() {
-      setClaudeCliChecking(true);
-      const nextInfo = await readClaudeCliVersionInfo();
-      if (!cancelled) {
-        setClaudeCliInfo(nextInfo);
-        setClaudeCliChecking(false);
-      }
-    }
-
-    void loadClaudeCliInfo();
     return () => {
       cancelled = true;
     };
@@ -165,13 +144,6 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
       });
       setUpdateCheckState('failed');
     }
-  }
-
-  async function handleCheckClaudeCliVersion() {
-    setClaudeCliChecking(true);
-    const nextInfo = await readClaudeCliVersionInfo();
-    setClaudeCliInfo(nextInfo);
-    setClaudeCliChecking(false);
   }
 
   return (
@@ -294,63 +266,6 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
             label="自动检查更新"
           />
         </SettingsRow>
-      </SettingsGroup>
-
-      <SettingsGroup title="Claude CLI 版本" insetTitle>
-        <SettingsRow
-          icon={TerminalSquare}
-          title={`Claude CLI ${claudeCliInfo?.installed ? (claudeCliInfo.version ?? '已安装') : '未安装'}`}
-          description={(
-            <span className="settings-runtime-description">
-              <span>{claudeCliInfo?.installed ? '检查本机 Claude CLI 是否满足当前桌面端运行要求' : '当前 PATH 中未找到 Claude CLI，可先完成安装'}</span>
-              <span className={`settings-runtime-state ${claudeCliInfo?.installed && claudeCliInfo.supported ? 'settings-runtime-state-latest' : 'settings-runtime-state-muted'}`}>
-                {formatClaudeCliState(claudeCliInfo)}
-              </span>
-            </span>
-          )}
-        >
-          <div className="settings-runtime-actions">
-            <button
-              type="button"
-              className="settings-action-button"
-              onClick={() => void handleCheckClaudeCliVersion()}
-              disabled={claudeCliChecking}
-            >
-              <RefreshCw size={14} className={claudeCliChecking ? 'spin' : ''} />
-              <span>重新检查</span>
-            </button>
-            <button
-              type="button"
-              className="settings-action-button"
-              onClick={() => void openExternalUrl(claudeCliInfo?.setupUrl ?? 'https://docs.anthropic.com/en/docs/claude-code/setup')}
-            >
-              <ExternalLink size={14} />
-              <span>{claudeCliInfo?.installed ? '安装文档' : '安装说明'}</span>
-            </button>
-          </div>
-        </SettingsRow>
-        <SettingsRow
-          icon={Code2}
-          muted
-          title={(
-            <span className="settings-runtime-inline-meta">
-            <span>{claudeCliInfo?.installed ? '更新命令' : '安装命令'}</span>
-            <code className="settings-runtime-command">
-              {claudeCliInfo?.installed
-                ? (claudeCliInfo.updateCommand ?? 'claude update')
-                : (claudeCliInfo?.installCommand ?? 'npm install -g @anthropic-ai/claude-code')}
-            </code>
-            {claudeCliInfo?.command ? (
-              <>
-                <span>路径</span>
-                <code className="settings-runtime-command">{claudeCliInfo.command}</code>
-              </>
-            ) : null}
-            {claudeCliInfo?.versionError ? <span>{claudeCliInfo.versionError}</span> : null}
-            </span>
-          )}
-          description=""
-        />
       </SettingsGroup>
 
       <SettingsGroup title="Git 审查" insetTitle>
@@ -552,17 +467,4 @@ function formatRuntimeSummary(info: AppRuntimeInfo) {
     return `${mode} · Rust 后端`;
   }
   return mode;
-}
-
-function formatClaudeCliState(info: ClaudeCliVersionInfo | null) {
-  if (!info) {
-    return '读取中...';
-  }
-  if (!info.installed) {
-    return '未安装';
-  }
-  if (info.supported) {
-    return '已满足要求';
-  }
-  return '需要升级';
 }

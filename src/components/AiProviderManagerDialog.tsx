@@ -1,6 +1,7 @@
 import {
   Check,
   ChevronDown,
+  Download,
   Eye,
   EyeOff,
   ExternalLink,
@@ -36,6 +37,7 @@ import { filterProviderVendors } from '../lib/provider-template-search';
 import { ProviderBrandIcon } from './ProviderBrandIcon';
 import { AiModelPickerDialog } from './AiModelPickerDialog';
 import { PopoverPortal } from './PopoverPortal';
+import { ExternalProviderImportDialog } from './ExternalProviderImportDialog';
 import type {
   AiChatModel,
   AiChatProtocol,
@@ -66,6 +68,7 @@ type AiProviderManagerDialogProps = {
 
 type AiProviderSettingsPanelProps = {
   active?: boolean;
+  channelLayout?: boolean;
   providers: AiChatProvider[];
   onChanged: () => Promise<void> | void;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
@@ -80,6 +83,7 @@ const protocolOptions: Array<{ value: AiChatProtocol; label: string }> = [
 
 export function AiProviderSettingsPanel({
   active = true,
+  channelLayout = false,
   providers,
   onChanged,
   showToast,
@@ -99,6 +103,7 @@ export function AiProviderSettingsPanel({
   const [revealedSavedApiKey, setRevealedSavedApiKey] = useState(false);
   const [confirmDeleteProvider, setConfirmDeleteProvider] = useState(false);
   const [confirmDeleteModelId, setConfirmDeleteModelId] = useState('');
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
 
   const selectedProvider = useMemo(
     () => providers.find((provider) => provider.id === selectedProviderId) ?? null,
@@ -504,9 +509,20 @@ export function AiProviderSettingsPanel({
   }
 
   return (
-    <div className="ai-provider-settings-panel">
-      <div className="ai-manager-layout">
-          <aside className="ai-manager-sidebar">
+    <div className={`ai-provider-settings-panel${channelLayout ? ' ordinary-chat-channel-panel' : ''}`}>
+      {!channelLayout ? (
+        <div className="ai-provider-settings-toolbar">
+          <div>
+            <strong>普通聊天渠道</strong>
+            <span>运行与 Agent 渠道保持独立</span>
+          </div>
+          <button type="button" className="settings-action-button ai-provider-import-button" onClick={() => setImportDialogOpen(true)}>
+            <Download size={14} />从 Cherry Studio 导入
+          </button>
+        </div>
+      ) : null}
+      <div className={`ai-manager-layout${channelLayout ? ' agent-channel-layout ordinary-chat-channel-layout' : ''}`}>
+          <aside className={`ai-manager-sidebar${channelLayout ? ' ordinary-chat-channel-sidebar' : ''}`}>
             <div className="ai-manager-sidebar-title">
               <span>供应商</span>
               <button type="button" className="ai-manager-add-provider-button" aria-label="新增配置" title="新增配置" onClick={startNewProvider}>
@@ -533,7 +549,7 @@ export function AiProviderSettingsPanel({
             </div>
           </aside>
 
-          <div className="ai-manager-content">
+          <div className={`ai-manager-content${channelLayout ? ' agent-channel-content ordinary-chat-channel-content' : ''}`}>
             {draft ? (
               <>
                 <section className="ai-manager-section">
@@ -751,6 +767,15 @@ export function AiProviderSettingsPanel({
             setDiscoveredModels(null);
           }}
           onConfirm={(models) => void confirmModelSelection(models)}
+        />
+      ) : null}
+      {!channelLayout && importDialogOpen ? (
+        <ExternalProviderImportDialog
+          open
+          targetKind="ordinary_chat"
+          onClose={() => setImportDialogOpen(false)}
+          onChanged={onChanged}
+          showToast={showToast}
         />
       ) : null}
     </div>

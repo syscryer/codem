@@ -15,10 +15,10 @@ const backendSource = readFileSync(new URL('../../src-tauri/src/ordinary_chat/mo
 const providerCatalogSource = readFileSync(new URL('../../src-tauri/src/ordinary_chat/provider.rs', import.meta.url), 'utf8');
 const providerIconSource = readFileSync(new URL('../components/ProviderBrandIcon.tsx', import.meta.url), 'utf8');
 
-test('普通聊天供应商管理是全局设置的一等页面', () => {
+test('普通聊天供应商保留兼容页面但不再占用设置主菜单', () => {
   assert.match(settingsViewSource, /activeSection === 'aiProviders'/);
   assert.match(settingsViewSource, /AiProviderSettingsSection/);
-  assert.match(settingsSidebarSource, /id: 'aiProviders', label: '普通聊天'/);
+  assert.doesNotMatch(settingsSidebarSource, /id: 'aiProviders', label: '普通聊天'/);
   assert.match(aiProviderSettingsSource, /<h1>普通聊天<\/h1>/);
 });
 
@@ -66,12 +66,20 @@ test('左侧供应商使用居中大图标和完整圆角选中态', () => {
   assert.doesNotMatch(stylesSource, /\.ai-manager-provider-row\.active\s*\{[^}]*inset 2px 0/);
 });
 
-test('普通聊天供应商设置统一使用设置主页面滚动', () => {
+test('普通聊天供应商设置统一使用设置主页面滚动并保持左栏完整边框', () => {
   assert.match(stylesSource, /\.ai-provider-settings-shell\s*\{[\s\S]*?height:\s*auto;[\s\S]*?overflow:\s*visible;/);
   assert.match(stylesSource, /\.ai-provider-settings-shell\s*\{[\s\S]*?border-radius:\s*12px;/);
-  assert.match(stylesSource, /\.ai-provider-settings-shell \.ai-manager-sidebar\s*\{[\s\S]*?border-radius:\s*11px 0 0 11px;/);
+  assert.match(stylesSource, /\.ai-provider-settings-shell \.ai-manager-sidebar\s*\{[\s\S]*?border:\s*1px solid var\(--app-border,[\s\S]*?border-radius:\s*9px;/);
   assert.match(stylesSource, /\.ai-provider-settings-shell \.ai-manager-sidebar,[\s\S]*?\.ai-provider-settings-shell \.ai-manager-content\s*\{[\s\S]*?overflow:\s*visible;/);
   assert.match(stylesSource, /\.ai-provider-settings-shell \.ai-manager-provider-list\s*\{[\s\S]*?max-height:\s*none;/);
+});
+
+test('渠道管理中的普通聊天复用 Agent 双栏外框并将导入入口上移', () => {
+  assert.match(providerManagerSource, /channelLayout \? ' agent-channel-layout ordinary-chat-channel-layout'/);
+  assert.match(providerManagerSource, /channelLayout \? ' ordinary-chat-channel-sidebar'/);
+  assert.match(providerManagerSource, /channelLayout \? ' agent-channel-content ordinary-chat-channel-content'/);
+  assert.match(stylesSource, /\.ordinary-chat-channel-sidebar\s*\{[\s\S]*?align-self:\s*stretch;[\s\S]*?border-radius:\s*8px 0 0 8px;/);
+  assert.match(stylesSource, /@media \(max-width: 760px\)[\s\S]*?\.ordinary-chat-channel-sidebar\s*\{[\s\S]*?border-right:\s*0;[\s\S]*?border-bottom:/);
 });
 
 test('全局搜索框聚焦时不显示浅色外扩光圈', () => {

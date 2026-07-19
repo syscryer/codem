@@ -93,6 +93,8 @@ test('Agent lifecycle refreshes diagnostics and the matching runtime probe', () 
   assert.match(providerSettingsSource, />当前版本</);
   assert.match(providerSettingsSource, />最新版本</);
   assert.match(providerSettingsSource, /isInstalled \? '更新' : '一键安装'/);
+  assert.match(providerSettingsSource, /getProviderInstallDocsUrl/);
+  assert.match(providerSettingsSource, /<span>安装文档<\/span>/);
 });
 
 test('Agent version facts use per-item loading and compact CC Switch-style rows', () => {

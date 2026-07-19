@@ -4,7 +4,7 @@ pub(crate) mod provider;
 mod runtime;
 pub(crate) mod secrets;
 mod skills;
-mod storage;
+pub(crate) mod storage;
 pub(crate) mod types;
 
 use axum::{
@@ -15,6 +15,7 @@ use axum::{
     Json, Router,
 };
 use serde_json::{json, Value};
+use rusqlite::OptionalExtension;
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use self::{
@@ -168,6 +169,13 @@ impl AiApiError {
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
+            message: message.into(),
+        }
+    }
+
+    fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
             message: message.into(),
         }
     }
@@ -450,6 +458,7 @@ async fn create_provider(
     }
     let connection =
         open_initialized_database(&state.database_path).map_err(AiApiError::internal)?;
+    ensure_provider_name_available(&connection, name, None)?;
     insert_provider(
         &connection,
         &id,
@@ -505,6 +514,7 @@ async fn update_provider(
         .map(|value| require_text(value, "供应商名称不能为空"))
         .transpose()?
         .unwrap_or(current.name.as_str());
+    ensure_provider_name_available(&connection, name, Some(&provider_id))?;
     let base_url = payload
         .base_url
         .as_deref()
@@ -848,6 +858,29 @@ fn require_text<'a>(value: &'a str, message: &str) -> AiApiResult<&'a str> {
     }
 }
 
+fn ensure_provider_name_available(
+    connection: &rusqlite::Connection,
+    name: &str,
+    exclude_id: Option<&str>,
+) -> AiApiResult<()> {
+    let existing = connection
+        .query_row(
+            r#"SELECT name FROM ai_providers
+               WHERE lower(name) = lower(?) AND (? IS NULL OR id <> ?)
+               LIMIT 1"#,
+            rusqlite::params![name.trim(), exclude_id, exclude_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| AiApiError::internal(format!("检查供应商名称失败: {error}")))?;
+    match existing {
+        Some(existing) => Err(AiApiError::conflict(format!(
+            "已存在同名普通聊天供应商“{existing}”",
+        ))),
+        None => Ok(()),
+    }
+}
+
 fn validate_base_url(value: &str) -> AiApiResult<String> {
     let value = require_text(value, "请求地址不能为空")?;
     let url =
@@ -858,11 +891,9 @@ fn validate_base_url(value: &str) -> AiApiResult<String> {
     Ok(value.trim_end_matches('/').to_string())
 }
 
-use rusqlite::OptionalExtension;
-
 #[cfg(test)]
 mod tests {
-    use super::OrdinaryChatService;
+    use super::{ensure_provider_name_available, OrdinaryChatService};
     use axum::{
         body::{to_bytes, Body},
         response::IntoResponse,
@@ -870,6 +901,28 @@ mod tests {
         Json, Router,
     };
     use serde_json::{json, Value};
+
+    #[test]
+    fn ordinary_chat_provider_names_are_globally_unique() {
+        let connection = rusqlite::Connection::open_in_memory().expect("open database");
+        super::storage::initialize_database(&connection).expect("initialize database");
+        connection
+            .execute(
+                r#"INSERT INTO ai_providers (
+                     id, name, protocol, base_url, enabled, is_default, secret_slot,
+                     created_at, updated_at
+                   ) VALUES ('provider', 'DeepSeek', 'openai_chat', 'https://api.deepseek.com',
+                     1, 1, 'slot', 'now', 'now')"#,
+                [],
+            )
+            .expect("insert provider");
+
+        let error = ensure_provider_name_available(&connection, "deepseek", None)
+            .expect_err("case-insensitive duplicate should fail");
+        assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+        ensure_provider_name_available(&connection, "DeepSeek", Some("provider"))
+            .expect("editing the same provider should remain valid");
+    }
     use std::{fs, path::PathBuf};
     use tower::ServiceExt;
 

@@ -3,6 +3,7 @@ import type {
   AgentCancelSupport,
   AgentCapabilitySupport,
   AgentProviderDescriptor,
+  AgentProviderId,
   AgentSettingsDiagnostics,
   ClaudeCliVersionInfo,
   ClaudeModelInfo,
@@ -25,6 +26,17 @@ export type ProviderModelSummary = {
   detail?: string;
   current?: boolean;
 };
+
+const AGENT_INSTALL_DOCS_URLS: Partial<Record<AgentProviderId, string>> = {
+  'claude-code': 'https://docs.anthropic.com/en/docs/claude-code/setup',
+  'grok-build': 'https://docs.x.ai/docs/overview',
+  'openai-codex': 'https://developers.openai.com/codex/cli/',
+  opencode: 'https://opencode.ai/docs/',
+};
+
+export function getProviderInstallDocsUrl(providerId: AgentProviderId) {
+  return AGENT_INSTALL_DOCS_URLS[providerId] ?? null;
+}
 
 export function reconcileProviderAvailability(
   provider: AgentProviderDescriptor,

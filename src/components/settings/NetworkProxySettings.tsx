@@ -74,10 +74,10 @@ export function NetworkProxySettingsSection({ settings, onUpdate, showToast }: P
         <SettingsRow icon={Network} title="当前配置" description={preview} />
         <SettingsRow icon={RefreshCw} title="网络路径" description="直连优先，失败后依次使用 CodeM 代理、系统代理和 npm 国内镜像" />
       </SettingsGroup>
-      <div className="settings-actions">
+      <div className="settings-actions network-proxy-actions">
         <button type="button" className="settings-action-button" onClick={() => setDraft(settings)}>清除未保存修改</button>
-        <button type="button" className="settings-action-button primary" onClick={() => void save()}><Save size={14} />保存设置</button>
         <button type="button" className="settings-action-button" disabled={testing} onClick={() => void testConnection()}><RefreshCw size={14} className={testing ? 'spin' : ''} />测试连接</button>
+        <button type="button" className="settings-action-button primary" onClick={() => void save()}><Save size={14} />保存设置</button>
       </div>
     </section>
   );

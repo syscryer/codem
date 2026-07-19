@@ -201,6 +201,13 @@ impl AgentChannelApiError {
         }
     }
 
+    fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: message.into(),
+        }
+    }
+
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -342,7 +349,7 @@ pub(crate) fn router(service: AgentChannelService) -> Router {
         .with_state(service)
 }
 
-fn initialize_database(connection: &Connection) -> Result<(), String> {
+pub(crate) fn initialize_database(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(
             r#"
@@ -810,6 +817,7 @@ async fn create_channel(
     let mut connection = service
         .open_database()
         .map_err(AgentChannelApiError::internal)?;
+    ensure_channel_name_available(&connection, &provider_id, &name, None)?;
     let transaction = connection
         .transaction()
         .map_err(|error| AgentChannelApiError::internal(format!("创建 Agent 渠道失败: {error}")))?;
@@ -889,6 +897,12 @@ async fn update_channel(
         .map(|value| require_text(value, "渠道名称不能为空").map(str::to_string))
         .transpose()?
         .unwrap_or(current.name.clone());
+    ensure_channel_name_available(
+        &connection,
+        &current.provider_id,
+        &name,
+        Some(&channel_id),
+    )?;
     let protocol = payload.protocol.unwrap_or(current.protocol);
     validate_protocol(&current.provider_id, protocol)?;
     let base_url = payload
@@ -1263,6 +1277,31 @@ fn get_stored_channel(
         )
         .optional()
         .map_err(|error| format!("读取 Agent 渠道失败: {error}"))
+}
+
+fn ensure_channel_name_available(
+    connection: &Connection,
+    provider_id: &str,
+    name: &str,
+    exclude_id: Option<&str>,
+) -> AgentChannelApiResult<()> {
+    let existing = connection
+        .query_row(
+            r#"SELECT name FROM agent_channels
+               WHERE provider_id = ? AND lower(name) = lower(?)
+                 AND (? IS NULL OR id <> ?)
+               LIMIT 1"#,
+            params![provider_id, name.trim(), exclude_id, exclude_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| AgentChannelApiError::internal(format!("检查渠道名称失败: {error}")))?;
+    match existing {
+        Some(existing) => Err(AgentChannelApiError::conflict(format!(
+            "同一 Agent 下已存在同名渠道“{existing}”",
+        ))),
+        None => Ok(()),
+    }
 }
 
 fn map_stored_channel(row: &Row<'_>) -> rusqlite::Result<StoredAgentChannel> {
@@ -2091,6 +2130,31 @@ mod tests {
                 params![id, id, id, enabled, is_default],
             )
             .expect("insert model");
+    }
+
+    #[test]
+    fn channel_names_are_unique_within_the_same_agent() {
+        let connection = Connection::open_in_memory().expect("open database");
+        initialize_database(&connection).expect("initialize database");
+        insert_channel(&connection, "Primary", true, false, "2026-07-19T00:00:00Z");
+
+        let error = ensure_channel_name_available(
+            &connection,
+            CLAUDE_CODE_PROVIDER_ID,
+            "primary",
+            None,
+        )
+        .expect_err("case-insensitive duplicate should fail");
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        ensure_channel_name_available(
+            &connection,
+            CLAUDE_CODE_PROVIDER_ID,
+            "Primary",
+            Some("Primary"),
+        )
+        .expect("editing the same channel should remain valid");
+        ensure_channel_name_available(&connection, OPENAI_CODEX_PROVIDER_ID, "Primary", None)
+            .expect("different Agent scopes may reuse a name");
     }
 
     #[test]

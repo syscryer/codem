@@ -196,9 +196,11 @@ export function SettingsView({
           channelsLoading={agentChannelsLoading}
           channelsError={agentChannelsError}
           channelFocus={agentChannelFocus}
+          aiChatProviders={aiChatProviders}
           onUpdateAgentRuntime={onUpdateAgentRuntime}
           onRefreshProviders={onRefreshAgentProviders}
           onRefreshChannels={onRefreshAgentChannels}
+          onRefreshAiChatProviders={onRefreshAiChatProviders}
           showToast={showToast}
         />
       );
