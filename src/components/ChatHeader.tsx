@@ -9,6 +9,7 @@ import {
   GitCommitHorizontal,
   GitPullRequest,
   FolderOpen,
+  LoaderCircle,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -56,6 +57,11 @@ export type ChatHeaderActionsProps = {
   onOpenGitHistory: () => void;
   onGitFetch: () => void;
   onGitPull: () => void;
+  gitOperationRunning: {
+    fetch: boolean;
+    pull: boolean;
+    push: boolean;
+  };
   terminalDockOpen: boolean;
   onToggleTerminalDock: () => void;
   terminalDockAvailable: boolean;
@@ -81,6 +87,7 @@ export function ChatHeader({
   onOpenGitHistory,
   onGitFetch,
   onGitPull,
+  gitOperationRunning,
   terminalDockOpen,
   onToggleTerminalDock,
   terminalDockAvailable,
@@ -185,6 +192,7 @@ export function ChatHeader({
         onOpenGitHistory={onOpenGitHistory}
         onGitFetch={onGitFetch}
         onGitPull={onGitPull}
+        gitOperationRunning={gitOperationRunning}
         terminalDockOpen={terminalDockOpen}
         onToggleTerminalDock={onToggleTerminalDock}
         terminalDockAvailable={terminalDockAvailable}
@@ -211,6 +219,7 @@ export function ChatHeaderActions({
   onOpenGitHistory,
   onGitFetch,
   onGitPull,
+  gitOperationRunning,
   terminalDockOpen,
   onToggleTerminalDock,
   terminalDockAvailable,
@@ -251,6 +260,7 @@ export function ChatHeaderActions({
         onOpenHistory={onOpenGitHistory}
         onFetch={onGitFetch}
         onPull={onGitPull}
+        running={gitOperationRunning}
       />
       <button
         type="button"
@@ -434,6 +444,7 @@ function GitActionMenu({
   onOpenHistory,
   onFetch,
   onPull,
+  running,
 }: {
   disabled: boolean;
   onOpenCommit: () => void;
@@ -442,9 +453,15 @@ function GitActionMenu({
   onOpenHistory: () => void;
   onFetch: () => void;
   onPull: () => void;
+  running: {
+    fetch: boolean;
+    pull: boolean;
+    push: boolean;
+  };
 }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const anyRunning = running.fetch || running.pull || running.push;
 
   useOutsideDismiss({
     selectors: [
@@ -467,7 +484,7 @@ function GitActionMenu({
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <GitCommitHorizontal size={15} />
+        {anyRunning ? <LoaderCircle className="spin" size={15} /> : <GitCommitHorizontal size={15} />}
         Git
         <span className="header-chevron" aria-hidden="true" />
       </button>
@@ -478,17 +495,17 @@ function GitActionMenu({
             <GitCommitHorizontal size={17} />
             <span>提交</span>
           </button>
-          <button type="button" className="workspace-menu-item" role="menuitem" onClick={() => select(onOpenPush)}>
-            <CloudUpload size={17} />
-            <span>推送</span>
+          <button type="button" className="workspace-menu-item" role="menuitem" disabled={running.push} onClick={() => select(onOpenPush)}>
+            {running.push ? <LoaderCircle className="spin" size={17} /> : <CloudUpload size={17} />}
+            <span>{running.push ? '推送中' : '推送'}</span>
           </button>
-          <button type="button" className="workspace-menu-item" role="menuitem" onClick={() => select(onPull)}>
-            <Download size={17} />
-            <span>拉取</span>
+          <button type="button" className="workspace-menu-item" role="menuitem" disabled={running.pull} onClick={() => select(onPull)}>
+            {running.pull ? <LoaderCircle className="spin" size={17} /> : <Download size={17} />}
+            <span>{running.pull ? '拉取中' : '拉取'}</span>
           </button>
-          <button type="button" className="workspace-menu-item" role="menuitem" onClick={() => select(onFetch)}>
-            <RefreshCw size={17} />
-            <span>获取远端</span>
+          <button type="button" className="workspace-menu-item" role="menuitem" disabled={running.fetch} onClick={() => select(onFetch)}>
+            {running.fetch ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}
+            <span>{running.fetch ? '获取中' : '获取远端'}</span>
           </button>
           <button type="button" className="workspace-menu-item" role="menuitem" disabled>
             <GitPullRequest size={17} />

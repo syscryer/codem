@@ -26,6 +26,7 @@ import { useAgentRun } from './hooks/useAgentRun';
 import { useAgentChannels } from './hooks/useAgentChannels';
 import { useAppSettings } from './hooks/useAppSettings';
 import { useAutomations } from './hooks/useAutomations';
+import { useBackgroundOperations } from './hooks/useBackgroundOperations';
 import { useOrdinaryChat } from './hooks/useOrdinaryChat';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
 import { APP_UPDATE_CHECK_INTERVAL_MS, CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
@@ -60,7 +61,7 @@ import {
 import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
 import { resolveChatRuntimeKind } from './lib/agent-provider-registry';
 import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
-import { fetchGitRemote, pullGitBranch, undoConversationChanges } from './lib/git-api';
+import { fetchGitRemote, pullGitBranch, pushGitBranch, undoConversationChanges } from './lib/git-api';
 import { areThreadRuntimeStatusesEqual, fetchThreadRuntimeStatuses } from './lib/thread-runtime-statuses';
 import {
   buildGitOperationToastDetail,
@@ -107,6 +108,7 @@ import type {
   ToolStep,
   ProjectSummary,
   GitCreateWorktreeResult,
+  GitPushPreview,
   InputContentBlock,
   UndoConversationChange,
   UserImageAttachment,
@@ -142,6 +144,12 @@ type GitOperationToastContext = {
   branch?: string;
   command?: string;
 };
+
+type GitBackgroundOperationType = 'fetch' | 'pull' | 'push';
+
+function getGitBackgroundOperationKey(type: GitBackgroundOperationType, projectId: string) {
+  return `git-${type}:${projectId}`;
+}
 
 type ComposerSubmission = {
   prompt: string;
@@ -269,6 +277,7 @@ export default function App() {
   } = workspaceState;
   const ordinaryChat = useOrdinaryChat(showToast);
   const agentChannels = useAgentChannels();
+  const backgroundOperations = useBackgroundOperations();
   const [appView, setAppView] = useState<AppView>({
     kind: 'workspace',
   });
@@ -1627,14 +1636,26 @@ export default function App() {
       branch: project.gitBranch,
       command: 'git fetch --all --prune',
     };
+    const operationId = backgroundOperations.startOperation({
+      key: getGitBackgroundOperationKey('fetch', project.id),
+      kind: 'git-fetch',
+      title: '获取远端',
+      target: project.name,
+      phase: '正在同步远端引用',
+    });
+    if (!operationId) {
+      return;
+    }
     try {
       await fetchGitRemote(project.id);
       await refreshProjectGitSummary(project.id);
+      backgroundOperations.completeOperation(operationId, '远端信息已更新');
       showGitOperationSuccessToast(
         fetchToastContext,
         project.id === activeProjectId ? '远端信息已更新' : `“${project.name}”远端信息已更新`,
       );
     } catch (error) {
+      backgroundOperations.failOperation(operationId, error);
       showGitOperationErrorToast(fetchToastContext, error, '获取远端失败');
       if (isGitOperationStateError(error)) {
         openGitCommitWorkbench();
@@ -1654,6 +1675,16 @@ export default function App() {
       branch: project.gitBranch,
       command: 'git pull --ff-only',
     };
+    const operationId = backgroundOperations.startOperation({
+      key: getGitBackgroundOperationKey('pull', project.id),
+      kind: 'git-pull',
+      title: '拉取',
+      target: project.name,
+      phase: '正在拉取远端提交',
+    });
+    if (!operationId) {
+      return;
+    }
     try {
       const result = await pullGitBranch(project.id);
       await refreshProjectGitSummary(project.id);
@@ -1663,15 +1694,50 @@ export default function App() {
         commitCount > 0
           ? `拉取完成：${commitCount} 个提交，${fileCount} 个文件`
           : '已经是最新版本';
+      backgroundOperations.completeOperation(operationId, message);
       showGitOperationSuccessToast(
         pullToastContext,
         project.id === activeProjectId ? message : `“${project.name}”${message}`,
       );
     } catch (error) {
+      backgroundOperations.failOperation(operationId, error);
       showGitOperationErrorToast(pullToastContext, error, '拉取失败');
       if (isGitOperationStateError(error)) {
         openGitCommitWorkbench();
       }
+    }
+  }
+
+  async function handleGitPush(project: ProjectSummary, preview: GitPushPreview) {
+    const pushToastContext: GitOperationToastContext = {
+      operation: '推送',
+      target: project.name,
+      branch: preview.branch,
+      command: `git push ${preview.remote} ${preview.branch}:${preview.targetBranch}`,
+    };
+    const operationId = backgroundOperations.startOperation({
+      key: getGitBackgroundOperationKey('push', project.id),
+      kind: 'git-push',
+      title: '推送',
+      target: project.name,
+      phase: `正在推送到 ${preview.remote}/${preview.targetBranch}`,
+    });
+    if (!operationId) {
+      throw new Error('该项目正在推送中');
+    }
+
+    try {
+      await pushGitBranch(project.id, preview.remote, preview.targetBranch);
+      await refreshProjectGitSummary(project.id);
+      const summary = preview.commits.length || preview.ahead
+        ? `推送完成：${preview.commits.length || preview.ahead} 个提交`
+        : '推送完成';
+      backgroundOperations.completeOperation(operationId, summary);
+      showGitOperationSuccessToast(pushToastContext, project.id === activeProjectId ? summary : `“${project.name}”${summary}`);
+    } catch (error) {
+      backgroundOperations.failOperation(operationId, error);
+      showGitOperationErrorToast(pushToastContext, error, '推送失败');
+      throw error;
     }
   }
 
@@ -1859,6 +1925,14 @@ export default function App() {
     showToast(result.projectId ? '工作树已创建并切换' : '工作树已创建');
   }
 
+  const activeGitOperationRunning = activeProject
+    ? {
+        fetch: backgroundOperations.isRunning(getGitBackgroundOperationKey('fetch', activeProject.id)),
+        pull: backgroundOperations.isRunning(getGitBackgroundOperationKey('pull', activeProject.id)),
+        push: backgroundOperations.isRunning(getGitBackgroundOperationKey('push', activeProject.id)),
+      }
+    : { fetch: false, pull: false, push: false };
+
   return (
     <div
       className="codex-desktop"
@@ -1889,6 +1963,9 @@ export default function App() {
           message: appUpdateRuntime.message,
           onAction: handleAppUpdateAction,
         } : null}
+        backgroundOperations={backgroundOperations.operations}
+        backgroundOperationsRunningCount={backgroundOperations.runningCount}
+        backgroundOperationsUnreadFailureCount={backgroundOperations.unreadFailureCount}
         sidebarVisible={sidebarVisible}
         windowMaterial={effectiveWindowMaterial}
         supportedWindowMaterials={visibleWindowMaterials}
@@ -1906,6 +1983,8 @@ export default function App() {
         onShowAbout={showAbout}
         onShowShortcuts={showShortcuts}
         onUnsupportedWindowAction={handleUnsupportedWindowAction}
+        onOpenBackgroundOperations={backgroundOperations.markFailuresRead}
+        onClearCompletedBackgroundOperations={backgroundOperations.clearCompleted}
       />
 
       <SettingsView
@@ -2016,6 +2095,10 @@ export default function App() {
               onOpenSettings={() => openSettings('appearance')}
               onGitFetch={handleGitFetch}
               onGitPull={handleGitPull}
+              gitOperationRunningForProject={(projectId) => ({
+                fetch: backgroundOperations.isRunning(getGitBackgroundOperationKey('fetch', projectId)),
+                pull: backgroundOperations.isRunning(getGitBackgroundOperationKey('pull', projectId)),
+              })}
               sidebarCustomWidth={appearance.sidebarCustomWidth}
               onUpdateSidebarCustomWidth={(width) => updateAppearance({ sidebarCustomWidth: width })}
             />
@@ -2083,6 +2166,7 @@ export default function App() {
                 onOpenGitHistory={openGitHistoryDock}
                 onGitFetch={() => void handleGitFetch()}
                 onGitPull={() => void handleGitPull()}
+                gitOperationRunning={activeGitOperationRunning}
                 terminalDockOpen={terminalDock.open}
                 onToggleTerminalDock={terminalDock.toggle}
                 terminalDockAvailable={terminalDockAvailable}
@@ -2307,6 +2391,8 @@ export default function App() {
           project={activeProject}
           onClose={() => setGitDialogMode(null)}
           onChanged={() => activeProjectId ? refreshProjectGitSummary(activeProjectId) : undefined}
+          onPush={handleGitPush}
+          pushRunning={backgroundOperations.isRunning(getGitBackgroundOperationKey('push', activeProject.id))}
           showToast={showToast}
         />
       ) : null}

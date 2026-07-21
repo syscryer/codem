@@ -6,14 +6,18 @@ import remarkGfm from 'remark-gfm';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { renderMarkdownLink } from '../lib/markdown-link';
 import { getWindowMaterialLabel, isTauriRuntime } from '../lib/window-material';
+import { BackgroundOperationCenter } from './BackgroundOperationCenter';
 import { PopoverPortal } from './PopoverPortal';
-import type { DesktopPlatform, WindowMaterialMode } from '../types';
+import type { BackgroundOperation, DesktopPlatform, WindowMaterialMode } from '../types';
 
 type AppMenuId = 'file' | 'edit' | 'view' | 'window' | 'help';
 
 type AppMenubarProps = {
   platform: DesktopPlatform;
   appUpdateNotice: AppUpdateTitlebarNotice | null;
+  backgroundOperations: BackgroundOperation[];
+  backgroundOperationsRunningCount: number;
+  backgroundOperationsUnreadFailureCount: number;
   sidebarVisible: boolean;
   windowMaterial: WindowMaterialMode;
   supportedWindowMaterials: WindowMaterialMode[];
@@ -31,6 +35,8 @@ type AppMenubarProps = {
   onShowAbout: () => void;
   onShowShortcuts: () => void;
   onUnsupportedWindowAction: (action: string) => void;
+  onOpenBackgroundOperations: () => void;
+  onClearCompletedBackgroundOperations: () => void;
 };
 
 type AppUpdateTitlebarNotice = {
@@ -85,6 +91,9 @@ const macShortcutLabels = {
 export function AppMenubar({
   platform,
   appUpdateNotice,
+  backgroundOperations,
+  backgroundOperationsRunningCount,
+  backgroundOperationsUnreadFailureCount,
   sidebarVisible,
   windowMaterial,
   supportedWindowMaterials,
@@ -102,6 +111,8 @@ export function AppMenubar({
   onShowAbout,
   onShowShortcuts,
   onUnsupportedWindowAction,
+  onOpenBackgroundOperations,
+  onClearCompletedBackgroundOperations,
 }: AppMenubarProps) {
   const [openMenu, setOpenMenu] = useState<AppMenuId | null>(null);
   const [updateCardOpen, setUpdateCardOpen] = useState(false);
@@ -414,6 +425,13 @@ export function AppMenubar({
           {navigation}
         </div>
         <div className="window-title-spacer" />
+        <BackgroundOperationCenter
+          operations={backgroundOperations}
+          runningCount={backgroundOperationsRunningCount}
+          unreadFailureCount={backgroundOperationsUnreadFailureCount}
+          onOpen={onOpenBackgroundOperations}
+          onClearCompleted={onClearCompletedBackgroundOperations}
+        />
         {updateEntry}
       </header>
     );
@@ -429,6 +447,13 @@ export function AppMenubar({
       {navigation}
       {menu}
       <div className="window-title-spacer" />
+      <BackgroundOperationCenter
+        operations={backgroundOperations}
+        runningCount={backgroundOperationsRunningCount}
+        unreadFailureCount={backgroundOperationsUnreadFailureCount}
+        onOpen={onOpenBackgroundOperations}
+        onClearCompleted={onClearCompletedBackgroundOperations}
+      />
       {updateEntry}
       {windowControls}
     </header>

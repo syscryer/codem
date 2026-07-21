@@ -27,6 +27,7 @@ const ordinaryProviderSource = await readFile(
   new URL('../components/AiProviderManagerDialog.tsx', import.meta.url),
   'utf8',
 );
+const stylesSource = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
 
 test('external provider import uses isolated Agent and ordinary chat endpoints', () => {
   assert.match(apiSource, /\/api\/provider-import\/agent\/scan/);
@@ -65,4 +66,10 @@ test('channel import triggers reuse the themed settings action button', () => {
   assert.doesNotMatch(agentChannelSource, /className="secondary"[^>]*>\s*<Download[^>]*\/>\s*导入渠道/);
   assert.doesNotMatch(ordinaryProviderSource, /className="secondary"[^>]*>\s*<Download[^>]*\/>\s*从 Cherry Studio 导入/);
   assert.doesNotMatch(dialogSource, /className="secondary external-provider-import-refresh"/);
+});
+
+test('provider import dialog adapts to short lists instead of forcing a tall empty body', () => {
+  const dialogStyles = stylesSource.match(/\.external-provider-import-dialog\s*\{([^}]*)\}/)?.[1] ?? '';
+  assert.match(dialogStyles, /max-height:\s*min\(720px, calc\(100vh - 48px\)\)/);
+  assert.doesNotMatch(dialogStyles, /(?:^|\s)height:\s*min\(720px/);
 });

@@ -164,7 +164,8 @@ export function mergeLoadedThreadTurns(
         (options.preserveCurrentChanges ||
           !options.force ||
           turn.status === 'pending' ||
-          turn.status === 'running'),
+          turn.status === 'running' ||
+          hasTurnVisibleOutput(turn)),
     ),
   ];
 }

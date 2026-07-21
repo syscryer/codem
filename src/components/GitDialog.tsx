@@ -13,7 +13,6 @@ import {
   createGitBranch,
   fetchGitPushPreview,
   fetchGitStatus,
-  pushGitBranch,
 } from '../lib/git-api';
 import type { GitPushPreview, GitStatusSnapshot, ProjectSummary } from '../types';
 
@@ -24,10 +23,12 @@ type GitDialogProps = {
   project: ProjectSummary;
   onClose: () => void;
   onChanged: () => void | Promise<void>;
+  onPush: (project: ProjectSummary, preview: GitPushPreview) => Promise<void>;
+  pushRunning: boolean;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
 };
 
-export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitDialogProps) {
+export function GitDialog({ mode, project, onClose, onChanged, onPush, pushRunning, showToast }: GitDialogProps) {
   const [activeMode, setActiveMode] = useState<GitDialogMode>(mode);
   const [status, setStatus] = useState<GitStatusSnapshot | null>(null);
   const [pushPreview, setPushPreview] = useState<GitPushPreview | null>(null);
@@ -66,15 +67,15 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
   }
 
   async function handlePush() {
-    if (!pushPreview || working) {
+    if (!pushPreview || working || pushRunning) {
       return;
     }
 
     setWorking(true);
     setError('');
     try {
-      await pushGitBranch(project.id, pushPreview.remote, pushPreview.targetBranch);
-      finishSuccessfulOperation('推送完成');
+      await onPush(project, pushPreview);
+      onClose();
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : '推送失败');
     } finally {
@@ -142,7 +143,7 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
             <button
               type="button"
               className="git-refresh-button"
-              disabled={loading || working}
+              disabled={loading || working || pushRunning}
               onClick={() => void loadData(activeMode)}
             >
               <RefreshCw size={15} />
@@ -164,7 +165,7 @@ export function GitDialog({ mode, project, onClose, onChanged, showToast }: GitD
         ) : error && activeMode === 'push' && !pushPreview ? (
           <div className="git-empty git-push-empty">修复上方提示后刷新，即可重新读取推送信息。</div>
         ) : activeMode === 'push' ? (
-          <PushPanel preview={pushPreview} working={working} onPush={() => void handlePush()} />
+          <PushPanel preview={pushPreview} working={working || pushRunning} onPush={() => void handlePush()} />
         ) : (
           <BranchPanel
             project={project}
@@ -272,7 +273,14 @@ function PushPanel({
       </div>
       <div className="git-commit-actions">
         <button type="button" className="dialog-button primary" disabled={working} onClick={onPush}>
-          推送
+          {working ? (
+            <>
+              <LoaderCircle className="spin" size={14} />
+              推送中
+            </>
+          ) : (
+            '推送'
+          )}
         </button>
       </div>
     </div>

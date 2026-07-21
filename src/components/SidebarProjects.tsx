@@ -71,6 +71,10 @@ type SidebarProjectsProps = {
   onCopyProjectPath: (project: ProjectSummary) => void | Promise<void>;
   onGitFetch: (project: ProjectSummary) => void | Promise<void>;
   onGitPull: (project: ProjectSummary) => void | Promise<void>;
+  gitOperationRunningForProject: (projectId: string) => {
+    fetch: boolean;
+    pull: boolean;
+  };
   onCreateWorktree: (project: ProjectSummary) => void;
   onOpenRenameProjectDialog: (project: ProjectSummary) => void;
   onOpenRemoveProjectDialog: (project: ProjectSummary) => void;
@@ -125,6 +129,7 @@ export function SidebarProjects({
   onCopyProjectPath,
   onGitFetch,
   onGitPull,
+  gitOperationRunningForProject,
   onCreateWorktree,
   onOpenRenameProjectDialog,
   onOpenRemoveProjectDialog,
@@ -445,30 +450,13 @@ export function SidebarProjects({
                   <Copy size={14} />
                   <span>复制路径</span>
                 </button>
-                <button
-                  type="button"
-                  className="workspace-menu-item"
-                  disabled={!project.isGitRepo}
-                  onClick={() => {
-                    setProjectMenuProjectId(null);
-                    void onGitFetch(project);
-                  }}
-                >
-                  <RefreshCw size={14} />
-                  <span>获取远端</span>
-                </button>
-                <button
-                  type="button"
-                  className="workspace-menu-item"
-                  disabled={!project.isGitRepo}
-                  onClick={() => {
-                    setProjectMenuProjectId(null);
-                    void onGitPull(project);
-                  }}
-                >
-                  <Download size={14} />
-                  <span>拉取</span>
-                </button>
+                <ProjectGitOperationItems
+                  project={project}
+                  running={gitOperationRunningForProject(project.id)}
+                  onGitFetch={onGitFetch}
+                  onGitPull={onGitPull}
+                  onCloseMenu={() => setProjectMenuProjectId(null)}
+                />
                 <button
                   type="button"
                   className="workspace-menu-item"
@@ -762,6 +750,49 @@ export function SidebarProjects({
         />
       ) : null}
     </aside>
+  );
+}
+
+function ProjectGitOperationItems({
+  project,
+  running,
+  onGitFetch,
+  onGitPull,
+  onCloseMenu,
+}: {
+  project: ProjectSummary;
+  running: { fetch: boolean; pull: boolean };
+  onGitFetch: (project: ProjectSummary) => void | Promise<void>;
+  onGitPull: (project: ProjectSummary) => void | Promise<void>;
+  onCloseMenu: () => void;
+}) {
+  return (
+    <>
+      <button
+        type="button"
+        className="workspace-menu-item"
+        disabled={!project.isGitRepo || running.fetch}
+        onClick={() => {
+          onCloseMenu();
+          void onGitFetch(project);
+        }}
+      >
+        {running.fetch ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
+        <span>{running.fetch ? '获取中' : '获取远端'}</span>
+      </button>
+      <button
+        type="button"
+        className="workspace-menu-item"
+        disabled={!project.isGitRepo || running.pull}
+        onClick={() => {
+          onCloseMenu();
+          void onGitPull(project);
+        }}
+      >
+        {running.pull ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />}
+        <span>{running.pull ? '拉取中' : '拉取'}</span>
+      </button>
+    </>
   );
 }
 

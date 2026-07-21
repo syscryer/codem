@@ -3439,12 +3439,46 @@ function WorkbenchBrowserShell({ active }: { active: boolean }) {
     }
   });
   const [address, setAddress] = useState('');
+  const [browserLoading, setBrowserLoading] = useState(false);
   const [error, setError] = useState('');
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const webviewsRef = useRef(new Map<string, Awaited<ReturnType<typeof ensureWorkbenchBrowserWebview>>>());
+  const browserLoadingTimerRef = useRef<number | null>(null);
   const browserTabsRef = useRef(browserState.tabs);
   browserTabsRef.current = browserState.tabs;
   const activeTab = browserState.tabs.find((tab) => tab.id === browserState.activeTabId) ?? browserState.tabs[0];
+
+  const stopBrowserLoading = useCallback((delayMs = 0) => {
+    if (browserLoadingTimerRef.current !== null) {
+      window.clearTimeout(browserLoadingTimerRef.current);
+    }
+    if (delayMs <= 0) {
+      browserLoadingTimerRef.current = null;
+      setBrowserLoading(false);
+      return;
+    }
+    browserLoadingTimerRef.current = window.setTimeout(() => {
+      browserLoadingTimerRef.current = null;
+      setBrowserLoading(false);
+    }, delayMs);
+  }, []);
+
+  const startBrowserLoading = useCallback(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    if (browserLoadingTimerRef.current !== null) {
+      window.clearTimeout(browserLoadingTimerRef.current);
+      browserLoadingTimerRef.current = null;
+    }
+    setBrowserLoading(true);
+    browserLoadingTimerRef.current = window.setTimeout(() => {
+      browserLoadingTimerRef.current = null;
+      setBrowserLoading(false);
+    }, 15_000);
+  }, []);
+
+  useEffect(() => () => stopBrowserLoading(), [stopBrowserLoading]);
 
   useEffect(() => {
     window.localStorage.setItem(WORKBENCH_BROWSER_STORAGE_KEY, JSON.stringify(browserState));
@@ -3477,9 +3511,11 @@ function WorkbenchBrowserShell({ active }: { active: boolean }) {
   const syncActiveWebview = useCallback(async () => {
     const currentTab = browserTabsRef.current.find((tab) => tab.id === browserState.activeTabId);
     if (!active || !currentTab?.url || !isTauriRuntime()) {
+      stopBrowserLoading();
       await hideInactiveWebviews();
       return;
     }
+    startBrowserLoading();
     const bounds = getBounds();
     if (!bounds) return;
     await hideInactiveWebviews(currentTab.id);
@@ -3488,14 +3524,17 @@ function WorkbenchBrowserShell({ active }: { active: boolean }) {
       webviewsRef.current.set(currentTab.id, webview);
       await syncWorkbenchBrowserWebviewBounds(webview, bounds);
     }
-  }, [active, browserState.activeTabId, getBounds, hideInactiveWebviews]);
+  }, [active, browserState.activeTabId, getBounds, hideInactiveWebviews, startBrowserLoading, stopBrowserLoading]);
 
   useEffect(() => {
-    void syncActiveWebview().catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+    void syncActiveWebview().catch((cause) => {
+      stopBrowserLoading();
+      setError(cause instanceof Error ? cause.message : String(cause));
+    });
     return () => {
       void hideInactiveWebviews();
     };
-  }, [syncActiveWebview, hideInactiveWebviews]);
+  }, [syncActiveWebview, hideInactiveWebviews, stopBrowserLoading]);
 
   useEffect(() => {
     const element = surfaceRef.current;
@@ -3524,6 +3563,7 @@ function WorkbenchBrowserShell({ active }: { active: boolean }) {
     if (!active || !activeTab?.url || !isTauriRuntime()) return;
     const timer = window.setInterval(() => {
       void readWorkbenchBrowserWebviewUrl(activeTab.id).then((url) => {
+        stopBrowserLoading(240);
         setBrowserState((state) => {
           const tab = state.tabs.find((item) => item.id === activeTab.id);
           if (!tab || !url || tab.url === url) return state;
@@ -3537,7 +3577,7 @@ function WorkbenchBrowserShell({ active }: { active: boolean }) {
       }).catch(() => undefined);
     }, 800);
     return () => window.clearInterval(timer);
-  }, [active, activeTab?.id, activeTab?.url]);
+  }, [active, activeTab?.id, activeTab?.url, stopBrowserLoading]);
 
   const updateActiveTab = useCallback((update: Partial<WorkbenchBrowserTab>) => {
     setBrowserState((state) => ({
@@ -3550,10 +3590,12 @@ function WorkbenchBrowserShell({ active }: { active: boolean }) {
     event.preventDefault();
     if (!activeTab) return;
     setError('');
+    startBrowserLoading();
     let url: string;
     try {
       url = normalizeWorkbenchBrowserInput(address);
     } catch (cause) {
+      stopBrowserLoading();
       setError(cause instanceof Error ? cause.message : String(cause));
       return;
     }
@@ -3566,19 +3608,22 @@ function WorkbenchBrowserShell({ active }: { active: boolean }) {
       if (webview) webviewsRef.current.set(activeTab.id, webview);
       await navigateWorkbenchBrowserWebview(activeTab.id, url);
     } catch (cause) {
+      stopBrowserLoading();
       setError(cause instanceof Error ? cause.message : String(cause));
     }
-  }, [activeTab, address, getBounds, updateActiveTab]);
+  }, [activeTab, address, getBounds, startBrowserLoading, stopBrowserLoading, updateActiveTab]);
 
   const runBrowserAction = useCallback(async (action: 'back' | 'forward' | 'reload') => {
     if (!activeTab?.url || !isTauriRuntime()) return;
     setError('');
+    startBrowserLoading();
     try {
       await controlWorkbenchBrowserWebview(activeTab.id, action);
     } catch (cause) {
+      stopBrowserLoading();
       setError(cause instanceof Error ? cause.message : String(cause));
     }
-  }, [activeTab]);
+  }, [activeTab, startBrowserLoading, stopBrowserLoading]);
 
   const createTab = useCallback(() => {
     if (browserState.tabs.length >= MAX_WORKBENCH_BROWSER_TABS) return;
@@ -3641,6 +3686,12 @@ function WorkbenchBrowserShell({ active }: { active: boolean }) {
             window.open(activeTab.url, '_blank', 'noopener,noreferrer');
           }
         }} disabled={!activeTab?.url}><ExternalLink size={14} /></button>
+        <span
+          className={`workbench-browser-loading-bar${browserLoading ? ' active' : ''}`}
+          role="progressbar"
+          aria-label="网页加载中"
+          aria-hidden={!browserLoading}
+        />
       </div>
       <div ref={surfaceRef} className="workbench-browser-surface">
         {!isTauriRuntime() && (

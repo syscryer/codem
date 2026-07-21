@@ -27,3 +27,11 @@ test('browser address input keeps focus styling on the neutral outer capsule', (
     /\.codex-desktop \.workbench-browser-address input:focus,[\s\S]*\.workbench-browser-address input:focus-visible\s*\{[\s\S]*border-color: transparent;[\s\S]*box-shadow: none;/,
   );
 });
+
+test('browser workbench exposes a non-blocking loading progress indicator', () => {
+  assert.match(source, /browserLoading/);
+  assert.match(source, /workbench-browser-loading-bar/);
+  assert.match(source, /role="progressbar"/);
+  assert.match(stylesSource, /\.workbench-browser-loading-bar\.active/);
+  assert.match(stylesSource, /@keyframes workbench-browser-loading/);
+});

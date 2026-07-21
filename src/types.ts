@@ -6,6 +6,31 @@ export type PermissionMode =
   | 'dontAsk'
   | 'bypassPermissions';
 
+export type BackgroundOperationKind =
+  | 'git-fetch'
+  | 'git-pull'
+  | 'git-push';
+
+export type BackgroundOperationStatus =
+  | 'running'
+  | 'success'
+  | 'error';
+
+export type BackgroundOperation = {
+  id: string;
+  key: string;
+  kind: BackgroundOperationKind;
+  title: string;
+  target: string;
+  phase: string;
+  status: BackgroundOperationStatus;
+  startedAtMs: number;
+  finishedAtMs?: number;
+  summary?: string;
+  errorMessage?: string;
+  unread?: boolean;
+};
+
 export type AgentProviderLifecycle = 'active' | 'planned';
 
 export type AgentCapabilitySupport = 'supported' | 'unsupported' | 'runtime-detected';

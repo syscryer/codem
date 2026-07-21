@@ -113,6 +113,19 @@ test('history merge appends completed turns created while a force refresh was in
   assert.deepEqual(merged, [olderHistoryTurn, newlyCompletedTurn]);
 });
 
+test('force refresh keeps a completed local turn missing from a stale history snapshot', () => {
+  const olderHistoryTurn = completedTextTurn('turn-old', '历史回答');
+  const latestLocalTurn = completedTextTurn('turn-latest', '刚完成的回答');
+
+  const merged = mergeLoadedThreadTurns(
+    [olderHistoryTurn],
+    [olderHistoryTurn, latestLocalTurn],
+    { force: true, preserveCurrentChanges: false },
+  );
+
+  assert.deepEqual(merged, [olderHistoryTurn, latestLocalTurn]);
+});
+
 test('force refresh still accepts loaded completed turns when local turns did not change', () => {
   const cachedTurn = completedTextTurn('turn-1', '旧缓存');
   const loadedTurn = completedTextTurn('turn-1', '后端恢复的最新回答');
