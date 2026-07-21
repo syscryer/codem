@@ -1415,7 +1415,7 @@ export function Composer({
             {variant === 'ordinary' ? (
                 <div className="permission-picker ordinary-context-picker" ref={reasoningMenuRef}>
                   {ordinaryReasoningOptions.length > 0 ? (
-                    <PopoverPortal open={reasoningMenuOpen} anchorRef={reasoningMenuRef} placement="top-start">
+                    <PopoverPortal open={reasoningMenuOpen && ordinaryThinkingEnabled} anchorRef={reasoningMenuRef} placement="top-start">
                     <div className="model-menu model-menu-compact knowledge-menu ordinary-reasoning-menu" role="menu" aria-label="思考等级">
                       <div className="model-menu-title">思考等级</div>
                       {ordinaryReasoningOptions.map((effort) => (
@@ -1438,30 +1438,46 @@ export function Composer({
                     </div>
                     </PopoverPortal>
                   ) : null}
-                  <button
-                    type="button"
-                    className={`permission-trigger ordinary-context-trigger ordinary-thinking-trigger${ordinaryThinkingEnabled ? ' active' : ''}`}
-                    aria-expanded={reasoningMenuOpen}
-                    aria-label={ordinaryReasoningOptions.length === 0
-                      ? '当前模型不支持思考'
-                      : ordinaryThinkingEnabled
-                        ? `思考已开启，${formatOrdinaryReasoningEffort(ordinaryReasoningEffort)}`
-                        : '开启思考'}
-                    title={ordinaryReasoningOptions.length === 0
-                      ? '当前供应商和模型不支持可控思考'
-                      : ordinaryThinkingEnabled
-                        ? `思考：${formatOrdinaryReasoningEffort(ordinaryReasoningEffort)}，点击切换等级`
-                        : '开启思考'}
-                    disabled={isRunning || ordinaryReasoningOptions.length === 0}
-                    onClick={() => {
-                      if (ordinaryThinkingEnabled) setReasoningMenuOpen((value) => !value);
-                      else void onToggleOrdinaryThinking?.();
-                    }}
+                  <div
+                    className={`ordinary-thinking-control${ordinaryThinkingEnabled ? ' active' : ''}`}
+                    data-disabled={isRunning || ordinaryReasoningOptions.length === 0 ? 'true' : undefined}
                   >
-                    <Lightbulb size={15} />
-                    {ordinaryThinkingEnabled ? <span>{formatOrdinaryReasoningEffort(ordinaryReasoningEffort)}</span> : null}
-                    {ordinaryThinkingEnabled ? <ChevronDown size={12} className="ordinary-context-chevron" /> : null}
-                  </button>
+                    <button
+                      type="button"
+                      className="permission-trigger ordinary-context-trigger ordinary-thinking-trigger"
+                      aria-pressed={ordinaryThinkingEnabled}
+                      aria-label={ordinaryReasoningOptions.length === 0
+                        ? '当前模型不支持思考'
+                        : ordinaryThinkingEnabled
+                          ? `关闭思考，当前等级${formatOrdinaryReasoningEffort(ordinaryReasoningEffort)}`
+                          : '开启思考'}
+                      title={ordinaryReasoningOptions.length === 0
+                        ? '当前供应商和模型不支持可控思考'
+                        : ordinaryThinkingEnabled
+                          ? '关闭思考'
+                          : '开启思考'}
+                      disabled={isRunning || ordinaryReasoningOptions.length === 0}
+                      onClick={() => {
+                        setReasoningMenuOpen(false);
+                        void onToggleOrdinaryThinking?.();
+                      }}
+                    >
+                      <Lightbulb size={15} />
+                      <span>{ordinaryThinkingEnabled ? formatOrdinaryReasoningEffort(ordinaryReasoningEffort) : '思考'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="ordinary-thinking-level-trigger"
+                      aria-expanded={reasoningMenuOpen && ordinaryThinkingEnabled}
+                      aria-haspopup="menu"
+                      aria-label="选择思考等级"
+                      title={ordinaryThinkingEnabled ? '选择思考等级' : '开启思考后选择等级'}
+                      disabled={isRunning || !ordinaryThinkingEnabled || ordinaryReasoningOptions.length < 2}
+                      onClick={() => setReasoningMenuOpen((value) => !value)}
+                    >
+                      <ChevronDown size={13} className="ordinary-context-chevron" />
+                    </button>
+                  </div>
                 </div>
             ) : null}
             {variant === 'ordinary' ? (

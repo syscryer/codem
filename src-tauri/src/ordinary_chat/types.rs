@@ -282,6 +282,7 @@ pub(crate) enum AiInputContentBlock {
         name: String,
         mime_type: Option<String>,
         size: Option<u64>,
+        #[serde(default)]
         text: String,
         text_bytes: Option<u64>,
     },

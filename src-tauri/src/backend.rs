@@ -662,6 +662,10 @@ fn create_router(state: AppState) -> Router {
             "/api/system/attachments/image-from-path",
             post(read_image_attachment_from_path),
         )
+        .route(
+            "/api/system/attachments/image-preview",
+            get(desktop_image_preview),
+        )
         .route("/api/system/image-preview", get(image_preview))
         .route("/api/system/file-preview", get(file_preview))
         .route("/api/git/clone", post(git_clone))
@@ -3343,6 +3347,22 @@ async fn image_preview(
         .ok_or_else(|| ApiError::bad_request("path 不能为空"))?;
     let file_path = resolve_absolute_path(file_path)?;
     ensure_can_preview_workspace_file(&state, &file_path)?;
+    build_image_preview_response(&file_path)
+}
+
+async fn desktop_image_preview(Query(query): Query<PreviewQuery>) -> ApiResult<Response> {
+    let file_path = query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("path 不能为空"))?;
+    validate_desktop_file_path(file_path)?;
+    let file_path = resolve_absolute_path(file_path)?;
+    build_image_preview_response(&file_path)
+}
+
+fn build_image_preview_response(file_path: &str) -> ApiResult<Response> {
     if !is_supported_image_file_path(&file_path) {
         return Err(ApiError::bad_request("仅支持图片预览"));
     }
@@ -5917,7 +5937,7 @@ fn resolve_codex_command() -> Option<String> {
     #[cfg(not(target_os = "windows"))]
     let lookup = background_command("which").arg("codex").output().ok();
 
-    lookup
+    let path_command = lookup
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .and_then(|stdout| {
@@ -5930,7 +5950,99 @@ fn resolve_codex_command() -> Option<String> {
                 })
                 .find(|candidate| command_reports_version(candidate))
                 .map(ToString::to_string)
-        })
+        });
+
+    path_command.or_else(resolve_default_codex_command)
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_default_codex_command() -> Option<String> {
+    let home = home_dir()?;
+    let app_data = env::var_os("APPDATA").map(PathBuf::from);
+    let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let candidates =
+        default_codex_command_paths(&home, app_data.as_deref(), local_app_data.as_deref());
+    resolve_first_runnable_command(candidates)
+        .or_else(resolve_windows_package_manager_codex_command)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn resolve_default_codex_command() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn default_codex_command_paths(
+    home: &Path,
+    app_data: Option<&Path>,
+    local_app_data: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let mut add_directory = |directory: PathBuf| {
+        candidates.extend(codex_command_paths_in_directory(&directory));
+    };
+
+    if let Some(app_data) = app_data {
+        add_directory(app_data.join("npm"));
+    }
+    if let Some(local_app_data) = local_app_data {
+        add_directory(local_app_data.join("npm"));
+        add_directory(local_app_data.join("pnpm"));
+    }
+    add_directory(home.join("AppData").join("Roaming").join("npm"));
+    add_directory(home.join("AppData").join("Local").join("pnpm"));
+    add_directory(home.join(".volta").join("bin"));
+    add_directory(home.join(".bun").join("bin"));
+    candidates
+}
+
+#[cfg(target_os = "windows")]
+fn codex_command_paths_in_directory(directory: &Path) -> [PathBuf; 4] {
+    [
+        directory.join("codex.cmd"),
+        directory.join("codex.exe"),
+        directory.join("codex.bat"),
+        directory.join("codex.com"),
+    ]
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_package_manager_codex_command() -> Option<String> {
+    for (program, args) in [
+        ("npm.cmd", vec!["config", "get", "prefix"]),
+        ("pnpm.cmd", vec!["bin", "--global"]),
+        ("bun.exe", vec!["pm", "bin", "-g"]),
+    ] {
+        let mut command = background_command(program);
+        command.args(args);
+        let Some(output) =
+            command_output_with_timeout(&mut command, std::time::Duration::from_secs(2))
+        else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let Some(directory) = parse_windows_global_bin_directory(&output.stdout) else {
+            continue;
+        };
+        if let Some(command) =
+            resolve_first_runnable_command(codex_command_paths_in_directory(&directory))
+        {
+            return Some(command);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn parse_windows_global_bin_directory(output: &[u8]) -> Option<PathBuf> {
+    String::from_utf8_lossy(output)
+        .lines()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .find(|path| path.is_absolute())
 }
 
 async fn opencode_acp_probe() -> Json<Value> {
@@ -19818,6 +19930,39 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn codex_command_paths_cover_windows_user_package_managers() {
+        let home = PathBuf::from("C:\\Users\\dev");
+        let app_data = home.join("AppData").join("Roaming");
+        let local_app_data = home.join("AppData").join("Local");
+        let candidates =
+            super::default_codex_command_paths(&home, Some(&app_data), Some(&local_app_data));
+
+        assert_eq!(
+            candidates.first(),
+            Some(&app_data.join("npm").join("codex.cmd"))
+        );
+        assert!(candidates.contains(&local_app_data.join("pnpm").join("codex.cmd")));
+        assert!(candidates.contains(&home.join(".volta").join("bin").join("codex.cmd")));
+        assert!(candidates.contains(&home.join(".bun").join("bin").join("codex.exe")));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_package_manager_bin_parser_ignores_relative_output() {
+        assert_eq!(
+            super::parse_windows_global_bin_directory(
+                b"warning\r\nC:\\Users\\dev\\AppData\\Roaming\\npm\r\n",
+            ),
+            Some(PathBuf::from("C:\\Users\\dev\\AppData\\Roaming\\npm"))
+        );
+        assert_eq!(
+            super::parse_windows_global_bin_directory(b"relative\\npm\r\n"),
+            None
+        );
+    }
+
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn native_claude_command_is_runnable_without_being_on_path() {
@@ -19860,6 +20005,27 @@ mod tests {
                 &home,
                 Some(&app_data),
                 true,
+            )),
+            Some(npm_command.to_string_lossy().to_string())
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_npm_codex_command_is_runnable_without_being_on_path() {
+        let test_directory = TestDirectory::new("codex-npm-fallback");
+        let home = test_directory.0.join("home");
+        let app_data = test_directory.0.join("app-data");
+        let npm_command = app_data.join("npm").join("codex.cmd");
+        fs::create_dir_all(npm_command.parent().unwrap()).expect("create npm directory");
+        fs::write(&npm_command, "@echo off\r\necho codex-cli 9.9.9\r\n")
+            .expect("write npm command");
+
+        assert_eq!(
+            resolve_first_runnable_command(super::default_codex_command_paths(
+                &home,
+                Some(&app_data),
+                None,
             )),
             Some(npm_command.to_string_lossy().to_string())
         );

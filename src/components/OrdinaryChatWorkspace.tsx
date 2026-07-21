@@ -127,6 +127,7 @@ export function OrdinaryChatWorkspace({
         isNewChatDraft={chat.isNewChatDraft}
         activeProject={null}
         activeProjectName="普通聊天"
+        attachmentPreviewScope="desktop"
         emptyDraftTitle={needsProviderSetup ? '配置 AI 供应商后开始聊天' : '开始普通聊天'}
         emptyDraftDescription={needsProviderSetup
           ? providerSetupDescription

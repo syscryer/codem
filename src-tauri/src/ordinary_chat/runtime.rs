@@ -39,8 +39,9 @@ use tokio::{
 
 const MAX_INPUT_BLOCKS: usize = 32;
 const MAX_TEXT_CHARS: usize = 1_000_000;
+const MAX_ATTACHMENT_TEXT_BYTES: u64 = 1024 * 1024;
+const MAX_ATTACHMENT_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_TOOL_ROUNDS: usize = 8;
-const MAX_REPLAY_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 const RUN_RECORD_RETENTION: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone)]
@@ -171,12 +172,13 @@ async fn start_chat_run(
             model_row_id = replay.model_id;
             blocks = serde_json::from_value(replay.content_blocks)
                 .map_err(|_| AiRunError::bad_request("原消息附件信息无法恢复"))?;
-            hydrate_replay_images(&mut blocks).map_err(AiRunError::bad_request)?;
             user_content = replay.user_content;
         }
         turn_id = source_turn_id.clone();
         replace_from_turn_id = Some(source_turn_id);
     }
+    hydrate_attachment_blocks(&mut blocks).map_err(AiRunError::bad_request)?;
+    validate_content_block_text(&blocks)?;
     if user_content.trim().is_empty() && blocks.is_empty() {
         return Err(AiRunError::bad_request("消息内容不能为空"));
     }
@@ -220,6 +222,7 @@ async fn start_chat_run(
         list_model_messages(&connection, &chat_id).map_err(AiRunError::internal)?,
         &model.capabilities,
     );
+    hydrate_stored_message_attachments(&mut messages);
     if let Some(current_user_message) = messages
         .iter_mut()
         .rev()
@@ -918,6 +921,11 @@ fn normalize_content_blocks(
     if blocks.len() > MAX_INPUT_BLOCKS {
         return Err(AiRunError::bad_request("单条消息的内容块过多"));
     }
+    validate_content_block_text(&blocks)?;
+    Ok(blocks)
+}
+
+fn validate_content_block_text(blocks: &[AiInputContentBlock]) -> AiRunResult<()> {
     let text_chars = blocks
         .iter()
         .map(|block| match block {
@@ -929,16 +937,130 @@ fn normalize_content_blocks(
     if text_chars > MAX_TEXT_CHARS {
         return Err(AiRunError::bad_request("单条消息文本内容过大"));
     }
-    Ok(blocks)
+    Ok(())
+}
+
+fn hydrate_attachment_blocks(blocks: &mut [AiInputContentBlock]) -> Result<(), String> {
+    for index in 0..blocks.len() {
+        let replacement = match &mut blocks[index] {
+            AiInputContentBlock::Image {
+                path,
+                mime_type,
+                size,
+                data,
+                ..
+            } if data.as_ref().map_or(true, |value| value.trim().is_empty()) => {
+                let source = path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "图片附件没有可读取的数据或路径，请重新添加图片".to_string())?;
+                let (detected_mime, encoded, byte_size) =
+                    read_image_attachment(source, mime_type.as_deref())?;
+                *mime_type = Some(detected_mime);
+                *size = Some(byte_size);
+                *data = Some(encoded);
+                None
+            }
+            AiInputContentBlock::FileReference {
+                id,
+                path,
+                name,
+                mime_type,
+                source: reference_source,
+                ..
+            } => {
+                let source_path = path.trim();
+                if source_path.is_empty() {
+                    return Err(format!("附件 {name} 没有有效路径"));
+                }
+                if is_image_attachment_path(source_path, mime_type.as_deref()) {
+                    let (detected_mime, encoded, byte_size) =
+                        read_image_attachment(source_path, mime_type.as_deref())?;
+                    Some(AiInputContentBlock::Image {
+                        id: id.clone(),
+                        path: Some(source_path.to_string()),
+                        name: Some(name.clone()),
+                        mime_type: Some(detected_mime),
+                        size: Some(byte_size),
+                        data: Some(encoded),
+                    })
+                } else if is_text_attachment_path(source_path, mime_type.as_deref()) {
+                    let (text, byte_size) = read_text_attachment(source_path)?;
+                    Some(AiInputContentBlock::FileText {
+                        id: id.clone(),
+                        path: source_path.to_string(),
+                        name: name.clone(),
+                        mime_type: mime_type.clone(),
+                        size: Some(byte_size),
+                        text,
+                        text_bytes: Some(byte_size),
+                    })
+                } else if reference_source.as_deref() == Some("attachment") {
+                    return Err(format!(
+                        "附件 {name} 暂不支持读取；当前支持图片和 1 MB 以内的文本、代码文件"
+                    ));
+                } else {
+                    None
+                }
+            }
+            AiInputContentBlock::FileText {
+                path,
+                text,
+                text_bytes,
+                ..
+            } if text.is_empty() => {
+                let (restored, byte_size) = read_text_attachment(path)?;
+                *text = restored;
+                *text_bytes = Some(byte_size);
+                None
+            }
+            AiInputContentBlock::AttachmentMetadata { name, reason, .. } => {
+                return Err(format!("附件 {name} 没有可读取内容：{reason}"));
+            }
+            _ => None,
+        };
+        if let Some(replacement) = replacement {
+            blocks[index] = replacement;
+        }
+    }
+    Ok(())
+}
+
+fn hydrate_stored_message_attachments(messages: &mut [ModelMessage]) {
+    for message in messages.iter_mut().filter(|message| message.role == "user") {
+        let Ok(mut blocks) =
+            serde_json::from_value::<Vec<AiInputContentBlock>>(message.content_blocks.clone())
+        else {
+            continue;
+        };
+        for block in &mut blocks {
+            let _ = hydrate_attachment_blocks(std::slice::from_mut(block));
+        }
+        if let Ok(value) = serde_json::to_value(blocks) {
+            message.content_blocks = value;
+        }
+    }
 }
 
 fn history_content_blocks(blocks: &[AiInputContentBlock]) -> serde_json::Result<Value> {
     let mut value = serde_json::to_value(blocks)?;
     if let Some(items) = value.as_array_mut() {
         for item in items {
-            if item.get("type").and_then(Value::as_str) == Some("image") {
-                if let Some(object) = item.as_object_mut() {
-                    object.remove("data");
+            if let Some(object) = item.as_object_mut() {
+                match object.get("type").and_then(Value::as_str) {
+                    Some("image") => {
+                        object.remove("data");
+                    }
+                    Some("file_text") => {
+                        if let Some(text) = object
+                            .remove("text")
+                            .and_then(|value| value.as_str().map(str::to_string))
+                        {
+                            object.insert("textBytes".to_string(), json!(text.len()));
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -946,44 +1068,142 @@ fn history_content_blocks(blocks: &[AiInputContentBlock]) -> serde_json::Result<
     Ok(value)
 }
 
-fn hydrate_replay_images(blocks: &mut [AiInputContentBlock]) -> Result<(), String> {
-    for block in blocks {
-        let AiInputContentBlock::Image {
-            path,
-            mime_type,
-            data,
-            ..
-        } = block
-        else {
-            continue;
-        };
-        if data.as_ref().is_some_and(|value| !value.trim().is_empty()) {
-            continue;
-        }
-        let source = path
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "原图片没有可恢复的本地路径，请重新添加图片后发送".to_string())?;
-        let canonical = std::fs::canonicalize(source)
-            .map_err(|_| format!("原图片已不存在或无法读取：{source}"))?;
-        let metadata = std::fs::metadata(&canonical)
-            .map_err(|_| format!("无法读取原图片信息：{}", canonical.display()))?;
-        if !metadata.is_file() || metadata.len() > MAX_REPLAY_IMAGE_BYTES {
-            return Err("原图片不是有效文件或大小超过 20 MB，请重新添加".to_string());
-        }
-        let detected_mime = mime_type
-            .as_deref()
-            .filter(|value| value.starts_with("image/"))
-            .map(str::to_string)
-            .or_else(|| image_mime_from_path(&canonical))
-            .ok_or_else(|| "原附件不是支持的图片格式，请重新添加".to_string())?;
-        let bytes = std::fs::read(&canonical)
-            .map_err(|_| format!("读取原图片失败：{}", canonical.display()))?;
-        *mime_type = Some(detected_mime);
-        *data = Some(base64::engine::general_purpose::STANDARD.encode(bytes));
+fn read_text_attachment(path: &str) -> Result<(String, u64), String> {
+    let canonical = canonicalize_attachment_path(path)?;
+    let metadata =
+        std::fs::metadata(&canonical).map_err(|error| format!("读取附件信息失败：{error}"))?;
+    if !metadata.is_file() {
+        return Err(format!("附件不是文件：{}", canonical.display()));
     }
-    Ok(())
+    if metadata.len() > MAX_ATTACHMENT_TEXT_BYTES {
+        return Err(format!(
+            "文本附件过大，请控制在 {} MB 以内",
+            MAX_ATTACHMENT_TEXT_BYTES / 1024 / 1024
+        ));
+    }
+    let bytes = std::fs::read(&canonical).map_err(|error| format!("读取附件失败：{error}"))?;
+    if bytes.contains(&0) {
+        return Err(format!("附件 {} 不是文本文件", canonical.display()));
+    }
+    let size = bytes.len() as u64;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| format!("附件 {} 不是 UTF-8 文本", canonical.display()))?;
+    Ok((text, size))
+}
+
+fn read_image_attachment(
+    path: &str,
+    declared_mime: Option<&str>,
+) -> Result<(String, String, u64), String> {
+    let canonical = canonicalize_attachment_path(path)?;
+    let metadata =
+        std::fs::metadata(&canonical).map_err(|error| format!("读取图片附件信息失败：{error}"))?;
+    if !metadata.is_file() {
+        return Err(format!("图片附件不是文件：{}", canonical.display()));
+    }
+    if metadata.len() > MAX_ATTACHMENT_IMAGE_BYTES {
+        return Err("图片附件过大，请控制在 10 MB 以内".to_string());
+    }
+    let mime = declared_mime
+        .filter(|value| value.trim().to_ascii_lowercase().starts_with("image/"))
+        .map(str::to_string)
+        .or_else(|| image_mime_from_path(&canonical))
+        .ok_or_else(|| "图片附件格式暂不支持".to_string())?;
+    let bytes = std::fs::read(&canonical).map_err(|error| format!("读取图片附件失败：{error}"))?;
+    if bytes.is_empty() {
+        return Err("图片附件内容为空".to_string());
+    }
+    let size = bytes.len() as u64;
+    Ok((
+        mime,
+        base64::engine::general_purpose::STANDARD.encode(bytes),
+        size,
+    ))
+}
+
+fn canonicalize_attachment_path(path: &str) -> Result<std::path::PathBuf, String> {
+    let normalized = path.trim().replace('\\', "/");
+    if normalized.is_empty()
+        || normalized.len() > 4096
+        || normalized.contains("/../")
+        || normalized.starts_with("../")
+        || normalized.ends_with("/..")
+    {
+        return Err("附件路径不被允许".to_string());
+    }
+    if is_sensitive_attachment_path(&normalized) {
+        return Err("附件路径不被允许".to_string());
+    }
+    let canonical =
+        std::fs::canonicalize(path).map_err(|error| format!("附件路径无法读取：{error}"))?;
+    if is_sensitive_attachment_path(&canonical.display().to_string().replace('\\', "/")) {
+        return Err("附件路径不被允许".to_string());
+    }
+    Ok(canonical)
+}
+
+fn is_sensitive_attachment_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower == ".env"
+        || lower.starts_with(".env.")
+        || lower.contains("/.env.")
+        || lower.ends_with("/.env")
+        || [
+            "/.ssh/",
+            "/.aws/",
+            "/.gnupg/",
+            "/.kube/",
+            "/etc/passwd",
+            "/etc/shadow",
+        ]
+        .iter()
+        .any(|pattern| lower.contains(pattern))
+}
+
+fn is_image_attachment_path(path: &str, mime_type: Option<&str>) -> bool {
+    mime_type.is_some_and(|value| value.trim().to_ascii_lowercase().starts_with("image/"))
+        || image_mime_from_path(std::path::Path::new(path)).is_some()
+}
+
+fn is_text_attachment_path(path: &str, mime_type: Option<&str>) -> bool {
+    let mime = mime_type.unwrap_or_default().trim().to_ascii_lowercase();
+    mime.starts_with("text/")
+        || mime.contains("json")
+        || mime.contains("xml")
+        || mime.contains("yaml")
+        || matches!(
+            std::path::Path::new(path)
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_ascii_lowercase())
+                .as_deref(),
+            Some(
+                "css"
+                    | "csv"
+                    | "env"
+                    | "go"
+                    | "html"
+                    | "ini"
+                    | "java"
+                    | "js"
+                    | "json"
+                    | "jsx"
+                    | "log"
+                    | "md"
+                    | "properties"
+                    | "py"
+                    | "rs"
+                    | "scss"
+                    | "sql"
+                    | "toml"
+                    | "ts"
+                    | "tsx"
+                    | "txt"
+                    | "xml"
+                    | "yaml"
+                    | "yml"
+            )
+        )
 }
 
 fn image_mime_from_path(path: &std::path::Path) -> Option<String> {
@@ -1168,19 +1388,21 @@ fn trim_history(
 #[cfg(test)]
 mod tests {
     use super::{
-        display_text, history_content_blocks, knowledge_context_message, normalize_content_blocks,
+        display_text, history_content_blocks, hydrate_attachment_blocks,
+        hydrate_stored_message_attachments, knowledge_context_message, normalize_content_blocks,
         query_requests_knowledge_overview, router, AiRunService,
     };
     use crate::ordinary_chat::{
         secrets::SecretStore,
         storage::{create_chat, insert_provider, open_initialized_database, upsert_model},
-        types::{AiInputContentBlock, AiProtocol},
+        types::{AiInputContentBlock, AiProtocol, ModelMessage},
     };
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
-    use serde_json::json;
+    use serde_json::{json, Value};
+    use std::fs;
     use tower::ServiceExt;
 
     #[test]
@@ -1207,6 +1429,99 @@ mod tests {
             history.pointer("/0/path").and_then(|value| value.as_str()),
             Some("C:\\temp\\image.png")
         );
+    }
+
+    #[test]
+    fn desktop_text_reference_is_read_for_the_model_without_persisting_the_body() {
+        let path = std::env::temp_dir().join(format!(
+            "codem-ordinary-chat-attachment-{}.md",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&path, "# Attachment\nhello from disk").unwrap();
+        let mut blocks = vec![AiInputContentBlock::FileReference {
+            id: Some("file-1".to_string()),
+            path: path.display().to_string(),
+            name: "attachment.md".to_string(),
+            mime_type: Some("text/markdown".to_string()),
+            size: None,
+            reason: None,
+            source: Some("attachment".to_string()),
+        }];
+
+        hydrate_attachment_blocks(&mut blocks).unwrap();
+        let AiInputContentBlock::FileText {
+            text, text_bytes, ..
+        } = &blocks[0]
+        else {
+            panic!("desktop text attachment should become file_text");
+        };
+        assert_eq!(text, "# Attachment\nhello from disk");
+        assert_eq!(*text_bytes, Some(text.len() as u64));
+
+        let history = history_content_blocks(&blocks).unwrap();
+        assert!(history.pointer("/0/text").is_none());
+        assert_eq!(
+            history.pointer("/0/textBytes").and_then(Value::as_u64),
+            Some(text.len() as u64)
+        );
+        let mut restored: Vec<AiInputContentBlock> = serde_json::from_value(history).unwrap();
+        hydrate_attachment_blocks(&mut restored).unwrap();
+        assert!(matches!(
+            &restored[0],
+            AiInputContentBlock::FileText { text, .. }
+                if text == "# Attachment\nhello from disk"
+        ));
+
+        let mut messages = vec![ModelMessage {
+            role: "user".to_string(),
+            content: "继续分析附件".to_string(),
+            content_blocks: history_content_blocks(&blocks).unwrap(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            tool_name: None,
+            tool_result_is_error: false,
+        }];
+        hydrate_stored_message_attachments(&mut messages);
+        assert_eq!(
+            messages[0]
+                .content_blocks
+                .pointer("/0/text")
+                .and_then(Value::as_str),
+            Some("# Attachment\nhello from disk")
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn desktop_image_reference_is_read_and_history_keeps_only_metadata() {
+        let path = std::env::temp_dir().join(format!(
+            "codem-ordinary-chat-attachment-{}.png",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&path, [0x89, b'P', b'N', b'G']).unwrap();
+        let mut blocks = vec![AiInputContentBlock::FileReference {
+            id: Some("image-1".to_string()),
+            path: path.display().to_string(),
+            name: "attachment.png".to_string(),
+            mime_type: None,
+            size: None,
+            reason: None,
+            source: Some("attachment".to_string()),
+        }];
+
+        hydrate_attachment_blocks(&mut blocks).unwrap();
+        let AiInputContentBlock::Image {
+            mime_type, data, ..
+        } = &blocks[0]
+        else {
+            panic!("desktop image attachment should become image");
+        };
+        assert_eq!(mime_type.as_deref(), Some("image/png"));
+        assert!(data.as_ref().is_some_and(|value| !value.is_empty()));
+
+        let history = history_content_blocks(&blocks).unwrap();
+        assert!(history.pointer("/0/data").is_none());
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

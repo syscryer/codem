@@ -196,6 +196,18 @@ test('Composer keeps successful attachment additions silent while preserving fai
   assert.match(appendDesktopPathsBody, /showToast\('没有可添加的有效文件（已过滤敏感路径）。', 'info'\)/);
 });
 
+test('普通聊天图片可通过文件选择和剪贴板粘贴构建内联 image block', () => {
+  const pasteBody = extractFunctionBody(composerSource, 'handlePaste');
+  const submitBody = extractFunctionBody(composerSource, 'handleSubmit');
+  const inlineImagesBody = extractFunctionBody(composerSource, 'buildInlineImageAttachments');
+
+  assert.match(pasteBody, /extractImageFiles\(event\.clipboardData\.items\)/);
+  assert.match(pasteBody, /await appendAttachments\(files\)/);
+  assert.match(submitBody, /variant === 'ordinary'[\s\S]*?await buildInlineImageAttachments\(imageAttachments\)/);
+  assert.match(inlineImagesBody, /data: payload\.data/);
+  assert.match(inlineImagesBody, /mimeType: payload\.mimeType/);
+});
+
 test('Composer keeps typing local and persists drafts only on explicit boundaries', () => {
   assert.match(composerSource, /const \[draft, setLocalDraft\] = useState\(persistedDraft\);/);
   assert.doesNotMatch(composerSource, /DRAFT_PERSIST_DEBOUNCE_MS/);

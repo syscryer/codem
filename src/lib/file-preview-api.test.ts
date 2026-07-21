@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildWorkspaceImagePreviewUrl, fetchWorkspaceFilePreview } from './file-preview-api.js';
+import {
+  buildDesktopImagePreviewUrl,
+  buildWorkspaceImagePreviewUrl,
+  fetchWorkspaceFilePreview,
+} from './file-preview-api.js';
 
 test('buildWorkspaceImagePreviewUrl rewrites desktop image preview urls to backend origin', () => {
   const originalWindow = globalThis.window;
@@ -22,6 +26,34 @@ test('buildWorkspaceImagePreviewUrl rewrites desktop image preview urls to backe
     assert.equal(
       buildWorkspaceImagePreviewUrl('D:\\workspace\\.codem-attachments\\image.png'),
       'http://127.0.0.1:3001/api/system/image-preview?path=D%3A%5Cworkspace%5C.codem-attachments%5Cimage.png',
+    );
+  } finally {
+    Object.defineProperty(globalThis, 'window', {
+      value: originalWindow,
+      configurable: true,
+    });
+  }
+});
+
+test('buildDesktopImagePreviewUrl uses the unrestricted desktop attachment preview route', () => {
+  const originalWindow = globalThis.window;
+  const fakeWindow = {
+    __TAURI_INTERNALS__: {},
+    location: {
+      href: 'tauri://localhost/',
+      origin: 'tauri://localhost',
+    },
+  } as unknown as Window & typeof globalThis;
+
+  try {
+    Object.defineProperty(globalThis, 'window', {
+      value: fakeWindow,
+      configurable: true,
+    });
+
+    assert.equal(
+      buildDesktopImagePreviewUrl('C:\\Users\\demo\\Pictures\\chat.png'),
+      'http://127.0.0.1:3001/api/system/attachments/image-preview?path=C%3A%5CUsers%5Cdemo%5CPictures%5Cchat.png',
     );
   } finally {
     Object.defineProperty(globalThis, 'window', {

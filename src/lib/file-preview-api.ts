@@ -22,6 +22,10 @@ export function buildWorkspaceImagePreviewUrl(filePath: string) {
   return resolveApiUrl(`/api/system/image-preview?path=${encodeURIComponent(filePath)}`);
 }
 
+export function buildDesktopImagePreviewUrl(filePath: string) {
+  return resolveApiUrl(`/api/system/attachments/image-preview?path=${encodeURIComponent(filePath)}`);
+}
+
 export async function fetchWorkspaceFilePreview(filePath: string) {
   const response = await fetch(`/api/system/file-preview?path=${encodeURIComponent(filePath)}`);
   if (!response.ok) {

@@ -887,7 +887,7 @@ export type AgentChannelBootstrap = {
 
 export type AgentChannelSettingsFocus = {
   requestId: number;
-  providerId: AgentProviderId;
+  providerId: AgentProviderId | 'ordinary-chat';
 };
 
 export type AgentRuntimeSettings = {

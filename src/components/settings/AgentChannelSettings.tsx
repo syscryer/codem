@@ -187,6 +187,14 @@ export function AgentChannelSettings({
     if (!focusRequest) return;
     const nextProviderId = focusRequest.providerId;
     pendingSelectedChannelIdRef.current = null;
+    if (nextProviderId === 'ordinary-chat') {
+      setOrdinaryChatActive(true);
+      setCreating(false);
+      setApiKeyVisible(false);
+      setRevealedSavedApiKey(false);
+      resetMessages();
+      return;
+    }
     setOrdinaryChatActive(false);
     setProviderId(nextProviderId);
     setSelectedChannelId(bootstrap.defaultChannelIds[nextProviderId] || 'system');

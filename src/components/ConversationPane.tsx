@@ -32,6 +32,7 @@ type ConversationPaneProps = {
   activeProject: ProjectSummary | null;
   activeProjectName?: string;
   providerId?: string;
+  attachmentPreviewScope?: 'workspace' | 'desktop';
   emptyDraftTitle?: string;
   emptyDraftDescription?: string;
   emptyDraftActionLabel?: string;
@@ -83,6 +84,7 @@ export function ConversationPane({
   activeProject,
   activeProjectName,
   providerId,
+  attachmentPreviewScope = 'workspace',
   emptyDraftTitle,
   emptyDraftDescription,
   emptyDraftActionLabel,
@@ -337,6 +339,7 @@ export function ConversationPane({
                 canUndoChangedFiles={canUndoChangedFiles}
                 activeProject={activeProject}
                 providerId={providerId}
+                attachmentPreviewScope={attachmentPreviewScope}
                 collapseIntermediateProcess={collapseIntermediateProcess}
                 thinkingLabel={thinkingLabel}
                 onOpenWorkbenchPreview={stableOpenWorkbenchPreview}

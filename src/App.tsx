@@ -1490,10 +1490,10 @@ export default function App() {
     applyLocation(location);
   }
 
-  function openAgentChannelSettings(providerId: string) {
+  function openAgentChannelSettings(providerId: AgentProviderId | 'ordinary-chat') {
     setAgentChannelSettingsFocus((current) => ({
       requestId: (current?.requestId ?? 0) + 1,
-      providerId: providerId as AgentProviderId,
+      providerId,
     }));
     navigateToLocation({ kind: 'settings', section: 'providers' });
   }
@@ -2058,7 +2058,7 @@ export default function App() {
               <OrdinaryChatWorkspace
                 chat={ordinaryChat}
                 showToast={showToast}
-                onOpenAiSettings={() => openSettings('aiProviders')}
+                onOpenAiSettings={() => openAgentChannelSettings('ordinary-chat')}
                 onOpenKnowledgeManager={() => setKnowledgeManagerOpen(true)}
                 onRenameChat={setOrdinaryChatRenameTarget}
                 onDeleteChat={setOrdinaryChatDeleteTarget}
@@ -2163,7 +2163,7 @@ export default function App() {
                 onDraftChange={handleComposerDraftChange}
                 onSelectProvider={selectDraftProvider}
                 onSelectAgentChannel={activeUsesClaude ? setClaudeAgentChannelId : handleGenericAgentChannelSelect}
-                onManageAgentChannels={openAgentChannelSettings}
+                onManageAgentChannels={(providerId) => openAgentChannelSettings(providerId as AgentProviderId)}
                 onSubmitPrompt={handleSubmitPrompt}
                 onRemoveQueuedPrompt={removeQueuedPrompt}
                 onRecallQueuedPrompt={handleRecallQueuedPrompt}

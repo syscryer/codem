@@ -50,7 +50,7 @@ import { runConversationOutputFileMenuAction } from '../lib/conversation-output-
 import { renderMarkdownImage, type MarkdownImagePreviewPayload } from '../lib/markdown-image';
 import { renderMarkdownLink } from '../lib/markdown-link';
 import { buildConversationOutputFilePreviewRequest, resolveWorkbenchPreviewFilePath } from '../lib/workbench-preview';
-import { buildWorkspaceImagePreviewUrl } from '../lib/file-preview-api';
+import { buildDesktopImagePreviewUrl, buildWorkspaceImagePreviewUrl } from '../lib/file-preview-api';
 import { deleteProjectFile } from '../lib/project-files-api';
 import type {
   ApprovalDecision,
@@ -79,6 +79,7 @@ function ConversationTurnViewComponent({
   canUndoChangedFiles,
   activeProject,
   providerId,
+  attachmentPreviewScope,
   collapseIntermediateProcess,
   thinkingLabel,
   onOpenWorkbenchPreview,
@@ -100,6 +101,7 @@ function ConversationTurnViewComponent({
   canUndoChangedFiles: boolean;
   activeProject: ProjectSummary | null;
   providerId?: string;
+  attachmentPreviewScope: 'workspace' | 'desktop';
   collapseIntermediateProcess: boolean;
   thinkingLabel: string;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
@@ -198,10 +200,15 @@ function ConversationTurnViewComponent({
         <div className="message-label">You</div>
         <div className="user-message-content">
           {hasUserContentBlocks ? (
-            <UserContentBlocks blocks={turn.userContentBlocks ?? []} onPreviewImage={setImagePreview} />
+            <UserContentBlocks
+              blocks={turn.userContentBlocks ?? []}
+              attachmentPreviewScope={attachmentPreviewScope}
+              onPreviewImage={setImagePreview}
+            />
           ) : hasUserAttachments ? (
             <UserAttachmentGallery
               attachments={turn.userAttachments ?? []}
+              attachmentPreviewScope={attachmentPreviewScope}
               onPreviewImage={setImagePreview}
             />
           ) : null}
@@ -603,9 +610,11 @@ export const ConversationTurnView = memo(ConversationTurnViewComponent);
 
 function UserContentBlocks({
   blocks,
+  attachmentPreviewScope,
   onPreviewImage,
 }: {
   blocks: InputContentBlockSummary[];
+  attachmentPreviewScope: 'workspace' | 'desktop';
   onPreviewImage: (preview: ImagePreviewItem) => void;
 }) {
   // file_reference 分两种来源：'mention'（@文件，路径已体现在 prompt 文本里）保持隐藏；
@@ -636,14 +645,14 @@ function UserContentBlocks({
                 aria-label={`预览图片：${block.name || '图片附件'}`}
                 onClick={() =>
                   onPreviewImage({
-                    src: buildUserAttachmentPreviewUrl(imagePath),
+                    src: buildUserAttachmentPreviewUrl(imagePath, attachmentPreviewScope),
                     alt: block.name || '图片附件',
                     title: block.name || undefined,
                   })
                 }
               >
                 <img
-                  src={buildUserAttachmentPreviewUrl(imagePath)}
+                  src={buildUserAttachmentPreviewUrl(imagePath, attachmentPreviewScope)}
                   alt={block.name || '图片附件'}
                   className="user-message-attachment-preview"
                   loading="lazy"
@@ -669,9 +678,11 @@ function UserContentBlocks({
 
 function UserAttachmentGallery({
   attachments,
+  attachmentPreviewScope = 'workspace',
   onPreviewImage,
 }: {
   attachments: UserImageAttachment[];
+  attachmentPreviewScope?: 'workspace' | 'desktop';
   onPreviewImage: (preview: ImagePreviewItem) => void;
 }) {
   return (
@@ -684,14 +695,14 @@ function UserAttachmentGallery({
             aria-label={`预览图片：${attachment.name || '图片附件'}`}
             onClick={() =>
               onPreviewImage({
-                src: buildUserAttachmentPreviewUrl(attachment.path),
+                src: buildUserAttachmentPreviewUrl(attachment.path, attachmentPreviewScope),
                 alt: attachment.name || '图片附件',
                 title: attachment.name || undefined,
               })
             }
           >
             <img
-              src={buildUserAttachmentPreviewUrl(attachment.path)}
+              src={buildUserAttachmentPreviewUrl(attachment.path, attachmentPreviewScope)}
               alt={attachment.name || '图片附件'}
               className="user-message-attachment-preview"
               loading="lazy"
@@ -3988,8 +3999,10 @@ function getFileName(filePath: string) {
   return segments[segments.length - 1] || filePath;
 }
 
-function buildUserAttachmentPreviewUrl(filePath: string) {
-  return buildWorkspaceImagePreviewUrl(filePath);
+function buildUserAttachmentPreviewUrl(filePath: string, scope: 'workspace' | 'desktop') {
+  return scope === 'desktop'
+    ? buildDesktopImagePreviewUrl(filePath)
+    : buildWorkspaceImagePreviewUrl(filePath);
 }
 
 function InlineCopyButton({
