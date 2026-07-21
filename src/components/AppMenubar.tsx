@@ -371,7 +371,6 @@ export function AppMenubar({
         ) : (
           <Download size={13} />
         )}
-        <span>{formatUpdatePillLabel(appUpdateNotice.phase)}</span>
       </button>
       <PopoverPortal open={updateCardOpen} anchorRef={updateTriggerRef} placement="bottom-end" offset={8}>
         <div className="app-update-popover" onMouseEnter={openUpdateCard} onMouseLeave={scheduleUpdateCardClose}>

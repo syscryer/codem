@@ -38,6 +38,21 @@ test('菜单材质作用域包含独立宿主且没有复用桌面根容器类',
   assert.doesNotMatch(stylesSource, /\.popover-portal-host::before\s*\{[^}]*backdrop-filter:/s);
 });
 
+test('独立宿主中的滚动容器继续使用全局滚动条 Token', () => {
+  assert.match(
+    stylesSource,
+    /:is\(\.codex-desktop,\s*\.popover-portal-host\)\s+\*:hover\s*\{[^}]*scrollbar-color:\s*var\(--app-scrollbar-thumb-hover\)\s+transparent;/s,
+  );
+  assert.match(
+    stylesSource,
+    /:is\(\.codex-desktop,\s*\.popover-portal-host\)\s+\*::-(?:webkit|Webkit)-scrollbar-thumb\s*\{[^}]*background-color:\s*transparent;/s,
+  );
+  assert.match(
+    stylesSource,
+    /:is\(\.codex-desktop,\s*\.popover-portal-host\)\s+\*:hover::-(?:webkit|Webkit)-scrollbar-thumb\s*\{[^}]*background-color:\s*var\(--app-scrollbar-thumb-hover\);/s,
+  );
+});
+
 test('对话框材质仍由原有样式独立控制', () => {
   assert.match(stylesSource, /\.dialog-backdrop\s*\{[^}]*backdrop-filter:\s*blur\(4px\);/s);
   assert.match(stylesSource, /\.dialog-card\s*\{[^}]*background:\s*#ffffff;/s);

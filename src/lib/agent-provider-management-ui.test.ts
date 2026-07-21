@@ -36,6 +36,7 @@ const providerManagementSource = await readFile(
 const stylesSource = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
 const appSource = await readFile(new URL('../App.tsx', import.meta.url), 'utf8');
 const agentRunSource = await readFile(new URL('../hooks/useAgentRun.ts', import.meta.url), 'utf8');
+const composerSource = await readFile(new URL('../components/Composer.tsx', import.meta.url), 'utf8');
 
 test('settings exposes Agent providers without adding a new navigation section', () => {
   assert.match(sidebarSource, /id: 'providers', label: 'Agent 设置'/);
@@ -295,4 +296,21 @@ test('OpenCode diagnostics report ACP and model configuration without exposing c
   );
   assert.match(providerSettingsSource, /provider\.id === 'opencode'/);
   assert.match(providerManagementSource, /OPENCODE_CLI_PATH/);
+});
+
+test('Agent model menu stays compact for the standard model catalog', () => {
+  assert.match(
+    stylesSource,
+    /\.model-menu\.model-menu-compact\.agent-model-menu\s*\{[^}]*width:\s*min\(320px,\s*calc\(100vw\s*-\s*40px\)\);/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.agent-model-menu \.model-menu-item\s*\{[^}]*min-height:\s*48px;[^}]*padding:\s*6px\s+14px;/s,
+  );
+  assert.match(stylesSource, /\.agent-model-menu \.model-menu-item-copy\s*\{[^}]*gap:\s*2px;/s);
+});
+
+test('Agent model menu does not show redundant native model tooltips', () => {
+  assert.doesNotMatch(composerSource, /title=\{item\.label\}/);
+  assert.match(composerSource, /<span>\{item\.label\}<\/span>/);
 });

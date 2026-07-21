@@ -48,3 +48,14 @@ test('Git history branch rows show upstream tooltip for local branches', () => {
   assert.match(panelSource, /未设置跟踪分支/);
   assert.doesNotMatch(panelSource, /branch\.kind === 'remote' \? branch\.name : branchTooltip/);
 });
+
+test('Git history branch filter only scrolls vertically and constrains long branch names', () => {
+  assert.match(
+    stylesSource,
+    /\.git-history-filter-menu-list\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.git-history-filter-menu-group\s*\{[^}]*min-width:\s*0;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s,
+  );
+});

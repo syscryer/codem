@@ -1930,14 +1930,13 @@ export function Composer({
                             role="menuitemradio"
                             aria-checked={selected}
                             disabled={isRunning}
-                            title={item.label}
                             onClick={() => {
                               onSelectAgentModel(item.id);
                               setModelMenuOpen(false);
                             }}
                           >
                             <span className="model-menu-item-copy">
-                              <span title={item.label}>{item.label}</span>
+                              <span>{item.label}</span>
                               {description ? <small>{description}</small> : null}
                             </span>
                             {selected ? <Check className="model-check" size={15} /> : null}

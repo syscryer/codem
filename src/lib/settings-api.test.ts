@@ -86,10 +86,15 @@ test('app checks updates at a low-frequency interval and exposes a direct top-ri
   assert.match(appSource, /releaseNotes: appUpdateRuntime\.info\.message/);
   assert.match(appSource, /releaseDate: appUpdateRuntime\.info\.date/);
   assert.match(menubarSource, /className={`title-update-pill \$\{appUpdateNotice\.phase\}`}/);
+  assert.doesNotMatch(menubarSource, /<span>\{formatUpdatePillLabel\(appUpdateNotice\.phase\)\}<\/span>/);
   assert.match(menubarSource, /onMouseEnter=\{openUpdateCard\}/);
   assert.match(menubarSource, /appUpdateNotice\.onAction\(\)/);
   assert.match(menubarSource, /v\$\{appUpdateNotice\.version\} 更新日志/);
   assert.match(stylesSource, /\.title-update-pill/);
+  assert.match(stylesSource, /\.title-update-pill\s*\{[^}]*width:\s*28px;[^}]*background:\s*color-mix\([^;]*var\(--accent/s);
+  assert.match(stylesSource, /\.title-update-pill::after\s*\{[^}]*width:\s*5px;[^}]*height:\s*5px;[^}]*background:\s*var\(--accent/s);
+  assert.match(stylesSource, /\.title-update-pill\.failed::after\s*\{[^}]*background:\s*var\(--danger/s);
+  assert.doesNotMatch(stylesSource, /\.title-update-pill\s*\{[^}]*box-shadow:\s*0\s+5px\s+14px/s);
   assert.match(stylesSource, /\.app-update-popover/);
 });
 
