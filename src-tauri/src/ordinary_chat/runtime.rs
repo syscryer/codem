@@ -386,7 +386,8 @@ async fn execute_chat_loop(
         let event_run_id = run_id.clone();
         let tool_block_base = block_index;
         let mut streamed_tool_indexes = HashSet::new();
-        let outcome = stream_chat(
+        let mut emitted_provider_event = false;
+        let first_attempt = stream_chat(
             provider,
             model,
             api_key,
@@ -397,49 +398,59 @@ async fn execute_chat_loop(
                 .unwrap_or(&[]),
             runtime_options,
             cancel.clone(),
-            |event| match event {
-                ProviderStreamEvent::TextDelta(text) => event_state.push_event(
+            |event| {
+                emitted_provider_event = true;
+                push_provider_stream_event(
+                    &event_state,
                     &event_run_id,
-                    json!({ "type": "delta", "runId": event_run_id, "text": text }),
-                ),
-                ProviderStreamEvent::ReasoningDelta(text) => event_state.push_event(
-                    &event_run_id,
-                    json!({ "type": "thinking-delta", "runId": event_run_id, "text": text }),
-                ),
-                ProviderStreamEvent::Usage(usage) => event_state.push_event(
-                    &event_run_id,
-                    json!({ "type": "usage", "runId": event_run_id, "usage": usage }),
-                ),
-                ProviderStreamEvent::ToolCallDelta(delta) => {
-                    let current_block_index = tool_block_base + delta.index;
-                    if streamed_tool_indexes.insert(delta.index) {
-                        event_state.push_event(
-                            &event_run_id,
-                            json!({
-                                "type": "tool-start",
-                                "runId": event_run_id,
-                                "blockIndex": current_block_index,
-                                "toolUseId": delta.id,
-                                "name": delta.name.unwrap_or_else(|| "MCP 工具".to_string()),
-                            }),
-                        );
-                    }
-                    if !delta.arguments_delta.is_empty() {
-                        event_state.push_event(
-                            &event_run_id,
-                            json!({
-                                "type": "tool-input-delta",
-                                "runId": event_run_id,
-                                "blockIndex": current_block_index,
-                                "toolUseId": delta.id,
-                                "text": delta.arguments_delta,
-                            }),
-                        );
-                    }
-                }
+                    tool_block_base,
+                    &mut streamed_tool_indexes,
+                    event,
+                );
             },
         )
-        .await?;
+        .await;
+        let outcome = match first_attempt {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let Some(retry_messages) =
+                    historical_image_retry_messages(messages, &error, emitted_provider_event)
+                else {
+                    return Err(error);
+                };
+                *messages = retry_messages;
+                state.push_event(
+                    &run_id,
+                    json!({
+                        "type": "status",
+                        "runId": run_id,
+                        "message": "当前模型不支持历史图片，已忽略历史图片并重试",
+                    }),
+                );
+                stream_chat(
+                    provider,
+                    model,
+                    api_key,
+                    messages,
+                    registry
+                        .as_ref()
+                        .map(McpToolRegistry::definitions)
+                        .unwrap_or(&[]),
+                    runtime_options,
+                    cancel.clone(),
+                    |event| {
+                        push_provider_stream_event(
+                            &event_state,
+                            &event_run_id,
+                            tool_block_base,
+                            &mut streamed_tool_indexes,
+                            event,
+                        );
+                    },
+                )
+                .await?
+            }
+        };
         total_text.push_str(&outcome.text);
         total_reasoning.push_str(&outcome.reasoning);
         if outcome.usage.is_some() {
@@ -655,6 +666,116 @@ async fn execute_chat_loop(
         registry.shutdown().await;
     }
     Err(format!("MCP 工具调用超过最大循环次数 {MAX_TOOL_ROUNDS}"))
+}
+
+fn push_provider_stream_event(
+    state: &AiRunState,
+    run_id: &str,
+    tool_block_base: usize,
+    streamed_tool_indexes: &mut HashSet<usize>,
+    event: ProviderStreamEvent,
+) {
+    match event {
+        ProviderStreamEvent::TextDelta(text) => state.push_event(
+            run_id,
+            json!({ "type": "delta", "runId": run_id, "text": text }),
+        ),
+        ProviderStreamEvent::ReasoningDelta(text) => state.push_event(
+            run_id,
+            json!({ "type": "thinking-delta", "runId": run_id, "text": text }),
+        ),
+        ProviderStreamEvent::Usage(usage) => state.push_event(
+            run_id,
+            json!({ "type": "usage", "runId": run_id, "usage": usage }),
+        ),
+        ProviderStreamEvent::ToolCallDelta(delta) => {
+            let current_block_index = tool_block_base + delta.index;
+            if streamed_tool_indexes.insert(delta.index) {
+                state.push_event(
+                    run_id,
+                    json!({
+                        "type": "tool-start",
+                        "runId": run_id,
+                        "blockIndex": current_block_index,
+                        "toolUseId": delta.id,
+                        "name": delta.name.unwrap_or_else(|| "MCP 工具".to_string()),
+                    }),
+                );
+            }
+            if !delta.arguments_delta.is_empty() {
+                state.push_event(
+                    run_id,
+                    json!({
+                        "type": "tool-input-delta",
+                        "runId": run_id,
+                        "blockIndex": current_block_index,
+                        "toolUseId": delta.id,
+                        "text": delta.arguments_delta,
+                    }),
+                );
+            }
+        }
+    }
+}
+
+fn historical_image_retry_messages(
+    messages: &[ModelMessage],
+    error: &str,
+    emitted_provider_event: bool,
+) -> Option<Vec<ModelMessage>> {
+    if emitted_provider_event || !is_unsupported_vision_error(error) {
+        return None;
+    }
+    let current_user_index = messages
+        .iter()
+        .rposition(|message| message.role == "user")?;
+    if message_has_image(&messages[current_user_index]) {
+        return None;
+    }
+
+    let mut retry_messages = messages.to_vec();
+    let mut removed_historical_image = false;
+    for message in &mut retry_messages[..current_user_index] {
+        let Some(blocks) = message.content_blocks.as_array_mut() else {
+            continue;
+        };
+        let previous_len = blocks.len();
+        blocks.retain(|block| block.get("type").and_then(Value::as_str) != Some("image"));
+        removed_historical_image |= blocks.len() != previous_len;
+    }
+    removed_historical_image.then_some(retry_messages)
+}
+
+fn message_has_image(message: &ModelMessage) -> bool {
+    message.content_blocks.as_array().is_some_and(|blocks| {
+        blocks
+            .iter()
+            .any(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+    })
+}
+
+fn is_unsupported_vision_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    let known_message = [
+        "not a vlm",
+        "not a vision language model",
+        "does not support image input",
+        "doesn't support image input",
+        "image input is not supported",
+        "image inputs are not supported",
+        "vision input is not supported",
+        "please use text-only prompts",
+        "no endpoints found that support image input",
+        "不支持图片输入",
+        "不支持视觉输入",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker));
+    let rejected_openai_image_block = normalized.contains("unknown variant")
+        && normalized.contains("image_url")
+        && normalized.contains("expected")
+        && normalized.contains("text");
+    known_message || rejected_openai_image_block
 }
 
 fn tool_result_message(call: &ProviderToolCall, content: &str, is_error: bool) -> ModelMessage {
@@ -1388,9 +1509,9 @@ fn trim_history(
 #[cfg(test)]
 mod tests {
     use super::{
-        display_text, history_content_blocks, hydrate_attachment_blocks,
-        hydrate_stored_message_attachments, knowledge_context_message, normalize_content_blocks,
-        query_requests_knowledge_overview, router, AiRunService,
+        display_text, historical_image_retry_messages, history_content_blocks,
+        hydrate_attachment_blocks, hydrate_stored_message_attachments, knowledge_context_message,
+        normalize_content_blocks, query_requests_knowledge_overview, router, AiRunService,
     };
     use crate::ordinary_chat::{
         secrets::SecretStore,
@@ -1411,6 +1532,112 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         assert_eq!(display_text(Some(" hello "), &blocks), "hello");
         assert!(matches!(blocks[0], AiInputContentBlock::Text { .. }));
+    }
+
+    #[test]
+    fn vision_rejection_retries_without_historical_images() {
+        let messages = vec![
+            ModelMessage {
+                role: "user".to_string(),
+                content: "分析这张图片".to_string(),
+                content_blocks: json!([
+                    { "type": "text", "text": "分析这张图片" },
+                    { "type": "image", "mimeType": "image/png", "data": "AAAA" }
+                ]),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                tool_name: None,
+                tool_result_is_error: false,
+            },
+            ModelMessage {
+                role: "assistant".to_string(),
+                content: "图片内容".to_string(),
+                content_blocks: json!([]),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                tool_name: None,
+                tool_result_is_error: false,
+            },
+            ModelMessage {
+                role: "user".to_string(),
+                content: "继续".to_string(),
+                content_blocks: json!([{ "type": "text", "text": "继续" }]),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                tool_name: None,
+                tool_result_is_error: false,
+            },
+        ];
+
+        let retry = historical_image_retry_messages(
+            &messages,
+            "The model is not a VLM (Vision Language Model). Please use text-only prompts.",
+            false,
+        )
+        .expect("historical image should be removed for a text-only retry");
+
+        assert_eq!(retry[0].content_blocks.as_array().unwrap().len(), 1);
+        assert_eq!(retry[0].content_blocks[0]["type"], "text");
+        assert_eq!(retry[2].content_blocks, messages[2].content_blocks);
+        assert_eq!(messages[0].content_blocks.as_array().unwrap().len(), 2);
+
+        assert!(historical_image_retry_messages(
+            &messages,
+            "HTTP 404: No endpoints found that support image input",
+            false,
+        )
+        .is_some());
+        assert!(historical_image_retry_messages(
+            &messages,
+            "HTTP 400: messages[8]: unknown variant `image_url`, expected `text`",
+            false,
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn vision_retry_never_drops_current_images_or_hides_other_errors() {
+        let current_image_messages = vec![ModelMessage {
+            role: "user".to_string(),
+            content: "分析".to_string(),
+            content_blocks: json!([
+                { "type": "text", "text": "分析" },
+                { "type": "image", "mimeType": "image/png", "data": "AAAA" }
+            ]),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            tool_name: None,
+            tool_result_is_error: false,
+        }];
+        assert!(historical_image_retry_messages(
+            &current_image_messages,
+            "image input is not supported",
+            false,
+        )
+        .is_none());
+
+        let mut historical_image_messages = current_image_messages.clone();
+        historical_image_messages.push(ModelMessage {
+            role: "user".to_string(),
+            content: "继续".to_string(),
+            content_blocks: json!([{ "type": "text", "text": "继续" }]),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            tool_name: None,
+            tool_result_is_error: false,
+        });
+        assert!(historical_image_retry_messages(
+            &historical_image_messages,
+            "HTTP 429 rate limited",
+            false,
+        )
+        .is_none());
+        assert!(historical_image_retry_messages(
+            &historical_image_messages,
+            "image input is not supported",
+            true,
+        )
+        .is_none());
     }
 
     #[test]

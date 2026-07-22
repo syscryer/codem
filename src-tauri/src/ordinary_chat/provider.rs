@@ -2398,7 +2398,29 @@ async fn ensure_success(response: reqwest::Response) -> Result<reqwest::Response
 }
 
 fn public_request_error(error: reqwest::Error) -> String {
-    format!("AI 服务请求失败：{}", sanitize_error(&error.to_string()))
+    let mut summary = error.to_string();
+    if let Some(url) = error.url() {
+        let mut safe_url = url.clone();
+        safe_url.set_query(None);
+        safe_url.set_fragment(None);
+        let _ = safe_url.set_username("");
+        let _ = safe_url.set_password(None);
+        summary = summary.replace(url.as_str(), safe_url.as_str());
+    }
+
+    let mut details = vec![summary];
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        let detail = cause.to_string();
+        if !detail.trim().is_empty() && details.last() != Some(&detail) {
+            details.push(detail);
+        }
+        source = cause.source();
+    }
+    format!(
+        "AI 服务请求失败：{}",
+        sanitize_error(&details.join("；原因："))
+    )
 }
 
 fn sanitize_error(value: &str) -> String {
@@ -2408,6 +2430,8 @@ fn sanitize_error(value: &str) -> String {
         "x-api-key",
         "api_key",
         "apikey",
+        "key=",
+        "token=",
         "bearer ",
         "sk-",
         "secret",
@@ -2418,7 +2442,7 @@ fn sanitize_error(value: &str) -> String {
     {
         return "错误内容包含敏感字段，已隐藏".to_string();
     }
-    value.chars().take(500).collect()
+    value.chars().take(2000).collect()
 }
 
 #[cfg(test)]
@@ -2428,8 +2452,9 @@ mod tests {
         apply_gemini_runtime_options, apply_openai_responses_runtime_options, discover_models,
         finalize_tool_calls, gemini_contents, merge_tool_call_delta, minimax_token_plan_thinking,
         normalize_action_endpoint, openai_chat_messages, openai_chat_tools, openai_responses_input,
-        parse_models, split_system_messages, stream_chat, test_token_plan_provider,
-        token_plan_supports_remote_models, ToolCallAccumulator, PROVIDER_TEMPLATES,
+        parse_models, public_request_error, split_system_messages, stream_chat,
+        test_token_plan_provider, token_plan_supports_remote_models, ToolCallAccumulator,
+        PROVIDER_TEMPLATES,
     };
     use crate::ordinary_chat::types::{
         AiChatModelPreference, AiProtocol, DiscoveredModel, ModelMessage, ProviderToolCall,
@@ -2514,6 +2539,27 @@ mod tests {
                 && item.channel_id == "token-plan-global"
                 && item.protocol == AiProtocol::AnthropicMessages
         }));
+    }
+
+    #[tokio::test]
+    async fn request_errors_include_the_original_cause_without_url_secrets() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let error = reqwest::Client::new()
+            .get(format!(
+                "http://{address}/chat/completions?key=do-not-expose"
+            ))
+            .send()
+            .await
+            .expect_err("closed local port should fail");
+
+        let message = public_request_error(error);
+        assert!(message.starts_with("AI 服务请求失败："));
+        assert!(message.contains("；原因："));
+        assert!(message.contains(&format!("http://{address}/chat/completions")));
+        assert!(!message.contains("do-not-expose"));
+        assert!(!message.contains("?key="));
     }
 
     #[test]
