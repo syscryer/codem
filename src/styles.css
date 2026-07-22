@@ -12169,18 +12169,6 @@ button.git-conflict-overview-row:focus-visible,
   background: var(--danger, #d64545);
 }
 
-.background-operation-trigger.is-running::after {
-  content: '';
-  position: absolute;
-  right: 5px;
-  bottom: 4px;
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background: var(--accent, #2374c6);
-  box-shadow: 0 0 0 1px var(--app-surface, #ffffff);
-}
-
 .background-operation-popover {
   width: min(380px, calc(100vw - 24px));
   max-height: min(560px, calc(100vh - 56px));

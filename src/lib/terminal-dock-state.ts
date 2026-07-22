@@ -1,6 +1,16 @@
 export type TerminalDockBodyKind = 'terminal' | 'extra' | 'unavailable';
 export type TerminalDockPanelId = 'terminal' | 'git-history';
 
+export function isTerminalDockActive({
+  isOpen,
+  activePanelId,
+}: {
+  isOpen: boolean;
+  activePanelId?: string | null;
+}) {
+  return isOpen && (activePanelId ?? 'terminal') === 'terminal';
+}
+
 export function shouldRenderTerminalDock({
   isOpen,
   terminalAvailable,

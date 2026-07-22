@@ -67,7 +67,11 @@ import {
   buildGitOperationToastDetail,
   normalizeGitOperationToastMessage,
 } from './lib/git-operation-toast-detail';
-import { resolveTerminalDockPanelIdOnRun, shouldRenderTerminalDock } from './lib/terminal-dock-state';
+import {
+  isTerminalDockActive,
+  resolveTerminalDockPanelIdOnRun,
+  shouldRenderTerminalDock,
+} from './lib/terminal-dock-state';
 import { calculateRightWorkbenchResizeWidth, clampRightWorkbenchWidth } from './lib/workbench-layout';
 import { showThreadSystemNotification } from './lib/thread-system-notifications';
 import {
@@ -320,6 +324,10 @@ export default function App() {
   const terminalDockAvailable = isTauriRuntime();
   const [terminalRunRequest, setTerminalRunRequest] = useState<TerminalRunRequest | null>(null);
   const [dockActivePanelId, setDockActivePanelId] = useState<'terminal' | 'git-history'>('terminal');
+  const terminalDockActive = isTerminalDockActive({
+    isOpen: terminalDock.open,
+    activePanelId: dockActivePanelId,
+  });
   const dockExtraPanels = useMemo(
     () => (activeProject?.isGitRepo
       ? [
@@ -1619,6 +1627,16 @@ export default function App() {
     setDockActivePanelId('git-history');
   }
 
+  function toggleTerminalDock() {
+    if (terminalDockActive) {
+      terminalDock.toggle();
+      return;
+    }
+
+    terminalDock.openDock();
+    setDockActivePanelId('terminal');
+  }
+
   function openFilesWorkbench() {
     setRightWorkbenchOpen(true);
     setRightWorkbenchTab('files');
@@ -2167,8 +2185,8 @@ export default function App() {
                 onGitFetch={() => void handleGitFetch()}
                 onGitPull={() => void handleGitPull()}
                 gitOperationRunning={activeGitOperationRunning}
-                terminalDockOpen={terminalDock.open}
-                onToggleTerminalDock={terminalDock.toggle}
+                terminalDockOpen={terminalDockActive}
+                onToggleTerminalDock={toggleTerminalDock}
                 terminalDockAvailable={terminalDockAvailable}
                 rightWorkbenchOpen={rightWorkbenchOpen}
                 onToggleRightWorkbench={() => setRightWorkbenchOpen((value) => !value)}
