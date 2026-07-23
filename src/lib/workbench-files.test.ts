@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   buildWorkbenchFileTree,
+  combineProjectFilePath,
   filterWorkbenchNoiseFiles,
   getWorkbenchPreviewKind,
   isWorkbenchNoiseFilePath,
@@ -11,6 +12,21 @@ import {
   toggleWorkbenchFileTreeNodeSelection,
   resolveWorkbenchCodeLanguage,
 } from './workbench-files';
+
+test('combineProjectFilePath preserves the project path platform style', () => {
+  assert.equal(
+    combineProjectFilePath('D:\\project\\codem', 'src/lib/workbench-files.ts'),
+    'D:\\project\\codem\\src\\lib\\workbench-files.ts',
+  );
+  assert.equal(
+    combineProjectFilePath('/Users/demo/project/codem', 'src/lib/workbench-files.ts'),
+    '/Users/demo/project/codem/src/lib/workbench-files.ts',
+  );
+  assert.equal(
+    combineProjectFilePath('\\\\server\\share\\codem', 'src/lib/workbench-files.ts'),
+    '\\\\server\\share\\codem\\src\\lib\\workbench-files.ts',
+  );
+});
 
 test('resolveWorkbenchCodeLanguage maps common preview files to highlighter languages', () => {
   assert.equal(resolveWorkbenchCodeLanguage('src/app.tsx'), 'tsx');
