@@ -216,6 +216,25 @@ export type CodexAppServerProbeResult = {
   probe: CodexAppServerProbeSummary | null;
 };
 
+export type PiRpcProbeSummary = {
+  authenticated: boolean;
+  sessionId: string;
+  currentModel: string | null;
+  thinkingLevel: string;
+  thinkingLevels: string[];
+  modelCount: number;
+  isStreaming: boolean;
+};
+
+export type PiRpcProbeResult = {
+  installed: boolean;
+  initialized: boolean;
+  command: string | null;
+  nodeVersion: string | null;
+  error: string | null;
+  probe: PiRpcProbeSummary | null;
+};
+
 export type AgentContentBlock = {
   type?: string;
   text?: string;

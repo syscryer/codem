@@ -9,6 +9,8 @@ import {
   normalizeCodexAppServerProbe,
   normalizeGrokAcpProbe,
   normalizeOpenCodeAcpProbe,
+  normalizePiRpcProbe,
+  probePiAgent,
   resolveChatRuntimeKind,
 } from './agent-provider-registry.js';
 
@@ -407,4 +409,82 @@ test('OpenCode probe rejects impossible initialized state', () => {
     () => normalizeOpenCodeAcpProbe({ installed: false, initialized: true }),
     /不能处于已初始化状态/,
   );
+});
+
+test('Pi RPC probe keeps only bounded public runtime diagnostics', () => {
+  const result = normalizePiRpcProbe({
+    installed: true,
+    initialized: true,
+    command: 'C:/tools/pi.cmd',
+    nodeVersion: 'v24.18.0',
+    token: 'must-not-survive',
+    probe: {
+      authenticated: true,
+      sessionId: 'session-1',
+      currentModel: 'anthropic/claude-sonnet-4',
+      thinkingLevel: 'high',
+      thinkingLevels: ['off', 'high'],
+      modelCount: 2,
+      isStreaming: false,
+      sessionFile: 'C:/private/session.jsonl',
+      auth: { apiKey: 'private' },
+    },
+  });
+
+  assert.deepEqual(result.probe, {
+    authenticated: true,
+    sessionId: 'session-1',
+    currentModel: 'anthropic/claude-sonnet-4',
+    thinkingLevel: 'high',
+    thinkingLevels: ['off', 'high'],
+    modelCount: 2,
+    isStreaming: false,
+  });
+  assert.doesNotMatch(JSON.stringify(result), /must-not-survive|sessionFile|private|apiKey/);
+});
+
+test('Pi RPC probe rejects impossible state and duplicate thinking levels', () => {
+  assert.throws(
+    () => normalizePiRpcProbe({ installed: false, initialized: true }),
+    /不能处于已初始化状态/,
+  );
+  assert.throws(
+    () => normalizePiRpcProbe({
+      installed: true,
+      initialized: true,
+      probe: {
+        authenticated: false,
+        sessionId: 'session-1',
+        currentModel: null,
+        thinkingLevel: 'off',
+        thinkingLevels: ['off', 'off'],
+        modelCount: 0,
+        isStreaming: false,
+      },
+    }),
+    /重复/,
+  );
+});
+
+test('Pi probe uses the native RPC probe endpoint', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  let requestedMethod = '';
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    requestedUrl = String(input);
+    requestedMethod = init?.method ?? 'GET';
+    return new Response(JSON.stringify({
+      installed: false,
+      initialized: false,
+      error: '未找到 pi 命令',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    const result = await probePiAgent();
+    assert.equal(result.installed, false);
+    assert.equal(requestedUrl, '/api/agents/pi/probe');
+    assert.equal(requestedMethod, 'POST');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

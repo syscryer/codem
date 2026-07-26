@@ -12,7 +12,7 @@ use crate::{
         PI_AGENT_PROVIDER_ID,
     },
     codex_app_server::{CodexAppServerError, CodexRuntimeEvent, CodexStdioClient, CodexUserInput},
-    pi_rpc::{PiImage, PiPromptInput, PiRpcError, PiRuntimeEvent, PiStdioClient},
+    pi_rpc::{PiImage, PiModel, PiPromptInput, PiRpcError, PiRuntimeEvent, PiState, PiStdioClient},
 };
 use axum::{
     body::Body,
@@ -420,6 +420,7 @@ impl AgentRunService {
         grok_command_resolver: fn() -> Option<String>,
         codex_command_resolver: fn() -> Option<String>,
         opencode_command_resolver: fn() -> Option<String>,
+        pi_command_resolver: fn() -> Option<String>,
         agent_channels: AgentChannelService,
     ) -> Self {
         Self {
@@ -432,7 +433,7 @@ impl AgentRunService {
                     grok: grok_command_resolver,
                     codex: codex_command_resolver,
                     opencode: opencode_command_resolver,
-                    pi: resolve_pi_command_from_environment,
+                    pi: pi_command_resolver,
                 },
                 agent_channels,
             },
@@ -618,6 +619,26 @@ async fn agent_models(
                 models,
             }))
         }
+        PI_AGENT_PROVIDER_ID => {
+            let command = resolve_agent_command(&state, provider_id, query.refresh)
+                .ok_or_else(|| AgentApiError::bad_request("未找到 pi 命令"))?;
+            let arguments = vec!["--mode".to_string(), "rpc".to_string()];
+            let client =
+                PiStdioClient::spawn_with_options(&command, &cwd, &BTreeMap::new(), &arguments)
+                    .await
+                    .map_err(|error| AgentApiError::internal(public_pi_error(error)))?;
+            let result = async {
+                let pi_state = client.get_state().await?;
+                let models = client.get_available_models().await?;
+                let levels = client.get_available_thinking_levels().await?;
+                Ok::<_, PiRpcError>(pi_model_catalog(&pi_state, models, levels))
+            }
+            .await;
+            client.shutdown().await;
+            result
+                .map(Json)
+                .map_err(|error| AgentApiError::internal(public_pi_error(error)))
+        }
         _ => Err(AgentApiError::bad_request(
             "当前 Provider 不提供动态模型目录",
         )),
@@ -692,14 +713,6 @@ fn resolve_agent_command(
         Instant::now(),
     );
     Some(command)
-}
-
-fn resolve_pi_command_from_environment() -> Option<String> {
-    env::var("PI_CLI_PATH")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| Some("pi".to_string()))
 }
 
 fn read_cached_agent_command(
@@ -1543,6 +1556,43 @@ fn pi_usage_snapshot(stats: &Value) -> AgentUsageSnapshot {
         cache_read_input_tokens: tokens.get("cacheRead").and_then(Value::as_u64),
         model_context_window: stats.get("contextTokens").and_then(Value::as_u64),
         total_cost_usd: stats.get("cost").and_then(Value::as_f64),
+    }
+}
+
+fn pi_model_catalog(
+    state: &PiState,
+    models: Vec<PiModel>,
+    thinking_levels: Vec<String>,
+) -> AgentModelCatalog {
+    let default_model_id = state
+        .model
+        .as_ref()
+        .map(|model| format!("{}/{}", model.provider, model.id));
+    let efforts = thinking_levels
+        .iter()
+        .map(|level| AgentReasoningEffortSummary {
+            id: level.clone(),
+            description: None,
+        })
+        .collect::<Vec<_>>();
+    AgentModelCatalog {
+        provider_id: PI_AGENT_PROVIDER_ID.to_string(),
+        default_model_id: default_model_id.clone(),
+        models: models
+            .into_iter()
+            .map(|model| {
+                let id = format!("{}/{}", model.provider, model.id);
+                AgentModelSummary {
+                    is_default: default_model_id.as_deref() == Some(id.as_str()),
+                    id,
+                    label: model.name,
+                    description: Some(model.provider),
+                    context_window_tokens: model.context_window,
+                    default_reasoning_effort: Some(state.thinking_level.clone()),
+                    supported_reasoning_efforts: efforts.clone(),
+                }
+            })
+            .collect(),
     }
 }
 
@@ -4178,8 +4228,8 @@ mod tests {
         acp_arguments, acp_permission_policy, build_acp_prompt, build_codex_input, build_pi_prompt,
         cancelled_before_prompt_outcome, find_grok_runtime_error_detail, grok_acp_arguments,
         grok_acp_error_with_runtime_detail, grok_uses_channel_credentials, normalize_agent_input,
-        parse_opencode_models, pi_model_parts, pi_rpc_arguments, pi_usage_snapshot,
-        public_acp_error, public_codex_error, read_cached_agent_command,
+        parse_opencode_models, pi_model_catalog, pi_model_parts, pi_rpc_arguments,
+        pi_usage_snapshot, public_acp_error, public_codex_error, read_cached_agent_command,
         read_cached_agent_model_catalog, runtime_can_reuse, sanitize_grok_runtime_error_detail,
         should_retry_grok_channel_prompt, should_set_acp_model, store_cached_agent_command,
         store_cached_agent_model_catalog, AcpEventMapper, AgentDriverInput, AgentDriverKind,
@@ -4196,7 +4246,7 @@ mod tests {
         agent_channels::AgentChannelService,
         agent_runtime::{AgentRunEvent, PI_AGENT_PROVIDER_ID},
         codex_app_server::{CodexAppServerError, CodexRuntimeEvent},
-        pi_rpc::PiRuntimeEvent,
+        pi_rpc::{PiModel, PiRuntimeEvent, PiState},
     };
     use chrono::Utc;
     use serde_json::{json, Value};
@@ -4325,6 +4375,7 @@ mod tests {
         let service = AgentRunService::new(
             || None,
             counting_codex_command_resolver,
+            || None,
             || None,
             test_agent_channel_service(),
         );
@@ -4770,6 +4821,46 @@ mod tests {
         assert_eq!(usage.cache_creation_input_tokens, Some(10));
         assert_eq!(usage.model_context_window, Some(2048));
         assert_eq!(usage.total_cost_usd, Some(0.0125));
+    }
+
+    #[test]
+    fn pi_models_map_to_dynamic_catalog_with_thinking_levels() {
+        let model = PiModel {
+            id: "claude-sonnet-4".to_string(),
+            name: "Claude Sonnet 4".to_string(),
+            provider: "anthropic".to_string(),
+            reasoning: true,
+            input: vec!["text".to_string()],
+            context_window: Some(200_000),
+        };
+        let catalog = pi_model_catalog(
+            &PiState {
+                model: Some(model.clone()),
+                thinking_level: "high".to_string(),
+                is_streaming: false,
+                session_file: None,
+                session_id: "session-1".to_string(),
+            },
+            vec![model],
+            vec!["off".to_string(), "high".to_string()],
+        );
+        assert_eq!(
+            catalog.default_model_id.as_deref(),
+            Some("anthropic/claude-sonnet-4")
+        );
+        assert_eq!(catalog.models[0].context_window_tokens, Some(200_000));
+        assert_eq!(
+            catalog.models[0].default_reasoning_effort.as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            catalog.models[0]
+                .supported_reasoning_efforts
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["off", "high"]
+        );
     }
 
     #[test]
