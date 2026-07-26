@@ -6,8 +6,10 @@ import type {
   AgentSettingsDiagnostics,
   ClaudeCliVersionInfo,
   OpenCodeAcpProbeResult,
+  PiRpcProbeResult,
 } from '../types.js';
 import {
+  getProviderInstallDocsUrl,
   reconcileProviderAvailability,
   resolveProviderDiagnostics,
   resolveProviderStatus,
@@ -37,6 +39,16 @@ const stylesSource = await readFile(new URL('../styles.css', import.meta.url), '
 const appSource = await readFile(new URL('../App.tsx', import.meta.url), 'utf8');
 const agentRunSource = await readFile(new URL('../hooks/useAgentRun.ts', import.meta.url), 'utf8');
 const composerSource = await readFile(new URL('../components/Composer.tsx', import.meta.url), 'utf8');
+const providerTabsSource = await readFile(new URL('../components/settings/AgentSettingsProviderTabs.tsx', import.meta.url), 'utf8');
+const providerIconSource = await readFile(new URL('../components/AgentProviderIcon.tsx', import.meta.url), 'utf8');
+const mcpSettingsSource = await readFile(new URL('../components/settings/McpSettings.tsx', import.meta.url), 'utf8');
+const globalPromptSource = await readFile(new URL('../components/settings/GlobalPromptSettings.tsx', import.meta.url), 'utf8');
+const usageSettingsSource = await readFile(new URL('../components/settings/UsageSettings.tsx', import.meta.url), 'utf8');
+const pluginsSuiteSource = await readFile(new URL('../components/settings/plugins/PluginsSuite.tsx', import.meta.url), 'utf8');
+const installedPluginsPanelSource = await readFile(
+  new URL('../components/settings/plugins/InstalledPluginsPanel.tsx', import.meta.url),
+  'utf8',
+);
 
 test('settings exposes Agent providers without adding a new navigation section', () => {
   assert.match(sidebarSource, /id: 'providers', label: 'Agent 设置'/);
@@ -313,4 +325,54 @@ test('Agent model menu stays compact for the standard model catalog', () => {
 test('Agent model menu does not show redundant native model tooltips', () => {
   assert.doesNotMatch(composerSource, /title=\{item\.label\}/);
   assert.match(composerSource, /<span>\{item\.label\}<\/span>/);
+});
+
+test('Pi Agent is represented across settings, diagnostics, and capability surfaces', () => {
+  const provider = {
+    id: 'pi-agent',
+    displayName: 'Pi',
+    driverId: 'pi-rpc',
+    lifecycle: 'active',
+    available: true,
+    selectable: true,
+    capabilities: {
+      sessions: { create: 'supported', resume: 'supported', list: 'supported', import: 'unsupported' },
+      input: { text: 'supported', images: 'supported', fileReferences: 'supported' },
+      tools: { streaming: 'supported', approval: 'supported', userInput: 'supported', mcp: 'unsupported' },
+      runtime: { cancel: 'soft', reconnect: 'supported', concurrentSessions: 'supported' },
+    },
+  } satisfies AgentProviderDescriptor;
+  const probe: PiRpcProbeResult = {
+    installed: true,
+    initialized: true,
+    command: 'C:/tools/pi.cmd',
+    nodeVersion: 'v24.18.0',
+    error: null,
+    probe: {
+      authenticated: true,
+      sessionId: 'session-1',
+      currentModel: 'anthropic/claude-sonnet-4',
+      thinkingLevel: 'high',
+      thinkingLevels: ['off', 'high'],
+      modelCount: 3,
+      isStreaming: false,
+    },
+  };
+
+  assert.deepEqual(resolveProviderStatus(provider, null, null, null, null, probe), {
+    label: '已检测',
+    tone: 'positive',
+  });
+  assert.equal(resolveProviderDiagnostics(provider, null, null, null, null, probe).auth, '已认证 · 3 个模型');
+  assert.equal(getProviderInstallDocsUrl('pi-agent'), 'https://pi.dev/docs/latest/quickstart');
+  assert.match(providerSettingsSource, /probePiAgent/);
+  assert.match(providerTabsSource, /id: 'pi-agent', label: 'Pi'/);
+  assert.match(providerIconSource, /PI_AGENT_PROVIDER_ID/);
+  assert.match(mcpSettingsSource, /Pi Agent 当前不支持由 CodeM 管理 MCP/);
+  assert.match(globalPromptSource, /~\/\.pi\/agent\/AGENTS\.md/);
+  assert.match(usageSettingsSource, /'pi-agent'/);
+  assert.match(pluginsSuiteSource, /Pi Packages/);
+  assert.match(pluginsSuiteSource, /~\/\.pi\/agent\/skills/);
+  assert.match(pluginsSuiteSource, /emptyText=\{providerId === 'pi-agent' \? '暂无已安装 Pi Packages'/);
+  assert.match(installedPluginsPanelSource, /emptyText = '暂无已安装插件'/);
 });

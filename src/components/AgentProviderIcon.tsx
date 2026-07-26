@@ -5,6 +5,7 @@ import {
   GROK_BUILD_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
+  PI_AGENT_PROVIDER_ID,
 } from '../constants';
 
 type AgentProviderIconProps = {
@@ -24,6 +25,9 @@ export function AgentProviderIcon({ providerId, size = 16, className = '' }: Age
 
   if (providerId === CODEM_AGENT_PROVIDER_ID) {
     return <img className={`${classes} agent-provider-brand-icon-image`} src="/icon.png" alt="" width={size} height={size} aria-hidden="true" />;
+  }
+  if (providerId === PI_AGENT_PROVIDER_ID) {
+    return <Bot className={classes} size={size} aria-hidden="true" />;
   }
 
   const path = providerId === CLAUDE_CODE_PROVIDER_ID

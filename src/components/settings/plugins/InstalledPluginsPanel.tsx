@@ -6,12 +6,22 @@ type InstalledPluginsPanelProps = {
   onUninstall: (plugin: InstalledPlugin) => void;
   supportsEnable: boolean;
   onToggleEnabled: (plugin: InstalledPlugin) => void;
+  onUpdate?: (plugin: InstalledPlugin) => void;
+  emptyText?: string;
 };
 
-export function InstalledPluginsPanel({ items, busy, onUninstall, supportsEnable, onToggleEnabled }: InstalledPluginsPanelProps) {
+export function InstalledPluginsPanel({
+  items,
+  busy,
+  onUninstall,
+  supportsEnable,
+  onToggleEnabled,
+  onUpdate,
+  emptyText = '暂无已安装插件',
+}: InstalledPluginsPanelProps) {
   return (
     <div className="settings-list settings-list-spaced">
-      {items.length === 0 ? <div className="settings-list-empty">暂无已安装插件</div> : null}
+      {items.length === 0 ? <div className="settings-list-empty">{emptyText}</div> : null}
       {items.map((item) => (
         <div key={`${item.id}:${item.scope}:${item.projectPath ?? 'global'}`} className="settings-list-row settings-list-row-tall">
           <div>
@@ -26,6 +36,11 @@ export function InstalledPluginsPanel({ items, busy, onUninstall, supportsEnable
             {supportsEnable ? (
               <button type="button" className="settings-action-button" disabled={busy} onClick={() => onToggleEnabled(item)}>
                 {item.enabled ? '禁用' : '启用'}
+              </button>
+            ) : null}
+            {onUpdate ? (
+              <button type="button" className="settings-action-button" disabled={busy} onClick={() => onUpdate(item)}>
+                更新
               </button>
             ) : null}
             <button

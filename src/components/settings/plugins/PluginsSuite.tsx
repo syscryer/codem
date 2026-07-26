@@ -135,6 +135,15 @@ export function PluginsSuite({
     });
   }
 
+  async function handleInstallPiPackage() {
+    const target = marketplaceInput.trim();
+    if (!target) return;
+    const success = await performMutation('安装 Pi Package', async () => {
+      await runPluginCommand({ providerId: 'pi-agent', kind: 'plugin', action: 'install', target });
+    });
+    if (success) setMarketplaceInput('');
+  }
+
   async function handleInstallSkillFromPath() {
     const targetPath = skillImportPath.trim();
     if (!targetPath) {
@@ -199,7 +208,7 @@ export function PluginsSuite({
             <div className="plugins-primary-tabs" aria-label="插件与技能">
               <button type="button" className={tab === 'plugins' ? 'active' : ''} onClick={() => setTab('plugins')}>
                 <Blocks size={15} />
-                <span>插件</span>
+                <span>{providerId === 'pi-agent' ? 'Pi Packages' : '插件'}</span>
                 <TabCount value={installed.length} />
               </button>
               <button type="button" className={tab === 'skills' ? 'active' : ''} onClick={() => setTab('skills')}>
@@ -209,7 +218,7 @@ export function PluginsSuite({
               </button>
             </div>
 
-            {tab === 'plugins' && providerId !== 'opencode' ? (
+            {tab === 'plugins' && providerId !== 'opencode' && providerId !== 'pi-agent' ? (
               <div className="plugins-secondary-tabs" aria-label="插件分类">
                 <button type="button" className={subTab === 'installed' ? 'active' : ''} onClick={() => setSubTab('installed')}>
                   <span>已安装</span>
@@ -239,6 +248,12 @@ export function PluginsSuite({
           </div>
         ) : null}
 
+        {providerId === 'pi-agent' && tab === 'plugins' ? (
+          <div className="plugins-help-panel">
+            <span>Pi Packages 由 Pi 原生命令管理；安装、更新和移除会直接调用当前 Pi CLI。</span>
+          </div>
+        ) : null}
+
         {tab === 'plugins' && providerId !== 'opencode' ? (
           <>
             <div className="plugins-toolbar">
@@ -246,9 +261,17 @@ export function PluginsSuite({
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="搜索插件、marketplace、描述"
+                  placeholder={providerId === 'pi-agent' ? '搜索已安装 Pi Packages' : '搜索插件、marketplace、描述'}
                 />
               </label>
+              {providerId === 'pi-agent' ? (
+                <div className="plugins-input-grid">
+                  <input className="settings-text-input" value={marketplaceInput} onChange={(event) => setMarketplaceInput(event.target.value)} placeholder="Package source" />
+                  <button type="button" className="settings-action-button primary" disabled={busy || !marketplaceInput.trim()} onClick={() => void handleInstallPiPackage()}>
+                    安装 Package
+                  </button>
+                </div>
+              ) : null}
               {subTab === 'discover' && providerId === 'claude-code' ? (
                 <label className="settings-inline-form plugins-inline-select">
                   <span>安装范围</span>
@@ -261,7 +284,7 @@ export function PluginsSuite({
               ) : null}
             </div>
 
-            {subTab === 'marketplaces' ? (
+            {subTab === 'marketplaces' && providerId !== 'pi-agent' ? (
               <div className="plugins-marketplace-actions">
                 <div className="plugins-input-grid">
                   <input
@@ -347,7 +370,13 @@ export function PluginsSuite({
           <InstalledPluginsPanel
             items={filteredInstalled}
             busy={busy}
-            supportsEnable={providerId !== 'openai-codex'}
+            emptyText={providerId === 'pi-agent' ? '暂无已安装 Pi Packages' : undefined}
+            supportsEnable={providerId !== 'openai-codex' && providerId !== 'pi-agent'}
+            onUpdate={providerId === 'pi-agent' ? (item) => {
+              void performMutation('更新 Pi Package', async () => {
+                await runPluginCommand({ providerId, kind: 'plugin', action: 'update', target: item.id });
+              });
+            } : undefined}
             onToggleEnabled={(item) => {
               void performMutation(item.enabled ? '禁用插件' : '启用插件', async () => {
                 await runPluginCommand({
@@ -367,7 +396,7 @@ export function PluginsSuite({
             }}
           />
         ) : null}
-        {!loading && !error && tab === 'plugins' && providerId !== 'opencode' && subTab === 'discover' ? (
+        {!loading && !error && tab === 'plugins' && providerId !== 'opencode' && providerId !== 'pi-agent' && subTab === 'discover' ? (
           <DiscoverPluginsPanel
             items={discoverItems}
             busy={busy}
@@ -378,7 +407,7 @@ export function PluginsSuite({
             }}
           />
         ) : null}
-        {!loading && !error && tab === 'plugins' && providerId !== 'opencode' && subTab === 'marketplaces' ? (
+        {!loading && !error && tab === 'plugins' && providerId !== 'opencode' && providerId !== 'pi-agent' && subTab === 'marketplaces' ? (
           <MarketplacesPanel
             items={filteredMarketplaces}
             busy={busy}
@@ -550,6 +579,9 @@ export function PluginsSuite({
 }
 
 function skillInstallLocationLabel(providerId: AgentProviderId) {
+  if (providerId === 'pi-agent') {
+    return <>用户级写入 <code>~/.pi/agent/skills</code>；项目级写入当前项目的 <code>.pi/skills</code>。</>;
+  }
   if (providerId === 'opencode') {
     return <>用户级写入 <code>~/.config/opencode/skills</code>；项目级写入当前项目的 <code>.opencode/skills</code>。</>;
   }
