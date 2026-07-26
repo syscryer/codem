@@ -9,8 +9,10 @@ use crate::{
         AgentControlCommand, AgentPermissionDecision, AgentRunEvent, AgentUsageSnapshot,
         AgentUserInputOption, AgentUserInputQuestion, AgentUserInputRequest,
         GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID,
+        PI_AGENT_PROVIDER_ID,
     },
     codex_app_server::{CodexAppServerError, CodexRuntimeEvent, CodexStdioClient, CodexUserInput},
+    pi_rpc::{PiImage, PiPromptInput, PiRpcError, PiRuntimeEvent, PiStdioClient},
 };
 use axum::{
     body::Body,
@@ -58,17 +60,20 @@ struct CommandResolvers {
     grok: CommandResolver,
     codex: CommandResolver,
     opencode: CommandResolver,
+    pi: CommandResolver,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AgentDriverKind {
     Acp,
     CodexAppServer,
+    PiRpc,
 }
 
 enum AgentDriverInput {
     Acp(Vec<AcpPromptInput>),
     Codex(Vec<CodexUserInput>),
+    Pi(PiPromptInput),
 }
 
 #[derive(Clone)]
@@ -152,6 +157,7 @@ struct AgentRuntimeConfig {
     channel_fingerprint: Option<String>,
     environment: BTreeMap<String, String>,
     codex_config_args: Vec<String>,
+    bridge_version: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -202,6 +208,10 @@ enum LiveAgentRuntime {
     },
     Codex {
         client: CodexStdioClient,
+        session_id: String,
+    },
+    Pi {
+        client: PiStdioClient,
         session_id: String,
     },
 }
@@ -422,6 +432,7 @@ impl AgentRunService {
                     grok: grok_command_resolver,
                     codex: codex_command_resolver,
                     opencode: opencode_command_resolver,
+                    pi: resolve_pi_command_from_environment,
                 },
                 agent_channels,
             },
@@ -671,6 +682,7 @@ fn resolve_agent_command(
         GROK_BUILD_PROVIDER_ID => (state.command_resolvers.grok)(),
         OPENAI_CODEX_PROVIDER_ID => (state.command_resolvers.codex)(),
         OPENCODE_PROVIDER_ID => (state.command_resolvers.opencode)(),
+        PI_AGENT_PROVIDER_ID => (state.command_resolvers.pi)(),
         _ => None,
     }?;
     store_cached_agent_command(
@@ -680,6 +692,14 @@ fn resolve_agent_command(
         Instant::now(),
     );
     Some(command)
+}
+
+fn resolve_pi_command_from_environment() -> Option<String> {
+    env::var("PI_CLI_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| Some("pi".to_string()))
 }
 
 fn read_cached_agent_command(
@@ -779,6 +799,12 @@ async fn start_agent_run(
             })?,
             "OpenAI Codex",
         ),
+        PI_AGENT_PROVIDER_ID => (
+            AgentDriverKind::PiRpc,
+            resolve_agent_command(&state, provider_id, false)
+                .ok_or_else(|| AgentApiError::bad_request("未找到 pi 命令"))?,
+            "Pi",
+        ),
         _ => {
             return Err(AgentApiError::bad_request(
                 "当前 Provider 不支持通用 Agent 运行",
@@ -797,6 +823,9 @@ async fn start_agent_run(
         )?),
         AgentDriverKind::CodexAppServer => {
             AgentDriverInput::Codex(build_codex_input(&input_blocks, &working_directory)?)
+        }
+        AgentDriverKind::PiRpc => {
+            AgentDriverInput::Pi(build_pi_prompt(&input_blocks, &working_directory)?)
         }
     };
     let requested_model = normalize_optional_id(payload.model, "model")?;
@@ -849,6 +878,11 @@ async fn start_agent_run(
         .ok_or_else(|| {
             AgentApiError::bad_request("permissionMode 仅支持 default、auto 或 bypassPermissions")
         })?;
+    if driver == AgentDriverKind::PiRpc && thread_id.is_none() {
+        return Err(AgentApiError::bad_request(
+            "Pi Agent 运行需要关联 CodeM threadId",
+        ));
+    }
     let run_id = uuid::Uuid::new_v4().to_string();
     let (cancel_sender, cancel_receiver) = watch::channel(false);
     let (control_sender, control_receiver) = mpsc::unbounded_channel();
@@ -890,6 +924,7 @@ async fn start_agent_run(
             channel_fingerprint,
             environment,
             codex_config_args,
+            bridge_version: (driver == AgentDriverKind::PiRpc).then(|| "1".to_string()),
         };
         if let Err(error) = state.dispatch_runtime(
             thread_id,
@@ -945,6 +980,7 @@ async fn start_agent_run(
                     })
                     .await;
                 }
+                AgentDriverInput::Pi(_) => unreachable!("Pi RPC runs require a thread runtime"),
             }
         });
     }
@@ -1119,7 +1155,9 @@ enum RuntimeExecution {
 impl LiveAgentRuntime {
     fn session_id(&self) -> &str {
         match self {
-            Self::Acp { session_id, .. } | Self::Codex { session_id, .. } => session_id,
+            Self::Acp { session_id, .. }
+            | Self::Codex { session_id, .. }
+            | Self::Pi { session_id, .. } => session_id,
         }
     }
 
@@ -1127,6 +1165,7 @@ impl LiveAgentRuntime {
         match self {
             Self::Acp { client, .. } => client.is_running(),
             Self::Codex { client, .. } => client.is_running(),
+            Self::Pi { client, .. } => client.is_running(),
         }
     }
 
@@ -1134,6 +1173,7 @@ impl LiveAgentRuntime {
         match self {
             Self::Acp { client, .. } => client.shutdown().await,
             Self::Codex { client, .. } => client.shutdown().await,
+            Self::Pi { client, .. } => client.shutdown().await,
         }
     }
 
@@ -1147,7 +1187,7 @@ impl LiveAgentRuntime {
         let AgentRuntimeRun {
             run_id,
             input,
-            cancel,
+            mut cancel,
             mut control,
         } = run;
         match (self, input) {
@@ -1266,6 +1306,105 @@ impl LiveAgentRuntime {
                     None => RuntimeExecution::Closed,
                 }
             }
+            (Self::Pi { client, session_id }, AgentDriverInput::Pi(input)) => {
+                let mut mapper = PiEventMapper::new(run_id.clone());
+                if let Err(error) = client.prompt(input).await {
+                    return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                        message: public_pi_error(error),
+                        fatal: true,
+                    }));
+                }
+                let mut text = String::new();
+                let mut stop_reason = "end_turn".to_string();
+                loop {
+                    tokio::select! {
+                        event = client.next_event() => {
+                            let event = match event {
+                                Ok(event) => event,
+                                Err(error) => {
+                                    return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                        message: public_pi_error(error),
+                                        fatal: true,
+                                    }));
+                                }
+                            };
+                            if let PiRuntimeEvent::TextDelta(delta) = &event {
+                                text.push_str(delta);
+                            }
+                            if let PiRuntimeEvent::MessageEnd(message) = &event {
+                                if let Some(reason) = message.get("stopReason").and_then(Value::as_str) {
+                                    stop_reason = reason.to_string();
+                                }
+                            }
+                            if let PiRuntimeEvent::TransportError(message) = &event {
+                                return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                    message: sanitize_public_error_detail(message),
+                                    fatal: true,
+                                }));
+                            }
+                            let mapped = mapper.map_event(event);
+                            for event in mapped.events {
+                                state.push_event(&run_id, event);
+                            }
+                            if mapped.settled {
+                                let usage = client
+                                    .get_session_stats()
+                                    .await
+                                    .map(|stats| pi_usage_snapshot(&stats))
+                                    .unwrap_or_default();
+                                return RuntimeExecution::Completed(Ok(RuntimeTurnOutcome {
+                                    session_id: session_id.clone(),
+                                    text,
+                                    stop_reason,
+                                    usage,
+                                }));
+                            }
+                        }
+                        _ = wait_for_cancel(&mut cancel) => {
+                            if let Err(error) = client.abort().await {
+                                return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                    message: public_pi_error(error),
+                                    fatal: true,
+                                }));
+                            }
+                            let settled = tokio::time::timeout(Duration::from_secs(5), async {
+                                loop {
+                                    match client.next_event().await.map_err(public_pi_error)? {
+                                        PiRuntimeEvent::AgentSettled => return Ok::<(), String>(()),
+                                        PiRuntimeEvent::TransportError(message) => {
+                                            return Err(sanitize_public_error_detail(&message));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }).await;
+                            match settled {
+                                Ok(Ok(())) => {
+                                    return RuntimeExecution::Completed(Ok(RuntimeTurnOutcome {
+                                        session_id: session_id.clone(),
+                                        text,
+                                        stop_reason: "cancelled".to_string(),
+                                        usage: AgentUsageSnapshot::default(),
+                                    }));
+                                }
+                                Ok(Err(error)) => {
+                                    return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                        message: error,
+                                        fatal: true,
+                                    }));
+                                }
+                                Err(_) => {
+                                    return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                        message: "Pi RPC abort 后未及时进入 settled 状态".to_string(),
+                                        fatal: true,
+                                    }));
+                                }
+                            }
+                        }
+                        _ = wait_for_shutdown(shutdown) => return RuntimeExecution::Closed,
+                    }
+                }
+            }
             _ => RuntimeExecution::Completed(Err(RuntimeTurnError {
                 message: "Agent runtime 与输入协议不匹配".to_string(),
                 fatal: true,
@@ -1328,6 +1467,82 @@ async fn start_live_agent_runtime(
                 requested_session_id.is_some(),
             ))
         }
+        AgentDriverKind::PiRpc => {
+            let mut environment = config.environment.clone();
+            environment.insert(
+                "CODEM_PI_PERMISSION_MODE".to_string(),
+                config.permission_mode.to_string(),
+            );
+            let arguments = pi_rpc_arguments(requested_session_id);
+            let client = PiStdioClient::spawn_with_options(
+                &config.command,
+                &config.working_directory,
+                &environment,
+                &arguments,
+            )
+            .await
+            .map_err(public_pi_error)?;
+            let state = match client.get_state().await {
+                Ok(state) if !state.session_id.trim().is_empty() => state,
+                Ok(_) => {
+                    client.shutdown().await;
+                    return Err("Pi RPC 返回了空 sessionId".to_string());
+                }
+                Err(error) => {
+                    client.shutdown().await;
+                    return Err(public_pi_error(error));
+                }
+            };
+            if let Some(model) = config.model.as_deref() {
+                let Some((provider, model_id)) = pi_model_parts(model) else {
+                    client.shutdown().await;
+                    return Err("Pi 模型必须使用 provider/model 格式".to_string());
+                };
+                if let Err(error) = client.set_model(provider, model_id).await {
+                    client.shutdown().await;
+                    return Err(public_pi_error(error));
+                }
+            }
+            if let Some(level) = config.reasoning_effort.as_deref() {
+                if let Err(error) = client.set_thinking_level(level).await {
+                    client.shutdown().await;
+                    return Err(public_pi_error(error));
+                }
+            }
+            Ok((
+                LiveAgentRuntime::Pi {
+                    client,
+                    session_id: state.session_id,
+                },
+                requested_session_id.is_some(),
+            ))
+        }
+    }
+}
+
+fn pi_rpc_arguments(requested_session_id: Option<&str>) -> Vec<String> {
+    let mut arguments = vec!["--mode".to_string(), "rpc".to_string()];
+    if let Some(session_id) = requested_session_id {
+        arguments.push("--session".to_string());
+        arguments.push(session_id.to_string());
+    }
+    arguments
+}
+
+fn pi_model_parts(model: &str) -> Option<(&str, &str)> {
+    let (provider, model_id) = model.split_once('/')?;
+    (!provider.is_empty() && !model_id.is_empty()).then_some((provider, model_id))
+}
+
+fn pi_usage_snapshot(stats: &Value) -> AgentUsageSnapshot {
+    let tokens = stats.get("tokens").unwrap_or(&Value::Null);
+    AgentUsageSnapshot {
+        input_tokens: tokens.get("input").and_then(Value::as_u64),
+        output_tokens: tokens.get("output").and_then(Value::as_u64),
+        cache_creation_input_tokens: tokens.get("cacheWrite").and_then(Value::as_u64),
+        cache_read_input_tokens: tokens.get("cacheRead").and_then(Value::as_u64),
+        model_context_window: stats.get("contextTokens").and_then(Value::as_u64),
+        total_cost_usd: stats.get("cost").and_then(Value::as_f64),
     }
 }
 
@@ -1373,6 +1588,14 @@ fn runtime_status_message(
         (_, AgentDriverKind::CodexAppServer, false, false) => {
             "已创建 OpenAI Codex 会话".to_string()
         }
+        (PI_AGENT_PROVIDER_ID, AgentDriverKind::PiRpc, true, _) => "已复用 Pi 热会话".to_string(),
+        (PI_AGENT_PROVIDER_ID, AgentDriverKind::PiRpc, false, true) => "已恢复 Pi 会话".to_string(),
+        (PI_AGENT_PROVIDER_ID, AgentDriverKind::PiRpc, false, false) => {
+            "已创建 Pi 会话".to_string()
+        }
+        (_, AgentDriverKind::PiRpc, true, _) => "已复用 Pi RPC 热会话".to_string(),
+        (_, AgentDriverKind::PiRpc, false, true) => "已恢复 Pi RPC 会话".to_string(),
+        (_, AgentDriverKind::PiRpc, false, false) => "已创建 Pi RPC 会话".to_string(),
         (_, AgentDriverKind::Acp, true, _) => "已复用 ACP 热会话".to_string(),
         (_, AgentDriverKind::Acp, false, true) => "已恢复 ACP 会话".to_string(),
         (_, AgentDriverKind::Acp, false, false) => "已创建 ACP 会话".to_string(),
@@ -2378,6 +2601,156 @@ struct CodexEventMapper {
     current_phase: Option<&'static str>,
 }
 
+async fn wait_for_cancel(cancel: &mut watch::Receiver<bool>) {
+    if *cancel.borrow() {
+        return;
+    }
+    while cancel.changed().await.is_ok() {
+        if *cancel.borrow() {
+            return;
+        }
+    }
+    std::future::pending::<()>().await;
+}
+
+struct PiMappedEvent {
+    events: Vec<AgentRunEvent>,
+    settled: bool,
+}
+
+struct PiEventMapper {
+    run_id: String,
+    next_block_index: u64,
+    tools: HashMap<String, ToolMappingState>,
+}
+
+impl PiEventMapper {
+    fn new(run_id: String) -> Self {
+        Self {
+            run_id,
+            next_block_index: 0,
+            tools: HashMap::new(),
+        }
+    }
+
+    fn map_event(&mut self, event: PiRuntimeEvent) -> PiMappedEvent {
+        let mut events = Vec::new();
+        let settled = match event {
+            PiRuntimeEvent::TextDelta(text) => {
+                events.push(AgentRunEvent::Delta {
+                    run_id: self.run_id.clone(),
+                    text,
+                });
+                false
+            }
+            PiRuntimeEvent::ThinkingDelta(text) => {
+                events.push(AgentRunEvent::ThinkingDelta {
+                    run_id: self.run_id.clone(),
+                    text,
+                });
+                false
+            }
+            PiRuntimeEvent::ToolStart {
+                tool_call_id,
+                tool_name,
+                args,
+            } => {
+                if !self.tools.contains_key(&tool_call_id) {
+                    let block_index = self.next_block_index;
+                    self.next_block_index += 1;
+                    self.tools.insert(
+                        tool_call_id.clone(),
+                        ToolMappingState {
+                            block_index,
+                            stopped: false,
+                        },
+                    );
+                    events.push(AgentRunEvent::ToolStart {
+                        run_id: self.run_id.clone(),
+                        block_index,
+                        tool_use_id: tool_call_id,
+                        name: tool_name,
+                        input: Some(args),
+                    });
+                }
+                false
+            }
+            PiRuntimeEvent::ToolEnd {
+                tool_call_id,
+                result,
+                is_error,
+                ..
+            } => {
+                let block_index = if let Some(tool) = self.tools.get_mut(&tool_call_id) {
+                    if tool.stopped {
+                        return PiMappedEvent {
+                            events,
+                            settled: false,
+                        };
+                    }
+                    tool.stopped = true;
+                    tool.block_index
+                } else {
+                    let block_index = self.next_block_index;
+                    self.next_block_index += 1;
+                    self.tools.insert(
+                        tool_call_id.clone(),
+                        ToolMappingState {
+                            block_index,
+                            stopped: true,
+                        },
+                    );
+                    events.push(AgentRunEvent::ToolStart {
+                        run_id: self.run_id.clone(),
+                        block_index,
+                        tool_use_id: tool_call_id.clone(),
+                        name: "Pi 工具".to_string(),
+                        input: None,
+                    });
+                    block_index
+                };
+                events.push(AgentRunEvent::ToolResult {
+                    run_id: self.run_id.clone(),
+                    tool_use_id: tool_call_id.clone(),
+                    content: pi_tool_result_text(&result),
+                    is_error,
+                });
+                events.push(AgentRunEvent::ToolStop {
+                    run_id: self.run_id.clone(),
+                    block_index,
+                    tool_use_id: tool_call_id,
+                });
+                false
+            }
+            PiRuntimeEvent::AgentEnd { will_retry: true } => {
+                events.push(AgentRunEvent::Status {
+                    run_id: self.run_id.clone(),
+                    message: "Pi 正在重试本轮请求".to_string(),
+                });
+                false
+            }
+            PiRuntimeEvent::AgentSettled => true,
+            _ => false,
+        };
+        PiMappedEvent { events, settled }
+    }
+}
+
+fn pi_tool_result_text(result: &Value) -> String {
+    result
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().find_map(|item| {
+                (item.get("type").and_then(Value::as_str) == Some("text"))
+                    .then(|| item.get("text").and_then(Value::as_str))
+                    .flatten()
+            })
+        })
+        .map(str::to_string)
+        .unwrap_or_else(|| result.to_string())
+}
+
 impl CodexEventMapper {
     fn new(run_id: String) -> Self {
         Self {
@@ -2824,6 +3197,13 @@ fn is_terminal_event(event: &AgentRunEvent) -> bool {
     matches!(
         event,
         AgentRunEvent::Done { .. } | AgentRunEvent::Error { .. }
+    )
+}
+
+fn public_pi_error(error: PiRpcError) -> String {
+    format!(
+        "Pi RPC 请求失败：{}",
+        sanitize_public_error_detail(&error.to_string())
     )
 }
 
@@ -3559,6 +3939,70 @@ fn validate_image_base64(data: &str) -> AgentApiResult<usize> {
     Ok(decoded.len())
 }
 
+fn build_pi_prompt(
+    blocks: &[NormalizedAgentInputBlock],
+    working_directory: &Path,
+) -> AgentApiResult<PiPromptInput> {
+    let mut message_parts = Vec::new();
+    let mut images = Vec::new();
+    for block in blocks {
+        match block {
+            NormalizedAgentInputBlock::Text { text } => message_parts.push(text.clone()),
+            NormalizedAgentInputBlock::Image {
+                path,
+                mime_type,
+                data,
+                ..
+            } => {
+                let (mime_type, data) = if let Some(data) = data {
+                    (
+                        mime_type.clone().ok_or_else(|| {
+                            AgentApiError::bad_request("base64 图片缺少 mimeType")
+                        })?,
+                        data.clone(),
+                    )
+                } else {
+                    read_local_image_for_acp(
+                        path.as_deref()
+                            .ok_or_else(|| AgentApiError::bad_request("图片路径不能为空"))?,
+                        mime_type.as_deref(),
+                        working_directory,
+                    )?
+                };
+                images.push(PiImage {
+                    kind: "image".to_string(),
+                    data,
+                    mime_type,
+                });
+            }
+            NormalizedAgentInputBlock::FileText {
+                path, name, text, ..
+            } => message_parts.push(format!("本地文件：{name}\n路径：{path}\n\n{text}")),
+            NormalizedAgentInputBlock::FileReference { path, name, .. } => {
+                message_parts.push(format!(
+                    "本地文件引用：{name}\n路径：{path}\n请按需使用本地文件工具读取。"
+                ));
+            }
+            NormalizedAgentInputBlock::AttachmentMetadata {
+                name,
+                mime_type,
+                size,
+                reason,
+            } => message_parts.push(format_attachment_metadata(
+                name,
+                mime_type.as_deref(),
+                *size,
+                reason,
+            )),
+        }
+    }
+    Ok(PiPromptInput {
+        message: message_parts.join("\n\n"),
+        images,
+        streaming_behavior: None,
+    })
+}
+
 fn read_local_image_for_acp(
     path: &str,
     requested_mime_type: Option<&str>,
@@ -3731,16 +4175,17 @@ fn should_set_acp_model(
 #[cfg(test)]
 mod tests {
     use super::{
-        acp_arguments, acp_permission_policy, build_acp_prompt, build_codex_input,
+        acp_arguments, acp_permission_policy, build_acp_prompt, build_codex_input, build_pi_prompt,
         cancelled_before_prompt_outcome, find_grok_runtime_error_detail, grok_acp_arguments,
         grok_acp_error_with_runtime_detail, grok_uses_channel_credentials, normalize_agent_input,
-        parse_opencode_models, public_acp_error, public_codex_error, read_cached_agent_command,
+        parse_opencode_models, pi_model_parts, pi_rpc_arguments, pi_usage_snapshot,
+        public_acp_error, public_codex_error, read_cached_agent_command,
         read_cached_agent_model_catalog, runtime_can_reuse, sanitize_grok_runtime_error_detail,
         should_retry_grok_channel_prompt, should_set_acp_model, store_cached_agent_command,
         store_cached_agent_model_catalog, AcpEventMapper, AgentDriverInput, AgentDriverKind,
         AgentInputContentBlock, AgentModelCatalog, AgentModelSummary, AgentRunRecord,
         AgentRunService, AgentRunState, AgentRuntimeCommand, AgentRuntimeConfig, AgentRuntimePhase,
-        AgentRuntimeRecord, AgentRuntimeRun, CodexEventMapper, CommandResolvers,
+        AgentRuntimeRecord, AgentRuntimeRun, CodexEventMapper, CommandResolvers, PiEventMapper,
         StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL, MODEL_CATALOG_CACHE_TTL,
     };
     use crate::{
@@ -3749,8 +4194,9 @@ mod tests {
             AcpToolCallUpdate,
         },
         agent_channels::AgentChannelService,
-        agent_runtime::AgentRunEvent,
+        agent_runtime::{AgentRunEvent, PI_AGENT_PROVIDER_ID},
         codex_app_server::{CodexAppServerError, CodexRuntimeEvent},
+        pi_rpc::PiRuntimeEvent,
     };
     use chrono::Utc;
     use serde_json::{json, Value};
@@ -3786,6 +4232,7 @@ mod tests {
             channel_fingerprint: None,
             environment: BTreeMap::new(),
             codex_config_args: Vec::new(),
+            bridge_version: None,
         }
     }
 
@@ -3808,6 +4255,7 @@ mod tests {
                 grok: || None,
                 codex: || None,
                 opencode: || None,
+                pi: || None,
             },
             agent_channels: test_agent_channel_service(),
         }
@@ -4164,6 +4612,164 @@ mod tests {
         let mut changed = config.clone();
         changed.permission_mode = "auto";
         assert!(!runtime_can_reuse(&runtime, &changed, Some("session-1")));
+    }
+
+    #[test]
+    fn pi_hot_runtime_status_and_bridge_version_are_part_of_reuse_contract() {
+        let mut config = test_runtime_config();
+        config.provider_id = PI_AGENT_PROVIDER_ID.to_string();
+        config.driver = AgentDriverKind::PiRpc;
+        config.command = "pi".to_string();
+        config.bridge_version = Some("1".to_string());
+        let (command, _commands) = mpsc::unbounded_channel();
+        let (shutdown, _shutdown) = watch::channel(false);
+        let runtime = AgentRuntimeRecord {
+            runtime_id: "runtime-pi-1".to_string(),
+            config: config.clone(),
+            session_id: Some("pi-session-1".to_string()),
+            phase: AgentRuntimePhase::Ready,
+            current_run_id: None,
+            command: Some(command),
+            shutdown,
+            last_error: None,
+        };
+
+        assert_eq!(
+            super::runtime_status_message(
+                PI_AGENT_PROVIDER_ID,
+                AgentDriverKind::PiRpc,
+                true,
+                false,
+            ),
+            "已复用 Pi 热会话"
+        );
+        assert!(runtime_can_reuse(&runtime, &config, Some("pi-session-1")));
+
+        let mut changed = config;
+        changed.bridge_version = Some("2".to_string());
+        assert!(!runtime_can_reuse(&runtime, &changed, Some("pi-session-1")));
+    }
+
+    #[test]
+    fn pi_mapper_only_settles_on_agent_settled() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+
+        let agent_end = mapper.map_event(PiRuntimeEvent::AgentEnd { will_retry: false });
+        assert!(!agent_end.settled);
+        assert!(agent_end.events.is_empty());
+
+        let settled = mapper.map_event(PiRuntimeEvent::AgentSettled);
+        assert!(settled.settled);
+        assert!(settled.events.is_empty());
+    }
+
+    #[test]
+    fn pi_input_and_runtime_events_preserve_multimodal_and_tool_semantics() {
+        let blocks = normalize_agent_input(
+            None,
+            Some(vec![
+                AgentInputContentBlock::Text {
+                    text: "检查项目".to_string(),
+                },
+                AgentInputContentBlock::Image {
+                    id: None,
+                    path: None,
+                    name: Some("shot.png".to_string()),
+                    mime_type: Some("image/png".to_string()),
+                    size: Some(5),
+                    data: Some("aGVsbG8=".to_string()),
+                },
+                AgentInputContentBlock::FileReference {
+                    id: None,
+                    path: "D:\\workspace\\README.md".to_string(),
+                    name: "README.md".to_string(),
+                    mime_type: Some("text/markdown".to_string()),
+                    size: None,
+                    reason: None,
+                    source: Some("mention".to_string()),
+                },
+            ]),
+        )
+        .expect("normalize Pi input");
+        let input = build_pi_prompt(&blocks, Path::new("D:/workspace")).expect("build Pi input");
+        assert!(input.message.contains("检查项目"));
+        assert!(input.message.contains("D:\\workspace\\README.md"));
+        assert_eq!(input.images.len(), 1);
+        assert_eq!(input.images[0].mime_type, "image/png");
+        assert_eq!(input.images[0].data, "aGVsbG8=");
+
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        let text = mapper.map_event(PiRuntimeEvent::TextDelta("hello".to_string()));
+        assert!(matches!(
+            text.events.as_slice(),
+            [AgentRunEvent::Delta { text, .. }] if text == "hello"
+        ));
+        let thinking = mapper.map_event(PiRuntimeEvent::ThinkingDelta("reasoning".to_string()));
+        assert!(matches!(
+            thinking.events.as_slice(),
+            [AgentRunEvent::ThinkingDelta { text, .. }] if text == "reasoning"
+        ));
+        let tool = mapper.map_event(PiRuntimeEvent::ToolStart {
+            tool_call_id: "tool-1".to_string(),
+            tool_name: "read".to_string(),
+            args: json!({"path": "README.md"}),
+        });
+        assert!(matches!(
+            tool.events.as_slice(),
+            [AgentRunEvent::ToolStart { tool_use_id, .. }] if tool_use_id == "tool-1"
+        ));
+        let result = mapper.map_event(PiRuntimeEvent::ToolEnd {
+            tool_call_id: "tool-1".to_string(),
+            tool_name: "read".to_string(),
+            result: json!({"content": [{"type": "text", "text": "ok"}]}),
+            is_error: false,
+        });
+        assert!(matches!(
+            result.events.as_slice(),
+            [
+                AgentRunEvent::ToolResult { tool_use_id, .. },
+                AgentRunEvent::ToolStop { .. }
+            ] if tool_use_id == "tool-1"
+        ));
+        let retry = mapper.map_event(PiRuntimeEvent::AgentEnd { will_retry: true });
+        assert!(!retry.settled);
+        assert!(matches!(
+            retry.events.as_slice(),
+            [AgentRunEvent::Status { message, .. }] if message.contains("重试")
+        ));
+    }
+
+    #[test]
+    fn pi_rpc_startup_restores_session_and_requires_provider_qualified_model() {
+        assert_eq!(
+            pi_rpc_arguments(Some("session-pi-1")),
+            vec!["--mode", "rpc", "--session", "session-pi-1"]
+        );
+        assert_eq!(
+            pi_model_parts("anthropic/claude-sonnet-4"),
+            Some(("anthropic", "claude-sonnet-4"))
+        );
+        assert_eq!(pi_model_parts("claude-sonnet-4"), None);
+    }
+
+    #[test]
+    fn pi_session_stats_map_to_unified_usage() {
+        let usage = pi_usage_snapshot(&json!({
+            "tokens": {
+                "input": 120,
+                "output": 45,
+                "cacheRead": 30,
+                "cacheWrite": 10
+            },
+            "contextTokens": 2048,
+            "cost": 0.0125
+        }));
+        assert_eq!(usage.input_tokens, Some(120));
+        assert_eq!(usage.output_tokens, Some(45));
+        assert_eq!(usage.cache_read_input_tokens, Some(30));
+        assert_eq!(usage.cache_creation_input_tokens, Some(10));
+        assert_eq!(usage.model_context_window, Some(2048));
+        assert_eq!(usage.total_cost_usd, Some(0.0125));
     }
 
     #[test]
