@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const appMenubar = readFileSync(new URL('../components/AppMenubar.tsx', import.meta.url), 'utf8');
+const backgroundOperationCenter = readFileSync(
+  new URL('../components/BackgroundOperationCenter.tsx', import.meta.url),
+  'utf8',
+);
 const chatHeader = readFileSync(new URL('../components/ChatHeader.tsx', import.meta.url), 'utf8');
 const gitDialog = readFileSync(new URL('../components/GitDialog.tsx', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
@@ -12,6 +16,12 @@ test('titlebar renders background operation center before update entry', () => {
   assert.match(appMenubar, /<BackgroundOperationCenter[\s\S]*\{updateEntry\}/);
   assert.match(appMenubar, /onOpenBackgroundOperations/);
   assert.match(appMenubar, /onClearCompletedBackgroundOperations/);
+});
+
+test('macos background operation popover opens away from the sidebar', () => {
+  assert.match(appMenubar, /if \(isMacos\)[\s\S]*placement="bottom-start"/);
+  assert.match(backgroundOperationCenter, /placement = 'bottom-end'/);
+  assert.match(backgroundOperationCenter, /placement=\{placement\}/);
 });
 
 test('git actions expose running states for fetch pull and push', () => {

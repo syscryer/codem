@@ -50,6 +50,7 @@ const MAX_REASON_BYTES: usize = 4096;
 const MAX_GROK_LOG_TAIL_BYTES: u64 = 512 * 1024;
 const MODEL_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const AGENT_COMMAND_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const AUTOMATION_EXECUTION_CONTEXT: &str = "[CodeM 自动化执行上下文]\n当前运行是 CodeM 已调度任务的一次执行。只完成本次任务，不要创建、修改、删除或查询任何定时任务、Cron、计划或唤醒任务。";
 
 type CommandResolver = fn() -> Option<String>;
 
@@ -304,6 +305,8 @@ struct StartAgentRunRequest {
     reasoning_effort: Option<String>,
     #[serde(default)]
     conversation_context: Option<String>,
+    #[serde(default)]
+    automation_execution: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -794,10 +797,13 @@ async fn start_agent_run(
             &input_blocks,
             &working_directory,
             payload.conversation_context.as_deref(),
+            payload.automation_execution,
         )?),
-        AgentDriverKind::CodexAppServer => {
-            AgentDriverInput::Codex(build_codex_input(&input_blocks, &working_directory)?)
-        }
+        AgentDriverKind::CodexAppServer => AgentDriverInput::Codex(build_codex_input(
+            &input_blocks,
+            &working_directory,
+            payload.automation_execution,
+        )?),
     };
     let requested_model = normalize_optional_id(payload.model, "model")?;
     let channel_id = normalize_optional_id(payload.channel_id, "channelId")?;
@@ -3294,10 +3300,16 @@ fn build_acp_prompt(
     blocks: &[NormalizedAgentInputBlock],
     working_directory: &Path,
     conversation_context: Option<&str>,
+    automation_execution: bool,
 ) -> AgentApiResult<Vec<AcpPromptInput>> {
     if let Some(context) = conversation_context {
         if context.trim().is_empty() {
-            return Ok(build_acp_prompt(blocks, working_directory, None)?);
+            return Ok(build_acp_prompt(
+                blocks,
+                working_directory,
+                None,
+                automation_execution,
+            )?);
         }
         if context.len() > MAX_CONVERSATION_CONTEXT_BYTES {
             return Err(AgentApiError::bad_request(
@@ -3306,7 +3318,16 @@ fn build_acp_prompt(
         }
     }
 
-    let mut prompt = Vec::with_capacity(blocks.len() + usize::from(conversation_context.is_some()));
+    let mut prompt = Vec::with_capacity(
+        blocks.len()
+            + usize::from(conversation_context.is_some())
+            + usize::from(automation_execution),
+    );
+    if automation_execution {
+        prompt.push(AcpPromptInput::Text {
+            text: AUTOMATION_EXECUTION_CONTEXT.to_string(),
+        });
+    }
     if let Some(context) = conversation_context.filter(|value| !value.trim().is_empty()) {
         prompt.push(AcpPromptInput::Text {
             text: context.to_string(),
@@ -3383,8 +3404,9 @@ fn build_acp_prompt(
 fn build_codex_input(
     blocks: &[NormalizedAgentInputBlock],
     working_directory: &Path,
+    automation_execution: bool,
 ) -> AgentApiResult<Vec<CodexUserInput>> {
-    blocks
+    let mut input = blocks
         .iter()
         .map(|block| match block {
             NormalizedAgentInputBlock::Text { text } => {
@@ -3443,7 +3465,16 @@ fn build_codex_input(
                 text: format_attachment_metadata(name, mime_type.as_deref(), *size, reason),
             }),
         })
-        .collect()
+        .collect::<AgentApiResult<Vec<_>>>()?;
+    if automation_execution {
+        input.insert(
+            0,
+            CodexUserInput::Text {
+                text: AUTOMATION_EXECUTION_CONTEXT.to_string(),
+            },
+        );
+    }
+    Ok(input)
 }
 
 fn add_input_text_bytes(total: &mut usize, bytes: usize) -> AgentApiResult<()> {
@@ -3741,7 +3772,8 @@ mod tests {
         AgentInputContentBlock, AgentModelCatalog, AgentModelSummary, AgentRunRecord,
         AgentRunService, AgentRunState, AgentRuntimeCommand, AgentRuntimeConfig, AgentRuntimePhase,
         AgentRuntimeRecord, AgentRuntimeRun, CodexEventMapper, CommandResolvers,
-        StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL, MODEL_CATALOG_CACHE_TTL,
+        StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL, AUTOMATION_EXECUTION_CONTEXT,
+        MODEL_CATALOG_CACHE_TTL,
     };
     use crate::{
         acp::{
@@ -3750,7 +3782,7 @@ mod tests {
         },
         agent_channels::AgentChannelService,
         agent_runtime::AgentRunEvent,
-        codex_app_server::{CodexAppServerError, CodexRuntimeEvent},
+        codex_app_server::{CodexAppServerError, CodexRuntimeEvent, CodexUserInput},
     };
     use chrono::Utc;
     use serde_json::{json, Value};
@@ -4061,7 +4093,7 @@ mod tests {
         .expect("normalize blocks-only input");
 
         let acp = serde_json::to_value(
-            build_acp_prompt(&blocks, Path::new("D:/workspace"), None).expect("ACP mapping"),
+            build_acp_prompt(&blocks, Path::new("D:/workspace"), None, false).expect("ACP mapping"),
         )
         .expect("serialize ACP input");
         assert_eq!(acp[0]["type"], "image");
@@ -4069,7 +4101,7 @@ mod tests {
         assert_eq!(acp[2]["type"], "resource_link");
 
         let codex = serde_json::to_value(
-            build_codex_input(&blocks, Path::new("D:/workspace")).expect("Codex mapping"),
+            build_codex_input(&blocks, Path::new("D:/workspace"), false).expect("Codex mapping"),
         )
         .expect("serialize Codex input");
         assert_eq!(codex[0]["type"], "image");
@@ -4089,6 +4121,7 @@ mod tests {
             &blocks,
             Path::new("D:/workspace"),
             Some("[CodeM 会话续接上下文]\n之前的回答"),
+            false,
         )
         .expect("build ACP continuity prompt");
         assert_eq!(acp.len(), 2);
@@ -4113,6 +4146,7 @@ mod tests {
             "threadId": "thread-1",
             "workingDirectory": "D:/workspace",
             "conversationContext": "[CodeM 会话续接上下文]",
+            "automationExecution": true,
             "contentBlocks": [{
                 "type": "file_text",
                 "path": "notes.md",
@@ -4131,6 +4165,7 @@ mod tests {
             request.conversation_context.as_deref(),
             Some("[CodeM 会话续接上下文]")
         );
+        assert!(request.automation_execution);
         assert!(matches!(
             request.content_blocks.as_deref(),
             Some([AgentInputContentBlock::FileText {
@@ -4139,6 +4174,42 @@ mod tests {
                 ..
             }]) if mime_type == "text/markdown"
         ));
+    }
+
+    #[test]
+    fn automation_execution_context_is_prepended_without_changing_user_input() {
+        let blocks = normalize_agent_input(Some("执行日报推送"), None).expect("normalize prompt");
+        let acp = build_acp_prompt(&blocks, Path::new("D:/workspace"), None, true)
+            .expect("build automation ACP prompt");
+        assert_eq!(acp.len(), 2);
+        assert_eq!(
+            acp[0],
+            AcpPromptInput::Text {
+                text: AUTOMATION_EXECUTION_CONTEXT.to_string(),
+            }
+        );
+        assert_eq!(
+            acp[1],
+            AcpPromptInput::Text {
+                text: "执行日报推送".to_string(),
+            }
+        );
+
+        let codex = build_codex_input(&blocks, Path::new("D:/workspace"), true)
+            .expect("build automation Codex input");
+        assert_eq!(codex.len(), 2);
+        assert_eq!(
+            codex[0],
+            CodexUserInput::Text {
+                text: AUTOMATION_EXECUTION_CONTEXT.to_string(),
+            }
+        );
+        assert_eq!(
+            codex[1],
+            CodexUserInput::Text {
+                text: "执行日报推送".to_string(),
+            }
+        );
     }
 
     #[test]

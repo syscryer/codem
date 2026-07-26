@@ -1173,6 +1173,7 @@ export function useClaudeRun({
       permissionModeOverride?: PermissionMode;
       modelOverride?: string;
       effortOverride?: ClaudeEffortSelection;
+      automationExecution?: boolean;
       toolResult?: {
         requestId: string;
         content: string;
@@ -1339,6 +1340,7 @@ export function useClaudeRun({
             sessionId: runSessionId,
             toolResult: options?.toolResult,
             contentBlocks: requestContentBlocks,
+            automationExecution: options?.automationExecution === true,
             clientSubmitAtMs: submitAtMs,
           }),
           signal: controller.signal,
@@ -2125,6 +2127,7 @@ export function useClaudeRun({
       permissionMode: PermissionMode;
       model?: string;
       reasoningEffort?: string;
+      automationExecution?: boolean;
     },
   ) {
     let started = false;
@@ -2134,6 +2137,7 @@ export function useClaudeRun({
       permissionModeOverride: options.permissionMode,
       modelOverride: options.model,
       effortOverride: normalizeClaudeEffortSelection(options.reasoningEffort),
+      automationExecution: options.automationExecution === true,
       onStarted: () => {
         started = true;
       },

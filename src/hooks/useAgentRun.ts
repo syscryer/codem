@@ -68,6 +68,7 @@ type AgentPromptSubmission = {
   contentBlocks?: InputContentBlock[];
   queueId?: string;
   queueStatus?: 'preparing' | 'ready';
+  automationExecution?: boolean;
 };
 
 type QueuedAgentPrompt = AgentPromptSubmission & {
@@ -1082,6 +1083,7 @@ export function useAgentRun({
       permissionMode: PermissionMode;
       model?: string;
       reasoningEffort?: string;
+      automationExecution?: boolean;
     },
   ) {
     if (resolveChatRuntimeKind(thread.provider) !== 'generic') {
@@ -1090,7 +1092,11 @@ export function useAgentRun({
     threadSummariesByIdRef.current.set(thread.id, thread);
     return startAgentRun(
       thread,
-      { prompt, displayText: prompt },
+      {
+        prompt,
+        displayText: prompt,
+        automationExecution: options.automationExecution === true,
+      },
       options.permissionMode,
       options.model,
       options.reasoningEffort,
@@ -1211,6 +1217,7 @@ export function useAgentRun({
             model: context.model,
             reasoningEffort: context.reasoningEffort,
             channelId: context.channelId,
+            automationExecution: submission.automationExecution === true,
           }),
           signal: controller.signal,
         });

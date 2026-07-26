@@ -428,6 +428,7 @@ export function AppMenubar({
           operations={backgroundOperations}
           runningCount={backgroundOperationsRunningCount}
           unreadFailureCount={backgroundOperationsUnreadFailureCount}
+          placement="bottom-start"
           onOpen={onOpenBackgroundOperations}
           onClearCompleted={onClearCompletedBackgroundOperations}
         />

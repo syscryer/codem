@@ -8,6 +8,7 @@ type BackgroundOperationCenterProps = {
   operations: BackgroundOperation[];
   runningCount: number;
   unreadFailureCount: number;
+  placement?: 'bottom-start' | 'bottom-end';
   onOpen: () => void;
   onClearCompleted: () => void;
 };
@@ -16,6 +17,7 @@ export function BackgroundOperationCenter({
   operations,
   runningCount,
   unreadFailureCount,
+  placement = 'bottom-end',
   onOpen,
   onClearCompleted,
 }: BackgroundOperationCenterProps) {
@@ -66,7 +68,7 @@ export function BackgroundOperationCenter({
         {runningCount > 1 ? <span>{runningCount}</span> : null}
         {unreadFailureCount > 0 ? <i aria-hidden="true" /> : null}
       </button>
-      <PopoverPortal open={open} anchorRef={triggerRef} placement="bottom-end" offset={8}>
+      <PopoverPortal open={open} anchorRef={triggerRef} placement={placement} offset={8}>
         <section className="background-operation-popover" role="dialog" aria-label="任务中心">
           <header className="background-operation-head">
             <div>

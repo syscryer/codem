@@ -35,6 +35,24 @@ const CLAUDE_CLI_UPDATE_COMMAND: &str = "claude update";
 const CLAUDE_CLI_INSTALL_COMMAND: &str = "npm install -g @anthropic-ai/claude-code";
 const CLAUDE_CLI_MACOS_INSTALL_COMMAND: &str =
     "/usr/bin/curl -fsSL https://claude.ai/install.sh | /bin/bash";
+const CLAUDE_CLI_WINDOWS_INSTALL_COMMAND: &str = "irm https://claude.ai/install.ps1 | iex";
+const CLAUDE_CLI_WINDOWS_INSTALL_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$proxyUrl = if ($env:HTTPS_PROXY) { $env:HTTPS_PROXY } elseif ($env:HTTP_PROXY) { $env:HTTP_PROXY } else { $null }
+if ($proxyUrl -and $proxyUrl -match '^https?://') {
+    $proxyUri = [Uri]$proxyUrl
+    $proxyAddress = [UriBuilder]::new($proxyUri.Scheme, $proxyUri.Host, $proxyUri.Port).Uri
+    $webProxy = [Net.WebProxy]::new($proxyAddress)
+    if ($proxyUri.UserInfo) {
+        $credentials = $proxyUri.UserInfo.Split(':', 2)
+        $username = [Uri]::UnescapeDataString($credentials[0])
+        $password = if ($credentials.Length -gt 1) { [Uri]::UnescapeDataString($credentials[1]) } else { '' }
+        $webProxy.Credentials = [Net.NetworkCredential]::new($username, $password)
+    }
+    [Net.WebRequest]::DefaultWebProxy = $webProxy
+}
+irm https://claude.ai/install.ps1 | iex
+"#;
 const CODEX_CLI_INSTALL_COMMAND: &str = "npm install -g @openai/codex@latest";
 #[cfg(target_os = "windows")]
 const GROK_CLI_INSTALL_COMMAND: &str = "irm https://x.ai/cli/install.ps1 | iex";
@@ -57,6 +75,8 @@ const AGENT_LIFECYCLE_PROXY_ENV_NAMES: &[&str] = &[
 ];
 const CLAUDE_CLI_SETUP_URL: &str = "https://docs.anthropic.com/en/docs/claude-code/setup";
 const RUN_RECONNECT_RETENTION_MS: u64 = 10 * 60 * 1000;
+const AUTOMATION_EXECUTION_SYSTEM_PROMPT: &str = "当前运行由 CodeM 自动化调度器触发，是已到期任务的一次执行。请只完成本次任务，不要创建、修改、删除或查询任何定时任务、Cron、计划或唤醒任务。";
+const AUTOMATION_DISALLOWED_TOOLS: &str = "CronCreate,CronDelete,CronList,ScheduleWakeup";
 
 #[derive(Clone)]
 struct AppState {
@@ -341,6 +361,8 @@ struct ClaudeRunRequest {
     channel_id: Option<String>,
     tool_result: Option<Value>,
     content_blocks: Option<Value>,
+    #[serde(default)]
+    automation_execution: bool,
 }
 
 #[derive(Deserialize)]
@@ -1822,15 +1844,12 @@ fn build_agent_lifecycle_plan(
     installed_command: Option<&str>,
 ) -> ApiResult<AgentLifecyclePlan> {
     if action == "install" && provider_id == CLAUDE_CODE_PROVIDER_ID {
-        if cfg!(target_os = "windows") {
-            return package_manager_install_plan(provider_id);
-        }
-        return Ok(claude_install_lifecycle_plan(
-            cfg!(target_os = "macos"),
-            cfg!(target_os = "windows"),
-        ));
+        return Ok(current_claude_install_lifecycle_plan());
     }
     if action == "update" && provider_id == CLAUDE_CODE_PROVIDER_ID && installed_command.is_none() {
+        if cfg!(target_os = "windows") {
+            return Ok(current_claude_install_lifecycle_plan());
+        }
         return Ok(claude_uninstalled_update_lifecycle_plan(
             cfg!(target_os = "macos"),
             cfg!(target_os = "windows"),
@@ -1897,7 +1916,7 @@ fn build_agent_lifecycle_plan(
         GROK_BUILD_PROVIDER_ID => return Err(ApiError::bad_request("不支持的 Grok Build 操作")),
         _ => return Err(ApiError::bad_request("不支持的 Agent Provider")),
     };
-    if let Some(plan) = package_manager_install_plan_for_package(provider_id, package, display) {
+    if let Some(plan) = package_manager_install_plan_for_package(package, display) {
         return Ok(plan);
     }
     Ok(lifecycle_plan(
@@ -1911,31 +1930,39 @@ fn build_agent_lifecycle_plan(
     ))
 }
 
-fn package_manager_install_plan(provider_id: &str) -> ApiResult<AgentLifecyclePlan> {
-    let (package, display) = match provider_id {
-        CLAUDE_CODE_PROVIDER_ID => (
-            "@anthropic-ai/claude-code@latest",
-            CLAUDE_CLI_INSTALL_COMMAND,
-        ),
-        _ => return Err(ApiError::bad_request("不支持的 Agent Provider")),
-    };
-    package_manager_install_plan_for_package(provider_id, package, display).ok_or_else(|| {
-        ApiError::bad_request(
-            "未检测到 npm、pnpm 或 bun。请先安装 Node.js 或任一受支持的包管理器后重试",
-        )
-    })
-}
-
 fn package_manager_install_plan_for_package(
-    provider_id: &str,
     package: &str,
     display: &str,
 ) -> Option<AgentLifecyclePlan> {
-    let suffix = if cfg!(target_os = "windows") {
-        ".cmd"
-    } else {
-        ""
-    };
+    if let Some(plan) = detected_package_manager_install_plan_for_package(
+        package,
+        display,
+        cfg!(target_os = "windows"),
+        executable_on_path,
+    ) {
+        return Some(plan);
+    }
+    Some(lifecycle_plan(
+        if cfg!(target_os = "windows") {
+            "npm.cmd"
+        } else {
+            "npm"
+        },
+        ["install", "-g", package],
+        display,
+    ))
+}
+
+fn detected_package_manager_install_plan_for_package<F>(
+    package: &str,
+    display: &str,
+    windows: bool,
+    executable_available: F,
+) -> Option<AgentLifecyclePlan>
+where
+    F: Fn(&str) -> bool,
+{
+    let suffix = if windows { ".cmd" } else { "" };
     for (manager, args, command) in [
         (
             format!("npm{suffix}"),
@@ -1953,7 +1980,7 @@ fn package_manager_install_plan_for_package(
             format!("bun add -g {package}"),
         ),
     ] {
-        if executable_on_path(&manager) {
+        if executable_available(&manager) {
             return Some(lifecycle_plan(
                 &manager,
                 args,
@@ -1965,16 +1992,27 @@ fn package_manager_install_plan_for_package(
             ));
         }
     }
-    let _ = provider_id;
-    Some(lifecycle_plan(
-        if cfg!(target_os = "windows") {
-            "npm.cmd"
-        } else {
-            "npm"
-        },
-        ["install", "-g", package],
-        display,
-    ))
+    None
+}
+
+fn current_claude_install_lifecycle_plan() -> AgentLifecyclePlan {
+    if cfg!(target_os = "windows") {
+        return windows_claude_install_lifecycle_plan(executable_on_path);
+    }
+    claude_install_lifecycle_plan(cfg!(target_os = "macos"), false)
+}
+
+fn windows_claude_install_lifecycle_plan<F>(executable_available: F) -> AgentLifecyclePlan
+where
+    F: Fn(&str) -> bool,
+{
+    detected_package_manager_install_plan_for_package(
+        "@anthropic-ai/claude-code@latest",
+        CLAUDE_CLI_INSTALL_COMMAND,
+        true,
+        executable_available,
+    )
+    .unwrap_or_else(|| claude_install_lifecycle_plan(false, true))
 }
 
 fn claude_install_lifecycle_plan(macos: bool, windows: bool) -> AgentLifecyclePlan {
@@ -1985,8 +2023,21 @@ fn claude_install_lifecycle_plan(macos: bool, windows: bool) -> AgentLifecyclePl
             CLAUDE_CLI_MACOS_INSTALL_COMMAND,
         );
     }
+    if windows {
+        return lifecycle_plan(
+            "powershell.exe",
+            [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                CLAUDE_CLI_WINDOWS_INSTALL_SCRIPT,
+            ],
+            CLAUDE_CLI_WINDOWS_INSTALL_COMMAND,
+        );
+    }
     lifecycle_plan(
-        if windows { "npm.cmd" } else { "npm" },
+        "npm",
         ["install", "-g", "@anthropic-ai/claude-code@latest"],
         CLAUDE_CLI_INSTALL_COMMAND,
     )
@@ -1999,12 +2050,8 @@ fn claude_uninstalled_update_lifecycle_plan(macos: bool, windows: bool) -> Agent
     claude_install_lifecycle_plan(false, windows)
 }
 
-fn claude_install_display_command() -> &'static str {
-    if cfg!(target_os = "macos") {
-        CLAUDE_CLI_MACOS_INSTALL_COMMAND
-    } else {
-        CLAUDE_CLI_INSTALL_COMMAND
-    }
+fn claude_install_display_command() -> String {
+    current_claude_install_lifecycle_plan().display_command
 }
 
 fn package_manager_lifecycle_plan(provider_id: &str, command: &str) -> Option<AgentLifecyclePlan> {
@@ -15123,6 +15170,12 @@ fn build_claude_run_args(
         args.push("--permission-mode".to_string());
         args.push(permission_mode.to_string());
     }
+    if payload.automation_execution {
+        args.push("--append-system-prompt".to_string());
+        args.push(AUTOMATION_EXECUTION_SYSTEM_PROMPT.to_string());
+        args.push("--disallowed-tools".to_string());
+        args.push(AUTOMATION_DISALLOWED_TOOLS.to_string());
+    }
     let model = payload
         .model
         .as_deref()
@@ -18129,25 +18182,25 @@ mod tests {
         claude_install_display_command, claude_install_lifecycle_plan,
         claude_uninstalled_update_lifecycle_plan, compare_project_file_entries,
         configure_agent_lifecycle_environment, create_router, create_thread_row,
-        default_claude_command_paths, default_grok_command_path, desktop_cors_layer,
-        ensure_agent_plugin_management_supported, extract_agent_semantic_version,
-        import_claude_sessions_from_root, initialize_workspace_database,
-        install_skill_directory_safely, is_agent_lifecycle_network_failure, lifecycle_plan,
-        lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
-        list_agent_plugin_marketplaces_value, list_agent_skills_value, list_slash_commands_value,
-        mark_request_user_input_submitted, normalize_agent_plugin_action,
-        normalize_agent_runtime_settings, normalize_request_user_input_answer_value,
-        parse_grok_cli_version, parse_grok_latest_version, parse_macos_system_proxy_environment,
-        parse_npm_latest_version, parse_request_user_input_event, read_opencode_mcp_config,
-        read_stored_thread_history, read_thread_detail, read_thread_summary, remove_thread_row,
-        resolve_codex_command, resolve_first_runnable_command, resolve_grok_command,
-        resolve_opencode_command, resolve_requested_thread_provider,
-        resolve_thread_create_permission_mode, resolve_workspace_relative_path,
-        sanitize_agent_lifecycle_output, search_workspace_files, select_runnable_command_candidate,
-        should_emit_claude_raw_event, should_store_run_event, summarize_content_blocks,
-        update_thread_metadata_from_payload, validate_desktop_file_path,
-        validate_managed_agent_skill_path, write_opencode_mcp_config, write_thread_history,
-        ApiError, AppState,
+        current_claude_install_lifecycle_plan, default_claude_command_paths,
+        default_grok_command_path, desktop_cors_layer, ensure_agent_plugin_management_supported,
+        extract_agent_semantic_version, import_claude_sessions_from_root,
+        initialize_workspace_database, install_skill_directory_safely,
+        is_agent_lifecycle_network_failure, lifecycle_plan, lifecycle_plan_supports_npm_mirror,
+        list_agent_installed_plugins_value, list_agent_plugin_marketplaces_value,
+        list_agent_skills_value, list_slash_commands_value, mark_request_user_input_submitted,
+        normalize_agent_plugin_action, normalize_agent_runtime_settings,
+        normalize_request_user_input_answer_value, parse_grok_cli_version,
+        parse_grok_latest_version, parse_macos_system_proxy_environment, parse_npm_latest_version,
+        parse_request_user_input_event, read_opencode_mcp_config, read_stored_thread_history,
+        read_thread_detail, read_thread_summary, remove_thread_row, resolve_codex_command,
+        resolve_first_runnable_command, resolve_grok_command, resolve_opencode_command,
+        resolve_requested_thread_provider, resolve_thread_create_permission_mode,
+        resolve_workspace_relative_path, sanitize_agent_lifecycle_output, search_workspace_files,
+        select_runnable_command_candidate, should_emit_claude_raw_event, should_store_run_event,
+        summarize_content_blocks, update_thread_metadata_from_payload, validate_desktop_file_path,
+        validate_managed_agent_skill_path, windows_claude_install_lifecycle_plan,
+        write_opencode_mcp_config, write_thread_history, ApiError, AppState,
     };
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
@@ -18182,8 +18235,7 @@ mod tests {
     fn agent_lifecycle_plans_only_cover_supported_providers() {
         let claude_plan = build_agent_lifecycle_plan(CLAUDE_CODE_PROVIDER_ID, "install", None)
             .expect("build Claude install plan");
-        let expected_claude_plan =
-            claude_install_lifecycle_plan(cfg!(target_os = "macos"), cfg!(target_os = "windows"));
+        let expected_claude_plan = current_claude_install_lifecycle_plan();
         assert_eq!(claude_plan.program, expected_claude_plan.program);
         assert_eq!(claude_plan.args, expected_claude_plan.args);
         assert_eq!(
@@ -18238,26 +18290,41 @@ mod tests {
     }
 
     #[test]
-    fn windows_claude_install_keeps_existing_npm_plan() {
-        let plan = claude_install_lifecycle_plan(false, true);
+    fn windows_claude_install_prefers_supported_package_managers() {
+        for expected_program in ["npm.cmd", "pnpm.cmd", "bun"] {
+            let plan = windows_claude_install_lifecycle_plan(|program| program == expected_program);
 
-        assert_eq!(plan.program, "npm.cmd");
+            assert_eq!(plan.program, expected_program);
+            assert!(plan
+                .args
+                .iter()
+                .any(|argument| argument == "@anthropic-ai/claude-code@latest"));
+            assert!(lifecycle_plan_supports_npm_mirror(&plan));
+        }
+    }
+
+    #[test]
+    fn windows_claude_install_falls_back_to_official_native_installer() {
+        let plan = windows_claude_install_lifecycle_plan(|_| false);
+
+        assert_eq!(plan.program, "powershell.exe");
+        assert_eq!(plan.args.first().map(String::as_str), Some("-NoProfile"));
         assert_eq!(
-            plan.args,
-            vec![
-                "install".to_string(),
-                "-g".to_string(),
-                "@anthropic-ai/claude-code@latest".to_string(),
-            ]
+            plan.args.get(1).map(String::as_str),
+            Some("-ExecutionPolicy")
         );
+        let script = plan.args.last().expect("PowerShell install script");
+        assert!(script.contains("$env:HTTPS_PROXY"));
+        assert!(script.contains("[Net.WebRequest]::DefaultWebProxy"));
+        assert!(script.contains("https://claude.ai/install.ps1"));
         assert_eq!(
             plan.display_command,
-            "npm install -g @anthropic-ai/claude-code"
+            "irm https://claude.ai/install.ps1 | iex"
         );
-        assert!(lifecycle_plan_supports_npm_mirror(&plan));
+        assert!(!lifecycle_plan_supports_npm_mirror(&plan));
 
         let update_plan = claude_uninstalled_update_lifecycle_plan(false, true);
-        assert_eq!(update_plan.program, "npm.cmd");
+        assert_eq!(update_plan.program, plan.program);
         assert_eq!(update_plan.args, plan.args);
         assert_eq!(update_plan.display_command, plan.display_command);
     }
@@ -18271,11 +18338,7 @@ mod tests {
         assert_eq!(plan.display_command, "claude update");
         assert_eq!(
             claude_install_display_command(),
-            if cfg!(target_os = "macos") {
-                "/usr/bin/curl -fsSL https://claude.ai/install.sh | /bin/bash"
-            } else {
-                "npm install -g @anthropic-ai/claude-code"
-            }
+            current_claude_install_lifecycle_plan().display_command
         );
     }
 
@@ -18612,6 +18675,7 @@ mod tests {
             channel_id: Some("channel-1".to_string()),
             tool_result: None,
             content_blocks: None,
+            automation_execution: false,
         };
         let runtime = crate::agent_channels::AgentChannelRuntime {
             channel_id: "channel-1".to_string(),
@@ -18657,6 +18721,53 @@ mod tests {
             settings["apiKeyHelper"],
             super::claude_channel_api_key_helper_command()
         );
+    }
+
+    #[test]
+    fn automation_execution_disables_native_schedule_tools_only_for_automation_runs() {
+        let mut payload = super::ClaudeRunRequest {
+            thread_id: Some("thread-automation".to_string()),
+            turn_id: Some("turn-automation".to_string()),
+            prompt: Some("每天推送日报".to_string()),
+            working_directory: Some("D:/workspace".to_string()),
+            session_id: None,
+            permission_mode: Some("bypassPermissions".to_string()),
+            model: None,
+            effort: None,
+            channel_id: None,
+            tool_result: None,
+            content_blocks: None,
+            automation_execution: true,
+        };
+
+        let automation_args = super::build_claude_run_args(&payload, "bypassPermissions", None);
+        let system_prompt_index = automation_args
+            .iter()
+            .position(|arg| arg == "--append-system-prompt")
+            .expect("automation system prompt arg");
+        assert_eq!(
+            automation_args
+                .get(system_prompt_index + 1)
+                .map(String::as_str),
+            Some(super::AUTOMATION_EXECUTION_SYSTEM_PROMPT)
+        );
+        let disallowed_tools_index = automation_args
+            .iter()
+            .position(|arg| arg == "--disallowed-tools")
+            .expect("automation disallowed tools arg");
+        assert_eq!(
+            automation_args
+                .get(disallowed_tools_index + 1)
+                .map(String::as_str),
+            Some(super::AUTOMATION_DISALLOWED_TOOLS)
+        );
+
+        payload.automation_execution = false;
+        let manual_args = super::build_claude_run_args(&payload, "bypassPermissions", None);
+        assert!(!manual_args
+            .iter()
+            .any(|arg| arg == "--append-system-prompt"));
+        assert!(!manual_args.iter().any(|arg| arg == "--disallowed-tools"));
     }
 
     #[test]

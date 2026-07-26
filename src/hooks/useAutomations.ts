@@ -46,6 +46,7 @@ type SubmitAutomationPrompt = (
     permissionMode: PermissionMode;
     model?: string;
     reasoningEffort?: string;
+    automationExecution?: boolean;
   },
   ) => boolean | Promise<boolean>;
 
@@ -194,11 +195,13 @@ export function useAutomations({
             permissionMode: automation.permissionMode,
             model: automation.model,
             reasoningEffort: automation.reasoningEffort,
+            automationExecution: true,
           })
         : submitAgentPrompt(thread, automation.prompt, {
             permissionMode: automation.permissionMode,
             model: automation.model,
             reasoningEffort: automation.reasoningEffort,
+            automationExecution: true,
           }));
       if (!submitted) {
         throw new Error('Agent 未能启动自动化任务');
