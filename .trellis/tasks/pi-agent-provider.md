@@ -128,6 +128,8 @@ Out of scope:
 
 ## Design
 
+详细实施步骤见 [Pi Agent RPC Provider Implementation Plan](./pi-agent-provider-implementation-plan.md)。
+
 ### RPC Client Boundary
 
 `pi_rpc.rs` 只负责 Pi 协议和进程通信，不负责 HTTP route、SQLite 或 frontend 语义。它提供：
@@ -208,10 +210,10 @@ Pi `extension_ui_request`，Rust 再映射到 CodeM 的 `approval-request` 或 `
 
 ## Verification Commands
 
-- `npm test -- src/lib/agent-provider-registry.test.ts`
-- `npm test -- src/lib/agent-provider-management-ui.test.ts`
-- `npm test -- src/lib/agent-model-selection.test.ts`
-- `npm test -- src/lib/agent-channel-selection.test.ts`
+- `node --import tsx --test src/lib/agent-provider-registry.test.ts`
+- `node --import tsx --test src/lib/agent-provider-management-ui.test.ts`
+- `node --import tsx --test src/lib/agent-model-selection.test.ts`
+- `node --import tsx --test src/lib/agent-channel-selection.test.ts`
 - `npm run typecheck`
 - `cargo fmt --manifest-path src-tauri/Cargo.toml --check`
 - `cargo test --manifest-path src-tauri/Cargo.toml pi_rpc`
@@ -221,6 +223,8 @@ Pi `extension_ui_request`，Rust 再映射到 CodeM 的 `approval-request` 或 `
 - 真实 smoke test 仅在显式提供已认证 Pi 环境时运行，默认标记 ignored。
 
 ## Implementation Record
+
+- 2026-07-26T04:35:05.222Z 完成 Pi Agent RPC 实施计划：九个测试驱动任务覆盖 Provider、RPC、热会话、渠道、生命周期、权限桥接、设置与验收
 - 2026-07-26T04:24:24.639Z 完成 Pi 原生 RPC 接入设计：确认同等 Provider 范围、热会话复用、权限桥接、自定义渠道隔离、错误恢复和首版 MCP 边界
 
 - 2026-07-26 用户确认改用 Pi 原生 RPC，并要求与其他 Agent 保持同等产品范围、支持热会话。
