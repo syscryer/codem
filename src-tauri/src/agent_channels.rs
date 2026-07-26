@@ -1982,7 +1982,7 @@ fn prepare_pi_runtime_dir(
         "providers": {
             provider_key: {
                 "baseUrl": channel.base_url,
-                "apiKey": secret_env_key,
+                "apiKey": format!("${secret_env_key}"),
                 "api": api,
                 "models": model_values
             }
@@ -2375,6 +2375,7 @@ mod tests {
         );
         let settings = fs::read_to_string(runtime_dir.join("settings.json")).unwrap();
         let models_config = fs::read_to_string(runtime_dir.join("models.json")).unwrap();
+        let models_value: Value = serde_json::from_str(&models_config).unwrap();
         assert!(!settings.contains("sk-secret"));
         assert!(!models_config.contains("sk-secret"));
         let secret_env = first
@@ -2383,7 +2384,10 @@ mod tests {
             .find(|(key, value)| key.starts_with("CODEM_PI_CHANNEL_") && *value == "sk-secret")
             .map(|(key, _)| key.clone())
             .expect("generated Pi secret environment variable");
-        assert!(models_config.contains(&secret_env));
+        assert_eq!(
+            models_value["providers"]["codem_channel_pi"]["apiKey"],
+            format!("${secret_env}")
+        );
         assert_eq!(
             first.effective_model.as_deref(),
             Some("codem_channel_pi/gpt-5")

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CLAUDE_CODE_PROVIDER_ID,
   DEFAULT_MODEL_VALUE,
@@ -242,15 +242,18 @@ export function useAgentRun({
     selectedProviderId,
     defaultAgentChannelIds[selectedProviderId as AgentProviderId],
   );
-  const currentModelCatalog = channelId === SYSTEM_AGENT_CHANNEL_ID
-    ? nativeModelCatalog
-    : selectedChannel
-      ? buildAgentChannelModelCatalog(
-          selectedProviderId as AgentProviderId,
-          selectedChannel,
-          nativeModelCatalog,
-        )
-      : null;
+  const currentModelCatalog = useMemo(
+    () => channelId === SYSTEM_AGENT_CHANNEL_ID
+      ? nativeModelCatalog
+      : selectedChannel
+        ? buildAgentChannelModelCatalog(
+            selectedProviderId as AgentProviderId,
+            selectedChannel,
+            nativeModelCatalog,
+          )
+        : null,
+    [channelId, nativeModelCatalog, selectedChannel, selectedProviderId],
+  );
   const queuedPrompts = activeThreadId
     ? queuedPromptsByThreadId[activeThreadId] ?? []
     : [];

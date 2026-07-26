@@ -368,6 +368,9 @@ test('Pi Agent is represented across settings, diagnostics, and capability surfa
   assert.match(providerSettingsSource, /probePiAgent/);
   assert.match(providerTabsSource, /id: 'pi-agent', label: 'Pi'/);
   assert.match(providerIconSource, /PI_AGENT_PROVIDER_ID/);
+  assert.match(providerIconSource, /const PI_PATH =/);
+  assert.match(providerIconSource, /providerId === PI_AGENT_PROVIDER_ID\s*\? PI_PATH/);
+  assert.doesNotMatch(providerIconSource, /providerId === PI_AGENT_PROVIDER_ID\) \{\s*return <Bot/);
   assert.match(mcpSettingsSource, /Pi Agent 当前不支持由 CodeM 管理 MCP/);
   assert.match(globalPromptSource, /~\/\.pi\/agent\/AGENTS\.md/);
   assert.match(usageSettingsSource, /'pi-agent'/);

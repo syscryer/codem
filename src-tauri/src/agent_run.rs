@@ -1349,6 +1349,20 @@ impl LiveAgentRuntime {
                                 if let Some(reason) = message.get("stopReason").and_then(Value::as_str) {
                                     stop_reason = reason.to_string();
                                 }
+                                if stop_reason == "error" {
+                                    let detail = message
+                                        .get("errorMessage")
+                                        .and_then(Value::as_str)
+                                        .filter(|value| !value.trim().is_empty())
+                                        .unwrap_or("Pi 返回了运行错误");
+                                    return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                        message: format!(
+                                            "Pi 请求失败：{}",
+                                            sanitize_public_error_detail(detail)
+                                        ),
+                                        fatal: false,
+                                    }));
+                                }
                             }
                             if let PiRuntimeEvent::TransportError(message) = &event {
                                 return RuntimeExecution::Completed(Err(RuntimeTurnError {
@@ -5250,6 +5264,94 @@ for await (const line of lines) {
             ]
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn pi_message_end_error_becomes_nonfatal_runtime_error() {
+        let root =
+            std::env::temp_dir().join(format!("codem-pi-message-error-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("fake-pi.mjs");
+        fs::write(
+            &script,
+            r#"
+import readline from 'node:readline';
+const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const emit = (value) => process.stdout.write(JSON.stringify(value) + '\n');
+for await (const line of lines) {
+  const command = JSON.parse(line);
+  const response = (data = undefined) => {
+    const value = { id: command.id, type: 'response', command: command.type, success: true };
+    if (data !== undefined) value.data = data;
+    emit(value);
+  };
+  if (command.type === 'prompt') {
+    response();
+    emit({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '401 authentication_error api_key sk-fake-sensitive-value'
+      }
+    });
+    emit({ type: 'agent_end', messages: [], willRetry: false });
+    emit({ type: 'agent_settled' });
+  } else if (command.type === 'get_session_stats') {
+    response({});
+  }
+}
+"#,
+        )
+        .unwrap();
+        let client = PiStdioClient::spawn_with_options(
+            "node",
+            &root,
+            &BTreeMap::new(),
+            &[script.to_string_lossy().to_string()],
+        )
+        .await
+        .unwrap();
+        let mut runtime = LiveAgentRuntime::Pi {
+            client,
+            session_id: "pi-session-error".to_string(),
+        };
+        let mut config = test_runtime_config();
+        config.provider_id = PI_AGENT_PROVIDER_ID.to_string();
+        config.driver = AgentDriverKind::PiRpc;
+        config.command = "node".to_string();
+        let (_cancel_sender, cancel) = watch::channel(false);
+        let (_control_sender, control) = mpsc::unbounded_channel();
+        let (_shutdown_sender, mut shutdown) = watch::channel(false);
+
+        let outcome = runtime
+            .run_turn(
+                &test_run_state(),
+                &config,
+                AgentRuntimeRun {
+                    run_id: "run-pi-message-error".to_string(),
+                    input: AgentDriverInput::Pi(PiPromptInput {
+                        message: "hello".to_string(),
+                        images: Vec::new(),
+                        streaming_behavior: None,
+                    }),
+                    cancel,
+                    control,
+                },
+                &mut shutdown,
+            )
+            .await;
+        runtime.shutdown().await;
+        fs::remove_dir_all(root).unwrap();
+
+        match outcome {
+            RuntimeExecution::Completed(Err(error)) => {
+                assert!(!error.fatal);
+                assert!(error.message.contains("401 authentication_error"));
+                assert!(!error.message.contains("sk-fake-sensitive-value"));
+            }
+            _ => panic!("Pi message_end error should fail the turn"),
+        }
     }
 
     #[test]

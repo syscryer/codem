@@ -37,3 +37,11 @@ test('thread metadata failures are observable so selectors can roll back', () =>
   assert.match(claudeRunSource, /setEffortState\(previousEffort\)/);
   assert.match(agentRunSource, /setAgentPermissionMode\(previousMode\)/);
 });
+
+test('custom channel model catalogs stay stable while draft model state changes', () => {
+  assert.match(agentRunSource, /import \{[^}]*useMemo[^}]*\} from 'react'/);
+  assert.match(
+    agentRunSource,
+    /const currentModelCatalog = useMemo\([\s\S]*buildAgentChannelModelCatalog[\s\S]*\[channelId, nativeModelCatalog, selectedChannel, selectedProviderId\][\s\S]*\);/,
+  );
+});

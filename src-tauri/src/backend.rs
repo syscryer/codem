@@ -7325,12 +7325,16 @@ where
         .unwrap_or(CLAUDE_CODE_PROVIDER_ID);
     match provider_id {
         CLAUDE_CODE_PROVIDER_ID => Ok(CLAUDE_CODE_PROVIDER_ID),
-        GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID | OPENCODE_PROVIDER_ID => {
+        GROK_BUILD_PROVIDER_ID
+        | OPENAI_CODEX_PROVIDER_ID
+        | OPENCODE_PROVIDER_ID
+        | PI_AGENT_PROVIDER_ID => {
             if provider_available(provider_id) {
                 return Ok(match provider_id {
                     GROK_BUILD_PROVIDER_ID => GROK_BUILD_PROVIDER_ID,
                     OPENAI_CODEX_PROVIDER_ID => OPENAI_CODEX_PROVIDER_ID,
                     OPENCODE_PROVIDER_ID => OPENCODE_PROVIDER_ID,
+                    PI_AGENT_PROVIDER_ID => PI_AGENT_PROVIDER_ID,
                     _ => unreachable!(),
                 });
             }
@@ -7338,6 +7342,7 @@ where
                 GROK_BUILD_PROVIDER_ID => "未找到 grok 命令",
                 OPENAI_CODEX_PROVIDER_ID => "未找到可由 CodeM 启动的 Codex CLI",
                 OPENCODE_PROVIDER_ID => "未找到可由 CodeM 启动的 OpenCode CLI",
+                PI_AGENT_PROVIDER_ID => "未找到可由 CodeM 启动的 Pi CLI",
                 _ => unreachable!(),
             }))
         }
@@ -7351,7 +7356,10 @@ fn resolve_thread_create_permission_mode(
 ) -> ApiResult<Option<String>> {
     if matches!(
         provider,
-        GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID | OPENCODE_PROVIDER_ID
+        GROK_BUILD_PROVIDER_ID
+            | OPENAI_CODEX_PROVIDER_ID
+            | OPENCODE_PROVIDER_ID
+            | PI_AGENT_PROVIDER_ID
     ) {
         return normalize_agent_permission_mode(permission_mode)
             .map(|mode| Some(mode.to_string()))
@@ -7386,7 +7394,10 @@ fn read_thread_metadata_payload(value: Option<&Value>, field: &str) -> ApiResult
 }
 
 fn provider_supports_reasoning_effort(provider: &str) -> bool {
-    matches!(provider, CLAUDE_CODE_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID)
+    matches!(
+        provider,
+        CLAUDE_CODE_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID | PI_AGENT_PROVIDER_ID
+    )
 }
 
 fn thread_model_preference_key(model: Option<&str>) -> String {
@@ -18497,10 +18508,11 @@ mod tests {
         normalize_pi_probe_summary, normalize_request_user_input_answer_value,
         parse_grok_cli_version, parse_grok_latest_version, parse_macos_system_proxy_environment,
         parse_npm_latest_version, parse_pi_installed_packages, parse_request_user_input_event,
-        pi_node_version_supported, read_agent_mcp_config_snapshot, read_opencode_mcp_config,
-        read_stored_thread_history, read_thread_detail, read_thread_summary, remove_thread_row,
-        resolve_codex_command, resolve_first_runnable_command, resolve_grok_command,
-        resolve_opencode_command, resolve_pi_command, resolve_requested_thread_provider,
+        pi_node_version_supported, provider_supports_reasoning_effort,
+        read_agent_mcp_config_snapshot, read_opencode_mcp_config, read_stored_thread_history,
+        read_thread_detail, read_thread_summary, remove_thread_row, resolve_codex_command,
+        resolve_first_runnable_command, resolve_grok_command, resolve_opencode_command,
+        resolve_pi_command, resolve_requested_thread_provider,
         resolve_thread_create_permission_mode, resolve_workspace_relative_path,
         sanitize_agent_lifecycle_output, sanitize_external_command_result, search_workspace_files,
         select_runnable_command_candidate, should_emit_claude_raw_event, should_store_run_event,
@@ -19734,6 +19746,14 @@ mod tests {
             .expect("enabled OpenCode provider"),
             OPENCODE_PROVIDER_ID
         );
+        assert!(resolve_requested_thread_provider(Some(PI_AGENT_PROVIDER_ID), |_| false,).is_err());
+        assert_eq!(
+            resolve_requested_thread_provider(Some(PI_AGENT_PROVIDER_ID), |provider_id| {
+                provider_id == PI_AGENT_PROVIDER_ID
+            },)
+            .expect("enabled Pi provider"),
+            PI_AGENT_PROVIDER_ID
+        );
         assert_eq!(
             resolve_thread_create_permission_mode(GROK_BUILD_PROVIDER_ID, None)
                 .expect("default Grok permission")
@@ -19755,6 +19775,16 @@ mod tests {
                 .as_deref(),
             Some("auto")
         );
+        assert_eq!(
+            resolve_thread_create_permission_mode(PI_AGENT_PROVIDER_ID, Some("auto"))
+                .expect("Pi permission")
+                .as_deref(),
+            Some("auto")
+        );
+        assert!(
+            resolve_thread_create_permission_mode(PI_AGENT_PROVIDER_ID, Some("dontAsk")).is_err()
+        );
+        assert!(provider_supports_reasoning_effort(PI_AGENT_PROVIDER_ID));
     }
 
     #[test]
