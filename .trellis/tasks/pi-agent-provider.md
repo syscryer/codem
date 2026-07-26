@@ -224,6 +224,8 @@ Pi `extension_ui_request`，Rust 再映射到 CodeM 的 `approval-request` 或 `
 
 ## Implementation Record
 
+- 2026-07-26T14:05:32.274Z 已将 Pi Agent 主线与自动化执行隔离、Windows Claude 原生安装回退及后台任务 UI 修正合并；冲突处理中同时保留 PiRpc 输入分支和 automationExecution 上下文。
+
 - 2026-07-26T07:47:32.728Z 真实 Pi smoke 发现系统配置无可用模型时 unknown/unknown 被误判为已认证；已改为仅接受 Pi get_available_models 返回的当前模型，并在设置页显示待处理
 - 2026-07-26T07:26:38.513Z 完成 Pi Agent 设置、MCP 边界、Rules、Skills、Packages、Usage 与图标界面，并补充 Pi Packages 专属空态及窄屏布局验证
 
@@ -248,6 +250,9 @@ Pi `extension_ui_request`，Rust 再映射到 CodeM 的 `approval-request` 或 `
 - 2026-07-23T18:56:09.957Z Task created by Trellis automation.
 
 ## Verification Results
+- 2026-07-26T14:05:34.301Z `npm run typecheck && npm run build && node --import tsx --test 相关 Pi/自动化/UI 测试`: 类型检查与生产构建通过；37 passed、0 failed。
+
+- 2026-07-26T14:05:33.285Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo test --manifest-path src-tauri/Cargo.toml`: 格式检查通过；Rust library 225 passed、0 failed、1 ignored，desktop 13 passed。
 
 - 2026-07-26T07:48:14.228Z `npm run desktop:dev；Invoke-RestMethod http://127.0.0.1:3002/api/health；POST /api/agents/pi/probe；POST /api/agents/run；Playwright http://127.0.0.1:5174/ Pi 检测`: 桌面 Vite 5174、后端 3002 已启动且健康；Pi 0.82.1 RPC 初始化成功；真实 run 创建会话并通过 SSE 返回缺少 API key 错误；修复后 probe 返回 authenticated=false/currentModel=null，UI 显示待处理且无控制台错误；认证生成与热复用 smoke 待配置 API key 后补测
 - 2026-07-26T07:47:58.034Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check；cargo test --manifest-path src-tauri/Cargo.toml pi_rpc；cargo test --manifest-path src-tauri/Cargo.toml agent_run；cargo test --manifest-path src-tauri/Cargo.toml agent_channels；cargo test --manifest-path src-tauri/Cargo.toml backend；cargo test --manifest-path src-tauri/Cargo.toml`: 格式通过；定向测试 pi_rpc 8、agent_run 50、agent_channels 11、backend 74 全通过；全量库测试 221 通过、1 个需认证 Grok 用例忽略，桌面壳 13 通过
@@ -273,6 +278,8 @@ Pi `extension_ui_request`，Rust 再映射到 CodeM 的 `approval-request` 或 `
 - 2026-07-26T05:26:57.287Z `cargo test --manifest-path src-tauri/Cargo.toml agent_run::tests`: 36 passed, 0 failed
 
 ## Completion Summary
+
+- 2026-07-26T14:05:35.299Z Pi Agent RPC、热会话、渠道、权限交互、设置能力和错误处理已完成，并已与自动化隔离及 Windows Claude 安装兼容改动合并验证。
 
 - 2026-07-26T07:48:25.819Z 完成 Pi Agent 原生 RPC、热会话、渠道、权限桥接与设置接入；自动化回归和桌面启动通过，真实 Pi 初始化与错误链路通过，认证生成 smoke 因本机未配置 API key 待补
 
