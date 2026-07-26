@@ -770,7 +770,12 @@ export type OpenWithTargetsResponse = {
   selectedTargetId: string;
 };
 
-export type AgentProviderId = 'claude-code' | 'grok-build' | 'openai-codex' | 'opencode';
+export type AgentProviderId =
+  | 'claude-code'
+  | 'grok-build'
+  | 'openai-codex'
+  | 'opencode'
+  | 'pi-agent';
 
 export type AutomationSchedule =
   | {

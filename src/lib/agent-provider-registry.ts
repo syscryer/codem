@@ -21,6 +21,7 @@ import {
   GROK_BUILD_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
+  PI_AGENT_PROVIDER_ID,
 } from '../constants.js';
 
 const CAPABILITY_SUPPORT = new Set<AgentCapabilitySupport>([
@@ -219,6 +220,7 @@ export function resolveChatRuntimeKind(providerId: string) {
     providerId === GROK_BUILD_PROVIDER_ID
     || providerId === OPENAI_CODEX_PROVIDER_ID
     || providerId === OPENCODE_PROVIDER_ID
+    || providerId === PI_AGENT_PROVIDER_ID
   ) {
     return 'generic' as const;
   }

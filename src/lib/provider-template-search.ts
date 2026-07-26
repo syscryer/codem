@@ -25,6 +25,7 @@ const agentChannelProtocols: Record<AgentProviderId, readonly AiChatProtocol[]> 
   'openai-codex': ['openai_responses', 'openai_chat'],
   'grok-build': ['openai_chat', 'openai_responses', 'anthropic_messages'],
   opencode: ['openai_chat', 'anthropic_messages'],
+  'pi-agent': ['openai_chat', 'openai_responses', 'anthropic_messages'],
 };
 
 export function protocolsForAgent(providerId: AgentProviderId): AiChatProtocol[] {

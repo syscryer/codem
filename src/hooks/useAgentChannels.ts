@@ -14,6 +14,7 @@ const EMPTY_BOOTSTRAP: AgentChannelBootstrap = {
     'openai-codex': 'system',
     'grok-build': 'system',
     opencode: 'system',
+    'pi-agent': 'system',
   },
 };
 

@@ -2,7 +2,7 @@ use crate::acp::{probe_acp_agent, probe_acp_initialize};
 use crate::agent_runtime::{
     agent_provider_registry, normalize_agent_permission_mode, AgentProviderRegistry,
     CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-    OPENCODE_PROVIDER_ID,
+    OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
 };
 use crate::codex_app_server::probe_codex_app_server;
 use axum::{
@@ -895,6 +895,10 @@ async fn agent_providers(State(state): State<AppState>) -> Json<AgentProviderReg
         state
             .agent_runs
             .resolve_command(OPENCODE_PROVIDER_ID, false)
+            .is_some(),
+        state
+            .agent_runs
+            .resolve_command(PI_AGENT_PROVIDER_ID, false)
             .is_some(),
     ))
 }

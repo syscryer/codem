@@ -17,6 +17,7 @@ const providerLabels: Record<AgentProviderId, string> = {
   'openai-codex': 'Codex',
   'grok-build': 'Grok',
   opencode: 'OpenCode',
+  'pi-agent': 'Pi',
 };
 
 export function SkillsPanel({ items, providerId, busy, onOpen, onDelete, onCopy }: SkillsPanelProps) {

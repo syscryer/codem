@@ -204,6 +204,7 @@ test('enabled Grok is selectable without routing unknown providers to Claude', (
   assert.equal(resolveChatRuntimeKind('grok-build'), 'generic');
   assert.equal(resolveChatRuntimeKind('openai-codex'), 'generic');
   assert.equal(resolveChatRuntimeKind('opencode'), 'generic');
+  assert.equal(resolveChatRuntimeKind('pi-agent'), 'generic');
   assert.equal(resolveChatRuntimeKind('future-provider'), 'unsupported');
 });
 
