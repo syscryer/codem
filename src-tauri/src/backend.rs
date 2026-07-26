@@ -5751,12 +5751,16 @@ fn normalize_pi_probe_summary(
     state: &PiState,
     models: &[PiModel],
     thinking_levels: &[String],
-    authenticated: bool,
 ) -> Value {
+    let authenticated_model = state.model.as_ref().filter(|current| {
+        models
+            .iter()
+            .any(|model| model.provider == current.provider && model.id == current.id)
+    });
     json!({
-        "authenticated": authenticated,
+        "authenticated": authenticated_model.is_some(),
         "sessionId": state.session_id,
-        "currentModel": state.model.as_ref().map(|model| format!("{}/{}", model.provider, model.id)),
+        "currentModel": authenticated_model.map(|model| format!("{}/{}", model.provider, model.id)),
         "thinkingLevel": state.thinking_level,
         "thinkingLevels": thinking_levels,
         "modelCount": models.len(),
@@ -5829,7 +5833,6 @@ async fn pi_rpc_probe(State(state): State<AppState>) -> Json<Value> {
                 &rpc_state,
                 &models,
                 &thinking_levels,
-                rpc_state.model.is_some(),
             ),
         })),
         Err(error) => Json(json!({
@@ -18615,7 +18618,6 @@ mod tests {
             },
             &[model],
             &["off".to_string(), "high".to_string()],
-            true,
         );
         assert_eq!(summary["authenticated"], true);
         assert_eq!(summary["modelCount"], 1);
@@ -18623,6 +18625,30 @@ mod tests {
         assert_eq!(summary["thinkingLevels"], json!(["off", "high"]));
         assert!(summary.get("sessionFile").is_none());
         assert!(!summary.to_string().contains("private"));
+    }
+
+    #[test]
+    fn pi_probe_summary_rejects_the_unknown_model_placeholder() {
+        let placeholder = PiModel {
+            id: "unknown".to_string(),
+            name: "unknown".to_string(),
+            provider: "unknown".to_string(),
+            reasoning: false,
+            input: vec!["text".to_string()],
+            context_window: None,
+        };
+        let state = PiState {
+            model: Some(placeholder),
+            thinking_level: "off".to_string(),
+            is_streaming: false,
+            session_file: None,
+            session_id: "session-unknown".to_string(),
+        };
+        let summary = normalize_pi_probe_summary(&state, &[], &["off".to_string()]);
+
+        assert_eq!(summary["authenticated"], false);
+        assert!(summary["currentModel"].is_null());
+        assert_eq!(summary["modelCount"], 0);
     }
 
     #[test]
