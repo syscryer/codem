@@ -1,4 +1,4 @@
-import { getWorkbenchPreviewKind } from './workbench-files';
+import { combineProjectFilePath, getWorkbenchPreviewKind } from './workbench-files';
 import type {
   GitFileStatus,
   ProjectFileEntry,
@@ -133,13 +133,7 @@ export function resolveWorkbenchPreviewFilePath(projectPath: string, previewPath
     return previewPath;
   }
 
-  const normalizedProjectPath = projectPath.replace(/[\\/]+$/, '');
-  const normalizedRelativePath = previewPath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
-  if (!normalizedRelativePath) {
-    return normalizedProjectPath;
-  }
-
-  return `${normalizedProjectPath}\\${normalizedRelativePath.replace(/\//g, '\\')}`;
+  return combineProjectFilePath(projectPath, previewPath);
 }
 
 export function closeWorkbenchPreviewTab(
