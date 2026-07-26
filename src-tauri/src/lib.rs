@@ -6,4 +6,5 @@ pub mod automation;
 pub mod backend;
 pub mod codex_app_server;
 pub mod ordinary_chat;
+pub mod pi_rpc;
 pub mod provider_import;
