@@ -36,7 +36,7 @@ Out of scope:
 - [x] README 明确列出 Pi Agent、Node.js 依赖与 Pi MCP 边界。
 - [x] 前端测试、生产构建、Rust 格式检查与全量测试通过。
 - [x] `package:doctor` 与发布 workflow 回归测试通过。
-- [ ] GitHub Release workflow 完成，并生成各平台安装包、签名、`latest.json` 和校验文件。
+- [x] GitHub Release workflow 完成，并生成各平台安装包、签名、`latest.json` 和校验文件。
 
 ## Verification Commands
 
@@ -54,12 +54,15 @@ Out of scope:
 - 2026-07-26T14:14:09.346Z Task created by Trellis automation.
 
 ## Verification Results
+
+- 2026-07-26T14:40:58.486Z `GitHub Actions run 30206030795；GitHub Release v0.1.19 assets；latest.json`: 通过：Windows、macOS ARM64、Linux 与 Publish job 全部成功；19 个资产包含 portable/EXE/MSI/DMG/AppImage/deb/rpm、updater 签名、源码包、SHA256SUMS.txt 和 latest.json；latest.json 版本 0.1.19，覆盖 3 个平台。
 - 2026-07-26T14:18:53.615Z `npm run package:doctor；node --test scripts/release-workflow.test.mjs；git diff --check`: 通过：Doctor OK，发布 workflow 回归测试通过，空白检查无错误。
 
 - 2026-07-26T14:18:52.580Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check；cargo test --manifest-path src-tauri/Cargo.toml`: 通过：Rust 格式检查成功；library 225 passed、0 failed、1 ignored，desktop 13 passed，文档测试通过；仅有现有 dead_code 警告。
 - 2026-07-26T14:18:51.561Z `node --import tsx --test Pi/渠道/自动化关键测试；npm run build`: 通过：49 项前端测试全部通过，TypeScript 与 Vite 生产构建成功；仅有现有分块大小提示。
 
 ## Completion Summary
+- 2026-07-26T14:40:59.543Z v0.1.19 已基于 GitHub main 发布：加入 Pi Agent 原生 RPC 与热会话能力，完善自动化隔离和 macOS 兼容；README、版本元数据、双远端 main/tag 已同步，GitHub 多平台构建和 Release 资产验收通过。
 
 ## Follow-ups
 
