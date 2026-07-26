@@ -15,6 +15,7 @@ const providers: Array<{ id: AgentProviderId; label: string }> = [
   { id: 'openai-codex', label: 'OpenAI Codex' },
   { id: 'grok-build', label: 'Grok Build' },
   { id: 'opencode', label: 'OpenCode' },
+  { id: 'pi-agent', label: 'Pi' },
 ];
 
 export function AgentSettingsProviderTabs({

@@ -10,6 +10,7 @@ import type {
   CodexAppServerProbeResult,
   GrokAcpProbeResult,
   OpenCodeAcpProbeResult,
+  PiRpcProbeResult,
 } from '../types.js';
 import { modelLabel } from './ui-labels.js';
 
@@ -32,6 +33,7 @@ const AGENT_INSTALL_DOCS_URLS: Partial<Record<AgentProviderId, string>> = {
   'grok-build': 'https://docs.x.ai/docs/overview',
   'openai-codex': 'https://developers.openai.com/codex/cli/',
   opencode: 'https://opencode.ai/docs/',
+  'pi-agent': 'https://pi.dev/docs/latest/quickstart',
 };
 
 export function getProviderInstallDocsUrl(providerId: AgentProviderId) {
@@ -101,6 +103,7 @@ export function resolveProviderStatus(
   grokProbe: GrokAcpProbeResult | null,
   codexProbe: CodexAppServerProbeResult | null = null,
   openCodeProbe: OpenCodeAcpProbeResult | null = null,
+  piProbe: PiRpcProbeResult | null = null,
 ): { label: string; tone: ProviderStatusTone } {
   if (provider.id === 'claude-code') {
     const available = claudeCliInfo?.installed === true || provider.available === true;
@@ -135,6 +138,15 @@ export function resolveProviderStatus(
     }
     return { label: '已检测', tone: 'positive' };
   }
+  if (provider.id === 'pi-agent' && piProbe) {
+    if (!piProbe.installed) {
+      return { label: '未安装', tone: 'negative' };
+    }
+    if (!piProbe.initialized || !piProbe.probe?.authenticated) {
+      return { label: '待处理', tone: 'warning' };
+    }
+    return { label: '已检测', tone: 'positive' };
+  }
   return provider.lifecycle === 'planned'
     ? { label: '规划中', tone: 'muted' }
     : { label: provider.available ? '可用' : '不可用', tone: provider.available ? 'positive' : 'negative' };
@@ -146,6 +158,7 @@ export function resolveProviderDiagnostics(
   grokProbe: GrokAcpProbeResult | null,
   codexProbe: CodexAppServerProbeResult | null = null,
   openCodeProbe: OpenCodeAcpProbeResult | null = null,
+  piProbe: PiRpcProbeResult | null = null,
 ) {
   if (provider.id === 'claude-code') {
     const installed = claudeCliInfo?.installed === true || provider.available === true;
@@ -188,6 +201,18 @@ export function resolveProviderDiagnostics(
       command: openCodeProbe?.command ?? '',
     };
   }
+  if (provider.id === 'pi-agent') {
+    return {
+      cli: piProbe ? (piProbe.installed ? '已安装' : '未安装') : '未检测',
+      auth: piProbe?.probe
+        ? (piProbe.probe.authenticated
+            ? `已认证 · ${piProbe.probe.modelCount} 个模型`
+            : '需要配置认证')
+        : '未检测',
+      version: piProbe?.nodeVersion ?? '未知',
+      command: piProbe?.command ?? '',
+    };
+  }
   return {
     cli: provider.id === 'codem-agent' ? '待实现' : '待接入检测',
     auth: '未检测',
@@ -228,6 +253,7 @@ export function formatProviderListMeta(
   grokProbe: GrokAcpProbeResult | null,
   codexProbe: CodexAppServerProbeResult | null = null,
   openCodeProbe: OpenCodeAcpProbeResult | null = null,
+  piProbe: PiRpcProbeResult | null = null,
 ) {
   if (provider.id === 'claude-code' && claudeCliInfo?.version) {
     return `v${claudeCliInfo.version} · ${provider.driverId}`;
@@ -240,6 +266,9 @@ export function formatProviderListMeta(
   }
   if (provider.id === 'opencode' && openCodeProbe?.version) {
     return `v${openCodeProbe.version} · ${provider.driverId}`;
+  }
+  if (provider.id === 'pi-agent' && piProbe) {
+    return `${piProbe.nodeVersion ?? 'Node 未知'} · ${provider.driverId}`;
   }
   return provider.driverId;
 }
@@ -339,6 +368,22 @@ export function getOpenCodeProbeStatusMessage(
     return `检测完成：OpenCode ACP 可用，当前可读取 ${result.probe.modelCount} 个模型；凭据继续由 OpenCode 管理。`;
   }
   return '尚未检测。检测会启动一次本机 OpenCode ACP 子进程，不读取或展示 API Key。';
+}
+
+export function getPiProbeStatusMessage(
+  state: 'idle' | 'checking' | 'ready' | 'error',
+  result: PiRpcProbeResult | null,
+  requestError: string,
+) {
+  if (state === 'checking') return '正在启动 Pi RPC 并检测认证、模型与思考级别';
+  if (state === 'error') return `${requestError || '检测失败'}。请检查后重新检测。`;
+  if (state === 'ready' && result) {
+    if (!result.installed) return `${result.error || '未找到可启动的 Pi CLI'}。安装后可重新检测。`;
+    if (!result.initialized) return `${result.error || 'Pi RPC 初始化失败'}。请检查 Node、Pi 版本和网络。`;
+    if (!result.probe?.authenticated) return 'Pi RPC 已可用，但当前模型认证不可用。请先完成 Pi Provider 配置。';
+    return `检测完成：Pi RPC 可用，已读取 ${result.probe.modelCount} 个模型和 ${result.probe.thinkingLevels.length} 个思考级别。`;
+  }
+  return '尚未检测。检测会启动一次本机 Pi RPC 子进程，不读取或展示 API Key。';
 }
 
 function formatTokenCount(tokens: number) {

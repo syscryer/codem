@@ -48,7 +48,7 @@
 - Test: `src-tauri/src/agent_runtime.rs`
 - Test: `src/lib/agent-provider-registry.test.ts`
 
-- [ ] **Step 1: Write failing Rust and TypeScript registry tests**
+- [x] **Step 1: Write failing Rust and TypeScript registry tests**
 
 Add a Rust assertion that `agent_provider_registry(false, false, false, false, true)` contains:
 
@@ -73,7 +73,7 @@ assert.equal(resolveChatRuntimeKind('pi-agent'), 'generic');
 assert.equal(normalizeAgentProviderRegistry(payload).providers.at(-1)?.driverId, 'pi-rpc');
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run:
 
@@ -84,7 +84,7 @@ node --import tsx --test src/lib/agent-provider-registry.test.ts
 
 Expected: failures because `PI_AGENT_PROVIDER_ID` and the fifth availability argument do not exist.
 
-- [ ] **Step 3: Add provider IDs, descriptor, and capabilities**
+- [x] **Step 3: Add provider IDs, descriptor, and capabilities**
 
 Add:
 
@@ -108,11 +108,11 @@ export type AgentProviderId =
 
 Include Pi in `resolveChatRuntimeKind`.
 
-- [ ] **Step 4: Run tests and verify GREEN**
+- [x] **Step 4: Run tests and verify GREEN**
 
 Run the commands from Step 2. Expected: PASS.
 
-- [ ] **Step 5: Commit only Task 1 files**
+- [x] **Step 5: Commit only Task 1 files**
 
 ```powershell
 git add -- src-tauri/src/agent_runtime.rs src/types.ts src/constants.ts src/lib/agent-provider-registry.ts src/lib/agent-provider-registry.test.ts
@@ -126,7 +126,7 @@ git commit -m "feat: register Pi Agent provider"
 - Modify: `src-tauri/src/lib.rs`
 - Test: `src-tauri/src/pi_rpc.rs`
 
-- [ ] **Step 1: Write failing framing tests**
+- [x] **Step 1: Write failing framing tests**
 
 Cover fragmented input, multiple records, CRLF tolerance, U+2028/U+2029 inside strings, maximum line size, and malformed JSON:
 
@@ -142,7 +142,7 @@ async fn pi_jsonl_reader_splits_only_on_lf() {
 
 Add a response router test where an event arrives between two command responses and each response resolves only its matching request ID.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml pi_rpc
@@ -150,7 +150,7 @@ cargo test --manifest-path src-tauri/Cargo.toml pi_rpc
 
 Expected: compile failure because `pi_rpc` does not exist.
 
-- [ ] **Step 3: Implement bounded LF JSONL transport**
+- [x] **Step 3: Implement bounded LF JSONL transport**
 
 Create:
 
@@ -184,11 +184,11 @@ pub enum PiRpcEnvelope {
 
 Use a dedicated stdout task with a pending `HashMap<String, oneshot::Sender<_>>` and an unbounded event channel.
 
-- [ ] **Step 4: Run tests and verify GREEN**
+- [x] **Step 4: Run tests and verify GREEN**
 
 Run the command from Step 2. Expected: all `pi_rpc` framing/correlation tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add -- src-tauri/src/pi_rpc.rs src-tauri/src/lib.rs
@@ -201,7 +201,7 @@ git commit -m "feat: add Pi RPC transport"
 - Modify: `src-tauri/src/pi_rpc.rs`
 - Test: `src-tauri/src/pi_rpc.rs`
 
-- [ ] **Step 1: Write failing protocol tests**
+- [x] **Step 1: Write failing protocol tests**
 
 Use a temporary fake executable/script that:
 
@@ -219,7 +219,7 @@ assert_eq!(client.available_thinking_levels().await.unwrap(), vec!["off", "high"
 client.abort().await.unwrap();
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml pi_rpc::tests::client_
@@ -227,7 +227,7 @@ cargo test --manifest-path src-tauri/Cargo.toml pi_rpc::tests::client_
 
 Expected: missing client methods/types.
 
-- [ ] **Step 3: Implement `PiStdioClient`**
+- [x] **Step 3: Implement `PiStdioClient`**
 
 Expose:
 
@@ -259,7 +259,7 @@ impl PiStdioClient {
 
 Parse model input modalities, context window, reasoning support, usage/cost, stop reason, tool content, queue/retry/compaction status, and Extension UI requests. Preserve unknown events as bounded summaries.
 
-- [ ] **Step 4: Run protocol tests**
+- [x] **Step 4: Run protocol tests**
 
 Run the command from Step 2 and then:
 
@@ -269,7 +269,7 @@ cargo test --manifest-path src-tauri/Cargo.toml pi_rpc
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add -- src-tauri/src/pi_rpc.rs
@@ -282,7 +282,7 @@ git commit -m "feat: model Pi RPC commands and events"
 - Modify: `src-tauri/src/agent_run.rs`
 - Test: `src-tauri/src/agent_run.rs`
 
-- [ ] **Step 1: Write failing runtime tests**
+- [x] **Step 1: Write failing runtime tests**
 
 Add tests proving:
 
@@ -302,7 +302,7 @@ Add fake-client actor tests for:
 - `agent_settled` emits exactly one `Done`;
 - a fatal protocol error marks runtime failed and the next dispatch restores the validated session without replaying the previous prompt.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml agent_run::tests::pi_
@@ -310,7 +310,7 @@ cargo test --manifest-path src-tauri/Cargo.toml agent_run::tests::pi_
 
 Expected: compile/test failures because Pi driver/runtime variants do not exist.
 
-- [ ] **Step 3: Add Pi driver, input, config, and runtime variants**
+- [x] **Step 3: Add Pi driver, input, config, and runtime variants**
 
 Add:
 
@@ -328,7 +328,7 @@ Extend command resolvers with `pi`, include `bridge_version` in `AgentRuntimeCon
 
 Start Pi with `--mode rpc`, optional `--session`, CodeM bridge `-e`, model, thinking, and channel environment. Call `get_state` before persisting session data.
 
-- [ ] **Step 4: Map Pi events and terminal semantics**
+- [x] **Step 4: Map Pi events and terminal semantics**
 
 Implement a focused `PiEventMapper`:
 
@@ -345,7 +345,7 @@ match event {
 
 On CodeM cancel, send RPC `abort`; hard-kill only after timeout or failed command. Keep the client for the next turn after successful abort.
 
-- [ ] **Step 5: Run runtime and regression tests**
+- [x] **Step 5: Run runtime and regression tests**
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml agent_run::tests::pi_
@@ -354,7 +354,7 @@ cargo test --manifest-path src-tauri/Cargo.toml agent_run::tests
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add -- src-tauri/src/agent_run.rs
@@ -370,7 +370,7 @@ git commit -m "feat: run Pi RPC in hot sessions"
 - Test: `src/lib/agent-channel-selection.test.ts`
 - Test: `src/hooks/useAgentChannels.test.ts`
 
-- [ ] **Step 1: Write failing channel tests**
+- [x] **Step 1: Write failing channel tests**
 
 Cover:
 
@@ -390,14 +390,14 @@ assert!(!config_text.contains("sk-secret"));
 assert_eq!(runtime.env["PI_CODING_AGENT_DIR"], expected_dir.to_string_lossy());
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml agent_channels::tests::pi_
 node --import tsx --test src/lib/agent-channel-selection.test.ts src/hooks/useAgentChannels.test.ts
 ```
 
-- [ ] **Step 3: Implement Pi channel preparation**
+- [x] **Step 3: Implement Pi channel preparation**
 
 Add `read_pi_system_channel()` using `~/.pi/agent/settings.json` and `models.json` without reading `auth.json`.
 
@@ -412,11 +412,11 @@ Add `prepare_pi_runtime_dir` that creates:
 
 Put the secret only in the child environment using a generated variable name, and configure Pi model auth to reference that variable where supported. Reject protocols that cannot be represented safely.
 
-- [ ] **Step 4: Run channel tests**
+- [x] **Step 4: Run channel tests**
 
 Run commands from Step 2. Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add -- src-tauri/src/agent_channels.rs src/hooks/useAgentChannels.ts src/lib/agent-channel-selection.test.ts src/hooks/useAgentChannels.test.ts
@@ -433,7 +433,7 @@ git commit -m "feat: add Pi Agent channels"
 - Test: `src-tauri/src/backend.rs`
 - Test: `src/lib/agent-provider-registry.test.ts`
 
-- [ ] **Step 1: Write failing lifecycle and probe tests**
+- [x] **Step 1: Write failing lifecycle and probe tests**
 
 Assert:
 
@@ -449,14 +449,14 @@ assert!(lifecycle_plan_supports_npm_mirror(&plan));
 
 Add Node version tests for `22.18.0` rejected and `22.19.0` accepted. Add Pi probe normalization tests for installed/uninitialized/authenticated/model counts.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml backend::tests::pi_
 node --import tsx --test src/lib/agent-provider-registry.test.ts
 ```
 
-- [ ] **Step 3: Implement lifecycle and diagnostics**
+- [x] **Step 3: Implement lifecycle and diagnostics**
 
 Add Pi to:
 
@@ -470,7 +470,7 @@ Add Pi to:
 
 Probe by starting Pi RPC, calling `get_state`, `get_available_models`, and `get_available_thinking_levels`, then shutting down. Never return credential values.
 
-- [ ] **Step 4: Implement model catalog**
+- [x] **Step 4: Implement model catalog**
 
 Convert Pi models to `AgentModelCatalog`:
 
@@ -488,7 +488,7 @@ AgentModelSummary {
 
 Cache through the existing short-TTL model catalog path.
 
-- [ ] **Step 5: Implement rules, Skills, Packages, MCP, and usage boundaries**
+- [x] **Step 5: Implement rules, Skills, Packages, MCP, and usage boundaries**
 
 Add Pi to the validated provider allowlists and map:
 
@@ -514,7 +514,7 @@ if provider_id == PI_AGENT_PROVIDER_ID {
 
 Package command output must pass through the existing bounded credential sanitizer. Do not expose `auth.json` through file-opening or settings APIs.
 
-- [ ] **Step 6: Run lifecycle/model/settings tests**
+- [x] **Step 6: Run lifecycle/model/settings tests**
 
 Run Step 2 commands and:
 
@@ -522,7 +522,7 @@ Run Step 2 commands and:
 cargo test --manifest-path src-tauri/Cargo.toml backend::tests::agent_lifecycle
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add -- src-tauri/src/backend.rs src-tauri/src/agent_run.rs src/types.ts src/lib/agent-provider-registry.ts src/lib/agent-provider-registry.test.ts
@@ -538,7 +538,7 @@ git commit -m "feat: manage Pi Agent lifecycle"
 - Test: `src-tauri/src/pi_rpc.rs`
 - Test: `src-tauri/src/agent_run.rs`
 
-- [ ] **Step 1: Write failing Extension UI tests**
+- [x] **Step 1: Write failing Extension UI tests**
 
 Feed these requests through the fake Pi process:
 
@@ -549,14 +549,14 @@ Feed these requests through the fake Pi process:
 
 Assert they become CodeM `ApprovalRequest` and `RequestUserInput`, and that approved/rejected/cancelled answers write the matching `extension_ui_response` to the same process.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml pi_rpc::tests::extension_ui_
 cargo test --manifest-path src-tauri/Cargo.toml agent_run::tests::pi_extension_
 ```
 
-- [ ] **Step 3: Implement the bridge asset**
+- [x] **Step 3: Implement the bridge asset**
 
 The extension must:
 
@@ -569,15 +569,15 @@ The extension must:
 
 Load it with Pi `-e <path>` after writing `include_str!("../resources/pi/codem-bridge.js")` to the isolated runtime directory.
 
-- [ ] **Step 4: Map Extension UI control responses**
+- [x] **Step 4: Map Extension UI control responses**
 
 Use the existing `AgentControlCommand::Permission` and `UserInput` channels. Validate request IDs, accept one response only, and send cancellation when the CodeM request is dismissed.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run Step 2 commands. Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add -- src-tauri/resources/pi/codem-bridge.js src-tauri/src/pi_rpc.rs src-tauri/src/agent_run.rs
@@ -599,7 +599,7 @@ git commit -m "feat: bridge Pi permissions and user input"
 - Modify: `src/lib/agent-provider-management.ts`
 - Test: `src/lib/agent-provider-management-ui.test.ts`
 
-- [ ] **Step 1: Write failing UI behavior tests**
+- [x] **Step 1: Write failing UI behavior tests**
 
 Assert:
 
@@ -611,18 +611,18 @@ Assert:
 - Pi Skills path resolves to `~/.pi/agent/skills`;
 - Pi appears in usage filters and provider tabs.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```powershell
 node --import tsx --test src/lib/agent-provider-management-ui.test.ts
 npm run typecheck
 ```
 
-- [ ] **Step 3: Add Pi probe and provider settings**
+- [x] **Step 3: Add Pi probe and provider settings**
 
 Create `PiRpcProbeResult` types and `probePiAgent()`. Add Pi state fields/controllers to `AgentProviderSettings` following the Codex/OpenCode pattern, keeping requests abortable and preserving prior diagnostic data during refresh.
 
-- [ ] **Step 4: Add channel, rule, package, MCP, usage, and icon surfaces**
+- [x] **Step 4: Add channel, rule, package, MCP, usage, and icon surfaces**
 
 Use existing theme variables and provider components. Do not create Pi-only card styling. Display:
 
@@ -631,7 +631,7 @@ Use existing theme variables and provider components. Do not create Pi-only card
 - system/custom channel support;
 - dynamic models and thinking levels.
 
-- [ ] **Step 5: Run tests and typecheck**
+- [x] **Step 5: Run tests and typecheck**
 
 Run Step 2 commands plus:
 
@@ -639,7 +639,7 @@ Run Step 2 commands plus:
 node --import tsx --test src/lib/agent-channel-selection.test.ts src/lib/agent-model-selection.test.ts
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add -- src/components src/hooks/useAgentRun.ts src/lib/agent-provider-management.ts src/lib/agent-provider-management-ui.test.ts src/types.ts
@@ -652,7 +652,7 @@ git commit -m "feat: add Pi Agent settings experience"
 - Modify: `.trellis/tasks/pi-agent-provider.md`
 - Modify: `.trellis/workspace/sessions/session-20260726-042200-lmp6-pi-agent-provider.md`
 
-- [ ] **Step 1: Run focused frontend tests**
+- [x] **Step 1: Run focused frontend tests**
 
 ```powershell
 node --import tsx --test src/lib/agent-provider-registry.test.ts src/lib/agent-provider-management-ui.test.ts src/lib/agent-model-selection.test.ts src/lib/agent-channel-selection.test.ts src/hooks/useAgentChannels.test.ts
@@ -661,7 +661,7 @@ npm run typecheck
 
 Expected: all tests pass and TypeScript emits no errors.
 
-- [ ] **Step 2: Run Rust formatting and focused tests**
+- [x] **Step 2: Run Rust formatting and focused tests**
 
 ```powershell
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
@@ -673,7 +673,7 @@ cargo test --manifest-path src-tauri/Cargo.toml backend
 
 Expected: PASS.
 
-- [ ] **Step 3: Run full regression suite**
+- [x] **Step 3: Run full regression suite**
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml
@@ -682,7 +682,7 @@ git diff --check
 
 Expected: all non-ignored tests pass; no whitespace errors.
 
-- [ ] **Step 4: Restart desktop development mode**
+- [x] **Step 4: Restart desktop development mode**
 
 Stop only the existing CodeM desktop dev launcher/processes, then run:
 
@@ -708,7 +708,9 @@ With an authenticated Pi installation:
 - change model or channel and verify a controlled runtime replacement;
 - confirm no secret/base64 data appears in debug events.
 
-- [ ] **Step 6: Record Trellis verification and completion**
+2026-07-26 实机结果：Pi 0.82.1 可完成 RPC 初始化、会话创建和 SSE 错误回传；系统配置没有可用模型或 API key，首个 prompt 返回 `No API key found for the selected model`，因此文本生成、二次热复用、停止后复用和配置切换 smoke 仍待认证环境补测。此次实机验证同时发现并修复了 `unknown/unknown` 被误判为已认证的问题，设置页现正确显示“待处理”。
+
+- [x] **Step 6: Record Trellis verification and completion**
 
 ```powershell
 npm run trellis -- verify "<exact command>" --result "<actual result>"
@@ -716,7 +718,7 @@ npm run trellis -- record "完成 Pi RPC 热会话、渠道、设置和权限桥
 npm run trellis -- complete --summary "完成 Pi Agent 原生 RPC 接入及热会话验证"
 ```
 
-- [ ] **Step 7: Commit final records without unrelated files**
+- [x] **Step 7: Commit final records without unrelated files**
 
 ```powershell
 git add -- .trellis/tasks/pi-agent-provider.md .trellis/workspace/sessions/session-20260726-042200-lmp6-pi-agent-provider.md

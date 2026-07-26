@@ -103,6 +103,13 @@ export function McpSettingsSection({
   const [pendingDeleteKey, setPendingDeleteKey] = useState('');
 
   useEffect(() => {
+    if (providerId === 'pi-agent') {
+      setPayload(null);
+      setLoading(false);
+      setError('');
+      setEditor(null);
+      return;
+    }
     void loadManagement();
   }, [projectPath, providerId]);
 
@@ -295,6 +302,21 @@ export function McpSettingsSection({
     } catch (openError) {
       setNotice({ tone: 'error', text: openError instanceof Error ? openError.message : '打开配置文件失败' });
     }
+  }
+
+  if (providerId === 'pi-agent') {
+    return (
+      <section className="settings-page-section">
+        <header className="settings-section-head"><h1>MCP 管理</h1></header>
+        <AgentSettingsProviderTabs value={providerId} onChange={setProviderId} />
+        <div className="settings-panel settings-editor-panel mcp-suite-panel">
+          <div className="settings-list-empty">
+            <strong>Pi Agent 当前不支持由 CodeM 管理 MCP</strong>
+            <span>Pi 首版使用原生 RPC，不写入无效 MCP 配置，也不依赖第三方适配器。</span>
+          </div>
+        </div>
+      </section>
+    );
   }
 
   return (

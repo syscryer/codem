@@ -1,7 +1,7 @@
 use crate::{
     agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENCODE_PROVIDER_ID,
+        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     },
     ordinary_chat::{
         provider::{discover_models, test_provider, PROVIDER_TEMPLATES},
@@ -442,7 +442,8 @@ fn validate_provider_id(value: &str) -> AgentChannelApiResult<&str> {
         CLAUDE_CODE_PROVIDER_ID
         | OPENAI_CODEX_PROVIDER_ID
         | GROK_BUILD_PROVIDER_ID
-        | OPENCODE_PROVIDER_ID => Ok(value),
+        | OPENCODE_PROVIDER_ID
+        | PI_AGENT_PROVIDER_ID => Ok(value),
         _ => Err(AgentChannelApiError::bad_request("不支持的 Agent")),
     }
 }
@@ -461,6 +462,10 @@ fn validate_protocol(provider_id: &str, protocol: AiProtocol) -> AgentChannelApi
         OPENCODE_PROVIDER_ID => matches!(
             protocol,
             AiProtocol::OpenaiChat | AiProtocol::AnthropicMessages
+        ),
+        PI_AGENT_PROVIDER_ID => matches!(
+            protocol,
+            AiProtocol::OpenaiChat | AiProtocol::OpenaiResponses | AiProtocol::AnthropicMessages
         ),
         _ => false,
     };
@@ -509,6 +514,7 @@ fn system_channel_summaries() -> Vec<SystemChannelSummary> {
         read_codex_system_channel(cc_switch.get("codex").cloned()),
         read_grok_system_channel(),
         read_opencode_system_channel(cc_switch.get("opencode").cloned()),
+        read_pi_system_channel(),
     ]
 }
 
@@ -641,6 +647,39 @@ fn read_opencode_system_channel(cc_switch_provider_name: Option<String>) -> Syst
     )
 }
 
+fn read_pi_system_channel() -> SystemChannelSummary {
+    let agent_dir = home_dir().map(|home| home.join(".pi").join("agent"));
+    let settings_path = agent_dir.as_ref().map(|path| path.join("settings.json"));
+    let models_path = agent_dir.as_ref().map(|path| path.join("models.json"));
+    let settings = settings_path.as_deref().and_then(read_json_file);
+    let models = models_path.as_deref().and_then(read_json_file);
+    let provider = settings
+        .as_ref()
+        .and_then(|value| value.get("defaultProvider"))
+        .and_then(Value::as_str);
+    let model = settings
+        .as_ref()
+        .and_then(|value| value.get("defaultModel"))
+        .and_then(Value::as_str)
+        .and_then(non_empty_string);
+    let base_url = provider
+        .and_then(|provider| models.as_ref()?.get("providers")?.get(provider))
+        .and_then(|value| value.get("baseUrl"))
+        .and_then(Value::as_str)
+        .and_then(non_empty_string);
+    let config_path = settings_path
+        .filter(|path| path.is_file())
+        .or_else(|| models_path.filter(|path| path.is_file()));
+    system_channel_summary(
+        PI_AGENT_PROVIDER_ID,
+        config_path,
+        base_url,
+        model,
+        None,
+        None,
+    )
+}
+
 fn system_channel_summary(
     provider_id: &'static str,
     path: Option<PathBuf>,
@@ -757,14 +796,14 @@ async fn channels_bootstrap(
         OPENAI_CODEX_PROVIDER_ID,
         GROK_BUILD_PROVIDER_ID,
         OPENCODE_PROVIDER_ID,
+        PI_AGENT_PROVIDER_ID,
     ] {
-        repair_default_channel(&connection, provider_id)
-            .map_err(AgentChannelApiError::internal)?;
+        repair_default_channel(&connection, provider_id).map_err(AgentChannelApiError::internal)?;
     }
     let channels =
         list_channels(&connection, &service.secrets).map_err(AgentChannelApiError::internal)?;
-    let default_channel_ids = default_channel_ids(&connection)
-        .map_err(AgentChannelApiError::internal)?;
+    let default_channel_ids =
+        default_channel_ids(&connection).map_err(AgentChannelApiError::internal)?;
     Ok(Json(json!({
         "channels": channels,
         "systemChannels": system_channel_summaries(),
@@ -897,12 +936,7 @@ async fn update_channel(
         .map(|value| require_text(value, "渠道名称不能为空").map(str::to_string))
         .transpose()?
         .unwrap_or(current.name.clone());
-    ensure_channel_name_available(
-        &connection,
-        &current.provider_id,
-        &name,
-        Some(&channel_id),
-    )?;
+    ensure_channel_name_available(&connection, &current.provider_id, &name, Some(&channel_id))?;
     let protocol = payload.protocol.unwrap_or(current.protocol);
     validate_protocol(&current.provider_id, protocol)?;
     let base_url = payload
@@ -1020,16 +1054,20 @@ fn remove_agent_channel_runtime(
     app_data_dir: &Path,
     channel: &StoredAgentChannel,
 ) -> Result<(), String> {
-    if channel.provider_id != GROK_BUILD_PROVIDER_ID {
-        return Ok(());
-    }
-    let runtime_home = app_data_dir
-        .join("agent-runtimes")
-        .join("grok")
-        .join(&channel.id);
+    let runtime_home = match channel.provider_id.as_str() {
+        GROK_BUILD_PROVIDER_ID => app_data_dir
+            .join("agent-runtimes")
+            .join("grok")
+            .join(&channel.id),
+        PI_AGENT_PROVIDER_ID => app_data_dir
+            .join("agent-runtimes")
+            .join("pi")
+            .join(&channel.id),
+        _ => return Ok(()),
+    };
     if runtime_home.is_dir() {
         fs::remove_dir_all(&runtime_home)
-            .map_err(|error| format!("清理 Grok 渠道运行目录失败: {error}"))?;
+            .map_err(|error| format!("清理 Agent 渠道运行目录失败: {error}"))?;
     }
     Ok(())
 }
@@ -1847,6 +1885,30 @@ fn build_runtime(
                 effective_model = Some(format!("{provider_key}/{model}"));
             }
         }
+        PI_AGENT_PROVIDER_ID => {
+            let provider_key = format!("codem_{}", channel.id.replace('-', "_"));
+            let secret_env_key = format!(
+                "CODEM_PI_CHANNEL_{}_API_KEY",
+                hex_digest(channel.id.as_bytes())[..12].to_ascii_uppercase()
+            );
+            env.insert(secret_env_key.clone(), api_key.to_string());
+            let runtime_dir = prepare_pi_runtime_dir(
+                app_data_dir,
+                channel,
+                models,
+                selected_model.as_deref(),
+                session_scope,
+                &provider_key,
+                &secret_env_key,
+            )?;
+            env.insert(
+                "PI_CODING_AGENT_DIR".to_string(),
+                runtime_dir.to_string_lossy().to_string(),
+            );
+            if let Some(model) = selected_model.as_deref() {
+                effective_model = Some(format!("{provider_key}/{model}"));
+            }
+        }
         _ => return Err("不支持的 Agent 渠道".to_string()),
     }
     let mut fingerprint_source = format!(
@@ -1867,6 +1929,87 @@ fn build_runtime(
         codex_config_args,
         effective_model,
     })
+}
+
+fn prepare_pi_runtime_dir(
+    app_data_dir: &Path,
+    channel: &StoredAgentChannel,
+    models: &[AgentChannelModelSummary],
+    selected_model: Option<&str>,
+    session_scope: Option<&str>,
+    provider_key: &str,
+    secret_env_key: &str,
+) -> Result<PathBuf, String> {
+    let pi_root = app_data_dir.join("agent-runtimes").join("pi");
+    let runtime_dir = session_scope
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| pi_root.join("threads").join(sanitize_identifier(value)))
+        .unwrap_or_else(|| pi_root.join(&channel.id));
+    let extensions_dir = runtime_dir.join("extensions");
+    fs::create_dir_all(&extensions_dir)
+        .map_err(|error| format!("创建 Pi 渠道运行目录失败: {error}"))?;
+    let api = match channel.protocol {
+        AiProtocol::OpenaiChat => "openai-completions",
+        AiProtocol::OpenaiResponses => "openai-responses",
+        AiProtocol::AnthropicMessages => "anthropic-messages",
+        _ => return Err("Pi 渠道不支持所选接口类型".to_string()),
+    };
+    let model_values = models
+        .iter()
+        .filter(|model| model.enabled)
+        .map(|model| {
+            let reasoning = model
+                .capabilities
+                .get("reasoning")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let context_window = model
+                .capabilities
+                .get("contextWindow")
+                .and_then(Value::as_u64)
+                .unwrap_or(128_000);
+            json!({
+                "id": model.model_id,
+                "name": model.display_name,
+                "reasoning": reasoning,
+                "input": ["text", "image"],
+                "contextWindow": context_window,
+                "maxTokens": 16_384
+            })
+        })
+        .collect::<Vec<_>>();
+    let models_config = json!({
+        "providers": {
+            provider_key: {
+                "baseUrl": channel.base_url,
+                "apiKey": format!("${secret_env_key}"),
+                "api": api,
+                "models": model_values
+            }
+        }
+    });
+    let settings = json!({
+        "defaultProvider": provider_key,
+        "defaultModel": selected_model
+    });
+    fs::write(
+        runtime_dir.join("models.json"),
+        serde_json::to_vec_pretty(&models_config)
+            .map_err(|error| format!("编码 Pi models.json 失败: {error}"))?,
+    )
+    .map_err(|error| format!("写入 Pi models.json 失败: {error}"))?;
+    fs::write(
+        runtime_dir.join("settings.json"),
+        serde_json::to_vec_pretty(&settings)
+            .map_err(|error| format!("编码 Pi settings.json 失败: {error}"))?,
+    )
+    .map_err(|error| format!("写入 Pi settings.json 失败: {error}"))?;
+    let bridge = extensions_dir.join("codem-bridge.js");
+    if !bridge.is_file() {
+        fs::write(&bridge, "export default function codemBridge() {}\n")
+            .map_err(|error| format!("写入 Pi bridge 占位扩展失败: {error}"))?;
+    }
+    Ok(runtime_dir)
 }
 
 fn opencode_anthropic_base_url(base_url: &str) -> Result<String, String> {
@@ -2138,13 +2281,9 @@ mod tests {
         initialize_database(&connection).expect("initialize database");
         insert_channel(&connection, "Primary", true, false, "2026-07-19T00:00:00Z");
 
-        let error = ensure_channel_name_available(
-            &connection,
-            CLAUDE_CODE_PROVIDER_ID,
-            "primary",
-            None,
-        )
-        .expect_err("case-insensitive duplicate should fail");
+        let error =
+            ensure_channel_name_available(&connection, CLAUDE_CODE_PROVIDER_ID, "primary", None)
+                .expect_err("case-insensitive duplicate should fail");
         assert_eq!(error.status, StatusCode::CONFLICT);
         ensure_channel_name_available(
             &connection,
@@ -2170,6 +2309,122 @@ mod tests {
 
         assert!(validate_protocol(CLAUDE_CODE_PROVIDER_ID, AiProtocol::OpenaiChat).is_err());
         assert!(validate_protocol(OPENCODE_PROVIDER_ID, AiProtocol::OpenaiResponses).is_err());
+    }
+
+    #[test]
+    fn pi_channel_protocols_and_system_channel_are_available() {
+        for protocol in [
+            AiProtocol::OpenaiChat,
+            AiProtocol::OpenaiResponses,
+            AiProtocol::AnthropicMessages,
+        ] {
+            assert!(validate_protocol(PI_AGENT_PROVIDER_ID, protocol).is_ok());
+        }
+        assert!(system_channel_summaries()
+            .iter()
+            .any(|channel| channel.provider_id == PI_AGENT_PROVIDER_ID && channel.id == "system"));
+    }
+
+    #[test]
+    fn pi_custom_channel_uses_isolated_secret_free_runtime_config() {
+        let root =
+            std::env::temp_dir().join(format!("codem-pi-agent-channel-{}", uuid::Uuid::new_v4()));
+        let mut channel = StoredAgentChannel {
+            id: "channel-pi".to_string(),
+            provider_id: PI_AGENT_PROVIDER_ID.to_string(),
+            name: "Pi Proxy".to_string(),
+            protocol: AiProtocol::OpenaiResponses,
+            base_url: "https://api.example.com/v1".to_string(),
+            models_url: None,
+            template_id: None,
+            enabled: true,
+            is_default: false,
+            secret_slot: "secret:channel-pi".to_string(),
+            created_at: "2026-07-26T00:00:00Z".to_string(),
+            updated_at: "2026-07-26T00:00:00Z".to_string(),
+        };
+        let models = vec![AgentChannelModelSummary {
+            id: "model-pi".to_string(),
+            channel_id: channel.id.clone(),
+            model_id: "gpt-5".to_string(),
+            display_name: "GPT-5".to_string(),
+            enabled: true,
+            is_default: true,
+            capabilities: json!({"reasoning": true, "contextWindow": 200000}),
+            created_at: "2026-07-26T00:00:00Z".to_string(),
+            updated_at: "2026-07-26T00:00:00Z".to_string(),
+        }];
+
+        let first = build_runtime(
+            &root,
+            &channel,
+            &models,
+            Some("gpt-5"),
+            "sk-secret",
+            Some("thread-1"),
+            None,
+        )
+        .expect("build Pi runtime");
+        let runtime_dir = PathBuf::from(&first.env["PI_CODING_AGENT_DIR"]);
+        assert_eq!(
+            runtime_dir,
+            root.join("agent-runtimes")
+                .join("pi")
+                .join("threads")
+                .join("thread-1")
+        );
+        let settings = fs::read_to_string(runtime_dir.join("settings.json")).unwrap();
+        let models_config = fs::read_to_string(runtime_dir.join("models.json")).unwrap();
+        let models_value: Value = serde_json::from_str(&models_config).unwrap();
+        assert!(!settings.contains("sk-secret"));
+        assert!(!models_config.contains("sk-secret"));
+        let secret_env = first
+            .env
+            .iter()
+            .find(|(key, value)| key.starts_with("CODEM_PI_CHANNEL_") && *value == "sk-secret")
+            .map(|(key, _)| key.clone())
+            .expect("generated Pi secret environment variable");
+        assert_eq!(
+            models_value["providers"]["codem_channel_pi"]["apiKey"],
+            format!("${secret_env}")
+        );
+        assert_eq!(
+            first.effective_model.as_deref(),
+            Some("codem_channel_pi/gpt-5")
+        );
+
+        let changed_secret = build_runtime(
+            &root,
+            &channel,
+            &models,
+            Some("gpt-5"),
+            "sk-secret-2",
+            Some("thread-1"),
+            None,
+        )
+        .unwrap();
+        assert_ne!(first.fingerprint, changed_secret.fingerprint);
+        channel.updated_at = "2026-07-26T00:01:00Z".to_string();
+        let changed_channel = build_runtime(
+            &root,
+            &channel,
+            &models,
+            Some("gpt-5"),
+            "sk-secret",
+            Some("thread-1"),
+            None,
+        )
+        .unwrap();
+        assert_ne!(first.fingerprint, changed_channel.fingerprint);
+
+        let channel_runtime = root.join("agent-runtimes").join("pi").join("channel-pi");
+        fs::create_dir_all(&channel_runtime).unwrap();
+        let unrelated = root.join("agent-runtimes").join("pi").join("channel-other");
+        fs::create_dir_all(&unrelated).unwrap();
+        remove_agent_channel_runtime(&root, &channel).unwrap();
+        assert!(!channel_runtime.exists());
+        assert!(unrelated.exists());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2251,8 +2506,10 @@ mod tests {
 
     #[test]
     fn grok_legacy_session_migrates_into_thread_scoped_runtime_home() {
-        let root = std::env::temp_dir()
-            .join(format!("codem-grok-session-migration-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "codem-grok-session-migration-{}",
+            uuid::Uuid::new_v4()
+        ));
         let legacy_workspace = root
             .join("agent-runtimes")
             .join("grok")
@@ -2406,12 +2663,8 @@ mod tests {
             .expect("collect defaults");
         assert!(defaults.is_empty());
 
-        set_default_channel_selection(
-            &connection,
-            CLAUDE_CODE_PROVIDER_ID,
-            "enabled-newer",
-        )
-        .expect("set CodeM default channel");
+        set_default_channel_selection(&connection, CLAUDE_CODE_PROVIDER_ID, "enabled-newer")
+            .expect("set CodeM default channel");
         let selected = default_channel_ids(&connection).expect("read default channel ids");
         assert_eq!(
             selected.get(CLAUDE_CODE_PROVIDER_ID).map(String::as_str),
@@ -2419,12 +2672,9 @@ mod tests {
         );
 
         for invalid_id in ["missing", "disabled-default"] {
-            let error = set_default_channel_selection(
-                &connection,
-                CLAUDE_CODE_PROVIDER_ID,
-                invalid_id,
-            )
-            .expect_err("invalid default channel should be rejected");
+            let error =
+                set_default_channel_selection(&connection, CLAUDE_CODE_PROVIDER_ID, invalid_id)
+                    .expect_err("invalid default channel should be rejected");
             assert_eq!(error.status, StatusCode::BAD_REQUEST);
             let still_selected: String = connection
                 .query_row(
@@ -2447,12 +2697,9 @@ mod tests {
                 [],
             )
             .expect("insert other provider channel");
-        let error = set_default_channel_selection(
-            &connection,
-            CLAUDE_CODE_PROVIDER_ID,
-            "other-provider",
-        )
-        .expect_err("cross-provider default channel should be rejected");
+        let error =
+            set_default_channel_selection(&connection, CLAUDE_CODE_PROVIDER_ID, "other-provider")
+                .expect_err("cross-provider default channel should be rejected");
         assert_eq!(error.status, StatusCode::BAD_REQUEST);
 
         connection
@@ -2461,8 +2708,7 @@ mod tests {
                 [],
             )
             .expect("disable default");
-        repair_default_channel(&connection, CLAUDE_CODE_PROVIDER_ID)
-            .expect("fall back to system");
+        repair_default_channel(&connection, CLAUDE_CODE_PROVIDER_ID).expect("fall back to system");
         let replacement: Option<String> = connection
             .query_row(
                 "SELECT id FROM agent_channels WHERE is_default = 1",
@@ -2473,12 +2719,8 @@ mod tests {
             .expect("read replacement");
         assert_eq!(replacement, None);
 
-        set_default_channel_selection(
-            &connection,
-            CLAUDE_CODE_PROVIDER_ID,
-            "enabled-older",
-        )
-        .expect("set replacement default");
+        set_default_channel_selection(&connection, CLAUDE_CODE_PROVIDER_ID, "enabled-older")
+            .expect("set replacement default");
         set_default_channel_selection(&connection, CLAUDE_CODE_PROVIDER_ID, "system")
             .expect("set system default");
         let selected = default_channel_ids(&connection).expect("read system default");

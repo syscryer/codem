@@ -2,9 +2,10 @@ use crate::acp::{probe_acp_agent, probe_acp_initialize};
 use crate::agent_runtime::{
     agent_provider_registry, normalize_agent_permission_mode, AgentProviderRegistry,
     CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-    OPENCODE_PROVIDER_ID,
+    OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
 };
 use crate::codex_app_server::probe_codex_app_server;
+use crate::pi_rpc::{PiModel, PiState, PiStdioClient};
 use axum::{
     body::Body,
     extract::{Path as AxumPath, Query, State},
@@ -548,6 +549,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         resolve_grok_command,
         resolve_codex_command,
         resolve_opencode_command,
+        resolve_pi_command,
         agent_channels.clone(),
     );
     let state = AppState {
@@ -596,6 +598,7 @@ fn create_router(state: AppState) -> Router {
         .route("/api/agents/grok/probe", post(grok_acp_probe))
         .route("/api/agents/codex/probe", post(codex_app_server_probe))
         .route("/api/agents/opencode/probe", post(opencode_acp_probe))
+        .route("/api/agents/pi/probe", post(pi_rpc_probe))
         .route("/api/claude/models", get(claude_models))
         .route("/api/settings", get(get_settings))
         .route("/api/settings/appearance", put(update_appearance_settings))
@@ -918,6 +921,10 @@ async fn agent_providers(State(state): State<AppState>) -> Json<AgentProviderReg
             .agent_runs
             .resolve_command(OPENCODE_PROVIDER_ID, false)
             .is_some(),
+        state
+            .agent_runs
+            .resolve_command(PI_AGENT_PROVIDER_ID, false)
+            .is_some(),
     ))
 }
 
@@ -948,10 +955,11 @@ async fn agent_settings_diagnostics(
     let install_command = build_agent_lifecycle_plan(provider_id, "install", None)?.display_command;
     let update_command =
         build_agent_lifecycle_plan(provider_id, "update", command.as_deref())?.display_command;
-    let (diagnostic_command, diagnostic_args) = match provider_id {
-        OPENAI_CODEX_PROVIDER_ID => ("codex doctor --json", Some(["doctor", "--json"])),
-        GROK_BUILD_PROVIDER_ID => ("grok inspect --json", Some(["inspect", "--json"])),
-        OPENCODE_PROVIDER_ID => ("opencode debug info", Some(["debug", "info"])),
+    let (diagnostic_command, diagnostic_args): (&str, Option<&[&str]>) = match provider_id {
+        OPENAI_CODEX_PROVIDER_ID => ("codex doctor --json", Some(&["doctor", "--json"])),
+        GROK_BUILD_PROVIDER_ID => ("grok inspect --json", Some(&["inspect", "--json"])),
+        OPENCODE_PROVIDER_ID => ("opencode debug info", Some(&["debug", "info"])),
+        PI_AGENT_PROVIDER_ID => ("pi --version", Some(&["--version"])),
         _ => ("claude doctor", None),
     };
     let diagnostic = if run_diagnostic {
@@ -1008,7 +1016,7 @@ async fn agent_settings_diagnostics(
         "diagnostic": diagnostic,
         "capabilities": {
             "plugins": command.is_some() && provider_id != OPENCODE_PROVIDER_ID,
-            "mcp": command.is_some(),
+            "mcp": command.is_some() && provider_id != PI_AGENT_PROVIDER_ID,
             "skills": true,
         }
     })))
@@ -1064,11 +1072,9 @@ async fn read_agent_latest_version(
         return read_grok_latest_version(command, proxy_environment).await;
     }
 
-    let package = match provider_id {
-        CLAUDE_CODE_PROVIDER_ID => "@anthropic-ai/claude-code",
-        OPENAI_CODEX_PROVIDER_ID => "@openai/codex",
-        OPENCODE_PROVIDER_ID => "opencode-ai",
-        _ => {
+    let package = match agent_npm_package_name(provider_id) {
+        Some(package) => package,
+        None => {
             return AgentLatestVersionCheck {
                 latest_version: None,
                 error: Some("当前 Agent 暂不支持版本查询".to_string()),
@@ -1114,6 +1120,16 @@ async fn read_agent_latest_version(
     AgentLatestVersionCheck {
         latest_version: None,
         error: Some("官方源和国内镜像均无法查询最新版本".to_string()),
+    }
+}
+
+fn agent_npm_package_name(provider_id: &str) -> Option<&'static str> {
+    match provider_id {
+        CLAUDE_CODE_PROVIDER_ID => Some("@anthropic-ai/claude-code"),
+        OPENAI_CODEX_PROVIDER_ID => Some("@openai/codex"),
+        OPENCODE_PROVIDER_ID => Some("opencode-ai"),
+        PI_AGENT_PROVIDER_ID => Some("@earendil-works/pi-coding-agent"),
+        _ => None,
     }
 }
 
@@ -1843,6 +1859,22 @@ fn build_agent_lifecycle_plan(
     action: &str,
     installed_command: Option<&str>,
 ) -> ApiResult<AgentLifecyclePlan> {
+    if action == "install" && provider_id == PI_AGENT_PROVIDER_ID {
+        return Ok(lifecycle_plan(
+            if cfg!(target_os = "windows") {
+                "npm.cmd"
+            } else {
+                "npm"
+            },
+            [
+                "install",
+                "-g",
+                "--ignore-scripts",
+                "@earendil-works/pi-coding-agent@latest",
+            ],
+            "npm install -g --ignore-scripts @earendil-works/pi-coding-agent@latest",
+        ));
+    }
     if action == "install" && provider_id == CLAUDE_CODE_PROVIDER_ID {
         return Ok(current_claude_install_lifecycle_plan());
     }
@@ -1877,6 +1909,13 @@ fn build_agent_lifecycle_plan(
     }
     if action == "update" {
         if let Some(command) = installed_command {
+            if provider_id == PI_AGENT_PROVIDER_ID {
+                return Ok(lifecycle_plan(
+                    command,
+                    ["update", "--self"],
+                    &format!("{} update --self", quote_display_command(command)),
+                ));
+            }
             if provider_id == GROK_BUILD_PROVIDER_ID {
                 return Ok(lifecycle_plan(
                     command,
@@ -1902,6 +1941,9 @@ fn build_agent_lifecycle_plan(
                 return Ok(plan);
             }
         }
+    }
+    if action == "update" && provider_id == PI_AGENT_PROVIDER_ID {
+        return build_agent_lifecycle_plan(provider_id, "install", None);
     }
     let (package, display) = match provider_id {
         CLAUDE_CODE_PROVIDER_ID => (
@@ -5752,6 +5794,109 @@ fn extract_agent_semantic_version(value: &str) -> Option<String> {
     })
 }
 
+fn normalize_pi_probe_summary(
+    state: &PiState,
+    models: &[PiModel],
+    thinking_levels: &[String],
+) -> Value {
+    let authenticated_model = state.model.as_ref().filter(|current| {
+        models
+            .iter()
+            .any(|model| model.provider == current.provider && model.id == current.id)
+    });
+    json!({
+        "authenticated": authenticated_model.is_some(),
+        "sessionId": state.session_id,
+        "currentModel": authenticated_model.map(|model| format!("{}/{}", model.provider, model.id)),
+        "thinkingLevel": state.thinking_level,
+        "thinkingLevels": thinking_levels,
+        "modelCount": models.len(),
+        "isStreaming": state.is_streaming,
+    })
+}
+
+async fn pi_rpc_probe(State(state): State<AppState>) -> Json<Value> {
+    let Some(command) = state.agent_runs.resolve_command(PI_AGENT_PROVIDER_ID, true) else {
+        return Json(json!({
+            "installed": false,
+            "initialized": false,
+            "error": "未找到 pi 命令",
+        }));
+    };
+    let node_version = background_command("node")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+    if !node_version
+        .as_deref()
+        .is_some_and(pi_node_version_supported)
+    {
+        return Json(json!({
+            "installed": true,
+            "initialized": false,
+            "command": command,
+            "nodeVersion": node_version,
+            "error": "Pi Agent 需要 Node.js 22.19.0 或更高版本",
+        }));
+    }
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let arguments = vec!["--mode".to_string(), "rpc".to_string()];
+    let client = match PiStdioClient::spawn_with_options(
+        &command,
+        &cwd,
+        &std::collections::BTreeMap::new(),
+        &arguments,
+    )
+    .await
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return Json(json!({
+                "installed": true,
+                "initialized": false,
+                "command": command,
+                "nodeVersion": node_version,
+                "error": sanitize_agent_lifecycle_output(&error.to_string()),
+            }));
+        }
+    };
+    let result = async {
+        let rpc_state = client.get_state().await?;
+        let models = client.get_available_models().await?;
+        let thinking_levels = client.get_available_thinking_levels().await?;
+        Ok::<_, crate::pi_rpc::PiRpcError>((rpc_state, models, thinking_levels))
+    }
+    .await;
+    client.shutdown().await;
+    match result {
+        Ok((rpc_state, models, thinking_levels)) => Json(json!({
+            "installed": true,
+            "initialized": true,
+            "command": command,
+            "nodeVersion": node_version,
+            "probe": normalize_pi_probe_summary(
+                &rpc_state,
+                &models,
+                &thinking_levels,
+            ),
+        })),
+        Err(error) => Json(json!({
+            "installed": true,
+            "initialized": false,
+            "command": command,
+            "nodeVersion": node_version,
+            "error": sanitize_agent_lifecycle_output(&error.to_string()),
+        })),
+    }
+}
+
+fn pi_node_version_supported(value: &str) -> bool {
+    extract_agent_semantic_version(value)
+        .is_some_and(|version| compare_semantic_versions(&version, "22.19.0") >= 0)
+}
+
 fn background_command(program: &str) -> Command {
     let mut command = Command::new(program);
     configure_background_command(&mut command);
@@ -6000,6 +6145,89 @@ fn resolve_codex_command() -> Option<String> {
         });
 
     path_command.or_else(resolve_default_codex_command)
+}
+
+fn resolve_pi_command() -> Option<String> {
+    if let Some(command) = env::var("PI_CLI_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| command_reports_version(value))
+    {
+        return Some(command);
+    }
+
+    #[cfg(target_os = "windows")]
+    let lookup = {
+        let mut command = background_command("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command pi -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
+        ]);
+        command_output_with_timeout(&mut command, std::time::Duration::from_secs(3))
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let lookup = background_command("which").arg("pi").output().ok();
+
+    let path_command = lookup
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| {
+            select_runnable_command_candidate(
+                &stdout,
+                cfg!(target_os = "windows"),
+                command_reports_version,
+            )
+        });
+    path_command.or_else(resolve_default_pi_command)
+}
+
+fn resolve_default_pi_command() -> Option<String> {
+    let home = home_dir()?;
+    let app_data = env::var_os("APPDATA").map(PathBuf::from);
+    let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    resolve_first_runnable_command(default_pi_command_paths(
+        &home,
+        app_data.as_deref(),
+        local_app_data.as_deref(),
+        cfg!(target_os = "windows"),
+    ))
+}
+
+fn default_pi_command_paths(
+    home: &Path,
+    app_data: Option<&Path>,
+    local_app_data: Option<&Path>,
+    windows: bool,
+) -> Vec<PathBuf> {
+    let executable = if windows { "pi.exe" } else { "pi" };
+    let package_script = if windows { "pi.cmd" } else { "pi" };
+    let mut candidates = Vec::new();
+    if let Some(app_data) = app_data {
+        candidates.push(app_data.join("npm").join(package_script));
+    }
+    if let Some(local_app_data) = local_app_data {
+        candidates.extend([
+            local_app_data.join("npm").join(package_script),
+            local_app_data.join("pnpm").join(package_script),
+        ]);
+    }
+    candidates.extend([
+        home.join(".local").join("bin").join(executable),
+        home.join(".volta").join("bin").join(package_script),
+        home.join(".bun").join("bin").join(executable),
+    ]);
+    if !windows {
+        candidates.extend([
+            PathBuf::from("/usr/local/bin/pi"),
+            PathBuf::from("/opt/homebrew/bin/pi"),
+        ]);
+    }
+    candidates
 }
 
 #[cfg(target_os = "windows")]
@@ -7144,12 +7372,16 @@ where
         .unwrap_or(CLAUDE_CODE_PROVIDER_ID);
     match provider_id {
         CLAUDE_CODE_PROVIDER_ID => Ok(CLAUDE_CODE_PROVIDER_ID),
-        GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID | OPENCODE_PROVIDER_ID => {
+        GROK_BUILD_PROVIDER_ID
+        | OPENAI_CODEX_PROVIDER_ID
+        | OPENCODE_PROVIDER_ID
+        | PI_AGENT_PROVIDER_ID => {
             if provider_available(provider_id) {
                 return Ok(match provider_id {
                     GROK_BUILD_PROVIDER_ID => GROK_BUILD_PROVIDER_ID,
                     OPENAI_CODEX_PROVIDER_ID => OPENAI_CODEX_PROVIDER_ID,
                     OPENCODE_PROVIDER_ID => OPENCODE_PROVIDER_ID,
+                    PI_AGENT_PROVIDER_ID => PI_AGENT_PROVIDER_ID,
                     _ => unreachable!(),
                 });
             }
@@ -7157,6 +7389,7 @@ where
                 GROK_BUILD_PROVIDER_ID => "未找到 grok 命令",
                 OPENAI_CODEX_PROVIDER_ID => "未找到可由 CodeM 启动的 Codex CLI",
                 OPENCODE_PROVIDER_ID => "未找到可由 CodeM 启动的 OpenCode CLI",
+                PI_AGENT_PROVIDER_ID => "未找到可由 CodeM 启动的 Pi CLI",
                 _ => unreachable!(),
             }))
         }
@@ -7170,7 +7403,10 @@ fn resolve_thread_create_permission_mode(
 ) -> ApiResult<Option<String>> {
     if matches!(
         provider,
-        GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID | OPENCODE_PROVIDER_ID
+        GROK_BUILD_PROVIDER_ID
+            | OPENAI_CODEX_PROVIDER_ID
+            | OPENCODE_PROVIDER_ID
+            | PI_AGENT_PROVIDER_ID
     ) {
         return normalize_agent_permission_mode(permission_mode)
             .map(|mode| Some(mode.to_string()))
@@ -7205,7 +7441,10 @@ fn read_thread_metadata_payload(value: Option<&Value>, field: &str) -> ApiResult
 }
 
 fn provider_supports_reasoning_effort(provider: &str) -> bool {
-    matches!(provider, CLAUDE_CODE_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID)
+    matches!(
+        provider,
+        CLAUDE_CODE_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID | PI_AGENT_PROVIDER_ID
+    )
 }
 
 fn thread_model_preference_key(model: Option<&str>) -> String {
@@ -10996,6 +11235,7 @@ fn settings_provider_id(value: Option<&str>) -> ApiResult<&str> {
         Some(GROK_BUILD_PROVIDER_ID) => Ok(GROK_BUILD_PROVIDER_ID),
         Some(OPENAI_CODEX_PROVIDER_ID) => Ok(OPENAI_CODEX_PROVIDER_ID),
         Some(OPENCODE_PROVIDER_ID) => Ok(OPENCODE_PROVIDER_ID),
+        Some(PI_AGENT_PROVIDER_ID) => Ok(PI_AGENT_PROVIDER_ID),
         Some(_) => Err(ApiError::bad_request("不支持的 Agent Provider")),
     }
 }
@@ -11005,6 +11245,7 @@ fn agent_config_directory_name(provider_id: &str) -> &'static str {
         GROK_BUILD_PROVIDER_ID => ".grok",
         OPENAI_CODEX_PROVIDER_ID => ".codex",
         OPENCODE_PROVIDER_ID => ".opencode",
+        PI_AGENT_PROVIDER_ID => ".pi",
         _ => ".claude",
     }
 }
@@ -11012,6 +11253,8 @@ fn agent_config_directory_name(provider_id: &str) -> &'static str {
 fn agent_global_config_directory(provider_id: &str, home: &Path) -> PathBuf {
     if provider_id == OPENCODE_PROVIDER_ID {
         home.join(".config").join("opencode")
+    } else if provider_id == PI_AGENT_PROVIDER_ID {
+        home.join(".pi").join("agent")
     } else {
         home.join(agent_config_directory_name(provider_id))
     }
@@ -11043,6 +11286,7 @@ fn resolve_agent_rules_path(
         GROK_BUILD_PROVIDER_ID => home.join(".grok").join("AGENTS.md"),
         OPENAI_CODEX_PROVIDER_ID => home.join(".codex").join("AGENTS.md"),
         OPENCODE_PROVIDER_ID => home.join(".config").join("opencode").join("AGENTS.md"),
+        PI_AGENT_PROVIDER_ID => home.join(".pi").join("agent").join("AGENTS.md"),
         _ => home.join(".claude").join("CLAUDE.md"),
     })
 }
@@ -11227,6 +11471,7 @@ async fn update_mcp_config(
     Json(payload): Json<Value>,
 ) -> ApiResult<Json<Value>> {
     let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
+    reject_pi_mcp_management(provider_id)?;
     let project_path = query.get("projectPath").map(String::as_str);
     let config = normalize_mcp_config(&payload);
     if provider_id != CLAUDE_CODE_PROVIDER_ID {
@@ -11261,6 +11506,7 @@ async fn update_mcp_config(
 
 async fn open_mcp_config(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
     let provider_id = settings_provider_id(payload.get("providerId").and_then(Value::as_str))?;
+    reject_pi_mcp_management(provider_id)?;
     let scope = required_json_string(&payload, "scope", "scope 不能为空")?;
     if !matches!(
         scope,
@@ -11362,8 +11608,7 @@ async fn plugin_install_skill_from_path(Json(payload): Json<Value>) -> ApiResult
         if provider_id == OPENCODE_PROVIDER_ID {
             home.join(".config").join("opencode").join("skills")
         } else {
-            home.join(agent_config_directory_name(provider_id))
-                .join("skills")
+            agent_global_config_directory(provider_id, &home).join("skills")
         }
     };
     let overwrite = payload
@@ -11573,23 +11818,12 @@ async fn plugin_command(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
     ensure_agent_plugin_management_supported(provider_id)?;
     let kind = required_json_string(&payload, "kind", "kind 不能为空")?;
     let action = required_json_string(&payload, "action", "action 不能为空")?;
-    let mut args = vec!["plugin".to_string()];
-    if kind == "marketplace" {
-        args.push("marketplace".to_string());
-        args.push(normalize_agent_plugin_action(provider_id, kind, action)?.to_string());
-    } else if kind == "plugin" {
-        args.push(normalize_agent_plugin_action(provider_id, kind, action)?.to_string());
-    } else {
-        return Err(ApiError::bad_request("不支持的插件命令类型"));
-    }
-    if let Some(target) = payload
+    let target = payload
         .get("target")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        args.push(target.to_string());
-    }
+        .filter(|value| !value.is_empty());
+    let mut args = build_agent_plugin_command_args(provider_id, kind, action, target)?;
     if kind == "plugin" && provider_id == CLAUDE_CODE_PROVIDER_ID {
         if let Some(scope) = payload
             .get("scope")
@@ -11611,9 +11845,37 @@ async fn plugin_command(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
     let command = resolve_agent_settings_command(provider_id)
         .ok_or_else(|| ApiError::bad_request("未找到 Agent CLI 命令"))?;
     let mut result = run_external_command_value(&command, &arg_refs, cwd.as_ref())?;
+    if provider_id == PI_AGENT_PROVIDER_ID {
+        sanitize_external_command_result(&mut result);
+    }
     result["command"] = json!(command);
     result["providerId"] = json!(provider_id);
     Ok(Json(result))
+}
+
+fn build_agent_plugin_command_args(
+    provider_id: &str,
+    kind: &str,
+    action: &str,
+    target: Option<&str>,
+) -> ApiResult<Vec<String>> {
+    let normalized = normalize_agent_plugin_action(provider_id, kind, action)?;
+    let mut args = if provider_id == PI_AGENT_PROVIDER_ID {
+        vec![normalized.to_string()]
+    } else {
+        let mut args = vec!["plugin".to_string()];
+        if kind == "marketplace" {
+            args.push("marketplace".to_string());
+        } else if kind != "plugin" {
+            return Err(ApiError::bad_request("不支持的插件命令类型"));
+        }
+        args.push(normalized.to_string());
+        args
+    };
+    if let Some(target) = target {
+        args.push(target.to_string());
+    }
+    Ok(args)
 }
 
 fn ensure_agent_plugin_management_supported(provider_id: &str) -> ApiResult<()> {
@@ -11637,6 +11899,7 @@ fn read_agent_mcp_config_snapshot(
     provider_id: &str,
     project_path: Option<&str>,
 ) -> ApiResult<Value> {
+    reject_pi_mcp_management(provider_id)?;
     if provider_id == CLAUDE_CODE_PROVIDER_ID {
         return read_mcp_config_snapshot(project_path);
     }
@@ -11663,6 +11926,15 @@ fn read_agent_mcp_config_snapshot(
             "claudeJsonProject": { "mcpServers": {} },
         },
     }))
+}
+
+fn reject_pi_mcp_management(provider_id: &str) -> ApiResult<()> {
+    if provider_id == PI_AGENT_PROVIDER_ID {
+        return Err(ApiError::bad_request(
+            "Pi Agent 当前不支持由 CodeM 管理 MCP",
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_agent_mcp_config_path(
@@ -12604,11 +12876,8 @@ fn list_agent_skills_value(provider_id: &str, project_path: Option<&str>) -> Val
     }
     let config_directory = agent_config_directory_name(provider_id);
     let mut skills = Vec::new();
-    scan_claude_skill_directory(
-        &home.join(config_directory).join("skills"),
-        "user",
-        &mut skills,
-    );
+    let global_root = agent_global_config_directory(provider_id, &home);
+    scan_claude_skill_directory(&global_root.join("skills"), "user", &mut skills);
     if let Some(project) = project_path
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -12640,6 +12909,7 @@ fn resolve_agent_settings_command(provider_id: &str) -> Option<String> {
         GROK_BUILD_PROVIDER_ID => resolve_grok_command(),
         OPENAI_CODEX_PROVIDER_ID => resolve_codex_command(),
         OPENCODE_PROVIDER_ID => resolve_opencode_command(),
+        PI_AGENT_PROVIDER_ID => resolve_pi_command(),
         _ => resolve_claude_command(),
     }
 }
@@ -12680,9 +12950,12 @@ fn normalize_agent_plugin_action<'a>(
         (OPENAI_CODEX_PROVIDER_ID, "plugin", "install") => "add",
         (OPENAI_CODEX_PROVIDER_ID, "plugin", "uninstall") => "remove",
         (OPENAI_CODEX_PROVIDER_ID, "marketplace", "update") => "upgrade",
+        (PI_AGENT_PROVIDER_ID, "plugin", "uninstall") => "remove",
         (_, _, value) => value,
     };
-    let supported = if kind == "marketplace" {
+    let supported = if provider_id == PI_AGENT_PROVIDER_ID {
+        kind == "plugin" && matches!(normalized, "install" | "remove" | "update")
+    } else if kind == "marketplace" {
         matches!(normalized, "add" | "remove" | "update" | "upgrade")
     } else if provider_id == GROK_BUILD_PROVIDER_ID {
         matches!(
@@ -12729,6 +13002,10 @@ fn list_agent_installed_plugins_value(provider_id: &str) -> ApiResult<Value> {
     if provider_id == OPENCODE_PROVIDER_ID {
         return Ok(json!([]));
     }
+    if provider_id == PI_AGENT_PROVIDER_ID {
+        let output = run_agent_text_command(provider_id, &["list"])?;
+        return Ok(parse_pi_installed_packages(&output));
+    }
     let payload = run_agent_json_command(provider_id, &["plugin", "list", "--json"])?;
     let items = payload
         .get("installed")
@@ -12748,7 +13025,7 @@ fn list_agent_plugin_marketplaces_value(provider_id: &str) -> ApiResult<Value> {
     if provider_id == CLAUDE_CODE_PROVIDER_ID {
         return Ok(list_plugin_marketplaces_value());
     }
-    if provider_id == OPENCODE_PROVIDER_ID {
+    if matches!(provider_id, OPENCODE_PROVIDER_ID | PI_AGENT_PROVIDER_ID) {
         return Ok(json!([]));
     }
     let available_payload =
@@ -12806,6 +13083,82 @@ fn list_agent_plugin_marketplaces_value(provider_id: &str) -> ApiResult<Value> {
         })
             .collect(),
     ))
+}
+
+fn run_agent_text_command(provider_id: &str, arguments: &[&str]) -> ApiResult<String> {
+    let command = resolve_agent_settings_command(provider_id)
+        .ok_or_else(|| ApiError::bad_request("未找到 Agent CLI 命令"))?;
+    let output = background_command(&command)
+        .args(arguments)
+        .output()
+        .map_err(|error| ApiError::internal(format!("执行 Agent CLI 失败: {error}")))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !output.status.success() {
+        let detail = sanitize_agent_lifecycle_output(if stderr.trim().is_empty() {
+            &stdout
+        } else {
+            &stderr
+        });
+        return Err(ApiError::bad_request(if detail.is_empty() {
+            "Agent CLI 命令执行失败".to_string()
+        } else {
+            detail
+        }));
+    }
+    Ok(stdout)
+}
+
+fn parse_pi_installed_packages(value: &str) -> Value {
+    let mut scope = None;
+    let mut packages = Vec::new();
+    for line in value.lines() {
+        let trimmed = line.trim();
+        match trimmed {
+            "User packages:" => {
+                scope = Some("user");
+                continue;
+            }
+            "Project packages:" => {
+                scope = Some("project");
+                continue;
+            }
+            "No packages installed." | "" => continue,
+            _ => {}
+        }
+        let Some(current_scope) = scope else {
+            continue;
+        };
+        let Some(source) = line.strip_prefix("  ") else {
+            continue;
+        };
+        if source.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let (source, filtered) = source
+            .strip_suffix(" (filtered)")
+            .map(|source| (source, true))
+            .unwrap_or((source, false));
+        let source = source.trim();
+        if source.is_empty()
+            || source.len() > 512
+            || source.chars().any(char::is_control)
+            || sanitize_agent_lifecycle_output(source) == "命令输出包含敏感字段，已隐藏"
+        {
+            continue;
+        }
+        packages.push(json!({
+            "id": source,
+            "name": source,
+            "marketplace": "Pi Packages",
+            "scope": current_scope,
+            "description": filtered.then_some("部分资源已筛选"),
+            "enabled": true,
+            "installed": true,
+            "providerId": PI_AGENT_PROVIDER_ID,
+        }));
+    }
+    Value::Array(packages)
 }
 
 fn normalize_agent_plugin_item(provider_id: &str, item: &Value, installed: bool) -> Option<Value> {
@@ -13473,6 +13826,21 @@ fn run_external_command_value(
         "args": args,
         "cwd": cwd,
     }))
+}
+
+fn sanitize_external_command_result(result: &mut Value) {
+    let Some(object) = result.as_object_mut() else {
+        return;
+    };
+    for field in ["stdout", "stderr"] {
+        let Some(value) = object.get(field).and_then(Value::as_str) else {
+            continue;
+        };
+        object.insert(
+            field.to_string(),
+            Value::String(sanitize_agent_lifecycle_output(value)),
+        );
+    }
 }
 
 fn build_marketplace_index(plugins_root: &Path) -> std::collections::HashMap<String, Vec<Value>> {
@@ -18176,27 +18544,31 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_agent_lifecycle_proxy_environment, build_agent_lifecycle_plan,
-        build_claude_input_message, build_request_user_input_response_answers,
-        build_usage_provider_rows, claude_input_message_has_content,
-        claude_install_display_command, claude_install_lifecycle_plan,
-        claude_uninstalled_update_lifecycle_plan, compare_project_file_entries,
-        configure_agent_lifecycle_environment, create_router, create_thread_row,
-        current_claude_install_lifecycle_plan, default_claude_command_paths,
-        default_grok_command_path, desktop_cors_layer, ensure_agent_plugin_management_supported,
-        extract_agent_semantic_version, import_claude_sessions_from_root,
-        initialize_workspace_database, install_skill_directory_safely,
-        is_agent_lifecycle_network_failure, lifecycle_plan, lifecycle_plan_supports_npm_mirror,
-        list_agent_installed_plugins_value, list_agent_plugin_marketplaces_value,
-        list_agent_skills_value, list_slash_commands_value, mark_request_user_input_submitted,
-        normalize_agent_plugin_action, normalize_agent_runtime_settings,
+        agent_global_config_directory, apply_agent_lifecycle_proxy_environment,
+        build_agent_lifecycle_plan, build_agent_plugin_command_args, build_claude_input_message,
+        build_request_user_input_response_answers, build_usage_provider_rows,
+        claude_input_message_has_content, claude_install_display_command,
+        claude_install_lifecycle_plan, claude_uninstalled_update_lifecycle_plan,
+        compare_project_file_entries, configure_agent_lifecycle_environment, create_router,
+        create_thread_row, current_claude_install_lifecycle_plan, default_claude_command_paths,
+        default_grok_command_path, default_pi_command_paths, desktop_cors_layer,
+        ensure_agent_plugin_management_supported, extract_agent_semantic_version,
+        import_claude_sessions_from_root, initialize_workspace_database,
+        install_skill_directory_safely, is_agent_lifecycle_network_failure, lifecycle_plan,
+        lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
+        list_agent_plugin_marketplaces_value, list_agent_skills_value, list_slash_commands_value,
+        mark_request_user_input_submitted, normalize_agent_plugin_action,
+        normalize_agent_runtime_settings, normalize_pi_probe_summary,
         normalize_request_user_input_answer_value, parse_grok_cli_version,
         parse_grok_latest_version, parse_macos_system_proxy_environment, parse_npm_latest_version,
-        parse_request_user_input_event, read_opencode_mcp_config, read_stored_thread_history,
-        read_thread_detail, read_thread_summary, remove_thread_row, resolve_codex_command,
+        parse_pi_installed_packages, parse_request_user_input_event, pi_node_version_supported,
+        provider_supports_reasoning_effort, read_agent_mcp_config_snapshot,
+        read_opencode_mcp_config, read_stored_thread_history, read_thread_detail,
+        read_thread_summary, remove_thread_row, resolve_codex_command,
         resolve_first_runnable_command, resolve_grok_command, resolve_opencode_command,
-        resolve_requested_thread_provider, resolve_thread_create_permission_mode,
-        resolve_workspace_relative_path, sanitize_agent_lifecycle_output, search_workspace_files,
+        resolve_pi_command, resolve_requested_thread_provider,
+        resolve_thread_create_permission_mode, resolve_workspace_relative_path,
+        sanitize_agent_lifecycle_output, sanitize_external_command_result, search_workspace_files,
         select_runnable_command_candidate, should_emit_claude_raw_event, should_store_run_event,
         summarize_content_blocks, update_thread_metadata_from_payload, validate_desktop_file_path,
         validate_managed_agent_skill_path, windows_claude_install_lifecycle_plan,
@@ -18204,8 +18576,9 @@ mod tests {
     };
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENCODE_PROVIDER_ID,
+        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     };
+    use crate::pi_rpc::{PiModel, PiState};
     use axum::{
         body::Body,
         http::{header, Method, Request, StatusCode},
@@ -18255,6 +18628,92 @@ mod tests {
             assert!(!plan.args.is_empty());
         }
         assert!(build_agent_lifecycle_plan("unknown-agent", "install", None).is_err());
+    }
+
+    #[test]
+    fn pi_agent_lifecycle_uses_npm_install_and_native_self_update() {
+        let install = build_agent_lifecycle_plan(PI_AGENT_PROVIDER_ID, "install", None)
+            .expect("build Pi install plan");
+        assert_eq!(
+            install.args,
+            vec![
+                "install",
+                "-g",
+                "--ignore-scripts",
+                "@earendil-works/pi-coding-agent@latest"
+            ]
+        );
+        assert!(lifecycle_plan_supports_npm_mirror(&install));
+
+        let update = build_agent_lifecycle_plan(PI_AGENT_PROVIDER_ID, "update", Some("pi"))
+            .expect("build Pi update plan");
+        assert_eq!(update.program, "pi");
+        assert_eq!(update.args, vec!["update", "--self"]);
+        assert_eq!(
+            super::agent_npm_package_name(PI_AGENT_PROVIDER_ID),
+            Some("@earendil-works/pi-coding-agent")
+        );
+    }
+
+    #[test]
+    fn pi_agent_requires_node_22_19_or_newer() {
+        assert!(!pi_node_version_supported("v22.18.0"));
+        assert!(pi_node_version_supported("22.19.0"));
+        assert!(pi_node_version_supported("v23.0.0"));
+        assert!(!pi_node_version_supported("unknown"));
+    }
+
+    #[test]
+    fn pi_probe_summary_exposes_only_public_runtime_diagnostics() {
+        let model = PiModel {
+            id: "claude-sonnet-4".to_string(),
+            name: "Claude Sonnet 4".to_string(),
+            provider: "anthropic".to_string(),
+            reasoning: true,
+            input: vec!["text".to_string(), "image".to_string()],
+            context_window: Some(200_000),
+        };
+        let summary = normalize_pi_probe_summary(
+            &PiState {
+                model: Some(model.clone()),
+                thinking_level: "high".to_string(),
+                is_streaming: false,
+                session_file: Some("C:/private/session.jsonl".to_string()),
+                session_id: "session-1".to_string(),
+            },
+            &[model],
+            &["off".to_string(), "high".to_string()],
+        );
+        assert_eq!(summary["authenticated"], true);
+        assert_eq!(summary["modelCount"], 1);
+        assert_eq!(summary["currentModel"], "anthropic/claude-sonnet-4");
+        assert_eq!(summary["thinkingLevels"], json!(["off", "high"]));
+        assert!(summary.get("sessionFile").is_none());
+        assert!(!summary.to_string().contains("private"));
+    }
+
+    #[test]
+    fn pi_probe_summary_rejects_the_unknown_model_placeholder() {
+        let placeholder = PiModel {
+            id: "unknown".to_string(),
+            name: "unknown".to_string(),
+            provider: "unknown".to_string(),
+            reasoning: false,
+            input: vec!["text".to_string()],
+            context_window: None,
+        };
+        let state = PiState {
+            model: Some(placeholder),
+            thinking_level: "off".to_string(),
+            is_streaming: false,
+            session_file: None,
+            session_id: "session-unknown".to_string(),
+        };
+        let summary = normalize_pi_probe_summary(&state, &[], &["off".to_string()]);
+
+        assert_eq!(summary["authenticated"], false);
+        assert!(summary["currentModel"].is_null());
+        assert_eq!(summary["modelCount"], 0);
     }
 
     #[test]
@@ -19090,6 +19549,92 @@ mod tests {
     }
 
     #[test]
+    fn pi_rules_skills_and_package_actions_follow_native_layout() {
+        let home = PathBuf::from("D:/home");
+        assert_eq!(
+            agent_global_config_directory(PI_AGENT_PROVIDER_ID, &home),
+            home.join(".pi").join("agent")
+        );
+        assert_eq!(
+            normalize_agent_plugin_action(PI_AGENT_PROVIDER_ID, "plugin", "install").unwrap(),
+            "install"
+        );
+        assert_eq!(
+            normalize_agent_plugin_action(PI_AGENT_PROVIDER_ID, "plugin", "uninstall").unwrap(),
+            "remove"
+        );
+        assert_eq!(
+            normalize_agent_plugin_action(PI_AGENT_PROVIDER_ID, "plugin", "update").unwrap(),
+            "update"
+        );
+        assert!(
+            normalize_agent_plugin_action(PI_AGENT_PROVIDER_ID, "marketplace", "update").is_err()
+        );
+    }
+
+    #[test]
+    fn pi_mcp_management_returns_stable_bad_request() {
+        let error = read_agent_mcp_config_snapshot(PI_AGENT_PROVIDER_ID, None)
+            .expect_err("Pi MCP management must remain unsupported");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("Pi Agent"));
+        assert!(error.message.contains("MCP"));
+    }
+
+    #[test]
+    fn pi_package_commands_use_native_cli_without_plugin_prefix() {
+        assert_eq!(
+            build_agent_plugin_command_args(
+                PI_AGENT_PROVIDER_ID,
+                "plugin",
+                "install",
+                Some("npm:@scope/package")
+            )
+            .unwrap(),
+            vec!["install", "npm:@scope/package"]
+        );
+        assert_eq!(
+            build_agent_plugin_command_args(
+                PI_AGENT_PROVIDER_ID,
+                "plugin",
+                "uninstall",
+                Some("npm:@scope/package")
+            )
+            .unwrap(),
+            vec!["remove", "npm:@scope/package"]
+        );
+    }
+
+    #[test]
+    fn pi_package_list_parser_maps_native_scopes_and_omits_install_paths() {
+        let packages = parse_pi_installed_packages(
+            "User packages:\n  npm:@scope/pi-tools\n    C:\\Users\\dev\\.pi\\agent\\packages\\pi-tools\n  git:github.com/example/pi-ext (filtered)\n\nProject packages:\n  ./local-extension\n    D:\\repo\\.pi\\packages\\local-extension\n",
+        );
+
+        assert_eq!(packages.as_array().map(Vec::len), Some(3));
+        assert_eq!(packages[0]["id"], "npm:@scope/pi-tools");
+        assert_eq!(packages[0]["scope"], "user");
+        assert_eq!(packages[1]["description"], "部分资源已筛选");
+        assert_eq!(packages[2]["scope"], "project");
+        assert!(packages[0].get("installPath").is_none());
+        assert!(!packages.to_string().contains("Users\\\\dev"));
+    }
+
+    #[test]
+    fn pi_package_command_output_uses_bounded_credential_sanitizer() {
+        let mut result = json!({
+            "stdout": "Installed npm:@scope/pi-tools",
+            "stderr": "Authorization: Bearer private-token",
+        });
+
+        sanitize_external_command_result(&mut result);
+
+        assert_eq!(result["stdout"], "Installed npm:@scope/pi-tools");
+        assert_eq!(result["stderr"], "命令输出包含敏感字段，已隐藏");
+        assert!(!result.to_string().contains("private-token"));
+    }
+
+    #[test]
     fn opencode_skills_use_only_managed_project_roots() {
         let root = TestDirectory::new("opencode-skill-roots");
         let plural = root.0.join(".opencode").join("skills").join("plural");
@@ -19164,6 +19709,7 @@ mod tests {
                 resolve_grok_command,
                 resolve_codex_command,
                 resolve_opencode_command,
+                resolve_pi_command,
                 agent_channels,
             ),
             workspace_write_lock: Arc::new(Mutex::new(())),
@@ -19312,6 +19858,14 @@ mod tests {
             .expect("enabled OpenCode provider"),
             OPENCODE_PROVIDER_ID
         );
+        assert!(resolve_requested_thread_provider(Some(PI_AGENT_PROVIDER_ID), |_| false,).is_err());
+        assert_eq!(
+            resolve_requested_thread_provider(Some(PI_AGENT_PROVIDER_ID), |provider_id| {
+                provider_id == PI_AGENT_PROVIDER_ID
+            },)
+            .expect("enabled Pi provider"),
+            PI_AGENT_PROVIDER_ID
+        );
         assert_eq!(
             resolve_thread_create_permission_mode(GROK_BUILD_PROVIDER_ID, None)
                 .expect("default Grok permission")
@@ -19333,6 +19887,16 @@ mod tests {
                 .as_deref(),
             Some("auto")
         );
+        assert_eq!(
+            resolve_thread_create_permission_mode(PI_AGENT_PROVIDER_ID, Some("auto"))
+                .expect("Pi permission")
+                .as_deref(),
+            Some("auto")
+        );
+        assert!(
+            resolve_thread_create_permission_mode(PI_AGENT_PROVIDER_ID, Some("dontAsk")).is_err()
+        );
+        assert!(provider_supports_reasoning_effort(PI_AGENT_PROVIDER_ID));
     }
 
     #[test]
@@ -20039,6 +20603,19 @@ mod tests {
             default_claude_command_paths(&home, None, false),
             vec![home.join(".local").join("bin").join("claude")]
         );
+    }
+
+    #[test]
+    fn default_pi_command_paths_cover_user_package_manager_installers() {
+        let home = PathBuf::from("C:\\Users\\dev");
+        let app_data = home.join("AppData").join("Roaming");
+        let local_app_data = home.join("AppData").join("Local");
+
+        let paths = default_pi_command_paths(&home, Some(&app_data), Some(&local_app_data), true);
+
+        assert!(paths.contains(&app_data.join("npm").join("pi.cmd")));
+        assert!(paths.contains(&local_app_data.join("pnpm").join("pi.cmd")));
+        assert!(paths.contains(&home.join(".bun").join("bin").join("pi.exe")));
     }
 
     #[cfg(target_os = "windows")]

@@ -371,11 +371,12 @@ impl AutomationService {
             let changed = if one_time {
                 1usize
             } else {
-                let next_run_at_ms = next_run_at_ms
-                    .filter(|value| *value > now_ms)
-                    .ok_or_else(|| {
-                        AutomationApiError::bad_request("下次运行时间必须晚于当前时间")
-                    })?;
+                let next_run_at_ms =
+                    next_run_at_ms
+                        .filter(|value| *value > now_ms)
+                        .ok_or_else(|| {
+                            AutomationApiError::bad_request("下次运行时间必须晚于当前时间")
+                        })?;
                 transaction.execute(
                     "UPDATE automations SET next_run_at_ms = ?, updated_at = ? WHERE id = ? AND enabled = 1 AND next_run_at_ms <= ?",
                     params![next_run_at_ms, current_timestamp(), automation_id, now_ms],
@@ -438,7 +439,9 @@ impl AutomationService {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => AutomationApiError::not_found("自动化运行不存在"),
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AutomationApiError::not_found("自动化运行不存在")
+                }
                 other => AutomationApiError::internal(format!("读取自动化运行失败: {other}")),
             })?;
         let changed = transaction

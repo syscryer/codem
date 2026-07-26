@@ -165,7 +165,10 @@ export function resolveWorkbenchCodeLanguage(filePath: string) {
   return 'text';
 }
 
-export async function highlightWorkbenchCode(content: string, filePath: string) {
+export async function highlightWorkbenchCode(
+  content: string,
+  filePath: string,
+): Promise<HighlightedCodeToken[][] | null> {
   const language = resolveWorkbenchCodeLanguage(filePath);
   if (language === 'text') {
     return null;
@@ -215,7 +218,10 @@ export function combineProjectFilePath(projectPath: string, relativePath: string
     return normalizedProjectPath;
   }
 
-  return `${normalizedProjectPath}\\${normalizedRelativePath.replace(/\//g, '\\')}`;
+  const separator = isWindowsProjectPath(normalizedProjectPath) ? '\\' : '/';
+  const joinedRelativePath =
+    separator === '\\' ? normalizedRelativePath.replace(/\//g, '\\') : normalizedRelativePath;
+  return `${normalizedProjectPath}${separator}${joinedRelativePath}`;
 }
 
 function highlightScriptLine(line: string): CodeHighlightSegment[] {
@@ -381,6 +387,10 @@ function escapeWorkbenchNoisePatternCharacter(character: string) {
 
 function normalizeFilePath(filePath: string) {
   return filePath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+function isWindowsProjectPath(projectPath: string) {
+  return /^[a-zA-Z]:[\\/]/.test(projectPath) || /^\\\\/.test(projectPath);
 }
 
 function compareWorkbenchFileTreeNodes(left: WorkbenchFileTreeNode, right: WorkbenchFileTreeNode) {

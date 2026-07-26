@@ -186,26 +186,26 @@ Pi `extension_ui_request`，Rust 再映射到 CodeM 的 `approval-request` 或 `
 
 ## Acceptance Criteria
 
-- [ ] Provider Registry 返回 active、可探测的 `pi-agent`，未安装时不可选择且设置页可安装。
-- [ ] Node.js 版本不足时安装与诊断给出明确提示，不执行必然失败的安装。
-- [ ] npm 安装、代理重试和国内镜像重试不泄露代理凭据。
-- [ ] Pi RPC probe 能验证版本、初始化、认证/模型可用性和思考级别。
-- [ ] 系统渠道使用现有 Pi 配置，不复制 API Key。
-- [ ] 自定义渠道使用隔离配置，切换渠道不会污染系统 Pi 配置或其他线程。
-- [ ] frontend 可动态选择 Pi 模型和当前模型实际支持的思考级别。
-- [ ] 文本、图片、文件引用、Thinking、工具、用量、错误都进入正确 timeline 语义。
-- [ ] 同一 thread 和相同配置的连续 turn 复用同一 Pi RPC 进程。
-- [ ] 运行中发送的新需求按现有 CodeM 队列语义映射为 Pi steer/follow-up。
-- [ ] 普通停止通过 `abort` 结束当前 run，下一次发送仍复用健康进程。
-- [ ] 进程崩溃或配置变化后能够用已验证 session 冷恢复。
-- [ ] 失败后不会自动重放可能已经执行过工具的 prompt。
-- [ ] `agent_settled` 之前不会提前发出 CodeM `done`。
-- [ ] Extension UI 的确认、选择、输入、编辑和取消能写回原热会话。
-- [ ] 三种权限模式按设计工作，设置页不宣称 Pi 原生具备不存在的权限系统。
-- [ ] 全局/项目规则、Skills、Pi Packages 和使用统计接入现有设置入口。
-- [ ] MCP 页面对 Pi 明确显示不支持，且不会写入无效配置。
-- [ ] trace、历史、debug event 和错误信息不包含 secret、图片 base64 或大文件全文。
-- [ ] 现有 Claude、Grok、Codex 和 OpenCode 行为与测试不回归。
+- [x] Provider Registry 返回 active、可探测的 `pi-agent`，未安装时不可选择且设置页可安装。
+- [x] Node.js 版本不足时安装与诊断给出明确提示，不执行必然失败的安装。
+- [x] npm 安装、代理重试和国内镜像重试不泄露代理凭据。
+- [x] Pi RPC probe 能验证版本、初始化、认证/模型可用性和思考级别。
+- [x] 系统渠道使用现有 Pi 配置，不复制 API Key。
+- [x] 自定义渠道使用隔离配置，切换渠道不会污染系统 Pi 配置或其他线程。
+- [x] frontend 可动态选择 Pi 模型和当前模型实际支持的思考级别。
+- [x] 文本、图片、文件引用、Thinking、工具、用量、错误都进入正确 timeline 语义。
+- [x] 同一 thread 和相同配置的连续 turn 复用同一 Pi RPC 进程。
+- [x] 运行中发送的新需求按现有 CodeM 队列语义映射为 Pi steer/follow-up。
+- [x] 普通停止通过 `abort` 结束当前 run，下一次发送仍复用健康进程。
+- [x] 进程崩溃或配置变化后能够用已验证 session 冷恢复。
+- [x] 失败后不会自动重放可能已经执行过工具的 prompt。
+- [x] `agent_settled` 之前不会提前发出 CodeM `done`。
+- [x] Extension UI 的确认、选择、输入、编辑和取消能写回原热会话。
+- [x] 三种权限模式按设计工作，设置页不宣称 Pi 原生具备不存在的权限系统。
+- [x] 全局/项目规则、Skills、Pi Packages 和使用统计接入现有设置入口。
+- [x] MCP 页面对 Pi 明确显示不支持，且不会写入无效配置。
+- [x] trace、历史、debug event 和错误信息不包含 secret、图片 base64 或大文件全文。
+- [x] 现有 Claude、Grok、Codex 和 OpenCode 行为与测试不回归。
 - [ ] 修改后的桌面开发模式能够启动并完成一次 Pi 真实 smoke run。
 
 ## Verification Commands
@@ -224,6 +224,20 @@ Pi `extension_ui_request`，Rust 再映射到 CodeM 的 `approval-request` 或 `
 
 ## Implementation Record
 
+- 2026-07-26T07:47:32.728Z 真实 Pi smoke 发现系统配置无可用模型时 unknown/unknown 被误判为已认证；已改为仅接受 Pi get_available_models 返回的当前模型，并在设置页显示待处理
+- 2026-07-26T07:26:38.513Z 完成 Pi Agent 设置、MCP 边界、Rules、Skills、Packages、Usage 与图标界面，并补充 Pi Packages 专属空态及窄屏布局验证
+
+- 2026-07-26T07:00:51.045Z 完成 Pi Extension UI 权限桥接：confirm/input 映射、热进程控制回写、default/auto/bypassPermissions 工具策略、隔离 bridge 资源与脱敏限长摘要
+- 2026-07-26T06:08:57.449Z 完成 Pi Agent 生命周期、Node 版本门槛、原生 RPC probe、动态模型目录、Rules/Skills/Packages 路径、MCP 400 边界、可执行命令检测与前端 probe 脱敏归一化；新机器已安装 Pi 0.82.1 并按真实 pi list 输出实现 Packages 解析。
+
+- 2026-07-26T05:32:07.121Z 完成 Pi 系统与自定义渠道：支持 OpenAI Chat、Responses、Anthropic Messages；自定义配置写入 thread 级 PI_CODING_AGENT_DIR，models.json 仅引用生成的环境变量名，密钥不落盘；加入系统渠道、指纹和精确删除边界。
+- 2026-07-26T05:26:47.074Z 完成 Pi RPC 热运行时接入：统一 driver/input/runtime，配置指纹包含渠道、模型、思考级别、权限和 bridge 版本；agent_end 非终态，agent_settled 才完成；abort 等待 settled 后保留健康进程；fatal 传输错误标记 runtime failed。
+
+- 2026-07-26T04:56:23.967Z Task 3 完成：实现 PiStdioClient 进程客户端、状态/模型/思考命令、prompt/steer/follow-up、Extension UI 回写、session stats 与类型化流事件；5/5 测试通过
+- 2026-07-26T04:47:47.070Z Task 2 完成：实现 Pi RPC 严格 LF JSONL framing、4 MiB 大小限制、非法 JSON 诊断和请求 ID 响应关联；3/3 测试通过
+
+- 2026-07-26T04:44:24.079Z Task 1 完成：注册 pi-agent/pi-rpc Provider，补齐能力描述、通用运行路由和前端穷举映射；Rust 9/9、前端 16/16、typecheck 通过
+
 - 2026-07-26T04:35:05.222Z 完成 Pi Agent RPC 实施计划：九个测试驱动任务覆盖 Provider、RPC、热会话、渠道、生命周期、权限桥接、设置与验收
 - 2026-07-26T04:24:24.639Z 完成 Pi 原生 RPC 接入设计：确认同等 Provider 范围、热会话复用、权限桥接、自定义渠道隔离、错误恢复和首版 MCP 边界
 
@@ -235,7 +249,32 @@ Pi `extension_ui_request`，Rust 再映射到 CodeM 的 `approval-request` 或 `
 
 ## Verification Results
 
+- 2026-07-26T07:48:14.228Z `npm run desktop:dev；Invoke-RestMethod http://127.0.0.1:3002/api/health；POST /api/agents/pi/probe；POST /api/agents/run；Playwright http://127.0.0.1:5174/ Pi 检测`: 桌面 Vite 5174、后端 3002 已启动且健康；Pi 0.82.1 RPC 初始化成功；真实 run 创建会话并通过 SSE 返回缺少 API key 错误；修复后 probe 返回 authenticated=false/currentModel=null，UI 显示待处理且无控制台错误；认证生成与热复用 smoke 待配置 API key 后补测
+- 2026-07-26T07:47:58.034Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check；cargo test --manifest-path src-tauri/Cargo.toml pi_rpc；cargo test --manifest-path src-tauri/Cargo.toml agent_run；cargo test --manifest-path src-tauri/Cargo.toml agent_channels；cargo test --manifest-path src-tauri/Cargo.toml backend；cargo test --manifest-path src-tauri/Cargo.toml`: 格式通过；定向测试 pi_rpc 8、agent_run 50、agent_channels 11、backend 74 全通过；全量库测试 221 通过、1 个需认证 Grok 用例忽略，桌面壳 13 通过
+
+- 2026-07-26T07:47:43.623Z `node --import tsx --test src/lib/agent-provider-registry.test.ts src/lib/agent-provider-management-ui.test.ts src/lib/agent-model-selection.test.ts src/lib/agent-channel-selection.test.ts src/hooks/useAgentChannels.test.ts；npm run typecheck`: 50 个前端测试通过；TypeScript 无错误
+- 2026-07-26T07:26:38.515Z `npm run typecheck；node --import tsx --test src/lib/agent-provider-management-ui.test.ts src/lib/agent-channel-selection.test.ts src/lib/agent-model-selection.test.ts src/lib/agent-provider-registry.test.ts；Playwright 1440x900/520x900 Pi 设置检查；git diff --check`: TypeScript 通过；49 个前端测试通过；桌面与窄屏页面无控制台错误、无横向溢出；空白检查通过
+
+- 2026-07-26T07:01:06.043Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check && git diff --check`: PASS
+- 2026-07-26T07:01:05.774Z `cargo test --manifest-path src-tauri/Cargo.toml agent_run::tests`: PASS: 40 passed, 0 failed
+
+- 2026-07-26T07:01:05.458Z `cargo test --manifest-path src-tauri/Cargo.toml pi_rpc`: PASS: 8 passed, 0 failed
+- 2026-07-26T06:09:16.167Z `node --import tsx --test src/lib/agent-provider-registry.test.ts && npm run typecheck`: PASS：18 项 registry/probe 测试通过，TypeScript 无错误
+
+- 2026-07-26T06:09:05.786Z `cargo test --manifest-path src-tauri/Cargo.toml backend::tests::pi_`: PASS：8 项 Pi 生命周期、probe、Rules/Skills/Packages/MCP 测试通过
+- 2026-07-26T05:32:09.103Z `node --import tsx --test src/lib/agent-channel-selection.test.ts src/hooks/useAgentChannels.test.ts`: 12 passed, 0 failed
+
+- 2026-07-26T05:32:08.107Z `cargo test --manifest-path src-tauri/Cargo.toml agent_channels::tests`: 11 passed, 0 failed
+- 2026-07-26T05:27:00.346Z `npm run typecheck`: 通过
+
+- 2026-07-26T05:26:59.339Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check`: 通过
+- 2026-07-26T05:26:58.287Z `cargo test --manifest-path src-tauri/Cargo.toml pi_rpc`: 6 passed, 0 failed
+
+- 2026-07-26T05:26:57.287Z `cargo test --manifest-path src-tauri/Cargo.toml agent_run::tests`: 36 passed, 0 failed
+
 ## Completion Summary
+
+- 2026-07-26T07:48:25.819Z 完成 Pi Agent 原生 RPC、热会话、渠道、权限桥接与设置接入；自动化回归和桌面启动通过，真实 Pi 初始化与错误链路通过，认证生成 smoke 因本机未配置 API key 待补
 
 ## Follow-ups
 

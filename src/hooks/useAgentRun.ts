@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CLAUDE_CODE_PROVIDER_ID,
   DEFAULT_MODEL_VALUE,
   GROK_BUILD_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
+  PI_AGENT_PROVIDER_ID,
 } from '../constants';
 import {
   applyAgentRunEventToTurn,
@@ -242,15 +243,18 @@ export function useAgentRun({
     selectedProviderId,
     defaultAgentChannelIds[selectedProviderId as AgentProviderId],
   );
-  const currentModelCatalog = channelId === SYSTEM_AGENT_CHANNEL_ID
-    ? nativeModelCatalog
-    : selectedChannel
-      ? buildAgentChannelModelCatalog(
-          selectedProviderId as AgentProviderId,
-          selectedChannel,
-          nativeModelCatalog,
-        )
-      : null;
+  const currentModelCatalog = useMemo(
+    () => channelId === SYSTEM_AGENT_CHANNEL_ID
+      ? nativeModelCatalog
+      : selectedChannel
+        ? buildAgentChannelModelCatalog(
+            selectedProviderId as AgentProviderId,
+            selectedChannel,
+            nativeModelCatalog,
+          )
+        : null,
+    [channelId, nativeModelCatalog, selectedChannel, selectedProviderId],
+  );
   const queuedPrompts = activeThreadId
     ? queuedPromptsByThreadId[activeThreadId] ?? []
     : [];
@@ -1704,6 +1708,9 @@ function getProviderRunError(
     if (providerId === OPENCODE_PROVIDER_ID) {
       return '未检测到可由 CodeM 启动的 OpenCode CLI，请安装 OpenCode、检查 PATH 或设置 OPENCODE_CLI_PATH 后重启。';
     }
+    if (providerId === PI_AGENT_PROVIDER_ID) {
+      return '未检测到可由 CodeM 启动的 Pi CLI，请安装 Pi、检查 Node 版本与 PATH 或设置 PI_CLI_PATH 后重启。';
+    }
     return '未检测到可用的 grok CLI，请安装或检查 PATH 后重启。';
   }
   if (!provider.selectable) {
@@ -1720,6 +1727,8 @@ function providerDisplayName(providerId: string, providers: AgentProviderDescrip
         ? 'OpenAI Codex'
         : providerId === OPENCODE_PROVIDER_ID
           ? 'OpenCode'
+          : providerId === PI_AGENT_PROVIDER_ID
+            ? 'Pi'
         : providerId);
 }
 

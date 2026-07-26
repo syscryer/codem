@@ -47,6 +47,16 @@ assert.equal(
   'D:\\project\\codem\\src\\lib\\workbench-preview.ts',
 );
 
+assert.equal(
+  resolveWorkbenchPreviewFilePath('/Users/demo/project/codem', 'src/lib/workbench-preview.ts'),
+  '/Users/demo/project/codem/src/lib/workbench-preview.ts',
+);
+
+assert.equal(
+  resolveWorkbenchPreviewFilePath('/Users/demo/project/codem', '/Users/demo/project/codem/src/lib/workbench-preview.ts'),
+  '/Users/demo/project/codem/src/lib/workbench-preview.ts',
+);
+
 const opened = openWorkbenchPreviewTab(
   [
     {

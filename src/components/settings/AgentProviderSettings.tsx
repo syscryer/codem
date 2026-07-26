@@ -30,6 +30,7 @@ import type {
   CodexAppServerProbeResult,
   GrokAcpProbeResult,
   OpenCodeAcpProbeResult,
+  PiRpcProbeResult,
 } from '../../types';
 import type { AgentRuntimeSettingsUpdate } from '../../hooks/useAppSettings';
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss';
@@ -39,6 +40,7 @@ import {
   probeCodexAgent,
   probeGrokAgent,
   probeOpenCodeAgent,
+  probePiAgent,
   runAgentLifecycleAction,
 } from '../../lib/agent-provider-registry';
 import {
@@ -47,6 +49,7 @@ import {
   getCodexProbeStatusMessage,
   getGrokProbeStatusMessage,
   getOpenCodeProbeStatusMessage,
+  getPiProbeStatusMessage,
   getProviderInstallDocsUrl,
   getProviderCapabilityGroups,
   getProviderModels,
@@ -100,6 +103,9 @@ export function AgentProviderSettings({
   const [openCodeProbeState, setOpenCodeProbeState] = useState<ProviderProbeState>('idle');
   const [openCodeProbe, setOpenCodeProbe] = useState<OpenCodeAcpProbeResult | null>(null);
   const [openCodeProbeError, setOpenCodeProbeError] = useState('');
+  const [piProbeState, setPiProbeState] = useState<ProviderProbeState>('idle');
+  const [piProbe, setPiProbe] = useState<PiRpcProbeResult | null>(null);
+  const [piProbeError, setPiProbeError] = useState('');
   const [agentRuntimeSaving, setAgentRuntimeSaving] = useState(false);
   const [diagnosticCheckingProviderId, setDiagnosticCheckingProviderId] = useState<AgentProviderId | null>(null);
   const [lifecycleAction, setLifecycleAction] = useState<{ providerId: AgentProviderId; action: 'install' | 'update' } | null>(null);
@@ -109,6 +115,7 @@ export function AgentProviderSettings({
   const grokControllerRef = useRef<AbortController | null>(null);
   const codexControllerRef = useRef<AbortController | null>(null);
   const openCodeControllerRef = useRef<AbortController | null>(null);
+  const piControllerRef = useRef<AbortController | null>(null);
 
   const loadProviderDetails = useCallback(async (
     requestedProviderIds?: AgentProviderId[],
@@ -116,7 +123,7 @@ export function AgentProviderSettings({
     setDetailsError('');
 
     const providerIds = requestedProviderIds ?? (
-      ['claude-code', 'openai-codex', 'grok-build', 'opencode'] satisfies AgentProviderId[]
+      ['claude-code', 'openai-codex', 'grok-build', 'opencode', 'pi-agent'] satisfies AgentProviderId[]
     );
     const loadingState = Object.fromEntries(providerIds.map((providerId) => [providerId, true]));
     setDiagnosticsLoading((current) => ({ ...current, ...loadingState }));
@@ -246,6 +253,7 @@ export function AgentProviderSettings({
       grokControllerRef.current?.abort();
       codexControllerRef.current?.abort();
       openCodeControllerRef.current?.abort();
+      piControllerRef.current?.abort();
     };
   }, [loadProviderDetails]);
 
@@ -383,6 +391,25 @@ export function AgentProviderSettings({
     }
   }
 
+  async function runPiProbe() {
+    if (piProbeState === 'checking') return;
+    piControllerRef.current?.abort();
+    const controller = new AbortController();
+    piControllerRef.current = controller;
+    setPiProbeState('checking');
+    setPiProbeError('');
+    try {
+      const result = await probePiAgent(controller.signal);
+      if (controller.signal.aborted) return;
+      setPiProbe(result);
+      setPiProbeState('ready');
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setPiProbeError(error instanceof Error ? error.message : '检测 Pi 失败');
+      setPiProbeState('error');
+    }
+  }
+
   async function updateDefaultProvider(defaultProviderId: AgentProviderId) {
     if (agentRuntimeSaving || defaultProviderId === agentRuntime.defaultProviderId) {
       return;
@@ -434,6 +461,8 @@ export function AgentProviderSettings({
           ? runCodexProbe()
           : providerId === 'opencode'
             ? runOpenCodeProbe()
+            : providerId === 'pi-agent'
+              ? runPiProbe()
             : Promise.resolve();
       await Promise.allSettled([
         Promise.resolve().then(() => onRefreshProviders()),
@@ -521,7 +550,7 @@ export function AgentProviderSettings({
             ) : null}
             {providersLoading && providers.length === 0 ? <AgentProviderListSkeleton /> : null}
             {effectiveProviders.map((provider) => {
-              const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe);
+              const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe);
               return (
                 <button
                   key={provider.id}
@@ -535,7 +564,7 @@ export function AgentProviderSettings({
                   </span>
                   <span className="agent-provider-list-copy">
                     <strong>{provider.displayName}</strong>
-                    <small>{formatProviderListMeta(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe)}</small>
+                    <small>{formatProviderListMeta(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe)}</small>
                   </span>
                   <ProviderStatusIcon tone={status.tone} label={status.label} compact />
                 </button>
@@ -584,12 +613,16 @@ export function AgentProviderSettings({
               openCodeProbe={openCodeProbe}
               openCodeProbeState={openCodeProbeState}
               openCodeProbeError={openCodeProbeError}
+              piProbe={piProbe}
+              piProbeState={piProbeState}
+              piProbeError={piProbeError}
               settingsDiagnostics={settingsDiagnostics[selectedProvider.id as AgentProviderId] ?? null}
               diagnosticsLoading={Boolean(diagnosticsLoading[selectedProvider.id as AgentProviderId])}
               latestVersionLoading={Boolean(latestVersionLoading[selectedProvider.id as AgentProviderId])}
               onProbeGrok={runGrokProbe}
               onProbeCodex={runCodexProbe}
               onProbeOpenCode={runOpenCodeProbe}
+              onProbePi={runPiProbe}
               onRefresh={() => loadProviderDetails([selectedProvider.id as AgentProviderId])}
               diagnosticChecking={diagnosticCheckingProviderId === selectedProvider.id}
               onRunNativeDiagnostic={() => runNativeDiagnostic(selectedProvider.id as AgentProviderId)}
@@ -732,7 +765,8 @@ function isDefaultAgentProvider(provider: AgentProviderDescriptor): provider is 
   return provider.id === 'claude-code'
     || provider.id === 'grok-build'
     || provider.id === 'openai-codex'
-    || provider.id === 'opencode';
+    || provider.id === 'opencode'
+    || provider.id === 'pi-agent';
 }
 
 function defaultAgentProviderName(providerId: AgentProviderId) {
@@ -744,6 +778,9 @@ function defaultAgentProviderName(providerId: AgentProviderId) {
   }
   if (providerId === 'opencode') {
     return 'OpenCode';
+  }
+  if (providerId === 'pi-agent') {
+    return 'Pi';
   }
   return 'Claude Code';
 }
@@ -761,12 +798,16 @@ function ProviderDetail({
   openCodeProbe,
   openCodeProbeState,
   openCodeProbeError,
+  piProbe,
+  piProbeState,
+  piProbeError,
   settingsDiagnostics,
   diagnosticsLoading,
   latestVersionLoading,
   onProbeGrok,
   onProbeCodex,
   onProbeOpenCode,
+  onProbePi,
   onRefresh,
   diagnosticChecking,
   onRunNativeDiagnostic,
@@ -785,20 +826,24 @@ function ProviderDetail({
   openCodeProbe: OpenCodeAcpProbeResult | null;
   openCodeProbeState: ProviderProbeState;
   openCodeProbeError: string;
+  piProbe: PiRpcProbeResult | null;
+  piProbeState: ProviderProbeState;
+  piProbeError: string;
   settingsDiagnostics: AgentSettingsDiagnostics | null;
   diagnosticsLoading: boolean;
   latestVersionLoading: boolean;
   onProbeGrok: () => Promise<void>;
   onProbeCodex: () => Promise<void>;
   onProbeOpenCode: () => Promise<void>;
+  onProbePi: () => Promise<void>;
   onRefresh: () => Promise<void>;
   diagnosticChecking: boolean;
   onRunNativeDiagnostic: () => Promise<void>;
   lifecycleAction: 'install' | 'update' | null;
   onRunLifecycleAction: (action: 'install' | 'update') => void;
 }) {
-  const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe);
-  const diagnostics = resolveProviderDiagnostics(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe);
+  const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe);
+  const diagnostics = resolveProviderDiagnostics(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe);
   const effectiveCliStatus = diagnostics.cli === '未检测' && settingsDiagnostics?.installed
     ? '已安装'
     : diagnostics.cli;
@@ -832,12 +877,15 @@ function ProviderDetail({
     openCodeProbe,
     openCodeProbeError,
   );
+  const piStatusMessage = getPiProbeStatusMessage(piProbeState, piProbe, piProbeError);
   const probeState = provider.id === 'grok-build'
     ? grokProbeState
     : provider.id === 'openai-codex'
       ? codexProbeState
       : provider.id === 'opencode'
         ? openCodeProbeState
+        : provider.id === 'pi-agent'
+          ? piProbeState
       : 'idle';
   const probeResultAvailable = provider.id === 'grok-build'
     ? Boolean(grokProbe?.probe?.authenticated)
@@ -845,6 +893,8 @@ function ProviderDetail({
       ? Boolean(codexProbe?.probe?.authenticated)
       : provider.id === 'opencode'
         ? Boolean(openCodeProbe?.probe?.configured)
+        : provider.id === 'pi-agent'
+          ? Boolean(piProbe?.probe?.authenticated)
       : false;
   const installDocsUrl = provider.id === 'claude-code'
     ? claudeCliInfo?.setupUrl ?? getProviderInstallDocsUrl(provider.id as AgentProviderId)
@@ -878,7 +928,7 @@ function ProviderDetail({
               <span>安装文档</span>
             </button>
           ) : null}
-          {provider.id === 'grok-build' || provider.id === 'openai-codex' || provider.id === 'opencode' ? (
+          {provider.id === 'grok-build' || provider.id === 'openai-codex' || provider.id === 'opencode' || provider.id === 'pi-agent' ? (
             <>
               <button
                 type="button"
@@ -889,7 +939,9 @@ function ProviderDetail({
                     ? onProbeGrok()
                     : provider.id === 'openai-codex'
                       ? onProbeCodex()
-                      : onProbeOpenCode()
+                      : provider.id === 'opencode'
+                        ? onProbeOpenCode()
+                        : onProbePi()
                 )}
               >
                 {probeState === 'checking' ? (
@@ -1037,6 +1089,26 @@ function ProviderDetail({
           ) : null}
           {openCodeProbeState === 'ready' && probeResultAvailable ? <CheckCircle2 size={15} /> : null}
           <span>{openCodeStatusMessage}</span>
+        </div>
+      ) : null}
+
+      {provider.id === 'pi-agent' ? (
+        <div className="agent-provider-live-status" aria-live="polite">
+          {piProbeState === 'checking' ? <LoaderCircle size={15} className="spin" /> : null}
+          {piProbeState === 'error' || (piProbeState === 'ready' && !probeResultAvailable) ? (
+            <AlertCircle size={15} />
+          ) : null}
+          {piProbeState === 'ready' && probeResultAvailable ? <CheckCircle2 size={15} /> : null}
+          <span>{piStatusMessage}</span>
+        </div>
+      ) : null}
+
+      {provider.id === 'pi-agent' && piProbe?.probe ? (
+        <div className="agent-provider-live-status">
+          <span>
+            当前模型：{piProbe.probe.currentModel ?? '由 Pi 配置'} · 思考级别：{piProbe.probe.thinkingLevel}
+            {' · '}可选级别：{piProbe.probe.thinkingLevels.join('、') || '未返回'}
+          </span>
         </div>
       ) : null}
 

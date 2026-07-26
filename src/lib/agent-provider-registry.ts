@@ -15,12 +15,14 @@ import type {
   GrokAcpProbeResult,
   GrokAcpProbeSummary,
   OpenCodeAcpProbeResult,
+  PiRpcProbeResult,
 } from '../types.js';
 import {
   CLAUDE_CODE_PROVIDER_ID,
   GROK_BUILD_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
+  PI_AGENT_PROVIDER_ID,
 } from '../constants.js';
 
 const CAPABILITY_SUPPORT = new Set<AgentCapabilitySupport>([
@@ -187,6 +189,17 @@ export async function probeOpenCodeAgent(signal?: AbortSignal): Promise<OpenCode
   return normalizeOpenCodeAcpProbe(await response.json());
 }
 
+export async function probePiAgent(signal?: AbortSignal): Promise<PiRpcProbeResult> {
+  const response = await fetch('/api/agents/pi/probe', {
+    method: 'POST',
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error('检测 Pi Agent 失败');
+  }
+  return normalizePiRpcProbe(await response.json());
+}
+
 export function normalizeAgentProviderRegistry(value: unknown): AgentProviderRegistry {
   const registry = requireRecord(value, 'registry');
   if (!Array.isArray(registry.providers)) {
@@ -219,6 +232,7 @@ export function resolveChatRuntimeKind(providerId: string) {
     providerId === GROK_BUILD_PROVIDER_ID
     || providerId === OPENAI_CODEX_PROVIDER_ID
     || providerId === OPENCODE_PROVIDER_ID
+    || providerId === PI_AGENT_PROVIDER_ID
   ) {
     return 'generic' as const;
   }
@@ -310,6 +324,47 @@ export function normalizeOpenCodeAcpProbe(value: unknown): OpenCodeAcpProbeResul
     initialized,
     command: optionalString(result.command),
     version: optionalString(result.version),
+    error: optionalString(result.error),
+    probe,
+  };
+}
+
+export function normalizePiRpcProbe(value: unknown): PiRpcProbeResult {
+  const result = requireRecord(value, 'piProbe');
+  const installed = requireBoolean(result.installed, 'piProbe.installed');
+  const initialized = requireBoolean(result.initialized, 'piProbe.initialized');
+
+  if (!installed && initialized) {
+    throw new Error('Pi Agent 未安装时不能处于已初始化状态');
+  }
+
+  let probe: PiRpcProbeResult['probe'] = null;
+  if (initialized) {
+    const summary = requireRecord(result.probe, 'piProbe.probe');
+    const thinkingLevels = requireArray(
+      summary.thinkingLevels,
+      'piProbe.probe.thinkingLevels',
+    ).map((level, index) => requireString(level, `piProbe.probe.thinkingLevels[${index}]`));
+    const uniqueThinkingLevels = new Set(thinkingLevels);
+    if (uniqueThinkingLevels.size !== thinkingLevels.length) {
+      throw new Error('piProbe.probe.thinkingLevels 存在重复值');
+    }
+    probe = {
+      authenticated: requireBoolean(summary.authenticated, 'piProbe.probe.authenticated'),
+      sessionId: requireString(summary.sessionId, 'piProbe.probe.sessionId'),
+      currentModel: optionalString(summary.currentModel),
+      thinkingLevel: requireString(summary.thinkingLevel, 'piProbe.probe.thinkingLevel'),
+      thinkingLevels,
+      modelCount: requireNonNegativeInteger(summary.modelCount, 'piProbe.probe.modelCount'),
+      isStreaming: requireBoolean(summary.isStreaming, 'piProbe.probe.isStreaming'),
+    };
+  }
+
+  return {
+    installed,
+    initialized,
+    command: optionalString(result.command),
+    nodeVersion: optionalString(result.nodeVersion),
     error: optionalString(result.error),
     probe,
   };

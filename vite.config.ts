@@ -9,6 +9,9 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     port: webPort,
+    watch: {
+      ignored: ['**/src-tauri/target/**'],
+    },
     proxy: {
       '/api': {
         target: `http://127.0.0.1:${backendPort}`,

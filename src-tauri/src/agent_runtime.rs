@@ -6,6 +6,7 @@ pub const CLAUDE_CODE_PROVIDER_ID: &str = "claude-code";
 pub const GROK_BUILD_PROVIDER_ID: &str = "grok-build";
 pub const OPENAI_CODEX_PROVIDER_ID: &str = "openai-codex";
 pub const OPENCODE_PROVIDER_ID: &str = "opencode";
+pub const PI_AGENT_PROVIDER_ID: &str = "pi-agent";
 pub const CODEM_AGENT_PROVIDER_ID: &str = "codem-agent";
 pub const DEFAULT_AGENT_PERMISSION_MODE: &str = "default";
 pub const DEFAULT_GROK_PERMISSION_MODE: &str = DEFAULT_AGENT_PERMISSION_MODE;
@@ -279,6 +280,7 @@ pub fn agent_provider_registry(
     grok_available: bool,
     codex_available: bool,
     opencode_available: bool,
+    pi_available: bool,
 ) -> AgentProviderRegistry {
     let grok_provider = AgentProviderDescriptor {
         id: GROK_BUILD_PROVIDER_ID,
@@ -307,6 +309,15 @@ pub fn agent_provider_registry(
         selectable: opencode_available,
         capabilities: opencode_capabilities(),
     };
+    let pi_provider = AgentProviderDescriptor {
+        id: PI_AGENT_PROVIDER_ID,
+        display_name: "Pi",
+        driver_id: "pi-rpc",
+        lifecycle: AgentProviderLifecycle::Active,
+        available: Some(pi_available),
+        selectable: pi_available,
+        capabilities: pi_capabilities(),
+    };
 
     AgentProviderRegistry {
         providers: vec![
@@ -322,6 +333,7 @@ pub fn agent_provider_registry(
             grok_provider,
             codex_provider,
             opencode_provider,
+            pi_provider,
             planned_provider(CODEM_AGENT_PROVIDER_ID, "CodeM Agent", "acp"),
         ],
     }
@@ -459,6 +471,35 @@ fn opencode_capabilities() -> AgentCapabilities {
     }
 }
 
+fn pi_capabilities() -> AgentCapabilities {
+    use AgentCapabilitySupport::{Supported, Unsupported};
+
+    AgentCapabilities {
+        sessions: AgentSessionCapabilities {
+            create: Supported,
+            resume: Supported,
+            list: Supported,
+            import: Unsupported,
+        },
+        input: AgentInputCapabilities {
+            text: Supported,
+            images: Supported,
+            file_references: Supported,
+        },
+        tools: AgentToolCapabilities {
+            streaming: Supported,
+            approval: Supported,
+            user_input: Supported,
+            mcp: Unsupported,
+        },
+        runtime: AgentRuntimeCapabilities {
+            cancel: AgentCancelSupport::Soft,
+            reconnect: Supported,
+            concurrent_sessions: Supported,
+        },
+    }
+}
+
 fn runtime_detected_capabilities() -> AgentCapabilities {
     use AgentCapabilitySupport::RuntimeDetected;
 
@@ -494,14 +535,14 @@ mod tests {
         agent_provider_registry, normalize_grok_permission_mode, AgentApprovalOption,
         AgentApprovalRequest, AgentCancelSupport, AgentCapabilitySupport, AgentProviderLifecycle,
         AgentRunEvent, CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENCODE_PROVIDER_ID,
+        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     };
     use serde_json::json;
     use std::collections::HashSet;
 
     #[test]
     fn agent_runtime_registry_keeps_provider_ids_unique() {
-        let registry = agent_provider_registry(true, false, false, false);
+        let registry = agent_provider_registry(true, false, false, false, false);
         let ids = registry
             .providers
             .iter()
@@ -525,14 +566,14 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_keeps_supported_agents_active() {
-        let registry = agent_provider_registry(true, false, false, false);
+        let registry = agent_provider_registry(true, false, false, false, false);
         let active = registry
             .providers
             .iter()
             .filter(|provider| provider.lifecycle == AgentProviderLifecycle::Active)
             .collect::<Vec<_>>();
 
-        assert_eq!(active.len(), 4);
+        assert_eq!(active.len(), 5);
         let claude = active
             .iter()
             .find(|provider| provider.id == CLAUDE_CODE_PROVIDER_ID)
@@ -547,7 +588,7 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_never_selects_planned_providers() {
-        let registry = agent_provider_registry(false, false, false, false);
+        let registry = agent_provider_registry(false, false, false, false, false);
 
         for provider in registry
             .providers
@@ -573,7 +614,7 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_selects_grok_when_cli_is_available() {
-        let unavailable = agent_provider_registry(true, false, false, false);
+        let unavailable = agent_provider_registry(true, false, false, false, false);
         let grok = unavailable
             .providers
             .iter()
@@ -583,7 +624,7 @@ mod tests {
         assert_eq!(grok.available, Some(false));
         assert!(!grok.selectable);
 
-        let available = agent_provider_registry(true, true, false, false);
+        let available = agent_provider_registry(true, true, false, false, false);
         let grok = available
             .providers
             .iter()
@@ -607,7 +648,7 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_selects_codex_when_cli_is_available() {
-        let unavailable = agent_provider_registry(true, true, false, false);
+        let unavailable = agent_provider_registry(true, true, false, false, false);
         let codex = unavailable
             .providers
             .iter()
@@ -617,7 +658,7 @@ mod tests {
         assert_eq!(codex.available, Some(false));
         assert!(!codex.selectable);
 
-        let available = agent_provider_registry(true, false, true, false);
+        let available = agent_provider_registry(true, false, true, false, false);
         let codex = available
             .providers
             .iter()
@@ -642,7 +683,7 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_selects_opencode_when_cli_is_available() {
-        let unavailable = agent_provider_registry(true, true, true, false);
+        let unavailable = agent_provider_registry(true, true, true, false, false);
         let opencode = unavailable
             .providers
             .iter()
@@ -652,7 +693,7 @@ mod tests {
         assert_eq!(opencode.available, Some(false));
         assert!(!opencode.selectable);
 
-        let available = agent_provider_registry(true, false, false, true);
+        let available = agent_provider_registry(true, false, false, true, false);
         let opencode = available
             .providers
             .iter()
@@ -672,6 +713,26 @@ mod tests {
             opencode.capabilities.runtime.cancel,
             AgentCancelSupport::Soft
         );
+    }
+
+    #[test]
+    fn agent_runtime_registry_selects_pi_when_cli_is_available() {
+        let registry = agent_provider_registry(false, false, false, false, true);
+        let pi = registry
+            .providers
+            .iter()
+            .find(|provider| provider.id == PI_AGENT_PROVIDER_ID)
+            .expect("Pi provider");
+
+        assert_eq!(pi.driver_id, "pi-rpc");
+        assert_eq!(pi.lifecycle, AgentProviderLifecycle::Active);
+        assert_eq!(pi.available, Some(true));
+        assert!(pi.selectable);
+        assert_eq!(
+            pi.capabilities.tools.mcp,
+            AgentCapabilitySupport::Unsupported
+        );
+        assert_eq!(pi.capabilities.runtime.cancel, AgentCancelSupport::Soft);
     }
 
     #[test]

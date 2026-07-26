@@ -100,6 +100,7 @@ const providerLabels: Record<AgentProviderId, string> = {
   'openai-codex': 'OpenAI Codex',
   'grok-build': 'Grok Build',
   opencode: 'OpenCode',
+  'pi-agent': 'Pi',
 };
 
 const protocolLabels: Record<AiChatProtocol, string> = {
