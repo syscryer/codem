@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     path::Path,
     process::Stdio,
@@ -210,6 +210,14 @@ pub struct PiStdioClient {
     stdout_task: JoinHandle<()>,
     stderr_task: JoinHandle<()>,
     next_request_id: AtomicU64,
+    pending_extension_ui: HashMap<String, PiExtensionUiMethod>,
+    seen_extension_ui_ids: HashSet<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PiExtensionUiMethod {
+    Confirm,
+    Input,
 }
 
 impl PiStdioClient {
@@ -314,6 +322,8 @@ impl PiStdioClient {
             stdout_task,
             stderr_task,
             next_request_id: AtomicU64::new(1),
+            pending_extension_ui: HashMap::new(),
+            seen_extension_ui_ids: HashSet::new(),
         })
     }
 
@@ -424,14 +434,22 @@ impl PiStdioClient {
         Ok(())
     }
 
-    pub async fn extension_ui_response(&self, response: Value) -> Result<(), PiRpcError> {
-        if response.get("type").and_then(Value::as_str) != Some("extension_ui_response")
-            || response.get("id").and_then(Value::as_str).is_none()
-        {
+    pub async fn extension_ui_response(&mut self, response: Value) -> Result<(), PiRpcError> {
+        let request_id = extension_ui_request_id(&response)?;
+        if response.get("type").and_then(Value::as_str) != Some("extension_ui_response") {
             return Err(PiRpcError::protocol(
-                "Pi Extension UI response 缺少类型或请求 ID",
+                "Pi Extension UI response 类型必须是 extension_ui_response",
             ));
         }
+        let method = self
+            .pending_extension_ui
+            .get(request_id)
+            .copied()
+            .ok_or_else(|| {
+                PiRpcError::protocol(format!("Pi Extension UI 请求不存在或已响应: {request_id}"))
+            })?;
+        validate_extension_ui_response(method, &response)?;
+        self.pending_extension_ui.remove(request_id);
         self.write_value(&response).await
     }
 
@@ -462,7 +480,27 @@ impl PiStdioClient {
             .recv()
             .await
             .ok_or_else(|| PiRpcError::protocol("Pi RPC 事件流已关闭"))?;
-        Ok(parse_runtime_event(value))
+        let event = parse_runtime_event(value);
+        if let PiRuntimeEvent::ExtensionUiRequest(request) = &event {
+            let request_id = extension_ui_request_id(request)?;
+            let method = match request.get("method").and_then(Value::as_str) {
+                Some("confirm") => PiExtensionUiMethod::Confirm,
+                Some("input") => PiExtensionUiMethod::Input,
+                _ => {
+                    return Err(PiRpcError::protocol(
+                        "Pi Extension UI request method 仅支持 confirm 或 input",
+                    ))
+                }
+            };
+            if !self.seen_extension_ui_ids.insert(request_id.to_string()) {
+                return Err(PiRpcError::protocol(format!(
+                    "Pi Extension UI 请求 ID 重复: {request_id}"
+                )));
+            }
+            self.pending_extension_ui
+                .insert(request_id.to_string(), method);
+        }
+        Ok(event)
     }
 
     pub fn is_running(&mut self) -> bool {
@@ -483,6 +521,58 @@ impl PiStdioClient {
         let _ = self.child.wait().await;
         self.stdout_task.abort();
         self.stderr_task.abort();
+    }
+}
+
+fn extension_ui_request_id(value: &Value) -> Result<&str, PiRpcError> {
+    let request_id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| PiRpcError::protocol("Pi Extension UI 缺少请求 ID"))?;
+    if request_id.is_empty() || request_id.trim() != request_id || request_id.len() > 512 {
+        return Err(PiRpcError::protocol(
+            "Pi Extension UI 请求 ID 必须是最多 512 字节的规范非空字符串",
+        ));
+    }
+    Ok(request_id)
+}
+
+fn validate_extension_ui_response(
+    method: PiExtensionUiMethod,
+    response: &Value,
+) -> Result<(), PiRpcError> {
+    let object = response
+        .as_object()
+        .ok_or_else(|| PiRpcError::protocol("Pi Extension UI response 必须是 JSON object"))?;
+    let cancelled = object.get("cancelled").and_then(Value::as_bool);
+    let valid = if cancelled == Some(true) {
+        object.len() == 3 && !object.contains_key("confirmed") && !object.contains_key("value")
+    } else {
+        match method {
+            PiExtensionUiMethod::Confirm => {
+                object.len() == 3
+                    && object.get("confirmed").and_then(Value::as_bool).is_some()
+                    && !object.contains_key("value")
+                    && !object.contains_key("cancelled")
+            }
+            PiExtensionUiMethod::Input => {
+                object.len() == 3
+                    && object.get("value").and_then(Value::as_str).is_some()
+                    && !object.contains_key("confirmed")
+                    && !object.contains_key("cancelled")
+            }
+        }
+    };
+    if valid {
+        Ok(())
+    } else {
+        let method = match method {
+            PiExtensionUiMethod::Confirm => "confirm",
+            PiExtensionUiMethod::Input => "input",
+        };
+        Err(PiRpcError::protocol(format!(
+            "Pi Extension UI {method} response 格式无效"
+        )))
     }
 }
 
@@ -595,7 +685,7 @@ mod tests {
         MAX_PI_RPC_LINE_BYTES,
     };
     use serde_json::json;
-    use std::{collections::BTreeMap, fs};
+    use std::{collections::BTreeMap, fs, time::Duration};
     use tokio::io::{duplex, AsyncWriteExt};
 
     #[tokio::test]
@@ -844,14 +934,6 @@ for await (const line of lines) {
             })
             .await
             .unwrap();
-        client
-            .extension_ui_response(json!({
-                "type": "extension_ui_response",
-                "id": "ui-1",
-                "confirmed": true,
-            }))
-            .await
-            .unwrap();
         assert_eq!(
             client.get_session_stats().await.unwrap()["totalMessages"],
             2
@@ -859,5 +941,150 @@ for await (const line of lines) {
         client.abort().await.unwrap();
         client.shutdown().await;
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn extension_ui_responses_validate_kind_and_write_each_request_once() {
+        let root =
+            std::env::temp_dir().join(format!("codem-pi-extension-ui-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("fake-pi.mjs");
+        let log = root.join("responses.jsonl");
+        fs::write(
+            &script,
+            r#"
+import fs from 'node:fs';
+import readline from 'node:readline';
+const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+for await (const line of lines) {
+  const command = JSON.parse(line);
+  if (command.type === 'prompt') {
+    process.stdout.write(JSON.stringify({ id: command.id, type: 'response', command: 'prompt', success: true }) + '\n');
+    process.stdout.write(JSON.stringify({
+      type: 'extension_ui_request', id: 'confirm-1', method: 'confirm',
+      title: 'Run command', message: 'npm test'
+    }) + '\n');
+  } else if (command.type === 'extension_ui_response') {
+    fs.appendFileSync(process.env.FAKE_PI_RESPONSE_LOG, JSON.stringify(command) + '\n');
+    if (command.id === 'confirm-1') {
+      process.stdout.write(JSON.stringify({
+        type: 'extension_ui_request', id: 'input-1', method: 'input',
+        title: 'Enter value', placeholder: 'value'
+      }) + '\n');
+    }
+  }
+}
+"#,
+        )
+        .unwrap();
+        let environment = BTreeMap::from([(
+            "FAKE_PI_RESPONSE_LOG".to_string(),
+            log.to_string_lossy().to_string(),
+        )]);
+        let mut client = PiStdioClient::spawn_with_options(
+            "node",
+            &root,
+            &environment,
+            &[script.to_string_lossy().to_string()],
+        )
+        .await
+        .unwrap();
+
+        client
+            .prompt(PiPromptInput {
+                message: "start".to_string(),
+                images: Vec::new(),
+                streaming_behavior: None,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.next_event().await.unwrap(),
+            PiRuntimeEvent::ExtensionUiRequest(ref request)
+                if request["id"] == "confirm-1" && request["method"] == "confirm"
+        ));
+        assert!(client
+            .extension_ui_response(json!({
+                "type": "extension_ui_response",
+                "id": "confirm-1",
+                "value": "wrong-kind",
+            }))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("confirm"));
+        client
+            .extension_ui_response(json!({
+                "type": "extension_ui_response",
+                "id": "confirm-1",
+                "confirmed": false,
+            }))
+            .await
+            .unwrap();
+        assert!(client
+            .extension_ui_response(json!({
+                "type": "extension_ui_response",
+                "id": "confirm-1",
+                "confirmed": true,
+            }))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("confirm-1"));
+
+        assert!(matches!(
+            client.next_event().await.unwrap(),
+            PiRuntimeEvent::ExtensionUiRequest(ref request)
+                if request["id"] == "input-1" && request["method"] == "input"
+        ));
+        client
+            .extension_ui_response(json!({
+                "type": "extension_ui_response",
+                "id": "input-1",
+                "cancelled": true,
+            }))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let responses = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            responses,
+            vec![
+                json!({
+                    "type": "extension_ui_response",
+                    "id": "confirm-1",
+                    "confirmed": false,
+                }),
+                json!({
+                    "type": "extension_ui_response",
+                    "id": "input-1",
+                    "cancelled": true,
+                }),
+            ]
+        );
+
+        client.shutdown().await;
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn extension_ui_request_ids_are_canonical_and_bounded() {
+        assert_eq!(
+            super::extension_ui_request_id(&json!({"id": "confirm-1"})).unwrap(),
+            "confirm-1"
+        );
+        for invalid in [
+            json!({"id": ""}),
+            json!({"id": " confirm-1"}),
+            json!({"id": "confirm-1 "}),
+            json!({"id": "x".repeat(513)}),
+        ] {
+            assert!(super::extension_ui_request_id(&invalid).is_err());
+        }
     }
 }

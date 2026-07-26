@@ -1329,6 +1329,7 @@ impl LiveAgentRuntime {
                 }
                 let mut text = String::new();
                 let mut stop_reason = "end_turn".to_string();
+                let mut pending_extension_ui = None;
                 loop {
                     tokio::select! {
                         event = client.next_event() => {
@@ -1356,6 +1357,14 @@ impl LiveAgentRuntime {
                                 }));
                             }
                             let mapped = mapper.map_event(event);
+                            if let Some(interaction) = mapped.extension_ui {
+                                if pending_extension_ui.replace(interaction).is_some() {
+                                    return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                        message: "Pi 同时发出了多个 Extension UI 请求".to_string(),
+                                        fatal: true,
+                                    }));
+                                }
+                            }
                             for event in mapped.events {
                                 state.push_event(&run_id, event);
                             }
@@ -1373,7 +1382,31 @@ impl LiveAgentRuntime {
                                 }));
                             }
                         }
+                        command = control.recv(), if !control.is_closed() => {
+                            let Some(command) = command else {
+                                continue;
+                            };
+                            if let Err(error) = handle_pi_extension_ui_control(
+                                client,
+                                &mut pending_extension_ui,
+                                command,
+                            ).await {
+                                return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                    message: public_pi_error(error),
+                                    fatal: true,
+                                }));
+                            }
+                        }
                         _ = wait_for_cancel(&mut cancel) => {
+                            if let Err(error) = cancel_pi_extension_ui_request(
+                                client,
+                                &mut pending_extension_ui,
+                            ).await {
+                                return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                    message: public_pi_error(error),
+                                    fatal: true,
+                                }));
+                            }
                             if let Err(error) = client.abort().await {
                                 return RuntimeExecution::Completed(Err(RuntimeTurnError {
                                     message: public_pi_error(error),
@@ -1486,7 +1519,8 @@ async fn start_live_agent_runtime(
                 "CODEM_PI_PERMISSION_MODE".to_string(),
                 config.permission_mode.to_string(),
             );
-            let arguments = pi_rpc_arguments(requested_session_id);
+            let bridge = write_pi_bridge_extension(&environment)?;
+            let arguments = pi_rpc_arguments(requested_session_id, &bridge);
             let client = PiStdioClient::spawn_with_options(
                 &config.command,
                 &config.working_directory,
@@ -1533,8 +1567,33 @@ async fn start_live_agent_runtime(
     }
 }
 
-fn pi_rpc_arguments(requested_session_id: Option<&str>) -> Vec<String> {
-    let mut arguments = vec!["--mode".to_string(), "rpc".to_string()];
+fn write_pi_bridge_extension(environment: &BTreeMap<String, String>) -> Result<PathBuf, String> {
+    const CODEM_PI_BRIDGE: &str = include_str!("../resources/pi/codem-bridge.js");
+    let runtime_dir = environment
+        .get("PI_CODING_AGENT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            env::temp_dir()
+                .join("codem")
+                .join("pi-runtime")
+                .join(std::process::id().to_string())
+        });
+    let extensions_dir = runtime_dir.join("extensions");
+    fs::create_dir_all(&extensions_dir)
+        .map_err(|error| format!("创建 Pi Extension 目录失败: {error}"))?;
+    let bridge = extensions_dir.join("codem-bridge.js");
+    fs::write(&bridge, CODEM_PI_BRIDGE)
+        .map_err(|error| format!("写入 CodeM Pi bridge 失败: {error}"))?;
+    Ok(bridge)
+}
+
+fn pi_rpc_arguments(requested_session_id: Option<&str>, bridge: &Path) -> Vec<String> {
+    let mut arguments = vec![
+        "--mode".to_string(),
+        "rpc".to_string(),
+        "-e".to_string(),
+        bridge.to_string_lossy().to_string(),
+    ];
     if let Some(session_id) = requested_session_id {
         arguments.push("--session".to_string());
         arguments.push(session_id.to_string());
@@ -2666,6 +2725,19 @@ async fn wait_for_cancel(cancel: &mut watch::Receiver<bool>) {
 struct PiMappedEvent {
     events: Vec<AgentRunEvent>,
     settled: bool,
+    extension_ui: Option<PiExtensionUiInteraction>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PiExtensionUiMethod {
+    Confirm,
+    Input,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PiExtensionUiInteraction {
+    request_id: String,
+    method: PiExtensionUiMethod,
 }
 
 struct PiEventMapper {
@@ -2685,6 +2757,7 @@ impl PiEventMapper {
 
     fn map_event(&mut self, event: PiRuntimeEvent) -> PiMappedEvent {
         let mut events = Vec::new();
+        let mut extension_ui = None;
         let settled = match event {
             PiRuntimeEvent::TextDelta(text) => {
                 events.push(AgentRunEvent::Delta {
@@ -2736,6 +2809,7 @@ impl PiEventMapper {
                         return PiMappedEvent {
                             events,
                             settled: false,
+                            extension_ui,
                         };
                     }
                     tool.stopped = true;
@@ -2779,11 +2853,233 @@ impl PiEventMapper {
                 });
                 false
             }
+            PiRuntimeEvent::ExtensionUiRequest(request) => {
+                if let Some((event, interaction)) =
+                    map_pi_extension_ui_request(&self.run_id, &request)
+                {
+                    events.push(event);
+                    extension_ui = Some(interaction);
+                }
+                false
+            }
             PiRuntimeEvent::AgentSettled => true,
             _ => false,
         };
-        PiMappedEvent { events, settled }
+        PiMappedEvent {
+            events,
+            settled,
+            extension_ui,
+        }
     }
+}
+
+fn map_pi_extension_ui_request(
+    run_id: &str,
+    request: &Value,
+) -> Option<(AgentRunEvent, PiExtensionUiInteraction)> {
+    let request_id = request.get("id")?.as_str()?.trim();
+    if request_id.is_empty() {
+        return None;
+    }
+    let title = request
+        .get("title")
+        .and_then(Value::as_str)
+        .map(bounded_pi_ui_text);
+    match request.get("method").and_then(Value::as_str)? {
+        "confirm" => {
+            let interaction = PiExtensionUiInteraction {
+                request_id: request_id.to_string(),
+                method: PiExtensionUiMethod::Confirm,
+            };
+            Some((
+                AgentRunEvent::ApprovalRequest {
+                    run_id: run_id.to_string(),
+                    request: AgentApprovalRequest {
+                        request_id: request_id.to_string(),
+                        kind: "permission".to_string(),
+                        title: title.unwrap_or_else(|| "Pi 权限确认".to_string()),
+                        description: request
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .map(bounded_pi_ui_text),
+                        danger: "medium".to_string(),
+                        options: vec![
+                            AgentApprovalOption {
+                                id: "approve".to_string(),
+                                label: "允许".to_string(),
+                                kind: "allow_once".to_string(),
+                            },
+                            AgentApprovalOption {
+                                id: "reject".to_string(),
+                                label: "拒绝".to_string(),
+                                kind: "reject_once".to_string(),
+                            },
+                        ],
+                    },
+                },
+                interaction,
+            ))
+        }
+        "input" => {
+            let placeholder = request
+                .get("placeholder")
+                .and_then(Value::as_str)
+                .map(bounded_pi_ui_text)
+                .unwrap_or_else(|| "请输入内容".to_string());
+            let interaction = PiExtensionUiInteraction {
+                request_id: request_id.to_string(),
+                method: PiExtensionUiMethod::Input,
+            };
+            Some((
+                AgentRunEvent::RequestUserInput {
+                    run_id: run_id.to_string(),
+                    request: AgentUserInputRequest {
+                        request_id: request_id.to_string(),
+                        title,
+                        description: placeholder.clone(),
+                        questions: vec![AgentUserInputQuestion {
+                            id: "value".to_string(),
+                            header: None,
+                            question: placeholder,
+                            input_type: "text".to_string(),
+                            options: Vec::<AgentUserInputOption>::new(),
+                            multi_select: false,
+                            required: true,
+                            secret: false,
+                        }],
+                    },
+                },
+                interaction,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn bounded_pi_ui_text(value: &str) -> String {
+    const MAX_PI_UI_TEXT_CHARS: usize = 2_048;
+    value.chars().take(MAX_PI_UI_TEXT_CHARS).collect()
+}
+
+async fn handle_pi_extension_ui_control(
+    client: &mut PiStdioClient,
+    pending: &mut Option<PiExtensionUiInteraction>,
+    command: AgentControlCommand,
+) -> Result<(), PiRpcError> {
+    let Some(interaction) = pending.as_ref() else {
+        match command {
+            AgentControlCommand::Permission {
+                acknowledgement, ..
+            }
+            | AgentControlCommand::UserInput {
+                acknowledgement, ..
+            } => {
+                let _ = acknowledgement.send(Err("Pi Extension UI 请求不存在或已结束".to_string()));
+            }
+        }
+        return Ok(());
+    };
+    match command {
+        AgentControlCommand::Permission {
+            request_id,
+            decision,
+            option_id,
+            acknowledgement,
+        } => {
+            if request_id != interaction.request_id {
+                let _ = acknowledgement.send(Err("权限请求 ID 与当前 Pi 请求不匹配".to_string()));
+                return Ok(());
+            }
+            if interaction.method != PiExtensionUiMethod::Confirm {
+                let _ = acknowledgement.send(Err("当前 Pi 请求正在等待用户输入".to_string()));
+                return Ok(());
+            }
+            let expected_option = match decision {
+                AgentPermissionDecision::Approve => "approve",
+                AgentPermissionDecision::Reject => "reject",
+            };
+            if option_id
+                .as_deref()
+                .is_some_and(|option| option != expected_option)
+            {
+                let _ = acknowledgement.send(Err("Pi 权限选项与当前决定不匹配".to_string()));
+                return Ok(());
+            }
+            let response = json!({
+                "type": "extension_ui_response",
+                "id": interaction.request_id,
+                "confirmed": decision == AgentPermissionDecision::Approve,
+            });
+            match client.extension_ui_response(response).await {
+                Ok(()) => {
+                    *pending = None;
+                    let _ = acknowledgement.send(Ok(()));
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = acknowledgement.send(Err(error.to_string()));
+                    Err(error)
+                }
+            }
+        }
+        AgentControlCommand::UserInput {
+            request_id,
+            mut answers,
+            acknowledgement,
+        } => {
+            if request_id != interaction.request_id {
+                let _ = acknowledgement.send(Err("提问请求 ID 与当前 Pi 请求不匹配".to_string()));
+                return Ok(());
+            }
+            if interaction.method != PiExtensionUiMethod::Input {
+                let _ = acknowledgement.send(Err("当前 Pi 请求正在等待权限决定".to_string()));
+                return Ok(());
+            }
+            let Some(value) = answers
+                .remove("value")
+                .and_then(|value| value.as_str().map(str::to_string))
+            else {
+                let _ = acknowledgement.send(Err("Pi 输入请求缺少字符串回答 value".to_string()));
+                return Ok(());
+            };
+            if !answers.is_empty() {
+                let _ = acknowledgement.send(Err("Pi 输入回答包含未知字段".to_string()));
+                return Ok(());
+            }
+            let response = json!({
+                "type": "extension_ui_response",
+                "id": interaction.request_id,
+                "value": value,
+            });
+            match client.extension_ui_response(response).await {
+                Ok(()) => {
+                    *pending = None;
+                    let _ = acknowledgement.send(Ok(()));
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = acknowledgement.send(Err(error.to_string()));
+                    Err(error)
+                }
+            }
+        }
+    }
+}
+
+async fn cancel_pi_extension_ui_request(
+    client: &mut PiStdioClient,
+    pending: &mut Option<PiExtensionUiInteraction>,
+) -> Result<(), PiRpcError> {
+    let Some(interaction) = pending.take() else {
+        return Ok(());
+    };
+    client
+        .extension_ui_response(json!({
+            "type": "extension_ui_response",
+            "id": interaction.request_id,
+            "cancelled": true,
+        }))
+        .await
 }
 
 fn pi_tool_result_text(result: &Value) -> String {
@@ -4235,8 +4531,9 @@ mod tests {
         store_cached_agent_model_catalog, AcpEventMapper, AgentDriverInput, AgentDriverKind,
         AgentInputContentBlock, AgentModelCatalog, AgentModelSummary, AgentRunRecord,
         AgentRunService, AgentRunState, AgentRuntimeCommand, AgentRuntimeConfig, AgentRuntimePhase,
-        AgentRuntimeRecord, AgentRuntimeRun, CodexEventMapper, CommandResolvers, PiEventMapper,
-        StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL, MODEL_CATALOG_CACHE_TTL,
+        AgentRuntimeRecord, AgentRuntimeRun, CodexEventMapper, CommandResolvers, LiveAgentRuntime,
+        PiEventMapper, RuntimeExecution, StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL,
+        MODEL_CATALOG_CACHE_TTL,
     };
     use crate::{
         acp::{
@@ -4244,20 +4541,23 @@ mod tests {
             AcpToolCallUpdate,
         },
         agent_channels::AgentChannelService,
-        agent_runtime::{AgentRunEvent, PI_AGENT_PROVIDER_ID},
+        agent_runtime::{
+            AgentControlCommand, AgentPermissionDecision, AgentRunEvent, PI_AGENT_PROVIDER_ID,
+        },
         codex_app_server::{CodexAppServerError, CodexRuntimeEvent},
-        pi_rpc::{PiModel, PiRuntimeEvent, PiState},
+        pi_rpc::{PiModel, PiPromptInput, PiRuntimeEvent, PiState, PiStdioClient},
     };
     use chrono::Utc;
     use serde_json::{json, Value};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::{
         collections::{BTreeMap, HashMap},
+        fs,
         path::{Path, PathBuf},
         sync::{Arc, Mutex},
-        time::Instant,
+        time::{Duration, Instant},
     };
-    use tokio::sync::{mpsc, watch, Notify};
+    use tokio::sync::{mpsc, oneshot, watch, Notify};
 
     static COMMAND_RESOLVER_CALLS: AtomicUsize = AtomicUsize::new(0);
     static COMMAND_RESOLVER_AVAILABLE: AtomicBool = AtomicBool::new(true);
@@ -4309,6 +4609,28 @@ mod tests {
             },
             agent_channels: test_agent_channel_service(),
         }
+    }
+
+    async fn wait_for_run_event<F>(
+        state: &AgentRunState,
+        run_id: &str,
+        predicate: F,
+    ) -> AgentRunEvent
+    where
+        F: Fn(&AgentRunEvent) -> bool,
+    {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some((events, _)) = state.snapshot_after(run_id, 0) {
+                    if let Some(event) = events.into_iter().find(&predicate) {
+                        return event;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for Agent run event")
     }
 
     #[test]
@@ -4714,6 +5036,323 @@ mod tests {
         assert!(settled.events.is_empty());
     }
 
+    #[tokio::test]
+    async fn pi_extension_confirm_input_and_cancel_round_trip_on_hot_runtime() {
+        let root = std::env::temp_dir().join(format!(
+            "codem-pi-run-extension-ui-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("fake-pi.mjs");
+        let log = root.join("responses.jsonl");
+        fs::write(
+            &script,
+            r#"
+import fs from 'node:fs';
+import readline from 'node:readline';
+const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const emit = (value) => process.stdout.write(JSON.stringify(value) + '\n');
+for await (const line of lines) {
+  const command = JSON.parse(line);
+  const response = (data = undefined) => {
+    const value = { id: command.id, type: 'response', command: command.type, success: true };
+    if (data !== undefined) value.data = data;
+    emit(value);
+  };
+  if (command.type === 'prompt') {
+    response();
+    emit({ type: 'extension_ui_request', id: 'confirm-approve', method: 'confirm', title: 'Run command', message: 'npm test' });
+  } else if (command.type === 'extension_ui_response') {
+    fs.appendFileSync(process.env.FAKE_PI_RESPONSE_LOG, JSON.stringify(command) + '\n');
+    if (command.id === 'confirm-approve') {
+      emit({ type: 'extension_ui_request', id: 'confirm-reject', method: 'confirm', title: 'Edit file', message: 'src/main.rs' });
+    } else if (command.id === 'confirm-reject') {
+      emit({ type: 'extension_ui_request', id: 'input-answer', method: 'input', title: 'Enter value', placeholder: 'value' });
+    } else if (command.id === 'input-answer') {
+      emit({ type: 'extension_ui_request', id: 'input-cancel', method: 'input', title: 'Optional value', placeholder: 'value' });
+    }
+  } else if (command.type === 'abort') {
+    response();
+    emit({ type: 'agent_settled' });
+  } else if (command.type === 'get_session_stats') {
+    response({});
+  }
+}
+"#,
+        )
+        .unwrap();
+        let environment = BTreeMap::from([(
+            "FAKE_PI_RESPONSE_LOG".to_string(),
+            log.to_string_lossy().to_string(),
+        )]);
+        let client = PiStdioClient::spawn_with_options(
+            "node",
+            &root,
+            &environment,
+            &[script.to_string_lossy().to_string()],
+        )
+        .await
+        .unwrap();
+        let mut runtime = LiveAgentRuntime::Pi {
+            client,
+            session_id: "pi-session-1".to_string(),
+        };
+        let state = test_run_state();
+        let run_id = "run-pi-extension".to_string();
+        let (cancel_sender, cancel) = watch::channel(false);
+        let (control_sender, control) = mpsc::unbounded_channel();
+        state
+            .insert(
+                run_id.clone(),
+                AgentRunRecord {
+                    thread_id: Some("thread-pi-extension".to_string()),
+                    events: Vec::new(),
+                    finished: false,
+                    terminal_emitted: false,
+                    notify: Arc::new(Notify::new()),
+                    cancel: cancel_sender.clone(),
+                    control: control_sender.clone(),
+                },
+            )
+            .unwrap();
+        let mut config = test_runtime_config();
+        config.provider_id = PI_AGENT_PROVIDER_ID.to_string();
+        config.driver = AgentDriverKind::PiRpc;
+        config.command = "node".to_string();
+        let (_shutdown_sender, mut shutdown) = watch::channel(false);
+        let turn_state = state.clone();
+        let turn_run_id = run_id.clone();
+        let turn = tokio::spawn(async move {
+            let outcome = runtime
+                .run_turn(
+                    &turn_state,
+                    &config,
+                    AgentRuntimeRun {
+                        run_id: turn_run_id,
+                        input: AgentDriverInput::Pi(PiPromptInput {
+                            message: "start".to_string(),
+                            images: Vec::new(),
+                            streaming_behavior: None,
+                        }),
+                        cancel,
+                        control,
+                    },
+                    &mut shutdown,
+                )
+                .await;
+            runtime.shutdown().await;
+            outcome
+        });
+
+        let approval = wait_for_run_event(&state, &run_id, |event| {
+            matches!(event, AgentRunEvent::ApprovalRequest { request, .. }
+                if request.request_id == "confirm-approve")
+        })
+        .await;
+        assert!(
+            matches!(approval, AgentRunEvent::ApprovalRequest { request, .. }
+            if request.title == "Run command" && request.description.as_deref() == Some("npm test"))
+        );
+        let (acknowledgement, ack) = oneshot::channel();
+        control_sender
+            .send(AgentControlCommand::Permission {
+                request_id: "wrong-confirm-id".to_string(),
+                decision: AgentPermissionDecision::Approve,
+                option_id: None,
+                acknowledgement,
+            })
+            .unwrap();
+        assert!(ack.await.unwrap().unwrap_err().contains("ID"));
+        let (acknowledgement, ack) = oneshot::channel();
+        control_sender
+            .send(AgentControlCommand::UserInput {
+                request_id: "confirm-approve".to_string(),
+                answers: serde_json::Map::from_iter([(
+                    "value".to_string(),
+                    Value::String("wrong-control-type".to_string()),
+                )]),
+                acknowledgement,
+            })
+            .unwrap();
+        assert!(ack.await.unwrap().unwrap_err().contains("权限"));
+        let (acknowledgement, ack) = oneshot::channel();
+        control_sender
+            .send(AgentControlCommand::Permission {
+                request_id: "confirm-approve".to_string(),
+                decision: AgentPermissionDecision::Approve,
+                option_id: None,
+                acknowledgement,
+            })
+            .unwrap();
+        assert_eq!(ack.await.unwrap(), Ok(()));
+
+        wait_for_run_event(&state, &run_id, |event| {
+            matches!(event, AgentRunEvent::ApprovalRequest { request, .. }
+                if request.request_id == "confirm-reject")
+        })
+        .await;
+        let (acknowledgement, ack) = oneshot::channel();
+        control_sender
+            .send(AgentControlCommand::Permission {
+                request_id: "confirm-reject".to_string(),
+                decision: AgentPermissionDecision::Reject,
+                option_id: None,
+                acknowledgement,
+            })
+            .unwrap();
+        assert_eq!(ack.await.unwrap(), Ok(()));
+
+        let input = wait_for_run_event(&state, &run_id, |event| {
+            matches!(event, AgentRunEvent::RequestUserInput { request, .. }
+                if request.request_id == "input-answer")
+        })
+        .await;
+        assert!(
+            matches!(input, AgentRunEvent::RequestUserInput { request, .. }
+            if request.questions.len() == 1 && request.questions[0].id == "value")
+        );
+        let (acknowledgement, ack) = oneshot::channel();
+        control_sender
+            .send(AgentControlCommand::UserInput {
+                request_id: "input-answer".to_string(),
+                answers: serde_json::Map::from_iter([(
+                    "value".to_string(),
+                    Value::String("Alice".to_string()),
+                )]),
+                acknowledgement,
+            })
+            .unwrap();
+        assert_eq!(ack.await.unwrap(), Ok(()));
+
+        wait_for_run_event(&state, &run_id, |event| {
+            matches!(event, AgentRunEvent::RequestUserInput { request, .. }
+                if request.request_id == "input-cancel")
+        })
+        .await;
+        cancel_sender.send(true).unwrap();
+        assert!(matches!(
+            turn.await.unwrap(),
+            RuntimeExecution::Completed(Ok(outcome)) if outcome.stop_reason == "cancelled"
+        ));
+
+        let responses = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            responses,
+            vec![
+                json!({"type": "extension_ui_response", "id": "confirm-approve", "confirmed": true}),
+                json!({"type": "extension_ui_response", "id": "confirm-reject", "confirmed": false}),
+                json!({"type": "extension_ui_response", "id": "input-answer", "value": "Alice"}),
+                json!({"type": "extension_ui_response", "id": "input-cancel", "cancelled": true}),
+            ]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pi_extension_bridge_gates_side_effecting_tools_without_leaking_payloads() {
+        let bridge = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("pi")
+            .join("codem-bridge.js");
+        let source = fs::read_to_string(&bridge).expect("read CodeM Pi bridge asset");
+        assert!(source.contains("pi.on(\"tool_call\""));
+        assert!(source.contains("ctx.ui.confirm"));
+
+        let root =
+            std::env::temp_dir().join(format!("codem-pi-bridge-js-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let harness = root.join("bridge-harness.mjs");
+        fs::write(
+            &harness,
+            r#"
+import { pathToFileURL } from 'node:url';
+const bridge = (await import(pathToFileURL(process.argv[2]).href)).default;
+let handler;
+bridge({ on(event, callback) { if (event === 'tool_call') handler = callback; } });
+if (!handler) throw new Error('tool_call handler was not registered');
+const prompts = [];
+const ctx = { ui: { confirm: async (title, message) => { prompts.push({ title, message }); return false; } } };
+process.env.CODEM_PI_PERMISSION_MODE = 'default';
+const longPath = `src/${'p'.repeat(300)}.txt`;
+const writeResult = await handler({ toolName: 'write', input: { path: longPath, content: 'FILE-CONTENT-SECRET' } }, ctx);
+const bashResult = await handler({ toolName: 'bash', input: { command: 'TOKEN=ENV-VALUE-SECRET\\ PART npm test -- --watch' } }, ctx);
+process.env.CODEM_PI_PERMISSION_MODE = 'auto';
+const autoResult = await handler({ toolName: 'edit', input: { path: 'src/main.rs', oldText: 'OLD-CONTENT-SECRET', newText: 'NEW-CONTENT-SECRET' } }, ctx);
+process.env.CODEM_PI_PERMISSION_MODE = 'bypassPermissions';
+const bypassResult = await handler({ toolName: 'bash', input: { command: 'echo BYPASS-SECRET' } }, ctx);
+process.stdout.write(JSON.stringify({ prompts, writeResult, bashResult, autoResult, bypassResult, longPath }));
+"#,
+        )
+        .unwrap();
+        let output = std::process::Command::new("node")
+            .arg(&harness)
+            .arg(&bridge)
+            .output()
+            .expect("run Pi bridge harness");
+        assert!(
+            output.status.success(),
+            "bridge harness failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["prompts"].as_array().unwrap().len(), 2);
+        assert_eq!(result["writeResult"]["block"], true);
+        assert_eq!(result["bashResult"]["block"], true);
+        assert!(result.get("autoResult").is_none());
+        assert!(result.get("bypassResult").is_none());
+        let prompts = result["prompts"].as_array().unwrap();
+        assert!(prompts[0]["message"].as_str().unwrap().chars().count() <= 246);
+        assert!(prompts[1]["message"].as_str().unwrap().chars().count() <= 89);
+        assert_ne!(prompts[0]["message"].as_str(), result["longPath"].as_str());
+        let confirmation_copy = result["prompts"].to_string();
+        for secret in [
+            "FILE-CONTENT-SECRET",
+            "ENV-VALUE-SECRET",
+            "OLD-CONTENT-SECRET",
+            "NEW-CONTENT-SECRET",
+            "BYPASS-SECRET",
+        ] {
+            assert!(!confirmation_copy.contains(secret));
+        }
+        assert!(confirmation_copy.contains("npm"));
+        assert!(!confirmation_copy.contains("PART"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pi_extension_bridge_is_written_to_isolated_runtime_and_loaded_with_e() {
+        let root =
+            std::env::temp_dir().join(format!("codem-pi-bridge-runtime-{}", uuid::Uuid::new_v4()));
+        let environment = BTreeMap::from([(
+            "PI_CODING_AGENT_DIR".to_string(),
+            root.to_string_lossy().to_string(),
+        )]);
+
+        let bridge = super::write_pi_bridge_extension(&environment).unwrap();
+
+        assert_eq!(bridge, root.join("extensions").join("codem-bridge.js"));
+        assert_eq!(
+            fs::read_to_string(&bridge).unwrap(),
+            include_str!("../resources/pi/codem-bridge.js")
+        );
+        assert_eq!(
+            pi_rpc_arguments(Some("session-pi-1"), &bridge),
+            vec![
+                "--mode",
+                "rpc",
+                "-e",
+                bridge.to_string_lossy().as_ref(),
+                "--session",
+                "session-pi-1",
+            ]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn pi_input_and_runtime_events_preserve_multimodal_and_tool_semantics() {
         let blocks = normalize_agent_input(
@@ -4793,8 +5432,15 @@ mod tests {
     #[test]
     fn pi_rpc_startup_restores_session_and_requires_provider_qualified_model() {
         assert_eq!(
-            pi_rpc_arguments(Some("session-pi-1")),
-            vec!["--mode", "rpc", "--session", "session-pi-1"]
+            pi_rpc_arguments(Some("session-pi-1"), Path::new("bridge.js")),
+            vec![
+                "--mode",
+                "rpc",
+                "-e",
+                "bridge.js",
+                "--session",
+                "session-pi-1"
+            ]
         );
         assert_eq!(
             pi_model_parts("anthropic/claude-sonnet-4"),
