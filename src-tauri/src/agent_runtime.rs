@@ -201,6 +201,37 @@ pub struct AgentUsageSnapshot {
     pub total_cost_usd: Option<f64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentCompactionSource {
+    Manual,
+    Automatic,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentCompactionStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentCompactCapabilityState {
+    Supported,
+    Unsupported,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCompactCapabilitySummary {
+    pub state: AgentCompactCapabilityState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(
     tag = "type",
@@ -263,6 +294,21 @@ pub enum AgentRunEvent {
         tool_use_id: String,
         content: String,
         is_error: bool,
+    },
+    ContextCompaction {
+        run_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        operation_id: Option<String>,
+        source: AgentCompactionSource,
+        status: AgentCompactionStatus,
+        provider_thread_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provider_turn_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provider_item_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        at_ms: i64,
     },
     Done {
         run_id: String,
@@ -537,12 +583,43 @@ fn runtime_detected_capabilities() -> AgentCapabilities {
 mod tests {
     use super::{
         agent_provider_registry, normalize_grok_permission_mode, AgentApprovalOption,
-        AgentApprovalRequest, AgentCancelSupport, AgentCapabilitySupport, AgentProviderLifecycle,
-        AgentRunEvent, CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+        AgentApprovalRequest, AgentCancelSupport, AgentCapabilitySupport, AgentCompactionSource,
+        AgentCompactionStatus, AgentProviderLifecycle, AgentRunEvent, CLAUDE_CODE_PROVIDER_ID,
+        GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID,
+        PI_AGENT_PROVIDER_ID,
     };
     use serde_json::json;
     use std::collections::HashSet;
+
+    #[test]
+    fn context_compaction_event_uses_stable_camel_case_contract() {
+        let event = AgentRunEvent::ContextCompaction {
+            run_id: "run-1".to_string(),
+            operation_id: Some("compact-1".to_string()),
+            source: AgentCompactionSource::Manual,
+            status: AgentCompactionStatus::Running,
+            provider_thread_id: "provider-thread-1".to_string(),
+            provider_turn_id: Some("provider-turn-1".to_string()),
+            provider_item_id: Some("provider-item-1".to_string()),
+            error: None,
+            at_ms: 1_754_000_000_000,
+        };
+
+        assert_eq!(
+            serde_json::to_value(event).expect("serialize"),
+            json!({
+                "type": "context-compaction",
+                "runId": "run-1",
+                "operationId": "compact-1",
+                "source": "manual",
+                "status": "running",
+                "providerThreadId": "provider-thread-1",
+                "providerTurnId": "provider-turn-1",
+                "providerItemId": "provider-item-1",
+                "atMs": 1754000000000_i64
+            })
+        );
+    }
 
     #[test]
     fn agent_runtime_registry_keeps_provider_ids_unique() {

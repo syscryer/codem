@@ -369,6 +369,43 @@ export type AgentApprovalOption = {
 
 export type ApprovalDecision = 'approve' | 'reject';
 
+export type CodexCompactCapabilityState =
+  | 'unknown'
+  | 'checking'
+  | 'supported'
+  | 'unsupported'
+  | 'error';
+
+export type CompactSource = 'manual' | 'automatic';
+export type CompactOperationStatus =
+  | 'waiting'
+  | 'preparing'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'interrupted';
+export type CompactResolution = 'skipped';
+
+export type CompactOperationMetadata = {
+  operationId: string;
+  source: CompactSource;
+  status: CompactOperationStatus;
+  attempt: number;
+  resolution?: CompactResolution;
+  providerThreadId: string;
+  providerTurnId?: string;
+  providerItemId?: string;
+  requestedAtMs: number;
+  startedAtMs?: number;
+  completedAtMs?: number;
+  error?: string;
+};
+
+export type CodexCompactCapability = {
+  state: CodexCompactCapabilityState;
+  message?: string;
+};
+
 export type AgentRunEvent =
   | { type: 'status'; runId: string; message: string }
   | { type: 'session'; runId: string; sessionId: string }
@@ -386,6 +423,18 @@ export type AgentRunEvent =
   | { type: 'tool-input-delta'; runId: string; blockIndex: number; toolUseId?: string; parentToolUseId?: string; isSidechain?: boolean; text: string }
   | { type: 'tool-stop'; runId: string; blockIndex: number; toolUseId?: string; parentToolUseId?: string; isSidechain?: boolean }
   | { type: 'tool-result'; runId: string; toolUseId?: string; parentToolUseId?: string; isSidechain?: boolean; content: string; isError?: boolean }
+  | {
+      type: 'context-compaction';
+      runId: string;
+      operationId?: string;
+      source: CompactSource;
+      status: Extract<CompactOperationStatus, 'running' | 'completed' | 'failed'>;
+      providerThreadId: string;
+      providerTurnId?: string;
+      providerItemId?: string;
+      error?: string;
+      atMs: number;
+    }
   | { type: 'subagent-delta'; runId: string; parentToolUseId?: string; text: string }
   | { type: 'assistant-snapshot'; runId: string; blocks: AgentContentBlock[] }
   | { type: 'raw'; runId: string; raw: unknown }
@@ -522,11 +571,12 @@ export type SystemCommandItem = {
   command: string;
   title: string;
   cardType: SlashCardType;
-  state: 'running' | 'done' | 'error';
+  state: 'waiting' | 'running' | 'done' | 'error';
   summary?: string;
   // 引导随附的图片：只存路径 / 元数据（不含 base64），供卡片显示缩略图。
   attachments?: UserImageAttachment[];
   details?: Record<string, unknown>;
+  compact?: CompactOperationMetadata;
   errorMessage?: string;
 };
 
@@ -538,6 +588,7 @@ export type AssistantItem =
 
 export type ConversationTurn = {
   id: string;
+  kind?: 'message' | 'system';
   backendRunId?: string;
   userText: string;
   userAttachments?: UserImageAttachment[];
