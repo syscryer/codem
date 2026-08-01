@@ -6,14 +6,15 @@ use crate::{
     agent_channels::AgentChannelService,
     agent_runtime::{
         normalize_agent_permission_mode, AgentApprovalOption, AgentApprovalRequest,
-        AgentCompactionSource, AgentCompactionStatus, AgentControlCommand, AgentPermissionDecision,
-        AgentRunEvent, AgentUsageSnapshot, AgentUserInputOption, AgentUserInputQuestion,
-        AgentUserInputRequest, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+        AgentCompactCapabilityState, AgentCompactCapabilitySummary, AgentCompactionSource,
+        AgentCompactionStatus, AgentControlCommand, AgentPermissionDecision, AgentRunEvent,
+        AgentUsageSnapshot, AgentUserInputOption, AgentUserInputQuestion, AgentUserInputRequest,
+        GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID,
+        PI_AGENT_PROVIDER_ID,
     },
     codex_app_server::{
-        CodexAppServerError, CodexCompactionEvent, CodexRuntimeEvent, CodexStdioClient,
-        CodexUserInput,
+        CodexAppServerError, CodexCompactCapability, CodexCompactionEvent, CodexRuntimeEvent,
+        CodexStdioClient, CodexUserInput,
     },
     pi_rpc::{PiImage, PiModel, PiPromptInput, PiRpcError, PiRuntimeEvent, PiState, PiStdioClient},
 };
@@ -33,12 +34,13 @@ use serde_json::{json, Map, Value};
 use std::{
     collections::{BTreeMap, HashMap},
     env, fs,
+    future::Future,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, oneshot, watch, Notify};
+use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex, Notify};
 
 const RUN_RETENTION: Duration = Duration::from_secs(10 * 60);
 const CONTROL_ACK_TIMEOUT: Duration = Duration::from_secs(20);
@@ -86,6 +88,7 @@ struct AgentRunState {
     runtimes: Arc<Mutex<HashMap<String, AgentRuntimeRecord>>>,
     model_catalog_cache: Arc<Mutex<HashMap<String, CachedAgentModelCatalog>>>,
     command_cache: Arc<Mutex<HashMap<String, CachedAgentCommand>>>,
+    compact_capability_cache: Arc<AsyncMutex<HashMap<String, AgentCompactCapabilitySummary>>>,
     command_resolvers: CommandResolvers,
     agent_channels: AgentChannelService,
 }
@@ -163,6 +166,45 @@ struct AgentRuntimeConfig {
     environment: BTreeMap<String, String>,
     codex_config_args: Vec<String>,
     bridge_version: Option<String>,
+}
+
+fn compact_capability_cache_key(config: &AgentRuntimeConfig) -> String {
+    json!([
+        config.command,
+        config.channel_fingerprint,
+        config.codex_config_args,
+    ])
+    .to_string()
+}
+
+async fn probe_compact_capability_cached<F, Fut>(
+    cache: &AsyncMutex<HashMap<String, AgentCompactCapabilitySummary>>,
+    config: &AgentRuntimeConfig,
+    refresh: bool,
+    probe: F,
+) -> AgentCompactCapabilitySummary
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<AgentCompactCapabilitySummary, CodexAppServerError>>,
+{
+    let key = compact_capability_cache_key(config);
+    let mut cache = cache.lock().await;
+    if !refresh {
+        if let Some(summary) = cache.get(&key) {
+            return summary.clone();
+        }
+    }
+
+    let summary = probe()
+        .await
+        .unwrap_or_else(|error| AgentCompactCapabilitySummary {
+            state: AgentCompactCapabilityState::Error,
+            message: Some(public_codex_error(error)),
+        });
+    if summary.state != AgentCompactCapabilityState::Error {
+        cache.insert(key, summary.clone());
+    }
+    summary
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -267,6 +309,7 @@ enum LiveAgentRuntime {
     Codex {
         client: CodexStdioClient,
         session_id: String,
+        compact_capability: AgentCompactCapabilitySummary,
     },
     Pi {
         client: PiStdioClient,
@@ -387,6 +430,20 @@ struct StartAgentCompactRequest {
     model: Option<String>,
     reasoning_effort: Option<String>,
     channel_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CodexCompactCapabilityRequest {
+    thread_id: String,
+    session_id: String,
+    working_directory: String,
+    permission_mode: Option<String>,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+    channel_id: Option<String>,
+    #[serde(default)]
+    refresh: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -515,6 +572,7 @@ impl AgentRunService {
                 runtimes: Arc::new(Mutex::new(HashMap::new())),
                 model_catalog_cache: Arc::new(Mutex::new(HashMap::new())),
                 command_cache: Arc::new(Mutex::new(HashMap::new())),
+                compact_capability_cache: Arc::new(AsyncMutex::new(HashMap::new())),
                 command_resolvers: CommandResolvers {
                     grok: grok_command_resolver,
                     codex: codex_command_resolver,
@@ -547,6 +605,10 @@ pub(crate) fn router(service: AgentRunService) -> Router {
     let state = service.state;
     Router::new()
         .route("/api/agents/{provider_id}/models", get(agent_models))
+        .route(
+            "/api/agents/codex/compact-capability",
+            post(codex_compact_capability),
+        )
         .route("/api/agents/runtimes", get(agent_runtime_statuses))
         .route(
             "/api/agents/runtime/{thread_id}",
@@ -570,6 +632,55 @@ pub(crate) fn router(service: AgentRunService) -> Router {
         .route("/api/agents/run/{run_id}", delete(cancel_agent_run))
         .layer(DefaultBodyLimit::max(MAX_AGENT_REQUEST_BYTES))
         .with_state(state)
+}
+
+async fn codex_compact_capability(
+    State(state): State<AgentRunState>,
+    Json(payload): Json<CodexCompactCapabilityRequest>,
+) -> AgentApiResult<Json<AgentCompactCapabilitySummary>> {
+    let thread_id = required_id(&payload.thread_id, "threadId")?;
+    let session_id = required_id(&payload.session_id, "sessionId")?;
+    if payload.refresh {
+        resolve_agent_command(&state, OPENAI_CODEX_PROVIDER_ID, true).ok_or_else(|| {
+            AgentApiError::bad_request(
+                "未找到可由 CodeM 启动的 Codex CLI，请安装独立 CLI 或设置 CODEX_CLI_PATH",
+            )
+        })?;
+    }
+    let request = StartAgentCompactRequest {
+        operation_id: "capability-probe".to_string(),
+        provider_id: OPENAI_CODEX_PROVIDER_ID.to_string(),
+        session_id,
+        working_directory: payload.working_directory,
+        permission_mode: payload.permission_mode,
+        model: payload.model,
+        reasoning_effort: payload.reasoning_effort,
+        channel_id: payload.channel_id,
+    };
+    let config = resolve_compact_runtime_config(&state, &thread_id, &request)?;
+    let summary = probe_compact_capability_cached(
+        &state.compact_capability_cache,
+        &config,
+        payload.refresh,
+        || async {
+            let mut client = CodexStdioClient::spawn_with_options(
+                &config.command,
+                &config.working_directory,
+                &config.codex_config_args,
+                &config.environment,
+            )
+            .await?;
+            let result = async {
+                client.initialize(env!("CARGO_PKG_VERSION")).await?;
+                client.probe_compact_capability().await
+            }
+            .await;
+            client.shutdown().await;
+            Ok(summarize_codex_compact_capability(result))
+        },
+    )
+    .await;
+    Ok(Json(summary))
 }
 
 async fn agent_models(
@@ -1539,7 +1650,12 @@ impl LiveAgentRuntime {
                     None => RuntimeExecution::Closed,
                 }
             }
-            (Self::Codex { client, session_id }, AgentDriverInput::Codex(input)) => {
+            (
+                Self::Codex {
+                    client, session_id, ..
+                },
+                AgentDriverInput::Codex(input),
+            ) => {
                 let mut mapper = CodexEventMapper::new(run_id.clone());
                 let event_state = state.clone();
                 let result = tokio::select! {
@@ -1740,13 +1856,42 @@ impl LiveAgentRuntime {
             run_id,
             operation_id,
         } = compact;
-        let Self::Codex { client, session_id } = self else {
+        let Self::Codex {
+            client,
+            session_id,
+            compact_capability,
+        } = self
+        else {
             return RuntimeExecution::Completed(Err(RuntimeTurnError {
                 message: "当前 Agent runtime 不支持原生上下文压缩".to_string(),
                 fatal: true,
             }));
         };
         let provider_thread_id = session_id.clone();
+        if compact_capability.state != AgentCompactCapabilityState::Supported {
+            let message = compact_capability
+                .message
+                .clone()
+                .unwrap_or_else(|| "无法确认 Codex 上下文压缩能力".to_string());
+            state.push_event(
+                &run_id,
+                AgentRunEvent::ContextCompaction {
+                    run_id: run_id.clone(),
+                    operation_id: Some(operation_id),
+                    source: AgentCompactionSource::Manual,
+                    status: AgentCompactionStatus::Failed,
+                    provider_thread_id,
+                    provider_turn_id: None,
+                    provider_item_id: None,
+                    error: Some(message.clone()),
+                    at_ms: Utc::now().timestamp_millis(),
+                },
+            );
+            return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                message,
+                fatal: false,
+            }));
+        }
         let event_state = state.clone();
         let event_run_id = run_id.clone();
         let event_operation_id = operation_id.clone();
@@ -1879,12 +2024,18 @@ async fn start_live_agent_runtime(
                 .initialize(env!("CARGO_PKG_VERSION"))
                 .await
                 .map_err(public_codex_error)?;
+            let compact_capability =
+                summarize_codex_compact_capability(client.probe_compact_capability().await);
             let session_id = client
                 .start_or_resume_thread(requested_session_id, &config.working_directory)
                 .await
                 .map_err(public_codex_error)?;
             Ok((
-                LiveAgentRuntime::Codex { client, session_id },
+                LiveAgentRuntime::Codex {
+                    client,
+                    session_id,
+                    compact_capability,
+                },
                 requested_session_id.is_some(),
             ))
         }
@@ -4416,6 +4567,25 @@ fn public_codex_error(error: CodexAppServerError) -> String {
     }
 }
 
+fn summarize_codex_compact_capability(
+    result: Result<CodexCompactCapability, CodexAppServerError>,
+) -> AgentCompactCapabilitySummary {
+    match result {
+        Ok(CodexCompactCapability::Supported) => AgentCompactCapabilitySummary {
+            state: AgentCompactCapabilityState::Supported,
+            message: None,
+        },
+        Ok(CodexCompactCapability::Unsupported) => AgentCompactCapabilitySummary {
+            state: AgentCompactCapabilityState::Unsupported,
+            message: Some("当前 Codex CLI 不支持原生会话压缩，请升级 Codex CLI。".to_string()),
+        },
+        Err(error) => AgentCompactCapabilitySummary {
+            state: AgentCompactCapabilityState::Error,
+            message: Some(public_codex_error(error)),
+        },
+    }
+}
+
 fn truncate_public_error_detail(message: &str) -> String {
     const MAX_DETAIL_CHARS: usize = 2_000;
     let detail = message.trim();
@@ -5158,21 +5328,23 @@ fn should_set_acp_model(
 mod tests {
     use super::{
         acp_arguments, acp_permission_policy, await_guide_ack, build_acp_prompt, build_codex_input,
-        build_pi_prompt, cancelled_before_prompt_outcome, find_grok_runtime_error_detail,
-        grok_acp_arguments, grok_acp_error_with_runtime_detail, grok_uses_channel_credentials,
-        guide_ack_response, normalize_agent_input, normalize_guide_prompt, parse_opencode_models,
-        pi_model_catalog, pi_model_parts, pi_rpc_arguments, pi_usage_snapshot, public_acp_error,
+        build_pi_prompt, cancelled_before_prompt_outcome, compact_capability_cache_key,
+        find_grok_runtime_error_detail, grok_acp_arguments, grok_acp_error_with_runtime_detail,
+        grok_uses_channel_credentials, guide_ack_response, normalize_agent_input,
+        normalize_guide_prompt, parse_opencode_models, pi_model_catalog, pi_model_parts,
+        pi_rpc_arguments, pi_usage_snapshot, probe_compact_capability_cached, public_acp_error,
         public_codex_error, push_compact_failure_event, read_cached_agent_command,
         read_cached_agent_model_catalog, runtime_can_reuse, sanitize_grok_runtime_error_detail,
         should_retry_grok_channel_prompt, should_set_acp_model, store_cached_agent_command,
-        store_cached_agent_model_catalog, validate_compact_runtime_session, AcpEventMapper,
-        AgentDriverInput, AgentDriverKind, AgentInputContentBlock, AgentModelCatalog,
-        AgentModelSummary, AgentRunRecord, AgentRunService, AgentRunState, AgentRuntimeCommand,
-        AgentRuntimeCompact, AgentRuntimeConfig, AgentRuntimePhase, AgentRuntimeRecord,
-        AgentRuntimeRun, CodexEventMapper, CommandResolvers, GuideAckOutcome, GuideAgentRunRequest,
-        LiveAgentRuntime, PiEventMapper, RuntimeExecution, StartAgentCompactRequest,
-        StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL, AUTOMATION_EXECUTION_CONTEXT,
-        MODEL_CATALOG_CACHE_TTL,
+        store_cached_agent_model_catalog, summarize_codex_compact_capability,
+        validate_compact_runtime_session, AcpEventMapper, AgentDriverInput, AgentDriverKind,
+        AgentInputContentBlock, AgentModelCatalog, AgentModelSummary, AgentRunRecord,
+        AgentRunService, AgentRunState, AgentRuntimeCommand, AgentRuntimeCompact,
+        AgentRuntimeConfig, AgentRuntimePhase, AgentRuntimeRecord, AgentRuntimeRun,
+        CodexCompactCapabilityRequest, CodexEventMapper, CommandResolvers, GuideAckOutcome,
+        GuideAgentRunRequest, LiveAgentRuntime, PiEventMapper, RuntimeExecution,
+        StartAgentCompactRequest, StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL,
+        AUTOMATION_EXECUTION_CONTEXT, MODEL_CATALOG_CACHE_TTL,
     };
     use crate::{
         acp::{
@@ -5181,8 +5353,9 @@ mod tests {
         },
         agent_channels::AgentChannelService,
         agent_runtime::{
-            AgentCompactionStatus, AgentControlCommand, AgentPermissionDecision, AgentRunEvent,
-            OPENAI_CODEX_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+            AgentCompactCapabilityState, AgentCompactCapabilitySummary, AgentCompactionStatus,
+            AgentControlCommand, AgentPermissionDecision, AgentRunEvent, OPENAI_CODEX_PROVIDER_ID,
+            PI_AGENT_PROVIDER_ID,
         },
         codex_app_server::{CodexAppServerError, CodexRuntimeEvent, CodexUserInput},
         pi_rpc::{PiModel, PiPromptInput, PiRuntimeEvent, PiState, PiStdioClient},
@@ -5198,10 +5371,123 @@ mod tests {
         sync::{Arc, Mutex},
         time::{Duration, Instant},
     };
-    use tokio::sync::{mpsc, oneshot, watch, Notify};
+    use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex, Notify};
 
     static COMMAND_RESOLVER_CALLS: AtomicUsize = AtomicUsize::new(0);
     static COMMAND_RESOLVER_AVAILABLE: AtomicBool = AtomicBool::new(true);
+
+    #[test]
+    fn compact_capability_cache_key_changes_with_channel_runtime() {
+        let mut first = test_codex_runtime_config();
+        first.channel_fingerprint = Some("channel-a".to_string());
+        let mut second = first.clone();
+        second.channel_fingerprint = Some("channel-b".to_string());
+
+        assert_ne!(
+            compact_capability_cache_key(&first),
+            compact_capability_cache_key(&second)
+        );
+        second.channel_fingerprint = first.channel_fingerprint.clone();
+        second
+            .codex_config_args
+            .push("model_reasoning_effort=high".to_string());
+        assert_ne!(
+            compact_capability_cache_key(&first),
+            compact_capability_cache_key(&second)
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_capability_cache_reuses_success_and_refreshes_on_request() {
+        let cache = AsyncMutex::new(HashMap::new());
+        let calls = AtomicUsize::new(0);
+        let config = test_codex_runtime_config();
+
+        let first = probe_compact_capability_cached(&cache, &config, false, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(AgentCompactCapabilitySummary {
+                state: AgentCompactCapabilityState::Supported,
+                message: None,
+            })
+        })
+        .await;
+        let second = probe_compact_capability_cached(&cache, &config, false, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(AgentCompactCapabilitySummary {
+                state: AgentCompactCapabilityState::Unsupported,
+                message: None,
+            })
+        })
+        .await;
+        let refreshed = probe_compact_capability_cached(&cache, &config, true, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(AgentCompactCapabilitySummary {
+                state: AgentCompactCapabilityState::Unsupported,
+                message: None,
+            })
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(first.state, AgentCompactCapabilityState::Supported);
+        assert_eq!(second.state, AgentCompactCapabilityState::Supported);
+        assert_eq!(refreshed.state, AgentCompactCapabilityState::Unsupported);
+    }
+
+    #[tokio::test]
+    async fn compact_capability_errors_are_sanitized_and_not_cached() {
+        let cache = AsyncMutex::new(HashMap::new());
+        let calls = AtomicUsize::new(0);
+        let config = test_codex_runtime_config();
+        let long_secret = format!("api_key=secret {}", "x".repeat(5000));
+
+        let failed = probe_compact_capability_cached(&cache, &config, false, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(CodexAppServerError::Execution(long_secret.clone()))
+        })
+        .await;
+        let recovered = probe_compact_capability_cached(&cache, &config, false, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(AgentCompactCapabilitySummary {
+                state: AgentCompactCapabilityState::Supported,
+                message: None,
+            })
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(failed.state, AgentCompactCapabilityState::Error);
+        assert!(!failed
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("secret"));
+        assert!(failed.message.as_deref().unwrap_or_default().len() <= 2200);
+        assert_eq!(recovered.state, AgentCompactCapabilityState::Supported);
+    }
+
+    #[test]
+    fn compact_capability_runtime_summary_preserves_safe_disable_reason() {
+        let unsupported = summarize_codex_compact_capability(Ok(
+            crate::codex_app_server::CodexCompactCapability::Unsupported,
+        ));
+        let error = summarize_codex_compact_capability(Err(CodexAppServerError::Execution(
+            "api_key=secret probe failed".to_string(),
+        )));
+
+        assert_eq!(unsupported.state, AgentCompactCapabilityState::Unsupported);
+        assert!(unsupported
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("升级"));
+        assert_eq!(error.state, AgentCompactCapabilityState::Error);
+        assert!(!error
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("secret"));
+    }
 
     fn counting_codex_command_resolver() -> Option<String> {
         COMMAND_RESOLVER_CALLS.fetch_add(1, Ordering::SeqCst);
@@ -5273,6 +5559,7 @@ mod tests {
             runtimes: Arc::new(Mutex::new(HashMap::new())),
             model_catalog_cache: Arc::new(Mutex::new(HashMap::new())),
             command_cache: Arc::new(Mutex::new(HashMap::new())),
+            compact_capability_cache: Arc::new(AsyncMutex::new(HashMap::new())),
             command_resolvers: CommandResolvers {
                 grok: || None,
                 codex: || None,
@@ -5796,6 +6083,34 @@ mod tests {
             "unexpected": true
         }))
         .is_err());
+    }
+
+    #[test]
+    fn compact_capability_request_uses_strict_runtime_identity_contract() {
+        let request = serde_json::from_value::<CodexCompactCapabilityRequest>(json!({
+            "threadId": "thread-1",
+            "sessionId": "provider-thread-1",
+            "workingDirectory": "D:/workspace",
+            "permissionMode": "default",
+            "model": "gpt-codex-default",
+            "reasoningEffort": "high",
+            "channelId": "channel-1",
+            "refresh": true
+        }))
+        .expect("valid compact capability request");
+
+        assert_eq!(request.thread_id, "thread-1");
+        assert_eq!(request.session_id, "provider-thread-1");
+        assert!(request.refresh);
+        assert!(
+            serde_json::from_value::<CodexCompactCapabilityRequest>(json!({
+                "threadId": "thread-1",
+                "sessionId": "provider-thread-1",
+                "workingDirectory": "D:/workspace",
+                "unexpected": true
+            }))
+            .is_err()
+        );
     }
 
     #[test]

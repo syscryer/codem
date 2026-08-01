@@ -31,7 +31,29 @@ export type CompactAvailability = {
   reason: string;
 };
 
+export type CompactCapabilityRuntime = {
+  threadId: string;
+  sessionId: string;
+  workingDirectory: string;
+  channelId?: string;
+  model?: string;
+  reasoningEffort?: string;
+  permissionMode?: string;
+};
+
 const MAX_COMPACT_ERROR_CHARS = 2_000;
+
+export function compactCapabilityKey(runtime: CompactCapabilityRuntime): string {
+  return JSON.stringify([
+    runtime.threadId,
+    runtime.sessionId,
+    runtime.workingDirectory,
+    runtime.channelId ?? '',
+    runtime.model ?? '',
+    runtime.reasoningEffort ?? '',
+    runtime.permissionMode ?? '',
+  ]);
+}
 
 export function createManualCompactTurn(input: CreateManualCompactTurnInput): ConversationTurn {
   return createCompactTurn(
@@ -94,17 +116,23 @@ export function findPendingCompactTurn(turns: ConversationTurn[]): ConversationT
 export function applyCompactEvent(
   turns: ConversationTurn[],
   event: ContextCompactionEvent,
+  workspace = '',
 ): ConversationTurn[] {
   let targetIndex = event.operationId
     ? turns.findIndex((turn) => readCompactMetadata(turn)?.operationId === event.operationId)
-    : findActiveManualCompactIndex(turns, event.providerThreadId);
+    : event.source === 'manual'
+      ? findActiveManualCompactIndex(turns, event.providerThreadId)
+      : -1;
 
   if (targetIndex === -1 && event.operationId && event.source !== 'automatic') {
     return turns;
   }
 
   if (targetIndex === -1) {
-    const automaticTurn = createAutomaticCompactTurn(event, turns.at(-1)?.workspace ?? '');
+    const automaticTurn = createAutomaticCompactTurn(
+      event,
+      turns.at(-1)?.workspace ?? workspace,
+    );
     const operationId = readCompactMetadata(automaticTurn)?.operationId;
     targetIndex = turns.findIndex(
       (turn) => readCompactMetadata(turn)?.operationId === operationId,
@@ -146,6 +174,17 @@ export function retryCompactTurn(turn: ConversationTurn, nowMs: number): Convers
     providerTurnId: undefined,
     providerItemId: undefined,
     error: undefined,
+  });
+}
+
+export function prepareCompactTurn(turn: ConversationTurn): ConversationTurn {
+  const metadata = readCompactMetadata(turn);
+  if (!metadata || metadata.source !== 'manual' || metadata.status !== 'waiting') {
+    return turn;
+  }
+  return replaceCompactMetadata(turn, {
+    ...metadata,
+    status: 'preparing',
   });
 }
 

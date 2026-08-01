@@ -5,6 +5,8 @@
 - Task: .trellis/tasks/codex-native-compact.md
 
 ## Notes
+
+- 2026-08-01T19:40:29.668Z 完成 Task 6：新增 Codex compact capability 进程内缓存与 API，热 runtime 自校验能力；useAgentRun 接入按 runtime key 的能力状态、统一 manual compact NDJSON coordinator、automatic 事件卡片、terminal done 队列释放与失败屏障。
 - 2026-08-01T19:18:11.380Z 完成 Task 5：getQueuedPromptContinuationState 新增 compact barrier 优先级；useAgentRun 按 thread 维护 compact operation 与暂停 continuation，普通 turn done 先检查 waiting compact，active compact 时不 shift 普通队列。
 
 - 2026-08-01T19:14:43.927Z 完成 Task 4：新增 Codex compact timeline 纯状态模型，覆盖 manual/automatic 单卡片、幂等原位更新、错误脱敏、retry/skip/interrupted、入口可用性；conversation 兼容旧 history kind 推导，并在持久化前把未确认 compact 标记为 interrupted。
@@ -37,6 +39,11 @@
 - 2026-08-01T17:14:04.617Z Session started.
 
 ## Verification
+
+- 2026-08-01T19:41:49.236Z `npm run typecheck`: 通过：Task 6 capability 与 compact coordinator 类型检查无错误。
+- 2026-08-01T19:41:41.679Z `node --import tsx --test src/lib/codex-compact.test.ts src/lib/queued-prompts.test.ts`: 通过：50 个 compact coordinator、automatic 事件与队列屏障用例，0 失败。
+
+- 2026-08-01T19:41:32.744Z `cargo test --manifest-path src-tauri/Cargo.toml agent_run -- --nocapture`: 通过：69 个 agent_run/runtime 回归用例，0 失败；仅有既有 dead-code 与 Windows linker warnings。
 - 2026-08-01T19:18:40.928Z `npm run typecheck`: 通过：Task 5 hook barrier 类型检查无错误。
 
 - 2026-08-01T19:18:26.426Z `node --import tsx --test src/lib/queued-prompts.test.ts src/lib/codex-compact.test.ts`: 通过：44 个 queue barrier 与 compact domain 用例，0 失败。

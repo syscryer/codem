@@ -33,6 +33,15 @@ import {
 } from '../lib/agent-model-selection';
 import { closeDanglingTurns, isVisiblePermissionMode } from '../lib/conversation';
 import {
+  applyCompactEvent,
+  compactCapabilityKey,
+  createManualCompactTurn,
+  getCompactAvailability,
+  prepareCompactTurn,
+  retryCompactTurn,
+  type CompactCapabilityRuntime,
+} from '../lib/codex-compact';
+import {
   buildHistoryContentBlocks,
   buildRunContentBlocks,
   stripTransientAttachmentData,
@@ -62,6 +71,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   ConversationTurn,
+  CodexCompactCapability,
   CompactOperationStatus,
   DebugEvent,
   InputContentBlock,
@@ -134,6 +144,16 @@ type CompactOperationContext = {
   operationId: string;
   turnId: string;
   status: CompactOperationStatus;
+  thread: ThreadSummary;
+  runtime: CompactCapabilityRuntime;
+  trigger: 'slash' | 'context' | 'retry';
+  abortController?: AbortController;
+  terminalConfirmed: boolean;
+};
+
+type CompactCapabilityEntry = CodexCompactCapability & {
+  key: string;
+  checkedAtMs?: number;
 };
 
 type UseAgentRunArgs = {
@@ -234,6 +254,9 @@ export function useAgentRun({
   const [queuedPromptsByThreadId, setQueuedPromptsByThreadId] = useState<
     Record<string, QueuedAgentPrompt[]>
   >({});
+  const [compactCapabilitiesByKey, setCompactCapabilitiesByKey] = useState<
+    Record<string, CompactCapabilityEntry>
+  >({});
   const [clockNowMs, setClockNowMs] = useState(Date.now());
   const runContextsByThreadIdRef = useRef(new Map<string, AgentRunContext>());
   const runContextsByRunIdRef = useRef(new Map<string, AgentRunContext>());
@@ -243,6 +266,8 @@ export function useAgentRun({
   const pausedQueueContinuationsByThreadIdRef = useRef(new Map<string, AgentRunContext>());
   const compactOperationsByThreadIdRef = useRef(new Map<string, CompactOperationContext>());
   const pausedQueueAfterCompactByThreadIdRef = useRef(new Map<string, AgentRunContext>());
+  const compactCapabilitiesByKeyRef = useRef<Record<string, CompactCapabilityEntry>>({});
+  const compactCapabilityControllerRef = useRef<AbortController | null>(null);
   const permissionModeRef = useRef<PermissionMode>(defaultPermissionMode);
   const modelRef = useRef(DEFAULT_MODEL_VALUE);
   const reasoningEffortRef = useRef('');
@@ -277,6 +302,22 @@ export function useAgentRun({
         : null,
     [channelId, nativeModelCatalog, selectedChannel, selectedProviderId],
   );
+  const activeCompactRuntime = activeThreadSummary?.provider === OPENAI_CODEX_PROVIDER_ID
+    ? resolveCompactCapabilityRuntime({
+        thread: activeThreadSummary,
+        activeProjectPath,
+        permissionMode,
+        model,
+        reasoningEffort,
+        channelId,
+      })
+    : null;
+  const activeCompactCapabilityKey = activeCompactRuntime
+    ? compactCapabilityKey(activeCompactRuntime)
+    : '';
+  const compactCapability: CodexCompactCapability = activeCompactCapabilityKey
+    ? compactCapabilitiesByKey[activeCompactCapabilityKey] ?? { state: 'unknown' }
+    : { state: 'unknown' };
   const queuedPrompts = activeThreadId
     ? (queuedPromptsByThreadId[activeThreadId] ?? []).map((prompt) => {
         const guideContent = selectedProviderId === OPENAI_CODEX_PROVIDER_ID
@@ -336,6 +377,61 @@ export function useAgentRun({
     void refreshProviders();
     return () => providersControllerRef.current?.abort();
   }, [refreshProviders]);
+
+  useEffect(() => {
+    compactCapabilityControllerRef.current?.abort();
+    if (!activeCompactRuntime) {
+      return undefined;
+    }
+    const key = compactCapabilityKey(activeCompactRuntime);
+    const existing = compactCapabilitiesByKeyRef.current[key];
+    if (existing && existing.state !== 'error' && existing.state !== 'unknown') {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    compactCapabilityControllerRef.current = controller;
+    storeCompactCapability({ key, state: 'checking' });
+    void (async () => {
+      try {
+        const response = await fetch('/api/agents/codex/compact-capability', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...activeCompactRuntime,
+            refresh: false,
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error((await readErrorResponseText(response)) || '检查 Codex 压缩能力失败');
+        }
+        const capability = await response.json() as CodexCompactCapability;
+        if (!['supported', 'unsupported', 'error'].includes(capability.state)) {
+          throw new Error('Codex 压缩能力响应无效');
+        }
+        if (!controller.signal.aborted) {
+          storeCompactCapability({ ...capability, key, checkedAtMs: Date.now() });
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          storeCompactCapability({
+            key,
+            state: 'error',
+            message: error instanceof Error ? error.message : '检查 Codex 压缩能力失败',
+            checkedAtMs: Date.now(),
+          });
+        }
+      }
+    })();
+    return () => controller.abort();
+  }, [activeCompactCapabilityKey]);
+
+  function storeCompactCapability(entry: CompactCapabilityEntry) {
+    const next = { ...compactCapabilitiesByKeyRef.current, [entry.key]: entry };
+    compactCapabilitiesByKeyRef.current = next;
+    setCompactCapabilitiesByKey(next);
+  }
 
   useEffect(() => {
     if (providersLoading || resolveChatRuntimeKind(defaultProviderId) !== 'generic') {
@@ -1138,7 +1234,274 @@ export function useAgentRun({
       return false;
     }
     pausedQueueAfterCompactByThreadIdRef.current.set(context.threadId, context);
+    if (context.sessionId) {
+      compactOperation.runtime = {
+        ...compactOperation.runtime,
+        sessionId: context.sessionId,
+        workingDirectory: context.workingDirectory,
+      };
+    }
+    void startCompactRequest(compactOperation);
     return true;
+  }
+
+  async function requestThreadCompaction(
+    thread: ThreadSummary,
+    trigger: 'slash' | 'context' | 'retry',
+  ): Promise<boolean> {
+    if (!thread.sessionId.trim()) {
+      showToast('完成至少一轮 Codex 对话后才能压缩上下文', 'error');
+      return false;
+    }
+    const runtime = resolveCompactCapabilityRuntime({
+      thread,
+      activeProjectPath,
+      permissionMode: permissionModeRef.current,
+      model: modelRef.current,
+      reasoningEffort: reasoningEffortRef.current,
+      channelId: channelIdRef.current,
+    });
+    if (!runtime) {
+      showToast('当前聊天缺少工作目录。', 'error');
+      return false;
+    }
+    const activeOperation = compactOperationsByThreadIdRef.current.get(thread.id);
+    const capability = compactCapabilitiesByKeyRef.current[compactCapabilityKey(runtime)]
+      ?? { state: 'unknown' as const };
+    const availability = getCompactAvailability({
+      providerId: thread.provider,
+      sessionId: runtime.sessionId,
+      capability,
+      activeStatus: trigger === 'retry' || activeOperation?.terminalConfirmed
+        ? undefined
+        : activeOperation?.status === 'completed'
+          ? 'running'
+          : activeOperation?.status,
+    });
+    if (!availability.available) {
+      showToast(availability.reason, availability.busy ? 'info' : 'error');
+      return false;
+    }
+    if (trigger === 'retry') {
+      if (!activeOperation || !['failed', 'interrupted'].includes(activeOperation.status)) {
+        showToast('当前没有可重试的上下文压缩。', 'info');
+        return false;
+      }
+      activeOperation.trigger = trigger;
+      activeOperation.thread = thread;
+      activeOperation.runtime = runtime;
+      activeOperation.status = 'preparing';
+      activeOperation.terminalConfirmed = false;
+      updateThreadTurn(thread.id, activeOperation.turnId, (turn) => retryCompactTurn(turn, Date.now()));
+      schedulePersistThreadHistory(thread.id, { urgent: true });
+      return startCompactRequest(activeOperation);
+    }
+
+    const operationId = crypto.randomUUID();
+    const waiting = runContextsByThreadIdRef.current.has(thread.id);
+    const operation: CompactOperationContext = {
+      operationId,
+      turnId: `compact-turn:${operationId}`,
+      status: waiting ? 'waiting' : 'preparing',
+      thread,
+      runtime,
+      trigger,
+      terminalConfirmed: false,
+    };
+    compactOperationsByThreadIdRef.current.set(thread.id, operation);
+    threadSummariesByIdRef.current.set(thread.id, thread);
+    updateThreadDetail(
+      thread.id,
+      (existing) => ({
+        ...existing,
+        turns: [
+          ...existing.turns,
+          createManualCompactTurn({
+            operationId,
+            providerThreadId: runtime.sessionId,
+            workspace: runtime.workingDirectory,
+            status: operation.status === 'waiting' ? 'waiting' : 'preparing',
+            nowMs: Date.now(),
+          }),
+        ],
+      }),
+      thread,
+    );
+    schedulePersistThreadHistory(thread.id, { urgent: !waiting });
+    if (waiting) {
+      showToast('将在当前回答完成后压缩上下文。', 'info');
+      return true;
+    }
+    return startCompactRequest(operation);
+  }
+
+  async function startCompactRequest(operation: CompactOperationContext): Promise<boolean> {
+    operation.status = 'preparing';
+    updateThreadTurn(operation.thread.id, operation.turnId, prepareCompactTurn, operation.thread);
+    schedulePersistThreadHistory(operation.thread.id);
+    const controller = new AbortController();
+    operation.abortController?.abort();
+    operation.abortController = controller;
+    try {
+      const thread = operation.thread;
+      const response = await fetch(
+        `/api/agents/runtime/${encodeURIComponent(thread.id)}/compact`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            operationId: operation.operationId,
+            providerId: OPENAI_CODEX_PROVIDER_ID,
+            sessionId: operation.runtime.sessionId,
+            workingDirectory: operation.runtime.workingDirectory,
+            permissionMode: operation.runtime.permissionMode,
+            model: operation.runtime.model,
+            reasoningEffort: operation.runtime.reasoningEffort,
+            channelId: operation.runtime.channelId,
+          }),
+          signal: controller.signal,
+        },
+      );
+      if (!response.ok) {
+        throw new Error((await readErrorResponseText(response)) || '启动 Codex 上下文压缩失败');
+      }
+      await consumeCompactEventStream(response, operation);
+      return compactOperationsByThreadIdRef.current.get(operation.thread.id)?.status === 'completed';
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return false;
+      }
+      failCompactOperation(
+        operation,
+        error instanceof Error ? error.message : 'Codex 上下文压缩失败',
+      );
+      return false;
+    }
+  }
+
+  async function consumeCompactEventStream(
+    response: Response,
+    operation: CompactOperationContext,
+  ) {
+    if (!response.body) {
+      throw new Error('Codex 压缩事件流不可读');
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let terminal = false;
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? '';
+      if (done && buffer.trim()) {
+        lines.push(buffer);
+      }
+      for (const line of lines) {
+        if (!line.trim()) {
+          continue;
+        }
+        let event: AgentRunEvent;
+        try {
+          event = JSON.parse(line) as AgentRunEvent;
+        } catch {
+          appendDebug(operation.thread.id, {
+            title: 'Codex 压缩事件解析失败',
+            content: '收到了一条无法解析的压缩事件；原始内容未写入日志。',
+            tone: 'error',
+          });
+          continue;
+        }
+        if (event.type === 'context-compaction') {
+          applyContextCompactionEvent(
+            operation.thread.id,
+            event,
+            operation.runtime.workingDirectory,
+          );
+          continue;
+        }
+        if (event.type === 'error') {
+          terminal = true;
+          operation.terminalConfirmed = true;
+          if (operation.status !== 'failed') {
+            failCompactOperation(operation, event.message);
+          }
+          continue;
+        }
+        if (event.type === 'done') {
+          terminal = true;
+          operation.terminalConfirmed = true;
+          if (operation.status === 'completed') {
+            releaseQueueAfterCompact(operation.thread.id);
+          } else {
+            failCompactOperation(operation, '压缩请求已结束，但未收到原生完成事件');
+          }
+        }
+      }
+      if (done) {
+        break;
+      }
+    }
+    if (!terminal) {
+      failCompactOperation(operation, 'Codex 压缩事件流意外结束');
+    }
+  }
+
+  function applyContextCompactionEvent(
+    threadId: string,
+    event: Extract<AgentRunEvent, { type: 'context-compaction' }>,
+    workingDirectory: string,
+  ) {
+    const operation = compactOperationsByThreadIdRef.current.get(threadId);
+    if (operation && event.source === 'manual' && event.operationId === operation.operationId) {
+      operation.status = event.status;
+    }
+    updateThreadDetail(
+      threadId,
+      (thread) => {
+        const turns = applyCompactEvent(thread.turns, event, workingDirectory);
+        return turns === thread.turns ? thread : { ...thread, turns };
+      },
+      operation?.thread ?? threadSummariesByIdRef.current.get(threadId),
+    );
+    schedulePersistThreadHistory(threadId, { urgent: event.status !== 'running' });
+    if (!operation && event.source === 'automatic') {
+      appendDebug(threadId, {
+        title: 'Codex 自动压缩上下文',
+        content: event.status === 'completed' ? '原生自动压缩已完成。' : '正在同步原生自动压缩状态。',
+        tone: 'neutral',
+      });
+    }
+  }
+
+  function failCompactOperation(operation: CompactOperationContext, message: string) {
+    if (operation.status === 'completed') {
+      return;
+    }
+    applyContextCompactionEvent(
+      operation.thread.id,
+      {
+        type: 'context-compaction',
+        runId: `local:${operation.operationId}`,
+        operationId: operation.operationId,
+        source: 'manual',
+        status: 'failed',
+        providerThreadId: operation.runtime.sessionId,
+        error: message,
+        atMs: Date.now(),
+      },
+      operation.runtime.workingDirectory,
+    );
+    showToast(message, 'error');
+  }
+
+  function releaseQueueAfterCompact(threadId: string) {
+    const continuation = pausedQueueAfterCompactByThreadIdRef.current.get(threadId);
+    pausedQueueAfterCompactByThreadIdRef.current.delete(threadId);
+    if (continuation) {
+      maybeStartQueuedPrompt(continuation);
+    }
   }
 
   function notifyQueuedPromptsRetained(threadId: string) {
@@ -1241,6 +1604,7 @@ export function useAgentRun({
       return false;
     }
     const activeContext = runContextsByThreadIdRef.current.get(thread.id);
+    const compactOperation = compactOperationsByThreadIdRef.current.get(thread.id);
     if (submission.queueId) {
       const queuedPrompt = updateQueuedPrompt(thread.id, submission.queueId, submission);
       if (queuedPrompt) {
@@ -1273,6 +1637,9 @@ export function useAgentRun({
     }
     if (
       activeContext ||
+      (compactOperation && (
+        !compactOperation.terminalConfirmed || compactOperation.status !== 'completed'
+      )) ||
       submission.queueStatus === 'preparing' ||
       pausedQueueContinuationsByThreadIdRef.current.has(thread.id)
     ) {
@@ -1528,6 +1895,10 @@ export function useAgentRun({
     }
 
     flushTextDelta(context);
+    if (event.type === 'context-compaction') {
+      applyContextCompactionEvent(context.threadId, event, context.workingDirectory);
+      return;
+    }
     updateThreadTurn(context.threadId, context.turnId, (turn) =>
       applyAgentRunEventToTurn(turn, event),
     );
@@ -1880,6 +2251,8 @@ export function useAgentRun({
     activeTurnIdsByThreadId,
     clockNowMs,
     queuedPrompts,
+    compactCapability,
+    requestThreadCompaction,
     removeQueuedPrompt,
     recallQueuedPrompt,
     guideQueuedPrompt,
@@ -1955,6 +2328,30 @@ function providerDisplayName(providerId: string, providers: AgentProviderDescrip
           : providerId === PI_AGENT_PROVIDER_ID
             ? 'Pi'
         : providerId);
+}
+
+function resolveCompactCapabilityRuntime(input: {
+  thread: ThreadSummary;
+  activeProjectPath?: string;
+  permissionMode: PermissionMode;
+  model: string;
+  reasoningEffort: string;
+  channelId: string;
+}): CompactCapabilityRuntime | null {
+  const sessionId = input.thread.sessionId.trim();
+  const workingDirectory = input.thread.workingDirectory.trim() || input.activeProjectPath?.trim() || '';
+  if (!sessionId || !workingDirectory) {
+    return null;
+  }
+  return {
+    threadId: input.thread.id,
+    sessionId,
+    workingDirectory,
+    permissionMode: input.permissionMode,
+    model: input.model === DEFAULT_MODEL_VALUE ? undefined : input.model,
+    reasoningEffort: input.reasoningEffort || undefined,
+    channelId: requestAgentChannelId(input.channelId),
+  };
 }
 
 async function readErrorResponseText(response: Response) {

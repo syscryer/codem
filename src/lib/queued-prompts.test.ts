@@ -322,6 +322,17 @@ test('useAgentRun gates terminal queue continuation behind a thread compact barr
   );
 });
 
+test('useAgentRun queues newly submitted prompts while compact is active', () => {
+  const submitPromptSource = extractFunctionBody(useAgentRunSource, 'submitPrompt');
+  assert.match(
+    submitPromptSource,
+    /compactOperationsByThreadIdRef\.current\.get\(thread\.id\)/,
+  );
+  assert.match(submitPromptSource, /!compactOperation\.terminalConfirmed/);
+  assert.match(submitPromptSource, /compactOperation\.status !== 'completed'/);
+  assert.match(submitPromptSource, /enqueuePrompt\(thread, submission\)/);
+});
+
 test('guideQueuedPrompt sends the queued prompt to the active run without creating a new thread', () => {
   const guideQueuedPromptSource = extractFunctionBody(useClaudeRunSource, 'guideQueuedPrompt');
 

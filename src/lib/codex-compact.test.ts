@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   applyCompactEvent,
+  compactCapabilityKey,
   createAutomaticCompactTurn,
   createManualCompactTurn,
   findPendingCompactTurn,
   getCompactAvailability,
   interruptUnconfirmedCompactTurn,
+  prepareCompactTurn,
   readCompactMetadata,
   retryCompactTurn,
   skipCompactTurn,
@@ -14,6 +17,7 @@ import {
 import type { AgentRunEvent, ConversationTurn } from '../types.js';
 
 type ContextCompactionEvent = Extract<AgentRunEvent, { type: 'context-compaction' }>;
+const useAgentRunSource = readFileSync(new URL('../hooks/useAgentRun.ts', import.meta.url), 'utf8');
 
 function textTurn(id: string): ConversationTurn {
   return {
@@ -111,6 +115,39 @@ test('automatic compact turns use provider identity for a stable operation id', 
   assert.equal(readCompactMetadata(first)?.source, 'automatic');
 });
 
+test('automatic compact event keeps the runtime workspace when history is empty', () => {
+  const event: ContextCompactionEvent = {
+    ...completedEvent('ignored'),
+    operationId: undefined,
+    source: 'automatic',
+  };
+  const turns = applyCompactEvent([], event, 'D:/runtime-workspace');
+
+  assert.equal(turns[0]?.workspace, 'D:/runtime-workspace');
+});
+
+test('automatic compact never completes a pending manual compact card', () => {
+  const manual = createManualCompactTurn({
+    operationId: 'manual-1',
+    providerThreadId: 'provider-thread-1',
+    workspace: 'D:/workspace',
+    status: 'waiting',
+    nowMs: 100,
+  });
+  const automatic: ContextCompactionEvent = {
+    ...completedEvent('ignored'),
+    operationId: undefined,
+    source: 'automatic',
+    providerTurnId: 'automatic-turn-1',
+  };
+  const turns = applyCompactEvent([manual], automatic, 'D:/workspace');
+
+  assert.equal(turns.length, 2);
+  assert.equal(readCompactMetadata(turns[0])?.status, 'waiting');
+  assert.equal(readCompactMetadata(turns[1])?.source, 'automatic');
+  assert.equal(readCompactMetadata(turns[1])?.status, 'completed');
+});
+
 test('compact errors redact assignments and stay bounded', () => {
   const failed = applyCompactEvent([compactTurn('compact-1')], {
     ...completedEvent('compact-1'),
@@ -186,4 +223,56 @@ test('compact availability reports provider, session, capability and busy reason
     }),
     { available: true, busy: false, reason: '' },
   );
+});
+
+test('compact capability key changes with session, workspace, channel and runtime selection', () => {
+  const base = {
+    threadId: 'thread-1',
+    sessionId: 'session-1',
+    workingDirectory: 'D:/workspace',
+    channelId: 'channel-1',
+    model: 'gpt-5.3-codex',
+    reasoningEffort: 'high',
+    permissionMode: 'default',
+  };
+  const first = compactCapabilityKey(base);
+
+  for (const patch of [
+    { sessionId: 'session-2' },
+    { workingDirectory: 'D:/other' },
+    { channelId: 'channel-2' },
+    { model: 'gpt-5.4' },
+    { reasoningEffort: 'medium' },
+    { permissionMode: 'auto' },
+  ]) {
+    assert.notEqual(compactCapabilityKey({ ...base, ...patch }), first);
+  }
+});
+
+test('preparing a waiting compact updates the same card without incrementing attempt', () => {
+  const waiting = createManualCompactTurn({
+    operationId: 'compact-1',
+    providerThreadId: 'provider-thread-1',
+    workspace: 'D:/workspace',
+    status: 'waiting',
+    nowMs: 100,
+  });
+  const preparing = prepareCompactTurn(waiting);
+
+  assert.equal(preparing.id, waiting.id);
+  assert.equal(readCompactMetadata(preparing)?.status, 'preparing');
+  assert.equal(readCompactMetadata(preparing)?.attempt, 1);
+});
+
+test('useAgentRun routes compact lifecycle before ordinary turn events', () => {
+  assert.match(
+    useAgentRunSource,
+    /if \(event\.type === 'context-compaction'\) \{[\s\S]*applyContextCompactionEvent\([\s\S]*return;\s*\}/,
+  );
+  assert.match(
+    useAgentRunSource,
+    /async function requestThreadCompaction\([\s\S]*trigger: 'slash' \| 'context' \| 'retry'/,
+  );
+  assert.match(useAgentRunSource, /\/api\/agents\/codex\/compact-capability/);
+  assert.match(useAgentRunSource, /\/api\/agents\/runtime\/\$\{encodeURIComponent\(thread\.id\)\}\/compact/);
 });

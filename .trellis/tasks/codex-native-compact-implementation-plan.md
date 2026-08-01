@@ -856,7 +856,7 @@ git commit -m "feat: gate prompt queue on Codex compact"
 - Test: `src-tauri/src/agent_run.rs` 内测试模块
 - Test: `src/lib/codex-compact.test.ts`
 
-- [ ] **Step 1: 写能力缓存与 API 失败测试**
+- [x] **Step 1: 写能力缓存与 API 失败测试**
 
 测试同一 `command + channelFingerprint + codexConfigArgs` 只启动一次 probe；refresh=true 或 key 改变会重新探测；unexpected RPC error 返回 `{state:'error'}` 且 message 经过公共错误裁剪。
 
@@ -871,7 +871,7 @@ fn compact_capability_cache_key_changes_with_channel_runtime() {
 }
 ```
 
-- [ ] **Step 2: 实现进程内 capability cache 和 route**
+- [x] **Step 2: 实现进程内 capability cache 和 route**
 
 `AgentRunState` 增加：
 
@@ -881,7 +881,7 @@ compact_capability_cache: Arc<Mutex<HashMap<String, AgentCompactCapabilitySummar
 
 路由固定为 `POST /api/agents/codex/compact-capability`，请求携带 CodeM threadId、sessionId、workingDirectory、channelId/model/reasoningEffort 和 `refresh`。handler 复用 Task 3 的 config 解析，缓存只在进程内；supported/unsupported 可缓存，error 不跨请求永久锁死。unsupported message 固定为“当前 Codex CLI 不支持原生会话压缩，请升级 Codex CLI。”
 
-- [ ] **Step 3: 在 hook 实现 capability 状态**
+- [x] **Step 3: 在 hook 实现 capability 状态**
 
 按 runtime key 维护：
 
@@ -894,7 +894,7 @@ type CompactCapabilityEntry = CodexCompactCapability & {
 
 active Provider 为 Codex、thread 已有 sessionId 且工作目录有效时请求能力；请求开始设 checking，失败设 error。Provider、channel、session 或 working directory 变化时换 key，不复用错误 runtime 的旧结果。Claude 不调用该 API。
 
-- [ ] **Step 4: 实现统一 `requestThreadCompaction`**
+- [x] **Step 4: 实现统一 `requestThreadCompaction`**
 
 hook 对外只暴露一个入口：
 
@@ -907,7 +907,7 @@ async function requestThreadCompaction(
 
 行为固定：能力不是 supported 时提示准确原因且不创建历史；无 sessionId 时提示“完成至少一轮 Codex 对话后才能压缩上下文”；已有未终结 compact 时定位原卡并提示；存在活动 turn 时创建 status=waiting 的系统 turn 并返回；空闲时创建 status=preparing 后请求专用 API。NDJSON 的 `context-compaction` 原位更新卡片；`done` 只在卡片已 completed 时释放队列；`error` 把卡片设 failed 并保持屏障。
 
-- [ ] **Step 5: 接入 ordinary turn 内的 automatic compact event**
+- [x] **Step 5: 接入 ordinary turn 内的 automatic compact event**
 
 `handleAgentEvent` 在普通 `applyAgentRunEventToTurn` 之前处理：
 
@@ -921,7 +921,7 @@ if (event.type === 'context-compaction') {
 
 operationId 缺失且没有 manual operation 可关联时 source 必须为 automatic，并用 provider item/turn ID 生成稳定卡片 ID；automatic 卡片不建立人工 barrier，也不出现 skip 动作。
 
-- [ ] **Step 6: 运行能力、事件和类型测试**
+- [x] **Step 6: 运行能力、事件和类型测试**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml compact_capability -- --nocapture`
 
@@ -935,7 +935,7 @@ Run: `npm run typecheck`
 
 Expected: PASS。
 
-- [ ] **Step 7: 提交 coordinator**
+- [x] **Step 7: 提交 coordinator**
 
 ```powershell
 git add -- src-tauri/src/agent_run.rs src/hooks/useAgentRun.ts src/types.ts src/lib/codex-compact.test.ts
