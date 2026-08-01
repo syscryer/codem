@@ -62,6 +62,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   ConversationTurn,
+  CompactOperationStatus,
   DebugEvent,
   InputContentBlock,
   PermissionMode,
@@ -127,6 +128,12 @@ type AgentRunContext = {
   terminal: boolean;
   terminalAllowsQueueContinuation: boolean;
   terminalBlockedGuidePromptId?: string;
+};
+
+type CompactOperationContext = {
+  operationId: string;
+  turnId: string;
+  status: CompactOperationStatus;
 };
 
 type UseAgentRunArgs = {
@@ -234,6 +241,8 @@ export function useAgentRun({
   const threadSummariesByIdRef = useRef(new Map<string, ThreadSummary>());
   const autoStartAfterPreparationThreadIdsRef = useRef(new Set<string>());
   const pausedQueueContinuationsByThreadIdRef = useRef(new Map<string, AgentRunContext>());
+  const compactOperationsByThreadIdRef = useRef(new Map<string, CompactOperationContext>());
+  const pausedQueueAfterCompactByThreadIdRef = useRef(new Map<string, AgentRunContext>());
   const permissionModeRef = useRef<PermissionMode>(defaultPermissionMode);
   const modelRef = useRef(DEFAULT_MODEL_VALUE);
   const reasoningEffortRef = useRef('');
@@ -1065,7 +1074,14 @@ export function useAgentRun({
 
   function maybeStartQueuedPrompt(context: AgentRunContext) {
     const queue = queuedPromptsByThreadIdRef.current[context.threadId] ?? [];
-    const continuationState = getQueuedPromptContinuationState(queue);
+    const compactOperation = compactOperationsByThreadIdRef.current.get(context.threadId);
+    const continuationState = getQueuedPromptContinuationState(queue, compactOperation?.status);
+    if (continuationState === 'blocked-by-compact') {
+      pausedQueueAfterCompactByThreadIdRef.current.set(context.threadId, context);
+      autoStartAfterPreparationThreadIdsRef.current.delete(context.threadId);
+      return;
+    }
+    pausedQueueAfterCompactByThreadIdRef.current.delete(context.threadId);
     if (continuationState !== 'paused') {
       pausedQueueContinuationsByThreadIdRef.current.delete(context.threadId);
     }
@@ -1114,6 +1130,15 @@ export function useAgentRun({
         restoreQueuedPrompt(context.threadId, nextPrompt);
       }
     }, 0);
+  }
+
+  function maybeStartPendingCompaction(context: AgentRunContext) {
+    const compactOperation = compactOperationsByThreadIdRef.current.get(context.threadId);
+    if (compactOperation?.status !== 'waiting') {
+      return false;
+    }
+    pausedQueueAfterCompactByThreadIdRef.current.set(context.threadId, context);
+    return true;
   }
 
   function notifyQueuedPromptsRetained(threadId: string) {
@@ -1538,7 +1563,9 @@ export function useAgentRun({
       removeRunContext(context);
       emitThreadNotice(context, event.type === 'error' ? 'failed' : 'completed', event.runId);
       if (event.type === 'done' && !context.cancelRequested) {
-        maybeStartQueuedPrompt(context);
+        if (!maybeStartPendingCompaction(context)) {
+          maybeStartQueuedPrompt(context);
+        }
       } else {
         notifyQueuedPromptsRetained(context.threadId);
       }

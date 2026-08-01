@@ -201,6 +201,7 @@ Out of scope:
 7. 确认失败时队列暂停，重试与跳过均能恢复且不会重复发送消息。
 
 ## Implementation Record
+- 2026-08-01T19:18:11.380Z 完成 Task 5：getQueuedPromptContinuationState 新增 compact barrier 优先级；useAgentRun 按 thread 维护 compact operation 与暂停 continuation，普通 turn done 先检查 waiting compact，active compact 时不 shift 普通队列。
 
 - 2026-08-01T19:14:43.927Z 完成 Task 4：新增 Codex compact timeline 纯状态模型，覆盖 manual/automatic 单卡片、幂等原位更新、错误脱敏、retry/skip/interrupted、入口可用性；conversation 兼容旧 history kind 推导，并在持久化前把未确认 compact 标记为 interrupted。
 - 2026-08-01T19:08:55.516Z 完成 Task 3：将热 runtime actor 首个工作项泛化为 Run/Compact command；新增专用 compact NDJSON 路由、共享 Codex runtime config 解析、thread 级 409 防重、session/config/channel/workspace 校验，以及 manual compact running/completed/failed 结构化事件和 fatal runtime 关闭策略。
@@ -232,6 +233,9 @@ Out of scope:
 - 2026-08-01T17:14:04.616Z Task created by Trellis automation.
 
 ## Verification Results
+- 2026-08-01T19:18:40.928Z `npm run typecheck`: 通过：Task 5 hook barrier 类型检查无错误。
+
+- 2026-08-01T19:18:26.426Z `node --import tsx --test src/lib/queued-prompts.test.ts src/lib/codex-compact.test.ts`: 通过：44 个 queue barrier 与 compact domain 用例，0 失败。
 - 2026-08-01T19:15:01.691Z `npm run typecheck`: 通过：Task 4 TypeScript contract 与调用点无类型错误。
 
 - 2026-08-01T19:14:53.391Z `node --import tsx --test src/lib/codex-compact.test.ts src/lib/conversation.test.ts`: 通过：33 个 compact domain 与 conversation history 用例，0 失败。

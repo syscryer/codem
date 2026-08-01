@@ -194,6 +194,43 @@ test('getQueuedPromptContinuationState freezes the entire queue when any guide i
   );
 });
 
+test('compact barrier runs before a ready queued prompt', () => {
+  assert.equal(
+    getQueuedPromptContinuationState([{ queueStatus: 'ready' }], 'waiting'),
+    'blocked-by-compact',
+  );
+  assert.equal(
+    getQueuedPromptContinuationState([{ queueStatus: 'ready' }], 'completed'),
+    'ready',
+  );
+});
+
+test('failed compact keeps the queue paused until skipped or retried', () => {
+  assert.equal(
+    getQueuedPromptContinuationState([{ queueStatus: 'ready' }], 'failed'),
+    'blocked-by-compact',
+  );
+  assert.equal(
+    getQueuedPromptContinuationState([{ queueStatus: 'ready' }], undefined),
+    'ready',
+  );
+});
+
+test('compact barrier outranks every queue preparation and guide state', () => {
+  for (const status of ['preparing', 'running', 'interrupted'] as const) {
+    assert.equal(
+      getQueuedPromptContinuationState([
+        { queueStatus: 'preparing' },
+        { queueStatus: 'guiding' },
+        { queueStatus: 'guide-unknown' },
+      ], status),
+      'blocked-by-compact',
+    );
+  }
+  assert.equal(getQueuedPromptContinuationState([], 'running'), 'blocked-by-compact');
+  assert.equal(getQueuedPromptContinuationState([], undefined), 'empty');
+});
+
 test('removing or recalling the last unknown guide resumes a paused continuation', () => {
   const remainingReadyQueue = [{ queueStatus: 'ready' as const }];
   assert.equal(
@@ -258,6 +295,30 @@ test('maybeStartQueuedPrompt clears a resumed continuation before waiting for pr
   assert.match(
     maybeStartQueuedPromptSource,
     /if \(continuationState !== 'paused'\) \{\s*pausedQueueContinuationsByThreadIdRef\.current\.delete\(context\.threadId\);\s*\}\s*if \(continuationState === 'preparing'\)/,
+  );
+});
+
+test('useAgentRun gates terminal queue continuation behind a thread compact barrier', () => {
+  assert.match(
+    useAgentRunSource,
+    /const compactOperationsByThreadIdRef = useRef\(new Map<string, CompactOperationContext>\(\)\)/,
+  );
+  assert.match(
+    useAgentRunSource,
+    /const pausedQueueAfterCompactByThreadIdRef = useRef\(new Map<string, AgentRunContext>\(\)\)/,
+  );
+  const maybeStartQueuedPromptSource = extractFunctionBody(
+    useAgentRunSource,
+    'maybeStartQueuedPrompt',
+  );
+  assert.match(
+    maybeStartQueuedPromptSource,
+    /getQueuedPromptContinuationState\(queue, compactOperation\?\.status\)/,
+  );
+  assert.match(maybeStartQueuedPromptSource, /continuationState === 'blocked-by-compact'/);
+  assert.match(
+    useAgentRunSource,
+    /if \(!maybeStartPendingCompaction\(context\)\) \{\s*maybeStartQueuedPrompt\(context\);\s*\}/,
   );
 });
 

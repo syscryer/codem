@@ -1,5 +1,6 @@
 import type {
   ClaudeEffortSelection,
+  CompactOperationStatus,
   InputContentBlock,
   PermissionMode,
   UserImageAttachment,
@@ -34,7 +35,11 @@ type QueuedPromptContinuationCandidate = {
 
 export function getQueuedPromptContinuationState(
   queue: QueuedPromptContinuationCandidate[],
-): 'empty' | 'preparing' | 'paused' | 'ready' {
+  compactStatus?: CompactOperationStatus,
+): 'empty' | 'preparing' | 'paused' | 'blocked-by-compact' | 'ready' {
+  if (compactStatus && compactStatus !== 'completed') {
+    return 'blocked-by-compact';
+  }
   if (queue.some((prompt) => prompt.queueStatus === 'guide-unknown')) {
     return 'paused';
   }
