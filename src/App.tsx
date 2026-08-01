@@ -658,6 +658,8 @@ export default function App() {
     activeThreadId: activeThreadRuntimeKind === 'generic' ? activeThreadId : null,
     activeThreadSummary:
       activeThreadRuntimeKind === 'generic' ? activeThreadSummary : null,
+    activeThreadDetail:
+      activeThreadRuntimeKind === 'generic' ? activeThread : null,
     createThread,
     renameThread,
     handlePickProjectDirectory,

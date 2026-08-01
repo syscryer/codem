@@ -33,14 +33,18 @@ import {
 } from '../lib/agent-model-selection';
 import { closeDanglingTurns, isVisiblePermissionMode } from '../lib/conversation';
 import {
+  applyCompactReconcileResult,
   applyCompactEvent,
   compactCapabilityKey,
   createManualCompactTurn,
+  findUnconfirmedManualCompactTurn,
   getCompactAvailability,
   prepareCompactTurn,
+  readCompactMetadata,
   retryCompactTurn,
   skipCompactTurn,
   type CompactCapabilityRuntime,
+  type CompactReconcileResult,
 } from '../lib/codex-compact';
 import {
   buildHistoryContentBlocks,
@@ -147,7 +151,7 @@ type CompactOperationContext = {
   status: CompactOperationStatus;
   thread: ThreadSummary;
   runtime: CompactCapabilityRuntime;
-  trigger: 'slash' | 'context' | 'retry';
+  trigger: 'slash' | 'context' | 'retry' | 'reconcile';
   abortController?: AbortController;
   terminalConfirmed: boolean;
 };
@@ -167,6 +171,7 @@ type UseAgentRunArgs = {
   activeProjectPath?: string;
   activeThreadId: string | null;
   activeThreadSummary: ThreadSummary | null;
+  activeThreadDetail: ThreadDetail | null;
   createThread: (
     projectId: string,
     title?: string,
@@ -223,6 +228,7 @@ export function useAgentRun({
   activeProjectPath,
   activeThreadId,
   activeThreadSummary,
+  activeThreadDetail,
   createThread,
   renameThread,
   handlePickProjectDirectory,
@@ -266,6 +272,7 @@ export function useAgentRun({
   const autoStartAfterPreparationThreadIdsRef = useRef(new Set<string>());
   const pausedQueueContinuationsByThreadIdRef = useRef(new Map<string, AgentRunContext>());
   const compactOperationsByThreadIdRef = useRef(new Map<string, CompactOperationContext>());
+  const reconciledCompactOperationIdsRef = useRef(new Set<string>());
   const pausedQueueAfterCompactByThreadIdRef = useRef(new Map<string, AgentRunContext>());
   const compactCapabilitiesByKeyRef = useRef<Record<string, CompactCapabilityEntry>>({});
   const compactCapabilityControllerRef = useRef<AbortController | null>(null);
@@ -622,6 +629,62 @@ export function useAgentRun({
       runContextsByRunIdRef.current.clear();
     };
   }, []);
+
+  useEffect(() => {
+    if (
+      !activeThreadDetail?.historyLoaded ||
+      activeThreadDetail.provider !== OPENAI_CODEX_PROVIDER_ID
+    ) {
+      return;
+    }
+    const turn = findUnconfirmedManualCompactTurn(activeThreadDetail.turns);
+    const metadata = turn ? readCompactMetadata(turn) : null;
+    if (!turn || !metadata || reconciledCompactOperationIdsRef.current.has(metadata.operationId)) {
+      return;
+    }
+    reconciledCompactOperationIdsRef.current.add(metadata.operationId);
+
+    const permission = isVisiblePermissionMode(activeThreadDetail.permissionMode)
+      ? activeThreadDetail.permissionMode
+      : defaultPermissionMode;
+    const persistedRuntime = resolveCompactCapabilityRuntime({
+      thread: activeThreadDetail,
+      activeProjectPath,
+      permissionMode: permission,
+      model: activeThreadDetail.model?.trim() || DEFAULT_MODEL_VALUE,
+      reasoningEffort: activeThreadDetail.reasoningEffort?.trim() || '',
+      channelId: threadAgentChannelId(activeThreadDetail.agentChannelId),
+    });
+    const runtime: CompactCapabilityRuntime = {
+      threadId: activeThreadDetail.id,
+      sessionId: metadata.providerThreadId,
+      workingDirectory:
+        persistedRuntime?.workingDirectory ||
+        activeThreadDetail.workingDirectory.trim() ||
+        activeProjectPath?.trim() ||
+        turn.workspace,
+      permissionMode: persistedRuntime?.permissionMode ?? permission,
+      model: persistedRuntime?.model,
+      reasoningEffort: persistedRuntime?.reasoningEffort,
+      channelId: persistedRuntime?.channelId,
+    };
+    const operation: CompactOperationContext = {
+      operationId: metadata.operationId,
+      turnId: turn.id,
+      status: metadata.status,
+      thread: activeThreadDetail,
+      runtime,
+      trigger: 'reconcile',
+      terminalConfirmed: false,
+    };
+    compactOperationsByThreadIdRef.current.set(activeThreadDetail.id, operation);
+    threadSummariesByIdRef.current.set(activeThreadDetail.id, activeThreadDetail);
+    void reconcilePersistedCompactOperation(operation, metadata.providerTurnId, metadata.providerItemId);
+  }, [
+    activeProjectPath,
+    activeThreadDetail,
+    defaultPermissionMode,
+  ]);
 
   function resetDraftProvider() {
     const providerId = defaultProviderIdRef.current;
@@ -1299,6 +1362,7 @@ export function useAgentRun({
     }
 
     const operationId = crypto.randomUUID();
+    reconciledCompactOperationIdsRef.current.add(operationId);
     const waiting = runContextsByThreadIdRef.current.has(thread.id);
     const operation: CompactOperationContext = {
       operationId,
@@ -1396,6 +1460,72 @@ export function useAgentRun({
       );
       return false;
     }
+  }
+
+  async function reconcilePersistedCompactOperation(
+    operation: CompactOperationContext,
+    providerTurnId?: string,
+    providerItemId?: string,
+  ) {
+    let result: CompactReconcileResult;
+    try {
+      const response = await fetch(
+        `/api/agents/runtime/${encodeURIComponent(operation.thread.id)}/compact/reconcile`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            operationId: operation.operationId,
+            providerId: OPENAI_CODEX_PROVIDER_ID,
+            sessionId: operation.runtime.sessionId,
+            workingDirectory: operation.runtime.workingDirectory,
+            permissionMode: operation.runtime.permissionMode,
+            model: operation.runtime.model,
+            reasoningEffort: operation.runtime.reasoningEffort,
+            channelId: operation.runtime.channelId,
+            providerTurnId,
+            providerItemId,
+          }),
+        },
+      );
+      if (!response.ok) {
+        throw new Error('无法核对 Codex 上下文压缩历史');
+      }
+      const payload = await response.json() as Partial<CompactReconcileResult>;
+      if (!['confirmed', 'unconfirmed', 'not_found'].includes(payload.state ?? '')) {
+        throw new Error('Codex 上下文压缩历史响应无效');
+      }
+      result = {
+        state: payload.state as CompactReconcileResult['state'],
+        providerTurnId: typeof payload.providerTurnId === 'string'
+          ? payload.providerTurnId
+          : undefined,
+        providerItemId: typeof payload.providerItemId === 'string'
+          ? payload.providerItemId
+          : undefined,
+      };
+    } catch {
+      result = { state: 'error' };
+    }
+
+    operation.status = result.state === 'confirmed' ? 'completed' : 'interrupted';
+    operation.terminalConfirmed = true;
+    updateThreadTurn(
+      operation.thread.id,
+      operation.turnId,
+      (turn) => applyCompactReconcileResult(turn, result, Date.now()),
+      operation.thread,
+    );
+    schedulePersistThreadHistory(operation.thread.id, { urgent: true });
+    appendDebug(operation.thread.id, {
+      title: result.state === 'confirmed'
+        ? '已恢复 Codex 压缩状态'
+        : 'Codex 压缩状态未确认',
+      content: result.state === 'confirmed'
+        ? '已从原生历史确认上下文压缩完成。'
+        : '未从原生历史确认完成，已标记为中断，可手动重试。',
+      tone: result.state === 'confirmed' ? 'neutral' : 'error',
+    });
   }
 
   async function consumeCompactEventStream(

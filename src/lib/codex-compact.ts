@@ -41,6 +41,12 @@ export type CompactCapabilityRuntime = {
   permissionMode?: string;
 };
 
+export type CompactReconcileResult = {
+  state: 'confirmed' | 'unconfirmed' | 'not_found' | 'error';
+  providerTurnId?: string;
+  providerItemId?: string;
+};
+
 const MAX_COMPACT_ERROR_CHARS = 2_000;
 
 export function compactCapabilityKey(runtime: CompactCapabilityRuntime): string {
@@ -111,6 +117,52 @@ export function findPendingCompactTurn(turns: ConversationTurn[]): ConversationT
     }
   }
   return null;
+}
+
+export function findUnconfirmedManualCompactTurn(
+  turns: ConversationTurn[],
+): ConversationTurn | null {
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const metadata = readCompactMetadata(turns[index]);
+    if (
+      metadata?.source === 'manual' &&
+      metadata.resolution !== 'skipped' &&
+      ['waiting', 'preparing', 'running'].includes(metadata.status)
+    ) {
+      return turns[index];
+    }
+  }
+  return null;
+}
+
+export function applyCompactReconcileResult(
+  turn: ConversationTurn,
+  result: CompactReconcileResult,
+  nowMs: number,
+): ConversationTurn {
+  const metadata = readCompactMetadata(turn);
+  if (
+    !metadata ||
+    metadata.source !== 'manual' ||
+    metadata.resolution === 'skipped' ||
+    !['waiting', 'preparing', 'running'].includes(metadata.status)
+  ) {
+    return turn;
+  }
+  if (result.state !== 'confirmed') {
+    return interruptUnconfirmedCompactTurn(turn, nowMs);
+  }
+  return applyCompactEvent([turn], {
+    type: 'context-compaction',
+    runId: `reconcile:${metadata.operationId}`,
+    operationId: metadata.operationId,
+    source: 'manual',
+    status: 'completed',
+    providerThreadId: metadata.providerThreadId,
+    providerTurnId: result.providerTurnId,
+    providerItemId: result.providerItemId,
+    atMs: nowMs,
+  })[0];
 }
 
 export function applyCompactEvent(

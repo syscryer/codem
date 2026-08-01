@@ -142,7 +142,7 @@ test('repairConversationTurn infers system kind for legacy compact history', () 
   assert.equal(repairConversationTurn(repaired), repaired);
 });
 
-test('normalizeTurnsForPersist interrupts unconfirmed compact operations', () => {
+test('normalizeTurnsForPersist preserves unconfirmed compact operations for restart reconciliation', () => {
   const waiting = createManualCompactTurn({
     operationId: 'compact-waiting',
     providerThreadId: 'provider-thread-1',
@@ -154,9 +154,10 @@ test('normalizeTurnsForPersist interrupts unconfirmed compact operations', () =>
   const [persisted] = normalizeTurnsForPersist([waiting]);
 
   assert.equal(persisted.kind, 'system');
-  assert.equal(persisted.status, 'stopped');
-  assert.equal(readCompactMetadata(persisted)?.status, 'interrupted');
-  assert.equal(readCompactMetadata(persisted)?.completedAtMs !== undefined, true);
+  assert.equal(persisted, waiting);
+  assert.equal(persisted.status, 'pending');
+  assert.equal(readCompactMetadata(persisted)?.status, 'waiting');
+  assert.equal(readCompactMetadata(persisted)?.completedAtMs, undefined);
 });
 
 test('late history snapshots cannot replace a completed local turn with stopped empty output', () => {

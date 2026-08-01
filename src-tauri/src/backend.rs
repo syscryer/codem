@@ -8437,7 +8437,14 @@ fn read_stored_thread_history(connection: &Connection, thread_id: &str) -> ApiRe
         .map(|(turn_id, mut turn)| {
             let mut items = item_buckets.remove(&turn_id).unwrap_or_default();
             items.sort_by_key(|(sort, _)| *sort);
-            turn["items"] = Value::Array(items.into_iter().map(|(_, item)| item).collect());
+            let items = items.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
+            if items.iter().any(|item| {
+                item.get("type").and_then(Value::as_str) == Some("system-command")
+                    && item.get("compact").is_some_and(Value::is_object)
+            }) {
+                turn["kind"] = Value::String("system".to_string());
+            }
+            turn["items"] = Value::Array(items);
             (*sort_keys.get(&turn_id).unwrap_or(&0), turn)
         })
         .collect();
@@ -20107,6 +20114,61 @@ mod tests {
         assert_eq!(restored[0]["items"][0]["text"], "先确认当前模型。");
         assert_eq!(restored[0]["items"][1]["type"], "text");
         assert_eq!(restored[0]["items"][1]["text"], "我是 MiniMax-M3。");
+    }
+
+    #[test]
+    fn thread_history_round_trip_preserves_compact_system_turn_without_schema_change() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        connection.execute(
+            "INSERT INTO projects (id, path, name, custom_name, created_at, updated_at) VALUES ('project', 'D:/workspace', 'workspace', 0, '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z')",
+            [],
+        ).expect("insert project");
+        let thread_id = create_thread_row(
+            &mut connection,
+            "project",
+            Some("Codex compact"),
+            OPENAI_CODEX_PROVIDER_ID,
+            Some("auto"),
+            Some("gpt-codex"),
+            None,
+            None,
+            true,
+        )
+        .expect("create thread");
+        let turns = vec![json!({
+            "id": "compact-turn-1",
+            "kind": "system",
+            "userText": "",
+            "assistantText": "",
+            "status": "running",
+            "tools": [],
+            "items": [{
+                "id": "compact-item-local-1",
+                "type": "system-command",
+                "command": "/compact",
+                "title": "压缩上下文",
+                "cardType": "compact",
+                "state": "running",
+                "compact": {
+                    "operationId": "compact-1",
+                    "source": "manual",
+                    "status": "running",
+                    "attempt": 1,
+                    "providerThreadId": "provider-thread-1",
+                    "requestedAtMs": 1754092800000_i64
+                }
+            }]
+        })];
+        write_thread_history(&mut connection, &thread_id, &turns).expect("write history");
+        let restored = read_stored_thread_history(&connection, &thread_id).expect("read history");
+        assert_eq!(restored[0]["kind"], "system");
+        assert_eq!(restored[0]["userText"], "");
+        assert_eq!(
+            restored[0]["items"][0]["compact"]["operationId"],
+            "compact-1"
+        );
+        assert_eq!(restored[0]["items"][0]["compact"]["status"], "running");
     }
 
     #[test]

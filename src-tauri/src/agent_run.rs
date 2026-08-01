@@ -13,8 +13,8 @@ use crate::{
         PI_AGENT_PROVIDER_ID,
     },
     codex_app_server::{
-        CodexAppServerError, CodexCompactCapability, CodexCompactionEvent, CodexRuntimeEvent,
-        CodexStdioClient, CodexUserInput,
+        CodexAppServerError, CodexCompactCapability, CodexCompactionEvent,
+        CodexCompactionHistoryState, CodexRuntimeEvent, CodexStdioClient, CodexUserInput,
     },
     pi_rpc::{PiImage, PiModel, PiPromptInput, PiRpcError, PiRuntimeEvent, PiState, PiStdioClient},
 };
@@ -434,6 +434,39 @@ struct StartAgentCompactRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReconcileAgentCompactRequest {
+    operation_id: String,
+    provider_id: String,
+    session_id: String,
+    working_directory: String,
+    permission_mode: Option<String>,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+    channel_id: Option<String>,
+    provider_turn_id: Option<String>,
+    provider_item_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AgentCompactReconcileState {
+    Confirmed,
+    Unconfirmed,
+    NotFound,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentCompactReconcileResponse {
+    state: AgentCompactReconcileState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_item_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CodexCompactCapabilityRequest {
     thread_id: String,
     session_id: String,
@@ -617,6 +650,10 @@ pub(crate) fn router(service: AgentRunService) -> Router {
         .route(
             "/api/agents/runtime/{thread_id}/compact",
             post(start_agent_compact),
+        )
+        .route(
+            "/api/agents/runtime/{thread_id}/compact/reconcile",
+            post(reconcile_agent_compact),
         )
         .route("/api/agents/run", post(start_agent_run))
         .route("/api/agents/run/{run_id}/events", get(agent_run_events))
@@ -1258,6 +1295,100 @@ async fn start_agent_compact(
         return Err(error);
     }
     build_event_stream(state, run_id, 0)
+}
+
+async fn reconcile_agent_compact(
+    State(state): State<AgentRunState>,
+    AxumPath(thread_id): AxumPath<String>,
+    Json(mut payload): Json<ReconcileAgentCompactRequest>,
+) -> AgentApiResult<Json<AgentCompactReconcileResponse>> {
+    let thread_id = required_id(&thread_id, "threadId")?;
+    if payload.provider_id.trim() != OPENAI_CODEX_PROVIDER_ID {
+        return Err(AgentApiError::bad_request(
+            "只有 OpenAI Codex 支持原生上下文压缩核对",
+        ));
+    }
+    payload.operation_id = required_id(&payload.operation_id, "operationId")?;
+    payload.session_id = required_id(&payload.session_id, "sessionId")?;
+    payload.provider_turn_id = normalize_optional_id(payload.provider_turn_id, "providerTurnId")?;
+    payload.provider_item_id = normalize_optional_id(payload.provider_item_id, "providerItemId")?;
+    ensure_compact_reconcile_runtime_idle(&state, &thread_id)?;
+
+    let compact_request = StartAgentCompactRequest {
+        operation_id: payload.operation_id,
+        provider_id: OPENAI_CODEX_PROVIDER_ID.to_string(),
+        session_id: payload.session_id.clone(),
+        working_directory: payload.working_directory,
+        permission_mode: payload.permission_mode,
+        model: payload.model,
+        reasoning_effort: payload.reasoning_effort,
+        channel_id: payload.channel_id,
+    };
+    let config = resolve_compact_runtime_config(&state, &thread_id, &compact_request)?;
+    let mut client = CodexStdioClient::spawn_with_options(
+        &config.command,
+        &config.working_directory,
+        &config.codex_config_args,
+        &config.environment,
+    )
+    .await
+    .map_err(|error| AgentApiError::internal(public_codex_error(error)))?;
+    let history = async {
+        client.initialize(env!("CARGO_PKG_VERSION")).await?;
+        client
+            .read_compaction_history(
+                &payload.session_id,
+                payload.provider_turn_id.as_deref(),
+                payload.provider_item_id.as_deref(),
+            )
+            .await
+    }
+    .await;
+    client.shutdown().await;
+
+    let response =
+        match history.map_err(|error| AgentApiError::internal(public_codex_error(error)))? {
+            CodexCompactionHistoryState::Confirmed(outcome) => AgentCompactReconcileResponse {
+                state: AgentCompactReconcileState::Confirmed,
+                provider_turn_id: Some(outcome.provider_turn_id),
+                provider_item_id: outcome.provider_item_id,
+            },
+            CodexCompactionHistoryState::Unconfirmed => AgentCompactReconcileResponse {
+                state: AgentCompactReconcileState::Unconfirmed,
+                provider_turn_id: payload.provider_turn_id,
+                provider_item_id: payload.provider_item_id,
+            },
+            CodexCompactionHistoryState::NotFound => AgentCompactReconcileResponse {
+                state: AgentCompactReconcileState::NotFound,
+                provider_turn_id: payload.provider_turn_id,
+                provider_item_id: payload.provider_item_id,
+            },
+        };
+    Ok(Json(response))
+}
+
+fn ensure_compact_reconcile_runtime_idle(
+    state: &AgentRunState,
+    thread_id: &str,
+) -> AgentApiResult<()> {
+    let runtimes = state
+        .runtimes
+        .lock()
+        .map_err(|_| AgentApiError::internal("锁定 Agent 热会话失败"))?;
+    let Some(runtime) = runtimes.get(thread_id) else {
+        return Ok(());
+    };
+    if runtime.current_run_id.is_some()
+        || matches!(
+            runtime.phase,
+            AgentRuntimePhase::Starting | AgentRuntimePhase::Running
+        )
+    {
+        return Err(AgentApiError::conflict(
+            "当前聊天已有 Agent 操作正在运行，无法核对上下文压缩历史",
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_compact_runtime_config(
@@ -5329,21 +5460,22 @@ mod tests {
     use super::{
         acp_arguments, acp_permission_policy, await_guide_ack, build_acp_prompt, build_codex_input,
         build_pi_prompt, cancelled_before_prompt_outcome, compact_capability_cache_key,
-        find_grok_runtime_error_detail, grok_acp_arguments, grok_acp_error_with_runtime_detail,
-        grok_uses_channel_credentials, guide_ack_response, normalize_agent_input,
-        normalize_guide_prompt, parse_opencode_models, pi_model_catalog, pi_model_parts,
-        pi_rpc_arguments, pi_usage_snapshot, probe_compact_capability_cached, public_acp_error,
-        public_codex_error, push_compact_failure_event, read_cached_agent_command,
-        read_cached_agent_model_catalog, runtime_can_reuse, sanitize_grok_runtime_error_detail,
-        should_retry_grok_channel_prompt, should_set_acp_model, store_cached_agent_command,
-        store_cached_agent_model_catalog, summarize_codex_compact_capability,
-        validate_compact_runtime_session, AcpEventMapper, AgentDriverInput, AgentDriverKind,
-        AgentInputContentBlock, AgentModelCatalog, AgentModelSummary, AgentRunRecord,
-        AgentRunService, AgentRunState, AgentRuntimeCommand, AgentRuntimeCompact,
+        ensure_compact_reconcile_runtime_idle, find_grok_runtime_error_detail, grok_acp_arguments,
+        grok_acp_error_with_runtime_detail, grok_uses_channel_credentials, guide_ack_response,
+        normalize_agent_input, normalize_guide_prompt, parse_opencode_models, pi_model_catalog,
+        pi_model_parts, pi_rpc_arguments, pi_usage_snapshot, probe_compact_capability_cached,
+        public_acp_error, public_codex_error, push_compact_failure_event,
+        read_cached_agent_command, read_cached_agent_model_catalog, runtime_can_reuse,
+        sanitize_grok_runtime_error_detail, should_retry_grok_channel_prompt, should_set_acp_model,
+        store_cached_agent_command, store_cached_agent_model_catalog,
+        summarize_codex_compact_capability, validate_compact_runtime_session, AcpEventMapper,
+        AgentCompactReconcileResponse, AgentCompactReconcileState, AgentDriverInput,
+        AgentDriverKind, AgentInputContentBlock, AgentModelCatalog, AgentModelSummary,
+        AgentRunRecord, AgentRunService, AgentRunState, AgentRuntimeCommand, AgentRuntimeCompact,
         AgentRuntimeConfig, AgentRuntimePhase, AgentRuntimeRecord, AgentRuntimeRun,
         CodexCompactCapabilityRequest, CodexEventMapper, CommandResolvers, GuideAckOutcome,
-        GuideAgentRunRequest, LiveAgentRuntime, PiEventMapper, RuntimeExecution,
-        StartAgentCompactRequest, StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL,
+        GuideAgentRunRequest, LiveAgentRuntime, PiEventMapper, ReconcileAgentCompactRequest,
+        RuntimeExecution, StartAgentCompactRequest, StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL,
         AUTOMATION_EXECUTION_CONTEXT, MODEL_CATALOG_CACHE_TTL,
     };
     use crate::{
@@ -6083,6 +6215,67 @@ mod tests {
             "unexpected": true
         }))
         .is_err());
+    }
+
+    #[test]
+    fn compact_reconcile_request_and_response_use_bounded_contracts() {
+        let request = serde_json::from_value::<ReconcileAgentCompactRequest>(json!({
+            "operationId": "compact-1",
+            "providerId": "openai-codex",
+            "sessionId": "provider-thread-1",
+            "workingDirectory": "D:/workspace",
+            "permissionMode": "default",
+            "model": "gpt-codex-default",
+            "reasoningEffort": "high",
+            "channelId": "channel-1",
+            "providerTurnId": "provider-turn-1",
+            "providerItemId": "provider-item-1"
+        }))
+        .expect("valid compact reconcile request");
+
+        assert_eq!(request.operation_id, "compact-1");
+        assert_eq!(request.provider_turn_id.as_deref(), Some("provider-turn-1"));
+        assert_eq!(request.provider_item_id.as_deref(), Some("provider-item-1"));
+        assert!(
+            serde_json::from_value::<ReconcileAgentCompactRequest>(json!({
+                "operationId": "compact-1",
+                "providerId": "openai-codex",
+                "sessionId": "provider-thread-1",
+                "workingDirectory": "D:/workspace",
+                "unexpected": true
+            }))
+            .is_err()
+        );
+
+        assert_eq!(
+            serde_json::to_value(AgentCompactReconcileResponse {
+                state: AgentCompactReconcileState::Confirmed,
+                provider_turn_id: Some("provider-turn-1".to_string()),
+                provider_item_id: Some("provider-item-1".to_string()),
+            })
+            .expect("serialize compact reconcile response"),
+            json!({
+                "state": "confirmed",
+                "providerTurnId": "provider-turn-1",
+                "providerItemId": "provider-item-1"
+            })
+        );
+    }
+
+    #[test]
+    fn compact_reconcile_rejects_active_runtime_operations() {
+        let state = test_run_state();
+        let (command, _commands) = mpsc::unbounded_channel();
+        insert_test_codex_runtime(
+            &state,
+            AgentRuntimePhase::Running,
+            Some("run-active"),
+            command,
+        );
+
+        let error = ensure_compact_reconcile_runtime_idle(&state, "thread-1")
+            .expect_err("active runtime must block reconcile");
+        assert_eq!(error.status, StatusCode::CONFLICT);
     }
 
     #[test]

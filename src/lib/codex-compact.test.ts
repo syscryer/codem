@@ -2,11 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
+  applyCompactReconcileResult,
   applyCompactEvent,
   compactCapabilityKey,
   createAutomaticCompactTurn,
   createManualCompactTurn,
   findPendingCompactTurn,
+  findUnconfirmedManualCompactTurn,
   getCompactAvailability,
   interruptUnconfirmedCompactTurn,
   prepareCompactTurn,
@@ -264,6 +266,46 @@ test('preparing a waiting compact updates the same card without incrementing att
   assert.equal(readCompactMetadata(preparing)?.attempt, 1);
 });
 
+test('restart reconciliation selects only the latest unfinished manual compact', () => {
+  const automatic = createAutomaticCompactTurn({
+    ...completedEvent('ignored'),
+    operationId: undefined,
+    source: 'automatic',
+    status: 'running',
+  }, 'D:/workspace');
+  const interrupted = interruptUnconfirmedCompactTurn(compactTurn('compact-old'), 200);
+  const waiting = createManualCompactTurn({
+    operationId: 'compact-waiting',
+    providerThreadId: 'provider-thread-1',
+    workspace: 'D:/workspace',
+    status: 'waiting',
+    nowMs: 300,
+  });
+
+  assert.equal(
+    findUnconfirmedManualCompactTurn([automatic, interrupted, waiting])?.id,
+    waiting.id,
+  );
+  assert.equal(findUnconfirmedManualCompactTurn([automatic, interrupted]), null);
+});
+
+test('restart reconciliation updates the existing compact card without adding a turn', () => {
+  const running = compactTurn('compact-1');
+  const confirmed = applyCompactReconcileResult(running, {
+    state: 'confirmed',
+    providerTurnId: 'provider-turn-recovered',
+    providerItemId: 'provider-item-recovered',
+  }, 500);
+  const interrupted = applyCompactReconcileResult(running, { state: 'not_found' }, 600);
+
+  assert.equal(confirmed.id, running.id);
+  assert.equal(readCompactMetadata(confirmed)?.status, 'completed');
+  assert.equal(readCompactMetadata(confirmed)?.providerTurnId, 'provider-turn-recovered');
+  assert.equal(readCompactMetadata(confirmed)?.providerItemId, 'provider-item-recovered');
+  assert.equal(interrupted.id, running.id);
+  assert.equal(readCompactMetadata(interrupted)?.status, 'interrupted');
+});
+
 test('useAgentRun routes compact lifecycle before ordinary turn events', () => {
   assert.match(
     useAgentRunSource,
@@ -275,4 +317,10 @@ test('useAgentRun routes compact lifecycle before ordinary turn events', () => {
   );
   assert.match(useAgentRunSource, /\/api\/agents\/codex\/compact-capability/);
   assert.match(useAgentRunSource, /\/api\/agents\/runtime\/\$\{encodeURIComponent\(thread\.id\)\}\/compact/);
+  assert.match(useAgentRunSource, /reconciledCompactOperationIdsRef/);
+  assert.match(useAgentRunSource, /\/compact\/reconcile/);
+  const reconcileFunction = useAgentRunSource.match(
+    /async function reconcilePersistedCompactOperation[\s\S]*?\n  function [a-zA-Z]/,
+  )?.[0] ?? '';
+  assert.doesNotMatch(reconcileFunction, /requestThreadCompaction|startCompactRequest/);
 });

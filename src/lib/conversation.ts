@@ -9,7 +9,6 @@ import type {
   UsageSnapshot,
 } from '../types';
 import {
-  interruptUnconfirmedCompactTurn,
   readCompactMetadata,
 } from './codex-compact';
 
@@ -132,7 +131,7 @@ export function normalizeTurnsForPersist(turns: ConversationTurn[]) {
 
     const compact = readCompactMetadata(turn);
     if (compact && ['waiting', 'preparing', 'running'].includes(compact.status)) {
-      return interruptUnconfirmedCompactTurn(turn, Date.now());
+      return turn;
     }
 
     return closeTurnWithoutTerminalEvent(turn);

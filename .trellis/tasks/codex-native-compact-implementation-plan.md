@@ -956,7 +956,7 @@ git commit -m "feat: coordinate Codex compact operations"
 - Modify: `src/lib/claude-slash-system-commands.test.ts`
 - Modify: `src/lib/slash-command-filter.test.ts`
 
-- [ ] **Step 1: 写双入口和 system turn UI 失败测试**
+- [x] **Step 1: 写双入口和 system turn UI 失败测试**
 
 ```ts
 test('Codex compact slash command uses the native coordinator while Claude keeps its submission', () => {
@@ -986,13 +986,13 @@ test('system turns do not render fake user or assistant labels', () => {
 });
 ```
 
-- [ ] **Step 2: 运行 UI contract tests 并确认失败**
+- [x] **Step 2: 运行 UI contract tests 并确认失败**
 
 Run: `node --import tsx --test src/lib/codex-compact-ui.test.ts src/lib/claude-slash-system-commands.test.ts`
 
 Expected: FAIL，尚未接线。
 
-- [ ] **Step 3: 改接 `/compact` 且保留 Claude 行为**
+- [x] **Step 3: 改接 `/compact` 且保留 Claude 行为**
 
 先把 backend builtin command 的 description 改为 Provider 中立文案，并让该命令单独返回
 `agentScope: ["claude", "codex"]`；`/context`、`/cost` 与其他 Claude commands 保持原 scope。不要把
@@ -1030,7 +1030,7 @@ if (command.localActionId === 'compact-thread') {
 
 旧 Codex CLI、checking/error、无 session、已有 compact 时该命令不会进入普通 prompt 提交。
 
-- [ ] **Step 4: 在上下文弹层增加统一按钮**
+- [x] **Step 4: 在上下文弹层增加统一按钮**
 
 `ComposerContextIndicatorProps` 增加 `compactAvailability` 和 `onCompactContext`。按钮使用 lucide `Minimize2`，disabled/title/aria-label 都来自同一个 availability：
 
@@ -1049,15 +1049,15 @@ if (command.localActionId === 'compact-thread') {
 
 该按钮仅在 active Provider 为 Codex 时展示；Claude 保持当前弹层，不新增第二套 compact handler。
 
-- [ ] **Step 5: 渲染 system turn 与 compact actions**
+- [x] **Step 5: 渲染 system turn 与 compact actions**
 
 `ConversationTurnViewComponent` 在普通 message 布局前增加 system 分支，内部仍复用 `SystemCommandCard`。`SystemCommandCard` 增加 `onRetryCompact`、`onSkipCompact`；manual failed/interrupted 显示 lucide `RotateCcw` 图标按钮（带 tooltip）和文字命令“跳过并继续”，automatic 不显示 skip。状态文案固定映射：等待、准备中、压缩中、已完成、失败、已中断、失败后已跳过。
 
-- [ ] **Step 6: 增加主题一致的样式**
+- [x] **Step 6: 增加主题一致的样式**
 
 新增 class 只使用现有主题变量，例如 `--surface-*`、`--border-*`、`--text-*`、`--accent-*`；卡片圆角不超过现有系统卡片；动作按钮尺寸稳定，不因文字或 loading 改变布局。同步检查 light/dark、comfortable/compact、desktop/web，禁止硬编码蓝色 focus ring。
 
-- [ ] **Step 7: 运行 UI tests、typecheck 和 build**
+- [x] **Step 7: 运行 UI tests、typecheck 和 build**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml slash_command_catalog_exposes_compact_to_claude_and_codex_only`
 
@@ -1075,7 +1075,7 @@ Run: `npm run build`
 
 Expected: PASS，Vite 输出 production assets。
 
-- [ ] **Step 8: 提交双入口与卡片**
+- [x] **Step 8: 提交双入口与卡片**
 
 ```powershell
 git add -- src/App.tsx src-tauri/src/backend.rs src/components/Composer.tsx src/components/ComposerContextIndicator.tsx src/components/ConversationPane.tsx src/components/ConversationTurn.tsx src/styles.css src/lib/codex-compact-ui.test.ts src/lib/claude-slash-system-commands.test.ts src/lib/slash-command-filter.test.ts
@@ -1088,11 +1088,15 @@ git commit -m "feat: add Codex compact controls and card"
 - Modify: `src-tauri/src/codex_app_server.rs`
 - Modify: `src-tauri/src/agent_run.rs`
 - Modify: `src-tauri/src/backend.rs`
+- Modify: `src/App.tsx`
 - Modify: `src/hooks/useAgentRun.ts`
+- Modify: `src/lib/codex-compact.ts`
+- Modify: `src/lib/codex-compact.test.ts`
+- Modify: `src/lib/conversation.ts`
 - Modify: `src/lib/conversation.test.ts`
 - Test: `src-tauri/src/backend.rs` 内测试模块
 
-- [ ] **Step 1: 写 native history read 失败测试**
+- [x] **Step 1: 写 native history read 失败测试**
 
 Codex mock 测试固定请求：
 
@@ -1111,7 +1115,7 @@ providerItemId 时按 item 与所属 turn 核对；两个 ID 都没有时返回 
 找不到返回 NotFound；同 item 位于 failed/interrupted/inProgress turn 时返回 Unconfirmed，不把 request accepted
 当完成。
 
-- [ ] **Step 2: 实现 `read_compaction_history`**
+- [x] **Step 2: 实现 `read_compaction_history`**
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1124,7 +1128,7 @@ pub enum CodexCompactionHistoryState {
 
 `thread/read` 使用 `includeTurns=true`，只提取 thread/turn/item ID 和 status；不把 user/assistant 内容、compact 正文或原始 JSON 写入日志和 API。
 
-- [ ] **Step 3: 写 SQLite JSON round-trip 失败测试**
+- [x] **Step 3: 写 SQLite JSON round-trip 失败测试**
 
 ```rust
 #[test]
@@ -1179,11 +1183,11 @@ fn thread_history_round_trip_preserves_compact_system_turn_without_schema_change
 }
 ```
 
-- [ ] **Step 4: 恢复 system kind 而不迁移数据库**
+- [x] **Step 4: 恢复 system kind 而不迁移数据库**
 
 `write_thread_history` 继续把 system-command item 序列化到现有 content JSON；`read_stored_thread_history` 观察到带 `compact` metadata 的 system-command item 时设置 `turn["kind"]="system"`。不新增 column/table，不把 kind 塞进 userText，不改普通 system command 的旧展示语义。
 
-- [ ] **Step 5: 新增只读 reconcile route**
+- [x] **Step 5: 新增只读 reconcile route**
 
 路由固定为：
 
@@ -1196,11 +1200,11 @@ fn thread_history_round_trip_preserves_compact_system_turn_without_schema_change
 
 请求携带 operationId、sessionId、workspace/channel config 和可用 providerTurnId/providerItemId。handler 先确认该 CodeM thread 没有 active runtime operation，再启动 Codex App Server、initialize、`thread/read(includeTurns=true)`；response thread.id 必须等于 sessionId。响应只返回 `{state:'confirmed'|'unconfirmed'|'not_found', providerTurnId?, providerItemId?}`。整个路径不调用 `thread/compact/start`。
 
-- [ ] **Step 6: 前端仅在历史加载后核对未终结卡片**
+- [x] **Step 6: 前端仅在历史加载后核对未终结卡片**
 
 `useAgentRun` 接收 active thread detail/historyLoaded。发现 waiting/preparing/running 时只调用 reconcile：confirmed 原位 completed；unconfirmed/not_found/error 原位 interrupted 并提供 retry；同一 operation ID 每次应用进程只核对一次。任何结果都不自动调用 `requestThreadCompaction`。
 
-- [ ] **Step 7: 运行恢复与持久化测试**
+- [x] **Step 7: 运行恢复与持久化测试**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml compaction_history -- --nocapture`
 

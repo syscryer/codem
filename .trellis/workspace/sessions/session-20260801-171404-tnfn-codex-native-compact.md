@@ -5,6 +5,10 @@
 - Task: .trellis/tasks/codex-native-compact.md
 
 ## Notes
+- 2026-08-01T20:26:31.350Z 完成 Task 8：新增 Codex thread/read(includeTurns=true) 历史确认、SQLite system compact round-trip、专用 compact/reconcile 只读路由，以及 historyLoaded 后每 operationId 单次原位恢复；App.tsx 仅透传 active ThreadDetail，codex-compact 纯函数保证不新增卡片、不自动重放 thread/compact/start。
+
+- 2026-08-01T20:02:47.728Z Task 7 已完成并提交 d705ebd（feat: add Codex compact controls and card）。
+- 2026-08-01T20:01:08.427Z Task 7 已接入 Codex 原生 /compact 双入口、能力感知上下文按钮、独立 system turn 卡片，以及 manual failed/interrupted 的重试和跳过继续；Claude /compact 保持普通提交语义。
 
 - 2026-08-01T19:40:29.668Z 完成 Task 6：新增 Codex compact capability 进程内缓存与 API，热 runtime 自校验能力；useAgentRun 接入按 runtime key 的能力状态、统一 manual compact NDJSON coordinator、automatic 事件卡片、terminal done 队列释放与失败屏障。
 - 2026-08-01T19:18:11.380Z 完成 Task 5：getQueuedPromptContinuationState 新增 compact barrier 优先级；useAgentRun 按 thread 维护 compact operation 与暂停 continuation，普通 turn done 先检查 waiting compact，active compact 时不 shift 普通队列。
@@ -39,6 +43,18 @@
 - 2026-08-01T17:14:04.617Z Session started.
 
 ## Verification
+
+- 2026-08-01T20:26:34.756Z `npm run typecheck + cargo fmt --manifest-path src-tauri/Cargo.toml --check + git diff --check`: PASS：TypeScript 无错误，Rust 格式与 diff whitespace 门禁通过。
+- 2026-08-01T20:26:34.079Z `node --import tsx --test src/lib/codex-compact.test.ts src/lib/conversation.test.ts`: PASS：40 个 Compact 恢复与 conversation 历史用例，0 失败。
+
+- 2026-08-01T20:26:33.371Z `cargo test --manifest-path src-tauri/Cargo.toml thread_history_round_trip_preserves_compact_system_turn_without_schema_change -- --nocapture`: PASS：1 个 SQLite JSON round-trip 用例，0 失败。
+- 2026-08-01T20:26:32.691Z `cargo test --manifest-path src-tauri/Cargo.toml compact_reconcile -- --nocapture`: PASS：2 个 reconcile contract 与 active runtime 冲突用例，0 失败。
+
+- 2026-08-01T20:26:32.009Z `cargo test --manifest-path src-tauri/Cargo.toml compaction_history -- --nocapture`: PASS：4 个 thread/read 历史确认用例，0 失败。
+- 2026-08-01T20:01:35.238Z `cargo fmt --check + npm run typecheck + npm run build + git diff --check`: 全部通过；Vite 2564 modules transformed，production assets 已生成
+
+- 2026-08-01T20:01:25.851Z `cargo test --manifest-path src-tauri/Cargo.toml slash_command_catalog_exposes_compact_to_claude_and_codex_only -- --nocapture`: PASS：1 test，0 failures
+- 2026-08-01T20:01:17.538Z `node --import tsx --test src/lib/codex-compact-ui.test.ts src/lib/claude-slash-system-commands.test.ts src/lib/slash-command-filter.test.ts`: PASS：11 tests，0 failures
 
 - 2026-08-01T19:41:49.236Z `npm run typecheck`: 通过：Task 6 capability 与 compact coordinator 类型检查无错误。
 - 2026-08-01T19:41:41.679Z `node --import tsx --test src/lib/codex-compact.test.ts src/lib/queued-prompts.test.ts`: 通过：50 个 compact coordinator、automatic 事件与队列屏障用例，0 失败。

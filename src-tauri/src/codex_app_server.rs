@@ -218,6 +218,13 @@ pub struct CodexCompactionOutcome {
     pub provider_item_id: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CodexCompactionHistoryState {
+    Confirmed(CodexCompactionOutcome),
+    Unconfirmed,
+    NotFound,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "type")]
 pub enum CodexUserInput {
@@ -653,6 +660,75 @@ where
                 });
             }
         }
+    }
+
+    pub async fn read_compaction_history(
+        &mut self,
+        thread_id: &str,
+        provider_turn_id: Option<&str>,
+        provider_item_id: Option<&str>,
+    ) -> Result<CodexCompactionHistoryState, CodexAppServerError> {
+        if provider_turn_id.is_none() && provider_item_id.is_none() {
+            return Ok(CodexCompactionHistoryState::Unconfirmed);
+        }
+        let result = self
+            .request(
+                "thread/read",
+                json!({
+                    "threadId": thread_id,
+                    "includeTurns": true,
+                }),
+                REQUEST_TIMEOUT,
+            )
+            .await?;
+        let thread = result.get("thread").ok_or_else(|| {
+            CodexAppServerError::Protocol("thread/read 响应缺少 thread".to_string())
+        })?;
+        let response_thread_id = thread.get("id").and_then(Value::as_str).ok_or_else(|| {
+            CodexAppServerError::Protocol("thread/read 响应缺少 thread.id".to_string())
+        })?;
+        if response_thread_id != thread_id {
+            return Err(CodexAppServerError::Protocol(
+                "thread/read 响应 thread.id 与请求不一致".to_string(),
+            ));
+        }
+        let turns = thread
+            .get("turns")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                CodexAppServerError::Protocol("thread/read 响应缺少 thread.turns".to_string())
+            })?;
+        for turn in turns {
+            let Some(turn_id) = turn.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if provider_turn_id.is_some_and(|expected| expected != turn_id) {
+                continue;
+            }
+            let Some(items) = turn.get("items").and_then(Value::as_array) else {
+                continue;
+            };
+            for item in items {
+                if item.get("type").and_then(Value::as_str) != Some("contextCompaction") {
+                    continue;
+                }
+                let item_id = item.get("id").and_then(Value::as_str);
+                if provider_item_id.is_some_and(|expected| Some(expected) != item_id) {
+                    continue;
+                }
+                if turn.get("status").and_then(Value::as_str) != Some("completed") {
+                    return Ok(CodexCompactionHistoryState::Unconfirmed);
+                }
+                return Ok(CodexCompactionHistoryState::Confirmed(
+                    CodexCompactionOutcome {
+                        provider_thread_id: response_thread_id.to_string(),
+                        provider_turn_id: turn_id.to_string(),
+                        provider_item_id: item_id.map(ToString::to_string),
+                    },
+                ));
+            }
+        }
+        Ok(CodexCompactionHistoryState::NotFound)
     }
 
     pub async fn run_turn<F>(
@@ -1294,6 +1370,17 @@ impl CodexStdioClient {
         F: FnMut(CodexCompactionEvent),
     {
         self.connection.start_compaction(thread_id, on_event).await
+    }
+
+    pub async fn read_compaction_history(
+        &mut self,
+        thread_id: &str,
+        provider_turn_id: Option<&str>,
+        provider_item_id: Option<&str>,
+    ) -> Result<CodexCompactionHistoryState, CodexAppServerError> {
+        self.connection
+            .read_compaction_history(thread_id, provider_turn_id, provider_item_id)
+            .await
     }
 
     pub async fn run_turn<F>(
@@ -2482,6 +2569,159 @@ mod tests {
             client.await.expect("probe task"),
             Err(CodexAppServerError::Rpc { code: -32603, .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn compaction_history_confirms_matching_turn_and_item_ids() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client = tokio::spawn(async move {
+            connection
+                .read_compaction_history(
+                    "provider-thread-1",
+                    Some("compact-turn-1"),
+                    Some("compact-item-1"),
+                )
+                .await
+        });
+
+        let request = read_wire(&mut lines).await;
+        assert_eq!(request["method"], "thread/read");
+        assert_eq!(
+            request["params"],
+            json!({ "threadId": "provider-thread-1", "includeTurns": true })
+        );
+        write_wire(
+            &mut writer,
+            json!({
+                "id": request["id"],
+                "result": {
+                    "thread": {
+                        "id": "provider-thread-1",
+                        "turns": [
+                            {
+                                "id": "other-turn",
+                                "status": "completed",
+                                "items": [{ "id": "other-item", "type": "contextCompaction" }]
+                            },
+                            {
+                                "id": "compact-turn-1",
+                                "status": "completed",
+                                "items": [{ "id": "compact-item-1", "type": "contextCompaction" }]
+                            }
+                        ]
+                    }
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            client.await.expect("history task").expect("history result"),
+            CodexCompactionHistoryState::Confirmed(CodexCompactionOutcome {
+                provider_thread_id: "provider-thread-1".to_string(),
+                provider_turn_id: "compact-turn-1".to_string(),
+                provider_item_id: Some("compact-item-1".to_string()),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_history_resolves_a_single_saved_provider_id() {
+        for (provider_turn_id, provider_item_id) in [
+            (Some("compact-turn-1"), None),
+            (None, Some("compact-item-1")),
+        ] {
+            let (mut connection, mut lines, mut writer) = mock_connection();
+            let client = tokio::spawn(async move {
+                connection
+                    .read_compaction_history(
+                        "provider-thread-1",
+                        provider_turn_id,
+                        provider_item_id,
+                    )
+                    .await
+            });
+            let request = read_wire(&mut lines).await;
+            write_wire(
+                &mut writer,
+                json!({
+                    "id": request["id"],
+                    "result": {
+                        "thread": {
+                            "id": "provider-thread-1",
+                            "turns": [{
+                                "id": "compact-turn-1",
+                                "status": "completed",
+                                "items": [{ "id": "compact-item-1", "type": "contextCompaction" }]
+                            }]
+                        }
+                    }
+                }),
+            )
+            .await;
+            assert!(matches!(
+                client.await.expect("history task").expect("history result"),
+                CodexCompactionHistoryState::Confirmed(_)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn compaction_history_without_provider_ids_stays_unconfirmed() {
+        let (mut connection, _lines, _writer) = mock_connection();
+        assert_eq!(
+            connection
+                .read_compaction_history("provider-thread-1", None, None)
+                .await
+                .expect("history result"),
+            CodexCompactionHistoryState::Unconfirmed
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_history_distinguishes_unconfirmed_from_not_found() {
+        for (status, expected) in [
+            ("failed", CodexCompactionHistoryState::Unconfirmed),
+            ("completed", CodexCompactionHistoryState::NotFound),
+        ] {
+            let (mut connection, mut lines, mut writer) = mock_connection();
+            let client = tokio::spawn(async move {
+                connection
+                    .read_compaction_history(
+                        "provider-thread-1",
+                        Some("compact-turn-1"),
+                        Some("compact-item-1"),
+                    )
+                    .await
+            });
+            let request = read_wire(&mut lines).await;
+            let (turn_id, item_id) = if status == "completed" {
+                ("different-turn", "different-item")
+            } else {
+                ("compact-turn-1", "compact-item-1")
+            };
+            write_wire(
+                &mut writer,
+                json!({
+                    "id": request["id"],
+                    "result": {
+                        "thread": {
+                            "id": "provider-thread-1",
+                            "turns": [{
+                                "id": turn_id,
+                                "status": status,
+                                "items": [{ "id": item_id, "type": "contextCompaction" }]
+                            }]
+                        }
+                    }
+                }),
+            )
+            .await;
+            assert_eq!(
+                client.await.expect("history task").expect("history result"),
+                expected
+            );
+        }
     }
 
     #[tokio::test]
