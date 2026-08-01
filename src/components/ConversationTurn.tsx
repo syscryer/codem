@@ -104,6 +104,8 @@ function ConversationTurnViewComponent({
   onEditUserMessage,
   onDeleteTurn,
   onRegenerateTurn,
+  onRetryCompact,
+  onSkipCompact,
 }: {
   turn: ConversationTurn;
   nowMs: number;
@@ -139,6 +141,8 @@ function ConversationTurnViewComponent({
   onEditUserMessage?: (turn: ConversationTurn) => void;
   onDeleteTurn?: (turn: ConversationTurn) => void;
   onRegenerateTurn?: (turn: ConversationTurn) => void;
+  onRetryCompact?: (turn: ConversationTurn) => Promise<boolean> | boolean;
+  onSkipCompact?: (turn: ConversationTurn) => Promise<boolean> | boolean;
 }) {
   const [imagePreview, setImagePreview] = useState<ImagePreviewItem | null>(null);
   const [intermediateProcessExpanded, setIntermediateProcessExpanded] = useState(false);
@@ -214,6 +218,25 @@ function ConversationTurnViewComponent({
   const hasUserContentBlocks = Boolean(turn.userContentBlocks?.length);
   const hasUserAttachments = Boolean(turn.userAttachments?.length);
   const conversationWorkspace = resolveConversationTurnWorkspace(turn.workspace, activeProject?.path);
+
+  if (turn.kind === 'system') {
+    return (
+      <article className={`turn system-turn ${isLatest ? 'latest-turn' : ''}`}>
+        <section className="system-turn-content" aria-label="系统事件">
+          {turn.items.map((item) => item.type === 'system-command' ? (
+            <SystemCommandCard
+              key={item.id}
+              item={item}
+              onPreviewImage={setImagePreview}
+              onRetryCompact={onRetryCompact ? () => onRetryCompact(turn) : undefined}
+              onSkipCompact={onSkipCompact ? () => onSkipCompact(turn) : undefined}
+            />
+          ) : null)}
+        </section>
+        {imagePreview ? <ImagePreviewDialog preview={imagePreview} onClose={() => setImagePreview(null)} /> : null}
+      </article>
+    );
+  }
 
   return (
     <article className={`turn ${isLatest ? 'latest-turn' : ''}`}>
@@ -690,12 +713,36 @@ function ThinkingMessage({ content, label }: { content: string; label: string })
 function SystemCommandCard({
   item,
   onPreviewImage,
+  onRetryCompact,
+  onSkipCompact,
 }: {
   item: SystemCommandItem;
   onPreviewImage: (preview: ImagePreviewItem) => void;
+  onRetryCompact?: () => Promise<boolean> | boolean;
+  onSkipCompact?: () => Promise<boolean> | boolean;
 }) {
+  const [pendingCompactAction, setPendingCompactAction] = useState<'retry' | 'skip' | null>(null);
   const detailText = formatSystemCommandDetails(item.details);
   const Icon = getSystemCommandIcon(item.cardType);
+  const showCompactActions = item.compact?.source === 'manual'
+    && item.compact.resolution !== 'skipped'
+    && ['failed', 'interrupted'].includes(item.compact.status)
+    && Boolean(onRetryCompact || onSkipCompact);
+
+  async function runCompactAction(
+    action: 'retry' | 'skip',
+    callback: (() => Promise<boolean> | boolean) | undefined,
+  ) {
+    if (!callback || pendingCompactAction) {
+      return;
+    }
+    setPendingCompactAction(action);
+    try {
+      await callback();
+    } finally {
+      setPendingCompactAction(null);
+    }
+  }
 
   return (
     <section className={`system-command-card is-${item.state}`}>
@@ -709,13 +756,39 @@ function SystemCommandCard({
           </strong>
           {shouldShowSystemCommandCode(item) ? <code>{item.command}</code> : null}
         </div>
-        <span className="system-command-card-state">{formatSystemCommandState(item.state)}</span>
+        <span className="system-command-card-state">{formatSystemCommandState(item)}</span>
       </div>
       {item.summary ? <div className="system-command-card-summary preserve-format">{item.summary}</div> : null}
       {item.attachments?.length ? (
         <UserAttachmentGallery attachments={item.attachments} onPreviewImage={onPreviewImage} />
       ) : null}
       {item.errorMessage ? <div className="system-command-card-error preserve-format">{item.errorMessage}</div> : null}
+      {showCompactActions ? (
+        <div className="system-command-card-actions">
+          {onRetryCompact ? (
+            <button
+              type="button"
+              className="system-command-card-icon-action"
+              disabled={pendingCompactAction !== null}
+              title="重试压缩"
+              aria-label="重试压缩"
+              onClick={() => void runCompactAction('retry', onRetryCompact)}
+            >
+              <RotateCcw size={14} className={pendingCompactAction === 'retry' ? 'spin-icon' : undefined} />
+            </button>
+          ) : null}
+          {onSkipCompact ? (
+            <button
+              type="button"
+              className="system-command-card-text-action"
+              disabled={pendingCompactAction !== null}
+              onClick={() => void runCompactAction('skip', onSkipCompact)}
+            >
+              跳过并继续
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {detailText ? (
         <details className="system-command-card-details">
           <summary>详情</summary>
@@ -2662,12 +2735,34 @@ function getToolTypeIcon(toolName: string) {
   return Wrench;
 }
 
-function formatSystemCommandState(state: SystemCommandItem['state']) {
-  if (state === 'running') {
+function formatSystemCommandState(item: SystemCommandItem) {
+  if (item.compact?.resolution === 'skipped') {
+    return '失败后已跳过';
+  }
+  if (item.compact) {
+    switch (item.compact.status) {
+      case 'waiting':
+        return '等待';
+      case 'preparing':
+        return '准备中';
+      case 'running':
+        return '压缩中';
+      case 'completed':
+        return '已完成';
+      case 'failed':
+        return '失败';
+      case 'interrupted':
+        return '已中断';
+    }
+  }
+  if (item.state === 'waiting') {
+    return '等待';
+  }
+  if (item.state === 'running') {
     return '运行中';
   }
 
-  if (state === 'error') {
+  if (item.state === 'error') {
     return '失败';
   }
 

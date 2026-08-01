@@ -39,6 +39,7 @@ import {
   getCompactAvailability,
   prepareCompactTurn,
   retryCompactTurn,
+  skipCompactTurn,
   type CompactCapabilityRuntime,
 } from '../lib/codex-compact';
 import {
@@ -1335,6 +1336,24 @@ export function useAgentRun({
     return startCompactRequest(operation);
   }
 
+  function skipThreadCompaction(thread: ThreadSummary): boolean {
+    const operation = compactOperationsByThreadIdRef.current.get(thread.id);
+    if (!operation || !['failed', 'interrupted'].includes(operation.status)) {
+      showToast('当前没有可跳过的上下文压缩。', 'info');
+      return false;
+    }
+    updateThreadTurn(
+      thread.id,
+      operation.turnId,
+      (turn) => skipCompactTurn(turn, Date.now()),
+      thread,
+    );
+    schedulePersistThreadHistory(thread.id, { urgent: true });
+    compactOperationsByThreadIdRef.current.delete(thread.id);
+    releaseQueueAfterCompact(thread.id, operation);
+    return true;
+  }
+
   async function startCompactRequest(operation: CompactOperationContext): Promise<boolean> {
     operation.status = 'preparing';
     updateThreadTurn(operation.thread.id, operation.turnId, prepareCompactTurn, operation.thread);
@@ -1433,7 +1452,7 @@ export function useAgentRun({
           terminal = true;
           operation.terminalConfirmed = true;
           if (operation.status === 'completed') {
-            releaseQueueAfterCompact(operation.thread.id);
+            releaseQueueAfterCompact(operation.thread.id, operation);
           } else {
             failCompactOperation(operation, '压缩请求已结束，但未收到原生完成事件');
           }
@@ -1496,12 +1515,36 @@ export function useAgentRun({
     showToast(message, 'error');
   }
 
-  function releaseQueueAfterCompact(threadId: string) {
+  function releaseQueueAfterCompact(
+    threadId: string,
+    operation?: CompactOperationContext,
+  ) {
     const continuation = pausedQueueAfterCompactByThreadIdRef.current.get(threadId);
     pausedQueueAfterCompactByThreadIdRef.current.delete(threadId);
     if (continuation) {
       maybeStartQueuedPrompt(continuation);
+      return;
     }
+    if (!operation) {
+      return;
+    }
+    const nextPrompt = shiftQueuedPrompt(threadId);
+    if (!nextPrompt) {
+      return;
+    }
+    const thread = threadSummariesByIdRef.current.get(threadId) ?? operation.thread;
+    window.setTimeout(() => {
+      const started = startAgentRun(
+        thread,
+        nextPrompt,
+        (operation.runtime.permissionMode as PermissionMode | undefined) ?? permissionModeRef.current,
+        operation.runtime.model,
+        operation.runtime.reasoningEffort,
+      );
+      if (!started) {
+        restoreQueuedPrompt(threadId, nextPrompt);
+      }
+    }, 0);
   }
 
   function notifyQueuedPromptsRetained(threadId: string) {
@@ -2253,6 +2296,7 @@ export function useAgentRun({
     queuedPrompts,
     compactCapability,
     requestThreadCompaction,
+    skipThreadCompaction,
     removeQueuedPrompt,
     recallQueuedPrompt,
     guideQueuedPrompt,

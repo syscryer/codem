@@ -28,6 +28,7 @@ import { getAgentModelForSelection } from '../lib/agent-model-selection';
 import { agentChannelTemplate, enabledAgentChannels, SYSTEM_AGENT_CHANNEL_ID, systemAgentChannelTemplate } from '../lib/agent-channel-selection';
 import { modelContext1mMenuActionLabel, modelMenuDescriptionLabel, modelMenuPrimaryLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
 import { getQueuedPromptGuideSelection, type QueuedPromptStatus } from '../lib/queued-prompts';
+import type { CompactAvailability } from '../lib/codex-compact';
 import type { AgentChannel, AgentModelCatalog, AgentModelOption, AgentProviderDescriptor, AgentSystemChannel, AgentType, AiChatReasoningEffort, AiKnowledgeBaseSummary, AiProviderTemplate, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, McpServerSummary, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingComposerAttachment =
@@ -123,6 +124,7 @@ type ComposerProps = {
   ordinaryWebSearchAvailable?: boolean;
   turns: ConversationTurn[];
   claudeContextState?: ClaudeContextRequestState;
+  compactAvailability?: CompactAvailability;
   isRunning: boolean;
   isInterrupting?: boolean;
   draftScopeKey: string;
@@ -169,6 +171,7 @@ type ComposerProps = {
   onStopRun: () => void | Promise<void>;
   onRunSlashSystemCommand: (command: SlashCommand, submittedText: string) => Promise<void> | void;
   onRefreshClaudeContext: () => Promise<void> | void;
+  onCompactContext?: () => Promise<boolean> | boolean;
 };
 
 export function Composer({
@@ -207,6 +210,7 @@ export function Composer({
   ordinaryWebSearchAvailable = false,
   turns,
   claudeContextState,
+  compactAvailability,
   isRunning,
   isInterrupting = false,
   draftScopeKey,
@@ -240,6 +244,7 @@ export function Composer({
   onStopRun,
   onRunSlashSystemCommand,
   onRefreshClaudeContext,
+  onCompactContext,
 }: ComposerProps) {
   const [draft, setLocalDraft] = useState(persistedDraft);
   const [attachments, setAttachments] = useState<PendingComposerAttachment[]>([]);
@@ -2034,6 +2039,13 @@ export function Composer({
                       <span className="model-trigger-chevron" aria-hidden="true" />
                     </button>
                   </div>
+                ) : null}
+                {agent === 'codex' && compactAvailability ? (
+                  <ComposerContextIndicator
+                    usage={contextUsage}
+                    compactAvailability={compactAvailability}
+                    onCompactContext={onCompactContext}
+                  />
                 ) : null}
               </>
             )}

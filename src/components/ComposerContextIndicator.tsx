@@ -1,9 +1,10 @@
-import { Activity } from 'lucide-react';
+import { Activity, Minimize2 } from 'lucide-react';
 import { useRef, useState, type CSSProperties } from 'react';
 
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { PopoverPortal } from './PopoverPortal';
 import type { ComposerContextUsage } from '../lib/composer-context-usage';
+import type { CompactAvailability } from '../lib/codex-compact';
 import type { ClaudeContextRequestState, ClaudeContextSnapshot } from '../types';
 
 type ComposerContextIndicatorProps = {
@@ -12,6 +13,8 @@ type ComposerContextIndicatorProps = {
   nativeContextStatus?: ClaudeContextRequestState['status'];
   onRefreshClaudeContext?: () => void | Promise<void>;
   shouldRefreshClaudeContextOnOpen?: boolean;
+  compactAvailability?: CompactAvailability;
+  onCompactContext?: () => boolean | Promise<boolean>;
 };
 
 const levelColors: Record<ComposerContextUsage['level'], string> = {
@@ -28,6 +31,8 @@ export function ComposerContextIndicator({
   nativeContextStatus = 'idle',
   onRefreshClaudeContext,
   shouldRefreshClaudeContextOnOpen = false,
+  compactAvailability,
+  onCompactContext,
 }: ComposerContextIndicatorProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -103,6 +108,11 @@ export function ComposerContextIndicator({
       ]
     : [];
   const showNativeSection = Boolean(nativeSummary) || nativeContextStatus === 'loading';
+  const compactActionLabel = compactAvailability
+    ? compactAvailability.available
+      ? '压缩上下文'
+      : compactAvailability.reason
+    : undefined;
 
   return (
     <div className="composer-context-indicator">
@@ -151,6 +161,22 @@ export function ComposerContextIndicator({
             <p className={`composer-context-card-status${usage.compact.reachedThreshold ? ' is-critical' : ' is-near'}`}>
               {usage.compact.reachedThreshold ? '已到自动压缩区间' : '接近自动压缩区间'}
             </p>
+          ) : null}
+          {compactAvailability && onCompactContext ? (
+            <button
+              type="button"
+              className="composer-context-compact-action"
+              disabled={!compactAvailability.available}
+              title={compactActionLabel}
+              aria-label={compactActionLabel}
+              onClick={() => {
+                setOpen(false);
+                void onCompactContext();
+              }}
+            >
+              <Minimize2 size={14} />
+              <span>{compactAvailability.busy ? '正在压缩' : '压缩上下文'}</span>
+            </button>
           ) : null}
           {showNativeSection ? (
             <section className="composer-context-native" aria-label="当前会话详情">

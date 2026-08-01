@@ -5004,6 +5004,59 @@ svg {
   color: var(--danger);
 }
 
+.system-turn-content {
+  min-width: 0;
+  width: 100%;
+  margin: 8px 0;
+}
+
+.system-command-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+}
+
+.system-command-card-icon-action,
+.system-command-card-text-action {
+  min-height: 30px;
+  border: 1px solid var(--app-border);
+  border-radius: 7px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  cursor: pointer;
+}
+
+.system-command-card-icon-action {
+  width: 30px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+}
+
+.system-command-card-text-action {
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.system-command-card-icon-action:hover:not(:disabled),
+.system-command-card-text-action:hover:not(:disabled) {
+  border-color: var(--app-border-strong);
+  background: var(--app-surface-muted);
+}
+
+.system-command-card-icon-action:focus-visible,
+.system-command-card-text-action:focus-visible {
+  outline: 2px solid var(--app-focus-outline);
+  outline-offset: 2px;
+}
+
+.system-command-card-icon-action:disabled,
+.system-command-card-text-action:disabled {
+  cursor: wait;
+  opacity: 0.56;
+}
+
 /* 引导卡片里的缩略图:左对齐 + 收窄尺寸,贴合紧凑卡片,避免默认靠右悬空留白 */
 .system-command-card .user-message-attachments {
   justify-content: flex-start;
@@ -9556,6 +9609,39 @@ body.git-history-resizing {
 
 .composer-context-card-status.is-critical {
   color: #b91c1c;
+}
+
+.composer-context-compact-action {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.composer-context-compact-action:hover:not(:disabled) {
+  border-color: var(--app-border-strong);
+  background: var(--app-surface-muted);
+}
+
+.composer-context-compact-action:focus-visible {
+  outline: 2px solid var(--app-focus-outline);
+  outline-offset: 2px;
+}
+
+.composer-context-compact-action:disabled {
+  color: var(--app-muted);
+  cursor: not-allowed;
+  opacity: 0.72;
 }
 
 .composer-context-card-compact {

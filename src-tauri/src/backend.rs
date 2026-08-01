@@ -13434,6 +13434,21 @@ fn push_claude_skill_from_file(skill_file: &Path, source: &str, skills: &mut Vec
 }
 
 fn list_slash_commands_value(project_path: Option<&str>) -> Vec<Value> {
+    let compact_command = {
+        let mut command = slash_command(
+            "builtin:/compact",
+            "compact",
+            "/compact",
+            "Compact Context",
+            "把当前 Agent 会话压缩成更短的上下文。",
+            "builtin",
+            "local-action",
+            "CodeM",
+            Some("compact-thread"),
+        );
+        command["agentScope"] = json!(["claude", "codex"]);
+        command
+    };
     let mut commands = vec![
         slash_command(
             "app:/clear",
@@ -13457,17 +13472,7 @@ fn list_slash_commands_value(project_path: Option<&str>) -> Vec<Value> {
             "CodeM",
             Some("show-status"),
         ),
-        slash_command(
-            "builtin:/compact",
-            "compact",
-            "/compact",
-            "Compact Context",
-            "把当前 Claude 会话压缩成更短的上下文。",
-            "builtin",
-            "local-action",
-            "CodeM",
-            Some("compact-thread"),
-        ),
+        compact_command,
         slash_command(
             "builtin:/context",
             "context",
@@ -20415,6 +20420,21 @@ mod tests {
             assert!(slash_values.contains(&required), "missing {required}");
         }
         assert_eq!(slash_values.len(), unique_values.len());
+    }
+
+    #[test]
+    fn slash_command_catalog_exposes_compact_to_claude_and_codex_only() {
+        let commands = list_slash_commands_value(None);
+        let compact = commands
+            .iter()
+            .find(|command| command.get("slash").and_then(Value::as_str) == Some("/compact"))
+            .expect("compact command");
+        assert_eq!(compact["agentScope"], json!(["claude", "codex"]));
+        let context = commands
+            .iter()
+            .find(|command| command.get("slash").and_then(Value::as_str) == Some("/context"))
+            .expect("context command");
+        assert_eq!(context["agentScope"], json!(["claude"]));
     }
 
     fn write_claude_transcript(

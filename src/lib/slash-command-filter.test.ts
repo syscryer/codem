@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { filterSlashCommands } from '../hooks/useSlashCommands';
+import { filterSlashCommandsForAgent } from './agent-slash-capabilities';
 import type { SlashCommand } from '../types';
 
 const commands: SlashCommand[] = [
@@ -10,13 +11,13 @@ const commands: SlashCommand[] = [
     name: 'compact',
     slash: '/compact',
     title: 'Compact Context',
-    description: '把当前 Claude 会话压缩成更短的上下文。',
+    description: '压缩当前会话上下文。',
     source: 'builtin',
     action: 'local-action',
     localActionId: 'compact-thread',
     sourceLabel: 'CodeM',
     category: 'session',
-    agentScope: ['claude'],
+    agentScope: ['claude', 'codex'],
   },
   {
     id: 'builtin:/context',
@@ -32,6 +33,17 @@ const commands: SlashCommand[] = [
     agentScope: ['claude'],
   },
 ];
+
+test('builtin compact is available to Claude and Codex only', () => {
+  assert.deepEqual(
+    filterSlashCommandsForAgent(commands, 'codex').map((command) => command.slash),
+    ['/compact'],
+  );
+  assert.deepEqual(
+    filterSlashCommandsForAgent(commands, 'grok').map((command) => command.slash),
+    [],
+  );
+});
 
 test('filterSlashCommands prioritizes exact slash matches over descriptive matches', () => {
   const result = filterSlashCommands(commands, '/context');

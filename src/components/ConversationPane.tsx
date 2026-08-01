@@ -69,6 +69,8 @@ type ConversationPaneProps = {
   onEditUserMessage?: (turn: ConversationTurn) => void;
   onDeleteTurn?: (turn: ConversationTurn) => void;
   onRegenerateTurn?: (turn: ConversationTurn) => void;
+  onRetryCompact?: (turn: ConversationTurn) => Promise<boolean> | boolean;
+  onSkipCompact?: (turn: ConversationTurn) => Promise<boolean> | boolean;
 };
 
 function useLatestCallback<T extends (...args: never[]) => unknown>(callback: T): T {
@@ -112,6 +114,8 @@ export function ConversationPane({
   onEditUserMessage,
   onDeleteTurn,
   onRegenerateTurn,
+  onRetryCompact,
+  onSkipCompact,
 }: ConversationPaneProps) {
   const [showBottomAnchor, setShowBottomAnchor] = useState(false);
   const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURN_COUNT);
@@ -132,6 +136,8 @@ export function ConversationPane({
   const stableEditUserMessage = useLatestCallback(onEditUserMessage ?? (() => undefined));
   const stableDeleteTurn = useLatestCallback(onDeleteTurn ?? (() => undefined));
   const stableRegenerateTurn = useLatestCallback(onRegenerateTurn ?? (() => undefined));
+  const stableRetryCompact = useLatestCallback(onRetryCompact ?? (() => false));
+  const stableSkipCompact = useLatestCallback(onSkipCompact ?? (() => false));
 
   useEffect(() => {
     setVisibleTurnCount(INITIAL_VISIBLE_TURN_COUNT);
@@ -361,6 +367,8 @@ export function ConversationPane({
                 onEditUserMessage={onEditUserMessage ? stableEditUserMessage : undefined}
                 onDeleteTurn={onDeleteTurn ? stableDeleteTurn : undefined}
                 onRegenerateTurn={onRegenerateTurn ? stableRegenerateTurn : undefined}
+                onRetryCompact={onRetryCompact ? stableRetryCompact : undefined}
+                onSkipCompact={onSkipCompact ? stableSkipCompact : undefined}
                 />
               );
             })}

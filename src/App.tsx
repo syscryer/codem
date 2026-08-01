@@ -59,6 +59,11 @@ import {
   setWindowMaterial,
 } from './lib/window-material';
 import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
+import {
+  findPendingCompactTurn,
+  getCompactAvailability,
+  readCompactMetadata,
+} from './lib/codex-compact';
 import { resolveChatRuntimeKind } from './lib/agent-provider-registry';
 import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
 import { openExternalUrl } from './lib/markdown-link';
@@ -631,6 +636,9 @@ export default function App() {
     activeTurnIdsByThreadId: genericAgentActiveTurnIdsByThreadId,
     clockNowMs: genericAgentClockNowMs,
     queuedPrompts: genericAgentQueuedPrompts,
+    compactCapability: genericAgentCompactCapability,
+    requestThreadCompaction,
+    skipThreadCompaction,
     removeQueuedPrompt: removeGenericAgentQueuedPrompt,
     recallQueuedPrompt: recallGenericAgentQueuedPrompt,
     guideQueuedPrompt: guideGenericAgentQueuedPrompt,
@@ -672,6 +680,16 @@ export default function App() {
   automationNoticeHandlerRef.current = automation.handleThreadActivityNotice;
 
   const activeProviderId = activeThreadSummary?.provider || draftProviderId;
+  const activeCompactMetadata = useMemo(() => {
+    const activeCompactTurn = findPendingCompactTurn(activeThread?.turns ?? []);
+    return activeCompactTurn ? readCompactMetadata(activeCompactTurn) : null;
+  }, [activeThread?.turns]);
+  const compactAvailability = getCompactAvailability({
+    providerId: activeProviderId,
+    sessionId: activeThreadSummary?.sessionId,
+    capability: genericAgentCompactCapability,
+    activeStatus: activeCompactMetadata?.status,
+  });
   const activeRuntimeKind = resolveChatRuntimeKind(activeProviderId);
   const activeUsesClaude = activeRuntimeKind === 'claude';
   const activeUsesGenericAgent = activeRuntimeKind === 'generic';
@@ -1434,7 +1452,11 @@ export default function App() {
     }
 
     if (command.localActionId === 'compact-thread') {
-      await submitPromptToThread(thread, buildCompactSlashCommandSubmission(submittedText));
+      if (activeProviderId === OPENAI_CODEX_PROVIDER_ID) {
+        await requestThreadCompaction(thread, 'slash');
+      } else {
+        await submitPromptToThread(thread, buildCompactSlashCommandSubmission(submittedText));
+      }
       return;
     }
 
@@ -2266,6 +2288,16 @@ export default function App() {
                   request: ApprovalRequest,
                   decision: ApprovalDecision,
                 ) => handleSubmitApprovalDecision(turn, request, decision)}
+                onRetryCompact={() => (
+                  activeProviderId === OPENAI_CODEX_PROVIDER_ID && activeThreadSummary
+                    ? requestThreadCompaction(activeThreadSummary, 'retry')
+                    : false
+                )}
+                onSkipCompact={() => (
+                  activeProviderId === OPENAI_CODEX_PROVIDER_ID && activeThreadSummary
+                    ? skipThreadCompaction(activeThreadSummary)
+                    : false
+                )}
               />
 
               <CurrentTaskDock activeThread={activeThread} />
@@ -2296,6 +2328,7 @@ export default function App() {
                 agentModelSelectionWarning={genericAgentModelSelectionWarning}
                 turns={activeThread?.turns ?? []}
                 claudeContextState={activeClaudeContextState}
+                compactAvailability={compactAvailability}
                 isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
                 isInterrupting={Boolean(activeThreadId && activeRunsByThreadId[activeThreadId]?.interrupting)}
                 draftScopeKey={composerDraftKey}
@@ -2323,6 +2356,11 @@ export default function App() {
                 onStopRun={() => handleStopRun(activeThreadId ?? undefined)}
                 onRunSlashSystemCommand={handleRunSlashSystemCommand}
                 onRefreshClaudeContext={handleRefreshClaudeContext}
+                onCompactContext={() => (
+                  activeProviderId === OPENAI_CODEX_PROVIDER_ID && activeThreadSummary
+                    ? requestThreadCompaction(activeThreadSummary, 'context')
+                    : false
+                )}
               />
 
               <WorkspaceStatus
