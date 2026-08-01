@@ -6,11 +6,16 @@ import {
   createToolStep,
   mergeLoadedThreadTurns,
   mergeUsageSnapshot,
+  normalizeTurnsForPersist,
   normalizeSubagentMessages,
   repairConversationTurn,
   upsertSubagentText,
   upsertToolDelta,
 } from './conversation.js';
+import {
+  createManualCompactTurn,
+  readCompactMetadata,
+} from './codex-compact.js';
 import {
   buildRequestUserInputAnswers,
   getRequestUserInputDraft,
@@ -119,6 +124,40 @@ function completedAgentToolTurn(
     items: [{ id: `${id}-agent-item`, type: 'tool', tool }],
   };
 }
+
+test('repairConversationTurn infers system kind for legacy compact history', () => {
+  const legacy = createManualCompactTurn({
+    operationId: 'compact-legacy',
+    providerThreadId: 'provider-thread-1',
+    workspace: 'D:/workspace',
+    status: 'waiting',
+    nowMs: 100,
+  });
+  delete legacy.kind;
+
+  const repaired = repairConversationTurn(legacy);
+
+  assert.equal(repaired.kind, 'system');
+  assert.notEqual(repaired, legacy);
+  assert.equal(repairConversationTurn(repaired), repaired);
+});
+
+test('normalizeTurnsForPersist interrupts unconfirmed compact operations', () => {
+  const waiting = createManualCompactTurn({
+    operationId: 'compact-waiting',
+    providerThreadId: 'provider-thread-1',
+    workspace: 'D:/workspace',
+    status: 'waiting',
+    nowMs: 100,
+  });
+
+  const [persisted] = normalizeTurnsForPersist([waiting]);
+
+  assert.equal(persisted.kind, 'system');
+  assert.equal(persisted.status, 'stopped');
+  assert.equal(readCompactMetadata(persisted)?.status, 'interrupted');
+  assert.equal(readCompactMetadata(persisted)?.completedAtMs !== undefined, true);
+});
 
 test('late history snapshots cannot replace a completed local turn with stopped empty output', () => {
   const staleHistoryTurn = completedTextTurn('turn-1', '');

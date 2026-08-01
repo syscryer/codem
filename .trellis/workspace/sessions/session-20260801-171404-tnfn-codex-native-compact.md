@@ -5,6 +5,8 @@
 - Task: .trellis/tasks/codex-native-compact.md
 
 ## Notes
+
+- 2026-08-01T19:14:43.927Z 完成 Task 4：新增 Codex compact timeline 纯状态模型，覆盖 manual/automatic 单卡片、幂等原位更新、错误脱敏、retry/skip/interrupted、入口可用性；conversation 兼容旧 history kind 推导，并在持久化前把未确认 compact 标记为 interrupted。
 - 2026-08-01T19:08:55.516Z 完成 Task 3：将热 runtime actor 首个工作项泛化为 Run/Compact command；新增专用 compact NDJSON 路由、共享 Codex runtime config 解析、thread 级 409 防重、session/config/channel/workspace 校验，以及 manual compact running/completed/failed 结构化事件和 fatal runtime 关闭策略。
 
 - 2026-08-01T18:52:10.061Z 完成 Task 2：定义 context-compaction 稳定跨层事件、Codex compact capability summary 与前端 compact operation metadata；旧 history 的 kind/compact 字段均保持可选兼容。
@@ -34,6 +36,9 @@
 - 2026-08-01T17:14:04.617Z Session started.
 
 ## Verification
+- 2026-08-01T19:15:01.691Z `npm run typecheck`: 通过：Task 4 TypeScript contract 与调用点无类型错误。
+
+- 2026-08-01T19:14:53.391Z `node --import tsx --test src/lib/codex-compact.test.ts src/lib/conversation.test.ts`: 通过：33 个 compact domain 与 conversation history 用例，0 失败。
 - 2026-08-01T19:09:16.956Z `cargo test --manifest-path src-tauri/Cargo.toml agent_run -- --nocapture`: 通过：64 个 agent_run/runtime 回归用例，0 失败；仅有既有 dead-code 与 Windows linker warnings。
 
 - 2026-08-01T19:09:05.365Z `cargo test --manifest-path src-tauri/Cargo.toml compact -- --nocapture`: 通过：17 个 compact 协议、contract、actor、API 与防重用例，0 失败。

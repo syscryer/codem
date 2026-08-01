@@ -8,6 +8,10 @@ import type {
   ToolStep,
   UsageSnapshot,
 } from '../types';
+import {
+  interruptUnconfirmedCompactTurn,
+  readCompactMetadata,
+} from './codex-compact';
 
 const SIDECHAIN_TOOL_TEXT_MAX_CHARS = 6_000;
 const SUBAGENT_MESSAGE_MAX_COUNT = 8;
@@ -46,7 +50,19 @@ export function closeDanglingTurns(turns: ConversationTurn[]) {
 export function repairConversationTurn(turn: ConversationTurn): ConversationTurn {
   const repairedItems = repairTurnItems(turn.items);
   const assistantText = sanitizeVisibleAssistantText(turn.assistantText);
-  if (repairedItems === turn.items && assistantText === turn.assistantText) {
+  const kind = turn.kind ?? (
+    turn.userText.trim() === '' &&
+    turn.items.length === 1 &&
+    turn.items[0]?.type === 'system-command' &&
+    Boolean(turn.items[0].compact)
+      ? 'system'
+      : 'message'
+  );
+  if (
+    repairedItems === turn.items &&
+    assistantText === turn.assistantText &&
+    kind === turn.kind
+  ) {
     return turn;
   }
 
@@ -88,6 +104,7 @@ export function repairConversationTurn(turn: ConversationTurn): ConversationTurn
 
   return {
     ...turn,
+    kind,
     assistantText,
     items: repairedItems,
     tools: toolsChanged ? repairedTools : turn.tools,
@@ -111,6 +128,11 @@ export function normalizeTurnsForPersist(turns: ConversationTurn[]) {
   return turns.map((turn) => {
     if (turn.status !== 'pending' && turn.status !== 'running') {
       return turn;
+    }
+
+    const compact = readCompactMetadata(turn);
+    if (compact && ['waiting', 'preparing', 'running'].includes(compact.status)) {
+      return interruptUnconfirmedCompactTurn(turn, Date.now());
     }
 
     return closeTurnWithoutTerminalEvent(turn);
