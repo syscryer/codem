@@ -6,12 +6,15 @@ use crate::{
     agent_channels::AgentChannelService,
     agent_runtime::{
         normalize_agent_permission_mode, AgentApprovalOption, AgentApprovalRequest,
-        AgentControlCommand, AgentPermissionDecision, AgentRunEvent, AgentUsageSnapshot,
-        AgentUserInputOption, AgentUserInputQuestion, AgentUserInputRequest,
-        GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID,
-        PI_AGENT_PROVIDER_ID,
+        AgentCompactionSource, AgentCompactionStatus, AgentControlCommand, AgentPermissionDecision,
+        AgentRunEvent, AgentUsageSnapshot, AgentUserInputOption, AgentUserInputQuestion,
+        AgentUserInputRequest, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     },
-    codex_app_server::{CodexAppServerError, CodexRuntimeEvent, CodexStdioClient, CodexUserInput},
+    codex_app_server::{
+        CodexAppServerError, CodexCompactionEvent, CodexRuntimeEvent, CodexStdioClient,
+        CodexUserInput,
+    },
     pi_rpc::{PiImage, PiModel, PiPromptInput, PiRpcError, PiRuntimeEvent, PiState, PiStdioClient},
 };
 use axum::{
@@ -190,8 +193,61 @@ struct AgentRuntimeRun {
     control: mpsc::UnboundedReceiver<AgentControlCommand>,
 }
 
+struct AgentRuntimeCompact {
+    run_id: String,
+    operation_id: String,
+}
+
 enum AgentRuntimeCommand {
     Run(AgentRuntimeRun),
+    Compact(AgentRuntimeCompact),
+}
+
+fn command_run_id(command: &AgentRuntimeCommand) -> &str {
+    match command {
+        AgentRuntimeCommand::Run(run) => &run.run_id,
+        AgentRuntimeCommand::Compact(compact) => &compact.run_id,
+    }
+}
+
+fn validate_compact_runtime_session(
+    command: &AgentRuntimeCommand,
+    requested_session_id: Option<&str>,
+    actual_session_id: &str,
+) -> Result<(), String> {
+    if matches!(command, AgentRuntimeCommand::Compact(_))
+        && requested_session_id != Some(actual_session_id)
+    {
+        return Err("Codex 恢复后的 sessionId 与压缩请求不一致".to_string());
+    }
+    Ok(())
+}
+
+fn push_compact_failure_event(
+    state: &AgentRunState,
+    command: &AgentRuntimeCommand,
+    provider_thread_id: Option<&str>,
+    message: &str,
+) {
+    let (AgentRuntimeCommand::Compact(compact), Some(provider_thread_id)) =
+        (command, provider_thread_id)
+    else {
+        return;
+    };
+    state.push_event(
+        &compact.run_id,
+        AgentRunEvent::ContextCompaction {
+            run_id: compact.run_id.clone(),
+            operation_id: Some(compact.operation_id.clone()),
+            source: AgentCompactionSource::Manual,
+            status: AgentCompactionStatus::Failed,
+            provider_thread_id: provider_thread_id.to_string(),
+            provider_turn_id: None,
+            provider_item_id: None,
+            error: Some(message.to_string()),
+            at_ms: Utc::now().timestamp_millis(),
+        },
+    );
 }
 
 enum RuntimeDispatchAction {
@@ -318,6 +374,19 @@ struct StartAgentRunRequest {
     conversation_context: Option<String>,
     #[serde(default)]
     automation_execution: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StartAgentCompactRequest {
+    operation_id: String,
+    provider_id: String,
+    session_id: String,
+    working_directory: String,
+    permission_mode: Option<String>,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+    channel_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -482,6 +551,10 @@ pub(crate) fn router(service: AgentRunService) -> Router {
         .route(
             "/api/agents/runtime/{thread_id}",
             get(agent_runtime_status).delete(close_agent_runtime),
+        )
+        .route(
+            "/api/agents/runtime/{thread_id}/compact",
+            post(start_agent_compact),
         )
         .route("/api/agents/run", post(start_agent_run))
         .route("/api/agents/run/{run_id}/events", get(agent_run_events))
@@ -1023,22 +1096,141 @@ async fn start_agent_run(
     build_event_stream(state, run_id, 0)
 }
 
+async fn start_agent_compact(
+    State(state): State<AgentRunState>,
+    AxumPath(thread_id): AxumPath<String>,
+    Json(mut payload): Json<StartAgentCompactRequest>,
+) -> AgentApiResult<Response> {
+    let thread_id = required_id(&thread_id, "threadId")?;
+    if payload.provider_id.trim() != OPENAI_CODEX_PROVIDER_ID {
+        return Err(AgentApiError::bad_request(
+            "只有 OpenAI Codex 支持原生上下文压缩",
+        ));
+    }
+    payload.provider_id = OPENAI_CODEX_PROVIDER_ID.to_string();
+    payload.operation_id = required_id(&payload.operation_id, "operationId")?;
+    payload.session_id = required_id(&payload.session_id, "sessionId")?;
+    let config = resolve_compact_runtime_config(&state, &thread_id, &payload)?;
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let (cancel, _cancel_receiver) = watch::channel(false);
+    let (control, _control_receiver) = mpsc::unbounded_channel();
+    state.insert(
+        run_id.clone(),
+        AgentRunRecord {
+            provider_id: OPENAI_CODEX_PROVIDER_ID.to_string(),
+            thread_id: Some(thread_id.clone()),
+            events: Vec::new(),
+            finished: false,
+            terminal_emitted: false,
+            notify: Arc::new(Notify::new()),
+            cancel,
+            control,
+        },
+    )?;
+    state.push_event(
+        &run_id,
+        AgentRunEvent::Status {
+            run_id: run_id.clone(),
+            message: "正在排队压缩 Codex 上下文".to_string(),
+        },
+    );
+    if let Err(error) = state.dispatch_compact(
+        thread_id,
+        config,
+        payload.session_id,
+        AgentRuntimeCompact {
+            run_id: run_id.clone(),
+            operation_id: payload.operation_id,
+        },
+    ) {
+        state.remove_run_record(&run_id);
+        return Err(error);
+    }
+    build_event_stream(state, run_id, 0)
+}
+
+fn resolve_compact_runtime_config(
+    state: &AgentRunState,
+    thread_id: &str,
+    request: &StartAgentCompactRequest,
+) -> AgentApiResult<AgentRuntimeConfig> {
+    let working_directory = resolve_working_directory(&request.working_directory)?;
+    let permission_mode = normalize_agent_permission_mode(request.permission_mode.as_deref())
+        .ok_or_else(|| {
+            AgentApiError::bad_request("permissionMode 仅支持 default、auto 或 bypassPermissions")
+        })?;
+    let requested_model = normalize_optional_id(request.model.clone(), "model")?;
+    let requested_channel_id = normalize_optional_id(request.channel_id.clone(), "channelId")?;
+    let channel_runtime = state
+        .agent_channels
+        .resolve_runtime(
+            OPENAI_CODEX_PROVIDER_ID,
+            requested_channel_id.as_deref(),
+            requested_model.as_deref(),
+            Some(thread_id),
+            Some(&request.session_id),
+        )
+        .map_err(AgentApiError::bad_request)?;
+    Ok(AgentRuntimeConfig {
+        provider_id: OPENAI_CODEX_PROVIDER_ID.to_string(),
+        driver: AgentDriverKind::CodexAppServer,
+        command: resolve_agent_command(state, OPENAI_CODEX_PROVIDER_ID, false).ok_or_else(
+            || {
+                AgentApiError::bad_request(
+                    "未找到可由 CodeM 启动的 Codex CLI，请安装独立 CLI 或设置 CODEX_CLI_PATH",
+                )
+            },
+        )?,
+        working_directory,
+        permission_mode,
+        model: channel_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.effective_model.clone())
+            .or(requested_model),
+        reasoning_effort: normalize_optional_id(
+            request.reasoning_effort.clone(),
+            "reasoningEffort",
+        )?,
+        channel_id: channel_runtime
+            .as_ref()
+            .map(|runtime| runtime.channel_id.clone()),
+        channel_fingerprint: channel_runtime
+            .as_ref()
+            .map(|runtime| runtime.fingerprint.clone()),
+        environment: channel_runtime
+            .as_ref()
+            .map(|runtime| runtime.env.clone())
+            .unwrap_or_default(),
+        codex_config_args: channel_runtime
+            .as_ref()
+            .map(|runtime| runtime.codex_config_args.clone())
+            .unwrap_or_default(),
+        bridge_version: None,
+    })
+}
+
 async fn run_agent_runtime_actor(
     state: AgentRunState,
     thread_id: String,
     runtime_id: String,
     config: AgentRuntimeConfig,
     requested_session_id: Option<String>,
-    first_run: AgentRuntimeRun,
+    first_command: AgentRuntimeCommand,
     mut commands: mpsc::UnboundedReceiver<AgentRuntimeCommand>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let first_run_id = first_run.run_id.clone();
+    let first_run_id = command_run_id(&first_command).to_string();
     let started = tokio::select! {
         result = start_live_agent_runtime(&config, requested_session_id.as_deref()) => Some(result),
         _ = wait_for_shutdown(&mut shutdown) => None,
     };
     let Some(started) = started else {
+        push_compact_failure_event(
+            &state,
+            &first_command,
+            requested_session_id.as_deref(),
+            "Agent 热会话已关闭",
+        );
         state.push_terminal(
             &first_run_id,
             AgentRunEvent::Error {
@@ -1052,6 +1244,12 @@ async fn run_agent_runtime_actor(
     let (mut runtime, resumed) = match started {
         Ok(runtime) => runtime,
         Err(message) => {
+            push_compact_failure_event(
+                &state,
+                &first_command,
+                requested_session_id.as_deref(),
+                &message,
+            );
             state.push_terminal(
                 &first_run_id,
                 AgentRunEvent::Error {
@@ -1064,13 +1262,35 @@ async fn run_agent_runtime_actor(
         }
     };
     let session_id = runtime.session_id().to_string();
+    if let Err(message) = validate_compact_runtime_session(
+        &first_command,
+        requested_session_id.as_deref(),
+        &session_id,
+    ) {
+        push_compact_failure_event(
+            &state,
+            &first_command,
+            requested_session_id.as_deref(),
+            &message,
+        );
+        state.push_terminal(
+            &first_run_id,
+            AgentRunEvent::Error {
+                run_id: first_run_id.clone(),
+                message: message.clone(),
+            },
+        );
+        state.mark_runtime_failed(&thread_id, &runtime_id, Some(&first_run_id), message);
+        runtime.shutdown().await;
+        return;
+    }
     state.activate_runtime_session(&thread_id, &runtime_id, &first_run_id, &session_id);
 
-    let mut current_run = Some(first_run);
+    let mut current_command = Some(first_command);
     let mut reused = false;
     loop {
-        if let Some(run) = current_run.take() {
-            let run_id = run.run_id.clone();
+        if let Some(command) = current_command.take() {
+            let run_id = command_run_id(&command).to_string();
             state.push_event(
                 &run_id,
                 AgentRunEvent::Session {
@@ -1078,21 +1298,37 @@ async fn run_agent_runtime_actor(
                     session_id: session_id.clone(),
                 },
             );
-            state.push_event(
-                &run_id,
-                AgentRunEvent::Status {
-                    run_id: run_id.clone(),
-                    message: runtime_status_message(
-                        &config.provider_id,
-                        config.driver,
-                        reused,
-                        resumed,
-                    ),
-                },
-            );
-            state.push_event(&run_id, agent_phase_event(&run_id, "thinking", "思考中"));
 
-            match runtime.run_turn(&state, &config, run, &mut shutdown).await {
+            let execution = match command {
+                AgentRuntimeCommand::Run(run) => {
+                    state.push_event(
+                        &run_id,
+                        AgentRunEvent::Status {
+                            run_id: run_id.clone(),
+                            message: runtime_status_message(
+                                &config.provider_id,
+                                config.driver,
+                                reused,
+                                resumed,
+                            ),
+                        },
+                    );
+                    state.push_event(&run_id, agent_phase_event(&run_id, "thinking", "思考中"));
+                    runtime.run_turn(&state, &config, run, &mut shutdown).await
+                }
+                AgentRuntimeCommand::Compact(compact) => {
+                    state.push_event(
+                        &run_id,
+                        AgentRunEvent::Status {
+                            run_id: run_id.clone(),
+                            message: "正在准备压缩 Codex 上下文".to_string(),
+                        },
+                    );
+                    runtime.compact(&state, compact, &mut shutdown).await
+                }
+            };
+
+            match execution {
                 RuntimeExecution::Completed(Ok(outcome)) => {
                     state.finish_runtime_run(&thread_id, &runtime_id, &run_id);
                     state.push_terminal(
@@ -1158,7 +1394,7 @@ async fn run_agent_runtime_actor(
             }
             command = commands.recv() => {
                 match command {
-                    Some(AgentRuntimeCommand::Run(run)) => current_run = Some(run),
+                    Some(command) => current_command = Some(command),
                     None => {
                         state.mark_runtime_closed(&thread_id, &runtime_id, None);
                         runtime.shutdown().await;
@@ -1491,6 +1727,109 @@ impl LiveAgentRuntime {
                 message: "Agent runtime 与输入协议不匹配".to_string(),
                 fatal: true,
             })),
+        }
+    }
+
+    async fn compact(
+        &mut self,
+        state: &AgentRunState,
+        compact: AgentRuntimeCompact,
+        shutdown: &mut watch::Receiver<bool>,
+    ) -> RuntimeExecution {
+        let AgentRuntimeCompact {
+            run_id,
+            operation_id,
+        } = compact;
+        let Self::Codex { client, session_id } = self else {
+            return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                message: "当前 Agent runtime 不支持原生上下文压缩".to_string(),
+                fatal: true,
+            }));
+        };
+        let provider_thread_id = session_id.clone();
+        let event_state = state.clone();
+        let event_run_id = run_id.clone();
+        let event_operation_id = operation_id.clone();
+        let result = tokio::select! {
+            result = client.start_compaction(session_id, |event| {
+                let event = match event {
+                    CodexCompactionEvent::Started {
+                        provider_turn_id,
+                        provider_item_id,
+                    } => AgentRunEvent::ContextCompaction {
+                        run_id: event_run_id.clone(),
+                        operation_id: Some(event_operation_id.clone()),
+                        source: AgentCompactionSource::Manual,
+                        status: AgentCompactionStatus::Running,
+                        provider_thread_id: provider_thread_id.clone(),
+                        provider_turn_id,
+                        provider_item_id,
+                        error: None,
+                        at_ms: Utc::now().timestamp_millis(),
+                    },
+                    CodexCompactionEvent::Completed {
+                        provider_turn_id,
+                        provider_item_id,
+                    } => AgentRunEvent::ContextCompaction {
+                        run_id: event_run_id.clone(),
+                        operation_id: Some(event_operation_id.clone()),
+                        source: AgentCompactionSource::Manual,
+                        status: AgentCompactionStatus::Completed,
+                        provider_thread_id: provider_thread_id.clone(),
+                        provider_turn_id: Some(provider_turn_id),
+                        provider_item_id,
+                        error: None,
+                        at_ms: Utc::now().timestamp_millis(),
+                    },
+                };
+                event_state.push_event(&event_run_id, event);
+            }) => Some(result),
+            _ = wait_for_shutdown(shutdown) => None,
+        };
+
+        match result {
+            Some(Ok(_)) => RuntimeExecution::Completed(Ok(RuntimeTurnOutcome {
+                session_id: session_id.clone(),
+                text: String::new(),
+                stop_reason: "compact".to_string(),
+                usage: AgentUsageSnapshot::default(),
+            })),
+            Some(Err(error)) => {
+                let fatal = codex_error_is_fatal(&error) || !client.is_running();
+                let message = public_codex_error(error);
+                state.push_event(
+                    &run_id,
+                    AgentRunEvent::ContextCompaction {
+                        run_id: run_id.clone(),
+                        operation_id: Some(operation_id),
+                        source: AgentCompactionSource::Manual,
+                        status: AgentCompactionStatus::Failed,
+                        provider_thread_id: session_id.clone(),
+                        provider_turn_id: None,
+                        provider_item_id: None,
+                        error: Some(message.clone()),
+                        at_ms: Utc::now().timestamp_millis(),
+                    },
+                );
+                RuntimeExecution::Completed(Err(RuntimeTurnError { message, fatal }))
+            }
+            None => {
+                state.push_event(
+                    &run_id,
+                    AgentRunEvent::ContextCompaction {
+                        run_id: run_id.clone(),
+                        operation_id: Some(operation_id),
+                        source: AgentCompactionSource::Manual,
+                        status: AgentCompactionStatus::Failed,
+                        provider_thread_id: session_id.clone(),
+                        provider_turn_id: None,
+                        provider_item_id: None,
+                        error: Some("Agent 热会话已关闭".to_string()),
+                        at_ms: Utc::now().timestamp_millis(),
+                    },
+                );
+                RuntimeExecution::Closed
+            }
         }
     }
 }
@@ -2456,7 +2795,9 @@ impl AgentRunState {
                     match command.send(AgentRuntimeCommand::Run(run)) {
                         Ok(()) => return Ok(()),
                         Err(error) => {
-                            let AgentRuntimeCommand::Run(run) = error.0;
+                            let AgentRuntimeCommand::Run(run) = error.0 else {
+                                return Err(AgentApiError::internal("Agent 运行调度命令类型异常"));
+                            };
                             pending_run = Some(run);
                             self.mark_runtime_failed(
                                 &thread_id,
@@ -2482,7 +2823,129 @@ impl AgentRunState {
                         runtime_id,
                         config,
                         requested_session_id,
-                        first_run,
+                        AgentRuntimeCommand::Run(first_run),
+                        commands,
+                        shutdown,
+                    ));
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    fn dispatch_compact(
+        &self,
+        thread_id: String,
+        config: AgentRuntimeConfig,
+        requested_session_id: String,
+        compact: AgentRuntimeCompact,
+    ) -> AgentApiResult<()> {
+        if config.provider_id != OPENAI_CODEX_PROVIDER_ID
+            || config.driver != AgentDriverKind::CodexAppServer
+        {
+            return Err(AgentApiError::bad_request(
+                "只有 OpenAI Codex runtime 支持原生上下文压缩",
+            ));
+        }
+        let run_id = compact.run_id.clone();
+        let mut pending_compact = Some(compact);
+        loop {
+            let action = {
+                let mut runtimes = self
+                    .runtimes
+                    .lock()
+                    .map_err(|_| AgentApiError::internal("锁定 Agent 热会话失败"))?;
+                if let Some(runtime) = runtimes.get_mut(&thread_id) {
+                    if runtime.current_run_id.is_some()
+                        || matches!(
+                            runtime.phase,
+                            AgentRuntimePhase::Starting | AgentRuntimePhase::Running
+                        )
+                    {
+                        return Err(AgentApiError::conflict("当前聊天已有 Agent 操作正在运行"));
+                    }
+                    if runtime.config != config {
+                        return Err(AgentApiError::conflict(
+                            "Codex 热会话配置已变化，请先恢复匹配的会话再压缩",
+                        ));
+                    }
+                    if runtime.session_id.as_deref() != Some(requested_session_id.as_str()) {
+                        return Err(AgentApiError::conflict(
+                            "Codex 热会话 sessionId 与压缩请求不一致",
+                        ));
+                    }
+                    if runtime_can_reuse(runtime, &config, Some(&requested_session_id)) {
+                        let command = runtime
+                            .command
+                            .clone()
+                            .ok_or_else(|| AgentApiError::internal("Agent 热会话命令通道已关闭"))?;
+                        runtime.phase = AgentRuntimePhase::Running;
+                        runtime.current_run_id = Some(run_id.clone());
+                        RuntimeDispatchAction::Reuse(command)
+                    } else if matches!(
+                        runtime.phase,
+                        AgentRuntimePhase::Closed | AgentRuntimePhase::Failed
+                    ) {
+                        create_runtime_record(
+                            &mut runtimes,
+                            &thread_id,
+                            &config,
+                            Some(requested_session_id.clone()),
+                            &run_id,
+                        )
+                    } else {
+                        return Err(AgentApiError::conflict(
+                            "Codex 热会话当前不可执行上下文压缩",
+                        ));
+                    }
+                } else {
+                    create_runtime_record(
+                        &mut runtimes,
+                        &thread_id,
+                        &config,
+                        Some(requested_session_id.clone()),
+                        &run_id,
+                    )
+                }
+            };
+
+            match action {
+                RuntimeDispatchAction::Reuse(command) => {
+                    let compact = pending_compact
+                        .take()
+                        .ok_or_else(|| AgentApiError::internal("Codex 压缩调度状态异常"))?;
+                    match command.send(AgentRuntimeCommand::Compact(compact)) {
+                        Ok(()) => return Ok(()),
+                        Err(error) => {
+                            let AgentRuntimeCommand::Compact(compact) = error.0 else {
+                                return Err(AgentApiError::internal("Codex 压缩调度命令类型异常"));
+                            };
+                            pending_compact = Some(compact);
+                            self.mark_runtime_failed(
+                                &thread_id,
+                                &self.runtime_id(&thread_id).unwrap_or_default(),
+                                Some(&run_id),
+                                "Agent 热会话命令通道已关闭".to_string(),
+                            );
+                        }
+                    }
+                }
+                RuntimeDispatchAction::Start {
+                    runtime_id,
+                    commands,
+                    shutdown,
+                } => {
+                    let compact = pending_compact
+                        .take()
+                        .ok_or_else(|| AgentApiError::internal("Codex 压缩调度状态异常"))?;
+                    let actor_state = self.clone();
+                    tokio::spawn(run_agent_runtime_actor(
+                        actor_state,
+                        thread_id,
+                        runtime_id,
+                        config,
+                        Some(requested_session_id),
+                        AgentRuntimeCommand::Compact(compact),
                         commands,
                         shutdown,
                     ));
@@ -4699,15 +5162,17 @@ mod tests {
         grok_acp_arguments, grok_acp_error_with_runtime_detail, grok_uses_channel_credentials,
         guide_ack_response, normalize_agent_input, normalize_guide_prompt, parse_opencode_models,
         pi_model_catalog, pi_model_parts, pi_rpc_arguments, pi_usage_snapshot, public_acp_error,
-        public_codex_error, read_cached_agent_command, read_cached_agent_model_catalog,
-        runtime_can_reuse, sanitize_grok_runtime_error_detail, should_retry_grok_channel_prompt,
-        should_set_acp_model, store_cached_agent_command, store_cached_agent_model_catalog,
-        AcpEventMapper, AgentDriverInput, AgentDriverKind, AgentInputContentBlock,
-        AgentModelCatalog, AgentModelSummary, AgentRunRecord, AgentRunService, AgentRunState,
-        AgentRuntimeCommand, AgentRuntimeConfig, AgentRuntimePhase, AgentRuntimeRecord,
+        public_codex_error, push_compact_failure_event, read_cached_agent_command,
+        read_cached_agent_model_catalog, runtime_can_reuse, sanitize_grok_runtime_error_detail,
+        should_retry_grok_channel_prompt, should_set_acp_model, store_cached_agent_command,
+        store_cached_agent_model_catalog, validate_compact_runtime_session, AcpEventMapper,
+        AgentDriverInput, AgentDriverKind, AgentInputContentBlock, AgentModelCatalog,
+        AgentModelSummary, AgentRunRecord, AgentRunService, AgentRunState, AgentRuntimeCommand,
+        AgentRuntimeCompact, AgentRuntimeConfig, AgentRuntimePhase, AgentRuntimeRecord,
         AgentRuntimeRun, CodexEventMapper, CommandResolvers, GuideAckOutcome, GuideAgentRunRequest,
-        LiveAgentRuntime, PiEventMapper, RuntimeExecution, StartAgentRunRequest,
-        AGENT_COMMAND_CACHE_TTL, AUTOMATION_EXECUTION_CONTEXT, MODEL_CATALOG_CACHE_TTL,
+        LiveAgentRuntime, PiEventMapper, RuntimeExecution, StartAgentCompactRequest,
+        StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL, AUTOMATION_EXECUTION_CONTEXT,
+        MODEL_CATALOG_CACHE_TTL,
     };
     use crate::{
         acp::{
@@ -4716,7 +5181,8 @@ mod tests {
         },
         agent_channels::AgentChannelService,
         agent_runtime::{
-            AgentControlCommand, AgentPermissionDecision, AgentRunEvent, PI_AGENT_PROVIDER_ID,
+            AgentCompactionStatus, AgentControlCommand, AgentPermissionDecision, AgentRunEvent,
+            OPENAI_CODEX_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
         },
         codex_app_server::{CodexAppServerError, CodexRuntimeEvent, CodexUserInput},
         pi_rpc::{PiModel, PiPromptInput, PiRuntimeEvent, PiState, PiStdioClient},
@@ -4759,6 +5225,37 @@ mod tests {
             codex_config_args: Vec::new(),
             bridge_version: None,
         }
+    }
+
+    fn test_codex_runtime_config() -> AgentRuntimeConfig {
+        let mut config = test_runtime_config();
+        config.provider_id = OPENAI_CODEX_PROVIDER_ID.to_string();
+        config.driver = AgentDriverKind::CodexAppServer;
+        config.command = "codex".to_string();
+        config.model = Some("gpt-codex-default".to_string());
+        config
+    }
+
+    fn insert_test_codex_runtime(
+        state: &AgentRunState,
+        phase: AgentRuntimePhase,
+        current_run_id: Option<&str>,
+        command: mpsc::UnboundedSender<AgentRuntimeCommand>,
+    ) {
+        let (shutdown, _shutdown_receiver) = watch::channel(false);
+        state.runtimes.lock().expect("runtime lock").insert(
+            "thread-1".to_string(),
+            AgentRuntimeRecord {
+                runtime_id: "runtime-1".to_string(),
+                config: test_codex_runtime_config(),
+                session_id: Some("provider-thread-1".to_string()),
+                phase,
+                current_run_id: current_run_id.map(ToString::to_string),
+                command: Some(command),
+                shutdown,
+                last_error: None,
+            },
+        );
     }
 
     fn test_agent_channel_service() -> AgentChannelService {
@@ -5273,6 +5770,32 @@ mod tests {
                 ..
             }]) if mime_type == "text/markdown"
         ));
+    }
+
+    #[test]
+    fn compact_request_uses_strict_camel_case_contract() {
+        let request = serde_json::from_value::<StartAgentCompactRequest>(json!({
+            "operationId": "compact-1",
+            "providerId": "openai-codex",
+            "sessionId": "provider-thread-1",
+            "workingDirectory": "D:/workspace",
+            "permissionMode": "default",
+            "model": "gpt-codex-default",
+            "reasoningEffort": "high",
+            "channelId": "channel-1"
+        }))
+        .expect("valid compact request");
+
+        assert_eq!(request.operation_id, "compact-1");
+        assert_eq!(request.session_id, "provider-thread-1");
+        assert!(serde_json::from_value::<StartAgentCompactRequest>(json!({
+            "operationId": "compact-1",
+            "providerId": "openai-codex",
+            "sessionId": "provider-thread-1",
+            "workingDirectory": "D:/workspace",
+            "unexpected": true
+        }))
+        .is_err());
     }
 
     #[test]
@@ -5984,6 +6507,176 @@ process.stdout.write(JSON.stringify({ prompts, writeResult, bashResult, autoResu
             .expect_err("concurrent run must fail");
 
         assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn hot_codex_runtime_dispatches_compact_over_existing_actor() {
+        let state = test_run_state();
+        let config = test_codex_runtime_config();
+        let (command, mut commands) = mpsc::unbounded_channel();
+        insert_test_codex_runtime(&state, AgentRuntimePhase::Ready, None, command);
+
+        state
+            .dispatch_compact(
+                "thread-1".to_string(),
+                config,
+                "provider-thread-1".to_string(),
+                AgentRuntimeCompact {
+                    run_id: "run-compact-1".to_string(),
+                    operation_id: "compact-1".to_string(),
+                },
+            )
+            .expect("dispatch compact");
+
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(AgentRuntimeCommand::Compact(AgentRuntimeCompact { operation_id, .. }))
+                if operation_id == "compact-1"
+        ));
+    }
+
+    #[test]
+    fn backend_rejects_compact_while_thread_operation_is_active() {
+        let state = test_run_state();
+        let (command, _commands) = mpsc::unbounded_channel();
+        insert_test_codex_runtime(&state, AgentRuntimePhase::Running, Some("run-1"), command);
+
+        let error = state
+            .dispatch_compact(
+                "thread-1".to_string(),
+                test_codex_runtime_config(),
+                "provider-thread-1".to_string(),
+                AgentRuntimeCompact {
+                    run_id: "run-compact-2".to_string(),
+                    operation_id: "compact-2".to_string(),
+                },
+            )
+            .expect_err("duplicate operation must fail");
+
+        assert_eq!(error.status, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn backend_rejects_compact_for_non_codex_runtime() {
+        let state = test_run_state();
+        let error = state
+            .dispatch_compact(
+                "thread-1".to_string(),
+                test_runtime_config(),
+                "provider-thread-1".to_string(),
+                AgentRuntimeCompact {
+                    run_id: "run-compact-1".to_string(),
+                    operation_id: "compact-1".to_string(),
+                },
+            )
+            .expect_err("non-Codex runtime must fail");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn backend_rejects_compact_when_session_or_config_does_not_match() {
+        let state = test_run_state();
+        let (command, _commands) = mpsc::unbounded_channel();
+        insert_test_codex_runtime(&state, AgentRuntimePhase::Ready, None, command);
+
+        let session_error = state
+            .dispatch_compact(
+                "thread-1".to_string(),
+                test_codex_runtime_config(),
+                "provider-thread-other".to_string(),
+                AgentRuntimeCompact {
+                    run_id: "run-compact-session".to_string(),
+                    operation_id: "compact-session".to_string(),
+                },
+            )
+            .expect_err("mismatched session must fail");
+        assert_eq!(session_error.status, StatusCode::CONFLICT);
+
+        let mut changed_config = test_codex_runtime_config();
+        changed_config.channel_fingerprint = Some("channel-other".to_string());
+        changed_config.working_directory = PathBuf::from("D:/other-workspace");
+        let config_error = state
+            .dispatch_compact(
+                "thread-1".to_string(),
+                changed_config,
+                "provider-thread-1".to_string(),
+                AgentRuntimeCompact {
+                    run_id: "run-compact-config".to_string(),
+                    operation_id: "compact-config".to_string(),
+                },
+            )
+            .expect_err("mismatched config must fail");
+        assert_eq!(config_error.status, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn compact_actor_rejects_a_different_resumed_session() {
+        let compact = AgentRuntimeCommand::Compact(AgentRuntimeCompact {
+            run_id: "run-compact-1".to_string(),
+            operation_id: "compact-1".to_string(),
+        });
+        assert!(validate_compact_runtime_session(
+            &compact,
+            Some("provider-thread-1"),
+            "provider-thread-1"
+        )
+        .is_ok());
+        assert!(validate_compact_runtime_session(
+            &compact,
+            Some("provider-thread-1"),
+            "provider-thread-other"
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn compact_failure_event_precedes_terminal_error() {
+        let state = test_run_state();
+        let (cancel, _cancel_receiver) = watch::channel(false);
+        let (control, _control_receiver) = mpsc::unbounded_channel();
+        state
+            .insert(
+                "run-compact-1".to_string(),
+                AgentRunRecord {
+                    provider_id: OPENAI_CODEX_PROVIDER_ID.to_string(),
+                    thread_id: Some("thread-1".to_string()),
+                    events: Vec::new(),
+                    finished: false,
+                    terminal_emitted: false,
+                    notify: Arc::new(Notify::new()),
+                    cancel,
+                    control,
+                },
+            )
+            .expect("insert compact run");
+        let command = AgentRuntimeCommand::Compact(AgentRuntimeCompact {
+            run_id: "run-compact-1".to_string(),
+            operation_id: "compact-1".to_string(),
+        });
+
+        push_compact_failure_event(&state, &command, Some("provider-thread-1"), "resume failed");
+        state.push_terminal(
+            "run-compact-1",
+            AgentRunEvent::Error {
+                run_id: "run-compact-1".to_string(),
+                message: "resume failed".to_string(),
+            },
+        );
+
+        let (events, finished) = state.snapshot_after("run-compact-1", 0).expect("events");
+        assert!(finished);
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AgentRunEvent::ContextCompaction {
+                    status: AgentCompactionStatus::Failed,
+                    error: Some(message),
+                    ..
+                },
+                AgentRunEvent::Error { .. }
+            ] if message == "resume failed"
+        ));
     }
 
     #[test]

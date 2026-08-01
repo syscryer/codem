@@ -5,6 +5,7 @@
 - Task: .trellis/tasks/codex-native-compact.md
 
 ## Notes
+- 2026-08-01T19:08:55.516Z 完成 Task 3：将热 runtime actor 首个工作项泛化为 Run/Compact command；新增专用 compact NDJSON 路由、共享 Codex runtime config 解析、thread 级 409 防重、session/config/channel/workspace 校验，以及 manual compact running/completed/failed 结构化事件和 fatal runtime 关闭策略。
 
 - 2026-08-01T18:52:10.061Z 完成 Task 2：定义 context-compaction 稳定跨层事件、Codex compact capability summary 与前端 compact operation metadata；旧 history 的 kind/compact 字段均保持可选兼容。
 - 2026-08-01T18:48:38.549Z 完成 Task 1：Codex App Server 新增 thread/compact/start 无副作用能力探测、手动压缩生命周期聚合、旧 thread/compacted 兼容优先级，以及普通 turn 自动 contextCompaction 的 started/completed 事件；成功必须同时满足 accepted、context item completed 和同 turn terminal completed。
@@ -33,6 +34,9 @@
 - 2026-08-01T17:14:04.617Z Session started.
 
 ## Verification
+- 2026-08-01T19:09:16.956Z `cargo test --manifest-path src-tauri/Cargo.toml agent_run -- --nocapture`: 通过：64 个 agent_run/runtime 回归用例，0 失败；仅有既有 dead-code 与 Windows linker warnings。
+
+- 2026-08-01T19:09:05.365Z `cargo test --manifest-path src-tauri/Cargo.toml compact -- --nocapture`: 通过：17 个 compact 协议、contract、actor、API 与防重用例，0 失败。
 - 2026-08-01T18:52:33.508Z `npm run typecheck`: 通过：TypeScript project references 无错误。
 
 - 2026-08-01T18:52:25.489Z `cargo test --manifest-path src-tauri/Cargo.toml context_compaction_event_uses_stable_camel_case_contract`: 通过：1 个 compact contract 序列化用例，0 失败。
