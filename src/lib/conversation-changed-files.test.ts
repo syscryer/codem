@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -8,6 +9,12 @@ import {
   findLatestChangedFilesTurnId,
 } from './conversation-changed-files';
 import type { ConversationTurn, ToolStep } from '../types';
+import { collectToolConversationFileChanges } from './conversation-preview-shortcuts';
+
+const conversationTurnSource = readFileSync(
+  new URL('../components/ConversationTurn.tsx', import.meta.url),
+  'utf8',
+);
 
 test('buildChangedFilesReviewRequests opens each changed file as a conversation preview tab', () => {
   const requests = buildChangedFilesReviewRequests([
@@ -108,6 +115,44 @@ test('buildChangedFileReviewRequest builds a single conversation review tab requ
     source: 'conversation-card',
     reviewDiff: ['--- a/src/App.tsx', '+++ b/src/App.tsx', '-old title', '+new title'],
   });
+});
+
+test('buildChangedFileReviewRequest preserves Codex native diff hunks', () => {
+  const diff = [
+    '@@ -10,3 +10,3 @@',
+    ' context one',
+    '-old one',
+    '+new one',
+    '@@ -40,3 +40,3 @@',
+    ' context two',
+    '-old two',
+    '+new two',
+  ].join('\n');
+  const request = buildChangedFileReviewRequest({
+    path: 'src/App.tsx',
+    name: 'App.tsx',
+    additions: 2,
+    deletions: 2,
+    previews: [
+      {
+        kind: 'edit',
+        filePath: 'src/App.tsx',
+        fileName: 'App.tsx',
+        beforeText: 'old one\nold two',
+        afterText: 'new one\nnew two',
+        additions: 2,
+        deletions: 2,
+        rows: [],
+        diff,
+      },
+    ],
+  });
+
+  assert.deepEqual(request?.reviewDiff, [
+    '--- a/src/App.tsx',
+    '+++ b/src/App.tsx',
+    ...diff.split('\n'),
+  ]);
 });
 
 test('buildConversationUndoChanges groups tool edits by file and preserves reverse-safe order', () => {
@@ -388,4 +433,64 @@ test('findLatestChangedFilesTurnId only returns the most recent turn with change
   ];
 
   assert.equal(findLatestChangedFilesTurnId(turns), 'turn-3');
+});
+
+test('findLatestChangedFilesTurnId recognizes Codex fileChange result entries', () => {
+  const turns: ConversationTurn[] = [
+    {
+      id: 'turn-codex',
+      userText: 'update docs',
+      workspace: 'D:/project/codem',
+      assistantText: 'done',
+      tools: [
+        {
+          id: 'codex-file-change',
+          name: 'Edit',
+          title: 'Codex file change',
+          status: 'done',
+          resultText: JSON.stringify({
+            status: 'completed',
+            changes: [
+              {
+                path: 'docs/prd.md',
+                kind: { type: 'add' },
+                diff: '@@ -0,0 +1 @@\n+# PRD',
+              },
+            ],
+          }),
+        },
+      ],
+      items: [],
+      status: 'done',
+    },
+  ];
+
+  assert.equal(findLatestChangedFilesTurnId(turns), 'turn-codex');
+});
+
+test('Codex moved files use the destination path in conversation review', () => {
+  const changes = collectToolConversationFileChanges({
+    id: 'codex-move',
+    name: 'Edit',
+    title: 'Codex file change',
+    status: 'done',
+    resultText: JSON.stringify({
+      changes: [
+        {
+          path: 'docs/old-name.md',
+          kind: { type: 'update', move_path: 'docs/new-name.md' },
+          diff: '@@ -1 +1 @@\n-old\n+new',
+        },
+      ],
+    }),
+  });
+
+  assert.equal(changes[0]?.path, 'docs/new-name.md');
+});
+
+test('Codex file changes without reversible snippets do not expose conversation undo', () => {
+  assert.match(
+    conversationTurnSource,
+    /canUndo=\{canUndoChangedFiles && undoChanges\.length > 0\}/,
+  );
 });

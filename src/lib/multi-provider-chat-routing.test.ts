@@ -59,7 +59,7 @@ test('generic Agent composer follows provider attachment capabilities and suppor
   assert.match(composerSource, /providerId === OPENAI_CODEX_PROVIDER_ID/);
   assert.match(composerSource, /providerId === OPENCODE_PROVIDER_ID/);
   assert.match(composerSource, /isRunning && !supportsQueue/);
-  assert.match(agentRunSource, /type QueuedAgentPrompt = AgentPromptSubmission/);
+  assert.match(agentRunSource, /type QueuedAgentPrompt = Omit<AgentPromptSubmission, 'queueStatus'>/);
   assert.match(agentRunSource, /maybeStartQueuedPrompt\(context\)/);
 });
 

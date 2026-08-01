@@ -5,9 +5,32 @@ import { APP_UPDATE_CHECK_INTERVAL_MS } from '../constants.js';
 import {
   defaultAgentRuntimeSettings,
   defaultGeneralSettings,
+  defaultOpenWithSettings,
   normalizeAgentRuntimeSettings,
   normalizeGeneralSettings,
+  normalizeOpenWithSettings,
 } from './settings-api.js';
+
+test('网页链接默认使用外部浏览器并只保留受支持的设置值', () => {
+  assert.equal(defaultOpenWithSettings.webLinkOpenTarget, 'external');
+  assert.equal(normalizeOpenWithSettings({}).webLinkOpenTarget, 'external');
+  assert.equal(
+    normalizeOpenWithSettings({
+      selectedTargetId: 'vscode',
+      customTargets: [],
+      webLinkOpenTarget: 'workbench',
+    }).webLinkOpenTarget,
+    'workbench',
+  );
+  assert.equal(
+    normalizeOpenWithSettings({
+      selectedTargetId: 'vscode',
+      customTargets: [],
+      webLinkOpenTarget: 'invalid',
+    }).webLinkOpenTarget,
+    'external',
+  );
+});
 
 test('normalizeAgentRuntimeSettings defaults to Claude Code and preserves supported providers', () => {
   assert.equal(normalizeAgentRuntimeSettings({}).defaultProviderId, 'claude-code');

@@ -1,10 +1,10 @@
-import { AppWindow, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { AppWindow, ExternalLink, Globe2, PanelRightOpen, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import type { OpenAppTarget, OpenWithSettings } from '../../types';
 import type { OpenWithSettingsUpdate } from '../../hooks/useAppSettings';
 import { defaultOpenWithSettings } from '../../hooks/useAppSettings';
 import { getOpenAppIcon } from '../../lib/open-app-icons';
-import { SettingsRow } from './SettingsControls';
+import { SegmentedControl, SettingsRow } from './SettingsControls';
 
 type OpenWithSettingsSectionProps = {
   openWith: OpenWithSettings;
@@ -66,6 +66,17 @@ export function OpenWithSettingsSection({
       </header>
 
       <div className="settings-panel">
+        <SettingsRow icon={Globe2} title="网页链接" description="控制聊天中的网页链接默认打开位置">
+          <SegmentedControl
+            value={openWith.webLinkOpenTarget}
+            options={[
+              { value: 'external', label: '外部浏览器', icon: ExternalLink },
+              { value: 'workbench', label: '右侧浏览器', icon: PanelRightOpen },
+            ]}
+            onChange={(webLinkOpenTarget) => void onUpdateOpenWith({ webLinkOpenTarget })}
+          />
+        </SettingsRow>
+
         <SettingsRow icon={AppWindow} title="默认打开工具" description="控制顶部工具按钮直接打开项目时使用的目标">
           <select
             className="settings-select"
@@ -158,7 +169,7 @@ export function OpenWithSettingsSection({
           ) : null}
         </div>
 
-        <SettingsRow icon={RotateCcw} title="重置打开方式" description="恢复默认工具选择并清空自定义工具">
+        <SettingsRow icon={RotateCcw} title="重置打开方式" description="恢复默认网页行为和工具选择，并清空自定义工具">
           <button
             type="button"
             className="settings-action-button"

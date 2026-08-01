@@ -43,6 +43,15 @@ import {
   reasoningEffortForThreadModel,
   updateThreadModelReasoningEffort,
 } from '../lib/thread-model-preferences';
+import {
+  getCodexQueuedPromptGuideContent,
+  getQueuedPromptContinuationState,
+  getQueuedPromptGuideSelection,
+  resolveGuideSuccessActivity,
+  shouldResumePausedQueueAfterUnknownRemoval,
+  shouldContinueQueueAfterGuide,
+  type QueuedPromptStatus,
+} from '../lib/queued-prompts';
 import type { ThreadActivityNoticeKind } from '../lib/thread-activity-notices';
 import type {
   AgentProviderId,
@@ -72,8 +81,9 @@ type AgentPromptSubmission = {
   automationExecution?: boolean;
 };
 
-type QueuedAgentPrompt = AgentPromptSubmission & {
+type QueuedAgentPrompt = Omit<AgentPromptSubmission, 'queueStatus'> & {
   id: string;
+  queueStatus: QueuedPromptStatus;
   createdAtMs: number;
 };
 
@@ -115,6 +125,8 @@ type AgentRunContext = {
   cancelRequested: boolean;
   cancelRequestSent: boolean;
   terminal: boolean;
+  terminalAllowsQueueContinuation: boolean;
+  terminalBlockedGuidePromptId?: string;
 };
 
 type UseAgentRunArgs = {
@@ -221,6 +233,7 @@ export function useAgentRun({
   const queuedPromptsByThreadIdRef = useRef<Record<string, QueuedAgentPrompt[]>>({});
   const threadSummariesByIdRef = useRef(new Map<string, ThreadSummary>());
   const autoStartAfterPreparationThreadIdsRef = useRef(new Set<string>());
+  const pausedQueueContinuationsByThreadIdRef = useRef(new Map<string, AgentRunContext>());
   const permissionModeRef = useRef<PermissionMode>(defaultPermissionMode);
   const modelRef = useRef(DEFAULT_MODEL_VALUE);
   const reasoningEffortRef = useRef('');
@@ -256,7 +269,17 @@ export function useAgentRun({
     [channelId, nativeModelCatalog, selectedChannel, selectedProviderId],
   );
   const queuedPrompts = activeThreadId
-    ? queuedPromptsByThreadId[activeThreadId] ?? []
+    ? (queuedPromptsByThreadId[activeThreadId] ?? []).map((prompt) => {
+        const guideContent = selectedProviderId === OPENAI_CODEX_PROVIDER_ID
+          ? getCodexQueuedPromptGuideContent(prompt)
+          : null;
+        return {
+          ...prompt,
+          guideUnavailableReason: guideContent && !guideContent.available
+            ? guideContent.reason
+            : undefined,
+        };
+      })
     : [];
 
   useEffect(() => {
@@ -875,9 +898,11 @@ export function useAgentRun({
     if (!activeThreadId || !promptId) {
       return;
     }
-    if (!removeQueuedPromptFromThread(activeThreadId, promptId)) {
+    const removedPrompt = removeQueuedPromptFromThread(activeThreadId, promptId);
+    if (!removedPrompt) {
       return;
     }
+    resumePausedQueueAfterUnknownRemoval(activeThreadId, removedPrompt);
     appendDebug(activeThreadId, {
       title: '已取消排队提示',
       content: promptId,
@@ -892,6 +917,7 @@ export function useAgentRun({
     if (!prompt) {
       return null;
     }
+    resumePausedQueueAfterUnknownRemoval(activeThreadId, prompt);
     appendDebug(activeThreadId, {
       title: '已召回排队提示',
       content: promptId,
@@ -899,15 +925,165 @@ export function useAgentRun({
     return prompt.displayText || prompt.prompt;
   }
 
-  async function guideQueuedPrompt() {
-    showToast('当前 Provider 不支持运行中引导，消息会在本轮完成后自动发送。', 'info');
-    return false;
+  function resumePausedQueueAfterUnknownRemoval(
+    threadId: string,
+    removedPrompt: QueuedAgentPrompt,
+  ) {
+    const context = pausedQueueContinuationsByThreadIdRef.current.get(threadId);
+    if (!shouldResumePausedQueueAfterUnknownRemoval(
+      removedPrompt.queueStatus,
+      queuedPromptsByThreadIdRef.current[threadId] ?? [],
+      Boolean(context),
+    ) || !context) {
+      return;
+    }
+    pausedQueueContinuationsByThreadIdRef.current.delete(threadId);
+    maybeStartQueuedPrompt(context);
+  }
+
+  async function guideQueuedPrompt(promptId: string) {
+    const targetThreadId = activeThreadId;
+    const context = targetThreadId
+      ? runContextsByThreadIdRef.current.get(targetThreadId)
+      : undefined;
+    if (!targetThreadId || !context?.runId) {
+      showToast('当前没有可引导的运行。', 'info');
+      return false;
+    }
+    if (context.providerId !== OPENAI_CODEX_PROVIDER_ID) {
+      showToast('当前 Provider 不支持运行中引导，消息会在本轮完成后自动发送。', 'info');
+      return false;
+    }
+    if (context.interrupting) {
+      showToast('当前运行正在停止，暂不能引导。', 'info');
+      return false;
+    }
+    const queue = queuedPromptsByThreadIdRef.current[targetThreadId] ?? [];
+    const guideSelection = getQueuedPromptGuideSelection(queue, promptId);
+    if (!guideSelection.available) {
+      showToast(guideSelection.reason, 'info');
+      return false;
+    }
+    const targetPrompt = queue[0];
+    const guideContent = getCodexQueuedPromptGuideContent(targetPrompt);
+    if (!guideContent.available) {
+      showToast(guideContent.reason, 'info');
+      return false;
+    }
+
+    updateQueuedPromptStatus(targetThreadId, promptId, 'guiding');
+    let resultUncertain = true;
+    try {
+      const response = await fetch(
+        `/api/agents/run/${encodeURIComponent(context.runId)}/guide`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: guideContent.text }),
+        },
+      );
+      const payload = await response.json().catch(() => null) as {
+        submitted?: boolean;
+        uncertain?: boolean;
+        error?: string;
+      } | null;
+      if (!response.ok || payload?.submitted !== true) {
+        resultUncertain = payload?.uncertain === true || response.status >= 500 || response.ok;
+        updateQueuedPromptStatus(
+          targetThreadId,
+          promptId,
+          resultUncertain ? 'guide-unknown' : 'ready',
+        );
+        if (shouldContinueQueueAfterGuide(
+          context.terminalAllowsQueueContinuation,
+          context.terminalBlockedGuidePromptId,
+          promptId,
+          resultUncertain ? 'uncertain' : 'rejected',
+        )) {
+          context.terminalBlockedGuidePromptId = undefined;
+          maybeStartQueuedPrompt(context);
+        }
+        throw new Error(payload?.error || '发送引导消息失败');
+      }
+
+      resultUncertain = false;
+      removeQueuedPromptFromThread(targetThreadId, promptId);
+      if (shouldContinueQueueAfterGuide(
+        context.terminalAllowsQueueContinuation,
+        context.terminalBlockedGuidePromptId,
+        promptId,
+        'submitted',
+      )) {
+        context.terminalBlockedGuidePromptId = undefined;
+        maybeStartQueuedPrompt(context);
+      }
+      updateThreadTurn(context.threadId, context.turnId, (turn) => ({
+        ...turn,
+        items: [
+          ...turn.items,
+          createAgentGuideSystemItem(targetPrompt.displayText || guideContent.text),
+        ],
+        activity: resolveGuideSuccessActivity(context.terminal, turn.activity),
+      }));
+      schedulePersistThreadHistory(context.threadId, { urgent: true });
+      appendDebug(targetThreadId, {
+        title: '已引导当前运行',
+        content: guideContent.text,
+      });
+      return true;
+    } catch (error) {
+      const queuedPrompt = (queuedPromptsByThreadIdRef.current[targetThreadId] ?? [])
+        .find((prompt) => prompt.id === promptId);
+      if (queuedPrompt?.queueStatus === 'guiding') {
+        updateQueuedPromptStatus(
+          targetThreadId,
+          promptId,
+          resultUncertain ? 'guide-unknown' : 'ready',
+        );
+      }
+      showToast(error instanceof Error ? error.message : '发送引导消息失败', 'error');
+      return false;
+    }
+  }
+
+  function updateQueuedPromptStatus(
+    threadId: string,
+    promptId: string,
+    queueStatus: QueuedPromptStatus,
+  ) {
+    updateQueuedPrompts((current) => {
+      const queue = current[threadId] ?? [];
+      const index = queue.findIndex((prompt) => prompt.id === promptId);
+      if (index === -1 || queue[index].queueStatus === queueStatus) {
+        return current;
+      }
+      const nextQueue = [...queue];
+      nextQueue[index] = { ...nextQueue[index], queueStatus };
+      return { ...current, [threadId]: nextQueue };
+    });
   }
 
   function maybeStartQueuedPrompt(context: AgentRunContext) {
     const queue = queuedPromptsByThreadIdRef.current[context.threadId] ?? [];
-    if (queue[0]?.queueStatus === 'preparing') {
+    const continuationState = getQueuedPromptContinuationState(queue);
+    if (continuationState !== 'paused') {
+      pausedQueueContinuationsByThreadIdRef.current.delete(context.threadId);
+    }
+    if (continuationState === 'preparing') {
       autoStartAfterPreparationThreadIdsRef.current.add(context.threadId);
+      return;
+    }
+    if (continuationState === 'paused') {
+      if (
+        context.terminalAllowsQueueContinuation &&
+        queue[0]?.queueStatus === 'guiding'
+      ) {
+        context.terminalBlockedGuidePromptId = queue[0].id;
+      }
+      if (context.terminalAllowsQueueContinuation) {
+        pausedQueueContinuationsByThreadIdRef.current.set(context.threadId, context);
+      }
+      autoStartAfterPreparationThreadIdsRef.current.delete(context.threadId);
       return;
     }
     autoStartAfterPreparationThreadIdsRef.current.delete(context.threadId);
@@ -1049,6 +1225,9 @@ export function useAgentRun({
         const queueHead = queuedPromptsByThreadIdRef.current[thread.id]?.[0];
         if (
           queueHead?.id !== queuedPrompt.id ||
+          getQueuedPromptContinuationState(
+            queuedPromptsByThreadIdRef.current[thread.id] ?? [],
+          ) === 'paused' ||
           !autoStartAfterPreparationThreadIdsRef.current.delete(thread.id)
         ) {
           return true;
@@ -1067,7 +1246,11 @@ export function useAgentRun({
         return started;
       }
     }
-    if (activeContext || submission.queueStatus === 'preparing') {
+    if (
+      activeContext ||
+      submission.queueStatus === 'preparing' ||
+      pausedQueueContinuationsByThreadIdRef.current.has(thread.id)
+    ) {
       enqueuePrompt(thread, submission);
       return true;
     }
@@ -1109,7 +1292,7 @@ export function useAgentRun({
 
   function startAgentRun(
     thread: ThreadSummary,
-    submission: AgentPromptSubmission,
+    submission: Omit<AgentPromptSubmission, 'queueStatus'>,
     runPermissionMode: PermissionMode,
     runModel?: string,
     runReasoningEffort?: string,
@@ -1170,6 +1353,8 @@ export function useAgentRun({
       cancelRequested: false,
       cancelRequestSent: false,
       terminal: false,
+      terminalAllowsQueueContinuation: false,
+      terminalBlockedGuidePromptId: undefined,
     };
 
     registerRunContext(context);
@@ -1349,6 +1534,7 @@ export function useAgentRun({
 
     if (isAgentRunTerminalEvent(event)) {
       context.terminal = true;
+      context.terminalAllowsQueueContinuation = event.type === 'done' && !context.cancelRequested;
       removeRunContext(context);
       emitThreadNotice(context, event.type === 'error' ? 'failed' : 'completed', event.runId);
       if (event.type === 'done' && !context.cancelRequested) {
@@ -1675,6 +1861,18 @@ export function useAgentRun({
     submitRequestUserInput,
     submitApprovalDecision,
     stopRun,
+  };
+}
+
+function createAgentGuideSystemItem(summary: string) {
+  return {
+    id: crypto.randomUUID(),
+    type: 'system-command' as const,
+    command: 'guide',
+    title: '已引导当前运行',
+    cardType: 'compact' as const,
+    state: 'done' as const,
+    summary: summary.trim(),
   };
 }
 

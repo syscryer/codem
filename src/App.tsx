@@ -61,6 +61,7 @@ import {
 import { getQueuedPromptGuideAvailability } from './lib/queued-prompts';
 import { resolveChatRuntimeKind } from './lib/agent-provider-registry';
 import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
+import { openExternalUrl } from './lib/markdown-link';
 import { fetchGitRemote, pullGitBranch, pushGitBranch, undoConversationChanges } from './lib/git-api';
 import { areThreadRuntimeStatusesEqual, fetchThreadRuntimeStatuses } from './lib/thread-runtime-statuses';
 import {
@@ -102,6 +103,7 @@ import type {
   RightWorkbenchTab,
   SlashCommand,
   WorkbenchPreviewContentState,
+  WorkbenchBrowserOpenRequest,
   WorkbenchPreviewRequest,
   WorkbenchPreviewTab,
   SettingsSection,
@@ -110,6 +112,7 @@ import type {
   ThreadRuntimeStatus,
   ThreadSummary,
   ToolStep,
+  WebLinkOpenTarget,
   ProjectSummary,
   GitCreateWorktreeResult,
   GitPushPreview,
@@ -291,6 +294,7 @@ export default function App() {
   const [rightWorkbenchOpen, setRightWorkbenchOpen] = useState(false);
   const [rightWorkbenchTab, setRightWorkbenchTab] = useState<RightWorkbenchTab>('overview');
   const [rightWorkbenchWidth, setRightWorkbenchWidth] = useState(680);
+  const [browserOpenRequest, setBrowserOpenRequest] = useState<WorkbenchBrowserOpenRequest | null>(null);
   const [chatWorkspaceWidth, setChatWorkspaceWidth] = useState(0);
   const [filePreviewTabs, setFilePreviewTabs] = useState<WorkbenchPreviewTab[]>([]);
   const [activeFilePreviewKey, setActiveFilePreviewKey] = useState('');
@@ -1018,10 +1022,16 @@ export default function App() {
   const activeRunTurn = activeRunTurnId
     ? activeThread?.turns.find((turn) => turn.id === activeRunTurnId)
     : undefined;
-  const queuedPromptGuideAvailability = activeUsesClaude
+  const supportsQueuedPromptGuide = activeUsesClaude || (
+    activeUsesGenericAgent && activeThread?.provider === OPENAI_CODEX_PROVIDER_ID
+  );
+  const queuedPromptGuideAvailability = supportsQueuedPromptGuide
     ? getQueuedPromptGuideAvailability({
         isRunning: Boolean(activeThreadId && runningThreadIds.includes(activeThreadId)),
         runId: backendRunId,
+        isInterrupting: Boolean(
+          activeThreadId && activeRunsByThreadId[activeThreadId]?.interrupting,
+        ),
         hasPendingHumanInput: Boolean(
           activeRunTurn?.pendingUserInputRequests?.length ||
           activeRunTurn?.pendingApprovalRequests?.length,
@@ -1642,6 +1652,32 @@ export default function App() {
     setRightWorkbenchTab('files');
   }
 
+  function openWorkbenchBrowser(url: string) {
+    setBrowserOpenRequest({ id: crypto.randomUUID(), url });
+    setRightWorkbenchOpen(true);
+    setRightWorkbenchTab('browser');
+  }
+
+  async function handleOpenWebLink(url: string, requestedTarget?: WebLinkOpenTarget) {
+    const target = requestedTarget ?? openWith.webLinkOpenTarget;
+    if (target === 'workbench' && isTauriRuntime()) {
+      openWorkbenchBrowser(url);
+      return;
+    }
+
+    if (!await openExternalUrl(url)) {
+      showToast('打开网页链接失败', 'error');
+    }
+  }
+
+  async function handleCopyWebLink(url: string) {
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      showToast('复制链接失败，请重试或手动复制。', 'error');
+    }
+  }
+
   async function handleGitFetch(project: ProjectSummary | null = activeProject) {
     if (!project?.isGitRepo) {
       showToast('当前项目不是 Git 仓库。', 'info');
@@ -2159,6 +2195,8 @@ export default function App() {
               <OrdinaryChatWorkspace
                 chat={ordinaryChat}
                 showToast={showToast}
+                onOpenWebLink={handleOpenWebLink}
+                onCopyWebLink={handleCopyWebLink}
                 onOpenAiSettings={() => openAgentChannelSettings('ordinary-chat')}
                 onOpenKnowledgeManager={() => setKnowledgeManagerOpen(true)}
                 onRenameChat={setOrdinaryChatRenameTarget}
@@ -2213,6 +2251,8 @@ export default function App() {
               onOpenWorkbenchPreview={openWorkbenchPreview}
               onOpenOutputPath={handleOpenOutputPath}
               onRevealOutputPath={handleRevealOutputPath}
+              onOpenWebLink={handleOpenWebLink}
+              onCopyWebLink={handleCopyWebLink}
               onUndoChangedFiles={handleUndoChangedFiles}
                 onSubmitRequestUserInput={(
                   turn: ConversationTurn,
@@ -2335,6 +2375,7 @@ export default function App() {
                 reviewHideNoiseFilesByDefault={general.reviewHideNoiseFilesByDefault}
                 reviewDefaultDisplayMode={general.reviewDefaultDisplayMode}
                 reviewNoisePatterns={general.reviewNoisePatterns}
+                browserOpenRequest={browserOpenRequest}
                 showToast={showToast}
                 onResizeStart={handleRightWorkbenchResizeStart}
                 onClose={() => setRightWorkbenchOpen(false)}

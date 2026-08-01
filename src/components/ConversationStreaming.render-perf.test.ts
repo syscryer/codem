@@ -10,7 +10,10 @@ const workspaceSource = readFileSync(new URL('../hooks/useWorkspaceState.ts', im
 test('streaming markdown memoizes expensive parsing behind deferred content', () => {
   assert.match(turnSource, /const deferredContent = useDeferredValue\(content\);/);
   assert.match(turnSource, /const DeferredMarkdownContent = memo\(function DeferredMarkdownContent/);
-  assert.match(turnSource, /<DeferredMarkdownContent content=\{deferredContent\}/);
+  assert.match(
+    turnSource,
+    /<DeferredMarkdownContent\s+content=\{deferredContent\}\s+onPreviewImage=\{onPreviewImage\}\s+onOpenLocalFile=\{onOpenLocalFile\}/,
+  );
   assert.match(turnSource, /\{content\}\s*<\/ReactMarkdown>/);
 });
 

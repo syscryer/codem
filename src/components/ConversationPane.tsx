@@ -12,6 +12,7 @@ import type {
   RuntimeSuggestedAction,
   ThreadDetail,
   UndoConversationChange,
+  WebLinkOpenTarget,
   WorkbenchPreviewRequest,
 } from '../types';
 
@@ -48,6 +49,8 @@ type ConversationPaneProps = {
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onOpenOutputPath: (path: string) => Promise<void>;
   onRevealOutputPath: (path: string) => Promise<void>;
+  onOpenWebLink: (url: string, target?: WebLinkOpenTarget) => void | Promise<void>;
+  onCopyWebLink: (url: string) => void | Promise<void>;
   onUndoChangedFiles: (turn: ConversationTurn, changes: UndoConversationChange[]) => void;
   onSubmitRequestUserInput: (
     turn: ConversationTurn,
@@ -100,6 +103,8 @@ export function ConversationPane({
   onOpenWorkbenchPreview,
   onOpenOutputPath,
   onRevealOutputPath,
+  onOpenWebLink,
+  onCopyWebLink,
   onUndoChangedFiles,
   onSubmitRequestUserInput,
   onSubmitRuntimeRecoveryAction,
@@ -118,6 +123,8 @@ export function ConversationPane({
   const stableOpenWorkbenchPreview = useLatestCallback(onOpenWorkbenchPreview);
   const stableOpenOutputPath = useLatestCallback(onOpenOutputPath);
   const stableRevealOutputPath = useLatestCallback(onRevealOutputPath);
+  const stableOpenWebLink = useLatestCallback(onOpenWebLink);
+  const stableCopyWebLink = useLatestCallback(onCopyWebLink);
   const stableUndoChangedFiles = useLatestCallback(onUndoChangedFiles);
   const stableSubmitRequestUserInput = useLatestCallback(onSubmitRequestUserInput);
   const stableSubmitRuntimeRecoveryAction = useLatestCallback(onSubmitRuntimeRecoveryAction);
@@ -345,6 +352,8 @@ export function ConversationPane({
                 onOpenWorkbenchPreview={stableOpenWorkbenchPreview}
                 onOpenOutputPath={stableOpenOutputPath}
                 onRevealOutputPath={stableRevealOutputPath}
+                onOpenWebLink={stableOpenWebLink}
+                onCopyWebLink={stableCopyWebLink}
                 onUndoChangedFiles={stableUndoChangedFiles}
                 onSubmitRequestUserInput={stableSubmitRequestUserInput}
                 onSubmitRuntimeRecoveryAction={stableSubmitRuntimeRecoveryAction}

@@ -36,7 +36,13 @@ test('隐藏工作区只在重新显示时接收最新渲染', () => {
 
 test('Claude 流式阶段保留完整 Markdown，并跳过相同 deferred 内容的重复解析', () => {
   assert.match(turnSource, /const DeferredMarkdownContent = memo\(function DeferredMarkdownContent/);
-  assert.match(turnSource, /return <DeferredMarkdownContent content=\{deferredContent\} onPreviewImage=\{onPreviewImage\} \/>;/);
+  assert.match(
+    turnSource,
+    /<DeferredMarkdownContent\s+content=\{deferredContent\}\s+onPreviewImage=\{onPreviewImage\}\s+onOpenLocalFile=\{onOpenLocalFile\}[\s\S]*?\/>/,
+  );
+  assert.match(turnSource, /onOpenLocalFileContextMenu=/);
+  assert.match(turnSource, /onOpenWebUrl=/);
+  assert.match(turnSource, /onOpenWebContextMenu=/);
   assert.match(turnSource, /<ReactMarkdown[\s\S]*?\{content\}\s*<\/ReactMarkdown>/);
   assert.doesNotMatch(turnSource, /if \(streaming\)/);
 });

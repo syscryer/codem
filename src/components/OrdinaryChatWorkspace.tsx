@@ -9,6 +9,7 @@ import type {
   ApprovalRequest,
   ConversationTurn,
   RequestUserInputRequest,
+  WebLinkOpenTarget,
 } from '../types';
 import { ordinaryChatReasoningOptions, ordinaryChatSupportsWebSearch } from '../lib/ordinary-chat-capabilities';
 import { Composer } from './Composer';
@@ -18,6 +19,8 @@ import { OrdinaryChatHeader } from './OrdinaryChatHeader';
 type OrdinaryChatWorkspaceProps = {
   chat: ReturnTypeUseOrdinaryChat;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
+  onOpenWebLink: (url: string, target?: WebLinkOpenTarget) => void | Promise<void>;
+  onCopyWebLink: (url: string) => void | Promise<void>;
   onOpenAiSettings: () => void;
   onOpenKnowledgeManager: () => void;
   onRenameChat: (chat: AiChatSummary) => void;
@@ -27,6 +30,8 @@ type OrdinaryChatWorkspaceProps = {
 export function OrdinaryChatWorkspace({
   chat,
   showToast,
+  onOpenWebLink,
+  onCopyWebLink,
   onOpenAiSettings,
   onOpenKnowledgeManager,
   onRenameChat,
@@ -145,6 +150,8 @@ export function OrdinaryChatWorkspace({
         onOpenWorkbenchPreview={() => undefined}
         onOpenOutputPath={async () => undefined}
         onRevealOutputPath={async () => undefined}
+        onOpenWebLink={onOpenWebLink}
+        onCopyWebLink={onCopyWebLink}
         onUndoChangedFiles={() => undefined}
         onSubmitRequestUserInput={async (
           _turn: ConversationTurn,

@@ -12,6 +12,8 @@ export type WorkbenchBrowserState = {
   activeTabId: string;
 };
 
+export type WorkbenchBrowserOpenOutcome = 'opened' | 'reused' | 'limit-reached';
+
 export function createWorkbenchBrowserTab(url = ''): WorkbenchBrowserTab {
   return {
     id: crypto.randomUUID(),
@@ -74,6 +76,46 @@ export function normalizeWorkbenchBrowserState(value: unknown): WorkbenchBrowser
     ? record.activeTabId
     : tabs[0].id;
   return { tabs, activeTabId };
+}
+
+export function openWorkbenchBrowserUrl(
+  state: WorkbenchBrowserState,
+  value: string,
+): { state: WorkbenchBrowserState; outcome: WorkbenchBrowserOpenOutcome; url: string } {
+  const url = normalizeWorkbenchBrowserInput(value);
+  const matchingTab = state.tabs.find((tab) => tab.url === url);
+  if (matchingTab) {
+    return {
+      state: { ...state, activeTabId: matchingTab.id },
+      outcome: 'reused',
+      url,
+    };
+  }
+
+  const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId);
+  if (activeTab && !activeTab.url) {
+    return {
+      state: {
+        tabs: state.tabs.map((tab) => tab.id === activeTab.id
+          ? { ...tab, url, title: browserTitleFromUrl(url) }
+          : tab),
+        activeTabId: activeTab.id,
+      },
+      outcome: 'opened',
+      url,
+    };
+  }
+
+  if (state.tabs.length >= MAX_WORKBENCH_BROWSER_TABS) {
+    return { state, outcome: 'limit-reached', url };
+  }
+
+  const tab = createWorkbenchBrowserTab(url);
+  return {
+    state: { tabs: [...state.tabs, tab], activeTabId: tab.id },
+    outcome: 'opened',
+    url,
+  };
 }
 
 function resolveBrowserInputCandidate(input: string) {

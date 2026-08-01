@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const source = readFileSync(new URL('../components/RightWorkbench.tsx', import.meta.url), 'utf8');
+const appSource = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
 test('browser workbench uses the native webview runtime instead of an iframe placeholder', () => {
@@ -34,4 +35,13 @@ test('browser workbench exposes a non-blocking loading progress indicator', () =
   assert.match(source, /role="progressbar"/);
   assert.match(stylesSource, /\.workbench-browser-loading-bar\.active/);
   assert.match(stylesSource, /@keyframes workbench-browser-loading/);
+});
+
+test('App can request a URL and the browser shell consumes it with tab reuse', () => {
+  assert.match(appSource, /browserOpenRequest/);
+  assert.match(appSource, /setRightWorkbenchTab\('browser'\)/);
+  assert.match(source, /browserOpenRequest/);
+  assert.match(source, /openWorkbenchBrowserUrl/);
+  assert.match(source, /limit-reached/);
+  assert.match(source, /最多只能打开/);
 });

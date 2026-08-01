@@ -117,6 +117,7 @@ import {
   MAX_WORKBENCH_BROWSER_TABS,
   normalizeWorkbenchBrowserInput,
   normalizeWorkbenchBrowserState,
+  openWorkbenchBrowserUrl,
   WORKBENCH_BROWSER_STORAGE_KEY,
   type WorkbenchBrowserState,
   type WorkbenchBrowserTab,
@@ -133,6 +134,7 @@ import type {
   RightWorkbenchTab,
   ThreadDetail,
   WorkbenchPreviewContentState,
+  WorkbenchBrowserOpenRequest,
   WorkbenchPreviewRequest,
   WorkbenchPreviewTab,
 } from '../types';
@@ -163,6 +165,7 @@ type RightWorkbenchProps = {
   reviewHideNoiseFilesByDefault: boolean;
   reviewDefaultDisplayMode: ReviewDisplayMode;
   reviewNoisePatterns: string[];
+  browserOpenRequest: WorkbenchBrowserOpenRequest | null;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onClose: () => void;
@@ -216,6 +219,7 @@ export function RightWorkbench({
   reviewHideNoiseFilesByDefault,
   reviewDefaultDisplayMode,
   reviewNoisePatterns,
+  browserOpenRequest,
   showToast,
   onResizeStart,
   onClose,
@@ -307,7 +311,10 @@ export function RightWorkbench({
           />
         </WorkbenchTabPanel>
         <WorkbenchTabPanel active={activeTab === 'browser'}>
-          <MemoWorkbenchBrowserShell active={activeTab === 'browser'} />
+          <MemoWorkbenchBrowserShell
+            active={activeTab === 'browser'}
+            browserOpenRequest={browserOpenRequest}
+          />
         </WorkbenchTabPanel>
       </div>
     </aside>
@@ -3426,7 +3433,13 @@ function WorkbenchEmpty({
   );
 }
 
-function WorkbenchBrowserShell({ active }: { active: boolean }) {
+function WorkbenchBrowserShell({
+  active,
+  browserOpenRequest,
+}: {
+  active: boolean;
+  browserOpenRequest: WorkbenchBrowserOpenRequest | null;
+}) {
   const browserResizeGutter = 8;
   const [browserState, setBrowserState] = useState<WorkbenchBrowserState>(() => {
     if (typeof window === 'undefined') {
@@ -3444,6 +3457,8 @@ function WorkbenchBrowserShell({ active }: { active: boolean }) {
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const webviewsRef = useRef(new Map<string, Awaited<ReturnType<typeof ensureWorkbenchBrowserWebview>>>());
   const browserLoadingTimerRef = useRef<number | null>(null);
+  const browserStateRef = useRef(browserState);
+  browserStateRef.current = browserState;
   const browserTabsRef = useRef(browserState.tabs);
   browserTabsRef.current = browserState.tabs;
   const activeTab = browserState.tabs.find((tab) => tab.id === browserState.activeTabId) ?? browserState.tabs[0];
@@ -3524,7 +3539,22 @@ function WorkbenchBrowserShell({ active }: { active: boolean }) {
       webviewsRef.current.set(currentTab.id, webview);
       await syncWorkbenchBrowserWebviewBounds(webview, bounds);
     }
-  }, [active, browserState.activeTabId, getBounds, hideInactiveWebviews, startBrowserLoading, stopBrowserLoading]);
+  }, [active, activeTab?.url, browserState.activeTabId, getBounds, hideInactiveWebviews, startBrowserLoading, stopBrowserLoading]);
+
+  useEffect(() => {
+    if (!browserOpenRequest) return;
+    try {
+      const result = openWorkbenchBrowserUrl(browserStateRef.current, browserOpenRequest.url);
+      if (result.outcome === 'limit-reached') {
+        setError(`最多只能打开 ${MAX_WORKBENCH_BROWSER_TABS} 个浏览器标签页`);
+        return;
+      }
+      setError('');
+      setBrowserState(result.state);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, [browserOpenRequest]);
 
   useEffect(() => {
     void syncActiveWebview().catch((cause) => {

@@ -14,7 +14,7 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines},
     process::{Child, ChildStdin, ChildStdout, Command},
-    sync::{mpsc, watch},
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
     time::{sleep, timeout},
 };
@@ -463,12 +463,14 @@ where
         let mut last_error = None::<String>;
         let mut active_tools = HashSet::<String>::new();
         let mut completed_tools = HashSet::<String>::new();
+        let mut file_change_patches = HashMap::<String, Value>::new();
         let mut pending_interactions = HashMap::<String, PendingInteraction>::new();
         let mut cancel_sent = false;
         let mut usage = AgentUsageSnapshot::default();
         let mut cancel_channel_open = true;
         let mut control_channel_open = true;
         let mut interrupt_request_ids = HashSet::<u64>::new();
+        let mut guide_requests = HashMap::<u64, oneshot::Sender<Result<(), String>>>::new();
         let deadline = sleep(TURN_TIMEOUT);
         tokio::pin!(deadline);
 
@@ -493,6 +495,19 @@ where
                 }
                 command = control.recv(), if control_channel_open => {
                     match command {
+                        Some(AgentControlCommand::Guide { text, acknowledgement }) => {
+                            let cancel_requested = *cancel.borrow();
+                            self.handle_guide_command(
+                                thread_id,
+                                turn_id.as_deref().filter(|_| turn_started),
+                                cancel_requested,
+                                cancel_sent,
+                                !pending_interactions.is_empty(),
+                                text,
+                                acknowledgement,
+                                &mut guide_requests,
+                            ).await?;
+                        }
                         Some(command) => {
                             self.apply_control_command(
                                 &mut pending_interactions,
@@ -525,7 +540,14 @@ where
                             }
                         }
                         CodexMessage::Response { id, result, error } => {
-                            if id.as_u64().is_some_and(|value| interrupt_request_ids.remove(&value)) {
+                            if let Some(acknowledgement) = id
+                                .as_u64()
+                                .and_then(|value| guide_requests.remove(&value))
+                            {
+                                if let Some(result) = classify_guide_response(result, error) {
+                                    let _ = acknowledgement.send(result);
+                                }
+                            } else if id.as_u64().is_some_and(|value| interrupt_request_ids.remove(&value)) {
                                 finish_response(result, error)?;
                             }
                         }
@@ -557,6 +579,7 @@ where
                                 &mut last_error,
                                 &mut active_tools,
                                 &mut completed_tools,
+                                &mut file_change_patches,
                                 &mut pending_interactions,
                                 &mut usage,
                                 &mut on_event,
@@ -605,6 +628,43 @@ where
                 }
             }
         }
+    }
+
+    async fn handle_guide_command(
+        &mut self,
+        thread_id: &str,
+        active_turn_id: Option<&str>,
+        cancel_requested: bool,
+        cancel_sent: bool,
+        has_pending_interactions: bool,
+        text: String,
+        acknowledgement: oneshot::Sender<Result<(), String>>,
+        guide_requests: &mut HashMap<u64, oneshot::Sender<Result<(), String>>>,
+    ) -> Result<(), CodexAppServerError> {
+        let Some(active_turn_id) = active_turn_id else {
+            let _ = acknowledgement.send(Err("Codex 当前没有可引导的活动 turn".to_string()));
+            return Ok(());
+        };
+        if cancel_requested || cancel_sent {
+            let _ = acknowledgement.send(Err("Codex 当前运行正在停止，暂不能引导".to_string()));
+            return Ok(());
+        }
+        if has_pending_interactions {
+            let _ = acknowledgement.send(Err("Codex 正在等待审批或回答，暂不能引导".to_string()));
+            return Ok(());
+        }
+        let request_id = self
+            .send_request(
+                "turn/steer",
+                json!({
+                    "threadId": thread_id,
+                    "expectedTurnId": active_turn_id,
+                    "input": [{ "type": "text", "text": text }],
+                }),
+            )
+            .await?;
+        guide_requests.insert(request_id, acknowledgement);
+        Ok(())
     }
 
     async fn send_interrupt(
@@ -690,6 +750,11 @@ where
         F: FnMut(CodexRuntimeEvent),
     {
         match command {
+            AgentControlCommand::Guide {
+                acknowledgement, ..
+            } => {
+                let _ = acknowledgement.send(Err("Codex 当前没有可引导的活动 turn".to_string()));
+            }
             AgentControlCommand::Permission {
                 request_id,
                 decision,
@@ -1037,6 +1102,7 @@ fn process_notification<F>(
     last_error: &mut Option<String>,
     active_tools: &mut HashSet<String>,
     completed_tools: &mut HashSet<String>,
+    file_change_patches: &mut HashMap<String, Value>,
     pending_interactions: &mut HashMap<String, PendingInteraction>,
     usage: &mut AgentUsageSnapshot,
     on_event: &mut F,
@@ -1103,6 +1169,14 @@ where
                 }
             }
         }
+        "item/fileChange/patchUpdated" => {
+            if let (Some(item_id), Some(changes)) = (
+                params.get("itemId").and_then(Value::as_str),
+                params.get("changes").filter(|value| value.is_array()),
+            ) {
+                file_change_patches.insert(item_id.to_string(), sanitize_json_value(changes, 0));
+            }
+        }
         "item/completed" => {
             if let Some(item) = params.get("item") {
                 if item.get("type").and_then(Value::as_str) == Some("agentMessage")
@@ -1116,7 +1190,13 @@ where
                         });
                     }
                 }
-                if let Some((tool_id, content, is_error)) = tool_completed_event(item) {
+                let patch = item
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .and_then(|tool_id| file_change_patches.remove(tool_id));
+                if let Some((tool_id, content, is_error)) =
+                    tool_completed_event(item, patch.as_ref())
+                {
                     active_tools.remove(&tool_id);
                     if completed_tools.insert(tool_id.clone()) {
                         on_event(CodexRuntimeEvent::ToolCompleted {
@@ -1252,7 +1332,10 @@ fn tool_started_event(item: &Value) -> Option<(String, String, Option<Value>)> {
     ))
 }
 
-fn tool_completed_event(item: &Value) -> Option<(String, String, bool)> {
+fn tool_completed_event(
+    item: &Value,
+    file_change_patch: Option<&Value>,
+) -> Option<(String, String, bool)> {
     let item_type = item.get("type")?.as_str()?;
     if !matches!(
         item_type,
@@ -1282,10 +1365,18 @@ fn tool_completed_event(item: &Value) -> Option<(String, String, bool)> {
             "status": status,
             "exitCode": item.get("exitCode").cloned().unwrap_or(Value::Null),
             "output": item.get("aggregatedOutput").cloned().unwrap_or(Value::Null),
+            "changes": if is_error {
+                Value::Null
+            } else {
+                parse_command_apply_patch_changes(item).unwrap_or(Value::Null)
+            },
         }),
         "fileChange" => json!({
             "status": status,
-            "changes": item.get("changes").cloned().unwrap_or(Value::Null),
+            "changes": file_change_patch
+                .cloned()
+                .or_else(|| item.get("changes").cloned())
+                .unwrap_or(Value::Null),
         }),
         "mcpToolCall" => json!({
             "status": status,
@@ -1295,6 +1386,90 @@ fn tool_completed_event(item: &Value) -> Option<(String, String, bool)> {
         _ => sanitize_json_value(item, 0),
     };
     Some((tool_id, safe_json_to_string(&content_value), is_error))
+}
+
+fn parse_command_apply_patch_changes(item: &Value) -> Option<Value> {
+    let command = match item.get("command")? {
+        Value::String(command) => command.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => return None,
+    };
+    if !command.contains("apply_patch") && !command.contains("--codex-run-as-apply-patch") {
+        return None;
+    }
+    let patch_start = command.find("*** Begin Patch")?;
+    let patch = &command[patch_start + "*** Begin Patch".len()..];
+    let patch_end = patch.find("*** End Patch")?;
+    let raw_patch = &patch[..patch_end];
+    let decoded_patch = if !raw_patch.contains('\n')
+        && command[..patch_start].contains("[string]::Join")
+        && raw_patch.contains("','")
+    {
+        Some(raw_patch.replace("','", "\n").replace("\\\"", "\""))
+    } else {
+        None
+    };
+    let lines = decoded_patch
+        .as_deref()
+        .unwrap_or(raw_patch)
+        .lines()
+        .map(|line| line.trim_end_matches('\r'))
+        .collect::<Vec<_>>();
+    let mut changes = Vec::new();
+    let mut index = 0;
+
+    while index < lines.len() && changes.len() < MAX_JSON_ARRAY_ITEMS {
+        let Some((path, change_type)) = parse_apply_patch_file_header(lines[index]) else {
+            index += 1;
+            continue;
+        };
+        index += 1;
+        let move_path = if change_type == "update" {
+            lines
+                .get(index)
+                .and_then(|line| line.strip_prefix("*** Move to: "))
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(|path| {
+                    index += 1;
+                    path.to_string()
+                })
+        } else {
+            None
+        };
+        let diff_start = index;
+        while index < lines.len() && parse_apply_patch_file_header(lines[index]).is_none() {
+            index += 1;
+        }
+        if !path.is_empty() {
+            let kind = if let Some(move_path) = move_path {
+                json!({ "type": change_type, "move_path": move_path })
+            } else {
+                json!({ "type": change_type })
+            };
+            changes.push(json!({
+                "path": path,
+                "kind": kind,
+                "diff": lines[diff_start..index].join("\n"),
+            }));
+        }
+    }
+
+    (!changes.is_empty()).then(|| Value::Array(changes))
+}
+
+fn parse_apply_patch_file_header(line: &str) -> Option<(&str, &'static str)> {
+    [
+        ("*** Add File: ", "add"),
+        ("*** Update File: ", "update"),
+        ("*** Delete File: ", "delete"),
+    ]
+    .into_iter()
+    .find_map(|(prefix, kind)| line.strip_prefix(prefix).map(|path| (path.trim(), kind)))
 }
 
 fn build_command_approval_request(request_id: &str, params: &Value) -> AgentApprovalRequest {
@@ -1614,6 +1789,20 @@ fn finish_response(
         .ok_or_else(|| CodexAppServerError::Protocol("Codex RPC response 缺少 result".to_string()))
 }
 
+fn classify_guide_response(
+    result: Option<Value>,
+    error: Option<CodexRpcError>,
+) -> Option<Result<(), String>> {
+    if error.is_some() {
+        return Some(
+            finish_response(result, error)
+                .map(|_| ())
+                .map_err(|error| error.public_message()),
+        );
+    }
+    result.map(|_| Ok(()))
+}
+
 fn request_id_string(value: &Value) -> Result<String, CodexAppServerError> {
     match value {
         Value::String(value) if !value.trim().is_empty() => Ok(value.clone()),
@@ -1757,6 +1946,131 @@ mod tests {
         assert_eq!(usage.cache_read_input_tokens, Some(20));
         assert_eq!(usage.output_tokens, Some(7));
         assert_eq!(usage.model_context_window, Some(353400));
+    }
+
+    #[test]
+    fn successful_command_execution_exposes_complete_apply_patch_changes() {
+        let item = json!({
+            "id": "tool-patch",
+            "type": "commandExecution",
+            "status": "completed",
+            "exitCode": 0,
+            "command": "apply_patch \"*** Begin Patch\n*** Add File: docs/report.md\n+# Report\n+done\n*** End Patch\"",
+            "aggregatedOutput": "Success. Updated the following files:\nA docs/report.md"
+        });
+
+        let (_, content, is_error) =
+            tool_completed_event(&item, None).expect("completed command event");
+        let content: Value = serde_json::from_str(&content).expect("command result json");
+
+        assert!(!is_error);
+        assert_eq!(content["changes"][0]["path"], "docs/report.md");
+        assert_eq!(content["changes"][0]["kind"]["type"], "add");
+        assert_eq!(content["changes"][0]["diff"], "+# Report\n+done");
+    }
+
+    #[test]
+    fn command_apply_patch_preserves_update_delete_move_and_hunks() {
+        let item = json!({
+            "id": "tool-patch",
+            "type": "commandExecution",
+            "status": "completed",
+            "exitCode": 0,
+            "command": [
+                "pwsh.exe",
+                "-Command",
+                "apply_patch \"*** Begin Patch\n*** Update File: src/main.rs\n@@ -1 +1 @@\n-old\n+new\n@@ -8 +8 @@\n-before\n+after\n*** Update File: src/old.rs\n*** Move to: src/new.rs\n@@ -1 +1 @@\n-old name\n+new name\n*** Delete File: docs/old.md\n*** End Patch\""
+            ],
+            "aggregatedOutput": "Success"
+        });
+
+        let (_, content, is_error) =
+            tool_completed_event(&item, None).expect("completed command event");
+        let content: Value = serde_json::from_str(&content).expect("command result json");
+        let changes = content["changes"].as_array().expect("apply patch changes");
+
+        assert!(!is_error);
+        assert_eq!(changes.len(), 3);
+        assert_eq!(changes[0]["path"], "src/main.rs");
+        assert_eq!(changes[0]["kind"]["type"], "update");
+        assert_eq!(
+            changes[0]["diff"],
+            "@@ -1 +1 @@\n-old\n+new\n@@ -8 +8 @@\n-before\n+after"
+        );
+        assert_eq!(changes[1]["path"], "src/old.rs");
+        assert_eq!(changes[1]["kind"]["type"], "update");
+        assert_eq!(changes[1]["kind"]["move_path"], "src/new.rs");
+        assert_eq!(changes[1]["diff"], "@@ -1 +1 @@\n-old name\n+new name");
+        assert_eq!(changes[2]["path"], "docs/old.md");
+        assert_eq!(changes[2]["kind"]["type"], "delete");
+    }
+
+    #[test]
+    fn failed_command_execution_does_not_expose_apply_patch_changes() {
+        let item = json!({
+            "id": "tool-patch",
+            "type": "commandExecution",
+            "status": "failed",
+            "exitCode": 1,
+            "command": "apply_patch \"*** Begin Patch\n*** Add File: report.md\n+not written\n*** End Patch\"",
+            "aggregatedOutput": "Invalid patch text"
+        });
+
+        let (_, content, is_error) =
+            tool_completed_event(&item, None).expect("completed command event");
+        let content: Value = serde_json::from_str(&content).expect("command result json");
+
+        assert!(is_error);
+        assert!(content["changes"].is_null());
+    }
+
+    #[test]
+    fn successful_non_apply_patch_command_does_not_expose_printed_patch_text() {
+        let item = json!({
+            "id": "tool-print",
+            "type": "commandExecution",
+            "status": "completed",
+            "exitCode": 0,
+            "command": "Write-Output \"*** Begin Patch\n*** Add File: report.md\n+not written\n*** End Patch\"",
+            "aggregatedOutput": "*** Begin Patch\n*** Add File: report.md\n+not written\n*** End Patch"
+        });
+
+        let (_, content, is_error) =
+            tool_completed_event(&item, None).expect("completed command event");
+        let content: Value = serde_json::from_str(&content).expect("command result json");
+
+        assert!(!is_error);
+        assert!(content["changes"].is_null());
+    }
+
+    #[test]
+    fn command_apply_patch_decodes_windows_joined_patch_lines() {
+        let item = json!({
+            "id": "tool-patch",
+            "type": "commandExecution",
+            "status": "completed",
+            "exitCode": 0,
+            "command": "$patch = [string]::Join(\"`n\", @('*** Begin Patch','*** Update File: sample.ts','@@','-export const version = \\\"1.0.1\\\";','+export const version = \\\"1.0.2\\\";','*** Add File: final.md','+# Codex Final','+','+[Open review](review.md)','*** End Patch')); codex.exe --codex-run-as-apply-patch \"$patch\"",
+            "aggregatedOutput": "Success"
+        });
+
+        let (_, content, is_error) =
+            tool_completed_event(&item, None).expect("completed command event");
+        let content: Value = serde_json::from_str(&content).expect("command result json");
+        let changes = content["changes"].as_array().expect("apply patch changes");
+
+        assert!(!is_error);
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0]["path"], "sample.ts");
+        assert_eq!(
+            changes[0]["diff"],
+            "@@\n-export const version = \"1.0.1\";\n+export const version = \"1.0.2\";"
+        );
+        assert_eq!(changes[1]["path"], "final.md");
+        assert_eq!(
+            changes[1]["diff"],
+            "+# Codex Final\n+\n+[Open review](review.md)"
+        );
     }
 
     fn mock_connection() -> (
@@ -2065,14 +2379,30 @@ mod tests {
         ));
         write_wire(
             &mut writer,
+            json!({ "method": "item/fileChange/patchUpdated", "params": { "threadId": "thread-1", "turnId": "turn-1", "itemId": "tool-2", "changes": [{ "path": "src/main.rs", "kind": { "type": "update" }, "diff": "@@ -1 +1 @@\n-old\n+new" }] } }),
+        )
+        .await;
+        write_wire(
+            &mut writer,
             json!({ "method": "item/completed", "params": { "threadId": "thread-1", "turnId": "turn-1", "item": { "id": "tool-2", "type": "fileChange", "status": "completed", "changes": [{ "path": "src/main.rs", "kind": "update" }] } } }),
         )
         .await;
-        assert!(matches!(
-            next_event(&mut event_receiver).await,
-            CodexRuntimeEvent::ToolCompleted { tool_id, is_error: false, .. }
-                if tool_id == "tool-2"
-        ));
+        let file_change_event = next_event(&mut event_receiver).await;
+        let CodexRuntimeEvent::ToolCompleted {
+            tool_id,
+            content,
+            is_error: false,
+        } = file_change_event
+        else {
+            panic!("expected completed file change event");
+        };
+        assert_eq!(tool_id, "tool-2");
+        let file_change_content: Value =
+            serde_json::from_str(&content).expect("file change content json");
+        assert_eq!(
+            file_change_content["changes"][0]["diff"],
+            "@@ -1 +1 @@\n-old\n+new"
+        );
 
         write_wire(
             &mut writer,
@@ -2164,7 +2494,7 @@ mod tests {
     async fn cancellation_sends_turn_interrupt_and_waits_for_terminal_event() {
         let (mut connection, mut lines, mut writer) = mock_connection();
         let (cancel_sender, cancel_receiver) = watch::channel(false);
-        let (_control_sender, mut control_receiver) = mpsc::unbounded_channel();
+        let (control_sender, mut control_receiver) = mpsc::unbounded_channel();
         let cwd = PathBuf::from("D:/workspace");
         let client = tokio::spawn(async move {
             connection
@@ -2211,6 +2541,18 @@ mod tests {
         assert_eq!(interrupt["method"], "turn/interrupt");
         assert_eq!(interrupt["params"]["threadId"], "thread-1");
         assert_eq!(interrupt["params"]["turnId"], "turn-1");
+        let (guide_ack, guide_result) = oneshot::channel();
+        control_sender
+            .send(AgentControlCommand::Guide {
+                text: "too late".to_string(),
+                acknowledgement: guide_ack,
+            })
+            .expect("submit guide while cancelling");
+        let guide_error = guide_result
+            .await
+            .expect("guide acknowledgement")
+            .expect_err("guide while cancelling must fail");
+        assert!(guide_error.contains("正在停止"));
         write_wire(&mut writer, json!({ "id": interrupt["id"], "result": {} })).await;
         write_wire(
             &mut writer,
@@ -2221,6 +2563,314 @@ mod tests {
         let outcome = client.await.expect("client task").expect("cancelled turn");
         assert_eq!(outcome.stop_reason, "cancelled");
         assert!(outcome.cancel_sent);
+    }
+
+    #[tokio::test]
+    async fn guide_does_not_write_when_cancel_is_requested_before_interrupt_is_sent() {
+        let (mut connection, mut lines, _writer) = mock_connection();
+        let mut guide_requests = HashMap::new();
+        let (acknowledgement, acknowledgement_result) = oneshot::channel();
+
+        connection
+            .handle_guide_command(
+                "thread-1",
+                Some("turn-1"),
+                true,
+                false,
+                false,
+                "too late".to_string(),
+                acknowledgement,
+                &mut guide_requests,
+            )
+            .await
+            .expect("reject guide without closing the connection");
+
+        let error = acknowledgement_result
+            .await
+            .expect("guide acknowledgement")
+            .expect_err("cancelled turn must reject guide");
+        assert!(error.contains("正在停止"));
+        assert!(guide_requests.is_empty());
+        assert!(
+            timeout(Duration::from_millis(20), lines.next_line())
+                .await
+                .is_err(),
+            "cancelled turn must not write turn/steer"
+        );
+    }
+
+    #[tokio::test]
+    async fn guide_steers_the_active_turn_and_acknowledges_only_after_rpc_success() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let (_cancel_sender, cancel_receiver) = watch::channel(false);
+        let (control_sender, mut control_receiver) = mpsc::unbounded_channel();
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let cwd = PathBuf::from("D:/workspace");
+        let client = tokio::spawn(async move {
+            connection
+                .run_text_turn(
+                    "thread-1",
+                    &cwd,
+                    "start",
+                    "default",
+                    None,
+                    None,
+                    cancel_receiver,
+                    &mut control_receiver,
+                    |event| {
+                        let _ = event_sender.send(event);
+                    },
+                )
+                .await
+        });
+
+        let start = read_wire(&mut lines).await;
+        write_wire(
+            &mut writer,
+            json!({ "id": start["id"], "result": { "turn": { "id": "turn-1" } } }),
+        )
+        .await;
+        write_wire(
+            &mut writer,
+            json!({ "method": "turn/started", "params": { "threadId": "thread-1", "turn": { "id": "turn-1" } } }),
+        )
+        .await;
+        write_wire(
+            &mut writer,
+            json!({ "method": "item/reasoning/summaryTextDelta", "params": { "threadId": "thread-1", "turnId": "turn-1", "itemId": "reasoning-1", "summaryIndex": 0, "delta": "working" } }),
+        )
+        .await;
+        assert!(matches!(
+            next_event(&mut event_receiver).await,
+            CodexRuntimeEvent::Thinking
+        ));
+
+        let (acknowledgement, acknowledgement_result) = oneshot::channel();
+        control_sender
+            .send(AgentControlCommand::Guide {
+                text: "check the failing test".to_string(),
+                acknowledgement,
+            })
+            .expect("submit guide");
+        let steer = read_wire(&mut lines).await;
+        assert_eq!(steer["method"], "turn/steer");
+        assert_eq!(steer["params"]["threadId"], "thread-1");
+        assert_eq!(steer["params"]["expectedTurnId"], "turn-1");
+        assert_eq!(
+            steer["params"]["input"],
+            json!([{ "type": "text", "text": "check the failing test" }])
+        );
+        let mut acknowledgement_result = Box::pin(acknowledgement_result);
+        assert!(
+            timeout(Duration::from_millis(20), acknowledgement_result.as_mut())
+                .await
+                .is_err(),
+            "guide must remain unacknowledged until the matching response"
+        );
+
+        write_wire(&mut writer, json!({ "id": steer["id"], "result": {} })).await;
+        acknowledgement_result
+            .await
+            .expect("guide acknowledgement")
+            .expect("guide accepted");
+        write_wire(
+            &mut writer,
+            json!({ "id": "approval-1", "method": "item/commandExecution/requestApproval", "params": { "threadId": "thread-1", "turnId": "turn-1", "command": "cargo test", "cwd": "D:/workspace", "reason": "run tests" } }),
+        )
+        .await;
+        assert!(matches!(
+            next_event(&mut event_receiver).await,
+            CodexRuntimeEvent::ApprovalRequest { request }
+                if request.request_id == "approval-1"
+        ));
+        let (pending_guide_ack, pending_guide_result) = oneshot::channel();
+        control_sender
+            .send(AgentControlCommand::Guide {
+                text: "answer before approval".to_string(),
+                acknowledgement: pending_guide_ack,
+            })
+            .expect("submit guide while approval is pending");
+        let pending_guide_error = pending_guide_result
+            .await
+            .expect("guide acknowledgement")
+            .expect_err("guide while approval is pending must fail");
+        assert!(pending_guide_error.contains("等待审批或回答"));
+        assert!(
+            timeout(Duration::from_millis(20), lines.next_line())
+                .await
+                .is_err(),
+            "rejected guide must not write a request"
+        );
+        write_wire(
+            &mut writer,
+            json!({ "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "completed" } } }),
+        )
+        .await;
+        client.await.expect("client task").expect("turn outcome");
+    }
+
+    #[tokio::test]
+    async fn guide_without_an_active_turn_is_rejected_without_writing_to_the_wire() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let (_cancel_sender, cancel_receiver) = watch::channel(false);
+        let (control_sender, mut control_receiver) = mpsc::unbounded_channel();
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let cwd = PathBuf::from("D:/workspace");
+        let client = tokio::spawn(async move {
+            connection
+                .run_text_turn(
+                    "thread-1",
+                    &cwd,
+                    "start",
+                    "default",
+                    None,
+                    None,
+                    cancel_receiver,
+                    &mut control_receiver,
+                    |event| {
+                        let _ = event_sender.send(event);
+                    },
+                )
+                .await
+        });
+
+        let start = read_wire(&mut lines).await;
+        let (acknowledgement, acknowledgement_result) = oneshot::channel();
+        control_sender
+            .send(AgentControlCommand::Guide {
+                text: "too early".to_string(),
+                acknowledgement,
+            })
+            .expect("submit guide");
+        let error = acknowledgement_result
+            .await
+            .expect("guide acknowledgement")
+            .expect_err("guide without active turn must fail");
+        assert!(error.contains("活动 turn"));
+        assert!(
+            timeout(Duration::from_millis(20), lines.next_line())
+                .await
+                .is_err(),
+            "rejected guide must not write a request"
+        );
+
+        write_wire(
+            &mut writer,
+            json!({ "id": start["id"], "result": { "turn": { "id": "turn-1" } } }),
+        )
+        .await;
+        write_wire(
+            &mut writer,
+            json!({ "method": "turn/started", "params": { "threadId": "thread-1", "turn": { "id": "turn-1" } } }),
+        )
+        .await;
+        write_wire(
+            &mut writer,
+            json!({ "method": "item/reasoning/summaryTextDelta", "params": { "threadId": "thread-1", "turnId": "turn-1", "itemId": "reasoning-1", "summaryIndex": 0, "delta": "working" } }),
+        )
+        .await;
+        assert!(matches!(
+            next_event(&mut event_receiver).await,
+            CodexRuntimeEvent::Thinking
+        ));
+        write_wire(
+            &mut writer,
+            json!({ "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "completed" } } }),
+        )
+        .await;
+        client.await.expect("client task").expect("turn outcome");
+    }
+
+    #[tokio::test]
+    async fn guide_rpc_error_is_acknowledged_as_a_known_failure() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let (_cancel_sender, cancel_receiver) = watch::channel(false);
+        let (control_sender, mut control_receiver) = mpsc::unbounded_channel();
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let cwd = PathBuf::from("D:/workspace");
+        let client = tokio::spawn(async move {
+            connection
+                .run_text_turn(
+                    "thread-1",
+                    &cwd,
+                    "start",
+                    "default",
+                    None,
+                    None,
+                    cancel_receiver,
+                    &mut control_receiver,
+                    |event| {
+                        let _ = event_sender.send(event);
+                    },
+                )
+                .await
+        });
+
+        let start = read_wire(&mut lines).await;
+        write_wire(
+            &mut writer,
+            json!({ "id": start["id"], "result": { "turn": { "id": "turn-1" } } }),
+        )
+        .await;
+        write_wire(
+            &mut writer,
+            json!({ "method": "turn/started", "params": { "threadId": "thread-1", "turn": { "id": "turn-1" } } }),
+        )
+        .await;
+        write_wire(
+            &mut writer,
+            json!({ "method": "item/reasoning/summaryTextDelta", "params": { "threadId": "thread-1", "turnId": "turn-1", "itemId": "reasoning-1", "summaryIndex": 0, "delta": "working" } }),
+        )
+        .await;
+        assert!(matches!(
+            next_event(&mut event_receiver).await,
+            CodexRuntimeEvent::Thinking
+        ));
+
+        let (acknowledgement, acknowledgement_result) = oneshot::channel();
+        control_sender
+            .send(AgentControlCommand::Guide {
+                text: "unsupported steer".to_string(),
+                acknowledgement,
+            })
+            .expect("submit guide");
+        let steer = read_wire(&mut lines).await;
+        write_wire(
+            &mut writer,
+            json!({
+                "id": steer["id"],
+                "error": { "code": -32601, "message": "Method not found: turn/steer" }
+            }),
+        )
+        .await;
+        let error = acknowledgement_result
+            .await
+            .expect("guide acknowledgement")
+            .expect_err("RPC rejection must fail the guide");
+        assert!(error.contains("Method not found"));
+
+        write_wire(
+            &mut writer,
+            json!({ "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "completed" } } }),
+        )
+        .await;
+        client.await.expect("client task").expect("turn outcome");
+    }
+
+    #[test]
+    fn guide_response_requires_result_or_explicit_rpc_error() {
+        assert_eq!(classify_guide_response(Some(json!({})), None), Some(Ok(())));
+        assert!(matches!(
+            classify_guide_response(
+                None,
+                Some(CodexRpcError {
+                    code: -32601,
+                    message: "Method not found".to_string(),
+                }),
+            ),
+            Some(Err(message)) if message.contains("Method not found")
+        ));
+        assert_eq!(classify_guide_response(None, None), None);
     }
 
     #[test]

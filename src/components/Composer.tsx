@@ -27,6 +27,7 @@ import { shouldSubmitComposerOnEnter } from '../lib/composer-keyboard';
 import { getAgentModelForSelection } from '../lib/agent-model-selection';
 import { agentChannelTemplate, enabledAgentChannels, SYSTEM_AGENT_CHANNEL_ID, systemAgentChannelTemplate } from '../lib/agent-channel-selection';
 import { modelContext1mMenuActionLabel, modelMenuDescriptionLabel, modelMenuPrimaryLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
+import { getQueuedPromptGuideSelection, type QueuedPromptStatus } from '../lib/queued-prompts';
 import type { AgentChannel, AgentModelCatalog, AgentModelOption, AgentProviderDescriptor, AgentSystemChannel, AgentType, AiChatReasoningEffort, AiKnowledgeBaseSummary, AiProviderTemplate, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, McpServerSummary, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingComposerAttachment =
@@ -126,7 +127,13 @@ type ComposerProps = {
   isInterrupting?: boolean;
   draftScopeKey: string;
   draft: string;
-  queuedPrompts: Array<{ id: string; displayText: string; createdAtMs: number; queueStatus?: 'preparing' | 'ready' }>;
+  queuedPrompts: Array<{
+    id: string;
+    displayText: string;
+    createdAtMs: number;
+    queueStatus?: QueuedPromptStatus;
+    guideUnavailableReason?: string;
+  }>;
   queuedPromptGuideAvailability: { available: boolean; reason?: string };
   onDraftChange: (value: string) => void;
   onSelectProvider: (providerId: string) => boolean | void;
@@ -1182,16 +1189,33 @@ export function Composer({
         {queuedPrompts.length > 0 ? (
           <div className="composer-queued-prompts" aria-label="已排队提示">
             <div className="composer-queued-head">
-              <span>排队中，当前回复完成后发送</span>
+              <span>
+                {queuedPrompts.some((prompt) => prompt.queueStatus === 'guide-unknown')
+                  ? '排队已暂停，等待你处理引导状态'
+                  : '排队中，当前回复完成后发送'}
+              </span>
               {!queuedPromptGuideAvailability.available && queuedPromptGuideAvailability.reason ? (
                 <small>{queuedPromptGuideAvailability.reason}</small>
               ) : null}
             </div>
             {queuedPrompts.map((prompt, index) => {
               const isPreparing = prompt.queueStatus === 'preparing';
-              const guideDisabled = isPreparing || !queuedPromptGuideAvailability.available;
+              const isGuiding = prompt.queueStatus === 'guiding';
+              const isGuideUnknown = prompt.queueStatus === 'guide-unknown';
+              const guideSelection = getQueuedPromptGuideSelection(queuedPrompts, prompt.id);
+              const guideDisabled = isPreparing || isGuiding || isGuideUnknown ||
+                !guideSelection.available || Boolean(prompt.guideUnavailableReason) ||
+                !queuedPromptGuideAvailability.available;
               const guideTitle = isPreparing
                 ? '正在准备附件和文件引用'
+                : isGuiding
+                  ? '正在引导当前运行'
+                  : isGuideUnknown
+                    ? '引导状态未知，请召回后再决定是否重发'
+                    : prompt.guideUnavailableReason
+                      ? prompt.guideUnavailableReason
+                      : !guideSelection.available
+                        ? guideSelection.reason
                 : queuedPromptGuideAvailability.available
                   ? '立即引导当前运行'
                   : queuedPromptGuideAvailability.reason ?? '暂不能引导';
@@ -1201,6 +1225,8 @@ export function Composer({
                 <span className="composer-queued-text">
                   {prompt.displayText || '图片消息'}
                   {isPreparing ? <small className="composer-queued-status"> · 准备附件中...</small> : null}
+                  {isGuiding ? <small className="composer-queued-status"> · 正在引导当前运行...</small> : null}
+                  {isGuideUnknown ? <small className="composer-queued-status"> · 引导状态未知</small> : null}
                 </span>
                 <div className="composer-queued-actions">
                   <button
@@ -1217,7 +1243,8 @@ export function Composer({
                     type="button"
                     className="composer-queued-action"
                     aria-label="编辑排队提示"
-                    title="编辑消息"
+                    title={isGuiding ? '正在确认引导结果' : '编辑消息'}
+                    disabled={isGuiding}
                     onClick={() => onRecallQueuedPrompt(prompt.id)}
                   >
                     <Pencil size={13} />
@@ -1226,7 +1253,8 @@ export function Composer({
                     type="button"
                     className="composer-queued-action"
                     aria-label="取消排队提示"
-                    title="取消排队"
+                    title={isGuiding ? '正在确认引导结果' : '取消排队'}
+                    disabled={isGuiding}
                     onClick={() => onRemoveQueuedPrompt(prompt.id)}
                   >
                     <X size={13} />

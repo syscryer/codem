@@ -5184,6 +5184,7 @@ fn normalize_open_with_settings(value: Option<&Value>) -> Value {
     json!({
         "selectedTargetId": normalize_open_target_id(record.and_then(|item| item.get("selectedTargetId"))).unwrap_or_else(|| "vscode".to_string()),
         "customTargets": normalize_open_app_targets(record.and_then(|item| item.get("customTargets"))),
+        "webLinkOpenTarget": enum_setting(record, "webLinkOpenTarget", &["external", "workbench"], "external"),
     })
 }
 
@@ -5197,6 +5198,7 @@ fn normalize_legacy_open_with_settings(record: &Map<String, Value>) -> Value {
         return json!({
             "selectedTargetId": target,
             "customTargets": [],
+            "webLinkOpenTarget": "external",
         });
     }
     if target == "custom" {
@@ -5210,12 +5212,14 @@ fn normalize_legacy_open_with_settings(record: &Map<String, Value>) -> Value {
                     "command": command,
                     "args": parse_open_with_args(limited_string(record.get("customArgs"), 600).as_deref().unwrap_or("")),
                 }],
+                "webLinkOpenTarget": "external",
             });
         }
     }
     json!({
         "selectedTargetId": "vscode",
         "customTargets": [],
+        "webLinkOpenTarget": "external",
     })
 }
 
@@ -5607,7 +5611,8 @@ fn default_app_settings() -> Value {
         },
         "openWith": {
             "selectedTargetId": "vscode",
-            "customTargets": []
+            "customTargets": [],
+            "webLinkOpenTarget": "external"
         }
         ,"networkProxy": {
             "enabled": false,
@@ -10265,23 +10270,26 @@ if ($result -eq [System.Windows.Forms.DialogResult]::OK -and $dialog.FileName) {
 fn open_path_with_system(path: &str) -> ApiResult<()> {
     #[cfg(target_os = "windows")]
     {
-        let output = background_command("powershell.exe")
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
-            .arg(format!(
-                "$ErrorActionPreference = 'Stop'; Start-Process -FilePath '{}'",
-                powershell_escape(path)
-            ))
-            .output()
-            .map_err(|error| ApiError::internal(format!("打开路径失败: {error}")))?;
+        use windows::{
+            core::{w, HSTRING, PCWSTR},
+            Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
+        };
 
-        return output.status.success().then_some(()).ok_or_else(|| {
-            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            ApiError::bad_request(if message.is_empty() {
-                "打开路径失败".to_string()
-            } else {
-                message
-            })
-        });
+        let target = HSTRING::from(path);
+        let result = unsafe {
+            ShellExecuteW(
+                None,
+                w!("open"),
+                &target,
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        let code = result.0 as isize;
+        return (code > 32)
+            .then_some(())
+            .ok_or_else(|| ApiError::bad_request(windows_shell_execute_error_message(code)));
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -10298,6 +10306,25 @@ fn open_path_with_system(path: &str) -> ApiResult<()> {
             .then_some(())
             .ok_or_else(|| ApiError::bad_request("打开路径失败"))
     }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_shell_execute_error_message(code: isize) -> String {
+    let reason = match code {
+        2 => "系统找不到指定的文件",
+        3 => "系统找不到指定的路径",
+        5 => "访问被拒绝",
+        8 => "系统内存不足",
+        26 => "文件正在被其他程序占用",
+        27 => "文件关联不完整",
+        28 => "打开请求超时",
+        29 => "默认应用通信失败",
+        30 => "默认应用正忙",
+        31 => "没有可用于打开此文件的默认应用",
+        32 => "打开文件所需的组件不可用",
+        _ => "系统无法打开该路径",
+    };
+    format!("打开路径失败：{reason}（错误码 {code}）")
 }
 
 fn reveal_path_in_explorer(path: &str) -> ApiResult<()> {
@@ -18558,7 +18585,7 @@ mod tests {
         lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
         list_agent_plugin_marketplaces_value, list_agent_skills_value, list_slash_commands_value,
         mark_request_user_input_submitted, normalize_agent_plugin_action,
-        normalize_agent_runtime_settings, normalize_pi_probe_summary,
+        normalize_agent_runtime_settings, normalize_open_with_settings, normalize_pi_probe_summary,
         normalize_request_user_input_answer_value, parse_grok_cli_version,
         parse_grok_latest_version, parse_macos_system_proxy_environment, parse_npm_latest_version,
         parse_pi_installed_packages, parse_request_user_input_event, pi_node_version_supported,
@@ -18572,7 +18599,8 @@ mod tests {
         select_runnable_command_candidate, should_emit_claude_raw_event, should_store_run_event,
         summarize_content_blocks, update_thread_metadata_from_payload, validate_desktop_file_path,
         validate_managed_agent_skill_path, windows_claude_install_lifecycle_plan,
-        write_opencode_mcp_config, write_thread_history, ApiError, AppState,
+        windows_shell_execute_error_message, write_opencode_mcp_config, write_thread_history,
+        ApiError, AppState,
     };
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
@@ -18602,6 +18630,18 @@ mod tests {
             fs::create_dir_all(&path).expect("create test directory");
             Self(path)
         }
+    }
+
+    #[test]
+    fn windows_shell_execute_error_message_is_stable_and_readable() {
+        assert_eq!(
+            windows_shell_execute_error_message(2),
+            "打开路径失败：系统找不到指定的文件（错误码 2）"
+        );
+        assert_eq!(
+            windows_shell_execute_error_message(31),
+            "打开路径失败：没有可用于打开此文件的默认应用（错误码 31）"
+        );
     }
 
     #[test]
@@ -19923,6 +19963,28 @@ mod tests {
             json!({
                 "defaultProviderId": CLAUDE_CODE_PROVIDER_ID,
             })
+        );
+    }
+
+    #[test]
+    fn open_with_settings_default_web_links_to_external_browser() {
+        assert_eq!(
+            normalize_open_with_settings(None)["webLinkOpenTarget"],
+            json!("external")
+        );
+        assert_eq!(
+            normalize_open_with_settings(Some(&json!({
+                "selectedTargetId": "vscode",
+                "customTargets": [],
+                "webLinkOpenTarget": "workbench"
+            })))["webLinkOpenTarget"],
+            json!("workbench")
+        );
+        assert_eq!(
+            normalize_open_with_settings(Some(&json!({
+                "webLinkOpenTarget": "invalid"
+            })))["webLinkOpenTarget"],
+            json!("external")
         );
     }
 

@@ -8,6 +8,7 @@ export type ConversationToolPreview = {
   kind: 'edit' | 'write';
   filePath: string;
   fileName: string;
+  diff?: string;
   beforeText: string;
   afterText: string;
   additions: number;
@@ -423,6 +424,11 @@ function buildConversationReviewDiff(file: ConversationChangedFileGroup) {
   const lines = [`--- a/${file.path}`, `+++ b/${file.path}`];
 
   file.previews.forEach((preview, index) => {
+    if (preview.diff) {
+      lines.push(...buildNativeDiffLines(preview.diff));
+      return;
+    }
+
     if (file.previews.length > 1) {
       lines.push(`@@ ${preview.kind === 'write' ? '新增片段' : '编辑片段'} ${index + 1} @@`);
     }
@@ -431,6 +437,20 @@ function buildConversationReviewDiff(file: ConversationChangedFileGroup) {
   });
 
   return lines;
+}
+
+function buildNativeDiffLines(diff: string) {
+  const lines = normalizePreviewText(diff).split('\n');
+  while (lines.at(-1) === '') {
+    lines.pop();
+  }
+
+  return lines.filter((line) => (
+    !line.startsWith('diff --git ') &&
+    !line.startsWith('index ') &&
+    !/^---\s/.test(line) &&
+    !/^\+\+\+\s/.test(line)
+  ));
 }
 
 function buildPreviewDiffLines(preview: ConversationToolPreview) {

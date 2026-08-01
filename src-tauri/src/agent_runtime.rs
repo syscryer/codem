@@ -32,6 +32,10 @@ pub enum AgentPermissionDecision {
 
 #[derive(Debug)]
 pub enum AgentControlCommand {
+    Guide {
+        text: String,
+        acknowledgement: oneshot::Sender<Result<(), String>>,
+    },
     Permission {
         request_id: String,
         decision: AgentPermissionDecision,

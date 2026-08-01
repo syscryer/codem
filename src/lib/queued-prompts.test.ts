@@ -2,12 +2,20 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  getCodexQueuedPromptGuideContent,
+  getQueuedPromptGuideSelection,
   getQueuedPromptGuideAvailability,
+  getQueuedPromptContinuationState,
   resolveQueuedPromptRunOptions,
+  resolveGuideSuccessActivity,
+  shouldResumePausedQueueAfterUnknownRemoval,
+  shouldContinueQueueAfterGuide,
 } from './queued-prompts.js';
 
+const appSource = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
 const useClaudeRunSource = readFileSync(new URL('../hooks/useClaudeRun.ts', import.meta.url), 'utf8');
 const useAgentRunSource = readFileSync(new URL('../hooks/useAgentRun.ts', import.meta.url), 'utf8');
+const composerSource = readFileSync(new URL('../components/Composer.tsx', import.meta.url), 'utf8');
 const conversationTurnSource = readFileSync(new URL('../components/ConversationTurn.tsx', import.meta.url), 'utf8');
 
 test('resolveQueuedPromptRunOptions prefers the completed run session over stale thread metadata', () => {
@@ -100,6 +108,159 @@ test('getQueuedPromptGuideAvailability waits for the backend run id before enabl
   );
 });
 
+test('getQueuedPromptGuideAvailability blocks guide delivery while the run is interrupting', () => {
+  assert.deepEqual(
+    getQueuedPromptGuideAvailability({
+      isRunning: true,
+      runId: 'run-1',
+      isInterrupting: true,
+      hasPendingHumanInput: false,
+      queueLength: 1,
+    }),
+    {
+      available: false,
+      reason: '当前运行正在停止，暂不能引导。',
+    },
+  );
+});
+
+test('getCodexQueuedPromptGuideContent accepts only ready plain-text queue items', () => {
+  assert.deepEqual(
+    getCodexQueuedPromptGuideContent({
+      prompt: '继续检查失败路径',
+      queueStatus: 'ready',
+    }),
+    { available: true, text: '继续检查失败路径' },
+  );
+  assert.deepEqual(
+    getCodexQueuedPromptGuideContent({
+      prompt: '查看附件',
+      queueStatus: 'ready',
+      contentBlocks: [{ type: 'file_reference', path: 'D:/workspace/a.md', name: 'a.md' }],
+    }),
+    {
+      available: false,
+      reason: 'Codex 运行中引导暂只支持纯文本消息。',
+    },
+  );
+  assert.deepEqual(
+    getCodexQueuedPromptGuideContent({
+      prompt: '不要重复发送',
+      queueStatus: 'guide-unknown',
+    }),
+    {
+      available: false,
+      reason: '引导结果尚未确认，请召回后再决定是否重发。',
+    },
+  );
+});
+
+test('getQueuedPromptGuideSelection only allows the head and prevents concurrent guiding', () => {
+  const readyQueue = [
+    { id: 'prompt-a', queueStatus: 'ready' as const },
+    { id: 'prompt-b', queueStatus: 'ready' as const },
+  ];
+  assert.deepEqual(
+    getQueuedPromptGuideSelection(readyQueue, 'prompt-a'),
+    { available: true },
+  );
+  assert.deepEqual(
+    getQueuedPromptGuideSelection(readyQueue, 'prompt-b'),
+    { available: false, reason: '只能引导队首排队消息。' },
+  );
+
+  const guidingQueue = [
+    { id: 'prompt-a', queueStatus: 'ready' as const },
+    { id: 'prompt-b', queueStatus: 'guiding' as const },
+  ];
+  assert.deepEqual(
+    getQueuedPromptGuideSelection(guidingQueue, 'prompt-a'),
+    { available: false, reason: '已有排队消息正在引导。' },
+  );
+});
+
+test('getQueuedPromptContinuationState freezes the entire queue when any guide is unknown', () => {
+  assert.equal(
+    getQueuedPromptContinuationState([
+      { queueStatus: 'ready' },
+      { queueStatus: 'guide-unknown' },
+      { queueStatus: 'ready' },
+    ]),
+    'paused',
+  );
+  assert.equal(
+    getQueuedPromptContinuationState([{ queueStatus: 'ready' }]),
+    'ready',
+  );
+});
+
+test('removing or recalling the last unknown guide resumes a paused continuation', () => {
+  const remainingReadyQueue = [{ queueStatus: 'ready' as const }];
+  assert.equal(
+    shouldResumePausedQueueAfterUnknownRemoval(
+      'guide-unknown',
+      remainingReadyQueue,
+      true,
+    ),
+    true,
+    'delete should resume the remaining queue',
+  );
+  assert.equal(
+    shouldResumePausedQueueAfterUnknownRemoval(
+      'guide-unknown',
+      remainingReadyQueue,
+      true,
+    ),
+    true,
+    'recall should resume the remaining queue',
+  );
+  assert.equal(
+    shouldResumePausedQueueAfterUnknownRemoval(
+      'guide-unknown',
+      [{ queueStatus: 'guide-unknown' }],
+      true,
+    ),
+    false,
+    'another unknown keeps the queue frozen',
+  );
+  assert.equal(
+    shouldResumePausedQueueAfterUnknownRemoval('ready', remainingReadyQueue, true),
+    false,
+    'removing an ordinary item does not consume the paused continuation',
+  );
+});
+
+test('resolveGuideSuccessActivity preserves terminal activity after a late HTTP success', () => {
+  assert.equal(
+    resolveGuideSuccessActivity(false, 'Codex 正在运行'),
+    '已发送引导消息，等待 Codex 接收',
+  );
+  assert.equal(
+    resolveGuideSuccessActivity(true, 'Codex 已完成'),
+    'Codex 已完成',
+  );
+});
+
+test('confirmed guide outcomes resume a queue that was blocked by terminal event ordering', () => {
+  assert.equal(shouldContinueQueueAfterGuide(true, 'prompt-b', 'prompt-b', 'submitted'), true);
+  assert.equal(shouldContinueQueueAfterGuide(true, 'prompt-b', 'prompt-b', 'rejected'), true);
+  assert.equal(shouldContinueQueueAfterGuide(true, 'prompt-b', 'prompt-b', 'uncertain'), false);
+  assert.equal(shouldContinueQueueAfterGuide(true, 'prompt-a', 'prompt-b', 'submitted'), false);
+  assert.equal(shouldContinueQueueAfterGuide(false, 'prompt-b', 'prompt-b', 'submitted'), false);
+});
+
+test('maybeStartQueuedPrompt clears a resumed continuation before waiting for preparation', () => {
+  const maybeStartQueuedPromptSource = extractFunctionBody(
+    useAgentRunSource,
+    'maybeStartQueuedPrompt',
+  );
+
+  assert.match(
+    maybeStartQueuedPromptSource,
+    /if \(continuationState !== 'paused'\) \{\s*pausedQueueContinuationsByThreadIdRef\.current\.delete\(context\.threadId\);\s*\}\s*if \(continuationState === 'preparing'\)/,
+  );
+});
+
 test('guideQueuedPrompt sends the queued prompt to the active run without creating a new thread', () => {
   const guideQueuedPromptSource = extractFunctionBody(useClaudeRunSource, 'guideQueuedPrompt');
 
@@ -115,6 +276,51 @@ test('guideQueuedPrompt sends the queued prompt to the active run without creati
   assert.match(guideQueuedPromptSource, /contentBlocks: targetPrompt\.contentBlocks,/);
   assert.doesNotMatch(guideQueuedPromptSource, /attachments:\s*requestImageAttachments/);
   assert.doesNotMatch(guideQueuedPromptSource, /ensureActiveThread|createThread|startRun\(/);
+});
+
+test('generic Agent guideQueuedPrompt steers Codex text and preserves uncertain requests', () => {
+  const guideQueuedPromptSource = extractFunctionBody(useAgentRunSource, 'guideQueuedPrompt');
+
+  assert.match(guideQueuedPromptSource, /context\.providerId !== OPENAI_CODEX_PROVIDER_ID/);
+  assert.match(guideQueuedPromptSource, /getCodexQueuedPromptGuideContent\(targetPrompt\)/);
+  assert.match(
+    guideQueuedPromptSource,
+    /fetch\(\s*`\/api\/agents\/run\/\$\{encodeURIComponent\(context\.runId\)\}\/guide`/,
+  );
+  assert.match(
+    guideQueuedPromptSource,
+    /updateQueuedPromptStatus\(targetThreadId, promptId, 'guiding'\)/,
+  );
+  assert.match(guideQueuedPromptSource, /resultUncertain \? 'guide-unknown' : 'ready'/);
+  assert.match(
+    guideQueuedPromptSource,
+    /payload\?\.uncertain === true \|\| response\.status >= 500 \|\| response\.ok/,
+  );
+  assert.match(guideQueuedPromptSource, /createAgentGuideSystemItem/);
+  assert.match(guideQueuedPromptSource, /removeQueuedPromptFromThread\(targetThreadId, promptId\)/);
+  assert.match(guideQueuedPromptSource, /shouldContinueQueueAfterGuide/);
+  assert.doesNotMatch(guideQueuedPromptSource, /startAgentRun\(|createThread\(/);
+});
+
+test('App enables the existing guide affordance for Codex but not other generic Agents', () => {
+  assert.match(
+    appSource,
+    /activeUsesGenericAgent\s*&&\s*activeThread\?\.provider\s*===\s*OPENAI_CODEX_PROVIDER_ID/,
+  );
+  assert.match(appSource, /getQueuedPromptGuideAvailability\(\{/);
+  assert.match(appSource, /isInterrupting:/);
+  assert.match(appSource, /当前 Provider 不支持运行中引导/);
+});
+
+test('Composer disables guiding and unknown queue items with explicit status text', () => {
+  assert.match(composerSource, /prompt\.queueStatus === 'guiding'/);
+  assert.match(composerSource, /prompt\.queueStatus === 'guide-unknown'/);
+  assert.match(composerSource, /prompt\.guideUnavailableReason/);
+  assert.match(composerSource, /正在引导当前运行/);
+  assert.match(composerSource, /引导状态未知/);
+  assert.match(composerSource, /排队已暂停，等待你处理引导状态/);
+  assert.match(composerSource, /disabled=\{isGuiding\}/);
+  assert.match(useAgentRunSource, /selectedProviderId === OPENAI_CODEX_PROVIDER_ID/);
 });
 
 test('guideQueuedPrompt waits for preparing queued prompts before sending guide payloads', () => {
@@ -150,7 +356,7 @@ test('useClaudeRun preserves contentBlocks across queue, direct send, and guide 
 
 test('useAgentRun preserves contentBlocks across preparing, ready, and automatic queue delivery', () => {
   assert.match(useAgentRunSource, /type AgentPromptSubmission = \{[\s\S]*contentBlocks\?: InputContentBlock\[\];/);
-  assert.match(useAgentRunSource, /type QueuedAgentPrompt = AgentPromptSubmission/);
+  assert.match(useAgentRunSource, /type QueuedAgentPrompt = Omit<AgentPromptSubmission, 'queueStatus'>/);
   assert.match(useAgentRunSource, /updateQueuedPrompt\(thread\.id, submission\.queueId, submission\)/);
   assert.match(useAgentRunSource, /submission\.queueStatus === 'preparing'/);
   assert.match(useAgentRunSource, /contentBlocks: requestContentBlocks/);
@@ -228,7 +434,7 @@ test('useClaudeRun stores safe user content block summaries and ConversationTurn
   assert.match(useClaudeRunSource, /userContentBlocks: turnContentBlocks,/);
 
   assert.match(conversationTurnSource, /const hasUserContentBlocks = Boolean\(turn\.userContentBlocks\?\.length\);/);
-  assert.match(conversationTurnSource, /<UserContentBlocks blocks=\{turn\.userContentBlocks \?\? \[\]\} onPreviewImage=\{setImagePreview\} \/>/);
+  assert.match(conversationTurnSource, /<UserContentBlocks[\s\S]*?blocks=\{turn\.userContentBlocks \?\? \[\]\}[\s\S]*?onPreviewImage=\{setImagePreview\}[\s\S]*?\/>/);
   assert.doesNotMatch(conversationTurnSource, /user-message-attachment-kind/);
   // 文本块不渲染卡片；@文件（mention 来源）的 file_reference 仍隐藏，
   // 桌面端拖拽 / 文件框添加（attachment 来源）的 file_reference 需要显示成附件卡片。
@@ -269,8 +475,11 @@ test('ConversationTurn hides the internal guide command label from guided queue 
 });
 
 function extractFunctionBody(source: string, functionName: string) {
-  const signature = `async function ${functionName}(`;
-  const start = source.indexOf(signature);
+  const asyncSignature = `async function ${functionName}(`;
+  const syncSignature = `function ${functionName}(`;
+  const start = source.indexOf(asyncSignature) !== -1
+    ? source.indexOf(asyncSignature)
+    : source.indexOf(syncSignature);
   assert.notEqual(start, -1, `missing ${functionName}`);
 
   const bodyStart = source.indexOf(') {', start);

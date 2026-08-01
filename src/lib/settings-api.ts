@@ -90,6 +90,7 @@ export const defaultShortcutSettings: ShortcutSettings = {
 export const defaultOpenWithSettings: OpenWithSettings = {
   selectedTargetId: 'vscode',
   customTargets: [],
+  webLinkOpenTarget: 'external',
 };
 
 export const defaultAgentRuntimeSettings: AgentRuntimeSettings = {
@@ -607,12 +608,16 @@ export function normalizeShortcutSettings(shortcuts: unknown): ShortcutSettings 
 export function normalizeOpenWithSettings(openWith: unknown): OpenWithSettings {
   const record = isRecord(openWith) ? openWith : {};
   if ('target' in record) {
-    return normalizeLegacyOpenWithSettings(record);
+    return {
+      ...normalizeLegacyOpenWithSettings(record),
+      webLinkOpenTarget: 'external',
+    };
   }
 
   return {
     selectedTargetId: normalizeOpenTargetId(record.selectedTargetId) || defaultOpenWithSettings.selectedTargetId,
     customTargets: normalizeOpenAppTargets(record.customTargets),
+    webLinkOpenTarget: normalizeOneOf(record.webLinkOpenTarget, ['external', 'workbench'], 'external'),
   };
 }
 
@@ -622,6 +627,7 @@ function normalizeLegacyOpenWithSettings(record: Record<string, unknown>): OpenW
     return {
       selectedTargetId: target,
       customTargets: [],
+      webLinkOpenTarget: 'external',
     };
   }
 
@@ -639,6 +645,7 @@ function normalizeLegacyOpenWithSettings(record: Record<string, unknown>): OpenW
             args: parseOpenWithArgs(normalizeLimitedString(record.customArgs, 600)),
           },
         ],
+        webLinkOpenTarget: 'external',
       };
     }
   }

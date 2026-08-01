@@ -100,6 +100,7 @@ struct CachedAgentCommand {
 }
 
 struct AgentRunRecord {
+    provider_id: String,
     thread_id: Option<String>,
     events: Vec<AgentRunEvent>,
     finished: bool,
@@ -418,6 +419,19 @@ struct UserInputResponseRequest {
     answers: Map<String, Value>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GuideAgentRunRequest {
+    prompt: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum GuideAckOutcome {
+    Submitted,
+    Rejected(String),
+    Uncertain(String),
+}
+
 impl AgentRunService {
     pub(crate) fn new(
         grok_command_resolver: fn() -> Option<String>,
@@ -479,6 +493,7 @@ pub(crate) fn router(service: AgentRunService) -> Router {
             "/api/agents/run/{run_id}/request-user-input",
             post(agent_run_user_input),
         )
+        .route("/api/agents/run/{run_id}/guide", post(agent_run_guide))
         .route("/api/agents/run/{run_id}", delete(cancel_agent_run))
         .layer(DefaultBodyLimit::max(MAX_AGENT_REQUEST_BYTES))
         .with_state(state)
@@ -908,6 +923,7 @@ async fn start_agent_run(
     state.insert(
         run_id.clone(),
         AgentRunRecord {
+            provider_id: provider_id.to_string(),
             thread_id: thread_id.clone(),
             events: Vec::new(),
             finished: false,
@@ -2193,6 +2209,39 @@ async fn agent_run_user_input(
     Ok(Json(json!({ "submitted": true })))
 }
 
+async fn agent_run_guide(
+    State(state): State<AgentRunState>,
+    AxumPath(run_id): AxumPath<String>,
+    Json(payload): Json<GuideAgentRunRequest>,
+) -> Response {
+    let prompt = match normalize_guide_prompt(payload.prompt) {
+        Ok(prompt) => prompt,
+        Err(error) => return error.into_response(),
+    };
+    let (provider_id, control) = match state.guide_control_sender(&run_id) {
+        Ok(target) => target,
+        Err(error) => return error.into_response(),
+    };
+    if provider_id != OPENAI_CODEX_PROVIDER_ID {
+        return guide_ack_response(GuideAckOutcome::Rejected(
+            "当前 Agent 不支持运行中引导".to_string(),
+        ));
+    }
+    let (acknowledgement, receiver) = oneshot::channel();
+    if control
+        .send(AgentControlCommand::Guide {
+            text: prompt,
+            acknowledgement,
+        })
+        .is_err()
+    {
+        return guide_ack_response(GuideAckOutcome::Uncertain(
+            "Agent 运行在确认引导请求前结束".to_string(),
+        ));
+    }
+    guide_ack_response(await_guide_ack(receiver, CONTROL_ACK_TIMEOUT).await)
+}
+
 async fn cancel_agent_run(
     State(state): State<AgentRunState>,
     AxumPath(run_id): AxumPath<String>,
@@ -2234,6 +2283,55 @@ async fn await_control_ack(receiver: oneshot::Receiver<Result<(), String>>) -> A
             "Agent 运行已结束，控制请求未被处理",
         )),
         Err(_) => Err(AgentApiError::conflict("Agent 控制请求响应超时")),
+    }
+}
+
+fn normalize_guide_prompt(prompt: String) -> AgentApiResult<String> {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err(AgentApiError::bad_request("prompt 不能为空"));
+    }
+    if prompt.len() > MAX_PROMPT_BYTES {
+        return Err(AgentApiError::bad_request("prompt 过长"));
+    }
+    Ok(prompt.to_string())
+}
+
+async fn await_guide_ack(
+    receiver: oneshot::Receiver<Result<(), String>>,
+    timeout_duration: Duration,
+) -> GuideAckOutcome {
+    match tokio::time::timeout(timeout_duration, receiver).await {
+        Ok(Ok(Ok(()))) => GuideAckOutcome::Submitted,
+        Ok(Ok(Err(message))) => GuideAckOutcome::Rejected(message),
+        Ok(Err(_)) => GuideAckOutcome::Uncertain("Agent 运行在确认引导请求前结束".to_string()),
+        Err(_) => GuideAckOutcome::Uncertain("Agent 引导请求确认超时".to_string()),
+    }
+}
+
+fn guide_ack_response(outcome: GuideAckOutcome) -> Response {
+    match outcome {
+        GuideAckOutcome::Submitted => {
+            (StatusCode::OK, Json(json!({ "submitted": true }))).into_response()
+        }
+        GuideAckOutcome::Rejected(error) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "submitted": false,
+                "uncertain": false,
+                "error": error,
+            })),
+        )
+            .into_response(),
+        GuideAckOutcome::Uncertain(error) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(json!({
+                "submitted": false,
+                "uncertain": true,
+                "error": error,
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -2623,6 +2721,23 @@ impl AgentRunState {
         Ok(record.control.clone())
     }
 
+    fn guide_control_sender(
+        &self,
+        run_id: &str,
+    ) -> AgentApiResult<(String, mpsc::UnboundedSender<AgentControlCommand>)> {
+        let records = self
+            .records
+            .lock()
+            .map_err(|_| AgentApiError::internal("读取 Agent 运行状态失败"))?;
+        let record = records
+            .get(run_id)
+            .ok_or_else(|| AgentApiError::not_found("Agent 运行不存在或已过期"))?;
+        if record.finished {
+            return Err(AgentApiError::conflict("Agent 运行已经结束"));
+        }
+        Ok((record.provider_id.clone(), record.control.clone()))
+    }
+
     fn cancel(&self, run_id: &str) -> AgentApiResult<bool> {
         let records = self
             .records
@@ -2988,6 +3103,11 @@ async fn handle_pi_extension_ui_control(
 ) -> Result<(), PiRpcError> {
     let Some(interaction) = pending.as_ref() else {
         match command {
+            AgentControlCommand::Guide {
+                acknowledgement, ..
+            } => {
+                let _ = acknowledgement.send(Err("Pi Agent 不支持运行中引导".to_string()));
+            }
             AgentControlCommand::Permission {
                 acknowledgement, ..
             }
@@ -3000,6 +3120,12 @@ async fn handle_pi_extension_ui_control(
         return Ok(());
     };
     match command {
+        AgentControlCommand::Guide {
+            acknowledgement, ..
+        } => {
+            let _ = acknowledgement.send(Err("Pi Agent 不支持运行中引导".to_string()));
+            Ok(())
+        }
         AgentControlCommand::Permission {
             request_id,
             decision,
@@ -4566,19 +4692,20 @@ fn should_set_acp_model(
 #[cfg(test)]
 mod tests {
     use super::{
-        acp_arguments, acp_permission_policy, build_acp_prompt, build_codex_input, build_pi_prompt,
-        cancelled_before_prompt_outcome, find_grok_runtime_error_detail, grok_acp_arguments,
-        grok_acp_error_with_runtime_detail, grok_uses_channel_credentials, normalize_agent_input,
-        parse_opencode_models, pi_model_catalog, pi_model_parts, pi_rpc_arguments,
-        pi_usage_snapshot, public_acp_error, public_codex_error, read_cached_agent_command,
-        read_cached_agent_model_catalog, runtime_can_reuse, sanitize_grok_runtime_error_detail,
-        should_retry_grok_channel_prompt, should_set_acp_model, store_cached_agent_command,
-        store_cached_agent_model_catalog, AcpEventMapper, AgentDriverInput, AgentDriverKind,
-        AgentInputContentBlock, AgentModelCatalog, AgentModelSummary, AgentRunRecord,
-        AgentRunService, AgentRunState, AgentRuntimeCommand, AgentRuntimeConfig, AgentRuntimePhase,
-        AgentRuntimeRecord, AgentRuntimeRun, CodexEventMapper, CommandResolvers, LiveAgentRuntime,
-        PiEventMapper, RuntimeExecution, StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL,
-        AUTOMATION_EXECUTION_CONTEXT, MODEL_CATALOG_CACHE_TTL,
+        acp_arguments, acp_permission_policy, await_guide_ack, build_acp_prompt, build_codex_input,
+        build_pi_prompt, cancelled_before_prompt_outcome, find_grok_runtime_error_detail,
+        grok_acp_arguments, grok_acp_error_with_runtime_detail, grok_uses_channel_credentials,
+        guide_ack_response, normalize_agent_input, normalize_guide_prompt, parse_opencode_models,
+        pi_model_catalog, pi_model_parts, pi_rpc_arguments, pi_usage_snapshot, public_acp_error,
+        public_codex_error, read_cached_agent_command, read_cached_agent_model_catalog,
+        runtime_can_reuse, sanitize_grok_runtime_error_detail, should_retry_grok_channel_prompt,
+        should_set_acp_model, store_cached_agent_command, store_cached_agent_model_catalog,
+        AcpEventMapper, AgentDriverInput, AgentDriverKind, AgentInputContentBlock,
+        AgentModelCatalog, AgentModelSummary, AgentRunRecord, AgentRunService, AgentRunState,
+        AgentRuntimeCommand, AgentRuntimeConfig, AgentRuntimePhase, AgentRuntimeRecord,
+        AgentRuntimeRun, CodexEventMapper, CommandResolvers, GuideAckOutcome, GuideAgentRunRequest,
+        LiveAgentRuntime, PiEventMapper, RuntimeExecution, StartAgentRunRequest,
+        AGENT_COMMAND_CACHE_TTL, AUTOMATION_EXECUTION_CONTEXT, MODEL_CATALOG_CACHE_TTL,
     };
     use crate::{
         acp::{
@@ -4592,6 +4719,7 @@ mod tests {
         codex_app_server::{CodexAppServerError, CodexRuntimeEvent, CodexUserInput},
         pi_rpc::{PiModel, PiPromptInput, PiRuntimeEvent, PiState, PiStdioClient},
     };
+    use axum::http::StatusCode;
     use chrono::Utc;
     use serde_json::{json, Value};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -4676,6 +4804,141 @@ mod tests {
         })
         .await
         .expect("timed out waiting for Agent run event")
+    }
+
+    #[tokio::test]
+    async fn guide_api_rejects_non_codex_runs_without_delivering_a_control_command() {
+        let state = test_run_state();
+        let (cancel, _cancel_receiver) = watch::channel(false);
+        let (control, mut commands) = mpsc::unbounded_channel();
+        state
+            .insert(
+                "run-grok".to_string(),
+                AgentRunRecord {
+                    provider_id: "grok-build".to_string(),
+                    thread_id: Some("thread-1".to_string()),
+                    events: Vec::new(),
+                    finished: false,
+                    terminal_emitted: false,
+                    notify: Arc::new(Notify::new()),
+                    cancel,
+                    control,
+                },
+            )
+            .expect("insert non-Codex run");
+
+        let response = super::agent_run_guide(
+            axum::extract::State(state.clone()),
+            axum::extract::Path("run-grok".to_string()),
+            axum::Json(GuideAgentRunRequest {
+                prompt: "inspect".to_string(),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("non-Codex rejection body");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("non-Codex rejection JSON"),
+            json!({
+                "submitted": false,
+                "uncertain": false,
+                "error": "当前 Agent 不支持运行中引导"
+            })
+        );
+        assert!(matches!(
+            commands.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn guide_request_accepts_only_a_non_empty_text_prompt() {
+        let payload = serde_json::from_value::<GuideAgentRunRequest>(json!({
+            "prompt": "  inspect the current failure  "
+        }))
+        .expect("valid guide request");
+        assert_eq!(
+            normalize_guide_prompt(payload.prompt).expect("normalized prompt"),
+            "inspect the current failure"
+        );
+
+        assert!(serde_json::from_value::<GuideAgentRunRequest>(json!({
+            "prompt": "inspect",
+            "attachments": []
+        }))
+        .is_err());
+        let error = normalize_guide_prompt(" \r\n\t ".to_string())
+            .expect_err("blank guide prompt must fail");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn guide_ack_classifies_success_rejection_closed_and_timeout() {
+        let (success_sender, success_receiver) = oneshot::channel();
+        success_sender.send(Ok(())).expect("send success ack");
+        assert_eq!(
+            await_guide_ack(success_receiver, Duration::from_secs(1)).await,
+            GuideAckOutcome::Submitted
+        );
+
+        let (rejected_sender, rejected_receiver) = oneshot::channel();
+        rejected_sender
+            .send(Err("turn/steer rejected".to_string()))
+            .expect("send rejection ack");
+        assert_eq!(
+            await_guide_ack(rejected_receiver, Duration::from_secs(1)).await,
+            GuideAckOutcome::Rejected("turn/steer rejected".to_string())
+        );
+
+        let (closed_sender, closed_receiver) = oneshot::channel::<Result<(), String>>();
+        drop(closed_sender);
+        assert!(matches!(
+            await_guide_ack(closed_receiver, Duration::from_secs(1)).await,
+            GuideAckOutcome::Uncertain(message) if message.contains("确认引导请求前结束")
+        ));
+
+        let (_timeout_sender, timeout_receiver) = oneshot::channel::<Result<(), String>>();
+        assert!(matches!(
+            await_guide_ack(timeout_receiver, Duration::from_millis(1)).await,
+            GuideAckOutcome::Uncertain(message) if message.contains("超时")
+        ));
+    }
+
+    #[tokio::test]
+    async fn guide_ack_response_distinguishes_known_and_uncertain_failure() {
+        let submitted = guide_ack_response(GuideAckOutcome::Submitted);
+        assert_eq!(submitted.status(), StatusCode::OK);
+        let submitted_body = axum::body::to_bytes(submitted.into_body(), usize::MAX)
+            .await
+            .expect("submitted body");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&submitted_body).expect("submitted JSON"),
+            json!({ "submitted": true })
+        );
+
+        let known = guide_ack_response(GuideAckOutcome::Rejected("not supported".to_string()));
+        assert_eq!(known.status(), StatusCode::CONFLICT);
+        let known_body = axum::body::to_bytes(known.into_body(), usize::MAX)
+            .await
+            .expect("known failure body");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&known_body).expect("known failure JSON"),
+            json!({ "submitted": false, "uncertain": false, "error": "not supported" })
+        );
+
+        let uncertain =
+            guide_ack_response(GuideAckOutcome::Uncertain("response timeout".to_string()));
+        assert_eq!(uncertain.status(), StatusCode::GATEWAY_TIMEOUT);
+        let uncertain_body = axum::body::to_bytes(uncertain.into_body(), usize::MAX)
+            .await
+            .expect("uncertain failure body");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&uncertain_body).expect("uncertain failure JSON"),
+            json!({ "submitted": false, "uncertain": true, "error": "response timeout" })
+        );
     }
 
     #[test]
@@ -5189,6 +5452,7 @@ for await (const line of lines) {
             .insert(
                 run_id.clone(),
                 AgentRunRecord {
+                    provider_id: PI_AGENT_PROVIDER_ID.to_string(),
                     thread_id: Some("thread-pi-extension".to_string()),
                     events: Vec::new(),
                     finished: false,
@@ -5792,6 +6056,7 @@ process.stdout.write(JSON.stringify({ prompts, writeResult, bashResult, autoResu
             .insert(
                 "run-1".to_string(),
                 AgentRunRecord {
+                    provider_id: "grok-build".to_string(),
                     thread_id: Some("thread-1".to_string()),
                     events: Vec::new(),
                     finished: false,
@@ -5893,6 +6158,7 @@ process.stdout.write(JSON.stringify({ prompts, writeResult, bashResult, autoResu
             .insert(
                 "run-1".to_string(),
                 AgentRunRecord {
+                    provider_id: "grok-build".to_string(),
                     thread_id: Some("thread-1".to_string()),
                     events: Vec::new(),
                     finished: false,
@@ -6219,6 +6485,7 @@ process.stdout.write(JSON.stringify({ prompts, writeResult, bashResult, autoResu
             .insert(
                 "run-1".to_string(),
                 AgentRunRecord {
+                    provider_id: "grok-build".to_string(),
                     thread_id: None,
                     events: Vec::new(),
                     finished: false,

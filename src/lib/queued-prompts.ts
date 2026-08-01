@@ -1,5 +1,95 @@
-import type { ClaudeEffortSelection, PermissionMode } from '../types';
+import type {
+  ClaudeEffortSelection,
+  InputContentBlock,
+  PermissionMode,
+  UserImageAttachment,
+} from '../types';
 import { resolvePromptSubmissionSessionId } from './claude-run-session';
+
+export type QueuedPromptStatus = 'preparing' | 'ready' | 'guiding' | 'guide-unknown';
+export type QueuedPromptGuideOutcome = 'submitted' | 'rejected' | 'uncertain';
+
+export function resolveGuideSuccessActivity(
+  terminal: boolean,
+  currentActivity: string | undefined,
+) {
+  return terminal ? currentActivity : '已发送引导消息，等待 Codex 接收';
+}
+
+type CodexQueuedPromptGuideCandidate = {
+  prompt: string;
+  queueStatus?: QueuedPromptStatus;
+  attachments?: UserImageAttachment[];
+  contentBlocks?: InputContentBlock[];
+};
+
+type QueuedPromptGuideSelectionCandidate = {
+  id: string;
+  queueStatus?: QueuedPromptStatus;
+};
+
+type QueuedPromptContinuationCandidate = {
+  queueStatus?: QueuedPromptStatus;
+};
+
+export function getQueuedPromptContinuationState(
+  queue: QueuedPromptContinuationCandidate[],
+): 'empty' | 'preparing' | 'paused' | 'ready' {
+  if (queue.some((prompt) => prompt.queueStatus === 'guide-unknown')) {
+    return 'paused';
+  }
+  const headStatus = queue[0]?.queueStatus;
+  if (!headStatus) {
+    return 'empty';
+  }
+  if (headStatus === 'preparing') {
+    return 'preparing';
+  }
+  if (headStatus === 'guiding') {
+    return 'paused';
+  }
+  return 'ready';
+}
+
+export function shouldResumePausedQueueAfterUnknownRemoval(
+  removedStatus: QueuedPromptStatus | undefined,
+  remainingQueue: QueuedPromptContinuationCandidate[],
+  hasPausedContinuation: boolean,
+) {
+  return hasPausedContinuation &&
+    removedStatus === 'guide-unknown' &&
+    getQueuedPromptContinuationState(remainingQueue) !== 'paused';
+}
+
+export function getQueuedPromptGuideSelection(
+  queue: QueuedPromptGuideSelectionCandidate[],
+  promptId: string,
+) {
+  if (queue[0]?.id !== promptId) {
+    return {
+      available: false as const,
+      reason: '只能引导队首排队消息。',
+    };
+  }
+  if (queue.some((prompt) => prompt.queueStatus === 'guiding')) {
+    return {
+      available: false as const,
+      reason: '已有排队消息正在引导。',
+    };
+  }
+  return { available: true as const };
+}
+
+export function shouldContinueQueueAfterGuide(
+  terminalAllowsQueueContinuation: boolean,
+  blockedPromptId: string | undefined,
+  resolvedPromptId: string,
+  outcome: QueuedPromptGuideOutcome,
+) {
+  return terminalAllowsQueueContinuation &&
+    blockedPromptId === resolvedPromptId &&
+    outcome !== 'uncertain';
+}
 
 type QueuedPromptThreadMetadata = {
   sessionId?: string;
@@ -28,9 +118,55 @@ export type QueuedPromptRunOptions = {
 export type QueuedPromptGuideAvailability = {
   isRunning: boolean;
   runId?: string;
+  isInterrupting?: boolean;
   hasPendingHumanInput: boolean;
   queueLength: number;
 };
+
+export function getCodexQueuedPromptGuideContent({
+  prompt,
+  queueStatus = 'ready',
+  attachments,
+  contentBlocks,
+}: CodexQueuedPromptGuideCandidate) {
+  if (queueStatus === 'guide-unknown') {
+    return {
+      available: false as const,
+      reason: '引导结果尚未确认，请召回后再决定是否重发。',
+    };
+  }
+  if (queueStatus === 'guiding') {
+    return {
+      available: false as const,
+      reason: '正在引导当前运行。',
+    };
+  }
+  if (queueStatus === 'preparing') {
+    return {
+      available: false as const,
+      reason: '正在准备附件和文件引用。',
+    };
+  }
+  if (attachments?.length || contentBlocks?.some((block) => block.type !== 'text')) {
+    return {
+      available: false as const,
+      reason: 'Codex 运行中引导暂只支持纯文本消息。',
+    };
+  }
+  const text = contentBlocks?.length
+    ? contentBlocks
+        .flatMap((block) => block.type === 'text' ? [block.text.trim()] : [])
+        .filter(Boolean)
+        .join('\n\n')
+    : prompt.trim();
+  if (!text) {
+    return {
+      available: false as const,
+      reason: '缺少可引导的文本内容。',
+    };
+  }
+  return { available: true as const, text };
+}
 
 export function resolveQueuedPromptRunOptions(
   thread: QueuedPromptThreadMetadata,
@@ -49,6 +185,7 @@ export function resolveQueuedPromptRunOptions(
 export function getQueuedPromptGuideAvailability({
   isRunning,
   runId,
+  isInterrupting = false,
   hasPendingHumanInput,
   queueLength,
 }: QueuedPromptGuideAvailability) {
@@ -63,6 +200,13 @@ export function getQueuedPromptGuideAvailability({
     return {
       available: false,
       reason: '当前没有运行中的任务。',
+    };
+  }
+
+  if (isInterrupting) {
+    return {
+      available: false,
+      reason: '当前运行正在停止，暂不能引导。',
     };
   }
 

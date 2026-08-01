@@ -108,3 +108,43 @@ test('describeConversationOutputFile maps office and previewable extensions to s
 
   assert.equal(describeConversationOutputFile('src/App.tsx'), null);
 });
+
+test('collectConversationOutputFiles recognizes Codex fileChange result entries', () => {
+  const tools: ToolStep[] = [
+    {
+      id: 'codex-file-change',
+      name: 'Codex 工具',
+      title: 'Codex file change',
+      status: 'done',
+      inputText: JSON.stringify({ changes: [] }),
+      resultText: JSON.stringify({
+        status: 'completed',
+        changes: [
+          {
+            path: 'docs/prd.md',
+            kind: { type: 'add' },
+            diff: '@@ -0,0 +1 @@\n+# PRD',
+          },
+          {
+            path: 'src/App.tsx',
+            kind: { type: 'update' },
+            diff: '@@ -1 +1 @@\n-old\n+new',
+          },
+          {
+            path: 'docs/obsolete.md',
+            kind: { type: 'delete' },
+            diff: '@@ -1 +0,0 @@\n-# Obsolete',
+          },
+        ],
+      }),
+    },
+  ];
+
+  assert.deepEqual(
+    collectConversationOutputFiles(tools).map((file) => ({
+      path: file.path,
+      openMode: file.openMode,
+    })),
+    [{ path: 'docs/prd.md', openMode: 'preview' }],
+  );
+});

@@ -736,9 +736,12 @@ export type OpenAppTarget = {
   args: string[];
 };
 
+export type WebLinkOpenTarget = 'external' | 'workbench';
+
 export type OpenWithSettings = {
   selectedTargetId: string;
   customTargets: OpenAppTarget[];
+  webLinkOpenTarget: WebLinkOpenTarget;
 };
 
 export type InstalledPlugin = {
@@ -1192,6 +1195,11 @@ export type GitCreateWorktreeResult = {
 export type ProjectGitSummary = Pick<ProjectSummary, 'gitBranch' | 'gitDiff' | 'isGitRepo' | 'isGitWorktree'>;
 
 export type RightWorkbenchTab = 'overview' | 'files' | 'review' | 'browser';
+
+export type WorkbenchBrowserOpenRequest = {
+  id: string;
+  url: string;
+};
 
 export type WorkbenchFileScope = 'all' | 'changed';
 

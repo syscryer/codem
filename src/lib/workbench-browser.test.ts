@@ -5,6 +5,7 @@ import {
   MAX_WORKBENCH_BROWSER_TABS,
   normalizeWorkbenchBrowserInput,
   normalizeWorkbenchBrowserState,
+  openWorkbenchBrowserUrl,
 } from './workbench-browser.js';
 
 test('browser input accepts explicit web urls and common host names', () => {
@@ -39,4 +40,32 @@ test('stored browser state removes invalid tabs and enforces the tab limit', () 
 
 test('browser title uses the hostname without the www prefix', () => {
   assert.equal(browserTitleFromUrl('https://www.github.com/openai'), 'github.com');
+});
+
+test('external requests reuse matching or empty browser tabs before creating a tab', () => {
+  const empty = {
+    tabs: [{ id: 'browser-tab-empty', title: '新标签页', url: '' }],
+    activeTabId: 'browser-tab-empty',
+  };
+  const opened = openWorkbenchBrowserUrl(empty, 'http://localhost:5173');
+  assert.equal(opened.outcome, 'opened');
+  assert.equal(opened.state.tabs.length, 1);
+  assert.equal(opened.state.tabs[0].url, 'http://localhost:5173/');
+
+  const reused = openWorkbenchBrowserUrl(opened.state, 'http://localhost:5173/');
+  assert.equal(reused.outcome, 'reused');
+  assert.equal(reused.state.tabs.length, 1);
+  assert.equal(reused.state.activeTabId, opened.state.tabs[0].id);
+});
+
+test('external requests preserve state when the browser tab limit is reached', () => {
+  const tabs = Array.from({ length: MAX_WORKBENCH_BROWSER_TABS }, (_, index) => ({
+    id: `browser-tab-${index}`,
+    title: `Tab ${index}`,
+    url: `https://example.com/${index}`,
+  }));
+  const current = { tabs, activeTabId: tabs[0].id };
+  const result = openWorkbenchBrowserUrl(current, 'http://127.0.0.1:3000');
+  assert.equal(result.outcome, 'limit-reached');
+  assert.deepEqual(result.state, current);
 });

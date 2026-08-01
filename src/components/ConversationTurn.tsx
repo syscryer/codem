@@ -1,7 +1,10 @@
-import { memo, useDeferredValue, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
+import { FileActionMenu } from './FileActionMenu';
+import { WebLinkActionMenu, type WebLinkMenuTarget } from './WebLinkActionMenu';
+import { ConversationWebPreviewCard } from './ConversationWebPreviewCard';
 import { ImagePreviewDialog, type ImagePreviewItem } from './ImagePreviewDialog';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import {
@@ -44,11 +47,17 @@ import {
   buildConversationUndoChanges,
   type ConversationUndoChange,
 } from '../lib/conversation-changed-files';
+import { collectToolConversationFileChanges, type ConversationFileChange } from '../lib/conversation-preview-shortcuts';
 import { collectConversationOutputFiles, type ConversationOutputFile } from '../lib/conversation-output-files';
+import { extractLocalWebPreviewUrls } from '../lib/conversation-web-previews';
 import { buildConversationOutputFileListState } from '../lib/conversation-output-file-list';
-import { runConversationOutputFileMenuAction } from '../lib/conversation-output-file-interactions';
+import {
+  resolveConversationOutputFileActionPath,
+  runConversationOutputFileMenuAction,
+} from '../lib/conversation-output-file-interactions';
 import { renderMarkdownImage, type MarkdownImagePreviewPayload } from '../lib/markdown-image';
 import { renderMarkdownLink } from '../lib/markdown-link';
+import { remarkLocalFileLinks } from '../lib/markdown-local-file-links';
 import { buildConversationOutputFilePreviewRequest, resolveWorkbenchPreviewFilePath } from '../lib/workbench-preview';
 import { buildDesktopImagePreviewUrl, buildWorkspaceImagePreviewUrl } from '../lib/file-preview-api';
 import { deleteProjectFile } from '../lib/project-files-api';
@@ -65,6 +74,7 @@ import type {
   SystemCommandItem,
   ToolStep,
   UserImageAttachment,
+  WebLinkOpenTarget,
   WorkbenchPreviewRequest,
 } from '../types';
 
@@ -85,6 +95,8 @@ function ConversationTurnViewComponent({
   onOpenWorkbenchPreview,
   onOpenOutputPath,
   onRevealOutputPath,
+  onOpenWebLink,
+  onCopyWebLink,
   onUndoChangedFiles,
   onSubmitRequestUserInput,
   onSubmitRuntimeRecoveryAction,
@@ -107,6 +119,8 @@ function ConversationTurnViewComponent({
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onOpenOutputPath: (path: string) => Promise<void>;
   onRevealOutputPath: (path: string) => Promise<void>;
+  onOpenWebLink: (url: string, target?: WebLinkOpenTarget) => void | Promise<void>;
+  onCopyWebLink: (url: string) => void | Promise<void>;
   onUndoChangedFiles: (turn: ConversationTurn, changes: ConversationUndoChange[]) => void;
   onSubmitRequestUserInput: (
     turn: ConversationTurn,
@@ -174,6 +188,12 @@ function ConversationTurnViewComponent({
   const canToggleIntermediateProcess = shouldCollapseIntermediateItems && intermediateItems.length > 0;
   const changedFileGroups = useMemo(() => collectConversationChangedFileGroups(turn.tools), [turn.tools]);
   const outputFiles = useMemo(() => collectConversationOutputFiles(turn.tools), [turn.tools]);
+  const webPreviewUrls = useMemo(
+    () => extractLocalWebPreviewUrls(
+      turn.items.filter((item) => item.type === 'text').map((item) => item.text),
+    ),
+    [turn.items],
+  );
   const undoChanges = useMemo(
     () => buildConversationUndoChanges(turn.tools, activeProject?.path ?? turn.workspace, previousTurns),
     [activeProject?.path, previousTurns, turn.tools, turn.workspace],
@@ -193,6 +213,7 @@ function ConversationTurnViewComponent({
   const hasUserText = Boolean(turn.userText.trim());
   const hasUserContentBlocks = Boolean(turn.userContentBlocks?.length);
   const hasUserAttachments = Boolean(turn.userAttachments?.length);
+  const conversationWorkspace = resolveConversationTurnWorkspace(turn.workspace, activeProject?.path);
 
   return (
     <article className={`turn ${isLatest ? 'latest-turn' : ''}`}>
@@ -265,10 +286,15 @@ function ConversationTurnViewComponent({
             <IntermediateProcessBody
               items={intermediateItems}
               turn={turn}
+              workspace={conversationWorkspace}
               turnInFlight={running}
               providerId={providerId}
               requestCardsByToolId={requestCardsByToolId}
               onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+              onOpenOutputPath={onOpenOutputPath}
+              onRevealOutputPath={onRevealOutputPath}
+              onOpenWebLink={onOpenWebLink}
+              onCopyWebLink={onCopyWebLink}
               onSubmitRequestUserInput={onSubmitRequestUserInput}
               onPreviewImage={setImagePreview}
               thinkingLabel={thinkingLabel}
@@ -279,10 +305,15 @@ function ConversationTurnViewComponent({
             narrativeItems.map((item) => renderAssistantItem({
               item,
               turn,
+              workspace: conversationWorkspace,
               turnInFlight: running,
               providerId,
               requestCardsByToolId,
               onOpenWorkbenchPreview,
+              onOpenOutputPath,
+              onRevealOutputPath,
+              onOpenWebLink,
+              onCopyWebLink,
               onSubmitRequestUserInput,
               onPreviewImage: setImagePreview,
               thinkingLabel,
@@ -297,9 +328,18 @@ function ConversationTurnViewComponent({
             <TurnProgressLine turn={turn} nowMs={nowMs} isLiveRunning={isLiveRunning} compact />
           ) : null}
 
+          {webPreviewUrls.length > 0 ? (
+            <ConversationWebPreviewCard
+              urls={webPreviewUrls}
+              onOpen={onOpenWebLink}
+              onCopy={onCopyWebLink}
+            />
+          ) : null}
+
           {outputFiles.length > 0 ? (
             <ConversationOutputFilesCard
               files={outputFiles}
+              workspace={conversationWorkspace}
               onOpenWorkbenchPreview={onOpenWorkbenchPreview}
               onOpenOutputPath={onOpenOutputPath}
               onRevealOutputPath={onRevealOutputPath}
@@ -309,7 +349,7 @@ function ConversationTurnViewComponent({
           {changedFileGroups.length > 0 ? (
             <ChangedFilesSummaryCard
               files={changedFileGroups}
-              canUndo={canUndoChangedFiles}
+              canUndo={canUndoChangedFiles && undoChanges.length > 0}
               activeProject={activeProject}
               onReview={() => {
                 const requests = buildChangedFilesReviewRequests(changedFileGroups);
@@ -499,29 +539,113 @@ function TurnProgressIcon({ turn, running }: { turn: ConversationTurn; running: 
 function MarkdownMessage({
   content,
   onPreviewImage,
+  workspace,
+  onOpenWorkbenchPreview,
+  onOpenOutputPath,
+  onRevealOutputPath,
+  onOpenWebLink,
+  onCopyWebLink,
 }: {
   content: string;
   onPreviewImage: (preview: MarkdownImagePreviewPayload) => void;
+  workspace: string;
+  onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
+  onOpenOutputPath: (path: string) => Promise<void>;
+  onRevealOutputPath: (path: string) => Promise<void>;
+  onOpenWebLink: (url: string, target?: WebLinkOpenTarget) => void | Promise<void>;
+  onCopyWebLink: (url: string) => void | Promise<void>;
 }) {
   const deferredContent = useDeferredValue(content);
+  const [webLinkMenuTarget, setWebLinkMenuTarget] = useState<WebLinkMenuTarget | null>(null);
+  const [fileMenuTarget, setFileMenuTarget] = useState<{
+    path: string;
+    name: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const resolveLocalFile = useCallback((path: string) => ({
+    path: workspace ? resolveWorkbenchPreviewFilePath(workspace, path) : path,
+    name: getFileName(path),
+  }), [workspace]);
+  const onOpenLocalFile = useCallback((path: string) => {
+    const file = resolveLocalFile(path);
+    onOpenWorkbenchPreview(buildConversationOutputFilePreviewRequest({
+      path: file.path,
+      name: file.name,
+      type: 'file',
+    }));
+  }, [onOpenWorkbenchPreview, resolveLocalFile]);
 
-  return <DeferredMarkdownContent content={deferredContent} onPreviewImage={onPreviewImage} />;
+  return (
+    <>
+      <DeferredMarkdownContent
+        content={deferredContent}
+        onPreviewImage={onPreviewImage}
+        onOpenLocalFile={onOpenLocalFile}
+        onOpenLocalFileContextMenu={({ path, x, y }) => {
+          setWebLinkMenuTarget(null);
+          setFileMenuTarget({ ...resolveLocalFile(path), x, y });
+        }}
+        onOpenWebUrl={(url) => void onOpenWebLink(url)}
+        onOpenWebContextMenu={(target) => {
+          setFileMenuTarget(null);
+          setWebLinkMenuTarget(target);
+        }}
+      />
+      <WebLinkActionMenu
+        target={webLinkMenuTarget}
+        onClose={() => setWebLinkMenuTarget(null)}
+        onOpen={onOpenWebLink}
+        onCopy={onCopyWebLink}
+      />
+      <FileActionMenu
+        target={fileMenuTarget}
+        virtualAnchor={fileMenuTarget ? { x: fileMenuTarget.x, y: fileMenuTarget.y } : null}
+        canPreview
+        onClose={() => setFileMenuTarget(null)}
+        onPreview={({ path, name }) => onOpenWorkbenchPreview(buildConversationOutputFilePreviewRequest({
+          path,
+          name,
+          type: 'file',
+        }))}
+        onOpen={onOpenOutputPath}
+        onReveal={onRevealOutputPath}
+        onCopy={(path) => navigator.clipboard.writeText(path)}
+      />
+    </>
+  );
 }
 
 const DeferredMarkdownContent = memo(function DeferredMarkdownContent({
   content,
   onPreviewImage,
+  onOpenLocalFile,
+  onOpenLocalFileContextMenu,
+  onOpenWebUrl,
+  onOpenWebContextMenu,
 }: {
   content: string;
   onPreviewImage: (preview: MarkdownImagePreviewPayload) => void;
+  onOpenLocalFile: (path: string) => void;
+  onOpenLocalFileContextMenu: (target: { path: string; x: number; y: number }) => void;
+  onOpenWebUrl: (url: string) => void;
+  onOpenWebContextMenu: (target: WebLinkMenuTarget) => void;
 }) {
   return (
     <div className="message-body markdown-body">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkLocalFileLinks]}
         components={{
           a({ href, title, children }) {
-            return renderMarkdownLink({ href, title, children });
+            return renderMarkdownLink({
+              href,
+              title,
+              children,
+              onOpenLocalFile,
+              onOpenLocalFileContextMenu,
+              onOpenWebUrl,
+              onOpenWebContextMenu,
+            });
           },
           img({ src, alt, title }) {
             return renderMarkdownImage({ src, alt, title, onPreview: onPreviewImage });
@@ -724,10 +848,15 @@ type DisplayAssistantItem =
 type AssistantItemRenderProps = {
   item: DisplayAssistantItem;
   turn: ConversationTurn;
+  workspace: string;
   turnInFlight: boolean;
   providerId?: string;
   requestCardsByToolId: Map<string, RequestUserInputRequest>;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
+  onOpenOutputPath: (path: string) => Promise<void>;
+  onRevealOutputPath: (path: string) => Promise<void>;
+  onOpenWebLink: (url: string, target?: WebLinkOpenTarget) => void | Promise<void>;
+  onCopyWebLink: (url: string) => void | Promise<void>;
   onSubmitRequestUserInput: (
     turn: ConversationTurn,
     request: RequestUserInputRequest,
@@ -744,10 +873,15 @@ function isIntermediateAssistantItem(item: DisplayAssistantItem) {
 function IntermediateProcessBody({
   items,
   turn,
+  workspace,
   turnInFlight,
   providerId,
   requestCardsByToolId,
   onOpenWorkbenchPreview,
+  onOpenOutputPath,
+  onRevealOutputPath,
+  onOpenWebLink,
+  onCopyWebLink,
   onSubmitRequestUserInput,
   onPreviewImage,
   thinkingLabel,
@@ -759,10 +893,15 @@ function IntermediateProcessBody({
       {items.map((item) => renderAssistantItem({
         item,
         turn,
+        workspace,
         turnInFlight,
         providerId,
         requestCardsByToolId,
         onOpenWorkbenchPreview,
+        onOpenOutputPath,
+        onRevealOutputPath,
+        onOpenWebLink,
+        onCopyWebLink,
         onSubmitRequestUserInput,
         onPreviewImage,
         thinkingLabel,
@@ -774,10 +913,15 @@ function IntermediateProcessBody({
 function renderAssistantItem({
   item,
   turn,
+  workspace,
   turnInFlight,
   providerId,
   requestCardsByToolId,
   onOpenWorkbenchPreview,
+  onOpenOutputPath,
+  onRevealOutputPath,
+  onOpenWebLink,
+  onCopyWebLink,
   onSubmitRequestUserInput,
   onPreviewImage,
   thinkingLabel,
@@ -788,6 +932,12 @@ function renderAssistantItem({
         key={item.id}
         content={item.text}
         onPreviewImage={onPreviewImage}
+        workspace={workspace}
+        onOpenWorkbenchPreview={onOpenWorkbenchPreview}
+        onOpenOutputPath={onOpenOutputPath}
+        onRevealOutputPath={onRevealOutputPath}
+        onOpenWebLink={onOpenWebLink}
+        onCopyWebLink={onCopyWebLink}
       />
     );
   }
@@ -1082,11 +1232,13 @@ function ToolPreviewPanel({
 
 function ConversationOutputFilesCard({
   files,
+  workspace,
   onOpenWorkbenchPreview,
   onOpenOutputPath,
   onRevealOutputPath,
 }: {
   files: ConversationOutputFile[];
+  workspace: string;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onOpenOutputPath: (path: string) => Promise<void>;
   onRevealOutputPath: (path: string) => Promise<void>;
@@ -1104,6 +1256,7 @@ function ConversationOutputFilesCard({
           <ConversationOutputFileCard
             key={file.path}
             file={file}
+            workspace={workspace}
             onOpenWorkbenchPreview={onOpenWorkbenchPreview}
             onOpenOutputPath={onOpenOutputPath}
             onRevealOutputPath={onRevealOutputPath}
@@ -1126,11 +1279,13 @@ function ConversationOutputFilesCard({
 
 function ConversationOutputFileCard({
   file,
+  workspace,
   onOpenWorkbenchPreview,
   onOpenOutputPath,
   onRevealOutputPath,
 }: {
   file: ConversationOutputFile;
+  workspace: string;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onOpenOutputPath: (path: string) => Promise<void>;
   onRevealOutputPath: (path: string) => Promise<void>;
@@ -1139,19 +1294,7 @@ function ConversationOutputFileCard({
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const canPreviewInWorkbench = file.openMode === 'preview';
-
-  useOutsideDismiss({
-    selectors: [
-      {
-        selector: '.conversation-output-file-menu',
-        onDismiss: () => {
-          setMenuOpen(false);
-          setContextMenu(null);
-        },
-        anchorRefs: [menuButtonRef],
-      },
-    ],
-  });
+  const resolvedFilePath = resolveConversationOutputFileActionPath(workspace, file.path);
 
   function closeMenus() {
     setMenuOpen(false);
@@ -1160,7 +1303,7 @@ function ConversationOutputFileCard({
 
   function openInWorkbenchPreview() {
     onOpenWorkbenchPreview(buildConversationOutputFilePreviewRequest({
-      path: file.path,
+      path: resolvedFilePath,
       name: file.name,
       type: 'file',
     }));
@@ -1172,15 +1315,7 @@ function ConversationOutputFileCard({
       return;
     }
 
-    void onOpenOutputPath(file.path);
-  }
-
-  async function handleCopyPath() {
-    try {
-      await navigator.clipboard.writeText(file.path);
-    } finally {
-      closeMenus();
-    }
+    void onOpenOutputPath(resolvedFilePath);
   }
 
   return (
@@ -1227,83 +1362,19 @@ function ConversationOutputFileCard({
         <span>打开方式</span>
         <ChevronDown size={14} />
       </button>
-      <PopoverPortal
-        open={menuOpen || Boolean(contextMenu)}
+      <FileActionMenu
+        target={menuOpen || contextMenu ? { path: resolvedFilePath, name: file.name } : null}
         anchorRef={menuButtonRef}
-        virtualAnchor={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        virtualAnchor={contextMenu}
         placement="bottom-end"
         offset={8}
-      >
-        <div
-          className="workspace-menu conversation-output-file-menu"
-          role="menu"
-          aria-label={`文件操作 ${file.name}`}
-          onClick={(event) => {
-            event.stopPropagation();
-          }}
-          onKeyDown={(event) => {
-            event.stopPropagation();
-          }}
-        >
-          {canPreviewInWorkbench ? (
-            <button
-              type="button"
-              className="workspace-menu-item conversation-output-file-menu-item"
-              role="menuitem"
-              onClick={(event) => {
-                runConversationOutputFileMenuAction(event, () => {
-                  openInWorkbenchPreview();
-                  closeMenus();
-                });
-              }}
-            >
-              <Maximize2 size={14} />
-              <span>在右侧预览</span>
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="workspace-menu-item conversation-output-file-menu-item"
-            role="menuitem"
-            onClick={(event) => {
-              runConversationOutputFileMenuAction(event, () => {
-                void onOpenOutputPath(file.path);
-                closeMenus();
-              });
-            }}
-          >
-            <ArrowUpRight size={14} />
-            <span>用默认应用打开</span>
-          </button>
-          <button
-            type="button"
-            className="workspace-menu-item conversation-output-file-menu-item"
-            role="menuitem"
-            onClick={(event) => {
-              runConversationOutputFileMenuAction(event, () => {
-                void onRevealOutputPath(file.path);
-                closeMenus();
-              });
-            }}
-          >
-            <Folder size={14} />
-            <span>在文件浏览器打开</span>
-          </button>
-          <button
-            type="button"
-            className="workspace-menu-item conversation-output-file-menu-item"
-            role="menuitem"
-            onClick={(event) => {
-              runConversationOutputFileMenuAction(event, () => {
-                void handleCopyPath();
-              });
-            }}
-          >
-            <Copy size={14} />
-            <span>复制路径</span>
-          </button>
-        </div>
-      </PopoverPortal>
+        canPreview={canPreviewInWorkbench}
+        onClose={closeMenus}
+        onPreview={() => openInWorkbenchPreview()}
+        onOpen={onOpenOutputPath}
+        onReveal={onRevealOutputPath}
+        onCopy={(path) => navigator.clipboard.writeText(path)}
+      />
     </article>
   );
 }
@@ -2754,6 +2825,7 @@ type ToolPreview = {
   kind: 'edit' | 'write';
   filePath: string;
   fileName: string;
+  diff?: string;
   beforeText: string;
   afterText: string;
   additions: number;
@@ -2799,72 +2871,67 @@ function collectConversationChangedFileGroups(tools: ToolStep[]) {
   const grouped = new Map<string, ChangedFilePreviewGroup>();
 
   for (const tool of tools) {
-    const preview = getToolPreview(tool);
-    if (!preview) {
-      continue;
+    const previews = getToolPreviews(tool);
+    for (const preview of previews) {
+      const current =
+        grouped.get(preview.filePath) ??
+        {
+          path: preview.filePath,
+          name: preview.fileName,
+          additions: 0,
+          deletions: 0,
+          previews: [],
+        };
+
+      current.additions += preview.additions;
+      current.deletions += preview.deletions;
+      current.previews.push(preview);
+      grouped.set(preview.filePath, current);
     }
-
-    const current =
-      grouped.get(preview.filePath) ??
-      {
-        path: preview.filePath,
-        name: preview.fileName,
-        additions: 0,
-        deletions: 0,
-        previews: [],
-      };
-
-    current.additions += preview.additions;
-    current.deletions += preview.deletions;
-    current.previews.push(preview);
-    grouped.set(preview.filePath, current);
   }
 
   return [...grouped.values()];
 }
 
 function getToolPreview(tool: ToolStep): ToolPreview | null {
-  if (tool.name !== 'Edit' && tool.name !== 'Write' && tool.name !== 'NotebookEdit') {
-    return null;
-  }
+  return getToolPreviews(tool)[0] ?? null;
+}
 
-  const input = parseToolInput(tool.inputText);
-  if (!input) {
-    return null;
-  }
+function getToolPreviews(tool: ToolStep): ToolPreview[] {
+  return collectToolConversationFileChanges(tool)
+    .map((change) => buildToolPreview(tool, change))
+    .filter((preview): preview is ToolPreview => Boolean(preview));
+}
 
-  const filePath = getToolInputString(input, ['file_path', 'path', 'notebook_path']);
-  if (!filePath) {
-    return null;
-  }
+function buildToolPreview(tool: ToolStep, change: ConversationFileChange): ToolPreview | null {
+  const { path: filePath, oldText: oldString, newText: newString, content, diff } = change;
 
-  const oldString = getToolInputString(input, ['old_string']);
-  const newString = getToolInputString(input, ['new_string']);
-  const content = getToolInputString(input, ['content']);
-  const diff = getToolInputString(input, ['diff', 'patch']);
-  const changeType = getToolInputString(input, ['change_type']) ?? 'update';
-
-  let kind: ToolPreview['kind'] = tool.name === 'Write' ? 'write' : 'edit';
+  let kind: ToolPreview['kind'] = change.kind === 'add' || tool.name === 'Write' ? 'write' : 'edit';
   let beforeText = '';
   let afterText = '';
+  let diffStats: { additions: number; deletions: number } | undefined;
 
   if (oldString !== undefined || newString !== undefined) {
     beforeText = oldString ?? '';
     afterText = newString ?? '';
   } else if (content !== undefined) {
-    if (changeType === 'delete') {
+    if (change.kind === 'delete') {
       beforeText = content;
       afterText = '';
     } else {
       afterText = content;
       if (tool.name !== 'Write') {
-        kind = changeType === 'create' ? 'write' : 'edit';
+        kind = change.kind === 'add' ? 'write' : 'edit';
       }
     }
   } else if (diff) {
     const parsedDiff = parseDiffContent(diff);
     beforeText = parsedDiff.beforeText;
     afterText = parsedDiff.afterText;
+    diffStats = {
+      additions: parsedDiff.additions,
+      deletions: parsedDiff.deletions,
+    };
   }
 
   if (!beforeText && !afterText) {
@@ -2875,12 +2942,13 @@ function getToolPreview(tool: ToolStep): ToolPreview | null {
     kind = 'write';
   }
 
-  const stats = calculateLineDiffStats(beforeText, afterText);
+  const stats = diffStats ?? calculateLineDiffStats(beforeText, afterText);
 
   return {
     kind,
     filePath,
     fileName: getFileName(filePath),
+    diff,
     beforeText,
     afterText,
     additions: stats.additions,
@@ -3847,10 +3915,15 @@ function getStringValue(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function parseDiffContent(diff: string) {
+export function parseDiffContent(diff: string) {
   const lines = normalizePreviewText(diff).split('\n');
+  if (lines.at(-1) === '') {
+    lines.pop();
+  }
   const beforeLines: string[] = [];
   const afterLines: string[] = [];
+  let additions = 0;
+  let deletions = 0;
 
   for (const line of lines) {
     if (
@@ -3865,11 +3938,13 @@ function parseDiffContent(diff: string) {
 
     if (line.startsWith('-')) {
       beforeLines.push(line.slice(1));
+      deletions += 1;
       continue;
     }
 
     if (line.startsWith('+')) {
       afterLines.push(line.slice(1));
+      additions += 1;
       continue;
     }
 
@@ -3881,7 +3956,13 @@ function parseDiffContent(diff: string) {
   return {
     beforeText: beforeLines.join('\n'),
     afterText: afterLines.join('\n'),
+    additions,
+    deletions,
   };
+}
+
+export function resolveConversationTurnWorkspace(turnWorkspace?: string, activeProjectPath?: string) {
+  return turnWorkspace || activeProjectPath || '';
 }
 
 function calculateLineDiffStats(beforeText: string, afterText: string) {

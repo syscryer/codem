@@ -1,4 +1,5 @@
 import type { ToolStep } from '../types';
+import { collectToolConversationFileChanges } from './conversation-preview-shortcuts';
 
 export type ConversationOutputFile = {
   path: string;
@@ -35,22 +36,27 @@ export function collectConversationOutputFiles(tools: ToolStep[]) {
   const files: ConversationOutputFile[] = [];
 
   for (const tool of tools) {
-    const filePath = extractToolOutputPath(tool);
-    if (!filePath || seen.has(filePath)) {
-      continue;
-    }
+    for (const change of collectToolConversationFileChanges(tool)) {
+      if (change.kind === 'delete') {
+        continue;
+      }
+      const filePath = change.path;
+      if (seen.has(filePath)) {
+        continue;
+      }
 
-    const descriptor = describeConversationOutputFile(filePath);
-    if (!descriptor) {
-      continue;
-    }
+      const descriptor = describeConversationOutputFile(filePath);
+      if (!descriptor) {
+        continue;
+      }
 
-    seen.add(filePath);
-    files.push({
-      path: filePath,
-      name: getFileName(filePath),
-      ...descriptor,
-    });
+      seen.add(filePath);
+      files.push({
+        path: filePath,
+        name: getFileName(filePath),
+        ...descriptor,
+      });
+    }
   }
 
   return files;
@@ -81,42 +87,6 @@ export function describeConversationOutputFile(filePath: string) {
   }
 
   return null;
-}
-
-function extractToolOutputPath(tool: ToolStep) {
-  if (tool.name !== 'Edit' && tool.name !== 'Write' && tool.name !== 'NotebookEdit') {
-    return '';
-  }
-
-  const input = parseToolInput(tool.inputText);
-  if (!input) {
-    return '';
-  }
-
-  return getToolInputString(input, ['file_path', 'path', 'notebook_path']) ?? '';
-}
-
-function parseToolInput(inputText?: string) {
-  if (!inputText?.trim()) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(inputText) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
-function getToolInputString(input: Record<string, unknown>, keys: string[]) {
-  for (const key of keys) {
-    const value = input[key];
-    if (typeof value === 'string') {
-      return value;
-    }
-  }
-
-  return undefined;
 }
 
 function getFileExtension(filePath: string) {

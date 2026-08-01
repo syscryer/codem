@@ -14,6 +14,8 @@ import {
 import {
   buildRequestUserInputAnswers,
   getRequestUserInputDraft,
+  parseDiffContent,
+  resolveConversationTurnWorkspace,
   shouldShowRequestUserInputTextarea,
   updateRequestUserInputNote,
   updateRequestUserInputSelection,
@@ -25,6 +27,51 @@ const conversationTurnSource = readFileSync(
   new URL('../components/ConversationTurn.tsx', import.meta.url),
   'utf8',
 );
+
+test('parseDiffContent ignores the trailing split sentinel in a new-file diff', () => {
+  const parsed = parseDiffContent([
+    '--- /dev/null',
+    '+++ b/deliverable.md',
+    '@@ -0,0 +1,3 @@',
+    '+# Deliverable',
+    '+',
+    '+Ready.',
+    '',
+  ].join('\n'));
+
+  assert.deepEqual(parsed, {
+    beforeText: '',
+    afterText: '# Deliverable\n\nReady.',
+    additions: 3,
+    deletions: 0,
+  });
+});
+
+test('resolveConversationTurnWorkspace falls back to the active project for restored history', () => {
+  assert.equal(
+    resolveConversationTurnWorkspace(undefined, 'C:\\project\\codem'),
+    'C:\\project\\codem',
+  );
+  assert.equal(
+    resolveConversationTurnWorkspace('D:\\live-worktree', 'C:\\project\\codem'),
+    'D:\\live-worktree',
+  );
+});
+
+test('output file actions use the path resolved from the turn workspace', () => {
+  assert.match(conversationTurnSource, /workspace=\{conversationWorkspace\}/);
+  assert.match(
+    conversationTurnSource,
+    /const resolvedFilePath = resolveConversationOutputFileActionPath\(workspace, file\.path\)/,
+  );
+  assert.match(
+    conversationTurnSource,
+    /target=\{menuOpen \|\| contextMenu \? \{ path: resolvedFilePath, name: file\.name \} : null\}/,
+  );
+  assert.match(conversationTurnSource, /onOpenOutputPath\(resolvedFilePath\)/);
+  assert.match(conversationTurnSource, /onReveal=\{onRevealOutputPath\}/);
+  assert.match(conversationTurnSource, /onCopy=\{\(path\) => navigator\.clipboard\.writeText\(path\)\}/);
+});
 
 function inlineThinkingTurn(content: string): ConversationTurn {
   return {

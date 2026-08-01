@@ -684,6 +684,12 @@ where
                         return Ok(cancel_already_sent);
                     };
                     match command {
+                        AgentControlCommand::Guide {
+                            acknowledgement, ..
+                        } => {
+                            let _ = acknowledgement
+                                .send(Err("当前 ACP Agent 不支持运行中引导".to_string()));
+                        }
                         AgentControlCommand::Permission {
                             request_id: submitted_request_id,
                             decision,
@@ -780,6 +786,12 @@ where
                         return Ok(cancel_already_sent);
                     };
                     match command {
+                        AgentControlCommand::Guide {
+                            acknowledgement, ..
+                        } => {
+                            let _ = acknowledgement
+                                .send(Err("当前 ACP Agent 不支持运行中引导".to_string()));
+                        }
                         AgentControlCommand::UserInput {
                             request_id: submitted_request_id,
                             answers,
