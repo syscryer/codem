@@ -83,6 +83,32 @@ const usageWithResultStats = buildComposerContextUsage({
 assert.equal(usageWithResultStats.usedTokens, 128_462);
 assert.equal(usageWithResultStats.breakdown.outputTokens, 1_589);
 
+test('buildComposerContextUsage exposes the context indicator for Codex only among non-Claude agents', () => {
+  const turns = [
+    turn({
+      inputTokens: 9_664,
+      cacheReadInputTokens: 12_032,
+      outputTokens: 5,
+    }),
+  ];
+
+  const codexUsage = buildComposerContextUsage({
+    agent: 'codex',
+    model: '__default',
+    turns,
+  });
+  const grokUsage = buildComposerContextUsage({
+    agent: 'grok',
+    model: '__default',
+    turns,
+  });
+
+  assert.equal(codexUsage.visible, true);
+  assert.equal(codexUsage.usedTokens, 21_696);
+  assert.equal(codexUsage.hasUsage, true);
+  assert.equal(grokUsage.visible, false);
+});
+
 test('buildComposerContextUsage prefers native 1m context window over stale turn usage', () => {
   const usage = buildComposerContextUsage({
     agent: 'claude',

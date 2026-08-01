@@ -160,19 +160,19 @@ Out of scope:
 
 ## Acceptance Criteria
 
-- [ ] 支持的 Codex runtime 可通过两个入口执行真实 `thread/compact/start`，且不会发送 `/compact` 文本。
-- [ ] 运行中请求严格按“当前 turn -> compact -> 后续普通消息”执行。
-- [ ] 同一 thread 不会并发或重复启动 compact；不同 thread 互不阻塞。
-- [ ] 卡片从等待/准备/运行原位进入完成、失败或中断，并区分手动与自动来源。
-- [ ] 请求接受不会提前标记完成；完成和失败由原生 item/turn 生命周期确认。
-- [ ] 成功后原 `sessionId` 不变、可见历史不丢失、普通队列自动继续。
-- [ ] 失败后普通队列暂停；重试和跳过均按确认规则恢复，且不产生重复卡片。
-- [ ] 应用重启不自动重放 compact；可从原生历史补齐完成，无法确认则标记中断。
-- [ ] 旧 CLI/方法不存在时两个入口禁用并提示升级，不生成历史假成功节点。
-- [ ] 自动 compact 只依据 Codex 原生事件展示，不根据 token 阈值伪造。
-- [ ] 历史和日志不包含压缩正文、提示词、凭证、环境变量或无界原始事件。
-- [ ] Claude `/compact`、Codex steer、普通 Agent 运行和队列行为无回归。
-- [ ] 长历史更新 compact 卡片时只更新目标 turn，不进行不必要的整树重建。
+- [x] 支持的 Codex runtime 可通过两个入口执行真实 `thread/compact/start`，且不会发送 `/compact` 文本。
+- [x] 运行中请求严格按“当前 turn -> compact -> 后续普通消息”执行。
+- [x] 同一 thread 不会并发或重复启动 compact；不同 thread 互不阻塞。
+- [x] 卡片从等待/准备/运行原位进入完成、失败或中断，并区分手动与自动来源。
+- [x] 请求接受不会提前标记完成；完成和失败由原生 item/turn 生命周期确认。
+- [x] 成功后原 `sessionId` 不变、可见历史不丢失、普通队列自动继续。
+- [x] 失败后普通队列暂停；重试和跳过均按确认规则恢复，且不产生重复卡片。
+- [x] 应用重启不自动重放 compact；可从原生历史补齐完成，无法确认则标记中断。
+- [x] 旧 CLI/方法不存在时两个入口禁用并提示升级，不生成历史假成功节点。
+- [x] 自动 compact 只依据 Codex 原生事件展示，不根据 token 阈值伪造。
+- [x] 历史和日志不包含压缩正文、提示词、凭证、环境变量或无界原始事件。
+- [x] Claude `/compact`、Codex steer、普通 Agent 运行和队列行为无回归。
+- [x] 长历史更新 compact 卡片时只更新目标 turn，不进行不必要的整树重建。
 
 ## Verification Commands
 
@@ -201,6 +201,14 @@ Out of scope:
 7. 确认失败时队列暂停，重试与跳过均能恢复且不会重复发送消息。
 
 ## Implementation Record
+
+- 2026-08-01T21:11:25.242Z 桌面真实验收发现 Codex 上下文弹层入口未渲染：Composer 已传入 compactAvailability，但 buildComposerContextUsage 对所有非 Claude provider 固定 visible=false。已按 TDD 调整为仅 Claude/Codex 可见，Grok/OpenCode 等保持隐藏；Codex 真实会话显示 10.8% 用量和统一压缩按钮。
+- 2026-08-01T20:58:24.968Z 真实桌面验收定位到 Codex CLI 0.146.0 对空 thread/compact/start 探测返回 RPC -32600 Invalid request: missing field threadId；原实现仅将 -32602 识别为 supported，导致支持 Compact 的 CLI 被误判为 capability error。已用失败测试复现，并最小兼容 -32600 且消息明确包含 missing field 与 threadId 的返回；其他 -32600 保持错误透传。
+
+- 2026-08-01T20:42:56.406Z 修正实施计划历史勾选：Task 1-5 已有对应实现、验证与提交记录，现与 Task 6-8 一致标记完成；Task 9 仅保留桌面手工验收、长历史实际滚动观察、Trellis complete 和最终验收提交为未完成。
+- 2026-08-01T20:41:17.280Z Task 9 自动验收已完成：实现提交为 c956fef、d705ebd、01b48b6；协议按 thread/compact/start + contextCompaction item + terminal turn 落地，deprecated thread/compacted 仅作兼容。定向前端 89/89、全量 TypeScript 704/704、Codex Rust 40/40、agent_run 71/71、Rust 全量 284 个已执行用例通过。尚未完成真实桌面 Compact、失败恢复、重启中断、跨 thread 与长历史滚动验收。
+
+- 2026-08-01T20:40:09.582Z 桌面 Computer Use 已定位唯一 CodeM 进程窗口，但两次窗口状态抓取都因 GetCursorPos 拒绝访问失败，按技能恢复规则停止重试；未据此声称桌面视觉验收完成。真实 Compact、失败重试/跳过、重启中断和跨 thread 流程仍待用户手工验收。
 - 2026-08-01T20:26:31.350Z 完成 Task 8：新增 Codex thread/read(includeTurns=true) 历史确认、SQLite system compact round-trip、专用 compact/reconcile 只读路由，以及 historyLoaded 后每 operationId 单次原位恢复；App.tsx 仅透传 active ThreadDetail，codex-compact 纯函数保证不新增卡片、不自动重放 thread/compact/start。
 
 - 2026-08-02：Task 8 补充 `src/lib/conversation.ts` 范围。原因是现有 `normalizeTurnsForPersist` 会在每次历史保存时提前把未终结 Compact 改为 interrupted，导致重启后无原始状态可供只读 reconcile；调整为保存时保留状态，历史加载后再核对。
@@ -242,6 +250,30 @@ Out of scope:
 
 ## Verification Results
 
+- 2026-08-01T21:18:43.695Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check + npm run build + git diff --check`: PASS：Rust 格式、TypeScript/Vite 生产构建和 whitespace 门禁全部通过；仅有既有动态导入与 chunk size 提示。
+- 2026-08-01T21:18:43.651Z `cargo test --manifest-path src-tauri/Cargo.toml`: PASS：286 个已执行用例通过；1 个需认证 Grok CLI 的既有 real smoke ignored。
+
+- 2026-08-01T21:18:43.631Z `$testFiles = @(rg --files src | Where-Object { $_ -match '\.test\.tsx?$' }); node --import tsx --test $testFiles`: PASS：112 个测试文件，705/705，0 skipped。
+- 2026-08-01T21:11:25.237Z `Playwright desktop real Compact acceptance`: PASS：Codex CLI 0.146.0 capability=supported；/compact 与上下文用量按钮均完成原生压缩；sessionId 保持 019fbf14-ac61-74f1-a974-90d5eda5afa2；真实顺序 FIRST turn -> waiting/running/completed Compact -> SECOND queued turn；另一 Codex thread 状态隔离；桌面进程重启后 3 张完成卡片与消息顺序恢复；控制台 0 error。
+
+- 2026-08-01T20:58:24.978Z `cargo test --manifest-path src-tauri/Cargo.toml compact_probe -- --nocapture`: PASS：5/5；覆盖 -32602 supported、Codex CLI 0.146.0 的 -32600 missing threadId supported、-32601 unsupported，以及其他 -32600/-32603 错误透传。
+- 2026-08-01T20:41:33.204Z `git diff --check`: PASS：exit code 0；仅提示 Windows 工作区后续会转换 LF 为 CRLF，无 whitespace error
+
+- 2026-08-01T20:40:08.891Z `Playwright Web smoke http://127.0.0.1:5173`: PASS：标题 CodeM、root 非空、无 Vite overlay、无 console error；帮助菜单可打开并关闭；截图保存在系统临时目录
+- 2026-08-01T20:40:08.192Z `Invoke-RestMethod http://127.0.0.1:3001/api/health`: PASS：available=true；CodeM PID 34428、Vite PID 51908 仍在运行
+
+- 2026-08-01T20:40:07.483Z `npm run build`: PASS：Vite production build 完成；仅有既有动态导入和 chunk size 提示
+- 2026-08-01T20:40:06.775Z `npm run typecheck`: PASS：tsc -b exit code 0
+
+- 2026-08-01T20:40:06.072Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check`: PASS：exit code 0，无格式差异
+- 2026-08-01T20:40:05.381Z `cargo test --manifest-path src-tauri/Cargo.toml`: PASS：284 个已执行用例通过；1 个需已认证 Grok CLI 的既有 real smoke ignored
+
+- 2026-08-01T20:40:04.680Z `cargo test --manifest-path src-tauri/Cargo.toml agent_run`: PASS：71/71
+- 2026-08-01T20:40:03.988Z `cargo test --manifest-path src-tauri/Cargo.toml codex`: PASS：40/40
+
+- 2026-08-01T20:40:03.267Z `all TypeScript tests`: PASS：112 个测试文件，704/704，0 skipped
+- 2026-08-01T20:40:02.588Z `node --import tsx --test src/lib/codex-compact.test.ts src/lib/queued-prompts.test.ts src/lib/codex-compact-ui.test.ts src/lib/claude-slash-system-commands.test.ts src/lib/slash-command-filter.test.ts src/lib/conversation.test.ts`: PASS：89/89；包含 200 turns Compact 生命周期测试，running/completed 均只替换目标 turn，其他 199 个引用保持不变
+
 - 2026-08-01T20:26:34.756Z `npm run typecheck + cargo fmt --manifest-path src-tauri/Cargo.toml --check + git diff --check`: PASS：TypeScript 无错误，Rust 格式与 diff whitespace 门禁通过。
 - 2026-08-01T20:26:34.079Z `node --import tsx --test src/lib/codex-compact.test.ts src/lib/conversation.test.ts`: PASS：40 个 Compact 恢复与 conversation 历史用例，0 失败。
 
@@ -273,6 +305,7 @@ Out of scope:
 - 2026-08-01T18:48:38.552Z `cargo test --manifest-path src-tauri/Cargo.toml compact_ -- --nocapture`: 通过：9 个 compact probe/lifecycle/automatic 用例，0 失败；仅有既有 dead-code 与 Windows linker warnings。
 
 ## Completion Summary
+- 2026-08-01T21:18:56.656Z 已完成 Codex 原生 thread/compact/start：兼容 Codex CLI 0.146.0 的严格能力探测，双入口、actor 串行、结构化卡片、失败重试/跳过、automatic event、历史 round-trip、重启只读核对和 200-turn 性能验收均通过；全量 TypeScript 705/705、Rust 286 个已执行用例通过。
 
 ## Follow-ups
 

@@ -360,6 +360,12 @@ where
             Err(CodexAppServerError::Rpc { code: -32602, .. }) => {
                 Ok(CodexCompactCapability::Supported)
             }
+            Err(CodexAppServerError::Rpc {
+                code: -32600,
+                message,
+            }) if message.contains("missing field") && message.contains("threadId") => {
+                Ok(CodexCompactCapability::Supported)
+            }
             Err(CodexAppServerError::Rpc { code: -32601, .. }) => {
                 Ok(CodexCompactCapability::Unsupported)
             }
@@ -2527,6 +2533,53 @@ mod tests {
             client.await.expect("probe task").expect("probe result"),
             CodexCompactCapability::Supported,
         );
+    }
+
+    #[tokio::test]
+    async fn compact_probe_maps_invalid_request_missing_thread_id_to_supported() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client = tokio::spawn(async move { connection.probe_compact_capability().await });
+
+        let request = read_wire(&mut lines).await;
+        assert_eq!(request["method"], "thread/compact/start");
+        assert_eq!(request["params"], json!({}));
+        write_wire(
+            &mut writer,
+            json!({
+                "id": request["id"],
+                "error": {
+                    "code": -32600,
+                    "message": "Invalid request: missing field `threadId`"
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            client.await.expect("probe task").expect("probe result"),
+            CodexCompactCapability::Supported,
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_probe_preserves_other_invalid_request_errors() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client = tokio::spawn(async move { connection.probe_compact_capability().await });
+
+        let request = read_wire(&mut lines).await;
+        write_wire(
+            &mut writer,
+            json!({
+                "id": request["id"],
+                "error": { "code": -32600, "message": "Invalid request envelope" }
+            }),
+        )
+        .await;
+
+        assert!(matches!(
+            client.await.expect("probe task"),
+            Err(CodexAppServerError::Rpc { code: -32600, .. })
+        ));
     }
 
     #[tokio::test]

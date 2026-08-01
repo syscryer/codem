@@ -43,7 +43,7 @@ export function buildComposerContextUsage(input: {
     resolveLatestRuntimeContextWindow(input.turns) ??
     resolveClaudeContextWindow(input.model);
 
-  if (input.agent !== 'claude') {
+  if (input.agent !== 'claude' && input.agent !== 'codex') {
     return createContextUsageResult({
       visible: false,
       totalTokens,

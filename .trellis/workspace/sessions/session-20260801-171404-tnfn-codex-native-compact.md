@@ -74,4 +74,11 @@
 - 2026-08-01T18:52:25.489Z `cargo test --manifest-path src-tauri/Cargo.toml context_compaction_event_uses_stable_camel_case_contract`: 通过：1 个 compact contract 序列化用例，0 失败。
 - 2026-08-01T18:48:38.552Z `cargo test --manifest-path src-tauri/Cargo.toml compact_ -- --nocapture`: 通过：9 个 compact probe/lifecycle/automatic 用例，0 失败；仅有既有 dead-code 与 Windows linker warnings。
 
+- 2026-08-01T21:18:43.695Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check + npm run build + git diff --check`: PASS：Rust 格式、TypeScript/Vite 生产构建和 whitespace 门禁全部通过；仅有既有动态导入与 chunk size 提示。
+- 2026-08-01T21:18:43.651Z `cargo test --manifest-path src-tauri/Cargo.toml`: PASS：286 个已执行用例通过；1 个需认证 Grok CLI 的既有 real smoke ignored。
+
+- 2026-08-01T21:18:43.631Z `$testFiles = @(rg --files src | Where-Object { $_ -match '\.test\.tsx?$' }); node --import tsx --test $testFiles`: PASS：112 个测试文件，705/705，0 skipped。
+
 ## Completed
+
+- 2026-08-01T21:18:56.656Z 已完成 Codex 原生 thread/compact/start：兼容 Codex CLI 0.146.0 的严格能力探测，双入口、actor 串行、结构化卡片、失败重试/跳过、automatic event、历史 round-trip、重启只读核对和 200-turn 性能验收均通过；全量 TypeScript 705/705、Rust 286 个已执行用例通过。

@@ -63,7 +63,7 @@ export type CompactResolution = 'skipped';
 - Modify: `src-tauri/src/codex_app_server.rs`
 - Test: `src-tauri/src/codex_app_server.rs` 内 `#[cfg(test)]` 模块
 
-- [ ] **Step 1: 写 capability probe 的失败测试**
+- [x] **Step 1: 写 capability probe 的失败测试**
 
 在现有 `mock_connection()` 测试设施旁新增三个 JSONL 测试，固定错误码判定：
 
@@ -118,13 +118,13 @@ async fn compact_probe_preserves_unexpected_rpc_errors() {
 }
 ```
 
-- [ ] **Step 2: 运行 probe 测试并确认失败**
+- [x] **Step 2: 运行 probe 测试并确认失败**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml compact_probe -- --nocapture`
 
 Expected: FAIL，编译器报告 `CodexCompactCapability` 或 `probe_compact_capability` 尚未定义。
 
-- [ ] **Step 3: 实现无副作用 probe**
+- [x] **Step 3: 实现无副作用 probe**
 
 在 `CodexAppServerError` 附近新增：
 
@@ -160,7 +160,7 @@ pub async fn probe_compact_capability(
 }
 ```
 
-- [ ] **Step 4: 写 lifecycle 聚合的失败测试**
+- [x] **Step 4: 写 lifecycle 聚合的失败测试**
 
 新增测试 `compact_waits_for_context_item_and_successful_terminal_turn`：请求空响应后先断言 task 未完成，再依次发送 `turn/started`、`item/started(contextCompaction)`、`item/completed(contextCompaction)` 和 `turn/completed(completed)`，最终断言 outcome 同时包含 `turn-compact-1` 与 `compact-item-1`。再新增 `compact_rejects_completed_turn_without_context_item`、`compact_reports_failed_terminal_turn` 和 `compact_deduplicates_deprecated_thread_compacted`。
 
@@ -181,13 +181,13 @@ assert!(observed.iter().any(|event| matches!(
 )));
 ```
 
-- [ ] **Step 5: 运行 lifecycle 测试并确认失败**
+- [x] **Step 5: 运行 lifecycle 测试并确认失败**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml compact_ -- --nocapture`
 
 Expected: FAIL，缺少 `CodexCompactionEvent`、`CodexCompactionOutcome` 和 `start_compaction`。
 
-- [ ] **Step 6: 实现 compact request 和生命周期聚合**
+- [x] **Step 6: 实现 compact request 和生命周期聚合**
 
 新增有界公开类型：
 
@@ -224,13 +224,13 @@ completed `contextCompaction` item 与 status=`completed` 的 terminal turn。RP
 `turn/completed(status=completed)` 到达后才发出 `CodexRuntimeEvent::CompactionCompleted`。不要在 item completed
 时提前宣告完成，也不改变普通 turn 的 terminal 判定；Task 6 的 mapper会把这条路径标记为 automatic。
 
-- [ ] **Step 7: 运行 Codex targeted tests**
+- [x] **Step 7: 运行 Codex targeted tests**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml compact_ -- --nocapture`
 
 Expected: PASS，至少包含 7 个 compact probe/lifecycle 用例。
 
-- [ ] **Step 8: 提交协议层**
+- [x] **Step 8: 提交协议层**
 
 ```powershell
 git add -- src-tauri/src/codex_app_server.rs
@@ -244,7 +244,7 @@ git commit -m "feat: add Codex compact protocol lifecycle"
 - Modify: `src/types.ts`
 - Test: `src-tauri/src/agent_runtime.rs` 内测试模块
 
-- [ ] **Step 1: 写 Rust 序列化失败测试**
+- [x] **Step 1: 写 Rust 序列化失败测试**
 
 ```rust
 #[test]
@@ -275,13 +275,13 @@ fn context_compaction_event_uses_stable_camel_case_contract() {
 }
 ```
 
-- [ ] **Step 2: 运行序列化测试并确认失败**
+- [x] **Step 2: 运行序列化测试并确认失败**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml context_compaction_event_uses_stable_camel_case_contract`
 
 Expected: FAIL，缺少 compact event 类型。
 
-- [ ] **Step 3: 增加 Rust contract**
+- [x] **Step 3: 增加 Rust contract**
 
 ```rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -318,7 +318,7 @@ pub struct AgentCompactCapabilitySummary {
 
 向 `AgentRunEvent` 加入固定字段的 `ContextCompaction` 变体；不要把它加入 `is_terminal_event`，manual compact 流使用随后到达的 `Done/Error` 终结。
 
-- [ ] **Step 4: 增加完全同构的 TypeScript contract**
+- [x] **Step 4: 增加完全同构的 TypeScript contract**
 
 ```ts
 export type CompactOperationMetadata = {
@@ -344,7 +344,7 @@ export type CodexCompactCapability = {
 
 `AgentRunEvent` 增加 `context-compaction`；`SystemCommandItem` 增加 `compact?: CompactOperationMetadata`；`ConversationTurn` 增加 `kind?: 'message' | 'system'`；`SystemCommandItem.state` 扩展为 `'waiting' | 'running' | 'done' | 'error'`。旧 JSON 缺少这些字段时仍可读取。
 
-- [ ] **Step 5: 验证 Rust 与 TypeScript contract**
+- [x] **Step 5: 验证 Rust 与 TypeScript contract**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml context_compaction_event_uses_stable_camel_case_contract`
 
@@ -354,7 +354,7 @@ Run: `npm run typecheck`
 
 Expected: PASS；现有 event switch 通过 default/terminal helper 保持兼容。
 
-- [ ] **Step 6: 提交跨层 contract**
+- [x] **Step 6: 提交跨层 contract**
 
 ```powershell
 git add -- src-tauri/src/agent_runtime.rs src/types.ts
@@ -368,7 +368,7 @@ git commit -m "feat: define compact runtime contract"
 - Modify: `src-tauri/src/codex_app_server.rs`
 - Test: `src-tauri/src/agent_run.rs` 内测试模块
 
-- [ ] **Step 1: 写 actor 调度失败测试**
+- [x] **Step 1: 写 actor 调度失败测试**
 
 新增以下独立行为测试：
 
@@ -445,13 +445,13 @@ fn backend_rejects_compact_while_thread_operation_is_active() {
 
 再覆盖 provider 不是 Codex、sessionId 缺失、runtime resume 后返回不同 sessionId、workspace/config/channel 不一致四类拒绝路径。
 
-- [ ] **Step 2: 运行 actor tests 并确认失败**
+- [x] **Step 2: 运行 actor tests 并确认失败**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml compact -- --nocapture`
 
 Expected: FAIL，`AgentRuntimeCommand::Compact` 与 `dispatch_compact` 不存在。
 
-- [ ] **Step 3: 把 actor 首个工作项泛化为 command**
+- [x] **Step 3: 把 actor 首个工作项泛化为 command**
 
 将 `run_agent_runtime_actor` 的 `first_run: AgentRuntimeRun` 参数调整为
 `first_command: AgentRuntimeCommand`，并使用同一个串行循环：
@@ -482,7 +482,7 @@ started/completed 时分别发送 `ContextCompaction(status=running/completed)`�
 failed terminal turn，属于 non-fatal，runtime 可回到 Ready；超时、stdout 关闭、协议错位和子进程退出属于
 fatal，必须关闭连接并把 runtime 标记 Failed，避免下一条消息读取到过期 compact 通知。
 
-- [ ] **Step 4: 提取一致的 Codex runtime config 解析**
+- [x] **Step 4: 提取一致的 Codex runtime config 解析**
 
 把 run handler 中 channel/runtime 解析提取成仅返回非敏感 config 的 helper，普通 run 与 compact 共用。
 compact handler 使用以下完整解析边界：
@@ -534,7 +534,7 @@ fn resolve_compact_runtime_config(
 
 helper 不把 environment、token 或 config args写入事件和错误正文。
 
-- [ ] **Step 5: 新增专用 compact 路由**
+- [x] **Step 5: 新增专用 compact 路由**
 
 路由固定为：
 
@@ -564,7 +564,7 @@ struct StartAgentCompactRequest {
 
 handler 校验 path thread ID、provider=`openai-codex`、非空 operation/session、工作目录归属和 config；创建独立 `AgentRunRecord` 后交给 `dispatch_compact`，返回现有 `build_event_stream`。同一 thread 的 active turn/compact 均返回 HTTP 409，不依赖前端防重。
 
-- [ ] **Step 6: 运行后端 targeted tests**
+- [x] **Step 6: 运行后端 targeted tests**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml agent_run::tests::hot_codex_runtime_dispatches_compact_over_existing_actor -- --exact`
 
@@ -574,7 +574,7 @@ Run: `cargo test --manifest-path src-tauri/Cargo.toml agent_run::tests::backend_
 
 Expected: PASS。
 
-- [ ] **Step 7: 提交 actor 与 API**
+- [x] **Step 7: 提交 actor 与 API**
 
 ```powershell
 git add -- src-tauri/src/agent_run.rs src-tauri/src/codex_app_server.rs
@@ -589,7 +589,7 @@ git commit -m "feat: serialize compact in agent runtime"
 - Modify: `src/lib/conversation.ts`
 - Test: `src/lib/conversation.test.ts`
 
-- [ ] **Step 1: 写纯函数失败测试**
+- [x] **Step 1: 写纯函数失败测试**
 
 覆盖创建、原位更新、重复 completed 去重、错误裁剪、不同 thread 的 operation ID 不串写、旧数据修复：
 
@@ -619,13 +619,13 @@ test('applyCompactEvent updates the existing card and preserves sibling turn ide
 });
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: `node --import tsx --test src/lib/codex-compact.test.ts`
 
 Expected: FAIL，模块尚不存在。
 
-- [ ] **Step 3: 实现 compact 纯函数**
+- [x] **Step 3: 实现 compact 纯函数**
 
 导出以下固定 API：
 
@@ -706,7 +706,7 @@ function completedEvent(operationId: string): ContextCompactionEvent {
 
 `applyCompactEvent` 只复制命中的 turn 与 item；provider item/turn ID 相同的重复事件返回原数组。错误正文先删除疑似 token/环境赋值，再限制为 2,000 字符。manual event 必须按 operation ID 关联；没有活动 manual operation 时才创建 automatic turn，禁止按时间或 token 阈值猜来源。
 
-- [ ] **Step 4: 增加旧 history 修复**
+- [x] **Step 4: 增加旧 history 修复**
 
 在 `repairConversationTurn` 中只做兼容推导，并把 `kind` 纳入 early-return 与最终返回对象：
 
@@ -738,13 +738,13 @@ return Object.assign({}, turn, {
 
 `normalizeTurnsForPersist` 对 waiting/preparing/running compact 不调用普通 `closeTurnWithoutTerminalEvent`，而是转为 `interrupted`，确保应用关闭时保存的事实不会伪装成 done。
 
-- [ ] **Step 5: 运行纯函数与历史测试**
+- [x] **Step 5: 运行纯函数与历史测试**
 
 Run: `node --import tsx --test src/lib/codex-compact.test.ts src/lib/conversation.test.ts`
 
 Expected: PASS。
 
-- [ ] **Step 6: 提交前端 compact domain**
+- [x] **Step 6: 提交前端 compact domain**
 
 ```powershell
 git add -- src/lib/codex-compact.ts src/lib/codex-compact.test.ts src/lib/conversation.ts src/lib/conversation.test.ts
@@ -758,7 +758,7 @@ git commit -m "feat: add compact timeline state model"
 - Modify: `src/lib/queued-prompts.test.ts`
 - Modify: `src/hooks/useAgentRun.ts`
 
-- [ ] **Step 1: 写队列优先级失败测试**
+- [x] **Step 1: 写队列优先级失败测试**
 
 ```ts
 test('compact barrier runs before a ready queued prompt', () => {
@@ -780,13 +780,13 @@ test('failed compact keeps the queue paused until skipped or retried', () => {
 
 再增加 `preparing/running/interrupted`、空队列、guide-unknown 与 compact 同时存在的用例；compact 屏障优先于 ready/preparing/guiding 状态。
 
-- [ ] **Step 2: 运行队列测试并确认失败**
+- [x] **Step 2: 运行队列测试并确认失败**
 
 Run: `node --import tsx --test src/lib/queued-prompts.test.ts`
 
 Expected: FAIL，函数尚不接受 compact status，返回联合类型缺少 `blocked-by-compact`。
 
-- [ ] **Step 3: 实现纯队列判定**
+- [x] **Step 3: 实现纯队列判定**
 
 ```ts
 export function getQueuedPromptContinuationState(
@@ -809,7 +809,7 @@ export function getQueuedPromptContinuationState(
 
 completed 卡片由 coordinator 在释放前从 active barrier map 移除，因此调用时也允许传 `undefined`；failed/interrupted 只有 retry 或 skip 才能解除。
 
-- [ ] **Step 4: 在 hook 建立按 thread 隔离的控制屏障**
+- [x] **Step 4: 在 hook 建立按 thread 隔离的控制屏障**
 
 新增 refs：
 
@@ -830,7 +830,7 @@ if (event.type === 'done' && !context.cancelRequested) {
 
 `maybeStartQueuedPrompt` 首先读取该 thread compact status；返回 `blocked-by-compact` 时保存 continuation 而不 shift queue。compact completed 删除 barrier 并调用 `maybeStartQueuedPrompt`；failed/interrupted 保留 barrier；skip 把卡片 resolution 写为 skipped、删除 barrier、再继续原 queue。retry 复用 operation/card，attempt+1，不创建第二张卡。
 
-- [ ] **Step 5: 运行队列与 typecheck**
+- [x] **Step 5: 运行队列与 typecheck**
 
 Run: `node --import tsx --test src/lib/queued-prompts.test.ts src/lib/codex-compact.test.ts`
 
@@ -840,7 +840,7 @@ Run: `npm run typecheck`
 
 Expected: PASS。
 
-- [ ] **Step 6: 提交队列屏障**
+- [x] **Step 6: 提交队列屏障**
 
 ```powershell
 git add -- src/lib/queued-prompts.ts src/lib/queued-prompts.test.ts src/hooks/useAgentRun.ts
@@ -1218,7 +1218,7 @@ Run: `node --import tsx --test src/lib/codex-compact.test.ts src/lib/conversatio
 
 Expected: PASS，未完成 operation 只会被标记 interrupted，不会生成第二张卡或自动重放。
 
-- [ ] **Step 8: 提交恢复链路**
+- [x] **Step 8: 提交恢复链路**
 
 ```powershell
 git add -- src-tauri/src/codex_app_server.rs src-tauri/src/agent_run.rs src-tauri/src/backend.rs src/hooks/useAgentRun.ts src/lib/conversation.test.ts
@@ -1232,13 +1232,13 @@ git commit -m "feat: reconcile compact history after restart"
 - Modify: `.trellis/tasks/codex-native-compact-implementation-plan.md`（只勾选已完成步骤与记录实际偏差）
 - Modify: `.trellis/workspace/sessions/session-20260801-171404-tnfn-codex-native-compact.md`（由 Trellis CLI 写入）
 
-- [ ] **Step 1: 运行 frontend targeted tests**
+- [x] **Step 1: 运行 frontend targeted tests**
 
 Run: `node --import tsx --test src/lib/codex-compact.test.ts src/lib/queued-prompts.test.ts src/lib/codex-compact-ui.test.ts src/lib/claude-slash-system-commands.test.ts src/lib/slash-command-filter.test.ts src/lib/conversation.test.ts`
 
 Expected: PASS，无失败、跳过或未处理 rejection。
 
-- [ ] **Step 2: 运行全部 TypeScript tests**
+- [x] **Step 2: 运行全部 TypeScript tests**
 
 Run:
 
@@ -1249,7 +1249,7 @@ node --import tsx --test $testFiles
 
 Expected: PASS；记录实际文件数和 test 数到 Trellis verify。
 
-- [ ] **Step 3: 运行 backend targeted 与全量 tests**
+- [x] **Step 3: 运行 backend targeted 与全量 tests**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml codex`
 
@@ -1263,7 +1263,7 @@ Run: `cargo test --manifest-path src-tauri/Cargo.toml`
 
 Expected: PASS。
 
-- [ ] **Step 4: 运行格式、类型、构建和 diff 门禁**
+- [x] **Step 4: 运行格式、类型、构建和 diff 门禁**
 
 Run: `cargo fmt --manifest-path src-tauri/Cargo.toml --check`
 
@@ -1281,7 +1281,7 @@ Run: `git diff --check`
 
 Expected: 无输出，exit code 0。
 
-- [ ] **Step 5: 重启桌面开发服务**
+- [x] **Step 5: 重启桌面开发服务**
 
 停止本任务启动的旧 CodeM desktop dev 进程，再运行：
 
@@ -1293,7 +1293,7 @@ Run: `Invoke-RestMethod http://127.0.0.1:3001/api/health`
 
 Expected: 返回健康状态；若后端自动选择其他端口，以 desktop-dev 输出端口为准。
 
-- [ ] **Step 6: 执行桌面手工验收**
+- [x] **Step 6: 执行桌面手工验收**
 
 按固定顺序验证并截图/记录结果：
 
@@ -1308,11 +1308,16 @@ Expected: 返回健康状态；若后端自动选择其他端口，以 desktop-d
 9. 切换两个 Codex thread，确认 compact、队列、卡片和操作不串线。
 10. 检查 debug/raw/history，不包含 compact 正文、原始协议包、环境变量或凭证。
 
-- [ ] **Step 7: 检查长历史更新性能**
+- [x] **Step 7: 检查长历史更新性能**
 
 在包含至少 200 个 turns 的本地测试历史中触发同一 compact 卡片的 running/completed 更新；React DevTools 或浏览器 Performance 中确认只替换目标 turn，未出现全部 ConversationTurn 卸载重建，滚动位置和“回到底部”按钮保持正确。
 
-- [ ] **Step 8: 写入 Trellis 验证记录**
+自动化部分由 `src/lib/codex-compact.test.ts` 构造 200 个 turns，证明 running/completed
+两次更新均只替换目标 turn，其他 199 个引用保持不变。桌面验收另建 200-turn 临时线程，
+确认界面仅挂载末尾 20 个 turn；Compact 完成后仅新增 1 张卡片，滚动仍在底部、未出现
+“回到底部”按钮，控制台无错误。验收后已删除临时线程并恢复原活动线程。
+
+- [x] **Step 8: 写入 Trellis 验证记录**
 
 每个实际执行的命令分别记录，不合并成未经验证的总括：
 
@@ -1323,11 +1328,11 @@ npm run trellis -- verify "cargo fmt --check + npm run typecheck + npm run build
 npm run trellis -- record "桌面手工验收完成：双入口、严格顺序、失败恢复、重启核对、跨 thread 隔离和日志脱敏均符合任务验收标准"
 ```
 
-- [ ] **Step 9: 对照主任务逐项勾选 Acceptance Criteria**
+- [x] **Step 9: 对照主任务逐项勾选 Acceptance Criteria**
 
 逐项检查 `.trellis/tasks/codex-native-compact.md` 的 13 条验收标准；没有当前证据的条目保持未勾选并继续修复或验证，不使用“代码已写”等同“已验收”。在 Implementation Record 记录实现 commit、协议偏差和最终验证数字。
 
-- [ ] **Step 10: 完成 Trellis session**
+- [x] **Step 10: 完成 Trellis session**
 
 Run:
 
@@ -1337,7 +1342,7 @@ npm run trellis -- complete --summary "已接入 Codex 原生 thread/compact/sta
 
 Expected: 当前 session 状态被清除，task Completion Summary 和 session record 均写入完成摘要。
 
-- [ ] **Step 11: 提交验收记录**
+- [x] **Step 11: 提交验收记录**
 
 ```powershell
 git add -- .trellis/tasks/codex-native-compact.md .trellis/tasks/codex-native-compact-implementation-plan.md .trellis/workspace/sessions/session-20260801-171404-tnfn-codex-native-compact.md

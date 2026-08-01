@@ -87,6 +87,33 @@ test('applyCompactEvent updates the existing card and preserves sibling turn ide
   assert.equal(readCompactMetadata(after[1])?.providerItemId, 'provider-item-1');
 });
 
+test('compact lifecycle updates only its target in a 200-turn history', () => {
+  const targetIndex = 137;
+  const before = Array.from({ length: 200 }, (_, index) => textTurn(`turn-${index}`));
+  before[targetIndex] = compactTurn('compact-1');
+
+  const running = applyCompactEvent(before, {
+    ...completedEvent('compact-1'),
+    status: 'running',
+  });
+  const completed = applyCompactEvent(running, completedEvent('compact-1'));
+
+  assert.notEqual(running, before);
+  assert.notEqual(completed, running);
+  assert.notEqual(running[targetIndex], before[targetIndex]);
+  assert.notEqual(completed[targetIndex], running[targetIndex]);
+  assert.equal(readCompactMetadata(running[targetIndex])?.status, 'running');
+  assert.equal(readCompactMetadata(completed[targetIndex])?.status, 'completed');
+
+  for (let index = 0; index < before.length; index += 1) {
+    if (index === targetIndex) {
+      continue;
+    }
+    assert.equal(running[index], before[index]);
+    assert.equal(completed[index], running[index]);
+  }
+});
+
 test('duplicate compact completion returns the original turn array', () => {
   const event = completedEvent('compact-1');
   const completed = applyCompactEvent([compactTurn('compact-1')], event);
