@@ -3308,6 +3308,8 @@ impl CodexEventMapper {
                 }]
             }
             CodexRuntimeEvent::InteractionResolved { .. } => self.set_phase("thinking", "思考中"),
+            CodexRuntimeEvent::CompactionStarted { .. }
+            | CodexRuntimeEvent::CompactionCompleted { .. } => Vec::new(),
         }
     }
 

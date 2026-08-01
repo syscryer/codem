@@ -21,6 +21,7 @@ use tokio::{
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const TURN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const COMPACT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_EVENT_TEXT_BYTES: usize = 256 * 1024;
 const MAX_JSON_STRING_BYTES: usize = 8 * 1024;
@@ -173,6 +174,14 @@ pub enum CodexRuntimeEvent {
     InteractionResolved {
         request_id: String,
     },
+    CompactionStarted {
+        provider_turn_id: Option<String>,
+        provider_item_id: Option<String>,
+    },
+    CompactionCompleted {
+        provider_turn_id: String,
+        provider_item_id: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -182,6 +191,31 @@ pub struct CodexTurnOutcome {
     pub text_truncated: bool,
     pub cancel_sent: bool,
     pub usage: AgentUsageSnapshot,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodexCompactCapability {
+    Supported,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CodexCompactionEvent {
+    Started {
+        provider_turn_id: Option<String>,
+        provider_item_id: Option<String>,
+    },
+    Completed {
+        provider_turn_id: String,
+        provider_item_id: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexCompactionOutcome {
+    pub provider_thread_id: String,
+    pub provider_turn_id: String,
+    pub provider_item_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -237,6 +271,14 @@ enum CodexTurnTerminal {
     Completed,
     Interrupted,
     Failed(String),
+}
+
+#[derive(Default)]
+struct RuntimeCompactionState {
+    provider_turn_id: Option<String>,
+    provider_item_id: Option<String>,
+    item_completed: bool,
+    started_emitted: bool,
 }
 
 pub struct CodexConnection<R, W> {
@@ -299,6 +341,26 @@ where
             auth_mode,
             requires_openai_auth,
         })
+    }
+
+    pub async fn probe_compact_capability(
+        &mut self,
+    ) -> Result<CodexCompactCapability, CodexAppServerError> {
+        match self
+            .request("thread/compact/start", json!({}), REQUEST_TIMEOUT)
+            .await
+        {
+            Err(CodexAppServerError::Rpc { code: -32602, .. }) => {
+                Ok(CodexCompactCapability::Supported)
+            }
+            Err(CodexAppServerError::Rpc { code: -32601, .. }) => {
+                Ok(CodexCompactCapability::Unsupported)
+            }
+            Ok(_) => Err(CodexAppServerError::Protocol(
+                "thread/compact/start 缺少 threadId 时意外成功".to_string(),
+            )),
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn list_models(&mut self) -> Result<Vec<CodexModelSummary>, CodexAppServerError> {
@@ -414,6 +476,185 @@ where
         .await
     }
 
+    pub async fn start_compaction<F>(
+        &mut self,
+        thread_id: &str,
+        mut on_event: F,
+    ) -> Result<CodexCompactionOutcome, CodexAppServerError>
+    where
+        F: FnMut(CodexCompactionEvent),
+    {
+        let request_id = self
+            .send_request(
+                "thread/compact/start",
+                json!({
+                    "threadId": thread_id,
+                }),
+            )
+            .await?;
+        let deadline = sleep(COMPACT_TIMEOUT);
+        tokio::pin!(deadline);
+        let mut accepted = false;
+        let mut provider_turn_id = None::<String>;
+        let mut provider_item_id = None::<String>;
+        let mut new_item_observed = false;
+        let mut item_completed = false;
+        let mut deprecated_completed = false;
+        let mut terminal_completed = false;
+
+        loop {
+            tokio::select! {
+                _ = &mut deadline => return Err(CodexAppServerError::Timeout("thread/compact/start")),
+                message = self.read_message() => {
+                    match message? {
+                        CodexMessage::Response { id, result, error } if id == json!(request_id) => {
+                            finish_response(result, error)?;
+                            accepted = true;
+                        }
+                        CodexMessage::Request { id, .. } => {
+                            self.respond_error(
+                                id,
+                                -32601,
+                                "CodeM 压缩阶段不支持这个客户端请求",
+                            ).await?;
+                        }
+                        CodexMessage::Notification { method, params } => {
+                            if params
+                                .get("threadId")
+                                .and_then(Value::as_str)
+                                .is_some_and(|value| value != thread_id)
+                            {
+                                continue;
+                            }
+                            match method.as_str() {
+                                "turn/started" => {
+                                    provider_turn_id = params
+                                        .get("turn")
+                                        .and_then(|turn| turn.get("id"))
+                                        .and_then(Value::as_str)
+                                        .map(ToString::to_string)
+                                        .or(provider_turn_id);
+                                }
+                                "item/started" => {
+                                    let item = params.get("item");
+                                    if item
+                                        .and_then(|item| item.get("type"))
+                                        .and_then(Value::as_str)
+                                        == Some("contextCompaction")
+                                    {
+                                        new_item_observed = true;
+                                        provider_turn_id = params
+                                            .get("turnId")
+                                            .and_then(Value::as_str)
+                                            .map(ToString::to_string)
+                                            .or(provider_turn_id);
+                                        provider_item_id = item
+                                            .and_then(|item| item.get("id"))
+                                            .and_then(Value::as_str)
+                                            .map(ToString::to_string)
+                                            .or(provider_item_id);
+                                        on_event(CodexCompactionEvent::Started {
+                                            provider_turn_id: provider_turn_id.clone(),
+                                            provider_item_id: provider_item_id.clone(),
+                                        });
+                                    }
+                                }
+                                "item/completed" => {
+                                    let item = params.get("item");
+                                    if item
+                                        .and_then(|item| item.get("type"))
+                                        .and_then(Value::as_str)
+                                        == Some("contextCompaction")
+                                    {
+                                        new_item_observed = true;
+                                        provider_turn_id = params
+                                            .get("turnId")
+                                            .and_then(Value::as_str)
+                                            .map(ToString::to_string)
+                                            .or(provider_turn_id);
+                                        provider_item_id = item
+                                            .and_then(|item| item.get("id"))
+                                            .and_then(Value::as_str)
+                                            .map(ToString::to_string)
+                                            .or(provider_item_id);
+                                        item_completed = true;
+                                    }
+                                }
+                                "thread/compacted" => {
+                                    provider_turn_id = params
+                                        .get("turnId")
+                                        .and_then(Value::as_str)
+                                        .map(ToString::to_string)
+                                        .or(provider_turn_id);
+                                    if !new_item_observed {
+                                        deprecated_completed = true;
+                                    }
+                                }
+                                "turn/completed" => {
+                                    let turn = params.get("turn").ok_or_else(|| {
+                                        CodexAppServerError::Protocol(
+                                            "compact turn/completed 缺少 turn".to_string(),
+                                        )
+                                    })?;
+                                    provider_turn_id = turn
+                                        .get("id")
+                                        .and_then(Value::as_str)
+                                        .map(ToString::to_string)
+                                        .or(provider_turn_id);
+                                    match turn.get("status").and_then(Value::as_str) {
+                                        Some("completed") => terminal_completed = true,
+                                        Some("failed") => {
+                                            let message = turn
+                                                .get("error")
+                                                .and_then(|error| error.get("message"))
+                                                .and_then(Value::as_str)
+                                                .unwrap_or("Codex 上下文压缩失败");
+                                            return Err(CodexAppServerError::Execution(
+                                                bounded_string(message, MAX_JSON_STRING_BYTES),
+                                            ));
+                                        }
+                                        Some("interrupted") => {
+                                            return Err(CodexAppServerError::Execution(
+                                                "Codex 上下文压缩已中断".to_string(),
+                                            ));
+                                        }
+                                        Some(status) => {
+                                            return Err(CodexAppServerError::Protocol(format!(
+                                                "compact turn/completed status 不受支持：{status}"
+                                            )));
+                                        }
+                                        None => {
+                                            return Err(CodexAppServerError::Protocol(
+                                                "compact turn/completed 缺少 status".to_string(),
+                                            ));
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            if accepted && terminal_completed && (item_completed || deprecated_completed) {
+                let provider_turn_id = provider_turn_id.clone().ok_or_else(|| {
+                    CodexAppServerError::Protocol("Codex 压缩完成但缺少 turn id".to_string())
+                })?;
+                on_event(CodexCompactionEvent::Completed {
+                    provider_turn_id: provider_turn_id.clone(),
+                    provider_item_id: provider_item_id.clone(),
+                });
+                return Ok(CodexCompactionOutcome {
+                    provider_thread_id: thread_id.to_string(),
+                    provider_turn_id,
+                    provider_item_id,
+                });
+            }
+        }
+    }
+
     pub async fn run_turn<F>(
         &mut self,
         thread_id: &str,
@@ -467,6 +708,7 @@ where
         let mut pending_interactions = HashMap::<String, PendingInteraction>::new();
         let mut cancel_sent = false;
         let mut usage = AgentUsageSnapshot::default();
+        let mut compaction = RuntimeCompactionState::default();
         let mut cancel_channel_open = true;
         let mut control_channel_open = true;
         let mut interrupt_request_ids = HashSet::<u64>::new();
@@ -582,6 +824,7 @@ where
                                 &mut file_change_patches,
                                 &mut pending_interactions,
                                 &mut usage,
+                                &mut compaction,
                                 &mut on_event,
                             )?;
                             if terminal.is_none()
@@ -992,6 +1235,12 @@ impl CodexStdioClient {
         self.connection.account_summary().await
     }
 
+    pub async fn probe_compact_capability(
+        &mut self,
+    ) -> Result<CodexCompactCapability, CodexAppServerError> {
+        self.connection.probe_compact_capability().await
+    }
+
     pub async fn list_models(&mut self) -> Result<Vec<CodexModelSummary>, CodexAppServerError> {
         self.connection.list_models().await
     }
@@ -1034,6 +1283,17 @@ impl CodexStdioClient {
                 on_event,
             )
             .await
+    }
+
+    pub async fn start_compaction<F>(
+        &mut self,
+        thread_id: &str,
+        on_event: F,
+    ) -> Result<CodexCompactionOutcome, CodexAppServerError>
+    where
+        F: FnMut(CodexCompactionEvent),
+    {
+        self.connection.start_compaction(thread_id, on_event).await
     }
 
     pub async fn run_turn<F>(
@@ -1105,6 +1365,7 @@ fn process_notification<F>(
     file_change_patches: &mut HashMap<String, Value>,
     pending_interactions: &mut HashMap<String, PendingInteraction>,
     usage: &mut AgentUsageSnapshot,
+    compaction: &mut RuntimeCompactionState,
     on_event: &mut F,
 ) -> Result<Option<CodexTurnTerminal>, CodexAppServerError>
 where
@@ -1152,6 +1413,25 @@ where
         }
         "item/started" => {
             if let Some(item) = params.get("item") {
+                if item.get("type").and_then(Value::as_str) == Some("contextCompaction") {
+                    compaction.provider_turn_id = params
+                        .get("turnId")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                        .or_else(|| compaction.provider_turn_id.clone());
+                    compaction.provider_item_id = item
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                        .or_else(|| compaction.provider_item_id.clone());
+                    if !compaction.started_emitted {
+                        compaction.started_emitted = true;
+                        on_event(CodexRuntimeEvent::CompactionStarted {
+                            provider_turn_id: compaction.provider_turn_id.clone(),
+                            provider_item_id: compaction.provider_item_id.clone(),
+                        });
+                    }
+                }
                 if matches!(
                     item.get("type").and_then(Value::as_str),
                     Some("reasoning" | "plan")
@@ -1179,6 +1459,19 @@ where
         }
         "item/completed" => {
             if let Some(item) = params.get("item") {
+                if item.get("type").and_then(Value::as_str) == Some("contextCompaction") {
+                    compaction.provider_turn_id = params
+                        .get("turnId")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                        .or_else(|| compaction.provider_turn_id.clone());
+                    compaction.provider_item_id = item
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                        .or_else(|| compaction.provider_item_id.clone());
+                    compaction.item_completed = true;
+                }
                 if item.get("type").and_then(Value::as_str) == Some("agentMessage")
                     && collected_text.is_empty()
                 {
@@ -1248,6 +1541,25 @@ where
             let status = turn.get("status").and_then(Value::as_str).ok_or_else(|| {
                 CodexAppServerError::Protocol("turn/completed 缺少 status".to_string())
             })?;
+            let terminal_turn_id = turn
+                .get("id")
+                .and_then(Value::as_str)
+                .or(turn_id.as_deref());
+            if status == "completed"
+                && compaction.item_completed
+                && terminal_turn_id.is_some()
+                && compaction
+                    .provider_turn_id
+                    .as_deref()
+                    .is_none_or(|value| Some(value) == terminal_turn_id)
+            {
+                on_event(CodexRuntimeEvent::CompactionCompleted {
+                    provider_turn_id: terminal_turn_id
+                        .expect("checked terminal turn id")
+                        .to_string(),
+                    provider_item_id: compaction.provider_item_id.clone(),
+                });
+            }
             return Ok(Some(match status {
                 "completed" => CodexTurnTerminal::Completed,
                 "interrupted" => CodexTurnTerminal::Interrupted,
@@ -2105,6 +2417,443 @@ mod tests {
             .await
             .expect("write mock response");
         writer.flush().await.expect("flush mock response");
+    }
+
+    #[tokio::test]
+    async fn compact_probe_maps_invalid_params_to_supported() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client = tokio::spawn(async move { connection.probe_compact_capability().await });
+
+        let request = read_wire(&mut lines).await;
+        assert_eq!(request["method"], "thread/compact/start");
+        assert_eq!(request["params"], json!({}));
+        write_wire(
+            &mut writer,
+            json!({
+                "id": request["id"],
+                "error": { "code": -32602, "message": "missing field threadId" }
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            client.await.expect("probe task").expect("probe result"),
+            CodexCompactCapability::Supported,
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_probe_maps_method_not_found_to_unsupported() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client = tokio::spawn(async move { connection.probe_compact_capability().await });
+
+        let request = read_wire(&mut lines).await;
+        write_wire(
+            &mut writer,
+            json!({
+                "id": request["id"],
+                "error": { "code": -32601, "message": "method not found" }
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            client.await.expect("probe task").expect("probe result"),
+            CodexCompactCapability::Unsupported,
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_probe_preserves_unexpected_rpc_errors() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client = tokio::spawn(async move { connection.probe_compact_capability().await });
+
+        let request = read_wire(&mut lines).await;
+        write_wire(
+            &mut writer,
+            json!({
+                "id": request["id"],
+                "error": { "code": -32603, "message": "internal error" }
+            }),
+        )
+        .await;
+
+        assert!(matches!(
+            client.await.expect("probe task"),
+            Err(CodexAppServerError::Rpc { code: -32603, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn compact_waits_for_context_item_and_successful_terminal_turn() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let mut client = tokio::spawn(async move {
+            connection
+                .start_compaction("thread-1", |event| {
+                    let _ = event_sender.send(event);
+                })
+                .await
+        });
+
+        let request = read_wire(&mut lines).await;
+        assert_eq!(request["method"], "thread/compact/start");
+        assert_eq!(request["params"], json!({ "threadId": "thread-1" }));
+        write_wire(&mut writer, json!({ "id": request["id"], "result": {} })).await;
+
+        assert!(timeout(Duration::from_millis(25), &mut client)
+            .await
+            .is_err());
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "turn/started",
+                "params": { "threadId": "thread-1", "turn": { "id": "turn-compact-1" } }
+            }),
+        )
+        .await;
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "item/started",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-compact-1",
+                    "item": { "id": "compact-item-1", "type": "contextCompaction" }
+                }
+            }),
+        )
+        .await;
+        assert!(matches!(
+            timeout(Duration::from_secs(2), event_receiver.recv())
+                .await
+                .expect("started event timeout")
+                .expect("started event"),
+            CodexCompactionEvent::Started {
+                provider_turn_id: Some(turn_id),
+                provider_item_id: Some(item_id),
+            } if turn_id == "turn-compact-1" && item_id == "compact-item-1"
+        ));
+
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-compact-1",
+                    "item": { "id": "compact-item-1", "type": "contextCompaction" }
+                }
+            }),
+        )
+        .await;
+        assert!(timeout(Duration::from_millis(25), &mut client)
+            .await
+            .is_err());
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turn": { "id": "turn-compact-1", "status": "completed" }
+                }
+            }),
+        )
+        .await;
+
+        let outcome = client
+            .await
+            .expect("compact task")
+            .expect("compact outcome");
+        assert_eq!(outcome.provider_thread_id, "thread-1");
+        assert_eq!(outcome.provider_turn_id, "turn-compact-1");
+        assert_eq!(outcome.provider_item_id.as_deref(), Some("compact-item-1"));
+        assert!(matches!(
+            timeout(Duration::from_secs(2), event_receiver.recv())
+                .await
+                .expect("completed event timeout")
+                .expect("completed event"),
+            CodexCompactionEvent::Completed {
+                provider_turn_id,
+                provider_item_id: Some(provider_item_id),
+            } if provider_turn_id == "turn-compact-1" && provider_item_id == "compact-item-1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn compact_rejects_completed_turn_without_context_item() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let mut client =
+            tokio::spawn(async move { connection.start_compaction("thread-1", |_| {}).await });
+
+        let request = read_wire(&mut lines).await;
+        write_wire(&mut writer, json!({ "id": request["id"], "result": {} })).await;
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turn": { "id": "turn-compact-1", "status": "completed" }
+                }
+            }),
+        )
+        .await;
+
+        assert!(
+            timeout(Duration::from_millis(25), &mut client)
+                .await
+                .is_err(),
+            "completed turn without a contextCompaction item must not succeed"
+        );
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-compact-1",
+                    "item": { "id": "compact-item-1", "type": "contextCompaction" }
+                }
+            }),
+        )
+        .await;
+
+        let outcome = client
+            .await
+            .expect("compact task")
+            .expect("compact outcome");
+        assert_eq!(outcome.provider_turn_id, "turn-compact-1");
+        assert_eq!(outcome.provider_item_id.as_deref(), Some("compact-item-1"));
+    }
+
+    #[tokio::test]
+    async fn compact_reports_failed_terminal_turn() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client =
+            tokio::spawn(async move { connection.start_compaction("thread-1", |_| {}).await });
+
+        let request = read_wire(&mut lines).await;
+        write_wire(&mut writer, json!({ "id": request["id"], "result": {} })).await;
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turn": {
+                        "id": "turn-compact-1",
+                        "status": "failed",
+                        "error": { "message": "compaction failed" }
+                    }
+                }
+            }),
+        )
+        .await;
+
+        assert!(matches!(
+            client.await.expect("compact task"),
+            Err(CodexAppServerError::Execution(message)) if message == "compaction failed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn compact_reports_interrupted_terminal_turn() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client =
+            tokio::spawn(async move { connection.start_compaction("thread-1", |_| {}).await });
+
+        let request = read_wire(&mut lines).await;
+        write_wire(&mut writer, json!({ "id": request["id"], "result": {} })).await;
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turn": { "id": "turn-compact-1", "status": "interrupted" }
+                }
+            }),
+        )
+        .await;
+
+        assert!(matches!(
+            client.await.expect("compact task"),
+            Err(CodexAppServerError::Execution(message)) if message.contains("中断")
+        ));
+    }
+
+    #[tokio::test]
+    async fn compact_deduplicates_deprecated_thread_compacted() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let client = tokio::spawn(async move {
+            connection
+                .start_compaction("thread-1", |event| {
+                    let _ = event_sender.send(event);
+                })
+                .await
+        });
+
+        let request = read_wire(&mut lines).await;
+        write_wire(&mut writer, json!({ "id": request["id"], "result": {} })).await;
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "item/started",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-compact-1",
+                    "item": { "id": "compact-item-1", "type": "contextCompaction" }
+                }
+            }),
+        )
+        .await;
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "thread/compacted",
+                "params": { "threadId": "thread-1", "turnId": "turn-compact-1" }
+            }),
+        )
+        .await;
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turn": { "id": "turn-compact-1", "status": "completed" }
+                }
+            }),
+        )
+        .await;
+
+        let mut client = client;
+        assert!(
+            timeout(Duration::from_millis(25), &mut client)
+                .await
+                .is_err(),
+            "deprecated signal must not win after a contextCompaction item was observed"
+        );
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-compact-1",
+                    "item": { "id": "compact-item-1", "type": "contextCompaction" }
+                }
+            }),
+        )
+        .await;
+
+        client
+            .await
+            .expect("compact task")
+            .expect("compact outcome");
+        let events = std::iter::from_fn(|| event_receiver.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, CodexCompactionEvent::Completed { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn automatic_compact_waits_for_successful_terminal_turn_before_completion_event() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let (_cancel_sender, cancel_receiver) = watch::channel(false);
+        let (_control_sender, mut control_receiver) = mpsc::unbounded_channel();
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let cwd = PathBuf::from("D:/workspace");
+        let client = tokio::spawn(async move {
+            connection
+                .run_text_turn(
+                    "thread-1",
+                    &cwd,
+                    "continue",
+                    "default",
+                    None,
+                    None,
+                    cancel_receiver,
+                    &mut control_receiver,
+                    |event| {
+                        let _ = event_sender.send(event);
+                    },
+                )
+                .await
+        });
+
+        let start = read_wire(&mut lines).await;
+        write_wire(
+            &mut writer,
+            json!({ "id": start["id"], "result": { "turn": { "id": "turn-1" } } }),
+        )
+        .await;
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "item/started",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "item": { "id": "compact-item-1", "type": "contextCompaction" }
+                }
+            }),
+        )
+        .await;
+        assert!(matches!(
+            next_event(&mut event_receiver).await,
+            CodexRuntimeEvent::CompactionStarted {
+                provider_turn_id: Some(turn_id),
+                provider_item_id: Some(item_id),
+            } if turn_id == "turn-1" && item_id == "compact-item-1"
+        ));
+
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "item": { "id": "compact-item-1", "type": "contextCompaction" }
+                }
+            }),
+        )
+        .await;
+        assert!(
+            timeout(Duration::from_millis(25), event_receiver.recv())
+                .await
+                .is_err(),
+            "item completion must not emit compaction completion early"
+        );
+
+        write_wire(
+            &mut writer,
+            json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turn": { "id": "turn-1", "status": "completed" }
+                }
+            }),
+        )
+        .await;
+        assert!(matches!(
+            next_event(&mut event_receiver).await,
+            CodexRuntimeEvent::CompactionCompleted {
+                provider_turn_id,
+                provider_item_id: Some(item_id),
+            } if provider_turn_id == "turn-1" && item_id == "compact-item-1"
+        ));
+        let outcome = client.await.expect("client task").expect("turn outcome");
+        assert_eq!(outcome.stop_reason, "end_turn");
     }
 
     #[test]

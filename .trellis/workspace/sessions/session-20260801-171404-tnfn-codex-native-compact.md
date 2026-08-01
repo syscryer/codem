@@ -5,6 +5,7 @@
 - Task: .trellis/tasks/codex-native-compact.md
 
 ## Notes
+- 2026-08-01T18:48:38.549Z 完成 Task 1：Codex App Server 新增 thread/compact/start 无副作用能力探测、手动压缩生命周期聚合、旧 thread/compacted 兼容优先级，以及普通 turn 自动 contextCompaction 的 started/completed 事件；成功必须同时满足 accepted、context item completed 和同 turn terminal completed。
 
 - 2026-08-01T18:29:56.794Z Codex 原生 Compact 实施计划已完成：9 个任务、67 个可勾选步骤，覆盖协议探测、actor 串行、队列屏障、双入口、系统卡片、失败恢复、自动压缩、历史 round-trip、重启只读核对、性能与桌面验收；计划位于 .trellis/tasks/codex-native-compact-implementation-plan.md。
 - 2026-08-01T18:08:22.525Z P0-2 完整设计已按用户确认写入任务文件，并完成占位符、内部一致性、范围和歧义自审；当前只提交设计与 session record，尚未进入实现。
@@ -30,5 +31,6 @@
 - 2026-08-01T17:14:04.617Z Session started.
 
 ## Verification
+- 2026-08-01T18:48:38.552Z `cargo test --manifest-path src-tauri/Cargo.toml compact_ -- --nocapture`: 通过：9 个 compact probe/lifecycle/automatic 用例，0 失败；仅有既有 dead-code 与 Windows linker warnings。
 
 ## Completed
