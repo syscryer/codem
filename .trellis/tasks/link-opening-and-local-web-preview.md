@@ -163,6 +163,7 @@ Out of scope:
 - 自动化测试覆盖分类派发、路径解析、菜单结构/关闭、四项动作接线和既有链接回归；完成后进行真实桌面/Web 手工验收。
 
 ## Implementation Record
+- 2026-08-01T09:32:57.778Z 完成正文文件链接右键菜单实施计划，按 renderer 派发、共享文件菜单、会话接线和真实验收四个 TDD 切片执行
 
 - 2026-08-01T09:25:51.129Z 确认正文 Markdown 文件链接复用文件产物四项右键菜单：右侧预览、默认应用打开、文件浏览器显示、复制完整路径
 - 2026-08-01T09:00:23.844Z 完成本地开发 URL 的安全提取、去重和无预加载网页预览卡片
@@ -189,9 +190,9 @@ Out of scope:
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 为聊天中的 HTTP/HTTPS 链接增加可配置默认打开目标和统一右键菜单，并把 assistant 回复中的本地开发地址提取为轻量网页预览卡片。
+**Goal:** 为聊天中的 HTTP/HTTPS 链接增加可配置默认打开目标和统一右键菜单，把 assistant 回复中的本地开发地址提取为轻量网页预览卡片，并让正文文件链接复用文件产物的四项右键菜单。
 
-**Architecture:** `AppSettings.openWith.webLinkOpenTarget` 是唯一持久化设置；`App` 负责把默认动作解析成外部浏览器或右侧浏览器请求。URL 识别、提取和浏览器标签复用保持为纯函数，`ConversationTurn` 只负责渲染，`RightWorkbench` 只消费一次性打开请求并维护浏览器标签状态。
+**Architecture:** `AppSettings.openWith.webLinkOpenTarget` 是唯一持久化设置；`App` 负责把默认动作解析成外部浏览器或右侧浏览器请求。URL 识别、提取和浏览器标签复用保持为纯函数，`ConversationTurn` 只负责渲染，`RightWorkbench` 只消费一次性打开请求并维护浏览器标签状态。Markdown renderer 只派发本地文件路径和右键坐标，`MarkdownMessage` 解析 workspace 相对路径，正文文件链接与文件产物卡片共同使用 `FileActionMenu` 执行四项文件动作。
 
 **Tech Stack:** React 19、TypeScript strict mode、React Markdown、Lucide、Tauri 2、Rust/Axum、Node test runner。
 
@@ -207,6 +208,7 @@ Out of scope:
 - `src/components/RightWorkbench.tsx`：消费一次性 URL 请求并显示可读错误。
 - `src/lib/markdown-link.tsx`：把 HTTP(S) 左键和右键事件交给上层动作，不持有工作台状态。
 - `src/components/WebLinkActionMenu.tsx`：正文链接和网页卡片共用的三项菜单。
+- `src/components/FileActionMenu.tsx`：正文文件链接和文件产物卡片共用的四项菜单。
 - `src/lib/conversation-web-previews.ts`：从可见 assistant 文本中提取、校验和去重本地开发 URL。
 - `src/components/ConversationWebPreviewCard.tsx`：轻量网页预览卡片，不发起网络请求。
 - `src/components/ConversationTurn.tsx`、`src/components/ConversationPane.tsx`、`src/App.tsx`：传递稳定业务动作并完成页面集成。
@@ -874,10 +876,17 @@ Run: `npm run desktop:dev`
 
 - [ ] **Step 5: 写回实际验证结果并完成 Trellis session**
 
-每条真实命令分别执行：
+按实际结果逐条登记，不合并或省略失败项：
 
 ```powershell
-npm run trellis -- verify "<实际命令或验收场景>" --result "<实际通过数量、失败数量和关键观察>"
+npm run trellis -- verify "node --import tsx --test src/lib/settings-api.test.ts src/lib/open-with-settings-ui.test.ts src/lib/markdown-link.test.ts src/lib/web-link-action-menu.test.ts src/lib/conversation-web-previews.test.ts src/lib/conversation-web-preview-ui.test.ts src/lib/workbench-browser.test.ts src/lib/workbench-browser-ui.test.ts src/lib/conversation-output-files.test.ts src/lib/conversation-output-file-interactions.test.ts" --result "全部通过，0 failed；记录实际通过数量"
+npm run trellis -- verify "npm run typecheck" --result "通过，0 个 TypeScript 错误"
+npm run trellis -- verify "npm run build" --result "通过；仅有已确认的 Vite chunk size 或动态导入提示"
+npm run trellis -- verify "cargo fmt --manifest-path src-tauri/Cargo.toml --check" --result "通过，Rust 格式无差异"
+npm run trellis -- verify "cargo test --manifest-path src-tauri/Cargo.toml open_with_settings_default_web_links_to_external_browser" --result "通过，1 passed，0 failed"
+npm run trellis -- verify "git diff --check" --result "通过，无空白错误"
+npm run trellis -- verify "桌面链接打开与本地网页预览验收" --result "两种默认行为、网页三项右键菜单、loopback 卡片、标签复用与上限、设置持久化均通过，0 项失败"
+npm run trellis -- verify "Web 链接回退与响应式视觉验收" --result "右侧浏览器设置正确回退外部打开，主页面未重载；浅色/深色及常规/窄窗口均通过，0 项失败"
 ```
 
 所有验收通过后执行：
@@ -891,3 +900,390 @@ npm run trellis -- complete --summary "完成网页链接默认打开设置、�
 检查 `git status --short` 和逐文件 diff，确认没有覆盖用户已有修改、没有构建产物或临时文件进入提交。只暂存本任务 hunks。
 
 Commit: `feat: 完善网页链接打开与本地预览体验`
+
+### Task 6: 本地文件链接右键派发契约
+
+**Files:**
+- Modify: `src/lib/markdown-link.tsx`
+- Modify: `src/lib/markdown-link.test.ts`
+
+- [ ] **Step 1: 写本地文件右键失败测试**
+
+在 `markdown-link.test.ts` 增加真实事件派发测试，明确本地文件右键只返回原始路径和鼠标坐标：
+
+```ts
+test('local file links delegate context menu actions without changing left click behavior', () => {
+  const opened: string[] = [];
+  const contextMenus: Array<{ path: string; x: number; y: number }> = [];
+  const element = renderMarkdownLink({
+    href: 'docs/中文 验收.md#result',
+    children: '打开文档',
+    onOpenLocalFile: (path) => opened.push(path),
+    onOpenLocalFileContextMenu: (target) => contextMenus.push(target),
+  });
+  const props = element.props as {
+    onClick: (event: ReactMouseEvent<HTMLAnchorElement>) => void;
+    onContextMenu: (event: ReactMouseEvent<HTMLAnchorElement>) => void;
+  };
+
+  props.onClick({ preventDefault() {} } as ReactMouseEvent<HTMLAnchorElement>);
+  props.onContextMenu({
+    preventDefault() {},
+    clientX: 18,
+    clientY: 32,
+  } as ReactMouseEvent<HTMLAnchorElement>);
+
+  assert.deepEqual(opened, ['docs/中文 验收.md']);
+  assert.deepEqual(contextMenus, [{ path: 'docs/中文 验收.md', x: 18, y: 32 }]);
+});
+```
+
+- [ ] **Step 2: 运行测试确认 RED**
+
+Run: `node --import tsx --test src/lib/markdown-link.test.ts`
+
+Expected: FAIL，提示 `onOpenLocalFileContextMenu` 不属于 renderer props 或 `onContextMenu` 不存在。
+
+- [ ] **Step 3: 实现 renderer 事件派发**
+
+在 `markdown-link.tsx` 定义并使用明确类型：
+
+```ts
+export type MarkdownLocalFileMenuTarget = {
+  path: string;
+  x: number;
+  y: number;
+};
+
+type MarkdownLinkProps = Pick<AnchorHTMLAttributes<HTMLAnchorElement>, 'href' | 'title'> & {
+  children?: ReactNode;
+  onOpenLocalFile?: (path: string) => void;
+  onOpenLocalFileContextMenu?: (target: MarkdownLocalFileMenuTarget) => void;
+  onOpenWebUrl?: (url: string) => void;
+  onOpenWebContextMenu?: (target: { url: string; x: number; y: number }) => void;
+};
+```
+
+`onContextMenu` 按链接分类分别派发，不改变左键分支：
+
+```ts
+onContextMenu: target.kind === 'external' && onOpenWebContextMenu
+  ? (event: MouseEvent<HTMLAnchorElement>) => {
+      event.preventDefault();
+      onOpenWebContextMenu({ url: target.url, x: event.clientX, y: event.clientY });
+    }
+  : target.kind === 'local-file' && onOpenLocalFileContextMenu
+    ? (event: MouseEvent<HTMLAnchorElement>) => {
+        event.preventDefault();
+        onOpenLocalFileContextMenu({
+          path: target.path,
+          x: event.clientX,
+          y: event.clientY,
+        });
+      }
+    : undefined,
+```
+
+- [ ] **Step 4: 运行 renderer 测试确认 GREEN**
+
+Run: `node --import tsx --test src/lib/markdown-link.test.ts`
+
+Expected: 全部 PASS，HTTP(S)、锚点、不安全协议和左键文件预览用例无回归。
+
+Record: `npm run trellis -- record "完成 Markdown 本地文件链接右键事件派发契约"`
+
+### Task 7: 共享文件动作菜单与会话接线
+
+**Files:**
+- Create: `src/components/FileActionMenu.tsx`
+- Create: `src/lib/file-action-menu.test.ts`
+- Modify: `src/lib/conversation-output-file-interactions.test.ts`
+- Modify: `src/components/ConversationTurn.tsx`
+
+- [ ] **Step 1: 写共享菜单和接线失败测试**
+
+新建 `file-action-menu.test.ts`，在组件尚不存在时得到 RED，并约束菜单只能有一份：
+
+```ts
+import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+import test from 'node:test';
+
+const componentUrl = new URL('../components/FileActionMenu.tsx', import.meta.url);
+const componentSource = existsSync(componentUrl) ? readFileSync(componentUrl, 'utf8') : '';
+const turnSource = readFileSync(new URL('../components/ConversationTurn.tsx', import.meta.url), 'utf8');
+
+test('文件动作菜单提供四项固定动作和统一关闭行为', () => {
+  assert.ok(componentSource, 'FileActionMenu.tsx should exist');
+  assert.equal((componentSource.match(/在右侧预览/g) ?? []).length, 1);
+  assert.equal((componentSource.match(/用默认应用打开/g) ?? []).length, 1);
+  assert.equal((componentSource.match(/在文件浏览器中显示/g) ?? []).length, 1);
+  assert.equal((componentSource.match(/复制完整路径/g) ?? []).length, 1);
+  assert.match(componentSource, /PopoverPortal/);
+  assert.match(componentSource, /useOutsideDismiss/);
+  assert.match(componentSource, /event\.key === 'Escape'/);
+  assert.match(componentSource, /finally[\s\S]*onClose\(\)/);
+});
+
+test('正文文件链接和文件产物卡片共同使用 FileActionMenu', () => {
+  assert.match(turnSource, /import \{ FileActionMenu/);
+  assert.ok((turnSource.match(/<FileActionMenu/g) ?? []).length >= 2);
+  assert.match(turnSource, /onOpenLocalFileContextMenu/);
+  assert.doesNotMatch(turnSource, /<span>在文件浏览器打开<\/span>/);
+});
+```
+
+扩展 `conversation-output-file-interactions.test.ts`，覆盖中文、空格和绝对路径：
+
+```ts
+test('resolveConversationOutputFileActionPath preserves unicode spaces and absolute paths', () => {
+  assert.equal(
+    resolveConversationOutputFileActionPath('D:\\项目 工作区', 'docs\\验收 文档.md'),
+    'D:\\项目 工作区\\docs\\验收 文档.md',
+  );
+  assert.equal(
+    resolveConversationOutputFileActionPath('D:\\项目 工作区', 'C:\\导出\\验收 文档.md'),
+    'C:\\导出\\验收 文档.md',
+  );
+});
+```
+
+- [ ] **Step 2: 运行共享菜单测试确认 RED**
+
+Run: `node --import tsx --test src/lib/file-action-menu.test.ts src/lib/conversation-output-file-interactions.test.ts`
+
+Expected: `FileActionMenu.tsx should exist` 失败；既有路径测试继续通过。
+
+- [ ] **Step 3: 新建共享 FileActionMenu**
+
+组件接口固定为：
+
+```ts
+export type FileActionMenuTarget = {
+  path: string;
+  name: string;
+};
+
+type FileActionMenuProps = {
+  target: FileActionMenuTarget | null;
+  anchorRef?: RefObject<HTMLElement | null>;
+  virtualAnchor?: { x: number; y: number } | null;
+  placement?: 'bottom-start' | 'bottom-end';
+  offset?: number;
+  canPreview?: boolean;
+  onClose: () => void;
+  onPreview: (target: FileActionMenuTarget) => void | Promise<void>;
+  onOpen: (path: string) => void | Promise<void>;
+  onReveal: (path: string) => void | Promise<void>;
+  onCopy: (path: string) => void | Promise<void>;
+};
+```
+
+组件内部使用 `PopoverPortal`、`useOutsideDismiss` 和 `Escape`，所有动作经过同一个关闭函数：
+
+```tsx
+async function run(
+  event: MouseEvent<HTMLButtonElement>,
+  action: () => void | Promise<void>,
+) {
+  event.stopPropagation();
+  try {
+    await action();
+  } finally {
+    onClose();
+  }
+}
+
+return (
+  <PopoverPortal
+    open={Boolean(target)}
+    anchorRef={anchorRef ?? fallbackAnchorRef}
+    virtualAnchor={virtualAnchor}
+    placement={placement}
+    offset={offset}
+  >
+    {target ? (
+      <div ref={menuRef} className="workspace-menu conversation-output-file-menu" role="menu" aria-label={`文件操作 ${target.name}`}>
+        {canPreview ? (
+          <button type="button" className="workspace-menu-item conversation-output-file-menu-item" role="menuitem" onClick={(event) => void run(event, () => onPreview(target))}>
+            <Maximize2 size={14} /><span>在右侧预览</span>
+          </button>
+        ) : null}
+        <button type="button" className="workspace-menu-item conversation-output-file-menu-item" role="menuitem" onClick={(event) => void run(event, () => onOpen(target.path))}>
+          <ArrowUpRight size={14} /><span>用默认应用打开</span>
+        </button>
+        <button type="button" className="workspace-menu-item conversation-output-file-menu-item" role="menuitem" onClick={(event) => void run(event, () => onReveal(target.path))}>
+          <Folder size={14} /><span>在文件浏览器中显示</span>
+        </button>
+        <div className="workspace-menu-divider" role="separator" />
+        <button type="button" className="workspace-menu-item conversation-output-file-menu-item" role="menuitem" onClick={(event) => void run(event, () => onCopy(target.path))}>
+          <Copy size={14} /><span>复制完整路径</span>
+        </button>
+      </div>
+    ) : null}
+  </PopoverPortal>
+);
+```
+
+`useOutsideDismiss` 的 anchorRefs 包含实际按钮 anchor；`target` 非空时注册 `keydown`，`Escape` 调用 `onClose`。
+
+- [ ] **Step 4: 让文件产物卡片改用共享菜单**
+
+`ConversationOutputFileCard` 保留主点击和“打开方式”按钮状态，只把内嵌 `PopoverPortal` 菜单替换为：
+
+```tsx
+<FileActionMenu
+  target={menuOpen || contextMenu ? { path: resolvedFilePath, name: file.name } : null}
+  anchorRef={menuButtonRef}
+  virtualAnchor={contextMenu}
+  placement="bottom-end"
+  offset={8}
+  canPreview={canPreviewInWorkbench}
+  onClose={closeMenus}
+  onPreview={() => openInWorkbenchPreview()}
+  onOpen={onOpenOutputPath}
+  onReveal={onRevealOutputPath}
+  onCopy={(path) => navigator.clipboard.writeText(path)}
+/>
+```
+
+删除卡片内重复的四项按钮和仅服务旧菜单的 outside-dismiss 配置，保留 `context-active` 状态。
+
+- [ ] **Step 5: 将文件动作回调传到 MarkdownMessage**
+
+在 `AssistantItemRenderProps` 增加：
+
+```ts
+onOpenOutputPath: (path: string) => Promise<void>;
+onRevealOutputPath: (path: string) => Promise<void>;
+```
+
+`ConversationTurnViewComponent` 的 intermediate/narrative 两条 `renderAssistantItem` 调用、`IntermediateProcessBody` 和 `MarkdownMessage` 均透传这两个既有回调。`MarkdownMessage` 保存解析后的菜单目标：
+
+```ts
+const [fileMenuTarget, setFileMenuTarget] = useState<{
+  path: string;
+  name: string;
+  x: number;
+  y: number;
+} | null>(null);
+
+const resolveLocalFile = useCallback((path: string) => ({
+  path: workspace ? resolveWorkbenchPreviewFilePath(workspace, path) : path,
+  name: getFileName(path),
+}), [workspace]);
+```
+
+`DeferredMarkdownContent` 增加 `onOpenLocalFileContextMenu`，正文 Markdown renderer 透传；`MarkdownMessage` 接收后解析路径并保存坐标：
+
+```ts
+onOpenLocalFileContextMenu={({ path, x, y }) => {
+  setFileMenuTarget({ ...resolveLocalFile(path), x, y });
+}}
+```
+
+在 `WebLinkActionMenu` 旁渲染共享文件菜单：
+
+```tsx
+<FileActionMenu
+  target={fileMenuTarget}
+  virtualAnchor={fileMenuTarget ? { x: fileMenuTarget.x, y: fileMenuTarget.y } : null}
+  canPreview
+  onClose={() => setFileMenuTarget(null)}
+  onPreview={({ path, name }) => onOpenWorkbenchPreview(buildConversationOutputFilePreviewRequest({ path, name, type: 'file' }))}
+  onOpen={onOpenOutputPath}
+  onReveal={onRevealOutputPath}
+  onCopy={(path) => navigator.clipboard.writeText(path)}
+/>
+```
+
+- [ ] **Step 6: 运行共享菜单、链接和文件产物测试确认 GREEN**
+
+Run:
+
+```powershell
+node --import tsx --test src/lib/file-action-menu.test.ts src/lib/markdown-link.test.ts src/lib/conversation-output-file-interactions.test.ts src/lib/conversation-output-files.test.ts
+```
+
+Expected: 全部 PASS；菜单固定四项，正文和产物卡片共同使用共享组件。
+
+Run: `npm run typecheck`
+
+Expected: PASS，无缺失回调或未使用导入。
+
+Record: `npm run trellis -- record "完成正文文件链接与文件产物卡片共享四项文件动作菜单"`
+
+### Task 8: 回归、真实验收与 Trellis 收尾
+
+**Files:**
+- Modify: `.trellis/tasks/link-opening-and-local-web-preview.md`
+- Modify: `.trellis/workspace/sessions/session-20260801-082231-kz6b-link-opening-and-local-web-preview.md`
+
+- [ ] **Step 1: 运行链接和文件相关完整测试集**
+
+Run:
+
+```powershell
+node --import tsx --test src/lib/markdown-link.test.ts src/lib/web-link-action-menu.test.ts src/lib/file-action-menu.test.ts src/lib/conversation-output-file-interactions.test.ts src/lib/conversation-output-files.test.ts src/lib/conversation-web-previews.test.ts src/lib/conversation-web-preview-ui.test.ts src/lib/workbench-browser.test.ts src/lib/workbench-browser-ui.test.ts
+```
+
+Expected: 0 failed。
+
+- [ ] **Step 2: 运行质量门禁**
+
+Run: `npm run typecheck`
+
+Run: `npm run build`
+
+Run: `git diff --check`
+
+Expected: 全部成功；只允许记录 Vite 既有 chunk size 和动态导入提示。
+
+- [ ] **Step 3: 重启桌面开发版并验收正文文件链接**
+
+重启 `npm run desktop:dev` 后，在真实会话使用以下 Markdown：
+
+```markdown
+[相对文档](docs/验收 文档.md)
+[绝对文档](C:\Users\demo\验收 文档.md)
+[网页链接](https://example.com)
+[页内位置](#result)
+```
+
+验收：
+
+1. 相对文件链接左键仍在右侧预览。
+2. 相对/绝对文件链接右键固定显示四项，复制结果为完整路径。
+3. 默认应用打开和文件浏览器显示成功或给出既有错误提示，不静默失败。
+4. 网页链接仍显示网页三项菜单，页内锚点不显示文件菜单。
+5. 文件产物卡片的按钮菜单和右键菜单使用相同四项文案与顺序。
+6. 外部点击、`Escape` 和执行动作均关闭菜单。
+
+- [ ] **Step 4: 验收 Web、主题和窄窗口**
+
+在 `http://127.0.0.1:5173` 重复正文文件链接右键操作，确认不触发主页面重载。分别检查浅色/深色和常规/窄窗口：菜单被 viewport 钳制，文案不截断，正文、卡片和菜单不重叠。
+
+- [ ] **Step 5: 写回验证并完成任务**
+
+按实际结果逐条登记，不合并或省略失败项：
+
+```powershell
+npm run trellis -- verify "node --import tsx --test src/lib/markdown-link.test.ts src/lib/web-link-action-menu.test.ts src/lib/file-action-menu.test.ts src/lib/conversation-output-file-interactions.test.ts src/lib/conversation-output-files.test.ts src/lib/conversation-web-previews.test.ts src/lib/conversation-web-preview-ui.test.ts src/lib/workbench-browser.test.ts src/lib/workbench-browser-ui.test.ts" --result "全部通过，0 failed；记录实际通过数量"
+npm run trellis -- verify "npm run typecheck" --result "通过，0 个 TypeScript 错误"
+npm run trellis -- verify "npm run build" --result "通过；仅有已确认的 Vite chunk size 或动态导入提示"
+npm run trellis -- verify "git diff --check" --result "通过，无空白错误"
+npm run trellis -- verify "桌面正文文件链接右键验收" --result "相对/绝对/中文/空格路径四项动作、菜单关闭、网页与锚点隔离、文件产物菜单一致性均通过，0 项失败"
+npm run trellis -- verify "Web 文件链接菜单与响应式视觉验收" --result "主页面未重载；浅色/深色及常规/窄窗口下菜单定位、文案和层级均通过，0 项失败"
+```
+
+全部通过后执行：
+
+```powershell
+npm run trellis -- complete --summary "完成网页链接默认行为、本地网页预览，以及正文文件链接与文件产物卡片共享四项右键菜单；相关自动化和桌面/Web 交互均已验证"
+```
+
+- [ ] **Step 6: 最终差异审查和选择性提交**
+
+检查 `git status --short` 和任务相关逐文件 diff。由于 `ConversationTurn.tsx` 等文件含此前同任务及其他未提交修改，只选择性暂存本任务 hunks，不带入无关后端、队列、附件或其他 Trellis 任务文件。
+
+Commit: `feat: 增加正文文件链接右键菜单`
