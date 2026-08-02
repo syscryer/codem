@@ -145,6 +145,8 @@ Out of scope:
 
 ## Implementation Record
 
+- 2026-08-02T16:48:18.053Z Task 3 双审与返工闭环完成：规格审查无偏差；本地质量审查提出的完整身份探测有界性 P2 经主 Agent 独立复现确认后，交回同一质量 Agent TDD 修复。command-group 管理 Windows Job Object 与 Unix process group，超时后有界回收整组；Unix PATH 解析不再调用外部 which。主 Agent 进程级复验第 4 秒无 PING.EXE 后代。CC 额度仍在 429 窗口，本轮返工不归因于 CC。
+
 - 2026-08-02T15:29:44.547Z Task 3 返工完成：Claude capability 命令身份解析改为 spawn_blocking，版本读取复用 read_cli_version 的 3 秒强制超时并解析语义版本；删除无界同步 Command::output。挂起版本命令回归测试在旧实现超过 5 秒失败，新实现 5 秒内返回。Claude 额度 429 导致原 cc coder 中断，由现有本地子 Agent按同一 RED 证据完成最小修复，主 Agent独立验收。
 - 2026-08-02T15:27:23.501Z Task 3 返工自审收紧：read_cli_version 有界返回后继续复用 parse_claude_cli_version，保持旧 cache key 的语义版本归一化不变；重新运行单项与全部指定回归、fmt、diff 均通过。
 
@@ -177,6 +179,9 @@ Out of scope:
   无 prompt 的 `--resume + --fork-session` 获取独立 session ID，子 thread 仅在 Provider 身份确认后可见。
 
 ## Verification Results
+
+- 2026-08-02T16:48:44.594Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check && git diff --check`: pass: fmt/diff exit 0; main-agent final verification
+- 2026-08-02T16:48:33.004Z `cargo test --manifest-path src-tauri/Cargo.toml --lib`: pass: 332 passed, 0 failed, 1 ignored; main-agent final verification
 
 - 2026-08-02T15:29:43.883Z `cargo test --manifest-path src-tauri/Cargo.toml claude_fork_capability_version_probe_is_bounded_against_hanging_command && cargo test --manifest-path src-tauri/Cargo.toml thread_fork && cargo test --manifest-path src-tauri/Cargo.toml codex_thread_fork && cargo test --manifest-path src-tauri/Cargo.toml claude_session_fork && cargo test --manifest-path src-tauri/Cargo.toml --lib`: 主 Agent 独立复验通过：有界身份 1/1；thread_fork 17/17；Codex 10/10；Claude bridge 16/16；全库 lib exit 0。新增 unused warning 已修正。
 - 2026-08-02T15:28:47.437Z `git diff --check`: 最终复验通过：exit code 0，仅 Windows LF/CRLF 提示。

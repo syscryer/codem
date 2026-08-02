@@ -20,6 +20,7 @@ base64 = "0.22"
 aes-gcm = "0.10"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
+command-group = "5.0.1"
 reqwest = { version = "0.13.4", features = ["socks"] }
 rusqlite = { version = "0.33", features = ["bundled"] }
 leveldb-core = "0.1.0"

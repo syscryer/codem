@@ -18,13 +18,14 @@ use axum::{
 };
 use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
+use command_group::{CommandGroup, GroupChild};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::{
     cmp::Ordering,
     env, fs,
-    io::{BufRead, BufReader as StdBufReader},
+    io::{BufRead, BufReader as StdBufReader, Read},
     net::SocketAddr,
     path::{Component, Path, PathBuf},
     process::Command,
@@ -6600,21 +6601,126 @@ fn command_output_with_timeout(
     command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = command.spawn().ok()?;
+    let mut child = spawn_background_command_group(command).ok()?;
+    let mut stdout = child.inner().stdout.take()?;
+    let mut stderr = child.inner().stderr.take()?;
+    let (stdout_sender, stdout_receiver) = std::sync::mpsc::channel();
+    let (stderr_sender, stderr_receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut output = Vec::new();
+        let result = stdout.read_to_end(&mut output).map(|_| output);
+        let _ = stdout_sender.send(result);
+    });
+    std::thread::spawn(move || {
+        let mut output = Vec::new();
+        let result = stderr.read_to_end(&mut output).map(|_| output);
+        let _ = stderr_sender.send(result);
+    });
+
+    let deadline = std::time::Instant::now() + timeout;
+    let mut status = None;
+    let mut stdout = None;
+    let mut stderr = None;
+    loop {
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(Some(exit_status)) => status = Some(exit_status),
+                Ok(None) => {}
+                Err(_) => {
+                    terminate_background_command_group(&mut child);
+                    return None;
+                }
+            }
+        }
+        if stdout.is_none() {
+            match stdout_receiver.try_recv() {
+                Ok(Ok(output)) => stdout = Some(output),
+                Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    terminate_background_command_group(&mut child);
+                    return None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if stderr.is_none() {
+            match stderr_receiver.try_recv() {
+                Ok(Ok(output)) => stderr = Some(output),
+                Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    terminate_background_command_group(&mut child);
+                    return None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if status.is_some() && stdout.is_some() && stderr.is_some() {
+            return Some(std::process::Output {
+                status: status.expect("command exit status is present"),
+                stdout: stdout.take().expect("command stdout is present"),
+                stderr: stderr.take().expect("command stderr is present"),
+            });
+        }
+        if std::time::Instant::now() >= deadline {
+            terminate_background_command_group(&mut child);
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_background_command_group(command: &mut Command) -> std::io::Result<GroupChild> {
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command
+        .group()
+        .kill_on_drop(true)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn spawn_background_command_group(command: &mut Command) -> std::io::Result<GroupChild> {
+    command.group_spawn()
+}
+
+fn terminate_background_command_group(child: &mut GroupChild) {
+    let _ = child.kill();
+    let _ = wait_for_background_command_group_exit(child, std::time::Duration::from_millis(500));
+}
+
+fn wait_for_background_command_group_exit(
+    child: &mut GroupChild,
+    timeout: std::time::Duration,
+) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(Some(_)) => return true,
             Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            Ok(None) | Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
+            Ok(None) | Err(_) => return false,
         }
     }
+}
+
+#[cfg(any(not(target_os = "windows"), test))]
+fn resolve_command_from_path(
+    command_name: &str,
+    path: Option<&std::ffi::OsStr>,
+    is_runnable: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let path = path?;
+    for directory in env::split_paths(path) {
+        let candidate = directory.join(command_name);
+        if !candidate.is_file() {
+            continue;
+        }
+        let candidate = candidate.to_string_lossy().to_string();
+        if is_runnable(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn background_tokio_command(program: &str) -> tokio::process::Command {
@@ -6656,9 +6762,7 @@ fn resolve_claude_command() -> Option<String> {
         command_output_with_timeout(&mut command, std::time::Duration::from_secs(3))
     };
 
-    #[cfg(not(target_os = "windows"))]
-    let lookup = background_command("which").arg("claude").output().ok();
-
+    #[cfg(target_os = "windows")]
     let path_command = lookup
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
@@ -6673,6 +6777,13 @@ fn resolve_claude_command() -> Option<String> {
                 .find(|candidate| command_reports_version(candidate))
                 .map(ToString::to_string)
         });
+
+    #[cfg(not(target_os = "windows"))]
+    let path_command = resolve_command_from_path(
+        "claude",
+        env::var_os("PATH").as_deref(),
+        command_reports_version,
+    );
 
     path_command.or_else(resolve_default_claude_command)
 }
@@ -20163,12 +20274,13 @@ mod tests {
         build_request_user_input_response_answers, build_usage_provider_rows,
         claude_input_message_has_content, claude_install_display_command,
         claude_install_lifecycle_plan, claude_uninstalled_update_lifecycle_plan,
-        codex_snapshot_to_conversation_turns, compare_project_file_entries,
-        complete_thread_fork_history, configure_agent_lifecycle_environment, create_project_row,
-        create_router, create_thread_row, current_claude_install_lifecycle_plan,
-        default_claude_command_paths, default_grok_command_path, default_pi_command_paths,
-        desktop_cors_layer, ensure_agent_plugin_management_supported,
-        ensure_claude_thread_fork_idle, extract_agent_semantic_version, finalize_local_thread_fork,
+        codex_snapshot_to_conversation_turns, command_output_with_timeout,
+        compare_project_file_entries, complete_thread_fork_history,
+        configure_agent_lifecycle_environment, create_project_row, create_router,
+        create_thread_row, current_claude_install_lifecycle_plan, default_claude_command_paths,
+        default_grok_command_path, default_pi_command_paths, desktop_cors_layer,
+        ensure_agent_plugin_management_supported, ensure_claude_thread_fork_idle,
+        extract_agent_semantic_version, finalize_local_thread_fork,
         import_claude_sessions_from_root, initialize_workspace_database,
         install_skill_directory_safely, is_agent_lifecycle_network_failure, lifecycle_plan,
         lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
@@ -20184,19 +20296,20 @@ mod tests {
         read_agent_mcp_config_snapshot, read_fork_source_thread, read_opencode_mcp_config,
         read_state_value, read_stored_thread_history, read_thread_detail,
         read_thread_fork_operation, read_thread_summary, recover_stale_thread_fork_operations,
-        remove_thread_row, resolve_codex_command, resolve_first_runnable_command,
-        resolve_grok_command, resolve_opencode_command, resolve_pi_command,
-        resolve_requested_thread_provider, resolve_thread_create_permission_mode,
-        resolve_workspace_relative_path, sanitize_agent_lifecycle_output,
-        sanitize_external_command_result, search_workspace_files,
+        remove_thread_row, resolve_codex_command, resolve_command_from_path,
+        resolve_first_runnable_command, resolve_grok_command, resolve_opencode_command,
+        resolve_pi_command, resolve_requested_thread_provider,
+        resolve_thread_create_permission_mode, resolve_workspace_relative_path,
+        sanitize_agent_lifecycle_output, sanitize_external_command_result, search_workspace_files,
         select_runnable_command_candidate, should_emit_claude_raw_event, should_store_run_event,
-        summarize_content_blocks, update_thread_metadata_from_payload, validate_desktop_file_path,
-        validate_managed_agent_skill_path, windows_claude_install_lifecycle_plan,
-        windows_shell_execute_error_message, write_opencode_mcp_config, write_state_value,
-        write_thread_history, ActiveRunRecord, ApiError, AppState, ClaudeContextRequestError,
-        ClaudeContextRequestRecord, ClaudeRuntimeRecord, ForkSourceThread,
-        ThreadForkCapabilityRequest, ThreadForkOperationStatus, ThreadForkRequest,
-        ThreadForkTestDriver,
+        spawn_background_command_group, summarize_content_blocks,
+        update_thread_metadata_from_payload, validate_desktop_file_path,
+        validate_managed_agent_skill_path, wait_for_background_command_group_exit,
+        windows_claude_install_lifecycle_plan, windows_shell_execute_error_message,
+        write_opencode_mcp_config, write_state_value, write_thread_history, ActiveRunRecord,
+        ApiError, AppState, ClaudeContextRequestError, ClaudeContextRequestRecord,
+        ClaudeRuntimeRecord, ForkSourceThread, ThreadForkCapabilityRequest,
+        ThreadForkOperationStatus, ThreadForkRequest, ThreadForkTestDriver,
     };
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
@@ -20405,6 +20518,129 @@ mod tests {
         }
         let command = path.to_string_lossy().to_string();
         (dir, command)
+    }
+
+    #[test]
+    fn command_output_timeout_terminates_descendant_processes() {
+        let root = TestDirectory::new("command-timeout-process-tree");
+        let started_marker = root.0.join("descendant-started");
+        let survived_marker = root.0.join("descendant-survived");
+        let script = if cfg!(windows) {
+            let path = root.0.join("parent.cmd");
+            let descendant_path = root.0.join("descendant.cmd");
+            let started = started_marker.to_string_lossy().replace('\'', "''");
+            let survived = survived_marker.to_string_lossy().replace('\'', "''");
+            fs::write(
+                &descendant_path,
+                format!(
+                    "@echo off\r\nping.exe 127.0.0.1 -n 2 > nul\r\n> \"{survived}\" echo survived\r\nping.exe 127.0.0.1 -n 6 > nul\r\n"
+                ),
+            )
+            .expect("write Windows descendant fixture");
+            fs::write(
+                &path,
+                format!(
+                    "@echo off\r\n> \"{started}\" echo started\r\ncmd.exe /D /C \"\"{}\"\"\r\n",
+                    descendant_path.to_string_lossy()
+                ),
+            )
+            .expect("write Windows process-tree fixture");
+            path
+        } else {
+            let path = root.0.join("parent.sh");
+            let started = started_marker.to_string_lossy().replace('\'', "'\"'\"'");
+            let survived = survived_marker.to_string_lossy().replace('\'', "'\"'\"'");
+            fs::write(
+                &path,
+                format!(
+                    "#!/bin/sh\nprintf started > '{started}'\nsh -c 'sleep 1.5; printf survived > \'{survived}\'; sleep 5'\n"
+                ),
+            )
+            .expect("write Unix process-tree fixture");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut permissions = fs::metadata(&path)
+                    .expect("read Unix fixture metadata")
+                    .permissions();
+                permissions.set_mode(0o755);
+                fs::set_permissions(&path, permissions).expect("make Unix fixture executable");
+            }
+            path
+        };
+
+        let mut command = super::background_command(script.to_string_lossy().as_ref());
+        let _ = command_output_with_timeout(&mut command, std::time::Duration::from_millis(500));
+
+        let started_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !started_marker.exists() && std::time::Instant::now() < started_deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            started_marker.exists(),
+            "fixture descendant must start before the parent timeout"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1_700));
+        assert!(
+            !survived_marker.exists(),
+            "timing out the command must terminate its descendant process tree"
+        );
+    }
+
+    #[test]
+    fn command_path_resolution_uses_environment_search_order() {
+        let root = TestDirectory::new("command-path-resolution");
+        let first_bin = root.0.join("first-bin");
+        let second_bin = root.0.join("second-bin");
+        fs::create_dir_all(&first_bin).expect("create first PATH directory");
+        fs::create_dir_all(&second_bin).expect("create second PATH directory");
+        let first_command = first_bin.join("claude-test");
+        let second_command = second_bin.join("claude-test");
+        fs::write(&first_command, "first").expect("write first PATH command");
+        fs::write(&second_command, "second").expect("write second PATH command");
+        let path_value =
+            std::env::join_paths([&first_bin, &second_bin]).expect("join test PATH directories");
+
+        let resolved =
+            resolve_command_from_path("claude-test", Some(path_value.as_os_str()), |candidate| {
+                candidate == second_command.to_string_lossy()
+            });
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some(second_command.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn command_group_reap_wait_is_bounded() {
+        let mut command = if cfg!(windows) {
+            let mut command = super::background_command("ping.exe");
+            command.args(["127.0.0.1", "-n", "6"]);
+            command
+        } else {
+            let mut command = super::background_command("sleep");
+            command.arg("5");
+            command
+        };
+        command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let mut child = spawn_background_command_group(&mut command)
+            .expect("spawn long-running process group fixture");
+
+        let started = std::time::Instant::now();
+        assert!(!wait_for_background_command_group_exit(
+            &mut child,
+            std::time::Duration::from_millis(100),
+        ));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "process-group reap polling must honor its deadline"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     fn inject_claude_runtime(state: &AppState, thread_id: &str, current_run_id: Option<&str>) {

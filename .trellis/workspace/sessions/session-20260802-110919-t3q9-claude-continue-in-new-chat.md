@@ -5,6 +5,19 @@
 - Task: .trellis/tasks/claude-continue-in-new-chat.md
 
 ## Notes
+- 2026-08-02T16:48:18.053Z Task 3 双审与返工闭环完成：规格审查无偏差；本地质量审查提出的完整身份探测有界性 P2 经主 Agent 独立复现确认后，交回同一质量 Agent TDD 修复。command-group 管理 Windows Job Object 与 Unix process group，超时后有界回收整组；Unix PATH 解析不再调用外部 which。主 Agent 进程级复验第 4 秒无 PING.EXE 后代。CC 额度仍在 429 窗口，本轮返工不归因于 CC。
+
+- 2026-08-02T16:46:09.731Z Task 3 双审与返工闭环完成：规格审查无偏差；质量审查提出的完整身份探测有界性 P2 经主 Agent 独立复现确认后，交回同一质量 Agent TDD 修复。Windows Job Object/Unix process group 负责整组回收，Unix PATH 解析不再调用外部 which；主 Agent 进程级复验第 4 秒无 PING.EXE 后代且外层任务已完成。CC 额度仍在 429 窗口，本轮返工不归因于 CC。
+- 2026-08-02T16:43:33.801Z 本地质量 Agent Task 3 最终质量复审 APPROVED：复核确认有界 try_wait 回收和 cmd -> cmd 稳定 fixture 已闭环上一轮两个 P2；原 Windows 后代遗留/管道 EOF 与 Unix which 无超时问题均被覆盖，无残留 P0/P1/P2。主 Agent 已逐项独立核对后采纳。
+
+- 2026-08-02T16:40:50.453Z 本地质量 Agent 第二轮 P2 修复 GREEN：terminate_background_command_group 删除无界 wait，kill 后最多 500ms try_wait 轮询；新增有界 helper 单测由 E0432 RED 转 1/1 GREEN（0.15s）。Windows 进程树 fixture 改为 parent.cmd 先写 started，再启动独立 descendant.cmd 延时写 survived；去掉 PowerShell 冷启动变量，真实后代回收测试 1/1 GREEN（2.28s）。
+- 2026-08-02T16:38:55.432Z 本地质量 Agent 第二轮 P2 独立复核：回收路径 kill 后无界 wait 在 kill 异常时破坏总截止时间，确认需改为有界 try_wait；Windows RED fixture 的 ready 标记依赖 PowerShell 冷启动存在慢机假失败窗口。新增 command_group_reap_wait_is_bounded RED，实测按预期编译失败 E0432（有界回收 helper 尚不存在）。
+
+- 2026-08-02T16:34:09.454Z Task 3 质量返工 GREEN：command_output_with_timeout 改用 command-group 5.0.1 管理 Unix process group / Windows Job Object，stdout/stderr 独立线程并发排空，直接进程状态与两路 EOF 均完成才返回；总截止时间到期终止整组并回收。Unix Claude 命令发现改为 std::env::split_paths 按 PATH 顺序逐项验证，删除无超时外部 which。
+- 2026-08-02T16:15:39.021Z Task 3 质量返工 RED：新增 command_output_timeout_terminates_descendant_processes，旧实现稳定失败于后代仍写入 survived 标记（测试本体 2.02s，外层约 7.25s）；新增 Rust PATH 解析契约测试，旧实现按预期编译失败 E0432 unresolved import resolve_command_from_path，证明尚无不依赖外部 which 的解析入口。
+
+- 2026-08-02T16:02:17.516Z Task 3 质量审查 P2 已由主 Agent 独立坐实：command_output_with_timeout 超时仅 kill/wait 直接 cmd，测试内 probe 3.02s 返回后其 PING.EXE -n 9 后代在第 4 秒仍存活，外层 cargo job 到 9.07s 才完成；重复 refresh 可积累短期/长期后代。非 Windows resolve_claude_command 仍直接 which claude .output()，spawn_blocking await 无 deadline，控制流上可被卡死的 which 永久占用 blocking worker。将交回原 reviewer 以 RED 进程树/全链路有界测试做最小修复。
+- 2026-08-02T15:46:33.372Z Task 3 规格审查通过：独立 reviewer 核对 90f5e48..49f2455 未发现规格偏差或阻塞问题；主 Agent 复核可信 Provider 来源、伪造字段拒绝、capability 分流/缓存、三类运行态门禁及忙碌时不落 operation，定向 thread_fork 17/17 通过。空闲 Claude 的占位 409 属于 Task 4 边界，不作为缺陷。
 
 - 2026-08-02T15:29:44.547Z Task 3 返工完成：Claude capability 命令身份解析改为 spawn_blocking，版本读取复用 read_cli_version 的 3 秒强制超时并解析语义版本；删除无界同步 Command::output。挂起版本命令回归测试在旧实现超过 5 秒失败，新实现 5 秒内返回。Claude 额度 429 导致原 cc coder 中断，由现有本地子 Agent按同一 RED 证据完成最小修复，主 Agent独立验收。
 - 2026-08-02T15:27:23.501Z Task 3 返工自审收紧：read_cli_version 有界返回后继续复用 parse_claude_cli_version，保持旧 cache key 的语义版本归一化不变；重新运行单项与全部指定回归、fmt、diff 均通过。
@@ -36,6 +49,25 @@
 - 2026-08-02T11:09:19.272Z Session started.
 
 ## Verification
+- 2026-08-02T16:48:44.594Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check && git diff --check`: pass: fmt/diff exit 0; main-agent final verification
+
+- 2026-08-02T16:48:33.004Z `cargo test --manifest-path src-tauri/Cargo.toml --lib`: pass: 332 passed, 0 failed, 1 ignored; main-agent final verification
+- 2026-08-02T16:45:55.845Z `cargo test --manifest-path src-tauri/Cargo.toml --lib`: pass: 332 passed, 0 failed, 1 ignored; main-agent final verification
+
+- 2026-08-02T16:45:45.683Z `CODEM_APP_DATA_DIR=<isolated temp> cargo run --manifest-path src-tauri/Cargo.toml --bin codem-backend; Invoke-RestMethod http://127.0.0.1:3001/api/health`: 通过：隔离数据目录后端启动成功；health 返回 available=true，并识别本机 claude.cmd。验收后已停止该临时进程树。
+- 2026-08-02T16:45:24.736Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check && git diff --check`: pass: fmt/diff exit 0
+
+- 2026-08-02T16:43:35.806Z `cargo test --manifest-path src-tauri/Cargo.toml --lib`: 最终通过：332 passed / 0 failed / 1 ignored；忽略项仍为需认证 Grok CLI 的既有真实 smoke。
+- 2026-08-02T16:43:35.135Z `cargo test --manifest-path src-tauri/Cargo.toml command_output_timeout_terminates_descendant_processes -- --nocapture`: 通过：1 passed / 0 failed；稳定 cmd -> cmd 后代 fixture 在 500ms timeout 后未写 survived，测试 2.28s、外层约 3.1s。
+
+- 2026-08-02T16:43:34.473Z `cargo test --manifest-path src-tauri/Cargo.toml command_group_reap_wait_is_bounded -- --nocapture`: 通过：1 passed / 0 failed；100ms 回收轮询约 0.15s 完成并返回 false，不再存在 kill 后无界 wait。
+- 2026-08-02T16:34:12.882Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check; git diff --check`: 均通过：exit code 0；仅 Git 的 LF/CRLF 工作区提示，无 whitespace error。
+
+- 2026-08-02T16:34:12.217Z `cargo test --manifest-path src-tauri/Cargo.toml --lib`: 通过：331 passed / 0 failed / 1 ignored；忽略项为需认证 Grok CLI 的既有真实 smoke。
+- 2026-08-02T16:34:11.552Z `cargo test --manifest-path src-tauri/Cargo.toml claude_fork_capability_version_probe_is_bounded_against_hanging_command -- --nocapture; cargo test --manifest-path src-tauri/Cargo.toml thread_fork -- --nocapture; cargo test --manifest-path src-tauri/Cargo.toml codex_thread_fork -- --nocapture; cargo test --manifest-path src-tauri/Cargo.toml claude_session_fork -- --nocapture`: 通过：有界能力 1/1（约 3.08s）、thread_fork 17/17、Codex 10/10、Claude bridge 16/16。
+
+- 2026-08-02T16:34:10.840Z `cargo test --manifest-path src-tauri/Cargo.toml command_output_timeout_terminates_descendant_processes -- --nocapture`: 通过：1 passed / 0 failed；Windows 真实 cmd -> PowerShell 后代在 300ms timeout 后被 Job Object 回收，1.7s 后 survived 标记不存在，外层约 2.9s 完成。
+- 2026-08-02T16:34:10.140Z `cargo test --manifest-path src-tauri/Cargo.toml command_path_resolution_uses_environment_search_order -- --nocapture`: 通过：1 passed / 0 failed；进程内 PATH 查找按目录顺序继续跳过不可运行候选并选中下一项。
 
 - 2026-08-02T15:29:43.883Z `cargo test --manifest-path src-tauri/Cargo.toml claude_fork_capability_version_probe_is_bounded_against_hanging_command && cargo test --manifest-path src-tauri/Cargo.toml thread_fork && cargo test --manifest-path src-tauri/Cargo.toml codex_thread_fork && cargo test --manifest-path src-tauri/Cargo.toml claude_session_fork && cargo test --manifest-path src-tauri/Cargo.toml --lib`: 主 Agent 独立复验通过：有界身份 1/1；thread_fork 17/17；Codex 10/10；Claude bridge 16/16；全库 lib exit 0。新增 unused warning 已修正。
 - 2026-08-02T15:28:47.437Z `git diff --check`: 最终复验通过：exit code 0，仅 Windows LF/CRLF 提示。
