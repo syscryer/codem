@@ -144,6 +144,11 @@ Out of scope:
   独立续聊和重启恢复；运行中与旧 CLI fixture 验证禁用提示。
 
 ## Implementation Record
+
+- 2026-08-02T14:56:23.064Z Task 3 RED 切片二（运行态门禁）：新增 ensure_claude_thread_fork_idle 单测（active runtime current_run_id / 未 finished ActiveRunRecord / pending context request 各自拒绝，idle 通过）与端点集成测（busy Claude /fork→409、无 operation row、源 runtime 不变）。cargo test thread_fork 实测编译失败 error[E0432] unresolved import super::ensure_claude_thread_fork_idle（helper 尚不存在）。GREEN：实现只读 ensure_claude_thread_fork_idle（runtimes.current_run_id / runs 未 finished / context_requests 三态任一即 conflict），并在 fork_thread 写 prepare_thread_fork_operation 前仅对 Claude 调用；冲突直接返回不创建 operation 记录、不触碰源 runtime，Codex 路径不变。Claude /fork 当前返回占位 conflict（Task 4 替换为真实创建）。
+- 2026-08-02T14:50:20.530Z Task 3 GREEN 切片一：新增 provider_supports_native_thread_fork / thread_fork_provider_label，read_fork_source_thread 与 prepare_thread_fork_operation 改用共享谓词，错误文案改为 Provider 中性（label 化）。路由 handler 更名为 thread_fork_capability / fork_thread（URL 与响应 wire shape 不变）。capability 按 source.provider 分流：Codex 继续 probe_thread_fork_capability，Claude 由后端 resolve_claude_command 后调用 claude_session_fork::probe_fork_session，未安装→error、旧 CLI→unsupported 升级提示、探测失败→error，全部不泄露命令参数/env。Claude capability 按 command path + 报告版本缓存 60s，refresh 绕过；缓存与 compute/read/write 全部留在 backend.rs（AppState 新增 claude_fork_capability_cache 字段）。cargo test thread_fork 实测 14 passed / 0 failed（RED 的两测转绿，新增缓存测验证缓存命中/refresh 绕过/identity 变更失效）。Codex 创建路径未改动。
+
+- 2026-08-02T14:46:32.362Z Task 3 RED 切片一（可信 Provider 接受 + 能力分流）：扩展 fork_operation_source_with_provider / fork_api_fixture_with_provider 与 ThreadForkTestDriver 的 Claude capability 字段后，新增 thread_fork_prepare_accepts_native_fork_providers、thread_fork_prepare_rejects_non_native_provider、thread_fork_capability_dispatches_claude_from_source_provider，并补齐 ThreadForkRequest 伪造 provider/sessionId/workingDirectory 断言。cargo test thread_fork 实测 11 passed / 2 failed：claude-code 源在 prepare_thread_fork_operation 被拒（400 只有已建立 Provider 会话的 OpenAI Codex 聊天支持 Fork），Claude capability 端点因 read_fork_source_thread 仍只放行 Codex 返回 400。Grok 拒绝与伪造字段守卫已通过。
 - 2026-08-02T14:28:52.194Z Task 2 cc 质量审查实质 APPROVED。唯一 P3：stderr 多字节 UTF-8 若跨 read 分块，诊断摘要可能出现替换字符。主 Agent 复核该边界理论上真实，但仅影响失败消息内最多 512 字符的 best-effort 辅助诊断，不影响 session ID、Fork 结果、隐私或进程生命周期；按低价值细节收住，不返工，后续如统一诊断流式解码再处理。Task 2 双门禁通过。
 
 - 2026-08-02T14:21:42.405Z Task 2 cc 规格审查 APPROVED。主 Agent 对唯一非阻塞提示（source_session_id 未 trim）复核：Claude session ID 来自结构化 provider event 并原样持久化，Fork 将由后端从数据库可信读取，客户端不可覆盖；当前真实链路无首尾空格触发路径，不作为缺陷返工。
@@ -163,6 +168,13 @@ Out of scope:
   无 prompt 的 `--resume + --fork-session` 获取独立 session ID，子 thread 仅在 Provider 身份确认后可见。
 
 ## Verification Results
+- 2026-08-02T14:56:31.580Z `cargo test --manifest-path src-tauri/Cargo.toml --lib`: 328 passed / 0 failed / 1 ignored（AppState 新增 claude_fork_capability_cache 字段无跨模块回归）
+
+- 2026-08-02T14:56:31.109Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check && git diff --check`: fmt --check exit 0；git diff --check exit 0（仅 LF→CRLF 归一化提示，非内容错误）
+- 2026-08-02T14:56:24.516Z `cargo test --manifest-path src-tauri/Cargo.toml claude_session_fork`: 16 passed / 0 failed（Task 2 协议桥未触碰）
+
+- 2026-08-02T14:56:24.001Z `cargo test --manifest-path src-tauri/Cargo.toml codex_thread_fork`: 10 passed / 0 failed（Codex Fork 路径无回归）
+- 2026-08-02T14:56:23.536Z `cargo test --manifest-path src-tauri/Cargo.toml thread_fork`: 17 passed / 0 failed（含 4 切片一 + 3 切片二新增；原 10 全绿）
 
 - 2026-08-02T14:15:50.901Z `cargo test --manifest-path src-tauri/Cargo.toml claude_session_fork && cargo fmt --manifest-path src-tauri/Cargo.toml --check && git diff --check HEAD^ HEAD`: 主 Agent 独立复验通过：16 passed/0 failed；fmt exit 0；diff-check exit 0。仅现有 dead_code warnings，.tmp-dev 未触碰。
 - 2026-08-02T14:15:50.214Z `cargo test --manifest-path src-tauri/Cargo.toml claude_session_fork_does_not_wait_for_descendant_stderr_eof -- --nocapture`: 主 Agent 独立复验通过：1 passed/0 failed；有效 init + 后代持有 stderr 场景不再让 Fork API 超时。

@@ -93,6 +93,17 @@ struct AppState {
     runs: Arc<Mutex<std::collections::HashMap<String, ActiveRunRecord>>>,
     runtimes: Arc<Mutex<std::collections::HashMap<String, ClaudeRuntimeRecord>>>,
     context_requests: Arc<Mutex<std::collections::HashMap<String, ClaudeContextRequestRecord>>>,
+    claude_fork_capability_cache: Arc<
+        Mutex<
+            std::collections::HashMap<
+                String,
+                (
+                    crate::agent_run::AgentForkCapabilitySummary,
+                    std::time::Instant,
+                ),
+            >,
+        >,
+    >,
     #[cfg(test)]
     thread_fork_test_driver: Option<ThreadForkTestDriver>,
 }
@@ -126,6 +137,10 @@ struct ThreadForkTestDriverState {
     reconcile_count: usize,
     read_count: usize,
     last_config: Option<crate::agent_run::AgentThreadControlConfig>,
+    claude_capability_results:
+        std::collections::VecDeque<crate::agent_run::AgentForkCapabilitySummary>,
+    claude_capability_count: usize,
+    claude_capability_identity: Option<(String, Option<String>)>,
 }
 
 #[cfg(test)]
@@ -197,6 +212,26 @@ impl ThreadForkTestDriver {
                 "Fork test driver missing read result".to_string(),
             ))
         })
+    }
+
+    fn claude_capability_identity(&self) -> Option<(String, Option<String>)> {
+        self.state
+            .lock()
+            .expect("lock Fork test driver")
+            .claude_capability_identity
+            .clone()
+    }
+
+    fn claude_probe(&self) -> crate::agent_run::AgentForkCapabilitySummary {
+        let mut state = self.state.lock().expect("lock Fork test driver");
+        state.claude_capability_count += 1;
+        state
+            .claude_capability_results
+            .pop_front()
+            .unwrap_or_else(|| crate::agent_run::AgentForkCapabilitySummary {
+                state: crate::agent_run::AgentForkCapabilityState::Supported,
+                message: None,
+            })
     }
 }
 
@@ -784,6 +819,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         runs: Arc::new(Mutex::new(std::collections::HashMap::new())),
         runtimes: Arc::new(Mutex::new(std::collections::HashMap::new())),
         context_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        claude_fork_capability_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         #[cfg(test)]
         thread_fork_test_driver: None,
     };
@@ -1055,11 +1091,11 @@ fn create_router(state: AppState) -> Router {
         .route("/api/projects/{project_id}/threads", post(create_thread))
         .route(
             "/api/projects/{project_id}/threads/{thread_id}/fork/capability",
-            post(codex_thread_fork_capability),
+            post(thread_fork_capability),
         )
         .route(
             "/api/projects/{project_id}/threads/{thread_id}/fork",
-            post(fork_codex_thread),
+            post(fork_thread),
         )
         .route("/api/projects/{project_id}/pin", post(pin_project))
         .route(
@@ -4763,7 +4799,7 @@ async fn create_thread(
     })))
 }
 
-async fn codex_thread_fork_capability(
+async fn thread_fork_capability(
     State(state): State<AppState>,
     AxumPath((project_id, thread_id)): AxumPath<(String, String)>,
     payload: Result<Json<ThreadForkCapabilityRequest>, axum::extract::rejection::JsonRejection>,
@@ -4774,13 +4810,20 @@ async fn codex_thread_fork_capability(
         let connection = open_initialized_workspace_database(&state)?;
         read_fork_source_thread(&connection, &project_id, &thread_id)?
     };
-    let capability = probe_thread_fork_capability(&state, source.control_config(), payload.refresh)
-        .await
-        .map_err(agent_thread_fork_api_error)?;
+    let capability = match source.provider.as_str() {
+        OPENAI_CODEX_PROVIDER_ID => {
+            probe_thread_fork_capability(&state, source.control_config(), payload.refresh).await
+        }
+        CLAUDE_CODE_PROVIDER_ID => {
+            probe_claude_thread_fork_capability(&state, &source, payload.refresh).await
+        }
+        _ => unreachable!("read_fork_source_thread 仅放行支持原生 Fork 的 Provider"),
+    }
+    .map_err(agent_thread_fork_api_error)?;
     Ok(Json(capability))
 }
 
-async fn fork_codex_thread(
+async fn fork_thread(
     State(state): State<AppState>,
     AxumPath((project_id, thread_id)): AxumPath<(String, String)>,
     payload: Result<Json<ThreadForkRequest>, axum::extract::rejection::JsonRejection>,
@@ -4790,6 +4833,12 @@ async fn fork_codex_thread(
         let _guard = lock_workspace_write(&state)?;
         let mut connection = open_initialized_workspace_database(&state)?;
         let source = read_fork_source_thread(&connection, &project_id, &thread_id)?;
+        if source.provider == CLAUDE_CODE_PROVIDER_ID {
+            // 仅 Claude 在写 operation 记录前执行运行态门禁；冲突时不创建 operation 记录，
+            // 也不关闭或修改源 runtime。真实 Claude 原生 Fork 创建与本地事务由 Task 4 在此插入。
+            ensure_claude_thread_fork_idle(&state, &source.id)?;
+            return Err(ApiError::conflict("Claude Code 在新聊天中继续尚未启用"));
+        }
         let operation = prepare_thread_fork_operation(
             &mut connection,
             &source,
@@ -4952,6 +5001,116 @@ async fn probe_thread_fork_capability(
         .await
 }
 
+/// 解析当前可启动的 Claude 命令身份（命令路径 + 报告版本），用于能力探测与缓存键。
+fn claude_fork_probe_identity(state: &AppState) -> Option<(String, Option<String>)> {
+    #[cfg(test)]
+    if let Some(driver) = state.thread_fork_test_driver.as_ref() {
+        return driver
+            .claude_capability_identity()
+            .or_else(|| Some(("claude".to_string(), Some("test".to_string()))));
+    }
+    let command = resolve_claude_command()?;
+    let version = read_claude_cli_version(&command);
+    Some((command, version))
+}
+
+/// 读取 `claude --version` 报告的语义版本，作为能力缓存键的一部分。
+fn read_claude_cli_version(command: &str) -> Option<String> {
+    let output = background_command(command).arg("--version").output().ok()?;
+    let output_text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    parse_claude_cli_version(output_text.trim())
+}
+
+/// 实际执行只读 `--fork-session` 探测并归一化为能力摘要。
+async fn compute_claude_fork_capability(
+    state: &AppState,
+    identity: Option<&(String, Option<String>)>,
+) -> crate::agent_run::AgentForkCapabilitySummary {
+    use crate::agent_run::{AgentForkCapabilityState, AgentForkCapabilitySummary};
+    #[cfg(test)]
+    if let Some(driver) = state.thread_fork_test_driver.as_ref() {
+        return driver.claude_probe();
+    }
+    let Some((command, _)) = identity else {
+        return AgentForkCapabilitySummary {
+            state: AgentForkCapabilityState::Error,
+            message: Some("未找到 claude 命令，请安装或恢复 Claude Code 后重试".to_string()),
+        };
+    };
+    match crate::claude_session_fork::probe_fork_session(command).await {
+        Ok(true) => AgentForkCapabilitySummary {
+            state: AgentForkCapabilityState::Supported,
+            message: None,
+        },
+        Ok(false) => AgentForkCapabilitySummary {
+            state: AgentForkCapabilityState::Unsupported,
+            message: Some("当前 Claude Code 不支持在新聊天中继续，请升级 Claude Code".to_string()),
+        },
+        Err(_) => AgentForkCapabilitySummary {
+            state: AgentForkCapabilityState::Error,
+            message: Some("无法检查 Claude Code Fork 能力，请稍后重试".to_string()),
+        },
+    }
+}
+
+fn read_cached_claude_fork_capability(
+    state: &AppState,
+    key: &str,
+) -> Option<crate::agent_run::AgentForkCapabilitySummary> {
+    let cache = state.claude_fork_capability_cache.lock().ok()?;
+    let (summary, stored) = cache.get(key)?;
+    if stored.elapsed() < CLAUDE_FORK_CAPABILITY_CACHE_TTL {
+        Some(summary.clone())
+    } else {
+        None
+    }
+}
+
+fn write_cached_claude_fork_capability(
+    state: &AppState,
+    key: &str,
+    summary: &crate::agent_run::AgentForkCapabilitySummary,
+) {
+    if let Ok(mut cache) = state.claude_fork_capability_cache.lock() {
+        cache.insert(
+            key.to_string(),
+            (summary.clone(), std::time::Instant::now()),
+        );
+    }
+}
+
+/// Claude 原生 Fork 能力探测：由后端自己解析 Claude 命令并调用协议桥，结果按命令路径
+/// 加报告版本缓存 60 秒；`refresh=true` 绕过缓存。命令参数、环境与 stderr 不会进入缓存、
+/// operation 或错误文案。
+async fn probe_claude_thread_fork_capability(
+    state: &AppState,
+    _source: &ForkSourceThread,
+    refresh: bool,
+) -> Result<crate::agent_run::AgentForkCapabilitySummary, crate::agent_run::AgentThreadForkError> {
+    let identity = claude_fork_probe_identity(state);
+    let cache_key = identity
+        .as_ref()
+        .map(|(command, version)| format!("{command}\u{0}{}", version.as_deref().unwrap_or("")));
+    if !refresh {
+        if let Some(key) = cache_key.as_deref() {
+            if let Some(cached) = read_cached_claude_fork_capability(state, key) {
+                return Ok(cached);
+            }
+        }
+    }
+    let summary = compute_claude_fork_capability(state, identity.as_ref()).await;
+    if let Some(key) = cache_key.as_deref() {
+        if summary.state != crate::agent_run::AgentForkCapabilityState::Error {
+            write_cached_claude_fork_capability(state, key, &summary);
+        }
+    }
+    Ok(summary)
+}
+
 impl AppState {
     async fn create_thread_fork_for_backend(
         &self,
@@ -5054,7 +5213,7 @@ async fn delete_thread(
     let mut connection = open_initialized_workspace_database(&state)?;
     if read_active_thread_fork_operation(&connection, &thread_id)?.is_some() {
         return Err(ApiError::conflict(
-            "当前聊天仍有未完成的 Codex Fork 恢复操作，暂时不能删除",
+            "当前聊天仍有未完成的 Fork 恢复操作，暂时不能删除",
         ));
     }
     remove_thread_row(&mut connection, &thread_id)?;
@@ -8095,6 +8254,53 @@ fn sync_thread_model_preference(
     Ok(())
 }
 
+/// Claude `--fork-session` 能力探测结果的短期缓存时长。缓存键为命令路径加报告版本，
+/// 因此 CLI 升级或命令变更会自然失效；显式 `refresh=true` 也会绕过缓存。
+const CLAUDE_FORK_CAPABILITY_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// 只有具备原生「在新聊天中继续」能力的 Provider 才能进入共享 Fork 链路。
+fn provider_supports_native_thread_fork(provider: &str) -> bool {
+    matches!(provider, CLAUDE_CODE_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID)
+}
+
+/// Fork 错误/提示文案中使用的 Provider 显示名；未知 Provider 回退为中性文案。
+fn thread_fork_provider_label(provider: &str) -> &'static str {
+    match provider {
+        CLAUDE_CODE_PROVIDER_ID => "Claude Code",
+        OPENAI_CODEX_PROVIDER_ID => "Codex CLI",
+        _ => "当前 Agent",
+    }
+}
+
+/// Claude 源聊天在创建 Fork 前必须空闲：没有进行中的运行（热 runtime 的 `current_run_id`
+/// 或未结束的 `ActiveRunRecord`），也没有待处理的人工上下文请求。调用方在写 operation
+/// 记录前调用，冲突时直接返回，不会留下脏数据；本函数只读运行态，绝不关闭或修改源 runtime。
+fn ensure_claude_thread_fork_idle(state: &AppState, thread_id: &str) -> ApiResult<()> {
+    let runtime_busy = state
+        .runtimes
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取 Claude 会话失败: {error}")))?
+        .get(thread_id)
+        .is_some_and(|runtime| runtime.current_run_id.is_some());
+    let run_busy = state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取 Claude 运行失败: {error}")))?
+        .values()
+        .any(|run| run.thread_id == thread_id && !run.finished);
+    let context_pending = state
+        .context_requests
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取 Claude 上下文请求失败: {error}")))?
+        .contains_key(thread_id);
+    if runtime_busy || run_busy || context_pending {
+        return Err(ApiError::conflict(
+            "当前聊天正在运行或等待处理，暂时不能在新聊天中继续",
+        ));
+    }
+    Ok(())
+}
+
 fn read_fork_source_thread(
     connection: &Connection,
     project_id: &str,
@@ -8134,13 +8340,17 @@ fn read_fork_source_thread(
         .optional()
         .map_err(|error| ApiError::internal(format!("读取 Fork 源聊天失败: {error}")))?
         .ok_or_else(|| ApiError::not_found("项目中的源聊天不存在"))?;
-    if source.provider != OPENAI_CODEX_PROVIDER_ID {
-        return Err(ApiError::bad_request(
-            "只有 OpenAI Codex 聊天支持在新聊天中继续",
-        ));
+    if !provider_supports_native_thread_fork(&source.provider) {
+        return Err(ApiError::bad_request(format!(
+            "{} 暂不支持在新聊天中继续",
+            thread_fork_provider_label(&source.provider)
+        )));
     }
     if source.provider_thread_id.trim().is_empty() {
-        return Err(ApiError::bad_request("当前聊天尚未绑定 Codex 会话"));
+        return Err(ApiError::bad_request(format!(
+            "当前聊天尚未绑定 {} 会话",
+            thread_fork_provider_label(&source.provider)
+        )));
     }
     ensure_fork_working_directory_is_in_project(&project_path, &source.working_directory)?;
     Ok(source)
@@ -8466,10 +8676,17 @@ fn prepare_thread_fork_operation(
             "operationId 仅支持 128 个以内的字母、数字、连字符或下划线",
         ));
     }
-    if source.provider != OPENAI_CODEX_PROVIDER_ID || source.provider_thread_id.trim().is_empty() {
-        return Err(ApiError::bad_request(
-            "只有已建立 Provider 会话的 OpenAI Codex 聊天支持 Fork",
-        ));
+    if !provider_supports_native_thread_fork(&source.provider) {
+        return Err(ApiError::bad_request(format!(
+            "{} 暂不支持在新聊天中继续",
+            thread_fork_provider_label(&source.provider)
+        )));
+    }
+    if source.provider_thread_id.trim().is_empty() {
+        return Err(ApiError::bad_request(format!(
+            "当前聊天尚未绑定 {} 会话",
+            thread_fork_provider_label(&source.provider)
+        )));
     }
     let source_turns = read_stored_thread_history(connection, &source.id)?;
     if source_turns.iter().any(has_pending_human_request) {
@@ -8504,9 +8721,10 @@ fn prepare_thread_fork_operation(
                 .ok_or_else(|| ApiError::internal("重新准备 Fork 操作后记录不存在"));
         }
         if existing.status == ThreadForkOperationStatus::Failed {
-            return Err(ApiError::conflict(
-                "Codex 已可能创建 Provider 聊天，不能直接重新发送 Fork",
-            ));
+            return Err(ApiError::conflict(format!(
+                "{} 已可能创建新会话，不能直接重新发送 Fork",
+                thread_fork_provider_label(&source.provider)
+            )));
         }
         return Ok(existing);
     }
@@ -19932,7 +20150,7 @@ mod tests {
         create_router, create_thread_row, current_claude_install_lifecycle_plan,
         default_claude_command_paths, default_grok_command_path, default_pi_command_paths,
         desktop_cors_layer, ensure_agent_plugin_management_supported,
-        extract_agent_semantic_version, finalize_local_thread_fork,
+        ensure_claude_thread_fork_idle, extract_agent_semantic_version, finalize_local_thread_fork,
         import_claude_sessions_from_root, initialize_workspace_database,
         install_skill_directory_safely, is_agent_lifecycle_network_failure, lifecycle_plan,
         lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
@@ -19944,20 +20162,23 @@ mod tests {
         parse_grok_cli_version, parse_grok_latest_version, parse_macos_system_proxy_environment,
         parse_npm_latest_version, parse_pi_installed_packages, parse_request_user_input_event,
         pi_node_version_supported, prepare_thread_fork_operation,
-        provider_supports_reasoning_effort, read_agent_mcp_config_snapshot,
-        read_fork_source_thread, read_opencode_mcp_config, read_state_value,
-        read_stored_thread_history, read_thread_detail, read_thread_fork_operation,
-        read_thread_summary, recover_stale_thread_fork_operations, remove_thread_row,
-        resolve_codex_command, resolve_first_runnable_command, resolve_grok_command,
-        resolve_opencode_command, resolve_pi_command, resolve_requested_thread_provider,
-        resolve_thread_create_permission_mode, resolve_workspace_relative_path,
-        sanitize_agent_lifecycle_output, sanitize_external_command_result, search_workspace_files,
+        probe_claude_thread_fork_capability, provider_supports_reasoning_effort,
+        read_agent_mcp_config_snapshot, read_fork_source_thread, read_opencode_mcp_config,
+        read_state_value, read_stored_thread_history, read_thread_detail,
+        read_thread_fork_operation, read_thread_summary, recover_stale_thread_fork_operations,
+        remove_thread_row, resolve_codex_command, resolve_first_runnable_command,
+        resolve_grok_command, resolve_opencode_command, resolve_pi_command,
+        resolve_requested_thread_provider, resolve_thread_create_permission_mode,
+        resolve_workspace_relative_path, sanitize_agent_lifecycle_output,
+        sanitize_external_command_result, search_workspace_files,
         select_runnable_command_candidate, should_emit_claude_raw_event, should_store_run_event,
         summarize_content_blocks, update_thread_metadata_from_payload, validate_desktop_file_path,
         validate_managed_agent_skill_path, windows_claude_install_lifecycle_plan,
         windows_shell_execute_error_message, write_opencode_mcp_config, write_state_value,
-        write_thread_history, ApiError, AppState, ForkSourceThread, ThreadForkCapabilityRequest,
-        ThreadForkOperationStatus, ThreadForkRequest, ThreadForkTestDriver,
+        write_thread_history, ActiveRunRecord, ApiError, AppState, ClaudeContextRequestError,
+        ClaudeContextRequestRecord, ClaudeRuntimeRecord, ForkSourceThread,
+        ThreadForkCapabilityRequest, ThreadForkOperationStatus, ThreadForkRequest,
+        ThreadForkTestDriver,
     };
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
@@ -20015,12 +20236,33 @@ mod tests {
             runs: Arc::new(Mutex::new(HashMap::new())),
             runtimes: Arc::new(Mutex::new(HashMap::new())),
             context_requests: Arc::new(Mutex::new(HashMap::new())),
+            claude_fork_capability_cache: Arc::new(Mutex::new(HashMap::new())),
             thread_fork_test_driver: None,
         }
     }
 
     fn fork_api_fixture(
         label: &str,
+    ) -> (
+        TestDirectory,
+        AppState,
+        ThreadForkTestDriver,
+        String,
+        String,
+    ) {
+        fork_api_fixture_with_provider(
+            label,
+            OPENAI_CODEX_PROVIDER_ID,
+            "provider-source",
+            "gpt-codex",
+        )
+    }
+
+    fn fork_api_fixture_with_provider(
+        label: &str,
+        provider: &str,
+        session_id: &str,
+        model: &str,
     ) -> (
         TestDirectory,
         AppState,
@@ -20042,9 +20284,9 @@ mod tests {
             &mut connection,
             &project_id,
             Some("Source"),
-            OPENAI_CODEX_PROVIDER_ID,
+            provider,
             Some("auto"),
-            Some("gpt-codex"),
+            Some(model),
             Some("high"),
             None,
             true,
@@ -20052,8 +20294,8 @@ mod tests {
         .expect("create Fork source thread");
         connection
             .execute(
-                "UPDATE threads SET session_id = 'provider-source' WHERE id = ?",
-                params![source_thread_id],
+                "UPDATE threads SET session_id = ? WHERE id = ?",
+                params![session_id, source_thread_id],
             )
             .expect("bind Fork source Provider thread");
         drop(connection);
@@ -20101,6 +20343,100 @@ mod tests {
         }
     }
 
+    fn dummy_claude_stdin() -> Arc<tokio::sync::Mutex<tokio::process::ChildStdin>> {
+        let mut command = tokio::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+        if cfg!(windows) {
+            command.arg("/c").arg("exit").arg("0");
+        } else {
+            command.arg("-c").arg("true");
+        }
+        command.stdin(std::process::Stdio::piped());
+        command.stdout(std::process::Stdio::null());
+        command.stderr(std::process::Stdio::null());
+        let mut child = command
+            .spawn()
+            .expect("spawn dummy process for Claude runtime stdin");
+        let stdin = child.stdin.take().expect("take piped stdin");
+        drop(child);
+        Arc::new(tokio::sync::Mutex::new(stdin))
+    }
+
+    fn inject_claude_runtime(state: &AppState, thread_id: &str, current_run_id: Option<&str>) {
+        let runtime = ClaudeRuntimeRecord {
+            thread_id: thread_id.to_string(),
+            working_directory: "D:/workspace".to_string(),
+            permission_mode: "default".to_string(),
+            model: None,
+            effort: None,
+            channel_id: None,
+            channel_fingerprint: None,
+            session_id: Some("claude-session".to_string()),
+            child_id: 0,
+            stdin: dummy_claude_stdin(),
+            current_run_id: current_run_id.map(str::to_string),
+            closed: false,
+        };
+        state
+            .runtimes
+            .lock()
+            .expect("lock runtimes")
+            .insert(thread_id.to_string(), runtime);
+    }
+
+    fn inject_active_run(state: &AppState, run_id: &str, thread_id: &str, finished: bool) {
+        let record = ActiveRunRecord {
+            run_id: run_id.to_string(),
+            thread_id: thread_id.to_string(),
+            turn_id: None,
+            prompt: String::new(),
+            user_content_blocks: None,
+            working_directory: "D:/workspace".to_string(),
+            session_id: None,
+            permission_mode: "default".to_string(),
+            model: None,
+            effort: None,
+            channel_id: None,
+            started_at_ms: 0,
+            events: Vec::new(),
+            finished,
+            child_id: None,
+            stdin: None,
+            notify: Arc::new(tokio::sync::Notify::new()),
+            collected_result: String::new(),
+            saw_done: false,
+            control_request_tool_use_ids: std::collections::HashMap::new(),
+            emitted_request_user_input_keys: std::collections::HashSet::new(),
+            emitted_approval_request_keys: std::collections::HashSet::new(),
+            emitted_recovery_hint_keys: std::collections::HashSet::new(),
+            paused_for_user_input: false,
+            block_type_by_index: std::collections::HashMap::new(),
+            tool_input_accumulators: std::collections::HashMap::new(),
+            last_phase_event: None,
+        };
+        state
+            .runs
+            .lock()
+            .expect("lock runs")
+            .insert(run_id.to_string(), record);
+    }
+
+    fn inject_context_request(state: &AppState, thread_id: &str) {
+        let (responder, _receiver) =
+            tokio::sync::oneshot::channel::<Result<Value, ClaudeContextRequestError>>();
+        let record = ClaudeContextRequestRecord {
+            requested_at_ms: 0,
+            event_count: 0,
+            assistant_texts: Vec::new(),
+            stderr_lines: Vec::new(),
+            responder: Some(responder),
+        };
+        state
+            .context_requests
+            .lock()
+            .expect("lock context requests")
+            .insert(thread_id.to_string(), record);
+    }
+
     #[tokio::test]
     async fn codex_thread_fork_capability_rejects_forged_fields_as_bad_request() {
         let root = TestDirectory::new("fork-strict-request");
@@ -20117,6 +20453,187 @@ mod tests {
             .await
             .expect("run Fork capability request");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn thread_fork_capability_dispatches_claude_from_source_provider() {
+        let (_root, state, driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
+            "fork-capability-claude",
+            CLAUDE_CODE_PROVIDER_ID,
+            "claude-session",
+            "sonnet",
+        );
+        {
+            let mut driver_state = driver.state.lock().expect("lock Fork test driver");
+            driver_state.claude_capability_results.push_back(
+                crate::agent_run::AgentForkCapabilitySummary {
+                    state: crate::agent_run::AgentForkCapabilityState::Supported,
+                    message: None,
+                },
+            );
+        }
+        let app = create_router(state.clone());
+        let response = run_json_request(
+            &app,
+            Method::POST,
+            &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork/capability"),
+            json!({ "refresh": false }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(payload["state"], "supported");
+        let driver_state = driver.state.lock().expect("lock Fork test driver");
+        assert_eq!(
+            driver_state.claude_capability_count, 1,
+            "capability must dispatch to Claude from the source provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_thread_fork_capability_caches_probe_until_refresh_or_identity_change() {
+        let root = TestDirectory::new("claude-fork-capability-cache");
+        let driver = ThreadForkTestDriver::default();
+        let mut state = test_app_state(root.0.clone());
+        state.thread_fork_test_driver = Some(driver.clone());
+        let source = ForkSourceThread {
+            id: "claude-source".to_string(),
+            project_id: "project-1".to_string(),
+            provider: CLAUDE_CODE_PROVIDER_ID.to_string(),
+            title: "Source".to_string(),
+            custom_title: false,
+            provider_thread_id: "claude-session".to_string(),
+            working_directory: "D:/workspace".to_string(),
+            model: Some("sonnet".to_string()),
+            reasoning_effort: Some("high".to_string()),
+            permission_mode: Some("default".to_string()),
+            agent_channel_id: None,
+        };
+        {
+            let mut driver_state = driver.state.lock().expect("lock Fork test driver");
+            driver_state.claude_capability_identity =
+                Some(("claude".to_string(), Some("2.1.220".to_string())));
+            driver_state.claude_capability_results.push_back(
+                crate::agent_run::AgentForkCapabilitySummary {
+                    state: crate::agent_run::AgentForkCapabilityState::Supported,
+                    message: None,
+                },
+            );
+        }
+        let first = probe_claude_thread_fork_capability(&state, &source, false)
+            .await
+            .expect("first Claude capability probe");
+        let second = probe_claude_thread_fork_capability(&state, &source, false)
+            .await
+            .expect("cached Claude capability probe");
+        assert_eq!(
+            first.state,
+            crate::agent_run::AgentForkCapabilityState::Supported
+        );
+        assert_eq!(second.state, first.state);
+        {
+            let driver_state = driver.state.lock().expect("lock Fork test driver");
+            assert_eq!(
+                driver_state.claude_capability_count, 1,
+                "second probe must hit the cache"
+            );
+        }
+        let _refreshed = probe_claude_thread_fork_capability(&state, &source, true)
+            .await
+            .expect("refreshed Claude capability probe");
+        {
+            let mut driver_state = driver.state.lock().expect("lock Fork test driver");
+            assert_eq!(
+                driver_state.claude_capability_count, 2,
+                "refresh must bypass the cache"
+            );
+            driver_state.claude_capability_identity =
+                Some(("claude".to_string(), Some("2.1.230".to_string())));
+        }
+        let _rekeyed = probe_claude_thread_fork_capability(&state, &source, false)
+            .await
+            .expect("re-probe after identity change");
+        let driver_state = driver.state.lock().expect("lock Fork test driver");
+        assert_eq!(
+            driver_state.claude_capability_count, 3,
+            "changed command/version identity must miss the cache"
+        );
+    }
+
+    #[test]
+    fn ensure_claude_thread_fork_idle_rejects_active_states() {
+        let runtime_root = TestDirectory::new("claude-fork-gate-runtime");
+        let runtime_state = test_app_state(runtime_root.0.clone());
+        inject_claude_runtime(&runtime_state, "thread-1", Some("run-active"));
+        assert!(
+            ensure_claude_thread_fork_idle(&runtime_state, "thread-1").is_err(),
+            "active Claude runtime current_run_id must block fork"
+        );
+
+        let run_root = TestDirectory::new("claude-fork-gate-run");
+        let run_state = test_app_state(run_root.0.clone());
+        inject_active_run(&run_state, "run-2", "thread-1", false);
+        assert!(
+            ensure_claude_thread_fork_idle(&run_state, "thread-1").is_err(),
+            "unfinished run record must block fork"
+        );
+
+        let context_root = TestDirectory::new("claude-fork-gate-context");
+        let context_state = test_app_state(context_root.0.clone());
+        inject_context_request(&context_state, "thread-1");
+        assert!(
+            ensure_claude_thread_fork_idle(&context_state, "thread-1").is_err(),
+            "pending context request must block fork"
+        );
+    }
+
+    #[test]
+    fn ensure_claude_thread_fork_idle_passes_when_idle() {
+        let root = TestDirectory::new("claude-fork-gate-idle");
+        let state = test_app_state(root.0.clone());
+        inject_claude_runtime(&state, "thread-1", None);
+        assert!(
+            ensure_claude_thread_fork_idle(&state, "thread-1").is_ok(),
+            "idle runtime without a current run must allow fork"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_thread_fork_rejects_busy_source_without_operation_row() {
+        let (_root, state, _driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
+            "fork-claude-busy-gate",
+            CLAUDE_CODE_PROVIDER_ID,
+            "claude-session",
+            "sonnet",
+        );
+        inject_claude_runtime(&state, &source_thread_id, Some("run-active"));
+        let app = create_router(state.clone());
+        let response = run_json_request(
+            &app,
+            Method::POST,
+            &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+            json!({ "operationId": "operation-busy" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(
+            state
+                .runtimes
+                .lock()
+                .expect("lock runtimes")
+                .contains_key(&source_thread_id),
+            "busy source runtime must not be closed or removed"
+        );
+        let connection = open_initialized_workspace_database(&state).expect("open workspace db");
+        let count = connection
+            .query_row("SELECT COUNT(*) FROM thread_fork_operations", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count operations");
+        assert_eq!(
+            count, 0,
+            "no operation row may be created while the Claude source is busy"
+        );
     }
 
     #[tokio::test]
@@ -21640,6 +22157,7 @@ mod tests {
             runs: Arc::new(Mutex::new(HashMap::new())),
             runtimes: Arc::new(Mutex::new(HashMap::new())),
             context_requests: Arc::new(Mutex::new(HashMap::new())),
+            claude_fork_capability_cache: Arc::new(Mutex::new(HashMap::new())),
             thread_fork_test_driver: None,
         })
         .merge(crate::ordinary_chat::router(ordinary_chat))
@@ -22285,6 +22803,20 @@ mod tests {
     }
 
     fn fork_operation_source(connection: &Connection, id: &str) -> ForkSourceThread {
+        fork_operation_source_with_provider(
+            connection,
+            id,
+            OPENAI_CODEX_PROVIDER_ID,
+            "provider-source",
+        )
+    }
+
+    fn fork_operation_source_with_provider(
+        connection: &Connection,
+        id: &str,
+        provider: &str,
+        session_id: &str,
+    ) -> ForkSourceThread {
         connection
             .execute(
                 "INSERT OR IGNORE INTO projects (id, path, name, custom_name, created_at, updated_at) VALUES ('fork-project', 'D:/workspace', 'workspace', 0, '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z')",
@@ -22299,21 +22831,21 @@ mod tests {
                   working_directory, model, reasoning_effort, permission_mode, agent_channel_id,
                   agent_channel_fingerprint, imported, created_at, updated_at, pinned_at
                 )
-                VALUES (?, 'fork-project', ?, '源聊天', 1, 'provider-source', NULL,
+                VALUES (?, 'fork-project', ?, '源聊天', 1, ?, NULL,
                         'D:/workspace', 'gpt-codex', 'high', 'auto', 'channel-1',
                         'fingerprint-1', 0, '2026-08-02T00:00:00.000Z',
                         '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z')
                 "#,
-                params![id, OPENAI_CODEX_PROVIDER_ID],
+                params![id, provider, session_id],
             )
             .expect("insert fork source thread");
         ForkSourceThread {
             id: id.to_string(),
             project_id: "fork-project".to_string(),
-            provider: OPENAI_CODEX_PROVIDER_ID.to_string(),
+            provider: provider.to_string(),
             title: "源聊天".to_string(),
             custom_title: true,
-            provider_thread_id: "provider-source".to_string(),
+            provider_thread_id: session_id.to_string(),
             working_directory: "D:/workspace".to_string(),
             model: Some("gpt-codex".to_string()),
             reasoning_effort: Some("high".to_string()),
@@ -22660,6 +23192,68 @@ mod tests {
     }
 
     #[test]
+    fn thread_fork_prepare_accepts_native_fork_providers() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let claude_source = fork_operation_source_with_provider(
+            &connection,
+            "claude-source",
+            CLAUDE_CODE_PROVIDER_ID,
+            "claude-session",
+        );
+        let claude_operation = prepare_thread_fork_operation(
+            &mut connection,
+            &claude_source,
+            "operation-claude",
+            1_754_092_800_000,
+        )
+        .expect("claude-code source supports thread fork");
+        assert_eq!(claude_operation.source_provider_thread_id, "claude-session");
+        let codex_source = fork_operation_source_with_provider(
+            &connection,
+            "codex-source",
+            OPENAI_CODEX_PROVIDER_ID,
+            "codex-session",
+        );
+        let codex_operation = prepare_thread_fork_operation(
+            &mut connection,
+            &codex_source,
+            "operation-codex",
+            1_754_092_801_000,
+        )
+        .expect("openai-codex source supports thread fork");
+        assert_eq!(codex_operation.source_provider_thread_id, "codex-session");
+    }
+
+    #[test]
+    fn thread_fork_prepare_rejects_non_native_provider() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let grok_source = fork_operation_source_with_provider(
+            &connection,
+            "grok-source",
+            GROK_BUILD_PROVIDER_ID,
+            "grok-session",
+        );
+        let error = prepare_thread_fork_operation(
+            &mut connection,
+            &grok_source,
+            "operation-grok",
+            1_754_092_800_000,
+        )
+        .expect_err("reject provider without native fork");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM thread_fork_operations", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("count operations"),
+            0
+        );
+    }
+
+    #[test]
     fn codex_thread_fork_capability_derives_runtime_identity_from_source() {
         let capability = serde_json::from_value::<ThreadForkCapabilityRequest>(json!({
             "refresh": true
@@ -22673,11 +23267,16 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<ThreadForkCapabilityRequest>(forged).is_err());
         }
-        assert!(serde_json::from_value::<ThreadForkRequest>(json!({
-            "operationId": "operation-1",
-            "sessionId": "forged"
-        }))
-        .is_err());
+        for forged in [
+            json!({ "operationId": "operation-1", "provider": "claude-code" }),
+            json!({ "operationId": "operation-1", "sessionId": "forged" }),
+            json!({ "operationId": "operation-1", "workingDirectory": "D:/elsewhere" }),
+        ] {
+            assert!(
+                serde_json::from_value::<ThreadForkRequest>(forged).is_err(),
+                "fork request must reject forged identity fields"
+            );
+        }
 
         let source = ForkSourceThread {
             id: "source-thread".to_string(),
