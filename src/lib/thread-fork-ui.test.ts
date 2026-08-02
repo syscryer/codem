@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const appSource = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+const workspaceSource = readFileSync(new URL('../hooks/useWorkspaceState.ts', import.meta.url), 'utf8');
 const headerSource = readFileSync(new URL('../components/ChatHeader.tsx', import.meta.url), 'utf8');
 const sidebarSource = readFileSync(new URL('../components/SidebarProjects.tsx', import.meta.url), 'utf8');
 
@@ -33,4 +34,14 @@ test('App derives busy and pending states without provider fallbacks', () => {
     appSource,
     /copy(?:Source)?Turns|fork(?:From)?Summary|createThread\([^)]*fork/is,
   );
+});
+
+test('frontend uses the provider-neutral fork module and preserves the shared API contract', () => {
+  assert.match(appSource, /from '\.\/lib\/thread-fork'/);
+  assert.match(workspaceSource, /from '\.\.\/lib\/thread-fork'/);
+  assert.doesNotMatch(appSource, /codex-thread-fork/);
+  assert.doesNotMatch(workspaceSource, /CodexThreadForkCapability|codex-thread-fork/);
+  assert.match(workspaceSource, /\/fork\/capability/);
+  assert.match(workspaceSource, /\/fork`/);
+  assert.match(workspaceSource, /JSON\.stringify\(\{ operationId \}\)/);
 });

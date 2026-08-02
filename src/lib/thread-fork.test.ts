@@ -5,7 +5,7 @@ import {
   getThreadForkAvailability,
   threadDetailFromForkResponse,
   threadForkCapabilityKey,
-} from './codex-thread-fork';
+} from './thread-fork';
 
 function thread(overrides: Partial<ThreadSummary> = {}): ThreadSummary {
   return {
@@ -21,6 +21,7 @@ function thread(overrides: Partial<ThreadSummary> = {}): ThreadSummary {
     reasoningEffort: 'high',
     permissionMode: 'auto',
     agentChannelId: 'channel-1',
+    agentChannelFingerprint: 'fingerprint-1',
     ...overrides,
   };
 }
@@ -37,7 +38,7 @@ function response(historyState: 'loaded' | 'pending'): ThreadForkResponse {
       threadId: child.id,
       turns: historyState === 'loaded'
         ? [{
-            id: 'codex:provider-child:turn-1',
+            id: 'provider:provider-child:turn-1',
             userText: 'hello',
             workspace: child.workingDirectory,
             assistantText: 'answer',
@@ -50,7 +51,86 @@ function response(historyState: 'loaded' | 'pending'): ThreadForkResponse {
   };
 }
 
-test('fork availability reports every blocking reason', () => {
+test('fork availability supports Claude Code and Codex CLI', () => {
+  const base = {
+    capability: { state: 'supported' as const },
+    busy: false,
+    pendingHumanRequest: false,
+    forking: false,
+  };
+
+  assert.deepEqual(
+    getThreadForkAvailability({ ...base, thread: thread({ provider: 'openai-codex' }) }),
+    { enabled: true },
+  );
+  assert.deepEqual(
+    getThreadForkAvailability({ ...base, thread: thread({ provider: 'claude-code' }) }),
+    { enabled: true },
+  );
+  assert.deepEqual(
+    getThreadForkAvailability({ ...base, thread: thread({ provider: 'opencode' }) }),
+    { enabled: false, reason: '当前 Agent 暂不支持在新聊天中继续' },
+  );
+});
+
+test('fork availability uses provider-aware capability messages', () => {
+  const base = {
+    busy: false,
+    pendingHumanRequest: false,
+    forking: false,
+  };
+  const providers = [
+    { provider: 'openai-codex', agent: 'Codex CLI' },
+    { provider: 'claude-code', agent: 'Claude Code' },
+  ];
+
+  for (const { provider, agent } of providers) {
+    assert.deepEqual(
+      getThreadForkAvailability({
+        ...base,
+        thread: thread({ provider, sessionId: '' }),
+        capability: { state: 'supported' },
+      }),
+      { enabled: false, reason: `当前聊天尚未绑定 ${agent} 会话` },
+    );
+    assert.deepEqual(
+      getThreadForkAvailability({ ...base, thread: thread({ provider }), capability: undefined }),
+      { enabled: false, reason: `正在检查 ${agent} Fork 能力` },
+    );
+    assert.deepEqual(
+      getThreadForkAvailability({
+        ...base,
+        thread: thread({ provider }),
+        capability: { state: 'checking' },
+      }),
+      { enabled: false, reason: `正在检查 ${agent} Fork 能力` },
+    );
+    assert.deepEqual(
+      getThreadForkAvailability({
+        ...base,
+        thread: thread({ provider }),
+        capability: { state: 'unsupported' },
+      }),
+      {
+        enabled: false,
+        reason: `当前 ${agent} 不支持在新聊天中继续，请升级 ${agent}。`,
+      },
+    );
+    assert.deepEqual(
+      getThreadForkAvailability({
+        ...base,
+        thread: thread({ provider }),
+        capability: { state: 'unsupported', message: 'method not found' },
+      }),
+      {
+        enabled: false,
+        reason: `当前 ${agent} 不支持在新聊天中继续，请升级 ${agent}。method not found`,
+      },
+    );
+  }
+});
+
+test('fork availability preserves runtime and operation gates', () => {
   const base = {
     thread: thread(),
     capability: { state: 'supported' as const },
@@ -58,14 +138,7 @@ test('fork availability reports every blocking reason', () => {
     pendingHumanRequest: false,
     forking: false,
   };
-  assert.deepEqual(
-    getThreadForkAvailability({ ...base, thread: thread({ provider: 'claude-code' }) }),
-    { enabled: false, reason: '仅 Codex 聊天支持在新聊天中继续' },
-  );
-  assert.deepEqual(
-    getThreadForkAvailability({ ...base, thread: thread({ sessionId: '' }) }),
-    { enabled: false, reason: '当前聊天尚未绑定 Codex 会话' },
-  );
+
   assert.deepEqual(getThreadForkAvailability({ ...base, busy: true }), {
     enabled: false,
     reason: '当前聊天正在运行',
@@ -74,21 +147,10 @@ test('fork availability reports every blocking reason', () => {
     enabled: false,
     reason: '当前聊天正在等待确认或输入',
   });
-  assert.deepEqual(getThreadForkAvailability({ ...base, capability: undefined }), {
+  assert.deepEqual(getThreadForkAvailability({ ...base, forking: true }), {
     enabled: false,
-    reason: '正在检查 Codex Fork 能力',
+    reason: '正在创建新聊天',
   });
-  assert.match(
-    getThreadForkAvailability({ ...base, capability: { state: 'unsupported' } }).reason ?? '',
-    /升级 Codex CLI/,
-  );
-  assert.match(
-    getThreadForkAvailability({
-      ...base,
-      capability: { state: 'unsupported', message: 'method not found' },
-    }).reason ?? '',
-    /升级 Codex CLI/,
-  );
   assert.deepEqual(
     getThreadForkAvailability({
       ...base,
@@ -96,11 +158,6 @@ test('fork availability reports every blocking reason', () => {
     }),
     { enabled: false, reason: 'probe failed' },
   );
-  assert.deepEqual(getThreadForkAvailability({ ...base, forking: true }), {
-    enabled: false,
-    reason: '正在创建新聊天',
-  });
-  assert.deepEqual(getThreadForkAvailability(base), { enabled: true });
 });
 
 test('fork response creates an isolated loaded ThreadDetail', () => {
@@ -120,11 +177,23 @@ test('history-pending fork detail stays recoverable without source fallback', ()
   assert.equal(detail.id, 'local-child');
   assert.equal(detail.sessionId, 'provider-child');
   assert.deepEqual(detail.turns, []);
+  assert.deepEqual(detail.debugEvents, []);
+  assert.deepEqual(detail.rawEvents, []);
   assert.equal(detail.historyLoaded, false);
   assert.equal(detail.historyLoading, false);
 });
 
-test('fork capability key changes with trusted runtime identity', () => {
+test('fork response rejects inconsistent thread identities', () => {
+  const mismatchedThread = response('loaded');
+  mismatchedThread.threadId = 'other-thread';
+  assert.throws(() => threadDetailFromForkResponse(mismatchedThread), /聊天 ID 不一致/);
+
+  const mismatchedHistory = response('loaded');
+  mismatchedHistory.history.threadId = 'other-thread';
+  assert.throws(() => threadDetailFromForkResponse(mismatchedHistory), /聊天 ID 不一致/);
+});
+
+test('fork capability key changes with every trusted runtime identity field', () => {
   const source = thread();
   const baseKey = threadForkCapabilityKey(source);
   const changes: Array<Partial<ThreadSummary>> = [
@@ -135,6 +204,7 @@ test('fork capability key changes with trusted runtime identity', () => {
     { reasoningEffort: 'medium' },
     { permissionMode: 'bypassPermissions' },
     { agentChannelId: 'channel-2' },
+    { agentChannelFingerprint: 'fingerprint-2' },
   ];
   for (const change of changes) {
     assert.notEqual(threadForkCapabilityKey(thread(change)), baseKey);

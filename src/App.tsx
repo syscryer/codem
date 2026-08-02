@@ -64,7 +64,7 @@ import {
   getCompactAvailability,
   readCompactMetadata,
 } from './lib/codex-compact';
-import { getThreadForkAvailability, threadForkCapabilityKey } from './lib/codex-thread-fork';
+import { getThreadForkAvailability, threadForkCapabilityKey } from './lib/thread-fork';
 import { resolveChatRuntimeKind } from './lib/agent-provider-registry';
 import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
 import { openExternalUrl } from './lib/markdown-link';

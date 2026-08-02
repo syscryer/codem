@@ -1,12 +1,15 @@
 import type {
-  CodexThreadForkCapability,
   ThreadDetail,
   ThreadForkAvailability,
+  ThreadForkCapability,
   ThreadForkResponse,
   ThreadSummary,
 } from '../types';
 
-const OPENAI_CODEX_PROVIDER_ID = 'openai-codex';
+const THREAD_FORK_PROVIDER_LABELS: Record<string, string> = {
+  'claude-code': 'Claude Code',
+  'openai-codex': 'Codex CLI',
+};
 
 export function threadForkCapabilityKey(thread: ThreadSummary): string {
   return JSON.stringify([
@@ -23,16 +26,17 @@ export function threadForkCapabilityKey(thread: ThreadSummary): string {
 
 export function getThreadForkAvailability(input: {
   thread: ThreadSummary;
-  capability?: CodexThreadForkCapability;
+  capability?: ThreadForkCapability;
   busy: boolean;
   pendingHumanRequest: boolean;
   forking: boolean;
 }): ThreadForkAvailability {
-  if (input.thread.provider !== OPENAI_CODEX_PROVIDER_ID) {
-    return { enabled: false, reason: '仅 Codex 聊天支持在新聊天中继续' };
+  const providerLabel = THREAD_FORK_PROVIDER_LABELS[input.thread.provider];
+  if (!providerLabel) {
+    return { enabled: false, reason: '当前 Agent 暂不支持在新聊天中继续' };
   }
   if (!input.thread.sessionId.trim()) {
-    return { enabled: false, reason: '当前聊天尚未绑定 Codex 会话' };
+    return { enabled: false, reason: `当前聊天尚未绑定 ${providerLabel} 会话` };
   }
   if (input.busy) {
     return { enabled: false, reason: '当前聊天正在运行' };
@@ -44,20 +48,20 @@ export function getThreadForkAvailability(input: {
     return { enabled: false, reason: '正在创建新聊天' };
   }
   if (!input.capability || input.capability.state === 'checking') {
-    return { enabled: false, reason: '正在检查 Codex Fork 能力' };
+    return { enabled: false, reason: `正在检查 ${providerLabel} Fork 能力` };
   }
   if (input.capability.state === 'unsupported') {
     return {
       enabled: false,
       reason: input.capability.message
-        ? `当前 Codex CLI 不支持在新聊天中继续，请升级 Codex CLI。${input.capability.message}`
-        : '当前 Codex CLI 不支持在新聊天中继续，请升级 Codex CLI。',
+        ? `当前 ${providerLabel} 不支持在新聊天中继续，请升级 ${providerLabel}。${input.capability.message}`
+        : `当前 ${providerLabel} 不支持在新聊天中继续，请升级 ${providerLabel}。`,
     };
   }
   if (input.capability.state === 'error') {
     return {
       enabled: false,
-      reason: input.capability.message || '无法检查 Codex Fork 能力',
+      reason: input.capability.message || `无法检查 ${providerLabel} Fork 能力`,
     };
   }
   return { enabled: true };

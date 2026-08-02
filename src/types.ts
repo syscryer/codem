@@ -1088,7 +1088,7 @@ export type ThreadSummary = {
   pinnedAt?: string;
 };
 
-export type CodexThreadForkCapability = {
+export type ThreadForkCapability = {
   state: 'checking' | 'supported' | 'unsupported' | 'error';
   message?: string;
 };

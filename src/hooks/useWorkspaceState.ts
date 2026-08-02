@@ -12,12 +12,12 @@ import { resolveNewChatDraftProjectId } from '../lib/new-chat-draft';
 import {
   threadDetailFromForkResponse,
   threadForkCapabilityKey,
-} from '../lib/codex-thread-fork';
+} from '../lib/thread-fork';
 import { buildWorkspaceSidebarSections } from '../lib/workspace-pinning';
 import type {
   AgentProviderId,
   CloneTask,
-  CodexThreadForkCapability,
+  ThreadForkCapability,
   ConfirmDialogState,
   ConversationTurn,
   DebugEvent,
@@ -111,7 +111,7 @@ export function useWorkspaceState() {
   const [isNewChatDraft, setIsNewChatDraft] = useState(false);
   const [threadDetails, setThreadDetails] = useState<Record<string, ThreadDetail>>({});
   const [threadForkCapabilities, setThreadForkCapabilities] = useState<
-    Record<string, CodexThreadForkCapability>
+    Record<string, ThreadForkCapability>
   >({});
   const [forkingThreadIds, setForkingThreadIds] = useState<string[]>([]);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -122,7 +122,7 @@ export function useWorkspaceState() {
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const threadDetailsRef = useRef<Record<string, ThreadDetail>>({});
-  const threadForkCapabilitiesRef = useRef<Record<string, CodexThreadForkCapability>>({});
+  const threadForkCapabilitiesRef = useRef<Record<string, ThreadForkCapability>>({});
   const forkOperationIdsRef = useRef(new Map<string, string>());
   const forkingThreadIdsRef = useRef(new Set<string>());
   const activeProjectIdRef = useRef<string | null>(null);
@@ -297,7 +297,7 @@ export function useWorkspaceState() {
 
   function storeThreadForkCapability(
     key: string,
-    capability: CodexThreadForkCapability,
+    capability: ThreadForkCapability,
   ) {
     const next = {
       ...threadForkCapabilitiesRef.current,
@@ -308,7 +308,7 @@ export function useWorkspaceState() {
   }
 
   async function prepareThreadFork(thread: ThreadSummary): Promise<void> {
-    if (thread.provider !== 'openai-codex' || !thread.sessionId.trim()) {
+    if (!['claude-code', 'openai-codex'].includes(thread.provider) || !thread.sessionId.trim()) {
       return;
     }
     const key = threadForkCapabilityKey(thread);
@@ -330,7 +330,7 @@ export function useWorkspaceState() {
       if (!historyLoaded) {
         storeThreadForkCapability(key, {
           state: 'error',
-          message: '加载聊天历史失败，暂时无法检查 Codex Fork 能力',
+          message: '加载聊天历史失败，暂时无法检查在新聊天中继续能力',
         });
         return;
       }
@@ -347,18 +347,18 @@ export function useWorkspaceState() {
       );
       if (!response.ok) {
         throw new Error(
-          normalizeWorkspaceLoadErrorText(await response.text()) || '检查 Codex Fork 能力失败',
+          normalizeWorkspaceLoadErrorText(await response.text()) || '检查在新聊天中继续能力失败',
         );
       }
-      const capability = (await response.json()) as CodexThreadForkCapability;
+      const capability = (await response.json()) as ThreadForkCapability;
       if (!['supported', 'unsupported', 'error'].includes(capability.state)) {
-        throw new Error('Codex Fork 能力响应无效');
+        throw new Error('在新聊天中继续能力响应无效');
       }
       storeThreadForkCapability(key, capability);
     } catch (error) {
       storeThreadForkCapability(key, {
         state: 'error',
-        message: error instanceof Error ? error.message : '检查 Codex Fork 能力失败',
+        message: error instanceof Error ? error.message : '检查在新聊天中继续能力失败',
       });
     }
   }
@@ -871,7 +871,7 @@ export function useWorkspaceState() {
         || !payload.operationId?.trim()
         || !['loaded', 'pending'].includes(payload.historyState)
       ) {
-        throw new Error('Codex Fork 响应无效');
+        throw new Error('在新聊天中继续响应无效');
       }
       const detail = threadDetailFromForkResponse(payload);
       setProjects((current) =>
