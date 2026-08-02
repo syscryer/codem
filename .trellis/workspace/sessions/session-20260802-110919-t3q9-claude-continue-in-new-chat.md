@@ -5,6 +5,13 @@
 - Task: .trellis/tasks/claude-continue-in-new-chat.md
 
 ## Notes
+
+- 2026-08-02T18:14:53.500Z Task 4 质量审查 APPROVED，无 P0-P2。主 Agent确认并修复唯一立即处理的 P3 恒真测试断言；固定 sleep 理论 flake、真实进程取消时 stderr drain 低概率残留、Drop 同步 fail-closed 等保留为非阻塞后续/实机风险，不扩大 Task 4 范围。
+- 2026-08-02T18:00:53.215Z Task 4 规格审查闭环：CC 规格 reviewer 的 P2 stale provider_pending 竞态经主 Agent 稳定 RED 复现（DB 已 ResultUnknown 仍启动并返回 OK），交回实现 Agent增加 acquire 后数据库重读与状态分流；主 Agent复验 stale unknown/succeeded/completed 与 352 项全库通过，规格复审 APPROVED，无 P0-P2。
+
+- 2026-08-02T17:36:48.288Z Task 4 主 Agent 独立核验并修复两项真实幂等问题：并发相同 operationId 曾双开 Claude Fork（RED create_count 2/1）；请求取消曾保留 provider_pending 并可再次启动（RED ProviderPending/ResultUnknown）。均交回同一 CC Agent 修复为源 thread 单飞 guard 与取消条件落库 result_unknown。
+
+- 2026-08-02T17:00:12.520Z 开始 Task 4：由 CC(max) 按 TDD 实现 Claude Fork 创建、原子本地绑定和 transcript pending 恢复；CC 结论仅作线索，主 Agent 将独立复核。
 - 2026-08-02T16:48:18.053Z Task 3 双审与返工闭环完成：规格审查无偏差；本地质量审查提出的完整身份探测有界性 P2 经主 Agent 独立复现确认后，交回同一质量 Agent TDD 修复。command-group 管理 Windows Job Object 与 Unix process group，超时后有界回收整组；Unix PATH 解析不再调用外部 which。主 Agent 进程级复验第 4 秒无 PING.EXE 后代。CC 额度仍在 429 窗口，本轮返工不归因于 CC。
 
 - 2026-08-02T16:46:09.731Z Task 3 双审与返工闭环完成：规格审查无偏差；质量审查提出的完整身份探测有界性 P2 经主 Agent 独立复现确认后，交回同一质量 Agent TDD 修复。Windows Job Object/Unix process group 负责整组回收，Unix PATH 解析不再调用外部 which；主 Agent 进程级复验第 4 秒无 PING.EXE 后代且外层任务已完成。CC 额度仍在 429 窗口，本轮返工不归因于 CC。
@@ -49,6 +56,9 @@
 - 2026-08-02T11:09:19.272Z Session started.
 
 ## Verification
+- 2026-08-02T18:15:05.274Z `Task 4 final: cargo test claude_fork/thread_fork/codex_thread_fork/claude_run_args/--lib; cargo fmt --check; git diff --check`: 通过：claude_fork 4/4，thread_fork 32/32，codex_thread_fork 11/11，claude_run_args 2/2，Rust lib 352 passed/0 failed/1 ignored；fmt/diff exit 0；规格与质量复审均 APPROVED。
+
+- 2026-08-02T17:36:58.518Z `cargo test --manifest-path src-tauri/Cargo.toml claude_fork; thread_fork; codex_thread_fork; claude_run_args; --lib; cargo fmt --check; git diff --check`: 主 Agent 独立通过：claude_fork 4/4，thread_fork 29/29，codex_thread_fork 11/11，claude_run_args 2/2，Rust lib 349 passed/0 failed/1 ignored；并发与取消两个回归各 1/1；fmt/diff exit 0。
 - 2026-08-02T16:48:44.594Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check && git diff --check`: pass: fmt/diff exit 0; main-agent final verification
 
 - 2026-08-02T16:48:33.004Z `cargo test --manifest-path src-tauri/Cargo.toml --lib`: pass: 332 passed, 0 failed, 1 ignored; main-agent final verification
