@@ -63,6 +63,9 @@ Fork 到一个独立的新聊天。用户已确认第一阶段只对齐官方“
 - 超时或响应不确定：禁止自动重试，避免重复创建多个 Provider thread；标记为“结果未知”，通过
   `thread/list` / `thread/read` 按 `forkedFromId`、操作时间窗口和已知请求关联执行只读核对。只有
   唯一匹配时才继续本地绑定；零匹配或多匹配时保持待人工重试状态，不猜测归属。
+- 应用重启时遗留的 Provider 请求中状态同样视为“结果未知”，只能先执行只读核对，不能因为本地尚未
+  记录返回 ID 就再次调用 `thread/fork`。`thread/list` 的 `parentThreadId` 属于实验筛选字段，恢复逻辑
+  使用稳定分页字段并在本地按 `forkedFromId` 和时间窗口过滤，不要求启用 `experimentalApi`。
 - Provider 成功、本地事务失败：持久化一条最小 Fork 恢复记录，至少包含操作 ID、源 CodeM
   thread ID、新 Provider thread ID、时间和状态，不保存消息正文、raw RPC 或环境变量。用户重试时
   复用该 Provider thread 完成本地绑定，不能再次调用 `thread/fork`。
@@ -153,17 +156,27 @@ Provider 回归和长历史增量装载。
 5. Fork 长会话后切换、刷新和重启应用，确认新聊天可恢复、历史不重复、控制台无错误。
 
 ## Implementation Record
+- 2026-08-02T05:29:19.393Z 修正计划交接：实现阶段必须新建 Trellis session；Task 7 在 complete 前从 current-session.json 捕获实际 implementation record 路径，最终只暂存该记录，避免误写计划阶段 session。
+
+- 2026-08-02T05:27:44.955Z 已完成 Codex 在新聊天中继续实施计划：拆分 7 个 TDD 任务，明确协议、runtime actor、SQLite 状态机、后端幂等编排、前端状态和双菜单验收；官方核对确认 parentThreadId 为实验筛选，恢复改用稳定 thread/list 字段加本地过滤；本轮未修改产品代码。
 - 2026-08-02T04:53:02.569Z 设计确认：第一阶段仅支持 Codex 完整已保存会话的原生 thread/fork；请求省略 lastTurnId 和 ephemeral，不复制本地消息或摘要，不支持指定轮次/跨项目/其他 Provider 伪 Fork；空闲状态才可执行，成功后创建独立双 ID 新聊天并立即打开；Provider 成功而本地失败通过预写最小操作记录和只读核对实现幂等恢复。
 
 - 2026-08-02T04:47:35.559Z Task created by Trellis automation.
 
 ## Verification Results
+- 2026-08-02T05:29:20.062Z `实施 session 交接、动态 record 路径、占位符与 git diff --check`: pass：Execution Setup 明确新建实现 session；Task 7 在 complete 前读取 sessionPath 并用于最终 git add；占位符 0；git diff --check 通过，仅有 Windows LF/CRLF 提示。
+
+- 2026-08-02T05:27:45.671Z `实施计划规格覆盖、占位符、类型/API/路径一致性与 git diff --check`: pass：thread/fork、双 ID、历史来源、互斥、六状态恢复、重启 unknown、双入口、非 Codex 回归和长历史均映射到 Task 1-7；占位符 0；缺失路径 0；Rust 多过滤命令已拆正；git diff --check 通过，仅有 Windows LF/CRLF 提示。
 - 2026-08-02T04:54:06.040Z `设计占位符、范围一致性、影响路径与 git diff --check`: pass：无待补充/TBD/TODO/FIXME；完整会话 Fork 与指定轮次 Fork 边界明确；恢复流程先写操作记录且结果未知只读核对；7 个影响文件路径存在；git diff --check 通过，仅有既有 Windows LF/CRLF 提示。
 
 ## Completion Summary
+- 2026-08-02T05:29:20.762Z 完成实施计划交接修正：实现阶段不复用已关闭的计划 session，最终 Trellis record 路径由 current-session.json 动态取得并精准暂存；未修改产品代码。
+
+- 2026-08-02T05:27:46.445Z 完成 P0-3 Codex 在新聊天中继续的可执行实施计划与自审：共 7 个 TDD 任务，补齐官方稳定协议边界、冷/热 runtime、原子落库、重启与结果未知恢复、前端双入口及桌面验收。当前仅完成计划文档，尚未修改产品代码；等待用户选择 Subagent-Driven 或 Inline Execution 后实施。
 - 2026-08-02T04:54:16.620Z 完成 P0-3 ‘在新聊天中继续’书面设计：对齐官方 thread/fork 完整历史语义，明确双入口、空闲门禁、双 ID、Provider 历史来源、配置继承、幂等恢复、安全兼容、验收与验证边界；同步标记 P0-2 Compact 已完成并后置指定轮次 Fork。当前仅完成设计，尚未生成实施计划或修改产品代码，等待用户审阅。
 
 ## Follow-ups
 
-- 本设计经用户书面审阅确认后，使用 `writing-plans` 生成实施计划，再进入编码。
+- 用户已确认本设计；实施计划见 `.trellis/tasks/codex-continue-in-new-chat-implementation-plan.md`。
+- 计划通过书面自审和用户执行方式确认后，再按 Task 1-7 进入编码。
 - 指定历史轮次 Fork 需要先稳定持久化普通 turn 的 `providerTurnId`，作为后续独立任务评估。
