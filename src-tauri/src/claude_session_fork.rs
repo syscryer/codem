@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -15,7 +16,7 @@ use tokio::process::Command;
 /// 等待 `system/init` 返回新 session ID 的协议超时。
 const FORK_PROTOCOL_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 收到 init 并关闭 stdin 后，等待进程自行退出的宽限期；超时才强制结束。
+/// 收到 init 并关闭 stdin / stdout EOF 后，等待进程自行退出的宽限期；超时才强制结束。
 const FORK_GRACEFUL_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// 对外暴露的 stderr / 进程输出归一化后最大字符数。
@@ -23,12 +24,13 @@ const PUBLIC_OUTPUT_LIMIT: usize = 512;
 
 /// 一次性 Fork 进程可能出现的失败语义。
 ///
-/// - `Unsupported`：当前 Claude CLI 不支持 `--fork-session`（如 `--help` 缺少该标志）。
 /// - `Rejected`：协议明确拒绝创建新会话，例如 init 事件缺少 session ID 或返回了源 ID。
 /// - `Uncertain`：无法确认是否已创建新会话（超时、EOF 前未收到 init、进程退出码异常等）。
+///
+/// 注意：不支持 `--fork-session`（旧版 CLI）不算错误，由 [`probe_fork_session`] 用
+/// `Ok(false)` 表达；这里只保留确实会发生的失败分支，避免出现永不构造的死变体。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ClaudeSessionForkError {
-    Unsupported(String),
     Rejected(String),
     Uncertain(String),
 }
@@ -123,9 +125,19 @@ pub(crate) struct ClaudeSessionForkOutcome {
 
 /// 只读探测当前 Claude CLI 是否支持 `--fork-session`。
 ///
-/// 成功运行 `--help` 时按是否包含精确标志返回 `Ok(true)` / `Ok(false)`；无法运行或超时
-/// 返回 `Err(Uncertain(..))`，由调用方映射为能力检查失败而非旧版本不支持。
+/// 成功运行 `<command> --help` 时按是否包含精确标志返回：
+/// - `Ok(true)`：支持 `--fork-session`。
+/// - `Ok(false)`：旧版本不支持（`--help` 缺少该标志），不是错误。
+///
+/// 无法运行命令或探测超时返回 `Err(Uncertain(..))`，由调用方映射为能力检查失败。
 pub(crate) async fn probe_fork_session(command: &str) -> Result<bool, ClaudeSessionForkError> {
+    probe_fork_session_with_timeout(command, FORK_PROTOCOL_TIMEOUT).await
+}
+
+async fn probe_fork_session_with_timeout(
+    command: &str,
+    timeout: Duration,
+) -> Result<bool, ClaudeSessionForkError> {
     let mut process = Command::new(command);
     configure_no_window(&mut process);
     process
@@ -135,7 +147,7 @@ pub(crate) async fn probe_fork_session(command: &str) -> Result<bool, ClaudeSess
         .stderr(Stdio::null())
         .kill_on_drop(true);
 
-    let output = match tokio::time::timeout(FORK_PROTOCOL_TIMEOUT, process.output()).await {
+    let output = match tokio::time::timeout(timeout, process.output()).await {
         Ok(Ok(output)) => output,
         Ok(Err(error)) => {
             return Err(ClaudeSessionForkError::Uncertain(format!(
@@ -179,7 +191,9 @@ async fn create_session_fork_with_timeout(
         .kill_on_drop(true);
 
     let mut child = command.spawn().map_err(|error| {
-        ClaudeSessionForkError::Uncertain(format!("启动 Claude Fork 进程失败: {error}"))
+        ClaudeSessionForkError::Uncertain(normalize_message(&format!(
+            "启动 Claude Fork 进程失败: {error}"
+        )))
     })?;
 
     let stdout = child.stdout.take().ok_or_else(|| {
@@ -188,6 +202,10 @@ async fn create_session_fork_with_timeout(
     let stderr_handle = child.stderr.take();
     // 显式持有 stdin，确保 init 前管道保持打开；drop 后才会关闭，提示 CLI 优雅退出。
     let stdin_handle = child.stdin.take();
+
+    // 进程一启动就并发持续排空 stderr，避免子进程在 init 前写满管道造成死锁。
+    // 只在 StderrSummary 中保留有界公开摘要，达到上限后仍继续 drain。
+    let (stderr_summary, stderr_done) = stderr_summary_task(stderr_handle);
 
     let init_future = read_fork_session_id(BufReader::new(stdout), &launch.source_session_id);
     let outcome = match tokio::time::timeout(protocol_timeout, init_future).await {
@@ -201,30 +219,31 @@ async fn create_session_fork_with_timeout(
             // init 携带非法 session ID：仍给 CLI 一次优雅退出的机会。
             drop(stdin_handle);
             let _ = wait_or_kill(&mut child, FORK_GRACEFUL_EXIT_TIMEOUT).await;
-            Err(annotate_with_stderr(rejected, stderr_handle).await)
+            Err(rejected)
         }
         Ok(Err(uncertain)) => {
-            // stdout 已结束但没有可信 init：尽快回收进程。
+            // stdout 已结束但没有可信 init：宽限期内优先优雅回收，超时才 kill。
             drop(stdin_handle);
-            let _ = child.wait().await;
-            Err(annotate_with_stderr(uncertain, stderr_handle).await)
+            let _ = wait_or_kill(&mut child, FORK_GRACEFUL_EXIT_TIMEOUT).await;
+            Err(uncertain)
         }
         Err(_) => {
             // 协议超时前未拿到 init：直接结束进程，避免长时间挂起。
             drop(stdin_handle);
             let _ = child.kill().await;
             let _ = child.wait().await;
-            Err(annotate_with_stderr(
-                ClaudeSessionForkError::Uncertain(
-                    "Claude Fork 协议在超时前未返回 init 事件".to_string(),
-                ),
-                stderr_handle,
-            )
-            .await)
+            Err(ClaudeSessionForkError::Uncertain(
+                "Claude Fork 协议在超时前未返回 init 事件".to_string(),
+            ))
         }
     };
 
-    outcome
+    // 进程已结束，等待 stderr drain 任务读到 EOF 后取出有界摘要再注释错误。
+    let summary = finish_stderr_summary(stderr_summary, stderr_done).await;
+    match outcome {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => Err(annotate_with_summary(error, &summary)),
+    }
 }
 
 /// 等待进程在宽限期内自行退出，超时才 kill。
@@ -241,57 +260,130 @@ async fn wait_or_kill(
     }
 }
 
-/// 把归一化（控制字符 / 连续空白折叠、长度截断）后的 CLI stderr 附到失败原因上。
+/// 启动后台任务持续 drain stderr 到一个有界摘要，返回共享句柄与完成信号。
 ///
-/// 成功路径不会调用本函数，因此不会泄露 CLI 的原始多行输出。
-async fn annotate_with_stderr(
-    error: ClaudeSessionForkError,
+/// 任务一直读取直到 stderr EOF，即便摘要已满也继续排空管道。这保证子进程写满 stderr
+/// 时不会被阻塞，从而能正常写出 init 事件。
+fn stderr_summary_task(
     stderr: Option<tokio::process::ChildStderr>,
-) -> ClaudeSessionForkError {
+) -> (
+    Arc<Mutex<StderrSummary>>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    let summary = Arc::new(Mutex::new(StderrSummary::new()));
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     let Some(mut stderr) = stderr else {
-        return error;
+        let _ = done_tx.send(());
+        return (summary, done_rx);
     };
-    let mut buffer = Vec::new();
-    if stderr.read_to_end(&mut buffer).await.is_err() {
-        return error;
+    let summary_clone = Arc::clone(&summary);
+    tokio::spawn(async move {
+        let mut buffer = [0u8; 8192];
+        loop {
+            match stderr.read(&mut buffer).await {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    if let Ok(mut guard) = summary_clone.lock() {
+                        guard.push_bytes(&buffer[..read]);
+                    }
+                }
+            }
+        }
+        let _ = done_tx.send(());
+    });
+    (summary, done_rx)
+}
+
+/// 等待 stderr drain 任务排空管道（读到 EOF）后取出最终有界摘要。
+///
+/// 本函数总是在进程被 kill/reap 之后调用，因此 stderr 必然会 EOF，等待是有限的。
+async fn finish_stderr_summary(
+    summary: Arc<Mutex<StderrSummary>>,
+    done: tokio::sync::oneshot::Receiver<()>,
+) -> String {
+    let _ = done.await;
+    match summary.lock() {
+        Ok(mut guard) => guard.take_finished(),
+        Err(_) => String::new(),
     }
-    let normalized = normalize_message(&String::from_utf8_lossy(&buffer));
-    if normalized.is_empty() {
+}
+
+/// 把归一化后有界的 CLI stderr 摘要附到失败原因上。
+///
+/// 成功路径不会调用本函数，因此不会泄露 CLI 的原始多行输出；摘要本身也已折叠控制字符、
+/// 连续空白并截断到 [`PUBLIC_OUTPUT_LIMIT`]，不会包含多行原始输出。
+fn annotate_with_summary(error: ClaudeSessionForkError, summary: &str) -> ClaudeSessionForkError {
+    if summary.is_empty() {
         return error;
     }
     match error {
-        ClaudeSessionForkError::Unsupported(message) => {
-            ClaudeSessionForkError::Unsupported(format!("{message}（{normalized}）"))
-        }
         ClaudeSessionForkError::Rejected(message) => {
-            ClaudeSessionForkError::Rejected(format!("{message}（{normalized}）"))
+            ClaudeSessionForkError::Rejected(format!("{message}（{summary}）"))
         }
         ClaudeSessionForkError::Uncertain(message) => {
-            ClaudeSessionForkError::Uncertain(format!("{message}（{normalized}）"))
+            ClaudeSessionForkError::Uncertain(format!("{message}（{summary}）"))
         }
     }
 }
 
-/// 折叠控制字符与连续空白，去掉首尾空白并按字符截断到 [`PUBLIC_OUTPUT_LIMIT`]。
-fn normalize_message(value: &str) -> String {
-    let mut normalized = String::with_capacity(value.len().min(PUBLIC_OUTPUT_LIMIT + 8));
-    let mut previous_was_space = false;
-    for ch in value.chars() {
-        if ch.is_control() || ch.is_whitespace() {
-            if !previous_was_space {
-                normalized.push(' ');
-                previous_was_space = true;
-            }
-            continue;
+/// 流式、有界的 stderr 归一化摘要。
+///
+/// 折叠控制字符与连续空白为单个空格，按字符截断到 [`PUBLIC_OUTPUT_LIMIT`]。达到上限后
+/// 不再存储更多字符，但 [`StderrSummary::push_bytes`] 仍是空操作而非阻塞，调用方（drain
+/// 任务）会继续读取并丢弃，保证管道不会因摘要已满而被写满。
+#[derive(Default)]
+struct StderrSummary {
+    normalized: String,
+    char_count: usize,
+    previous_was_space: bool,
+}
+
+impl StderrSummary {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn push_bytes(&mut self, bytes: &[u8]) {
+        if self.char_count >= PUBLIC_OUTPUT_LIMIT {
+            return;
         }
-        normalized.push(ch);
-        previous_was_space = false;
+        for ch in String::from_utf8_lossy(bytes).chars() {
+            if self.char_count >= PUBLIC_OUTPUT_LIMIT {
+                break;
+            }
+            if ch.is_control() || ch.is_whitespace() {
+                if !self.previous_was_space {
+                    self.normalized.push(' ');
+                    self.char_count += 1;
+                    self.previous_was_space = true;
+                }
+            } else {
+                self.normalized.push(ch);
+                self.char_count += 1;
+                self.previous_was_space = false;
+            }
+        }
     }
-    let trimmed = normalized.trim();
-    if trimmed.chars().count() <= PUBLIC_OUTPUT_LIMIT {
-        return trimmed.to_string();
+
+    /// 取出归一化后的有界摘要，去掉首尾空白。
+    fn take_finished(&mut self) -> String {
+        self.previous_was_space = false;
+        self.char_count = 0;
+        let trimmed = self.normalized.trim();
+        let finished = trimmed.to_string();
+        self.normalized.clear();
+        finished
     }
-    trimmed.chars().take(PUBLIC_OUTPUT_LIMIT).collect()
+}
+
+/// 折叠控制字符与连续空白，去掉首尾空白并按字符截断到 [`PUBLIC_OUTPUT_LIMIT`]。
+///
+/// 复用 [`StderrSummary`] 的有界归一化逻辑；用于一次性处理已知较小的字符串（如启动
+/// 错误），进程 stderr 的持续 drain 不经过本函数，而是直接增量喂给 [`StderrSummary`]。
+fn normalize_message(value: &str) -> String {
+    let mut summary = StderrSummary::new();
+    summary.push_bytes(value.as_bytes());
+    summary.take_finished()
 }
 
 #[cfg(target_os = "windows")]
@@ -307,7 +399,8 @@ fn configure_no_window(_command: &mut Command) {}
 mod tests {
     use super::{
         create_session_fork_with_timeout, extract_fork_session_id, help_supports_fork_session,
-        read_fork_session_id, ClaudeSessionForkError, ClaudeSessionForkLaunch,
+        normalize_message, probe_fork_session_with_timeout, read_fork_session_id,
+        ClaudeSessionForkError, ClaudeSessionForkLaunch, PUBLIC_OUTPUT_LIMIT,
     };
     use std::collections::HashMap;
     use std::io::Write;
@@ -360,6 +453,72 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn claude_session_fork_normalize_collapses_control_and_whitespace() {
+        assert_eq!(normalize_message("  a\tb\n\rc\u{0}d  \n "), "a b c d");
+        assert_eq!(normalize_message("\n\t  hi  \n"), "hi");
+        assert_eq!(normalize_message("already   clean"), "already clean");
+    }
+
+    #[test]
+    fn claude_session_fork_normalize_truncates_unicode_at_limit() {
+        let cjk: String = "字".repeat(PUBLIC_OUTPUT_LIMIT + 100);
+        let normalized = normalize_message(&cjk);
+        assert_eq!(normalized.chars().count(), PUBLIC_OUTPUT_LIMIT);
+        assert!(normalized.chars().all(|ch| ch == '字'));
+
+        let mixed = format!("{}{}", "é".repeat(10), "字".repeat(PUBLIC_OUTPUT_LIMIT));
+        let normalized = normalize_message(&mixed);
+        assert_eq!(normalized.chars().count(), PUBLIC_OUTPUT_LIMIT);
+        assert!(normalized.starts_with(&"é".repeat(10)));
+    }
+
+    fn node_available() -> bool {
+        std::process::Command::new("node")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .and_then(|mut child| child.wait())
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn claude_session_fork_probe_start_failure_is_uncertain() {
+        let outcome = probe_fork_session_with_timeout(
+            "definitely-not-a-real-claude-binary-xyz",
+            Duration::from_secs(2),
+        )
+        .await;
+        assert!(
+            matches!(outcome, Err(ClaudeSessionForkError::Uncertain(_))),
+            "expected uncertain on spawn failure, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_session_fork_probe_unsupported_when_help_lacks_flag() {
+        if !node_available() {
+            return;
+        }
+        let outcome = probe_fork_session_with_timeout("node", Duration::from_secs(5)).await;
+        // `node --help` 不会包含 --fork-session，因此探测为不支持（Ok(false)）。
+        assert_eq!(outcome, Ok(false));
+    }
+
+    #[tokio::test]
+    async fn claude_session_fork_probe_timeout_is_uncertain() {
+        if !node_available() {
+            return;
+        }
+        let outcome = probe_fork_session_with_timeout("node", Duration::from_millis(1)).await;
+        assert!(
+            matches!(outcome, Err(ClaudeSessionForkError::Uncertain(_))),
+            "expected uncertain on probe timeout, got {outcome:?}"
+        );
+    }
+
     fn fork_working_directory() -> PathBuf {
         let mut directory = std::env::temp_dir();
         directory.push(format!("codem-claude-fork-{}", uuid::Uuid::new_v4()));
@@ -373,6 +532,15 @@ mod tests {
         std::fs::File::create(&path)
             .and_then(|mut file| file.write_all(contents.as_bytes()))
             .expect("write fixture file");
+        filename
+    }
+
+    fn write_node_script(working_directory: &Path, body: &str) -> String {
+        let filename = format!("codem-claude-fork-{}.js", uuid::Uuid::new_v4());
+        let path = working_directory.join(&filename);
+        std::fs::File::create(&path)
+            .and_then(|mut file| file.write_all(body.as_bytes()))
+            .expect("write node script");
         filename
     }
 
@@ -416,6 +584,28 @@ mod tests {
         }
     }
 
+    fn launch_node(
+        working_directory: &Path,
+        filename: &str,
+        source_session_id: &str,
+    ) -> ClaudeSessionForkLaunch {
+        ClaudeSessionForkLaunch {
+            command: "node".to_string(),
+            args: vec![filename.to_string()],
+            working_directory: working_directory.to_string_lossy().to_string(),
+            environment: HashMap::new(),
+            source_session_id: source_session_id.to_string(),
+        }
+    }
+
+    /// 从 `prefix（summary）` 形式的错误消息中取出归一化后的 stderr 摘要部分。
+    fn stderr_portion(message: &str) -> String {
+        message
+            .split_once('（')
+            .map(|(_, rest)| rest.trim_end_matches('）').to_string())
+            .unwrap_or_default()
+    }
+
     #[tokio::test]
     async fn claude_session_fork_process_returns_new_session_id() {
         let working_directory = fork_working_directory();
@@ -453,6 +643,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_session_fork_process_timeout_is_uncertain() {
+        let start = std::time::Instant::now();
         let working_directory = fork_working_directory();
         let launch = launch_hanging(&working_directory);
 
@@ -460,6 +651,134 @@ mod tests {
         assert!(
             matches!(&outcome, Err(ClaudeSessionForkError::Uncertain(_))),
             "expected uncertain outcome on timeout, got {outcome:?}"
+        );
+        // 挂起进程必须被 kill+reap，不能无限挂住测试。
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "hanging process should be killed+reaped promptly, took {:?}",
+            start.elapsed()
+        );
+
+        let _ = std::fs::remove_dir_all(&working_directory);
+    }
+
+    #[tokio::test]
+    async fn claude_session_fork_process_drains_stderr_flood_then_reads_init() {
+        // 子进程用 fs.writeSync(2, ...) 同步写满 stderr 管道后再写 init；若启动后不并发
+        // 排空 stderr，子进程会阻塞在同步写上、永远写不出 init，从而死锁到协议超时。
+        if !node_available() {
+            return;
+        }
+        let working_directory = fork_working_directory();
+        let script = write_node_script(
+            &working_directory,
+            "const fs=require('fs');fs.writeSync(2,Buffer.alloc(100000,65));process.stdout.write('{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"child-session\"}\\n');",
+        );
+        let launch = launch_node(&working_directory, &script, "source-session");
+
+        let outcome = create_session_fork_with_timeout(&launch, Duration::from_secs(10))
+            .await
+            .expect("concurrent stderr drain should let init through");
+        assert_eq!(outcome.session_id, "child-session");
+
+        let _ = std::fs::remove_dir_all(&working_directory);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_session_fork_eof_branch_kills_loitering_process() {
+        // Unix：写一行非 init 后用 `exec 1>&-` 真正关闭 stdout 再 sleep；EOF 分支必须用
+        // 有界 wait_or_kill 回收，否则会无限等待驻留进程。Windows 进程只在退出时关闭
+        // stdout，无法构造此场景，故仅 Unix 覆盖该 kill 路径。
+        let start = std::time::Instant::now();
+        let working_directory = fork_working_directory();
+        let launch = ClaudeSessionForkLaunch {
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "printf 'not-init\\n'; exec 1>&-; sleep 15".to_string(),
+            ],
+            working_directory: working_directory.to_string_lossy().to_string(),
+            environment: HashMap::new(),
+            source_session_id: "source-session".to_string(),
+        };
+
+        let outcome = create_session_fork_with_timeout(&launch, Duration::from_secs(10)).await;
+        assert!(
+            matches!(&outcome, Err(ClaudeSessionForkError::Uncertain(_))),
+            "expected uncertain outcome, got {outcome:?}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "EOF branch should reap within the grace window, took {:?}",
+            start.elapsed()
+        );
+
+        let _ = std::fs::remove_dir_all(&working_directory);
+    }
+
+    #[tokio::test]
+    async fn claude_session_fork_rejected_annotates_bounded_single_line_stderr() {
+        // init 返回源 session ID -> Rejected；多行 stderr 必须折叠成单行有界摘要。
+        if !node_available() {
+            return;
+        }
+        let working_directory = fork_working_directory();
+        let script = write_node_script(
+            &working_directory,
+            "const fs=require('fs');fs.writeSync(2,'detail line one\\ndetail line two\\ndetail line three\\n'.repeat(200));process.stdout.write('{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"source-session\"}\\n');",
+        );
+        let launch = launch_node(&working_directory, &script, "source-session");
+
+        let outcome = create_session_fork_with_timeout(&launch, Duration::from_secs(10)).await;
+        let message = match outcome {
+            Err(ClaudeSessionForkError::Rejected(message)) => message,
+            other => panic!("expected rejected, got {other:?}"),
+        };
+        assert!(message.contains("detail line one"));
+        assert!(
+            !message.contains('\n'),
+            "annotated message must stay single-line"
+        );
+        let portion = stderr_portion(&message);
+        assert!(
+            portion.chars().count() <= PUBLIC_OUTPUT_LIMIT,
+            "stderr portion must be bounded, got {} chars",
+            portion.chars().count()
+        );
+        assert!(!portion.is_empty(), "stderr portion should capture output");
+
+        let _ = std::fs::remove_dir_all(&working_directory);
+    }
+
+    #[tokio::test]
+    async fn claude_session_fork_uncertain_annotates_bounded_single_line_stderr() {
+        // 写多行 stderr 后只写非 init 行即退出 -> EOF Uncertain；注释仍单行有界。
+        if !node_available() {
+            return;
+        }
+        let working_directory = fork_working_directory();
+        let script = write_node_script(
+            &working_directory,
+            "const fs=require('fs');fs.writeSync(2,'detail line one\\ndetail line two\\n'.repeat(200));process.stdout.write('{\"type\":\"system\",\"subtype\":\"status\"}\\n');",
+        );
+        let launch = launch_node(&working_directory, &script, "source-session");
+
+        let outcome = create_session_fork_with_timeout(&launch, Duration::from_secs(10)).await;
+        let message = match outcome {
+            Err(ClaudeSessionForkError::Uncertain(message)) => message,
+            other => panic!("expected uncertain, got {other:?}"),
+        };
+        assert!(message.contains("detail line one"));
+        assert!(
+            !message.contains('\n'),
+            "annotated message must stay single-line"
+        );
+        let portion = stderr_portion(&message);
+        assert!(
+            portion.chars().count() <= PUBLIC_OUTPUT_LIMIT,
+            "stderr portion must be bounded, got {} chars",
+            portion.chars().count()
         );
 
         let _ = std::fs::remove_dir_all(&working_directory);
