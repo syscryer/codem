@@ -216,6 +216,72 @@ struct ThreadDetailRow {
     agent_channel_fingerprint: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+struct ForkSourceThread {
+    id: String,
+    project_id: String,
+    provider: String,
+    title: String,
+    custom_title: bool,
+    provider_thread_id: String,
+    working_directory: String,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+    permission_mode: Option<String>,
+    agent_channel_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ThreadForkOperationStatus {
+    ProviderPending,
+    ProviderSucceeded,
+    ResultUnknown,
+    HistoryPending,
+    Completed,
+    Failed,
+}
+
+impl ThreadForkOperationStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ProviderPending => "provider_pending",
+            Self::ProviderSucceeded => "provider_succeeded",
+            Self::ResultUnknown => "result_unknown",
+            Self::HistoryPending => "history_pending",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn parse(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "provider_pending" => Ok(Self::ProviderPending),
+            "provider_succeeded" => Ok(Self::ProviderSucceeded),
+            "result_unknown" => Ok(Self::ResultUnknown),
+            "history_pending" => Ok(Self::HistoryPending),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            _ => Err(rusqlite::Error::InvalidColumnType(
+                5,
+                "status".to_string(),
+                rusqlite::types::Type::Text,
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ThreadForkOperation {
+    operation_id: String,
+    source_thread_id: String,
+    source_provider_thread_id: String,
+    provider_thread_id: Option<String>,
+    local_thread_id: Option<String>,
+    status: ThreadForkOperationStatus,
+    started_at_ms: i64,
+    last_error: Option<String>,
+}
+
 #[derive(Debug)]
 struct ClaudeSessionMetadata {
     session_id: String,
@@ -566,6 +632,12 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         runtimes: Arc::new(Mutex::new(std::collections::HashMap::new())),
         context_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
     };
+    {
+        let _guard = lock_workspace_write(&state).map_err(|error| error.message)?;
+        let connection =
+            open_initialized_workspace_database(&state).map_err(|error| error.message)?;
+        recover_stale_thread_fork_operations(&connection).map_err(|error| error.message)?;
+    }
     let app = create_router(state)
         .merge(crate::automation::router(automation))
         .merge(crate::ordinary_chat::router(ordinary_chat))
@@ -6675,10 +6747,32 @@ fn initialize_workspace_database(connection: &Connection) -> ApiResult<()> {
               subtools_json TEXT,
               sub_messages_json TEXT
             );
+            CREATE TABLE IF NOT EXISTS thread_fork_operations (
+              operation_id TEXT PRIMARY KEY,
+              source_thread_id TEXT NOT NULL,
+              source_provider_thread_id TEXT NOT NULL,
+              provider_thread_id TEXT UNIQUE,
+              local_thread_id TEXT,
+              status TEXT NOT NULL CHECK (status IN (
+                'provider_pending', 'provider_succeeded', 'result_unknown',
+                'history_pending', 'completed', 'failed'
+              )),
+              started_at_ms INTEGER NOT NULL,
+              last_error TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_messages_thread_turn
             ON messages (thread_id, turn_sort, item_sort, role);
             CREATE INDEX IF NOT EXISTS idx_tool_calls_thread_turn
             ON tool_calls (thread_id, turn_sort, item_sort, tool_sort);
+            CREATE INDEX IF NOT EXISTS idx_thread_fork_operations_source_status
+            ON thread_fork_operations (source_thread_id, status, updated_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_fork_operations_one_active_source
+            ON thread_fork_operations (source_thread_id)
+            WHERE status IN (
+              'provider_pending', 'provider_succeeded', 'result_unknown', 'history_pending'
+            );
             "#,
         )
         .map_err(|error| ApiError::internal(format!("初始化工作区数据库失败: {error}")))
@@ -7563,6 +7657,352 @@ fn sync_thread_model_preference(
             .map_err(|error| ApiError::internal(format!("清理线程模型偏好失败: {error}")))?;
     }
     Ok(())
+}
+
+fn read_thread_fork_operation(
+    connection: &Connection,
+    operation_id: &str,
+) -> ApiResult<Option<ThreadForkOperation>> {
+    connection
+        .query_row(
+            r#"
+            SELECT operation_id, source_thread_id, source_provider_thread_id,
+                   provider_thread_id, local_thread_id, status, started_at_ms, last_error
+            FROM thread_fork_operations
+            WHERE operation_id = ?
+            "#,
+            params![operation_id],
+            |row| {
+                let status = row.get::<_, String>(5)?;
+                Ok(ThreadForkOperation {
+                    operation_id: row.get(0)?,
+                    source_thread_id: row.get(1)?,
+                    source_provider_thread_id: row.get(2)?,
+                    provider_thread_id: row.get(3)?,
+                    local_thread_id: row.get(4)?,
+                    status: ThreadForkOperationStatus::parse(&status)?,
+                    started_at_ms: row.get(6)?,
+                    last_error: row.get(7)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取 Fork 操作失败: {error}")))
+}
+
+fn read_active_thread_fork_operation(
+    connection: &Connection,
+    source_thread_id: &str,
+) -> ApiResult<Option<ThreadForkOperation>> {
+    let operation_id = connection
+        .query_row(
+            r#"
+            SELECT operation_id
+            FROM thread_fork_operations
+            WHERE source_thread_id = ?
+              AND status IN ('provider_pending', 'provider_succeeded', 'result_unknown', 'history_pending')
+            ORDER BY updated_at DESC
+            LIMIT 1
+            "#,
+            params![source_thread_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取活跃 Fork 操作失败: {error}")))?;
+    operation_id
+        .as_deref()
+        .map(|operation_id| read_thread_fork_operation(connection, operation_id))
+        .transpose()
+        .map(Option::flatten)
+}
+
+fn prepare_thread_fork_operation(
+    connection: &mut Connection,
+    source: &ForkSourceThread,
+    requested_operation_id: &str,
+    now_ms: i64,
+) -> ApiResult<ThreadForkOperation> {
+    let operation_id = requested_operation_id.trim();
+    if operation_id.is_empty() {
+        return Err(ApiError::bad_request("operationId 不能为空"));
+    }
+    if source.provider != OPENAI_CODEX_PROVIDER_ID || source.provider_thread_id.trim().is_empty() {
+        return Err(ApiError::bad_request(
+            "只有已建立 Provider 会话的 OpenAI Codex 聊天支持 Fork",
+        ));
+    }
+    let source_turns = read_stored_thread_history(connection, &source.id)?;
+    if source_turns.iter().any(has_pending_human_request) {
+        return Err(ApiError::conflict(
+            "当前聊天仍有待处理的权限确认或用户输入，暂时不能在新聊天中继续",
+        ));
+    }
+    if let Some(active) = read_active_thread_fork_operation(connection, &source.id)? {
+        return Ok(active);
+    }
+    if let Some(existing) = read_thread_fork_operation(connection, operation_id)? {
+        if existing.source_thread_id != source.id
+            || existing.source_provider_thread_id != source.provider_thread_id
+        {
+            return Err(ApiError::conflict("operationId 已用于其他聊天"));
+        }
+        if existing.status == ThreadForkOperationStatus::Failed
+            && existing.provider_thread_id.is_none()
+        {
+            let now = current_timestamp();
+            connection
+                .execute(
+                    r#"
+                    UPDATE thread_fork_operations
+                    SET status = 'provider_pending', started_at_ms = ?, last_error = NULL, updated_at = ?
+                    WHERE operation_id = ? AND status = 'failed' AND provider_thread_id IS NULL
+                    "#,
+                    params![now_ms, now, operation_id],
+                )
+                .map_err(|error| ApiError::internal(format!("重新准备 Fork 操作失败: {error}")))?;
+            return read_thread_fork_operation(connection, operation_id)?
+                .ok_or_else(|| ApiError::internal("重新准备 Fork 操作后记录不存在"));
+        }
+        if existing.status == ThreadForkOperationStatus::Failed {
+            return Err(ApiError::conflict(
+                "Codex 已可能创建 Provider 聊天，不能直接重新发送 Fork",
+            ));
+        }
+        return Ok(existing);
+    }
+
+    let now = current_timestamp();
+    connection
+        .execute(
+            r#"
+            INSERT INTO thread_fork_operations (
+              operation_id, source_thread_id, source_provider_thread_id,
+              provider_thread_id, local_thread_id, status, started_at_ms,
+              last_error, created_at, updated_at
+            )
+            VALUES (?, ?, ?, NULL, NULL, 'provider_pending', ?, NULL, ?, ?)
+            "#,
+            params![
+                operation_id,
+                source.id,
+                source.provider_thread_id,
+                now_ms,
+                now,
+                now
+            ],
+        )
+        .map_err(|error| ApiError::internal(format!("准备 Fork 操作失败: {error}")))?;
+    read_thread_fork_operation(connection, operation_id)?
+        .ok_or_else(|| ApiError::internal("准备 Fork 操作后记录不存在"))
+}
+
+fn recover_stale_thread_fork_operations(connection: &Connection) -> ApiResult<()> {
+    connection
+        .execute(
+            r#"
+            UPDATE thread_fork_operations
+            SET status = 'result_unknown', updated_at = ?
+            WHERE status = 'provider_pending'
+            "#,
+            params![current_timestamp()],
+        )
+        .map(|_| ())
+        .map_err(|error| ApiError::internal(format!("恢复遗留 Fork 操作失败: {error}")))
+}
+
+fn mark_fork_provider_succeeded(
+    connection: &Connection,
+    operation_id: &str,
+    provider_thread_id: &str,
+) -> ApiResult<()> {
+    let provider_thread_id = provider_thread_id.trim();
+    if provider_thread_id.is_empty() {
+        return Err(ApiError::bad_request("providerThreadId 不能为空"));
+    }
+    let existing = read_thread_fork_operation(connection, operation_id)?
+        .ok_or_else(|| ApiError::not_found("Fork 操作不存在"))?;
+    if let Some(existing_provider_thread_id) = existing.provider_thread_id.as_deref() {
+        if existing_provider_thread_id != provider_thread_id {
+            return Err(ApiError::conflict("Fork 操作已绑定其他 Provider 聊天"));
+        }
+    }
+    if !matches!(
+        existing.status,
+        ThreadForkOperationStatus::ProviderPending
+            | ThreadForkOperationStatus::ResultUnknown
+            | ThreadForkOperationStatus::ProviderSucceeded
+    ) {
+        return Err(ApiError::conflict(
+            "Fork 操作当前状态不能绑定 Provider 结果",
+        ));
+    }
+    connection
+        .execute(
+            r#"
+            UPDATE thread_fork_operations
+            SET provider_thread_id = ?, status = 'provider_succeeded', last_error = NULL, updated_at = ?
+            WHERE operation_id = ?
+            "#,
+            params![provider_thread_id, current_timestamp(), operation_id],
+        )
+        .map(|_| ())
+        .map_err(|error| ApiError::internal(format!("保存 Fork Provider 结果失败: {error}")))
+}
+
+fn finalize_local_thread_fork(
+    connection: &mut Connection,
+    source: &ForkSourceThread,
+    operation: &ThreadForkOperation,
+    provider_turns: &[Value],
+    history_pending: bool,
+) -> ApiResult<(Value, String)> {
+    if operation.source_thread_id != source.id
+        || operation.source_provider_thread_id != source.provider_thread_id
+    {
+        return Err(ApiError::conflict("Fork 操作与源聊天不匹配"));
+    }
+    if operation.status == ThreadForkOperationStatus::Completed {
+        let local_thread_id = operation
+            .local_thread_id
+            .as_deref()
+            .ok_or_else(|| ApiError::internal("已完成 Fork 操作缺少本地聊天 ID"))?;
+        return Ok((
+            read_thread_summary(connection, local_thread_id)?,
+            local_thread_id.to_string(),
+        ));
+    }
+    if !matches!(
+        operation.status,
+        ThreadForkOperationStatus::ProviderSucceeded | ThreadForkOperationStatus::HistoryPending
+    ) {
+        return Err(ApiError::conflict("Fork 操作尚未获得 Provider 结果"));
+    }
+    let provider_thread_id = operation
+        .provider_thread_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::internal("Fork 操作缺少 Provider 聊天 ID"))?;
+    if provider_thread_id == source.provider_thread_id {
+        return Err(ApiError::internal("Fork Provider 聊天 ID 与源聊天相同"));
+    }
+    let local_thread_id = operation
+        .local_thread_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let now = current_timestamp();
+    let final_status = if history_pending {
+        ThreadForkOperationStatus::HistoryPending
+    } else {
+        ThreadForkOperationStatus::Completed
+    };
+    let transaction = connection
+        .transaction()
+        .map_err(|error| ApiError::internal(format!("完成 Fork 本地事务失败: {error}")))?;
+    if operation.local_thread_id.is_some() {
+        let existing_identity = transaction
+            .query_row(
+                "SELECT project_id, provider, session_id FROM threads WHERE id = ?",
+                params![local_thread_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| ApiError::internal(format!("读取 Fork 本地聊天失败: {error}")))?
+            .ok_or_else(|| ApiError::internal("Fork 操作绑定的本地聊天不存在"))?;
+        if existing_identity.0 != source.project_id
+            || existing_identity.1 != source.provider
+            || existing_identity.2.as_deref() != Some(provider_thread_id)
+        {
+            return Err(ApiError::conflict("Fork 操作绑定的本地聊天身份不匹配"));
+        }
+    } else {
+        transaction
+            .execute(
+                r#"
+                INSERT INTO threads (
+                  id, project_id, provider, title, custom_title, session_id, transcript_path,
+                  working_directory, model, reasoning_effort, permission_mode, agent_channel_id,
+                  agent_channel_fingerprint, imported, created_at, updated_at, pinned_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, 0, ?, ?, NULL)
+                "#,
+                params![
+                    local_thread_id,
+                    source.project_id,
+                    source.provider,
+                    source.title,
+                    if source.custom_title { 1 } else { 0 },
+                    provider_thread_id,
+                    source.working_directory,
+                    source.model,
+                    source.reasoning_effort,
+                    source.permission_mode,
+                    source.agent_channel_id,
+                    now,
+                    now,
+                ],
+            )
+            .map_err(|error| ApiError::internal(format!("创建 Fork 本地聊天失败: {error}")))?;
+    }
+    sync_thread_model_preference(
+        &transaction,
+        &local_thread_id,
+        source.model.as_deref(),
+        source.reasoning_effort.as_deref(),
+        &now,
+    )?;
+    if !history_pending {
+        write_thread_history_rows(
+            &transaction,
+            &local_thread_id,
+            provider_turns,
+            &source.project_id,
+            &now,
+        )?;
+    } else {
+        transaction
+            .execute(
+                "UPDATE projects SET updated_at = ? WHERE id = ?",
+                params![now, source.project_id],
+            )
+            .map_err(|error| ApiError::internal(format!("更新 Fork 项目失败: {error}")))?;
+    }
+    write_state_value(&transaction, "activeProjectId", &source.project_id)?;
+    write_state_value(&transaction, "activeThreadId", &local_thread_id)?;
+    let updated = transaction
+        .execute(
+            r#"
+            UPDATE thread_fork_operations
+            SET local_thread_id = ?, status = ?, last_error = NULL, updated_at = ?
+            WHERE operation_id = ?
+              AND status IN ('provider_succeeded', 'history_pending')
+              AND provider_thread_id = ?
+            "#,
+            params![
+                local_thread_id,
+                final_status.as_str(),
+                now,
+                operation.operation_id,
+                provider_thread_id,
+            ],
+        )
+        .map_err(|error| ApiError::internal(format!("完成 Fork 操作记录失败: {error}")))?;
+    if updated != 1 {
+        return Err(ApiError::conflict("Fork 操作状态已变化，请重新读取后恢复"));
+    }
+    transaction
+        .commit()
+        .map_err(|error| ApiError::internal(format!("提交 Fork 本地事务失败: {error}")))?;
+    Ok((
+        read_thread_summary(connection, &local_thread_id)?,
+        local_thread_id,
+    ))
 }
 
 fn create_thread_row(
@@ -8517,13 +8957,26 @@ fn write_thread_history(
     let transaction = connection
         .transaction()
         .map_err(|error| ApiError::internal(format!("保存聊天历史失败: {error}")))?;
+    write_thread_history_rows(&transaction, thread_id, turns, &thread.project_id, &now)?;
     transaction
+        .commit()
+        .map_err(|error| ApiError::internal(format!("提交聊天历史失败: {error}")))
+}
+
+fn write_thread_history_rows(
+    connection: &Connection,
+    thread_id: &str,
+    turns: &[Value],
+    project_id: &str,
+    now: &str,
+) -> ApiResult<()> {
+    connection
         .execute(
             "DELETE FROM tool_calls WHERE thread_id = ?",
             params![thread_id],
         )
         .map_err(|error| ApiError::internal(format!("清理工具记录失败: {error}")))?;
-    transaction
+    connection
         .execute(
             "DELETE FROM messages WHERE thread_id = ?",
             params![thread_id],
@@ -8544,7 +8997,7 @@ fn write_thread_history(
             .and_then(timestamp_ms_to_iso)
             .unwrap_or_else(current_timestamp);
         insert_message_row(
-            &transaction,
+            connection,
             thread_id,
             &turn_id,
             turn_index as i64,
@@ -8580,7 +9033,7 @@ fn write_thread_history(
             match item.get("type").and_then(Value::as_str) {
                 Some(item_type @ ("text" | "thinking")) => {
                     insert_message_row(
-                        &transaction,
+                        connection,
                         thread_id,
                         &turn_id,
                         turn_index as i64,
@@ -8595,7 +9048,7 @@ fn write_thread_history(
                 }
                 Some("system-command") => {
                     insert_message_row(
-                        &transaction,
+                        connection,
                         thread_id,
                         &turn_id,
                         turn_index as i64,
@@ -8611,7 +9064,7 @@ fn write_thread_history(
                 Some("tool") => {
                     if let Some(tool) = item.get("tool") {
                         insert_tool_row(
-                            &transaction,
+                            connection,
                             thread_id,
                             &turn_id,
                             turn_index as i64,
@@ -8627,25 +9080,23 @@ fn write_thread_history(
         }
     }
 
-    transaction
+    connection
         .execute(
             "UPDATE threads SET updated_at = ? WHERE id = ?",
             params![now, thread_id],
         )
         .map_err(|error| ApiError::internal(format!("更新聊天时间失败: {error}")))?;
-    transaction
+    connection
         .execute(
             "UPDATE projects SET updated_at = ? WHERE id = ?",
-            params![now, thread.project_id],
+            params![now, project_id],
         )
-        .map_err(|error| ApiError::internal(format!("更新项目时间失败: {error}")))?;
-    transaction
-        .commit()
-        .map_err(|error| ApiError::internal(format!("提交聊天历史失败: {error}")))
+        .map(|_| ())
+        .map_err(|error| ApiError::internal(format!("更新项目时间失败: {error}")))
 }
 
 fn insert_message_row(
-    transaction: &rusqlite::Transaction<'_>,
+    connection: &Connection,
     thread_id: &str,
     turn_id: &str,
     turn_sort: i64,
@@ -8657,7 +9108,7 @@ fn insert_message_row(
     created_at: &str,
     include_user_payload: bool,
 ) -> ApiResult<()> {
-    transaction
+    connection
         .execute(
             r#"
             INSERT INTO messages (
@@ -8712,7 +9163,7 @@ fn insert_message_row(
 }
 
 fn insert_tool_row(
-    transaction: &rusqlite::Transaction<'_>,
+    connection: &Connection,
     thread_id: &str,
     turn_id: &str,
     turn_sort: i64,
@@ -8725,7 +9176,7 @@ fn insert_tool_row(
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "tool");
-    transaction
+    connection
         .execute(
             r#"
             INSERT INTO tool_calls (
@@ -18592,18 +19043,20 @@ mod tests {
         create_thread_row, current_claude_install_lifecycle_plan, default_claude_command_paths,
         default_grok_command_path, default_pi_command_paths, desktop_cors_layer,
         ensure_agent_plugin_management_supported, extract_agent_semantic_version,
-        import_claude_sessions_from_root, initialize_workspace_database,
-        install_skill_directory_safely, is_agent_lifecycle_network_failure, lifecycle_plan,
-        lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
-        list_agent_plugin_marketplaces_value, list_agent_skills_value, list_slash_commands_value,
+        finalize_local_thread_fork, import_claude_sessions_from_root,
+        initialize_workspace_database, install_skill_directory_safely,
+        is_agent_lifecycle_network_failure, lifecycle_plan, lifecycle_plan_supports_npm_mirror,
+        list_agent_installed_plugins_value, list_agent_plugin_marketplaces_value,
+        list_agent_skills_value, list_slash_commands_value, mark_fork_provider_succeeded,
         mark_request_user_input_submitted, normalize_agent_plugin_action,
         normalize_agent_runtime_settings, normalize_open_with_settings, normalize_pi_probe_summary,
         normalize_request_user_input_answer_value, parse_grok_cli_version,
         parse_grok_latest_version, parse_macos_system_proxy_environment, parse_npm_latest_version,
         parse_pi_installed_packages, parse_request_user_input_event, pi_node_version_supported,
-        provider_supports_reasoning_effort, read_agent_mcp_config_snapshot,
-        read_opencode_mcp_config, read_stored_thread_history, read_thread_detail,
-        read_thread_summary, remove_thread_row, resolve_codex_command,
+        prepare_thread_fork_operation, provider_supports_reasoning_effort,
+        read_agent_mcp_config_snapshot, read_opencode_mcp_config, read_stored_thread_history,
+        read_thread_detail, read_thread_fork_operation, read_thread_summary,
+        recover_stale_thread_fork_operations, remove_thread_row, resolve_codex_command,
         resolve_first_runnable_command, resolve_grok_command, resolve_opencode_command,
         resolve_pi_command, resolve_requested_thread_provider,
         resolve_thread_create_permission_mode, resolve_workspace_relative_path,
@@ -18612,7 +19065,7 @@ mod tests {
         summarize_content_blocks, update_thread_metadata_from_payload, validate_desktop_file_path,
         validate_managed_agent_skill_path, windows_claude_install_lifecycle_plan,
         windows_shell_execute_error_message, write_opencode_mcp_config, write_thread_history,
-        ApiError, AppState,
+        ApiError, AppState, ForkSourceThread, ThreadForkOperationStatus,
     };
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
@@ -18623,7 +19076,7 @@ mod tests {
         body::Body,
         http::{header, Method, Request, StatusCode},
     };
-    use rusqlite::{params, Connection};
+    use rusqlite::{params, Connection, OptionalExtension};
     use serde_json::{json, Value};
     use std::{
         collections::HashMap,
@@ -20410,6 +20863,362 @@ mod tests {
             &channel_service,
         )
         .is_err());
+    }
+
+    fn fork_operation_source(connection: &Connection, id: &str) -> ForkSourceThread {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO projects (id, path, name, custom_name, created_at, updated_at) VALUES ('fork-project', 'D:/workspace', 'workspace', 0, '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z')",
+                [],
+            )
+            .expect("insert fork project");
+        connection
+            .execute(
+                r#"
+                INSERT INTO threads (
+                  id, project_id, provider, title, custom_title, session_id, transcript_path,
+                  working_directory, model, reasoning_effort, permission_mode, agent_channel_id,
+                  agent_channel_fingerprint, imported, created_at, updated_at, pinned_at
+                )
+                VALUES (?, 'fork-project', ?, '源聊天', 1, 'provider-source', NULL,
+                        'D:/workspace', 'gpt-codex', 'high', 'auto', 'channel-1',
+                        'fingerprint-1', 0, '2026-08-02T00:00:00.000Z',
+                        '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z')
+                "#,
+                params![id, OPENAI_CODEX_PROVIDER_ID],
+            )
+            .expect("insert fork source thread");
+        ForkSourceThread {
+            id: id.to_string(),
+            project_id: "fork-project".to_string(),
+            provider: OPENAI_CODEX_PROVIDER_ID.to_string(),
+            title: "源聊天".to_string(),
+            custom_title: true,
+            provider_thread_id: "provider-source".to_string(),
+            working_directory: "D:/workspace".to_string(),
+            model: Some("gpt-codex".to_string()),
+            reasoning_effort: Some("high".to_string()),
+            permission_mode: Some("auto".to_string()),
+            agent_channel_id: Some("channel-1".to_string()),
+        }
+    }
+
+    #[test]
+    fn fork_operation_schema_keeps_only_bounded_recovery_metadata() {
+        let connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let columns = connection
+            .prepare("PRAGMA table_info(thread_fork_operations)")
+            .expect("prepare columns")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query columns")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect columns");
+
+        assert_eq!(
+            columns,
+            vec![
+                "operation_id",
+                "source_thread_id",
+                "source_provider_thread_id",
+                "provider_thread_id",
+                "local_thread_id",
+                "status",
+                "started_at_ms",
+                "last_error",
+                "created_at",
+                "updated_at",
+            ]
+        );
+        let schema: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'thread_fork_operations'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read fork schema");
+        for forbidden in ["prompt", "raw_rpc", "environment", "env_json"] {
+            assert!(!schema.to_ascii_lowercase().contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn fork_operation_prepare_reuses_one_non_terminal_source_operation() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let source = fork_operation_source(&connection, "source-thread");
+
+        let first = prepare_thread_fork_operation(
+            &mut connection,
+            &source,
+            "operation-1",
+            1_754_092_800_000,
+        )
+        .expect("prepare first operation");
+        let reused = prepare_thread_fork_operation(
+            &mut connection,
+            &source,
+            "operation-2",
+            1_754_092_801_000,
+        )
+        .expect("reuse active operation");
+        assert_eq!(first.operation_id, reused.operation_id);
+        assert_eq!(reused.status, ThreadForkOperationStatus::ProviderPending);
+        assert!(connection
+            .execute(
+                r#"INSERT INTO thread_fork_operations (
+                    operation_id, source_thread_id, source_provider_thread_id, status,
+                    started_at_ms, created_at, updated_at
+                ) VALUES ('operation-conflict', 'source-thread', 'provider-source',
+                          'provider_pending', 1754092802000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"#,
+                [],
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn fork_operation_failed_without_provider_can_rearm_explicit_retry() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let source = fork_operation_source(&connection, "source-thread");
+        prepare_thread_fork_operation(
+            &mut connection,
+            &source,
+            "operation-retry",
+            1_754_092_800_000,
+        )
+        .expect("prepare operation");
+        connection
+            .execute(
+                "UPDATE thread_fork_operations SET status = 'failed' WHERE operation_id = 'operation-retry'",
+                [],
+            )
+            .expect("mark failed");
+
+        let rearmed = prepare_thread_fork_operation(
+            &mut connection,
+            &source,
+            "operation-retry",
+            1_754_092_801_000,
+        )
+        .expect("rearm explicit retry");
+        assert_eq!(rearmed.status, ThreadForkOperationStatus::ProviderPending);
+        connection
+            .execute(
+                "UPDATE thread_fork_operations SET status = 'failed', provider_thread_id = 'provider-child' WHERE operation_id = 'operation-retry'",
+                [],
+            )
+            .expect("mark failed after provider create");
+        assert!(prepare_thread_fork_operation(
+            &mut connection,
+            &source,
+            "operation-retry",
+            1_754_092_802_000,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn fork_operation_restart_moves_inflight_pending_to_result_unknown() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let source = fork_operation_source(&connection, "source-thread");
+        prepare_thread_fork_operation(
+            &mut connection,
+            &source,
+            "operation-restart",
+            1_754_092_800_000,
+        )
+        .expect("prepare operation");
+
+        recover_stale_thread_fork_operations(&connection).expect("recover stale operation");
+        let recovered = read_thread_fork_operation(&connection, "operation-restart")
+            .expect("read operation")
+            .expect("operation exists");
+        assert_eq!(recovered.status, ThreadForkOperationStatus::ResultUnknown);
+        let reused = prepare_thread_fork_operation(
+            &mut connection,
+            &source,
+            "operation-restart",
+            1_754_092_801_000,
+        )
+        .expect("reuse unknown operation");
+        assert_eq!(reused.status, ThreadForkOperationStatus::ResultUnknown);
+    }
+
+    #[test]
+    fn fork_operation_finalize_inherits_identity_and_writes_provider_history() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let source = fork_operation_source(&connection, "source-thread");
+        write_thread_history(
+            &mut connection,
+            &source.id,
+            &[json!({ "id": "source-turn", "userText": "source-only" })],
+        )
+        .expect("write source history");
+        let mut operation = prepare_thread_fork_operation(
+            &mut connection,
+            &source,
+            "operation-finalize",
+            1_754_092_800_000,
+        )
+        .expect("prepare operation");
+        mark_fork_provider_succeeded(&connection, &operation.operation_id, "provider-child")
+            .expect("mark provider succeeded");
+        operation = read_thread_fork_operation(&connection, &operation.operation_id)
+            .expect("read operation")
+            .expect("operation exists");
+        let provider_turns = vec![json!({
+            "id": "provider-turn",
+            "userText": "provider-only",
+            "assistantText": "child-answer",
+            "items": [{ "id": "item-1", "type": "text", "text": "child-answer" }]
+        })];
+
+        let (_summary, child_id) = finalize_local_thread_fork(
+            &mut connection,
+            &source,
+            &operation,
+            &provider_turns,
+            false,
+        )
+        .expect("finalize fork");
+        let child: (
+            String,
+            String,
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = connection
+            .query_row(
+                "SELECT project_id, title, custom_title, session_id, working_directory, model, reasoning_effort, permission_mode, agent_channel_id, pinned_at FROM threads WHERE id = ?",
+                params![child_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?)),
+            )
+            .expect("read child");
+        assert_eq!(child.0, source.project_id);
+        assert_eq!(child.1, source.title);
+        assert_eq!(child.2, 1);
+        assert_eq!(child.3, "provider-child");
+        assert_eq!(child.4, source.working_directory);
+        assert_eq!(child.5, source.model);
+        assert_eq!(child.6, source.reasoning_effort);
+        assert_eq!(child.7, source.permission_mode);
+        assert_eq!(child.8, source.agent_channel_id);
+        assert_eq!(child.9, None);
+        assert_eq!(
+            read_stored_thread_history(&connection, &child_id).expect("read child history")[0]
+                ["userText"],
+            "provider-only"
+        );
+        assert_eq!(
+            read_stored_thread_history(&connection, &source.id).expect("read source history")[0]
+                ["userText"],
+            "source-only"
+        );
+        assert_eq!(
+            read_thread_fork_operation(&connection, &operation.operation_id)
+                .expect("read operation")
+                .expect("operation exists")
+                .status,
+            ThreadForkOperationStatus::Completed
+        );
+    }
+
+    #[test]
+    fn fork_operation_finalize_rolls_back_thread_history_selection_and_status_together() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let source = fork_operation_source(&connection, "source-thread");
+        let mut operation = prepare_thread_fork_operation(
+            &mut connection,
+            &source,
+            "operation-rollback",
+            1_754_092_800_000,
+        )
+        .expect("prepare operation");
+        mark_fork_provider_succeeded(&connection, &operation.operation_id, "provider-child")
+            .expect("mark provider succeeded");
+        operation = read_thread_fork_operation(&connection, &operation.operation_id)
+            .expect("read operation")
+            .expect("operation exists");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_fork_history BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'reject fork history'); END;",
+            )
+            .expect("install failing history trigger");
+
+        assert!(finalize_local_thread_fork(
+            &mut connection,
+            &source,
+            &operation,
+            &[json!({ "id": "provider-turn", "userText": "provider-only" })],
+            false,
+        )
+        .is_err());
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM threads", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("count threads"),
+            1
+        );
+        assert!(connection
+            .query_row(
+                "SELECT value FROM app_state WHERE key = 'activeThreadId'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .expect("read active thread")
+            .is_none());
+        assert_eq!(
+            read_thread_fork_operation(&connection, &operation.operation_id)
+                .expect("read operation")
+                .expect("operation exists")
+                .status,
+            ThreadForkOperationStatus::ProviderSucceeded
+        );
+    }
+
+    #[test]
+    fn fork_operation_source_pending_request_blocks_prepare() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let source = fork_operation_source(&connection, "source-thread");
+        write_thread_history(
+            &mut connection,
+            &source.id,
+            &[json!({
+                "id": "pending-turn",
+                "userText": "run command",
+                "pendingApprovalRequests": [{ "requestId": "approval-1" }]
+            })],
+        )
+        .expect("write pending source history");
+
+        let error = prepare_thread_fork_operation(
+            &mut connection,
+            &source,
+            "operation-pending",
+            1_754_092_800_000,
+        )
+        .expect_err("pending request must block fork");
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM thread_fork_operations", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("count operations"),
+            0
+        );
     }
 
     #[test]

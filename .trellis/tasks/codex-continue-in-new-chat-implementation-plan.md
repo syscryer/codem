@@ -276,7 +276,7 @@ git commit -m "feat: route Codex thread fork through runtime actor"
 - Modify: `src-tauri/src/backend.rs`
 - Test: `src-tauri/src/backend.rs` 内联 tests
 
-- [ ] **Step 1: 写迁移、最小记录和事务回滚失败测试**
+- [x] **Step 1: 写迁移、最小记录和事务回滚失败测试**
 
 新增完整测试，统一使用 `fork_operation_` 前缀：
 
@@ -290,13 +290,13 @@ git commit -m "feat: route Codex thread fork through runtime actor"
 | `fork_operation_finalize_rolls_back_thread_history_selection_and_status_together` | 注入非法 history 后 child/messages/selection 均不存在；此前已提交的 operation 仍为 `provider_succeeded` |
 | `fork_operation_source_pending_request_blocks_prepare` | 已持久化 approval 或 user-input 的 source 返回 conflict，且不插入 operation |
 
-- [ ] **Step 2: 运行数据库测试确认失败**
+- [x] **Step 2: 运行数据库测试确认失败**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml backend::tests::fork_operation -- --nocapture`
 
 Expected: FAIL，缺少表、operation helpers 和原子 finalize。
 
-- [ ] **Step 3: 添加最小恢复表和索引**
+- [x] **Step 3: 添加最小恢复表和索引**
 
 在 `initialize_workspace_database` 中加入：
 
@@ -322,7 +322,7 @@ WHERE status IN ('provider_pending', 'provider_succeeded', 'result_unknown', 'hi
 
 允许的状态固定为：`provider_pending | provider_succeeded | result_unknown | history_pending | completed | failed`。`last_error` 先使用现有敏感赋值脱敏和长度限制，只保存用户可见摘要。应用初始化时把遗留的 `provider_pending` 原子改为 `result_unknown`；该状态表示上次进程可能已发出 Provider 请求，恢复流程绝不能直接再次 Fork。
 
-- [ ] **Step 4: 实现操作记录和原子 finalize helpers**
+- [x] **Step 4: 实现操作记录和原子 finalize helpers**
 
 增加明确的持久化 DTO 和状态枚举：
 
@@ -396,13 +396,13 @@ fn finalize_local_thread_fork(
 
 状态转换固定为：新请求 `provider_pending -> provider_succeeded -> completed|history_pending`；明确 Provider 失败 `provider_pending -> failed`；超时/连接断开/进程重启 `provider_pending -> result_unknown`；`result_unknown` 只允许只读 reconcile；`provider_succeeded` 只允许本地 finalize；`history_pending` 只允许只读 history 恢复；`completed` 直接返回既有 child。只有 `failed` 且 `provider_thread_id IS NULL` 时，用户显式重试才能把同一 operation 重新置为 `provider_pending`。
 
-- [ ] **Step 5: 运行数据库测试和既有 history 回归**
+- [x] **Step 5: 运行数据库测试和既有 history 回归**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml backend::tests -- --nocapture`
 
 Expected: PASS；原子回滚、配置继承、源历史不变和 Compact history round-trip 均通过。
 
-- [ ] **Step 6: 提交持久化层**
+- [x] **Step 6: 提交持久化层**
 
 ```powershell
 git add -- src-tauri/src/backend.rs

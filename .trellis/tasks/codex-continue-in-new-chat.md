@@ -157,6 +157,9 @@ Provider 回归和长历史增量装载。
 
 ## Implementation Record
 
+- 2026-08-02T07:37:17.122Z Task 3 GREEN：新增最小 thread_fork_operations 表与唯一非终态索引；prepare/rearm/restart recover/provider success/finalize 状态流落地；child、Provider history、selection、operation 同事务提交。定向 7 passed，完整 backend::tests 86 passed。为避免每请求初始化误伤进行中操作，provider_pending 仅在后端进程启动时单次恢复为 result_unknown。
+- 2026-08-02T07:27:25.187Z Task 3 RED：backend::tests::fork_operation 定向测试按预期失败；缺少 thread_fork_operations 表、ForkSourceThread/ThreadForkOperation 状态 DTO、prepare/read/recover/mark/finalize helpers。child_id 类型报错为 finalize 返回类型缺失的连带推断。另确认恢复 pending 不能放在每请求都会调用的 initialize_workspace_database，改为后端启动时单次执行。
+
 - 2026-08-02T07:19:33.652Z Task 2 GREEN：Fork 定向测试 9 passed；完整 agent_run::tests 69 passed；cargo fmt --check 通过。Fork 经源 runtime actor 串行，使用 fork:<operationId> 互斥，不创建 run record/聊天终态事件；超时与通道未知映射 Uncertain，历史读取失败保留 ProviderCreated。
 - 2026-08-02T07:10:19.093Z Task 2 第二轮 RED：Fork 定向测试按预期因 complete_fork_command/fail_fork_command 尚不存在而失败；该缺口对应 Actor 完成与启动/关闭错误必须统一结束 oneshot、且不得写普通聊天事件的契约。
 
@@ -172,6 +175,8 @@ Provider 回归和长历史增量装载。
 - 2026-08-02T04:47:35.559Z Task created by Trellis automation.
 
 ## Verification Results
+
+- 2026-08-02T07:37:17.112Z `cargo test --manifest-path src-tauri/Cargo.toml backend::tests -- --nocapture；cargo fmt --manifest-path src-tauri/Cargo.toml -- --check；git diff --check`: 86 passed，格式与 diff 检查通过
 - 2026-08-02T07:20:49.660Z `cargo test --manifest-path src-tauri/Cargo.toml agent_run::tests -- --nocapture；cargo fmt --manifest-path src-tauri/Cargo.toml -- --check；git diff --check`: 69 passed，格式与 diff 检查通过
 
 - 2026-08-02T05:49:00.050Z `Task 1 Codex Fork 协议层`: cargo test codex_app_server::tests::fork：6 passed；cargo test public_agent_errors_keep_details_for_each_transport_error：1 passed；cargo fmt --check：通过；仅有既有 dead_code/linker warnings。
