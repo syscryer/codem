@@ -10,6 +10,7 @@ import {
   GitPullRequest,
   FolderOpen,
   LoaderCircle,
+  MessageSquarePlus,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -25,7 +26,13 @@ import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { PopoverPortal } from './PopoverPortal';
 import { getGitDiffBadgeLabels } from '../lib/git-diff';
 import { getOpenAppIcon } from '../lib/open-app-icons';
-import type { OpenAppTarget, ProjectSummary, ThreadDetail, ThreadSummary } from '../types';
+import type {
+  OpenAppTarget,
+  ProjectSummary,
+  ThreadDetail,
+  ThreadForkAvailability,
+  ThreadSummary,
+} from '../types';
 
 const LAUNCH_SCRIPTS_STORAGE_KEY = 'codem::project-launch-scripts';
 
@@ -36,6 +43,9 @@ type ChatHeaderProps = {
 } & ChatHeaderActionsProps & ChatHeaderThreadActionsProps;
 
 type ChatHeaderThreadActionsProps = {
+  threadForkAvailability: ThreadForkAvailability;
+  onPrepareThreadFork: (thread: ThreadSummary) => void | Promise<void>;
+  onForkThread: (thread: ThreadSummary) => void | Promise<unknown>;
   onTogglePinThread: (threadId: string, pinned: boolean) => void | Promise<void>;
   onOpenRenameThreadDialog: (thread: ThreadSummary) => void;
   onCopySessionId: (thread: ThreadSummary) => void | Promise<void>;
@@ -94,6 +104,9 @@ export function ChatHeader({
   rightWorkbenchOpen,
   onToggleRightWorkbench,
   onOpenReviewWorkbench,
+  threadForkAvailability,
+  onPrepareThreadFork,
+  onForkThread,
   onTogglePinThread,
   onOpenRenameThreadDialog,
   onCopySessionId,
@@ -113,9 +126,17 @@ export function ChatHeader({
     setThreadMenuOpen(false);
   }, [activeThread?.id, isNewChatDraft]);
 
-  function runThreadMenuAction(action: () => void | Promise<void>) {
+  function runThreadMenuAction(action: () => void | Promise<unknown>) {
     setThreadMenuOpen(false);
     void action();
+  }
+
+  function toggleThreadMenu() {
+    const opening = !threadMenuOpen;
+    setThreadMenuOpen(opening);
+    if (opening && activeThread) {
+      void onPrepareThreadFork(activeThread);
+    }
   }
 
   return (
@@ -131,7 +152,7 @@ export function ChatHeader({
             aria-haspopup="menu"
             aria-expanded={threadMenuOpen}
             disabled={!activeThread}
-            onClick={() => setThreadMenuOpen((open) => !open)}
+            onClick={toggleThreadMenu}
           >
             <MoreHorizontal size={15} />
           </button>
@@ -154,6 +175,24 @@ export function ChatHeader({
               >
                 <Pencil size={14} />
                 <span>重命名聊天</span>
+              </button>
+              <button
+                type="button"
+                className="workspace-menu-item"
+                role="menuitem"
+                disabled={!threadForkAvailability.enabled}
+                title={threadForkAvailability.reason}
+                aria-label={threadForkAvailability.enabled
+                  ? '在新聊天中继续'
+                  : `在新聊天中继续：${threadForkAvailability.reason ?? '当前不可用'}`}
+                onClick={() => activeThread
+                  ? runThreadMenuAction(() => onForkThread(activeThread))
+                  : undefined}
+              >
+                {threadForkAvailability.reason === '正在创建新聊天'
+                  ? <LoaderCircle size={14} className="spin" />
+                  : <MessageSquarePlus size={14} />}
+                <span>在新聊天中继续</span>
               </button>
               <button
                 type="button"

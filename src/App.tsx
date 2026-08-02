@@ -64,6 +64,7 @@ import {
   getCompactAvailability,
   readCompactMetadata,
 } from './lib/codex-compact';
+import { getThreadForkAvailability, threadForkCapabilityKey } from './lib/codex-thread-fork';
 import { resolveChatRuntimeKind } from './lib/agent-provider-registry';
 import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
 import { openExternalUrl } from './lib/markdown-link';
@@ -114,6 +115,7 @@ import type {
   SettingsSection,
   SystemCommandItem,
   ThreadDetail,
+  ThreadForkAvailability,
   ThreadRuntimeStatus,
   ThreadSummary,
   ToolStep,
@@ -236,6 +238,9 @@ export default function App() {
     activeProject,
     activeThreadSummary,
     activeThread,
+    threadDetails,
+    threadForkCapabilities,
+    forkingThreadIds,
     pinnedThreads,
     pinnedProjects,
     unpinnedProjects,
@@ -249,6 +254,8 @@ export default function App() {
     syncWorkspace,
     loadWorkspace,
     createThread,
+    prepareThreadFork,
+    forkThread,
     renameThread,
     openWorktreePath,
     selectDirectoryPath,
@@ -1045,6 +1052,24 @@ export default function App() {
   const supportsQueuedPromptGuide = activeUsesClaude || (
     activeUsesGenericAgent && activeThread?.provider === OPENAI_CODEX_PROVIDER_ID
   );
+  const resolveThreadForkAvailability = useCallback((thread: ThreadSummary): ThreadForkAvailability => {
+    const detail = threadDetails[thread.id];
+    return getThreadForkAvailability({
+      thread,
+      capability: threadForkCapabilities[threadForkCapabilityKey(thread)],
+      busy: runningThreadIds.includes(thread.id)
+        || Boolean(threadRuntimeStatuses[thread.id]?.activeRun),
+      pendingHumanRequest: Boolean(detail?.turns.some((turn) =>
+        turn.pendingApprovalRequests?.length || turn.pendingUserInputRequests?.length)),
+      forking: forkingThreadIds.includes(thread.id),
+    });
+  }, [
+    forkingThreadIds,
+    runningThreadIds,
+    threadDetails,
+    threadForkCapabilities,
+    threadRuntimeStatuses,
+  ]);
   const queuedPromptGuideAvailability = supportsQueuedPromptGuide
     ? getQueuedPromptGuideAvailability({
         isRunning: Boolean(activeThreadId && runningThreadIds.includes(activeThreadId)),
@@ -2167,6 +2192,9 @@ export default function App() {
               onOpenRemoveProjectDialog={openRemoveProjectDialog}
               onToggleProjectCollapse={toggleProjectCollapse}
               onSelectThread={handleSelectThread}
+              getThreadForkAvailability={resolveThreadForkAvailability}
+              onPrepareThreadFork={prepareThreadFork}
+              onForkThread={forkThread}
               onOpenRenameThreadDialog={openRenameThreadDialog}
               onCopySessionId={handleCopySessionId}
               onOpenRemoveThreadDialog={handleOpenRemoveThreadDialog}
@@ -2253,6 +2281,11 @@ export default function App() {
                 rightWorkbenchOpen={rightWorkbenchOpen}
                 onToggleRightWorkbench={() => setRightWorkbenchOpen((value) => !value)}
                 onOpenReviewWorkbench={openReviewWorkbench}
+                threadForkAvailability={activeThreadSummary
+                  ? resolveThreadForkAvailability(activeThreadSummary)
+                  : { enabled: false, reason: '请先选择聊天' }}
+                onPrepareThreadFork={prepareThreadFork}
+                onForkThread={forkThread}
                 onTogglePinThread={togglePinThread}
                 onOpenRenameThreadDialog={openRenameThreadDialog}
                 onCopySessionId={handleCopySessionId}

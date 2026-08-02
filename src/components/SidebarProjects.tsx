@@ -7,6 +7,7 @@ import {
   Copy,
   Download,
   LoaderCircle,
+  MessageSquarePlus,
   MessageSquareText,
   Folder,
   FolderOpen,
@@ -31,7 +32,15 @@ import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { PopoverPortal } from './PopoverPortal';
 import { resolveSidebarThreadStatus, type SidebarThreadStatusKind } from '../lib/sidebar-thread-status';
 import type { ThreadActivityNoticeMap } from '../lib/thread-activity-notices';
-import type { AiChatSummary, CloneTask, PanelState, ProjectSummary, ThreadRuntimeStatus, ThreadSummary } from '../types';
+import type {
+  AiChatSummary,
+  CloneTask,
+  PanelState,
+  ProjectSummary,
+  ThreadForkAvailability,
+  ThreadRuntimeStatus,
+  ThreadSummary,
+} from '../types';
 
 const VISIBLE_THREAD_PREVIEW_LIMIT = 5;
 
@@ -80,6 +89,9 @@ type SidebarProjectsProps = {
   onOpenRemoveProjectDialog: (project: ProjectSummary) => void;
   onToggleProjectCollapse: (projectId: string) => void;
   onSelectThread: (projectId: string, threadId: string) => void | Promise<void>;
+  getThreadForkAvailability: (thread: ThreadSummary) => ThreadForkAvailability;
+  onPrepareThreadFork: (thread: ThreadSummary) => void | Promise<void>;
+  onForkThread: (thread: ThreadSummary) => void | Promise<unknown>;
   onOpenRenameThreadDialog: (thread: ThreadSummary) => void;
   onCopySessionId: (thread: ThreadSummary) => void | Promise<void>;
   onOpenRemoveThreadDialog: (thread: ThreadSummary) => void;
@@ -135,6 +147,9 @@ export function SidebarProjects({
   onOpenRemoveProjectDialog,
   onToggleProjectCollapse,
   onSelectThread,
+  getThreadForkAvailability,
+  onPrepareThreadFork,
+  onForkThread,
   onOpenRenameThreadDialog,
   onCopySessionId,
   onOpenRemoveThreadDialog,
@@ -184,13 +199,14 @@ export function SidebarProjects({
     setProjectMenuProjectId(projectId);
   }
 
-  function openThreadMenu(threadId: string, anchor?: { x: number; y: number }) {
+  function openThreadMenu(thread: ThreadSummary, anchor?: { x: number; y: number }) {
     setProjectMenuProjectId(null);
     setProjectMenuAnchor(null);
     setOrdinaryChatMenuId(null);
     setOrdinaryChatMenuAnchor(null);
     setThreadMenuAnchor(anchor ?? null);
-    setThreadMenuThreadId(threadId);
+    setThreadMenuThreadId(thread.id);
+    void onPrepareThreadFork(thread);
   }
 
   function openOrdinaryChatMenu(chatId: string, anchor?: { x: number; y: number }) {
@@ -268,6 +284,7 @@ export function SidebarProjects({
     });
     const isRunningThread = threadStatus === 'running';
     const isPinned = Boolean(thread.pinnedAt);
+    const threadForkAvailability = getThreadForkAvailability(thread);
     return (
       <div
         key={thread.id}
@@ -275,7 +292,7 @@ export function SidebarProjects({
         onContextMenu={(event) => {
           event.preventDefault();
           event.stopPropagation();
-          openThreadMenu(thread.id, { x: event.clientX, y: event.clientY });
+          openThreadMenu(thread, { x: event.clientX, y: event.clientY });
         }}
       >
         <button type="button" className="sidebar-thread" onClick={() => void onSelectThread(hostProjectId, thread.id)}>
@@ -301,6 +318,24 @@ export function SidebarProjects({
             <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); onOpenRenameThreadDialog(thread); }}>
               <Pencil size={14} />
               <span>重命名聊天</span>
+            </button>
+            <button
+              type="button"
+              className="workspace-menu-item"
+              disabled={!threadForkAvailability.enabled}
+              title={threadForkAvailability.reason}
+              aria-label={threadForkAvailability.enabled
+                ? '在新聊天中继续'
+                : `在新聊天中继续：${threadForkAvailability.reason ?? '当前不可用'}`}
+              onClick={() => {
+                setThreadMenuThreadId(null);
+                void onForkThread(thread);
+              }}
+            >
+              {threadForkAvailability.reason === '正在创建新聊天'
+                ? <LoaderCircle size={14} className="spin" />
+                : <MessageSquarePlus size={14} />}
+              <span>在新聊天中继续</span>
             </button>
             <button type="button" className="workspace-menu-item" onClick={() => { setThreadMenuThreadId(null); void onCopySessionId(thread); }}>
               <Copy size={14} />
