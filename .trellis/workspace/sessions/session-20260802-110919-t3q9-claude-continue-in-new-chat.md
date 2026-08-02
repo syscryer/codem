@@ -5,6 +5,9 @@
 - Task: .trellis/tasks/claude-continue-in-new-chat.md
 
 ## Notes
+- 2026-08-02T14:28:52.194Z Task 2 cc 质量审查实质 APPROVED。唯一 P3：stderr 多字节 UTF-8 若跨 read 分块，诊断摘要可能出现替换字符。主 Agent 复核该边界理论上真实，但仅影响失败消息内最多 512 字符的 best-effort 辅助诊断，不影响 session ID、Fork 结果、隐私或进程生命周期；按低价值细节收住，不返工，后续如统一诊断流式解码再处理。Task 2 双门禁通过。
+
+- 2026-08-02T14:21:42.405Z Task 2 cc 规格审查 APPROVED。主 Agent 对唯一非阻塞提示（source_session_id 未 trim）复核：Claude session ID 来自结构化 provider event 并原样持久化，Fork 将由后端从数据库可信读取，客户端不可覆盖；当前真实链路无首尾空格触发路径，不作为缺陷返工。
 - 2026-08-02T14:13:51.483Z fix: bound Claude fork stderr drain。确认问题：finish_stderr_summary 用 done.await 无界等待 stderr drain 任务 EOF；直接子进程返回 init 并退出后，若后代继承 stderr 管道，EOF 迟迟不来（测试中后代存活 4s），Fork API 被挂住——主 Agent RED 测试 claude_session_fork_does_not_wait_for_descendant_stderr_eof 外层 1.5s timeout FAILED（总耗时 4.10s）。最小修复：stderr_summary_task 改返回 drain JoinHandle（去掉 oneshot）；finish_stderr_summary 用 tokio::time::timeout(STDERR_DRAIN_FINISH_TIMEOUT=500ms, &mut handle) 有界等待——超时则 handle.abort() 再 await 回收（不留后台任务），自然完成则不二次 poll（修复过程中发现并修正了 JoinHandle polled after completion 双重轮询 panic：原先 timeout Ok 后又 handle.await 二次 poll）。进程存活期间 drain 仍并发持续（未退回全量缓冲/串行）。GREEN：单项红测转绿（create 在 1.5s 内返回，assert outcome.is_ok() 通过），cargo test claude_session_fork 16 passed/0 failed。wait_or_kill 与协议超时分支的 kill+wait 仅回收直接子进程、kill 后即 reap，无真实无界问题，未改。范围仅 claude_session_fork.rs + Trellis，未触碰 backend.rs/.tmp-dev/。
 
 - 2026-08-02T14:01:05.289Z 主 Agent 独立审查 0c27d50：原 I-1/I-2/I-3 修复与 15 项测试均确认，但新增复现 finish_stderr_summary 无界等待。回归测试 claude_session_fork_does_not_wait_for_descendant_stderr_eof：直接子进程返回有效 init 后退出，后代继承 stderr 持有 4 秒；外层 1.5 秒超时，测试 FAILED，证明 Fork API 会被无关后代拖住。已保留红测，交回原 ccagent 做最小有界收尾修复。
@@ -19,6 +22,9 @@
 - 2026-08-02T11:09:19.272Z Session started.
 
 ## Verification
+
+- 2026-08-02T14:15:50.901Z `cargo test --manifest-path src-tauri/Cargo.toml claude_session_fork && cargo fmt --manifest-path src-tauri/Cargo.toml --check && git diff --check HEAD^ HEAD`: 主 Agent 独立复验通过：16 passed/0 failed；fmt exit 0；diff-check exit 0。仅现有 dead_code warnings，.tmp-dev 未触碰。
+- 2026-08-02T14:15:50.214Z `cargo test --manifest-path src-tauri/Cargo.toml claude_session_fork_does_not_wait_for_descendant_stderr_eof -- --nocapture`: 主 Agent 独立复验通过：1 passed/0 failed；有效 init + 后代持有 stderr 场景不再让 Fork API 超时。
 
 - 2026-08-02T14:14:00.620Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check && git diff --check`: 通过：fmt --check exit 0；git diff --check exit 0（仅 LF→CRLF）。范围仅 claude_session_fork.rs + Trellis 记录。
 - 2026-08-02T14:14:00.157Z `cargo test --manifest-path src-tauri/Cargo.toml claude_session_fork`: 通过：lib unittests 16 passed / 0 failed（含主 Agent RED 测试 claude_session_fork_does_not_wait_for_descendant_stderr_eof 转绿；finish_stderr_summary 有界 500ms+abort 回收，无双重 poll）。
