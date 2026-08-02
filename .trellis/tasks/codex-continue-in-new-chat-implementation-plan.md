@@ -131,7 +131,7 @@ Run: `cargo test --manifest-path src-tauri/Cargo.toml codex_app_server::tests::f
 
 Expected: PASS；至少覆盖 supported、unsupported、请求字段、ID 校验、active source、历史读取失败携带新 ID、零/单/多候选和历史脱敏。
 
-- [ ] **Step 5: 提交协议层**
+- [x] **Step 5: 提交协议层**
 
 ```powershell
 git add -- src-tauri/src/codex_app_server.rs
@@ -144,7 +144,7 @@ git commit -m "feat: add native Codex thread fork protocol"
 - Modify: `src-tauri/src/agent_run.rs`
 - Test: `src-tauri/src/agent_run.rs` 内联 tests
 
-- [ ] **Step 1: 写 actor 串行、互斥和结果分类失败测试**
+- [x] **Step 1: 写 actor 串行、互斥和结果分类失败测试**
 
 新增完整测试，统一使用 `fork_` 前缀以便定向执行：
 
@@ -157,13 +157,13 @@ git commit -m "feat: add native Codex thread fork protocol"
 | `fork_capability_cache_is_keyed_by_command_channel_and_config_args` | 同 key 只 probe 一次；refresh、command、channel fingerprint、config args 变化重新 probe |
 | `fork_actor_shutdown_resolves_acknowledgement` | resume 失败、shutdown 和 command channel 关闭均结束 oneshot，不悬挂 handler |
 
-- [ ] **Step 2: 运行定向测试并确认失败**
+- [x] **Step 2: 运行定向测试并确认失败**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml agent_run::tests::fork -- --nocapture`
 
 Expected: FAIL，缺少 Fork command、service API 和 capability cache。
 
-- [ ] **Step 3: 增加 runtime 控制 DTO 和错误分类**
+- [x] **Step 3: 增加 runtime 控制 DTO 和错误分类**
 
 增加 crate 内 API：
 
@@ -228,7 +228,7 @@ pub(crate) async fn reconcile_codex_thread_fork(
 ) -> Result<AgentForkReconcileResult, AgentThreadForkError>;
 ```
 
-- [ ] **Step 4: 扩展 actor command，但不污染普通聊天事件**
+- [x] **Step 4: 扩展 actor command，但不污染普通聊天事件**
 
 把 command 扩展为：
 
@@ -257,13 +257,13 @@ enum AgentRuntimeCommand {
 - Fork 完成后清除 `current_run_id` 并回到 Ready；fatal 子进程错误才把 runtime 标为 Failed。
 - capability 按 command、channel fingerprint、codex config args 缓存；method-not-found 在当前 runtime 生命周期内熔断。
 
-- [ ] **Step 5: 运行 runtime 与既有 Compact/Steer 回归**
+- [x] **Step 5: 运行 runtime 与既有 Compact/Steer 回归**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml agent_run::tests -- --nocapture`
 
 Expected: PASS；Fork 不产生 run event，Compact/Steer actor 行为不变。
 
-- [ ] **Step 6: 提交 runtime 控制层**
+- [x] **Step 6: 提交 runtime 控制层**
 
 ```powershell
 git add -- src-tauri/src/agent_run.rs

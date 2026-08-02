@@ -14,7 +14,8 @@ use crate::{
     },
     codex_app_server::{
         CodexAppServerError, CodexCompactCapability, CodexCompactionEvent,
-        CodexCompactionHistoryState, CodexRuntimeEvent, CodexStdioClient, CodexUserInput,
+        CodexCompactionHistoryState, CodexForkCapability, CodexForkOutcome, CodexRuntimeEvent,
+        CodexStdioClient, CodexUserInput,
     },
     pi_rpc::{PiImage, PiModel, PiPromptInput, PiRpcError, PiRuntimeEvent, PiState, PiStdioClient},
 };
@@ -89,6 +90,7 @@ struct AgentRunState {
     model_catalog_cache: Arc<Mutex<HashMap<String, CachedAgentModelCatalog>>>,
     command_cache: Arc<Mutex<HashMap<String, CachedAgentCommand>>>,
     compact_capability_cache: Arc<AsyncMutex<HashMap<String, AgentCompactCapabilitySummary>>>,
+    fork_capability_cache: Arc<AsyncMutex<HashMap<String, AgentForkCapabilitySummary>>>,
     command_resolvers: CommandResolvers,
     agent_channels: AgentChannelService,
 }
@@ -177,6 +179,15 @@ fn compact_capability_cache_key(config: &AgentRuntimeConfig) -> String {
     .to_string()
 }
 
+fn fork_capability_cache_key(config: &AgentRuntimeConfig) -> String {
+    json!([
+        config.command,
+        config.channel_fingerprint,
+        config.codex_config_args,
+    ])
+    .to_string()
+}
+
 async fn probe_compact_capability_cached<F, Fut>(
     cache: &AsyncMutex<HashMap<String, AgentCompactCapabilitySummary>>,
     config: &AgentRuntimeConfig,
@@ -205,6 +216,82 @@ where
         cache.insert(key, summary.clone());
     }
     summary
+}
+
+async fn probe_fork_capability_cached<F, Fut>(
+    cache: &AsyncMutex<HashMap<String, AgentForkCapabilitySummary>>,
+    config: &AgentRuntimeConfig,
+    refresh: bool,
+    probe: F,
+) -> AgentForkCapabilitySummary
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<AgentForkCapabilitySummary, CodexAppServerError>>,
+{
+    let key = fork_capability_cache_key(config);
+    let mut cache = cache.lock().await;
+    if !refresh {
+        if let Some(summary) = cache.get(&key) {
+            return summary.clone();
+        }
+    }
+
+    let summary = probe()
+        .await
+        .unwrap_or_else(|error| AgentForkCapabilitySummary {
+            state: AgentForkCapabilityState::Error,
+            message: Some(public_codex_error(error)),
+        });
+    if summary.state != AgentForkCapabilityState::Error {
+        cache.insert(key, summary.clone());
+    }
+    summary
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentThreadControlConfig {
+    pub thread_id: String,
+    pub session_id: String,
+    pub working_directory: String,
+    pub permission_mode: Option<String>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub channel_id: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) enum AgentThreadForkError {
+    Unsupported(String),
+    Conflict(String),
+    Rejected(String),
+    Uncertain(String),
+    ProviderCreated {
+        provider_thread_id: String,
+        message: String,
+    },
+    Internal(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentForkCapabilityState {
+    Supported,
+    Unsupported,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentForkCapabilitySummary {
+    pub state: AgentForkCapabilityState,
+    pub message: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) enum AgentForkReconcileResult {
+    None,
+    One(CodexForkOutcome),
+    Multiple(Vec<String>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -240,15 +327,37 @@ struct AgentRuntimeCompact {
     operation_id: String,
 }
 
+struct AgentRuntimeFork {
+    operation_id: String,
+    started_at_seconds: i64,
+    mode: AgentRuntimeForkMode,
+    acknowledgement: oneshot::Sender<Result<AgentForkReconcileResult, AgentThreadForkError>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentRuntimeForkMode {
+    Create,
+    Reconcile,
+}
+
 enum AgentRuntimeCommand {
     Run(AgentRuntimeRun),
     Compact(AgentRuntimeCompact),
+    Fork(AgentRuntimeFork),
 }
 
 fn command_run_id(command: &AgentRuntimeCommand) -> &str {
     match command {
         AgentRuntimeCommand::Run(run) => &run.run_id,
         AgentRuntimeCommand::Compact(compact) => &compact.run_id,
+        AgentRuntimeCommand::Fork(fork) => &fork.operation_id,
+    }
+}
+
+fn command_runtime_id(command: &AgentRuntimeCommand) -> String {
+    match command {
+        AgentRuntimeCommand::Fork(fork) => format!("fork:{}", fork.operation_id),
+        _ => command_run_id(command).to_string(),
     }
 }
 
@@ -257,8 +366,10 @@ fn validate_compact_runtime_session(
     requested_session_id: Option<&str>,
     actual_session_id: &str,
 ) -> Result<(), String> {
-    if matches!(command, AgentRuntimeCommand::Compact(_))
-        && requested_session_id != Some(actual_session_id)
+    if matches!(
+        command,
+        AgentRuntimeCommand::Compact(_) | AgentRuntimeCommand::Fork(_)
+    ) && requested_session_id != Some(actual_session_id)
     {
         return Err("Codex 恢复后的 sessionId 与压缩请求不一致".to_string());
     }
@@ -292,6 +403,22 @@ fn push_compact_failure_event(
     );
 }
 
+fn complete_fork_command(
+    state: &AgentRunState,
+    thread_id: &str,
+    runtime_id: &str,
+    fork: AgentRuntimeFork,
+    result: Result<AgentForkReconcileResult, AgentThreadForkError>,
+) {
+    let fork_run_id = format!("fork:{}", fork.operation_id);
+    state.finish_runtime_run(thread_id, runtime_id, &fork_run_id);
+    let _ = fork.acknowledgement.send(result);
+}
+
+fn fail_fork_command(fork: AgentRuntimeFork, error: AgentThreadForkError) {
+    let _ = fork.acknowledgement.send(Err(error));
+}
+
 enum RuntimeDispatchAction {
     Reuse(mpsc::UnboundedSender<AgentRuntimeCommand>),
     Start {
@@ -310,6 +437,7 @@ enum LiveAgentRuntime {
         client: CodexStdioClient,
         session_id: String,
         compact_capability: AgentCompactCapabilitySummary,
+        fork_capability: AgentForkCapabilitySummary,
     },
     Pi {
         client: PiStdioClient,
@@ -606,6 +734,7 @@ impl AgentRunService {
                 model_catalog_cache: Arc::new(Mutex::new(HashMap::new())),
                 command_cache: Arc::new(Mutex::new(HashMap::new())),
                 compact_capability_cache: Arc::new(AsyncMutex::new(HashMap::new())),
+                fork_capability_cache: Arc::new(AsyncMutex::new(HashMap::new())),
                 command_resolvers: CommandResolvers {
                     grok: grok_command_resolver,
                     codex: codex_command_resolver,
@@ -632,6 +761,129 @@ impl AgentRunService {
     pub(crate) fn resolve_command(&self, provider_id: &str, refresh: bool) -> Option<String> {
         resolve_agent_command(&self.state, provider_id, refresh)
     }
+
+    pub(crate) async fn probe_codex_fork_capability(
+        &self,
+        config: AgentThreadControlConfig,
+        refresh: bool,
+    ) -> Result<AgentForkCapabilitySummary, AgentThreadForkError> {
+        if refresh && resolve_agent_command(&self.state, OPENAI_CODEX_PROVIDER_ID, true).is_none() {
+            return Err(AgentThreadForkError::Rejected(
+                "未找到可由 CodeM 启动的 Codex CLI，请安装独立 CLI 或设置 CODEX_CLI_PATH"
+                    .to_string(),
+            ));
+        }
+        let runtime_config = resolve_thread_control_runtime_config(&self.state, &config)?;
+        Ok(probe_fork_capability_cached(
+            &self.state.fork_capability_cache,
+            &runtime_config,
+            refresh,
+            || async {
+                let mut client = CodexStdioClient::spawn_with_options(
+                    &runtime_config.command,
+                    &runtime_config.working_directory,
+                    &runtime_config.codex_config_args,
+                    &runtime_config.environment,
+                )
+                .await?;
+                let result = async {
+                    client.initialize(env!("CARGO_PKG_VERSION")).await?;
+                    client.probe_fork_capability().await
+                }
+                .await;
+                client.shutdown().await;
+                Ok(summarize_codex_fork_capability(result))
+            },
+        )
+        .await)
+    }
+
+    pub(crate) async fn fork_codex_thread(
+        &self,
+        config: AgentThreadControlConfig,
+        operation_id: String,
+    ) -> Result<CodexForkOutcome, AgentThreadForkError> {
+        let runtime_config = resolve_thread_control_runtime_config(&self.state, &config)?;
+        let (acknowledgement, response) = oneshot::channel();
+        self.state.dispatch_fork(
+            config.thread_id,
+            runtime_config,
+            config.session_id,
+            AgentRuntimeFork {
+                operation_id,
+                started_at_seconds: Utc::now().timestamp(),
+                mode: AgentRuntimeForkMode::Create,
+                acknowledgement,
+            },
+        )?;
+        match await_fork_acknowledgement(response).await? {
+            AgentForkReconcileResult::One(outcome) => Ok(outcome),
+            AgentForkReconcileResult::None | AgentForkReconcileResult::Multiple(_) => Err(
+                AgentThreadForkError::Internal("Codex Fork 创建返回了无效结果".to_string()),
+            ),
+        }
+    }
+
+    pub(crate) async fn reconcile_codex_thread_fork(
+        &self,
+        config: AgentThreadControlConfig,
+        operation_id: String,
+        started_at_seconds: i64,
+    ) -> Result<AgentForkReconcileResult, AgentThreadForkError> {
+        let runtime_config = resolve_thread_control_runtime_config(&self.state, &config)?;
+        let (acknowledgement, response) = oneshot::channel();
+        self.state.dispatch_fork(
+            config.thread_id,
+            runtime_config,
+            config.session_id,
+            AgentRuntimeFork {
+                operation_id,
+                started_at_seconds,
+                mode: AgentRuntimeForkMode::Reconcile,
+                acknowledgement,
+            },
+        )?;
+        await_fork_acknowledgement(response).await
+    }
+}
+
+async fn await_fork_acknowledgement(
+    response: oneshot::Receiver<Result<AgentForkReconcileResult, AgentThreadForkError>>,
+) -> Result<AgentForkReconcileResult, AgentThreadForkError> {
+    match tokio::time::timeout(CONTROL_ACK_TIMEOUT, response).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err(AgentThreadForkError::Uncertain(
+            "Codex Fork runtime 在确认结果前结束".to_string(),
+        )),
+        Err(_) => Err(AgentThreadForkError::Uncertain(
+            "等待 Codex Fork runtime 确认结果超时".to_string(),
+        )),
+    }
+}
+
+fn resolve_thread_control_runtime_config(
+    state: &AgentRunState,
+    config: &AgentThreadControlConfig,
+) -> Result<AgentRuntimeConfig, AgentThreadForkError> {
+    let request = StartAgentCompactRequest {
+        operation_id: "thread-control".to_string(),
+        provider_id: OPENAI_CODEX_PROVIDER_ID.to_string(),
+        session_id: config.session_id.clone(),
+        working_directory: config.working_directory.clone(),
+        permission_mode: config.permission_mode.clone(),
+        model: config.model.clone(),
+        reasoning_effort: config.reasoning_effort.clone(),
+        channel_id: config.channel_id.clone(),
+    };
+    resolve_compact_runtime_config(state, &config.thread_id, &request).map_err(|error| {
+        if error.status == StatusCode::CONFLICT {
+            AgentThreadForkError::Conflict(error.message)
+        } else if error.status == StatusCode::INTERNAL_SERVER_ERROR {
+            AgentThreadForkError::Internal(error.message)
+        } else {
+            AgentThreadForkError::Rejected(error.message)
+        }
+    })
 }
 
 pub(crate) fn router(service: AgentRunService) -> Router {
@@ -1461,12 +1713,20 @@ async fn run_agent_runtime_actor(
     mut commands: mpsc::UnboundedReceiver<AgentRuntimeCommand>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let first_run_id = command_run_id(&first_command).to_string();
+    let first_run_id = command_runtime_id(&first_command);
     let started = tokio::select! {
         result = start_live_agent_runtime(&config, requested_session_id.as_deref()) => Some(result),
         _ = wait_for_shutdown(&mut shutdown) => None,
     };
     let Some(started) = started else {
+        if let AgentRuntimeCommand::Fork(fork) = first_command {
+            fail_fork_command(
+                fork,
+                AgentThreadForkError::Uncertain("Agent 热会话已关闭".to_string()),
+            );
+            state.mark_runtime_closed(&thread_id, &runtime_id, Some(&first_run_id));
+            return;
+        }
         push_compact_failure_event(
             &state,
             &first_command,
@@ -1486,6 +1746,11 @@ async fn run_agent_runtime_actor(
     let (mut runtime, resumed) = match started {
         Ok(runtime) => runtime,
         Err(message) => {
+            if let AgentRuntimeCommand::Fork(fork) = first_command {
+                fail_fork_command(fork, AgentThreadForkError::Rejected(message.clone()));
+                state.mark_runtime_failed(&thread_id, &runtime_id, Some(&first_run_id), message);
+                return;
+            }
             push_compact_failure_event(
                 &state,
                 &first_command,
@@ -1509,6 +1774,12 @@ async fn run_agent_runtime_actor(
         requested_session_id.as_deref(),
         &session_id,
     ) {
+        if let AgentRuntimeCommand::Fork(fork) = first_command {
+            fail_fork_command(fork, AgentThreadForkError::Conflict(message.clone()));
+            state.mark_runtime_failed(&thread_id, &runtime_id, Some(&first_run_id), message);
+            runtime.shutdown().await;
+            return;
+        }
         push_compact_failure_event(
             &state,
             &first_command,
@@ -1532,6 +1803,28 @@ async fn run_agent_runtime_actor(
     let mut reused = false;
     loop {
         if let Some(command) = current_command.take() {
+            if let AgentRuntimeCommand::Fork(fork) = command {
+                let fork_run_id = format!("fork:{}", fork.operation_id);
+                let execution = runtime
+                    .fork(fork.mode, fork.started_at_seconds, &mut shutdown)
+                    .await;
+                match execution {
+                    RuntimeForkExecution::Completed(result) => {
+                        complete_fork_command(&state, &thread_id, &runtime_id, fork, result);
+                    }
+                    RuntimeForkExecution::Closed => {
+                        state.mark_runtime_closed(&thread_id, &runtime_id, Some(&fork_run_id));
+                        fail_fork_command(
+                            fork,
+                            AgentThreadForkError::Uncertain("Agent 热会话已关闭".to_string()),
+                        );
+                        runtime.shutdown().await;
+                        return;
+                    }
+                }
+                reused = true;
+                continue;
+            }
             let run_id = command_run_id(&command).to_string();
             state.push_event(
                 &run_id,
@@ -1568,6 +1861,7 @@ async fn run_agent_runtime_actor(
                     );
                     runtime.compact(&state, compact, &mut shutdown).await
                 }
+                AgentRuntimeCommand::Fork(_) => unreachable!("Fork command handled above"),
             };
 
             match execution {
@@ -1662,6 +1956,11 @@ async fn run_agent_runtime_actor(
 
 enum RuntimeExecution {
     Completed(Result<RuntimeTurnOutcome, RuntimeTurnError>),
+    Closed,
+}
+
+enum RuntimeForkExecution {
+    Completed(Result<AgentForkReconcileResult, AgentThreadForkError>),
     Closed,
 }
 
@@ -1991,6 +2290,7 @@ impl LiveAgentRuntime {
             client,
             session_id,
             compact_capability,
+            ..
         } = self
         else {
             return RuntimeExecution::Completed(Err(RuntimeTurnError {
@@ -2108,6 +2408,70 @@ impl LiveAgentRuntime {
             }
         }
     }
+
+    async fn fork(
+        &mut self,
+        mode: AgentRuntimeForkMode,
+        started_at_seconds: i64,
+        shutdown: &mut watch::Receiver<bool>,
+    ) -> RuntimeForkExecution {
+        let Self::Codex {
+            client,
+            session_id,
+            fork_capability,
+            ..
+        } = self
+        else {
+            return RuntimeForkExecution::Completed(Err(AgentThreadForkError::Rejected(
+                "当前 Agent runtime 不支持 Codex 会话 Fork".to_string(),
+            )));
+        };
+        if fork_capability.state != AgentForkCapabilityState::Supported {
+            let message = fork_capability
+                .message
+                .clone()
+                .unwrap_or_else(|| "无法确认 Codex 会话 Fork 能力".to_string());
+            return RuntimeForkExecution::Completed(Err(AgentThreadForkError::Unsupported(
+                message,
+            )));
+        }
+
+        let result = tokio::select! {
+            result = async {
+                match mode {
+                    AgentRuntimeForkMode::Create => client
+                        .fork_thread_snapshot(session_id)
+                        .await
+                        .map(AgentForkReconcileResult::One),
+                    AgentRuntimeForkMode::Reconcile => {
+                        let candidates = client
+                            .find_fork_candidates(session_id, started_at_seconds)
+                            .await?;
+                        match candidates.as_slice() {
+                            [] => Ok(AgentForkReconcileResult::None),
+                            [provider_thread_id] => {
+                                let turns = client.read_thread_snapshot(provider_thread_id).await?;
+                                Ok(AgentForkReconcileResult::One(CodexForkOutcome {
+                                    provider_thread_id: provider_thread_id.clone(),
+                                    forked_from_id: Some(session_id.clone()),
+                                    turns,
+                                }))
+                            }
+                            _ => Ok(AgentForkReconcileResult::Multiple(candidates)),
+                        }
+                    }
+                }
+            } => Some(result),
+            _ = wait_for_shutdown(shutdown) => None,
+        };
+        match result {
+            Some(Ok(result)) => RuntimeForkExecution::Completed(Ok(result)),
+            Some(Err(error)) => {
+                RuntimeForkExecution::Completed(Err(classify_codex_fork_error(error, mode)))
+            }
+            None => RuntimeForkExecution::Closed,
+        }
+    }
 }
 
 async fn start_live_agent_runtime(
@@ -2157,6 +2521,8 @@ async fn start_live_agent_runtime(
                 .map_err(public_codex_error)?;
             let compact_capability =
                 summarize_codex_compact_capability(client.probe_compact_capability().await);
+            let fork_capability =
+                summarize_codex_fork_capability(client.probe_fork_capability().await);
             let session_id = client
                 .start_or_resume_thread(requested_session_id, &config.working_directory)
                 .await
@@ -2166,6 +2532,7 @@ async fn start_live_agent_runtime(
                     client,
                     session_id,
                     compact_capability,
+                    fork_capability,
                 },
                 requested_session_id.is_some(),
             ))
@@ -3228,6 +3595,130 @@ impl AgentRunState {
                         config,
                         Some(requested_session_id),
                         AgentRuntimeCommand::Compact(compact),
+                        commands,
+                        shutdown,
+                    ));
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    fn dispatch_fork(
+        &self,
+        thread_id: String,
+        config: AgentRuntimeConfig,
+        requested_session_id: String,
+        fork: AgentRuntimeFork,
+    ) -> Result<(), AgentThreadForkError> {
+        if config.provider_id != OPENAI_CODEX_PROVIDER_ID
+            || config.driver != AgentDriverKind::CodexAppServer
+        {
+            return Err(AgentThreadForkError::Rejected(
+                "只有 OpenAI Codex runtime 支持在新聊天中继续".to_string(),
+            ));
+        }
+        let run_id = format!("fork:{}", fork.operation_id);
+        let mut pending_fork = Some(fork);
+        loop {
+            let action = {
+                let mut runtimes = self.runtimes.lock().map_err(|_| {
+                    AgentThreadForkError::Internal("锁定 Agent 热会话失败".to_string())
+                })?;
+                if let Some(runtime) = runtimes.get_mut(&thread_id) {
+                    if runtime.current_run_id.is_some()
+                        || matches!(
+                            runtime.phase,
+                            AgentRuntimePhase::Starting | AgentRuntimePhase::Running
+                        )
+                    {
+                        return Err(AgentThreadForkError::Conflict(
+                            "当前聊天已有 Agent 操作正在运行".to_string(),
+                        ));
+                    }
+                    if runtime.config != config {
+                        return Err(AgentThreadForkError::Conflict(
+                            "Codex 热会话配置已变化，请先恢复匹配的会话再继续".to_string(),
+                        ));
+                    }
+                    if runtime.session_id.as_deref() != Some(requested_session_id.as_str()) {
+                        return Err(AgentThreadForkError::Conflict(
+                            "Codex 热会话 sessionId 与 Fork 请求不一致".to_string(),
+                        ));
+                    }
+                    if runtime_can_reuse(runtime, &config, Some(&requested_session_id)) {
+                        let command = runtime.command.clone().ok_or_else(|| {
+                            AgentThreadForkError::Internal("Agent 热会话命令通道已关闭".to_string())
+                        })?;
+                        runtime.phase = AgentRuntimePhase::Running;
+                        runtime.current_run_id = Some(run_id.clone());
+                        RuntimeDispatchAction::Reuse(command)
+                    } else if matches!(
+                        runtime.phase,
+                        AgentRuntimePhase::Closed | AgentRuntimePhase::Failed
+                    ) {
+                        create_runtime_record(
+                            &mut runtimes,
+                            &thread_id,
+                            &config,
+                            Some(requested_session_id.clone()),
+                            &run_id,
+                        )
+                    } else {
+                        return Err(AgentThreadForkError::Conflict(
+                            "Codex 热会话当前不可执行 Fork".to_string(),
+                        ));
+                    }
+                } else {
+                    create_runtime_record(
+                        &mut runtimes,
+                        &thread_id,
+                        &config,
+                        Some(requested_session_id.clone()),
+                        &run_id,
+                    )
+                }
+            };
+
+            match action {
+                RuntimeDispatchAction::Reuse(command) => {
+                    let fork = pending_fork.take().ok_or_else(|| {
+                        AgentThreadForkError::Internal("Codex Fork 调度状态异常".to_string())
+                    })?;
+                    match command.send(AgentRuntimeCommand::Fork(fork)) {
+                        Ok(()) => return Ok(()),
+                        Err(error) => {
+                            let AgentRuntimeCommand::Fork(fork) = error.0 else {
+                                return Err(AgentThreadForkError::Internal(
+                                    "Codex Fork 调度命令类型异常".to_string(),
+                                ));
+                            };
+                            pending_fork = Some(fork);
+                            self.mark_runtime_failed(
+                                &thread_id,
+                                &self.runtime_id(&thread_id).unwrap_or_default(),
+                                Some(&run_id),
+                                "Agent 热会话命令通道已关闭".to_string(),
+                            );
+                        }
+                    }
+                }
+                RuntimeDispatchAction::Start {
+                    runtime_id,
+                    commands,
+                    shutdown,
+                } => {
+                    let fork = pending_fork.take().ok_or_else(|| {
+                        AgentThreadForkError::Internal("Codex Fork 调度状态异常".to_string())
+                    })?;
+                    let actor_state = self.clone();
+                    tokio::spawn(run_agent_runtime_actor(
+                        actor_state,
+                        thread_id,
+                        runtime_id,
+                        config,
+                        Some(requested_session_id),
+                        AgentRuntimeCommand::Fork(fork),
                         commands,
                         shutdown,
                     ));
@@ -4725,6 +5216,44 @@ fn summarize_codex_compact_capability(
     }
 }
 
+fn summarize_codex_fork_capability(
+    result: Result<CodexForkCapability, CodexAppServerError>,
+) -> AgentForkCapabilitySummary {
+    match result {
+        Ok(CodexForkCapability::Supported) => AgentForkCapabilitySummary {
+            state: AgentForkCapabilityState::Supported,
+            message: None,
+        },
+        Ok(CodexForkCapability::Unsupported) => AgentForkCapabilitySummary {
+            state: AgentForkCapabilityState::Unsupported,
+            message: Some("当前 Codex CLI 不支持在新聊天中继续，请升级 Codex CLI。".to_string()),
+        },
+        Err(error) => AgentForkCapabilitySummary {
+            state: AgentForkCapabilityState::Error,
+            message: Some(public_codex_error(error)),
+        },
+    }
+}
+
+fn classify_codex_fork_error(
+    error: CodexAppServerError,
+    _mode: AgentRuntimeForkMode,
+) -> AgentThreadForkError {
+    match error {
+        CodexAppServerError::ForkHistory {
+            provider_thread_id,
+            source,
+        } => AgentThreadForkError::ProviderCreated {
+            provider_thread_id,
+            message: public_codex_error(*source),
+        },
+        CodexAppServerError::Timeout(_) | CodexAppServerError::Io(_) => {
+            AgentThreadForkError::Uncertain(public_codex_error(error))
+        }
+        error => AgentThreadForkError::Rejected(public_codex_error(error)),
+    }
+}
+
 fn truncate_public_error_detail(message: &str) -> String {
     const MAX_DETAIL_CHARS: usize = 2_000;
     let detail = message.trim();
@@ -5467,21 +5996,25 @@ fn should_set_acp_model(
 mod tests {
     use super::{
         acp_arguments, acp_permission_policy, await_guide_ack, build_acp_prompt, build_codex_input,
-        build_pi_prompt, cancelled_before_prompt_outcome, compact_capability_cache_key,
-        ensure_compact_reconcile_runtime_idle, find_grok_runtime_error_detail, grok_acp_arguments,
-        grok_acp_error_with_runtime_detail, grok_uses_channel_credentials, guide_ack_response,
-        normalize_agent_input, normalize_guide_prompt, parse_opencode_models, pi_model_catalog,
-        pi_model_parts, pi_rpc_arguments, pi_usage_snapshot, probe_compact_capability_cached,
-        public_acp_error, public_codex_error, push_compact_failure_event,
-        read_cached_agent_command, read_cached_agent_model_catalog, runtime_can_reuse,
-        sanitize_grok_runtime_error_detail, should_retry_grok_channel_prompt, should_set_acp_model,
-        store_cached_agent_command, store_cached_agent_model_catalog,
-        summarize_codex_compact_capability, validate_compact_runtime_session, AcpEventMapper,
-        AgentCompactReconcileResponse, AgentCompactReconcileState, AgentDriverInput,
-        AgentDriverKind, AgentInputContentBlock, AgentModelCatalog, AgentModelSummary,
-        AgentRunRecord, AgentRunService, AgentRunState, AgentRuntimeCommand, AgentRuntimeCompact,
-        AgentRuntimeConfig, AgentRuntimePhase, AgentRuntimeRecord, AgentRuntimeRun,
-        CodexCompactCapabilityRequest, CodexEventMapper, CommandResolvers, GuideAckOutcome,
+        build_pi_prompt, cancelled_before_prompt_outcome, classify_codex_fork_error,
+        compact_capability_cache_key, complete_fork_command, ensure_compact_reconcile_runtime_idle,
+        fail_fork_command, find_grok_runtime_error_detail, fork_capability_cache_key,
+        grok_acp_arguments, grok_acp_error_with_runtime_detail, grok_uses_channel_credentials,
+        guide_ack_response, normalize_agent_input, normalize_guide_prompt, parse_opencode_models,
+        pi_model_catalog, pi_model_parts, pi_rpc_arguments, pi_usage_snapshot,
+        probe_compact_capability_cached, probe_fork_capability_cached, public_acp_error,
+        public_codex_error, push_compact_failure_event, read_cached_agent_command,
+        read_cached_agent_model_catalog, runtime_can_reuse, sanitize_grok_runtime_error_detail,
+        should_retry_grok_channel_prompt, should_set_acp_model, store_cached_agent_command,
+        store_cached_agent_model_catalog, summarize_codex_compact_capability,
+        validate_compact_runtime_session, AcpEventMapper, AgentCompactReconcileResponse,
+        AgentCompactReconcileState, AgentDriverInput, AgentDriverKind, AgentForkCapabilityState,
+        AgentForkCapabilitySummary, AgentForkReconcileResult, AgentInputContentBlock,
+        AgentModelCatalog, AgentModelSummary, AgentRunRecord, AgentRunService, AgentRunState,
+        AgentRuntimeCommand, AgentRuntimeCompact, AgentRuntimeConfig, AgentRuntimeFork,
+        AgentRuntimeForkMode, AgentRuntimePhase, AgentRuntimeRecord, AgentRuntimeRun,
+        AgentThreadControlConfig, AgentThreadForkError, CodexCompactCapabilityRequest,
+        CodexEventMapper, CodexForkOutcome, CommandResolvers, GuideAckOutcome,
         GuideAgentRunRequest, LiveAgentRuntime, PiEventMapper, ReconcileAgentCompactRequest,
         RuntimeExecution, StartAgentCompactRequest, StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL,
         AUTOMATION_EXECUTION_CONTEXT, MODEL_CATALOG_CACHE_TTL,
@@ -5607,6 +6140,86 @@ mod tests {
     }
 
     #[test]
+    fn fork_capability_cache_is_keyed_by_command_channel_and_config_args() {
+        let mut first = test_codex_runtime_config();
+        let mut changed_command = first.clone();
+        changed_command.command = "codex-next".to_string();
+        let mut changed_channel = first.clone();
+        changed_channel.channel_fingerprint = Some("channel-b".to_string());
+        let mut changed_args = first.clone();
+        changed_args
+            .codex_config_args
+            .push("model_reasoning_effort=high".to_string());
+
+        assert_ne!(
+            fork_capability_cache_key(&first),
+            fork_capability_cache_key(&changed_command)
+        );
+        assert_ne!(
+            fork_capability_cache_key(&first),
+            fork_capability_cache_key(&changed_channel)
+        );
+        assert_ne!(
+            fork_capability_cache_key(&first),
+            fork_capability_cache_key(&changed_args)
+        );
+
+        first.command = "codex".to_string();
+        assert_eq!(
+            fork_capability_cache_key(&first),
+            fork_capability_cache_key(&test_codex_runtime_config())
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_capability_cache_reuses_success_and_refreshes_on_request() {
+        let cache = AsyncMutex::new(HashMap::new());
+        let calls = AtomicUsize::new(0);
+        let config = test_codex_runtime_config();
+
+        let first = probe_fork_capability_cached(&cache, &config, false, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(AgentForkCapabilitySummary {
+                state: AgentForkCapabilityState::Supported,
+                message: None,
+            })
+        })
+        .await;
+        let cached = probe_fork_capability_cached(&cache, &config, false, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(AgentForkCapabilitySummary {
+                state: AgentForkCapabilityState::Unsupported,
+                message: None,
+            })
+        })
+        .await;
+        let refreshed = probe_fork_capability_cached(&cache, &config, true, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(AgentForkCapabilitySummary {
+                state: AgentForkCapabilityState::Unsupported,
+                message: Some("upgrade".to_string()),
+            })
+        })
+        .await;
+        let mut changed_config = config.clone();
+        changed_config.command = "codex-next".to_string();
+        let changed = probe_fork_capability_cached(&cache, &changed_config, false, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(AgentForkCapabilitySummary {
+                state: AgentForkCapabilityState::Supported,
+                message: None,
+            })
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(first.state, AgentForkCapabilityState::Supported);
+        assert_eq!(cached.state, AgentForkCapabilityState::Supported);
+        assert_eq!(refreshed.state, AgentForkCapabilityState::Unsupported);
+        assert_eq!(changed.state, AgentForkCapabilityState::Supported);
+    }
+
+    #[test]
     fn compact_capability_runtime_summary_preserves_safe_disable_reason() {
         let unsupported = summarize_codex_compact_capability(Ok(
             crate::codex_app_server::CodexCompactCapability::Unsupported,
@@ -5700,6 +6313,7 @@ mod tests {
             model_catalog_cache: Arc::new(Mutex::new(HashMap::new())),
             command_cache: Arc::new(Mutex::new(HashMap::new())),
             compact_capability_cache: Arc::new(AsyncMutex::new(HashMap::new())),
+            fork_capability_cache: Arc::new(AsyncMutex::new(HashMap::new())),
             command_resolvers: CommandResolvers {
                 grok: || None,
                 codex: || None,
@@ -7048,6 +7662,322 @@ process.stdout.write(JSON.stringify({ prompts, writeResult, bashResult, autoResu
             commands.try_recv(),
             Ok(AgentRuntimeCommand::Compact(AgentRuntimeCompact { operation_id, .. }))
                 if operation_id == "compact-1"
+        ));
+    }
+
+    #[test]
+    fn fork_hot_runtime_dispatches_over_source_actor() {
+        let state = test_run_state();
+        let config = test_codex_runtime_config();
+        let (command, mut commands) = mpsc::unbounded_channel();
+        insert_test_codex_runtime(&state, AgentRuntimePhase::Ready, None, command);
+        let (acknowledgement, _response) = oneshot::channel();
+
+        state
+            .dispatch_fork(
+                "thread-1".to_string(),
+                config,
+                "provider-thread-1".to_string(),
+                AgentRuntimeFork {
+                    operation_id: "fork-1".to_string(),
+                    started_at_seconds: 1_754_000_000,
+                    mode: AgentRuntimeForkMode::Create,
+                    acknowledgement,
+                },
+            )
+            .expect("dispatch fork");
+
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(AgentRuntimeCommand::Fork(AgentRuntimeFork { operation_id, .. }))
+                if operation_id == "fork-1"
+        ));
+        assert!(!state
+            .records
+            .lock()
+            .expect("records lock")
+            .contains_key("fork:fork-1"));
+    }
+
+    #[test]
+    fn fork_rejects_running_compact_turn_and_mismatched_identity() {
+        let state = test_run_state();
+        let (command, _commands) = mpsc::unbounded_channel();
+        insert_test_codex_runtime(&state, AgentRuntimePhase::Running, Some("run-1"), command);
+        let (acknowledgement, _response) = oneshot::channel();
+        let running_error = state
+            .dispatch_fork(
+                "thread-1".to_string(),
+                test_codex_runtime_config(),
+                "provider-thread-1".to_string(),
+                AgentRuntimeFork {
+                    operation_id: "fork-running".to_string(),
+                    started_at_seconds: 1_754_000_000,
+                    mode: AgentRuntimeForkMode::Create,
+                    acknowledgement,
+                },
+            )
+            .expect_err("running runtime must reject fork");
+        assert!(matches!(running_error, AgentThreadForkError::Conflict(_)));
+
+        let state = test_run_state();
+        let (command, _commands) = mpsc::unbounded_channel();
+        insert_test_codex_runtime(&state, AgentRuntimePhase::Starting, None, command);
+        let (acknowledgement, _response) = oneshot::channel();
+        let starting_error = state
+            .dispatch_fork(
+                "thread-1".to_string(),
+                test_codex_runtime_config(),
+                "provider-thread-1".to_string(),
+                AgentRuntimeFork {
+                    operation_id: "fork-starting".to_string(),
+                    started_at_seconds: 1_754_000_000,
+                    mode: AgentRuntimeForkMode::Create,
+                    acknowledgement,
+                },
+            )
+            .expect_err("starting runtime must reject fork");
+        assert!(matches!(starting_error, AgentThreadForkError::Conflict(_)));
+
+        let state = test_run_state();
+        let (command, _commands) = mpsc::unbounded_channel();
+        insert_test_codex_runtime(&state, AgentRuntimePhase::Ready, None, command);
+        let (acknowledgement, _response) = oneshot::channel();
+        let session_error = state
+            .dispatch_fork(
+                "thread-1".to_string(),
+                test_codex_runtime_config(),
+                "provider-thread-other".to_string(),
+                AgentRuntimeFork {
+                    operation_id: "fork-session".to_string(),
+                    started_at_seconds: 1_754_000_000,
+                    mode: AgentRuntimeForkMode::Create,
+                    acknowledgement,
+                },
+            )
+            .expect_err("mismatched session must reject fork");
+        assert!(matches!(session_error, AgentThreadForkError::Conflict(_)));
+
+        let state = test_run_state();
+        let (command, _commands) = mpsc::unbounded_channel();
+        insert_test_codex_runtime(&state, AgentRuntimePhase::Ready, None, command);
+        let mut changed_config = test_codex_runtime_config();
+        changed_config.working_directory = PathBuf::from("D:/other-workspace");
+        let (acknowledgement, _response) = oneshot::channel();
+        let config_error = state
+            .dispatch_fork(
+                "thread-1".to_string(),
+                changed_config,
+                "provider-thread-1".to_string(),
+                AgentRuntimeFork {
+                    operation_id: "fork-config".to_string(),
+                    started_at_seconds: 1_754_000_000,
+                    mode: AgentRuntimeForkMode::Create,
+                    acknowledgement,
+                },
+            )
+            .expect_err("mismatched config must reject fork");
+        assert!(matches!(config_error, AgentThreadForkError::Conflict(_)));
+
+        let state = test_run_state();
+        let (acknowledgement, _response) = oneshot::channel();
+        let provider_error = state
+            .dispatch_fork(
+                "thread-1".to_string(),
+                test_runtime_config(),
+                "provider-thread-1".to_string(),
+                AgentRuntimeFork {
+                    operation_id: "fork-provider".to_string(),
+                    started_at_seconds: 1_754_000_000,
+                    mode: AgentRuntimeForkMode::Create,
+                    acknowledgement,
+                },
+            )
+            .expect_err("non-Codex runtime must reject fork");
+        assert!(matches!(provider_error, AgentThreadForkError::Rejected(_)));
+    }
+
+    #[tokio::test]
+    async fn fork_cold_or_closed_runtime_starts_one_source_actor() {
+        for phase in [
+            None,
+            Some(AgentRuntimePhase::Closed),
+            Some(AgentRuntimePhase::Failed),
+        ] {
+            let state = test_run_state();
+            let mut config = test_codex_runtime_config();
+            config.command = "Z:/missing/codex.exe".to_string();
+            if let Some(phase) = phase {
+                let (command, _commands) = mpsc::unbounded_channel();
+                let (shutdown, _shutdown_receiver) = watch::channel(false);
+                state.runtimes.lock().expect("runtime lock").insert(
+                    "thread-1".to_string(),
+                    AgentRuntimeRecord {
+                        runtime_id: "stale-runtime".to_string(),
+                        config: config.clone(),
+                        session_id: Some("provider-thread-1".to_string()),
+                        phase,
+                        current_run_id: None,
+                        command: Some(command),
+                        shutdown,
+                        last_error: None,
+                    },
+                );
+            }
+            let (acknowledgement, response) = oneshot::channel();
+
+            state
+                .dispatch_fork(
+                    "thread-1".to_string(),
+                    config,
+                    "provider-thread-1".to_string(),
+                    AgentRuntimeFork {
+                        operation_id: "fork-cold".to_string(),
+                        started_at_seconds: 1_754_000_000,
+                        mode: AgentRuntimeForkMode::Create,
+                        acknowledgement,
+                    },
+                )
+                .expect("dispatch cold fork");
+
+            let result = tokio::time::timeout(Duration::from_secs(3), response)
+                .await
+                .expect("fork acknowledgement must resolve")
+                .expect("fork sender must respond");
+            assert!(matches!(result, Err(AgentThreadForkError::Rejected(_))));
+            assert_eq!(state.runtimes.lock().expect("runtime lock").len(), 1);
+            assert!(state.records.lock().expect("records lock").is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_actor_returns_provider_outcome_without_agent_run_events() {
+        let state = test_run_state();
+        let (command, _commands) = mpsc::unbounded_channel();
+        insert_test_codex_runtime(
+            &state,
+            AgentRuntimePhase::Running,
+            Some("fork:fork-actor"),
+            command,
+        );
+        let (acknowledgement, response) = oneshot::channel();
+        let outcome = CodexForkOutcome {
+            provider_thread_id: "provider-child".to_string(),
+            forked_from_id: Some("provider-thread-1".to_string()),
+            turns: Vec::new(),
+        };
+
+        complete_fork_command(
+            &state,
+            "thread-1",
+            "runtime-1",
+            AgentRuntimeFork {
+                operation_id: "fork-actor".to_string(),
+                started_at_seconds: 1_754_000_000,
+                mode: AgentRuntimeForkMode::Create,
+                acknowledgement,
+            },
+            Ok(AgentForkReconcileResult::One(outcome)),
+        );
+
+        let result = response.await.expect("fork acknowledgement");
+        assert!(matches!(
+            result,
+            Ok(AgentForkReconcileResult::One(CodexForkOutcome {
+                provider_thread_id,
+                ..
+            })) if provider_thread_id == "provider-child"
+        ));
+        assert!(state.records.lock().expect("records lock").is_empty());
+        assert!(state.snapshot_after("fork:fork-actor", 0).is_none());
+        let runtimes = state.runtimes.lock().expect("runtime lock");
+        let runtime = runtimes.get("thread-1").expect("source runtime");
+        assert_eq!(runtime.phase, AgentRuntimePhase::Ready);
+        assert!(runtime.current_run_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn fork_actor_shutdown_resolves_acknowledgement() {
+        for error in [
+            AgentThreadForkError::Rejected("resume failed".to_string()),
+            AgentThreadForkError::Uncertain("runtime shutdown".to_string()),
+            AgentThreadForkError::Uncertain("command channel closed".to_string()),
+        ] {
+            let (acknowledgement, response) = oneshot::channel();
+            fail_fork_command(
+                AgentRuntimeFork {
+                    operation_id: "fork-ack".to_string(),
+                    started_at_seconds: 1_754_000_000,
+                    mode: AgentRuntimeForkMode::Create,
+                    acknowledgement,
+                },
+                error,
+            );
+            assert!(tokio::time::timeout(Duration::from_millis(100), response)
+                .await
+                .expect("fork acknowledgement must not hang")
+                .expect("fork sender must resolve")
+                .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_service_exposes_trusted_control_contract() {
+        let service = AgentRunService {
+            state: test_run_state(),
+        };
+        let config = AgentThreadControlConfig {
+            thread_id: "thread-1".to_string(),
+            session_id: "provider-thread-1".to_string(),
+            working_directory: "D:/workspace".to_string(),
+            permission_mode: Some("default".to_string()),
+            model: Some("gpt-codex-default".to_string()),
+            reasoning_effort: Some("high".to_string()),
+            channel_id: None,
+        };
+        assert!(matches!(
+            service
+                .probe_codex_fork_capability(config.clone(), false)
+                .await,
+            Err(AgentThreadForkError::Rejected(_))
+        ));
+        assert!(matches!(
+            service
+                .fork_codex_thread(config.clone(), "fork-create".to_string())
+                .await,
+            Err(AgentThreadForkError::Rejected(_))
+        ));
+        assert!(matches!(
+            service
+                .reconcile_codex_thread_fork(config, "fork-reconcile".to_string(), 1_754_000_000,)
+                .await,
+            Err(AgentThreadForkError::Rejected(_))
+        ));
+    }
+
+    #[test]
+    fn fork_timeout_and_created_provider_errors_preserve_recovery_state() {
+        assert!(matches!(
+            classify_codex_fork_error(
+                CodexAppServerError::Timeout("thread/list"),
+                AgentRuntimeForkMode::Reconcile,
+            ),
+            AgentThreadForkError::Uncertain(_)
+        ));
+        assert!(matches!(
+            classify_codex_fork_error(
+                CodexAppServerError::ForkHistory {
+                    provider_thread_id: "provider-child".to_string(),
+                    source: Box::new(CodexAppServerError::Execution(
+                        "history unavailable".to_string(),
+                    )),
+                },
+                AgentRuntimeForkMode::Create,
+            ),
+            AgentThreadForkError::ProviderCreated {
+                provider_thread_id,
+                ..
+            } if provider_thread_id == "provider-child"
         ));
     }
 
