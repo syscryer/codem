@@ -334,10 +334,11 @@ struct AgentRuntimeFork {
     acknowledgement: oneshot::Sender<Result<AgentForkReconcileResult, AgentThreadForkError>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum AgentRuntimeForkMode {
     Create,
     Reconcile,
+    Read(String),
 }
 
 enum AgentRuntimeCommand {
@@ -844,6 +845,33 @@ impl AgentRunService {
             },
         )?;
         await_fork_acknowledgement(response).await
+    }
+
+    pub(crate) async fn read_codex_fork_history(
+        &self,
+        config: AgentThreadControlConfig,
+        operation_id: String,
+        provider_thread_id: String,
+    ) -> Result<CodexForkOutcome, AgentThreadForkError> {
+        let runtime_config = resolve_thread_control_runtime_config(&self.state, &config)?;
+        let (acknowledgement, response) = oneshot::channel();
+        self.state.dispatch_fork(
+            config.thread_id,
+            runtime_config,
+            config.session_id.clone(),
+            AgentRuntimeFork {
+                operation_id,
+                started_at_seconds: Utc::now().timestamp(),
+                mode: AgentRuntimeForkMode::Read(provider_thread_id),
+                acknowledgement,
+            },
+        )?;
+        match await_fork_acknowledgement(response).await? {
+            AgentForkReconcileResult::One(outcome) => Ok(outcome),
+            AgentForkReconcileResult::None | AgentForkReconcileResult::Multiple(_) => Err(
+                AgentThreadForkError::Internal("Codex Fork 历史读取返回了无效结果".to_string()),
+            ),
+        }
     }
 }
 
@@ -1806,7 +1834,7 @@ async fn run_agent_runtime_actor(
             if let AgentRuntimeCommand::Fork(fork) = command {
                 let fork_run_id = format!("fork:{}", fork.operation_id);
                 let execution = runtime
-                    .fork(fork.mode, fork.started_at_seconds, &mut shutdown)
+                    .fork(fork.mode.clone(), fork.started_at_seconds, &mut shutdown)
                     .await;
                 match execution {
                     RuntimeForkExecution::Completed(result) => {
@@ -2438,7 +2466,7 @@ impl LiveAgentRuntime {
 
         let result = tokio::select! {
             result = async {
-                match mode {
+                match mode.clone() {
                     AgentRuntimeForkMode::Create => client
                         .fork_thread_snapshot(session_id)
                         .await
@@ -2459,6 +2487,14 @@ impl LiveAgentRuntime {
                             }
                             _ => Ok(AgentForkReconcileResult::Multiple(candidates)),
                         }
+                    }
+                    AgentRuntimeForkMode::Read(provider_thread_id) => {
+                        let turns = client.read_thread_snapshot(&provider_thread_id).await?;
+                        Ok(AgentForkReconcileResult::One(CodexForkOutcome {
+                            provider_thread_id,
+                            forked_from_id: Some(session_id.clone()),
+                            turns,
+                        }))
                     }
                 }
             } => Some(result),

@@ -4,7 +4,9 @@ use crate::agent_runtime::{
     CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
     OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
 };
-use crate::codex_app_server::probe_codex_app_server;
+use crate::codex_app_server::{
+    probe_codex_app_server, CodexStoredItem, CodexStoredTurn, CodexUserInput,
+};
 use crate::pi_rpc::{PiModel, PiState, PiStdioClient};
 use axum::{
     body::Body,
@@ -91,6 +93,111 @@ struct AppState {
     runs: Arc<Mutex<std::collections::HashMap<String, ActiveRunRecord>>>,
     runtimes: Arc<Mutex<std::collections::HashMap<String, ClaudeRuntimeRecord>>>,
     context_requests: Arc<Mutex<std::collections::HashMap<String, ClaudeContextRequestRecord>>>,
+    #[cfg(test)]
+    thread_fork_test_driver: Option<ThreadForkTestDriver>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct ThreadForkTestDriver {
+    state: Arc<Mutex<ThreadForkTestDriverState>>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct ThreadForkTestDriverState {
+    capability_results: std::collections::VecDeque<
+        Result<
+            crate::agent_run::AgentForkCapabilitySummary,
+            crate::agent_run::AgentThreadForkError,
+        >,
+    >,
+    create_results: std::collections::VecDeque<
+        Result<crate::codex_app_server::CodexForkOutcome, crate::agent_run::AgentThreadForkError>,
+    >,
+    reconcile_results: std::collections::VecDeque<
+        Result<crate::agent_run::AgentForkReconcileResult, crate::agent_run::AgentThreadForkError>,
+    >,
+    read_results: std::collections::VecDeque<
+        Result<crate::codex_app_server::CodexForkOutcome, crate::agent_run::AgentThreadForkError>,
+    >,
+    before_create: Option<Arc<dyn Fn() + Send + Sync>>,
+    create_count: usize,
+    reconcile_count: usize,
+    read_count: usize,
+    last_config: Option<crate::agent_run::AgentThreadControlConfig>,
+}
+
+#[cfg(test)]
+impl ThreadForkTestDriver {
+    fn probe(
+        &self,
+        config: crate::agent_run::AgentThreadControlConfig,
+    ) -> Result<crate::agent_run::AgentForkCapabilitySummary, crate::agent_run::AgentThreadForkError>
+    {
+        let mut state = self.state.lock().expect("lock Fork test driver");
+        state.last_config = Some(config);
+        state.capability_results.pop_front().unwrap_or(Ok(
+            crate::agent_run::AgentForkCapabilitySummary {
+                state: crate::agent_run::AgentForkCapabilityState::Supported,
+                message: None,
+            },
+        ))
+    }
+
+    fn create(
+        &self,
+        config: crate::agent_run::AgentThreadControlConfig,
+    ) -> Result<crate::codex_app_server::CodexForkOutcome, crate::agent_run::AgentThreadForkError>
+    {
+        let (before_create, result) = {
+            let mut state = self.state.lock().expect("lock Fork test driver");
+            state.create_count += 1;
+            state.last_config = Some(config);
+            (
+                state.before_create.clone(),
+                state.create_results.pop_front(),
+            )
+        };
+        if let Some(before_create) = before_create {
+            before_create();
+        }
+        result.unwrap_or_else(|| {
+            Err(crate::agent_run::AgentThreadForkError::Internal(
+                "Fork test driver missing create result".to_string(),
+            ))
+        })
+    }
+
+    fn reconcile(
+        &self,
+        config: crate::agent_run::AgentThreadControlConfig,
+    ) -> Result<crate::agent_run::AgentForkReconcileResult, crate::agent_run::AgentThreadForkError>
+    {
+        let mut state = self.state.lock().expect("lock Fork test driver");
+        state.reconcile_count += 1;
+        state.last_config = Some(config);
+        state.reconcile_results.pop_front().unwrap_or_else(|| {
+            Err(crate::agent_run::AgentThreadForkError::Internal(
+                "Fork test driver missing reconcile result".to_string(),
+            ))
+        })
+    }
+
+    fn read(
+        &self,
+        config: crate::agent_run::AgentThreadControlConfig,
+    ) -> Result<crate::codex_app_server::CodexForkOutcome, crate::agent_run::AgentThreadForkError>
+    {
+        let mut state = self.state.lock().expect("lock Fork test driver");
+        state.read_count += 1;
+        state.last_config = Some(config);
+        state.read_results.pop_front().unwrap_or_else(|| {
+            Err(crate::agent_run::AgentThreadForkError::Internal(
+                "Fork test driver missing read result".to_string(),
+            ))
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -231,6 +338,20 @@ struct ForkSourceThread {
     agent_channel_id: Option<String>,
 }
 
+impl ForkSourceThread {
+    fn control_config(&self) -> crate::agent_run::AgentThreadControlConfig {
+        crate::agent_run::AgentThreadControlConfig {
+            thread_id: self.id.clone(),
+            session_id: self.provider_thread_id.clone(),
+            working_directory: self.working_directory.clone(),
+            permission_mode: self.permission_mode.clone(),
+            model: self.model.clone(),
+            reasoning_effort: self.reasoning_effort.clone(),
+            channel_id: self.agent_channel_id.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ThreadForkOperationStatus {
     ProviderPending,
@@ -279,6 +400,7 @@ struct ThreadForkOperation {
     local_thread_id: Option<String>,
     status: ThreadForkOperationStatus,
     started_at_ms: i64,
+    #[allow(dead_code)]
     last_error: Option<String>,
 }
 
@@ -361,6 +483,37 @@ struct ThreadCreateRequest {
     channel_id: Option<String>,
     #[serde(default = "default_true")]
     activate: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadForkCapabilityRequest {
+    #[serde(default)]
+    refresh: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadForkRequest {
+    operation_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadForkResponse {
+    ok: bool,
+    operation_id: String,
+    thread_id: String,
+    thread: Value,
+    history: Value,
+    history_state: ThreadForkHistoryState,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ThreadForkHistoryState {
+    Loaded,
+    Pending,
 }
 
 #[derive(Deserialize)]
@@ -631,6 +784,8 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         runs: Arc::new(Mutex::new(std::collections::HashMap::new())),
         runtimes: Arc::new(Mutex::new(std::collections::HashMap::new())),
         context_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        #[cfg(test)]
+        thread_fork_test_driver: None,
     };
     {
         let _guard = lock_workspace_write(&state).map_err(|error| error.message)?;
@@ -898,6 +1053,14 @@ fn create_router(state: AppState) -> Router {
             get(list_project_files).delete(delete_project_file),
         )
         .route("/api/projects/{project_id}/threads", post(create_thread))
+        .route(
+            "/api/projects/{project_id}/threads/{thread_id}/fork/capability",
+            post(codex_thread_fork_capability),
+        )
+        .route(
+            "/api/projects/{project_id}/threads/{thread_id}/fork",
+            post(fork_codex_thread),
+        )
         .route("/api/projects/{project_id}/pin", post(pin_project))
         .route(
             "/api/threads/{thread_id}",
@@ -4600,6 +4763,244 @@ async fn create_thread(
     })))
 }
 
+async fn codex_thread_fork_capability(
+    State(state): State<AppState>,
+    AxumPath((project_id, thread_id)): AxumPath<(String, String)>,
+    payload: Result<Json<ThreadForkCapabilityRequest>, axum::extract::rejection::JsonRejection>,
+) -> ApiResult<Json<crate::agent_run::AgentForkCapabilitySummary>> {
+    let Json(payload) = payload.map_err(|_| ApiError::bad_request_json("Fork 请求格式无效"))?;
+    let source = {
+        let _guard = lock_workspace_write(&state)?;
+        let connection = open_initialized_workspace_database(&state)?;
+        read_fork_source_thread(&connection, &project_id, &thread_id)?
+    };
+    let capability = probe_thread_fork_capability(&state, source.control_config(), payload.refresh)
+        .await
+        .map_err(agent_thread_fork_api_error)?;
+    Ok(Json(capability))
+}
+
+async fn fork_codex_thread(
+    State(state): State<AppState>,
+    AxumPath((project_id, thread_id)): AxumPath<(String, String)>,
+    payload: Result<Json<ThreadForkRequest>, axum::extract::rejection::JsonRejection>,
+) -> ApiResult<Json<ThreadForkResponse>> {
+    let Json(payload) = payload.map_err(|_| ApiError::bad_request_json("Fork 请求格式无效"))?;
+    let (source, operation) = {
+        let _guard = lock_workspace_write(&state)?;
+        let mut connection = open_initialized_workspace_database(&state)?;
+        let source = read_fork_source_thread(&connection, &project_id, &thread_id)?;
+        let operation = prepare_thread_fork_operation(
+            &mut connection,
+            &source,
+            &payload.operation_id,
+            current_timestamp_ms_i64(),
+        )?;
+        (source, operation)
+    };
+
+    if matches!(
+        operation.status,
+        ThreadForkOperationStatus::Completed | ThreadForkOperationStatus::HistoryPending
+    ) {
+        let _guard = lock_workspace_write(&state)?;
+        let mut connection = open_initialized_workspace_database(&state)?;
+        return build_thread_fork_response(&mut connection, &operation).map(Json);
+    }
+
+    let provider_result = match operation.status {
+        ThreadForkOperationStatus::ProviderPending => {
+            state
+                .create_thread_fork_for_backend(
+                    source.control_config(),
+                    operation.operation_id.clone(),
+                )
+                .await
+        }
+        ThreadForkOperationStatus::ResultUnknown => {
+            match state
+                .reconcile_thread_fork_for_backend(
+                    source.control_config(),
+                    operation.operation_id.clone(),
+                    operation.started_at_ms.div_euclid(1000),
+                )
+                .await
+            {
+                Ok(crate::agent_run::AgentForkReconcileResult::One(outcome)) => Ok(outcome),
+                Ok(crate::agent_run::AgentForkReconcileResult::None) => {
+                    return Err(ApiError::conflict(
+                        "Codex Fork 结果仍无法确认；未找到唯一的新聊天，请稍后重试核对",
+                    ));
+                }
+                Ok(crate::agent_run::AgentForkReconcileResult::Multiple(candidates)) => {
+                    return Err(ApiError::conflict(format!(
+                        "Codex Fork 结果仍无法确认；找到 {} 个候选聊天，未自动绑定",
+                        candidates.len()
+                    )));
+                }
+                Err(error) => {
+                    persist_thread_fork_error(
+                        &state,
+                        &operation.operation_id,
+                        ThreadForkOperationStatus::ResultUnknown,
+                        &agent_thread_fork_error_message(&error),
+                    )?;
+                    return Err(agent_thread_fork_api_error(error));
+                }
+            }
+        }
+        ThreadForkOperationStatus::ProviderSucceeded => {
+            let provider_thread_id = operation
+                .provider_thread_id
+                .clone()
+                .ok_or_else(|| ApiError::internal("Fork 操作缺少 Provider 聊天 ID"))?;
+            state
+                .read_thread_fork_for_backend(
+                    source.control_config(),
+                    operation.operation_id.clone(),
+                    provider_thread_id,
+                )
+                .await
+        }
+        ThreadForkOperationStatus::HistoryPending
+        | ThreadForkOperationStatus::Completed
+        | ThreadForkOperationStatus::Failed => unreachable!("Fork operation was normalized"),
+    };
+
+    let outcome = match provider_result {
+        Ok(outcome) => outcome,
+        Err(crate::agent_run::AgentThreadForkError::ProviderCreated {
+            provider_thread_id,
+            message,
+        }) => {
+            return finalize_thread_fork_without_history(
+                &state,
+                &source,
+                &operation.operation_id,
+                &provider_thread_id,
+                &message,
+            )
+            .map(Json);
+        }
+        Err(error) if operation.status == ThreadForkOperationStatus::ProviderSucceeded => {
+            let provider_thread_id = operation
+                .provider_thread_id
+                .as_deref()
+                .ok_or_else(|| ApiError::internal("Fork 操作缺少 Provider 聊天 ID"))?;
+            return finalize_thread_fork_without_history(
+                &state,
+                &source,
+                &operation.operation_id,
+                provider_thread_id,
+                &agent_thread_fork_error_message(&error),
+            )
+            .map(Json);
+        }
+        Err(error @ crate::agent_run::AgentThreadForkError::Uncertain(_)) => {
+            persist_thread_fork_error(
+                &state,
+                &operation.operation_id,
+                ThreadForkOperationStatus::ResultUnknown,
+                &agent_thread_fork_error_message(&error),
+            )?;
+            return Err(agent_thread_fork_api_error(error));
+        }
+        Err(error) => {
+            persist_thread_fork_error(
+                &state,
+                &operation.operation_id,
+                ThreadForkOperationStatus::Failed,
+                &agent_thread_fork_error_message(&error),
+            )?;
+            return Err(agent_thread_fork_api_error(error));
+        }
+    };
+
+    let _guard = lock_workspace_write(&state)?;
+    let mut connection = open_initialized_workspace_database(&state)?;
+    let source = read_fork_source_thread(&connection, &project_id, &thread_id)?;
+    mark_fork_provider_succeeded(
+        &connection,
+        &operation.operation_id,
+        &outcome.provider_thread_id,
+    )?;
+    let operation = read_thread_fork_operation(&connection, &operation.operation_id)?
+        .ok_or_else(|| ApiError::internal("Fork 操作不存在"))?;
+    let turns = codex_snapshot_to_conversation_turns(
+        &outcome.turns,
+        &outcome.provider_thread_id,
+        &source.working_directory,
+    );
+    finalize_local_thread_fork(&mut connection, &source, &operation, &turns, false)?;
+    let operation = read_thread_fork_operation(&connection, &operation.operation_id)?
+        .ok_or_else(|| ApiError::internal("Fork 操作不存在"))?;
+    build_thread_fork_response(&mut connection, &operation).map(Json)
+}
+
+async fn probe_thread_fork_capability(
+    state: &AppState,
+    config: crate::agent_run::AgentThreadControlConfig,
+    refresh: bool,
+) -> Result<crate::agent_run::AgentForkCapabilitySummary, crate::agent_run::AgentThreadForkError> {
+    #[cfg(test)]
+    if let Some(driver) = state.thread_fork_test_driver.as_ref() {
+        return driver.probe(config);
+    }
+    state
+        .agent_runs
+        .probe_codex_fork_capability(config, refresh)
+        .await
+}
+
+impl AppState {
+    async fn create_thread_fork_for_backend(
+        &self,
+        config: crate::agent_run::AgentThreadControlConfig,
+        operation_id: String,
+    ) -> Result<crate::codex_app_server::CodexForkOutcome, crate::agent_run::AgentThreadForkError>
+    {
+        #[cfg(test)]
+        if let Some(driver) = self.thread_fork_test_driver.as_ref() {
+            return driver.create(config);
+        }
+        self.agent_runs
+            .fork_codex_thread(config, operation_id)
+            .await
+    }
+
+    async fn reconcile_thread_fork_for_backend(
+        &self,
+        config: crate::agent_run::AgentThreadControlConfig,
+        operation_id: String,
+        started_at_seconds: i64,
+    ) -> Result<crate::agent_run::AgentForkReconcileResult, crate::agent_run::AgentThreadForkError>
+    {
+        #[cfg(test)]
+        if let Some(driver) = self.thread_fork_test_driver.as_ref() {
+            return driver.reconcile(config);
+        }
+        self.agent_runs
+            .reconcile_codex_thread_fork(config, operation_id, started_at_seconds)
+            .await
+    }
+
+    async fn read_thread_fork_for_backend(
+        &self,
+        config: crate::agent_run::AgentThreadControlConfig,
+        operation_id: String,
+        provider_thread_id: String,
+    ) -> Result<crate::codex_app_server::CodexForkOutcome, crate::agent_run::AgentThreadForkError>
+    {
+        #[cfg(test)]
+        if let Some(driver) = self.thread_fork_test_driver.as_ref() {
+            return driver.read(config);
+        }
+        self.agent_runs
+            .read_codex_fork_history(config, operation_id, provider_thread_id)
+            .await
+    }
+}
+
 async fn update_thread(
     State(state): State<AppState>,
     AxumPath(thread_id): AxumPath<String>,
@@ -4651,6 +5052,11 @@ async fn delete_thread(
 ) -> ApiResult<Json<Value>> {
     let _guard = lock_workspace_write(&state)?;
     let mut connection = open_initialized_workspace_database(&state)?;
+    if read_active_thread_fork_operation(&connection, &thread_id)?.is_some() {
+        return Err(ApiError::conflict(
+            "当前聊天仍有未完成的 Codex Fork 恢复操作，暂时不能删除",
+        ));
+    }
     remove_thread_row(&mut connection, &thread_id)?;
     let _ = close_thread_runtime(&state, &thread_id);
     remove_run_records_for_thread(&state, &thread_id);
@@ -4700,8 +5106,38 @@ async fn get_thread_history(
     State(state): State<AppState>,
     AxumPath(thread_id): AxumPath<String>,
 ) -> ApiResult<Json<Value>> {
+    let pending = {
+        let _guard = lock_workspace_write(&state)?;
+        let mut connection = open_initialized_workspace_database(&state)?;
+        match read_pending_fork_history_context(&connection, &thread_id)? {
+            Some(pending) => Some(pending),
+            None => return read_thread_history_payload(&mut connection, &thread_id).map(Json),
+        }
+    };
+    let (source, operation) = pending.expect("pending Fork history context");
+    let provider_thread_id = operation
+        .provider_thread_id
+        .clone()
+        .ok_or_else(|| ApiError::internal("待恢复 Fork 操作缺少 Provider 聊天 ID"))?;
+    let outcome = state
+        .read_thread_fork_for_backend(
+            source.control_config(),
+            operation.operation_id.clone(),
+            provider_thread_id.clone(),
+        )
+        .await
+        .map_err(agent_thread_fork_api_error)?;
+    if outcome.provider_thread_id != provider_thread_id {
+        return Err(ApiError::conflict("Codex 返回了不匹配的 Fork 聊天历史"));
+    }
+    let turns = codex_snapshot_to_conversation_turns(
+        &outcome.turns,
+        &provider_thread_id,
+        &source.working_directory,
+    );
     let _guard = lock_workspace_write(&state)?;
     let mut connection = open_initialized_workspace_database(&state)?;
+    complete_thread_fork_history(&mut connection, &source, &operation, &turns)?;
     read_thread_history_payload(&mut connection, &thread_id).map(Json)
 }
 
@@ -7659,6 +8095,301 @@ fn sync_thread_model_preference(
     Ok(())
 }
 
+fn read_fork_source_thread(
+    connection: &Connection,
+    project_id: &str,
+    thread_id: &str,
+) -> ApiResult<ForkSourceThread> {
+    let (source, project_path) = connection
+        .query_row(
+            r#"
+            SELECT t.id, t.project_id, t.provider, t.title, t.custom_title, t.session_id,
+                   t.working_directory, t.model, t.reasoning_effort, t.permission_mode,
+                   t.agent_channel_id, p.path
+            FROM threads t
+            INNER JOIN projects p ON p.id = t.project_id
+            WHERE t.id = ? AND t.project_id = ?
+            "#,
+            params![thread_id, project_id],
+            |row| {
+                let provider_thread_id = row.get::<_, Option<String>>(5)?;
+                Ok((
+                    ForkSourceThread {
+                        id: row.get(0)?,
+                        project_id: row.get(1)?,
+                        provider: row.get(2)?,
+                        title: row.get(3)?,
+                        custom_title: row.get::<_, i64>(4)? != 0,
+                        provider_thread_id: provider_thread_id.unwrap_or_default(),
+                        working_directory: row.get(6)?,
+                        model: row.get(7)?,
+                        reasoning_effort: row.get(8)?,
+                        permission_mode: row.get(9)?,
+                        agent_channel_id: row.get(10)?,
+                    },
+                    row.get::<_, String>(11)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取 Fork 源聊天失败: {error}")))?
+        .ok_or_else(|| ApiError::not_found("项目中的源聊天不存在"))?;
+    if source.provider != OPENAI_CODEX_PROVIDER_ID {
+        return Err(ApiError::bad_request(
+            "只有 OpenAI Codex 聊天支持在新聊天中继续",
+        ));
+    }
+    if source.provider_thread_id.trim().is_empty() {
+        return Err(ApiError::bad_request("当前聊天尚未绑定 Codex 会话"));
+    }
+    ensure_fork_working_directory_is_in_project(&project_path, &source.working_directory)?;
+    Ok(source)
+}
+
+fn ensure_fork_working_directory_is_in_project(
+    project_path: &str,
+    working_directory: &str,
+) -> ApiResult<()> {
+    let project = fs::canonicalize(project_path)
+        .map_err(|_| ApiError::bad_request("Fork 源项目目录不存在或不可访问"))?;
+    let working_directory = fs::canonicalize(working_directory)
+        .map_err(|_| ApiError::bad_request("Fork 源工作目录不存在或不可访问"))?;
+    if !working_directory.starts_with(&project) {
+        return Err(ApiError::bad_request(
+            "Fork 源工作目录必须位于当前项目目录内",
+        ));
+    }
+    Ok(())
+}
+
+fn agent_thread_fork_error_message(error: &crate::agent_run::AgentThreadForkError) -> String {
+    match error {
+        crate::agent_run::AgentThreadForkError::Unsupported(message)
+        | crate::agent_run::AgentThreadForkError::Conflict(message)
+        | crate::agent_run::AgentThreadForkError::Rejected(message)
+        | crate::agent_run::AgentThreadForkError::Uncertain(message)
+        | crate::agent_run::AgentThreadForkError::Internal(message) => message.clone(),
+        crate::agent_run::AgentThreadForkError::ProviderCreated { message, .. } => message.clone(),
+    }
+}
+
+fn agent_thread_fork_api_error(error: crate::agent_run::AgentThreadForkError) -> ApiError {
+    let message = agent_thread_fork_error_message(&error);
+    match error {
+        crate::agent_run::AgentThreadForkError::Internal(_) => ApiError::internal(message),
+        crate::agent_run::AgentThreadForkError::Unsupported(_)
+        | crate::agent_run::AgentThreadForkError::Conflict(_)
+        | crate::agent_run::AgentThreadForkError::Rejected(_)
+        | crate::agent_run::AgentThreadForkError::Uncertain(_)
+        | crate::agent_run::AgentThreadForkError::ProviderCreated { .. } => {
+            ApiError::conflict(message)
+        }
+    }
+}
+
+fn sanitize_thread_fork_error(message: &str) -> String {
+    let normalized = message
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    normalized.chars().take(512).collect()
+}
+
+fn update_thread_fork_operation_error(
+    connection: &Connection,
+    operation_id: &str,
+    status: ThreadForkOperationStatus,
+    message: &str,
+) -> ApiResult<()> {
+    let updated = connection
+        .execute(
+            r#"
+            UPDATE thread_fork_operations
+            SET status = ?, last_error = ?, updated_at = ?
+            WHERE operation_id = ?
+            "#,
+            params![
+                status.as_str(),
+                sanitize_thread_fork_error(message),
+                current_timestamp(),
+                operation_id,
+            ],
+        )
+        .map_err(|error| ApiError::internal(format!("更新 Fork 操作状态失败: {error}")))?;
+    if updated != 1 {
+        return Err(ApiError::not_found("Fork 操作不存在"));
+    }
+    Ok(())
+}
+
+fn persist_thread_fork_error(
+    state: &AppState,
+    operation_id: &str,
+    status: ThreadForkOperationStatus,
+    message: &str,
+) -> ApiResult<()> {
+    let _guard = lock_workspace_write(state)?;
+    let connection = open_initialized_workspace_database(state)?;
+    update_thread_fork_operation_error(&connection, operation_id, status, message)
+}
+
+fn build_thread_fork_response(
+    connection: &mut Connection,
+    operation: &ThreadForkOperation,
+) -> ApiResult<ThreadForkResponse> {
+    let local_thread_id = operation
+        .local_thread_id
+        .as_deref()
+        .ok_or_else(|| ApiError::internal("Fork 操作缺少本地聊天 ID"))?;
+    let history_state = match operation.status {
+        ThreadForkOperationStatus::Completed => ThreadForkHistoryState::Loaded,
+        ThreadForkOperationStatus::HistoryPending => ThreadForkHistoryState::Pending,
+        _ => return Err(ApiError::conflict("Fork 操作尚未创建可见聊天")),
+    };
+    let thread = read_thread_summary(connection, local_thread_id)?;
+    let history = match history_state {
+        ThreadForkHistoryState::Loaded => read_thread_history_payload(connection, local_thread_id)?,
+        ThreadForkHistoryState::Pending => json!({
+            "threadId": local_thread_id,
+            "turns": [],
+        }),
+    };
+    Ok(ThreadForkResponse {
+        ok: true,
+        operation_id: operation.operation_id.clone(),
+        thread_id: local_thread_id.to_string(),
+        thread,
+        history,
+        history_state,
+    })
+}
+
+fn finalize_thread_fork_without_history(
+    state: &AppState,
+    source: &ForkSourceThread,
+    operation_id: &str,
+    provider_thread_id: &str,
+    error_message: &str,
+) -> ApiResult<ThreadForkResponse> {
+    let _guard = lock_workspace_write(state)?;
+    let mut connection = open_initialized_workspace_database(state)?;
+    mark_fork_provider_succeeded(&connection, operation_id, provider_thread_id)?;
+    let operation = read_thread_fork_operation(&connection, operation_id)?
+        .ok_or_else(|| ApiError::internal("Fork 操作不存在"))?;
+    finalize_local_thread_fork(&mut connection, source, &operation, &[], true)?;
+    update_thread_fork_operation_error(
+        &connection,
+        operation_id,
+        ThreadForkOperationStatus::HistoryPending,
+        error_message,
+    )?;
+    let operation = read_thread_fork_operation(&connection, operation_id)?
+        .ok_or_else(|| ApiError::internal("Fork 操作不存在"))?;
+    build_thread_fork_response(&mut connection, &operation)
+}
+
+fn read_pending_fork_history_context(
+    connection: &Connection,
+    local_thread_id: &str,
+) -> ApiResult<Option<(ForkSourceThread, ThreadForkOperation)>> {
+    let operation_id = connection
+        .query_row(
+            r#"
+            SELECT operation_id
+            FROM thread_fork_operations
+            WHERE local_thread_id = ? AND status = 'history_pending'
+            LIMIT 1
+            "#,
+            params![local_thread_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取待恢复 Fork 历史失败: {error}")))?;
+    let Some(operation_id) = operation_id else {
+        return Ok(None);
+    };
+    let operation = read_thread_fork_operation(connection, &operation_id)?
+        .ok_or_else(|| ApiError::internal("待恢复 Fork 操作不存在"))?;
+    let source_project_id = connection
+        .query_row(
+            "SELECT project_id FROM threads WHERE id = ?",
+            params![operation.source_thread_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取 Fork 源项目失败: {error}")))?
+        .ok_or_else(|| ApiError::conflict("Fork 源聊天已不存在，无法恢复历史"))?;
+    let source =
+        read_fork_source_thread(connection, &source_project_id, &operation.source_thread_id)?;
+    Ok(Some((source, operation)))
+}
+
+fn complete_thread_fork_history(
+    connection: &mut Connection,
+    source: &ForkSourceThread,
+    expected_operation: &ThreadForkOperation,
+    provider_turns: &[Value],
+) -> ApiResult<()> {
+    let current = read_thread_fork_operation(connection, &expected_operation.operation_id)?
+        .ok_or_else(|| ApiError::not_found("Fork 操作不存在"))?;
+    if current.status == ThreadForkOperationStatus::Completed {
+        return Ok(());
+    }
+    if current.status != ThreadForkOperationStatus::HistoryPending
+        || current.source_thread_id != source.id
+        || current.provider_thread_id != expected_operation.provider_thread_id
+        || current.local_thread_id != expected_operation.local_thread_id
+    {
+        return Err(ApiError::conflict("Fork 历史恢复状态已变化，请重新加载"));
+    }
+    let local_thread_id = current
+        .local_thread_id
+        .as_deref()
+        .ok_or_else(|| ApiError::internal("待恢复 Fork 操作缺少本地聊天 ID"))?;
+    let now = current_timestamp();
+    let transaction = connection
+        .transaction()
+        .map_err(|error| ApiError::internal(format!("恢复 Fork 历史事务失败: {error}")))?;
+    write_thread_history_rows(
+        &transaction,
+        local_thread_id,
+        provider_turns,
+        &source.project_id,
+        &now,
+    )?;
+    let updated = transaction
+        .execute(
+            r#"
+            UPDATE thread_fork_operations
+            SET status = 'completed', last_error = NULL, updated_at = ?
+            WHERE operation_id = ? AND status = 'history_pending'
+              AND local_thread_id = ? AND provider_thread_id = ?
+            "#,
+            params![
+                now,
+                current.operation_id,
+                local_thread_id,
+                current.provider_thread_id,
+            ],
+        )
+        .map_err(|error| ApiError::internal(format!("完成 Fork 历史恢复失败: {error}")))?;
+    if updated != 1 {
+        return Err(ApiError::conflict("Fork 历史恢复状态已变化，请重新加载"));
+    }
+    transaction
+        .commit()
+        .map_err(|error| ApiError::internal(format!("提交 Fork 历史恢复失败: {error}")))
+}
+
 fn read_thread_fork_operation(
     connection: &Connection,
     operation_id: &str,
@@ -7725,6 +8456,15 @@ fn prepare_thread_fork_operation(
     let operation_id = requested_operation_id.trim();
     if operation_id.is_empty() {
         return Err(ApiError::bad_request("operationId 不能为空"));
+    }
+    if operation_id.chars().count() > 128
+        || !operation_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(ApiError::bad_request(
+            "operationId 仅支持 128 个以内的字母、数字、连字符或下划线",
+        ));
     }
     if source.provider != OPENAI_CODEX_PROVIDER_ID || source.provider_thread_id.trim().is_empty() {
         return Err(ApiError::bad_request(
@@ -8550,6 +9290,152 @@ fn sanitize_project_path(project_path: &str) -> String {
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
         .collect()
+}
+
+fn codex_snapshot_to_conversation_turns(
+    turns: &[CodexStoredTurn],
+    provider_thread_id: &str,
+    workspace: &str,
+) -> Vec<Value> {
+    turns
+        .iter()
+        .map(|turn| {
+            let turn_id = format!("codex:{provider_thread_id}:{}", turn.id);
+            let only_compaction = !turn.items.is_empty()
+                && turn
+                    .items
+                    .iter()
+                    .all(|item| matches!(item, CodexStoredItem::ContextCompaction { .. }));
+            if only_compaction {
+                let item_id = turn
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        CodexStoredItem::ContextCompaction { id } => Some(id.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or("compact");
+                return json!({
+                    "id": turn_id,
+                    "kind": "system",
+                    "userText": "",
+                    "assistantText": "",
+                    "status": codex_snapshot_turn_status(&turn.status),
+                    "tools": [],
+                    "items": [{
+                        "id": format!("codex:{provider_thread_id}:{}:{item_id}", turn.id),
+                        "type": "system-command",
+                        "command": "/compact",
+                        "title": "压缩上下文",
+                        "cardType": "compact",
+                        "state": "completed",
+                        "source": "automatic",
+                        "compact": {
+                            "source": "automatic",
+                            "status": "completed",
+                            "providerThreadId": provider_thread_id,
+                            "providerTurnId": turn.id,
+                            "providerItemId": item_id,
+                        }
+                    }]
+                });
+            }
+
+            let mut user_texts = Vec::new();
+            let mut user_content_blocks = Vec::new();
+            let mut assistant_texts = Vec::new();
+            let mut items = Vec::new();
+            let mut tools = Vec::new();
+            for item in &turn.items {
+                match item {
+                    CodexStoredItem::UserMessage { content, .. } => {
+                        for input in content {
+                            match input {
+                                CodexUserInput::Text { text } => {
+                                    if !text.trim().is_empty() {
+                                        user_texts.push(text.clone());
+                                        user_content_blocks
+                                            .push(json!({ "type": "text", "text": text }));
+                                    }
+                                }
+                                CodexUserInput::LocalImage { path } => {
+                                    let name = Path::new(path)
+                                        .file_name()
+                                        .and_then(|value| value.to_str())
+                                        .unwrap_or("image")
+                                        .to_string();
+                                    user_content_blocks.push(json!({
+                                        "type": "image",
+                                        "path": path,
+                                        "name": name,
+                                    }));
+                                }
+                                CodexUserInput::Image { url: _ } => {
+                                    user_content_blocks.push(json!({
+                                        "type": "attachment_metadata",
+                                        "name": "remote-image",
+                                        "reason": "remote_image",
+                                        "workspace": workspace,
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                    CodexStoredItem::AgentMessage { id, text } => {
+                        if !text.trim().is_empty() {
+                            assistant_texts.push(text.clone());
+                            items.push(json!({
+                                "id": format!("codex:{provider_thread_id}:{}:{id}", turn.id),
+                                "type": "text",
+                                "text": text,
+                            }));
+                        }
+                    }
+                    CodexStoredItem::Tool {
+                        id,
+                        name,
+                        input,
+                        result,
+                        is_error,
+                    } => {
+                        let status = if *is_error { "error" } else { "done" };
+                        let tool = json!({
+                            "id": format!("codex:{provider_thread_id}:{}:{id}", turn.id),
+                            "name": name,
+                            "title": name,
+                            "status": status,
+                            "inputText": input.as_ref().map(Value::to_string),
+                            "resultText": result,
+                            "isError": is_error,
+                        });
+                        tools.push(tool.clone());
+                        items.push(json!({ "type": "tool", "tool": tool }));
+                    }
+                    CodexStoredItem::ContextCompaction { .. } => {}
+                }
+            }
+            json!({
+                "id": turn_id,
+                "userText": user_texts.join("\n"),
+                "assistantText": assistant_texts.join("\n"),
+                "status": codex_snapshot_turn_status(&turn.status),
+                "userContentBlocks": user_content_blocks,
+                "pendingApprovalRequests": [],
+                "pendingUserInputRequests": [],
+                "tools": tools,
+                "items": items,
+                "sessionId": provider_thread_id,
+            })
+        })
+        .collect()
+}
+
+fn codex_snapshot_turn_status(status: &str) -> &'static str {
+    match status {
+        "interrupted" | "cancelled" | "canceled" => "stopped",
+        "failed" | "error" => "error",
+        _ => "done",
+    }
 }
 
 fn read_thread_history_payload(connection: &mut Connection, thread_id: &str) -> ApiResult<Value> {
@@ -19039,37 +19925,44 @@ mod tests {
         build_request_user_input_response_answers, build_usage_provider_rows,
         claude_input_message_has_content, claude_install_display_command,
         claude_install_lifecycle_plan, claude_uninstalled_update_lifecycle_plan,
-        compare_project_file_entries, configure_agent_lifecycle_environment, create_router,
-        create_thread_row, current_claude_install_lifecycle_plan, default_claude_command_paths,
-        default_grok_command_path, default_pi_command_paths, desktop_cors_layer,
-        ensure_agent_plugin_management_supported, extract_agent_semantic_version,
-        finalize_local_thread_fork, import_claude_sessions_from_root,
-        initialize_workspace_database, install_skill_directory_safely,
-        is_agent_lifecycle_network_failure, lifecycle_plan, lifecycle_plan_supports_npm_mirror,
-        list_agent_installed_plugins_value, list_agent_plugin_marketplaces_value,
-        list_agent_skills_value, list_slash_commands_value, mark_fork_provider_succeeded,
-        mark_request_user_input_submitted, normalize_agent_plugin_action,
-        normalize_agent_runtime_settings, normalize_open_with_settings, normalize_pi_probe_summary,
-        normalize_request_user_input_answer_value, parse_grok_cli_version,
-        parse_grok_latest_version, parse_macos_system_proxy_environment, parse_npm_latest_version,
-        parse_pi_installed_packages, parse_request_user_input_event, pi_node_version_supported,
-        prepare_thread_fork_operation, provider_supports_reasoning_effort,
-        read_agent_mcp_config_snapshot, read_opencode_mcp_config, read_stored_thread_history,
-        read_thread_detail, read_thread_fork_operation, read_thread_summary,
-        recover_stale_thread_fork_operations, remove_thread_row, resolve_codex_command,
-        resolve_first_runnable_command, resolve_grok_command, resolve_opencode_command,
-        resolve_pi_command, resolve_requested_thread_provider,
+        codex_snapshot_to_conversation_turns, compare_project_file_entries,
+        complete_thread_fork_history, configure_agent_lifecycle_environment, create_project_row,
+        create_router, create_thread_row, current_claude_install_lifecycle_plan,
+        default_claude_command_paths, default_grok_command_path, default_pi_command_paths,
+        desktop_cors_layer, ensure_agent_plugin_management_supported,
+        extract_agent_semantic_version, finalize_local_thread_fork,
+        import_claude_sessions_from_root, initialize_workspace_database,
+        install_skill_directory_safely, is_agent_lifecycle_network_failure, lifecycle_plan,
+        lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
+        list_agent_plugin_marketplaces_value, list_agent_skills_value, list_slash_commands_value,
+        mark_fork_provider_succeeded, mark_request_user_input_submitted,
+        normalize_agent_plugin_action, normalize_agent_runtime_settings,
+        normalize_open_with_settings, normalize_pi_probe_summary,
+        normalize_request_user_input_answer_value, open_initialized_workspace_database,
+        parse_grok_cli_version, parse_grok_latest_version, parse_macos_system_proxy_environment,
+        parse_npm_latest_version, parse_pi_installed_packages, parse_request_user_input_event,
+        pi_node_version_supported, prepare_thread_fork_operation,
+        provider_supports_reasoning_effort, read_agent_mcp_config_snapshot,
+        read_fork_source_thread, read_opencode_mcp_config, read_state_value,
+        read_stored_thread_history, read_thread_detail, read_thread_fork_operation,
+        read_thread_summary, recover_stale_thread_fork_operations, remove_thread_row,
+        resolve_codex_command, resolve_first_runnable_command, resolve_grok_command,
+        resolve_opencode_command, resolve_pi_command, resolve_requested_thread_provider,
         resolve_thread_create_permission_mode, resolve_workspace_relative_path,
         sanitize_agent_lifecycle_output, sanitize_external_command_result, search_workspace_files,
         select_runnable_command_candidate, should_emit_claude_raw_event, should_store_run_event,
         summarize_content_blocks, update_thread_metadata_from_payload, validate_desktop_file_path,
         validate_managed_agent_skill_path, windows_claude_install_lifecycle_plan,
-        windows_shell_execute_error_message, write_opencode_mcp_config, write_thread_history,
-        ApiError, AppState, ForkSourceThread, ThreadForkOperationStatus,
+        windows_shell_execute_error_message, write_opencode_mcp_config, write_state_value,
+        write_thread_history, ApiError, AppState, ForkSourceThread, ThreadForkCapabilityRequest,
+        ThreadForkOperationStatus, ThreadForkRequest, ThreadForkTestDriver,
     };
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
         OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+    };
+    use crate::codex_app_server::{
+        CodexForkOutcome, CodexStoredItem, CodexStoredTurn, CodexUserInput,
     };
     use crate::pi_rpc::{PiModel, PiState};
     use axum::{
@@ -19095,6 +19988,529 @@ mod tests {
             fs::create_dir_all(&path).expect("create test directory");
             Self(path)
         }
+    }
+
+    fn test_app_state(app_data_dir: PathBuf) -> AppState {
+        let secrets = crate::ordinary_chat::secrets::SecretStore::new(app_data_dir.clone());
+        let agent_channels =
+            crate::agent_channels::AgentChannelService::new(app_data_dir.clone(), secrets);
+        AppState {
+            app_data_dir: Arc::new(app_data_dir),
+            settings_write_lock: Arc::new(Mutex::new(())),
+            agent_channels: agent_channels.clone(),
+            agent_lifecycle_running: Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
+            agent_runs: crate::agent_run::AgentRunService::new(
+                resolve_grok_command,
+                resolve_codex_command,
+                resolve_opencode_command,
+                resolve_pi_command,
+                agent_channels,
+            ),
+            workspace_write_lock: Arc::new(Mutex::new(())),
+            workspace_database_init_lock: Arc::new(Mutex::new(())),
+            runs: Arc::new(Mutex::new(HashMap::new())),
+            runtimes: Arc::new(Mutex::new(HashMap::new())),
+            context_requests: Arc::new(Mutex::new(HashMap::new())),
+            thread_fork_test_driver: None,
+        }
+    }
+
+    fn fork_api_fixture(
+        label: &str,
+    ) -> (
+        TestDirectory,
+        AppState,
+        ThreadForkTestDriver,
+        String,
+        String,
+    ) {
+        let root = TestDirectory::new(label);
+        let project_path = root.0.join("project");
+        fs::create_dir_all(&project_path).expect("create Fork project directory");
+        let driver = ThreadForkTestDriver::default();
+        let mut state = test_app_state(root.0.clone());
+        state.thread_fork_test_driver = Some(driver.clone());
+        let mut connection =
+            open_initialized_workspace_database(&state).expect("open Fork workspace database");
+        let project_id = create_project_row(&connection, &project_path.to_string_lossy())
+            .expect("create Fork project");
+        let source_thread_id = create_thread_row(
+            &mut connection,
+            &project_id,
+            Some("Source"),
+            OPENAI_CODEX_PROVIDER_ID,
+            Some("auto"),
+            Some("gpt-codex"),
+            Some("high"),
+            None,
+            true,
+        )
+        .expect("create Fork source thread");
+        connection
+            .execute(
+                "UPDATE threads SET session_id = 'provider-source' WHERE id = ?",
+                params![source_thread_id],
+            )
+            .expect("bind Fork source Provider thread");
+        drop(connection);
+        (root, state, driver, project_id, source_thread_id)
+    }
+
+    async fn run_json_request(
+        app: &axum::Router,
+        method: Method,
+        uri: &str,
+        body: Value,
+    ) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("build JSON request"),
+            )
+            .await
+            .expect("run JSON request")
+    }
+
+    async fn response_json(response: axum::response::Response) -> Value {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        serde_json::from_slice(&body).expect("parse response JSON")
+    }
+
+    fn fork_outcome(provider_thread_id: &str, assistant_text: &str) -> CodexForkOutcome {
+        CodexForkOutcome {
+            provider_thread_id: provider_thread_id.to_string(),
+            forked_from_id: Some("provider-source".to_string()),
+            turns: vec![CodexStoredTurn {
+                id: "turn-1".to_string(),
+                status: "completed".to_string(),
+                items: vec![CodexStoredItem::AgentMessage {
+                    id: "message-1".to_string(),
+                    text: assistant_text.to_string(),
+                }],
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_thread_fork_capability_rejects_forged_fields_as_bad_request() {
+        let root = TestDirectory::new("fork-strict-request");
+        let app = create_router(test_app_state(root.0.clone()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/projects/project/threads/thread/fork/capability")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"refresh":true,"sessionId":"forged"}"#))
+                    .expect("build Fork capability request"),
+            )
+            .await
+            .expect("run Fork capability request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn codex_thread_fork_prepares_record_before_provider_call() {
+        let (_root, state, driver, project_id, source_thread_id) =
+            fork_api_fixture("fork-prepare-before-provider");
+        let database_path = state.app_data_dir.join("codem.sqlite");
+        {
+            let mut driver_state = driver.state.lock().expect("lock Fork test driver");
+            driver_state.before_create = Some(Arc::new(move || {
+                let connection = Connection::open(&database_path).expect("open callback database");
+                let status = connection
+                    .query_row(
+                        "SELECT status FROM thread_fork_operations WHERE operation_id = 'operation-prepare'",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .expect("read prepared operation");
+                assert_eq!(status, "provider_pending");
+            }));
+            driver_state
+                .create_results
+                .push_back(Ok(fork_outcome("provider-child", "forked answer")));
+        }
+        let app = create_router(state.clone());
+        let response = run_json_request(
+            &app,
+            Method::POST,
+            &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+            json!({ "operationId": "operation-prepare" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(payload["historyState"], "loaded");
+        assert_eq!(payload["thread"]["sessionId"], "provider-child");
+        assert_eq!(
+            payload["history"]["turns"][0]["assistantText"],
+            "forked answer"
+        );
+        let driver_state = driver.state.lock().expect("lock Fork test driver");
+        assert_eq!(driver_state.create_count, 1);
+        let config = driver_state
+            .last_config
+            .as_ref()
+            .expect("record source config");
+        assert_eq!(config.thread_id, source_thread_id);
+        assert_eq!(config.session_id, "provider-source");
+    }
+
+    #[tokio::test]
+    async fn codex_thread_fork_retry_finalizes_provider_succeeded_without_second_create() {
+        let (_root, state, driver, project_id, source_thread_id) =
+            fork_api_fixture("fork-provider-succeeded-retry");
+        let database_path = state.app_data_dir.join("codem.sqlite");
+        {
+            let mut driver_state = driver.state.lock().expect("lock Fork test driver");
+            driver_state.before_create = Some(Arc::new(move || {
+                let connection = Connection::open(&database_path).expect("open callback database");
+                connection
+                    .execute_batch(
+                        r#"
+                        CREATE TRIGGER fail_fork_child_insert
+                        BEFORE INSERT ON threads
+                        WHEN NEW.session_id = 'provider-child'
+                        BEGIN
+                          SELECT RAISE(FAIL, 'injected Fork finalize failure');
+                        END;
+                        "#,
+                    )
+                    .expect("install finalize failure trigger");
+            }));
+            driver_state
+                .create_results
+                .push_back(Ok(fork_outcome("provider-child", "first history")));
+        }
+        let app = create_router(state.clone());
+        let uri = format!("/api/projects/{project_id}/threads/{source_thread_id}/fork");
+        let first = run_json_request(
+            &app,
+            Method::POST,
+            &uri,
+            json!({ "operationId": "operation-retry-finalize" }),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        {
+            let connection =
+                open_initialized_workspace_database(&state).expect("open workspace database");
+            connection
+                .execute_batch("DROP TRIGGER fail_fork_child_insert;")
+                .expect("remove finalize failure trigger");
+            let status = connection
+                .query_row(
+                    "SELECT status FROM thread_fork_operations WHERE operation_id = 'operation-retry-finalize'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("read recoverable operation");
+            assert_eq!(status, "provider_succeeded");
+        }
+        {
+            let mut driver_state = driver.state.lock().expect("lock Fork test driver");
+            driver_state.before_create = None;
+            driver_state
+                .read_results
+                .push_back(Ok(fork_outcome("provider-child", "recovered history")));
+        }
+        let second = run_json_request(
+            &app,
+            Method::POST,
+            &uri,
+            json!({ "operationId": "operation-retry-finalize" }),
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::OK);
+        let payload = response_json(second).await;
+        assert_eq!(payload["thread"]["sessionId"], "provider-child");
+        assert_eq!(
+            payload["history"]["turns"][0]["assistantText"],
+            "recovered history"
+        );
+        let driver_state = driver.state.lock().expect("lock Fork test driver");
+        assert_eq!(driver_state.create_count, 1);
+        assert_eq!(driver_state.read_count, 1);
+    }
+
+    #[tokio::test]
+    async fn codex_thread_fork_uncertain_uses_read_only_reconciliation() {
+        let (_root, state, driver, project_id, source_thread_id) =
+            fork_api_fixture("fork-uncertain-reconcile");
+        {
+            let mut connection =
+                open_initialized_workspace_database(&state).expect("open workspace database");
+            let source = read_fork_source_thread(&connection, &project_id, &source_thread_id)
+                .expect("read source thread");
+            prepare_thread_fork_operation(
+                &mut connection,
+                &source,
+                "operation-uncertain",
+                1_754_092_800_000,
+            )
+            .expect("prepare uncertain operation");
+            recover_stale_thread_fork_operations(&connection)
+                .expect("move pending operation to unknown");
+        }
+        {
+            let mut driver_state = driver.state.lock().expect("lock Fork test driver");
+            driver_state
+                .reconcile_results
+                .push_back(Ok(crate::agent_run::AgentForkReconcileResult::None));
+            driver_state.reconcile_results.push_back(Ok(
+                crate::agent_run::AgentForkReconcileResult::Multiple(vec![
+                    "candidate-a".to_string(),
+                    "candidate-b".to_string(),
+                ]),
+            ));
+            driver_state.reconcile_results.push_back(Ok(
+                crate::agent_run::AgentForkReconcileResult::One(fork_outcome(
+                    "provider-unique",
+                    "unique history",
+                )),
+            ));
+        }
+        let app = create_router(state.clone());
+        let uri = format!("/api/projects/{project_id}/threads/{source_thread_id}/fork");
+        for expected in [StatusCode::CONFLICT, StatusCode::CONFLICT, StatusCode::OK] {
+            let response = run_json_request(
+                &app,
+                Method::POST,
+                &uri,
+                json!({ "operationId": "operation-uncertain" }),
+            )
+            .await;
+            assert_eq!(response.status(), expected);
+        }
+        let driver_state = driver.state.lock().expect("lock Fork test driver");
+        assert_eq!(driver_state.create_count, 0);
+        assert_eq!(driver_state.reconcile_count, 3);
+        let connection =
+            open_initialized_workspace_database(&state).expect("reopen workspace database");
+        let operation = read_thread_fork_operation(&connection, "operation-uncertain")
+            .expect("read reconciled operation")
+            .expect("reconciled operation exists");
+        assert_eq!(operation.status, ThreadForkOperationStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn codex_thread_fork_history_pending_recovers_through_get_history() {
+        let (_root, state, driver, project_id, source_thread_id) =
+            fork_api_fixture("fork-history-recovery");
+        {
+            let mut driver_state = driver.state.lock().expect("lock Fork test driver");
+            driver_state.create_results.push_back(Err(
+                crate::agent_run::AgentThreadForkError::ProviderCreated {
+                    provider_thread_id: "provider-pending-history".to_string(),
+                    message: "history unavailable".to_string(),
+                },
+            ));
+            driver_state.read_results.push_back(Ok(fork_outcome(
+                "provider-pending-history",
+                "restored through GET",
+            )));
+        }
+        let app = create_router(state.clone());
+        let fork_response = run_json_request(
+            &app,
+            Method::POST,
+            &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+            json!({ "operationId": "operation-history-recovery" }),
+        )
+        .await;
+        assert_eq!(fork_response.status(), StatusCode::OK);
+        let fork_payload = response_json(fork_response).await;
+        assert_eq!(fork_payload["historyState"], "pending");
+        assert_eq!(fork_payload["history"]["turns"], json!([]));
+        let child_thread_id = fork_payload["threadId"]
+            .as_str()
+            .expect("child thread id")
+            .to_string();
+
+        let history_response = run_json_request(
+            &app,
+            Method::GET,
+            &format!("/api/threads/{child_thread_id}/history"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(history_response.status(), StatusCode::OK);
+        let history = response_json(history_response).await;
+        assert_eq!(history["turns"][0]["assistantText"], "restored through GET");
+        let driver_state = driver.state.lock().expect("lock Fork test driver");
+        assert_eq!(driver_state.create_count, 1);
+        assert_eq!(driver_state.read_count, 1);
+        let connection =
+            open_initialized_workspace_database(&state).expect("reopen workspace database");
+        let operation = read_thread_fork_operation(&connection, "operation-history-recovery")
+            .expect("read recovered operation")
+            .expect("recovered operation exists");
+        assert_eq!(operation.status, ThreadForkOperationStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn codex_thread_fork_completed_retry_returns_same_child() {
+        let root = TestDirectory::new("fork-completed-retry");
+        let project_path = root.0.join("project");
+        fs::create_dir_all(&project_path).expect("create project directory");
+        let state = test_app_state(root.0.clone());
+        let (project_id, source_thread_id, child_thread_id) = {
+            let mut connection =
+                open_initialized_workspace_database(&state).expect("open workspace database");
+            let project_id = create_project_row(&connection, &project_path.to_string_lossy())
+                .expect("create project");
+            let source_thread_id = create_thread_row(
+                &mut connection,
+                &project_id,
+                Some("Source"),
+                OPENAI_CODEX_PROVIDER_ID,
+                Some("auto"),
+                Some("gpt-codex"),
+                Some("high"),
+                None,
+                true,
+            )
+            .expect("create source thread");
+            connection
+                .execute(
+                    "UPDATE threads SET session_id = 'provider-source' WHERE id = ?",
+                    params![source_thread_id],
+                )
+                .expect("bind source Provider thread");
+            let source = read_fork_source_thread(&connection, &project_id, &source_thread_id)
+                .expect("read source thread");
+            let operation = prepare_thread_fork_operation(
+                &mut connection,
+                &source,
+                "operation-completed",
+                1_754_092_800_000,
+            )
+            .expect("prepare Fork operation");
+            mark_fork_provider_succeeded(&connection, &operation.operation_id, "provider-child")
+                .expect("record Provider child");
+            let operation = read_thread_fork_operation(&connection, &operation.operation_id)
+                .expect("read operation")
+                .expect("operation exists");
+            let (_, child_thread_id) = finalize_local_thread_fork(
+                &mut connection,
+                &source,
+                &operation,
+                &[json!({
+                    "id": "codex:provider-child:turn-1",
+                    "userText": "hello",
+                    "assistantText": "answer",
+                    "status": "done",
+                    "tools": [],
+                    "items": [{ "id": "item-1", "type": "text", "text": "answer" }]
+                })],
+                false,
+            )
+            .expect("finalize Fork");
+            (project_id, source_thread_id, child_thread_id)
+        };
+
+        let app = create_router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!(
+                        "/api/projects/{project_id}/threads/{source_thread_id}/fork"
+                    ))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"operationId":"operation-completed"}"#))
+                    .expect("build completed Fork retry request"),
+            )
+            .await
+            .expect("run completed Fork retry request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read Fork response body");
+        let payload: Value = serde_json::from_slice(&body).expect("parse Fork response");
+        assert_eq!(payload["operationId"], "operation-completed");
+        assert_eq!(payload["threadId"], child_thread_id);
+        assert_eq!(payload["thread"]["sessionId"], "provider-child");
+        assert_eq!(payload["historyState"], "loaded");
+        assert_eq!(payload["history"]["turns"][0]["assistantText"], "answer");
+
+        let connection =
+            open_initialized_workspace_database(&state).expect("reopen workspace database");
+        let thread_count = connection
+            .query_row("SELECT COUNT(*) FROM threads", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count threads");
+        assert_eq!(thread_count, 2);
+    }
+
+    #[test]
+    fn codex_thread_fork_history_pending_completion_preserves_current_selection() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let source = fork_operation_source(&connection, "source-history-pending");
+        let operation = prepare_thread_fork_operation(
+            &mut connection,
+            &source,
+            "operation-history-pending",
+            1_754_092_800_000,
+        )
+        .expect("prepare Fork operation");
+        mark_fork_provider_succeeded(
+            &connection,
+            &operation.operation_id,
+            "provider-history-child",
+        )
+        .expect("record Provider child");
+        let operation = read_thread_fork_operation(&connection, &operation.operation_id)
+            .expect("read operation")
+            .expect("operation exists");
+        let (_, child_thread_id) =
+            finalize_local_thread_fork(&mut connection, &source, &operation, &[], true)
+                .expect("create history-pending child");
+        write_state_value(&connection, "activeThreadId", &source.id)
+            .expect("switch selection away from child");
+        let operation = read_thread_fork_operation(&connection, &operation.operation_id)
+            .expect("read pending operation")
+            .expect("pending operation exists");
+
+        complete_thread_fork_history(
+            &mut connection,
+            &source,
+            &operation,
+            &[json!({
+                "id": "codex:provider-history-child:turn-1",
+                "userText": "hello",
+                "assistantText": "restored",
+                "status": "done",
+                "tools": [],
+                "items": [{ "id": "text-1", "type": "text", "text": "restored" }]
+            })],
+        )
+        .expect("complete pending history");
+
+        let completed = read_thread_fork_operation(&connection, &operation.operation_id)
+            .expect("read completed operation")
+            .expect("completed operation exists");
+        assert_eq!(completed.status, ThreadForkOperationStatus::Completed);
+        assert_eq!(
+            read_state_value(&connection, "activeThreadId")
+                .expect("read active thread")
+                .as_deref(),
+            Some(source.id.as_str())
+        );
+        let history = read_stored_thread_history(&connection, &child_thread_id)
+            .expect("read restored child history");
+        assert_eq!(history[0]["assistantText"], "restored");
     }
 
     #[test]
@@ -20222,6 +21638,7 @@ mod tests {
             runs: Arc::new(Mutex::new(HashMap::new())),
             runtimes: Arc::new(Mutex::new(HashMap::new())),
             context_requests: Arc::new(Mutex::new(HashMap::new())),
+            thread_fork_test_driver: None,
         })
         .merge(crate::ordinary_chat::router(ordinary_chat))
         .layer(desktop_cors_layer());
@@ -20977,6 +22394,25 @@ mod tests {
     }
 
     #[test]
+    fn codex_thread_fork_operation_id_is_bounded_before_persistence() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let source = fork_operation_source(&connection, "source-bounded-operation");
+        let oversized = "x".repeat(129);
+
+        let error =
+            prepare_thread_fork_operation(&mut connection, &source, &oversized, 1_754_092_800_000)
+                .expect_err("reject oversized operation id");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        let count = connection
+            .query_row("SELECT COUNT(*) FROM thread_fork_operations", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count Fork operations");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
     fn fork_operation_failed_without_provider_can_rearm_explicit_retry() {
         let mut connection = Connection::open_in_memory().expect("open database");
         initialize_workspace_database(&connection).expect("initialize database");
@@ -21219,6 +22655,126 @@ mod tests {
                 .expect("count operations"),
             0
         );
+    }
+
+    #[test]
+    fn codex_thread_fork_capability_derives_runtime_identity_from_source() {
+        let capability = serde_json::from_value::<ThreadForkCapabilityRequest>(json!({
+            "refresh": true
+        }))
+        .expect("parse capability request");
+        assert!(capability.refresh);
+        for forged in [
+            json!({ "provider": "claude-code" }),
+            json!({ "sessionId": "forged" }),
+            json!({ "workingDirectory": "D:/elsewhere" }),
+        ] {
+            assert!(serde_json::from_value::<ThreadForkCapabilityRequest>(forged).is_err());
+        }
+        assert!(serde_json::from_value::<ThreadForkRequest>(json!({
+            "operationId": "operation-1",
+            "sessionId": "forged"
+        }))
+        .is_err());
+
+        let source = ForkSourceThread {
+            id: "source-thread".to_string(),
+            project_id: "project-1".to_string(),
+            provider: OPENAI_CODEX_PROVIDER_ID.to_string(),
+            title: "Source".to_string(),
+            custom_title: false,
+            provider_thread_id: "provider-source".to_string(),
+            working_directory: "D:/workspace".to_string(),
+            model: Some("gpt-codex".to_string()),
+            reasoning_effort: Some("high".to_string()),
+            permission_mode: Some("auto".to_string()),
+            agent_channel_id: Some("channel-1".to_string()),
+        };
+        let control = source.control_config();
+        assert_eq!(control.thread_id, source.id);
+        assert_eq!(control.session_id, source.provider_thread_id);
+        assert_eq!(control.working_directory, source.working_directory);
+        assert_eq!(control.model, source.model);
+        assert_eq!(control.reasoning_effort, source.reasoning_effort);
+        assert_eq!(control.permission_mode, source.permission_mode);
+        assert_eq!(control.channel_id, source.agent_channel_id);
+    }
+
+    #[test]
+    fn codex_thread_fork_snapshot_maps_stable_visible_history() {
+        let turns = vec![
+            CodexStoredTurn {
+                id: "turn-1".to_string(),
+                status: "completed".to_string(),
+                items: vec![
+                    CodexStoredItem::UserMessage {
+                        id: "user-1".to_string(),
+                        content: vec![
+                            CodexUserInput::Text {
+                                text: "hello".to_string(),
+                            },
+                            CodexUserInput::LocalImage {
+                                path: "D:/workspace/image.png".to_string(),
+                            },
+                            CodexUserInput::Image {
+                                url: "https://example.com/image.png".to_string(),
+                            },
+                            CodexUserInput::Image {
+                                url: "data:image/png;base64,secret-payload".to_string(),
+                            },
+                        ],
+                    },
+                    CodexStoredItem::AgentMessage {
+                        id: "agent-1".to_string(),
+                        text: "answer".to_string(),
+                    },
+                    CodexStoredItem::Tool {
+                        id: "tool-1".to_string(),
+                        name: "shell".to_string(),
+                        input: Some(json!({ "command": "pwd" })),
+                        result: "D:/workspace".to_string(),
+                        is_error: false,
+                    },
+                ],
+            },
+            CodexStoredTurn {
+                id: "turn-compact".to_string(),
+                status: "completed".to_string(),
+                items: vec![CodexStoredItem::ContextCompaction {
+                    id: "compact-1".to_string(),
+                }],
+            },
+        ];
+
+        let first = codex_snapshot_to_conversation_turns(&turns, "provider-child", "D:/workspace");
+        let second = codex_snapshot_to_conversation_turns(&turns, "provider-child", "D:/workspace");
+        assert_eq!(first, second);
+        assert_eq!(first[0]["id"], "codex:provider-child:turn-1");
+        assert_eq!(first[0]["userText"], "hello");
+        assert_eq!(first[0]["assistantText"], "answer");
+        assert_eq!(first[0]["status"], "done");
+        assert_eq!(first[0]["userContentBlocks"][1]["type"], "image");
+        assert_eq!(
+            first[0]["userContentBlocks"][1]["path"],
+            "D:/workspace/image.png"
+        );
+        assert!(first[0]["userContentBlocks"][1].get("data").is_none());
+        assert_eq!(
+            first[0]["userContentBlocks"][2]["type"],
+            "attachment_metadata"
+        );
+        assert_eq!(
+            first[0]["userContentBlocks"][3]["type"],
+            "attachment_metadata"
+        );
+        assert!(!serde_json::to_string(&first)
+            .expect("serialize mapped snapshot")
+            .contains("secret-payload"));
+        assert_eq!(first[0]["items"][1]["type"], "tool");
+        assert_eq!(first[0]["items"][1]["tool"]["status"], "done");
+        assert_eq!(first[1]["kind"], "system");
+        assert_eq!(first[1]["items"][0]["type"], "system-command");
+        assert_eq!(first[1]["items"][0]["source"], "automatic");
     }
 
     #[test]
