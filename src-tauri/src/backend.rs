@@ -141,6 +141,7 @@ struct ThreadForkTestDriverState {
         std::collections::VecDeque<crate::agent_run::AgentForkCapabilitySummary>,
     claude_capability_count: usize,
     claude_capability_identity: Option<(String, Option<String>)>,
+    claude_capability_command: Option<String>,
 }
 
 #[cfg(test)]
@@ -219,6 +220,14 @@ impl ThreadForkTestDriver {
             .lock()
             .expect("lock Fork test driver")
             .claude_capability_identity
+            .clone()
+    }
+
+    fn claude_capability_command(&self) -> Option<String> {
+        self.state
+            .lock()
+            .expect("lock Fork test driver")
+            .claude_capability_command
             .clone()
     }
 
@@ -5002,37 +5011,46 @@ async fn probe_thread_fork_capability(
 }
 
 /// 解析当前可启动的 Claude 命令身份（命令路径 + 报告版本），用于能力探测与缓存键。
-fn claude_fork_probe_identity(state: &AppState) -> Option<(String, Option<String>)> {
+async fn claude_fork_probe_identity(
+    _state: &AppState,
+) -> Result<Option<(String, Option<String>)>, crate::agent_run::AgentThreadForkError> {
     #[cfg(test)]
-    if let Some(driver) = state.thread_fork_test_driver.as_ref() {
-        return driver
-            .claude_capability_identity()
-            .or_else(|| Some(("claude".to_string(), Some("test".to_string()))));
-    }
-    let command = resolve_claude_command()?;
-    let version = read_claude_cli_version(&command);
-    Some((command, version))
-}
+    let test_driver = _state.thread_fork_test_driver.clone();
 
-/// 读取 `claude --version` 报告的语义版本，作为能力缓存键的一部分。
-fn read_claude_cli_version(command: &str) -> Option<String> {
-    let output = background_command(command).arg("--version").output().ok()?;
-    let output_text = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    parse_claude_cli_version(output_text.trim())
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        if let Some(driver) = test_driver.as_ref() {
+            if let Some(command) = driver.claude_capability_command() {
+                let version =
+                    read_cli_version(&command).and_then(|output| parse_claude_cli_version(&output));
+                return Some((command, version));
+            }
+            return driver
+                .claude_capability_identity()
+                .or_else(|| Some(("claude".to_string(), Some("test".to_string()))));
+        }
+
+        let command = resolve_claude_command()?;
+        let version =
+            read_cli_version(&command).and_then(|output| parse_claude_cli_version(&output));
+        Some((command, version))
+    })
+    .await
+    .map_err(|_| {
+        crate::agent_run::AgentThreadForkError::Internal(
+            "检查 Claude Code Fork 命令身份失败".to_string(),
+        )
+    })
 }
 
 /// 实际执行只读 `--fork-session` 探测并归一化为能力摘要。
 async fn compute_claude_fork_capability(
-    state: &AppState,
+    _state: &AppState,
     identity: Option<&(String, Option<String>)>,
 ) -> crate::agent_run::AgentForkCapabilitySummary {
     use crate::agent_run::{AgentForkCapabilityState, AgentForkCapabilitySummary};
     #[cfg(test)]
-    if let Some(driver) = state.thread_fork_test_driver.as_ref() {
+    if let Some(driver) = _state.thread_fork_test_driver.as_ref() {
         return driver.claude_probe();
     }
     let Some((command, _)) = identity else {
@@ -5091,7 +5109,7 @@ async fn probe_claude_thread_fork_capability(
     _source: &ForkSourceThread,
     refresh: bool,
 ) -> Result<crate::agent_run::AgentForkCapabilitySummary, crate::agent_run::AgentThreadForkError> {
-    let identity = claude_fork_probe_identity(state);
+    let identity = claude_fork_probe_identity(state).await?;
     let cache_key = identity
         .as_ref()
         .map(|(command, version)| format!("{command}\u{0}{}", version.as_deref().unwrap_or("")));
@@ -20361,6 +20379,34 @@ mod tests {
         Arc::new(tokio::sync::Mutex::new(stdin))
     }
 
+    /// 生成一个忽略参数并长期挂起的版本命令路径，用于证明版本探测必须被有界超时回收。
+    fn hanging_version_command() -> (TestDirectory, String) {
+        let dir = TestDirectory::new("claude-hang");
+        let (path, contents) = if cfg!(windows) {
+            (
+                dir.0.join("claude-hang.cmd"),
+                "@echo off\r\nping -n 9 127.0.0.1 > nul\r\n".to_string(),
+            )
+        } else {
+            (
+                dir.0.join("claude-hang.sh"),
+                "#!/bin/sh\nsleep 8\n".to_string(),
+            )
+        };
+        std::fs::write(&path, contents).expect("write hang script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&path)
+                .expect("read hang script metadata")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).expect("make hang script executable");
+        }
+        let command = path.to_string_lossy().to_string();
+        (dir, command)
+    }
+
     fn inject_claude_runtime(state: &AppState, thread_id: &str, current_run_id: Option<&str>) {
         let runtime = ClaudeRuntimeRecord {
             thread_id: thread_id.to_string(),
@@ -20487,6 +20533,43 @@ mod tests {
         assert_eq!(
             driver_state.claude_capability_count, 1,
             "capability must dispatch to Claude from the source provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_fork_capability_version_probe_is_bounded_against_hanging_command() {
+        let (_hang_dir, hanging) = hanging_version_command();
+        let root = TestDirectory::new("claude-fork-bounded-identity");
+        let driver = ThreadForkTestDriver::default();
+        let mut state = test_app_state(root.0.clone());
+        state.thread_fork_test_driver = Some(driver.clone());
+        driver
+            .state
+            .lock()
+            .expect("lock Fork test driver")
+            .claude_capability_command = Some(hanging);
+        let source = ForkSourceThread {
+            id: "claude-source".to_string(),
+            project_id: "project-1".to_string(),
+            provider: CLAUDE_CODE_PROVIDER_ID.to_string(),
+            title: "Source".to_string(),
+            custom_title: false,
+            provider_thread_id: "claude-session".to_string(),
+            working_directory: "D:/workspace".to_string(),
+            model: Some("sonnet".to_string()),
+            reasoning_effort: None,
+            permission_mode: Some("default".to_string()),
+            agent_channel_id: None,
+        };
+
+        let started = std::time::Instant::now();
+        let _ = probe_claude_thread_fork_capability(&state, &source, false)
+            .await
+            .expect("probe Claude Fork capability");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "Claude Fork 版本探测必须在 5 秒内结束，实际耗时 {elapsed:?}"
         );
     }
 
