@@ -19,6 +19,11 @@ const FORK_PROTOCOL_TIMEOUT: Duration = Duration::from_secs(10);
 /// 收到 init 并关闭 stdin / stdout EOF 后，等待进程自行退出的宽限期；超时才强制结束。
 const FORK_GRACEFUL_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// 直接子进程被回收后，等待 stderr drain 任务自然读到 EOF 的最长时间；超时则中止并
+/// 回收任务。残留 stderr 在管道里很快排空，但若后代继承了 stderr 管道，EOF 可能迟迟
+/// 不来，必须用这个有界等待兜底，避免被无关后代长期挂住 Fork API。
+const STDERR_DRAIN_FINISH_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// 对外暴露的 stderr / 进程输出归一化后最大字符数。
 const PUBLIC_OUTPUT_LIMIT: usize = 512;
 
@@ -205,7 +210,7 @@ async fn create_session_fork_with_timeout(
 
     // 进程一启动就并发持续排空 stderr，避免子进程在 init 前写满管道造成死锁。
     // 只在 StderrSummary 中保留有界公开摘要，达到上限后仍继续 drain。
-    let (stderr_summary, stderr_done) = stderr_summary_task(stderr_handle);
+    let (stderr_summary, stderr_drain) = stderr_summary_task(stderr_handle);
 
     let init_future = read_fork_session_id(BufReader::new(stdout), &launch.source_session_id);
     let outcome = match tokio::time::timeout(protocol_timeout, init_future).await {
@@ -238,8 +243,9 @@ async fn create_session_fork_with_timeout(
         }
     };
 
-    // 进程已结束，等待 stderr drain 任务读到 EOF 后取出有界摘要再注释错误。
-    let summary = finish_stderr_summary(stderr_summary, stderr_done).await;
+    // 进程已结束，有界等待 stderr drain 任务收尾（读到 EOF）并取出摘要；若后代仍持有
+    // stderr 管道，超时后会中止并回收 drain 任务，不会留下后台任务或长期挂住。
+    let summary = finish_stderr_summary(stderr_summary, stderr_drain).await;
     match outcome {
         Ok(outcome) => Ok(outcome),
         Err(error) => Err(annotate_with_summary(error, &summary)),
@@ -260,24 +266,23 @@ async fn wait_or_kill(
     }
 }
 
-/// 启动后台任务持续 drain stderr 到一个有界摘要，返回共享句柄与完成信号。
+/// 启动后台任务持续 drain stderr 到一个有界摘要，返回共享句柄与任务句柄。
 ///
-/// 任务一直读取直到 stderr EOF，即便摘要已满也继续排空管道。这保证子进程写满 stderr
-/// 时不会被阻塞，从而能正常写出 init 事件。
+/// 任务在进程存活期间一直读取 stderr，即便摘要已满也继续排空管道，避免子进程在 init
+/// 前写满管道而死锁。任务句柄交给 [`finish_stderr_summary`] 做有界收尾，并在需要时
+/// 中止回收，不会留下后台任务。
 fn stderr_summary_task(
     stderr: Option<tokio::process::ChildStderr>,
 ) -> (
     Arc<Mutex<StderrSummary>>,
-    tokio::sync::oneshot::Receiver<()>,
+    Option<tokio::task::JoinHandle<()>>,
 ) {
     let summary = Arc::new(Mutex::new(StderrSummary::new()));
-    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     let Some(mut stderr) = stderr else {
-        let _ = done_tx.send(());
-        return (summary, done_rx);
+        return (summary, None);
     };
     let summary_clone = Arc::clone(&summary);
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let mut buffer = [0u8; 8192];
         loop {
             match stderr.read(&mut buffer).await {
@@ -289,19 +294,31 @@ fn stderr_summary_task(
                 }
             }
         }
-        let _ = done_tx.send(());
     });
-    (summary, done_rx)
+    (summary, Some(handle))
 }
 
-/// 等待 stderr drain 任务排空管道（读到 EOF）后取出最终有界摘要。
+/// 有界结束 stderr drain 任务并取出公开摘要。
 ///
-/// 本函数总是在进程被 kill/reap 之后调用，因此 stderr 必然会 EOF，等待是有限的。
+/// 直接子进程被回收后，管道里残留的 stderr 通常很快排空到 EOF；但若后代继承了 stderr
+/// 管道，EOF 可能很久不来。这里对 drain 任务施加 [`STDERR_DRAIN_FINISH_TIMEOUT`] 有界
+/// 等待：超时则中止并回收任务（不留后台任务），并取走已收集的有界摘要。
 async fn finish_stderr_summary(
     summary: Arc<Mutex<StderrSummary>>,
-    done: tokio::sync::oneshot::Receiver<()>,
+    drain_task: Option<tokio::task::JoinHandle<()>>,
 ) -> String {
-    let _ = done.await;
+    if let Some(mut handle) = drain_task {
+        // 用 `&mut handle` 借用等待，避免拥有式 await 造成二次轮询（JoinHandle 完成后
+        // 再 poll 会 panic）。超时（后代持有管道、EOF 不来）才中止并回收任务；自然完成
+        // 时 `&mut` 轮询已驱动其到完成，drop handle 即可回收，不再二次 poll。
+        if tokio::time::timeout(STDERR_DRAIN_FINISH_TIMEOUT, &mut handle)
+            .await
+            .is_err()
+        {
+            handle.abort();
+            let _ = handle.await;
+        }
+    }
     match summary.lock() {
         Ok(mut guard) => guard.take_finished(),
         Err(_) => String::new(),
@@ -680,6 +697,33 @@ mod tests {
             .await
             .expect("concurrent stderr drain should let init through");
         assert_eq!(outcome.session_id, "child-session");
+
+        let _ = std::fs::remove_dir_all(&working_directory);
+    }
+
+    #[tokio::test]
+    async fn claude_session_fork_does_not_wait_for_descendant_stderr_eof() {
+        // 直接子进程返回可信 init 后退出，但它启动的后代继续继承 stderr 管道。
+        // Fork API 只应有界收集摘要，不能等待无关后代最终关闭管道。
+        if !node_available() {
+            return;
+        }
+        let working_directory = fork_working_directory();
+        let script = write_node_script(
+            &working_directory,
+            "const {spawn}=require('child_process');const child=spawn(process.execPath,['-e','setTimeout(()=>{},4000)'],{stdio:['ignore','ignore','inherit'],detached:true});child.unref();process.stdout.write('{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"child-session\"}\\n');process.exit(0);",
+        );
+        let launch = launch_node(&working_directory, &script, "source-session");
+
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(1500),
+            create_session_fork_with_timeout(&launch, Duration::from_secs(10)),
+        )
+        .await;
+        assert!(
+            outcome.is_ok(),
+            "fork result must not wait for a descendant holding stderr open"
+        );
 
         let _ = std::fs::remove_dir_all(&working_directory);
     }
