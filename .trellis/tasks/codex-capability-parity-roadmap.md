@@ -56,24 +56,31 @@ Fork 与 Archive 会创建或改变会话身份，放在前两项稳定后处理
 - 请求成功后从队列移除并显示“已引导当前轮次”；请求失败、超时或能力不支持时，原消息保持队列状态，不静默丢弃或重复发送。
 - 当前轮次尚无 `turnId`、正在处理中断/审批、runtime 已退出时，不发送 steer，继续按队列处理。
 
-#### P0-2 原生上下文压缩
+#### P0-2 原生上下文压缩（已完成）
 
 - Codex Provider 的 `/compact` 改为调用 `thread/compact/start`；其他 Provider 保持现有逻辑。
 - 压缩期间展示独立状态，禁止同一 thread 重复发起 compact；普通消息可保留队列，但不能和 compact 并发启动 turn。
 - 消费 compact started/completed/failed 相关响应或通知，把压缩节点作为轻量系统事件写入历史。
 - 失败不清空本地历史、不覆盖 `sessionId`；恢复普通发送前必须确认 runtime 回到可用状态。
 - 自动压缩只展示 Codex 实际上报的节点，不根据 token 阈值伪造“已完成压缩”。
+- 不支持原生 Compact 的 Codex 版本禁用该动作并提示升级；不发送 `/compact` 文本作为兼容回退。
 
-#### P0-3 从历史轮次 Fork
+#### P0-3 在新聊天中继续
 
-- 在某个已完成的用户/助手轮次操作菜单中提供“从这里创建分支”；仅 Codex 且存在原生 thread/turn 标识时可用。
-- 调用 `thread/fork` 时传递原 Codex `threadId` 和选定的已完成历史轮次 `lastTurnId`，包含该轮并排除其后的轮次；
+- 在当前聊天顶部更多菜单和侧边栏聊天右键菜单提供“在新聊天中继续”；仅 Codex、已存在原生
+  thread ID 且会话空闲时可用。
+- 调用 `thread/fork` 时只传原 Codex `threadId`，省略 `lastTurnId`，复制当前完整已保存会话；
   成功后创建新的 CodeM thread，并绑定返回的新 Codex thread ID。
-- 新 CodeM thread 复制 Fork 点之前的可见历史快照、项目、Provider、工作目录和必要显示设置；不复制运行中状态、队列、审批请求、debug/raw 日志。
-- 原 thread 保持不变；新 thread 默认以“原标题 - 分支”命名并立即可打开，后续仍可自动改名。
-- Fork 失败不得先创建残留 CodeM thread；如服务端成功而本地写入失败，应保留返回 ID 到受限恢复日志并提供重试入口。
-- 不使用已废弃的 `thread/rollback` 裁剪分支；若旧 CLI 的 `thread/fork` 不支持 `lastTurnId`，隐藏“从此处分支”，
-  只允许明确标注的“复制完整会话”，不能先完整 Fork 再破坏性回滚。
+- 新聊天历史从 Fork 响应或原生 `thread/read` / `thread/resume` 归一化，不直接复制源聊天的本地
+  message/turn 记录；继承项目、工作目录、Provider、模型、reasoning effort、权限、渠道和标题。
+- 原 thread 保持不变；新 thread 具有独立 CodeM/Codex 双 ID，成功后立即打开。不继承运行状态、
+  队列、审批、用户输入请求、Compact 状态、debug/raw 日志。
+- 运行中、审批中、等待用户输入或 Compact 中禁用 Fork，避免复制半完成状态。
+- Fork 失败不得创建可见的本地残留；Provider 成功而本地失败时保留最小恢复记录，重试只完成
+  本地绑定，不再次创建 Provider Fork。
+- 不支持 `thread/fork` 的 CLI 禁用动作并提示升级；不使用本地消息复制、摘要续聊、普通新聊天或
+  `thread/rollback` 作为回退。
+- 指定 `lastTurnId` 的历史轮次 Fork 后置为独立阶段，待普通 turn 的 `providerTurnId` 持久化稳定后再设计。
 
 #### P0-4 Archive / Unarchive
 
@@ -105,7 +112,7 @@ Fork 与 Archive 会创建或改变会话身份，放在前两项稳定后处理
 
 - 不重写 Codex CLI/App Server，不解析自然语言猜测协议状态。
 - 不把 CodeM 本地 thread ID 改成 Codex thread ID，也不让多个 CodeM thread 隐式共享同一 Codex thread。
-- 不在 P0 支持 steer 附件、跨项目 Fork、Fork 运行中轮次或归档正在运行的会话。
+- 不在 P0 支持 steer 附件、跨项目 Fork、指定历史轮次 Fork、Fork 运行中轮次或归档正在运行的会话。
 - 不在 P1 首版实现自动修复、自动提交、自动暂存或自动撤销。
 - 不在 P2 首版实现 PDF/DOCX 深度解析、云端导出同步或多人实时批注。
 - 不改变 Claude Code、Grok、OpenCode、Pi 的已有协议；共享 UI 能力需通过通用类型适配。
@@ -114,7 +121,8 @@ Fork 与 Archive 会创建或改变会话身份，放在前两项稳定后处理
 
 - 运行中消息继续先进入可见队列；Codex 支持 steer 时，队列项提供“引导当前轮次”，而不是发送即自动 steer。
 - `/compact` 执行时使用会话区内状态节点，不弹出阻塞式对话框。
-- Fork 入口放在历史轮次的更多菜单；新分支是独立侧边栏会话，不在原会话内制造分叉视图。
+- “在新聊天中继续”放在当前聊天顶部更多菜单和侧边栏聊天右键菜单；新聊天是独立侧边栏会话，
+  不在原会话内制造分叉视图。
 - Archive 放在会话更多菜单，Unarchive 放在设置页归档列表；永久删除继续使用危险操作样式。
 - Review 使用目标选择弹层，结果复用现有聊天卡片和右侧 Diff，不新建独立全屏审查页面。
 - 计划、压缩和执行树是会话过程信息，默认紧凑展示；长内容折叠，避免挤压主回答。
@@ -126,8 +134,9 @@ Fork 与 Archive 会创建或改变会话身份，放在前两项稳定后处理
 - `ThreadSummary.id` / 本地 `threads.id` 始终是 CodeM thread ID，继续作为路由、SQLite 外键、UI 状态和运行队列主键。
 - `ThreadSummary.sessionId` 对 Codex Provider 表示 Codex App Server `thread.id`。现阶段继续沿用字段，避免一次性迁移全部 Provider。
 - 新增协议事件需要显式携带 `providerThreadId` 和必要的 `providerTurnId`，不得仅凭当前活动会话推断。
-- `providerTurnId` 只保存到对应 `ConversationTurn` 的 provider metadata；不复用 CodeM 本地 `turn.id`，
-  Fork 使用它作为 `lastTurnId`，steer 使用活动轮次 ID 作为 `expectedTurnId`。
+- `providerTurnId` 只保存到对应 `ConversationTurn` 的 provider metadata；不复用 CodeM 本地 `turn.id`。
+  当前完整会话 Fork 不依赖它；未来指定轮次 Fork 才使用它作为 `lastTurnId`，steer 使用活动轮次 ID
+  作为 `expectedTurnId`。
 - Fork 成功后必须创建新的 CodeM thread ID，并把新的 Codex thread ID 写入其 `sessionId`；禁止原、新 CodeM thread 指向同一个 Codex thread。
 
 ### 同步与恢复
@@ -157,7 +166,7 @@ Fork 与 Archive 会创建或改变会话身份，放在前两项稳定后处理
 | 运行 Hook | `src/hooks/useAgentRun.ts` | Codex steer 与失败回队；会话控制状态；结构化事件消费 |
 | 工作区状态 | `src/hooks/useWorkspaceState.ts` | 新 thread 原子接入、归档列表、恢复、ID 映射持久化 |
 | 输入区 | `src/components/Composer.tsx` 及队列组件 | 排队/引导动作、能力不可用与处理中状态 |
-| 会话与侧栏 | `src/components/ConversationTurn.tsx`、`src/components/SidebarProjects.tsx` | Fork 入口、计划/压缩/审查卡片、Archive 菜单 |
+| 会话与侧栏 | `src/components/ChatHeader.tsx`、`src/components/ConversationTurn.tsx`、`src/components/SidebarProjects.tsx` | 完整会话 Fork 入口、计划/压缩/审查卡片、Archive 菜单；指定轮次入口后置 |
 | 设置与搜索 | `src/components/settings/SessionManagementSettings.tsx`、`src/components/SessionSearchDialog.tsx` | 归档恢复、全文搜索、导出入口 |
 | Diff 工作台 | 现有 changed-files / review helper 与工作台组件 | finding 定位和审查目标快照复用，不重做 Diff 引擎 |
 
@@ -186,7 +195,8 @@ Fork 与 Archive 会创建或改变会话身份，放在前两项稳定后处理
 
 - 不持久化 Codex 原始 JSON-RPC、环境变量、完整命令环境、审批敏感参数、base64 或附件全文。
 - steer 只发送用户明确选择的队列项；不得把后续所有排队消息批量注入当前轮次。
-- Fork 只复制 CodeM 已持久化的可见历史和必要元数据；debug/raw events、运行时句柄、审批和用户输入请求不得复制。
+- Fork 历史只来自 Codex 原生已保存会话并归一化到新聊天，不直接复制源 CodeM 的本地消息；
+  debug/raw events、运行时句柄、队列、Compact 状态、审批和用户输入请求不得复制。
 - Review 仅在用户明确发起时读取所选目标；不自动上传或审查工作区外路径。
 - 导出默认进行相同脱敏；JSON 导出使用版本化 schema，避免把内部数据库记录直接序列化。
 - 搜索索引遵循历史保留策略；删除会话时同步删除索引与本地批注。
@@ -210,15 +220,18 @@ Fork 与 Archive 会创建或改变会话身份，放在前两项稳定后处理
 
 ### P0-2 Acceptance: native compact
 
-- [ ] Codex `/compact` 调用原生协议，展示 started/completed/failed 节点并持久化。
-- [ ] compact 与 turn 不并发，同一 thread 不重复触发；失败后可继续普通发送。
-- [ ] 旧 CLI 自动回退现有兼容路径并明确提示，不伪造原生完成状态。
+- [x] Codex `/compact` 调用原生协议，展示 started/completed/failed 节点并持久化。
+- [x] compact 与 turn 不并发，同一 thread 不重复触发；失败后通过明确重试或跳过恢复普通发送。
+- [x] 不支持原生能力的旧 CLI 禁用 Compact 并提示升级，不发送文本回退、不伪造完成状态。
 
 ### P0-3 Acceptance: fork
 
-- [ ] 可从已完成且具有 providerTurnId 的历史轮次创建独立 CodeM/Codex 分支。
-- [ ] 新分支历史边界正确，原会话不变，队列、审批、raw/debug 不复制。
-- [ ] Provider 或本地事务失败不产生不可见孤儿或侧边栏残留。
+- [ ] 可从空闲 Codex 完整会话创建独立 CodeM/Codex 新聊天，并立即打开。
+- [ ] 请求省略 `lastTurnId`；新聊天从 Provider Fork 历史归一化，原会话不变且不直接复制本地消息。
+- [ ] 项目、工作目录、Provider、模型、reasoning effort、权限、渠道和标题继承正确，运行状态、队列、
+  审批、用户输入请求、Compact、raw/debug 不继承。
+- [ ] Provider 或本地事务失败不产生侧边栏残留；Provider 成功、本地失败和结果未知均可幂等恢复，
+  不重复创建 Provider Fork。
 
 ### P0-4 Acceptance: archive
 
@@ -254,8 +267,9 @@ Fork 与 Archive 会创建或改变会话身份，放在前两项稳定后处理
 按里程碑补充定向测试：
 
 - P0-1：协议响应、无 turnId、失败回队、未知结果防重复、附件禁用、其他 Provider 队列回归。
-- P0-2：compact 状态机、并发门禁、失败恢复、旧 CLI 降级、刷新后节点恢复。
-- P0-3：Fork 点边界、双 ID 唯一性、本地事务回滚、远端孤儿恢复、跨项目拒绝。
+- P0-2：compact 状态机、并发门禁、失败恢复、旧 CLI 禁用、刷新后节点恢复。
+- P0-3：完整历史请求参数、双 ID 唯一性、配置继承、状态不继承、本地事务回滚、Provider 成功后
+  幂等恢复、结果未知防重复、跨项目拒绝和长历史增量装载。
 - P0-4：归档/恢复补偿、运行中门禁、local-only、侧边栏/设置页过滤。
 - P1：四类 target、inline/detached、finding 定位、多次审查隔离、历史恢复。
 - P2：plan 增量合并、搜索脱敏、导出 schema/脱敏、批注失效、大执行树性能。
@@ -271,7 +285,8 @@ Fork 与 Archive 会创建或改变会话身份，放在前两项稳定后处理
 
 - **Slice A / P0-1**：先写协议与队列状态测试，再接 `turn/steer` 和 Composer 引导动作；单独验收。
 - **Slice B / P0-2**：接原生 compact 状态机和历史节点；单独验收。
-- **Slice C / P0-3**：完成 provider turn metadata、Fork API、本地事务和侧边栏新分支；单独验收。
+- **Slice C / P0-3**：完成原生完整会话 Fork API、本地事务与恢复、两处菜单入口和新聊天激活；
+  不把 provider turn metadata 或指定轮次 Fork 混入本切片。
 - **Slice D / P0-4**：完成归档迁移、同步补偿、侧边栏过滤和设置页恢复；单独验收。
 - **Slice E / P1**：先 detached Review + 四类 target + finding 定位，再评估 inline 和处置动作。
 - **Slice F / P2**：先 plan/compact 事件，再搜索与导出，最后批注和执行树。
@@ -281,7 +296,15 @@ Fork 与 Archive 会创建或改变会话身份，放在前两项稳定后处理
 
 ## Implementation Record
 - 2026-08-02 P0-1 `turn/steer` 已完成自动化与真实桌面验收；路线下一实施切片切换为 P0-2 原生 compact。
-- 2026-08-01T06:04:28.603Z 已确认三阶段路线优先级为 P0 会话控制与分支、P1 审查闭环、P2 过程与产物可观察性；P0 固定按 turn/steer、原生 compact、指定轮次 Fork、Archive/Unarchive 分片实施。Codex 0.146.0 schema 已核实 steer 使用 expectedTurnId，fork 使用 lastTurnId/beforeTurnId，不依赖已废弃的 thread/rollback。
+- 2026-08-02 P0-2 原生 Compact 已完成自动化、长历史与真实桌面验收；不支持版本禁用并提示升级，
+  不存在 `/compact` 文本回退。路线下一实施切片切换为 P0-3 完整会话“在新聊天中继续”。
+- 2026-08-02 P0-3 第一阶段设计调整为官方完整会话 Fork：省略 `lastTurnId`，Provider 历史为唯一
+  Fork 来源；指定历史轮次 Fork 后置，不作为当前交付前置。
+- 2026-08-01T06:04:28.603Z 当时确认三阶段路线优先级为 P0 会话控制与分支、P1 审查闭环、P2
+  过程与产物可观察性；P0 当时按 turn/steer、原生 compact、指定轮次 Fork、Archive/Unarchive
+  分片。该 Fork 范围已由上方 2026-08-02 记录修订为先交付完整会话 Fork。Codex 0.146.0 schema
+  已核实 steer 使用 expectedTurnId，指定轮次 fork 可使用 lastTurnId/beforeTurnId，不依赖已废弃的
+  thread/rollback。
 
 - 2026-08-01T05:57:13.278Z Task created by Trellis automation.
 
@@ -293,6 +316,7 @@ Fork 与 Archive 会创建或改变会话身份，放在前两项稳定后处理
 
 ## Follow-ups
 
-- 下一步进入 P0-2 详细设计：重新核实当前 Codex App Server 的 compact 协议、能力探测、运行互斥和历史节点恢复边界。
-- P0-2 验收后再续接 P0-3，不在同一变更中并发实现多个会话控制能力。
+- 下一步按 `.trellis/tasks/codex-continue-in-new-chat.md` 完成 P0-3 实施计划与实现，不在同一变更中
+  并发实现 Archive 或指定历史轮次 Fork。
+- P0-3 验收后再续接 P0-4，不在同一变更中并发实现多个会话控制能力。
 - P1 的逐行评论与 Git 暂存/撤销，以及 P2 的 PDF/DOCX 深度解析，保留为后续独立提案。
