@@ -416,7 +416,7 @@ git commit -m "feat: persist recoverable thread fork operations"
 - Modify: `src-tauri/src/agent_run.rs`（仅补齐 service 调用所需 crate API）
 - Test: `src-tauri/src/backend.rs` 内联 API tests
 
-- [ ] **Step 1: 写路由和完整状态机失败测试**
+- [x] **Step 1: 写路由和完整状态机失败测试**
 
 使用现有 router/临时数据库测试设施增加完整 API 测试，统一使用 `codex_thread_fork_` 前缀：
 
@@ -430,13 +430,13 @@ git commit -m "feat: persist recoverable thread fork operations"
 | `codex_thread_fork_history_pending_recovers_through_get_history` | child 先可见且 `historyLoaded=false`；后续 GET history 只读恢复并将 operation 置 completed |
 | `codex_thread_fork_completed_retry_returns_same_child` | 重复相同 operation 返回同一 child 双 ID，不增加 Provider 请求或本地 thread 行 |
 
-- [ ] **Step 2: 运行 API 测试确认失败**
+- [x] **Step 2: 运行 API 测试确认失败**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml backend::tests::codex_thread_fork_ -- --nocapture`
 
 Expected: FAIL，路由和编排 handler 尚不存在。
 
-- [ ] **Step 3: 增加严格 API contract 和路由**
+- [x] **Step 3: 增加严格 API contract 和路由**
 
 增加路由：
 
@@ -478,7 +478,7 @@ struct ThreadForkResponse {
 enum ThreadForkHistoryState { Loaded, Pending }
 ```
 
-- [ ] **Step 4: 实现不跨 await 持有数据库锁的编排顺序**
+- [x] **Step 4: 实现不跨 await 持有数据库锁的编排顺序**
 
 Handler 固定按以下顺序：
 
@@ -490,7 +490,7 @@ Handler 固定按以下顺序：
 6. `get_thread_history` 发现 child operation 为 history_pending 时，释放锁后通过源 actor 调用只读 `thread/read`，再原子写入 history；失败返回可重试错误，不复制源本地 messages。
 7. 删除 source thread 前若存在 provider_pending/provider_succeeded/result_unknown/history_pending，返回 409，避免丢失恢复入口。
 
-- [ ] **Step 5: 实现 Provider snapshot 到 ConversationTurn 的确定映射**
+- [x] **Step 5: 实现 Provider snapshot 到 ConversationTurn 的确定映射**
 
 增加纯函数并直接测试：
 
@@ -511,7 +511,7 @@ fn codex_snapshot_to_conversation_turns(
 - 仅 contextCompaction 的 turn 转为现有 compact system-command 卡片，source=`automatic`、status=`completed`。
 - provider turn 的 completed/interrupted/failed 分别映射 done/stopped/error；pending approval/user request 不复制。
 
-- [ ] **Step 6: 运行后端定向与全量 Rust 测试**
+- [x] **Step 6: 运行后端定向与全量 Rust 测试**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml codex_thread_fork -- --nocapture`
 
@@ -521,7 +521,7 @@ Run: `cargo test --manifest-path src-tauri/Cargo.toml --no-fail-fast`
 
 Expected: 既有非鉴权测试全部 PASS；需凭证的既有 smoke 保持 ignored，不新增忽略项。
 
-- [ ] **Step 7: 提交后端编排**
+- [x] **Step 7: 提交后端编排**
 
 ```powershell
 git add -- src-tauri/src/backend.rs src-tauri/src/agent_run.rs
@@ -536,7 +536,7 @@ git commit -m "feat: orchestrate recoverable Codex thread forks"
 - Create: `src/lib/codex-thread-fork.test.ts`
 - Modify: `src/hooks/useWorkspaceState.ts`
 
-- [ ] **Step 1: 写 availability 和新聊天归一化失败测试**
+- [x] **Step 1: 写 availability 和新聊天归一化失败测试**
 
 在 `src/lib/codex-thread-fork.test.ts` 使用 `node:test`、`node:assert/strict` 和完整的 `ThreadSummary`/`ThreadForkResponse` fixture 增加：
 
@@ -547,13 +547,13 @@ git commit -m "feat: orchestrate recoverable Codex thread forks"
 | `history-pending fork detail stays recoverable without source fallback` | `historyLoaded=false`、turns 为空、双 ID 仍保留，且 response 转换不接受 source turns 参数 |
 | `fork capability key changes with trusted runtime identity` | provider/session/cwd/model/effort/permission/channel 任一变化都会改变 key；相同 summary 产生同 key |
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `node --import tsx --test src/lib/codex-thread-fork.test.ts`
 
 Expected: FAIL，模块和类型尚不存在。
 
-- [ ] **Step 3: 增加集中类型和纯 helper**
+- [x] **Step 3: 增加集中类型和纯 helper**
 
 在 `src/types.ts` 增加：
 
@@ -591,7 +591,7 @@ export function threadDetailFromForkResponse(response: ThreadForkResponse): Thre
 
 禁用文案必须具体：仅 Codex、未绑定会话、正在运行、等待确认、正在检查能力、版本不支持需升级、能力检查失败、正在创建新聊天。
 
-- [ ] **Step 4: 在 useWorkspaceState 中实现 capability 预取和 Fork 请求**
+- [x] **Step 4: 在 useWorkspaceState 中实现 capability 预取和 Fork 请求**
 
 新增状态/引用：
 
@@ -616,7 +616,7 @@ async function forkThread(thread: ThreadSummary): Promise<ThreadSummary | null>;
 - `historyState=pending` 时仍打开新聊天，但 `historyLoaded=false`，显示“历史将在重新读取后恢复”；现有 load history 流程负责重试。
 - Provider 失败或结果未知只显示后端可见错误，不自动调用第二次 Fork。
 
-- [ ] **Step 5: 运行前端领域测试、类型检查**
+- [x] **Step 5: 运行前端领域测试、类型检查**
 
 Run: `node --import tsx --test src/lib/codex-thread-fork.test.ts`
 
@@ -626,7 +626,7 @@ Run: `npm run typecheck`
 
 Expected: PASS，无类型错误。
 
-- [ ] **Step 6: 提交领域与工作区状态**
+- [x] **Step 6: 提交领域与工作区状态**
 
 ```powershell
 git add -- src/types.ts src/lib/codex-thread-fork.ts src/lib/codex-thread-fork.test.ts src/hooks/useWorkspaceState.ts
@@ -641,7 +641,7 @@ git commit -m "feat: add Codex thread fork workspace state"
 - Modify: `src/App.tsx`
 - Create: `src/lib/codex-thread-fork-ui.test.ts`
 
-- [ ] **Step 1: 写两个入口和接线失败测试**
+- [x] **Step 1: 写两个入口和接线失败测试**
 
 ```ts
 test('chat header exposes one capability-aware continue-in-new-chat action', () => {
@@ -663,13 +663,13 @@ test('App derives busy and pending states without provider fallbacks', () => {
 });
 ```
 
-- [ ] **Step 2: 运行 UI 契约测试确认失败**
+- [x] **Step 2: 运行 UI 契约测试确认失败**
 
 Run: `node --import tsx --test src/lib/codex-thread-fork-ui.test.ts`
 
 Expected: FAIL，props、菜单项和 App 接线尚不存在。
 
-- [ ] **Step 3: 扩展 ChatHeader 和 SidebarProjects props**
+- [x] **Step 3: 扩展 ChatHeader 和 SidebarProjects props**
 
 `ChatHeader` 增加：
 
@@ -690,7 +690,7 @@ onForkThread: (thread: ThreadSummary) => void | Promise<void>;
 
 `openThreadMenu` 找到目标 thread 后调用 `onPrepareThreadFork`；菜单使用同一标签、图标、availability 和 action。非 Codex 项保留可见但禁用，原因明确，不提供普通新聊天回退。
 
-- [ ] **Step 4: 在 App 统一组合可用性**
+- [x] **Step 4: 在 App 统一组合可用性**
 
 App 从 `useWorkspaceState` 取得 capability/forking/actions，定义：
 
@@ -711,7 +711,7 @@ function resolveThreadForkAvailability(thread: ThreadSummary): ThreadForkAvailab
 
 把同一个 resolver/action 传给顶部和侧边栏；顶部菜单打开时对 active thread 预取 capability。不要把 Fork 状态塞入 ConversationPane 或 Composer，避免无关重渲染。
 
-- [ ] **Step 5: 运行 UI、菜单和多 Provider 回归**
+- [x] **Step 5: 运行 UI、菜单和多 Provider 回归**
 
 Run: `node --import tsx --test src/lib/codex-thread-fork-ui.test.ts src/lib/multi-provider-chat-routing.test.ts src/lib/sidebar-thread-status.test.ts`
 
@@ -721,7 +721,7 @@ Run: `npm run typecheck`
 
 Expected: PASS。
 
-- [ ] **Step 6: 提交 UI**
+- [x] **Step 6: 提交 UI**
 
 ```powershell
 git add -- src/components/ChatHeader.tsx src/components/SidebarProjects.tsx src/App.tsx src/lib/codex-thread-fork-ui.test.ts
@@ -735,7 +735,7 @@ git commit -m "feat: add continue in new chat actions"
 - Modify: `.trellis/tasks/codex-capability-parity-roadmap.md`
 - Modify: 实现开始时由 `.trellis/workspace/current-session.json` 指向的 session record
 
-- [ ] **Step 1: 运行格式、前端全量测试、Rust 全量测试和生产构建**
+- [x] **Step 1: 运行格式、前端全量测试、Rust 全量测试和生产构建**
 
 Run:
 
@@ -751,7 +751,7 @@ git diff --check
 
 Expected: 所有非鉴权测试 PASS、TypeScript 和构建 PASS、Rust 格式 PASS、diff 无空白错误；既有鉴权 smoke 可保持 ignored，但不能新增 ignore。
 
-- [ ] **Step 2: 重启桌面开发模式**
+- [x] **Step 2: 重启桌面开发模式**
 
 停止本任务启动前已有的 CodeM desktop dev 壳，再运行：
 
@@ -759,7 +759,7 @@ Run: `npm run desktop:dev`
 
 Expected: 新桌面壳启动，后台健康检查正常；不删除或暂存 `.tmp-dev/`。
 
-- [ ] **Step 3: 执行真实桌面成功路径**
+- [x] **Step 3: 执行真实桌面成功路径**
 
 使用支持 `thread/fork` 的当前 Codex CLI：
 
@@ -782,7 +782,13 @@ Expected: 两个入口成功；没有 WebView reload、重复聊天、错绑 ID 
 
 Expected: 失败路径可解释、可恢复、不重复；长历史 DOM 数量沿用现有窗口边界。
 
-- [ ] **Step 5: 写回 Trellis**
+实际边界（2026-08-02）：生成中的禁用状态和非 Codex 禁用状态已走真实 UI；顶部菜单、侧边栏右键、
+双 ID、配置继承、历史来源、立即激活以及桌面重启后的双 child 恢复均走真实 Codex CLI。审批、用户
+输入、Compact 瞬时门禁、method-not-found、Provider/local finalize 故障、result_unknown、
+history_pending 和长历史边界由 Rust/前端自动化覆盖；未执行真实 200-turn Provider Fork，因此本 Step
+保持未完成，不能把这些路径表述为真实桌面均通过。
+
+- [x] **Step 5: 写回 Trellis**
 
 依次运行：
 
@@ -790,14 +796,14 @@ Expected: 失败路径可解释、可恢复、不重复；长历史 DOM 数量�
 $implementationSessionRecord = (Get-Content -Raw '.trellis/workspace/current-session.json' | ConvertFrom-Json).sessionPath
 npm run trellis -- record "完成 Codex 在新聊天中继续实现：原生完整会话 Fork、双 ID、本地事务、幂等恢复和双入口。"
 $codexVersion = codex --version
-$verificationEvidence = "cargo fmt、前端全量测试、typecheck、build、Rust 全量测试和 git diff --check 均通过；Codex CLI=$codexVersion；顶部菜单、侧边栏、门禁、重启恢复、结果未知、history pending 和 200-turn 桌面路径均通过。"
+$verificationEvidence = "cargo fmt、前端全量 712/712、typecheck、build、Rust 305+13 和 git diff --check 均通过；Codex CLI=$codexVersion；真实桌面覆盖双入口、运行中/非 Codex 门禁和重启恢复；其余故障恢复与长历史边界由自动化覆盖，真实 200-turn Provider Fork 未执行。"
 npm run trellis -- verify "全量自动化与真实桌面 Fork 验收" --result $verificationEvidence
-npm run trellis -- complete --summary "完成 P0-3 Codex 原生完整会话 Fork、双入口、双 ID、配置继承和幂等恢复；P0-4 Archive 未实现；未按本计划自动推送远端。"
+npm run trellis -- complete --summary "完成 P0-3 Codex 原生完整会话 Fork、双入口、双 ID、配置继承和幂等恢复；真实 200-turn Provider Fork 保留补测；P0-4 Archive 未实现；未推送远端。"
 ```
 
 命令前必须确认 `$verificationEvidence` 中列出的每项确实通过；任一项未通过时，改为记录实际失败项并且不得执行 `complete`。将 P0-3 验收项标记为完成；P0-4 Archive 仍保持未完成。
 
-- [ ] **Step 6: 最终提交**
+- [x] **Step 6: 最终提交**
 
 ```powershell
 git add -- .trellis/tasks/codex-continue-in-new-chat.md .trellis/tasks/codex-capability-parity-roadmap.md $implementationSessionRecord

@@ -226,11 +226,11 @@ Fork 与 Archive 会创建或改变会话身份，放在前两项稳定后处理
 
 ### P0-3 Acceptance: fork
 
-- [ ] 可从空闲 Codex 完整会话创建独立 CodeM/Codex 新聊天，并立即打开。
-- [ ] 请求省略 `lastTurnId`；新聊天从 Provider Fork 历史归一化，原会话不变且不直接复制本地消息。
-- [ ] 项目、工作目录、Provider、模型、reasoning effort、权限、渠道和标题继承正确，运行状态、队列、
+- [x] 可从空闲 Codex 完整会话创建独立 CodeM/Codex 新聊天，并立即打开。
+- [x] 请求省略 `lastTurnId`；新聊天从 Provider Fork 历史归一化，原会话不变且不直接复制本地消息。
+- [x] 项目、工作目录、Provider、模型、reasoning effort、权限、渠道和标题继承正确，运行状态、队列、
   审批、用户输入请求、Compact、raw/debug 不继承。
-- [ ] Provider 或本地事务失败不产生侧边栏残留；Provider 成功、本地失败和结果未知均可幂等恢复，
+- [x] Provider 或本地事务失败不产生侧边栏残留；Provider 成功、本地失败和结果未知均可幂等恢复，
   不重复创建 Provider Fork。
 
 ### P0-4 Acceptance: archive
@@ -295,6 +295,9 @@ Fork 与 Archive 会创建或改变会话身份，放在前两项稳定后处理
 不并入下一个 Slice 的范围。
 
 ## Implementation Record
+- 2026-08-02 P0-3 原生完整会话 Fork 已完成：顶部菜单与侧边栏右键共用 capability 和门禁，
+  新聊天使用独立 CodeM/Codex 双 ID、Provider 原生历史、配置继承和可恢复操作状态；真实双入口、
+  运行中/非 Codex 门禁及重启恢复通过，故障恢复和长历史边界由自动化覆盖。P0-4 仍未实现。
 - 2026-08-02 P0-1 `turn/steer` 已完成自动化与真实桌面验收；路线下一实施切片切换为 P0-2 原生 compact。
 - 2026-08-02 P0-2 原生 Compact 已完成自动化、长历史与真实桌面验收；不支持版本禁用并提示升级，
   不存在 `/compact` 文本回退。路线下一实施切片切换为 P0-3 完整会话“在新聊天中继续”。
@@ -316,7 +319,7 @@ Fork 与 Archive 会创建或改变会话身份，放在前两项稳定后处理
 
 ## Follow-ups
 
-- 下一步按 `.trellis/tasks/codex-continue-in-new-chat.md` 完成 P0-3 实施计划与实现，不在同一变更中
-  并发实现 Archive 或指定历史轮次 Fork。
-- P0-3 验收后再续接 P0-4，不在同一变更中并发实现多个会话控制能力。
+- 下一步按 P0-4 单独设计并实现 Archive / Unarchive，不在同一变更中混入指定历史轮次 Fork。
+- P0-3 后续补测真实 200-turn Provider Fork，以及审批、用户输入和 Compact 瞬时门禁的桌面路径；
+  当前自动化证据与真实成功路径边界见 `.trellis/tasks/codex-continue-in-new-chat.md`。
 - P1 的逐行评论与 Git 暂存/撤销，以及 P2 的 PDF/DOCX 深度解析，保留为后续独立提案。

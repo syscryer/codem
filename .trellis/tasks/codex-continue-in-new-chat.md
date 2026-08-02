@@ -119,19 +119,19 @@ Out of scope:
 
 ## Acceptance Criteria
 
-- [ ] Codex 空闲会话可从两个既有菜单执行“在新聊天中继续”，成功后立即打开新聊天。
-- [ ] `thread/fork` 请求省略 `lastTurnId` 和 `ephemeral`，新 Provider thread ID 与源 ID 不同。
-- [ ] 新 CodeM thread ID 与源 ID 不同，绑定返回的 Provider thread ID，且原、新两组 ID 不错绑。
-- [ ] 新聊天完整显示 Provider Fork 的已保存历史，原聊天保持不变；实现未复制源本地消息记录。
-- [ ] 项目、工作目录、Provider、模型、reasoning effort、权限、渠道和标题按设计继承。
-- [ ] 队列、运行状态、审批、用户输入请求、Compact 状态、debug/raw events 均未继承。
-- [ ] 运行中、审批中、等待用户输入、Compact 中、无 sessionId、非 Codex 或能力不支持时不能误发
+- [x] Codex 空闲会话可从两个既有菜单执行“在新聊天中继续”，成功后立即打开新聊天。
+- [x] `thread/fork` 请求省略 `lastTurnId` 和 `ephemeral`，新 Provider thread ID 与源 ID 不同。
+- [x] 新 CodeM thread ID 与源 ID 不同，绑定返回的 Provider thread ID，且原、新两组 ID 不错绑。
+- [x] 新聊天完整显示 Provider Fork 的已保存历史，原聊天保持不变；实现未复制源本地消息记录。
+- [x] 项目、工作目录、Provider、模型、reasoning effort、权限、渠道和标题按设计继承。
+- [x] 队列、运行状态、审批、用户输入请求、Compact 状态、debug/raw events 均未继承。
+- [x] 运行中、审批中、等待用户输入、Compact 中、无 sessionId、非 Codex 或能力不支持时不能误发
   Fork，并能看到准确原因。
-- [ ] Provider 失败不产生本地残留；结果未知不自动重试；Provider 成功而本地失败可在重启后幂等恢复，
+- [x] Provider 失败不产生本地残留；结果未知不自动重试；Provider 成功而本地失败可在重启后幂等恢复，
   且不会创建第二个 Provider Fork。
-- [ ] 历史读取失败可通过原生只读恢复，不降级为本地消息复制。
-- [ ] Claude Code、Grok、OpenCode、Pi 的新建聊天、菜单和运行流程无回归。
-- [ ] 长会话 Fork 不导致源会话整树重渲染或同步挂载全部历史；新聊天沿用现有分页/增量渲染边界。
+- [x] 历史读取失败可通过原生只读恢复，不降级为本地消息复制。
+- [x] Claude Code、Grok、OpenCode、Pi 的新建聊天、菜单和运行流程无回归。
+- [x] 长会话 Fork 不导致源会话整树重渲染或同步挂载全部历史；新聊天沿用现有分页/增量渲染边界。
 
 ## Verification Commands
 
@@ -155,7 +155,18 @@ Provider 回归和长历史增量装载。
 4. 使用 method-not-found fixture 或不支持版本检查升级提示，确认没有本地复制或摘要回退。
 5. Fork 长会话后切换、刷新和重启应用，确认新聊天可恢复、历史不重复、控制台无错误。
 
+实际桌面验收边界（2026-08-02）：顶部菜单和侧边栏右键成功路径、生成中门禁、非 Codex 门禁、
+Tooltip 更新及重启恢复已使用 Codex CLI 0.146.0 验证。审批、用户输入、Compact 瞬时门禁、
+method-not-found、Provider/local finalize 故障、result_unknown、history_pending 和长历史边界由自动化
+覆盖；真实 200-turn Provider Fork 未执行，保留为后续补测，不计入本轮真实桌面通过项。
+
 ## Implementation Record
+
+- 2026-08-02T10:27:11.723Z 完成 Codex 在新聊天中继续实现与 Tooltip 修复：原生完整会话 Fork、双 ID、本地事务、幂等恢复、双入口和准确禁用原因；P0-4 未纳入本次范围。
+- 2026-08-02T09:53:04.141Z Task 6 GREEN：顶部更多菜单与侧边栏聊天右键菜单接入‘在新聊天中继续’；菜单打开预取 capability，两个入口共用 busy、审批/输入等待、能力和 Fork 进行中状态解析；禁用项展示具体原因，非 Codex 不回退。
+
+- 2026-08-02T09:44:49.453Z Task 5 GREEN：新增 Codex Thread Fork 前端领域类型与纯 helper；useWorkspaceState 按可信 runtime key 预取能力、等待历史加载、复用 operationId、防重复请求，并使用后端响应原子加入/激活隔离 child；history_pending 保持可恢复且不复制 source turns。
+- 2026-08-02T08:16:52.947Z Task 4 GREEN：完成严格 Fork capability/create API、可信源线程校验、Provider 调用前预写、锁外等待、结果未知只读核对、provider_succeeded 幂等恢复、history_pending GET 恢复、源线程删除保护与 Codex snapshot 确定映射；远程/data 图片只保留脱敏元数据，operationId 和错误摘要限长。
 
 - 2026-08-02T07:37:17.122Z Task 3 GREEN：新增最小 thread_fork_operations 表与唯一非终态索引；prepare/rearm/restart recover/provider success/finalize 状态流落地；child、Provider history、selection、operation 同事务提交。定向 7 passed，完整 backend::tests 86 passed。为避免每请求初始化误伤进行中操作，provider_pending 仅在后端进程启动时单次恢复为 result_unknown。
 - 2026-08-02T07:27:25.187Z Task 3 RED：backend::tests::fork_operation 定向测试按预期失败；缺少 thread_fork_operations 表、ForkSourceThread/ThreadForkOperation 状态 DTO、prepare/read/recover/mark/finalize helpers。child_id 类型报错为 finalize 返回类型缺失的连带推断。另确认恢复 pending 不能放在每请求都会调用的 initialize_workspace_database，改为后端启动时单次执行。
@@ -176,6 +187,12 @@ Provider 回归和长历史增量装载。
 
 ## Verification Results
 
+- 2026-08-02T10:27:12.068Z `全量自动化与真实桌面 Fork 验收`: Codex CLI 0.146.0；前端全量 712/712、typecheck、build、cargo fmt、Rust lib 305 passed/1 既有鉴权 smoke ignored、桌面 13 passed、git diff --check 均通过。真实桌面已覆盖顶部菜单、侧边栏右键、运行中门禁、非 Codex 门禁、Tooltip 和重启后两个 child 恢复；双 ID 未错绑，历史 turn ID 无重复，页面/控制台无错误。审批、用户输入、Compact 瞬时门禁、method-not-found、Provider/local finalize 故障、result_unknown、history_pending 和长历史边界仅由自动化覆盖；真实 200-turn Provider Fork 未执行。
+- 2026-08-02T09:53:14.571Z `node --import tsx --test src/lib/codex-thread-fork-ui.test.ts src/lib/multi-provider-chat-routing.test.ts src/lib/sidebar-thread-status.test.ts；npm run typecheck；git diff --check`: 16 passed；TypeScript 类型检查与 diff 检查通过。
+
+- 2026-08-02T09:44:49.775Z `node --import tsx --test src/lib/codex-thread-fork.test.ts；npm run typecheck；git diff --check`: Fork 领域测试 4 passed；TypeScript 类型检查与 diff 检查通过。
+- 2026-08-02T08:16:53.271Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check；cargo test --manifest-path src-tauri/Cargo.toml codex_thread_fork -- --nocapture；cargo test --manifest-path src-tauri/Cargo.toml --no-fail-fast；git diff --check`: Fork 定向 10 passed；Rust lib 305 passed/1 既有鉴权 smoke ignored；桌面壳 13 passed；fmt 与 diff 检查通过。
+
 - 2026-08-02T07:37:17.112Z `cargo test --manifest-path src-tauri/Cargo.toml backend::tests -- --nocapture；cargo fmt --manifest-path src-tauri/Cargo.toml -- --check；git diff --check`: 86 passed，格式与 diff 检查通过
 - 2026-08-02T07:20:49.660Z `cargo test --manifest-path src-tauri/Cargo.toml agent_run::tests -- --nocapture；cargo fmt --manifest-path src-tauri/Cargo.toml -- --check；git diff --check`: 69 passed，格式与 diff 检查通过
 
@@ -186,6 +203,8 @@ Provider 回归和长历史增量装载。
 - 2026-08-02T04:54:06.040Z `设计占位符、范围一致性、影响路径与 git diff --check`: pass：无待补充/TBD/TODO/FIXME；完整会话 Fork 与指定轮次 Fork 边界明确；恢复流程先写操作记录且结果未知只读核对；7 个影响文件路径存在；git diff --check 通过，仅有既有 Windows LF/CRLF 提示。
 
 ## Completion Summary
+
+- 2026-08-02T10:27:12.421Z 完成 P0-3 Codex 原生完整会话 Fork、双入口、双 ID、配置继承和幂等恢复；真实桌面与自动化证据边界已如实记录，真实 200-turn Provider Fork 保留补测；P0-4 Archive 未实现；未推送远端。
 - 2026-08-02T05:29:20.762Z 完成实施计划交接修正：实现阶段不复用已关闭的计划 session，最终 Trellis record 路径由 current-session.json 动态取得并精准暂存；未修改产品代码。
 
 - 2026-08-02T05:27:46.445Z 完成 P0-3 Codex 在新聊天中继续的可执行实施计划与自审：共 7 个 TDD 任务，补齐官方稳定协议边界、冷/热 runtime、原子落库、重启与结果未知恢复、前端双入口及桌面验收。当前仅完成计划文档，尚未修改产品代码；等待用户选择 Subagent-Driven 或 Inline Execution 后实施。
@@ -193,6 +212,6 @@ Provider 回归和长历史增量装载。
 
 ## Follow-ups
 
-- 用户已确认本设计；实施计划见 `.trellis/tasks/codex-continue-in-new-chat-implementation-plan.md`。
-- 计划通过书面自审和用户执行方式确认后，再按 Task 1-7 进入编码。
+- P0-3 已完成实现；后续按 `.trellis/tasks/codex-capability-parity-roadmap.md` 单独推进 P0-4 Archive / Unarchive。
+- 补充真实 200-turn Provider Fork，以及审批、用户输入和 Compact 瞬时门禁的桌面专项回归；当前自动化已覆盖对应状态和长历史渲染边界。
 - 指定历史轮次 Fork 需要先稳定持久化普通 turn 的 `providerTurnId`，作为后续独立任务评估。
