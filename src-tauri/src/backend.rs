@@ -9318,6 +9318,7 @@ fn codex_snapshot_to_conversation_turns(
                 return json!({
                     "id": turn_id,
                     "kind": "system",
+                    "workspace": workspace,
                     "userText": "",
                     "assistantText": "",
                     "status": codex_snapshot_turn_status(&turn.status),
@@ -9416,6 +9417,7 @@ fn codex_snapshot_to_conversation_turns(
             }
             json!({
                 "id": turn_id,
+                "workspace": workspace,
                 "userText": user_texts.join("\n"),
                 "assistantText": assistant_texts.join("\n"),
                 "status": codex_snapshot_turn_status(&turn.status),
@@ -22750,6 +22752,7 @@ mod tests {
         let second = codex_snapshot_to_conversation_turns(&turns, "provider-child", "D:/workspace");
         assert_eq!(first, second);
         assert_eq!(first[0]["id"], "codex:provider-child:turn-1");
+        assert_eq!(first[0]["workspace"], "D:/workspace");
         assert_eq!(first[0]["userText"], "hello");
         assert_eq!(first[0]["assistantText"], "answer");
         assert_eq!(first[0]["status"], "done");
