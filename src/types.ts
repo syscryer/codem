@@ -1088,6 +1088,16 @@ export type ThreadSummary = {
   pinnedAt?: string;
 };
 
+export type CodexThreadForkCapability = {
+  state: 'checking' | 'supported' | 'unsupported' | 'error';
+  message?: string;
+};
+
+export type ThreadForkAvailability = {
+  enabled: boolean;
+  reason?: string;
+};
+
 export type ThreadRuntimeStatus = {
   threadId: string;
   pid?: number;
@@ -1481,6 +1491,15 @@ export type ThreadHistoryPayload = {
   threadId: string;
   turns: ConversationTurn[];
   claudeContext?: ClaudeContextSnapshot;
+};
+
+export type ThreadForkResponse = {
+  ok: true;
+  operationId: string;
+  threadId: string;
+  thread: ThreadSummary;
+  history: ThreadHistoryPayload;
+  historyState: 'loaded' | 'pending';
 };
 
 export type ThreadDetail = ThreadSummary & {

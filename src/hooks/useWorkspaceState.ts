@@ -9,10 +9,15 @@ import {
 } from '../lib/conversation';
 import { pickDesktopDirectory } from '../lib/desktop-dialog';
 import { resolveNewChatDraftProjectId } from '../lib/new-chat-draft';
+import {
+  threadDetailFromForkResponse,
+  threadForkCapabilityKey,
+} from '../lib/codex-thread-fork';
 import { buildWorkspaceSidebarSections } from '../lib/workspace-pinning';
 import type {
   AgentProviderId,
   CloneTask,
+  CodexThreadForkCapability,
   ConfirmDialogState,
   ConversationTurn,
   DebugEvent,
@@ -24,6 +29,7 @@ import type {
   ProjectSummary,
   ThreadDetail,
   ThreadHistoryPayload,
+  ThreadForkResponse,
   ThreadSummary,
   ToastOptions,
   ToastState,
@@ -104,6 +110,10 @@ export function useWorkspaceState() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [isNewChatDraft, setIsNewChatDraft] = useState(false);
   const [threadDetails, setThreadDetails] = useState<Record<string, ThreadDetail>>({});
+  const [threadForkCapabilities, setThreadForkCapabilities] = useState<
+    Record<string, CodexThreadForkCapability>
+  >({});
+  const [forkingThreadIds, setForkingThreadIds] = useState<string[]>([]);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
@@ -112,6 +122,9 @@ export function useWorkspaceState() {
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const threadDetailsRef = useRef<Record<string, ThreadDetail>>({});
+  const threadForkCapabilitiesRef = useRef<Record<string, CodexThreadForkCapability>>({});
+  const forkOperationIdsRef = useRef(new Map<string, string>());
+  const forkingThreadIdsRef = useRef(new Set<string>());
   const activeProjectIdRef = useRef<string | null>(null);
   const newChatDraftRef = useRef(false);
   const directoryPickerPromiseRef = useRef<Promise<string | null> | null>(null);
@@ -282,6 +295,74 @@ export function useWorkspaceState() {
     });
   }, []);
 
+  function storeThreadForkCapability(
+    key: string,
+    capability: CodexThreadForkCapability,
+  ) {
+    const next = {
+      ...threadForkCapabilitiesRef.current,
+      [key]: capability,
+    };
+    threadForkCapabilitiesRef.current = next;
+    setThreadForkCapabilities(next);
+  }
+
+  async function prepareThreadFork(thread: ThreadSummary): Promise<void> {
+    if (thread.provider !== 'openai-codex' || !thread.sessionId.trim()) {
+      return;
+    }
+    const key = threadForkCapabilityKey(thread);
+    const existing = threadForkCapabilitiesRef.current[key];
+    if (existing && existing.state !== 'error') {
+      return;
+    }
+    storeThreadForkCapability(key, { state: 'checking' });
+
+    let detail = threadDetailsRef.current[thread.id];
+    if (detail?.historyLoading) {
+      for (let attempt = 0; attempt < 100 && detail?.historyLoading; attempt += 1) {
+        await wait(50);
+        detail = threadDetailsRef.current[thread.id];
+      }
+    }
+    if (!detail?.historyLoaded) {
+      const historyLoaded = await loadThreadHistory(thread.id);
+      if (!historyLoaded) {
+        storeThreadForkCapability(key, {
+          state: 'error',
+          message: '加载聊天历史失败，暂时无法检查 Codex Fork 能力',
+        });
+        return;
+      }
+    }
+
+    try {
+      const response = await fetch(
+        `/api/projects/${encodeURIComponent(thread.projectId)}/threads/${encodeURIComponent(thread.id)}/fork/capability`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh: false }),
+        },
+      );
+      if (!response.ok) {
+        throw new Error(
+          normalizeWorkspaceLoadErrorText(await response.text()) || '检查 Codex Fork 能力失败',
+        );
+      }
+      const capability = (await response.json()) as CodexThreadForkCapability;
+      if (!['supported', 'unsupported', 'error'].includes(capability.state)) {
+        throw new Error('Codex Fork 能力响应无效');
+      }
+      storeThreadForkCapability(key, capability);
+    } catch (error) {
+      storeThreadForkCapability(key, {
+        state: 'error',
+        message: error instanceof Error ? error.message : '检查 Codex Fork 能力失败',
+      });
+    }
+  }
+
   const dismissToast = useCallback(() => {
     setToast(null);
   }, []);
@@ -354,7 +435,7 @@ export function useWorkspaceState() {
     const currentDetail = threadDetailsRef.current[threadId];
     const turnsAtRequest = currentDetail?.turns;
     if (currentDetail?.historyLoading || (currentDetail?.historyLoaded && !force)) {
-      return;
+      return currentDetail.historyLoaded;
     }
 
     function stopThreadHistoryLoading(targetThreadId: string) {
@@ -378,7 +459,7 @@ export function useWorkspaceState() {
       const response = await fetch(`/api/threads/${threadId}/history`);
       if (!response.ok) {
         stopThreadHistoryLoading(threadId);
-        return;
+        return false;
       }
 
       const payload = (await response.json()) as ThreadHistoryPayload;
@@ -412,8 +493,10 @@ export function useWorkspaceState() {
           },
         };
       });
+      return true;
     } catch {
       stopThreadHistoryLoading(threadId);
+      return false;
     }
   }
 
@@ -749,6 +832,86 @@ export function useWorkspaceState() {
       setIsNewChatDraft(false);
     }
     return createdThread;
+  }
+
+  async function forkThread(thread: ThreadSummary): Promise<ThreadSummary | null> {
+    if (forkingThreadIdsRef.current.has(thread.id)) {
+      return null;
+    }
+    const capabilityKey = threadForkCapabilityKey(thread);
+    if (threadForkCapabilitiesRef.current[capabilityKey]?.state !== 'supported') {
+      await prepareThreadFork(thread);
+      const refreshedCapabilities = { ...threadForkCapabilitiesRef.current };
+      if (refreshedCapabilities[capabilityKey]?.state !== 'supported') {
+        return null;
+      }
+    }
+
+    const operationId = forkOperationIdsRef.current.get(thread.id) ?? crypto.randomUUID();
+    forkOperationIdsRef.current.set(thread.id, operationId);
+    forkingThreadIdsRef.current.add(thread.id);
+    setForkingThreadIds(Array.from(forkingThreadIdsRef.current));
+    try {
+      const response = await fetch(
+        `/api/projects/${encodeURIComponent(thread.projectId)}/threads/${encodeURIComponent(thread.id)}/fork`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ operationId }),
+        },
+      );
+      if (!response.ok) {
+        throw new Error(
+          normalizeWorkspaceLoadErrorText(await response.text()) || '在新聊天中继续失败',
+        );
+      }
+      const payload = (await response.json()) as ThreadForkResponse;
+      if (
+        payload.ok !== true
+        || !payload.operationId?.trim()
+        || !['loaded', 'pending'].includes(payload.historyState)
+      ) {
+        throw new Error('Codex Fork 响应无效');
+      }
+      const detail = threadDetailFromForkResponse(payload);
+      setProjects((current) =>
+        current.map((project) =>
+          project.id === detail.projectId
+            ? {
+                ...project,
+                updatedAt: detail.updatedAt,
+                threads: [
+                  payload.thread,
+                  ...project.threads.filter((candidate) => candidate.id !== payload.thread.id),
+                ],
+              }
+            : project,
+        ),
+      );
+      setThreadDetails((current) => {
+        const next = { ...current, [detail.id]: detail };
+        threadDetailsRef.current = next;
+        return next;
+      });
+      activeProjectIdRef.current = detail.projectId;
+      setActiveProjectId(detail.projectId);
+      setActiveThreadId(detail.id);
+      newChatDraftRef.current = false;
+      setIsNewChatDraft(false);
+      forkOperationIdsRef.current.delete(thread.id);
+      if (payload.historyState === 'pending') {
+        showToast('新聊天已创建，历史将在重新读取后恢复', 'info');
+      } else {
+        showToast('已在新聊天中继续');
+      }
+      return payload.thread;
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '在新聊天中继续失败', 'error');
+      return null;
+    } finally {
+      forkingThreadIdsRef.current.delete(thread.id);
+      setForkingThreadIds(Array.from(forkingThreadIdsRef.current));
+    }
   }
 
   async function renameThread(threadId: string, title: string, _options?: { showToast?: boolean }) {
@@ -1395,6 +1558,8 @@ export function useWorkspaceState() {
     activeThreadId,
     isNewChatDraft,
     threadDetails,
+    threadForkCapabilities,
+    forkingThreadIds,
     searchOpen,
     searchQuery,
     collapsedProjects,
@@ -1422,6 +1587,8 @@ export function useWorkspaceState() {
     syncWorkspace,
     loadWorkspace,
     createThread,
+    prepareThreadFork,
+    forkThread,
     renameThread,
     enterNewChatDraft,
     createProjectFromPath,
