@@ -52,7 +52,7 @@ Expected: status 指向 `.trellis/tasks/codex-continue-in-new-chat.md`，并生�
 **Files:**
 - Modify: `src-tauri/src/codex_app_server.rs`
 
-- [ ] **Step 1: 写 capability、请求参数和快照归一化失败测试**
+- [x] **Step 1: 写 capability、请求参数和快照归一化失败测试**
 
 在现有 `#[cfg(test)] mod tests` 中用 `mock_connection`、`read_wire`、`write_wire` 增加以下测试矩阵；测试体必须写出完整 arrange/act/assert，不保留空函数：
 
@@ -65,13 +65,13 @@ Expected: status 指向 `.trellis/tasks/codex-continue-in-new-chat.md`，并生�
 | `fork_candidate_scan_filters_locally_without_experimental_fields` | 两页 `thread/list` 混入旧 child、其他 parent、零/一/多匹配 | 请求不含 `parentThreadId`/`ancestorThreadId`；仅按 `forkedFromId`、createdAt 窗口和非 ephemeral 结果返回候选 |
 | `fork_stored_snapshot_redacts_private_reasoning_and_unknown_raw_items` | history 含 reasoning、未知 item、base64 image、local image 和带敏感字段的 tool | reasoning/未知/base64 不进入结果；local image 只留路径元数据；工具输入继续经过 `sanitize_json_value` |
 
-- [ ] **Step 2: 运行测试并确认失败原因是 Fork API 尚不存在**
+- [x] **Step 2: 运行测试并确认失败原因是 Fork API 尚不存在**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml codex_app_server::tests::fork -- --nocapture`
 
 Expected: FAIL，缺少 `CodexConnection::probe_fork_capability`、`fork_thread_snapshot` 和快照类型。
 
-- [ ] **Step 3: 增加最小协议类型和方法**
+- [x] **Step 3: 增加最小协议类型和方法**
 
 在 `CodexCompactCapability` 附近增加：
 
@@ -125,7 +125,7 @@ pub async fn find_fork_candidates(
 - agentMessage 保留可见文本；reasoning/plan 私有内容丢弃；工具复用 `tool_started_event`、`tool_completed_event` 和 `sanitize_json_value`；未知 item 丢弃。
 - `find_fork_candidates` 调用稳定的 `thread/list` 字段：`sortKey: created_at`、`sortDirection: desc`、`archived: false`，并显式包含 `appServer` 等公开 `sourceKinds`；不得发送需要 `experimentalApi` 的 `parentThreadId`/`ancestorThreadId`。响应在本地按 `forkedFromId`、操作时间窗口和 `ephemeral=false` 过滤，分页设 100 页安全上限。
 
-- [ ] **Step 4: 运行协议测试**
+- [x] **Step 4: 运行协议测试**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml codex_app_server::tests::fork -- --nocapture`
 

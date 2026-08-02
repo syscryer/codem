@@ -4695,6 +4695,14 @@ fn public_codex_error(error: CodexAppServerError) -> String {
             "Codex App Server 响应超时：{}",
             sanitize_public_error_detail(operation)
         ),
+        CodexAppServerError::ForkHistory {
+            provider_thread_id,
+            source,
+        } => format!(
+            "Codex 已创建新聊天 {}，但历史读取失败：{}",
+            sanitize_public_error_detail(&provider_thread_id),
+            public_codex_error(*source)
+        ),
     }
 }
 
@@ -7444,6 +7452,16 @@ process.stdout.write(JSON.stringify({ prompts, writeResult, bashResult, autoResu
             "upstream rejected request".to_string(),
         ));
         assert!(codex_message.contains("upstream rejected request"));
+
+        let fork_message = public_codex_error(CodexAppServerError::ForkHistory {
+            provider_thread_id: "fork-thread".to_string(),
+            source: Box::new(CodexAppServerError::Rpc {
+                code: -32603,
+                message: "history unavailable".to_string(),
+            }),
+        });
+        assert!(fork_message.contains("fork-thread"));
+        assert!(fork_message.contains("history unavailable"));
     }
 
     #[test]

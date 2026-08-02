@@ -9,7 +9,7 @@ use std::{
     fmt,
     path::Path,
     process::Stdio,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines},
@@ -33,10 +33,17 @@ const MAX_JSON_DEPTH: usize = 6;
 pub enum CodexAppServerError {
     Io(std::io::Error),
     Json(serde_json::Error),
-    Rpc { code: i64, message: String },
+    Rpc {
+        code: i64,
+        message: String,
+    },
     Execution(String),
     Protocol(String),
     Timeout(&'static str),
+    ForkHistory {
+        provider_thread_id: String,
+        source: Box<CodexAppServerError>,
+    },
 }
 
 impl CodexAppServerError {
@@ -51,6 +58,13 @@ impl CodexAppServerError {
             Self::Execution(message) => bounded_string(message, MAX_JSON_STRING_BYTES),
             Self::Protocol(_) => "Codex App Server 返回了不兼容的协议消息".to_string(),
             Self::Timeout(operation) => format!("Codex App Server 响应超时：{operation}"),
+            Self::ForkHistory {
+                provider_thread_id,
+                source,
+            } => format!(
+                "Codex 已创建新聊天 {provider_thread_id}，但读取历史失败：{}",
+                source.public_message()
+            ),
         }
     }
 }
@@ -68,6 +82,13 @@ impl fmt::Display for CodexAppServerError {
                 write!(formatter, "Codex App Server protocol error: {message}")
             }
             Self::Timeout(operation) => write!(formatter, "Codex App Server timeout: {operation}"),
+            Self::ForkHistory {
+                provider_thread_id,
+                source,
+            } => write!(
+                formatter,
+                "Codex fork {provider_thread_id} history read failed: {source}"
+            ),
         }
     }
 }
@@ -197,6 +218,48 @@ pub struct CodexTurnOutcome {
 pub enum CodexCompactCapability {
     Supported,
     Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodexForkCapability {
+    Supported,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodexForkOutcome {
+    pub provider_thread_id: String,
+    pub forked_from_id: Option<String>,
+    pub turns: Vec<CodexStoredTurn>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodexStoredTurn {
+    pub id: String,
+    pub status: String,
+    pub items: Vec<CodexStoredItem>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum CodexStoredItem {
+    UserMessage {
+        id: String,
+        content: Vec<CodexUserInput>,
+    },
+    AgentMessage {
+        id: String,
+        text: String,
+    },
+    Tool {
+        id: String,
+        name: String,
+        input: Option<Value>,
+        result: String,
+        is_error: bool,
+    },
+    ContextCompaction {
+        id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -374,6 +437,202 @@ where
             )),
             Err(error) => Err(error),
         }
+    }
+
+    pub async fn probe_fork_capability(
+        &mut self,
+    ) -> Result<CodexForkCapability, CodexAppServerError> {
+        match self
+            .request("thread/fork", json!({}), REQUEST_TIMEOUT)
+            .await
+        {
+            Err(CodexAppServerError::Rpc { code: -32602, .. }) => {
+                Ok(CodexForkCapability::Supported)
+            }
+            Err(CodexAppServerError::Rpc {
+                code: -32600,
+                message,
+            }) if message.contains("missing field") && message.contains("threadId") => {
+                Ok(CodexForkCapability::Supported)
+            }
+            Err(CodexAppServerError::Rpc { code: -32601, .. }) => {
+                Ok(CodexForkCapability::Unsupported)
+            }
+            Ok(_) => Err(CodexAppServerError::Protocol(
+                "thread/fork 缺少 threadId 时意外成功".to_string(),
+            )),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub async fn read_thread_snapshot(
+        &mut self,
+        thread_id: &str,
+    ) -> Result<Vec<CodexStoredTurn>, CodexAppServerError> {
+        let result = self
+            .request(
+                "thread/read",
+                json!({
+                    "threadId": thread_id,
+                    "includeTurns": true,
+                }),
+                REQUEST_TIMEOUT,
+            )
+            .await?;
+        parse_thread_snapshot(&result, thread_id)
+    }
+
+    pub async fn fork_thread_snapshot(
+        &mut self,
+        source_thread_id: &str,
+    ) -> Result<CodexForkOutcome, CodexAppServerError> {
+        let source_result = self
+            .request(
+                "thread/read",
+                json!({
+                    "threadId": source_thread_id,
+                    "includeTurns": false,
+                }),
+                REQUEST_TIMEOUT,
+            )
+            .await?;
+        let source_thread = checked_thread(&source_result, source_thread_id, "thread/read")?;
+        if source_thread
+            .get("status")
+            .and_then(|status| status.get("type"))
+            .and_then(Value::as_str)
+            == Some("active")
+        {
+            return Err(CodexAppServerError::Execution(
+                "Codex 源聊天正在运行中，暂时不能在新聊天中继续".to_string(),
+            ));
+        }
+
+        let fork_result = self
+            .request(
+                "thread/fork",
+                json!({ "threadId": source_thread_id }),
+                REQUEST_TIMEOUT,
+            )
+            .await?;
+        let fork_thread = fork_result.get("thread").ok_or_else(|| {
+            CodexAppServerError::Protocol("thread/fork 响应缺少 thread".to_string())
+        })?;
+        let provider_thread_id =
+            optional_non_empty_string(fork_thread.get("id")).ok_or_else(|| {
+                CodexAppServerError::Protocol("thread/fork 响应缺少有效 thread.id".to_string())
+            })?;
+        if provider_thread_id == source_thread_id {
+            return Err(CodexAppServerError::Protocol(
+                "thread/fork 返回了源 thread.id".to_string(),
+            ));
+        }
+        let forked_from_id = optional_non_empty_string(fork_thread.get("forkedFromId"));
+        let turns = self
+            .read_thread_snapshot(&provider_thread_id)
+            .await
+            .map_err(|source| CodexAppServerError::ForkHistory {
+                provider_thread_id: provider_thread_id.clone(),
+                source: Box::new(source),
+            })?;
+
+        Ok(CodexForkOutcome {
+            provider_thread_id,
+            forked_from_id,
+            turns,
+        })
+    }
+
+    pub async fn find_fork_candidates(
+        &mut self,
+        source_thread_id: &str,
+        started_at_seconds: i64,
+    ) -> Result<Vec<String>, CodexAppServerError> {
+        const SOURCE_KINDS: [&str; 10] = [
+            "cli",
+            "vscode",
+            "exec",
+            "appServer",
+            "subAgent",
+            "subAgentReview",
+            "subAgentCompact",
+            "subAgentThreadSpawn",
+            "subAgentOther",
+            "unknown",
+        ];
+        const CLOCK_SKEW_SECONDS: i64 = 5;
+
+        let latest_created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+            .unwrap_or(i64::MAX)
+            .saturating_add(CLOCK_SKEW_SECONDS);
+        let earliest_created_at = started_at_seconds.saturating_sub(CLOCK_SKEW_SECONDS);
+        let mut candidates = Vec::new();
+        let mut seen_thread_ids = HashSet::new();
+        let mut seen_cursors = HashSet::new();
+        let mut cursor = None::<String>;
+
+        for _ in 0..100 {
+            let result = self
+                .request(
+                    "thread/list",
+                    json!({
+                        "cursor": cursor,
+                        "limit": 100,
+                        "sortKey": "created_at",
+                        "sortDirection": "desc",
+                        "sourceKinds": SOURCE_KINDS,
+                        "archived": false,
+                    }),
+                    REQUEST_TIMEOUT,
+                )
+                .await?;
+            let page = result
+                .get("data")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    CodexAppServerError::Protocol("thread/list 响应缺少 data".to_string())
+                })?;
+            for thread in page {
+                if thread.get("forkedFromId").and_then(Value::as_str) != Some(source_thread_id)
+                    || thread
+                        .get("ephemeral")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                {
+                    continue;
+                }
+                let Some(created_at) = thread.get("createdAt").and_then(Value::as_i64) else {
+                    continue;
+                };
+                if created_at < earliest_created_at || created_at > latest_created_at {
+                    continue;
+                }
+                let Some(thread_id) = optional_non_empty_string(thread.get("id")) else {
+                    continue;
+                };
+                if thread_id != source_thread_id && seen_thread_ids.insert(thread_id.clone()) {
+                    candidates.push(thread_id);
+                }
+            }
+
+            let next_cursor = optional_non_empty_string(result.get("nextCursor"));
+            let Some(next_cursor) = next_cursor else {
+                return Ok(candidates);
+            };
+            if !seen_cursors.insert(next_cursor.clone()) {
+                return Err(CodexAppServerError::Protocol(
+                    "thread/list 返回了重复游标".to_string(),
+                ));
+            }
+            cursor = Some(next_cursor);
+        }
+
+        Err(CodexAppServerError::Protocol(
+            "thread/list 分页超过安全上限".to_string(),
+        ))
     }
 
     pub async fn list_models(&mut self) -> Result<Vec<CodexModelSummary>, CodexAppServerError> {
@@ -1323,6 +1582,36 @@ impl CodexStdioClient {
         self.connection.probe_compact_capability().await
     }
 
+    pub async fn probe_fork_capability(
+        &mut self,
+    ) -> Result<CodexForkCapability, CodexAppServerError> {
+        self.connection.probe_fork_capability().await
+    }
+
+    pub async fn read_thread_snapshot(
+        &mut self,
+        thread_id: &str,
+    ) -> Result<Vec<CodexStoredTurn>, CodexAppServerError> {
+        self.connection.read_thread_snapshot(thread_id).await
+    }
+
+    pub async fn fork_thread_snapshot(
+        &mut self,
+        source_thread_id: &str,
+    ) -> Result<CodexForkOutcome, CodexAppServerError> {
+        self.connection.fork_thread_snapshot(source_thread_id).await
+    }
+
+    pub async fn find_fork_candidates(
+        &mut self,
+        source_thread_id: &str,
+        started_at_seconds: i64,
+    ) -> Result<Vec<String>, CodexAppServerError> {
+        self.connection
+            .find_fork_candidates(source_thread_id, started_at_seconds)
+            .await
+    }
+
     pub async fn list_models(&mut self) -> Result<Vec<CodexModelSummary>, CodexAppServerError> {
         self.connection.list_models().await
     }
@@ -2061,6 +2350,119 @@ fn build_user_input_response(answers: Map<String, Value>) -> Result<Value, Codex
     Ok(json!({ "answers": normalized }))
 }
 
+fn checked_thread<'a>(
+    result: &'a Value,
+    expected_thread_id: &str,
+    method: &str,
+) -> Result<&'a Value, CodexAppServerError> {
+    let thread = result
+        .get("thread")
+        .ok_or_else(|| CodexAppServerError::Protocol(format!("{method} 响应缺少 thread")))?;
+    let response_thread_id = thread
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CodexAppServerError::Protocol(format!("{method} 响应缺少 thread.id")))?;
+    if response_thread_id != expected_thread_id {
+        return Err(CodexAppServerError::Protocol(format!(
+            "{method} 响应 thread.id 与请求不一致"
+        )));
+    }
+    Ok(thread)
+}
+
+fn parse_thread_snapshot(
+    result: &Value,
+    expected_thread_id: &str,
+) -> Result<Vec<CodexStoredTurn>, CodexAppServerError> {
+    let thread = checked_thread(result, expected_thread_id, "thread/read")?;
+    let turns = thread
+        .get("turns")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            CodexAppServerError::Protocol("thread/read 响应缺少 thread.turns".to_string())
+        })?;
+
+    Ok(turns.iter().filter_map(parse_stored_turn).collect())
+}
+
+fn parse_stored_turn(turn: &Value) -> Option<CodexStoredTurn> {
+    let id = optional_non_empty_string(turn.get("id"))?;
+    let status = optional_non_empty_string(turn.get("status"))?;
+    let items = turn
+        .get("items")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(parse_stored_item)
+        .collect();
+    Some(CodexStoredTurn { id, status, items })
+}
+
+fn parse_stored_item(item: &Value) -> Option<CodexStoredItem> {
+    let item_type = item.get("type")?.as_str()?;
+    let id = optional_non_empty_string(item.get("id"))?;
+    match item_type {
+        "userMessage" => {
+            let content = item
+                .get("content")
+                .and_then(Value::as_array)?
+                .iter()
+                .filter_map(parse_stored_user_input)
+                .collect::<Vec<_>>();
+            (!content.is_empty()).then_some(CodexStoredItem::UserMessage { id, content })
+        }
+        "agentMessage" => {
+            item.get("text")
+                .and_then(Value::as_str)
+                .map(|text| CodexStoredItem::AgentMessage {
+                    id,
+                    text: bounded_string(text, MAX_EVENT_TEXT_BYTES),
+                })
+        }
+        "contextCompaction" => Some(CodexStoredItem::ContextCompaction { id }),
+        _ => {
+            let (_, name, input) = tool_started_event(item)?;
+            let (_, result, is_error) = tool_completed_event(item, None)?;
+            Some(CodexStoredItem::Tool {
+                id,
+                name,
+                input,
+                result,
+                is_error,
+            })
+        }
+    }
+}
+
+fn parse_stored_user_input(value: &Value) -> Option<CodexUserInput> {
+    match value.get("type").and_then(Value::as_str)? {
+        "text" => value
+            .get("text")
+            .and_then(Value::as_str)
+            .map(|text| CodexUserInput::Text {
+                text: bounded_string(text, MAX_EVENT_TEXT_BYTES),
+            }),
+        "localImage" => value
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(|path| CodexUserInput::LocalImage {
+                path: bounded_string(path, MAX_JSON_STRING_BYTES),
+            }),
+        "image" => value
+            .get("url")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|url| !url.is_empty() && !url.starts_with("data:"))
+            .map(|url| CodexUserInput::Image {
+                url: bounded_string(url, MAX_JSON_STRING_BYTES),
+            }),
+        _ => None,
+    }
+}
+
 fn summarize_model(value: &Value) -> Option<CodexModelSummary> {
     if value
         .get("hidden")
@@ -2510,6 +2912,532 @@ mod tests {
             .await
             .expect("write mock response");
         writer.flush().await.expect("flush mock response");
+    }
+
+    async fn probe_fork_with_response(
+        response: Value,
+    ) -> Result<CodexForkCapability, CodexAppServerError> {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client = tokio::spawn(async move { connection.probe_fork_capability().await });
+
+        let request = read_wire(&mut lines).await;
+        assert_eq!(request["method"], "thread/fork");
+        assert_eq!(request["params"], json!({}));
+        let mut response = response;
+        response["id"] = request["id"].clone();
+        write_wire(&mut writer, response).await;
+
+        client.await.expect("fork probe task")
+    }
+
+    async fn find_fork_candidates_from_single_page(data: Value) -> Vec<String> {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client = tokio::spawn(async move {
+            connection
+                .find_fork_candidates("source-thread", 1_000)
+                .await
+        });
+        let request = read_wire(&mut lines).await;
+        write_wire(
+            &mut writer,
+            json!({
+                "id": request["id"],
+                "result": { "data": data, "nextCursor": null }
+            }),
+        )
+        .await;
+        client
+            .await
+            .expect("candidate task")
+            .expect("candidate result")
+    }
+
+    #[tokio::test]
+    async fn fork_probe_classifies_supported_and_method_not_found() {
+        assert_eq!(
+            probe_fork_with_response(json!({
+                "error": { "code": -32602, "message": "missing field threadId" }
+            }))
+            .await
+            .expect("invalid params means supported"),
+            CodexForkCapability::Supported,
+        );
+        assert_eq!(
+            probe_fork_with_response(json!({
+                "error": {
+                    "code": -32600,
+                    "message": "Invalid request: missing field `threadId`"
+                }
+            }))
+            .await
+            .expect("strict missing thread id means supported"),
+            CodexForkCapability::Supported,
+        );
+        assert_eq!(
+            probe_fork_with_response(json!({
+                "error": { "code": -32601, "message": "method not found" }
+            }))
+            .await
+            .expect("method not found means unsupported"),
+            CodexForkCapability::Unsupported,
+        );
+        assert!(matches!(
+            probe_fork_with_response(json!({
+                "error": { "code": -32603, "message": "provider unavailable" }
+            }))
+            .await,
+            Err(CodexAppServerError::Rpc {
+                code: -32603,
+                message,
+            }) if message == "provider unavailable"
+        ));
+        assert!(matches!(
+            probe_fork_with_response(json!({
+                "error": { "code": -32600, "message": "Invalid request envelope" }
+            }))
+            .await,
+            Err(CodexAppServerError::Rpc { code: -32600, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn fork_thread_omits_last_turn_and_ephemeral_then_reads_full_history() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client =
+            tokio::spawn(async move { connection.fork_thread_snapshot("source-thread").await });
+
+        let source_read = read_wire(&mut lines).await;
+        assert_eq!(source_read["method"], "thread/read");
+        assert_eq!(
+            source_read["params"],
+            json!({ "threadId": "source-thread", "includeTurns": false })
+        );
+        write_wire(
+            &mut writer,
+            json!({
+                "id": source_read["id"],
+                "result": {
+                    "thread": {
+                        "id": "source-thread",
+                        "status": { "type": "idle" }
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let fork = read_wire(&mut lines).await;
+        assert_eq!(fork["method"], "thread/fork");
+        assert_eq!(fork["params"], json!({ "threadId": "source-thread" }));
+        assert!(fork["params"].get("lastTurnId").is_none());
+        assert!(fork["params"].get("ephemeral").is_none());
+        write_wire(
+            &mut writer,
+            json!({
+                "id": fork["id"],
+                "result": {
+                    "thread": {
+                        "id": "fork-thread",
+                        "forkedFromId": "source-thread",
+                        "ephemeral": false
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let history = read_wire(&mut lines).await;
+        assert_eq!(history["method"], "thread/read");
+        assert_eq!(
+            history["params"],
+            json!({ "threadId": "fork-thread", "includeTurns": true })
+        );
+        write_wire(
+            &mut writer,
+            json!({
+                "id": history["id"],
+                "result": {
+                    "thread": {
+                        "id": "fork-thread",
+                        "turns": [{
+                            "id": "turn-1",
+                            "status": "completed",
+                            "items": [
+                                {
+                                    "id": "user-1",
+                                    "type": "userMessage",
+                                    "content": [{ "type": "text", "text": "hello" }]
+                                },
+                                {
+                                    "id": "agent-1",
+                                    "type": "agentMessage",
+                                    "text": "done"
+                                },
+                                {
+                                    "id": "command-1",
+                                    "type": "commandExecution",
+                                    "status": "completed",
+                                    "exitCode": 0,
+                                    "command": "pwd",
+                                    "cwd": "D:/repo",
+                                    "aggregatedOutput": "D:/repo"
+                                },
+                                {
+                                    "id": "file-1",
+                                    "type": "fileChange",
+                                    "status": "completed",
+                                    "changes": [{ "path": "README.md", "kind": "update" }]
+                                },
+                                { "id": "compact-1", "type": "contextCompaction" }
+                            ]
+                        }]
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let outcome = client.await.expect("fork task").expect("fork outcome");
+        assert_eq!(outcome.provider_thread_id, "fork-thread");
+        assert_eq!(outcome.forked_from_id.as_deref(), Some("source-thread"));
+        assert_eq!(outcome.turns.len(), 1);
+        assert_eq!(outcome.turns[0].id, "turn-1");
+        assert_eq!(outcome.turns[0].status, "completed");
+        assert!(matches!(
+            outcome.turns[0].items.as_slice(),
+            [
+                CodexStoredItem::UserMessage { id: user_id, .. },
+                CodexStoredItem::AgentMessage { id: agent_id, text },
+                CodexStoredItem::Tool { id: command_id, name: command_name, .. },
+                CodexStoredItem::Tool { id: file_id, name: file_name, .. },
+                CodexStoredItem::ContextCompaction { id: compact_id },
+            ] if user_id == "user-1"
+                && agent_id == "agent-1"
+                && text == "done"
+                && command_id == "command-1"
+                && command_name == "Bash"
+                && file_id == "file-1"
+                && file_name == "Edit"
+                && compact_id == "compact-1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn fork_rejects_active_source_and_invalid_child_id() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let active_client =
+            tokio::spawn(async move { connection.fork_thread_snapshot("source-thread").await });
+        let source_read = read_wire(&mut lines).await;
+        write_wire(
+            &mut writer,
+            json!({
+                "id": source_read["id"],
+                "result": {
+                    "thread": {
+                        "id": "source-thread",
+                        "status": { "type": "active", "activeFlags": ["turn"] }
+                    }
+                }
+            }),
+        )
+        .await;
+        assert!(matches!(
+            active_client.await.expect("active fork task"),
+            Err(CodexAppServerError::Execution(message)) if message.contains("运行中")
+        ));
+        let next_message = timeout(Duration::from_millis(25), lines.next_line()).await;
+        assert!(matches!(next_message, Err(_) | Ok(Ok(None))));
+
+        for child_id in ["", "source-thread"] {
+            let (mut connection, mut lines, mut writer) = mock_connection();
+            let client =
+                tokio::spawn(async move { connection.fork_thread_snapshot("source-thread").await });
+            let source_read = read_wire(&mut lines).await;
+            write_wire(
+                &mut writer,
+                json!({
+                    "id": source_read["id"],
+                    "result": {
+                        "thread": {
+                            "id": "source-thread",
+                            "status": { "type": "idle" }
+                        }
+                    }
+                }),
+            )
+            .await;
+            let fork = read_wire(&mut lines).await;
+            write_wire(
+                &mut writer,
+                json!({
+                    "id": fork["id"],
+                    "result": { "thread": { "id": child_id } }
+                }),
+            )
+            .await;
+            assert!(matches!(
+                client.await.expect("invalid child task"),
+                Err(CodexAppServerError::Protocol(_))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_history_failure_preserves_created_provider_id() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client =
+            tokio::spawn(async move { connection.fork_thread_snapshot("source-thread").await });
+
+        let source_read = read_wire(&mut lines).await;
+        write_wire(
+            &mut writer,
+            json!({
+                "id": source_read["id"],
+                "result": {
+                    "thread": {
+                        "id": "source-thread",
+                        "status": { "type": "idle" }
+                    }
+                }
+            }),
+        )
+        .await;
+        let fork = read_wire(&mut lines).await;
+        write_wire(
+            &mut writer,
+            json!({
+                "id": fork["id"],
+                "result": {
+                    "thread": {
+                        "id": "fork-thread",
+                        "forkedFromId": "source-thread"
+                    }
+                }
+            }),
+        )
+        .await;
+        let history = read_wire(&mut lines).await;
+        write_wire(
+            &mut writer,
+            json!({
+                "id": history["id"],
+                "error": { "code": -32603, "message": "history unavailable" }
+            }),
+        )
+        .await;
+
+        assert!(matches!(
+            client.await.expect("fork history task"),
+            Err(CodexAppServerError::ForkHistory {
+                provider_thread_id,
+                ..
+            }) if provider_thread_id == "fork-thread"
+        ));
+    }
+
+    #[tokio::test]
+    async fn fork_candidate_scan_filters_locally_without_experimental_fields() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client = tokio::spawn(async move {
+            connection
+                .find_fork_candidates("source-thread", 1_000)
+                .await
+        });
+
+        let first_page = read_wire(&mut lines).await;
+        assert_eq!(first_page["method"], "thread/list");
+        assert_eq!(first_page["params"]["cursor"], Value::Null);
+        assert_eq!(first_page["params"]["limit"], 100);
+        assert_eq!(first_page["params"]["sortKey"], "created_at");
+        assert_eq!(first_page["params"]["sortDirection"], "desc");
+        assert_eq!(first_page["params"]["archived"], false);
+        assert!(first_page["params"].get("parentThreadId").is_none());
+        assert!(first_page["params"].get("ancestorThreadId").is_none());
+        let source_kinds = first_page["params"]["sourceKinds"]
+            .as_array()
+            .expect("public source kinds");
+        assert!(source_kinds.contains(&json!("appServer")));
+        write_wire(
+            &mut writer,
+            json!({
+                "id": first_page["id"],
+                "result": {
+                    "data": [
+                        {
+                            "id": "valid-child-1",
+                            "forkedFromId": "source-thread",
+                            "createdAt": 1_001,
+                            "ephemeral": false
+                        },
+                        {
+                            "id": "old-child",
+                            "forkedFromId": "source-thread",
+                            "createdAt": 900,
+                            "ephemeral": false
+                        },
+                        {
+                            "id": "other-parent",
+                            "forkedFromId": "other-thread",
+                            "createdAt": 1_002,
+                            "ephemeral": false
+                        },
+                        {
+                            "id": "ephemeral-child",
+                            "forkedFromId": "source-thread",
+                            "createdAt": 1_003,
+                            "ephemeral": true
+                        }
+                    ],
+                    "nextCursor": "page-2"
+                }
+            }),
+        )
+        .await;
+
+        let second_page = read_wire(&mut lines).await;
+        assert_eq!(second_page["params"]["cursor"], "page-2");
+        assert!(second_page["params"].get("parentThreadId").is_none());
+        write_wire(
+            &mut writer,
+            json!({
+                "id": second_page["id"],
+                "result": {
+                    "data": [
+                        {
+                            "id": "valid-child-2",
+                            "forkedFromId": "source-thread",
+                            "createdAt": 1_004,
+                            "ephemeral": false
+                        }
+                    ],
+                    "nextCursor": null
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            client.await.expect("candidate task").expect("candidates"),
+            vec!["valid-child-1".to_string(), "valid-child-2".to_string()]
+        );
+        assert!(find_fork_candidates_from_single_page(json!([]))
+            .await
+            .is_empty());
+        assert_eq!(
+            find_fork_candidates_from_single_page(json!([{
+                "id": "only-child",
+                "forkedFromId": "source-thread",
+                "createdAt": 1_000,
+                "ephemeral": false
+            }]))
+            .await,
+            vec!["only-child".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_stored_snapshot_redacts_private_reasoning_and_unknown_raw_items() {
+        let (mut connection, mut lines, mut writer) = mock_connection();
+        let client =
+            tokio::spawn(async move { connection.read_thread_snapshot("fork-thread").await });
+
+        let request = read_wire(&mut lines).await;
+        assert_eq!(request["method"], "thread/read");
+        write_wire(
+            &mut writer,
+            json!({
+                "id": request["id"],
+                "result": {
+                    "thread": {
+                        "id": "fork-thread",
+                        "turns": [{
+                            "id": "turn-1",
+                            "status": "completed",
+                            "items": [
+                                {
+                                    "id": "user-1",
+                                    "type": "userMessage",
+                                    "content": [
+                                        { "type": "text", "text": "hello" },
+                                        { "type": "image", "url": "data:image/png;base64,SECRET" },
+                                        { "type": "localImage", "path": "D:/images/example.png", "bytes": "SECRET" }
+                                    ]
+                                },
+                                { "id": "reason-1", "type": "reasoning", "text": "private" },
+                                { "id": "plan-1", "type": "plan", "text": "private plan" },
+                                { "id": "unknown-1", "type": "futurePrivateItem", "raw": "SECRET" },
+                                {
+                                    "id": "tool-1",
+                                    "type": "mcpToolCall",
+                                    "tool": "lookup",
+                                    "status": "completed",
+                                    "arguments": {
+                                        "authorization": "Bearer secret",
+                                        "query": "visible"
+                                    },
+                                    "result": {
+                                        "apiKey": "secret-key",
+                                        "value": "visible-result"
+                                    }
+                                }
+                            ]
+                        }]
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let turns = client.await.expect("snapshot task").expect("snapshot");
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 2);
+        let CodexStoredItem::UserMessage { content, .. } = &turns[0].items[0] else {
+            panic!("first stored item must be a user message");
+        };
+        assert_eq!(
+            content,
+            &vec![
+                CodexUserInput::Text {
+                    text: "hello".to_string()
+                },
+                CodexUserInput::LocalImage {
+                    path: "D:/images/example.png".to_string()
+                }
+            ]
+        );
+        let CodexStoredItem::Tool { input, result, .. } = &turns[0].items[1] else {
+            panic!("second stored item must be a tool");
+        };
+        assert_eq!(
+            input.as_ref().expect("sanitized tool input")["authorization"],
+            "[redacted]"
+        );
+        assert!(result.contains("[redacted]"));
+        assert!(!result.contains("secret-key"));
+        assert!(!format!("{turns:?}").contains("private"));
+        assert!(!format!("{turns:?}").contains("SECRET"));
+
+        for invalid_thread in [
+            json!({ "id": "other-thread", "turns": [] }),
+            json!({ "id": "fork-thread", "turns": {} }),
+        ] {
+            let (mut connection, mut lines, mut writer) = mock_connection();
+            let client =
+                tokio::spawn(async move { connection.read_thread_snapshot("fork-thread").await });
+            let request = read_wire(&mut lines).await;
+            write_wire(
+                &mut writer,
+                json!({
+                    "id": request["id"],
+                    "result": { "thread": invalid_thread }
+                }),
+            )
+            .await;
+            assert!(matches!(
+                client.await.expect("invalid snapshot task"),
+                Err(CodexAppServerError::Protocol(_))
+            ));
+        }
     }
 
     #[tokio::test]

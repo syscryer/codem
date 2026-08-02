@@ -156,6 +156,9 @@ Provider 回归和长历史增量装载。
 5. Fork 长会话后切换、刷新和重启应用，确认新聊天可恢复、历史不重复、控制台无错误。
 
 ## Implementation Record
+- 2026-08-02T05:49:00.034Z Task 1 GREEN：实现原生 thread/fork 能力探测、源运行态检查、严格仅 threadId 请求、Provider child ID 校验、完整 thread/read 快照、ForkHistory 专用错误和稳定 thread/list 本地恢复筛选；私有 reasoning、未知 item 与 base64 图片不落历史。
+
+- 2026-08-02T05:39:05.717Z Task 1 RED：新增 Codex thread/fork 协议测试矩阵；定向 cargo test 因 CodexForkCapability、ForkHistory、fork/read/list 快照方法缺失而按预期失败。官方 App Server 文档确认完整 Fork 请求仅传 threadId，thread/read 为只读历史，parentThreadId/ancestorThreadId 仍为实验过滤字段。
 - 2026-08-02T05:29:19.393Z 修正计划交接：实现阶段必须新建 Trellis session；Task 7 在 complete 前从 current-session.json 捕获实际 implementation record 路径，最终只暂存该记录，避免误写计划阶段 session。
 
 - 2026-08-02T05:27:44.955Z 已完成 Codex 在新聊天中继续实施计划：拆分 7 个 TDD 任务，明确协议、runtime actor、SQLite 状态机、后端幂等编排、前端状态和双菜单验收；官方核对确认 parentThreadId 为实验筛选，恢复改用稳定 thread/list 字段加本地过滤；本轮未修改产品代码。
@@ -164,6 +167,8 @@ Provider 回归和长历史增量装载。
 - 2026-08-02T04:47:35.559Z Task created by Trellis automation.
 
 ## Verification Results
+
+- 2026-08-02T05:49:00.050Z `Task 1 Codex Fork 协议层`: cargo test codex_app_server::tests::fork：6 passed；cargo test public_agent_errors_keep_details_for_each_transport_error：1 passed；cargo fmt --check：通过；仅有既有 dead_code/linker warnings。
 - 2026-08-02T05:29:20.062Z `实施 session 交接、动态 record 路径、占位符与 git diff --check`: pass：Execution Setup 明确新建实现 session；Task 7 在 complete 前读取 sessionPath 并用于最终 git add；占位符 0；git diff --check 通过，仅有 Windows LF/CRLF 提示。
 
 - 2026-08-02T05:27:45.671Z `实施计划规格覆盖、占位符、类型/API/路径一致性与 git diff --check`: pass：thread/fork、双 ID、历史来源、互斥、六状态恢复、重启 unknown、双入口、非 Codex 回归和长历史均映射到 Task 1-7；占位符 0；缺失路径 0；Rust 多过滤命令已拆正；git diff --check 通过，仅有 Windows LF/CRLF 提示。
