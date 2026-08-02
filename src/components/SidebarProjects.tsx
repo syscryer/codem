@@ -323,7 +323,7 @@ export function SidebarProjects({
               type="button"
               className="workspace-menu-item"
               disabled={!threadForkAvailability.enabled}
-              title={threadForkAvailability.reason}
+              title={threadForkAvailability.reason ?? '在新聊天中继续'}
               aria-label={threadForkAvailability.enabled
                 ? '在新聊天中继续'
                 : `在新聊天中继续：${threadForkAvailability.reason ?? '当前不可用'}`}

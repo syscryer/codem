@@ -11,6 +11,7 @@ test('chat header exposes one capability-aware continue-in-new-chat action', () 
   assert.match(headerSource, /onPrepareThreadFork\(activeThread\)/);
   assert.match(headerSource, />在新聊天中继续</);
   assert.match(headerSource, /disabled=\{!threadForkAvailability\.enabled\}/);
+  assert.match(headerSource, /title=\{threadForkAvailability\.reason \?\? '在新聊天中继续'\}/);
   assert.match(headerSource, /threadForkAvailability\.reason/);
 });
 
@@ -19,6 +20,7 @@ test('sidebar prepares capability on menu open and uses the same action contract
   assert.match(sidebarSource, /onForkThread\(thread\)/);
   assert.match(sidebarSource, />在新聊天中继续</);
   assert.match(sidebarSource, /disabled=\{!threadForkAvailability\.enabled\}/);
+  assert.match(sidebarSource, /title=\{threadForkAvailability\.reason \?\? '在新聊天中继续'\}/);
   assert.match(sidebarSource, /threadForkAvailability\.reason/);
 });
 
