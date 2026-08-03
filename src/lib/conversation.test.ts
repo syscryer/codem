@@ -18,6 +18,7 @@ import {
 } from './codex-compact.js';
 import {
   buildRequestUserInputAnswers,
+  collectConversationChangedFileGroups,
   getRequestUserInputDraft,
   parseDiffContent,
   resolveConversationTurnWorkspace,
@@ -50,6 +51,105 @@ test('parseDiffContent ignores the trailing split sentinel in a new-file diff', 
     additions: 3,
     deletions: 0,
   });
+});
+
+test('parseDiffContent bounds large provider diffs before building preview rows', () => {
+  const parsed = parseDiffContent(
+    Array.from({ length: 5_000 }, (_, index) => `+line ${index}`).join('\n'),
+  );
+
+  assert.ok(parsed.additions <= 4_000);
+  assert.ok(parsed.afterText.length <= 256 * 1024);
+});
+
+test('path-only provider changes remain visible in the changed-file summary', () => {
+  const tool = {
+    ...createToolStep({
+      type: 'tool-start' as const,
+      runId: 'run-1',
+      blockIndex: 0,
+      toolUseId: 'tool-1',
+      name: 'Agent 工具',
+      input: null,
+    }),
+    status: 'done' as const,
+    resultText: JSON.stringify({
+      status: 'completed',
+      changes: [{ path: 'src/old.ts', kind: { type: 'delete' } }],
+    }),
+  };
+
+  const groups = collectConversationChangedFileGroups([tool]);
+
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0]?.path, 'src/old.ts');
+  assert.deepEqual(groups[0]?.previews, []);
+});
+
+test('changed-file summary normalizes a Windows absolute path against the conversation workspace', () => {
+  const tool = {
+    ...createToolStep({
+      type: 'tool-start' as const,
+      runId: 'run-1',
+      blockIndex: 0,
+      toolUseId: 'tool-write',
+      name: 'write',
+      input: null,
+    }),
+    status: 'done' as const,
+    resultText: JSON.stringify({
+      status: 'completed',
+      changes: [{
+        path: 'D:\\ai_proj\\codem\\docs\\文件输出测试.md',
+        kind: { type: 'add' },
+        diff: '+第一行中文内容\n+第二行中文内容\n',
+      }],
+    }),
+  };
+
+  const groups = collectConversationChangedFileGroups([tool], 'D:\\ai_proj\\codem');
+
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0]?.path, 'docs/文件输出测试.md');
+  assert.equal(groups[0]?.name, '文件输出测试.md');
+  assert.equal(groups[0]?.additions, 2);
+});
+
+test('changed-file summary deduplicates Windows extended and relative paths from one tool', () => {
+  const tool = {
+    ...createToolStep({
+      type: 'tool-start' as const,
+      runId: 'run-1',
+      blockIndex: 0,
+      toolUseId: 'tool-write',
+      name: 'write',
+      input: null,
+    }),
+    status: 'done' as const,
+    resultText: JSON.stringify({
+      status: 'completed',
+      changes: [
+        {
+          path: '\\\\?\\D:\\ai_proj\\codem\\docs\\中文.md',
+          kind: { type: 'add' },
+          diff: '-\n+第一行\n+第二行\n',
+        },
+        {
+          path: 'docs/中文.md',
+          kind: { type: 'add' },
+          diff: '+第一行\n+第二行\n',
+        },
+      ],
+    }),
+  };
+
+  const groups = collectConversationChangedFileGroups([tool], 'D:\\ai_proj\\codem');
+
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0]?.path, 'docs/中文.md');
+  assert.equal(groups[0]?.additions, 2);
+  assert.equal(groups[0]?.deletions, 0);
+  assert.equal(groups[0]?.previews.length, 1);
 });
 
 test('resolveConversationTurnWorkspace falls back to the active project for restored history', () => {

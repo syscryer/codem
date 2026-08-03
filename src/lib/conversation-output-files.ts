@@ -1,4 +1,5 @@
 import type { ToolStep } from '../types';
+import { normalizeConversationFilePath } from './conversation-changed-files';
 import { collectToolConversationFileChanges } from './conversation-preview-shortcuts';
 
 export type ConversationOutputFile = {
@@ -31,7 +32,7 @@ const DEFAULT_APP_EXTENSIONS = new Map<string, string>([
   ['pptx', 'PowerPoint'],
 ]);
 
-export function collectConversationOutputFiles(tools: ToolStep[]) {
+export function collectConversationOutputFiles(tools: ToolStep[], workspace?: string) {
   const seen = new Set<string>();
   const files: ConversationOutputFile[] = [];
 
@@ -40,7 +41,7 @@ export function collectConversationOutputFiles(tools: ToolStep[]) {
       if (change.kind === 'delete') {
         continue;
       }
-      const filePath = change.path;
+      const filePath = normalizeConversationFilePath(change.path, workspace);
       if (seen.has(filePath)) {
         continue;
       }

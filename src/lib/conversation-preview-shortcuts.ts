@@ -51,8 +51,12 @@ export function collectConversationChangedFiles(tools: ToolStep[]) {
 }
 
 export function collectToolConversationFileChanges(tool: ToolStep): ConversationFileChange[] {
+  if (tool.status === 'error' || tool.isError) {
+    return [];
+  }
+
   const result = parseToolInput(tool.resultText);
-  const resultChanges = extractCodexFileChanges(result);
+  const resultChanges = extractStructuredFileChanges(result);
   if (resultChanges.length > 0) {
     return resultChanges;
   }
@@ -62,7 +66,7 @@ export function collectToolConversationFileChanges(tool: ToolStep): Conversation
     return [];
   }
 
-  const inputChanges = extractCodexFileChanges(input);
+  const inputChanges = extractStructuredFileChanges(input);
   if (inputChanges.length > 0) {
     return inputChanges;
   }
@@ -92,7 +96,7 @@ export function collectToolConversationFileChanges(tool: ToolStep): Conversation
   }];
 }
 
-function extractCodexFileChanges(input: Record<string, unknown> | null) {
+function extractStructuredFileChanges(input: Record<string, unknown> | null) {
   if (!Array.isArray(input?.changes)) {
     return [];
   }
@@ -116,14 +120,17 @@ function extractCodexFileChanges(input: Record<string, unknown> | null) {
       return {
         path,
         name: getFileName(path),
-        kind: normalizeCodexChangeKind(change.kind),
+        kind: normalizeFileChangeKind(change.kind),
+        oldText: getToolInputString(change, ['old_string', 'oldText']),
+        newText: getToolInputString(change, ['new_string', 'newText']),
+        content: getToolInputString(change, ['content']),
         diff: getToolInputString(change, ['diff', 'unified_diff']),
       };
     })
     .filter((change): change is ConversationFileChange => Boolean(change));
 }
 
-function normalizeCodexChangeKind(value: unknown): ConversationFileChange['kind'] {
+function normalizeFileChangeKind(value: unknown): ConversationFileChange['kind'] {
   const kind = typeof value === 'string'
     ? value
     : value && typeof value === 'object'

@@ -1,7 +1,9 @@
 use crate::{
     acp::{
-        AcpEmbeddedResource, AcpError, AcpPermissionPolicy, AcpPromptInput, AcpPromptOutcome,
-        AcpRuntimeEvent, AcpSessionSummary, AcpStdioClient, AcpToolCall, AcpToolCallUpdate,
+        acp_kind_to_change_type, bounded_string, sanitize_file_change_text, sanitize_json_value,
+        sanitize_tool_text, AcpEmbeddedResource, AcpError, AcpFileChange, AcpPermissionPolicy,
+        AcpPromptInput, AcpPromptOutcome, AcpRuntimeEvent, AcpSessionSummary, AcpStdioClient,
+        AcpToolCall, AcpToolCallUpdate,
     },
     agent_channels::AgentChannelService,
     agent_runtime::{
@@ -56,6 +58,16 @@ const MAX_NAME_BYTES: usize = 512;
 const MAX_MIME_TYPE_BYTES: usize = 255;
 const MAX_REASON_BYTES: usize = 4096;
 const MAX_GROK_LOG_TAIL_BYTES: u64 = 512 * 1024;
+const MAX_TOOL_CHANGES: usize = 32;
+const MAX_TOOL_DIFF_BYTES: usize = 256 * 1024;
+const MAX_TOOL_DIFF_LINES: usize = 4_000;
+const MAX_TOOL_RESULT_SUMMARY_BYTES: usize = 4_096;
+/// Total byte budget for the final serialized `changes[]` ToolResult JSON.
+/// Independent of the per-field diff cap, so the complete resultText is always
+/// bounded even when many changes with large diffs are emitted.
+const MAX_TOOL_RESULT_BYTES: usize = 256 * 1024;
+const TOOL_DIFF_TRIM_MARKER: &str = " [Diff 已截断]\n";
+const TOOL_RESULT_TRIM_MARKER: &str = " [Diff 已截断]\n";
 const MODEL_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const AGENT_COMMAND_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const AUTOMATION_EXECUTION_CONTEXT: &str = "[CodeM 自动化执行上下文]\n当前运行是 CodeM 已调度任务的一次执行。只完成本次任务，不要创建、修改、删除或查询任何定时任务、Cron、计划或唤醒任务。";
@@ -1025,17 +1037,9 @@ async fn agent_models(
                 .map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
             let result = async {
                 let initialize = client.initialize(env!("CARGO_PKG_VERSION")).await?;
-                let auth_method_id = initialize
-                    .auth_methods
-                    .iter()
-                    .find(|method| method.id == "cached_token")
-                    .map(|method| method.id.as_str())
-                    .ok_or_else(|| {
-                        AcpError::Protocol(
-                            "Grok Build 没有可用缓存认证，请先运行 grok login".to_string(),
-                        )
-                    })?;
-                client.authenticate(auth_method_id).await?;
+                client
+                    .authenticate_cached_token_if_available(&initialize)
+                    .await?;
                 Ok::<_, AcpError>(initialize)
             }
             .await;
@@ -2032,7 +2036,8 @@ impl LiveAgentRuntime {
         } = run;
         match (self, input) {
             (Self::Acp { client, session_id }, AgentDriverInput::Acp(input)) => {
-                let mut mapper = AcpEventMapper::new(run_id.clone());
+                let mut mapper =
+                    AcpEventMapper::new_for_workspace(run_id.clone(), &config.working_directory);
                 let event_state = state.clone();
                 let turn_started_at = Utc::now();
                 let mut result = tokio::select! {
@@ -2806,14 +2811,8 @@ async fn prepare_acp_session(
         .await
         .map_err(public_acp_error)?;
     if provider_id == GROK_BUILD_PROVIDER_ID && !grok_uses_channel_credentials(environment) {
-        let auth_method_id = initialize
-            .auth_methods
-            .iter()
-            .find(|method| method.id == "cached_token")
-            .map(|method| method.id.as_str())
-            .ok_or_else(|| "Grok Build 没有可用缓存认证，请先运行 grok login".to_string())?;
         client
-            .authenticate(auth_method_id)
+            .authenticate_cached_token_if_available(&initialize)
             .await
             .map_err(public_acp_error)?;
     }
@@ -2935,7 +2934,7 @@ async fn execute_acp_run(task: AcpRunTask) {
         }
     };
 
-    let mut mapper = AcpEventMapper::new(run_id.clone());
+    let mut mapper = AcpEventMapper::new_for_workspace(run_id.clone(), &working_directory);
     let execution = async {
         let (session, resumed) = prepare_acp_session(
             &mut client,
@@ -4096,14 +4095,28 @@ fn agent_runtime_status_from_record(
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct ToolMappingState {
     block_index: u64,
     stopped: bool,
+    /// ACP: exact recognized tool identity from the title. Some providers map
+    /// `write` to the broad ACP `edit` kind, so this more specific evidence
+    /// takes precedence when finalizing a change.
+    acp_operation_hint: Option<String>,
+    /// ACP: latest recognized tool-level change type, used as a fallback when
+    /// path-specific evidence does not carry a `kind`.
+    kind_hint: Option<String>,
+    /// ACP: accumulated file-change evidence merged across tool_call/_update.
+    file_changes: Vec<AcpFileChange>,
+    /// Pi: tool name captured at tool_execution_start.
+    saved_name: Option<String>,
+    /// Pi: tool args captured at tool_execution_start, used at tool_execution_end.
+    saved_args: Option<Value>,
 }
 
 struct AcpEventMapper {
     run_id: String,
+    workspace: Option<PathBuf>,
     next_block_index: u64,
     tools: HashMap<String, ToolMappingState>,
     current_phase: Option<&'static str>,
@@ -4188,30 +4201,41 @@ impl PiEventMapper {
                 if !self.tools.contains_key(&tool_call_id) {
                     let block_index = self.next_block_index;
                     self.next_block_index += 1;
+                    let saved_args = if args.is_null() {
+                        None
+                    } else {
+                        Some(args.clone())
+                    };
                     self.tools.insert(
                         tool_call_id.clone(),
                         ToolMappingState {
                             block_index,
                             stopped: false,
+                            saved_name: Some(tool_name.clone()),
+                            saved_args,
+                            ..Default::default()
                         },
                     );
+                    let safe_args = sanitize_json_value(&args, 0);
                     events.push(AgentRunEvent::ToolStart {
                         run_id: self.run_id.clone(),
                         block_index,
                         tool_use_id: tool_call_id,
                         name: tool_name,
-                        input: Some(args),
+                        input: Some(safe_args),
                     });
                 }
                 false
             }
             PiRuntimeEvent::ToolEnd {
                 tool_call_id,
+                tool_name,
                 result,
                 is_error,
                 ..
             } => {
-                let block_index = if let Some(tool) = self.tools.get_mut(&tool_call_id) {
+                let (block_index, had_start) = if let Some(tool) = self.tools.get_mut(&tool_call_id)
+                {
                     if tool.stopped {
                         return PiMappedEvent {
                             events,
@@ -4220,8 +4244,10 @@ impl PiEventMapper {
                         };
                     }
                     tool.stopped = true;
-                    tool.block_index
+                    (tool.block_index, true)
                 } else {
+                    // Orphan ToolEnd: synthesize a start, but there are no saved
+                    // args, so no file changes can be produced.
                     let block_index = self.next_block_index;
                     self.next_block_index += 1;
                     self.tools.insert(
@@ -4229,21 +4255,29 @@ impl PiEventMapper {
                         ToolMappingState {
                             block_index,
                             stopped: true,
+                            ..Default::default()
                         },
                     );
                     events.push(AgentRunEvent::ToolStart {
                         run_id: self.run_id.clone(),
                         block_index,
                         tool_use_id: tool_call_id.clone(),
-                        name: "Pi 工具".to_string(),
+                        name: tool_name.clone(),
                         input: None,
                     });
-                    block_index
+                    (block_index, false)
+                };
+                let summary = pi_tool_result_text(&result);
+                let content = if !is_error && had_start {
+                    self.build_pi_tool_result_content(&tool_call_id, &tool_name, &summary)
+                        .unwrap_or_else(|| summary.clone())
+                } else {
+                    summary
                 };
                 events.push(AgentRunEvent::ToolResult {
                     run_id: self.run_id.clone(),
                     tool_use_id: tool_call_id.clone(),
-                    content: pi_tool_result_text(&result),
+                    content,
                     is_error,
                 });
                 events.push(AgentRunEvent::ToolStop {
@@ -4277,6 +4311,28 @@ impl PiEventMapper {
             settled,
             extension_ui,
         }
+    }
+
+    /// Build the unified `changes[]` ToolResult content from saved Pi tool args
+    /// on a successful, non-orphan ToolEnd. Returns `None` when the tool did not
+    /// mutate a file (e.g. read/bash), leaving the caller to keep the summary.
+    fn build_pi_tool_result_content(
+        &self,
+        tool_call_id: &str,
+        fallback_tool_name: &str,
+        summary: &str,
+    ) -> Option<String> {
+        let tool = self.tools.get(tool_call_id)?;
+        let args = tool.saved_args.as_ref()?;
+        let tool_name = tool.saved_name.as_deref().unwrap_or(fallback_tool_name);
+        let changes: Vec<Value> = extract_pi_file_changes(tool_name, args)
+            .iter()
+            .filter_map(finalize_file_change)
+            .collect();
+        if changes.is_empty() {
+            return None;
+        }
+        Some(build_tool_result_content(&changes, Some(summary)))
     }
 }
 
@@ -4501,7 +4557,7 @@ async fn cancel_pi_extension_ui_request(
 }
 
 fn pi_tool_result_text(result: &Value) -> String {
-    result
+    let raw = result
         .get("content")
         .and_then(Value::as_array)
         .and_then(|items| {
@@ -4512,7 +4568,550 @@ fn pi_tool_result_text(result: &Value) -> String {
             })
         })
         .map(str::to_string)
-        .unwrap_or_else(|| result.to_string())
+        .unwrap_or_else(|| result.to_string());
+    bounded_string(&sanitize_tool_text(&raw), MAX_TOOL_RESULT_SUMMARY_BYTES)
+}
+
+/// Provider-neutral file-change evidence used to build the unified `changes[]`
+/// contract. Both the ACP mapper (from `AcpFileChange`) and the Pi mapper (from
+/// saved tool args) funnel through this struct before finalization.
+struct FileChangeParts {
+    path: String,
+    kind: Option<String>,
+    move_path: Option<String>,
+    old_text: Option<String>,
+    new_text: Option<String>,
+    content: Option<String>,
+    diff: Option<String>,
+}
+
+/// Build a single normalized change object (`{path, kind, diff?}`) from evidence.
+/// Returns `None` only when the path is empty. Evidence text is sanitized
+/// (sensitive keys redacted, bounded) before diff generation so raw provider
+/// content never reaches history. `diff` is generated from explicit provider
+/// diff, then old/new text, then new-file content/new text, then content;
+/// without diff evidence only `path`/`kind` are emitted (never a fabricated
+/// diff).
+fn finalize_file_change(parts: &FileChangeParts) -> Option<Value> {
+    let path = parts.path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let kind_type = normalize_change_type(parts.kind.as_deref())
+        .unwrap_or("update")
+        .to_string();
+    let mut kind = Map::new();
+    kind.insert("type".to_string(), Value::String(kind_type.clone()));
+    if let Some(move_path) = parts
+        .move_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|move_path| !move_path.is_empty())
+    {
+        kind.insert(
+            "move_path".to_string(),
+            Value::String(bounded_string(move_path, MAX_PATH_BYTES)),
+        );
+    }
+
+    let old_text = parts.old_text.as_deref().map(sanitize_file_change_text);
+    let new_text = parts.new_text.as_deref().map(sanitize_file_change_text);
+    let content = parts.content.as_deref().map(sanitize_file_change_text);
+    let diff = parts
+        .diff
+        .as_deref()
+        .map(sanitize_file_change_text)
+        .filter(|diff| !diff.is_empty())
+        .or_else(|| match (old_text.as_deref(), new_text.as_deref()) {
+            (Some(old_text), Some(new_text)) => build_unified_diff(old_text, new_text),
+            _ => None,
+        })
+        .or_else(|| match kind_type.as_str() {
+            // New file: `newText` (ACP `oldText: null`) or `content` holds the
+            // post-change body, rendered as an all-added diff.
+            "add" => new_text
+                .as_deref()
+                .or(content.as_deref())
+                .and_then(build_add_diff),
+            // Deleted file content is old-state evidence, so it must render as
+            // removals. Other content-only updates stay path-only because no
+            // trustworthy before/after comparison exists.
+            "delete" => old_text
+                .as_deref()
+                .or(content.as_deref())
+                .and_then(build_remove_diff),
+            _ => None,
+        });
+
+    let mut change = Map::new();
+    change.insert(
+        "path".to_string(),
+        Value::String(bounded_string(path, MAX_PATH_BYTES)),
+    );
+    change.insert("kind".to_string(), Value::Object(kind));
+    if let Some(diff) = diff {
+        change.insert("diff".to_string(), Value::String(diff));
+    }
+    Some(Value::Object(change))
+}
+
+/// Serialize the unified `{"status":"completed","changes":[...],"result"?}`
+/// contract into the `ToolResult.content` string. The final JSON is hard-capped
+/// at `MAX_TOOL_RESULT_BYTES` (see `trim_tool_result_json`), so the total
+/// resultText is bounded on top of the per-field diff cap.
+fn build_tool_result_content(changes: &[Value], summary: Option<&str>) -> String {
+    let mut change_list = changes.to_vec();
+    let mut text = serialize_result_json(&change_list, summary);
+    trim_tool_result_json(&mut change_list, &mut text, summary);
+    text
+}
+
+fn serialize_result_json(changes: &[Value], summary: Option<&str>) -> String {
+    let mut object = Map::new();
+    object.insert("status".to_string(), Value::String("completed".to_string()));
+    object.insert(
+        "changes".to_string(),
+        if changes.is_empty() {
+            Value::Null
+        } else {
+            Value::Array(changes.to_vec())
+        },
+    );
+    if let Some(summary) = summary.map(str::trim).filter(|summary| !summary.is_empty()) {
+        object.insert(
+            "result".to_string(),
+            Value::String(bounded_string(summary, MAX_TOOL_RESULT_SUMMARY_BYTES)),
+        );
+    }
+    Value::Object(object).to_string()
+}
+
+/// Enforce the total size cap on the serialized `changes[]` JSON. Diffs are
+/// trimmed from the last change backwards; each mutation re-serializes the
+/// JSON, so the result always parses. Removing `n` raw bytes of a diff always
+/// shrinks the JSON by at least `n` bytes (escaping can only add bytes), so a
+/// partial trim lands under budget in one step; otherwise the whole diff is
+/// dropped and the loop moves to the previous change. Only when no diff is
+/// left (e.g. many near-max paths) are trailing changes dropped.
+fn trim_tool_result_json(changes: &mut Vec<Value>, text: &mut String, summary: Option<&str>) {
+    while text.len() > MAX_TOOL_RESULT_BYTES {
+        let Some(index) = changes
+            .iter()
+            .rposition(|change| change.get("diff").is_some())
+        else {
+            break;
+        };
+        let Some(diff) = changes[index]
+            .get("diff")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            break;
+        };
+        let mut keep = diff.len().saturating_sub(
+            text.len()
+                .saturating_sub(MAX_TOOL_RESULT_BYTES)
+                .saturating_add(TOOL_RESULT_TRIM_MARKER.len()),
+        );
+        while keep > 0 && !diff.is_char_boundary(keep) {
+            keep -= 1;
+        }
+        keep = diff[..keep].rfind('\n').map(|index| index + 1).unwrap_or(0);
+        let object = changes[index]
+            .as_object_mut()
+            .expect("change entry is always an object");
+        if keep == 0 {
+            if diff == TOOL_RESULT_TRIM_MARKER {
+                object.remove("diff");
+            } else {
+                object.insert(
+                    "diff".to_string(),
+                    Value::String(TOOL_RESULT_TRIM_MARKER.to_string()),
+                );
+            }
+        } else {
+            let mut trimmed = String::with_capacity(keep + TOOL_RESULT_TRIM_MARKER.len());
+            trimmed.push_str(&diff[..keep]);
+            trimmed.push_str(TOOL_RESULT_TRIM_MARKER);
+            object.insert("diff".to_string(), Value::String(trimmed));
+        }
+        *text = serialize_result_json(changes, summary);
+    }
+    while text.len() > MAX_TOOL_RESULT_BYTES && !changes.is_empty() {
+        changes.pop();
+        *text = serialize_result_json(changes, summary);
+    }
+}
+
+/// Build a minimal unified-diff body (common prefix/suffix trimmed) from an
+/// explicit old/new snippet, mirroring the frontend snippet renderer so the
+/// review/diff view stays consistent. Returns `None` when old and new match.
+fn build_unified_diff(old_text: &str, new_text: &str) -> Option<String> {
+    let old_text = normalize_diff_text(old_text);
+    let new_text = normalize_diff_text(new_text);
+    if old_text == new_text {
+        return None;
+    }
+    // `str::split` represents an empty string as one empty line. That turns a
+    // new file with `oldText: ""` into a false `-` line, so use `lines()` and
+    // treat truly empty content as zero lines.
+    let old_lines: Vec<&str> = old_text.lines().collect();
+    let new_lines: Vec<&str> = new_text.lines().collect();
+    let mut prefix = 0usize;
+    while prefix < old_lines.len()
+        && prefix < new_lines.len()
+        && old_lines[prefix] == new_lines[prefix]
+    {
+        prefix += 1;
+    }
+    let mut suffix = 0usize;
+    while suffix < old_lines.len() - prefix
+        && suffix < new_lines.len() - prefix
+        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let mut diff = String::new();
+    let mut line_count = 0usize;
+    let mut truncated = false;
+    for line in &old_lines[prefix..old_lines.len() - suffix] {
+        if !append_diff_line(&mut diff, &mut line_count, '-', line) {
+            truncated = true;
+            break;
+        }
+    }
+    if !truncated {
+        for line in &new_lines[prefix..new_lines.len() - suffix] {
+            if !append_diff_line(&mut diff, &mut line_count, '+', line) {
+                truncated = true;
+                break;
+            }
+        }
+    }
+    if truncated {
+        diff.push_str(TOOL_DIFF_TRIM_MARKER);
+    }
+    (!diff.is_empty()).then_some(diff)
+}
+
+/// Build an all-added diff body for a newly written file (no previous content).
+fn build_add_diff(content: &str) -> Option<String> {
+    if content.is_empty() {
+        return None;
+    }
+    let mut diff = String::new();
+    let mut line_count = 0usize;
+    let mut truncated = false;
+    for line in normalize_diff_text(content).lines() {
+        if !append_diff_line(&mut diff, &mut line_count, '+', line) {
+            truncated = true;
+            break;
+        }
+    }
+    if truncated {
+        diff.push_str(TOOL_DIFF_TRIM_MARKER);
+    }
+    (!diff.is_empty()).then_some(diff)
+}
+
+/// Build an all-removed diff body when a delete tool provides the old content.
+fn build_remove_diff(content: &str) -> Option<String> {
+    if content.is_empty() {
+        return None;
+    }
+    let mut diff = String::new();
+    let mut line_count = 0usize;
+    let mut truncated = false;
+    for line in normalize_diff_text(content).lines() {
+        if !append_diff_line(&mut diff, &mut line_count, '-', line) {
+            truncated = true;
+            break;
+        }
+    }
+    if truncated {
+        diff.push_str(TOOL_DIFF_TRIM_MARKER);
+    }
+    (!diff.is_empty()).then_some(diff)
+}
+
+fn append_diff_line(diff: &mut String, line_count: &mut usize, prefix: char, line: &str) -> bool {
+    if *line_count >= MAX_TOOL_DIFF_LINES.saturating_sub(1)
+        || diff.len() + line.len() + 2
+            > MAX_TOOL_DIFF_BYTES.saturating_sub(TOOL_DIFF_TRIM_MARKER.len())
+    {
+        return false;
+    }
+    diff.push(prefix);
+    diff.push_str(line);
+    diff.push('\n');
+    *line_count += 1;
+    true
+}
+
+fn normalize_diff_text(value: &str) -> String {
+    value.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// Merge late-arriving ACP evidence into the accumulated record for a path.
+/// The original old text is retained as the baseline. Later kind, destination,
+/// new content and explicit diff evidence replace earlier partial values.
+fn merge_acp_file_change(existing: &mut AcpFileChange, new_change: &AcpFileChange) {
+    if new_change.kind.is_some() {
+        existing.kind = new_change.kind.clone();
+    }
+    if new_change.move_path.is_some() {
+        existing.move_path = new_change.move_path.clone();
+    }
+    if existing.old_text.is_none() {
+        existing.old_text = new_change.old_text.clone();
+    }
+    if new_change.new_text.is_some() {
+        existing.new_text = new_change.new_text.clone();
+    }
+    if new_change.content.is_some() {
+        existing.content = new_change.content.clone();
+    }
+    if new_change.diff.is_some() {
+        existing.diff = new_change.diff.clone();
+    }
+}
+
+fn merge_file_change_evidence(
+    accumulated: &mut Vec<AcpFileChange>,
+    new_changes: &[AcpFileChange],
+    workspace: Option<&Path>,
+) {
+    for new_change in new_changes {
+        let mut normalized_change = new_change.clone();
+        normalized_change.path = normalize_file_change_path(&normalized_change.path, workspace);
+        if let Some(move_path) = normalized_change.move_path.as_deref() {
+            normalized_change.move_path = Some(normalize_file_change_path(move_path, workspace));
+        }
+        if let Some(existing) = accumulated
+            .iter_mut()
+            .find(|existing| file_change_paths_equal(&existing.path, &normalized_change.path))
+        {
+            merge_acp_file_change(existing, &normalized_change);
+        } else if accumulated.len() < MAX_TOOL_CHANGES {
+            accumulated.push(normalized_change);
+        }
+    }
+}
+
+fn normalize_file_change_path(value: &str, workspace: Option<&Path>) -> String {
+    let normalized = normalize_windows_extended_path(value);
+    let Some(workspace) = workspace else {
+        return normalized;
+    };
+    let normalized_workspace = normalize_windows_extended_path(&workspace.to_string_lossy());
+    if normalized_workspace.is_empty() {
+        return normalized;
+    }
+
+    let prefix_len = normalized_workspace.len();
+    if normalized.len() > prefix_len
+        && normalized.as_bytes().get(prefix_len) == Some(&b'/')
+        && normalized
+            .get(..prefix_len)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&normalized_workspace))
+    {
+        return normalized[prefix_len + 1..].to_string();
+    }
+
+    normalized
+}
+
+fn normalize_windows_extended_path(value: &str) -> String {
+    let normalized = value.trim().replace('\\', "/");
+    let without_prefix = normalized
+        .strip_prefix("//?/UNC/")
+        .map(|path| format!("//{path}"))
+        .or_else(|| normalized.strip_prefix("//?/").map(str::to_string))
+        .unwrap_or(normalized);
+    without_prefix.trim_end_matches('/').to_string()
+}
+
+fn file_change_paths_equal(left: &str, right: &str) -> bool {
+    if is_windows_style_path(left) || is_windows_style_path(right) {
+        left.eq_ignore_ascii_case(right)
+    } else {
+        left == right
+    }
+}
+
+fn is_windows_style_path(value: &str) -> bool {
+    value.as_bytes().get(1) == Some(&b':') || value.starts_with("//")
+}
+
+/// Convert accumulated ACP evidence into the final `changes[]` JSON content for
+/// a successful tool completion. Returns `None` when no structured change can be
+/// produced, leaving the caller free to keep the original summary text.
+fn build_acp_tool_result_content(
+    operation_hint: Option<&str>,
+    kind_hint: Option<&str>,
+    file_changes: &[AcpFileChange],
+    summary: Option<&str>,
+) -> Option<String> {
+    let changes: Vec<Value> = file_changes
+        .iter()
+        .filter_map(|change| {
+            finalize_file_change(&FileChangeParts {
+                path: change.path.clone(),
+                kind: operation_hint
+                    .map(str::to_string)
+                    .or_else(|| change.kind.clone())
+                    .or_else(|| kind_hint.map(str::to_string)),
+                move_path: change.move_path.clone(),
+                old_text: change.old_text.clone(),
+                new_text: change.new_text.clone(),
+                content: change.content.clone(),
+                diff: change.diff.clone(),
+            })
+        })
+        .take(MAX_TOOL_CHANGES)
+        .collect();
+    if changes.is_empty() {
+        return None;
+    }
+    Some(build_tool_result_content(&changes, summary))
+}
+
+/// ACP `kind` deliberately groups several file tools under `edit`. Accept only
+/// an exact, known tool title as secondary operation evidence; descriptive
+/// natural-language titles are intentionally ignored.
+fn acp_tool_name_kind(tool_name: Option<&str>) -> Option<&'static str> {
+    let normalized = tool_name?.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "write" | "create" | "create_file" | "write_file" => Some("add"),
+        "edit" | "edit_file" | "apply_patch" | "patch" => Some("update"),
+        "delete" | "delete_file" | "remove" | "remove_file" => Some("delete"),
+        "move" | "move_file" | "rename" | "rename_file" => Some("move"),
+        _ => None,
+    }
+}
+
+/// Map a Pi tool name to the internal change vocabulary for tools that mutate
+/// files. Returns `None` for non-mutating tools (read/list/bash/...).
+fn pi_tool_name_kind(tool_name: &str) -> Option<&'static str> {
+    let normalized = tool_name.to_ascii_lowercase();
+    match normalized.as_str() {
+        "write" | "create" | "create_file" | "write_file" => Some("add"),
+        "edit" | "edit_file" => Some("update"),
+        "delete" | "delete_file" | "remove" | "remove_file" => Some("delete"),
+        "move" | "move_file" | "rename" | "rename_file" => Some("move"),
+        _ => None,
+    }
+}
+
+fn normalize_change_type(value: Option<&str>) -> Option<&'static str> {
+    match value {
+        Some("add" | "create" | "write") => Some("add"),
+        Some("update" | "edit") => Some("update"),
+        Some("delete" | "remove") => Some("delete"),
+        Some("move" | "rename") => Some("move"),
+        _ => None,
+    }
+}
+
+/// Extract file-change evidence from saved Pi tool args. Reads are excluded
+/// because their args carry no old/new/content/diff signal and no mutating
+/// name. Pi 0.83 `edit` tools pass `path` + `edits: [{oldText, newText}, ...]`
+/// — each segment becomes its own change — with the flat oldText/newText pair
+/// kept as a compatibility fallback. `write` tools pass `path` + `content`.
+fn extract_pi_file_changes(tool_name: &str, args: &Value) -> Vec<FileChangeParts> {
+    let Some(path) = pi_args_string(args, &["path", "file_path", "filePath", "notebook_path"])
+    else {
+        return Vec::new();
+    };
+    if let Some(edits) = args.get("edits").and_then(Value::as_array) {
+        let mut parts = Vec::new();
+        for edit in edits.iter().take(MAX_TOOL_CHANGES) {
+            let Some(old_text) = pi_args_text(edit, &["oldText", "old_string", "oldString"]) else {
+                continue;
+            };
+            let Some(new_text) = pi_args_text(edit, &["newText", "new_string", "newString"]) else {
+                continue;
+            };
+            parts.push(FileChangeParts {
+                path: path.clone(),
+                kind: Some("update".to_string()),
+                move_path: None,
+                old_text: Some(bounded_string(&old_text, MAX_TOOL_DIFF_BYTES)),
+                new_text: Some(bounded_string(&new_text, MAX_TOOL_DIFF_BYTES)),
+                content: None,
+                diff: None,
+            });
+        }
+        if !parts.is_empty() {
+            return parts;
+        }
+    }
+    let diff = pi_args_text(args, &["diff", "patch", "unified_diff"])
+        .filter(|value| !value.trim().is_empty());
+    let old_text = pi_args_text(args, &["old_string", "oldString", "old_text", "oldText"]);
+    let new_text = pi_args_text(args, &["new_string", "newString", "new_text", "newText"]);
+    let content = pi_args_text(args, &["content"]);
+    let change_type = pi_args_string(args, &["change_type", "changeType"])
+        .and_then(|value| normalize_change_type(Some(&value)).map(str::to_string))
+        .or_else(|| pi_tool_name_kind(tool_name).map(str::to_string))
+        .or_else(|| (old_text.is_some() && new_text.is_some()).then(|| "update".to_string()));
+
+    // Need a recognized mutating op plus concrete diff/old/new/content evidence
+    // (or an explicit delete/move). No fabrication when evidence is missing.
+    let has_signal = change_type.is_some()
+        && (diff.is_some()
+            || old_text.is_some()
+            || new_text.is_some()
+            || content.is_some()
+            || matches!(change_type.as_deref(), Some("delete") | Some("move")));
+    if !has_signal {
+        return Vec::new();
+    }
+
+    let move_path = if change_type.as_deref() == Some("move") {
+        pi_args_string(
+            args,
+            &[
+                "to",
+                "destination",
+                "new_path",
+                "newPath",
+                "target_path",
+                "moveTo",
+            ],
+        )
+    } else {
+        None
+    };
+
+    vec![FileChangeParts {
+        path,
+        kind: change_type,
+        move_path,
+        old_text: old_text.map(|value| bounded_string(&value, MAX_TOOL_DIFF_BYTES)),
+        new_text: new_text.map(|value| bounded_string(&value, MAX_TOOL_DIFF_BYTES)),
+        content: content.map(|value| bounded_string(&value, MAX_TOOL_DIFF_BYTES)),
+        diff: diff.map(|value| bounded_string(&value, MAX_TOOL_DIFF_BYTES)),
+    }]
+}
+
+fn pi_args_string(value: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = value
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn pi_args_text(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str).map(str::to_string))
 }
 
 impl CodexEventMapper {
@@ -4614,6 +5213,7 @@ impl CodexEventMapper {
             ToolMappingState {
                 block_index,
                 stopped: false,
+                ..Default::default()
             },
         );
         self.current_phase = Some("tool");
@@ -4685,8 +5285,17 @@ impl CodexEventMapper {
 
 impl AcpEventMapper {
     fn new(run_id: String) -> Self {
+        Self::new_with_workspace(run_id, None)
+    }
+
+    fn new_for_workspace(run_id: String, workspace: &Path) -> Self {
+        Self::new_with_workspace(run_id, Some(workspace.to_path_buf()))
+    }
+
+    fn new_with_workspace(run_id: String, workspace: Option<PathBuf>) -> Self {
         Self {
             run_id,
+            workspace,
             next_block_index: 0,
             tools: HashMap::new(),
             current_phase: None,
@@ -4813,12 +5422,20 @@ impl AcpEventMapper {
             call.input.clone(),
             &mut events,
         );
+        self.record_file_evidence(
+            &call.tool_call_id,
+            Some(&call.title),
+            call.kind.as_deref(),
+            &call.file_changes,
+        );
         if matches!(call.status.as_deref(), Some("completed" | "failed")) {
+            let failed = call.status.as_deref() == Some("failed");
+            let content = self.complete_tool_content(&call.tool_call_id, failed, call.content);
             self.finish_tool(
                 &call.tool_call_id,
                 block_index,
-                call.status.as_deref() == Some("failed"),
-                call.content,
+                failed,
+                content,
                 &mut events,
             );
             if !self.has_open_tools() {
@@ -4849,12 +5466,20 @@ impl AcpEventMapper {
             update.input.clone(),
             &mut events,
         );
+        self.record_file_evidence(
+            &update.tool_call_id,
+            update.title.as_deref(),
+            update.kind.as_deref(),
+            &update.file_changes,
+        );
         if matches!(update.status.as_deref(), Some("completed" | "failed")) {
+            let failed = update.status.as_deref() == Some("failed");
+            let content = self.complete_tool_content(&update.tool_call_id, failed, update.content);
             self.finish_tool(
                 &update.tool_call_id,
                 block_index,
-                update.status.as_deref() == Some("failed"),
-                update.content,
+                failed,
+                content,
                 &mut events,
             );
             if !self.has_open_tools() {
@@ -4862,6 +5487,62 @@ impl AcpEventMapper {
             }
         }
         events
+    }
+
+    /// Accumulate `kind` and structured file-change evidence for a tool call,
+    /// merging late-arriving fields by `toolCallId`.
+    fn record_file_evidence(
+        &mut self,
+        tool_call_id: &str,
+        tool_name: Option<&str>,
+        kind: Option<&str>,
+        file_changes: &[AcpFileChange],
+    ) {
+        let Some(tool) = self.tools.get_mut(tool_call_id) else {
+            return;
+        };
+        if let Some(mapped) = acp_tool_name_kind(tool_name) {
+            tool.acp_operation_hint = Some(mapped.to_string());
+        }
+        if let Some(mapped) = acp_kind_to_change_type(kind) {
+            tool.kind_hint = Some(mapped);
+        }
+        merge_file_change_evidence(
+            &mut tool.file_changes,
+            file_changes,
+            self.workspace.as_deref(),
+        );
+    }
+
+    /// Build the ToolResult content for a completing ACP tool. On failure the
+    /// original summary is kept (no `changes[]`). On success the unified
+    /// `changes[]` JSON is emitted when evidence exists, otherwise the summary.
+    fn complete_tool_content(
+        &mut self,
+        tool_call_id: &str,
+        failed: bool,
+        summary: Option<String>,
+    ) -> Option<String> {
+        if failed {
+            return summary;
+        }
+        let (operation_hint, kind_hint, file_changes) = match self.tools.get(tool_call_id) {
+            Some(tool) => (
+                tool.acp_operation_hint.clone(),
+                tool.kind_hint.clone(),
+                tool.file_changes.clone(),
+            ),
+            None => return summary,
+        };
+        match build_acp_tool_result_content(
+            operation_hint.as_deref(),
+            kind_hint.as_deref(),
+            &file_changes,
+            summary.as_deref(),
+        ) {
+            Some(content) => Some(content),
+            None => summary,
+        }
     }
 
     fn ensure_tool_started(
@@ -4881,6 +5562,7 @@ impl AcpEventMapper {
             ToolMappingState {
                 block_index,
                 stopped: false,
+                ..Default::default()
             },
         );
         self.current_phase = Some("tool");
@@ -6057,8 +6739,8 @@ mod tests {
     };
     use crate::{
         acp::{
-            AcpError, AcpPermissionPolicy, AcpPromptInput, AcpRuntimeEvent, AcpToolCall,
-            AcpToolCallUpdate,
+            AcpError, AcpFileChange, AcpPermissionPolicy, AcpPromptInput, AcpRuntimeEvent,
+            AcpToolCall, AcpToolCallUpdate,
         },
         agent_channels::AgentChannelService,
         agent_runtime::{
@@ -7072,6 +7754,308 @@ mod tests {
         let settled = mapper.map_event(PiRuntimeEvent::AgentSettled);
         assert!(settled.settled);
         assert!(settled.events.is_empty());
+    }
+
+    fn pi_mapper_tool_start(mapper: &mut PiEventMapper, tool_name: &str, args: Value) {
+        mapper.map_event(PiRuntimeEvent::ToolStart {
+            tool_call_id: "tool-1".to_string(),
+            tool_name: tool_name.to_string(),
+            args,
+        });
+    }
+
+    fn pi_mapper_tool_end(
+        mapper: &mut PiEventMapper,
+        tool_name: &str,
+        result: Value,
+        is_error: bool,
+    ) -> Vec<AgentRunEvent> {
+        mapper
+            .map_event(PiRuntimeEvent::ToolEnd {
+                tool_call_id: "tool-1".to_string(),
+                tool_name: tool_name.to_string(),
+                result,
+                is_error,
+            })
+            .events
+    }
+
+    #[test]
+    fn pi_mapper_edit_multiple_segments_produces_one_change_per_edit() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        pi_mapper_tool_start(
+            &mut mapper,
+            "edit",
+            json!({
+                "path": "src/a.ts",
+                "edits": [
+                    { "oldText": "one", "newText": "ONE" },
+                    { "oldText": "two", "newText": "TWO" }
+                ]
+            }),
+        );
+        let ended = pi_mapper_tool_end(
+            &mut mapper,
+            "edit",
+            json!({ "content": [{ "type": "text", "text": "ok" }] }),
+            false,
+        );
+
+        let value = parse_tool_result_json(&ended);
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["result"], "ok");
+        let changes = value["changes"].as_array().expect("changes array");
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0]["path"], "src/a.ts");
+        assert_eq!(changes[0]["kind"]["type"], "update");
+        assert_eq!(changes[0]["diff"], "-one\n+ONE\n");
+        assert_eq!(changes[1]["diff"], "-two\n+TWO\n");
+    }
+
+    #[test]
+    fn pi_mapper_edit_preserves_empty_segments_and_whitespace() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        pi_mapper_tool_start(
+            &mut mapper,
+            "edit",
+            json!({
+                "path": "src/a.ts",
+                "edits": [
+                    { "oldText": "", "newText": "  inserted\n" },
+                    { "oldText": "tail\n", "newText": "" }
+                ]
+            }),
+        );
+        let ended = pi_mapper_tool_end(&mut mapper, "edit", json!({"text": "ok"}), false);
+
+        let value = parse_tool_result_json(&ended);
+        let changes = value["changes"].as_array().expect("changes array");
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0]["diff"], "+  inserted\n");
+        assert_eq!(changes[1]["diff"], "-tail\n");
+    }
+
+    #[test]
+    fn pi_mapper_edit_flat_old_new_pair_stays_compatible() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        pi_mapper_tool_start(
+            &mut mapper,
+            "edit",
+            json!({ "path": "src/a.ts", "oldText": "one", "newText": "ONE" }),
+        );
+        let ended = pi_mapper_tool_end(&mut mapper, "edit", json!({"text": "ok"}), false);
+
+        let value = parse_tool_result_json(&ended);
+        assert_eq!(value["changes"].as_array().map(Vec::len), Some(1));
+        assert_eq!(value["changes"][0]["kind"]["type"], "update");
+        assert_eq!(value["changes"][0]["diff"], "-one\n+ONE\n");
+    }
+
+    #[test]
+    fn pi_mapper_write_emits_add_change_with_content_diff() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        pi_mapper_tool_start(
+            &mut mapper,
+            "write",
+            json!({ "path": "src/new.ts", "content": "line1\nline2" }),
+        );
+        let ended = pi_mapper_tool_end(&mut mapper, "write", json!({"text": "done"}), false);
+
+        let value = parse_tool_result_json(&ended);
+        assert_eq!(value["changes"][0]["path"], "src/new.ts");
+        assert_eq!(value["changes"][0]["kind"]["type"], "add");
+        assert_eq!(value["changes"][0]["diff"], "+line1\n+line2\n");
+    }
+
+    #[test]
+    fn pi_mapper_empty_write_keeps_the_file_change_without_a_fake_line() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        pi_mapper_tool_start(
+            &mut mapper,
+            "write",
+            json!({ "path": "src/empty.ts", "content": "" }),
+        );
+        let ended = pi_mapper_tool_end(&mut mapper, "write", json!({"text": "done"}), false);
+
+        let value = parse_tool_result_json(&ended);
+        assert_eq!(value["changes"][0]["path"], "src/empty.ts");
+        assert_eq!(value["changes"][0]["kind"]["type"], "add");
+        assert!(value["changes"][0].get("diff").is_none());
+    }
+
+    #[test]
+    fn pi_mapper_content_only_update_stays_path_only() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        pi_mapper_tool_start(
+            &mut mapper,
+            "edit",
+            json!({ "path": "src/a.ts", "content": "full replacement without old state" }),
+        );
+        let ended = pi_mapper_tool_end(&mut mapper, "edit", json!({"text": "done"}), false);
+
+        let value = parse_tool_result_json(&ended);
+        assert_eq!(value["changes"][0]["path"], "src/a.ts");
+        assert_eq!(value["changes"][0]["kind"]["type"], "update");
+        assert!(value["changes"][0].get("diff").is_none());
+    }
+
+    #[test]
+    fn pi_mapper_delete_content_renders_removed_lines() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        pi_mapper_tool_start(
+            &mut mapper,
+            "delete",
+            json!({ "path": "src/old.ts", "content": "line1\nline2" }),
+        );
+        let ended = pi_mapper_tool_end(&mut mapper, "delete", json!({"text": "done"}), false);
+
+        let value = parse_tool_result_json(&ended);
+        assert_eq!(value["changes"][0]["kind"]["type"], "delete");
+        assert_eq!(value["changes"][0]["diff"], "-line1\n-line2\n");
+    }
+
+    #[test]
+    fn pi_mapper_does_not_infer_a_file_change_from_unknown_tool_content() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        pi_mapper_tool_start(
+            &mut mapper,
+            "credit_report",
+            json!({ "path": "report.json", "content": "not a file write", "change_type": "other" }),
+        );
+        let ended =
+            pi_mapper_tool_end(&mut mapper, "credit_report", json!({"text": "done"}), false);
+
+        let content = result_content_of(&ended).expect("tool result");
+        assert!(!content.contains("changes"));
+        assert!(content.contains("done"));
+    }
+
+    #[test]
+    fn pi_mapper_read_tool_keeps_summary_without_changes() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        pi_mapper_tool_start(&mut mapper, "read", json!({ "path": "README.md" }));
+        let ended = pi_mapper_tool_end(
+            &mut mapper,
+            "read",
+            json!({ "content": [{ "type": "text", "text": "ok" }] }),
+            false,
+        );
+
+        let content = result_content_of(&ended).expect("tool result");
+        assert_eq!(content, "ok");
+        assert!(!content.contains("changes"));
+    }
+
+    #[test]
+    fn pi_mapper_failed_tool_end_keeps_summary_without_changes() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        pi_mapper_tool_start(
+            &mut mapper,
+            "edit",
+            json!({ "path": "src/a.ts", "oldText": "one", "newText": "ONE" }),
+        );
+        let failed = pi_mapper_tool_end(
+            &mut mapper,
+            "edit",
+            json!({ "content": [{ "type": "text", "text": "boom" }] }),
+            true,
+        );
+
+        assert!(matches!(
+            failed.as_slice(),
+            [AgentRunEvent::ToolResult { content, is_error: true, .. }, AgentRunEvent::ToolStop { .. }]
+                if content == "boom"
+        ));
+    }
+
+    #[test]
+    fn pi_mapper_orphan_tool_end_keeps_summary_without_changes() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        let ended = pi_mapper_tool_end(
+            &mut mapper,
+            "write",
+            json!({ "content": [{ "type": "text", "text": "ok" }] }),
+            false,
+        );
+
+        assert!(matches!(
+            ended.as_slice(),
+            [
+                AgentRunEvent::ToolStart { input: None, .. },
+                AgentRunEvent::ToolResult { content, .. },
+                AgentRunEvent::ToolStop { .. }
+            ] if content == "ok"
+        ));
+    }
+
+    #[test]
+    fn pi_mapper_duplicate_tool_end_is_idempotent() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        pi_mapper_tool_start(
+            &mut mapper,
+            "write",
+            json!({ "path": "src/new.ts", "content": "line1" }),
+        );
+        let first = pi_mapper_tool_end(&mut mapper, "write", json!({"text": "ok"}), false);
+        let duplicate = pi_mapper_tool_end(&mut mapper, "write", json!({"text": "again"}), false);
+
+        assert_eq!(
+            parse_tool_result_json(&first)["changes"][0]["kind"]["type"],
+            "add"
+        );
+        assert!(duplicate.is_empty());
+    }
+
+    #[test]
+    fn pi_mapper_sanitizes_sensitive_write_content() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        pi_mapper_tool_start(
+            &mut mapper,
+            "write",
+            json!({ "path": ".env", "content": "api_key=super-secret-value\nhello" }),
+        );
+        let ended = pi_mapper_tool_end(&mut mapper, "write", json!({"text": "ok"}), false);
+
+        let content = result_content_of(&ended).expect("tool result");
+        assert!(!content.contains("super-secret-value"));
+        let value: Value = serde_json::from_str(content).expect("unified result is JSON");
+        let diff = value["changes"][0]["diff"].as_str().expect("add diff");
+        assert!(diff.contains("[已脱敏]"));
+        assert!(diff.contains("+hello"));
+    }
+
+    #[test]
+    fn pi_mapper_bounds_base64_like_bodies_to_total_budget() {
+        let mut mapper = PiEventMapper::new("run-pi-1".to_string());
+        let base64_body = (0..1_200)
+            .map(|_| format!("{}\n", "A".repeat(240)))
+            .collect::<String>();
+        let started = mapper.map_event(PiRuntimeEvent::ToolStart {
+            tool_call_id: "tool-1".to_string(),
+            tool_name: "write".to_string(),
+            args: json!({ "path": "data.bin", "content": base64_body }),
+        });
+        assert!(matches!(
+            started.events.as_slice(),
+            [AgentRunEvent::ToolStart { input: Some(input), .. }]
+                if input["content"].as_str().is_some_and(|value| {
+                    value.contains("[base64 已省略]") && !value.contains(&"A".repeat(128))
+                })
+        ));
+        let ended = pi_mapper_tool_end(&mut mapper, "write", json!({"text": "ok"}), false);
+
+        let content = result_content_of(&ended).expect("tool result");
+        assert!(
+            content.len() <= super::MAX_TOOL_RESULT_BYTES,
+            "resultText {} bytes exceeds total budget",
+            content.len()
+        );
+        let value: Value = serde_json::from_str(content).expect("trimmed JSON stays parseable");
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["changes"][0]["path"], "data.bin");
+        let diff = value["changes"][0]["diff"].as_str().expect("safe diff");
+        assert!(diff.contains("[base64 已省略]"));
+        assert!(!diff.contains(&"A".repeat(128)));
     }
 
     #[tokio::test]
@@ -8538,6 +9522,7 @@ process.stdout.write(JSON.stringify({ prompts, writeResult, bashResult, autoResu
                 status: Some("in_progress".to_string()),
                 input: Some(json!({ "path": "README.md" })),
                 content: None,
+                file_changes: Vec::new(),
             },
         });
         let completed = mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
@@ -8548,6 +9533,7 @@ process.stdout.write(JSON.stringify({ prompts, writeResult, bashResult, autoResu
                 status: Some("completed".to_string()),
                 input: None,
                 content: Some("ok".to_string()),
+                file_changes: Vec::new(),
             },
         });
         let duplicate = mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
@@ -8558,6 +9544,7 @@ process.stdout.write(JSON.stringify({ prompts, writeResult, bashResult, autoResu
                 status: Some("completed".to_string()),
                 input: None,
                 content: Some("duplicate".to_string()),
+                file_changes: Vec::new(),
             },
         });
         let usage = mapper.map_event(AcpRuntimeEvent::Usage {
@@ -8615,6 +9602,548 @@ process.stdout.write(JSON.stringify({ prompts, writeResult, bashResult, autoResu
                 && usage.model_context_window == Some(200000)
         ));
         assert!(duplicate.is_empty());
+    }
+
+    fn result_content_of(events: &[AgentRunEvent]) -> Option<&str> {
+        events.iter().find_map(|event| match event {
+            AgentRunEvent::ToolResult { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+    }
+
+    fn parse_tool_result_json(events: &[AgentRunEvent]) -> Value {
+        let content = result_content_of(events).expect("tool produced a result");
+        serde_json::from_str(content).expect("unified result is JSON")
+    }
+
+    #[test]
+    fn acp_mapper_merges_initial_call_and_late_update_evidence_into_one_change() {
+        let mut mapper = AcpEventMapper::new("run-1".to_string());
+        let start = mapper.map_event(AcpRuntimeEvent::ToolCall {
+            call: AcpToolCall {
+                tool_call_id: "tool-1".to_string(),
+                title: "编辑文件".to_string(),
+                kind: Some("edit".to_string()),
+                status: Some("in_progress".to_string()),
+                input: None,
+                content: None,
+                file_changes: vec![AcpFileChange {
+                    path: "src/a.ts".to_string(),
+                    kind: Some("update".to_string()),
+                    old_text: Some("const a = 1;".to_string()),
+                    ..Default::default()
+                }],
+            },
+        });
+        let completed = mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
+            update: AcpToolCallUpdate {
+                tool_call_id: "tool-1".to_string(),
+                title: None,
+                kind: None,
+                status: Some("completed".to_string()),
+                input: None,
+                content: Some("ok".to_string()),
+                file_changes: vec![AcpFileChange {
+                    path: "src/a.ts".to_string(),
+                    new_text: Some("const a = 2;".to_string()),
+                    ..Default::default()
+                }],
+            },
+        });
+
+        assert!(matches!(
+            start.as_slice(),
+            [AgentRunEvent::ToolStart { .. }]
+        ));
+        let value = parse_tool_result_json(&completed);
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["result"], "ok");
+        let changes = value["changes"].as_array().expect("changes array");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0]["path"], "src/a.ts");
+        assert_eq!(changes[0]["kind"]["type"], "update");
+        assert_eq!(changes[0]["diff"], "-const a = 1;\n+const a = 2;\n");
+    }
+
+    #[test]
+    fn acp_mapper_uses_the_latest_new_text_and_preserves_empty_content() {
+        let mut mapper = AcpEventMapper::new("run-1".to_string());
+        mapper.map_event(AcpRuntimeEvent::ToolCall {
+            call: AcpToolCall {
+                tool_call_id: "tool-1".to_string(),
+                title: "编辑文件".to_string(),
+                kind: Some("edit".to_string()),
+                status: Some("in_progress".to_string()),
+                input: None,
+                content: None,
+                file_changes: vec![AcpFileChange {
+                    path: "src/a.ts".to_string(),
+                    kind: Some("update".to_string()),
+                    old_text: Some("  old\n".to_string()),
+                    new_text: Some("partial".to_string()),
+                    ..Default::default()
+                }],
+            },
+        });
+        let completed = mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
+            update: AcpToolCallUpdate {
+                tool_call_id: "tool-1".to_string(),
+                title: None,
+                kind: None,
+                status: Some("completed".to_string()),
+                input: None,
+                content: Some("done".to_string()),
+                file_changes: vec![AcpFileChange {
+                    path: "src/a.ts".to_string(),
+                    kind: Some("update".to_string()),
+                    new_text: Some("".to_string()),
+                    ..Default::default()
+                }],
+            },
+        });
+
+        let value = parse_tool_result_json(&completed);
+        assert_eq!(value["changes"][0]["diff"], "-  old\n");
+    }
+
+    #[test]
+    fn acp_mapper_new_file_null_oldtext_emits_add_change_with_diff() {
+        let mut mapper = AcpEventMapper::new("run-1".to_string());
+        mapper.map_event(AcpRuntimeEvent::ToolCall {
+            call: AcpToolCall {
+                tool_call_id: "tool-1".to_string(),
+                title: "写入文件".to_string(),
+                kind: Some("write".to_string()),
+                status: Some("in_progress".to_string()),
+                input: None,
+                content: None,
+                file_changes: vec![AcpFileChange {
+                    path: "src/new.ts".to_string(),
+                    kind: Some("add".to_string()),
+                    new_text: Some("export const x = 1;".to_string()),
+                    ..Default::default()
+                }],
+            },
+        });
+        let completed = mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
+            update: AcpToolCallUpdate {
+                tool_call_id: "tool-1".to_string(),
+                title: None,
+                kind: None,
+                status: Some("completed".to_string()),
+                input: None,
+                content: Some("written".to_string()),
+                file_changes: Vec::new(),
+            },
+        });
+
+        let value = parse_tool_result_json(&completed);
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["result"], "written");
+        let changes = value["changes"].as_array().expect("changes array");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0]["path"], "src/new.ts");
+        assert_eq!(changes[0]["kind"]["type"], "add");
+        assert_eq!(changes[0]["diff"], "+export const x = 1;\n");
+    }
+
+    #[test]
+    fn acp_mapper_uses_exact_write_title_to_refine_broad_edit_kind() {
+        let mut mapper = AcpEventMapper::new("run-1".to_string());
+        mapper.map_event(AcpRuntimeEvent::ToolCall {
+            call: AcpToolCall {
+                tool_call_id: "tool-write".to_string(),
+                title: "write".to_string(),
+                kind: Some("edit".to_string()),
+                status: Some("pending".to_string()),
+                input: None,
+                content: None,
+                file_changes: Vec::new(),
+            },
+        });
+        mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
+            update: AcpToolCallUpdate {
+                tool_call_id: "tool-write".to_string(),
+                title: Some("write".to_string()),
+                kind: Some("edit".to_string()),
+                status: Some("in_progress".to_string()),
+                input: Some(json!({
+                    "filePath": "D:\\ai_proj\\codem\\docs\\文件输出测试.md",
+                    "content": "第一行中文内容\n第二行中文内容\n",
+                })),
+                content: None,
+                file_changes: vec![AcpFileChange {
+                    path: "D:\\ai_proj\\codem\\docs\\文件输出测试.md".to_string(),
+                    kind: Some("update".to_string()),
+                    content: Some("第一行中文内容\n第二行中文内容\n".to_string()),
+                    ..Default::default()
+                }],
+            },
+        });
+        let completed = mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
+            update: AcpToolCallUpdate {
+                tool_call_id: "tool-write".to_string(),
+                title: None,
+                kind: None,
+                status: Some("completed".to_string()),
+                input: None,
+                content: Some("Wrote file successfully.".to_string()),
+                file_changes: Vec::new(),
+            },
+        });
+
+        let value = parse_tool_result_json(&completed);
+        assert_eq!(value["changes"][0]["kind"]["type"], "add");
+        assert_eq!(
+            value["changes"][0]["diff"],
+            "+第一行中文内容\n+第二行中文内容\n"
+        );
+    }
+
+    #[test]
+    fn acp_mapper_deduplicates_extended_absolute_and_relative_write_paths() {
+        let mut mapper =
+            AcpEventMapper::new_for_workspace("run-1".to_string(), Path::new("D:\\ai_proj\\codem"));
+        mapper.map_event(AcpRuntimeEvent::ToolCall {
+            call: AcpToolCall {
+                tool_call_id: "tool-write".to_string(),
+                title: "write".to_string(),
+                kind: Some("edit".to_string()),
+                status: Some("in_progress".to_string()),
+                input: None,
+                content: None,
+                file_changes: Vec::new(),
+            },
+        });
+        let completed = mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
+            update: AcpToolCallUpdate {
+                tool_call_id: "tool-write".to_string(),
+                title: None,
+                kind: Some("edit".to_string()),
+                status: Some("completed".to_string()),
+                input: None,
+                content: Some("written".to_string()),
+                file_changes: vec![
+                    AcpFileChange {
+                        path: r"\\?\D:\ai_proj\codem\docs\中文.md".to_string(),
+                        kind: Some("add".to_string()),
+                        old_text: Some(String::new()),
+                        new_text: Some("第一行\n第二行".to_string()),
+                        ..Default::default()
+                    },
+                    AcpFileChange {
+                        path: "docs/中文.md".to_string(),
+                        kind: Some("update".to_string()),
+                        content: Some("第一行\n第二行".to_string()),
+                        ..Default::default()
+                    },
+                ],
+            },
+        });
+
+        let value = parse_tool_result_json(&completed);
+        let changes = value["changes"].as_array().expect("changes array");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0]["path"], "docs/中文.md");
+        assert_eq!(changes[0]["kind"]["type"], "add");
+        assert_eq!(changes[0]["diff"], "+第一行\n+第二行\n");
+    }
+
+    #[test]
+    fn acp_mapper_failed_tool_keeps_summary_without_changes() {
+        let mut mapper = AcpEventMapper::new("run-1".to_string());
+        mapper.map_event(AcpRuntimeEvent::ToolCall {
+            call: AcpToolCall {
+                tool_call_id: "tool-1".to_string(),
+                title: "编辑文件".to_string(),
+                kind: Some("edit".to_string()),
+                status: Some("in_progress".to_string()),
+                input: None,
+                content: None,
+                file_changes: vec![AcpFileChange {
+                    path: "src/a.ts".to_string(),
+                    kind: Some("update".to_string()),
+                    old_text: Some("const a = 1;".to_string()),
+                    new_text: Some("const a = 2;".to_string()),
+                    ..Default::default()
+                }],
+            },
+        });
+        let failed = mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
+            update: AcpToolCallUpdate {
+                tool_call_id: "tool-1".to_string(),
+                title: None,
+                kind: None,
+                status: Some("failed".to_string()),
+                input: None,
+                content: Some("boom".to_string()),
+                file_changes: Vec::new(),
+            },
+        });
+
+        assert!(matches!(
+            failed.as_slice(),
+            [
+                AgentRunEvent::ToolResult { content, is_error: true, .. },
+                AgentRunEvent::ToolStop { .. },
+                AgentRunEvent::Phase { .. }
+            ] if content == "boom"
+        ));
+    }
+
+    #[test]
+    fn acp_mapper_duplicate_terminal_update_is_idempotent_with_changes() {
+        let mut mapper = AcpEventMapper::new("run-1".to_string());
+        mapper.map_event(AcpRuntimeEvent::ToolCall {
+            call: AcpToolCall {
+                tool_call_id: "tool-1".to_string(),
+                title: "编辑文件".to_string(),
+                kind: Some("edit".to_string()),
+                status: Some("in_progress".to_string()),
+                input: None,
+                content: None,
+                file_changes: vec![AcpFileChange {
+                    path: "src/a.ts".to_string(),
+                    kind: Some("update".to_string()),
+                    old_text: Some("one".to_string()),
+                    new_text: Some("ONE".to_string()),
+                    ..Default::default()
+                }],
+            },
+        });
+        let first = mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
+            update: AcpToolCallUpdate {
+                tool_call_id: "tool-1".to_string(),
+                title: None,
+                kind: None,
+                status: Some("completed".to_string()),
+                input: None,
+                content: Some("ok".to_string()),
+                file_changes: Vec::new(),
+            },
+        });
+        let duplicate = mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
+            update: AcpToolCallUpdate {
+                tool_call_id: "tool-1".to_string(),
+                title: None,
+                kind: None,
+                status: Some("completed".to_string()),
+                input: None,
+                content: Some("again".to_string()),
+                file_changes: vec![AcpFileChange {
+                    path: "src/a.ts".to_string(),
+                    kind: Some("update".to_string()),
+                    old_text: Some("one".to_string()),
+                    new_text: Some("ONE".to_string()),
+                    ..Default::default()
+                }],
+            },
+        });
+
+        let value = parse_tool_result_json(&first);
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["changes"][0]["diff"], "-one\n+ONE\n");
+        assert!(duplicate.is_empty());
+    }
+
+    #[test]
+    fn acp_mapper_delete_and_move_evidence_emit_path_only_changes() {
+        let mut mapper = AcpEventMapper::new("run-1".to_string());
+        mapper.map_event(AcpRuntimeEvent::ToolCall {
+            call: AcpToolCall {
+                tool_call_id: "tool-delete".to_string(),
+                title: "删除文件".to_string(),
+                kind: Some("delete".to_string()),
+                status: Some("in_progress".to_string()),
+                input: None,
+                content: None,
+                file_changes: vec![AcpFileChange {
+                    path: "gone.ts".to_string(),
+                    kind: Some("delete".to_string()),
+                    ..Default::default()
+                }],
+            },
+        });
+        let deleted = mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
+            update: AcpToolCallUpdate {
+                tool_call_id: "tool-delete".to_string(),
+                title: None,
+                kind: None,
+                status: Some("completed".to_string()),
+                input: None,
+                content: Some("ok".to_string()),
+                file_changes: Vec::new(),
+            },
+        });
+        mapper.map_event(AcpRuntimeEvent::ToolCall {
+            call: AcpToolCall {
+                tool_call_id: "tool-move".to_string(),
+                title: "移动文件".to_string(),
+                kind: Some("move".to_string()),
+                status: Some("in_progress".to_string()),
+                input: None,
+                content: None,
+                file_changes: vec![AcpFileChange {
+                    path: "a.ts".to_string(),
+                    kind: Some("move".to_string()),
+                    move_path: Some("b.ts".to_string()),
+                    ..Default::default()
+                }],
+            },
+        });
+        let moved = mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
+            update: AcpToolCallUpdate {
+                tool_call_id: "tool-move".to_string(),
+                title: None,
+                kind: None,
+                status: Some("completed".to_string()),
+                input: None,
+                content: Some("ok".to_string()),
+                file_changes: Vec::new(),
+            },
+        });
+
+        let deleted_value = parse_tool_result_json(&deleted);
+        assert_eq!(deleted_value["changes"][0]["path"], "gone.ts");
+        assert_eq!(deleted_value["changes"][0]["kind"]["type"], "delete");
+        assert!(deleted_value["changes"][0].get("diff").is_none());
+        let moved_value = parse_tool_result_json(&moved);
+        assert_eq!(moved_value["changes"][0]["path"], "a.ts");
+        assert_eq!(moved_value["changes"][0]["kind"]["type"], "move");
+        assert_eq!(moved_value["changes"][0]["kind"]["move_path"], "b.ts");
+        assert!(moved_value["changes"][0].get("diff").is_none());
+    }
+
+    #[test]
+    fn acp_mapper_sanitizes_sensitive_evidence_before_storing() {
+        let mut mapper = AcpEventMapper::new("run-1".to_string());
+        mapper.map_event(AcpRuntimeEvent::ToolCall {
+            call: AcpToolCall {
+                tool_call_id: "tool-1".to_string(),
+                title: "编辑配置".to_string(),
+                kind: Some("edit".to_string()),
+                status: Some("in_progress".to_string()),
+                input: None,
+                content: None,
+                file_changes: vec![AcpFileChange {
+                    path: ".env".to_string(),
+                    kind: Some("update".to_string()),
+                    old_text: Some("api_key=old-secret\nkeep-old".to_string()),
+                    new_text: Some("api_key=new-secret\nkeep-new".to_string()),
+                    ..Default::default()
+                }],
+            },
+        });
+        let completed = mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
+            update: AcpToolCallUpdate {
+                tool_call_id: "tool-1".to_string(),
+                title: None,
+                kind: None,
+                status: Some("completed".to_string()),
+                input: None,
+                content: Some("ok".to_string()),
+                file_changes: Vec::new(),
+            },
+        });
+
+        let content = result_content_of(&completed).expect("tool result");
+        assert!(!content.contains("old-secret"));
+        assert!(!content.contains("new-secret"));
+        let value: Value = serde_json::from_str(content).expect("unified result is JSON");
+        assert_eq!(value["changes"][0]["diff"], "-keep-old\n+keep-new\n");
+    }
+
+    #[test]
+    fn acp_mapper_bounds_total_result_json_even_with_many_large_diffs() {
+        let mut mapper = AcpEventMapper::new("run-1".to_string());
+        let large_body = |prefix: &str| {
+            (0..5_000)
+                .map(|index| format!("{prefix}-{index:04}-{}\n", "x".repeat(60)))
+                .collect::<String>()
+        };
+        mapper.map_event(AcpRuntimeEvent::ToolCall {
+            call: AcpToolCall {
+                tool_call_id: "tool-1".to_string(),
+                title: "编辑文件".to_string(),
+                kind: Some("edit".to_string()),
+                status: Some("in_progress".to_string()),
+                input: None,
+                content: None,
+                file_changes: vec![
+                    AcpFileChange {
+                        path: "src/a.ts".to_string(),
+                        kind: Some("update".to_string()),
+                        old_text: Some(large_body("old-a")),
+                        new_text: Some(large_body("new-a")),
+                        ..Default::default()
+                    },
+                    AcpFileChange {
+                        path: "src/b.ts".to_string(),
+                        kind: Some("update".to_string()),
+                        old_text: Some(large_body("old-b")),
+                        new_text: Some(large_body("new-b")),
+                        ..Default::default()
+                    },
+                ],
+            },
+        });
+        let completed = mapper.map_event(AcpRuntimeEvent::ToolCallUpdate {
+            update: AcpToolCallUpdate {
+                tool_call_id: "tool-1".to_string(),
+                title: None,
+                kind: None,
+                status: Some("completed".to_string()),
+                input: None,
+                content: Some("ok".to_string()),
+                file_changes: Vec::new(),
+            },
+        });
+
+        let content = result_content_of(&completed).expect("tool result");
+        assert!(
+            content.len() <= super::MAX_TOOL_RESULT_BYTES,
+            "resultText {} bytes exceeds total budget",
+            content.len()
+        );
+        let value: Value = serde_json::from_str(content).expect("trimmed JSON stays parseable");
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["changes"].as_array().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn tool_result_trim_marks_a_single_oversized_diff_line() {
+        let content = super::build_tool_result_content(
+            &[json!({
+                "path": "src/a.ts",
+                "kind": { "type": "update" },
+                "diff": format!("+{}", "x".repeat(super::MAX_TOOL_RESULT_BYTES)),
+            })],
+            None,
+        );
+
+        assert!(content.len() <= super::MAX_TOOL_RESULT_BYTES);
+        let value: Value = serde_json::from_str(&content).expect("bounded result stays valid JSON");
+        assert_eq!(value["changes"][0]["diff"], super::TOOL_RESULT_TRIM_MARKER);
+    }
+
+    #[test]
+    fn acp_file_evidence_stops_accumulating_after_the_contract_limit() {
+        let incoming = (0..(super::MAX_TOOL_CHANGES + 8))
+            .map(|index| AcpFileChange {
+                path: format!("src/{index}.ts"),
+                kind: Some("update".to_string()),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let mut accumulated = Vec::new();
+
+        super::merge_file_change_evidence(&mut accumulated, &incoming, None);
+
+        assert_eq!(accumulated.len(), super::MAX_TOOL_CHANGES);
+        assert_eq!(
+            accumulated.last().map(|change| change.path.as_str()),
+            Some("src/31.ts")
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ export type ConversationToolPreview = {
   filePath: string;
   fileName: string;
   diff?: string;
+  diffTruncated?: boolean;
   beforeText: string;
   afterText: string;
   additions: number;
@@ -36,7 +37,15 @@ export type ConversationUndoChange = {
   operations: ConversationUndoOperation[];
 };
 
+const MAX_CONVERSATION_REVIEW_DIFF_LINES = 4_000;
+const MAX_CONVERSATION_REVIEW_DIFF_CHARS = 256 * 1024;
+const CONVERSATION_REVIEW_DIFF_TRUNCATION_LINE = '@@ CodeM Diff 预览已截断 @@';
+
 export function buildChangedFileReviewRequest(file: ConversationChangedFileGroup) {
+  if (file.previews.length === 0) {
+    return null;
+  }
+
   const request = buildConversationPreviewRequest({
     filePath: file.path,
     fileName: file.name,
@@ -71,7 +80,7 @@ export function buildConversationUndoChanges(
       continue;
     }
 
-    const normalizedPath = normalizeConversationUndoPath(change.path, projectPath);
+    const normalizedPath = normalizeConversationFilePath(change.path, projectPath);
 
     const current = grouped.get(normalizedPath) ?? {
       path: normalizedPath,
@@ -192,7 +201,7 @@ function extractBashDeleteUndoChange(
     return null;
   }
 
-  const normalizedPath = normalizeConversationUndoPath(deletedPath, projectPath);
+  const normalizedPath = normalizeConversationFilePath(deletedPath, projectPath);
   const beforeText = knownFiles.get(normalizedPath);
   if (beforeText === undefined || beforeText === null) {
     return null;
@@ -218,7 +227,7 @@ function buildKnownFileContentMap(turns: ConversationTurn[], projectPath?: strin
         continue;
       }
 
-      const normalizedPath = normalizeConversationUndoPath(change.path, projectPath ?? turn.workspace);
+      const normalizedPath = normalizeConversationFilePath(change.path, projectPath ?? turn.workspace);
       knownFiles.set(normalizedPath, applyKnownFileOperation(knownFiles.get(normalizedPath), change.operation));
     }
   }
@@ -396,7 +405,7 @@ function normalizePreviewText(value: string) {
   return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
 
-function normalizeConversationUndoPath(filePath: string, projectPath?: string) {
+export function normalizeConversationFilePath(filePath: string, projectPath?: string) {
   const normalizedFilePath = normalizePathForComparison(filePath);
   if (!projectPath) {
     return normalizedFilePath;
@@ -417,48 +426,110 @@ function normalizeConversationUndoPath(filePath: string, projectPath?: string) {
 }
 
 function normalizePathForComparison(value: string) {
-  return value.replace(/\\/g, '/').replace(/\/+$/, '');
+  const normalized = value.replace(/\\/g, '/');
+  const withoutExtendedPrefix = normalized.startsWith('//?/UNC/')
+    ? `//${normalized.slice('//?/UNC/'.length)}`
+    : normalized.startsWith('//?/')
+      ? normalized.slice('//?/'.length)
+      : normalized;
+  return withoutExtendedPrefix.replace(/\/+$/, '');
 }
 
 function buildConversationReviewDiff(file: ConversationChangedFileGroup) {
   const lines = [`--- a/${file.path}`, `+++ b/${file.path}`];
+  let truncated = false;
 
   file.previews.forEach((preview, index) => {
+    if (truncated) {
+      return;
+    }
+
     if (preview.diff) {
-      lines.push(...buildNativeDiffLines(preview.diff));
+      const nativeDiff = buildNativeDiffLines(preview.diff);
+      const appended = appendBoundedReviewDiffLines(lines, nativeDiff.lines);
+      truncated = Boolean(preview.diffTruncated) || nativeDiff.truncated || !appended;
       return;
     }
 
     if (file.previews.length > 1) {
-      lines.push(`@@ ${preview.kind === 'write' ? '新增片段' : '编辑片段'} ${index + 1} @@`);
+      truncated = !appendBoundedReviewDiffLines(
+        lines,
+        [`@@ ${preview.kind === 'write' ? '新增片段' : '编辑片段'} ${index + 1} @@`],
+      );
+      if (truncated) {
+        return;
+      }
     }
 
-    lines.push(...buildPreviewDiffLines(preview));
+    const previewDiff = buildPreviewDiffLines(preview);
+    const appended = appendBoundedReviewDiffLines(lines, previewDiff.lines);
+    truncated = Boolean(preview.diffTruncated) || previewDiff.truncated || !appended;
   });
+
+  if (truncated) {
+    lines.push(CONVERSATION_REVIEW_DIFF_TRUNCATION_LINE);
+  }
 
   return lines;
 }
 
+function appendBoundedReviewDiffLines(target: string[], candidates: string[]) {
+  const reservedLines = 1;
+  const reservedChars = CONVERSATION_REVIEW_DIFF_TRUNCATION_LINE.length + 1;
+  let currentChars = target.reduce((total, line) => total + line.length + 1, 0);
+
+  for (const line of candidates) {
+    if (
+      target.length >= MAX_CONVERSATION_REVIEW_DIFF_LINES - reservedLines ||
+      currentChars + line.length + 1 > MAX_CONVERSATION_REVIEW_DIFF_CHARS - reservedChars
+    ) {
+      return false;
+    }
+
+    target.push(line);
+    currentChars += line.length + 1;
+  }
+
+  return true;
+}
+
 function buildNativeDiffLines(diff: string) {
-  const lines = normalizePreviewText(diff).split('\n');
+  const boundedByChars = diff.slice(0, MAX_CONVERSATION_REVIEW_DIFF_CHARS);
+  let lines = normalizePreviewText(boundedByChars).split('\n');
+  const truncated = diff.length > boundedByChars.length || lines.length > MAX_CONVERSATION_REVIEW_DIFF_LINES;
+  if (diff.length > boundedByChars.length && !/[\r\n]$/.test(boundedByChars)) {
+    lines.pop();
+  }
+  if (lines.length > MAX_CONVERSATION_REVIEW_DIFF_LINES) {
+    lines = lines.slice(0, MAX_CONVERSATION_REVIEW_DIFF_LINES);
+  }
   while (lines.at(-1) === '') {
     lines.pop();
   }
 
-  return lines.filter((line) => (
-    !line.startsWith('diff --git ') &&
-    !line.startsWith('index ') &&
-    !/^---\s/.test(line) &&
-    !/^\+\+\+\s/.test(line)
-  ));
+  return {
+    lines: lines.filter((line) => (
+      !line.startsWith('diff --git ') &&
+      !line.startsWith('index ') &&
+      !/^---\s/.test(line) &&
+      !/^\+\+\+\s/.test(line)
+    )),
+    truncated,
+  };
 }
 
 function buildPreviewDiffLines(preview: ConversationToolPreview) {
-  const beforeLines = splitPreviewLines(preview.beforeText);
-  const afterLines = splitPreviewLines(preview.afterText);
+  const before = splitBoundedPreviewLines(preview.beforeText);
+  const after = splitBoundedPreviewLines(preview.afterText);
+  const beforeLines = before.lines;
+  const afterLines = after.lines;
+  const truncated = before.truncated || after.truncated;
 
   if (preview.kind === 'write') {
-    return afterLines.map((line) => `+${line}`);
+    return {
+      lines: afterLines.map((line) => `+${line}`),
+      truncated,
+    };
   }
 
   let prefix = 0;
@@ -501,9 +572,21 @@ function buildPreviewDiffLines(preview: ConversationToolPreview) {
     lines.push(` ${afterLines[index] ?? ''}`);
   }
 
-  return lines.length > 0 ? lines : [' '];
+  return {
+    lines: lines.length > 0 ? lines : [' '],
+    truncated,
+  };
 }
 
-function splitPreviewLines(value: string) {
-  return normalizePreviewText(value).split('\n');
+function splitBoundedPreviewLines(value: string) {
+  const boundedByChars = value.slice(0, MAX_CONVERSATION_REVIEW_DIFF_CHARS);
+  let lines = normalizePreviewText(boundedByChars).split('\n');
+  const truncated = value.length > boundedByChars.length || lines.length > MAX_CONVERSATION_REVIEW_DIFF_LINES;
+  if (value.length > boundedByChars.length && !/[\r\n]$/.test(boundedByChars)) {
+    lines.pop();
+  }
+  if (lines.length > MAX_CONVERSATION_REVIEW_DIFF_LINES) {
+    lines = lines.slice(0, MAX_CONVERSATION_REVIEW_DIFF_LINES);
+  }
+  return { lines, truncated };
 }

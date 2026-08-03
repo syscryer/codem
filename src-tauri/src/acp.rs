@@ -23,6 +23,8 @@ const MAX_JSON_STRING_BYTES: usize = 8 * 1024;
 const MAX_JSON_ARRAY_ITEMS: usize = 32;
 const MAX_JSON_OBJECT_FIELDS: usize = 64;
 const MAX_JSON_DEPTH: usize = 6;
+const MAX_TOOL_DIFF_BYTES: usize = 256 * 1024;
+const OMITTED_BASE64_TEXT: &str = "[base64 已省略]";
 pub const ACP_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub const ACP_PROMPT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
@@ -128,6 +130,14 @@ pub struct AcpProbeSummary {
     pub auth_error: Option<String>,
 }
 
+pub(crate) fn cached_token_auth_method_id(initialize: &AcpInitializeSummary) -> Option<&str> {
+    initialize
+        .auth_methods
+        .iter()
+        .find(|method| method.id == "cached_token")
+        .map(|method| method.id.as_str())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionSummary {
@@ -198,6 +208,8 @@ pub struct AcpToolCall {
     pub status: Option<String>,
     pub input: Option<Value>,
     pub content: Option<String>,
+    #[serde(skip)]
+    pub file_changes: Vec<AcpFileChange>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -209,6 +221,25 @@ pub struct AcpToolCallUpdate {
     pub status: Option<String>,
     pub input: Option<Value>,
     pub content: Option<String>,
+    #[serde(skip)]
+    pub file_changes: Vec<AcpFileChange>,
+}
+
+/// Structured file-change evidence extracted from an ACP tool call/update.
+///
+/// Fields are populated from `kind`, `rawInput` and `content[type=diff]`; the
+/// ACP mapper merges them by `toolCallId` and turns them into the unified
+/// `changes[]` contract on successful completion. `kind` is already normalized
+/// to the internal `add|update|delete|move` vocabulary when determinable.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AcpFileChange {
+    pub path: String,
+    pub kind: Option<String>,
+    pub move_path: Option<String>,
+    pub old_text: Option<String>,
+    pub new_text: Option<String>,
+    pub content: Option<String>,
+    pub diff: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -1025,6 +1056,17 @@ impl AcpStdioClient {
         self.connection.authenticate(method_id).await
     }
 
+    pub async fn authenticate_cached_token_if_available(
+        &mut self,
+        initialize: &AcpInitializeSummary,
+    ) -> Result<bool, AcpError> {
+        let Some(method_id) = cached_token_auth_method_id(initialize) else {
+            return Ok(false);
+        };
+        self.authenticate(method_id).await?;
+        Ok(true)
+    }
+
     pub async fn new_session(&mut self, cwd: &Path) -> Result<AcpSessionSummary, AcpError> {
         self.connection.new_session(cwd).await
     }
@@ -1136,18 +1178,30 @@ pub async fn probe_acp_agent(
     let mut client = AcpStdioClient::spawn(program, &["agent", "stdio"], cwd).await?;
     let result = async {
         let initialize = client.initialize(client_version).await?;
-        let auth_method_id = initialize
-            .auth_methods
-            .iter()
-            .find(|method| method.id == "cached_token")
-            .map(|method| method.id.clone());
-        let (authenticated, auth_error) = if let Some(method_id) = auth_method_id.as_deref() {
-            match client.authenticate(method_id).await {
-                Ok(()) => (true, None),
-                Err(_) => (false, Some("缓存认证不可用，请运行 grok login".to_string())),
+        let cached_token_result = client
+            .authenticate_cached_token_if_available(&initialize)
+            .await;
+        let (authenticated, auth_method_id, auth_error) = match cached_token_result {
+            Ok(true) => (true, Some("cached_token".to_string()), None),
+            Err(_) => (
+                false,
+                Some("cached_token".to_string()),
+                Some("缓存认证不可用，请运行 grok login".to_string()),
+            ),
+            Ok(false) => {
+                // Grok 0.2.112+ reads API keys and OAuth state from its normal
+                // configuration before ACP starts. It no longer advertises the
+                // legacy `cached_token` method, so a session creation is the
+                // non-interactive proof that the configured credentials work.
+                match client.new_session(cwd).await {
+                    Ok(_) => (true, None, None),
+                    Err(_) => (
+                        false,
+                        None,
+                        Some("Grok 配置认证不可用，请检查 API Key 或运行 grok login".to_string()),
+                    ),
+                }
             }
-        } else {
-            (false, Some("Provider 未提供非交互式缓存认证".to_string()))
         };
 
         Ok(AcpProbeSummary {
@@ -1895,6 +1949,7 @@ fn parse_tool_call(value: &Value) -> Option<AcpToolCall> {
             .get("rawInput")
             .map(|value| sanitize_json_value(value, 0)),
         content: summarize_tool_content(value),
+        file_changes: extract_acp_file_changes(value),
     })
 }
 
@@ -1910,7 +1965,203 @@ fn parse_tool_call_update(value: &Value) -> Option<AcpToolCallUpdate> {
             .filter(|value| !value.is_null())
             .map(|value| sanitize_json_value(value, 0)),
         content: summarize_tool_content(value),
+        file_changes: extract_acp_file_changes(value),
     })
+}
+
+/// Extract structured file-change evidence from a raw ACP tool call/update
+/// object. `content[type=diff]` items are the strongest evidence and follow
+/// the official ACP v1 structure (`path` + `oldText`/`newText`, with an
+/// explicit `null` `oldText` meaning a newly created file); `rawInput` plus
+/// the tool `kind` derive the rest. Evidence is bounded but not yet finalized
+/// into a diff — the mapper merges late-arriving fields and builds the diff.
+fn extract_acp_file_changes(value: &Value) -> Vec<AcpFileChange> {
+    let tool_kind = value.get("kind").and_then(Value::as_str);
+    let mut changes = Vec::new();
+
+    if let Some(items) = value.get("content").and_then(Value::as_array) {
+        for item in items.iter().take(MAX_JSON_ARRAY_ITEMS) {
+            if item.get("type").and_then(Value::as_str) != Some("diff") {
+                continue;
+            }
+            let Some(path) = first_non_empty_string(item, &["path"]) else {
+                continue;
+            };
+            // Official ACP v1 fields: `oldText` may be an explicit null for a
+            // newly created file; `newText` holds the post-change content.
+            let official_old = item.get("oldText").is_some();
+            let official_new = item.get("newText").is_some();
+            let old_text = exact_string(item, "oldText");
+            let new_text = exact_string(item, "newText");
+            let kind = if item.get("oldText") == Some(&Value::Null) {
+                Some("add".to_string())
+            } else {
+                acp_kind_to_change_type(tool_kind).or_else(|| {
+                    (old_text.is_some() && new_text.is_some()).then(|| "update".to_string())
+                })
+            };
+            // Non-standard `diff`/`text` fields are only a compatibility
+            // fallback — the official oldText/newText pair wins whenever it is
+            // present, even if only one side (or a null) arrived.
+            let diff = if official_old || official_new {
+                None
+            } else {
+                first_non_empty_text(item, &["diff"])
+                    .or_else(|| {
+                        item.pointer("/content/text")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .or_else(|| first_non_empty_text(item, &["text"]))
+            };
+            changes.push(AcpFileChange {
+                path,
+                kind,
+                move_path: None,
+                old_text: old_text.map(|text| bounded_string(&text, MAX_TOOL_DIFF_BYTES)),
+                new_text: new_text.map(|text| bounded_string(&text, MAX_TOOL_DIFF_BYTES)),
+                content: None,
+                diff: diff.map(|diff| bounded_string(&diff, MAX_TOOL_DIFF_BYTES)),
+            });
+        }
+    }
+
+    if let Some(input) = value.get("rawInput").filter(|value| value.is_object()) {
+        for derived in derive_acp_input_changes(tool_kind, input) {
+            if let Some(existing) = changes
+                .iter_mut()
+                .find(|change| change.path == derived.path)
+            {
+                merge_acp_input_fallback(existing, &derived);
+            } else {
+                changes.push(derived);
+            }
+        }
+    }
+
+    changes
+}
+
+/// Derive file-change evidence from `rawInput`, skipping paths already covered
+/// by a structured diff content item.
+fn derive_acp_input_changes(tool_kind: Option<&str>, input: &Value) -> Vec<AcpFileChange> {
+    let Some(path) =
+        first_non_empty_string(input, &["path", "file_path", "filePath", "notebook_path"])
+    else {
+        return Vec::new();
+    };
+    let diff = first_non_empty_text(input, &["diff", "patch"]);
+    let old_text = first_exact_string(input, &["old_string", "oldString", "old_text", "oldText"]);
+    let new_text = first_exact_string(input, &["new_string", "newString", "new_text", "newText"]);
+    let content = first_exact_string(input, &["content", "text", "file_text"]);
+    let change_type = acp_kind_to_change_type(tool_kind)
+        .or_else(|| (old_text.is_some() && new_text.is_some()).then(|| "update".to_string()));
+
+    // Without structural evidence (a recognized op or diff/old/new/content) we
+    // must not fabricate a change (rule: path-only is allowed only with a kind).
+    let has_signal = change_type.is_some()
+        && (diff.is_some()
+            || old_text.is_some()
+            || new_text.is_some()
+            || content.is_some()
+            || matches!(change_type.as_deref(), Some("delete") | Some("move")));
+    if !has_signal {
+        return Vec::new();
+    }
+
+    let move_path = if change_type.as_deref() == Some("move") {
+        first_non_empty_string(
+            input,
+            &[
+                "to",
+                "destination",
+                "new_path",
+                "newPath",
+                "target_path",
+                "moveTo",
+                "new_file_path",
+            ],
+        )
+    } else {
+        None
+    };
+
+    vec![AcpFileChange {
+        path,
+        kind: change_type,
+        move_path,
+        old_text: old_text.map(|value| bounded_string(&value, MAX_TOOL_DIFF_BYTES)),
+        new_text: new_text.map(|value| bounded_string(&value, MAX_TOOL_DIFF_BYTES)),
+        content: content.map(|value| bounded_string(&value, MAX_TOOL_DIFF_BYTES)),
+        diff: diff.map(|value| bounded_string(&value, MAX_TOOL_DIFF_BYTES)),
+    }]
+}
+
+fn merge_acp_input_fallback(existing: &mut AcpFileChange, fallback: &AcpFileChange) {
+    if existing.kind.is_none() {
+        existing.kind = fallback.kind.clone();
+    }
+    if existing.move_path.is_none() {
+        existing.move_path = fallback.move_path.clone();
+    }
+    if existing.old_text.is_none() {
+        existing.old_text = fallback.old_text.clone();
+    }
+    if existing.new_text.is_none() {
+        existing.new_text = fallback.new_text.clone();
+    }
+    if existing.content.is_none() {
+        existing.content = fallback.content.clone();
+    }
+    if existing.diff.is_none() {
+        existing.diff = fallback.diff.clone();
+    }
+}
+
+/// Map an ACP tool `kind` to the internal change vocabulary. Returns `None` for
+/// non-mutating kinds (read/search/execute/fetch/...) so they never emit changes.
+pub(crate) fn acp_kind_to_change_type(kind: Option<&str>) -> Option<String> {
+    match kind {
+        Some("edit") => Some("update".to_string()),
+        Some("write") | Some("create") => Some("add".to_string()),
+        Some("delete") => Some("delete".to_string()),
+        Some("move") => Some("move".to_string()),
+        _ => None,
+    }
+}
+
+fn first_non_empty_string(value: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(text) = value.get(*key).and_then(Value::as_str) {
+            if let Some(result) = first_non_empty_string_owned(text) {
+                return Some(result);
+            }
+        }
+    }
+    None
+}
+
+fn first_non_empty_string_owned(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn first_non_empty_text(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn exact_string(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn first_exact_string(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| exact_string(value, key))
 }
 
 fn normalize_tool_status(value: Option<&Value>) -> Option<String> {
@@ -1963,18 +2214,13 @@ fn safe_json_to_string(value: &Value) -> String {
     )
 }
 
-fn sanitize_tool_text(value: &str) -> String {
+pub(crate) fn sanitize_tool_text(value: &str) -> String {
     if let Ok(value) = serde_json::from_str::<Value>(value) {
         return safe_json_to_string(&value);
     }
     let mut sanitized = String::new();
     for line in value.lines() {
-        let replacement = line
-            .split_once('=')
-            .or_else(|| line.split_once(':'))
-            .filter(|(key, _)| is_sensitive_key(key))
-            .map(|(key, _)| format!("{}: [已脱敏]", key.trim()))
-            .unwrap_or_else(|| line.to_string());
+        let replacement = sanitize_file_change_line(line);
         if !sanitized.is_empty() {
             append_bounded(&mut sanitized, "\n", MAX_EVENT_TEXT_BYTES);
         }
@@ -1985,12 +2231,108 @@ fn sanitize_tool_text(value: &str) -> String {
     sanitized
 }
 
-fn sanitize_json_value(value: &Value, depth: usize) -> Value {
+pub(crate) fn sanitize_file_change_text(value: &str) -> String {
+    let mut sanitized = String::new();
+    for chunk in value.split_inclusive('\n') {
+        let (line, newline) = chunk
+            .strip_suffix('\n')
+            .map(|line| (line.strip_suffix('\r').unwrap_or(line), "\n"))
+            .unwrap_or((chunk, ""));
+        let replacement = sanitize_file_change_line(line);
+        if append_bounded(&mut sanitized, &replacement, MAX_TOOL_DIFF_BYTES) {
+            break;
+        }
+        if !newline.is_empty() && append_bounded(&mut sanitized, newline, MAX_TOOL_DIFF_BYTES) {
+            break;
+        }
+    }
+    sanitized
+}
+
+fn sanitize_file_change_line(line: &str) -> String {
+    let trimmed = line.trim_start();
+    let (diff_prefix, body) = match trimmed.chars().next() {
+        Some(prefix @ ('+' | '-')) => (Some(prefix), &trimmed[prefix.len_utf8()..]),
+        _ => (None, trimmed),
+    };
+    let replacement = if looks_like_base64_payload(body) {
+        Some(OMITTED_BASE64_TEXT.to_string())
+    } else if let Some(redacted) = redact_embedded_base64_runs(body) {
+        Some(redacted)
+    } else {
+        body.split_once('=')
+            .or_else(|| body.split_once(':'))
+            .filter(|(key, _)| is_sensitive_key(key))
+            .map(|(key, _)| format!("{}: [已脱敏]", key.trim()))
+    };
+    let Some(replacement) = replacement else {
+        return line.to_string();
+    };
+    let indentation_len = line.len().saturating_sub(trimmed.len());
+    let indentation = &line[..indentation_len];
+    match diff_prefix {
+        Some(prefix) => format!("{indentation}{prefix}{replacement}"),
+        None => format!("{indentation}{replacement}"),
+    }
+}
+
+fn redact_embedded_base64_runs(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut result = String::new();
+    let mut copied_until = 0usize;
+    let mut index = 0usize;
+    let mut redacted = false;
+
+    while index < bytes.len() {
+        if !is_base64_byte(bytes[index]) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && is_base64_byte(bytes[index]) {
+            index += 1;
+        }
+        if index - start < 128 {
+            continue;
+        }
+        result.push_str(&value[copied_until..start]);
+        result.push_str(OMITTED_BASE64_TEXT);
+        copied_until = index;
+        redacted = true;
+    }
+
+    if !redacted {
+        return None;
+    }
+    result.push_str(&value[copied_until..]);
+    Some(result)
+}
+
+fn is_base64_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')
+}
+
+fn looks_like_base64_payload(value: &str) -> bool {
+    let value = value.trim();
+    if value.len() < 128 {
+        return false;
+    }
+    let lower = value.to_ascii_lowercase();
+    if lower.starts_with("data:") && lower.contains(";base64,") {
+        return true;
+    }
+    value.bytes().all(is_base64_byte)
+}
+
+pub(crate) fn sanitize_json_value(value: &Value, depth: usize) -> Value {
     if depth >= MAX_JSON_DEPTH {
         return json!("[已截断]");
     }
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
+        Value::String(value) if looks_like_base64_payload(value) => {
+            Value::String(OMITTED_BASE64_TEXT.to_string())
+        }
         Value::String(value) => Value::String(bounded_string(value, MAX_JSON_STRING_BYTES)),
         Value::Array(values) => Value::Array(
             values
@@ -2007,6 +2349,12 @@ fn sanitize_json_value(value: &Value, depth: usize) -> Value {
                 .map(|(key, value)| {
                     let value = if is_sensitive_key(key) {
                         json!("[已脱敏]")
+                    } else if is_file_change_text_key(key) {
+                        value
+                            .as_str()
+                            .map(sanitize_file_change_text)
+                            .map(|text| Value::String(bounded_string(&text, MAX_JSON_STRING_BYTES)))
+                            .unwrap_or_else(|| sanitize_json_value(value, depth + 1))
                     } else {
                         sanitize_json_value(value, depth + 1)
                     };
@@ -2015,6 +2363,22 @@ fn sanitize_json_value(value: &Value, depth: usize) -> Value {
                 .collect(),
         ),
     }
+}
+
+fn is_file_change_text_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "content"
+            | "text"
+            | "diff"
+            | "patch"
+            | "oldtext"
+            | "newtext"
+            | "old_text"
+            | "new_text"
+            | "old_string"
+            | "new_string"
+    )
 }
 
 fn is_sensitive_key(key: &str) -> bool {
@@ -2039,7 +2403,7 @@ fn is_sensitive_key(key: &str) -> bool {
     .any(|needle| normalized.contains(needle))
 }
 
-fn bounded_string(value: &str, max_bytes: usize) -> String {
+pub(crate) fn bounded_string(value: &str, max_bytes: usize) -> String {
     let mut bounded = String::new();
     let truncated = append_bounded(&mut bounded, value, max_bytes);
     if truncated {
@@ -2087,7 +2451,8 @@ fn configure_background_command(_command: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_session_update, parse_acp_usage, parse_session_usage_update,
+        cached_token_auth_method_id, collect_session_update, parse_acp_usage,
+        parse_session_usage_update, parse_tool_call, parse_tool_call_update,
         summarize_initialize_result, AcpConnection, AcpEmbeddedResource, AcpError,
         AcpPermissionPolicy, AcpPromptCapabilities, AcpPromptInput, AcpPromptOutcome,
         AcpRuntimeEvent, AcpStdioClient,
@@ -2340,6 +2705,268 @@ mod tests {
         assert!(!serialized.contains("secret-adjacent"));
         assert!(!serialized.contains("internal"));
         assert!(serialized.contains("500000"));
+    }
+
+    #[test]
+    fn acp_cached_token_auth_is_optional_for_new_grok_config_credentials() {
+        let legacy = summarize_initialize_result(&json!({
+            "protocolVersion": 1,
+            "authMethods": [{ "id": "cached_token", "name": "Cached token" }]
+        }))
+        .unwrap();
+        let current = summarize_initialize_result(&json!({
+            "protocolVersion": 1,
+            "authMethods": [
+                { "id": "xai.api_key", "name": "xai.api_key" },
+                { "id": "grok.com", "name": "Grok" }
+            ],
+            "_meta": { "defaultAuthMethodId": "xai.api_key" }
+        }))
+        .unwrap();
+
+        assert_eq!(cached_token_auth_method_id(&legacy), Some("cached_token"));
+        assert_eq!(cached_token_auth_method_id(&current), None);
+    }
+
+    #[test]
+    fn acp_diff_content_extracts_official_path_oldtext_newtext() {
+        let call = parse_tool_call(&json!({
+            "toolCallId": "call-1",
+            "kind": "edit",
+            "status": "in_progress",
+            "content": [
+                { "type": "diff", "path": "src/a.ts", "oldText": "const a = 1;", "newText": "const a = 2;" }
+            ]
+        }))
+        .expect("tool call parses");
+        assert_eq!(call.file_changes.len(), 1);
+        let change = &call.file_changes[0];
+        assert_eq!(change.path, "src/a.ts");
+        assert_eq!(change.kind.as_deref(), Some("update"));
+        assert_eq!(change.old_text.as_deref(), Some("const a = 1;"));
+        assert_eq!(change.new_text.as_deref(), Some("const a = 2;"));
+        assert!(change.diff.is_none());
+    }
+
+    #[test]
+    fn acp_diff_preserves_empty_text_and_surrounding_whitespace() {
+        let call = parse_tool_call(&json!({
+            "toolCallId": "call-whitespace",
+            "kind": "edit",
+            "content": [
+                { "type": "diff", "path": "src/a.ts", "oldText": "  old\n", "newText": "" }
+            ]
+        }))
+        .expect("tool call parses");
+        let change = &call.file_changes[0];
+        assert_eq!(change.old_text.as_deref(), Some("  old\n"));
+        assert_eq!(change.new_text.as_deref(), Some(""));
+        assert_eq!(change.kind.as_deref(), Some("update"));
+    }
+
+    #[test]
+    fn acp_diff_update_extracts_late_newtext_evidence() {
+        let update = parse_tool_call_update(&json!({
+            "toolCallId": "call-1",
+            "status": "completed",
+            "content": [
+                { "type": "diff", "path": "src/a.ts", "newText": "const a = 2;" }
+            ]
+        }))
+        .expect("tool call update parses");
+        let change = &update.file_changes[0];
+        assert_eq!(change.path, "src/a.ts");
+        assert!(change.old_text.is_none());
+        assert_eq!(change.new_text.as_deref(), Some("const a = 2;"));
+    }
+
+    #[test]
+    fn acp_diff_null_oldtext_marks_new_file() {
+        let call = parse_tool_call(&json!({
+            "toolCallId": "call-1",
+            "kind": "write",
+            "status": "completed",
+            "content": [
+                { "type": "diff", "path": "src/new.ts", "oldText": null, "newText": "export const x = 1;" }
+            ]
+        }))
+        .expect("tool call parses");
+        let change = call.file_changes.first().expect("one change");
+        assert_eq!(change.path, "src/new.ts");
+        assert_eq!(change.kind.as_deref(), Some("add"));
+        assert!(change.old_text.is_none());
+        assert_eq!(change.new_text.as_deref(), Some("export const x = 1;"));
+    }
+
+    #[test]
+    fn acp_diff_official_fields_win_over_nonstandard_diff_text() {
+        // Official oldText/newText present: the non-standard `diff` is ignored.
+        let call = parse_tool_call(&json!({
+            "toolCallId": "call-1",
+            "kind": "edit",
+            "content": [
+                { "type": "diff", "path": "a.ts", "oldText": "o", "newText": "n", "diff": "ignored" }
+            ]
+        }))
+        .expect("tool call parses");
+        let change = &call.file_changes[0];
+        assert_eq!(change.old_text.as_deref(), Some("o"));
+        assert_eq!(change.new_text.as_deref(), Some("n"));
+        assert!(change.diff.is_none());
+
+        // Only the non-standard `diff` field: kept as a compatibility fallback.
+        let call = parse_tool_call(&json!({
+            "toolCallId": "call-2",
+            "kind": "edit",
+            "content": [
+                { "type": "diff", "path": "a.ts", "diff": "-old\n+new" }
+            ]
+        }))
+        .expect("tool call parses");
+        let change = &call.file_changes[0];
+        assert!(change.old_text.is_none());
+        assert!(change.new_text.is_none());
+        assert_eq!(change.diff.as_deref(), Some("-old\n+new"));
+    }
+
+    #[test]
+    fn acp_diff_without_kind_or_title_still_normalizes() {
+        let call = parse_tool_call(&json!({
+            "toolCallId": "call-1",
+            "content": [
+                { "type": "diff", "path": "a.ts", "oldText": "one", "newText": "ONE" }
+            ]
+        }))
+        .expect("tool call parses");
+        let change = &call.file_changes[0];
+        assert_eq!(change.kind.as_deref(), Some("update"));
+    }
+
+    #[test]
+    fn acp_delete_and_move_kinds_derive_path_only_evidence() {
+        let delete = parse_tool_call(&json!({
+            "toolCallId": "call-1",
+            "kind": "delete",
+            "rawInput": { "path": "gone.ts" }
+        }))
+        .expect("tool call parses");
+        let change = &delete.file_changes[0];
+        assert_eq!(change.path, "gone.ts");
+        assert_eq!(change.kind.as_deref(), Some("delete"));
+        assert!(change.diff.is_none());
+
+        let move_call = parse_tool_call(&json!({
+            "toolCallId": "call-2",
+            "kind": "move",
+            "rawInput": { "path": "a.ts", "to": "b.ts" }
+        }))
+        .expect("tool call parses");
+        let change = &move_call.file_changes[0];
+        assert_eq!(change.path, "a.ts");
+        assert_eq!(change.kind.as_deref(), Some("move"));
+        assert_eq!(change.move_path.as_deref(), Some("b.ts"));
+    }
+
+    #[test]
+    fn acp_move_merges_raw_destination_with_structured_diff() {
+        let call = parse_tool_call(&json!({
+            "toolCallId": "call-move",
+            "kind": "move",
+            "rawInput": { "path": "a.ts", "to": "b.ts" },
+            "content": [
+                { "type": "diff", "path": "a.ts", "oldText": "old", "newText": "new" }
+            ]
+        }))
+        .expect("tool call parses");
+        assert_eq!(call.file_changes.len(), 1);
+        let change = &call.file_changes[0];
+        assert_eq!(change.kind.as_deref(), Some("move"));
+        assert_eq!(change.move_path.as_deref(), Some("b.ts"));
+        assert_eq!(change.old_text.as_deref(), Some("old"));
+        assert_eq!(change.new_text.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn acp_write_kind_derives_add_from_rawinput_content() {
+        let call = parse_tool_call(&json!({
+            "toolCallId": "call-1",
+            "kind": "write",
+            "rawInput": { "path": "src/new.ts", "content": "export const x = 1;" }
+        }))
+        .expect("tool call parses");
+        let change = &call.file_changes[0];
+        assert_eq!(change.path, "src/new.ts");
+        assert_eq!(change.kind.as_deref(), Some("add"));
+        assert_eq!(change.content.as_deref(), Some("export const x = 1;"));
+    }
+
+    #[test]
+    fn acp_read_tool_derives_no_change_evidence() {
+        let call = parse_tool_call(&json!({
+            "toolCallId": "call-1",
+            "kind": "read",
+            "rawInput": { "path": "README.md" }
+        }))
+        .expect("tool call parses");
+        assert!(call.file_changes.is_empty());
+    }
+
+    #[test]
+    fn acp_rawinput_sensitive_keys_are_redacted_but_evidence_kept() {
+        let call = parse_tool_call(&json!({
+            "toolCallId": "call-1",
+            "kind": "write",
+            "rawInput": { "path": "src/new.ts", "content": "hello", "apiKey": "super-secret" }
+        }))
+        .expect("tool call parses");
+        let input = call.input.as_ref().expect("sanitized input");
+        assert_eq!(input["apiKey"], "[已脱敏]");
+        assert_eq!(input["content"], "hello");
+        let change = &call.file_changes[0];
+        assert_eq!(change.path, "src/new.ts");
+        assert_eq!(change.kind.as_deref(), Some("add"));
+        assert_eq!(change.content.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn acp_rawinput_omits_base64_and_redacts_file_text_secrets() {
+        let encoded = "A".repeat(256);
+        let call = parse_tool_call(&json!({
+            "toolCallId": "call-1",
+            "kind": "write",
+            "rawInput": {
+                "path": "src/new.ts",
+                "content": format!("api_key=secret\n{encoded}")
+            }
+        }))
+        .expect("tool call parses");
+        let input = call.input.as_ref().expect("sanitized input");
+        let content = input["content"].as_str().expect("content string");
+        assert!(!content.contains("secret"));
+        assert!(!content.contains(&encoded));
+        assert!(content.contains("[已脱敏]"));
+        assert!(content.contains("[base64 已省略]"));
+    }
+
+    #[test]
+    fn acp_rawinput_omits_base64_embedded_in_json_file_text() {
+        let encoded = "A".repeat(256);
+        let source = format!(r#"{{"title":"中文保留","payload":"{encoded}"}}"#);
+        let call = parse_tool_call(&json!({
+            "toolCallId": "call-1",
+            "kind": "write",
+            "rawInput": {
+                "path": "data.json",
+                "content": source
+            }
+        }))
+        .expect("tool call parses");
+
+        let input = call.input.as_ref().expect("sanitized input");
+        let content = input["content"].as_str().expect("content string");
+        assert!(content.contains("中文保留"));
+        assert!(content.contains("[base64 已省略]"));
+        assert!(!content.contains(&encoded));
     }
 
     #[tokio::test]

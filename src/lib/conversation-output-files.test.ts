@@ -148,3 +148,39 @@ test('collectConversationOutputFiles recognizes Codex fileChange result entries'
     [{ path: 'docs/prd.md', openMode: 'preview' }],
   );
 });
+
+test('collectConversationOutputFiles ignores failed provider file changes', () => {
+  const failedTool: ToolStep = {
+    id: 'failed-provider-write',
+    name: 'write',
+    title: 'Provider write failed',
+    status: 'error',
+    isError: true,
+    resultText: JSON.stringify({
+      changes: [{ path: 'docs/not-created.md', kind: { type: 'add' } }],
+    }),
+  };
+
+  assert.deepEqual(collectConversationOutputFiles([failedTool]), []);
+});
+
+test('collectConversationOutputFiles deduplicates Windows extended and relative paths', () => {
+  const tool: ToolStep = {
+    id: 'grok-write',
+    name: 'write',
+    title: 'Provider write',
+    status: 'done',
+    resultText: JSON.stringify({
+      status: 'completed',
+      changes: [
+        { path: '\\\\?\\D:\\ai_proj\\codem\\docs\\中文.md', kind: { type: 'add' } },
+        { path: 'docs/中文.md', kind: { type: 'add' } },
+      ],
+    }),
+  };
+
+  assert.deepEqual(
+    collectConversationOutputFiles([tool], 'D:\\ai_proj\\codem').map((file) => file.path),
+    ['docs/中文.md'],
+  );
+});

@@ -45,6 +45,7 @@ import {
   buildChangedFileReviewRequest,
   buildChangedFilesReviewRequests,
   buildConversationUndoChanges,
+  normalizeConversationFilePath,
   type ConversationUndoChange,
 } from '../lib/conversation-changed-files';
 import { collectToolConversationFileChanges, type ConversationFileChange } from '../lib/conversation-preview-shortcuts';
@@ -190,8 +191,15 @@ function ConversationTurnViewComponent({
     ? groupedVisibleItems.filter((item) => !isIntermediateAssistantItem(item))
     : groupedVisibleItems;
   const canToggleIntermediateProcess = shouldCollapseIntermediateItems && intermediateItems.length > 0;
-  const changedFileGroups = useMemo(() => collectConversationChangedFileGroups(turn.tools), [turn.tools]);
-  const outputFiles = useMemo(() => collectConversationOutputFiles(turn.tools), [turn.tools]);
+  const conversationWorkspace = resolveConversationTurnWorkspace(turn.workspace, activeProject?.path);
+  const changedFileGroups = useMemo(
+    () => collectConversationChangedFileGroups(turn.tools, conversationWorkspace),
+    [conversationWorkspace, turn.tools],
+  );
+  const outputFiles = useMemo(
+    () => collectConversationOutputFiles(turn.tools, conversationWorkspace),
+    [conversationWorkspace, turn.tools],
+  );
   const webPreviewUrls = useMemo(
     () => extractLocalWebPreviewUrls(
       turn.items.filter((item) => item.type === 'text').map((item) => item.text),
@@ -217,8 +225,6 @@ function ConversationTurnViewComponent({
   const hasUserText = Boolean(turn.userText.trim());
   const hasUserContentBlocks = Boolean(turn.userContentBlocks?.length);
   const hasUserAttachments = Boolean(turn.userAttachments?.length);
-  const conversationWorkspace = resolveConversationTurnWorkspace(turn.workspace, activeProject?.path);
-
   if (turn.kind === 'system') {
     return (
       <article className={`turn system-turn ${isLatest ? 'latest-turn' : ''}`}>
@@ -1498,6 +1504,7 @@ function ChangedFilesSummaryCard({
       ),
     [visibleFiles],
   );
+  const canReview = visibleFiles.some((file) => file.previews.length > 0);
 
   useOutsideDismiss({
     refs: [
@@ -1610,10 +1617,12 @@ function ChangedFilesSummaryCard({
               撤销
             </button>
           ) : null}
-          <button type="button" className="tool-preview-open-button" onClick={onReview}>
-            审查
-            <ArrowUpRight size={14} />
-          </button>
+          {canReview ? (
+            <button type="button" className="tool-preview-open-button" onClick={onReview}>
+              审查
+              <ArrowUpRight size={14} />
+            </button>
+          ) : null}
         </div>
       </header>
       <div className="changed-files-summary-list">
@@ -1638,18 +1647,20 @@ function ChangedFilesSummaryCard({
                   }}
                 >
                   <span className="changed-files-summary-path">{formatChangedFilePath(file.path)}</span>
-                  <button
-                    type="button"
-                    className="changed-file-review-button"
-                    aria-label={`审查文件 ${file.path}`}
-                    title="审查此文件"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onReviewFile(file);
-                    }}
-                  >
-                    <ClipboardList size={14} />
-                  </button>
+                  {file.previews.length > 0 ? (
+                    <button
+                      type="button"
+                      className="changed-file-review-button"
+                      aria-label={`审查文件 ${file.path}`}
+                      title="审查此文件"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onReviewFile(file);
+                      }}
+                    >
+                      <ClipboardList size={14} />
+                    </button>
+                  ) : null}
                   <span className="changed-files-summary-stats">
                     {file.additions > 0 ? <span className="tool-preview-add">+{file.additions}</span> : null}
                     {file.deletions > 0 ? <span className="tool-preview-del">-{file.deletions}</span> : null}
@@ -1804,6 +1815,18 @@ function buildConversationToolReviewDiff(preview: ToolPreview) {
 }
 
 function ChangedFileInlineDiff({ file }: { file: ChangedFilePreviewGroup }) {
+  if (file.previews.length === 0) {
+    return (
+      <div className="changed-file-diff-body">
+        <div className="changed-file-diff-fragment">
+          <div className="changed-file-diff-fragment-head">
+            <span>未提供 Diff</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="changed-file-diff-body">
       {file.previews.map((preview, index) => (
@@ -2921,6 +2944,7 @@ type ToolPreview = {
   filePath: string;
   fileName: string;
   diff?: string;
+  diffTruncated?: boolean;
   beforeText: string;
   afterText: string;
   additions: number;
@@ -2961,27 +2985,63 @@ type StructuredToolPreviewData = {
 type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'unknown';
 
 const TOOL_DIFF_CONTEXT_LINE_COUNT = 2;
+const MAX_TOOL_DIFF_PREVIEW_LINES = 4_000;
+const MAX_TOOL_DIFF_PREVIEW_CHARS = 256 * 1024;
+const TOOL_DIFF_PREVIEW_TRUNCATION_TEXT = 'Diff 预览已截断';
 
-function collectConversationChangedFileGroups(tools: ToolStep[]) {
+export function collectConversationChangedFileGroups(tools: ToolStep[], workspace?: string) {
   const grouped = new Map<string, ChangedFilePreviewGroup>();
 
   for (const tool of tools) {
-    const previews = getToolPreviews(tool);
-    for (const preview of previews) {
+    const changesByPath = new Map<string, { change: ConversationFileChange; projectRelative: boolean }>();
+    for (const change of collectToolConversationFileChanges(tool)) {
+      const normalizedPath = normalizeConversationFilePath(change.path, workspace);
+      const normalizedChange = normalizedPath === change.path
+        ? change
+        : { ...change, path: normalizedPath, name: getFileName(normalizedPath) };
+      const projectRelative = normalizeConversationFilePath(change.path) === normalizedPath;
+      const existing = changesByPath.get(normalizedPath);
+      if (!existing) {
+        changesByPath.set(normalizedPath, { change: normalizedChange, projectRelative });
+        continue;
+      }
+
+      const preferNew = projectRelative && !existing.projectRelative;
+      const primary = preferNew ? normalizedChange : existing.change;
+      const fallback = preferNew ? existing.change : normalizedChange;
+      changesByPath.set(normalizedPath, {
+        projectRelative: existing.projectRelative || projectRelative,
+        change: {
+          ...fallback,
+          ...primary,
+          path: normalizedPath,
+          name: getFileName(normalizedPath),
+          oldText: primary.oldText ?? fallback.oldText,
+          newText: primary.newText ?? fallback.newText,
+          content: primary.content ?? fallback.content,
+          diff: primary.diff ?? fallback.diff,
+        },
+      });
+    }
+
+    for (const [normalizedPath, { change: normalizedChange }] of changesByPath) {
+      const preview = buildToolPreview(tool, normalizedChange);
       const current =
-        grouped.get(preview.filePath) ??
+        grouped.get(normalizedPath) ??
         {
-          path: preview.filePath,
-          name: preview.fileName,
+          path: normalizedPath,
+          name: normalizedChange.name,
           additions: 0,
           deletions: 0,
           previews: [],
         };
 
-      current.additions += preview.additions;
-      current.deletions += preview.deletions;
-      current.previews.push(preview);
-      grouped.set(preview.filePath, current);
+      if (preview) {
+        current.additions += preview.additions;
+        current.deletions += preview.deletions;
+        current.previews.push(preview);
+      }
+      grouped.set(normalizedPath, current);
     }
   }
 
@@ -2999,30 +3059,45 @@ function getToolPreviews(tool: ToolStep): ToolPreview[] {
 }
 
 function buildToolPreview(tool: ToolStep, change: ConversationFileChange): ToolPreview | null {
-  const { path: filePath, oldText: oldString, newText: newString, content, diff } = change;
+  const {
+    path: filePath,
+    oldText: oldString,
+    newText: newString,
+    content,
+    diff: sourceDiff,
+  } = change;
 
   let kind: ToolPreview['kind'] = change.kind === 'add' || tool.name === 'Write' ? 'write' : 'edit';
   let beforeText = '';
   let afterText = '';
+  let diff: string | undefined;
   let diffStats: { additions: number; deletions: number } | undefined;
+  let diffTruncated = false;
 
   if (oldString !== undefined || newString !== undefined) {
-    beforeText = oldString ?? '';
-    afterText = newString ?? '';
+    const boundedBefore = boundToolPreviewText(oldString ?? '');
+    const boundedAfter = boundToolPreviewText(newString ?? '');
+    beforeText = boundedBefore.text;
+    afterText = boundedAfter.text;
+    diffTruncated = boundedBefore.truncated || boundedAfter.truncated;
   } else if (content !== undefined) {
+    const boundedContent = boundToolPreviewText(content);
     if (change.kind === 'delete') {
-      beforeText = content;
+      beforeText = boundedContent.text;
       afterText = '';
     } else {
-      afterText = content;
+      afterText = boundedContent.text;
       if (tool.name !== 'Write') {
         kind = change.kind === 'add' ? 'write' : 'edit';
       }
     }
-  } else if (diff) {
-    const parsedDiff = parseDiffContent(diff);
+    diffTruncated = boundedContent.truncated;
+  } else if (sourceDiff) {
+    const parsedDiff = parseBoundedDiffContent(sourceDiff);
+    diff = parsedDiff.boundedDiff;
     beforeText = parsedDiff.beforeText;
     afterText = parsedDiff.afterText;
+    diffTruncated = parsedDiff.truncated;
     diffStats = {
       additions: parsedDiff.additions,
       deletions: parsedDiff.deletions,
@@ -3039,16 +3114,26 @@ function buildToolPreview(tool: ToolStep, change: ConversationFileChange): ToolP
 
   const stats = diffStats ?? calculateLineDiffStats(beforeText, afterText);
 
+  let rows = kind === 'edit' ? buildDiffRows(beforeText, afterText) : [];
+  if (rows.length >= MAX_TOOL_DIFF_PREVIEW_LINES) {
+    rows = rows.slice(0, MAX_TOOL_DIFF_PREVIEW_LINES - 1);
+    diffTruncated = true;
+  }
+  if (diffTruncated && rows.at(-1)?.text !== TOOL_DIFF_PREVIEW_TRUNCATION_TEXT) {
+    rows.push({ type: 'context', text: TOOL_DIFF_PREVIEW_TRUNCATION_TEXT });
+  }
+
   return {
     kind,
     filePath,
     fileName: getFileName(filePath),
     diff,
+    diffTruncated,
     beforeText,
     afterText,
     additions: stats.additions,
     deletions: stats.deletions,
-    rows: kind === 'edit' ? buildDiffRows(beforeText, afterText) : [],
+    rows,
   };
 }
 
@@ -3061,11 +3146,19 @@ function buildNumberedDiffRows(preview: ToolPreview): NumberedDiffRow[] {
   const afterLines = splitPreviewLines(preview.afterText);
 
   if (preview.kind === 'write') {
-    return afterLines.map<NumberedDiffRow>((text, index) => ({
+    let rows = afterLines.map<NumberedDiffRow>((text, index) => ({
       type: 'add' as const,
       text,
       afterLine: index + 1,
     }));
+    const rowsTruncated = rows.length >= MAX_TOOL_DIFF_PREVIEW_LINES;
+    if (rowsTruncated) {
+      rows = rows.slice(0, MAX_TOOL_DIFF_PREVIEW_LINES - 1);
+    }
+    if (preview.diffTruncated || rowsTruncated) {
+      rows.push({ type: 'context', text: TOOL_DIFF_PREVIEW_TRUNCATION_TEXT });
+    }
+    return rows;
   }
 
   let prefix = 0;
@@ -3139,14 +3232,19 @@ function buildNumberedDiffRows(preview: ToolPreview): NumberedDiffRow[] {
   }
 
   if (rows.length === 0) {
-    return [
-      {
-        type: 'context' as const,
-        text: afterLines[0] ?? '',
-        afterLine: afterLines[0] ? 1 : undefined,
-        beforeLine: beforeLines[0] ? 1 : undefined,
-      },
-    ];
+    rows.push({
+      type: 'context' as const,
+      text: afterLines[0] ?? '',
+      afterLine: afterLines[0] ? 1 : undefined,
+      beforeLine: beforeLines[0] ? 1 : undefined,
+    });
+  }
+  const rowsTruncated = rows.length >= MAX_TOOL_DIFF_PREVIEW_LINES;
+  if (rowsTruncated) {
+    rows.splice(MAX_TOOL_DIFF_PREVIEW_LINES - 1);
+  }
+  if (preview.diffTruncated || rowsTruncated) {
+    rows.push({ type: 'context', text: TOOL_DIFF_PREVIEW_TRUNCATION_TEXT });
   }
 
   return rows;
@@ -4011,7 +4109,25 @@ function getStringValue(value: unknown) {
 }
 
 export function parseDiffContent(diff: string) {
-  const lines = normalizePreviewText(diff).split('\n');
+  const {
+    truncated: _truncated,
+    boundedDiff: _boundedDiff,
+    ...parsed
+  } = parseBoundedDiffContent(diff);
+  return parsed;
+}
+
+function parseBoundedDiffContent(diff: string) {
+  const boundedByChars = diff.slice(0, MAX_TOOL_DIFF_PREVIEW_CHARS);
+  const normalized = normalizePreviewText(boundedByChars);
+  let lines = normalized.split('\n');
+  const truncated = diff.length > boundedByChars.length || lines.length > MAX_TOOL_DIFF_PREVIEW_LINES;
+  if (diff.length > boundedByChars.length && !/[\r\n]$/.test(boundedByChars)) {
+    lines.pop();
+  }
+  if (lines.length > MAX_TOOL_DIFF_PREVIEW_LINES) {
+    lines = lines.slice(0, MAX_TOOL_DIFF_PREVIEW_LINES);
+  }
   if (lines.at(-1) === '') {
     lines.pop();
   }
@@ -4053,6 +4169,24 @@ export function parseDiffContent(diff: string) {
     afterText: afterLines.join('\n'),
     additions,
     deletions,
+    truncated,
+    boundedDiff: lines.join('\n'),
+  };
+}
+
+function boundToolPreviewText(value: string) {
+  const boundedByChars = value.slice(0, MAX_TOOL_DIFF_PREVIEW_CHARS);
+  let lines = normalizePreviewText(boundedByChars).split('\n');
+  const truncated = value.length > boundedByChars.length || lines.length > MAX_TOOL_DIFF_PREVIEW_LINES;
+  if (value.length > boundedByChars.length && !/[\r\n]$/.test(boundedByChars)) {
+    lines.pop();
+  }
+  if (lines.length > MAX_TOOL_DIFF_PREVIEW_LINES) {
+    lines = lines.slice(0, MAX_TOOL_DIFF_PREVIEW_LINES);
+  }
+  return {
+    text: lines.join('\n'),
+    truncated,
   };
 }
 

@@ -117,6 +117,16 @@ test('buildChangedFileReviewRequest builds a single conversation review tab requ
   });
 });
 
+test('buildChangedFileReviewRequest skips path-only changes without a trustworthy diff', () => {
+  assert.equal(buildChangedFileReviewRequest({
+    path: 'src/old.ts',
+    name: 'old.ts',
+    additions: 0,
+    deletions: 0,
+    previews: [],
+  }), null);
+});
+
 test('buildChangedFileReviewRequest preserves Codex native diff hunks', () => {
   const diff = [
     '@@ -10,3 +10,3 @@',
@@ -153,6 +163,32 @@ test('buildChangedFileReviewRequest preserves Codex native diff hunks', () => {
     '+++ b/src/App.tsx',
     ...diff.split('\n'),
   ]);
+});
+
+test('buildChangedFileReviewRequest bounds aggregated large diffs', () => {
+  const diff = Array.from({ length: 5_000 }, (_, index) => `+line ${index}`).join('\n');
+  const request = buildChangedFileReviewRequest({
+    path: 'src/large.ts',
+    name: 'large.ts',
+    additions: 5_000,
+    deletions: 0,
+    previews: [{
+      kind: 'write',
+      filePath: 'src/large.ts',
+      fileName: 'large.ts',
+      beforeText: '',
+      afterText: '',
+      additions: 5_000,
+      deletions: 0,
+      rows: [],
+      diff,
+    }],
+  });
+
+  assert.ok(request);
+  assert.ok(request.reviewDiff.length <= 4_000);
+  assert.ok(request.reviewDiff.join('\n').length <= 256 * 1024);
+  assert.equal(request.reviewDiff.at(-1), '@@ CodeM Diff 预览已截断 @@');
 });
 
 test('buildConversationUndoChanges groups tool edits by file and preserves reverse-safe order', () => {
@@ -486,6 +522,65 @@ test('Codex moved files use the destination path in conversation review', () => 
   });
 
   assert.equal(changes[0]?.path, 'docs/new-name.md');
+});
+
+test('provider-neutral result changes do not depend on the provider tool name', () => {
+  const changes = collectToolConversationFileChanges({
+    id: 'pi-edit',
+    name: 'edit',
+    title: 'Pi edit',
+    status: 'done',
+    resultText: JSON.stringify({
+      status: 'completed',
+      changes: [
+        {
+          path: 'src/pi.ts',
+          kind: { type: 'update' },
+          oldText: 'old',
+          newText: 'new',
+        },
+      ],
+    }),
+  });
+
+  assert.deepEqual(changes, [
+    {
+      path: 'src/pi.ts',
+      name: 'pi.ts',
+      kind: 'update',
+      oldText: 'old',
+      newText: 'new',
+      content: undefined,
+      diff: undefined,
+    },
+  ]);
+});
+
+test('failed tools never expose structured or input-derived file changes', () => {
+  const resultText = JSON.stringify({
+    changes: [{ path: 'docs/not-written.md', kind: { type: 'add' }, diff: '+not written' }],
+  });
+  const inputText = JSON.stringify({
+    file_path: 'docs/not-written.md',
+    content: 'not written',
+  });
+
+  assert.deepEqual(collectToolConversationFileChanges({
+    id: 'failed-status',
+    name: 'Write',
+    title: 'Failed write',
+    status: 'error',
+    resultText,
+    inputText,
+  }), []);
+  assert.deepEqual(collectToolConversationFileChanges({
+    id: 'failed-flag',
+    name: 'write',
+    title: 'Failed Pi write',
+    status: 'done',
+    isError: true,
+    resultText,
+  }), []);
 });
 
 test('Codex file changes without reversible snippets do not expose conversation undo', () => {
