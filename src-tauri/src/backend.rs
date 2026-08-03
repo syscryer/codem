@@ -19350,13 +19350,13 @@ fn handle_runtime_stdout_line(state: &AppState, thread_id: &str, line: &str) {
         return;
     };
     if let Some(Err(error)) = bind_awaiting_claude_fork_session(state, thread_id, line) {
-        push_run_event(
+        finish_run_with_event(
             state,
             &run_id,
             json!({ "type": "error", "runId": run_id, "message": error.message }),
         );
+        finish_runtime_run(state, thread_id, &run_id);
         let _ = close_thread_runtime(state, thread_id);
-        mark_run_finished(state, &run_id);
         return;
     }
     if serde_json::from_str::<Value>(line.trim())
@@ -19375,7 +19375,7 @@ fn handle_runtime_stdout_line(state: &AppState, thread_id: &str, line: &str) {
             "Claude Fork 在确认新 session 前返回了终态",
         )
     {
-        push_run_event(
+        finish_run_with_event(
             state,
             &run_id,
             json!({
@@ -19384,8 +19384,8 @@ fn handle_runtime_stdout_line(state: &AppState, thread_id: &str, line: &str) {
                 "message": "Claude Fork 已返回运行结果，但没有先确认新的 session ID；为避免重复发送，未自动重试。",
             }),
         );
+        finish_runtime_run(state, thread_id, &run_id);
         let _ = close_thread_runtime(state, thread_id);
-        mark_run_finished(state, &run_id);
         return;
     }
     remember_control_request_mapping(state, &run_id, line);
@@ -21297,6 +21297,31 @@ fn mark_run_finished(state: &AppState, run_id: &str) {
     }
 }
 
+fn finish_run_with_event(state: &AppState, run_id: &str, event: Value) {
+    let mut notify = None;
+    let mut should_schedule_cleanup = false;
+    if let Ok(mut runs) = state.runs.lock() {
+        if let Some(run) = runs.get_mut(run_id) {
+            if should_store_run_event(&mut run.last_phase_event, &event) {
+                run.events.push(event);
+            }
+            if !run.finished {
+                should_schedule_cleanup = true;
+            }
+            run.finished = true;
+            run.child_id = None;
+            run.stdin = None;
+            notify = Some(run.notify.clone());
+        }
+    }
+    if let Some(notify) = notify {
+        notify.notify_waiters();
+    }
+    if should_schedule_cleanup {
+        schedule_run_record_cleanup(state.clone(), run_id.to_string());
+    }
+}
+
 fn schedule_run_record_cleanup(state: AppState, run_id: String) {
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(RUN_RECONNECT_RETENTION_MS)).await;
@@ -22556,14 +22581,32 @@ mod tests {
         if let Some(parent) = PathBuf::from(path).parent() {
             fs::create_dir_all(parent).expect("create transcript parent directory");
         }
-        fs::write(
-            path,
-            concat!(
-                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"fork me\"}]},\"timestamp\":\"2026-08-03T10:00:00.000Z\"}\n",
-                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"forked!\"}]},\"timestamp\":\"2026-08-03T10:00:01.000Z\"}\n",
-            ),
-        )
-        .expect("write fork transcript");
+        let user_timestamp = (chrono::Utc::now() + chrono::Duration::seconds(1))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let assistant_timestamp = (chrono::Utc::now() + chrono::Duration::seconds(2))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let transcript = [
+            json!({
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "fork me" }],
+                },
+                "timestamp": user_timestamp,
+            })
+            .to_string(),
+            json!({
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "forked!" }],
+                },
+                "timestamp": assistant_timestamp,
+            })
+            .to_string(),
+        ]
+        .join("\n");
+        fs::write(path, format!("{transcript}\n")).expect("write fork transcript");
     }
 
     // ===== Task 5.1（方案 A）：Claude 点击 Fork 只创建 pending 本地子聊天 =====
