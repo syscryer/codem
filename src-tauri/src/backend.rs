@@ -105,10 +105,14 @@ struct AppState {
             >,
         >,
     >,
+    #[cfg(test)]
+    /// 旧版 eager Fork 回归测试使用；正式路径已改为首条真实消息延迟 Fork。
     /// 进程内 Claude 一次性 Fork 启动单飞集合：同一源 thread 同时只允许一个请求启动
     /// `--fork-session` 进程，防止并发重复请求双开原生会话。元素为源 thread ID，
     /// 由 [`ClaudeForkLaunchGuard`] 在 Drop 时移除（含错误返回与 task cancellation）。
     claude_fork_launch_in_flight: Arc<Mutex<std::collections::HashSet<String>>>,
+    #[cfg(test)]
+    claude_runtime_test_launch: Option<(String, Vec<String>)>,
     #[cfg(test)]
     thread_fork_test_driver: Option<ThreadForkTestDriver>,
 }
@@ -425,6 +429,7 @@ struct ForkSourceThread {
     reasoning_effort: Option<String>,
     permission_mode: Option<String>,
     agent_channel_id: Option<String>,
+    agent_channel_fingerprint: Option<String>,
 }
 
 impl ForkSourceThread {
@@ -449,6 +454,11 @@ enum ThreadForkOperationStatus {
     HistoryPending,
     Completed,
     Failed,
+    /// 方案 A（2026-08-03）：Claude 点击 Fork 只创建本地 pending 子聊天，不启动 Provider；
+    /// 用户在子聊天发送首条真实消息时才原生 `--fork-session`（Task 5.3）。此状态表示
+    /// "已创建可见子聊天、等待首条消息触发原生 Fork"，不属于 stale recovery 范围
+    /// （`recover_stale_thread_fork_operations` 只收口 `provider_pending`）。
+    AwaitingFirstMessage,
 }
 
 impl ThreadForkOperationStatus {
@@ -460,6 +470,7 @@ impl ThreadForkOperationStatus {
             Self::HistoryPending => "history_pending",
             Self::Completed => "completed",
             Self::Failed => "failed",
+            Self::AwaitingFirstMessage => "awaiting_first_message",
         }
     }
 
@@ -471,6 +482,7 @@ impl ThreadForkOperationStatus {
             "history_pending" => Ok(Self::HistoryPending),
             "completed" => Ok(Self::Completed),
             "failed" => Ok(Self::Failed),
+            "awaiting_first_message" => Ok(Self::AwaitingFirstMessage),
             _ => Err(rusqlite::Error::InvalidColumnType(
                 5,
                 "status".to_string(),
@@ -491,6 +503,121 @@ struct ThreadForkOperation {
     started_at_ms: i64,
     #[allow(dead_code)]
     last_error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct AwaitingClaudeForkRun {
+    operation_id: String,
+    source: ForkSourceThread,
+}
+
+#[derive(Clone, Debug)]
+struct ClaudeForkSnapshotContext {
+    child_session_id: String,
+    started_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DelayedClaudeForkClaimPhase {
+    BeforeSpawn,
+    ProcessStarted,
+}
+
+/// Covers cancellation between the atomic first-message claim and handing the launched runtime
+/// over to the stdout/exit callbacks. Before spawn the message is safe to retry; once a process
+/// exists, an interrupted request is fail-closed because Claude may already have consumed it.
+struct DelayedClaudeForkClaimGuard {
+    state: AppState,
+    local_thread_id: String,
+    operation_id: String,
+    phase: DelayedClaudeForkClaimPhase,
+    armed: bool,
+}
+
+impl DelayedClaudeForkClaimGuard {
+    fn new(state: &AppState, local_thread_id: &str, operation_id: &str) -> Self {
+        Self {
+            state: state.clone(),
+            local_thread_id: local_thread_id.to_string(),
+            operation_id: operation_id.to_string(),
+            phase: DelayedClaudeForkClaimPhase::BeforeSpawn,
+            armed: true,
+        }
+    }
+
+    fn mark_process_started(&mut self) {
+        self.phase = DelayedClaudeForkClaimPhase::ProcessStarted;
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DelayedClaudeForkClaimGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Ok(connection) = open_initialized_workspace_database(&self.state) else {
+            return;
+        };
+        let (status, last_error) = match self.phase {
+            DelayedClaudeForkClaimPhase::BeforeSpawn => ("awaiting_first_message", None),
+            DelayedClaudeForkClaimPhase::ProcessStarted => (
+                "result_unknown",
+                Some("Claude Fork 首条消息处理被中断，新 session 创建结果无法确认"),
+            ),
+        };
+        let _ = connection.execute(
+            r#"
+            UPDATE thread_fork_operations
+            SET status = ?, last_error = ?, updated_at = ?
+            WHERE operation_id = ? AND local_thread_id = ? AND status = 'provider_pending'
+            "#,
+            params![
+                status,
+                last_error,
+                current_timestamp(),
+                self.operation_id,
+                self.local_thread_id,
+            ],
+        );
+    }
+}
+
+#[derive(Debug)]
+struct ClaudeRuntimeLaunchError {
+    error: ApiError,
+    process_started: bool,
+}
+
+impl ClaudeRuntimeLaunchError {
+    fn before_spawn(error: ApiError) -> Self {
+        Self {
+            error,
+            process_started: false,
+        }
+    }
+
+    fn after_spawn(error: ApiError) -> Self {
+        Self {
+            error,
+            process_started: true,
+        }
+    }
+}
+
+fn apply_awaiting_claude_fork_run(
+    payload: &mut ClaudeRunRequest,
+    awaiting: &AwaitingClaudeForkRun,
+) {
+    payload.working_directory = Some(awaiting.source.working_directory.clone());
+    payload.session_id = Some(awaiting.source.provider_thread_id.clone());
+    payload.permission_mode = awaiting.source.permission_mode.clone();
+    payload.model = awaiting.source.model.clone();
+    payload.effort = awaiting.source.reasoning_effort.clone();
+    payload.channel_id = awaiting.source.agent_channel_id.clone();
 }
 
 #[derive(Debug)]
@@ -874,7 +1001,10 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         runtimes: Arc::new(Mutex::new(std::collections::HashMap::new())),
         context_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
         claude_fork_capability_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        #[cfg(test)]
         claude_fork_launch_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        #[cfg(test)]
+        claude_runtime_test_launch: None,
         #[cfg(test)]
         thread_fork_test_driver: None,
     };
@@ -2746,7 +2876,7 @@ async fn update_claude_system_prompt(
 
 async fn claude_run(
     State(state): State<AppState>,
-    Json(payload): Json<ClaudeRunRequest>,
+    Json(mut payload): Json<ClaudeRunRequest>,
 ) -> ApiResult<Response> {
     let thread_id = payload
         .thread_id
@@ -2755,6 +2885,23 @@ async fn claude_run(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ApiError::bad_request("threadId 不能为空"))?
         .to_string();
+    let awaiting_fork = {
+        let _guard = lock_workspace_write(&state)?;
+        let connection = open_initialized_workspace_database(&state)?;
+        let awaiting = read_awaiting_claude_fork_run(&connection, &thread_id)?;
+        if let Some(awaiting) = awaiting.as_ref() {
+            if payload.tool_result.is_some() {
+                return Err(ApiError::conflict(
+                    "复制的新聊天尚未发送第一条消息，不能先提交工具结果",
+                ));
+            }
+            ensure_claude_thread_fork_idle(&state, &awaiting.source.id)?;
+        }
+        awaiting
+    };
+    if let Some(awaiting) = awaiting_fork.as_ref() {
+        apply_awaiting_claude_fork_run(&mut payload, awaiting);
+    }
     let working_directory = payload
         .working_directory
         .as_deref()
@@ -2771,6 +2918,14 @@ async fn claude_run(
     if !claude_input_message_has_content(&input_message) {
         return Err(ApiError::bad_request("发送内容不能为空"));
     }
+    #[cfg(test)]
+    let command = state
+        .claude_runtime_test_launch
+        .as_ref()
+        .map(|(command, _)| command.clone())
+        .or_else(resolve_claude_command)
+        .ok_or_else(|| ApiError::bad_request("未找到 claude 命令"))?;
+    #[cfg(not(test))]
     let command =
         resolve_claude_command().ok_or_else(|| ApiError::bad_request("未找到 claude 命令"))?;
     let run_id = uuid::Uuid::new_v4().to_string();
@@ -2800,6 +2955,18 @@ async fn claude_run(
             channel_fingerprint.as_deref(),
         )
         .map_err(ApiError::internal)?;
+    let mut delayed_fork_claim_guard = if let Some(awaiting) = awaiting_fork.as_ref() {
+        let _guard = lock_workspace_write(&state)?;
+        let connection = open_initialized_workspace_database(&state)?;
+        claim_awaiting_claude_fork_run(&connection, &thread_id, &awaiting.operation_id)?;
+        Some(DelayedClaudeForkClaimGuard::new(
+            &state,
+            &thread_id,
+            &awaiting.operation_id,
+        ))
+    } else {
+        None
+    };
     let notify = Arc::new(tokio::sync::Notify::new());
     let record = ActiveRunRecord {
         run_id: run_id.clone(),
@@ -2808,7 +2975,11 @@ async fn claude_run(
         prompt: prompt.clone(),
         user_content_blocks: summarize_content_blocks(payload.content_blocks.as_ref()),
         working_directory: working_directory.clone(),
-        session_id: payload.session_id.clone(),
+        session_id: if awaiting_fork.is_some() {
+            None
+        } else {
+            payload.session_id.clone()
+        },
         permission_mode: permission_mode.clone(),
         model: payload.model.clone(),
         effort: payload.effort.clone(),
@@ -2830,11 +3001,14 @@ async fn claude_run(
         tool_input_accumulators: std::collections::HashMap::new(),
         last_phase_event: None,
     };
-    state
-        .runs
-        .lock()
-        .map_err(|error| ApiError::internal(format!("锁定运行状态失败: {error}")))?
-        .insert(run_id.clone(), record);
+    match state.runs.lock() {
+        Ok(mut runs) => {
+            runs.insert(run_id.clone(), record);
+        }
+        Err(error) => {
+            return Err(ApiError::internal(format!("锁定运行状态失败: {error}")));
+        }
+    }
 
     push_trace_event(
         &state,
@@ -2867,11 +3041,18 @@ async fn claude_run(
         &permission_mode,
         &payload,
         channel_runtime.as_ref(),
+        awaiting_fork.is_some(),
     )
     .await
     {
         Ok(result) => result,
-        Err(error) => {
+        Err(launch_error) => {
+            if launch_error.process_started {
+                if let Some(guard) = delayed_fork_claim_guard.as_mut() {
+                    guard.mark_process_started();
+                }
+            }
+            let error = launch_error.error;
             push_run_event(
                 &state,
                 &run_id,
@@ -2881,6 +3062,9 @@ async fn claude_run(
             return build_run_stream_response(state, run_id);
         }
     };
+    if let Some(guard) = delayed_fork_claim_guard.as_mut() {
+        guard.mark_process_started();
+    }
 
     if runtime.closed || runtime.current_run_id.is_some() {
         push_run_event(
@@ -2963,6 +3147,9 @@ async fn claude_run(
         );
         close_thread_runtime(&state, &thread_id)?;
         mark_run_finished(&state, &run_id);
+    } else if let Some(guard) = delayed_fork_claim_guard.as_mut() {
+        // stdout/init and process-exit callbacks now own the pending operation lifecycle.
+        guard.disarm();
     }
 
     build_run_stream_response(state, run_id)
@@ -4889,9 +5076,43 @@ async fn fork_thread(
         let mut connection = open_initialized_workspace_database(&state)?;
         let source = read_fork_source_thread(&connection, &project_id, &thread_id)?;
         if source.provider == CLAUDE_CODE_PROVIDER_ID {
-            // 仅 Claude 在写 operation 记录前执行运行态门禁；冲突时不创建 operation 记录，
-            // 也不关闭或修改源 runtime。
-            ensure_claude_thread_fork_idle(&state, &source.id)?;
+            let operation_id = normalize_thread_fork_operation_id(&payload.operation_id)?;
+            let requested = read_thread_fork_operation(&connection, &operation_id)?;
+            if requested.as_ref().is_some_and(|existing| {
+                existing.source_thread_id != source.id
+                    || existing.source_provider_thread_id != source.provider_thread_id
+            }) {
+                return Err(ApiError::conflict("operationId 已用于其他聊天"));
+            }
+            let operation = if let Some(existing) = requested {
+                existing
+            } else if let Some(active) = read_active_thread_fork_operation(&connection, &source.id)?
+            {
+                active
+            } else {
+                ensure_claude_thread_fork_idle(&state, &source.id)?;
+                prepare_claude_pending_thread_fork(
+                    &mut connection,
+                    &source,
+                    &operation_id,
+                    current_timestamp_ms_i64(),
+                )?
+            };
+            return match operation.status {
+                ThreadForkOperationStatus::AwaitingFirstMessage
+                | ThreadForkOperationStatus::HistoryPending
+                | ThreadForkOperationStatus::Completed => {
+                    build_thread_fork_response(&mut connection, &operation).map(Json)
+                }
+                ThreadForkOperationStatus::ResultUnknown => Err(ApiError::conflict(
+                    "Claude Fork 结果仍无法确认；为避免重复创建会话，未自动重新 Fork，请稍后重试核对",
+                )),
+                ThreadForkOperationStatus::ProviderPending
+                | ThreadForkOperationStatus::ProviderSucceeded
+                | ThreadForkOperationStatus::Failed => Err(ApiError::conflict(
+                    "Claude Fork 状态正在恢复，暂时不能重新发起",
+                )),
+            };
         }
         let operation = prepare_thread_fork_operation(
             &mut connection,
@@ -4901,12 +5122,6 @@ async fn fork_thread(
         )?;
         (source, operation)
     };
-
-    if source.provider == CLAUDE_CODE_PROVIDER_ID {
-        return fork_thread_claude(&state, source, operation)
-            .await
-            .map(Json);
-    }
 
     if matches!(
         operation.status,
@@ -4973,7 +5188,10 @@ async fn fork_thread(
         }
         ThreadForkOperationStatus::HistoryPending
         | ThreadForkOperationStatus::Completed
-        | ThreadForkOperationStatus::Failed => unreachable!("Fork operation was normalized"),
+        | ThreadForkOperationStatus::Failed
+        | ThreadForkOperationStatus::AwaitingFirstMessage => {
+            unreachable!("Fork operation was normalized")
+        }
     };
 
     let outcome = match provider_result {
@@ -5052,6 +5270,7 @@ async fn fork_thread(
 /// 命令身份、渠道环境、模型与权限全部来自可信源 thread；进程只完成会话创建（无 prompt，
 /// 不触发模型生成），不进入 `state.runs` / `runtimes`，也不会关闭或替换源热 runtime。
 /// `Rejected` 保持拒绝语义，`Uncertain` 保持不确定语义，由调用方决定 operation 落库状态。
+#[cfg(test)]
 async fn create_claude_thread_fork(
     state: &AppState,
     source: &ForkSourceThread,
@@ -5111,6 +5330,7 @@ async fn create_claude_thread_fork(
 }
 
 /// 取消兜底写入 operation 的有界通用错误文案。
+#[cfg(test)]
 const CLAUDE_FORK_CANCELLED_ERROR_MESSAGE: &str = "Claude Fork 请求被取消，新会话创建结果无法确认";
 
 /// Claude 一次性 Fork 启动的进程内单飞 guard。
@@ -5123,6 +5343,7 @@ const CLAUDE_FORK_CANCELLED_ERROR_MESSAGE: &str = "Claude Fork 请求被取消�
 /// 正常路径在 Provider 结果按既有语义落库（Failed / ResultUnknown / provider_succeeded）
 /// 后必须调用 [`ClaudeForkLaunchGuard::disarm`] 解除兜底。仅进程内有效，应用重启后仍走
 /// 现有 `provider_pending -> result_unknown` 恢复边界，不依赖本结构。
+#[cfg(test)]
 struct ClaudeForkLaunchGuard {
     source_thread_id: String,
     in_flight: Arc<Mutex<std::collections::HashSet<String>>>,
@@ -5131,11 +5352,13 @@ struct ClaudeForkLaunchGuard {
 
 /// 取消兜底上下文：Drop 时若仍 armed，把仍为 `provider_pending` 的 operation 条件更新
 /// 为 `result_unknown`。
+#[cfg(test)]
 struct ClaudeForkCancellation {
     state: AppState,
     operation_id: String,
 }
 
+#[cfg(test)]
 impl ClaudeForkLaunchGuard {
     /// 解除取消兜底：调用方已按既有语义持久化 Provider 结果状态
     /// （Failed / ResultUnknown / provider_succeeded），Drop 不再改写 operation。
@@ -5144,6 +5367,7 @@ impl ClaudeForkLaunchGuard {
     }
 }
 
+#[cfg(test)]
 impl std::fmt::Debug for ClaudeForkLaunchGuard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClaudeForkLaunchGuard")
@@ -5153,6 +5377,7 @@ impl std::fmt::Debug for ClaudeForkLaunchGuard {
     }
 }
 
+#[cfg(test)]
 impl Drop for ClaudeForkLaunchGuard {
     fn drop(&mut self) {
         // 取消兜底优先执行：只有兜底落库成功（或 operation 状态已被其他路径持久化）才
@@ -5170,6 +5395,7 @@ impl Drop for ClaudeForkLaunchGuard {
     }
 }
 
+#[cfg(test)]
 impl ClaudeForkCancellation {
     /// 取消兜底：仅当 operation 仍为 `provider_pending` 时条件更新为 `result_unknown` 并
     /// 记录有界通用错误。WHERE 条件保证不会覆盖 `provider_succeeded` / `history_pending` /
@@ -5201,6 +5427,7 @@ impl ClaudeForkCancellation {
 
 /// 为源 thread 获取 Claude Fork 启动单飞权；已被同源并发请求持有时返回 conflict。
 /// 只短暂持锁做插入，不跨 await 持锁。guard 带 operation 的取消兜底上下文。
+#[cfg(test)]
 fn acquire_claude_fork_launch(
     state: &AppState,
     source_thread_id: &str,
@@ -5234,6 +5461,7 @@ fn acquire_claude_fork_launch(
 /// - `provider_succeeded`：只做本地恢复（transcript 解析或 pending 绑定），不创建新会话。
 ///
 /// 源 thread 的 session、历史与热 runtime 全程不变；Fork 进程不进 `state.runs` / `runtimes`。
+#[cfg(test)]
 async fn fork_thread_claude(
     state: &AppState,
     source: ForkSourceThread,
@@ -5294,7 +5522,8 @@ async fn fork_thread_claude(
                     current.provider_thread_id.clone()
                 }
                 ThreadForkOperationStatus::Completed
-                | ThreadForkOperationStatus::HistoryPending => {
+                | ThreadForkOperationStatus::HistoryPending
+                | ThreadForkOperationStatus::AwaitingFirstMessage => {
                     guard.disarm();
                     return build_thread_fork_response(&mut connection, &current);
                 }
@@ -7768,6 +7997,72 @@ fn open_initialized_workspace_database(state: &AppState) -> ApiResult<Connection
     Ok(connection)
 }
 
+fn migrate_thread_fork_operation_status_schema(connection: &Connection) -> ApiResult<()> {
+    let schema = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'thread_fork_operations'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取 Fork 操作表结构失败: {error}")))?;
+    if schema
+        .as_deref()
+        .is_none_or(|value| value.contains("awaiting_first_message"))
+    {
+        return Ok(());
+    }
+
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| ApiError::internal(format!("开始迁移 Fork 操作状态失败: {error}")))?;
+    transaction
+        .execute_batch(
+            r#"
+            DROP INDEX IF EXISTS idx_thread_fork_operations_source_status;
+            DROP INDEX IF EXISTS idx_thread_fork_operations_one_active_source;
+            ALTER TABLE thread_fork_operations RENAME TO thread_fork_operations_before_awaiting;
+            CREATE TABLE thread_fork_operations (
+              operation_id TEXT PRIMARY KEY,
+              source_thread_id TEXT NOT NULL,
+              source_provider_thread_id TEXT NOT NULL,
+              provider_thread_id TEXT UNIQUE,
+              local_thread_id TEXT,
+              status TEXT NOT NULL CHECK (status IN (
+                'provider_pending', 'provider_succeeded', 'result_unknown',
+                'history_pending', 'completed', 'failed', 'awaiting_first_message'
+              )),
+              started_at_ms INTEGER NOT NULL,
+              last_error TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            INSERT INTO thread_fork_operations (
+              operation_id, source_thread_id, source_provider_thread_id,
+              provider_thread_id, local_thread_id, status, started_at_ms,
+              last_error, created_at, updated_at
+            )
+            SELECT operation_id, source_thread_id, source_provider_thread_id,
+                   provider_thread_id, local_thread_id, status, started_at_ms,
+                   last_error, created_at, updated_at
+            FROM thread_fork_operations_before_awaiting;
+            DROP TABLE thread_fork_operations_before_awaiting;
+            CREATE INDEX idx_thread_fork_operations_source_status
+            ON thread_fork_operations (source_thread_id, status, updated_at);
+            CREATE UNIQUE INDEX idx_thread_fork_operations_one_active_source
+            ON thread_fork_operations (source_thread_id)
+            WHERE status IN (
+              'provider_pending', 'provider_succeeded', 'result_unknown', 'history_pending',
+              'awaiting_first_message'
+            );
+            "#,
+        )
+        .map_err(|error| ApiError::internal(format!("迁移 Fork 操作状态失败: {error}")))?;
+    transaction
+        .commit()
+        .map_err(|error| ApiError::internal(format!("提交 Fork 操作状态迁移失败: {error}")))
+}
+
 fn initialize_workspace_database(connection: &Connection) -> ApiResult<()> {
     connection
         .execute_batch(
@@ -7874,7 +8169,7 @@ fn initialize_workspace_database(connection: &Connection) -> ApiResult<()> {
               local_thread_id TEXT,
               status TEXT NOT NULL CHECK (status IN (
                 'provider_pending', 'provider_succeeded', 'result_unknown',
-                'history_pending', 'completed', 'failed'
+                'history_pending', 'completed', 'failed', 'awaiting_first_message'
               )),
               started_at_ms INTEGER NOT NULL,
               last_error TEXT,
@@ -7890,12 +8185,14 @@ fn initialize_workspace_database(connection: &Connection) -> ApiResult<()> {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_fork_operations_one_active_source
             ON thread_fork_operations (source_thread_id)
             WHERE status IN (
-              'provider_pending', 'provider_succeeded', 'result_unknown', 'history_pending'
+              'provider_pending', 'provider_succeeded', 'result_unknown', 'history_pending',
+              'awaiting_first_message'
             );
             "#,
         )
         .map_err(|error| ApiError::internal(format!("初始化工作区数据库失败: {error}")))
         .and_then(|_| {
+            migrate_thread_fork_operation_status_schema(connection)?;
             ensure_column(
                 connection,
                 "tool_calls",
@@ -8835,7 +9132,7 @@ fn read_fork_source_thread(
             r#"
             SELECT t.id, t.project_id, t.provider, t.title, t.custom_title, t.session_id,
                    t.working_directory, t.model, t.reasoning_effort, t.permission_mode,
-                   t.agent_channel_id, p.path
+                   t.agent_channel_id, t.agent_channel_fingerprint, p.path
             FROM threads t
             INNER JOIN projects p ON p.id = t.project_id
             WHERE t.id = ? AND t.project_id = ?
@@ -8856,8 +9153,9 @@ fn read_fork_source_thread(
                         reasoning_effort: row.get(8)?,
                         permission_mode: row.get(9)?,
                         agent_channel_id: row.get(10)?,
+                        agent_channel_fingerprint: row.get(11)?,
                     },
-                    row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
                 ))
             },
         )
@@ -8985,7 +9283,9 @@ fn build_thread_fork_response(
         .as_deref()
         .ok_or_else(|| ApiError::internal("Fork 操作缺少本地聊天 ID"))?;
     let history_state = match operation.status {
-        ThreadForkOperationStatus::Completed => ThreadForkHistoryState::Loaded,
+        ThreadForkOperationStatus::Completed | ThreadForkOperationStatus::AwaitingFirstMessage => {
+            ThreadForkHistoryState::Loaded
+        }
         ThreadForkOperationStatus::HistoryPending => ThreadForkHistoryState::Pending,
         _ => return Err(ApiError::conflict("Fork 操作尚未创建可见聊天")),
     };
@@ -9156,6 +9456,173 @@ fn read_thread_fork_operation(
         .map_err(|error| ApiError::internal(format!("读取 Fork 操作失败: {error}")))
 }
 
+fn read_delayed_claude_fork_run(
+    connection: &Connection,
+    local_thread_id: &str,
+) -> ApiResult<Option<(AwaitingClaudeForkRun, ThreadForkOperationStatus)>> {
+    let operation_id = connection
+        .query_row(
+            r#"
+            SELECT operation_id
+            FROM thread_fork_operations
+            WHERE local_thread_id = ?
+              AND status IN ('awaiting_first_message', 'provider_pending', 'result_unknown')
+            LIMIT 1
+            "#,
+            params![local_thread_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取待首发 Fork 操作失败: {error}")))?;
+    let Some(operation_id) = operation_id else {
+        return Ok(None);
+    };
+    let operation = read_thread_fork_operation(connection, &operation_id)?
+        .ok_or_else(|| ApiError::internal("待首发 Fork 操作不存在"))?;
+    let source_project_id = connection
+        .query_row(
+            "SELECT project_id FROM threads WHERE id = ?",
+            params![operation.source_thread_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取 Fork 源项目失败: {error}")))?
+        .ok_or_else(|| ApiError::conflict("Fork 源聊天已不存在，不能创建独立会话"))?;
+    let source =
+        read_fork_source_thread(connection, &source_project_id, &operation.source_thread_id)?;
+    let child_identity = connection
+        .query_row(
+            r#"
+            SELECT project_id, provider, session_id, working_directory, model,
+                   reasoning_effort, permission_mode, agent_channel_id, agent_channel_fingerprint
+            FROM threads
+            WHERE id = ?
+            "#,
+            params![local_thread_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取 Fork 子聊天失败: {error}")))?
+        .ok_or_else(|| ApiError::not_found("Fork 子聊天不存在"))?;
+    if child_identity.0 != source.project_id
+        || child_identity.1 != CLAUDE_CODE_PROVIDER_ID
+        || child_identity
+            .2
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || child_identity.3 != source.working_directory
+        || child_identity.4 != source.model
+        || child_identity.5 != source.reasoning_effort
+        || child_identity.6 != source.permission_mode
+        || child_identity.7 != source.agent_channel_id
+        || child_identity.8 != source.agent_channel_fingerprint
+    {
+        return Err(ApiError::conflict(
+            "Fork 子聊天可信配置已变化，请重新创建副本",
+        ));
+    }
+    let status = operation.status;
+    Ok(Some((
+        AwaitingClaudeForkRun {
+            operation_id,
+            source,
+        },
+        status,
+    )))
+}
+
+fn read_awaiting_claude_fork_run(
+    connection: &Connection,
+    local_thread_id: &str,
+) -> ApiResult<Option<AwaitingClaudeForkRun>> {
+    let Some((awaiting, status)) = read_delayed_claude_fork_run(connection, local_thread_id)?
+    else {
+        return Ok(None);
+    };
+    match status {
+        ThreadForkOperationStatus::AwaitingFirstMessage => Ok(Some(awaiting)),
+        ThreadForkOperationStatus::ProviderPending => Err(ApiError::conflict(
+            "复制聊天的第一条消息正在创建独立 Claude session，请勿重复发送",
+        )),
+        ThreadForkOperationStatus::ResultUnknown => Err(ApiError::conflict(
+            "复制聊天的独立 Claude session 创建结果无法确认；为避免重复发送，未自动重试",
+        )),
+        _ => unreachable!("delayed Fork query only returns pending states"),
+    }
+}
+
+fn claim_awaiting_claude_fork_run(
+    connection: &Connection,
+    local_thread_id: &str,
+    operation_id: &str,
+) -> ApiResult<()> {
+    let updated = connection
+        .execute(
+            r#"
+            UPDATE thread_fork_operations
+            SET status = 'provider_pending', last_error = NULL, updated_at = ?
+            WHERE operation_id = ? AND local_thread_id = ?
+              AND status = 'awaiting_first_message'
+            "#,
+            params![current_timestamp(), operation_id, local_thread_id],
+        )
+        .map_err(|error| ApiError::internal(format!("占用 Claude Fork 首发操作失败: {error}")))?;
+    if updated == 1 {
+        Ok(())
+    } else {
+        Err(ApiError::conflict(
+            "复制聊天的第一条消息已被其他请求处理，请勿重复发送",
+        ))
+    }
+}
+
+#[cfg(test)]
+fn reset_claude_fork_run_before_spawn(state: &AppState, local_thread_id: &str, operation_id: &str) {
+    let Ok(connection) = open_initialized_workspace_database(state) else {
+        return;
+    };
+    let _ = connection.execute(
+        r#"
+        UPDATE thread_fork_operations
+        SET status = 'awaiting_first_message', last_error = NULL, updated_at = ?
+        WHERE operation_id = ? AND local_thread_id = ? AND status = 'provider_pending'
+        "#,
+        params![current_timestamp(), operation_id, local_thread_id],
+    );
+}
+
+fn mark_delayed_claude_fork_result_unknown(
+    state: &AppState,
+    local_thread_id: &str,
+    message: &str,
+) -> bool {
+    let Ok(connection) = open_initialized_workspace_database(state) else {
+        return false;
+    };
+    connection
+        .execute(
+            r#"
+        UPDATE thread_fork_operations
+        SET status = 'result_unknown', last_error = ?, updated_at = ?
+        WHERE local_thread_id = ? AND status = 'provider_pending'
+        "#,
+            params![message, current_timestamp(), local_thread_id],
+        )
+        .is_ok_and(|updated| updated == 1)
+}
+
 fn read_active_thread_fork_operation(
     connection: &Connection,
     source_thread_id: &str,
@@ -9166,7 +9633,10 @@ fn read_active_thread_fork_operation(
             SELECT operation_id
             FROM thread_fork_operations
             WHERE source_thread_id = ?
-              AND status IN ('provider_pending', 'provider_succeeded', 'result_unknown', 'history_pending')
+              AND status IN (
+                'provider_pending', 'provider_succeeded', 'result_unknown', 'history_pending',
+                'awaiting_first_message'
+              )
             ORDER BY updated_at DESC
             LIMIT 1
             "#,
@@ -9182,25 +9652,12 @@ fn read_active_thread_fork_operation(
         .map(Option::flatten)
 }
 
-fn prepare_thread_fork_operation(
-    connection: &mut Connection,
+fn validate_thread_fork_operation_request(
+    connection: &Connection,
     source: &ForkSourceThread,
     requested_operation_id: &str,
-    now_ms: i64,
-) -> ApiResult<ThreadForkOperation> {
-    let operation_id = requested_operation_id.trim();
-    if operation_id.is_empty() {
-        return Err(ApiError::bad_request("operationId 不能为空"));
-    }
-    if operation_id.chars().count() > 128
-        || !operation_id
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-    {
-        return Err(ApiError::bad_request(
-            "operationId 仅支持 128 个以内的字母、数字、连字符或下划线",
-        ));
-    }
+) -> ApiResult<String> {
+    let operation_id = normalize_thread_fork_operation_id(requested_operation_id)?;
     if !provider_supports_native_thread_fork(&source.provider) {
         return Err(ApiError::bad_request(format!(
             "{} 暂不支持在新聊天中继续",
@@ -9219,10 +9676,38 @@ fn prepare_thread_fork_operation(
             "当前聊天仍有待处理的权限确认或用户输入，暂时不能在新聊天中继续",
         ));
     }
+    Ok(operation_id)
+}
+
+fn normalize_thread_fork_operation_id(requested_operation_id: &str) -> ApiResult<String> {
+    let operation_id = requested_operation_id.trim();
+    if operation_id.is_empty() {
+        return Err(ApiError::bad_request("operationId 不能为空"));
+    }
+    if operation_id.chars().count() > 128
+        || !operation_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(ApiError::bad_request(
+            "operationId 仅支持 128 个以内的字母、数字、连字符或下划线",
+        ));
+    }
+    Ok(operation_id.to_string())
+}
+
+fn prepare_thread_fork_operation(
+    connection: &mut Connection,
+    source: &ForkSourceThread,
+    requested_operation_id: &str,
+    now_ms: i64,
+) -> ApiResult<ThreadForkOperation> {
+    let operation_id =
+        validate_thread_fork_operation_request(connection, source, requested_operation_id)?;
     if let Some(active) = read_active_thread_fork_operation(connection, &source.id)? {
         return Ok(active);
     }
-    if let Some(existing) = read_thread_fork_operation(connection, operation_id)? {
+    if let Some(existing) = read_thread_fork_operation(connection, &operation_id)? {
         if existing.source_thread_id != source.id
             || existing.source_provider_thread_id != source.provider_thread_id
         {
@@ -9242,7 +9727,7 @@ fn prepare_thread_fork_operation(
                     params![now_ms, now, operation_id],
                 )
                 .map_err(|error| ApiError::internal(format!("重新准备 Fork 操作失败: {error}")))?;
-            return read_thread_fork_operation(connection, operation_id)?
+            return read_thread_fork_operation(connection, &operation_id)?
                 .ok_or_else(|| ApiError::internal("重新准备 Fork 操作后记录不存在"));
         }
         if existing.status == ThreadForkOperationStatus::Failed {
@@ -9275,8 +9760,123 @@ fn prepare_thread_fork_operation(
             ],
         )
         .map_err(|error| ApiError::internal(format!("准备 Fork 操作失败: {error}")))?;
-    read_thread_fork_operation(connection, operation_id)?
+    read_thread_fork_operation(connection, &operation_id)?
         .ok_or_else(|| ApiError::internal("准备 Fork 操作后记录不存在"))
+}
+
+fn prepare_claude_pending_thread_fork(
+    connection: &mut Connection,
+    source: &ForkSourceThread,
+    requested_operation_id: &str,
+    now_ms: i64,
+) -> ApiResult<ThreadForkOperation> {
+    let operation_id =
+        validate_thread_fork_operation_request(connection, source, requested_operation_id)?;
+    if source.provider != CLAUDE_CODE_PROVIDER_ID {
+        return Err(ApiError::bad_request(
+            "只有 Claude Code 使用待首条消息的 Fork 流程",
+        ));
+    }
+
+    let source_history = read_thread_history_payload(connection, &source.id)?;
+    let snapshot_turns = source_history
+        .get("turns")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| ApiError::internal("读取 Fork 源聊天历史失败"))?;
+
+    let transaction = connection
+        .transaction()
+        .map_err(|error| ApiError::internal(format!("创建待分叉聊天事务失败: {error}")))?;
+    if let Some(active) = read_active_thread_fork_operation(&transaction, &source.id)? {
+        return Ok(active);
+    }
+    if let Some(existing) = read_thread_fork_operation(&transaction, &operation_id)? {
+        if existing.source_thread_id != source.id
+            || existing.source_provider_thread_id != source.provider_thread_id
+        {
+            return Err(ApiError::conflict("operationId 已用于其他聊天"));
+        }
+        return Ok(existing);
+    }
+
+    let local_thread_id = uuid::Uuid::new_v4().to_string();
+    let now = current_timestamp();
+    transaction
+        .execute(
+            r#"
+            INSERT INTO threads (
+              id, project_id, provider, title, custom_title, session_id, transcript_path,
+              working_directory, model, reasoning_effort, permission_mode, agent_channel_id,
+              agent_channel_fingerprint, imported, created_at, updated_at, pinned_at
+            )
+            VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL)
+            "#,
+            params![
+                local_thread_id,
+                source.project_id,
+                source.provider,
+                source.title,
+                if source.custom_title { 1 } else { 0 },
+                source.working_directory,
+                source.model,
+                source.reasoning_effort,
+                source.permission_mode,
+                source.agent_channel_id,
+                source.agent_channel_fingerprint,
+                now,
+                now,
+            ],
+        )
+        .map_err(|error| ApiError::internal(format!("创建待分叉聊天失败: {error}")))?;
+    sync_thread_model_preference(
+        &transaction,
+        &local_thread_id,
+        source.model.as_deref(),
+        source.reasoning_effort.as_deref(),
+        &now,
+    )?;
+    write_thread_history_rows(
+        &transaction,
+        &local_thread_id,
+        &snapshot_turns,
+        &source.project_id,
+        &now,
+    )?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO thread_fork_operations (
+              operation_id, source_thread_id, source_provider_thread_id,
+              provider_thread_id, local_thread_id, status, started_at_ms,
+              last_error, created_at, updated_at
+            )
+            VALUES (?, ?, ?, NULL, ?, 'awaiting_first_message', ?, NULL, ?, ?)
+            "#,
+            params![
+                operation_id,
+                source.id,
+                source.provider_thread_id,
+                local_thread_id,
+                now_ms,
+                now,
+                now,
+            ],
+        )
+        .map_err(|error| ApiError::internal(format!("创建待分叉操作失败: {error}")))?;
+    transaction
+        .execute(
+            "UPDATE projects SET updated_at = ? WHERE id = ?",
+            params![now, source.project_id],
+        )
+        .map_err(|error| ApiError::internal(format!("更新 Fork 项目失败: {error}")))?;
+    write_state_value(&transaction, "activeProjectId", &source.project_id)?;
+    write_state_value(&transaction, "activeThreadId", &local_thread_id)?;
+    transaction
+        .commit()
+        .map_err(|error| ApiError::internal(format!("提交待分叉聊天失败: {error}")))?;
+    read_thread_fork_operation(connection, &operation_id)?
+        .ok_or_else(|| ApiError::internal("创建待分叉操作后记录不存在"))
 }
 
 fn recover_stale_thread_fork_operations(connection: &Connection) -> ApiResult<()> {
@@ -9330,6 +9930,128 @@ fn mark_fork_provider_succeeded(
         )
         .map(|_| ())
         .map_err(|error| ApiError::internal(format!("保存 Fork Provider 结果失败: {error}")))
+}
+
+fn bind_awaiting_claude_fork_session(
+    state: &AppState,
+    local_thread_id: &str,
+    line: &str,
+) -> Option<ApiResult<String>> {
+    let payload = serde_json::from_str::<Value>(line.trim()).ok()?;
+    if payload.get("type").and_then(Value::as_str) != Some("system")
+        || payload.get("subtype").and_then(Value::as_str) != Some("init")
+    {
+        return None;
+    }
+    let result = (|| {
+        let _guard = lock_workspace_write(state)?;
+        let mut connection = open_initialized_workspace_database(state)?;
+        let Some((awaiting, status)) = read_delayed_claude_fork_run(&connection, local_thread_id)?
+        else {
+            return Ok(String::new());
+        };
+        if !matches!(
+            status,
+            ThreadForkOperationStatus::AwaitingFirstMessage
+                | ThreadForkOperationStatus::ProviderPending
+        ) {
+            return Err(ApiError::conflict(
+                "Claude Fork session 创建结果已处于不确定状态",
+            ));
+        }
+        let child_session_id = payload
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some(child_session_id) = child_session_id else {
+            connection
+                .execute(
+                    r#"
+                    UPDATE thread_fork_operations
+                    SET status = 'result_unknown', last_error = ?, updated_at = ?
+                    WHERE operation_id = ?
+                      AND status IN ('awaiting_first_message', 'provider_pending')
+                    "#,
+                    params![
+                        "Claude Fork init 未返回新的 session ID",
+                        current_timestamp(),
+                        awaiting.operation_id,
+                    ],
+                )
+                .map_err(|error| ApiError::internal(format!("保存异常 Fork 状态失败: {error}")))?;
+            return Err(ApiError::conflict(
+                "Claude Fork init 未返回新的 session ID，已停止当前运行",
+            ));
+        };
+        if child_session_id == awaiting.source.provider_thread_id {
+            connection
+                .execute(
+                    r#"
+                    UPDATE thread_fork_operations
+                    SET status = 'result_unknown', last_error = ?, updated_at = ?
+                    WHERE operation_id = ?
+                      AND status IN ('awaiting_first_message', 'provider_pending')
+                    "#,
+                    params![
+                        "Claude Fork init 返回了源 session ID",
+                        current_timestamp(),
+                        awaiting.operation_id,
+                    ],
+                )
+                .map_err(|error| ApiError::internal(format!("保存异常 Fork 状态失败: {error}")))?;
+            return Err(ApiError::conflict(
+                "Claude Fork 未创建独立 session，已停止当前运行",
+            ));
+        }
+        let transcript_path =
+            resolve_claude_transcript_path(&awaiting.source.working_directory, child_session_id);
+        let now = current_timestamp();
+        let transaction = connection.transaction().map_err(|error| {
+            ApiError::internal(format!("绑定 Claude Fork session 失败: {error}"))
+        })?;
+        let thread_updated = transaction
+            .execute(
+                r#"
+                UPDATE threads
+                SET session_id = ?, transcript_path = ?, updated_at = ?
+                WHERE id = ? AND provider = ?
+                  AND (session_id IS NULL OR TRIM(session_id) = '')
+                "#,
+                params![
+                    child_session_id,
+                    transcript_path,
+                    now,
+                    local_thread_id,
+                    CLAUDE_CODE_PROVIDER_ID,
+                ],
+            )
+            .map_err(|error| ApiError::internal(format!("绑定 Claude Fork 子聊天失败: {error}")))?;
+        let operation_updated = transaction
+            .execute(
+                r#"
+                UPDATE thread_fork_operations
+                SET provider_thread_id = ?, status = 'completed', last_error = NULL, updated_at = ?
+                WHERE operation_id = ? AND local_thread_id = ?
+                  AND status IN ('awaiting_first_message', 'provider_pending')
+                "#,
+                params![
+                    child_session_id,
+                    now,
+                    awaiting.operation_id,
+                    local_thread_id,
+                ],
+            )
+            .map_err(|error| ApiError::internal(format!("完成 Claude Fork 操作失败: {error}")))?;
+        if thread_updated != 1 || operation_updated != 1 {
+            return Err(ApiError::conflict("Claude Fork 绑定状态已变化，请重新加载"));
+        }
+        transaction.commit().map_err(|error| {
+            ApiError::internal(format!("提交 Claude Fork session 失败: {error}"))
+        })?;
+        Ok(child_session_id.to_string())
+    })();
+    Some(result)
 }
 
 fn finalize_local_thread_fork(
@@ -9414,7 +10136,7 @@ fn finalize_local_thread_fork(
                   working_directory, model, reasoning_effort, permission_mode, agent_channel_id,
                   agent_channel_fingerprint, imported, created_at, updated_at, pinned_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, NULL)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL)
                 "#,
                 params![
                     local_thread_id,
@@ -9429,6 +10151,7 @@ fn finalize_local_thread_fork(
                     source.reasoning_effort,
                     source.permission_mode,
                     source.agent_channel_id,
+                    source.agent_channel_fingerprint,
                     now,
                     now,
                 ],
@@ -10217,6 +10940,11 @@ fn codex_snapshot_turn_status(status: &str) -> &'static str {
 fn read_thread_history_payload(connection: &mut Connection, thread_id: &str) -> ApiResult<Value> {
     let thread = read_thread_detail(connection, thread_id)?;
     let stored_turns = read_stored_thread_history(connection, thread_id)?;
+    let claude_fork_snapshot = if thread.provider == CLAUDE_CODE_PROVIDER_ID {
+        read_claude_fork_snapshot_context(connection, thread_id)?
+    } else {
+        None
+    };
     let claude_context = (thread.provider == CLAUDE_CODE_PROVIDER_ID)
         .then(|| {
             thread
@@ -10242,6 +10970,8 @@ fn read_thread_history_payload(connection: &mut Connection, thread_id: &str) -> 
             if !reparsed_turns.is_empty() {
                 turns = if stored_turns.is_empty() {
                     reparsed_turns
+                } else if let Some(snapshot) = claude_fork_snapshot.as_ref() {
+                    merge_claude_fork_snapshot_history(&stored_turns, reparsed_turns, snapshot)
                 } else {
                     merge_stored_turn_metrics(&stored_turns, reparsed_turns)
                 };
@@ -10264,6 +10994,34 @@ fn read_thread_history_payload(connection: &mut Connection, thread_id: &str) -> 
         }
     }
     Ok(payload)
+}
+
+fn read_claude_fork_snapshot_context(
+    connection: &Connection,
+    thread_id: &str,
+) -> ApiResult<Option<ClaudeForkSnapshotContext>> {
+    connection
+        .query_row(
+            r#"
+            SELECT operation.provider_thread_id, operation.started_at_ms
+            FROM thread_fork_operations operation
+            JOIN threads source ON source.id = operation.source_thread_id
+            WHERE operation.local_thread_id = ?
+              AND source.provider = ?
+              AND operation.provider_thread_id IS NOT NULL
+            ORDER BY operation.updated_at DESC
+            LIMIT 1
+            "#,
+            params![thread_id, CLAUDE_CODE_PROVIDER_ID],
+            |row| {
+                Ok(ClaudeForkSnapshotContext {
+                    child_session_id: row.get(0)?,
+                    started_at_ms: row.get(1)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| ApiError::internal(format!("读取 Claude Fork 快照边界失败: {error}")))
 }
 
 fn should_refresh_stored_history(
@@ -10376,6 +11134,48 @@ fn merge_stored_turn_metrics(stored_turns: &[Value], reparsed_turns: Vec<Value>)
             turn
         })
         .collect()
+}
+
+fn merge_claude_fork_snapshot_history(
+    stored_turns: &[Value],
+    reparsed_turns: Vec<Value>,
+    snapshot: &ClaudeForkSnapshotContext,
+) -> Vec<Value> {
+    let mut frozen_snapshot = stored_turns
+        .iter()
+        .filter(|turn| {
+            let session_id = turn.get("sessionId").and_then(Value::as_str);
+            if session_id == Some(snapshot.child_session_id.as_str()) {
+                return false;
+            }
+            turn.get("startedAtMs")
+                .and_then(Value::as_i64)
+                .is_none_or(|started_at_ms| started_at_ms <= snapshot.started_at_ms)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let frozen_user_texts = frozen_snapshot
+        .iter()
+        .filter_map(|turn| turn.get("userText").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .collect::<std::collections::HashSet<_>>();
+    let child_turns = reparsed_turns
+        .into_iter()
+        .filter(|turn| {
+            turn.get("startedAtMs")
+                .and_then(Value::as_i64)
+                .is_some_and(|started_at_ms| started_at_ms > snapshot.started_at_ms)
+                || turn.get("startedAtMs").and_then(Value::as_i64).is_none()
+                    && turn
+                        .get("userText")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .is_none_or(|text| text.is_empty() || !frozen_user_texts.contains(text))
+        })
+        .collect::<Vec<_>>();
+    frozen_snapshot.extend(merge_stored_turn_metrics(stored_turns, child_turns));
+    frozen_snapshot
 }
 
 fn turn_merge_key(turn: &Value, index: usize) -> String {
@@ -17741,9 +18541,23 @@ fn build_claude_run_args(
     args
 }
 
+fn build_claude_runtime_args(
+    payload: &ClaudeRunRequest,
+    permission_mode: &str,
+    channel_runtime: Option<&crate::agent_channels::AgentChannelRuntime>,
+    fork_session: bool,
+) -> Vec<String> {
+    let mut args = build_claude_run_args(payload, permission_mode, channel_runtime);
+    if fork_session {
+        args.push("--fork-session".to_string());
+    }
+    args
+}
+
 /// 构建 Claude 原生 Fork 的一次性进程参数：复用普通运行的参数构建，以可信源 thread 的
 /// session 作为 `--resume` 目标并恰好追加一次 `--fork-session`；prompt 为空，不会触发
 /// 模型生成。返回参数不包含任何渠道密钥或环境变量（渠道环境由启动方单独注入）。
+#[cfg(test)]
 fn build_claude_fork_args(
     source: &ForkSourceThread,
     channel_runtime: Option<&crate::agent_channels::AgentChannelRuntime>,
@@ -17763,9 +18577,7 @@ fn build_claude_fork_args(
         automation_execution: false,
     };
     let permission_mode = normalize_claude_permission_mode(source.permission_mode.as_deref());
-    let mut args = build_claude_run_args(&payload, &permission_mode, channel_runtime);
-    args.push("--fork-session".to_string());
-    args
+    build_claude_runtime_args(&payload, &permission_mode, channel_runtime, true)
 }
 
 fn claude_channel_settings(
@@ -18294,15 +19106,25 @@ async fn get_or_create_claude_runtime(
     permission_mode: &str,
     payload: &ClaudeRunRequest,
     channel_runtime: Option<&crate::agent_channels::AgentChannelRuntime>,
-) -> ApiResult<(ClaudeRuntimeRecord, bool)> {
+    fork_session: bool,
+) -> Result<(ClaudeRuntimeRecord, bool), ClaudeRuntimeLaunchError> {
     let existing = state
         .runtimes
         .lock()
-        .map_err(|error| ApiError::internal(format!("读取 Claude 会话失败: {error}")))?
+        .map_err(|error| {
+            ClaudeRuntimeLaunchError::before_spawn(ApiError::internal(format!(
+                "读取 Claude 会话失败: {error}"
+            )))
+        })?
         .get(thread_id)
         .cloned();
 
     if let Some(runtime) = existing {
+        if fork_session {
+            return Err(ClaudeRuntimeLaunchError::after_spawn(ApiError::conflict(
+                "复制聊天存在未确认的 Claude 运行时；为避免重复发送，未继续创建 Fork",
+            )));
+        }
         let has_context_request = state
             .context_requests
             .lock()
@@ -18320,12 +19142,20 @@ async fn get_or_create_claude_runtime(
         ) {
             return Ok((runtime, true));
         }
-        close_thread_runtime(state, thread_id)?;
+        close_thread_runtime(state, thread_id).map_err(ClaudeRuntimeLaunchError::before_spawn)?;
     }
 
-    let mut args = build_claude_run_args(payload, permission_mode, channel_runtime);
-    let mut process = background_tokio_command(command);
+    let args = build_claude_runtime_args(payload, permission_mode, channel_runtime, fork_session);
+    #[cfg(test)]
+    let (launch_command, mut args) = state
+        .claude_runtime_test_launch
+        .clone()
+        .unwrap_or_else(|| (command.to_string(), args));
+    #[cfg(not(test))]
+    let (launch_command, mut args) = (command.to_string(), args);
+    let mut process = background_tokio_command(&launch_command);
     process.args(args.drain(..)).current_dir(working_directory);
+    process.kill_on_drop(true);
     if let Some(channel_runtime) = channel_runtime {
         process.envs(&channel_runtime.env);
     }
@@ -18334,18 +19164,20 @@ async fn get_or_create_claude_runtime(
         .stderr(std::process::Stdio::piped())
         .stdin(std::process::Stdio::piped())
         .spawn()
-        .map_err(|error| ApiError::internal(format!("启动 Claude 失败: {error}")))?;
-    let child_id = child
-        .id()
-        .ok_or_else(|| ApiError::internal("Claude 进程 ID 不可用"))?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| ApiError::internal("Claude stdin 不可写"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| ApiError::internal("Claude stdout 不可读"))?;
+        .map_err(|error| {
+            ClaudeRuntimeLaunchError::before_spawn(ApiError::internal(format!(
+                "启动 Claude 失败: {error}"
+            )))
+        })?;
+    let child_id = child.id().ok_or_else(|| {
+        ClaudeRuntimeLaunchError::after_spawn(ApiError::internal("Claude 进程 ID 不可用"))
+    })?;
+    let stdin = child.stdin.take().ok_or_else(|| {
+        ClaudeRuntimeLaunchError::after_spawn(ApiError::internal("Claude stdin 不可写"))
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        ClaudeRuntimeLaunchError::after_spawn(ApiError::internal("Claude stdout 不可读"))
+    })?;
     let stderr = child.stderr.take();
     let stdin = Arc::new(tokio::sync::Mutex::new(stdin));
     let runtime = ClaudeRuntimeRecord {
@@ -18366,7 +19198,11 @@ async fn get_or_create_claude_runtime(
     state
         .runtimes
         .lock()
-        .map_err(|error| ApiError::internal(format!("保存 Claude 会话失败: {error}")))?
+        .map_err(|error| {
+            ClaudeRuntimeLaunchError::after_spawn(ApiError::internal(format!(
+                "保存 Claude 会话失败: {error}"
+            )))
+        })?
         .insert(thread_id.to_string(), runtime.clone());
 
     let stdout_state = state.clone();
@@ -18538,6 +19374,45 @@ fn handle_runtime_stdout_line(state: &AppState, thread_id: &str, line: &str) {
     let Some(run_id) = run_id else {
         return;
     };
+    if let Some(Err(error)) = bind_awaiting_claude_fork_session(state, thread_id, line) {
+        push_run_event(
+            state,
+            &run_id,
+            json!({ "type": "error", "runId": run_id, "message": error.message }),
+        );
+        let _ = close_thread_runtime(state, thread_id);
+        mark_run_finished(state, &run_id);
+        return;
+    }
+    if serde_json::from_str::<Value>(line.trim())
+        .ok()
+        .and_then(|payload| {
+            payload
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .as_deref()
+        == Some("result")
+        && mark_delayed_claude_fork_result_unknown(
+            state,
+            thread_id,
+            "Claude Fork 在确认新 session 前返回了终态",
+        )
+    {
+        push_run_event(
+            state,
+            &run_id,
+            json!({
+                "type": "error",
+                "runId": run_id,
+                "message": "Claude Fork 已返回运行结果，但没有先确认新的 session ID；为避免重复发送，未自动重试。",
+            }),
+        );
+        let _ = close_thread_runtime(state, thread_id);
+        mark_run_finished(state, &run_id);
+        return;
+    }
     remember_control_request_mapping(state, &run_id, line);
 
     let (events, saw_done) = {
@@ -18734,6 +19609,11 @@ fn handle_runtime_exit(
     thread_id: &str,
     status: Result<std::process::ExitStatus, std::io::Error>,
 ) {
+    let delayed_fork_unconfirmed = mark_delayed_claude_fork_result_unknown(
+        state,
+        thread_id,
+        "Claude Fork 进程结束前未确认新的 session ID",
+    );
     fail_runtime_context_request(
         state,
         thread_id,
@@ -18759,23 +19639,35 @@ fn handle_runtime_exit(
             .and_then(|runs| runs.get(&run_id).map(|run| run.saw_done || run.finished))
             .unwrap_or(false);
         if !already_done {
-            match status {
-                Ok(status) if status.success() => {
-                    push_run_event(state, &run_id, runtime_exit_done_event(state, &run_id));
-                }
-                Ok(status) => {
-                    push_run_event(
-                        state,
-                        &run_id,
-                        json!({ "type": "error", "runId": run_id, "message": format!("Claude 退出码: {status}") }),
-                    );
-                }
-                Err(error) => {
-                    push_run_event(
-                        state,
-                        &run_id,
-                        json!({ "type": "error", "runId": run_id, "message": format!("等待 Claude 退出失败: {error}") }),
-                    );
+            if delayed_fork_unconfirmed {
+                push_run_event(
+                    state,
+                    &run_id,
+                    json!({
+                        "type": "error",
+                        "runId": run_id,
+                        "message": "Claude Fork 进程已结束，但没有确认新的 session ID；为避免重复发送，未自动重试。",
+                    }),
+                );
+            } else {
+                match status {
+                    Ok(status) if status.success() => {
+                        push_run_event(state, &run_id, runtime_exit_done_event(state, &run_id));
+                    }
+                    Ok(status) => {
+                        push_run_event(
+                            state,
+                            &run_id,
+                            json!({ "type": "error", "runId": run_id, "message": format!("Claude 退出码: {status}") }),
+                        );
+                    }
+                    Err(error) => {
+                        push_run_event(
+                            state,
+                            &run_id,
+                            json!({ "type": "error", "runId": run_id, "message": format!("等待 Claude 退出失败: {error}") }),
+                        );
+                    }
                 }
             }
         }
@@ -18832,6 +19724,11 @@ fn finish_run_and_close_runtime(state: &AppState, run_id: &str) -> ApiResult<()>
 }
 
 fn close_thread_runtime(state: &AppState, thread_id: &str) -> ApiResult<bool> {
+    mark_delayed_claude_fork_result_unknown(
+        state,
+        thread_id,
+        "Claude Fork 在确认新 session 前被停止",
+    );
     let runtime = state
         .runtimes
         .lock()
@@ -20823,6 +21720,7 @@ mod tests {
             context_requests: Arc::new(Mutex::new(HashMap::new())),
             claude_fork_capability_cache: Arc::new(Mutex::new(HashMap::new())),
             claude_fork_launch_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            claude_runtime_test_launch: None,
             thread_fork_test_driver: None,
         }
     }
@@ -21251,6 +22149,7 @@ mod tests {
             reasoning_effort: None,
             permission_mode: Some("default".to_string()),
             agent_channel_id: None,
+            agent_channel_fingerprint: None,
         };
 
         let started = std::time::Instant::now();
@@ -21282,6 +22181,7 @@ mod tests {
             reasoning_effort: Some("high".to_string()),
             permission_mode: Some("default".to_string()),
             agent_channel_id: None,
+            agent_channel_fingerprint: None,
         };
         {
             let mut driver_state = driver.state.lock().expect("lock Fork test driver");
@@ -21426,6 +22326,7 @@ mod tests {
             reasoning_effort: Some("high".to_string()),
             permission_mode: Some("auto".to_string()),
             agent_channel_id: Some("channel-1".to_string()),
+            agent_channel_fingerprint: Some("fingerprint-1".to_string()),
         };
 
         let args = super::build_claude_fork_args(&source, None);
@@ -21483,6 +22384,7 @@ mod tests {
             reasoning_effort: None,
             permission_mode: Some("bypassPermissions".to_string()),
             agent_channel_id: Some("channel-1".to_string()),
+            agent_channel_fingerprint: Some("fingerprint".to_string()),
         };
         let runtime = crate::agent_channels::AgentChannelRuntime {
             channel_id: "channel-1".to_string(),
@@ -21648,6 +22550,33 @@ mod tests {
         super::set_claude_transcript_test_home(Some(home));
     }
 
+    #[cfg(target_os = "windows")]
+    fn powershell_claude_runtime(script: impl Into<String>) -> (String, Vec<String>) {
+        (
+            "powershell.exe".to_string(),
+            vec![
+                "-NoProfile".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-Command".to_string(),
+                script.into(),
+            ],
+        )
+    }
+
+    fn delayed_fork_run_payload(thread_id: &str) -> Value {
+        json!({
+            "threadId": thread_id,
+            "turnId": "first-child-turn",
+            "prompt": "第一条真实消息",
+            "workingDirectory": "D:/forged",
+            "sessionId": "forged-session",
+            "permissionMode": "bypassPermissions",
+            "model": "forged-model",
+            "effort": "low",
+        })
+    }
+
     /// 写入一个包含 user/assistant 两行的最小 Claude transcript fixture。
     fn write_fork_transcript(path: &str) {
         if let Some(parent) = PathBuf::from(path).parent() {
@@ -21663,8 +22592,392 @@ mod tests {
         .expect("write fork transcript");
     }
 
+    // ===== Task 5.1（方案 A）：Claude 点击 Fork 只创建 pending 本地子聊天 =====
+
+    /// 读取子聊天的可信身份列，供 pending 继承断言。
+    fn read_child_thread_columns(
+        connection: &Connection,
+        child_id: &str,
+    ) -> (
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) {
+        connection
+            .query_row(
+                "SELECT session_id, transcript_path, provider, working_directory, custom_title, title, model, reasoning_effort, permission_mode, agent_channel_id, agent_channel_fingerprint FROM threads WHERE id = ?",
+                params![child_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<String>>(10)?,
+                    ))
+                },
+            )
+            .expect("read child thread columns")
+    }
+
     #[tokio::test(flavor = "current_thread")]
-    async fn claude_thread_fork_creates_child_and_loads_transcript_history() {
+    async fn claude_thread_fork_creates_pending_child_without_provider_launch() {
+        let (_root, state, driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
+            "fork-claude-pending-create",
+            CLAUDE_CODE_PROVIDER_ID,
+            "claude-session",
+            "sonnet",
+        );
+        // 注入空闲源 runtime，验证 Fork 后源 runtime 不被关闭/替换，子聊天不进 runtimes。
+        inject_claude_runtime(&state, &source_thread_id, None);
+        // 给源 thread 绑定 channel+fingerprint，验证子聊天忠实继承。
+        let expected_metadata = {
+            let connection =
+                open_initialized_workspace_database(&state).expect("open workspace database");
+            connection
+                .execute(
+                    "UPDATE threads SET agent_channel_id = 'channel-x', agent_channel_fingerprint = 'fp-x' WHERE id = ?",
+                    params![source_thread_id],
+                )
+                .expect("bind source channel");
+            let (
+                _,
+                _,
+                provider,
+                cwd,
+                custom_title,
+                title,
+                model,
+                effort,
+                permission,
+                channel,
+                fingerprint,
+            ) = read_child_thread_columns(&connection, &source_thread_id);
+            (
+                provider,
+                cwd,
+                custom_title,
+                title,
+                model,
+                effort,
+                permission,
+                channel,
+                fingerprint,
+            )
+        };
+
+        let app = create_router(state.clone());
+        let response = run_json_request(
+            &app,
+            Method::POST,
+            &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+            json!({ "operationId": "op-pending-create" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        // 点击创建独立历史快照，但尚无 Provider session。
+        assert_eq!(payload["historyState"], "loaded");
+        assert_eq!(payload["thread"]["sessionId"], "");
+        assert_eq!(payload["history"]["turns"], json!([]));
+        let child_thread_id = payload["threadId"]
+            .as_str()
+            .expect("child thread id")
+            .to_string();
+        assert_ne!(child_thread_id, source_thread_id);
+
+        let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
+        let (
+            session_id,
+            transcript_path,
+            provider,
+            cwd,
+            custom_title,
+            title,
+            model,
+            effort,
+            permission,
+            channel,
+            fingerprint,
+        ) = read_child_thread_columns(&connection, &child_thread_id);
+        assert!(
+            session_id.as_deref().unwrap_or("").is_empty(),
+            "pending 子聊天不得绑定 Provider session"
+        );
+        assert!(
+            transcript_path.as_deref().unwrap_or("").is_empty(),
+            "pending 子聊天不得有 transcript 路径"
+        );
+        assert_eq!(
+            (
+                provider,
+                cwd,
+                custom_title,
+                title,
+                model,
+                effort,
+                permission,
+                channel,
+                fingerprint
+            ),
+            expected_metadata,
+            "pending 子聊天必须忠实继承源聊天的可信 metadata"
+        );
+
+        let operation = read_thread_fork_operation(&connection, "op-pending-create")
+            .expect("read operation")
+            .expect("operation exists");
+        assert_eq!(
+            operation.status,
+            ThreadForkOperationStatus::AwaitingFirstMessage
+        );
+        assert_eq!(
+            operation.local_thread_id.as_deref(),
+            Some(child_thread_id.as_str())
+        );
+        assert_eq!(operation.source_thread_id, source_thread_id);
+        assert_eq!(operation.source_provider_thread_id, "claude-session");
+        assert!(operation.provider_thread_id.is_none());
+
+        // 不调用 ThreadForkTestDriver.create_claude，不启动 CLI、不产生 Provider session。
+        let driver_state = driver.state.lock().expect("lock Fork test driver");
+        assert_eq!(driver_state.claude_create_count, 0);
+
+        // 子聊天无任何历史行；源 thread session/历史不变。
+        let child_messages: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE thread_id = ?",
+                params![child_thread_id],
+                |row| row.get(0),
+            )
+            .expect("count child messages");
+        assert_eq!(child_messages, 0);
+        let child_tools: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM tool_calls WHERE thread_id = ?",
+                params![child_thread_id],
+                |row| row.get(0),
+            )
+            .expect("count child tool calls");
+        assert_eq!(child_tools, 0);
+        let source_session: String = connection
+            .query_row(
+                "SELECT session_id FROM threads WHERE id = ?",
+                params![source_thread_id],
+                |row| row.get(0),
+            )
+            .expect("read source session");
+        assert_eq!(source_session, "claude-session");
+        assert_eq!(
+            read_state_value(&connection, "activeThreadId")
+                .expect("read active thread")
+                .as_deref(),
+            Some(child_thread_id.as_str()),
+            "active selection 必须切到子聊天"
+        );
+
+        // 源 runtime 原样保留；子聊天不进 runtimes/runs。
+        let runtimes = state.runtimes.lock().expect("lock runtimes");
+        assert!(runtimes.contains_key(&source_thread_id));
+        assert!(!runtimes.contains_key(&child_thread_id));
+        let source_runtime = runtimes.get(&source_thread_id).expect("source runtime");
+        assert_eq!(source_runtime.current_run_id, None);
+        assert_eq!(source_runtime.session_id.as_deref(), Some("claude-session"));
+        drop(runtimes);
+        assert!(state.runs.lock().expect("lock runs").is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_thread_fork_same_operation_id_returns_same_pending_child() {
+        let (_root, state, _driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
+            "fork-claude-pending-idempotent",
+            CLAUDE_CODE_PROVIDER_ID,
+            "claude-session",
+            "sonnet",
+        );
+        let app = create_router(state.clone());
+        let uri = format!("/api/projects/{project_id}/threads/{source_thread_id}/fork");
+        let first = run_json_request(
+            &app,
+            Method::POST,
+            &uri,
+            json!({ "operationId": "op-idem" }),
+        )
+        .await;
+        inject_claude_runtime(&state, &source_thread_id, Some("run-after-pending"));
+        let second = run_json_request(
+            &app,
+            Method::POST,
+            &uri,
+            json!({ "operationId": "op-idem" }),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+        let first_payload = response_json(first).await;
+        let second_payload = response_json(second).await;
+        assert_eq!(first_payload["threadId"], second_payload["threadId"]);
+        let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
+        let thread_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
+            .expect("count threads");
+        assert_eq!(thread_count, 2, "同 operationId 重试不得再建子聊天");
+        let op_rows: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM thread_fork_operations WHERE operation_id = 'op-idem'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count op rows");
+        assert_eq!(op_rows, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_thread_fork_different_operation_id_same_source_reuses_pending_child() {
+        let (_root, state, _driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
+            "fork-claude-pending-reuse",
+            CLAUDE_CODE_PROVIDER_ID,
+            "claude-session",
+            "sonnet",
+        );
+        let app = create_router(state.clone());
+        let uri = format!("/api/projects/{project_id}/threads/{source_thread_id}/fork");
+        let first = run_json_request(
+            &app,
+            Method::POST,
+            &uri,
+            json!({ "operationId": "op-reuse-a" }),
+        )
+        .await;
+        inject_context_request(&state, &source_thread_id);
+        let second = run_json_request(
+            &app,
+            Method::POST,
+            &uri,
+            json!({ "operationId": "op-reuse-b" }),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(
+            second.status(),
+            StatusCode::OK,
+            "同源不同 operationId 不得 conflict，应复用同一 pending 子聊天"
+        );
+        let first_payload = response_json(first).await;
+        let second_payload = response_json(second).await;
+        assert_eq!(first_payload["threadId"], second_payload["threadId"]);
+        let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
+        let thread_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
+            .expect("count threads");
+        assert_eq!(thread_count, 2, "同源重复点击不得再建子聊天");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claude_thread_fork_concurrent_duplicate_creates_one_pending_child() {
+        let (_root, state, _driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
+            "fork-claude-pending-concurrent",
+            CLAUDE_CODE_PROVIDER_ID,
+            "claude-session",
+            "sonnet",
+        );
+        let app = create_router(state);
+        let uri = format!("/api/projects/{project_id}/threads/{source_thread_id}/fork");
+        let app_a = app.clone();
+        let uri_a = uri.clone();
+        let first = tokio::spawn(async move {
+            run_json_request(
+                &app_a,
+                Method::POST,
+                &uri_a,
+                json!({ "operationId": "op-concurrent" }),
+            )
+            .await
+        });
+        let app_b = app.clone();
+        let uri_b = uri.clone();
+        let second = tokio::spawn(async move {
+            run_json_request(
+                &app_b,
+                Method::POST,
+                &uri_b,
+                json!({ "operationId": "op-concurrent" }),
+            )
+            .await
+        });
+        let first = first.await.expect("first fork");
+        let second = second.await.expect("second fork");
+        // 方案 A：并发重复不得 conflict 卡死 UI，两请求都拿到同一个 pending 子聊天。
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+        let first_payload = response_json(first).await;
+        let second_payload = response_json(second).await;
+        assert_eq!(first_payload["threadId"], second_payload["threadId"]);
+    }
+
+    #[test]
+    fn thread_fork_status_round_trips_awaiting_first_message() {
+        assert_eq!(
+            ThreadForkOperationStatus::AwaitingFirstMessage.as_str(),
+            "awaiting_first_message"
+        );
+        assert_eq!(
+            ThreadForkOperationStatus::parse("awaiting_first_message").unwrap(),
+            ThreadForkOperationStatus::AwaitingFirstMessage
+        );
+    }
+
+    #[test]
+    fn claude_thread_fork_awaiting_first_message_survives_stale_recovery() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let source = fork_operation_source_with_provider(
+            &connection,
+            "source-awaiting-recovery",
+            CLAUDE_CODE_PROVIDER_ID,
+            "claude-source-session",
+        );
+        prepare_thread_fork_operation(
+            &mut connection,
+            &source,
+            "op-awaiting-recovery",
+            1_754_092_800_000,
+        )
+        .expect("prepare operation");
+        // 模拟方案 A 点击后落库的 awaiting 状态 + 本地子聊天。
+        connection
+            .execute(
+                "UPDATE thread_fork_operations SET status = 'awaiting_first_message', local_thread_id = 'child-awaiting' WHERE operation_id = 'op-awaiting-recovery'",
+                [],
+            )
+            .expect("mark awaiting");
+        recover_stale_thread_fork_operations(&connection).expect("run stale recovery");
+        let recovered = read_thread_fork_operation(&connection, "op-awaiting-recovery")
+            .expect("read operation")
+            .expect("operation exists");
+        assert_eq!(
+            recovered.status,
+            ThreadForkOperationStatus::AwaitingFirstMessage,
+            "stale recovery 不得把 awaiting_first_message 自动转 result_unknown"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_thread_fork_click_does_not_bind_preexisting_provider_transcript() {
         let (root, state, driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
             "fork-claude-create",
             CLAUDE_CODE_PROVIDER_ID,
@@ -21705,9 +23018,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let payload = response_json(response).await;
         assert_eq!(payload["historyState"], "loaded");
-        assert_eq!(payload["thread"]["sessionId"], "claude-child-session");
-        assert_eq!(payload["history"]["turns"][0]["userText"], "fork me");
-        assert_eq!(payload["history"]["turns"][0]["assistantText"], "forked!");
+        assert_eq!(payload["thread"]["sessionId"], "");
+        assert_eq!(payload["history"]["turns"], json!([]));
         let child_thread_id = payload["threadId"]
             .as_str()
             .expect("child thread id")
@@ -21716,14 +23028,8 @@ mod tests {
 
         {
             let driver_state = driver.state.lock().expect("lock Fork test driver");
-            assert_eq!(driver_state.claude_create_count, 1);
-            let last_source = driver_state
-                .last_claude_source
-                .as_ref()
-                .expect("recorded trusted source");
-            assert_eq!(last_source.provider, CLAUDE_CODE_PROVIDER_ID);
-            assert_eq!(last_source.provider_thread_id, "claude-session");
-            assert_eq!(last_source.working_directory, source.working_directory);
+            assert_eq!(driver_state.claude_create_count, 0);
+            assert!(driver_state.last_claude_source.is_none());
         }
         // 一次性 Fork 进程不进 runtimes/runs；源 runtime 原样保留。
         {
@@ -21746,60 +23052,157 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("read child transcript path");
-        assert_eq!(stored_path.as_deref(), Some(transcript_path.as_str()));
+        assert!(stored_path.is_none());
         let operation = read_thread_fork_operation(&connection, "operation-claude-create")
             .expect("read operation")
             .expect("operation exists");
-        assert_eq!(operation.status, ThreadForkOperationStatus::Completed);
+        assert_eq!(
+            operation.status,
+            ThreadForkOperationStatus::AwaitingFirstMessage
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn claude_thread_fork_pending_history_recovers_through_get_history() {
+    async fn claude_thread_fork_copies_independent_history_snapshot() {
         let (root, state, driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
-            "fork-claude-pending-recover",
+            "fork-claude-snapshot",
             CLAUDE_CODE_PROVIDER_ID,
             "claude-session",
             "sonnet",
         );
         use_transcript_home(&root);
         {
-            let mut driver_state = driver.state.lock().expect("lock Fork test driver");
-            driver_state.claude_create_results.push_back(Ok(
-                crate::claude_session_fork::ClaudeSessionForkOutcome {
-                    session_id: "claude-pending-child".to_string(),
-                },
-            ));
+            let mut connection =
+                open_initialized_workspace_database(&state).expect("open workspace db");
+            write_thread_history(
+                &mut connection,
+                &source_thread_id,
+                &vec![json!({
+                    "id": "source-turn-1",
+                    "userText": "源问题",
+                    "userAttachments": [{ "id": "attachment-1", "name": "说明.md", "size": 12 }],
+                    "userContentBlocks": [{ "type": "text", "text": "源问题" }],
+                    "assistantText": "源回答",
+                    "status": "done",
+                    "tools": [{
+                        "id": "source-tool-1",
+                        "name": "Read",
+                        "title": "读取文件",
+                        "status": "done",
+                        "inputText": "说明.md",
+                        "resultText": "内容"
+                    }],
+                    "items": [
+                        { "id": "source-thinking-1", "type": "thinking", "text": "公开思考" },
+                        { "id": "source-tool-item-1", "type": "tool", "tool": {
+                            "id": "source-tool-1",
+                            "name": "Read",
+                            "title": "读取文件",
+                            "status": "done",
+                            "inputText": "说明.md",
+                            "resultText": "内容"
+                        }},
+                        { "id": "source-text-1", "type": "text", "text": "源回答" }
+                    ],
+                })],
+            )
+            .expect("write source history");
         }
         let app = create_router(state.clone());
         let fork_response = run_json_request(
             &app,
             Method::POST,
             &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
-            json!({ "operationId": "operation-claude-pending" }),
+            json!({ "operationId": "operation-claude-snapshot" }),
         )
         .await;
         assert_eq!(fork_response.status(), StatusCode::OK);
         let fork_payload = response_json(fork_response).await;
-        assert_eq!(fork_payload["historyState"], "pending");
-        assert_eq!(fork_payload["history"]["turns"], json!([]));
+        assert_eq!(fork_payload["historyState"], "loaded");
+        assert!(fork_payload.get("forkState").is_none());
         let child_thread_id = fork_payload["threadId"]
             .as_str()
             .expect("child thread id")
             .to_string();
-
-        // transcript 稍后就绪后，经同一 operation ID 恢复历史，不再次 Fork。
-        let source = read_fork_source_thread(
-            &open_initialized_workspace_database(&state).expect("open workspace db"),
-            &project_id,
-            &source_thread_id,
-        )
-        .expect("read source thread");
-        let transcript_path = super::resolve_claude_transcript_path(
-            &source.working_directory,
-            "claude-pending-child",
+        assert_ne!(child_thread_id, source_thread_id);
+        assert_eq!(fork_payload["history"]["threadId"], child_thread_id);
+        assert_eq!(
+            fork_payload["history"]["turns"]
+                .as_array()
+                .expect("turns array")
+                .len(),
+            1
         );
-        write_fork_transcript(&transcript_path);
+        assert_eq!(
+            fork_payload["history"]["turns"][0]["assistantText"],
+            "源回答"
+        );
+        assert_eq!(
+            fork_payload["history"]["turns"][0]["items"][0]["type"],
+            "thinking"
+        );
+        assert_eq!(
+            fork_payload["history"]["turns"][0]["items"][1]["type"],
+            "tool"
+        );
+        assert_eq!(
+            fork_payload["history"]["turns"][0]["userAttachments"][0]["name"],
+            "说明.md"
+        );
+        {
+            let connection =
+                open_initialized_workspace_database(&state).expect("open workspace db");
+            let message_count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM messages WHERE thread_id = ?",
+                    params![child_thread_id],
+                    |row| row.get(0),
+                )
+                .expect("count child messages");
+            let tool_count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM tool_calls WHERE thread_id = ?",
+                    params![child_thread_id],
+                    |row| row.get(0),
+                )
+                .expect("count child tools");
+            assert_eq!(message_count, 3, "子聊天应保存 user/thinking/text 消息");
+            assert_eq!(tool_count, 1, "子聊天应保存工具快照");
+            let driver_state = driver.state.lock().expect("lock Fork test driver");
+            assert_eq!(
+                driver_state.claude_create_count, 0,
+                "菜单点击和历史复制不得创建 Claude 会话"
+            );
+        }
 
+        // 复制完成后更新源历史，子聊天仍保持原快照。
+        {
+            let mut connection =
+                open_initialized_workspace_database(&state).expect("open workspace db");
+            write_thread_history(
+                &mut connection,
+                &source_thread_id,
+                &vec![
+                    json!({
+                        "id": "source-turn-1",
+                        "userText": "源问题",
+                        "assistantText": "源回答",
+                        "status": "done",
+                        "tools": [],
+                        "items": [{ "id": "source-text-1", "type": "text", "text": "源回答" }],
+                    }),
+                    json!({
+                        "id": "source-turn-2",
+                        "userText": "追问",
+                        "assistantText": "追问回答",
+                        "status": "done",
+                        "tools": [],
+                        "items": [{ "id": "source-text-2", "type": "text", "text": "追问回答" }],
+                    }),
+                ],
+            )
+            .expect("append source history");
+        }
         let history_response = run_json_request(
             &app,
             Method::GET,
@@ -21807,26 +23210,929 @@ mod tests {
             json!({}),
         )
         .await;
-        assert_eq!(history_response.status(), StatusCode::OK);
         let history = response_json(history_response).await;
-        assert_eq!(history["turns"][0]["userText"], "fork me");
-        assert_eq!(history["turns"][0]["assistantText"], "forked!");
-        {
-            let driver_state = driver.state.lock().expect("lock Fork test driver");
-            assert_eq!(
-                driver_state.claude_create_count, 1,
-                "历史恢复不得再次创建 Claude 会话"
-            );
-        }
+        assert_eq!(history["turns"].as_array().expect("turns array").len(), 1);
+        assert_eq!(history["turns"][0]["assistantText"], "源回答");
+
+        // 子聊天可以独立保存自己的历史，且不会反写源聊天。
+        let put_response = run_json_request(
+            &app,
+            Method::PUT,
+            &format!("/api/threads/{child_thread_id}/history"),
+            json!({ "turns": [{
+                "id": "child-turn-1",
+                "userText": "子问题",
+                "assistantText": "子回答",
+                "status": "done",
+                "tools": [],
+                "items": [{ "id": "child-text-1", "type": "text", "text": "子回答" }]
+            }] }),
+        )
+        .await;
+        assert_eq!(put_response.status(), StatusCode::OK);
+        let source_history = response_json(
+            run_json_request(
+                &app,
+                Method::GET,
+                &format!("/api/threads/{source_thread_id}/history"),
+                json!({}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(source_history["turns"].as_array().expect("turns").len(), 2);
+        assert_eq!(source_history["turns"][1]["assistantText"], "追问回答");
+
         let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
-        let operation = read_thread_fork_operation(&connection, "operation-claude-pending")
+        let operation = read_thread_fork_operation(&connection, "operation-claude-snapshot")
             .expect("read operation")
             .expect("operation exists");
-        assert_eq!(operation.status, ThreadForkOperationStatus::Completed);
+        assert_eq!(
+            operation.status,
+            ThreadForkOperationStatus::AwaitingFirstMessage,
+            "历史快照不得提前创建 Provider session"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn claude_thread_fork_provider_succeeded_retry_does_not_create_again() {
+    async fn claude_thread_fork_snapshot_is_idempotent_and_survives_bootstrap() {
+        let (root, state, _driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
+            "fork-claude-snapshot-bootstrap",
+            CLAUDE_CODE_PROVIDER_ID,
+            "claude-session",
+            "sonnet",
+        );
+        use_transcript_home(&root);
+        {
+            let mut connection =
+                open_initialized_workspace_database(&state).expect("open workspace db");
+            write_thread_history(
+                &mut connection,
+                &source_thread_id,
+                &vec![json!({
+                    "id": "source-turn-1",
+                    "userText": "源问题",
+                    "assistantText": "源回答",
+                    "status": "done",
+                    "tools": [],
+                    "items": [{ "id": "source-text-1", "type": "text", "text": "源回答" }],
+                })],
+            )
+            .expect("write source history");
+        }
+        let app = create_router(state.clone());
+        let fork_response = run_json_request(
+            &app,
+            Method::POST,
+            &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+            json!({ "operationId": "operation-claude-snapshot-bootstrap" }),
+        )
+        .await;
+        let fork_payload = response_json(fork_response).await;
+        let child_thread_id = fork_payload["threadId"]
+            .as_str()
+            .expect("child thread id")
+            .to_string();
+        let duplicate_payload = response_json(
+            run_json_request(
+                &app,
+                Method::POST,
+                &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+                json!({ "operationId": "operation-claude-snapshot-bootstrap" }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(duplicate_payload["threadId"], child_thread_id);
+
+        let bootstrap = super::read_workspace_bootstrap(&state).expect("read workspace bootstrap");
+        let child_summary = bootstrap["projects"]
+            .as_array()
+            .expect("projects")
+            .iter()
+            .flat_map(|project| project["threads"].as_array().expect("threads"))
+            .find(|thread| thread["id"].as_str() == Some(child_thread_id.as_str()))
+            .expect("find child summary");
+        assert!(child_summary.get("forkState").is_none());
+        assert!(
+            child_summary.get("sourceThreadId").is_none(),
+            "summary 不得暴露 sourceThreadId"
+        );
+        assert!(
+            child_summary.get("sourceSessionId").is_none(),
+            "summary 不得暴露 sourceSessionId"
+        );
+        assert_eq!(
+            child_summary["sessionId"], "",
+            "awaiting child 未绑定 Provider 会话"
+        );
+        let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
+        let operation_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM thread_fork_operations WHERE source_thread_id = ?",
+                params![source_thread_id],
+                |row| row.get(0),
+            )
+            .expect("count operations");
+        let message_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE thread_id = ?",
+                params![child_thread_id],
+                |row| row.get(0),
+            )
+            .expect("count child messages");
+        assert_eq!(operation_count, 1);
+        assert_eq!(message_count, 2, "重复请求不得重复复制历史");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_delayed_fork_first_run_uses_trusted_source_and_single_fork_flag() {
+        let (root, state, _driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
+            "fork-claude-first-run-args",
+            CLAUDE_CODE_PROVIDER_ID,
+            "claude-source-session",
+            "sonnet",
+        );
+        use_transcript_home(&root);
+        let app = create_router(state.clone());
+        let fork_payload = response_json(
+            run_json_request(
+                &app,
+                Method::POST,
+                &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+                json!({ "operationId": "operation-claude-first-run-args" }),
+            )
+            .await,
+        )
+        .await;
+        let child_thread_id = fork_payload["threadId"].as_str().expect("child id");
+        let connection = open_initialized_workspace_database(&state).expect("open workspace db");
+        let awaiting = super::read_awaiting_claude_fork_run(&connection, child_thread_id)
+            .expect("read awaiting Fork")
+            .expect("awaiting Fork exists");
+        let mut payload = super::ClaudeRunRequest {
+            thread_id: Some(child_thread_id.to_string()),
+            turn_id: Some("turn-first".to_string()),
+            prompt: Some("第一条真实消息".to_string()),
+            working_directory: Some("D:/forged".to_string()),
+            session_id: Some("forged-session".to_string()),
+            permission_mode: Some("bypassPermissions".to_string()),
+            model: Some("forged-model".to_string()),
+            effort: Some("high".to_string()),
+            channel_id: Some("forged-channel".to_string()),
+            tool_result: None,
+            content_blocks: Some(json!([{ "type": "text", "text": "第一条真实消息" }])),
+            automation_execution: false,
+        };
+        let original_prompt = payload.prompt.clone();
+        let original_content_blocks = payload.content_blocks.clone();
+        super::apply_awaiting_claude_fork_run(&mut payload, &awaiting);
+        assert_eq!(payload.prompt, original_prompt, "真实文本不得被改写");
+        assert_eq!(
+            payload.content_blocks, original_content_blocks,
+            "图片和附件 content blocks 不得被改写"
+        );
+        assert_eq!(payload.session_id.as_deref(), Some("claude-source-session"));
+        assert_eq!(
+            payload.working_directory.as_deref(),
+            Some(awaiting.source.working_directory.as_str())
+        );
+        assert_eq!(payload.model, awaiting.source.model);
+        assert_eq!(payload.permission_mode, awaiting.source.permission_mode);
+        assert_eq!(payload.channel_id, awaiting.source.agent_channel_id);
+        let permission_mode =
+            super::normalize_claude_permission_mode(payload.permission_mode.as_deref());
+        let args = super::build_claude_runtime_args(&payload, &permission_mode, None, true);
+        assert_eq!(
+            args.iter()
+                .filter(|argument| argument.as_str() == "--fork-session")
+                .count(),
+            1
+        );
+        let resume_index = args
+            .iter()
+            .position(|argument| argument == "--resume")
+            .expect("resume argument");
+        assert_eq!(
+            args.get(resume_index + 1).map(String::as_str),
+            Some("claude-source-session")
+        );
+        assert_eq!(args.last().map(String::as_str), Some("--fork-session"));
+
+        let ordinary_args =
+            super::build_claude_runtime_args(&payload, &permission_mode, None, false);
+        assert!(!ordinary_args
+            .iter()
+            .any(|argument| argument == "--fork-session"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_delayed_fork_init_binds_independent_session_without_rewriting_snapshot() {
+        let (root, state, _driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
+            "fork-claude-init-bind",
+            CLAUDE_CODE_PROVIDER_ID,
+            "claude-source-session",
+            "sonnet",
+        );
+        use_transcript_home(&root);
+        {
+            let mut connection =
+                open_initialized_workspace_database(&state).expect("open workspace db");
+            write_thread_history(
+                &mut connection,
+                &source_thread_id,
+                &vec![json!({
+                    "id": "source-turn-1",
+                    "userText": "源问题",
+                    "assistantText": "源回答",
+                    "status": "done",
+                    "tools": [],
+                    "items": [{ "id": "source-text-1", "type": "text", "text": "源回答" }]
+                })],
+            )
+            .expect("write source history");
+        }
+        let app = create_router(state.clone());
+        let fork_payload = response_json(
+            run_json_request(
+                &app,
+                Method::POST,
+                &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+                json!({ "operationId": "operation-claude-init-bind" }),
+            )
+            .await,
+        )
+        .await;
+        let child_thread_id = fork_payload["threadId"]
+            .as_str()
+            .expect("child id")
+            .to_string();
+        let bound = super::bind_awaiting_claude_fork_session(
+            &state,
+            &child_thread_id,
+            r#"{"type":"system","subtype":"init","session_id":"claude-child-session"}"#,
+        )
+        .expect("init event")
+        .expect("bind child session");
+        assert_eq!(bound, "claude-child-session");
+
+        let mut connection =
+            open_initialized_workspace_database(&state).expect("reopen workspace db");
+        let (child_session_id, child_transcript_path): (Option<String>, Option<String>) =
+            connection
+                .query_row(
+                    "SELECT session_id, transcript_path FROM threads WHERE id = ?",
+                    params![child_thread_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("read child identity");
+        assert_eq!(child_session_id.as_deref(), Some("claude-child-session"));
+        assert!(child_transcript_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with("claude-child-session.jsonl")));
+        let operation = read_thread_fork_operation(&connection, "operation-claude-init-bind")
+            .expect("read operation")
+            .expect("operation exists");
+        assert_eq!(operation.status, ThreadForkOperationStatus::Completed);
+        assert_eq!(
+            operation.provider_thread_id.as_deref(),
+            Some("claude-child-session")
+        );
+        let child_history = super::read_thread_history_payload(&mut connection, &child_thread_id)
+            .expect("read child history");
+        assert_eq!(child_history["turns"].as_array().expect("turns").len(), 1);
+        assert_eq!(child_history["turns"][0]["assistantText"], "源回答");
+        let source = read_fork_source_thread(&connection, &project_id, &source_thread_id)
+            .expect("read source identity");
+        assert_eq!(source.provider_thread_id, "claude-source-session");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_delayed_fork_rejects_source_session_from_init() {
+        let (root, state, _driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
+            "fork-claude-init-source-id",
+            CLAUDE_CODE_PROVIDER_ID,
+            "claude-source-session",
+            "sonnet",
+        );
+        use_transcript_home(&root);
+        let app = create_router(state.clone());
+        let fork_payload = response_json(
+            run_json_request(
+                &app,
+                Method::POST,
+                &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+                json!({ "operationId": "operation-claude-init-source-id" }),
+            )
+            .await,
+        )
+        .await;
+        let child_thread_id = fork_payload["threadId"].as_str().expect("child id");
+        let error = super::bind_awaiting_claude_fork_session(
+            &state,
+            child_thread_id,
+            r#"{"type":"system","subtype":"init","session_id":"claude-source-session"}"#,
+        )
+        .expect("init event")
+        .expect_err("source session must be rejected");
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
+        let operation = read_thread_fork_operation(&connection, "operation-claude-init-source-id")
+            .expect("read operation")
+            .expect("operation exists");
+        assert_eq!(operation.status, ThreadForkOperationStatus::ResultUnknown);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_delayed_fork_first_message_claim_is_single_flight_and_fail_closed() {
+        let (root, state, _driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
+            "fork-claude-first-run-claim",
+            CLAUDE_CODE_PROVIDER_ID,
+            "claude-source-session",
+            "sonnet",
+        );
+        use_transcript_home(&root);
+        let app = create_router(state.clone());
+        let fork_payload = response_json(
+            run_json_request(
+                &app,
+                Method::POST,
+                &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+                json!({ "operationId": "operation-claude-first-run-claim" }),
+            )
+            .await,
+        )
+        .await;
+        let child_thread_id = fork_payload["threadId"].as_str().expect("child id");
+        {
+            let connection =
+                open_initialized_workspace_database(&state).expect("open workspace db");
+            super::claim_awaiting_claude_fork_run(
+                &connection,
+                child_thread_id,
+                "operation-claude-first-run-claim",
+            )
+            .expect("claim first message");
+            let duplicate = super::read_awaiting_claude_fork_run(&connection, child_thread_id)
+                .expect_err("second first message must be rejected");
+            assert_eq!(duplicate.status, StatusCode::CONFLICT);
+            assert!(super::claim_awaiting_claude_fork_run(
+                &connection,
+                child_thread_id,
+                "operation-claude-first-run-claim",
+            )
+            .is_err());
+        }
+
+        super::reset_claude_fork_run_before_spawn(
+            &state,
+            child_thread_id,
+            "operation-claude-first-run-claim",
+        );
+        {
+            let connection =
+                open_initialized_workspace_database(&state).expect("reopen workspace db");
+            assert!(
+                super::read_awaiting_claude_fork_run(&connection, child_thread_id)
+                    .expect("read retryable Fork")
+                    .is_some()
+            );
+            super::claim_awaiting_claude_fork_run(
+                &connection,
+                child_thread_id,
+                "operation-claude-first-run-claim",
+            )
+            .expect("reclaim first message");
+        }
+        super::mark_delayed_claude_fork_result_unknown(
+            &state,
+            child_thread_id,
+            "provider result unknown",
+        );
+        let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
+        let error = super::read_awaiting_claude_fork_run(&connection, child_thread_id)
+            .expect_err("unknown result must not retry");
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        let operation = read_thread_fork_operation(&connection, "operation-claude-first-run-claim")
+            .expect("read operation")
+            .expect("operation exists");
+        assert_eq!(operation.status, ThreadForkOperationStatus::ResultUnknown);
+    }
+
+    #[test]
+    fn claude_delayed_fork_claim_guard_classifies_cancellation_by_spawn_boundary() {
+        let (_root, state, _driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
+            "fork-claude-claim-guard",
+            CLAUDE_CODE_PROVIDER_ID,
+            "claude-source-session",
+            "sonnet",
+        );
+        let child_thread_id = {
+            let mut connection =
+                open_initialized_workspace_database(&state).expect("open workspace db");
+            let source = read_fork_source_thread(&connection, &project_id, &source_thread_id)
+                .expect("read source");
+            let operation = super::prepare_claude_pending_thread_fork(
+                &mut connection,
+                &source,
+                "operation-claude-claim-guard",
+                1_754_092_800_000,
+            )
+            .expect("prepare pending child");
+            operation.local_thread_id.expect("child thread id")
+        };
+
+        {
+            let connection =
+                open_initialized_workspace_database(&state).expect("open workspace db");
+            super::claim_awaiting_claude_fork_run(
+                &connection,
+                &child_thread_id,
+                "operation-claude-claim-guard",
+            )
+            .expect("claim before-spawn attempt");
+        }
+        drop(super::DelayedClaudeForkClaimGuard::new(
+            &state,
+            &child_thread_id,
+            "operation-claude-claim-guard",
+        ));
+        {
+            let connection =
+                open_initialized_workspace_database(&state).expect("reopen workspace db");
+            let operation = read_thread_fork_operation(&connection, "operation-claude-claim-guard")
+                .expect("read operation")
+                .expect("operation exists");
+            assert_eq!(
+                operation.status,
+                ThreadForkOperationStatus::AwaitingFirstMessage,
+                "spawn 前取消必须保持可重试"
+            );
+            super::claim_awaiting_claude_fork_run(
+                &connection,
+                &child_thread_id,
+                "operation-claude-claim-guard",
+            )
+            .expect("claim process-started attempt");
+        }
+        let mut guard = super::DelayedClaudeForkClaimGuard::new(
+            &state,
+            &child_thread_id,
+            "operation-claude-claim-guard",
+        );
+        guard.mark_process_started();
+        drop(guard);
+        let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
+        let operation = read_thread_fork_operation(&connection, "operation-claude-claim-guard")
+            .expect("read operation")
+            .expect("operation exists");
+        assert_eq!(
+            operation.status,
+            ThreadForkOperationStatus::ResultUnknown,
+            "spawn 后取消必须禁止自动重发"
+        );
+    }
+
+    #[test]
+    fn claude_delayed_fork_transcript_merge_preserves_frozen_snapshot() {
+        let snapshot = super::ClaudeForkSnapshotContext {
+            child_session_id: "child-session".to_string(),
+            started_at_ms: 2_000,
+        };
+        let stored = vec![
+            json!({
+                "id": "source-turn",
+                "userText": "复制前的问题",
+                "assistantText": "复制前的回答",
+                "sessionId": "source-session",
+                "startedAtMs": 1_000,
+                "status": "done",
+                "items": [],
+                "tools": [],
+            }),
+            json!({
+                "id": "optimistic-child-turn",
+                "userText": "子聊天第一问",
+                "assistantText": "实时回答",
+                "sessionId": "child-session",
+                "startedAtMs": 3_000,
+                "status": "done",
+                "items": [],
+                "tools": [],
+                "durationMs": 123,
+            }),
+        ];
+        let reparsed = vec![
+            json!({
+                "id": "unexpected-source-later",
+                "userText": "源聊天复制后新增内容",
+                "assistantText": "不应进入子聊天",
+                "sessionId": "child-session",
+                "startedAtMs": 1_500,
+                "status": "done",
+                "items": [],
+                "tools": [],
+            }),
+            json!({
+                "id": "parsed-child-turn",
+                "userText": "子聊天第一问",
+                "assistantText": "transcript 回答",
+                "sessionId": "child-session",
+                "startedAtMs": 3_000,
+                "status": "done",
+                "items": [],
+                "tools": [],
+            }),
+        ];
+
+        let merged = super::merge_claude_fork_snapshot_history(&stored, reparsed, &snapshot);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0]["userText"], "复制前的问题");
+        assert_eq!(merged[0]["assistantText"], "复制前的回答");
+        assert_eq!(merged[1]["userText"], "子聊天第一问");
+        assert_eq!(merged[1]["assistantText"], "transcript 回答");
+        assert_eq!(
+            merged[1]["durationMs"], 123,
+            "实时指标应合并回 transcript 轮次"
+        );
+        assert!(merged
+            .iter()
+            .all(|turn| turn["userText"] != "源聊天复制后新增内容"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claude_delayed_fork_real_process_init_binds_before_exit() {
+        let (root, mut state, _driver, project_id, source_thread_id) =
+            fork_api_fixture_with_provider(
+                "fork-claude-real-init",
+                CLAUDE_CODE_PROVIDER_ID,
+                "claude-source-session",
+                "sonnet",
+            );
+        use_transcript_home(&root);
+        {
+            let mut connection =
+                open_initialized_workspace_database(&state).expect("open workspace db");
+            write_thread_history(
+                &mut connection,
+                &source_thread_id,
+                &vec![json!({
+                    "id": "source-snapshot-turn",
+                    "userText": "复制前的问题",
+                    "assistantText": "复制前的回答",
+                    "sessionId": "claude-source-session",
+                    "startedAtMs": 1_000,
+                    "status": "done",
+                    "items": [],
+                    "tools": [],
+                })],
+            )
+            .expect("write source snapshot");
+        }
+        state.claude_runtime_test_launch = Some(powershell_claude_runtime(
+            r#"$null = [Console]::In.ReadLine(); [Console]::Out.WriteLine('{"type":"system","subtype":"init","session_id":"claude-real-child"}'); [Console]::Out.WriteLine('{"type":"result","subtype":"success","session_id":"claude-real-child","result":"ok"}')"#,
+        ));
+        let app = create_router(state.clone());
+        let fork = response_json(
+            run_json_request(
+                &app,
+                Method::POST,
+                &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+                json!({ "operationId": "operation-claude-real-init" }),
+            )
+            .await,
+        )
+        .await;
+        let child_thread_id = fork["threadId"].as_str().expect("child id").to_string();
+        let response = run_json_request(
+            &app,
+            Method::POST,
+            "/api/claude/run",
+            delayed_fork_run_payload(&child_thread_id),
+        )
+        .await;
+        let body = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            axum::body::to_bytes(response.into_body(), usize::MAX),
+        )
+        .await
+        .expect("real process response timeout")
+        .expect("read real process response");
+        let events = String::from_utf8_lossy(&body);
+        assert!(
+            events.contains("claude-real-child"),
+            "init session event missing: {events}"
+        );
+        assert!(
+            events.contains("\"type\":\"done\""),
+            "done event missing: {events}"
+        );
+
+        let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
+        let operation = read_thread_fork_operation(&connection, "operation-claude-real-init")
+            .expect("read operation")
+            .expect("operation exists");
+        assert_eq!(operation.status, ThreadForkOperationStatus::Completed);
+        assert_eq!(
+            operation.provider_thread_id.as_deref(),
+            Some("claude-real-child")
+        );
+        let child_session: Option<String> = connection
+            .query_row(
+                "SELECT session_id FROM threads WHERE id = ?",
+                params![child_thread_id],
+                |row| row.get(0),
+            )
+            .expect("read child session");
+        assert_eq!(child_session.as_deref(), Some("claude-real-child"));
+        let transcript_path: String = connection
+            .query_row(
+                "SELECT transcript_path FROM threads WHERE id = ?",
+                params![child_thread_id],
+                |row| row.get(0),
+            )
+            .expect("read child transcript path");
+        drop(connection);
+        write_fork_transcript(&transcript_path);
+        let history = response_json(
+            run_json_request(
+                &app,
+                Method::GET,
+                &format!("/api/threads/{child_thread_id}/history"),
+                json!({}),
+            )
+            .await,
+        )
+        .await;
+        let turns = history["turns"].as_array().expect("history turns");
+        assert_eq!(turns.len(), 2, "固定快照和子 transcript 都必须保留");
+        assert_eq!(turns[0]["userText"], "复制前的问题");
+        assert_eq!(turns[1]["userText"], "fork me");
+        let repeated_history = response_json(
+            run_json_request(
+                &app,
+                Method::GET,
+                &format!("/api/threads/{child_thread_id}/history"),
+                json!({}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            repeated_history["turns"]
+                .as_array()
+                .expect("repeated turns")
+                .len(),
+            2,
+            "重复读取不得重复追加子 transcript"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claude_delayed_fork_real_process_eof_without_init_is_error_and_unknown() {
+        let (root, mut state, _driver, project_id, source_thread_id) =
+            fork_api_fixture_with_provider(
+                "fork-claude-real-eof",
+                CLAUDE_CODE_PROVIDER_ID,
+                "claude-source-session",
+                "sonnet",
+            );
+        use_transcript_home(&root);
+        state.claude_runtime_test_launch = Some(powershell_claude_runtime(
+            "$null = [Console]::In.ReadLine(); exit 0",
+        ));
+        let app = create_router(state.clone());
+        let fork = response_json(
+            run_json_request(
+                &app,
+                Method::POST,
+                &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+                json!({ "operationId": "operation-claude-real-eof" }),
+            )
+            .await,
+        )
+        .await;
+        let child_thread_id = fork["threadId"].as_str().expect("child id").to_string();
+        let response = run_json_request(
+            &app,
+            Method::POST,
+            "/api/claude/run",
+            delayed_fork_run_payload(&child_thread_id),
+        )
+        .await;
+        let body = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            axum::body::to_bytes(response.into_body(), usize::MAX),
+        )
+        .await
+        .expect("EOF response timeout")
+        .expect("read EOF response");
+        let events = String::from_utf8_lossy(&body);
+        assert!(
+            events.contains("\"type\":\"error\""),
+            "EOF must be error: {events}"
+        );
+        assert!(
+            events.contains("没有确认新的 session ID"),
+            "missing recovery message: {events}"
+        );
+        assert!(
+            !events.contains("\"type\":\"done\""),
+            "EOF must not look successful: {events}"
+        );
+
+        let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
+        let operation = read_thread_fork_operation(&connection, "operation-claude-real-eof")
+            .expect("read operation")
+            .expect("operation exists");
+        assert_eq!(operation.status, ThreadForkOperationStatus::ResultUnknown);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claude_delayed_fork_real_process_result_without_init_never_reports_done() {
+        let (root, mut state, _driver, project_id, source_thread_id) =
+            fork_api_fixture_with_provider(
+                "fork-claude-real-result-before-init",
+                CLAUDE_CODE_PROVIDER_ID,
+                "claude-source-session",
+                "sonnet",
+            );
+        use_transcript_home(&root);
+        state.claude_runtime_test_launch = Some(powershell_claude_runtime(
+            r#"$null = [Console]::In.ReadLine(); [Console]::Out.WriteLine('{"type":"result","subtype":"success","session_id":"untrusted-result-session","result":"should-not-succeed"}')"#,
+        ));
+        let app = create_router(state.clone());
+        let fork = response_json(
+            run_json_request(
+                &app,
+                Method::POST,
+                &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+                json!({ "operationId": "operation-claude-real-result-before-init" }),
+            )
+            .await,
+        )
+        .await;
+        let child_thread_id = fork["threadId"].as_str().expect("child id").to_string();
+        let response = run_json_request(
+            &app,
+            Method::POST,
+            "/api/claude/run",
+            delayed_fork_run_payload(&child_thread_id),
+        )
+        .await;
+        let body = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            axum::body::to_bytes(response.into_body(), usize::MAX),
+        )
+        .await
+        .expect("result-before-init response timeout")
+        .expect("read result-before-init response");
+        let events = String::from_utf8_lossy(&body);
+        assert!(
+            events.contains("\"type\":\"error\""),
+            "must surface error: {events}"
+        );
+        assert!(
+            events.contains("没有先确认新的 session ID"),
+            "missing protocol error: {events}"
+        );
+        assert!(
+            !events.contains("\"type\":\"done\""),
+            "must not report done: {events}"
+        );
+
+        let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
+        let operation =
+            read_thread_fork_operation(&connection, "operation-claude-real-result-before-init")
+                .expect("read operation")
+                .expect("operation exists");
+        assert_eq!(operation.status, ThreadForkOperationStatus::ResultUnknown);
+        assert!(operation.provider_thread_id.is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claude_delayed_fork_real_process_init_then_failure_keeps_child_session() {
+        let (root, mut state, _driver, project_id, source_thread_id) =
+            fork_api_fixture_with_provider(
+                "fork-claude-real-init-failure",
+                CLAUDE_CODE_PROVIDER_ID,
+                "claude-source-session",
+                "sonnet",
+            );
+        use_transcript_home(&root);
+        state.claude_runtime_test_launch = Some(powershell_claude_runtime(
+            r#"$null = [Console]::In.ReadLine(); [Console]::Out.WriteLine('{"type":"system","subtype":"init","session_id":"claude-failed-child"}'); exit 7"#,
+        ));
+        let app = create_router(state.clone());
+        let fork = response_json(
+            run_json_request(
+                &app,
+                Method::POST,
+                &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+                json!({ "operationId": "operation-claude-real-init-failure" }),
+            )
+            .await,
+        )
+        .await;
+        let child_thread_id = fork["threadId"].as_str().expect("child id").to_string();
+        let response = run_json_request(
+            &app,
+            Method::POST,
+            "/api/claude/run",
+            delayed_fork_run_payload(&child_thread_id),
+        )
+        .await;
+        let body = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            axum::body::to_bytes(response.into_body(), usize::MAX),
+        )
+        .await
+        .expect("init failure response timeout")
+        .expect("read init failure response");
+        let events = String::from_utf8_lossy(&body);
+        assert!(
+            events.contains("claude-failed-child"),
+            "init must bind: {events}"
+        );
+        assert!(
+            events.contains("\"type\":\"error\""),
+            "exit failure must surface: {events}"
+        );
+
+        let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
+        let operation =
+            read_thread_fork_operation(&connection, "operation-claude-real-init-failure")
+                .expect("read operation")
+                .expect("operation exists");
+        assert_eq!(operation.status, ThreadForkOperationStatus::Completed);
+        assert_eq!(
+            operation.provider_thread_id.as_deref(),
+            Some("claude-failed-child"),
+            "confirmed init must never be downgraded or re-forked"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claude_delayed_fork_concurrent_first_send_starts_one_real_process() {
+        let (root, mut state, _driver, project_id, source_thread_id) =
+            fork_api_fixture_with_provider(
+                "fork-claude-real-single-flight",
+                CLAUDE_CODE_PROVIDER_ID,
+                "claude-source-session",
+                "sonnet",
+            );
+        use_transcript_home(&root);
+        let marker = root.0.join("runtime-launches.txt");
+        let marker_path = marker.to_string_lossy().replace('\'', "''");
+        state.claude_runtime_test_launch = Some(powershell_claude_runtime(format!(
+            "$path = '{marker_path}'; [IO.File]::AppendAllText($path, \"launch`n\"); $null = [Console]::In.ReadLine(); Start-Sleep -Milliseconds 500; [Console]::Out.WriteLine('{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-single-child\"}}'); [Console]::Out.WriteLine('{{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"claude-single-child\",\"result\":\"ok\"}}')"
+        )));
+        let app = create_router(state.clone());
+        let fork = response_json(
+            run_json_request(
+                &app,
+                Method::POST,
+                &format!("/api/projects/{project_id}/threads/{source_thread_id}/fork"),
+                json!({ "operationId": "operation-claude-real-single-flight" }),
+            )
+            .await,
+        )
+        .await;
+        let child_thread_id = fork["threadId"].as_str().expect("child id").to_string();
+        let first = run_json_request(
+            &app,
+            Method::POST,
+            "/api/claude/run",
+            delayed_fork_run_payload(&child_thread_id),
+        )
+        .await;
+        let second = run_json_request(
+            &app,
+            Method::POST,
+            "/api/claude/run",
+            delayed_fork_run_payload(&child_thread_id),
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::CONFLICT);
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            axum::body::to_bytes(first.into_body(), usize::MAX),
+        )
+        .await
+        .expect("first response timeout")
+        .expect("read first response");
+        let launches = fs::read_to_string(&marker).expect("read process launch marker");
+        assert_eq!(launches.lines().count(), 1, "only one process may launch");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_thread_fork_legacy_provider_succeeded_does_not_create_again() {
         let (root, state, driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
             "fork-claude-succeeded-retry",
             CLAUDE_CODE_PROVIDER_ID,
@@ -21861,14 +24167,11 @@ mod tests {
             json!({ "operationId": "operation-claude-succeeded" }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let payload = response_json(response).await;
-        assert_eq!(payload["historyState"], "pending");
-        assert_eq!(payload["thread"]["sessionId"], "claude-succeeded-child");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
         let driver_state = driver.state.lock().expect("lock Fork test driver");
         assert_eq!(
             driver_state.claude_create_count, 0,
-            "provider_succeeded 只做本地恢复，不得再次创建"
+            "遗留 provider_succeeded 状态不得再次创建 Provider 会话"
         );
     }
 
@@ -21928,7 +24231,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn claude_thread_fork_rejected_provider_error_leaves_no_visible_thread() {
+    async fn claude_thread_fork_click_does_not_consume_rejected_provider_result() {
         let (_root, state, driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
             "fork-claude-rejected",
             CLAUDE_CODE_PROVIDER_ID,
@@ -21951,22 +24254,25 @@ mod tests {
             json!({ "operationId": "operation-claude-rejected" }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(response.status(), StatusCode::OK);
         let driver_state = driver.state.lock().expect("lock Fork test driver");
-        assert_eq!(driver_state.claude_create_count, 1);
+        assert_eq!(driver_state.claude_create_count, 0);
         let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
         let operation = read_thread_fork_operation(&connection, "operation-claude-rejected")
             .expect("read operation")
             .expect("operation exists");
-        assert_eq!(operation.status, ThreadForkOperationStatus::Failed);
+        assert_eq!(
+            operation.status,
+            ThreadForkOperationStatus::AwaitingFirstMessage
+        );
         let thread_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
             .expect("count threads");
-        assert_eq!(thread_count, 1, "Provider 失败不得留下可见聊天");
+        assert_eq!(thread_count, 2, "点击必须只创建一个可见 pending 子聊天");
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn claude_thread_fork_uncertain_provider_error_marks_result_unknown() {
+    async fn claude_thread_fork_click_does_not_consume_uncertain_provider_result() {
         let (_root, state, driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
             "fork-claude-uncertain",
             CLAUDE_CODE_PROVIDER_ID,
@@ -21989,22 +24295,22 @@ mod tests {
             json!({ "operationId": "operation-claude-uncertain" }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(response.status(), StatusCode::OK);
         let driver_state = driver.state.lock().expect("lock Fork test driver");
-        assert_eq!(driver_state.claude_create_count, 1);
+        assert_eq!(driver_state.claude_create_count, 0);
         let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
         let operation = read_thread_fork_operation(&connection, "operation-claude-uncertain")
             .expect("read operation")
             .expect("operation exists");
         assert_eq!(
             operation.status,
-            ThreadForkOperationStatus::ResultUnknown,
-            "Uncertain 必须保留 result_unknown 供用户核对"
+            ThreadForkOperationStatus::AwaitingFirstMessage,
+            "菜单点击不得提前消费 Provider 的 uncertain 结果"
         );
         let thread_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
             .expect("count threads");
-        assert_eq!(thread_count, 1);
+        assert_eq!(thread_count, 2);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -22063,14 +24369,11 @@ mod tests {
         assert_eq!(second.status(), StatusCode::OK);
         let second_payload = response_json(second).await;
         assert_eq!(second_payload["threadId"], child_thread_id);
-        assert_eq!(
-            second_payload["thread"]["sessionId"],
-            "claude-duplicate-child"
-        );
+        assert_eq!(second_payload["thread"]["sessionId"], "");
         let driver_state = driver.state.lock().expect("lock Fork test driver");
         assert_eq!(
-            driver_state.claude_create_count, 1,
-            "重复 operationId 不得再次创建 Claude 会话"
+            driver_state.claude_create_count, 0,
+            "重复 operationId 点击不得创建 Claude 会话"
         );
         let connection = open_initialized_workspace_database(&state).expect("reopen workspace db");
         let thread_count: i64 = connection
@@ -22080,7 +24383,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn claude_thread_fork_concurrent_duplicate_launches_provider_once() {
+    async fn claude_thread_fork_concurrent_duplicate_does_not_launch_provider() {
         let (_root, state, driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
             "fork-claude-concurrent-duplicate",
             CLAUDE_CODE_PROVIDER_ID,
@@ -22126,11 +24429,11 @@ mod tests {
         let first = first.await.expect("first Fork request");
         let second = second.await.expect("second Fork request");
         assert_eq!(first.status(), StatusCode::OK);
-        assert_eq!(second.status(), StatusCode::CONFLICT);
+        assert_eq!(second.status(), StatusCode::OK);
         let driver_state = driver.state.lock().expect("lock Fork test driver");
         assert_eq!(
-            driver_state.claude_create_count, 1,
-            "并发重复 operationId 只能启动一次 Claude Fork"
+            driver_state.claude_create_count, 0,
+            "并发重复 operationId 点击不得启动 Claude Fork"
         );
     }
 
@@ -22235,7 +24538,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn claude_thread_fork_cancelled_request_marks_result_unknown_without_rerunning() {
+    async fn claude_thread_fork_click_finishes_without_cancellable_provider_launch() {
         let (_root, state, driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
             "fork-claude-cancel-release",
             CLAUDE_CODE_PROVIDER_ID,
@@ -22270,16 +24573,16 @@ mod tests {
         task.abort();
         let _ = task.await;
 
-        // 进程已经启动后取消，请求结果无法确认。必须先把 operation 收口为
-        // result_unknown；否则立即重试会创建第二个原生 Claude session。
+        // 点击路径没有跨 Provider await；即使调用方随后取消任务，落库结果仍是完整的
+        // awaiting_first_message，而不是 result_unknown。
         let connection = open_initialized_workspace_database(&state).expect("open workspace db");
         let operation = read_thread_fork_operation(&connection, "operation-claude-cancel")
             .expect("read operation")
             .expect("operation exists");
         assert_eq!(
             operation.status,
-            ThreadForkOperationStatus::ResultUnknown,
-            "取消已启动的 Provider 请求必须保守标记为 result_unknown"
+            ThreadForkOperationStatus::AwaitingFirstMessage,
+            "菜单点击不得进入 Provider 不确定状态"
         );
         drop(connection);
 
@@ -22290,11 +24593,11 @@ mod tests {
             json!({ "operationId": "operation-claude-cancel" }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(response.status(), StatusCode::OK);
         let driver_state = driver.state.lock().expect("lock Fork test driver");
         assert_eq!(
-            driver_state.claude_create_count, 1,
-            "result_unknown 重试不得再次启动 Provider"
+            driver_state.claude_create_count, 0,
+            "点击及重试都不得启动 Provider"
         );
         assert!(
             state
@@ -22490,7 +24793,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn claude_thread_fork_failed_rearm_starts_provider_again() {
+    async fn claude_thread_fork_repeated_click_does_not_consume_provider_results() {
         let (_root, state, driver, project_id, source_thread_id) = fork_api_fixture_with_provider(
             "fork-claude-failed-rearm",
             CLAUDE_CODE_PROVIDER_ID,
@@ -22519,9 +24822,8 @@ mod tests {
             json!({ "operationId": "operation-claude-rearm" }),
         )
         .await;
-        assert_eq!(first.status(), StatusCode::CONFLICT);
-        // guard 已随失败路径释放；Failed（无 provider 结果）可经 prepare 的既有 rearm
-        // 语义再次进入 provider_pending 并启动，create 计数必须递增。
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_payload = response_json(first).await;
         let second = run_json_request(
             &app,
             Method::POST,
@@ -22531,11 +24833,12 @@ mod tests {
         .await;
         assert_eq!(second.status(), StatusCode::OK);
         let payload = response_json(second).await;
-        assert_eq!(payload["thread"]["sessionId"], "claude-rearm-child");
+        assert_eq!(payload["threadId"], first_payload["threadId"]);
+        assert_eq!(payload["thread"]["sessionId"], "");
         let driver_state = driver.state.lock().expect("lock Fork test driver");
         assert_eq!(
-            driver_state.claude_create_count, 2,
-            "Failed rearm 必须能再次启动 Provider"
+            driver_state.claude_create_count, 0,
+            "重复点击不得消费任何预置 Provider 结果"
         );
         assert!(
             state
@@ -24071,6 +26374,7 @@ mod tests {
             context_requests: Arc::new(Mutex::new(HashMap::new())),
             claude_fork_capability_cache: Arc::new(Mutex::new(HashMap::new())),
             claude_fork_launch_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            claude_runtime_test_launch: None,
             thread_fork_test_driver: None,
         })
         .merge(crate::ordinary_chat::router(ordinary_chat))
@@ -24764,6 +27068,7 @@ mod tests {
             reasoning_effort: Some("high".to_string()),
             permission_mode: Some("auto".to_string()),
             agent_channel_id: Some("channel-1".to_string()),
+            agent_channel_fingerprint: Some("fingerprint-1".to_string()),
         }
     }
 
@@ -24804,6 +27109,81 @@ mod tests {
         for forbidden in ["prompt", "raw_rpc", "environment", "env_json"] {
             assert!(!schema.to_ascii_lowercase().contains(forbidden));
         }
+        assert!(schema.contains("awaiting_first_message"));
+    }
+
+    #[test]
+    fn thread_fork_schema_migrates_existing_operations_for_awaiting_first_message() {
+        let connection = Connection::open_in_memory().expect("open database");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE thread_fork_operations (
+                  operation_id TEXT PRIMARY KEY,
+                  source_thread_id TEXT NOT NULL,
+                  source_provider_thread_id TEXT NOT NULL,
+                  provider_thread_id TEXT UNIQUE,
+                  local_thread_id TEXT,
+                  status TEXT NOT NULL CHECK (status IN (
+                    'provider_pending', 'provider_succeeded', 'result_unknown',
+                    'history_pending', 'completed', 'failed'
+                  )),
+                  started_at_ms INTEGER NOT NULL,
+                  last_error TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+                INSERT INTO thread_fork_operations (
+                  operation_id, source_thread_id, source_provider_thread_id,
+                  provider_thread_id, local_thread_id, status, started_at_ms,
+                  last_error, created_at, updated_at
+                ) VALUES (
+                  'legacy-completed', 'legacy-source', 'legacy-session',
+                  'legacy-child-session', 'legacy-child', 'completed', 1754092800000,
+                  NULL, '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z'
+                );
+                "#,
+            )
+            .expect("create legacy Fork schema");
+
+        initialize_workspace_database(&connection).expect("migrate workspace database");
+
+        let legacy = read_thread_fork_operation(&connection, "legacy-completed")
+            .expect("read legacy operation")
+            .expect("legacy operation preserved");
+        assert_eq!(legacy.status, ThreadForkOperationStatus::Completed);
+        assert_eq!(legacy.local_thread_id.as_deref(), Some("legacy-child"));
+        connection
+            .execute(
+                r#"
+                INSERT INTO thread_fork_operations (
+                  operation_id, source_thread_id, source_provider_thread_id,
+                  local_thread_id, status, started_at_ms, created_at, updated_at
+                ) VALUES (
+                  'pending-a', 'pending-source', 'source-session', 'pending-child',
+                  'awaiting_first_message', 1754092801000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                "#,
+                [],
+            )
+            .expect("new awaiting status is writable after migration");
+        assert!(
+            connection
+                .execute(
+                    r#"
+                INSERT INTO thread_fork_operations (
+                  operation_id, source_thread_id, source_provider_thread_id,
+                  local_thread_id, status, started_at_ms, created_at, updated_at
+                ) VALUES (
+                  'pending-b', 'pending-source', 'source-session', 'pending-child-b',
+                  'awaiting_first_message', 1754092802000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                "#,
+                    [],
+                )
+                .is_err(),
+            "同一源聊天只能有一个 awaiting_first_message 操作"
+        );
     }
 
     #[test]
@@ -25205,6 +27585,7 @@ mod tests {
             reasoning_effort: Some("high".to_string()),
             permission_mode: Some("auto".to_string()),
             agent_channel_id: Some("channel-1".to_string()),
+            agent_channel_fingerprint: Some("fingerprint-1".to_string()),
         };
         let control = source.control_config();
         assert_eq!(control.thread_id, source.id);

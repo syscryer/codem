@@ -6,6 +6,7 @@ const appSource = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
 const workspaceSource = readFileSync(new URL('../hooks/useWorkspaceState.ts', import.meta.url), 'utf8');
 const headerSource = readFileSync(new URL('../components/ChatHeader.tsx', import.meta.url), 'utf8');
 const sidebarSource = readFileSync(new URL('../components/SidebarProjects.tsx', import.meta.url), 'utf8');
+const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
 test('chat header exposes one capability-aware continue-in-new-chat action', () => {
   assert.match(headerSource, /MessageSquarePlus/);
@@ -23,6 +24,17 @@ test('sidebar prepares capability on menu open and uses the same action contract
   assert.match(sidebarSource, /disabled=\{!threadForkAvailability\.enabled\}/);
   assert.match(sidebarSource, /title=\{threadForkAvailability\.reason \?\? '在新聊天中继续'\}/);
   assert.match(sidebarSource, /threadForkAvailability\.reason/);
+});
+
+test('thread action menus are wide enough to show the full continue label', () => {
+  assert.match(
+    stylesSource,
+    /\.thread-menu-popover\s*\{[^}]*width:\s*184px;[^}]*min-width:\s*184px;[^}]*max-width:\s*184px;/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.chat-thread-menu-popover\s*\{[^}]*width:\s*184px;[^}]*min-width:\s*184px;[^}]*max-width:\s*184px;/s,
+  );
 });
 
 test('App derives busy and pending states without provider fallbacks', () => {

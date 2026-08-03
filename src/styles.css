@@ -1413,9 +1413,9 @@ svg {
 }
 
 .thread-menu-popover {
-  width: 146px;
-  min-width: 146px;
-  max-width: 146px;
+  width: 184px;
+  min-width: 184px;
+  max-width: 184px;
 }
 
 .project-menu-popover {
@@ -1600,9 +1600,9 @@ svg {
 }
 
 .chat-thread-menu-popover {
-  width: 154px;
-  min-width: 154px;
-  max-width: 154px;
+  width: 184px;
+  min-width: 184px;
+  max-width: 184px;
 }
 
 .header-actions {

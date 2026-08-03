@@ -4,27 +4,35 @@
 //! 源会话并确认 `system/init` 事件中的新原生 session ID。本模块只负责协议解析与
 //! 进程生命周期，不依赖 `backend.rs`，方便单独做单元测试。
 
-use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
+
+#[cfg(test)]
+use serde_json::Value;
+#[cfg(test)]
+use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 /// 等待 `system/init` 返回新 session ID 的协议超时。
 const FORK_PROTOCOL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 收到 init 并关闭 stdin / stdout EOF 后，等待进程自行退出的宽限期；超时才强制结束。
+#[cfg(test)]
 const FORK_GRACEFUL_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// 直接子进程被回收后，等待 stderr drain 任务自然读到 EOF 的最长时间；超时则中止并
 /// 回收任务。残留 stderr 在管道里很快排空，但若后代继承了 stderr 管道，EOF 可能迟迟
 /// 不来，必须用这个有界等待兜底，避免被无关后代长期挂住 Fork API。
+#[cfg(test)]
 const STDERR_DRAIN_FINISH_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// 对外暴露的 stderr / 进程输出归一化后最大字符数。
+#[cfg(test)]
 const PUBLIC_OUTPUT_LIMIT: usize = 512;
 
 /// 一次性 Fork 进程可能出现的失败语义。
@@ -36,6 +44,7 @@ const PUBLIC_OUTPUT_LIMIT: usize = 512;
 /// `Ok(false)` 表达；这里只保留确实会发生的失败分支，避免出现永不构造的死变体。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ClaudeSessionForkError {
+    #[cfg(test)]
     Rejected(String),
     Uncertain(String),
 }
@@ -51,6 +60,7 @@ pub(crate) fn help_supports_fork_session(output: &str) -> bool {
 ///
 /// 非 JSON、非 init 事件返回 `Ok(None)`；init 事件缺少 session ID 或返回源 ID 视为
 /// `Rejected`；init 事件携带与源 ID 不同的有效 session ID 返回 `Ok(Some(...))`。
+#[cfg(test)]
 pub(crate) fn extract_fork_session_id(
     line: &str,
     source_session_id: &str,
@@ -87,6 +97,7 @@ pub(crate) fn extract_fork_session_id(
 ///
 /// 非 init / 非 JSON 行被忽略；遇到 EOF 仍未拿到 init 视为 `Uncertain`，因为无法确认
 /// Claude 服务端是否已创建新会话。
+#[cfg(test)]
 pub(crate) async fn read_fork_session_id<R>(
     reader: R,
     source_session_id: &str,
@@ -114,6 +125,7 @@ where
 
 /// 一次性 Fork 进程的启动配置，全部来自后端可信的源 thread 字段。
 #[derive(Debug)]
+#[cfg(test)]
 pub(crate) struct ClaudeSessionForkLaunch {
     pub command: String,
     pub args: Vec<String>,
@@ -124,6 +136,7 @@ pub(crate) struct ClaudeSessionForkLaunch {
 
 /// 成功创建 Fork 后确认到的新原生 session ID。
 #[derive(Debug)]
+#[cfg(test)]
 pub(crate) struct ClaudeSessionForkOutcome {
     pub session_id: String,
 }
@@ -174,12 +187,14 @@ async fn probe_fork_session_with_timeout(
 ///
 /// 使用固定 10 秒协议超时；init 之前保持 stdin 打开，收到 init 后关闭 stdin 优先等待
 /// 优雅退出，仅宽限期超时才 kill。EOF、超时或进程在可信 init 前结束都返回 `Uncertain`。
+#[cfg(test)]
 pub(crate) async fn create_session_fork(
     launch: &ClaudeSessionForkLaunch,
 ) -> Result<ClaudeSessionForkOutcome, ClaudeSessionForkError> {
     create_session_fork_with_timeout(launch, FORK_PROTOCOL_TIMEOUT).await
 }
 
+#[cfg(test)]
 async fn create_session_fork_with_timeout(
     launch: &ClaudeSessionForkLaunch,
     protocol_timeout: Duration,
@@ -253,6 +268,7 @@ async fn create_session_fork_with_timeout(
 }
 
 /// 等待进程在宽限期内自行退出，超时才 kill。
+#[cfg(test)]
 async fn wait_or_kill(
     child: &mut tokio::process::Child,
     grace: Duration,
@@ -271,6 +287,7 @@ async fn wait_or_kill(
 /// 任务在进程存活期间一直读取 stderr，即便摘要已满也继续排空管道，避免子进程在 init
 /// 前写满管道而死锁。任务句柄交给 [`finish_stderr_summary`] 做有界收尾，并在需要时
 /// 中止回收，不会留下后台任务。
+#[cfg(test)]
 fn stderr_summary_task(
     stderr: Option<tokio::process::ChildStderr>,
 ) -> (
@@ -303,6 +320,7 @@ fn stderr_summary_task(
 /// 直接子进程被回收后，管道里残留的 stderr 通常很快排空到 EOF；但若后代继承了 stderr
 /// 管道，EOF 可能很久不来。这里对 drain 任务施加 [`STDERR_DRAIN_FINISH_TIMEOUT`] 有界
 /// 等待：超时则中止并回收任务（不留后台任务），并取走已收集的有界摘要。
+#[cfg(test)]
 async fn finish_stderr_summary(
     summary: Arc<Mutex<StderrSummary>>,
     drain_task: Option<tokio::task::JoinHandle<()>>,
@@ -329,6 +347,7 @@ async fn finish_stderr_summary(
 ///
 /// 成功路径不会调用本函数，因此不会泄露 CLI 的原始多行输出；摘要本身也已折叠控制字符、
 /// 连续空白并截断到 [`PUBLIC_OUTPUT_LIMIT`]，不会包含多行原始输出。
+#[cfg(test)]
 fn annotate_with_summary(error: ClaudeSessionForkError, summary: &str) -> ClaudeSessionForkError {
     if summary.is_empty() {
         return error;
@@ -349,12 +368,14 @@ fn annotate_with_summary(error: ClaudeSessionForkError, summary: &str) -> Claude
 /// 不再存储更多字符，但 [`StderrSummary::push_bytes`] 仍是空操作而非阻塞，调用方（drain
 /// 任务）会继续读取并丢弃，保证管道不会因摘要已满而被写满。
 #[derive(Default)]
+#[cfg(test)]
 struct StderrSummary {
     normalized: String,
     char_count: usize,
     previous_was_space: bool,
 }
 
+#[cfg(test)]
 impl StderrSummary {
     fn new() -> Self {
         Self::default()
@@ -397,6 +418,7 @@ impl StderrSummary {
 ///
 /// 复用 [`StderrSummary`] 的有界归一化逻辑；用于一次性处理已知较小的字符串（如启动
 /// 错误），进程 stderr 的持续 drain 不经过本函数，而是直接增量喂给 [`StderrSummary`]。
+#[cfg(test)]
 fn normalize_message(value: &str) -> String {
     let mut summary = StderrSummary::new();
     summary.push_bytes(value.as_bytes());

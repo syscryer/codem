@@ -5,6 +5,19 @@
 - Task: .trellis/tasks/claude-continue-in-new-chat.md
 
 ## Notes
+- 2026-08-03T04:26:09.986Z 小范围 UI 修正：统一侧边栏右键和顶部会话操作菜单宽度为 184px，完整展示“在新聊天中继续”；新增 thread-fork-ui CSS 回归断言。桌面 HMR 实测两个入口文字完整、图标和其他菜单项未挤压。
+
+- 2026-08-03T04:18:43.466Z 按用户确认的简单复制语义收尾：正式构建不再编译旧版点击即 eager Fork 的启动、取消和无 prompt 协议桥，仅保留为历史回归测试；生产路径只保留点击时独立快照复制、能力探测和首条真实消息延迟 --fork-session。cargo check 后旧路径的 28 组未使用警告已清除。
+- 2026-08-03T04:05:12.222Z 补充协议乱序收口：真实子进程若返回 result 但从未先返回 system/init，不再映射 done 或信任 result.session_id；operation 原子进入 result_unknown、流发送明确 error 并关闭 runtime。新增真实进程回归后 claude_delayed_fork 11/11。
+
+- 2026-08-03T03:55:31.743Z Task 5.3/5.4 收口：延迟 Claude Fork 首发使用 claim RAII 守卫区分 spawn 前可重试与 spawn 后 result_unknown；运行时创建返回 before/after-spawn 分类并禁止待 Fork 子聊天复用既存 runtime；EOF 无 init 发送 error 而非 done；init 后退出失败保留 child session。新增 Windows 真实 PowerShell 子进程测试覆盖 init 成功、EOF、init 后失败、并发首发单进程。修复子 transcript 刷新覆盖固定历史：按 operation 点击边界保留源快照，只合并边界后的 child transcript，重复读取不重复。官方文档确认 --fork-session 仅在 resume/continue 启动时创建新 session；零输入点击时 checkpoint 仍非 CLI 能力。
+- 2026-08-03T02:43:11.302Z Task 5.2 完成：Claude /fork 在创建子聊天事务内通过标准化历史写入链复制固定 messages/tool_calls 快照，响应直接 historyState=loaded；复制后源与子历史互不影响，重复请求复用同一子聊天且不重复写入；未暴露 forkState，未启动 Claude Provider。
+
+- 2026-08-03T02:33:02.858Z 2026-08-03 用户将 Claude 在新聊天中继续收敛为一次性独立快照复制：点击时原子复制当前可见历史和可信配置，之后不再同步源聊天；前端按 loaded 普通历史接入，不暴露 forkState。Claude CLI 无 prompt 不能物化 session，首条真实消息仍使用可信源 session 执行一次 --resume + --fork-session，绑定后完全独立。
+- 2026-08-03T01:57:51.406Z Task 5.1 完成：Claude /fork 改为单事务创建 awaiting_first_message 本地子聊天，不启动 CLI；新增旧 SQLite CHECK/唯一索引兼容迁移、可信 channel fingerprint 继承、同 operation/同源/并发及源忙后幂等复用。主 Agent 发现并修复 result_unknown 500 与忙状态重试 409；CC max 只读复核 APPROVED。Codex eager Fork 保持不变。
+
+- 2026-08-03T01:12:21.937Z 2026-08-03 用户确认方案 A，并补充确认 pending 子聊天立即显示源历史。设计已更新为：点击只创建 awaiting_first_message 本地子 thread；历史由后端基于 operation 只读投影，pending 期间源消息继续进入投影，Fork 上下文切点为子聊天第一条真实消息；该消息唯一一次通过 --resume 源 session + --fork-session 发送，init 后绑定新 session/transcript。明确 pre-spawn 可重试、写入后未确认 init 转 result_unknown、禁止隐藏 prompt/自动重发，并形成 Task 5.1-5.5 TDD 实施计划。
+- 2026-08-02T18:54:42.682Z Task 5 真实 Claude 2.1.220 验收确认阻塞：capability 虽为 supported，但当前无 prompt 的 stream-json Fork 保持 stdin 打开时 10 秒内无 system/init；stdin 立即 EOF 则 exit 0、无输出、无新 transcript。主 Agent独立核验后交回同一 CC(max) 复查；CC 的永久 RED ignored test 因双分支恒定 panic、参数不匹配真实线程被主 Agent拒绝并已清除。官方 Agent SDK query 的 prompt 为必填，真实正对照只有发送 hi 后才生成独立 session d139b98e-2b3e-4e90-89c6-db671d2a50a4 与 transcript，因此当前 点击即原生 Fork、无 prompt、无模型生成在 CLI 2.1.220 下无受支持协议。生产代码未改，Task 5 暂不完成；待用户在延迟到首条真实消息 Fork、暂时禁用 Claude Fork、等待上游协议三个方案中确认。
 
 - 2026-08-02T18:14:53.500Z Task 4 质量审查 APPROVED，无 P0-P2。主 Agent确认并修复唯一立即处理的 P3 恒真测试断言；固定 sleep 理论 flake、真实进程取消时 stderr drain 低概率残留、Drop 同步 fail-closed 等保留为非阻塞后续/实机风险，不扩大 Task 4 范围。
 - 2026-08-02T18:00:53.215Z Task 4 规格审查闭环：CC 规格 reviewer 的 P2 stale provider_pending 竞态经主 Agent 稳定 RED 复现（DB 已 ResultUnknown 仍启动并返回 OK），交回实现 Agent增加 acquire 后数据库重读与状态分流；主 Agent复验 stale unknown/succeeded/completed 与 352 项全库通过，规格复审 APPROVED，无 P0-P2。
@@ -56,6 +69,21 @@
 - 2026-08-02T11:09:19.272Z Session started.
 
 ## Verification
+- 2026-08-03T07:37:34.680Z `cargo test --manifest-path src-tauri/Cargo.toml --lib; npx tsx --test src/lib/thread-fork.test.ts src/lib/thread-fork-ui.test.ts src/hooks/useWorkspaceState.history-persistence.test.ts; npm run typecheck; npm run build; cargo fmt --manifest-path src-tauri/Cargo.toml --check; git diff --check`: 提交前复验通过：Rust 371 passed/0 failed/1 ignored；前端 18/18；typecheck、build、fmt、diff check 均通过。build 仅既有 chunk/dynamic import 警告。真实 Claude 首条消息端到端验收仍保留为待办，不在本次提交中虚假关闭。
+
+- 2026-08-03T04:26:27.069Z `npx tsx --test src/lib/thread-fork.test.ts src/lib/thread-fork-ui.test.ts src/hooks/useWorkspaceState.history-persistence.test.ts; npm run typecheck; npm run build; git diff --check; CodeM 桌面双入口视觉验收`: 通过：18 tests/18 pass，typecheck 与 build 通过（仅既有 chunk/dynamic import 警告），diff check 通过；侧边栏右键与顶部更多菜单均完整显示“在新聊天中继续”。
+- 2026-08-03T04:18:56.260Z `cargo check --manifest-path src-tauri/Cargo.toml --lib; cargo test --manifest-path src-tauri/Cargo.toml --lib; cargo fmt --manifest-path src-tauri/Cargo.toml --check; npm run typecheck; git diff --check`: 通过：正式 Rust 构建仅保留仓库既有 5 个警告；Rust 371 passed/0 failed/1 ignored；fmt、typecheck、diff check 均通过。延迟 Fork 11/11，thread_fork 40/40。真实桌面顶部/右键入口仍因 Windows 锁屏待手工验收。
+
+- 2026-08-03T04:05:13.002Z `cargo test --manifest-path src-tauri/Cargo.toml --lib; cargo fmt --check; git diff --check`: 最终通过：371 passed，0 failed，1 ignored；fmt exit 0；diff check exit 0，仅 LF/CRLF 提示。桌面 dev 已按 Rust 改动重启，3001 health available=true；Windows 当前锁屏，顶部/右键菜单手工 UI 验收尚未执行。
+- 2026-08-03T03:58:08.166Z `frontend Fork/history tests; npm run typecheck; npm run build; cargo fmt --check; git diff --check`: 全部 exit 0；生产构建仅既有 dynamic import/chunk size 警告，diff check 仅 LF/CRLF 提示。
+
+- 2026-08-03T03:58:07.463Z `cargo test --manifest-path src-tauri/Cargo.toml --lib`: 通过：370 passed，0 failed，1 ignored（需认证 Grok CLI 的既有真实 smoke）。
+- 2026-08-03T03:58:06.768Z `cargo test --manifest-path src-tauri/Cargo.toml claude_delayed_fork; cargo test --manifest-path src-tauri/Cargo.toml thread_fork`: 通过：delayed Fork 10/10（含 Windows 真实进程 init/EOF/init 后失败/并发单飞、取消边界和快照 transcript 合并）；thread_fork 40/40。
+
+- 2026-08-03T02:43:12.054Z `Task 5.2: cargo test thread_fork; frontend thread-fork/history tests; npm run typecheck`: 通过：Rust thread_fork 40/40；前端 Fork/UI/history 17/17；tsc -b exit 0。快照覆盖 text/thinking/tool/attachments/content blocks、源子双向隔离、幂等与 bootstrap 恢复。
+- 2026-08-03T01:58:04.978Z `Task 5.1: cargo test thread_fork; cargo test codex_thread_fork; schema migration test; cargo fmt --check; git diff --check`: 通过：thread_fork 39/39，codex_thread_fork 11/11，旧 schema 迁移 1/1；fmt/diff exit 0。新增 RED 曾真实返回 500，GREEN 后 pending child/provider create_count=0；CC max 只读复核 APPROVED。
+
+- 2026-08-02T18:54:54.071Z `真实 Claude 2.1.220 零输入 Fork 协议验收 + transcript 独立核验`: FAIL/BLOCKED：隔离后端真实 operation 10 秒无 init 并进入 result_unknown；直接 CLI stdin EOF 为 exit 0/无事件/无 transcript；只有真实用户 prompt 正对照产生独立 session d139b98e-2b3e-4e90-89c6-db671d2a50a4，证明当前 CLI 无零 prompt Fork 契约。git diff 在 Trellis 记录前为空，仅 .tmp-dev/ 未跟踪。
 - 2026-08-02T18:15:05.274Z `Task 4 final: cargo test claude_fork/thread_fork/codex_thread_fork/claude_run_args/--lib; cargo fmt --check; git diff --check`: 通过：claude_fork 4/4，thread_fork 32/32，codex_thread_fork 11/11，claude_run_args 2/2，Rust lib 352 passed/0 failed/1 ignored；fmt/diff exit 0；规格与质量复审均 APPROVED。
 
 - 2026-08-02T17:36:58.518Z `cargo test --manifest-path src-tauri/Cargo.toml claude_fork; thread_fork; codex_thread_fork; claude_run_args; --lib; cargo fmt --check; git diff --check`: 主 Agent 独立通过：claude_fork 4/4，thread_fork 29/29，codex_thread_fork 11/11，claude_run_args 2/2，Rust lib 349 passed/0 failed/1 ignored；并发与取消两个回归各 1/1；fmt/diff exit 0。
