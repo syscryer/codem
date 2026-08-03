@@ -18583,35 +18583,10 @@ fn build_claude_fork_args(
 fn claude_channel_settings(
     channel_runtime: Option<&crate::agent_channels::AgentChannelRuntime>,
 ) -> Option<String> {
-    let runtime = channel_runtime?;
-    let mut env = serde_json::Map::new();
-    for key in ["ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"] {
-        if let Some(value) = runtime.env.get(key) {
-            env.insert(key.to_string(), json!(value));
-        }
-    }
-    if env.is_empty() {
-        return None;
-    }
-    env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), json!(""));
-    env.insert("ANTHROPIC_API_KEY".to_string(), json!(""));
-    Some(
-        json!({
-            "env": env,
-            "apiKeyHelper": claude_channel_api_key_helper_command(),
-        })
-        .to_string(),
-    )
-}
-
-#[cfg(windows)]
-fn claude_channel_api_key_helper_command() -> &'static str {
-    "cmd /d /s /c echo %CODEM_AGENT_CHANNEL_API_KEY%"
-}
-
-#[cfg(not(windows))]
-fn claude_channel_api_key_helper_command() -> &'static str {
-    "printf '%s' \"$CODEM_AGENT_CHANNEL_API_KEY\""
+    channel_runtime?
+        .claude_settings_path
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string())
 }
 
 fn build_claude_input_message(
@@ -22401,6 +22376,9 @@ mod tests {
             ]),
             codex_config_args: Vec::new(),
             effective_model: Some("MiniMax-M3".to_string()),
+            claude_settings_path: Some(std::path::PathBuf::from(
+                "D:/codem/agent-runtimes/claude/channel-1/settings.json",
+            )),
         };
 
         let args = super::build_claude_fork_args(&source, Some(&runtime));
@@ -22428,14 +22406,10 @@ mod tests {
             .iter()
             .position(|arg| arg == "--settings")
             .expect("settings arg");
-        let settings: Value =
-            serde_json::from_str(&args[settings_index + 1]).expect("settings JSON");
         assert_eq!(
-            settings["env"]["ANTHROPIC_BASE_URL"],
-            "https://api.example.com/anthropic"
+            args.get(settings_index + 1).map(String::as_str),
+            Some("D:/codem/agent-runtimes/claude/channel-1/settings.json")
         );
-        assert_eq!(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "");
-        assert_eq!(settings["env"]["ANTHROPIC_API_KEY"], "");
         assert!(
             !args.iter().any(|arg| arg.contains("secret-token")),
             "渠道密钥不得进入 Fork 参数"
@@ -25807,6 +25781,9 @@ mod tests {
             ]),
             codex_config_args: Vec::new(),
             effective_model: Some("MiniMax-M3".to_string()),
+            claude_settings_path: Some(std::path::PathBuf::from(
+                "D:/codem/agent-runtimes/claude/channel-1/settings.json",
+            )),
         };
 
         let args = super::build_claude_run_args(&payload, "bypassPermissions", Some(&runtime));
@@ -25822,18 +25799,9 @@ mod tests {
             .iter()
             .position(|arg| arg == "--settings")
             .expect("settings arg");
-        let settings: Value =
-            serde_json::from_str(&args[settings_index + 1]).expect("settings JSON");
         assert_eq!(
-            settings["env"]["ANTHROPIC_BASE_URL"],
-            "https://api.minimaxi.com/anthropic"
-        );
-        assert_eq!(settings["env"]["ANTHROPIC_MODEL"], "MiniMax-M3");
-        assert_eq!(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "");
-        assert_eq!(settings["env"]["ANTHROPIC_API_KEY"], "");
-        assert_eq!(
-            settings["apiKeyHelper"],
-            super::claude_channel_api_key_helper_command()
+            args.get(settings_index + 1).map(String::as_str),
+            Some("D:/codem/agent-runtimes/claude/channel-1/settings.json")
         );
     }
 

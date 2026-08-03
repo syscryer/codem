@@ -227,6 +227,11 @@ Files: `src/types.ts`, `src/hooks/useWorkspaceState.ts`, existing `ChatHeader`/`
   运行中与旧 CLI fixture 验证禁用提示。
 
 ## Implementation Record
+
+- 2026-08-03T08:01:34.266Z 用户要求打包当前 Windows 工作区；package:doctor 已通过，开始执行 package:win，并将在完成后校验安装版、portable 与 updater 产物。
+- 2026-08-03T07:58:44.627Z 已实现 Claude 自定义渠道 settings 文件化：按非敏感内容哈希写入 app_data/agent-runtimes/claude/<channel>/settings-<hash>.json，运行参数只传文件路径；API Key 仍仅经环境变量/apiKeyHelper 注入，删除渠道同步清理隔离目录。已补文件内容、密钥脱敏、参数路径和删除清理测试。
+
+- 2026-08-03T07:50:11.276Z 真实 DeepSeek 渠道验收发现 Windows claude.cmd 会破坏内联 --settings JSON，引发 Settings file not found 后 exit 1；作为普通 Claude 渠道回归纳入 Task 5.5 收口。决定改为无密钥隔离 settings 文件路径，并补 Windows 包装入口回归测试。
 - 2026-08-03T04:26:09.986Z 小范围 UI 修正：统一侧边栏右键和顶部会话操作菜单宽度为 184px，完整展示“在新聊天中继续”；新增 thread-fork-ui CSS 回归断言。桌面 HMR 实测两个入口文字完整、图标和其他菜单项未挤压。
 
 - 2026-08-03T04:18:43.466Z 按用户确认的简单复制语义收尾：正式构建不再编译旧版点击即 eager Fork 的启动、取消和无 prompt 协议桥，仅保留为历史回归测试；生产路径只保留点击时独立快照复制、能力探测和首条真实消息延迟 --fork-session。cargo check 后旧路径的 28 组未使用警告已清除。
@@ -281,6 +286,14 @@ Files: `src/types.ts`, `src/hooks/useWorkspaceState.ts`, existing `ChatHeader`/`
   2026-08-03 真实 CLI 验收否定，并由本文顶部的延迟 Fork 设计正式取代。
 
 ## Verification Results
+
+- 2026-08-03T08:28:15.951Z `targeted Claude custom-channel settings tests; cargo fmt --check; git diff --check`: 3/3 targeted tests passed; Rust format and diff checks passed
+- 2026-08-03T08:09:34.561Z `npm run package:doctor && npm run package:win`: 通过：package doctor OK；前端 TypeScript/Vite、Rust release、NSIS 和 MSI 全部构建成功。生成 CodeM_0.1.19_x64-setup.exe（15015596 bytes）与 CodeM_0.1.19_x64_en-US.msi（20451328 bytes）；release codem.exe 产品/文件版本均为 0.1.19。
+
+- 2026-08-03T07:58:45.539Z `CodeM Dev /api/claude/run -> claude.cmd -> DeepSeek deepseek-v4-flash`: 通过：桌面后端自动重启后真实返回 FIXED_OK；命令行 --settings 为隔离 JSON 文件路径，不再出现 Settings file not found；文件与实际渠道密钥比对 HasSecret=False。
+- 2026-08-03T07:58:45.235Z `cargo fmt --manifest-path src-tauri/Cargo.toml --check && git diff --check`: 通过：Rust 格式检查和差异空白检查均通过，仅有仓库既有 CRLF 提示。
+
+- 2026-08-03T07:58:44.934Z `cargo test --manifest-path src-tauri/Cargo.toml`: 通过：Rust 372 个库测试 + 13 个桌面测试通过，1 个需真实 Grok 认证的测试按预期忽略，0 失败。
 - 2026-08-03T07:37:34.680Z `cargo test --manifest-path src-tauri/Cargo.toml --lib; npx tsx --test src/lib/thread-fork.test.ts src/lib/thread-fork-ui.test.ts src/hooks/useWorkspaceState.history-persistence.test.ts; npm run typecheck; npm run build; cargo fmt --manifest-path src-tauri/Cargo.toml --check; git diff --check`: 提交前复验通过：Rust 371 passed/0 failed/1 ignored；前端 18/18；typecheck、build、fmt、diff check 均通过。build 仅既有 chunk/dynamic import 警告。真实 Claude 首条消息端到端验收仍保留为待办，不在本次提交中虚假关闭。
 
 - 2026-08-03T04:26:27.069Z `npx tsx --test src/lib/thread-fork.test.ts src/lib/thread-fork-ui.test.ts src/hooks/useWorkspaceState.history-persistence.test.ts; npm run typecheck; npm run build; git diff --check; CodeM 桌面双入口视觉验收`: 通过：18 tests/18 pass，typecheck 与 build 通过（仅既有 chunk/dynamic import 警告），diff check 通过；侧边栏右键与顶部更多菜单均完整显示“在新聊天中继续”。
@@ -346,6 +359,8 @@ Files: `src/types.ts`, `src/hooks/useWorkspaceState.ts`, existing `ChatHeader`/`
 - 2026-08-02T12:41:42.709Z `npx tsx --test src/lib/thread-fork.test.ts src/lib/thread-fork-ui.test.ts`: 通过：11 tests，11 pass，0 fail；覆盖双 Provider availability、状态门禁、Provider 文案、响应 ID、history loaded/pending、debug/raw 隔离、capability key 全字段及双 UI 入口。
 
 ## Completion Summary
+
+- 2026-08-03T08:28:16.635Z 完成 Claude 会话复制、首条消息延迟 Fork、自定义渠道 settings 文件化、真实 DeepSeek 验收与 Windows 打包验证
 
 ## Follow-ups
 

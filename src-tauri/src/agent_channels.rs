@@ -42,6 +42,7 @@ pub(crate) struct AgentChannelRuntime {
     pub env: BTreeMap<String, String>,
     pub codex_config_args: Vec<String>,
     pub effective_model: Option<String>,
+    pub claude_settings_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1055,6 +1056,10 @@ fn remove_agent_channel_runtime(
     channel: &StoredAgentChannel,
 ) -> Result<(), String> {
     let runtime_home = match channel.provider_id.as_str() {
+        CLAUDE_CODE_PROVIDER_ID => app_data_dir
+            .join("agent-runtimes")
+            .join("claude")
+            .join(&channel.id),
         GROK_BUILD_PROVIDER_ID => app_data_dir
             .join("agent-runtimes")
             .join("grok")
@@ -1773,6 +1778,7 @@ fn build_runtime(
     let mut env = BTreeMap::new();
     let mut codex_config_args = Vec::new();
     let mut effective_model = selected_model.clone();
+    let mut claude_settings_path = None;
     env.insert(
         "CODEM_AGENT_CHANNEL_API_KEY".to_string(),
         api_key.to_string(),
@@ -1785,6 +1791,11 @@ fn build_runtime(
             if let Some(model) = selected_model.as_deref() {
                 env.insert("ANTHROPIC_MODEL".to_string(), model.to_string());
             }
+            claude_settings_path = Some(prepare_claude_runtime_settings(
+                app_data_dir,
+                channel,
+                selected_model.as_deref(),
+            )?);
         }
         OPENAI_CODEX_PROVIDER_ID => {
             let provider_key = format!("codem_{}", channel.id.replace('-', "_"));
@@ -1928,7 +1939,55 @@ fn build_runtime(
         env,
         codex_config_args,
         effective_model,
+        claude_settings_path,
     })
+}
+
+fn prepare_claude_runtime_settings(
+    app_data_dir: &Path,
+    channel: &StoredAgentChannel,
+    selected_model: Option<&str>,
+) -> Result<PathBuf, String> {
+    let mut settings_env = serde_json::Map::new();
+    settings_env.insert("ANTHROPIC_BASE_URL".to_string(), json!(channel.base_url));
+    if let Some(model) = selected_model {
+        settings_env.insert("ANTHROPIC_MODEL".to_string(), json!(model));
+    }
+    settings_env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), json!(""));
+    settings_env.insert("ANTHROPIC_API_KEY".to_string(), json!(""));
+    let content = format!(
+        "{}\n",
+        json!({
+            "env": settings_env,
+            "apiKeyHelper": claude_channel_api_key_helper_command(),
+        })
+    );
+    let content_hash = hex_digest(content.as_bytes());
+    let runtime_dir = app_data_dir
+        .join("agent-runtimes")
+        .join("claude")
+        .join(&channel.id);
+    fs::create_dir_all(&runtime_dir)
+        .map_err(|error| format!("创建 Claude 渠道运行目录失败: {error}"))?;
+    let settings_path = runtime_dir.join(format!("settings-{content_hash}.json"));
+    let needs_write = fs::read_to_string(&settings_path)
+        .map(|current| current != content)
+        .unwrap_or(true);
+    if needs_write {
+        fs::write(&settings_path, content)
+            .map_err(|error| format!("写入 Claude 渠道配置失败: {error}"))?;
+    }
+    Ok(settings_path)
+}
+
+#[cfg(windows)]
+fn claude_channel_api_key_helper_command() -> &'static str {
+    "cmd /d /s /c echo %CODEM_AGENT_CHANNEL_API_KEY%"
+}
+
+#[cfg(not(windows))]
+fn claude_channel_api_key_helper_command() -> &'static str {
+    "printf '%s' \"$CODEM_AGENT_CHANNEL_API_KEY\""
 }
 
 fn prepare_pi_runtime_dir(
@@ -2323,6 +2382,83 @@ mod tests {
         assert!(system_channel_summaries()
             .iter()
             .any(|channel| channel.provider_id == PI_AGENT_PROVIDER_ID && channel.id == "system"));
+    }
+
+    #[test]
+    fn claude_custom_channel_uses_secret_free_settings_file() {
+        let root = std::env::temp_dir().join(format!(
+            "codem-claude-agent-channel-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let channel = StoredAgentChannel {
+            id: "channel-claude".to_string(),
+            provider_id: CLAUDE_CODE_PROVIDER_ID.to_string(),
+            name: "Claude Proxy".to_string(),
+            protocol: AiProtocol::AnthropicMessages,
+            base_url: "https://api.example.com/anthropic".to_string(),
+            models_url: None,
+            template_id: None,
+            enabled: true,
+            is_default: false,
+            secret_slot: "secret:channel-claude".to_string(),
+            created_at: "2026-08-03T00:00:00Z".to_string(),
+            updated_at: "2026-08-03T00:00:00Z".to_string(),
+        };
+        let models = vec![AgentChannelModelSummary {
+            id: "model-claude".to_string(),
+            channel_id: channel.id.clone(),
+            model_id: "deepseek-v4-flash".to_string(),
+            display_name: "DeepSeek V4 Flash".to_string(),
+            enabled: true,
+            is_default: true,
+            capabilities: json!({}),
+            created_at: "2026-08-03T00:00:00Z".to_string(),
+            updated_at: "2026-08-03T00:00:00Z".to_string(),
+        }];
+
+        let runtime = build_runtime(
+            &root,
+            &channel,
+            &models,
+            Some("deepseek-v4-flash"),
+            "sk-secret",
+            None,
+            None,
+        )
+        .expect("build Claude runtime");
+        let settings_path = runtime
+            .claude_settings_path
+            .as_ref()
+            .expect("Claude settings path");
+        assert!(settings_path.starts_with(
+            root.join("agent-runtimes")
+                .join("claude")
+                .join("channel-claude")
+        ));
+        let settings_text = fs::read_to_string(settings_path).expect("read Claude settings");
+        let settings: Value = serde_json::from_str(&settings_text).expect("parse Claude settings");
+        assert_eq!(
+            settings["env"]["ANTHROPIC_BASE_URL"],
+            "https://api.example.com/anthropic"
+        );
+        assert_eq!(settings["env"]["ANTHROPIC_MODEL"], "deepseek-v4-flash");
+        assert_eq!(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "");
+        assert_eq!(settings["env"]["ANTHROPIC_API_KEY"], "");
+        assert_eq!(
+            settings["apiKeyHelper"],
+            claude_channel_api_key_helper_command()
+        );
+        assert!(!settings_text.contains("sk-secret"));
+
+        let unrelated = root
+            .join("agent-runtimes")
+            .join("claude")
+            .join("channel-other");
+        fs::create_dir_all(&unrelated).expect("create unrelated Claude runtime");
+        remove_agent_channel_runtime(&root, &channel).expect("remove Claude runtime");
+        assert!(!settings_path.exists());
+        assert!(unrelated.exists());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
