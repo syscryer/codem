@@ -9403,6 +9403,13 @@ process.stdout.write(JSON.stringify({ prompts, writeResult, bashResult, autoResu
         ));
         assert!(codex_message.contains("upstream rejected request"));
 
+        let codex_protocol_message = public_codex_error(CodexAppServerError::Protocol(
+            "Codex App Server stdout 已关闭：wire_api = chat is no longer supported api_key=sk-sensitive-value"
+                .to_string(),
+        ));
+        assert!(codex_protocol_message.contains("wire_api = chat is no longer supported"));
+        assert!(!codex_protocol_message.contains("sk-sensitive-value"));
+
         let fork_message = public_codex_error(CodexAppServerError::ForkHistory {
             provider_thread_id: "fork-thread".to_string(),
             source: Box::new(CodexAppServerError::Rpc {

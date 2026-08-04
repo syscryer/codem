@@ -158,7 +158,7 @@ export function buildAgentChannelModelCatalog(
   nativeCatalog: AgentModelCatalog | null,
 ) {
   if (!channel) {
-    return nativeCatalog;
+    return withKnownAgentModelCapabilities(nativeCatalog);
   }
 
   const enabledModels = channel.models.filter((model) => model.enabled);
@@ -182,6 +182,32 @@ export function buildAgentChannelModelCatalog(
           ? configuredEfforts
           : native?.supportedReasoningEfforts ?? [],
       } satisfies AgentModelOption;
+    }),
+  } satisfies AgentModelCatalog;
+}
+
+function withKnownAgentModelCapabilities(catalog: AgentModelCatalog | null) {
+  if (!catalog) {
+    return catalog;
+  }
+  return {
+    ...catalog,
+    models: catalog.models.map((model) => {
+      if (
+        model.id.trim().toLocaleLowerCase() !== 'deepseek-v4-flash'
+        || model.supportedReasoningEfforts.length > 0
+      ) {
+        return model;
+      }
+      return {
+        ...model,
+        defaultReasoningEffort: model.defaultReasoningEffort || 'high',
+        supportedReasoningEfforts: [
+          { id: 'low', description: '响应更快，使用较轻的推理' },
+          { id: 'high', description: '适合复杂任务的深度推理' },
+          { id: 'max', description: '为最困难任务提供最大推理深度' },
+        ],
+      };
     }),
   } satisfies AgentModelCatalog;
 }

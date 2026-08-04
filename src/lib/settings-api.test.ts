@@ -109,11 +109,28 @@ test('app checks updates at a low-frequency interval and exposes a direct top-ri
   assert.match(appSource, /releaseNotes: appUpdateRuntime\.info\.message/);
   assert.match(appSource, /releaseDate: appUpdateRuntime\.info\.date/);
   assert.match(menubarSource, /className={`title-update-pill \$\{appUpdateNotice\.phase\}`}/);
+  assert.match(
+    menubarSource,
+    /className="desktop-menubar-window-actions"[\s\S]*?\{updateEntry\}[\s\S]*?\{windowControls\}/,
+  );
   assert.doesNotMatch(menubarSource, /<span>\{formatUpdatePillLabel\(appUpdateNotice\.phase\)\}<\/span>/);
   assert.match(menubarSource, /onMouseEnter=\{openUpdateCard\}/);
   assert.match(menubarSource, /appUpdateNotice\.onAction\(\)/);
   assert.match(menubarSource, /v\$\{appUpdateNotice\.version\} 更新日志/);
   assert.match(stylesSource, /\.title-update-pill/);
+  assert.match(stylesSource, /\.desktop-menubar\s*\{[^}]*grid-template-columns:\s*auto auto minmax\(0, 1fr\) auto auto;/s);
+  assert.match(
+    stylesSource,
+    /\.desktop-menubar-window-actions\s*\{[^}]*min-width:\s*138px;[^}]*display:\s*flex;[^}]*justify-content:\s*flex-end;/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.window-controls\s*\{[^}]*width:\s*138px;[^}]*min-width:\s*138px;[^}]*flex:\s*0 0 138px;/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.window-controls button\s*\{[^}]*width:\s*46px;[^}]*min-width:\s*46px;[^}]*flex:\s*0 0 46px;/s,
+  );
   assert.match(stylesSource, /\.title-update-pill\s*\{[^}]*width:\s*28px;[^}]*background:\s*color-mix\([^;]*var\(--accent/s);
   assert.match(stylesSource, /\.title-update-pill::after\s*\{[^}]*width:\s*5px;[^}]*height:\s*5px;[^}]*background:\s*var\(--accent/s);
   assert.match(stylesSource, /\.title-update-pill\.failed::after\s*\{[^}]*background:\s*var\(--danger/s);

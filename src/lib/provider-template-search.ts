@@ -22,9 +22,9 @@ const protocolSearchLabels: Record<AiProviderTemplate['protocol'], string> = {
 
 const agentChannelProtocols: Record<AgentProviderId, readonly AiChatProtocol[]> = {
   'claude-code': ['anthropic_messages'],
-  'openai-codex': ['openai_responses', 'openai_chat'],
+  'openai-codex': ['openai_responses'],
   'grok-build': ['openai_chat', 'openai_responses', 'anthropic_messages'],
-  opencode: ['openai_chat', 'anthropic_messages'],
+  opencode: ['openai_chat', 'openai_responses', 'anthropic_messages'],
   'pi-agent': ['openai_chat', 'openai_responses', 'anthropic_messages'],
 };
 
@@ -50,9 +50,12 @@ export function agentChannelProtocolHint(
     return '适用于大多数 OpenAI 兼容渠道，也是 Grok 自定义渠道的默认选项。';
   }
   if (providerId === 'opencode') {
-    return protocol === 'anthropic_messages'
-      ? 'OpenCode 将通过 Anthropic AI SDK 连接此渠道。'
-      : 'OpenCode 的 OpenAI 兼容渠道使用 Chat Completions。';
+    if (protocol === 'anthropic_messages') {
+      return 'OpenCode 将通过 Anthropic AI SDK 连接此渠道。';
+    }
+    return protocol === 'openai_responses'
+      ? 'OpenCode 将通过 OpenAI SDK 连接上游 /responses 接口。'
+      : 'OpenCode 的普通 OpenAI 兼容渠道使用 Chat Completions。';
   }
   return '';
 }

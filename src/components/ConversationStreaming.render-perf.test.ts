@@ -17,6 +17,14 @@ test('streaming markdown memoizes expensive parsing behind deferred content', ()
   assert.match(turnSource, /\{content\}\s*<\/ReactMarkdown>/);
 });
 
+test('markdown code blocks keep a stable renderer across conversation refreshes', () => {
+  assert.match(turnSource, /function MarkdownCodeBlock\(\{ children \}/);
+  assert.match(turnSource, /const markdownComponents = useMemo\(\(\) => \(\{/);
+  assert.match(turnSource, /pre: MarkdownCodeBlock/);
+  assert.match(turnSource, /components=\{markdownComponents\}/);
+  assert.doesNotMatch(turnSource, /pre\(\{ children \}\) \{/);
+});
+
 test('generic agent deltas do not schedule a full-history persist every animation frame', () => {
   const flushStart = agentRunSource.indexOf('function flushTextDelta(context: AgentRunContext)');
   const flushEnd = agentRunSource.indexOf('async function stopRun', flushStart);

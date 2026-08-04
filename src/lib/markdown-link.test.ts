@@ -17,9 +17,10 @@ const tauriMainSource = readFileSync(new URL('../../src-tauri/src/main.rs', impo
 
 test('assistant Markdown links use the shared external link renderer', () => {
   assert.match(conversationTurnSource, /import \{ renderMarkdownLink \} from '\.\.\/lib\/markdown-link';/);
+  assert.match(conversationTurnSource, /const markdownComponents = useMemo\(\(\) => \(\{/);
   assert.match(
     conversationTurnSource,
-    /a\(\{ href, title, children \}\) \{\s*return renderMarkdownLink\(\{[\s\S]*?onOpenLocalFile,[\s\S]*?onOpenWebUrl,[\s\S]*?onOpenWebContextMenu,[\s\S]*?\}\);\s*\}/,
+    /a\(\{ href, title, children \}[\s\S]*?return renderMarkdownLink\(\{[\s\S]*?onOpenLocalFile,[\s\S]*?onOpenWebUrl,[\s\S]*?onOpenWebContextMenu,[\s\S]*?\}\);\s*\}/,
   );
 });
 

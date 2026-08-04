@@ -454,8 +454,10 @@ export function AppMenubar({
         onOpen={onOpenBackgroundOperations}
         onClearCompleted={onClearCompletedBackgroundOperations}
       />
-      {updateEntry}
-      {windowControls}
+      <div className="desktop-menubar-window-actions">
+        {updateEntry}
+        {windowControls}
+      </div>
     </header>
   );
 }

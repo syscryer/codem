@@ -9,12 +9,13 @@ use std::{
     fmt,
     path::Path,
     process::Stdio,
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines},
     process::{Child, ChildStdin, ChildStdout, Command},
-    sync::{mpsc, oneshot, watch},
+    sync::{mpsc, oneshot, watch, Mutex},
     task::JoinHandle,
     time::{sleep, timeout},
 };
@@ -28,6 +29,7 @@ const MAX_JSON_STRING_BYTES: usize = 8 * 1024;
 const MAX_JSON_ARRAY_ITEMS: usize = 32;
 const MAX_JSON_OBJECT_FIELDS: usize = 64;
 const MAX_JSON_DEPTH: usize = 6;
+const MAX_STDERR_BYTES: usize = 8 * 1024;
 
 #[derive(Debug)]
 pub enum CodexAppServerError {
@@ -355,6 +357,7 @@ pub struct CodexConnection<R, W> {
     lines: Lines<BufReader<R>>,
     writer: W,
     next_request_id: u64,
+    stderr: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
 impl<R, W> CodexConnection<R, W>
@@ -367,6 +370,16 @@ where
             lines: BufReader::new(reader).lines(),
             writer,
             next_request_id: 1,
+            stderr: None,
+        }
+    }
+
+    fn with_stderr(reader: R, writer: W, stderr: Arc<Mutex<Vec<u8>>>) -> Self {
+        Self {
+            lines: BufReader::new(reader).lines(),
+            writer,
+            next_request_id: 1,
+            stderr: Some(stderr),
         }
     }
 
@@ -1501,9 +1514,18 @@ where
 
     async fn read_message(&mut self) -> Result<CodexMessage, CodexAppServerError> {
         loop {
-            let line = self.lines.next_line().await?.ok_or_else(|| {
-                CodexAppServerError::Protocol("Codex App Server stdout 已关闭".to_string())
-            })?;
+            let Some(line) = self.lines.next_line().await? else {
+                sleep(Duration::from_millis(10)).await;
+                let stderr = match self.stderr.as_ref() {
+                    Some(stderr) => stderr_summary(&stderr.lock().await),
+                    None => None,
+                };
+                let message = stderr.map_or_else(
+                    || "Codex App Server stdout 已关闭".to_string(),
+                    |detail| format!("Codex App Server stdout 已关闭：{detail}"),
+                );
+                return Err(CodexAppServerError::Protocol(message));
+            };
             if line.trim().is_empty() {
                 continue;
             }
@@ -1557,13 +1579,21 @@ impl CodexStdioClient {
         let mut stderr = child.stderr.take().ok_or_else(|| {
             CodexAppServerError::Protocol("Codex App Server stderr 不可用".to_string())
         })?;
+        let stderr_buffer = Arc::new(Mutex::new(Vec::new()));
+        let stderr_writer = stderr_buffer.clone();
         let stderr_task = tokio::spawn(async move {
             let mut buffer = [0_u8; 4096];
-            while stderr.read(&mut buffer).await.is_ok_and(|read| read > 0) {}
+            while let Ok(read) = stderr.read(&mut buffer).await {
+                if read == 0 {
+                    break;
+                }
+                let mut captured = stderr_writer.lock().await;
+                append_bounded_stderr(&mut captured, &buffer[..read]);
+            }
         });
         Ok(Self {
             child,
-            connection: CodexConnection::new(stdout, stdin),
+            connection: CodexConnection::with_stderr(stdout, stdin, stderr_buffer),
             stderr_task,
         })
     }
@@ -1717,6 +1747,23 @@ impl CodexStdioClient {
         let _ = timeout(Duration::from_secs(2), self.child.wait()).await;
         self.stderr_task.abort();
     }
+}
+
+fn append_bounded_stderr(target: &mut Vec<u8>, incoming: &[u8]) {
+    target.extend_from_slice(incoming);
+    if target.len() > MAX_STDERR_BYTES {
+        target.drain(..target.len() - MAX_STDERR_BYTES);
+    }
+}
+
+fn stderr_summary(stderr: &[u8]) -> Option<String> {
+    let detail = String::from_utf8_lossy(stderr)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!detail.is_empty()).then(|| bounded_string(&detail, MAX_JSON_STRING_BYTES))
 }
 
 pub async fn probe_codex_app_server(
@@ -4855,5 +4902,33 @@ mod tests {
         assert_eq!(sanitized["authorization"], "[redacted]");
         assert_eq!(sanitized["nested"]["apiKey"], "[redacted]");
         assert_eq!(sanitized["nested"]["visible"], "ok");
+    }
+
+    #[test]
+    fn stderr_buffer_keeps_only_the_bounded_tail() {
+        let mut stderr = Vec::new();
+        append_bounded_stderr(&mut stderr, &vec![b'a'; MAX_STDERR_BYTES]);
+        append_bounded_stderr(&mut stderr, b"wire_api = responses");
+        assert_eq!(stderr.len(), MAX_STDERR_BYTES);
+        assert!(stderr.ends_with(b"wire_api = responses"));
+    }
+
+    #[tokio::test]
+    async fn closed_stdout_includes_captured_stderr_detail() {
+        let (reader, writer) = tokio::io::duplex(64);
+        drop(writer);
+        let stderr = Arc::new(Mutex::new(
+            b"Error: wire_api = chat is no longer supported\n".to_vec(),
+        ));
+        let mut connection = CodexConnection::with_stderr(reader, tokio::io::sink(), stderr);
+        let error = connection
+            .read_message()
+            .await
+            .expect_err("closed stdout should fail");
+        assert!(matches!(
+            error,
+            CodexAppServerError::Protocol(message)
+                if message.contains("wire_api = chat is no longer supported")
+        ));
     }
 }

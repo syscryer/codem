@@ -120,6 +120,20 @@ pub(crate) const PROVIDER_TEMPLATES: &[ProviderTemplate] = &[
         category: "china",
     },
     ProviderTemplate {
+        id: "deepseek-responses",
+        name: "DeepSeek",
+        vendor_id: "deepseek",
+        vendor_name: "DeepSeek",
+        channel_id: "standard",
+        channel_name: "标准 API",
+        protocol: AiProtocol::OpenaiResponses,
+        base_url: "https://api.deepseek.com",
+        api_key_url: "https://platform.deepseek.com/api_keys",
+        docs_url: "https://api-docs.deepseek.com/guides/responses_api",
+        icon: "deepseek",
+        category: "china",
+    },
+    ProviderTemplate {
         id: "deepseek-anthropic",
         name: "DeepSeek",
         vendor_id: "deepseek",
@@ -608,6 +622,34 @@ pub(crate) const PROVIDER_TEMPLATES: &[ProviderTemplate] = &[
         api_key_url: "https://openrouter.ai/keys",
         docs_url: "https://openrouter.ai/docs",
         icon: "openrouter",
+        category: "aggregator",
+    },
+    ProviderTemplate {
+        id: "opencode-go",
+        name: "OpenCode Go",
+        vendor_id: "opencode-go",
+        vendor_name: "OpenCode Go",
+        channel_id: "go",
+        channel_name: "Go",
+        protocol: AiProtocol::OpenaiChat,
+        base_url: "https://opencode.ai/zen/go/v1",
+        api_key_url: "https://opencode.ai/go",
+        docs_url: "https://opencode.ai/go",
+        icon: "opencode",
+        category: "aggregator",
+    },
+    ProviderTemplate {
+        id: "opencode-go-responses",
+        name: "OpenCode Go",
+        vendor_id: "opencode-go",
+        vendor_name: "OpenCode Go",
+        channel_id: "go",
+        channel_name: "Go",
+        protocol: AiProtocol::OpenaiResponses,
+        base_url: "https://opencode.ai/zen/go/v1",
+        api_key_url: "https://opencode.ai/go",
+        docs_url: "https://opencode.ai/go",
+        icon: "opencode",
         category: "aggregator",
     },
 ];
@@ -1115,6 +1157,7 @@ where
     if !provider.enabled {
         return Err("当前普通聊天供应商已禁用".to_string());
     }
+    validate_protocol_model(provider.protocol, &provider.base_url, &model.model_id)?;
     let client = Client::new();
     match provider.protocol {
         AiProtocol::OpenaiChat => {
@@ -1174,6 +1217,26 @@ where
             .await
         }
     }
+}
+
+pub(crate) fn validate_protocol_model(
+    protocol: AiProtocol,
+    base_url: &str,
+    model_id: &str,
+) -> Result<(), String> {
+    let is_official_deepseek = Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| host == "api.deepseek.com");
+    if protocol == AiProtocol::OpenaiResponses
+        && is_official_deepseek
+        && !model_id.trim().eq_ignore_ascii_case("deepseek-v4-flash")
+    {
+        return Err(
+            "DeepSeek Responses 当前仅支持 deepseek-v4-flash，请切换模型或接口类型".to_string(),
+        );
+    }
+    Ok(())
 }
 
 async fn stream_openai_chat<F>(
@@ -2453,8 +2516,8 @@ mod tests {
         finalize_tool_calls, gemini_contents, merge_tool_call_delta, minimax_token_plan_thinking,
         normalize_action_endpoint, openai_chat_messages, openai_chat_tools, openai_responses_input,
         parse_models, public_request_error, split_system_messages, stream_chat,
-        test_token_plan_provider, token_plan_supports_remote_models, ToolCallAccumulator,
-        PROVIDER_TEMPLATES,
+        test_token_plan_provider, token_plan_supports_remote_models, validate_protocol_model,
+        ToolCallAccumulator, PROVIDER_TEMPLATES,
     };
     use crate::ordinary_chat::types::{
         AiChatModelPreference, AiProtocol, DiscoveredModel, ModelMessage, ProviderToolCall,
@@ -2471,12 +2534,12 @@ mod tests {
 
     #[test]
     fn curated_templates_exclude_partner_marketplace_entries() {
-        assert_eq!(PROVIDER_TEMPLATES.len(), 42);
+        assert_eq!(PROVIDER_TEMPLATES.len(), 45);
         let vendors = PROVIDER_TEMPLATES
             .iter()
             .map(|item| item.vendor_id)
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(vendors.len(), 18);
+        assert_eq!(vendors.len(), 19);
         assert!(PROVIDER_TEMPLATES.iter().any(|item| item.id == "deepseek"));
         assert!(PROVIDER_TEMPLATES.iter().any(|item| item.id == "minimax"));
         assert!(PROVIDER_TEMPLATES
@@ -2527,6 +2590,22 @@ mod tests {
         assert!(PROVIDER_TEMPLATES.iter().any(|item| {
             item.vendor_id == "deepseek"
                 && item.channel_id == "standard"
+                && item.protocol == AiProtocol::OpenaiResponses
+        }));
+        let opencode_go = PROVIDER_TEMPLATES
+            .iter()
+            .filter(|item| item.vendor_id == "opencode-go")
+            .collect::<Vec<_>>();
+        assert_eq!(opencode_go.len(), 2);
+        assert!(opencode_go
+            .iter()
+            .any(|item| item.protocol == AiProtocol::OpenaiChat));
+        assert!(opencode_go
+            .iter()
+            .any(|item| item.protocol == AiProtocol::OpenaiResponses));
+        assert!(PROVIDER_TEMPLATES.iter().any(|item| {
+            item.vendor_id == "deepseek"
+                && item.channel_id == "standard"
                 && item.protocol == AiProtocol::AnthropicMessages
         }));
         assert!(PROVIDER_TEMPLATES.iter().any(|item| {
@@ -2539,6 +2618,29 @@ mod tests {
                 && item.channel_id == "token-plan-global"
                 && item.protocol == AiProtocol::AnthropicMessages
         }));
+    }
+
+    #[test]
+    fn official_deepseek_responses_only_accepts_v4_flash() {
+        validate_protocol_model(
+            AiProtocol::OpenaiResponses,
+            "https://api.deepseek.com/v1",
+            "deepseek-v4-flash",
+        )
+        .expect("DeepSeek V4 Flash should support Responses");
+        let error = validate_protocol_model(
+            AiProtocol::OpenaiResponses,
+            "https://api.deepseek.com",
+            "deepseek-v4-pro",
+        )
+        .expect_err("DeepSeek V4 Pro is not supported by Responses yet");
+        assert!(error.contains("deepseek-v4-flash"));
+        validate_protocol_model(
+            AiProtocol::OpenaiResponses,
+            "https://proxy.example.com/v1",
+            "custom-model",
+        )
+        .expect("custom Responses upstreams should remain configurable");
     }
 
     #[tokio::test]

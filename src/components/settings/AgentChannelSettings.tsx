@@ -150,9 +150,10 @@ export function AgentChannelSettings({
   );
   const selectedChannel = channels.find((channel) => channel.id === selectedChannelId) ?? null;
   const systemChannel = bootstrap.systemChannels.find((channel) => channel.providerId === providerId) ?? null;
-  const templates = useMemo(
-    () => bootstrap.templates.filter((template) => templateSupportsAgent(template, providerId)),
-    [bootstrap.templates, providerId],
+  const templates = bootstrap.templates;
+  const compatibleTemplates = useMemo(
+    () => templates.filter((template) => templateSupportsAgent(template, providerId)),
+    [templates, providerId],
   );
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId)
     ?? matchTemplate(templates, draft)
@@ -182,7 +183,7 @@ export function AgentChannelSettings({
   }, [modelQuery, selectedChannel?.models]);
   const protocolHint = agentChannelProtocolHint(providerId, draft.protocol);
   const defaultChannelId = bootstrap.defaultChannelIds[providerId] || 'system';
-  const systemTemplate = systemAgentChannelTemplate(systemChannel, templates) ?? null;
+  const systemTemplate = systemAgentChannelTemplate(systemChannel, compatibleTemplates) ?? null;
 
   useEffect(() => {
     if (!focusRequest) return;
@@ -730,7 +731,12 @@ export function AgentChannelSettings({
                   <label><span>渠道名称</span><input value={draft.name} placeholder="例如：MiniMax Coding Plan" onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
                   <label>
                     <span>厂商预设</span>
-                    <AgentTemplateDropdown templates={templates} selected={selectedTemplate} protocol={draft.protocol} onChange={applyTemplate} />
+          <AgentTemplateDropdown
+            templates={templates}
+            selected={selectedTemplate}
+            protocol={draft.protocol}
+            onChange={applyTemplate}
+          />
                   </label>
                   <div className="ai-manager-template-config wide">
                     {selectedTemplate ? (
@@ -961,8 +967,13 @@ function AgentTemplateDropdown({
   const customVisible = !normalizedQuery || '自定义渠道'.includes(normalizedQuery);
   const options = useMemo(() => [
     ...visibleVendors.flatMap((vendor) => {
-      const template = vendor.templates.find((item) => item.protocol === protocol) ?? vendor.templates[0];
-      return template ? [{ id: vendor.id, name: vendor.name, icon: vendor.icon, template }] : [];
+      const template = vendor.templates.find((item) => item.protocol === protocol) ?? vendor.templates[0] ?? null;
+      return [{
+        id: vendor.id,
+        name: vendor.name,
+        icon: vendor.icon,
+        template,
+      }];
     }),
     ...(customVisible ? [{ id: 'custom', name: '自定义渠道', icon: '', template: null }] : []),
   ], [customVisible, protocol, visibleVendors]);
@@ -1083,7 +1094,9 @@ function AgentTemplateDropdown({
                 onMouseEnter={() => setHighlightedIndex(index)}
                 onClick={() => chooseVendor(index)}
               >
-                {option.template ? <ProviderBrandIcon icon={option.icon} name={option.name} size={24} /> : <Route size={20} />}
+                {option.id === 'custom'
+                  ? <Route size={20} />
+                  : <ProviderBrandIcon icon={option.icon} name={option.name} size={24} />}
                 <span>{option.name}</span>
                 {option.id === selectedVendorId ? <Check size={14} /> : null}
               </button>

@@ -11,6 +11,7 @@ import {
   defaultAgentChannelId,
   isAgentChannelSelectionAvailable,
   resolveRunAgentChannelSelection,
+  buildAgentChannelModelCatalog,
   shouldPreservePendingAgentChannelSelection,
   SYSTEM_AGENT_CHANNEL_ID,
   threadAgentChannelId,
@@ -187,6 +188,56 @@ test('Codex keeps its session when its channel changes', () => {
       selectedChannelId: 'codex-b',
     }),
     { channelId: 'codex-b', channelChanged: true, reuseSession: true },
+  );
+});
+
+test('channel model capabilities expose DeepSeek reasoning levels to Codex', () => {
+  const catalog = buildAgentChannelModelCatalog(OPENAI_CODEX_PROVIDER_ID, {
+    ...channels[0],
+    providerId: OPENAI_CODEX_PROVIDER_ID,
+    protocol: 'openai_responses',
+    baseUrl: 'https://api.deepseek.com',
+    models: [{
+      id: 'deepseek-model',
+      channelId: 'enabled-channel',
+      modelId: 'deepseek-v4-flash',
+      displayName: 'DeepSeek V4 Flash',
+      enabled: true,
+      isDefault: true,
+      capabilities: {
+        defaultReasoningEffort: 'high',
+        reasoningEfforts: [
+          { id: 'low', label: '低' },
+          { id: 'high', label: '高' },
+          { id: 'max', label: '最大' },
+        ],
+      },
+      createdAt: '2026-08-04T00:00:00Z',
+      updatedAt: '2026-08-04T00:00:00Z',
+    }],
+  }, null);
+  assert.equal(catalog?.models[0]?.defaultReasoningEffort, 'high');
+  assert.deepEqual(
+    catalog?.models[0]?.supportedReasoningEfforts.map((effort) => effort.id),
+    ['low', 'high', 'max'],
+  );
+});
+
+test('system Codex catalog fills official DeepSeek reasoning levels when missing', () => {
+  const catalog = buildAgentChannelModelCatalog(OPENAI_CODEX_PROVIDER_ID, undefined, {
+    providerId: OPENAI_CODEX_PROVIDER_ID,
+    defaultModelId: 'deepseek-v4-flash',
+    models: [{
+      id: 'deepseek-v4-flash',
+      label: 'DeepSeek V4 Flash',
+      isDefault: true,
+      supportedReasoningEfforts: [],
+    }],
+  });
+  assert.equal(catalog?.models[0]?.defaultReasoningEffort, 'high');
+  assert.deepEqual(
+    catalog?.models[0]?.supportedReasoningEfforts.map((effort) => effort.id),
+    ['low', 'high', 'max'],
   );
 });
 

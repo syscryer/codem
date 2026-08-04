@@ -1,4 +1,4 @@
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
@@ -604,6 +604,17 @@ function MarkdownMessage({
       type: 'file',
     }));
   }, [onOpenWorkbenchPreview, resolveLocalFile]);
+  const handleOpenLocalFileContextMenu = useCallback(({ path, x, y }: { path: string; x: number; y: number }) => {
+    setWebLinkMenuTarget(null);
+    setFileMenuTarget({ ...resolveLocalFile(path), x, y });
+  }, [resolveLocalFile]);
+  const handleOpenWebUrl = useCallback((url: string) => {
+    void onOpenWebLink(url);
+  }, [onOpenWebLink]);
+  const handleOpenWebContextMenu = useCallback((target: WebLinkMenuTarget) => {
+    setFileMenuTarget(null);
+    setWebLinkMenuTarget(target);
+  }, []);
 
   return (
     <>
@@ -611,15 +622,9 @@ function MarkdownMessage({
         content={deferredContent}
         onPreviewImage={onPreviewImage}
         onOpenLocalFile={onOpenLocalFile}
-        onOpenLocalFileContextMenu={({ path, x, y }) => {
-          setWebLinkMenuTarget(null);
-          setFileMenuTarget({ ...resolveLocalFile(path), x, y });
-        }}
-        onOpenWebUrl={(url) => void onOpenWebLink(url)}
-        onOpenWebContextMenu={(target) => {
-          setFileMenuTarget(null);
-          setWebLinkMenuTarget(target);
-        }}
+        onOpenLocalFileContextMenu={handleOpenLocalFileContextMenu}
+        onOpenWebUrl={handleOpenWebUrl}
+        onOpenWebContextMenu={handleOpenWebContextMenu}
       />
       <WebLinkActionMenu
         target={webLinkMenuTarget}
@@ -660,41 +665,51 @@ const DeferredMarkdownContent = memo(function DeferredMarkdownContent({
   onOpenWebUrl: (url: string) => void;
   onOpenWebContextMenu: (target: WebLinkMenuTarget) => void;
 }) {
+  const markdownComponents = useMemo(() => ({
+    a({ href, title, children }: { href?: string; title?: string; children?: ReactNode }) {
+      return renderMarkdownLink({
+        href,
+        title,
+        children,
+        onOpenLocalFile,
+        onOpenLocalFileContextMenu,
+        onOpenWebUrl,
+        onOpenWebContextMenu,
+      });
+    },
+    img({ src, alt, title }: { src?: string; alt?: string; title?: string }) {
+      return renderMarkdownImage({ src, alt, title, onPreview: onPreviewImage });
+    },
+    pre: MarkdownCodeBlock,
+  }), [
+    onOpenLocalFile,
+    onOpenLocalFileContextMenu,
+    onOpenWebContextMenu,
+    onOpenWebUrl,
+    onPreviewImage,
+  ]);
+
   return (
     <div className="message-body markdown-body">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkLocalFileLinks]}
-        components={{
-          a({ href, title, children }) {
-            return renderMarkdownLink({
-              href,
-              title,
-              children,
-              onOpenLocalFile,
-              onOpenLocalFileContextMenu,
-              onOpenWebUrl,
-              onOpenWebContextMenu,
-            });
-          },
-          img({ src, alt, title }) {
-            return renderMarkdownImage({ src, alt, title, onPreview: onPreviewImage });
-          },
-          pre({ children }) {
-            const text = extractCodeText(children);
-            return (
-              <div className="code-block-shell">
-                <pre>{children}</pre>
-                <InlineCopyButton text={text} title="复制代码" className="code-copy-button" />
-              </div>
-            );
-          },
-        }}
+        components={markdownComponents}
       >
         {content}
       </ReactMarkdown>
     </div>
   );
 });
+
+function MarkdownCodeBlock({ children }: { children?: ReactNode }) {
+  const text = extractCodeText(children);
+  return (
+    <div className="code-block-shell">
+      <pre>{children}</pre>
+      <InlineCopyButton text={text} title="复制代码" className="code-copy-button" />
+    </div>
+  );
+}
 
 function ThinkingMessage({ content, label }: { content: string; label: string }) {
   const cleanContent = content.trim();

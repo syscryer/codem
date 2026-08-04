@@ -9,6 +9,7 @@ import mistralIcon from '../assets/provider-icons/mistral.svg?raw';
 import modelscopeIcon from '../assets/provider-icons/modelscope.svg?raw';
 import nvidiaIcon from '../assets/provider-icons/nvidia.svg?raw';
 import openaiIcon from '../assets/provider-icons/openai.svg?raw';
+import opencodeGoIcon from '../assets/provider-icons/opencode-go.svg?raw';
 import openrouterIcon from '../assets/provider-icons/openrouter.svg?raw';
 import siliconflowIcon from '../assets/provider-icons/siliconflow.svg?raw';
 import stepfunIcon from '../assets/provider-icons/stepfun.svg?raw';
@@ -35,6 +36,7 @@ const providerIconUrls: Record<string, string> = {
   modelscope: modelscopeIcon,
   nvidia: nvidiaIcon,
   openai: openaiIcon,
+  opencode: opencodeGoIcon,
   openrouter: openrouterIcon,
   qwen: bailianIcon,
   siliconflow: siliconflowIcon,
@@ -80,6 +82,7 @@ function normalizeProviderIcon(icon: string) {
   if (value.includes('gemini') || value.includes('google')) return 'gemini';
   if (value.includes('anthropic') || value.includes('claude')) return 'anthropic';
   if (value.includes('openrouter')) return 'openrouter';
+  if (value.includes('opencode')) return 'opencode';
   if (value.includes('openai')) return 'openai';
   return value;
 }

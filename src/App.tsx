@@ -1,6 +1,7 @@
 import { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GitCommitHorizontal, ListChecks } from 'lucide-react';
 import { AppMenubar } from './components/AppMenubar';
+import { AgentHubPrototype } from './components/AgentHubPrototype';
 import { AutomationCenter } from './components/AutomationCenter';
 import { ChatHeader } from './components/ChatHeader';
 import { CloneRepositoryDialog } from './components/CloneRepositoryDialog';
@@ -132,12 +133,14 @@ import type {
 type AppView =
   | { kind: 'workspace' }
   | { kind: 'ordinary-chat' }
+  | { kind: 'agent-hub' }
   | { kind: 'automation' }
   | { kind: 'settings'; section: SettingsSection };
 
 type AppLocation =
   | { kind: 'workspace'; projectId: string | null; threadId: string | null }
   | { kind: 'ordinary-chat'; chatId: string | null }
+  | { kind: 'agent-hub' }
   | { kind: 'automation' }
   | { kind: 'settings'; section: SettingsSection };
 
@@ -809,6 +812,8 @@ export default function App() {
   const currentAppLocation: AppLocation =
     appView.kind === 'settings'
       ? { kind: 'settings', section: appView.section }
+      : appView.kind === 'agent-hub'
+        ? { kind: 'agent-hub' }
       : appView.kind === 'automation'
         ? { kind: 'automation' }
       : appView.kind === 'ordinary-chat'
@@ -820,6 +825,8 @@ export default function App() {
     .find((location) => location.kind !== 'settings');
   const settingsReturnLabel = settingsReturnLocation?.kind === 'ordinary-chat'
     ? '返回聊天'
+    : settingsReturnLocation?.kind === 'agent-hub'
+      ? '返回 Agent Hub'
     : settingsReturnLocation?.kind === 'automation'
       ? '返回自动化'
       : '返回工作区';
@@ -1498,6 +1505,10 @@ export default function App() {
     navigateToLocation({ kind: 'automation' });
   }
 
+  function openAgentHub() {
+    navigateToLocation({ kind: 'agent-hub' });
+  }
+
   function returnWorkspace() {
     if (appView.kind === 'settings') {
       let targetIndex = -1;
@@ -1616,6 +1627,12 @@ export default function App() {
       } else {
         ordinaryChat.createNewChatDraft();
       }
+      return;
+    }
+
+    if (location.kind === 'agent-hub') {
+      setAppView({ kind: 'agent-hub' });
+      setRightWorkbenchOpen(false);
       return;
     }
 
@@ -2153,6 +2170,7 @@ export default function App() {
               activeThreadId={appView.kind === 'workspace' ? activeThreadId : null}
               activeOrdinaryChatId={appView.kind === 'ordinary-chat' ? ordinaryChat.activeChatId : null}
               ordinaryChatIsDraft={appView.kind === 'ordinary-chat' && ordinaryChat.isNewChatDraft}
+              agentHubActive={appView.kind === 'agent-hub'}
               automationsActive={appView.kind === 'automation'}
               ordinaryChats={ordinaryChat.chats}
               runningOrdinaryChatIds={ordinaryChat.runningChatIds}
@@ -2178,6 +2196,7 @@ export default function App() {
               onRefreshProjects={handleRefreshProjects}
               refreshingProjects={projectsRefreshing}
               onOpenPlugins={() => openSettings('plugins')}
+              onOpenAgentHub={openAgentHub}
               onOpenAutomations={openAutomations}
               onPanelStateChange={handlePanelStateChange}
               onPickProjectDirectory={handlePickProjectDirectory}
@@ -2217,7 +2236,9 @@ export default function App() {
               '--right-workbench-width': `${effectiveRightWorkbenchWidth}px`,
             } as CSSProperties}
           >
-            {appView.kind === 'automation' ? (
+            {appView.kind === 'agent-hub' ? (
+              <AgentHubPrototype />
+            ) : appView.kind === 'automation' ? (
               <AutomationCenter
                 automations={automation.automations}
                 runs={automation.runs}
@@ -2668,6 +2689,10 @@ function isSameAppLocation(left: AppLocation | null, right: AppLocation | null) 
 
   if (left.kind === 'ordinary-chat' && right.kind === 'ordinary-chat') {
     return left.chatId === right.chatId;
+  }
+
+  if (left.kind === 'agent-hub' && right.kind === 'agent-hub') {
+    return true;
   }
 
   if (left.kind === 'automation' && right.kind === 'automation') {

@@ -4,7 +4,7 @@ use crate::{
         OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     },
     ordinary_chat::{
-        provider::{discover_models, test_provider, PROVIDER_TEMPLATES},
+        provider::{discover_models, test_provider, validate_protocol_model, PROVIDER_TEMPLATES},
         secrets::SecretStore,
         types::{AiProtocol, DiscoveredModel, StoredProvider},
     },
@@ -386,8 +386,18 @@ pub(crate) fn initialize_database(connection: &Connection) -> Result<(), String>
             CREATE INDEX IF NOT EXISTS idx_agent_channel_models_channel
               ON agent_channel_models(channel_id, enabled, is_default, updated_at);
             UPDATE agent_channels
-              SET protocol = 'openai_chat'
-              WHERE provider_id = 'opencode' AND protocol = 'openai_responses';
+              SET protocol = 'openai_responses'
+              WHERE provider_id = 'openai-codex'
+                AND protocol = 'openai_chat'
+                AND lower(rtrim(base_url, '/')) IN (
+                  'https://api.deepseek.com',
+                  'https://api.deepseek.com/v1'
+                )
+                AND EXISTS (
+                  SELECT 1 FROM agent_channel_models
+                  WHERE agent_channel_models.channel_id = agent_channels.id
+                    AND lower(agent_channel_models.model_id) = 'deepseek-v4-flash'
+                );
             "#,
         )
         .map_err(|error| format!("初始化 Agent 渠道数据库失败: {error}"))?;
@@ -452,17 +462,14 @@ fn validate_provider_id(value: &str) -> AgentChannelApiResult<&str> {
 fn validate_protocol(provider_id: &str, protocol: AiProtocol) -> AgentChannelApiResult<()> {
     let supported = match provider_id {
         CLAUDE_CODE_PROVIDER_ID => protocol == AiProtocol::AnthropicMessages,
-        OPENAI_CODEX_PROVIDER_ID => matches!(
-            protocol,
-            AiProtocol::OpenaiResponses | AiProtocol::OpenaiChat
-        ),
+        OPENAI_CODEX_PROVIDER_ID => protocol == AiProtocol::OpenaiResponses,
         GROK_BUILD_PROVIDER_ID => matches!(
             protocol,
             AiProtocol::OpenaiResponses | AiProtocol::OpenaiChat | AiProtocol::AnthropicMessages
         ),
         OPENCODE_PROVIDER_ID => matches!(
             protocol,
-            AiProtocol::OpenaiChat | AiProtocol::AnthropicMessages
+            AiProtocol::OpenaiResponses | AiProtocol::OpenaiChat | AiProtocol::AnthropicMessages
         ),
         PI_AGENT_PROVIDER_ID => matches!(
             protocol,
@@ -1391,7 +1398,10 @@ fn list_channels(
     for row in rows {
         let channel = row.map_err(|error| format!("读取 Agent 渠道失败: {error}"))?;
         let api_key_saved = secrets.has(&channel.secret_slot)?;
-        let models = list_models(connection, &channel.id)?;
+        let mut models = list_models(connection, &channel.id)?;
+        for model in &mut models {
+            apply_known_model_capabilities(&channel, model);
+        }
         channels.push(AgentChannelSummary {
             id: channel.id,
             provider_id: channel.provider_id,
@@ -1429,6 +1439,52 @@ fn list_models(
         .map_err(|error| format!("读取 Agent 渠道模型失败: {error}"))?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| format!("读取 Agent 渠道模型失败: {error}"))
+}
+
+fn apply_known_model_capabilities(
+    channel: &StoredAgentChannel,
+    model: &mut AgentChannelModelSummary,
+) {
+    let is_official_deepseek_responses = channel.protocol == AiProtocol::OpenaiResponses
+        && Url::parse(&channel.base_url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+            .is_some_and(|host| host == "api.deepseek.com")
+        && model
+            .model_id
+            .trim()
+            .eq_ignore_ascii_case("deepseek-v4-flash");
+    if !is_official_deepseek_responses {
+        return;
+    }
+    if !model.capabilities.is_object() {
+        model.capabilities = json!({});
+    }
+    let capabilities = model
+        .capabilities
+        .as_object_mut()
+        .expect("known model capabilities must be an object");
+    capabilities.entry("reasoning").or_insert(json!(true));
+    capabilities
+        .entry("defaultReasoningEffort")
+        .or_insert(json!("high"));
+    capabilities.entry("reasoningEfforts").or_insert(json!([
+        {
+            "id": "low",
+            "label": "低",
+            "description": "响应更快，使用较轻的推理"
+        },
+        {
+            "id": "high",
+            "label": "高",
+            "description": "适合复杂任务的深度推理"
+        },
+        {
+            "id": "max",
+            "label": "最大",
+            "description": "为最困难任务提供最大推理深度"
+        }
+    ]));
 }
 
 fn get_model(
@@ -1783,6 +1839,9 @@ fn build_runtime(
         "CODEM_AGENT_CHANNEL_API_KEY".to_string(),
         api_key.to_string(),
     );
+    if let Some(model) = selected_model.as_deref() {
+        validate_protocol_model(channel.protocol, &channel.base_url, model)?;
+    }
     match channel.provider_id.as_str() {
         CLAUDE_CODE_PROVIDER_ID => {
             env.insert("ANTHROPIC_BASE_URL".to_string(), channel.base_url.clone());
@@ -1799,11 +1858,9 @@ fn build_runtime(
         }
         OPENAI_CODEX_PROVIDER_ID => {
             let provider_key = format!("codem_{}", channel.id.replace('-', "_"));
-            let wire_api = match channel.protocol {
-                AiProtocol::OpenaiResponses => "responses",
-                AiProtocol::OpenaiChat => "chat",
-                _ => return Err("Codex 渠道仅支持 OpenAI Responses 或 Chat 接口".to_string()),
-            };
+            if channel.protocol != AiProtocol::OpenaiResponses {
+                return Err("新版 Codex 渠道仅支持 OpenAI Responses 接口".to_string());
+            }
             codex_config_args.extend([
                 format!("model_provider={}", toml_string(&provider_key)),
                 format!(
@@ -1820,7 +1877,7 @@ fn build_runtime(
                 ),
                 format!(
                     "model_providers.{provider_key}.wire_api={}",
-                    toml_string(wire_api)
+                    toml_string("responses")
                 ),
                 format!("model_providers.{provider_key}.requires_openai_auth=false"),
             ]);
@@ -1856,10 +1913,12 @@ fn build_runtime(
             let provider_key = format!("codem_{}", channel.id.replace('-', "_"));
             let package = match channel.protocol {
                 AiProtocol::AnthropicMessages => "@ai-sdk/anthropic",
+                AiProtocol::OpenaiResponses => "@ai-sdk/openai",
                 AiProtocol::OpenaiChat => "@ai-sdk/openai-compatible",
                 _ => {
                     return Err(
-                        "OpenCode 渠道仅支持 OpenAI Chat 或 Anthropic Messages 接口".to_string()
+                        "OpenCode 渠道仅支持 OpenAI Responses、Chat 或 Anthropic Messages 接口"
+                            .to_string(),
                     )
                 }
             };
@@ -2359,15 +2418,57 @@ mod tests {
     fn agent_channel_protocol_matrix_matches_runtime_adapters() {
         assert!(validate_protocol(CLAUDE_CODE_PROVIDER_ID, AiProtocol::AnthropicMessages).is_ok());
         assert!(validate_protocol(OPENAI_CODEX_PROVIDER_ID, AiProtocol::OpenaiResponses).is_ok());
-        assert!(validate_protocol(OPENAI_CODEX_PROVIDER_ID, AiProtocol::OpenaiChat).is_ok());
+        assert!(validate_protocol(OPENAI_CODEX_PROVIDER_ID, AiProtocol::OpenaiChat).is_err());
         assert!(validate_protocol(GROK_BUILD_PROVIDER_ID, AiProtocol::OpenaiResponses).is_ok());
         assert!(validate_protocol(GROK_BUILD_PROVIDER_ID, AiProtocol::OpenaiChat).is_ok());
         assert!(validate_protocol(GROK_BUILD_PROVIDER_ID, AiProtocol::AnthropicMessages).is_ok());
         assert!(validate_protocol(OPENCODE_PROVIDER_ID, AiProtocol::OpenaiChat).is_ok());
+        assert!(validate_protocol(OPENCODE_PROVIDER_ID, AiProtocol::OpenaiResponses).is_ok());
         assert!(validate_protocol(OPENCODE_PROVIDER_ID, AiProtocol::AnthropicMessages).is_ok());
 
         assert!(validate_protocol(CLAUDE_CODE_PROVIDER_ID, AiProtocol::OpenaiChat).is_err());
-        assert!(validate_protocol(OPENCODE_PROVIDER_ID, AiProtocol::OpenaiResponses).is_err());
+    }
+
+    #[test]
+    fn official_deepseek_flash_channel_exposes_codex_reasoning_levels() {
+        let channel = StoredAgentChannel {
+            id: "deepseek-channel".to_string(),
+            provider_id: OPENAI_CODEX_PROVIDER_ID.to_string(),
+            name: "DeepSeek".to_string(),
+            protocol: AiProtocol::OpenaiResponses,
+            base_url: "https://api.deepseek.com".to_string(),
+            models_url: None,
+            template_id: Some("deepseek-responses".to_string()),
+            enabled: true,
+            is_default: true,
+            secret_slot: "secret:deepseek".to_string(),
+            created_at: "2026-08-04T00:00:00Z".to_string(),
+            updated_at: "2026-08-04T00:00:00Z".to_string(),
+        };
+        let mut model = AgentChannelModelSummary {
+            id: "deepseek-model".to_string(),
+            channel_id: channel.id.clone(),
+            model_id: "deepseek-v4-flash".to_string(),
+            display_name: "DeepSeek V4 Flash".to_string(),
+            enabled: true,
+            is_default: true,
+            capabilities: json!({}),
+            created_at: "2026-08-04T00:00:00Z".to_string(),
+            updated_at: "2026-08-04T00:00:00Z".to_string(),
+        };
+
+        apply_known_model_capabilities(&channel, &mut model);
+
+        assert_eq!(model.capabilities["defaultReasoningEffort"], "high");
+        assert_eq!(
+            model.capabilities["reasoningEfforts"]
+                .as_array()
+                .expect("reasoning levels")
+                .iter()
+                .filter_map(|effort| effort["id"].as_str())
+                .collect::<Vec<_>>(),
+            vec!["low", "high", "max"]
+        );
     }
 
     #[test]
@@ -2564,7 +2665,7 @@ mod tests {
     }
 
     #[test]
-    fn database_migrates_legacy_opencode_responses_channels_to_chat() {
+    fn database_preserves_opencode_responses_channels() {
         let connection = Connection::open_in_memory().expect("open database");
         initialize_database(&connection).expect("initialize database");
         connection
@@ -2589,7 +2690,46 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("read migrated protocol");
-        assert_eq!(protocol, "openai_chat");
+        assert_eq!(protocol, "openai_responses");
+    }
+
+    #[test]
+    fn database_migrates_deepseek_flash_codex_chat_channels_to_responses() {
+        let connection = Connection::open_in_memory().expect("open database");
+        initialize_database(&connection).expect("initialize database");
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO agent_channels (
+                  id, provider_id, name, protocol, base_url, models_url, enabled,
+                  is_default, secret_slot, created_at, updated_at
+                ) VALUES (
+                  'deepseek-codex', 'openai-codex', 'DeepSeek', 'openai_chat',
+                  'https://api.deepseek.com', NULL, 1, 1, 'secret:deepseek-codex',
+                  '2026-08-04T00:00:00Z', '2026-08-04T00:00:00Z'
+                );
+                INSERT INTO agent_channel_models (
+                  id, channel_id, model_id, display_name, enabled, is_default,
+                  capabilities_json, created_at, updated_at
+                ) VALUES (
+                  'deepseek-flash', 'deepseek-codex', 'deepseek-v4-flash',
+                  'DeepSeek V4 Flash', 1, 1, '{}',
+                  '2026-08-04T00:00:00Z', '2026-08-04T00:00:00Z'
+                );
+                "#,
+            )
+            .expect("insert legacy DeepSeek Codex channel");
+
+        initialize_database(&connection).expect("run channel migration");
+
+        let protocol: String = connection
+            .query_row(
+                "SELECT protocol FROM agent_channels WHERE id = 'deepseek-codex'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read migrated protocol");
+        assert_eq!(protocol, "openai_responses");
     }
 
     #[test]
@@ -2759,6 +2899,58 @@ mod tests {
         assert_eq!(
             runtime.effective_model.as_deref(),
             Some("codem_channel/MiniMax-M3")
+        );
+    }
+
+    #[test]
+    fn opencode_responses_runtime_uses_openai_sdk() {
+        let channel = StoredAgentChannel {
+            id: "channel".to_string(),
+            provider_id: OPENCODE_PROVIDER_ID.to_string(),
+            name: "DeepSeek".to_string(),
+            protocol: AiProtocol::OpenaiResponses,
+            base_url: "https://api.deepseek.com".to_string(),
+            models_url: None,
+            template_id: Some("deepseek-responses".to_string()),
+            enabled: true,
+            is_default: false,
+            secret_slot: "secret:channel".to_string(),
+            created_at: "2026-08-04T00:00:00Z".to_string(),
+            updated_at: "2026-08-04T00:00:00Z".to_string(),
+        };
+        let models = vec![AgentChannelModelSummary {
+            id: "model".to_string(),
+            channel_id: channel.id.clone(),
+            model_id: "deepseek-v4-flash".to_string(),
+            display_name: "DeepSeek V4 Flash".to_string(),
+            enabled: true,
+            is_default: true,
+            capabilities: json!({}),
+            created_at: "2026-08-04T00:00:00Z".to_string(),
+            updated_at: "2026-08-04T00:00:00Z".to_string(),
+        }];
+
+        let runtime = build_runtime(
+            std::env::temp_dir().as_path(),
+            &channel,
+            &models,
+            Some("deepseek-v4-flash"),
+            "test-key",
+            None,
+            None,
+        )
+        .expect("build OpenCode Responses runtime");
+        let config: Value = serde_json::from_str(
+            runtime
+                .env
+                .get("OPENCODE_CONFIG_CONTENT")
+                .expect("OpenCode config content"),
+        )
+        .expect("parse OpenCode config content");
+        assert_eq!(config["provider"]["codem_channel"]["npm"], "@ai-sdk/openai");
+        assert_eq!(
+            config["provider"]["codem_channel"]["options"]["baseURL"],
+            "https://api.deepseek.com"
         );
     }
 
