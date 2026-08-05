@@ -3,9 +3,11 @@ dist/
 dist-server/
 src-tauri/target/
 src-tauri/gen/
+src-tauri/binaries/
 .logs/
 .codex-logs/
 .codex/
+.tmp-dev/
 .vite/
 coverage/
 .DS_Store

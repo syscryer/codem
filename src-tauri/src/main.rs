@@ -132,6 +132,14 @@ struct PtySessions {
 #[derive(Default)]
 struct BackendPortState {
     port: Mutex<u16>,
+    token: Mutex<Option<String>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendConnection {
+    base_url: String,
+    token: Option<String>,
 }
 
 #[derive(Default)]
@@ -433,6 +441,20 @@ fn get_backend_base_url(state: State<'_, BackendPortState>) -> Result<String, St
 }
 
 #[tauri::command]
+fn get_backend_connection(state: State<'_, BackendPortState>) -> Result<BackendConnection, String> {
+    let port = *state.port.lock().map_err(|error| error.to_string())?;
+    let token = state
+        .token
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
+    Ok(BackendConnection {
+        base_url: format!("http://127.0.0.1:{port}"),
+        token,
+    })
+}
+
+#[tauri::command]
 fn show_thread_notification(
     app: AppHandle,
     request: ThreadNotificationRequest,
@@ -463,6 +485,7 @@ fn main() {
         .manage(PtySessions::default())
         .manage(BackendPortState {
             port: Mutex::new(3001),
+            token: Mutex::new(None),
         })
         .manage(WindowMaterialState::default());
 
@@ -503,6 +526,7 @@ fn main() {
             pick_directory,
             pick_files,
             get_backend_base_url,
+            get_backend_connection,
             open_external_url,
             browser_webview_navigate,
             browser_webview_control,
@@ -893,6 +917,17 @@ fn has_success_status(response: &str) -> bool {
 }
 
 fn resolve_backend_startup_target(app: &tauri::AppHandle) -> Result<BackendStartupTarget, String> {
+    if let Some(discovery) = resolve_or_start_agent_mux_runtime(app) {
+        set_backend_connection(app, discovery.port, Some(discovery.token))?;
+        log_desktop_event(
+            app,
+            &format!("reusing Agent Mux Runtime port: {}", discovery.port),
+        );
+        return Ok(BackendStartupTarget {
+            port: discovery.port,
+            reuse_existing: true,
+        });
+    }
     if let Some(port) = configured_backend_port() {
         if is_backend_ready(port) {
             set_backend_port(app, port)?;
@@ -960,11 +995,103 @@ fn allocate_backend_port() -> Result<u16, String> {
 }
 
 fn set_backend_port(app: &tauri::AppHandle, port: u16) -> Result<(), String> {
+    set_backend_connection(app, port, None)
+}
+
+fn set_backend_connection(
+    app: &tauri::AppHandle,
+    port: u16,
+    token: Option<String>,
+) -> Result<(), String> {
     let state = app.state::<BackendPortState>();
     let mut current = state.port.lock().map_err(|error| error.to_string())?;
     *current = port;
+    drop(current);
+    let mut current_token = state.token.lock().map_err(|error| error.to_string())?;
+    *current_token = token;
     log_desktop_event(app, &format!("selected backend port: {port}"));
     Ok(())
+}
+
+fn resolve_or_start_agent_mux_runtime(
+    app: &tauri::AppHandle,
+) -> Option<codem::agent_mux_runtime::RuntimeDiscovery> {
+    let app_data_dir = backend_app_data_dir(app)?;
+    if let Some(discovery) = codem::agent_mux_runtime::read_discovery(&app_data_dir) {
+        if codem::agent_mux_runtime::probe_runtime(&discovery) {
+            return Some(discovery);
+        }
+        let stopped = codem::agent_mux_runtime::shutdown_runtime(&discovery);
+        log_desktop_event(
+            app,
+            if stopped {
+                "stale Agent Mux Runtime stopped before refresh"
+            } else {
+                "stale Agent Mux Runtime did not confirm shutdown before refresh"
+            },
+        );
+        codem::agent_mux_runtime::remove_discovery(&app_data_dir);
+    }
+    let cli = agent_mux_cli_path(app)?;
+    let mut command = std::process::Command::new(cli);
+    command
+        .arg("ensure")
+        .arg("--app-data")
+        .arg(&app_data_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let mut child = command.spawn().ok()?;
+    let started_at = SystemTime::now();
+    while started_at.elapsed().unwrap_or_default() < Duration::from_secs(15) {
+        if let Some(discovery) = codem::agent_mux_runtime::read_discovery(&app_data_dir) {
+            if codem::agent_mux_runtime::probe_runtime(&discovery) {
+                let _ = child.wait();
+                return Some(discovery);
+            }
+        }
+        if child.try_wait().ok().flatten().is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    None
+}
+
+fn agent_mux_cli_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("CODEM_AGENT_MUX_CLI_PATH")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+    {
+        return Some(path);
+    }
+    let directory = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    #[cfg(target_os = "windows")]
+    let candidate = directory.join("codem-agent-mux.exe");
+    #[cfg(not(target_os = "windows"))]
+    let candidate = directory.join("codem-agent-mux");
+    if candidate.is_file() {
+        return Some(candidate);
+    }
+    let resources = app.path().resource_dir().ok()?;
+    #[cfg(target_os = "windows")]
+    let file_name = "codem-agent-mux.exe";
+    #[cfg(not(target_os = "windows"))]
+    let file_name = "codem-agent-mux";
+    for candidate in [
+        resources.join(file_name),
+        resources.join("binaries").join(file_name),
+    ] {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn backend_app_data_dir(app: &tauri::AppHandle) -> Option<PathBuf> {

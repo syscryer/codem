@@ -12,14 +12,16 @@ import {
 } from './markdown-link.js';
 
 const conversationTurnSource = readFileSync(new URL('../components/ConversationTurn.tsx', import.meta.url), 'utf8');
+const markdownContentSource = readFileSync(new URL('../components/MarkdownContent.tsx', import.meta.url), 'utf8');
 const rightWorkbenchSource = readFileSync(new URL('../components/RightWorkbench.tsx', import.meta.url), 'utf8');
 const tauriMainSource = readFileSync(new URL('../../src-tauri/src/main.rs', import.meta.url), 'utf8');
 
 test('assistant Markdown links use the shared external link renderer', () => {
-  assert.match(conversationTurnSource, /import \{ renderMarkdownLink \} from '\.\.\/lib\/markdown-link';/);
-  assert.match(conversationTurnSource, /const markdownComponents = useMemo\(\(\) => \(\{/);
+  assert.match(conversationTurnSource, /import \{ MarkdownContent \} from '\.\/MarkdownContent';/);
+  assert.match(markdownContentSource, /import \{ renderMarkdownLink, type MarkdownLocalFileMenuTarget \} from '\.\.\/lib\/markdown-link';/);
+  assert.match(markdownContentSource, /const markdownComponents = useMemo\(\(\) => \(\{/);
   assert.match(
-    conversationTurnSource,
+    markdownContentSource,
     /a\(\{ href, title, children \}[\s\S]*?return renderMarkdownLink\(\{[\s\S]*?onOpenLocalFile,[\s\S]*?onOpenWebUrl,[\s\S]*?onOpenWebContextMenu,[\s\S]*?\}\);\s*\}/,
   );
 });

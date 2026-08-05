@@ -5,6 +5,7 @@ const backendReadyTimeoutMs = 8000;
 const backendReadyPollMs = 100;
 
 let apiBaseUrl = fallbackApiBaseUrl;
+let apiToken: string | null = null;
 
 declare global {
   interface Window {
@@ -22,7 +23,7 @@ export function installApiFetchBridge() {
 
   window.fetch = (input, init) => {
     const nextInput = rewriteApiRequest(input);
-    return nativeFetch(nextInput, init);
+    return nativeFetch(nextInput, withApiAuthorization(nextInput, init));
   };
 }
 
@@ -33,18 +34,52 @@ export async function initializeApiFetchBridge() {
 
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    const nextBaseUrl = await invoke<string>('get_backend_base_url');
-    if (typeof nextBaseUrl === 'string' && /^https?:\/\//.test(nextBaseUrl)) {
-      apiBaseUrl = nextBaseUrl.replace(/\/+$/, '');
+    const connection = await invoke<{ baseUrl: string; token?: string | null }>('get_backend_connection');
+    if (typeof connection?.baseUrl === 'string' && /^https?:\/\//.test(connection.baseUrl)) {
+      apiBaseUrl = connection.baseUrl.replace(/\/+$/, '');
+      apiToken = typeof connection.token === 'string' && connection.token ? connection.token : null;
     }
     await waitForBackendReady(apiBaseUrl);
   } catch {
     apiBaseUrl = fallbackApiBaseUrl;
+    apiToken = null;
   }
 }
 
 export function resolveApiUrl(input: string) {
   return isTauriRuntime() ? rewriteApiUrlString(input) : input;
+}
+
+function withApiAuthorization(input: RequestInfo | URL, init?: RequestInit): RequestInit | undefined {
+  return withRuntimeApiAuthorization(input, init, apiToken, apiBaseUrl);
+}
+
+export function withRuntimeApiAuthorization(input: RequestInfo | URL, init: RequestInit | undefined, token: string | null, baseUrl: string): RequestInit | undefined {
+  if (!token || !isResolvedApiRequest(input, baseUrl)) {
+    return init;
+  }
+  const headers = new Headers(input instanceof Request ? input.headers : undefined);
+  if (init?.headers) {
+    new Headers(init.headers).forEach((value, name) => headers.set(name, value));
+  }
+  headers.set('Authorization', `Bearer ${token}`);
+  return { ...init, headers };
+}
+
+function isResolvedApiRequest(input: RequestInfo | URL, baseUrl: string) {
+  try {
+    const url = input instanceof Request ? new URL(input.url) : input instanceof URL ? input : new URL(input, window.location.href);
+    return url.origin === baseUrl && isApiPath(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+export function getApiBaseUrl() {
+  if (isTauriRuntime()) {
+    return apiBaseUrl;
+  }
+  return typeof window === 'undefined' ? fallbackApiBaseUrl : window.location.origin;
 }
 
 function rewriteApiRequest(input: RequestInfo | URL): RequestInfo | URL {
@@ -97,7 +132,8 @@ async function waitForBackendReady(baseUrl: string) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < backendReadyTimeoutMs) {
     try {
-      const response = await fetch(`${baseUrl}/api/health`, { cache: 'no-store' });
+      const headers = apiToken ? { Authorization: `Bearer ${apiToken}` } : undefined;
+      const response = await fetch(`${baseUrl}/api/health`, { cache: 'no-store', headers });
       if (response.ok) {
         return;
       }

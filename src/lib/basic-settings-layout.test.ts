@@ -26,3 +26,9 @@ test('应用更新安装中使用加载图标而不是旋转下载箭头', () =>
   assert.match(source, /updateInstalling\s*\?\s*<LoaderCircle className="spin" size=\{14\} \/>/);
   assert.doesNotMatch(source, /<Download size=\{14\} className=\{updateInstalling \? 'spin' : ''\} \/>/);
 });
+
+test('默认权限模式使用标准主题下拉', () => {
+  assert.doesNotMatch(source, /<select\b/);
+  assert.match(source, /import \{ StandardSelect \} from '\.\.\/StandardSelect'/);
+  assert.match(source, /<StandardSelect[\s\S]*?ariaLabel="选择默认权限模式"/);
+});

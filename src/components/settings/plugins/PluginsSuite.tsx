@@ -25,6 +25,7 @@ import { InstalledPluginsPanel } from './InstalledPluginsPanel';
 import { MarketplacesPanel } from './MarketplacesPanel';
 import { SkillsPanel } from './SkillsPanel';
 import { AgentSettingsProviderTabs } from '../AgentSettingsProviderTabs';
+import { StandardSelect } from '../../StandardSelect';
 
 const builtinSkillInstallers = [
   {
@@ -275,11 +276,18 @@ export function PluginsSuite({
               {subTab === 'discover' && providerId === 'claude-code' ? (
                 <label className="settings-inline-form plugins-inline-select">
                   <span>安装范围</span>
-                  <select value={pluginInstallScope} onChange={(event) => setPluginInstallScope(event.target.value as PluginScope)}>
-                    <option value="user">用户级</option>
-                    <option value="project">项目级</option>
-                    <option value="local">本地</option>
-                  </select>
+                  <StandardSelect<PluginScope>
+                    ariaLabel="选择插件安装范围"
+                    value={pluginInstallScope}
+                    className="plugins-inline-standard-select"
+                    triggerClassName="plugins-inline-select-trigger"
+                    options={[
+                      { value: 'user', label: '用户级' },
+                      { value: 'project', label: '项目级' },
+                      { value: 'local', label: '本地' },
+                    ]}
+                    onChange={setPluginInstallScope}
+                  />
                 </label>
               ) : null}
             </div>
@@ -517,15 +525,18 @@ export function PluginsSuite({
 
               <label className="plugins-import-field">
                 <span>安装范围</span>
-                <select
-                  className="plugins-import-select"
+                <StandardSelect<SkillScope>
+                  ariaLabel="选择技能安装范围"
                   value={skillImportScope}
                   disabled={busy}
-                  onChange={(event) => setSkillImportScope(event.target.value as SkillScope)}
-                >
-                  <option value="user">用户级（所有项目）</option>
-                  <option value="project">项目级（当前项目）</option>
-                </select>
+                  className="plugins-import-standard-select"
+                  triggerClassName="plugins-import-select"
+                  options={[
+                    { value: 'user', label: '用户级（所有项目）' },
+                    { value: 'project', label: '项目级（当前项目）' },
+                  ]}
+                  onChange={setSkillImportScope}
+                />
               </label>
 
               <label className="plugins-import-option">

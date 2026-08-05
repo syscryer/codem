@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { installApiFetchBridge, resolveApiUrl } from './api-fetch-bridge.js';
+import { installApiFetchBridge, resolveApiUrl, withRuntimeApiAuthorization } from './api-fetch-bridge.js';
 
 test('installApiFetchBridge leaves fetch untouched in plain web runtime', () => {
   const originalWindow = globalThis.window;
@@ -77,6 +77,44 @@ test('resolveApiUrl rewrites relative api paths to desktop backend origin in tau
     assert.equal(
       resolveApiUrl('/api/system/image-preview?path=D%3A%5Cworkspace%5Cimage.png'),
       'http://127.0.0.1:3001/api/system/image-preview?path=D%3A%5Cworkspace%5Cimage.png',
+    );
+  } finally {
+    Object.defineProperty(globalThis, 'window', {
+      value: originalWindow,
+      configurable: true,
+    });
+  }
+});
+
+test('runtime authorization is added only to the resolved local API', () => {
+  const originalWindow = globalThis.window;
+  const fakeWindow = {
+    location: {
+      href: 'tauri://localhost/',
+      origin: 'tauri://localhost',
+    },
+  } as unknown as Window & typeof globalThis;
+
+  try {
+    Object.defineProperty(globalThis, 'window', {
+      value: fakeWindow,
+      configurable: true,
+    });
+
+    const authorized = withRuntimeApiAuthorization(
+      'http://127.0.0.1:4567/api/agent-mux/overview',
+      { headers: { 'X-CodeM-Test': 'preserved' } },
+      'runtime-secret',
+      'http://127.0.0.1:4567',
+    );
+    const authorizedHeaders = new Headers(authorized?.headers);
+    assert.equal(authorizedHeaders.get('Authorization'), 'Bearer runtime-secret');
+    assert.equal(authorizedHeaders.get('X-CodeM-Test'), 'preserved');
+
+    const external = { headers: { Accept: 'application/json' } };
+    assert.equal(
+      withRuntimeApiAuthorization('https://example.com/api/agent-mux/overview', external, 'runtime-secret', 'http://127.0.0.1:4567'),
+      external,
     );
   } finally {
     Object.defineProperty(globalThis, 'window', {

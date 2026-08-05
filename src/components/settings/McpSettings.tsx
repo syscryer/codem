@@ -10,6 +10,7 @@ import type {
   McpServerSummary,
 } from '../../types';
 import { AgentSettingsProviderTabs } from './AgentSettingsProviderTabs';
+import { StandardSelect } from '../StandardSelect';
 
 type EditableServerScope = 'global' | 'project' | 'claude-json-global';
 type ServerScope = EditableServerScope | 'claude-json-project';
@@ -605,19 +606,16 @@ function EditorPanel({
 
           <label className="mcp-form-field">
             <span>保存位置</span>
-            <select
-              className="settings-select"
+            <StandardSelect<EditableServerScope>
+              ariaLabel="选择 MCP 保存位置"
               value={editor.scope}
-              onChange={(event) => onUpdate({ scope: event.currentTarget.value as EditableServerScope })}
               disabled={saving}
-            >
-              {EDIT_SCOPE_OPTIONS.filter((option) =>
+              options={EDIT_SCOPE_OPTIONS.filter((option) =>
                 (option.value !== 'project' || hasProject)
                 && (option.value !== 'claude-json-global' || providerId === 'claude-code'),
-              ).map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
+              )}
+              onChange={(scope) => onUpdate({ scope })}
+            />
           </label>
 
           <div className="mcp-form-field">
@@ -738,16 +736,13 @@ function EditorPanel({
 
             <label className="mcp-form-field">
               <span>鉴权方式</span>
-              <select
-                className="settings-select"
+              <StandardSelect<EditorState['auth']>
+                ariaLabel="选择 MCP 鉴权方式"
                 value={editor.auth}
-                onChange={(event) => onUpdate({ auth: event.currentTarget.value as EditorState['auth'] })}
                 disabled={saving}
-              >
-                {AUTH_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
+                options={AUTH_OPTIONS}
+                onChange={(auth) => onUpdate({ auth })}
+              />
             </label>
           </div>
 

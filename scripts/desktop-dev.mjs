@@ -26,6 +26,7 @@ registerSignalHandlers();
 
 async function main() {
   cleanupStaleDesktopDevArtifacts();
+  buildAgentMuxCli();
 
   const preferredBackendPort = resolvePreferredBackendPort();
   const preferredWebPort = resolvePreferredWebPort();
@@ -49,6 +50,20 @@ async function main() {
     stopChildren(tauri);
     process.exit(code ?? 0);
   });
+}
+
+function buildAgentMuxCli() {
+  const cargo = process.platform === 'win32' ? 'cargo.exe' : 'cargo';
+  const result = spawnSync(cargo, ['build', '--manifest-path', 'src-tauri/Cargo.toml', '--bin', 'codem-agent-mux'], {
+    cwd: process.cwd(),
+    env: process.env,
+    shell: false,
+    stdio: 'inherit',
+    windowsHide: true,
+  });
+  if (result.status !== 0) {
+    throw new Error('Agent Mux CLI build failed.');
+  }
 }
 
 function spawnChild(command, args, env = process.env) {

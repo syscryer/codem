@@ -196,6 +196,161 @@ export function isAgentRunTerminalEvent(event: AgentRunEvent) {
   return event.type === 'done' || event.type === 'error';
 }
 
+export function isAgentRunBlockingEvent(event: AgentRunEvent) {
+  return event.type === 'request-user-input' || event.type === 'approval-request';
+}
+
+export function shouldPersistAgentRunTranscriptEvent(event: AgentRunEvent) {
+  return !(
+    event.type === 'trace' ||
+    event.type === 'claude-event' ||
+    event.type === 'raw' ||
+    event.type === 'stderr' ||
+    event.type === 'assistant-snapshot' ||
+    event.type === 'runtime-reconnect-hint' ||
+    event.type === 'retryable-error' ||
+    event.type === 'context-compaction'
+  );
+}
+
+export function isAgentRunTranscriptDeltaEvent(event: AgentRunEvent) {
+  return (
+    event.type === 'delta' ||
+    event.type === 'thinking-delta' ||
+    event.type === 'tool-input-delta' ||
+    event.type === 'subagent-delta'
+  );
+}
+
+export function getAgentRunEventLogMessage(event: AgentRunEvent) {
+  switch (event.type) {
+    case 'status':
+      return event.message || '状态更新';
+    case 'session':
+      return '已创建 Agent 会话';
+    case 'delta':
+      return event.text.trim() ? event.text : '生成回复中';
+    case 'thinking-delta':
+      return event.text.trim() ? event.text : '思考中';
+    case 'phase':
+      return event.label || '运行阶段更新';
+    case 'usage':
+      return '用量更新';
+    case 'tool-start':
+      return `调用工具：${event.name}`;
+    case 'tool-input-delta':
+      return '补充工具参数';
+    case 'tool-stop':
+      return '工具执行完成';
+    case 'tool-result':
+      return event.isError ? '工具返回异常' : '工具返回结果';
+    case 'request-user-input':
+      return '等待用户输入';
+    case 'approval-request':
+      return '等待权限确认';
+    case 'subagent-delta':
+      return event.text.trim() ? event.text : '子 Agent 输出';
+    case 'done':
+      return event.result.trim() ? event.result : '运行完成';
+    case 'error':
+      return event.message || 'Agent 运行失败';
+    default:
+      return event.type;
+  }
+}
+
+export function coalesceAgentRunTranscriptEvent(
+  current: AgentRunEvent | null,
+  next: AgentRunEvent,
+): AgentRunEvent | null {
+  if (!current || current.type !== next.type || current.runId !== next.runId) {
+    return null;
+  }
+
+  if (current.type === 'delta' && next.type === 'delta') {
+    return { ...current, text: `${current.text}${next.text}` };
+  }
+  if (current.type === 'thinking-delta' && next.type === 'thinking-delta') {
+    return { ...current, text: `${current.text}${next.text}` };
+  }
+  if (
+    current.type === 'subagent-delta' &&
+    next.type === 'subagent-delta' &&
+    current.parentToolUseId === next.parentToolUseId
+  ) {
+    return { ...current, text: `${current.text}${next.text}` };
+  }
+  if (
+    current.type === 'tool-input-delta' &&
+    next.type === 'tool-input-delta' &&
+    current.blockIndex === next.blockIndex &&
+    current.toolUseId === next.toolUseId &&
+    current.parentToolUseId === next.parentToolUseId
+  ) {
+    return { ...current, text: `${current.text}${next.text}` };
+  }
+  return null;
+}
+
+export async function consumeAgentRunEventStream(
+  response: Response,
+  onEvent: (event: AgentRunEvent) => void | boolean | Promise<void | boolean>,
+  onMalformedLine?: (line: string) => void,
+) {
+  if (!response.body) {
+    throw new Error('Agent 事件流不可读');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      const shouldContinue = await consumeAgentRunEventLine(line, onEvent, onMalformedLine);
+      if (!shouldContinue) {
+        await reader.cancel();
+        return;
+      }
+    }
+    if (done) {
+      if (buffer.trim()) {
+        await consumeAgentRunEventLine(buffer, onEvent, onMalformedLine);
+      }
+      return;
+    }
+  }
+}
+
+export function parseAgentRunEventLine(line: string): AgentRunEvent {
+  const value = JSON.parse(line) as Partial<AgentRunEvent>;
+  if (typeof value.type !== 'string' || typeof value.runId !== 'string') {
+    throw new Error('事件缺少 type/runId');
+  }
+  return value as AgentRunEvent;
+}
+
+async function consumeAgentRunEventLine(
+  line: string,
+  onEvent: (event: AgentRunEvent) => void | boolean | Promise<void | boolean>,
+  onMalformedLine?: (line: string) => void,
+) {
+  if (!line.trim()) {
+    return true;
+  }
+  let event: AgentRunEvent;
+  try {
+    event = parseAgentRunEventLine(line);
+  } catch {
+    onMalformedLine?.(line);
+    return true;
+  }
+  return (await onEvent(event)) !== false;
+}
+
 export function shouldSettleAgentStreamAsStopped(cancelRequested: boolean, aborted: boolean) {
   return cancelRequested || aborted;
 }

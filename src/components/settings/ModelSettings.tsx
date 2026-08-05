@@ -5,6 +5,7 @@ import type { ClaudeModelInfo, ClaudeModelOption, ModelCapability, ModelSettings
 import type { ModelSettingsUpdate } from '../../hooks/useAppSettings';
 import { modelLabel } from '../../lib/ui-labels';
 import { SettingsRow } from './SettingsControls';
+import { StandardSelect } from '../StandardSelect';
 
 type ModelSettingsSectionProps = {
   models: ModelSettings;
@@ -118,15 +119,13 @@ export function ModelSettingsPanel({
           <span className="settings-inline-value">{defaultModel?.description?.replace(/^使用当前 Claude Code 默认模型：/, '') || '未配置'}</span>
         </SettingsRow>
         <SettingsRow icon={CircleDot} title="新聊天默认选择" description="仅影响 CodeM Composer 初始模型，不切换供应商">
-          <select
-            className="settings-select"
+          <StandardSelect
+            ariaLabel="选择新聊天默认模型"
+            className="settings-simple-select"
             value={models.defaultModelId}
-            onChange={(event) => void onUpdateModels({ defaultModelId: event.target.value })}
-          >
-            {defaultChoices.map((choice) => (
-              <option key={choice.id} value={choice.id}>{choice.label}</option>
-            ))}
-          </select>
+            options={defaultChoices.map((choice) => ({ value: choice.id, label: choice.label }))}
+            onChange={(defaultModelId) => void onUpdateModels({ defaultModelId })}
+          />
         </SettingsRow>
         <div className="settings-row settings-row-stack">
           <div className="settings-row-label">

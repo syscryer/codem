@@ -24,6 +24,7 @@
 - 保持现有 Codex-like 白色桌面风格，不随意改视觉语言
 - 结构重构时尽量不改 className，降低 CSS 回归风险
 - 如果确实要改 className，必须同步检查 `styles.css`
+- 普通单选下拉统一使用 `src/components/StandardSelect.tsx`，业务组件不得新增原生 `<select>`；搜索、多选、图标、分组或复杂说明等场景可以使用专用下拉，但必须复用 `PopoverPortal`、主题变量和标准菜单交互。
 
 ## 何时拆组件
 

@@ -11,7 +11,11 @@ use crate::pi_rpc::{PiModel, PiState, PiStdioClient};
 use axum::{
     body::Body,
     extract::{Path as AxumPath, Query, State},
-    http::{header::HeaderName, HeaderValue, Method, StatusCode},
+    http::{
+        header::{HeaderName, AUTHORIZATION},
+        HeaderValue, Method, Request, StatusCode,
+    },
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post, put},
     Json, Router,
@@ -987,6 +991,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         resolve_pi_command,
         agent_channels.clone(),
     );
+    let agent_mux = crate::agent_mux::AgentMuxService::new(app_data_dir.clone());
     let state = AppState {
         app_data_dir: Arc::new(app_data_dir),
         settings_write_lock: Arc::new(Mutex::new(())),
@@ -1019,7 +1024,17 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         .merge(crate::ordinary_chat::router(ordinary_chat))
         .merge(crate::provider_import::router(provider_import))
         .merge(crate::agent_channels::router(agent_channels))
+        .merge(crate::agent_mux::router(agent_mux))
         .layer(desktop_cors_layer());
+    let app = if let Some(token) = env::var(crate::agent_mux_runtime::RUNTIME_TOKEN_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        app.route("/api/runtime/shutdown", post(runtime_shutdown))
+            .layer(middleware::from_fn_with_state(token, runtime_auth))
+    } else {
+        app
+    };
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(address)
         .await
@@ -1029,6 +1044,36 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
     axum::serve(listener, app)
         .await
         .map_err(|error| format!("Rust 后端服务异常退出: {error}"))
+}
+
+async fn runtime_auth(token: State<String>, request: Request<Body>, next: Next) -> Response {
+    let path = request.uri().path();
+    if path == "/api/runtime/identity" || request.method() == Method::OPTIONS {
+        return next.run(request).await;
+    }
+    let expected = format!("Bearer {}", token.0);
+    let authorized = request
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == expected);
+    if authorized {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "message": "Agent Mux Runtime token 无效" })),
+        )
+            .into_response()
+    }
+}
+
+async fn runtime_shutdown() -> Json<Value> {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        std::process::exit(0);
+    });
+    Json(json!({ "stopping": true }))
 }
 
 fn create_router(state: AppState) -> Router {
@@ -1346,6 +1391,7 @@ async fn runtime_identity() -> Json<Value> {
     Json(json!({
         "app": "codem",
         "backend": "rust",
+        "protocolVersion": crate::agent_mux_runtime::RUNTIME_PROTOCOL_VERSION,
     }))
 }
 
@@ -8109,6 +8155,29 @@ fn initialize_workspace_database(connection: &Connection) -> ApiResult<()> {
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS agent_mux_agents (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              description TEXT NOT NULL,
+              tags_json TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS agent_mux_profiles (
+              id TEXT PRIMARY KEY,
+              agent_id TEXT NOT NULL REFERENCES agent_mux_agents(id) ON DELETE CASCADE,
+              provider TEXT NOT NULL,
+              model TEXT NOT NULL,
+              level TEXT NOT NULL,
+              tags_json TEXT NOT NULL,
+              role TEXT NOT NULL,
+              status TEXT NOT NULL,
+              channel_id TEXT,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_mux_profiles_agent
+            ON agent_mux_profiles(agent_id);
             CREATE TABLE IF NOT EXISTS ignored_imported_sessions (
               session_id TEXT PRIMARY KEY,
               transcript_path TEXT,
@@ -21650,7 +21719,7 @@ mod tests {
         remove_thread_row, resolve_codex_command, resolve_command_from_path,
         resolve_first_runnable_command, resolve_grok_command, resolve_opencode_command,
         resolve_pi_command, resolve_requested_thread_provider,
-        resolve_thread_create_permission_mode, resolve_workspace_relative_path,
+        resolve_thread_create_permission_mode, resolve_workspace_relative_path, runtime_auth,
         sanitize_agent_lifecycle_output, sanitize_external_command_result, search_workspace_files,
         select_runnable_command_candidate, should_emit_claude_raw_event, should_store_run_event,
         spawn_background_command_group, summarize_content_blocks,
@@ -21673,6 +21742,9 @@ mod tests {
     use axum::{
         body::Body,
         http::{header, Method, Request, StatusCode},
+        middleware,
+        routing::get,
+        Router,
     };
     use rusqlite::{params, Connection, OptionalExtension};
     use serde_json::{json, Value};
@@ -26354,6 +26426,56 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[tokio::test]
+    async fn runtime_auth_protects_api_routes_and_keeps_identity_public() {
+        let app = Router::new()
+            .route("/api/private", get(|| async { StatusCode::NO_CONTENT }))
+            .route(
+                "/api/runtime/identity",
+                get(|| async { StatusCode::NO_CONTENT }),
+            )
+            .layer(middleware::from_fn_with_state(
+                "runtime-secret".to_string(),
+                runtime_auth,
+            ));
+
+        let unauthorized = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/private")
+                    .body(Body::empty())
+                    .expect("build unauthorized request"),
+            )
+            .await
+            .expect("run unauthorized request");
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let authorized = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/private")
+                    .header(header::AUTHORIZATION, "Bearer runtime-secret")
+                    .body(Body::empty())
+                    .expect("build authorized request"),
+            )
+            .await
+            .expect("run authorized request");
+        assert_eq!(authorized.status(), StatusCode::NO_CONTENT);
+
+        let identity = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/runtime/identity")
+                    .body(Body::empty())
+                    .expect("build identity request"),
+            )
+            .await
+            .expect("run identity request");
+        assert_eq!(identity.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]

@@ -10,6 +10,7 @@ import {
 import {
   applyAgentRunEventToTurn,
   closeAgentTurnWithoutTerminalEvent,
+  consumeAgentRunEventStream,
   isAgentRunTerminalEvent,
   shouldSettleAgentStreamAsStopped,
 } from '../lib/agent-run-events';
@@ -1982,7 +1983,15 @@ export function useAgentRun({
         if (responseRunId) {
           observeRunId(context, responseRunId);
         }
-        await consumeAgentEventStream(response, context);
+        await consumeAgentRunEventStream(
+          response,
+          (event) => handleAgentEvent(event, context),
+          () => appendDebug(context.threadId, {
+            title: 'Agent 事件解析失败',
+            content: '收到了一条无法解析的本地 Agent 事件；原始内容未写入日志。',
+            tone: 'error',
+          }),
+        );
         if (!context.terminal && runContextsByThreadIdRef.current.get(context.threadId) === context) {
           if (shouldSettleAgentStreamAsStopped(context.cancelRequested, controller.signal.aborted)) {
             settleRunWithoutTerminal(context, '已停止');
@@ -2009,52 +2018,6 @@ export function useAgentRun({
     })();
 
     return true;
-  }
-
-  async function consumeAgentEventStream(response: Response, context: AgentRunContext) {
-    if (!response.body) {
-      throw new Error('Agent 事件流不可读');
-    }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      buffer += decoder.decode(value, { stream: !done });
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        handleAgentStreamLine(line, context);
-      }
-      if (done) {
-        if (buffer.trim()) {
-          handleAgentStreamLine(buffer, context);
-        }
-        break;
-      }
-    }
-  }
-
-  function handleAgentStreamLine(line: string, context: AgentRunContext) {
-    if (!line.trim()) {
-      return;
-    }
-    let event: AgentRunEvent;
-    try {
-      const value = JSON.parse(line) as Partial<AgentRunEvent>;
-      if (typeof value.type !== 'string' || typeof value.runId !== 'string') {
-        throw new Error('事件缺少 type/runId');
-      }
-      event = value as AgentRunEvent;
-    } catch {
-      appendDebug(context.threadId, {
-        title: 'Agent 事件解析失败',
-        content: '收到了一条无法解析的本地 Agent 事件；原始内容未写入日志。',
-        tone: 'error',
-      });
-      return;
-    }
-    handleAgentEvent(event, context);
   }
 
   function handleAgentEvent(event: AgentRunEvent, context: AgentRunContext) {

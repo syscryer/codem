@@ -187,7 +187,7 @@ test('设置页主要文字跟随 UI 字号', () => {
   assert.doesNotMatch(stylesSource, /\.codex-desktop\s+\.settings-view\s+:where\([\s\S]*\.settings-row-label\s+strong[\s\S]*\)\s*\{[\s\S]*font-size:\s*var\(--app-ui-font-size,\s*14px\);/);
   assert.match(stylesSource, /\.codex-desktop\s+\.settings-view\s+:where\([\s\S]*\.settings-row-label\s+small[\s\S]*\.settings-font-follow-text[\s\S]*\)\s*\{[\s\S]*font-size:\s*max\(11px,\s*calc\(var\(--app-ui-font-size,\s*14px\)\s*-\s*1px\)\);/);
   assert.match(stylesSource, /\.codex-desktop\s+\.settings-view\s+\.settings-section-head\s+h1\s*\{[\s\S]*font-size:\s*calc\(var\(--app-ui-font-size,\s*14px\)\s*\+\s*5px\);/);
-  assert.doesNotMatch(stylesSource, /\.codex-desktop\s+\.settings-sidebar\s+:where\(\.settings-return,\s*\.settings-nav-item\)\s*\{[\s\S]*font-size:\s*15px;/);
+  assert.doesNotMatch(stylesSource, /\.codex-desktop\s+\.settings-sidebar\s+:where\(\.settings-return,\s*\.settings-nav-item\)\s*\{[^}]*font-size:\s*15px;/);
 });
 
 test('会话标题使用更柔和的字重', () => {

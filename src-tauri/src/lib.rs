@@ -1,5 +1,7 @@
 pub mod acp;
 pub mod agent_channels;
+pub mod agent_mux;
+pub mod agent_mux_runtime;
 pub mod agent_run;
 pub mod agent_runtime;
 pub mod automation;

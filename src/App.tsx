@@ -1,7 +1,7 @@
 import { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GitCommitHorizontal, ListChecks } from 'lucide-react';
 import { AppMenubar } from './components/AppMenubar';
-import { AgentHubPrototype } from './components/AgentHubPrototype';
+import { AgentMuxPrototype } from './components/AgentMuxPrototype';
 import { AutomationCenter } from './components/AutomationCenter';
 import { ChatHeader } from './components/ChatHeader';
 import { CloneRepositoryDialog } from './components/CloneRepositoryDialog';
@@ -2237,7 +2237,7 @@ export default function App() {
             } as CSSProperties}
           >
             {appView.kind === 'agent-hub' ? (
-              <AgentHubPrototype />
+              <AgentMuxPrototype projects={projects} activeProjectId={activeProjectId} />
             ) : appView.kind === 'automation' ? (
               <AutomationCenter
                 automations={automation.automations}

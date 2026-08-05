@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyAgentRunEventToTurn,
+  coalesceAgentRunTranscriptEvent,
+  consumeAgentRunEventStream,
   shouldSettleAgentStreamAsStopped,
 } from './agent-run-events.js';
 import type { AgentRunEvent, ConversationTurn } from '../types.js';
@@ -193,4 +195,35 @@ test('cancelled generic Agent streams remain stopped when EOF has no terminal ev
   assert.equal(shouldSettleAgentStreamAsStopped(true, false), true);
   assert.equal(shouldSettleAgentStreamAsStopped(false, true), true);
   assert.equal(shouldSettleAgentStreamAsStopped(false, false), false);
+});
+
+test('shared Agent stream consumer parses NDJSON for chat and Agent Mux callers', async () => {
+  const received: AgentRunEvent[] = [];
+  const malformed: string[] = [];
+  const response = new Response([
+    JSON.stringify({ type: 'delta', runId: 'run-1', text: 'hello' }),
+    '{bad-json}',
+    JSON.stringify({ type: 'done', runId: 'run-1', result: 'hello' }),
+  ].join('\n'));
+
+  await consumeAgentRunEventStream(
+    response,
+    (event) => { received.push(event); },
+    (line) => malformed.push(line),
+  );
+
+  assert.deepEqual(received.map((event) => event.type), ['delta', 'done']);
+  assert.deepEqual(malformed, ['{bad-json}']);
+});
+
+test('transcript persistence coalesces only compatible streaming deltas', () => {
+  const first: AgentRunEvent = { type: 'delta', runId: 'run-1', text: 'hello ' };
+  assert.deepEqual(
+    coalesceAgentRunTranscriptEvent(first, { type: 'delta', runId: 'run-1', text: 'world' }),
+    { type: 'delta', runId: 'run-1', text: 'hello world' },
+  );
+  assert.equal(
+    coalesceAgentRunTranscriptEvent(first, { type: 'status', runId: 'run-1', message: 'running' }),
+    null,
+  );
 });

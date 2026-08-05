@@ -14,6 +14,7 @@ import {
   type AppUpdateInfo,
 } from '../../lib/settings-runtime';
 import { SegmentedControl, SettingsGroup, SettingsRow } from './SettingsControls';
+import { StandardSelect } from '../StandardSelect';
 
 type BasicSettingsSectionProps = {
   general: GeneralSettings;
@@ -194,18 +195,16 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
         </SettingsRow>
 
         <SettingsRow icon={Shield} title="默认权限模式" description="新聊天和未指定权限时使用的 Claude Code 权限模式">
-          <select
-            className="settings-select"
+          <StandardSelect
+            ariaLabel="选择默认权限模式"
+            className="settings-permission-mode-select"
             value={resolvedGeneral.defaultPermissionMode}
-            onChange={(event) =>
+            options={permissionMenuModes.map((mode) => ({ value: mode, label: permissionLabel(mode) }))}
+            onChange={(defaultPermissionMode) =>
               void onUpdateGeneral({
-                defaultPermissionMode: event.currentTarget.value as GeneralSettings['defaultPermissionMode'],
+                defaultPermissionMode,
               })}
-          >
-            {permissionMenuModes.map((mode) => (
-              <option key={mode} value={mode}>{permissionLabel(mode)}</option>
-            ))}
-          </select>
+          />
         </SettingsRow>
       </div>
 

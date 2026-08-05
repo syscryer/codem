@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import { Check, ChevronDown, Code2, Columns3, MessageSquareQuote, Monitor, Moon, Palette, RotateCcw, Rows3, Sparkles, Sun, Type } from 'lucide-react';
+import { useEffect, useState, type CSSProperties } from 'react';
+import { Code2, Columns3, MessageSquareQuote, Monitor, Moon, Palette, RotateCcw, Rows3, Sparkles, Sun, Type } from 'lucide-react';
 import {
   ACCENT_COLOR_PRESETS,
   CODE_FONT_PRESETS,
@@ -19,8 +19,7 @@ import type {
   WindowMaterialMode,
 } from '../../types';
 import { defaultAppearanceSettings, type AppearanceSettingsUpdate } from '../../hooks/useAppSettings';
-import { useOutsideDismiss } from '../../hooks/useOutsideDismiss';
-import { PopoverPortal } from '../PopoverPortal';
+import { StandardSelect } from '../StandardSelect';
 import { SegmentedControl, SettingsRow, Stepper } from './SettingsControls';
 
 type AppearanceSettingsSectionProps = {
@@ -362,7 +361,6 @@ export function AppearanceSettingsSection({
     </section>
   );
 }
-
 function FontFamilyControl<TMode extends string, TPreset extends string>({
   modeValue,
   modeOptions,
@@ -395,7 +393,7 @@ function FontFamilyControl<TMode extends string, TPreset extends string>({
   return (
     <div className="settings-font-control">
       <div className="settings-font-main">
-        <SettingsDropdown
+        <StandardSelect
           value={modeValue}
           options={modeOptions}
           ariaLabel="选择字体模式"
@@ -420,7 +418,7 @@ function FontFamilyControl<TMode extends string, TPreset extends string>({
         ) : followVisible ? (
           <div className="settings-font-follow-text">{followText}</div>
         ) : presetVisible ? (
-          <SettingsDropdown
+          <StandardSelect
             value={presetValue}
             options={presetOptions}
             ariaLabel="选择字体预设"
@@ -428,64 +426,6 @@ function FontFamilyControl<TMode extends string, TPreset extends string>({
           />
         ) : null}
       </div>
-    </div>
-  );
-}
-
-function SettingsDropdown<T extends string>({
-  value,
-  options,
-  ariaLabel,
-  onChange,
-}: {
-  value: T;
-  options: ReadonlyArray<{ value: T; label: string }>;
-  ariaLabel: string;
-  onChange: (value: T) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const anchorRef = useRef<HTMLDivElement | null>(null);
-  const selected = options.find((option) => option.value === value) ?? options[0];
-
-  useOutsideDismiss({
-    selectors: [
-      { selector: '.settings-select-menu', onDismiss: () => setOpen(false), anchorRefs: [anchorRef] },
-    ],
-  });
-
-  return (
-    <div className="settings-select-anchor" ref={anchorRef}>
-      <button
-        type="button"
-        className={`settings-select-trigger${open ? ' open' : ''}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={ariaLabel}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span>{selected?.label ?? ''}</span>
-        <ChevronDown size={15} className="settings-select-chevron" />
-      </button>
-      <PopoverPortal open={open} anchorRef={anchorRef} placement="bottom-start" offset={8}>
-        <div className="settings-select-menu" role="menu" aria-label={ariaLabel}>
-          {options.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              className={`settings-select-menu-item${option.value === value ? ' current' : ''}`}
-              role="menuitemradio"
-              aria-checked={option.value === value}
-              onClick={() => {
-                onChange(option.value);
-                setOpen(false);
-              }}
-            >
-              <span>{option.label}</span>
-              {option.value === value ? <Check size={15} /> : null}
-            </button>
-          ))}
-        </div>
-      </PopoverPortal>
     </div>
   );
 }

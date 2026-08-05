@@ -9,10 +9,10 @@ import remarkGfm from 'remark-gfm';
 import { renderMarkdownLink } from './markdown-link.js';
 
 const pluginUrl = new URL('./markdown-local-file-links.ts', import.meta.url);
-const conversationTurnSource = readFileSync(new URL('../components/ConversationTurn.tsx', import.meta.url), 'utf8');
+const markdownContentSource = readFileSync(new URL('../components/MarkdownContent.tsx', import.meta.url), 'utf8');
 
 test('会话 Markdown 启用本地文件链接宽松解析插件', () => {
-  assert.match(conversationTurnSource, /remarkPlugins=\{\[remarkGfm, remarkLocalFileLinks\]\}/);
+  assert.match(markdownContentSource, /remarkPlugins=\{\[remarkGfm, remarkLocalFileLinks\]\}/);
 });
 
 test('宽松解析中文和空格组成的本地文件链接', async () => {

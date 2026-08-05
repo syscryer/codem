@@ -1,11 +1,10 @@
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { PopoverPortal } from './PopoverPortal';
 import { FileActionMenu } from './FileActionMenu';
 import { WebLinkActionMenu, type WebLinkMenuTarget } from './WebLinkActionMenu';
 import { ConversationWebPreviewCard } from './ConversationWebPreviewCard';
 import { ImagePreviewDialog, type ImagePreviewItem } from './ImagePreviewDialog';
+import { MarkdownContent } from './MarkdownContent';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import {
   ArrowUpRight,
@@ -56,9 +55,7 @@ import {
   resolveConversationOutputFileActionPath,
   runConversationOutputFileMenuAction,
 } from '../lib/conversation-output-file-interactions';
-import { renderMarkdownImage, type MarkdownImagePreviewPayload } from '../lib/markdown-image';
-import { renderMarkdownLink } from '../lib/markdown-link';
-import { remarkLocalFileLinks } from '../lib/markdown-local-file-links';
+import type { MarkdownImagePreviewPayload } from '../lib/markdown-image';
 import { buildConversationOutputFilePreviewRequest, resolveWorkbenchPreviewFilePath } from '../lib/workbench-preview';
 import { buildDesktopImagePreviewUrl, buildWorkspaceImagePreviewUrl } from '../lib/file-preview-api';
 import { deleteProjectFile } from '../lib/project-files-api';
@@ -584,7 +581,6 @@ function MarkdownMessage({
   onOpenWebLink: (url: string, target?: WebLinkOpenTarget) => void | Promise<void>;
   onCopyWebLink: (url: string) => void | Promise<void>;
 }) {
-  const deferredContent = useDeferredValue(content);
   const [webLinkMenuTarget, setWebLinkMenuTarget] = useState<WebLinkMenuTarget | null>(null);
   const [fileMenuTarget, setFileMenuTarget] = useState<{
     path: string;
@@ -618,8 +614,8 @@ function MarkdownMessage({
 
   return (
     <>
-      <DeferredMarkdownContent
-        content={deferredContent}
+      <MarkdownContent
+        content={content}
         onPreviewImage={onPreviewImage}
         onOpenLocalFile={onOpenLocalFile}
         onOpenLocalFileContextMenu={handleOpenLocalFileContextMenu}
@@ -647,67 +643,6 @@ function MarkdownMessage({
         onCopy={(path) => navigator.clipboard.writeText(path)}
       />
     </>
-  );
-}
-
-const DeferredMarkdownContent = memo(function DeferredMarkdownContent({
-  content,
-  onPreviewImage,
-  onOpenLocalFile,
-  onOpenLocalFileContextMenu,
-  onOpenWebUrl,
-  onOpenWebContextMenu,
-}: {
-  content: string;
-  onPreviewImage: (preview: MarkdownImagePreviewPayload) => void;
-  onOpenLocalFile: (path: string) => void;
-  onOpenLocalFileContextMenu: (target: { path: string; x: number; y: number }) => void;
-  onOpenWebUrl: (url: string) => void;
-  onOpenWebContextMenu: (target: WebLinkMenuTarget) => void;
-}) {
-  const markdownComponents = useMemo(() => ({
-    a({ href, title, children }: { href?: string; title?: string; children?: ReactNode }) {
-      return renderMarkdownLink({
-        href,
-        title,
-        children,
-        onOpenLocalFile,
-        onOpenLocalFileContextMenu,
-        onOpenWebUrl,
-        onOpenWebContextMenu,
-      });
-    },
-    img({ src, alt, title }: { src?: string; alt?: string; title?: string }) {
-      return renderMarkdownImage({ src, alt, title, onPreview: onPreviewImage });
-    },
-    pre: MarkdownCodeBlock,
-  }), [
-    onOpenLocalFile,
-    onOpenLocalFileContextMenu,
-    onOpenWebContextMenu,
-    onOpenWebUrl,
-    onPreviewImage,
-  ]);
-
-  return (
-    <div className="message-body markdown-body">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkLocalFileLinks]}
-        components={markdownComponents}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
-  );
-});
-
-function MarkdownCodeBlock({ children }: { children?: ReactNode }) {
-  const text = extractCodeText(children);
-  return (
-    <div className="code-block-shell">
-      <pre>{children}</pre>
-      <InlineCopyButton text={text} title="复制代码" className="code-copy-button" />
-    </div>
   );
 }
 
@@ -2935,23 +2870,6 @@ function formatMessageTime(timestamp?: number) {
     minute: '2-digit',
     hour12: false,
   });
-}
-
-function extractCodeText(value: unknown): string {
-  if (typeof value === 'string') {
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(extractCodeText).join('');
-  }
-
-  if (value && typeof value === 'object' && 'props' in value) {
-    const props = (value as { props?: { children?: unknown } }).props;
-    return extractCodeText(props?.children);
-  }
-
-  return '';
 }
 
 type ToolPreview = {

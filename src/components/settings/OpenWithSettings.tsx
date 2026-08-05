@@ -5,6 +5,7 @@ import type { OpenWithSettingsUpdate } from '../../hooks/useAppSettings';
 import { defaultOpenWithSettings } from '../../hooks/useAppSettings';
 import { getOpenAppIcon } from '../../lib/open-app-icons';
 import { SegmentedControl, SettingsRow } from './SettingsControls';
+import { StandardSelect } from '../StandardSelect';
 
 type OpenWithSettingsSectionProps = {
   openWith: OpenWithSettings;
@@ -78,15 +79,13 @@ export function OpenWithSettingsSection({
         </SettingsRow>
 
         <SettingsRow icon={AppWindow} title="默认打开工具" description="控制顶部工具按钮直接打开项目时使用的目标">
-          <select
-            className="settings-select"
+          <StandardSelect
+            ariaLabel="选择默认打开工具"
+            className="settings-simple-select"
             value={selectedTarget?.id ?? openWith.selectedTargetId}
-            onChange={(event) => void onUpdateOpenWith({ selectedTargetId: event.target.value })}
-          >
-            {openTargets.map((target) => (
-              <option key={target.id} value={target.id}>{target.label}</option>
-            ))}
-          </select>
+            options={openTargets.map((target) => ({ value: target.id, label: target.label }))}
+            onChange={(selectedTargetId) => void onUpdateOpenWith({ selectedTargetId })}
+          />
         </SettingsRow>
 
         <div className="settings-row settings-row-stack">
