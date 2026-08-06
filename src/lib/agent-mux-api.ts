@@ -2,6 +2,8 @@ export type AgentMuxRuntimeProfile = {
   id: string;
   provider: string;
   model: string;
+  nickname?: string | null;
+  avatar?: string | null;
   reasoningEffort?: string | null;
   level: '高级' | '标准' | '轻量' | '未评级';
   tags: string[];
@@ -23,6 +25,8 @@ export type AgentMuxRun = {
   caller: string;
   target: string;
   profile: string;
+  nickname?: string | null;
+  avatar?: string | null;
   skill: string;
   status: 'running' | 'completed' | 'failed' | 'queued' | 'waiting' | 'cancelled';
   duration: string;
@@ -32,6 +36,7 @@ export type AgentMuxRun = {
   profileId?: string | null;
   providerRunId?: string | null;
   workingDirectory?: string | null;
+  threadId?: string | null;
 };
 
 export type AgentMuxRunEvent = {
@@ -57,6 +62,10 @@ export type AgentMuxOverview = {
 };
 
 export type AgentMuxRuntimeInfo = { cliPath: string; appDataDir: string; runtimeManaged: boolean };
+
+export function filterAgentMuxRunsForThread(runs: AgentMuxRun[], threadId: string | null) {
+  return threadId ? runs.filter((run) => run.threadId === threadId) : [];
+}
 
 export type AgentMuxSkillTargetState = 'not-installed' | 'installed' | 'update-available';
 

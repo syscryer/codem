@@ -2,14 +2,16 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { groupAgentMuxRunsByWorkspace } from './agent-mux-workspaces';
+import { filterAgentMuxRunsForThread, type AgentMuxRun } from './agent-mux-api';
 
 const componentSource = readFileSync(new URL('../components/AgentMuxPrototype.tsx', import.meta.url), 'utf8');
+const avatarSource = readFileSync(new URL('../components/AgentMuxAvatar.tsx', import.meta.url), 'utf8');
 const apiSource = readFileSync(new URL('./agent-mux-api.ts', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 const cliSource = readFileSync(new URL('../../src-tauri/src/bin/codem-agent-mux.rs', import.meta.url), 'utf8');
 
 test('Agent Mux exposes OpenCode configuration without claiming independent runtime support', () => {
-  assert.match(componentSource, /agentId === 'opencode' \? OPENCODE_PROVIDER_ID/);
+  assert.match(componentSource, /id === 'opencode' \? OPENCODE_PROVIDER_ID/);
   assert.match(componentSource, /providerId === OPENCODE_PROVIDER_ID/);
   assert.match(apiSource, /agentId === 'opencode'[\s\S]*?probeOpenCodeAgent\(\)/);
   assert.match(componentSource, /\['codex', 'grok'\]\.includes\(agent\.id\)/);
@@ -18,7 +20,7 @@ test('Agent Mux exposes OpenCode configuration without claiming independent runt
   assert.match(apiSource, /prompt: string;/);
   assert.match(componentSource, /className="agent-mux-agent-mark small" data-provider=\{agent\.id\}><AgentProviderIcon/);
   assert.match(componentSource, /className="agent-mux-agent-mark" data-provider=\{agent\.id\}><AgentProviderIcon/);
-  assert.match(componentSource, /className="agent-mux-provider-mark" data-provider=\{agentId\}><AgentProviderIcon/);
+  assert.match(componentSource, /<AgentMuxAvatar avatar=\{profile\.avatar\} providerId=\{agentProviderId\(agentId\) \?\? agentId\} size="small"/);
 });
 
 test('Agent Mux overview rows open the selected monitor run', () => {
@@ -26,16 +28,16 @@ test('Agent Mux overview rows open the selected monitor run', () => {
   assert.match(componentSource, /className="agent-mux-call-row" onClick=\{onOpen\}/);
 });
 
-test('Agent Mux monitor shows provider icons in run rows and details', () => {
+test('Agent Mux monitor shows profile avatars in run rows and details', () => {
   assert.match(componentSource, /<MonitorView agents=\{agentRecords\}/);
-  assert.match(componentSource, /className="agent-mux-agent-mark small" data-provider=\{agentId\}><AgentProviderIcon/);
-  assert.match(componentSource, /className="agent-mux-detail-title"[\s\S]*?className="agent-mux-agent-mark" data-provider=\{selectedAgentId\}><AgentProviderIcon/);
+  assert.match(componentSource, /<AgentMuxAvatar avatar=\{run\.avatar\} providerId=\{providerId\} size="small"/);
+  assert.match(componentSource, /className="agent-mux-detail-title"[\s\S]*?<AgentMuxAvatar avatar=\{run\.avatar\} providerId=\{providerId\} size="large"/);
   assert.match(stylesSource, /\.agent-mux-monitor-page \.agent-mux-run-summary \{ margin: 12px 0; padding: 8px 0; \}/);
   assert.match(stylesSource, /\.agent-mux-monitor-page \.agent-mux-detail-heading \.agent-mux-run-prompt p \{ max-height: 56px; \}/);
 });
 
 test('run detail shows the immutable prompt and no empty More menu remains', () => {
-  assert.match(componentSource, /<span>调用提示词<\/span><p>\{selected\.prompt \|\| '旧记录未保存原始提示词'\}<\/p>/);
+  assert.match(componentSource, /<span>调用提示词<\/span><p>\{run\.prompt \|\| '旧记录未保存原始提示词'\}<\/p>/);
   assert.doesNotMatch(componentSource, /MoreHorizontal/);
   assert.doesNotMatch(componentSource, />更多<\/button>/);
 });
@@ -49,7 +51,7 @@ test('Agent Mux confirmations use the themed app dialog instead of browser confi
 
 test('Agent Mux runtime uses an accessible stop icon and keeps long paths visible', () => {
   assert.match(componentSource, /className="agent-mux-stop-button agent-mux-runtime-stop-button"[^>]*title="停止 Runtime"[^>]*aria-label="停止 Runtime"/);
-  assert.match(stylesSource, /\.agent-mux-run-item > span \{[^}]*flex-direction: column/);
+  assert.match(stylesSource, /\.agent-mux-run-item > span:not\(\.conversation-agent-avatar\) \{[^}]*flex-direction: column/);
   assert.match(stylesSource, /\.agent-mux-agent-copy strong, \.agent-mux-run-item strong \{[^}]*white-space: nowrap/);
   assert.match(stylesSource, /\.agent-mux-runtime-status small \{[^}]*overflow-wrap: anywhere/);
   assert.match(stylesSource, /\.agent-mux-skill-source-row small \{[^}]*overflow-wrap: anywhere/);
@@ -82,6 +84,18 @@ test('Agent Mux uses the standard themed dropdown instead of native selects', ()
   assert.match(componentSource, /<StandardSelect[\s\S]*?triggerClassName="agent-mux-select-trigger"/);
 });
 
+test('Agent Mux offers nickname and an internal avatar dropdown with legacy fallback', () => {
+  assert.match(componentSource, /nickname: nickname\.trim\(\) \|\| null/);
+  assert.match(componentSource, /avatar: avatar \|\| null/);
+  assert.match(componentSource, /<AgentMuxAvatarSelect value=\{avatar\}/);
+  assert.match(componentSource, /<PopoverPortal open=\{open\} anchorRef=\{anchorRef\}/);
+  assert.match(componentSource, /profile\.nickname\?\.trim\(\) \|\| `\$\{profile\.provider\} \/ \$\{profile\.model\}`/);
+  assert.match(componentSource, /run\.nickname\?\.trim\(\) \|\| run\.target/);
+  assert.match(componentSource, /id === 'codex' \|\| id === 'openai codex'/);
+  assert.match(avatarSource, /if \(index === undefined\)[\s\S]*?<AgentProviderIcon providerId=\{providerId\}/);
+  assert.doesNotMatch(componentSource, /type="file"/);
+});
+
 test('global add profile allows selecting an agent while scoped profile actions stay locked', () => {
   assert.match(componentSource, /setProfileDialog\(\{ agentId: selectedAgent\.id, allowAgentSelection: true \}\)/);
   assert.match(componentSource, /allowAgentSelection \? <StandardSelect ariaLabel="选择 Agent 类型"/);
@@ -104,4 +118,15 @@ test('Agent Mux profiles default reasoning to the model and pass explicit choice
   assert.match(apiSource, /reasoningEffort: input\.reasoningEffort \|\| undefined/);
   assert.match(cliSource, /profile\.get\("reasoningEffort"\)/);
   assert.match(cliSource, /"reasoningEffort": reasoning_effort/);
+});
+
+test('Agent Mux conversation context only receives explicitly associated runs', () => {
+  const runs = [
+    { id: 'current', threadId: 'thread-1' },
+    { id: 'other', threadId: 'thread-2' },
+    { id: 'external', threadId: null },
+  ] as AgentMuxRun[];
+
+  assert.deepEqual(filterAgentMuxRunsForThread(runs, 'thread-1').map((run) => run.id), ['current']);
+  assert.deepEqual(filterAgentMuxRunsForThread(runs, null), []);
 });

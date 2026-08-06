@@ -1255,7 +1255,7 @@ export type GitCreateWorktreeResult = {
 
 export type ProjectGitSummary = Pick<ProjectSummary, 'gitBranch' | 'gitDiff' | 'isGitRepo' | 'isGitWorktree'>;
 
-export type RightWorkbenchTab = 'overview' | 'files' | 'review' | 'browser';
+export type RightWorkbenchTab = 'files' | 'review' | 'browser' | 'agent';
 
 export type WorkbenchBrowserOpenRequest = {
   id: string;

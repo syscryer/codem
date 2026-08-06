@@ -411,6 +411,7 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
     let working_directory = option(args, "--working-directory").unwrap_or_else(|| ".".to_string());
     let permission_mode = option(args, "--permission").unwrap_or_else(|| "default".to_string());
     let caller = caller_label(args)?;
+    let thread_id = optional_environment_value(env::var("CODEM_THREAD_ID").ok());
     let provider_id = provider_id(agent.get("id").and_then(Value::as_str).unwrap_or_default())
         .ok_or_else(|| "当前 Agent 暂不支持独立运行".to_string())?;
     let target = agent.get("name").and_then(Value::as_str).unwrap_or("Agent");
@@ -423,6 +424,8 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
         .and_then(Value::as_str)
         .unwrap_or_default();
     let reasoning_effort = profile.get("reasoningEffort").and_then(Value::as_str);
+    let nickname = profile.get("nickname").and_then(Value::as_str);
+    let avatar = profile.get("avatar").and_then(Value::as_str);
     let profile_id = profile
         .get("id")
         .and_then(Value::as_str)
@@ -438,8 +441,11 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
                 "caller": caller,
                 "target": target,
                 "profile": format!("{provider} / {model}"),
+                "nickname": nickname,
+                "avatar": avatar,
                 "profileId": profile_id,
                 "workingDirectory": working_directory,
+                "threadId": thread_id,
                 "skill": "codem-agent-mux",
                 "status": "queued",
                 "duration": "--",
@@ -576,6 +582,12 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
         println!();
     }
     Ok(())
+}
+
+fn optional_environment_value(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 async fn consume_event(
@@ -927,6 +939,16 @@ mod tests {
         );
         assert!(caller_label(&["--caller".into(), " ".into()]).is_err());
         assert!(caller_label(&["--caller".into(), "x".repeat(65)]).is_err());
+    }
+
+    #[test]
+    fn inherited_thread_id_ignores_blank_values() {
+        assert_eq!(
+            optional_environment_value(Some(" thread-42 ".to_string())).as_deref(),
+            Some("thread-42")
+        );
+        assert_eq!(optional_environment_value(Some("  ".to_string())), None);
+        assert_eq!(optional_environment_value(None), None);
     }
 }
 

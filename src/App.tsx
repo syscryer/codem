@@ -6,6 +6,7 @@ import { AutomationCenter } from './components/AutomationCenter';
 import { ChatHeader } from './components/ChatHeader';
 import { CloneRepositoryDialog } from './components/CloneRepositoryDialog';
 import { Composer } from './components/Composer';
+import { ConversationContextIsland } from './components/ConversationContextPrototype';
 import { ConversationPane } from './components/ConversationPane';
 import { Dialogs } from './components/Dialogs';
 import { GitDialog } from './components/GitDialog';
@@ -38,12 +39,16 @@ import {
   buildStatusSlashCardResult,
 } from './lib/claude-slash-system-commands';
 import {
+  buildConversationOutputFilePreviewRequest,
   closeWorkbenchPreviewTab,
   closeWorkbenchPreviewTabs,
   openWorkbenchPreviewTab,
   normalizeWorkbenchPreviewRequest,
   resolveWorkbenchPreviewContentOnOpen,
 } from './lib/workbench-preview';
+import { cancelAgentMuxProviderRun, filterAgentMuxRunsForThread, getAgentMuxOverview, updateAgentMuxRun, type AgentMuxRun } from './lib/agent-mux-api';
+import { collectConversationOutputFiles, type ConversationOutputFile } from './lib/conversation-output-files';
+import { extractLocalWebPreviewUrls } from './lib/conversation-web-previews';
 import { matchesShortcut } from './lib/shortcuts';
 import { createSystemCommandItem, settleSystemCommandItem } from './lib/system-command-items';
 import { modelLabel, permissionLabel } from './lib/ui-labels';
@@ -307,7 +312,10 @@ export default function App() {
   const [navigationHistory, setNavigationHistory] = useState<NavigationHistory>({ past: [], future: [] });
   const [gitDialogMode, setGitDialogMode] = useState<'push' | 'branch' | null>(null);
   const [rightWorkbenchOpen, setRightWorkbenchOpen] = useState(false);
-  const [rightWorkbenchTab, setRightWorkbenchTab] = useState<RightWorkbenchTab>('overview');
+  const [contextIslandNarrowOpen, setContextIslandNarrowOpen] = useState(false);
+  const [activeThreadAgentMuxRuns, setActiveThreadAgentMuxRuns] = useState<AgentMuxRun[]>([]);
+  const [selectedAgentMuxRunId, setSelectedAgentMuxRunId] = useState<string | null>(null);
+  const [rightWorkbenchTab, setRightWorkbenchTab] = useState<RightWorkbenchTab>('files');
   const [rightWorkbenchWidth, setRightWorkbenchWidth] = useState(680);
   const [browserOpenRequest, setBrowserOpenRequest] = useState<WorkbenchBrowserOpenRequest | null>(null);
   const [chatWorkspaceWidth, setChatWorkspaceWidth] = useState(0);
@@ -336,6 +344,51 @@ export default function App() {
   const appUpdateRuntimeRef = useRef<AppUpdateRuntimeState | null>(null);
   const activeThreadIdRef = useRef<string | null>(activeThreadId);
   const windowFocusedRef = useRef(isAppWindowFocused());
+
+  useEffect(() => {
+    setSelectedAgentMuxRunId(null);
+    setRightWorkbenchTab((tab) => tab === 'agent' ? 'files' : tab);
+    if (!activeThreadId) {
+      setActiveThreadAgentMuxRuns([]);
+      return;
+    }
+    let disposed = false;
+    setActiveThreadAgentMuxRuns([]);
+    const refresh = () => void getAgentMuxOverview().then((overview) => {
+      if (!disposed) setActiveThreadAgentMuxRuns(filterAgentMuxRunsForThread(overview.runs, activeThreadId));
+    }).catch(() => undefined);
+    refresh();
+    const timer = window.setInterval(refresh, 2_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [activeThreadId]);
+
+  const selectedAgentMuxRun = activeThreadAgentMuxRuns.find((run) => run.id === selectedAgentMuxRunId) ?? null;
+
+  const conversationContextPlan = useMemo(() => getLatestTodoWritePreview(activeThread), [activeThread]);
+  const conversationContextResources = useMemo(() => {
+    const outputFiles: ConversationOutputFile[] = [];
+    const localUrls: string[] = [];
+    const seenFiles = new Set<string>();
+    const seenUrls = new Set<string>();
+    for (const turn of [...(activeThread?.turns ?? [])].reverse()) {
+      for (const file of collectConversationOutputFiles(turn.tools, turn.workspace || activeProject?.path)) {
+        if (!seenFiles.has(file.path)) {
+          seenFiles.add(file.path);
+          outputFiles.push(file);
+        }
+      }
+      for (const url of extractLocalWebPreviewUrls(turn.items.filter((item) => item.type === 'text').map((item) => item.text))) {
+        if (!seenUrls.has(url)) {
+          seenUrls.add(url);
+          localUrls.push(url);
+        }
+      }
+    }
+    return { outputFiles: outputFiles.slice(0, 3), localUrls: localUrls.slice(0, 3) };
+  }, [activeProject?.path, activeThread?.turns]);
   const systemNotificationKeysRef = useRef(new Set<string>());
   const taskbarAttentionRequestedRef = useRef(false);
   const automationNoticeHandlerRef = useRef<(notice: ThreadActivityNotice) => void>(() => undefined);
@@ -1718,6 +1771,25 @@ export default function App() {
     setRightWorkbenchTab('files');
   }
 
+  function openAgentMuxRun(run: AgentMuxRun) {
+    setSelectedAgentMuxRunId(run.id);
+    setContextIslandNarrowOpen(false);
+    setRightWorkbenchOpen(true);
+    setRightWorkbenchTab('agent');
+  }
+
+  async function cancelAgentMuxRun(run: AgentMuxRun) {
+    if (!run.providerRunId) return;
+    try {
+      await cancelAgentMuxProviderRun(run.providerRunId);
+      const cancelled = await updateAgentMuxRun(run.id, { status: 'cancelled' });
+      setActiveThreadAgentMuxRuns((runs) => runs.map((item) => item.id === cancelled.id ? cancelled : item));
+      showToast('Agent 运行已取消', 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '取消 Agent 运行失败', 'error');
+    }
+  }
+
   function openWorkbenchBrowser(url: string) {
     setBrowserOpenRequest({ id: crypto.randomUUID(), url });
     setRightWorkbenchOpen(true);
@@ -2300,7 +2372,12 @@ export default function App() {
                 onToggleTerminalDock={toggleTerminalDock}
                 terminalDockAvailable={terminalDockAvailable}
                 rightWorkbenchOpen={rightWorkbenchOpen}
-                onToggleRightWorkbench={() => setRightWorkbenchOpen((value) => !value)}
+                contextIslandOpen={contextIslandNarrowOpen}
+                onToggleContextIsland={() => setContextIslandNarrowOpen((value) => !value)}
+                onToggleRightWorkbench={() => {
+                  setContextIslandNarrowOpen(false);
+                  setRightWorkbenchOpen((value) => !value);
+                }}
                 onOpenReviewWorkbench={openReviewWorkbench}
                 threadForkAvailability={activeThreadSummary
                   ? resolveThreadForkAvailability(activeThreadSummary)
@@ -2313,6 +2390,46 @@ export default function App() {
                 onOpenRemoveThreadDialog={handleOpenRemoveThreadDialog}
               />
 
+              {!rightWorkbenchOpen ? (
+                <ConversationContextIsland
+                  narrowOpen={contextIslandNarrowOpen}
+                  onNarrowOpenChange={setContextIslandNarrowOpen}
+                  project={activeProject}
+                  plan={conversationContextPlan}
+                  agentRuns={activeThreadAgentMuxRuns}
+                  outputFiles={conversationContextResources.outputFiles}
+                  localUrls={conversationContextResources.localUrls}
+                  onLoadBranches={async (projectId) => {
+                    try {
+                      return await loadProjectGitBranches(projectId);
+                    } catch (error) {
+                      showToast(error instanceof Error ? error.message : '读取 Git 分支失败', 'error');
+                      return [];
+                    }
+                  }}
+                  onSwitchBranch={async (projectId, branchName) => {
+                    try {
+                      await switchProjectGitBranch(projectId, branchName);
+                    } catch (error) {
+                      showToast(error instanceof Error ? error.message : '切换 Git 分支失败', 'error');
+                    }
+                  }}
+                  onOpenChanges={openReviewWorkbench}
+                  onOpenGitCommit={openGitCommitWorkbench}
+                  onCreateBranch={() => setGitDialogMode('branch')}
+                  onOpenGitHistory={openGitHistoryDock}
+                  onOpenOutput={(file) => {
+                    if (file.openMode === 'preview') {
+                      openWorkbenchPreview(buildConversationOutputFilePreviewRequest({ path: file.path, name: file.name, type: 'file' }));
+                    } else {
+                      void handleOpenOutputPath(file.path);
+                    }
+                  }}
+                  onOpenUrl={(url) => void handleOpenWebLink(url, 'workbench')}
+                  onOpenAgentRun={openAgentMuxRun}
+                />
+              ) : null}
+
               <ConversationPane
                 activeThread={activeThread}
                 isNewChatDraft={isNewChatDraft}
@@ -2323,6 +2440,8 @@ export default function App() {
                 clockNowMs={clockNowMs}
                 isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
                 activeTurnId={activeThreadId ? activeTurnIdsByThreadId[activeThreadId] ?? '' : ''}
+                agentMuxRuns={activeThreadAgentMuxRuns}
+                onOpenAgentRun={openAgentMuxRun}
                 transcriptRef={transcriptRef}
                 bottomRef={conversationBottomRef}
               undoneTurnIds={undoneTurnIds}
@@ -2446,8 +2565,7 @@ export default function App() {
               <RightWorkbench
                 activeTab={rightWorkbenchTab}
                 activeProject={activeProject}
-                activeThread={activeThread}
-                isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
+                selectedAgentRun={selectedAgentMuxRun}
                 filePreviewTabs={filePreviewTabs}
                 activeFilePreviewKey={activeFilePreviewKey}
                 reviewPreviewTabs={reviewPreviewTabs}
@@ -2472,6 +2590,7 @@ export default function App() {
                 browserOpenRequest={browserOpenRequest}
                 showToast={showToast}
                 onResizeStart={handleRightWorkbenchResizeStart}
+                onCancelAgentRun={cancelAgentMuxRun}
                 onClose={() => setRightWorkbenchOpen(false)}
               />
             ) : null}

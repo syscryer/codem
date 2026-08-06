@@ -18,7 +18,6 @@ import {
   Globe2,
   GitMerge,
   GitPullRequest,
-  LayoutDashboard,
   Link2,
   LoaderCircle,
   MoreHorizontal,
@@ -38,6 +37,9 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProper
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
+import { AgentMuxRunDetail } from './AgentMuxPrototype';
+import { AgentMuxAvatar } from './AgentMuxAvatar';
+import { agentProvider } from './ConversationContextPrototype';
 import { MemoGitDiffViewer } from './GitDiffViewer';
 import { GitConflictMergeDialog } from './git-conflict/GitConflictMergeDialog';
 import { GitConflictOverviewDialog } from './git-conflict/GitConflictOverviewDialog';
@@ -123,6 +125,8 @@ import {
   type WorkbenchBrowserTab,
 } from '../lib/workbench-browser';
 import { isTauriRuntime } from '../lib/window-material';
+import { listAgentMuxRunEvents } from '../lib/agent-mux-api';
+import type { AgentMuxRun, AgentMuxRunEvent } from '../lib/agent-mux-api';
 import type {
   GitFileStatus,
   GitOperationState,
@@ -132,7 +136,6 @@ import type {
   ProjectSummary,
   ReviewDisplayMode,
   RightWorkbenchTab,
-  ThreadDetail,
   WorkbenchPreviewContentState,
   WorkbenchBrowserOpenRequest,
   WorkbenchPreviewRequest,
@@ -142,8 +145,7 @@ import type {
 type RightWorkbenchProps = {
   activeTab: RightWorkbenchTab;
   activeProject: ProjectSummary | null;
-  activeThread: ThreadDetail | null;
-  isRunning: boolean;
+  selectedAgentRun: AgentMuxRun | null;
   filePreviewTabs: WorkbenchPreviewTab[];
   activeFilePreviewKey: string;
   reviewPreviewTabs: WorkbenchPreviewTab[];
@@ -168,6 +170,7 @@ type RightWorkbenchProps = {
   browserOpenRequest: WorkbenchBrowserOpenRequest | null;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onCancelAgentRun: (run: AgentMuxRun) => Promise<void>;
   onClose: () => void;
 };
 
@@ -196,8 +199,7 @@ type PendingRevertConfirm = {
 export function RightWorkbench({
   activeTab,
   activeProject,
-  activeThread,
-  isRunning,
+  selectedAgentRun,
   filePreviewTabs,
   activeFilePreviewKey,
   reviewPreviewTabs,
@@ -222,18 +224,34 @@ export function RightWorkbench({
   browserOpenRequest,
   showToast,
   onResizeStart,
+  onCancelAgentRun,
   onClose,
 }: RightWorkbenchProps) {
+  const [agentRunEvents, setAgentRunEvents] = useState<AgentMuxRunEvent[]>([]);
+
+  useEffect(() => {
+    if (activeTab !== 'agent' || !selectedAgentRun) {
+      setAgentRunEvents([]);
+      return;
+    }
+    let disposed = false;
+    const refresh = () => void listAgentMuxRunEvents(selectedAgentRun.id)
+      .then((events) => { if (!disposed) setAgentRunEvents(events); })
+      .catch(() => undefined);
+    refresh();
+    if (!['running', 'queued', 'waiting'].includes(selectedAgentRun.status)) return () => { disposed = true; };
+    const timer = window.setInterval(refresh, 1_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [activeTab, selectedAgentRun?.id, selectedAgentRun?.status]);
+
   return (
     <aside className="right-workbench" aria-label="右侧工作台">
       <div className="right-workbench-resizer" onPointerDown={onResizeStart} aria-hidden="true" />
       <div className="right-workbench-tabs" role="tablist" aria-label="工作台工具">
-        <WorkbenchTab
-          active={activeTab === 'overview'}
-          icon={<LayoutDashboard size={15} />}
-          label="概览"
-          onClick={() => onSelectTab('overview')}
-        />
+        {selectedAgentRun ? <WorkbenchTab active={activeTab === 'agent'} icon={<AgentMuxAvatar avatar={selectedAgentRun.avatar} providerId={agentProvider(selectedAgentRun)} size="small" />} label={selectedAgentRun.nickname?.trim() || selectedAgentRun.target} onClick={() => onSelectTab('agent')} /> : null}
         <WorkbenchTab
           active={activeTab === 'files'}
           icon={<Folder size={15} />}
@@ -252,17 +270,14 @@ export function RightWorkbench({
           label="浏览器"
           onClick={() => onSelectTab('browser')}
         />
-        <button type="button" className="right-workbench-tab ghost" title="稍后添加工具">
-          <Plus size={16} />
-        </button>
         <button type="button" className="right-workbench-close" title="收起工作台" onClick={onClose}>
           <PanelRightClose size={15} />
         </button>
       </div>
 
       <div className="right-workbench-content">
-        <WorkbenchTabPanel active={activeTab === 'overview'}>
-          <MemoWorkbenchOverview activeProject={activeProject} activeThread={activeThread} isRunning={isRunning} />
+        <WorkbenchTabPanel active={activeTab === 'agent'}>
+          {selectedAgentRun ? <div className="agent-mux-detail-panel agent-mux-workbench-detail"><AgentMuxRunDetail run={selectedAgentRun} events={agentRunEvents} providerId={agentProvider(selectedAgentRun)} onCancel={() => onCancelAgentRun(selectedAgentRun)} onBack={onClose} /></div> : null}
         </WorkbenchTabPanel>
         <WorkbenchTabPanel active={activeTab === 'files'}>
           <MemoWorkbenchFiles
@@ -357,34 +372,6 @@ function WorkbenchTab({
       {icon}
       <span>{label}</span>
     </button>
-  );
-}
-
-function WorkbenchOverview({
-  activeProject,
-  activeThread,
-  isRunning,
-}: {
-  activeProject: ProjectSummary | null;
-  activeThread: ThreadDetail | null;
-  isRunning: boolean;
-}) {
-  return (
-    <section className="workbench-panel">
-      <div className="workbench-section-head">
-        <h3>概览</h3>
-        <p>当前项目和会话的轻量状态。</p>
-      </div>
-      <div className="workbench-overview-grid">
-        <InfoTile label="项目" value={activeProject?.name ?? '未选择项目'} />
-        <InfoTile label="会话" value={activeThread?.title ?? '未选择聊天'} />
-        <InfoTile label="运行状态" value={isRunning ? '正在运行' : '空闲'} />
-        <InfoTile
-          label="Git 变更"
-          value={activeProject ? `${activeProject.gitDiff.filesChanged} 个文件` : '无项目'}
-        />
-      </div>
-    </section>
   );
 }
 
@@ -3744,7 +3731,6 @@ function WorkbenchBrowserShell({
   );
 }
 
-const MemoWorkbenchOverview = memo(WorkbenchOverview);
 const MemoWorkbenchFiles = memo(WorkbenchFiles);
 const MemoWorkbenchBrowserShell = memo(WorkbenchBrowserShell);
 
@@ -4269,13 +4255,4 @@ function readGitDiffStats(content: string) {
 
 function formatPullModeLabel(mode: GitPullMode) {
   return mode === 'merge' ? '合并拉取' : '变基拉取';
-}
-
-function InfoTile({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="workbench-info-tile">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
 }

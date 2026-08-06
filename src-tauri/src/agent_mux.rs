@@ -15,6 +15,45 @@ use std::{
 
 const AGENT_MUX_SKILL_NAME: &str = "codem-agent-mux";
 const MAX_AGENT_MUX_SKILL_BYTES: usize = 256 * 1024;
+const MAX_AGENT_MUX_NICKNAME_CHARS: usize = 32;
+const AGENT_MUX_AVATARS: [&str; 36] = [
+    "rabbit",
+    "fox",
+    "penguin",
+    "turtle",
+    "cat",
+    "owl",
+    "shiba",
+    "koala",
+    "panda",
+    "otter",
+    "frog",
+    "lion",
+    "hedgehog",
+    "bird",
+    "raccoon",
+    "chick",
+    "pig",
+    "whale",
+    "crocodile",
+    "chipmunk",
+    "polar-bear",
+    "deer",
+    "dolphin",
+    "hamster",
+    "alpaca",
+    "crow",
+    "duck",
+    "red-panda",
+    "elephant",
+    "bat",
+    "sheep",
+    "unicorn",
+    "leopard",
+    "snowy-owl",
+    "bee",
+    "husky",
+];
 
 #[derive(Clone)]
 pub struct AgentMuxService {
@@ -27,6 +66,10 @@ pub struct RuntimeProfile {
     pub id: String,
     pub provider: String,
     pub model: String,
+    #[serde(default)]
+    pub nickname: Option<String>,
+    #[serde(default)]
+    pub avatar: Option<String>,
     #[serde(rename = "reasoningEffort", default)]
     pub reasoning_effort: Option<String>,
     pub level: String,
@@ -52,6 +95,8 @@ pub struct RunRecord {
     pub caller: String,
     pub target: String,
     pub profile: String,
+    pub nickname: Option<String>,
+    pub avatar: Option<String>,
     pub skill: String,
     pub status: String,
     pub duration: String,
@@ -64,6 +109,8 @@ pub struct RunRecord {
     pub provider_run_id: Option<String>,
     #[serde(rename = "workingDirectory")]
     pub working_directory: Option<String>,
+    #[serde(rename = "threadId")]
+    pub thread_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +161,10 @@ pub struct CreateRunRequest {
     pub caller: String,
     pub target: String,
     pub profile: String,
+    #[serde(default)]
+    pub nickname: Option<String>,
+    #[serde(default)]
+    pub avatar: Option<String>,
     #[serde(default = "default_skill")]
     pub skill: String,
     pub status: String,
@@ -129,6 +180,8 @@ pub struct CreateRunRequest {
     pub profile_id: Option<String>,
     #[serde(rename = "workingDirectory", default)]
     pub working_directory: Option<String>,
+    #[serde(rename = "threadId", default)]
+    pub thread_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -428,7 +481,7 @@ async fn list_profiles(State(service): State<AgentMuxService>) -> ApiResult<Vec<
 
 async fn create_profile(
     State(service): State<AgentMuxService>,
-    Json(payload): Json<CreateProfileRequest>,
+    Json(mut payload): Json<CreateProfileRequest>,
 ) -> ApiResult<RuntimeProfile> {
     let connection = service.connection()?;
     ensure_schema(&connection)?;
@@ -442,6 +495,7 @@ async fn create_profile(
     if !agent_exists {
         return Err(client_error("Agent 类型不存在"));
     }
+    normalize_profile_identity(&mut payload.profile)?;
     write_profile(&connection, &payload.agent_id, &payload.profile)?;
     Ok(Json(payload.profile))
 }
@@ -454,10 +508,11 @@ async fn update_profile(
     let connection = service.connection()?;
     ensure_schema(&connection)?;
     profile.id = profile_id.clone();
+    normalize_profile_identity(&mut profile)?;
     let changed = connection
         .execute(
-            "UPDATE agent_mux_profiles SET provider = ?2, model = ?3, level = ?4, tags_json = ?5, role = ?6, status = ?7, channel_id = ?8, reasoning_effort = ?9, updated_at = datetime('now') WHERE id = ?1",
-            params![profile_id, profile.provider, profile.model, profile.level, serde_json::to_string(&profile.tags).map_err(internal_error)?, profile.role, profile.status, profile.channel_id, profile.reasoning_effort],
+            "UPDATE agent_mux_profiles SET provider = ?2, model = ?3, level = ?4, tags_json = ?5, role = ?6, status = ?7, channel_id = ?8, reasoning_effort = ?9, nickname = ?10, avatar = ?11, updated_at = datetime('now') WHERE id = ?1",
+            params![profile_id, profile.provider, profile.model, profile.level, serde_json::to_string(&profile.tags).map_err(internal_error)?, profile.role, profile.status, profile.channel_id, profile.reasoning_effort, profile.nickname, profile.avatar],
         )
         .map_err(internal_error)?;
     if changed == 0 {
@@ -507,16 +562,17 @@ async fn list_runs(State(service): State<AgentMuxService>) -> ApiResult<Vec<RunR
 
 async fn create_run(
     State(service): State<AgentMuxService>,
-    Json(payload): Json<CreateRunRequest>,
+    Json(mut payload): Json<CreateRunRequest>,
 ) -> ApiResult<RunRecord> {
     validate_run_request(&payload)?;
+    normalize_run_identity(&mut payload)?;
     let connection = service.connection()?;
     ensure_schema(&connection)?;
     let id = format!("mux-{}", uuid::Uuid::new_v4());
     connection
         .execute(
-            "INSERT INTO agent_mux_runs (id, caller, target, profile, skill, status, duration, started, prompt, summary, profile_id, working_directory) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![id, payload.caller.trim(), payload.target.trim(), payload.profile.trim(), payload.skill.trim(), payload.status, payload.duration, payload.started, payload.prompt, payload.summary.trim(), payload.profile_id, payload.working_directory],
+            "INSERT INTO agent_mux_runs (id, caller, target, profile, nickname, avatar, skill, status, duration, started, prompt, summary, profile_id, working_directory, thread_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![id, payload.caller.trim(), payload.target.trim(), payload.profile.trim(), payload.nickname, payload.avatar, payload.skill.trim(), payload.status, payload.duration, payload.started, payload.prompt, payload.summary.trim(), payload.profile_id, payload.working_directory, payload.thread_id],
         )
         .map_err(internal_error)?;
     let run =
@@ -624,9 +680,14 @@ fn ensure_schema(connection: &Connection) -> Result<(), (StatusCode, Json<Value>
             .map_err(internal_error)?;
     }
     ensure_column(connection, "agent_mux_profiles", "reasoning_effort", "TEXT")?;
+    ensure_column(connection, "agent_mux_profiles", "nickname", "TEXT")?;
+    ensure_column(connection, "agent_mux_profiles", "avatar", "TEXT")?;
     ensure_column(connection, "agent_mux_runs", "profile_id", "TEXT")?;
     ensure_column(connection, "agent_mux_runs", "provider_run_id", "TEXT")?;
     ensure_column(connection, "agent_mux_runs", "working_directory", "TEXT")?;
+    ensure_column(connection, "agent_mux_runs", "thread_id", "TEXT")?;
+    ensure_column(connection, "agent_mux_runs", "nickname", "TEXT")?;
+    ensure_column(connection, "agent_mux_runs", "avatar", "TEXT")?;
     ensure_column(
         connection,
         "agent_mux_runs",
@@ -710,7 +771,7 @@ fn write_profile(
     agent_id: &str,
     profile: &RuntimeProfile,
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    connection.execute("INSERT OR REPLACE INTO agent_mux_profiles (id, agent_id, provider, model, level, tags_json, role, status, channel_id, reasoning_effort, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))", params![profile.id, agent_id, profile.provider, profile.model, profile.level, serde_json::to_string(&profile.tags).map_err(internal_error)?, profile.role, profile.status, profile.channel_id, profile.reasoning_effort]).map_err(internal_error)?;
+    connection.execute("INSERT OR REPLACE INTO agent_mux_profiles (id, agent_id, provider, model, level, tags_json, role, status, channel_id, reasoning_effort, nickname, avatar, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))", params![profile.id, agent_id, profile.provider, profile.model, profile.level, serde_json::to_string(&profile.tags).map_err(internal_error)?, profile.role, profile.status, profile.channel_id, profile.reasoning_effort, profile.nickname, profile.avatar]).map_err(internal_error)?;
     Ok(())
 }
 
@@ -731,7 +792,7 @@ fn read_agents(connection: &Connection) -> Result<Vec<AgentRecord>, (StatusCode,
         .map_err(internal_error)?;
     let mut agents: Vec<AgentRecord> = rows.collect::<Result<_, _>>().map_err(internal_error)?;
     for agent in &mut agents {
-        let mut profiles = connection.prepare("SELECT id, provider, model, level, tags_json, role, status, channel_id, reasoning_effort FROM agent_mux_profiles WHERE agent_id = ?1 ORDER BY rowid").map_err(internal_error)?;
+        let mut profiles = connection.prepare("SELECT id, provider, model, level, tags_json, role, status, channel_id, reasoning_effort, nickname, avatar FROM agent_mux_profiles WHERE agent_id = ?1 ORDER BY rowid").map_err(internal_error)?;
         agent.profiles = profiles
             .query_map([&agent.id], |row| {
                 Ok(RuntimeProfile {
@@ -744,6 +805,8 @@ fn read_agents(connection: &Connection) -> Result<Vec<AgentRecord>, (StatusCode,
                     status: row.get(6)?,
                     channel_id: row.get(7)?,
                     reasoning_effort: row.get(8)?,
+                    nickname: row.get(9)?,
+                    avatar: row.get(10)?,
                 })
             })
             .map_err(internal_error)?
@@ -757,7 +820,7 @@ fn read_profile(
     connection: &Connection,
     id: &str,
 ) -> Result<Option<RuntimeProfile>, (StatusCode, Json<Value>)> {
-    connection.query_row("SELECT id, provider, model, level, tags_json, role, status, channel_id, reasoning_effort FROM agent_mux_profiles WHERE id = ?1", [id], |row| Ok(RuntimeProfile { id: row.get(0)?, provider: row.get(1)?, model: row.get(2)?, level: row.get(3)?, tags: parse_tags(row.get::<_, String>(4)?), role: row.get(5)?, status: row.get(6)?, channel_id: row.get(7)?, reasoning_effort: row.get(8)? })).optional().map_err(internal_error)
+    connection.query_row("SELECT id, provider, model, level, tags_json, role, status, channel_id, reasoning_effort, nickname, avatar FROM agent_mux_profiles WHERE id = ?1", [id], |row| Ok(RuntimeProfile { id: row.get(0)?, provider: row.get(1)?, model: row.get(2)?, level: row.get(3)?, tags: parse_tags(row.get::<_, String>(4)?), role: row.get(5)?, status: row.get(6)?, channel_id: row.get(7)?, reasoning_effort: row.get(8)?, nickname: row.get(9)?, avatar: row.get(10)? })).optional().map_err(internal_error)
 }
 
 fn read_overview(connection: &Connection) -> Result<AgentMuxOverview, (StatusCode, Json<Value>)> {
@@ -770,7 +833,7 @@ fn read_overview(connection: &Connection) -> Result<AgentMuxOverview, (StatusCod
 
 fn read_runs(connection: &Connection) -> Result<Vec<RunRecord>, (StatusCode, Json<Value>)> {
     let mut statement = connection
-        .prepare("SELECT id, caller, target, profile, skill, status, duration, started, prompt, summary, profile_id, provider_run_id, working_directory FROM agent_mux_runs ORDER BY created_at DESC LIMIT 100")
+        .prepare("SELECT id, caller, target, profile, skill, status, duration, started, prompt, summary, profile_id, provider_run_id, working_directory, thread_id, nickname, avatar FROM agent_mux_runs ORDER BY created_at DESC LIMIT 100")
         .map_err(internal_error)?;
     let runs = statement
         .query_map([], |row| {
@@ -788,6 +851,9 @@ fn read_runs(connection: &Connection) -> Result<Vec<RunRecord>, (StatusCode, Jso
                 profile_id: row.get(10)?,
                 provider_run_id: row.get(11)?,
                 working_directory: row.get(12)?,
+                thread_id: row.get(13)?,
+                nickname: row.get(14)?,
+                avatar: row.get(15)?,
             })
         })
         .map_err(internal_error)?
@@ -802,7 +868,7 @@ fn read_run(
 ) -> Result<Option<RunRecord>, (StatusCode, Json<Value>)> {
     connection
         .query_row(
-            "SELECT id, caller, target, profile, skill, status, duration, started, prompt, summary, profile_id, provider_run_id, working_directory FROM agent_mux_runs WHERE id = ?1",
+            "SELECT id, caller, target, profile, skill, status, duration, started, prompt, summary, profile_id, provider_run_id, working_directory, thread_id, nickname, avatar FROM agent_mux_runs WHERE id = ?1",
             [id],
             |row| {
                 Ok(RunRecord {
@@ -819,6 +885,9 @@ fn read_run(
                     profile_id: row.get(10)?,
                     provider_run_id: row.get(11)?,
                     working_directory: row.get(12)?,
+                    thread_id: row.get(13)?,
+                    nickname: row.get(14)?,
+                    avatar: row.get(15)?,
                 })
             },
         )
@@ -878,12 +947,61 @@ fn read_metrics(connection: &Connection) -> Result<AgentMuxMetrics, (StatusCode,
     })
 }
 
+fn normalize_profile_identity(
+    profile: &mut RuntimeProfile,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    normalize_nickname(&mut profile.nickname)?;
+    normalize_avatar(&mut profile.avatar)
+}
+
+fn normalize_run_identity(payload: &mut CreateRunRequest) -> Result<(), (StatusCode, Json<Value>)> {
+    normalize_nickname(&mut payload.nickname)?;
+    normalize_avatar(&mut payload.avatar)
+}
+
+fn normalize_nickname(value: &mut Option<String>) -> Result<(), (StatusCode, Json<Value>)> {
+    let normalized = value
+        .take()
+        .map(|nickname| nickname.trim().to_string())
+        .filter(|nickname| !nickname.is_empty());
+    if normalized
+        .as_deref()
+        .is_some_and(|nickname| nickname.chars().count() > MAX_AGENT_MUX_NICKNAME_CHARS)
+    {
+        return Err(client_error("Agent 昵称不能超过 32 个字符"));
+    }
+    *value = normalized;
+    Ok(())
+}
+
+fn normalize_avatar(value: &mut Option<String>) -> Result<(), (StatusCode, Json<Value>)> {
+    let normalized = value
+        .take()
+        .map(|avatar| avatar.trim().to_string())
+        .filter(|avatar| !avatar.is_empty());
+    if normalized
+        .as_deref()
+        .is_some_and(|avatar| !AGENT_MUX_AVATARS.contains(&avatar))
+    {
+        return Err(client_error("Agent 图标不是有效的内置图标"));
+    }
+    *value = normalized;
+    Ok(())
+}
+
 fn validate_run_request(payload: &CreateRunRequest) -> Result<(), (StatusCode, Json<Value>)> {
     if payload.caller.trim().is_empty()
         || payload.target.trim().is_empty()
         || payload.profile.trim().is_empty()
     {
         return Err(client_error("运行记录缺少调用方、目标 Agent 或运行配置"));
+    }
+    if payload
+        .thread_id
+        .as_deref()
+        .is_some_and(|thread_id| thread_id.trim().is_empty() || thread_id.len() > 128)
+    {
+        return Err(client_error("threadId 无效"));
     }
     validate_run_status(&payload.status)
 }
@@ -1024,12 +1142,14 @@ mod tests {
     }
 
     #[test]
-    fn profile_reasoning_effort_is_persisted() {
+    fn profile_identity_and_reasoning_are_persisted() {
         let connection = test_connection();
-        let profile = RuntimeProfile {
+        let mut profile = RuntimeProfile {
             id: "codex-reasoning".to_string(),
             provider: "OpenAI Codex".to_string(),
             model: "gpt-5.6-sol".to_string(),
+            nickname: Some("  审查员  ".to_string()),
+            avatar: Some("fox".to_string()),
             reasoning_effort: Some("high".to_string()),
             level: "高级".to_string(),
             tags: vec!["代码生成".to_string()],
@@ -1038,12 +1158,17 @@ mod tests {
             channel_id: None,
         };
 
+        normalize_profile_identity(&mut profile).expect("normalize profile identity");
         write_profile(&connection, "codex", &profile).expect("persist reasoning effort");
         let stored = read_profile(&connection, &profile.id)
             .expect("read profile")
             .expect("profile exists");
 
+        assert_eq!(stored.nickname.as_deref(), Some("审查员"));
+        assert_eq!(stored.avatar.as_deref(), Some("fox"));
         assert_eq!(stored.reasoning_effort.as_deref(), Some("high"));
+        let mut invalid_avatar = Some("https://example.com/avatar.png".to_string());
+        assert!(normalize_avatar(&mut invalid_avatar).is_err());
     }
 
     #[test]
@@ -1087,6 +1212,35 @@ mod tests {
             .expect("run exists");
         assert_eq!(run.prompt, "检查完整改动并输出审查报告");
         assert_eq!(run.summary, "发现两个问题");
+    }
+
+    #[test]
+    fn run_thread_id_is_optional_and_persisted() {
+        let connection = test_connection();
+        connection.execute(
+            "INSERT INTO agent_mux_runs (id, caller, target, profile, skill, status, thread_id) VALUES ('thread-run', 'OpenAI Codex', 'Codex', 'OpenAI / sol', 'codem-agent-mux', 'running', 'thread-42')",
+            [],
+        ).expect("insert thread-associated Agent Mux run");
+        connection.execute(
+            "INSERT INTO agent_mux_runs (id, caller, target, profile, skill, status) VALUES ('external-run', '外部调用', 'Codex', 'OpenAI / sol', 'codem-agent-mux', 'completed')",
+            [],
+        ).expect("insert external Agent Mux run");
+
+        assert_eq!(
+            read_run(&connection, "thread-run")
+                .expect("read associated run")
+                .expect("associated run exists")
+                .thread_id
+                .as_deref(),
+            Some("thread-42")
+        );
+        assert_eq!(
+            read_run(&connection, "external-run")
+                .expect("read external run")
+                .expect("external run exists")
+                .thread_id,
+            None
+        );
     }
 
     #[test]

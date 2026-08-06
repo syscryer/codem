@@ -1389,10 +1389,14 @@ async fn start_agent_run(
     let channel_fingerprint = channel_runtime
         .as_ref()
         .map(|runtime| runtime.fingerprint.clone());
-    let environment = channel_runtime
+    let mut environment = channel_runtime
         .as_ref()
         .map(|runtime| runtime.env.clone())
         .unwrap_or_default();
+    environment.insert(
+        "CODEM_THREAD_ID".to_string(),
+        thread_id.clone().unwrap_or_default(),
+    );
     let codex_config_args = channel_runtime
         .as_ref()
         .map(|runtime| runtime.codex_config_args.clone())

@@ -19203,6 +19203,7 @@ async fn get_or_create_claude_runtime(
     if let Some(channel_runtime) = channel_runtime {
         process.envs(&channel_runtime.env);
     }
+    process.env("CODEM_THREAD_ID", thread_id);
     let mut child = process
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

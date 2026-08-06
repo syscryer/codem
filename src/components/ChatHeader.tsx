@@ -10,6 +10,7 @@ import {
   GitPullRequest,
   FolderOpen,
   LoaderCircle,
+  Layers3,
   MessageSquarePlus,
   MoreHorizontal,
   Pencil,
@@ -76,6 +77,8 @@ export type ChatHeaderActionsProps = {
   onToggleTerminalDock: () => void;
   terminalDockAvailable: boolean;
   rightWorkbenchOpen: boolean;
+  contextIslandOpen: boolean;
+  onToggleContextIsland: () => void;
   onToggleRightWorkbench: () => void;
   onOpenReviewWorkbench: () => void;
 };
@@ -102,6 +105,8 @@ export function ChatHeader({
   onToggleTerminalDock,
   terminalDockAvailable,
   rightWorkbenchOpen,
+  contextIslandOpen,
+  onToggleContextIsland,
   onToggleRightWorkbench,
   onOpenReviewWorkbench,
   threadForkAvailability,
@@ -236,6 +241,8 @@ export function ChatHeader({
         onToggleTerminalDock={onToggleTerminalDock}
         terminalDockAvailable={terminalDockAvailable}
         rightWorkbenchOpen={rightWorkbenchOpen}
+        contextIslandOpen={contextIslandOpen}
+        onToggleContextIsland={onToggleContextIsland}
         onToggleRightWorkbench={onToggleRightWorkbench}
         onOpenReviewWorkbench={onOpenReviewWorkbench}
       />
@@ -263,6 +270,8 @@ export function ChatHeaderActions({
   onToggleTerminalDock,
   terminalDockAvailable,
   rightWorkbenchOpen,
+  contextIslandOpen,
+  onToggleContextIsland,
   onToggleRightWorkbench,
   onOpenReviewWorkbench,
   compact = false,
@@ -332,6 +341,18 @@ export function ChatHeaderActions({
       >
         <FolderOpen size={15} />
       </button>
+      {!rightWorkbenchOpen ? (
+        <button
+          type="button"
+          className={`icon-button context-island-toggle${contextIslandOpen ? ' active' : ''}`}
+          title={contextIslandOpen ? '收起会话上下文' : '显示会话上下文'}
+          aria-label={contextIslandOpen ? '收起会话上下文' : '显示会话上下文'}
+          aria-pressed={contextIslandOpen}
+          onClick={onToggleContextIsland}
+        >
+          <Layers3 size={15} />
+        </button>
+      ) : null}
       {!rightWorkbenchOpen ? (
         <button
           type="button"
