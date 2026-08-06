@@ -118,8 +118,11 @@ test('Agent Mux profile configuration selects the channel before its model catal
 
   assert.ok(channelField >= 0);
   assert.ok(modelField > channelField);
+  assert.match(dialogSource, /buildAgentSystemChannelModelCatalog\(providerId, selectedSystemChannel, nativeModelCatalog \?\? null\)/);
   assert.match(dialogSource, /buildAgentChannelModelCatalog\(providerId, selectedAgentChannel, nativeModelCatalog \?\? null\)/);
   assert.match(dialogSource, /channelId === 'system' \? undefined/);
+  assert.match(dialogSource, /channelId === 'system' \? <div className="agent-mux-readonly-field">/);
+  assert.match(dialogSource, /channel\.ccSwitchProviderName\?\.trim\(\) \|\| providerLabel/);
 });
 
 test('Agent Mux skill records the caller agent without requesting a session name', () => {

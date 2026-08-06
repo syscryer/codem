@@ -7,6 +7,7 @@ import type {
   AiProviderTemplate,
   ClaudeModelOption,
 } from '../types';
+import { CLAUDE_CODE_PROVIDER_ID } from '../constants';
 
 export const SYSTEM_AGENT_CHANNEL_ID = 'system';
 
@@ -158,12 +159,12 @@ export function buildAgentChannelModelCatalog(
   nativeCatalog: AgentModelCatalog | null,
 ) {
   if (!channel) {
-    return withKnownAgentModelCapabilities(nativeCatalog);
+    return withKnownAgentModelCapabilities(providerId, nativeCatalog);
   }
 
   const enabledModels = channel.models.filter((model) => model.enabled);
   const defaultModel = enabledModels.find((model) => model.isDefault);
-  return {
+  return withKnownAgentModelCapabilities(providerId, {
     providerId,
     defaultModelId: defaultModel?.modelId,
     models: enabledModels.map((model) => {
@@ -183,20 +184,64 @@ export function buildAgentChannelModelCatalog(
           : native?.supportedReasoningEfforts ?? [],
       } satisfies AgentModelOption;
     }),
-  } satisfies AgentModelCatalog;
+  } satisfies AgentModelCatalog);
 }
 
-function withKnownAgentModelCapabilities(catalog: AgentModelCatalog | null) {
+export function buildAgentSystemChannelModelCatalog(
+  providerId: AgentProviderId,
+  channel: AgentSystemChannel | undefined,
+  nativeCatalog: AgentModelCatalog | null,
+) {
+  const configuredModelId = channel?.model?.trim();
+  const nativeModel = configuredModelId
+    ? nativeCatalog?.models.find((model) => model.id === configuredModelId)
+    : nativeCatalog?.models.find((model) => model.isDefault) ?? nativeCatalog?.models[0];
+  const modelId = configuredModelId || nativeModel?.id;
+  if (!modelId) {
+    return null;
+  }
+  return withKnownAgentModelCapabilities(providerId, {
+    providerId,
+    defaultModelId: modelId,
+    models: [{
+      id: modelId,
+      label: nativeModel?.label || modelId,
+      description: nativeModel?.description || channel?.detail,
+      contextWindowTokens: nativeModel?.contextWindowTokens,
+      isDefault: true,
+      defaultReasoningEffort: nativeModel?.defaultReasoningEffort,
+      supportedReasoningEfforts: nativeModel?.supportedReasoningEfforts ?? [],
+    }],
+  });
+}
+
+function withKnownAgentModelCapabilities(
+  providerId: AgentProviderId,
+  catalog: AgentModelCatalog | null,
+) {
   if (!catalog) {
     return catalog;
   }
   return {
     ...catalog,
     models: catalog.models.map((model) => {
-      if (
-        model.id.trim().toLocaleLowerCase() !== 'deepseek-v4-flash'
-        || model.supportedReasoningEfforts.length > 0
-      ) {
+      if (model.supportedReasoningEfforts.length > 0) {
+        return model;
+      }
+      if (providerId === CLAUDE_CODE_PROVIDER_ID) {
+        return {
+          ...model,
+          supportedReasoningEfforts: [
+            { id: 'low', description: '更快，适合简单修改' },
+            { id: 'medium', description: '平衡速度和推理' },
+            { id: 'high', description: '复杂代码和排查问题' },
+            { id: 'xhigh', description: '更深入的推理' },
+            { id: 'max', description: '当前会话最高努力级别' },
+            { id: 'ultracode', description: 'xhigh 与自动 workflows，仅当前会话' },
+          ],
+        };
+      }
+      if (model.id.trim().toLocaleLowerCase() !== 'deepseek-v4-flash') {
         return model;
       }
       return {

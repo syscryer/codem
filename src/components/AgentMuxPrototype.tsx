@@ -3,7 +3,7 @@ import { cancelAgentMuxProviderRun, createAgentMuxProfile, createAgentMuxRun, cr
 import { agentMuxConversationKey, groupAgentMuxRunsByConversation } from '../lib/agent-mux-api';
 import type { AgentMuxMetrics, AgentMuxRun, AgentMuxRunEvent, AgentMuxRuntimeInfo, AgentMuxSkillSource, AgentMuxSkillTarget } from '../lib/agent-mux-api';
 import { fetchAgentChannelBootstrap, testAgentChannel } from '../lib/agent-channel-api';
-import { buildAgentChannelModelCatalog } from '../lib/agent-channel-selection';
+import { buildAgentChannelModelCatalog, buildAgentSystemChannelModelCatalog } from '../lib/agent-channel-selection';
 import { fetchAgentModelCatalog, fetchAgentProviderRegistry } from '../lib/agent-provider-registry';
 import { installSkillFromPath } from '../lib/plugins';
 import { buildAgentMuxConversationTurn, formatAgentMuxExactTime, formatAgentMuxRelativeTime } from '../lib/agent-mux-events';
@@ -842,14 +842,19 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
   const providerId = agentProviderId(agent.id);
   const availableChannels = providerId ? channels.filter((channel) => channel.providerId === providerId && channel.enabled) : [];
   const availableSystemChannels = providerId ? systemChannels.filter((channel) => channel.providerId === providerId && channel.configured) : [];
-  const channelOptions = [...availableSystemChannels.map((channel) => ({ id: 'system', name: channel.name || '系统渠道', provider: providerLabel(providerId ?? '') })), ...availableChannels.map((channel) => ({ id: channel.id, name: channel.name, provider: providerLabel(channel.providerId) }))];
+  const channelOptions = [...availableSystemChannels.map((channel) => ({ id: 'system', name: channel.name || '系统渠道', provider: channel.ccSwitchProviderName?.trim() || providerLabel(providerId ?? '') })), ...availableChannels.map((channel) => ({ id: channel.id, name: channel.name, provider: providerLabel(channel.providerId) }))];
   const initialChannel = channelOptions.find((channel) => channel.id === (profile?.channelId ?? 'system')) ?? channelOptions[0];
   const [channelId, setChannelId] = useState(profile?.channelId ?? initialChannel?.id ?? '');
   const selectedChannel = channelOptions.find((channel) => channel.id === channelId) ?? initialChannel;
+  const selectedSystemChannel = channelId === 'system' ? availableSystemChannels[0] : undefined;
   const selectedAgentChannel = channelId === 'system' ? undefined : availableChannels.find((channel) => channel.id === channelId);
   const [nativeModelCatalog, setNativeModelCatalog] = useState<AgentModelCatalog | null | undefined>(undefined);
   useEffect(() => {
     if (!providerId) {
+      setNativeModelCatalog(null);
+      return;
+    }
+    if (providerId === CLAUDE_CODE_PROVIDER_ID) {
       setNativeModelCatalog(null);
       return;
     }
@@ -859,7 +864,9 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
     return () => controller.abort();
   }, [providerId]);
   const selectedCatalog = providerId
-    ? buildAgentChannelModelCatalog(providerId, selectedAgentChannel, nativeModelCatalog ?? null)
+    ? channelId === 'system'
+      ? buildAgentSystemChannelModelCatalog(providerId, selectedSystemChannel, nativeModelCatalog ?? null)
+      : buildAgentChannelModelCatalog(providerId, selectedAgentChannel, nativeModelCatalog ?? null)
     : null;
   const selectedModels = selectedCatalog?.models ?? [];
   const provider = selectedChannel?.provider ?? profile?.provider ?? '';
@@ -872,7 +879,7 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
   const capabilityOptions = agentCapabilityOptions(agent.id);
   const [primaryCapability, setPrimaryCapability] = useState(profile?.tags[0] ?? capabilityOptions[0] ?? '');
   const [secondaryCapability, setSecondaryCapability] = useState(profile?.tags[1] ?? '');
-  const modelCatalogReady = channelId !== 'system' || nativeModelCatalog !== undefined;
+  const modelCatalogReady = channelId !== 'system' || Boolean(selectedSystemChannel?.model?.trim()) || nativeModelCatalog !== undefined;
   const defaultModelId = selectedCatalog?.defaultModelId
     ?? selectedModels.find((item) => item.isDefault)?.id
     ?? selectedModels[0]?.id
@@ -919,7 +926,7 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
           <label className="agent-mux-form-field"><span>渠道 <em>来自 Agent 设置，密钥不复制</em></span><StandardSelect ariaLabel="选择渠道" value={channelId} placeholder="选择已配置渠道" className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={channelOptions.map((channel) => ({ value: channel.id, label: channel.name }))} onChange={(next) => { setChannelId(next); setModel(''); setReasoningEffort(''); }} /></label>
           <div className="agent-mux-form-grid">
             <label className="agent-mux-form-field"><span>供应商</span><div className="agent-mux-readonly-field">{provider || '请先选择渠道'}</div></label>
-            <label className="agent-mux-form-field"><span>模型</span><StandardSelect ariaLabel="选择模型" value={model} placeholder={modelCatalogReady && selectedModels.length === 0 ? '该渠道没有可用模型' : '选择模型'} disabled={!selectedChannel || !modelCatalogReady || selectedModels.length === 0} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={selectedModels.map((item) => ({ value: item.id, label: item.label }))} onChange={(next) => { setModel(next); setReasoningEffort(''); }} /></label>
+            <label className="agent-mux-form-field"><span>模型</span>{channelId === 'system' ? <div className="agent-mux-readonly-field">{modelCatalogReady ? selectedModel?.label || '未检测到默认模型' : '读取中...'}</div> : <StandardSelect ariaLabel="选择模型" value={model} placeholder={modelCatalogReady && selectedModels.length === 0 ? '该渠道没有可用模型' : '选择模型'} disabled={!selectedChannel || !modelCatalogReady || selectedModels.length === 0} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={selectedModels.map((item) => ({ value: item.id, label: item.label }))} onChange={(next) => { setModel(next); setReasoningEffort(''); }} />}</label>
           </div>
           <label className="agent-mux-form-field"><span>思考等级 <em>默认跟随模型</em></span><StandardSelect ariaLabel="选择思考等级" value={reasoningEffort} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={reasoningOptions} onChange={setReasoningEffort} /></label>
           <div className="agent-mux-form-grid">

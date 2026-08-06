@@ -12,6 +12,7 @@ import {
   isAgentChannelSelectionAvailable,
   resolveRunAgentChannelSelection,
   buildAgentChannelModelCatalog,
+  buildAgentSystemChannelModelCatalog,
   shouldPreservePendingAgentChannelSelection,
   SYSTEM_AGENT_CHANNEL_ID,
   threadAgentChannelId,
@@ -258,6 +259,48 @@ test('system Agent channel keeps the complete native model catalog', () => {
     'gpt-5.6-terra',
     'gpt-5.6-luna',
   ]);
+});
+
+test('system Claude channel exposes the detected provider and model as one configured choice', () => {
+  const catalog = buildAgentSystemChannelModelCatalog(CLAUDE_CODE_PROVIDER_ID, {
+    id: 'system',
+    providerId: CLAUDE_CODE_PROVIDER_ID,
+    name: '系统渠道',
+    source: 'cc-switch',
+    configured: true,
+    model: 'glm-5.2',
+    ccSwitchProviderName: 'Zhipu GLM',
+    detail: '当前由 CC Switch 管理',
+  }, null);
+
+  assert.equal(catalog?.defaultModelId, 'glm-5.2');
+  assert.deepEqual(catalog?.models.map((model) => model.id), ['glm-5.2']);
+  assert.deepEqual(
+    catalog?.models[0]?.supportedReasoningEfforts.map((effort) => effort.id),
+    ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
+  );
+});
+
+test('custom Claude channel falls back to Claude Code reasoning levels', () => {
+  const catalog = buildAgentChannelModelCatalog(CLAUDE_CODE_PROVIDER_ID, {
+    ...channels[0],
+    models: [{
+      id: 'glm-model',
+      channelId: channels[0].id,
+      modelId: 'GLM-5.2',
+      displayName: 'GLM-5.2',
+      enabled: true,
+      isDefault: true,
+      capabilities: {},
+      createdAt: '2026-08-07T00:00:00Z',
+      updatedAt: '2026-08-07T00:00:00Z',
+    }],
+  }, null);
+
+  assert.deepEqual(
+    catalog?.models[0]?.supportedReasoningEfforts.map((effort) => effort.id),
+    ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
+  );
 });
 
 test('background queued runs keep the persisted thread channel', () => {
