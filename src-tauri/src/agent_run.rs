@@ -1421,6 +1421,10 @@ async fn start_agent_run(
         .ok_or_else(|| {
             AgentApiError::bad_request("permissionMode 仅支持 default、auto 或 bypassPermissions")
         })?;
+    environment.insert(
+        "CODEM_PERMISSION_MODE".to_string(),
+        permission_mode.to_string(),
+    );
     if driver == AgentDriverKind::PiRpc && thread_id.is_none() {
         return Err(AgentApiError::bad_request(
             "Pi Agent 运行需要关联 CodeM threadId",

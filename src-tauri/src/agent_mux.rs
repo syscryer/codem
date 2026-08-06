@@ -111,6 +111,8 @@ pub struct RunRecord {
     pub working_directory: Option<String>,
     #[serde(rename = "threadId")]
     pub thread_id: Option<String>,
+    #[serde(rename = "sessionId")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +184,8 @@ pub struct CreateRunRequest {
     pub working_directory: Option<String>,
     #[serde(rename = "threadId", default)]
     pub thread_id: Option<String>,
+    #[serde(rename = "sessionId", default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,6 +195,8 @@ pub struct UpdateRunRequest {
     pub summary: Option<String>,
     #[serde(rename = "providerRunId")]
     pub provider_run_id: Option<String>,
+    #[serde(rename = "sessionId")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -215,6 +221,27 @@ impl AgentMuxService {
     fn connection(&self) -> Result<Connection, (StatusCode, Json<Value>)> {
         Connection::open(&*self.database_path).map_err(internal_error)
     }
+}
+
+pub fn reconcile_interrupted_runs(app_data_dir: &FsPath) -> Result<usize, String> {
+    fs::create_dir_all(app_data_dir).map_err(|error| error.to_string())?;
+    let connection =
+        Connection::open(app_data_dir.join("codem.sqlite")).map_err(|error| error.to_string())?;
+    ensure_schema(&connection).map_err(|(_, Json(payload))| {
+        payload
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Agent Mux schema initialization failed")
+            .to_string()
+    })?;
+    reconcile_interrupted_runs_in_connection(&connection).map_err(|error| error.to_string())
+}
+
+fn reconcile_interrupted_runs_in_connection(connection: &Connection) -> rusqlite::Result<usize> {
+    connection.execute(
+        "UPDATE agent_mux_runs SET status = 'failed', summary = CASE WHEN trim(summary) = '' THEN 'Agent Mux Runtime 重启，运行已中断' ELSE summary END, updated_at = datetime('now') WHERE status IN ('running', 'queued')",
+        [],
+    )
 }
 
 pub fn router(service: AgentMuxService) -> Router {
@@ -571,8 +598,8 @@ async fn create_run(
     let id = format!("mux-{}", uuid::Uuid::new_v4());
     connection
         .execute(
-            "INSERT INTO agent_mux_runs (id, caller, target, profile, nickname, avatar, skill, status, duration, started, prompt, summary, profile_id, working_directory, thread_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-            params![id, payload.caller.trim(), payload.target.trim(), payload.profile.trim(), payload.nickname, payload.avatar, payload.skill.trim(), payload.status, payload.duration, payload.started, payload.prompt, payload.summary.trim(), payload.profile_id, payload.working_directory, payload.thread_id],
+            "INSERT INTO agent_mux_runs (id, caller, target, profile, nickname, avatar, skill, status, duration, started, prompt, summary, profile_id, working_directory, thread_id, session_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![id, payload.caller.trim(), payload.target.trim(), payload.profile.trim(), payload.nickname, payload.avatar, payload.skill.trim(), payload.status, payload.duration, payload.started, payload.prompt, payload.summary.trim(), payload.profile_id, payload.working_directory, payload.thread_id, payload.session_id],
         )
         .map_err(internal_error)?;
     let run =
@@ -583,11 +610,12 @@ async fn create_run(
 async fn update_run(
     Path(run_id): Path<String>,
     State(service): State<AgentMuxService>,
-    Json(payload): Json<UpdateRunRequest>,
+    Json(mut payload): Json<UpdateRunRequest>,
 ) -> ApiResult<RunRecord> {
     if let Some(status) = payload.status.as_deref() {
         validate_run_status(status)?;
     }
+    normalize_session_id(&mut payload.session_id)?;
     let connection = service.connection()?;
     ensure_schema(&connection)?;
     let existing = read_run(&connection, &run_id)?.ok_or_else(|| client_error("运行记录不存在"))?;
@@ -604,8 +632,8 @@ async fn update_run(
         .flatten();
     let changed = connection
         .execute(
-            "UPDATE agent_mux_runs SET status = COALESCE(?2, status), duration = COALESCE(?3, duration), summary = COALESCE(?4, summary), provider_run_id = COALESCE(?5, provider_run_id), updated_at = datetime('now') WHERE id = ?1",
-            params![run_id, status, duration, summary, payload.provider_run_id],
+            "UPDATE agent_mux_runs SET status = COALESCE(?2, status), duration = COALESCE(?3, duration), summary = COALESCE(?4, summary), provider_run_id = COALESCE(?5, provider_run_id), session_id = COALESCE(?6, session_id), updated_at = datetime('now') WHERE id = ?1",
+            params![run_id, status, duration, summary, payload.provider_run_id, payload.session_id],
         )
         .map_err(internal_error)?;
     if changed == 0 {
@@ -699,6 +727,7 @@ fn ensure_schema(connection: &Connection) -> Result<(), (StatusCode, Json<Value>
     ensure_column(connection, "agent_mux_runs", "provider_run_id", "TEXT")?;
     ensure_column(connection, "agent_mux_runs", "working_directory", "TEXT")?;
     ensure_column(connection, "agent_mux_runs", "thread_id", "TEXT")?;
+    ensure_column(connection, "agent_mux_runs", "session_id", "TEXT")?;
     ensure_column(connection, "agent_mux_runs", "nickname", "TEXT")?;
     ensure_column(connection, "agent_mux_runs", "avatar", "TEXT")?;
     ensure_column(
@@ -846,7 +875,7 @@ fn read_overview(connection: &Connection) -> Result<AgentMuxOverview, (StatusCod
 
 fn read_runs(connection: &Connection) -> Result<Vec<RunRecord>, (StatusCode, Json<Value>)> {
     let mut statement = connection
-        .prepare("SELECT id, caller, target, profile, skill, status, duration, started, prompt, summary, profile_id, provider_run_id, working_directory, thread_id, nickname, avatar FROM agent_mux_runs ORDER BY created_at DESC LIMIT 100")
+        .prepare("SELECT id, caller, target, profile, skill, status, duration, started, prompt, summary, profile_id, provider_run_id, working_directory, thread_id, nickname, avatar, session_id FROM agent_mux_runs ORDER BY created_at DESC, rowid DESC LIMIT 100")
         .map_err(internal_error)?;
     let runs = statement
         .query_map([], |row| {
@@ -867,6 +896,7 @@ fn read_runs(connection: &Connection) -> Result<Vec<RunRecord>, (StatusCode, Jso
                 thread_id: row.get(13)?,
                 nickname: row.get(14)?,
                 avatar: row.get(15)?,
+                session_id: row.get(16)?,
             })
         })
         .map_err(internal_error)?
@@ -881,7 +911,7 @@ fn read_run(
 ) -> Result<Option<RunRecord>, (StatusCode, Json<Value>)> {
     connection
         .query_row(
-            "SELECT id, caller, target, profile, skill, status, duration, started, prompt, summary, profile_id, provider_run_id, working_directory, thread_id, nickname, avatar FROM agent_mux_runs WHERE id = ?1",
+            "SELECT id, caller, target, profile, skill, status, duration, started, prompt, summary, profile_id, provider_run_id, working_directory, thread_id, nickname, avatar, session_id FROM agent_mux_runs WHERE id = ?1",
             [id],
             |row| {
                 Ok(RunRecord {
@@ -901,6 +931,7 @@ fn read_run(
                     thread_id: row.get(13)?,
                     nickname: row.get(14)?,
                     avatar: row.get(15)?,
+                    session_id: row.get(16)?,
                 })
             },
         )
@@ -969,7 +1000,23 @@ fn normalize_profile_identity(
 
 fn normalize_run_identity(payload: &mut CreateRunRequest) -> Result<(), (StatusCode, Json<Value>)> {
     normalize_nickname(&mut payload.nickname)?;
-    normalize_avatar(&mut payload.avatar)
+    normalize_avatar(&mut payload.avatar)?;
+    normalize_session_id(&mut payload.session_id)
+}
+
+fn normalize_session_id(value: &mut Option<String>) -> Result<(), (StatusCode, Json<Value>)> {
+    let normalized = value
+        .take()
+        .map(|session_id| session_id.trim().to_string())
+        .filter(|session_id| !session_id.is_empty());
+    if normalized
+        .as_deref()
+        .is_some_and(|session_id| session_id.len() > 512)
+    {
+        return Err(client_error("sessionId 无效"));
+    }
+    *value = normalized;
+    Ok(())
 }
 
 fn normalize_nickname(value: &mut Option<String>) -> Result<(), (StatusCode, Json<Value>)> {
@@ -1208,6 +1255,63 @@ mod tests {
     }
 
     #[test]
+    fn runtime_start_reconciles_only_interrupted_active_runs() {
+        let connection = test_connection();
+        for (id, status, summary) in [
+            ("running-run", "running", ""),
+            ("queued-run", "queued", "已有摘要"),
+            ("waiting-run", "waiting", "等待用户处理"),
+            ("completed-run", "completed", "已完成"),
+        ] {
+            connection.execute(
+                "INSERT INTO agent_mux_runs (id, caller, target, profile, skill, status, summary) VALUES (?1, 'CodeM', 'Codex', 'OpenAI / sol', 'codem-agent-mux', ?2, ?3)",
+                params![id, status, summary],
+            ).expect("insert Agent Mux run");
+        }
+
+        assert_eq!(
+            reconcile_interrupted_runs_in_connection(&connection)
+                .expect("reconcile interrupted runs"),
+            2
+        );
+        assert_eq!(
+            read_run(&connection, "running-run")
+                .expect("read running run")
+                .expect("running run exists")
+                .status,
+            "failed"
+        );
+        assert_eq!(
+            read_run(&connection, "running-run")
+                .expect("read running run")
+                .expect("running run exists")
+                .summary,
+            "Agent Mux Runtime 重启，运行已中断"
+        );
+        assert_eq!(
+            read_run(&connection, "queued-run")
+                .expect("read queued run")
+                .expect("queued run exists")
+                .summary,
+            "已有摘要"
+        );
+        assert_eq!(
+            read_run(&connection, "waiting-run")
+                .expect("read waiting run")
+                .expect("waiting run exists")
+                .status,
+            "waiting"
+        );
+        assert_eq!(
+            read_run(&connection, "completed-run")
+                .expect("read completed run")
+                .expect("completed run exists")
+                .status,
+            "completed"
+        );
+    }
+
+    #[test]
     fn run_prompt_survives_summary_updates() {
         let connection = test_connection();
         connection.execute(
@@ -1231,7 +1335,7 @@ mod tests {
     fn run_thread_id_is_optional_and_persisted() {
         let connection = test_connection();
         connection.execute(
-            "INSERT INTO agent_mux_runs (id, caller, target, profile, skill, status, thread_id) VALUES ('thread-run', 'OpenAI Codex', 'Codex', 'OpenAI / sol', 'codem-agent-mux', 'running', 'thread-42')",
+            "INSERT INTO agent_mux_runs (id, caller, target, profile, skill, status, thread_id, session_id) VALUES ('thread-run', 'OpenAI Codex', 'Codex', 'OpenAI / sol', 'codem-agent-mux', 'running', 'thread-42', 'session-42')",
             [],
         ).expect("insert thread-associated Agent Mux run");
         connection.execute(
@@ -1246,6 +1350,14 @@ mod tests {
                 .thread_id
                 .as_deref(),
             Some("thread-42")
+        );
+        assert_eq!(
+            read_run(&connection, "thread-run")
+                .expect("read associated run")
+                .expect("associated run exists")
+                .session_id
+                .as_deref(),
+            Some("session-42")
         );
         assert_eq!(
             read_run(&connection, "external-run")

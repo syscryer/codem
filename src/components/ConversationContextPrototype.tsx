@@ -20,7 +20,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
-import type { AgentMuxRun } from '../lib/agent-mux-api';
+import { groupAgentMuxRunsByConversation, type AgentMuxRun } from '../lib/agent-mux-api';
 import type { ConversationOutputFile } from '../lib/conversation-output-files';
 import type { GitBranchSummary, ProjectSummary } from '../types';
 import { AgentMuxAvatar } from './AgentMuxAvatar';
@@ -88,8 +88,12 @@ export function ConversationContextIsland({
   const [branchLoading, setBranchLoading] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const branchRef = useRef<HTMLDivElement | null>(null);
-  const runningCount = agentRuns.filter((run) => run.status === 'running' || run.status === 'queued').length;
-  const visibleRuns = agentRuns.slice(0, 3);
+  const conversationRuns = useMemo(
+    () => groupAgentMuxRunsByConversation(agentRuns).map((runs) => runs[0]),
+    [agentRuns],
+  );
+  const runningCount = conversationRuns.filter((run) => run.status === 'running' || run.status === 'queued').length;
+  const visibleRuns = conversationRuns.slice(0, 3);
   const filteredBranches = useMemo(() => {
     const query = branchQuery.trim().toLowerCase();
     return branches.filter((branch) => !query || branch.name.toLowerCase().includes(query));
@@ -133,15 +137,15 @@ export function ConversationContextIsland({
 
   const agentSummary = runningCount
     ? `${runningCount} 个 Agent Mux 正在运行`
-    : agentRuns.length
-      ? `${agentRuns.length} 个 Agent Mux 调用`
+    : conversationRuns.length
+      ? `${conversationRuns.length} 个 Agent Mux 调用`
       : project?.name ?? '当前会话';
 
   return (
     <aside className={`conversation-context-island${narrowOpen ? ' is-narrow-open' : ''}`} data-display-mode={displayMode} aria-label="会话上下文">
       <button type="button" className="conversation-context-capsule" aria-expanded="false" onClick={() => selectDisplayMode('expanded')}>
         {runningCount ? <span className="conversation-context-live-dot" /> : null}
-        <span>{agentRuns.length ? `${agentRuns.length} 个 Agent` : '会话上下文'}</span>
+        <span>{conversationRuns.length ? `${conversationRuns.length} 个 Agent` : '会话上下文'}</span>
         {project?.gitBranch ? <><span className="conversation-context-capsule-divider" /><GitBranch size={13} /><span>{project.gitBranch}</span></> : null}
         <ChevronDown size={13} />
       </button>
@@ -214,36 +218,10 @@ export function ConversationContextIsland({
   );
 }
 
-export function AgentInvocationGroup({ runs, onOpenRun }: { runs: AgentMuxRun[]; onOpenRun: (run: AgentMuxRun) => void }) {
-  const [expanded, setExpanded] = useState(true);
-  if (!runs.length) return null;
-  const runningCount = runs.filter((run) => run.status === 'running' || run.status === 'queued').length;
-  const completedCount = runs.filter((run) => run.status === 'completed').length;
-
-  return (
-    <section className="agent-invocation-prototype" aria-label="Agent Mux 调用">
-      <button type="button" className="agent-invocation-summary" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
-        <span className="agent-invocation-avatar-stack" aria-hidden="true">{runs.slice(0, 3).map((run) => <AgentMuxAvatar key={run.id} avatar={run.avatar} providerId={agentProvider(run)} size="small" />)}</span>
-        <span className="agent-invocation-summary-copy"><strong>调用 {runs.length} 个 Agent</strong><small>{runningCount ? `${runningCount} 个运行中` : `${completedCount} 个已完成`}</small></span>
-        {runs[0]?.duration && runs[0].duration !== '--' ? <span className="agent-invocation-time"><Clock3 size={13} />{runs[0].duration}</span> : null}
-        <ChevronDown className={expanded ? 'is-expanded' : ''} size={15} />
-      </button>
-      {expanded ? <div className="agent-invocation-list">{runs.map((run) => <InvocationRow key={run.id} run={run} onOpen={() => onOpenRun(run)} />)}</div> : null}
-    </section>
-  );
-}
-
 function ContextAgentRow({ run, onOpen }: { run: AgentMuxRun; onOpen: () => void }) {
   const running = run.status === 'running' || run.status === 'queued';
   const detail = `${run.target} · ${run.profile}`;
   return <button type="button" className="conversation-context-agent-row" onClick={onOpen} aria-label={`查看 ${run.nickname || detail} 详情`}><AgentMuxAvatar avatar={run.avatar} providerId={agentProvider(run)} size="large" /><span className="conversation-context-agent-copy"><strong title={detail}>{run.nickname || detail}</strong><small><span>{run.prompt || run.summary || 'Agent Mux 调用'}</span><em>Agent Mux</em></small></span>{running ? <span className="conversation-context-running"><span />运行中</span> : run.status === 'completed' ? <CircleCheck size={14} /> : <CircleX size={14} />}</button>;
-}
-
-function InvocationRow({ run, onOpen }: { run: AgentMuxRun; onOpen: () => void }) {
-  const running = run.status === 'running' || run.status === 'queued';
-  const title = `${run.target} · ${run.profile}`;
-  const detail = run.prompt || run.summary || 'Agent Mux 调用';
-  return <button type="button" className="agent-invocation-row is-mux" onClick={onOpen} aria-label={`查看 ${run.nickname || title} 详情`}><AgentMuxAvatar avatar={run.avatar} providerId={agentProvider(run)} size="large" /><span className="agent-invocation-copy"><span><strong title={title}>{run.nickname || title}</strong><em>Agent Mux</em></span><small title={detail}>{detail}</small></span>{running ? <span className="agent-invocation-status is-running"><span />运行中</span> : <span className="agent-invocation-status">{run.status === 'completed' ? <CircleCheck size={14} /> : <CircleX size={14} />}{run.status === 'completed' ? '已完成' : run.status === 'waiting' ? '等待处理' : run.status === 'cancelled' ? '已取消' : '失败'}</span>}</button>;
 }
 
 export function agentProvider(run: AgentMuxRun) {

@@ -60,6 +60,8 @@ test('标准 AgentRunEvent 使用聊天 reducer 重建文本和工具顺序', ()
   assert.deepEqual(transcript.items.map((item) => item.type), ['text', 'tool', 'text']);
   assert.equal(transcript.tools[0]?.resultText, 'ok');
   assert.equal(transcript.workspace, 'D:/workspace');
+  assert.equal(transcript.userText, run.prompt);
+  assert.equal(transcript.durationMs, 4_000);
 });
 
 test('旧版纯文本事件仍可迁移回聊天展示模型', () => {
@@ -74,4 +76,35 @@ test('旧版纯文本事件仍可迁移回聊天展示模型', () => {
   assert.equal(transcript.assistantText, '## 审查结果\n\n- 第一项\n');
   assert.deepEqual(transcript.items.map((item) => item.type), ['text', 'tool']);
   assert.equal(transcript.tools[0]?.name, 'Bash');
+});
+
+test('SQLite UTC 时间不按浏览器本地时区解析', () => {
+  const transcript = buildAgentMuxConversationTurn(run, [
+    {
+      ...stored(1, 'status', '开始运行'),
+      createdAt: '2026-08-06 07:24:30',
+    },
+  ]);
+
+  assert.equal(transcript.startedAtMs, Date.parse('2026-08-06T07:24:30Z'));
+});
+
+test('已完成运行优先使用数据库固化耗时', () => {
+  const transcript = buildAgentMuxConversationTurn(
+    { ...run, duration: '01:09' },
+    [
+      {
+        ...stored(1, 'done', '运行完成', {
+          type: 'done',
+          runId: 'provider-run-1',
+          result: 'ok',
+          stopReason: 'end_turn',
+        }),
+        createdAt: '2026-08-06 07:24:30',
+      },
+    ],
+  );
+
+  assert.equal(transcript.status, 'done');
+  assert.equal(transcript.durationMs, 69_000);
 });

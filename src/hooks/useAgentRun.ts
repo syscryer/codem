@@ -55,8 +55,10 @@ import {
 import { buildNewChatTitleFromSubmission, shouldAutoRenameThreadTitle } from '../lib/new-chat-draft';
 import {
   collectThreadModelPreferences,
+  isModelSelectionChannelReady,
   reasoningEffortForThreadModel,
   updateThreadModelReasoningEffort,
+  type ThreadModelPreferences,
 } from '../lib/thread-model-preferences';
 import {
   getCodexQueuedPromptGuideContent,
@@ -173,6 +175,7 @@ type UseAgentRunArgs = {
   activeThreadId: string | null;
   activeThreadSummary: ThreadSummary | null;
   activeThreadDetail: ThreadDetail | null;
+  isNewChatDraft: boolean;
   createThread: (
     projectId: string,
     title?: string,
@@ -218,6 +221,14 @@ type UseAgentRunArgs = {
   }) => void;
 };
 
+type AgentDraftSelection = {
+  permissionMode?: PermissionMode;
+  channelId?: string;
+  model?: string;
+  reasoningEffort?: string;
+  modelPreferences: ThreadModelPreferences;
+};
+
 const AGENT_CANCEL_FALLBACK_MS = 6000;
 export function useAgentRun({
   defaultProviderId,
@@ -230,6 +241,7 @@ export function useAgentRun({
   activeThreadId,
   activeThreadSummary,
   activeThreadDetail,
+  isNewChatDraft,
   createThread,
   renameThread,
   handlePickProjectDirectory,
@@ -285,6 +297,7 @@ export function useAgentRun({
   const defaultProviderIdRef = useRef(defaultProviderId);
   const selectedProviderIdRef = useRef(initialProviderId);
   const providersControllerRef = useRef<AbortController | null>(null);
+  const draftSelectionRef = useRef<AgentDraftSelection>({ modelPreferences: {} });
 
   const runningThreadIds = Object.keys(activeRunsByThreadId);
   const activeTurnIdsByThreadId = Object.fromEntries(
@@ -454,31 +467,62 @@ export function useAgentRun({
   }, [defaultProviderId, providers, providersLoading]);
 
   useEffect(() => {
-    setAgentPermissionMode(
-      isVisiblePermissionMode(activeThreadSummary?.permissionMode)
+    if (!activeThreadSummary && !isNewChatDraft) {
+      return;
+    }
+    const draftPermissionMode = draftSelectionRef.current.permissionMode;
+    const nextPermissionMode = activeThreadSummary
+      ? isVisiblePermissionMode(activeThreadSummary.permissionMode)
         ? activeThreadSummary.permissionMode
-        : defaultPermissionMode,
-    );
-  }, [activeThreadSummary?.id, activeThreadSummary?.permissionMode, defaultPermissionMode]);
+        : defaultPermissionMode
+      : isVisiblePermissionMode(draftPermissionMode)
+        ? draftPermissionMode
+        : defaultPermissionMode;
+    setAgentPermissionMode(nextPermissionMode);
+    if (!activeThreadSummary) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        permissionMode: nextPermissionMode,
+      };
+    }
+  }, [
+    activeThreadSummary?.id,
+    activeThreadSummary?.permissionMode,
+    defaultPermissionMode,
+    isNewChatDraft,
+  ]);
 
   useEffect(() => {
+    if (!activeThreadSummary && !isNewChatDraft) {
+      return;
+    }
     if (!activeThreadSummary && agentChannelsLoading) {
       return;
     }
     const nextChannelId = activeThreadSummary
       ? threadAgentChannelId(activeThreadSummary.agentChannelId)
-      : selectedProviderDefaultChannelId;
+      : draftSelectionRef.current.channelId ?? selectedProviderDefaultChannelId;
     channelIdRef.current = nextChannelId;
     setChannelIdState(nextChannelId);
+    if (!activeThreadSummary) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        channelId: nextChannelId,
+      };
+    }
   }, [
     activeThreadSummary?.agentChannelId,
     activeThreadSummary?.id,
     agentChannelsLoading,
     selectedProviderId,
     selectedProviderDefaultChannelId,
+    isNewChatDraft,
   ]);
 
   useEffect(() => {
+    if (!activeThreadSummary && !isNewChatDraft) {
+      return;
+    }
     const selectedChannelId = channelIdRef.current;
     if (
       agentChannelsLoading
@@ -495,6 +539,15 @@ export function useAgentRun({
     setAgentModel(DEFAULT_MODEL_VALUE);
     setAgentReasoningEffort('');
     setModelSelectionWarning('');
+    if (!activeThreadSummary) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        channelId: SYSTEM_AGENT_CHANNEL_ID,
+        model: DEFAULT_MODEL_VALUE,
+        reasoningEffort: '',
+        modelPreferences: {},
+      };
+    }
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, {
         channelId: null,
@@ -508,6 +561,8 @@ export function useAgentRun({
     activeThreadId,
     agentChannels,
     agentChannelsLoading,
+    activeThreadSummary,
+    isNewChatDraft,
     persistThreadMetadata,
     selectedProviderId,
     showToast,
@@ -560,17 +615,34 @@ export function useAgentRun({
   }, [channelId, selectedProviderId]);
 
   useEffect(() => {
+    if (!activeThreadSummary && !isNewChatDraft) {
+      return;
+    }
+    const draftSelection = draftSelectionRef.current;
+    const targetChannelId = activeThreadSummary
+      ? threadAgentChannelId(activeThreadSummary.agentChannelId)
+      : draftSelection.channelId ?? selectedProviderDefaultChannelId;
+    if (!isModelSelectionChannelReady(channelId, targetChannelId)) {
+      return;
+    }
     if (!currentModelCatalog) {
-      setAgentModel(DEFAULT_MODEL_VALUE);
-      setAgentReasoningEffort('');
+      modelPreferencesRef.current = activeThreadSummary ? {} : draftSelection.modelPreferences;
+      setAgentModel(activeThreadSummary ? DEFAULT_MODEL_VALUE : draftSelection.model ?? DEFAULT_MODEL_VALUE);
+      setAgentReasoningEffort(activeThreadSummary ? '' : draftSelection.reasoningEffort ?? '');
       setModelSelectionWarning('');
       return;
     }
     const threadMatchesCatalog = activeThreadSummary?.provider === currentModelCatalog.providerId;
-    const preferences = collectThreadModelPreferences(
-      threadMatchesCatalog ? activeThreadSummary : undefined,
-    );
-    const savedModelId = threadMatchesCatalog ? activeThreadSummary?.model : undefined;
+    const preferences = threadMatchesCatalog
+      ? collectThreadModelPreferences(activeThreadSummary)
+      : isNewChatDraft
+        ? draftSelection.modelPreferences
+        : {};
+    const savedModelId = threadMatchesCatalog
+      ? activeThreadSummary?.model
+      : isNewChatDraft
+        ? draftSelection.model
+        : undefined;
     const savedReasoningEffort = reasoningEffortForThreadModel(preferences, savedModelId);
     modelPreferencesRef.current = preferences;
     const resolved = resolveAgentModelSelection(
@@ -580,6 +652,14 @@ export function useAgentRun({
     );
     setAgentModel(resolved.modelId);
     setAgentReasoningEffort(resolved.reasoningEffort);
+    if (!activeThreadSummary) {
+      draftSelectionRef.current = {
+        ...draftSelection,
+        model: resolved.modelId,
+        reasoningEffort: resolved.reasoningEffort,
+        modelPreferences: preferences,
+      };
+    }
     if (resolved.staleModelId) {
       setModelSelectionWarning(
         `已保存的模型 ${resolved.staleModelId} 当前不可用，运行时将使用 Provider 默认模型。`,
@@ -593,6 +673,14 @@ export function useAgentRun({
         resolved.modelId,
         resolved.reasoningEffort,
       );
+      if (!activeThreadSummary) {
+        draftSelectionRef.current = {
+          ...draftSelectionRef.current,
+          model: resolved.modelId,
+          reasoningEffort: resolved.reasoningEffort,
+          modelPreferences: modelPreferencesRef.current,
+        };
+      }
       if (activeThreadId) {
         void persistThreadMetadata(activeThreadId, {
           model: resolved.modelId === DEFAULT_MODEL_VALUE ? null : resolved.modelId,
@@ -610,9 +698,12 @@ export function useAgentRun({
     activeThreadSummary?.provider,
     activeThreadSummary?.reasoningEffort,
     activeThreadSummary?.modelPreferences,
+    activeThreadSummary?.agentChannelId,
     channelId,
     activeThreadId,
     currentModelCatalog,
+    isNewChatDraft,
+    selectedProviderDefaultChannelId,
   ]);
 
   useEffect(() => {
@@ -687,21 +778,6 @@ export function useAgentRun({
     defaultPermissionMode,
   ]);
 
-  function resetDraftProvider() {
-    const providerId = defaultProviderIdRef.current;
-    const nextChannelId = defaultAgentChannelId(
-      agentChannels,
-      providerId,
-      defaultAgentChannelIds[providerId],
-    );
-    setDraftProviderId(providerId);
-    channelIdRef.current = nextChannelId;
-    setChannelIdState(nextChannelId);
-    setAgentPermissionMode(defaultPermissionMode);
-    resetDraftModelSelection(providerId);
-    setModelSelectionWarning('');
-  }
-
   function selectDraftProvider(providerId: string) {
     const nextChannelId = defaultAgentChannelId(
       agentChannels,
@@ -712,6 +788,13 @@ export function useAgentRun({
       setDraftProviderId(providerId);
       channelIdRef.current = nextChannelId;
       setChannelIdState(nextChannelId);
+      draftSelectionRef.current = {
+        permissionMode: defaultPermissionMode,
+        channelId: nextChannelId,
+        model: DEFAULT_MODEL_VALUE,
+        reasoningEffort: '',
+        modelPreferences: {},
+      };
       resetDraftModelSelection(providerId);
       setModelSelectionWarning('');
       return true;
@@ -726,6 +809,13 @@ export function useAgentRun({
       setAgentPermissionMode(defaultPermissionMode);
       channelIdRef.current = nextChannelId;
       setChannelIdState(nextChannelId);
+      draftSelectionRef.current = {
+        permissionMode: defaultPermissionMode,
+        channelId: nextChannelId,
+        model: DEFAULT_MODEL_VALUE,
+        reasoningEffort: '',
+        modelPreferences: {},
+      };
       resetDraftModelSelection(providerId);
       setModelSelectionWarning('');
     }
@@ -757,12 +847,28 @@ export function useAgentRun({
     if (!cached) {
       setAgentModel(DEFAULT_MODEL_VALUE);
       setAgentReasoningEffort('');
+      if (isNewChatDraft) {
+        draftSelectionRef.current = {
+          ...draftSelectionRef.current,
+          model: DEFAULT_MODEL_VALUE,
+          reasoningEffort: '',
+          modelPreferences: {},
+        };
+      }
       return;
     }
     setModelCatalog(cached);
     const resolved = resolveAgentModelSelection(cached);
     setAgentModel(resolved.modelId);
     setAgentReasoningEffort(resolved.reasoningEffort);
+    if (isNewChatDraft) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        model: resolved.modelId,
+        reasoningEffort: resolved.reasoningEffort,
+        modelPreferences: {},
+      };
+    }
     if (snapshot.stale) {
       void agentModelCatalogCache.load(providerId).then((catalog) => {
         if (selectedProviderIdRef.current === providerId) {
@@ -789,6 +895,14 @@ export function useAgentRun({
         null,
       );
       setModelSelectionWarning('');
+      if (isNewChatDraft) {
+        draftSelectionRef.current = {
+          ...draftSelectionRef.current,
+          model: DEFAULT_MODEL_VALUE,
+          reasoningEffort: '',
+          modelPreferences: modelPreferencesRef.current,
+        };
+      }
       if (activeThreadId) {
         void persistThreadMetadata(activeThreadId, {
           model: null,
@@ -833,6 +947,14 @@ export function useAgentRun({
       nextEffort,
     );
     setModelSelectionWarning('');
+    if (isNewChatDraft) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        model: nextModel,
+        reasoningEffort: nextEffort,
+        modelPreferences: modelPreferencesRef.current,
+      };
+    }
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, {
         model: nextModel === DEFAULT_MODEL_VALUE ? null : nextModel,
@@ -867,6 +989,14 @@ export function useAgentRun({
       nextEffort,
     );
     setModelSelectionWarning('');
+    if (isNewChatDraft) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        model: modelRef.current,
+        reasoningEffort: nextEffort,
+        modelPreferences: modelPreferencesRef.current,
+      };
+    }
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, {
         model: modelRef.current === DEFAULT_MODEL_VALUE ? null : modelRef.current,
@@ -932,6 +1062,15 @@ export function useAgentRun({
     setAgentModel(DEFAULT_MODEL_VALUE);
     setAgentReasoningEffort('');
     setModelSelectionWarning('');
+    if (isNewChatDraft) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        channelId: nextChannelId,
+        model: DEFAULT_MODEL_VALUE,
+        reasoningEffort: '',
+        modelPreferences: {},
+      };
+    }
 
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, {
@@ -957,6 +1096,12 @@ export function useAgentRun({
     }
     const previousMode = permissionModeRef.current;
     setAgentPermissionMode(mode);
+    if (isNewChatDraft) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        permissionMode: mode,
+      };
+    }
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, { permissionMode: mode }).catch((error) => {
         setAgentPermissionMode(previousMode);
@@ -2375,7 +2520,6 @@ export function useAgentRun({
     modelsError,
     modelSelectionWarning,
     selectDraftProvider,
-    resetDraftProvider,
     handlePermissionModeSelect,
     handleModelSelect,
     handleReasoningEffortSelect,

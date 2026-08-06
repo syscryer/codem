@@ -125,7 +125,7 @@ import {
   type WorkbenchBrowserTab,
 } from '../lib/workbench-browser';
 import { isTauriRuntime } from '../lib/window-material';
-import { listAgentMuxRunEvents } from '../lib/agent-mux-api';
+import { agentMuxConversationKey, listAgentMuxRunEvents } from '../lib/agent-mux-api';
 import type { AgentMuxRun, AgentMuxRunEvent } from '../lib/agent-mux-api';
 import type {
   GitFileStatus,
@@ -145,6 +145,7 @@ import type {
 type RightWorkbenchProps = {
   activeTab: RightWorkbenchTab;
   activeProject: ProjectSummary | null;
+  agentRuns: AgentMuxRun[];
   selectedAgentRun: AgentMuxRun | null;
   filePreviewTabs: WorkbenchPreviewTab[];
   activeFilePreviewKey: string;
@@ -199,6 +200,7 @@ type PendingRevertConfirm = {
 export function RightWorkbench({
   activeTab,
   activeProject,
+  agentRuns,
   selectedAgentRun,
   filePreviewTabs,
   activeFilePreviewKey,
@@ -227,25 +229,31 @@ export function RightWorkbench({
   onCancelAgentRun,
   onClose,
 }: RightWorkbenchProps) {
-  const [agentRunEvents, setAgentRunEvents] = useState<AgentMuxRunEvent[]>([]);
+  const [agentRunEventsById, setAgentRunEventsById] = useState<Record<string, AgentMuxRunEvent[]>>({});
+  const selectedAgentConversationRuns = useMemo(() => {
+    if (!selectedAgentRun) return [];
+    const key = agentMuxConversationKey(selectedAgentRun);
+    if (!key) return [selectedAgentRun];
+    return agentRuns.filter((run) => agentMuxConversationKey(run) === key).reverse();
+  }, [agentRuns, selectedAgentRun]);
 
   useEffect(() => {
-    if (activeTab !== 'agent' || !selectedAgentRun) {
-      setAgentRunEvents([]);
+    if (activeTab !== 'agent' || selectedAgentConversationRuns.length === 0) {
+      setAgentRunEventsById({});
       return;
     }
     let disposed = false;
-    const refresh = () => void listAgentMuxRunEvents(selectedAgentRun.id)
-      .then((events) => { if (!disposed) setAgentRunEvents(events); })
+    const refresh = () => void Promise.all(selectedAgentConversationRuns.map(async (run) => [run.id, await listAgentMuxRunEvents(run.id)] as const))
+      .then((entries) => { if (!disposed) setAgentRunEventsById(Object.fromEntries(entries)); })
       .catch(() => undefined);
     refresh();
-    if (!['running', 'queued', 'waiting'].includes(selectedAgentRun.status)) return () => { disposed = true; };
+    if (!selectedAgentConversationRuns.some((run) => ['running', 'queued', 'waiting'].includes(run.status))) return () => { disposed = true; };
     const timer = window.setInterval(refresh, 1_000);
     return () => {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [activeTab, selectedAgentRun?.id, selectedAgentRun?.status]);
+  }, [activeTab, selectedAgentConversationRuns]);
 
   return (
     <aside className="right-workbench" aria-label="右侧工作台">
@@ -277,7 +285,7 @@ export function RightWorkbench({
 
       <div className="right-workbench-content">
         <WorkbenchTabPanel active={activeTab === 'agent'}>
-          {selectedAgentRun ? <div className="agent-mux-detail-panel agent-mux-workbench-detail"><AgentMuxRunDetail run={selectedAgentRun} events={agentRunEvents} providerId={agentProvider(selectedAgentRun)} onCancel={() => onCancelAgentRun(selectedAgentRun)} onBack={onClose} /></div> : null}
+          {selectedAgentRun ? <div className="agent-mux-detail-panel agent-mux-workbench-detail"><AgentMuxRunDetail runs={selectedAgentConversationRuns} eventsByRunId={agentRunEventsById} liveTurns={{}} providerId={agentProvider(selectedAgentRun)} onCancel={() => onCancelAgentRun(selectedAgentRun)} onBack={onClose} /></div> : null}
         </WorkbenchTabPanel>
         <WorkbenchTabPanel active={activeTab === 'files'}>
           <MemoWorkbenchFiles

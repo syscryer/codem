@@ -14,7 +14,7 @@ test('Claude and generic Agents receive the same configured default permission',
   );
   assert.match(
     agentRunSource,
-    /isVisiblePermissionMode\(activeThreadSummary\?\.permissionMode\)[\s\S]*: defaultPermissionMode/,
+    /const nextPermissionMode = activeThreadSummary[\s\S]*isVisiblePermissionMode\(activeThreadSummary\.permissionMode\)[\s\S]*: defaultPermissionMode/,
   );
   assert.doesNotMatch(agentRunSource, /DEFAULT_AGENT_PERMISSION_MODE/);
 });
@@ -43,5 +43,40 @@ test('custom channel model catalogs stay stable while draft model state changes'
   assert.match(
     agentRunSource,
     /const currentModelCatalog = useMemo\([\s\S]*buildAgentChannelModelCatalog[\s\S]*\[channelId, nativeModelCatalog, selectedChannel, selectedProviderId\][\s\S]*\);/,
+  );
+});
+
+test('unsent new-chat runtime selections survive switching through existing threads', () => {
+  assert.equal(appSource.match(/isNewChatDraft,/g)?.length, 3);
+  assert.match(claudeRunSource, /const draftSelectionRef = useRef<ClaudeDraftSelection>/);
+  assert.match(agentRunSource, /const draftSelectionRef = useRef<AgentDraftSelection>/);
+  assert.match(
+    claudeRunSource,
+    /if \(!activeThreadSummary && !isNewChatDraft\) \{\s*return;\s*\}/,
+  );
+  assert.match(
+    agentRunSource,
+    /if \(!activeThreadSummary && !isNewChatDraft\) \{\s*return;\s*\}/,
+  );
+  assert.match(
+    claudeRunSource,
+    /draftSelectionRef\.current = \{[\s\S]*model: nextModel,[\s\S]*effort: nextEffort/,
+  );
+  assert.match(
+    agentRunSource,
+    /draftSelectionRef\.current = \{[\s\S]*model: nextModel,[\s\S]*reasoningEffort: nextEffort/,
+  );
+  assert.doesNotMatch(
+    appSource,
+    /function handleCreateThread[\s\S]*?resetDraftProvider\(\)[\s\S]*?enterNewChatDraft/,
+  );
+  assert.doesNotMatch(agentRunSource, /function resetDraftProvider\(/);
+  assert.match(
+    claudeRunSource,
+    /if \(!isModelSelectionChannelReady\(channelId, targetChannelId\)\) \{\s*return;\s*\}/,
+  );
+  assert.match(
+    agentRunSource,
+    /if \(!isModelSelectionChannelReady\(channelId, targetChannelId\)\) \{\s*return;\s*\}/,
   );
 });

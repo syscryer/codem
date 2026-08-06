@@ -147,3 +147,12 @@ test('normalizeGeneralSettings preserves explicit intermediate process collapse 
   assert.equal(normalizeGeneralSettings({ collapseIntermediateProcess: true }).collapseIntermediateProcess, true);
   assert.equal(normalizeGeneralSettings({ collapseIntermediateProcess: false }).collapseIntermediateProcess, false);
 });
+
+test('workspace file search ignores .gitignore only when explicitly enabled', () => {
+  assert.equal(normalizeGeneralSettings({}).workspaceFileSearchRespectGitignore, false);
+  assert.equal(defaultGeneralSettings.workspaceFileSearchRespectGitignore, false);
+  assert.equal(
+    normalizeGeneralSettings({ workspaceFileSearchRespectGitignore: true }).workspaceFileSearchRespectGitignore,
+    true,
+  );
+});

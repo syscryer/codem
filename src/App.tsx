@@ -652,6 +652,7 @@ export default function App() {
     activeThreadId: activeThreadSummary?.provider === CLAUDE_CODE_PROVIDER_ID ? activeThreadId : null,
     activeThreadSummary:
       activeThreadSummary?.provider === CLAUDE_CODE_PROVIDER_ID ? activeThreadSummary : null,
+    isNewChatDraft,
     appModelSettings,
     agentChannels: agentChannels.bootstrap.channels,
     defaultAgentChannelIds: agentChannels.bootstrap.defaultChannelIds,
@@ -687,7 +688,6 @@ export default function App() {
     modelsError: genericAgentModelsError,
     modelSelectionWarning: genericAgentModelSelectionWarning,
     selectDraftProvider,
-    resetDraftProvider,
     handlePermissionModeSelect: handleGenericAgentPermissionModeSelect,
     handleModelSelect: handleGenericAgentModelSelect,
     handleReasoningEffortSelect: handleGenericAgentReasoningEffortSelect,
@@ -723,6 +723,7 @@ export default function App() {
       activeThreadRuntimeKind === 'generic' ? activeThreadSummary : null,
     activeThreadDetail:
       activeThreadRuntimeKind === 'generic' ? activeThread : null,
+    isNewChatDraft,
     createThread,
     renameThread,
     handlePickProjectDirectory,
@@ -1370,7 +1371,6 @@ export default function App() {
       rememberCurrentLocation();
     }
     setAppView({ kind: 'workspace' });
-    resetDraftProvider();
     await enterNewChatDraft(projectId);
   }
 
@@ -2440,8 +2440,6 @@ export default function App() {
                 clockNowMs={clockNowMs}
                 isRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
                 activeTurnId={activeThreadId ? activeTurnIdsByThreadId[activeThreadId] ?? '' : ''}
-                agentMuxRuns={activeThreadAgentMuxRuns}
-                onOpenAgentRun={openAgentMuxRun}
                 transcriptRef={transcriptRef}
                 bottomRef={conversationBottomRef}
               undoneTurnIds={undoneTurnIds}
@@ -2565,6 +2563,7 @@ export default function App() {
               <RightWorkbench
                 activeTab={rightWorkbenchTab}
                 activeProject={activeProject}
+                agentRuns={activeThreadAgentMuxRuns}
                 selectedAgentRun={selectedAgentMuxRun}
                 filePreviewTabs={filePreviewTabs}
                 activeFilePreviewKey={activeFilePreviewKey}

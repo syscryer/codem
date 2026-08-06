@@ -31,13 +31,14 @@ test('Agent Mux overview rows open the selected monitor run', () => {
 test('Agent Mux monitor shows profile avatars in run rows and details', () => {
   assert.match(componentSource, /<MonitorView agents=\{agentRecords\}/);
   assert.match(componentSource, /<AgentMuxAvatar avatar=\{run\.avatar\} providerId=\{providerId\} size="small"/);
-  assert.match(componentSource, /className="agent-mux-detail-title"[\s\S]*?<AgentMuxAvatar avatar=\{run\.avatar\} providerId=\{providerId\} size="large"/);
-  assert.match(stylesSource, /\.agent-mux-monitor-page \.agent-mux-run-summary \{ margin: 12px 0; padding: 8px 0; \}/);
-  assert.match(stylesSource, /\.agent-mux-monitor-page \.agent-mux-detail-heading \.agent-mux-run-prompt p \{ max-height: 56px; \}/);
+  assert.match(componentSource, /className="agent-mux-detail-title"[\s\S]*?<AgentMuxAvatar avatar=\{latest\.avatar\} providerId=\{providerId\} size="large"/);
+  assert.match(componentSource, /className="conversation agent-mux-conversation-log"/);
+  assert.match(componentSource, /<ConversationTurnView/);
 });
 
-test('run detail shows the immutable prompt and no empty More menu remains', () => {
-  assert.match(componentSource, /<span>调用提示词<\/span><p>\{run\.prompt \|\| '旧记录未保存原始提示词'\}<\/p>/);
+test('run detail reuses the conversation turn and no empty More menu remains', () => {
+  assert.match(componentSource, /buildAgentMuxConversationTurn\(run, events\)/);
+  assert.match(componentSource, /<AgentMuxRunLog key=\{item\.id\} run=\{item\}/);
   assert.doesNotMatch(componentSource, /MoreHorizontal/);
   assert.doesNotMatch(componentSource, />更多<\/button>/);
 });
@@ -101,6 +102,17 @@ test('global add profile allows selecting an agent while scoped profile actions 
   assert.match(componentSource, /allowAgentSelection \? <StandardSelect ariaLabel="选择 Agent 类型"/);
   assert.match(componentSource, /onAddProfile=\{\(\) => setProfileDialog\(\{ agentId: selectedAgent\.id \}\)\}/);
   assert.match(componentSource, /onEditProfile=\{\(profile\) => setProfileDialog\(\{ agentId: selectedAgent\.id, profile \}\)\}/);
+});
+
+test('Agent Mux profile configuration selects the channel before its model catalog', () => {
+  const dialogSource = componentSource.slice(componentSource.indexOf('function AddRuntimeProfileDialog'));
+  const channelField = dialogSource.indexOf('ariaLabel="选择渠道"');
+  const modelField = dialogSource.indexOf('ariaLabel="选择模型"');
+
+  assert.ok(channelField >= 0);
+  assert.ok(modelField > channelField);
+  assert.match(dialogSource, /buildAgentChannelModelCatalog\(providerId, selectedAgentChannel, nativeModelCatalog \?\? null\)/);
+  assert.match(dialogSource, /channelId === 'system' \? undefined/);
 });
 
 test('Agent Mux skill records the caller agent without requesting a session name', () => {

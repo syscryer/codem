@@ -123,17 +123,14 @@ async fn run(args: Vec<String>, app_data_dir: PathBuf) -> Result<(), String> {
     match command {
         "ensure" => {
             let discovery = ensure_runtime(&app_data_dir).await?;
-            println!("{}", discovery.public_json());
+            println!("{}", json_for_stdout(&discovery.public_json(), false)?);
             Ok(())
         }
         "agents" => {
             let api = ApiClient::connect(&app_data_dir).await?;
             let overview = api.get("/api/agent-mux/overview").await?;
             if args.iter().any(|arg| arg == "--json") {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&overview).map_err(|error| error.to_string())?
-                );
+                println!("{}", json_for_stdout(&overview, true)?);
             } else {
                 print_agents(&overview);
             }
@@ -143,14 +140,12 @@ async fn run(args: Vec<String>, app_data_dir: PathBuf) -> Result<(), String> {
             let discovery = read_live_discovery(&app_data_dir).await?;
             let api = ApiClient::from_discovery(&discovery)?;
             let overview = api.get("/api/agent-mux/overview").await?;
-            println!(
-                "{}",
-                json!({
-                    "runtime": discovery.public_json(),
-                    "metrics": overview.get("metrics").cloned().unwrap_or(Value::Null),
-                    "runs": overview.get("runs").cloned().unwrap_or(Value::Array(Vec::new())),
-                })
-            );
+            let status = json!({
+                "runtime": discovery.public_json(),
+                "metrics": overview.get("metrics").cloned().unwrap_or(Value::Null),
+                "runs": overview.get("runs").cloned().unwrap_or(Value::Array(Vec::new())),
+            });
+            println!("{}", json_for_stdout(&status, false)?);
             Ok(())
         }
         "invoke" => invoke(&args, &app_data_dir).await,
@@ -163,12 +158,40 @@ async fn run(args: Vec<String>, app_data_dir: PathBuf) -> Result<(), String> {
     }
 }
 
+fn json_for_stdout(value: &Value, pretty: bool) -> Result<String, String> {
+    let serialized = if pretty {
+        serde_json::to_string_pretty(value)
+    } else {
+        serde_json::to_string(value)
+    }
+    .map_err(|error| error.to_string())?;
+
+    Ok(escape_non_ascii_json(&serialized))
+}
+
+fn escape_non_ascii_json(serialized: &str) -> String {
+    let mut output = String::with_capacity(serialized.len());
+    for character in serialized.chars() {
+        if character.is_ascii() {
+            output.push(character);
+            continue;
+        }
+
+        let mut units = [0_u16; 2];
+        for &unit in character.encode_utf16(&mut units).iter() {
+            output.push_str(&format!("\\u{unit:04X}"));
+        }
+    }
+    output
+}
+
 fn serve(args: &[String], app_data_dir: &Path) -> Result<(), String> {
     let port = option(args, "--port")
         .and_then(|value| value.parse::<u16>().ok())
         .ok_or_else(|| "serve 缺少有效的 --port".to_string())?;
     env::set_var("CODEM_BACKEND_PORT", port.to_string());
     env::set_var("CODEM_APP_DATA_DIR", app_data_dir);
+    codem::agent_mux::reconcile_interrupted_runs(app_data_dir)?;
     codem::backend::run_from_env_blocking()
 }
 
@@ -409,7 +432,12 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
     let (agent, profile) = select_profile(&overview, option(args, "--profile").as_deref())?;
     let prompt = option(args, "--prompt").ok_or_else(|| "invoke 缺少 --prompt".to_string())?;
     let working_directory = option(args, "--working-directory").unwrap_or_else(|| ".".to_string());
-    let permission_mode = option(args, "--permission").unwrap_or_else(|| "default".to_string());
+    let requested_permission_mode = option(args, "--permission");
+    let inherited_permission_mode = env::var("CODEM_PERMISSION_MODE").ok();
+    let permission_mode = resolve_permission_mode(
+        requested_permission_mode.as_deref(),
+        inherited_permission_mode.as_deref(),
+    );
     let caller = caller_label(args)?;
     let thread_id = optional_environment_value(env::var("CODEM_THREAD_ID").ok());
     let provider_id = provider_id(agent.get("id").and_then(Value::as_str).unwrap_or_default())
@@ -430,6 +458,12 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
         .get("id")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let resumed_session_id = resumable_session_id(
+        &overview,
+        thread_id.as_deref(),
+        profile_id,
+        &working_directory,
+    );
     let channel_id = profile
         .get("channelId")
         .and_then(Value::as_str)
@@ -446,6 +480,7 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
                 "profileId": profile_id,
                 "workingDirectory": working_directory,
                 "threadId": thread_id,
+                "sessionId": resumed_session_id,
                 "skill": "codem-agent-mux",
                 "status": "queued",
                 "duration": "--",
@@ -474,6 +509,7 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
         model,
         reasoning_effort,
         &permission_mode,
+        resumed_session_id.as_deref(),
     );
     let response = api.raw_post(endpoint, payload).await?;
     if !response.status().is_success() {
@@ -505,6 +541,8 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
     let mut buffer = String::new();
     let mut answer = String::new();
     let mut output_buffer = String::new();
+    let mut thinking_buffer = String::new();
+    let mut session_id = resumed_session_id;
     let mut status = "failed";
     let stream_result = async {
         let mut stop_reading = false;
@@ -519,6 +557,8 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
                     &line,
                     &mut answer,
                     &mut output_buffer,
+                    &mut thinking_buffer,
+                    &mut session_id,
                     &mut status,
                 )
                 .await?;
@@ -538,19 +578,22 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
                 &buffer,
                 &mut answer,
                 &mut output_buffer,
+                &mut thinking_buffer,
+                &mut session_id,
                 &mut status,
             )
             .await?;
         }
-        flush_output(&api, &run_id, &mut output_buffer).await
+        flush_text_buffers(&api, &run_id, &mut output_buffer, &mut thinking_buffer).await
     }
     .await;
     if let Err(error) = stream_result {
         if let Some(runtime_id) = claude_runtime_id.as_deref() {
             let _ = close_claude_runtime(&api, runtime_id).await;
         }
-        let _ = flush_output(&api, &run_id, &mut output_buffer).await;
-        let _ = api.event(&run_id, "error", &error).await;
+        let _ = flush_text_buffers(&api, &run_id, &mut output_buffer, &mut thinking_buffer).await;
+        let error_event = json!({ "type": "error", "runId": run_id, "message": error });
+        let _ = api.event(&run_id, "error", &error, Some(error_event)).await;
         let _ = api
             .patch(
                 &format!("/api/agent-mux/runs/{run_id}"),
@@ -593,6 +636,41 @@ fn optional_environment_value(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn resolve_permission_mode(requested: Option<&str>, inherited: Option<&str>) -> String {
+    if inherited.is_some_and(|value| value.trim() == "bypassPermissions") {
+        return "bypassPermissions".to_string();
+    }
+    requested
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("default")
+        .to_string()
+}
+
+fn resumable_session_id(
+    overview: &Value,
+    thread_id: Option<&str>,
+    profile_id: &str,
+    working_directory: &str,
+) -> Option<String> {
+    let thread_id = thread_id?;
+    overview.get("runs")?.as_array()?.iter().find_map(|run| {
+        let status = run.get("status").and_then(Value::as_str)?;
+        if matches!(status, "running" | "queued")
+            || run.get("threadId").and_then(Value::as_str) != Some(thread_id)
+            || run.get("profileId").and_then(Value::as_str) != Some(profile_id)
+            || run.get("workingDirectory").and_then(Value::as_str) != Some(working_directory)
+        {
+            return None;
+        }
+        run.get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|session_id| !session_id.is_empty())
+            .map(str::to_string)
+    })
+}
+
 fn agent_run_request(
     provider_id: &str,
     run_id: &str,
@@ -602,6 +680,7 @@ fn agent_run_request(
     model: &str,
     reasoning_effort: Option<&str>,
     permission_mode: &str,
+    session_id: Option<&str>,
 ) -> (&'static str, Value, Option<String>) {
     if provider_id == PROVIDER_CLAUDE {
         let runtime_id = format!("agent-mux-{run_id}");
@@ -615,6 +694,7 @@ fn agent_run_request(
                 "model": model,
                 "effort": reasoning_effort,
                 "permissionMode": permission_mode,
+                "sessionId": session_id,
             }),
             Some(runtime_id),
         );
@@ -630,6 +710,7 @@ fn agent_run_request(
             "model": model,
             "reasoningEffort": reasoning_effort,
             "permissionMode": permission_mode,
+            "sessionId": session_id,
         }),
         None,
     )
@@ -650,6 +731,8 @@ async fn consume_event(
     line: &str,
     answer: &mut String,
     output_buffer: &mut String,
+    thinking_buffer: &mut String,
+    session_id: &mut Option<String>,
     status: &mut &str,
 ) -> Result<(), String> {
     if line.trim().is_empty() {
@@ -662,8 +745,14 @@ async fn consume_event(
         .and_then(Value::as_str)
         .unwrap_or_default();
     match event_type {
+        "session" => {
+            persist_session_id(api, run_id, &event, session_id).await?;
+            api.event(run_id, event_type, "Agent 会话已建立", Some(event.clone()))
+                .await?;
+        }
         "delta" => {
             if let Some(text) = event.get("text").and_then(Value::as_str) {
+                flush_thinking(api, run_id, thinking_buffer).await?;
                 answer.push_str(text);
                 output_buffer.push_str(text);
                 print!("{text}");
@@ -673,8 +762,18 @@ async fn consume_event(
                 }
             }
         }
-        "status" | "phase" | "tool-start" => {
-            flush_output(api, run_id, output_buffer).await?;
+        "thinking-delta" => {
+            if let Some(text) = event.get("text").and_then(Value::as_str) {
+                flush_output(api, run_id, output_buffer).await?;
+                thinking_buffer.push_str(text);
+                if thinking_buffer.len() >= 1000 {
+                    flush_thinking(api, run_id, thinking_buffer).await?;
+                }
+            }
+        }
+        "status" | "phase" | "tool-start" | "tool-input-delta" | "tool-stop" | "tool-result"
+        | "usage" => {
+            flush_text_buffers(api, run_id, output_buffer, thinking_buffer).await?;
             let message = event
                 .get("message")
                 .or_else(|| event.get("label"))
@@ -687,11 +786,12 @@ async fn consume_event(
                 } else {
                     message.to_string()
                 };
-                api.event(run_id, event_type, &event_message).await?;
+                api.event(run_id, event_type, &event_message, Some(event.clone()))
+                    .await?;
             }
         }
         "approval-request" | "request-user-input" => {
-            flush_output(api, run_id, output_buffer).await?;
+            flush_text_buffers(api, run_id, output_buffer, thinking_buffer).await?;
             *status = "waiting";
             api.event(
                 run_id,
@@ -701,11 +801,12 @@ async fn consume_event(
                 } else {
                     "等待用户输入"
                 },
+                Some(event.clone()),
             )
             .await?;
         }
         "error" => {
-            flush_output(api, run_id, output_buffer).await?;
+            flush_text_buffers(api, run_id, output_buffer, thinking_buffer).await?;
             *status = "failed";
             api.event(
                 run_id,
@@ -714,10 +815,12 @@ async fn consume_event(
                     .get("message")
                     .and_then(Value::as_str)
                     .unwrap_or("Agent 运行失败"),
+                Some(event.clone()),
             )
             .await?;
         }
         "done" => {
+            persist_session_id(api, run_id, &event, session_id).await?;
             if answer.is_empty() {
                 if let Some(result) = event.get("result").and_then(Value::as_str) {
                     answer.push_str(result);
@@ -726,7 +829,7 @@ async fn consume_event(
                     let _ = std::io::stdout().flush();
                 }
             }
-            flush_output(api, run_id, output_buffer).await?;
+            flush_text_buffers(api, run_id, output_buffer, thinking_buffer).await?;
             let reason = event
                 .get("stopReason")
                 .and_then(Value::as_str)
@@ -737,9 +840,41 @@ async fn consume_event(
             } else {
                 "completed"
             };
+            api.event(run_id, event_type, "运行完成", Some(event.clone()))
+                .await?;
         }
-        _ => {}
+        _ => {
+            flush_text_buffers(api, run_id, output_buffer, thinking_buffer).await?;
+            api.event(run_id, event_type, event_type, Some(event.clone()))
+                .await?;
+        }
     }
+    Ok(())
+}
+
+async fn persist_session_id(
+    api: &ApiClient,
+    run_id: &str,
+    event: &Value,
+    current: &mut Option<String>,
+) -> Result<(), String> {
+    let Some(session_id) = event
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|session_id| !session_id.is_empty())
+    else {
+        return Ok(());
+    };
+    if current.as_deref() == Some(session_id) {
+        return Ok(());
+    }
+    api.patch(
+        &format!("/api/agent-mux/runs/{run_id}"),
+        json!({ "sessionId": session_id }),
+    )
+    .await?;
+    *current = Some(session_id.to_string());
     Ok(())
 }
 
@@ -752,7 +887,36 @@ async fn flush_output(
         return Ok(());
     }
     let output = std::mem::take(output_buffer);
-    api.event(run_id, "output", &output).await
+    let payload = buffered_text_event(run_id, "delta", &output);
+    api.event(run_id, "output", &output, Some(payload)).await
+}
+
+async fn flush_thinking(
+    api: &ApiClient,
+    run_id: &str,
+    thinking_buffer: &mut String,
+) -> Result<(), String> {
+    if thinking_buffer.is_empty() {
+        return Ok(());
+    }
+    let thinking = std::mem::take(thinking_buffer);
+    let payload = buffered_text_event(run_id, "thinking-delta", &thinking);
+    api.event(run_id, "thinking-delta", &thinking, Some(payload))
+        .await
+}
+
+async fn flush_text_buffers(
+    api: &ApiClient,
+    run_id: &str,
+    output_buffer: &mut String,
+    thinking_buffer: &mut String,
+) -> Result<(), String> {
+    flush_output(api, run_id, output_buffer).await?;
+    flush_thinking(api, run_id, thinking_buffer).await
+}
+
+fn buffered_text_event(run_id: &str, event_type: &str, text: &str) -> Value {
+    json!({ "type": event_type, "runId": run_id, "text": text })
 }
 
 async fn cancel(args: &[String], app_data_dir: &Path) -> Result<(), String> {
@@ -774,14 +938,21 @@ async fn cancel(args: &[String], app_data_dir: &Path) -> Result<(), String> {
         .ok_or_else(|| "运行还没有底层 Agent ID".to_string())?;
     api.delete(&cancel_agent_endpoint(run, provider_run_id))
         .await?;
-    api.event(&run_id, "cancelled", "用户取消了运行").await?;
+    let event = json!({
+        "type": "done",
+        "runId": run_id,
+        "result": "",
+        "stopReason": "cancelled",
+    });
+    api.event(&run_id, "cancelled", "用户取消了运行", Some(event))
+        .await?;
     let final_run = api
         .patch(
             &format!("/api/agent-mux/runs/{run_id}"),
             json!({ "status": "cancelled", "summary": "任务已取消" }),
         )
         .await?;
-    println!("{}", final_run);
+    println!("{}", json_for_stdout(&final_run, false)?);
     Ok(())
 }
 
@@ -958,10 +1129,16 @@ impl ApiClient {
         self.read_json(response).await
     }
 
-    async fn event(&self, run_id: &str, event_type: &str, message: &str) -> Result<(), String> {
+    async fn event(
+        &self,
+        run_id: &str,
+        event_type: &str,
+        message: &str,
+        payload: Option<Value>,
+    ) -> Result<(), String> {
         self.post(
             &format!("/api/agent-mux/runs/{run_id}/events"),
-            json!({ "eventType": event_type, "message": message }),
+            agent_mux_event_body(event_type, message, payload),
         )
         .await
         .map(|_| ())
@@ -987,6 +1164,14 @@ impl ApiClient {
         }
         serde_json::from_str(&body).map_err(|error| format!("Runtime 返回数据无效: {error}"))
     }
+}
+
+fn agent_mux_event_body(event_type: &str, message: &str, payload: Option<Value>) -> Value {
+    json!({
+        "eventType": event_type,
+        "message": message,
+        "payload": payload,
+    })
 }
 
 #[cfg(test)]
@@ -1015,6 +1200,93 @@ mod tests {
     }
 
     #[test]
+    fn inherited_full_access_promotes_the_child_permission_mode() {
+        assert_eq!(
+            resolve_permission_mode(Some("default"), Some("bypassPermissions")),
+            "bypassPermissions"
+        );
+        assert_eq!(
+            resolve_permission_mode(None, Some("bypassPermissions")),
+            "bypassPermissions"
+        );
+        assert_eq!(
+            resolve_permission_mode(Some("auto"), Some("default")),
+            "auto"
+        );
+    }
+
+    #[test]
+    fn structured_agent_mux_event_body_preserves_payload() {
+        let payload = buffered_text_event("mux-run-1", "thinking-delta", "正在分析");
+        let body = agent_mux_event_body("thinking-delta", "正在分析", Some(payload.clone()));
+
+        assert_eq!(body.get("eventType"), Some(&json!("thinking-delta")));
+        assert_eq!(body.get("message"), Some(&json!("正在分析")));
+        assert_eq!(body.get("payload"), Some(&payload));
+        assert_eq!(payload.get("type"), Some(&json!("thinking-delta")));
+        assert_eq!(payload.get("runId"), Some(&json!("mux-run-1")));
+    }
+
+    #[test]
+    fn machine_json_output_is_ascii_safe_and_round_trips_unicode() {
+        let value = json!({
+            "nickname": "小猫",
+            "avatar": "😺",
+            "role": "小任务",
+            "tags": ["快速修复"],
+        });
+
+        let output = json_for_stdout(&value, true).expect("serialize machine JSON");
+
+        assert!(output.is_ascii());
+        assert!(output.contains("\\u5C0F\\u732B"));
+        assert!(output.contains("\\uD83D\\uDE3A"));
+        assert_eq!(
+            serde_json::from_str::<Value>(&output).expect("parse escaped JSON"),
+            value
+        );
+    }
+
+    #[test]
+    fn resumes_only_the_same_main_thread_profile_and_workspace() {
+        let overview = json!({
+            "runs": [
+                {
+                    "threadId": "thread-42",
+                    "profileId": "codex-sol",
+                    "workingDirectory": "D:/workspace",
+                    "status": "completed",
+                    "sessionId": "session-42"
+                }
+            ]
+        });
+
+        assert_eq!(
+            resumable_session_id(&overview, Some("thread-42"), "codex-sol", "D:/workspace")
+                .as_deref(),
+            Some("session-42")
+        );
+        assert_eq!(
+            resumable_session_id(
+                &overview,
+                Some("another-thread"),
+                "codex-sol",
+                "D:/workspace"
+            ),
+            None
+        );
+        assert_eq!(
+            resumable_session_id(
+                &overview,
+                Some("thread-42"),
+                "codex-sol",
+                "D:/another-workspace"
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn claude_request_uses_an_isolated_runtime_and_claude_contract() {
         let (endpoint, payload, runtime_id) = agent_run_request(
             PROVIDER_CLAUDE,
@@ -1025,12 +1297,14 @@ mod tests {
             "MiniMax-M3",
             Some("high"),
             "default",
+            Some("session-42"),
         );
 
         assert_eq!(endpoint, "/api/claude/run");
         assert_eq!(runtime_id.as_deref(), Some("agent-mux-mux-42"));
         assert_eq!(payload["threadId"], "agent-mux-mux-42");
         assert_eq!(payload["effort"], "high");
+        assert_eq!(payload["sessionId"], "session-42");
         assert!(payload.get("reasoningEffort").is_none());
     }
 

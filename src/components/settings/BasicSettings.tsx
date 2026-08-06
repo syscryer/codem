@@ -34,6 +34,8 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
     showDebugButton: general.showDebugButton ?? defaultGeneralSettings.showDebugButton,
     collapseIntermediateProcess:
       general.collapseIntermediateProcess ?? defaultGeneralSettings.collapseIntermediateProcess,
+    workspaceFileSearchRespectGitignore:
+      general.workspaceFileSearchRespectGitignore ?? defaultGeneralSettings.workspaceFileSearchRespectGitignore,
     defaultPermissionMode: general.defaultPermissionMode ?? defaultGeneralSettings.defaultPermissionMode,
     reviewHideNoiseFilesByDefault:
       general.reviewHideNoiseFilesByDefault ?? defaultGeneralSettings.reviewHideNoiseFilesByDefault,
@@ -263,6 +265,20 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
             checked={resolvedGeneral.autoCheckAppUpdate}
             onChange={(autoCheckAppUpdate) => void onUpdateGeneral({ autoCheckAppUpdate })}
             label="自动检查更新"
+          />
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="工作区文件搜索" insetTitle>
+        <SettingsRow
+          icon={Search}
+          title="搜索时遵循 .gitignore"
+          description="开启后不显示被项目 .gitignore 排除的文件；.git、node_modules、target、dist 始终不参与搜索"
+        >
+          <Toggle
+            checked={resolvedGeneral.workspaceFileSearchRespectGitignore}
+            onChange={(workspaceFileSearchRespectGitignore) => void onUpdateGeneral({ workspaceFileSearchRespectGitignore })}
+            label="搜索时遵循 .gitignore"
           />
         </SettingsRow>
       </SettingsGroup>

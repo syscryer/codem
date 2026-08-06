@@ -44,6 +44,7 @@ export const defaultGeneralSettings: GeneralSettings = {
   autoCheckAppUpdate: true,
   showDebugButton: true,
   collapseIntermediateProcess: false,
+  workspaceFileSearchRespectGitignore: false,
   defaultPermissionMode: 'default',
   reviewHideNoiseFilesByDefault: true,
   reviewDefaultDisplayMode: 'tree',
@@ -363,6 +364,10 @@ export function normalizeGeneralSettings(general: unknown): GeneralSettings {
     collapseIntermediateProcess: normalizeBoolean(
       record.collapseIntermediateProcess,
       defaultGeneralSettings.collapseIntermediateProcess,
+    ),
+    workspaceFileSearchRespectGitignore: normalizeBoolean(
+      record.workspaceFileSearchRespectGitignore,
+      defaultGeneralSettings.workspaceFileSearchRespectGitignore,
     ),
     defaultPermissionMode: normalizeOneOf(
       record.defaultPermissionMode,

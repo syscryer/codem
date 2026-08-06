@@ -23,6 +23,7 @@ use axum::{
 use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
 use command_group::{CommandGroup, GroupChild};
+use ignore::WalkBuilder;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -3879,7 +3880,10 @@ async fn open_system_path(Json(payload): Json<OpenPathRequest>) -> ApiResult<Jso
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn search_system_files(Query(query): Query<FileSearchQuery>) -> ApiResult<Json<Value>> {
+async fn search_system_files(
+    State(state): State<AppState>,
+    Query(query): Query<FileSearchQuery>,
+) -> ApiResult<Json<Value>> {
     let working_directory = query
         .working_directory
         .as_deref()
@@ -3887,7 +3891,17 @@ async fn search_system_files(Query(query): Query<FileSearchQuery>) -> ApiResult<
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ApiError::bad_request("workingDirectory 不能为空"))?;
     let root = resolve_accessible_directory(working_directory)?;
-    let files = search_workspace_files(&root, query.query.as_deref().unwrap_or_default())?;
+    let respect_gitignore = read_app_settings(&state)?
+        .get("general")
+        .and_then(|general| general.get("workspaceFileSearchRespectGitignore"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let search_query = query.query.unwrap_or_default();
+    let files = tokio::task::spawn_blocking(move || {
+        search_workspace_files(&root, &search_query, respect_gitignore)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("搜索工作区文件失败: {error}")))??;
     Ok(Json(json!({ "files": files })))
 }
 
@@ -6257,6 +6271,7 @@ fn normalize_general_settings(value: Option<&Value>) -> Value {
         "autoCheckAppUpdate": bool_setting(record, "autoCheckAppUpdate", true),
         "showDebugButton": bool_setting(record, "showDebugButton", true),
         "collapseIntermediateProcess": bool_setting(record, "collapseIntermediateProcess", false),
+        "workspaceFileSearchRespectGitignore": bool_setting(record, "workspaceFileSearchRespectGitignore", false),
         "defaultPermissionMode": enum_setting(record, "defaultPermissionMode", &["default", "auto", "bypassPermissions"], "default"),
         "reviewHideNoiseFilesByDefault": bool_setting(record, "reviewHideNoiseFilesByDefault", true),
         "reviewDefaultDisplayMode": enum_setting(record, "reviewDefaultDisplayMode", &["tree", "flat"], "tree"),
@@ -6909,6 +6924,7 @@ fn default_app_settings() -> Value {
             "autoCheckAppUpdate": true,
             "showDebugButton": true,
             "collapseIntermediateProcess": false,
+            "workspaceFileSearchRespectGitignore": false,
             "defaultPermissionMode": "default",
             "reviewHideNoiseFilesByDefault": true,
             "reviewDefaultDisplayMode": "tree",
@@ -12839,72 +12855,59 @@ fn timestamp_ms_to_iso(value: i64) -> Option<String> {
         .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
-fn search_workspace_files(root: &str, query: &str) -> ApiResult<Vec<Value>> {
+const WORKSPACE_FILE_SEARCH_RESULT_LIMIT: usize = 80;
+const WORKSPACE_FILE_SEARCH_EXCLUDED_DIRECTORIES: [&str; 4] =
+    [".git", "node_modules", "target", "dist"];
+
+fn search_workspace_files(
+    root: &str,
+    query: &str,
+    respect_gitignore: bool,
+) -> ApiResult<Vec<Value>> {
     let normalized_query = query.replace('\\', "/").to_ascii_lowercase();
     if normalized_query.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let skip_directories = [
-        ".git",
-        "node_modules",
-        "target",
-        "dist",
-        ".next",
-        ".venv",
-        "venv",
-        ".codem-attachments",
-    ];
-    let mut results: Vec<(String, String, bool, usize)> = Vec::new();
-    let mut stack = vec![(PathBuf::from(root), 0_usize)];
-    let mut index = 0_usize;
 
-    while let Some((directory, depth)) = stack.pop() {
-        if depth >= 4 || results.len() >= 500 {
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(false)
+        .parents(false)
+        .ignore(false)
+        .git_ignore(respect_gitignore)
+        .git_global(false)
+        .git_exclude(false)
+        .require_git(false)
+        .filter_entry(|entry| !is_permanently_excluded_workspace_directory(entry));
+
+    let mut results: Vec<(String, String, bool)> = Vec::new();
+    for entry in builder.build().flatten() {
+        if entry.depth() == 0 {
             continue;
         }
-        let Ok(entries) = fs::read_dir(&directory) else {
+        let path = entry.path();
+        let Some(file_type) = entry.file_type() else {
             continue;
         };
-        for entry in entries.flatten() {
-            if results.len() >= 500 {
-                break;
-            }
-            let path = entry.path();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            let is_directory = file_type.is_dir();
-            let name = entry.file_name().to_string_lossy().to_string();
-            if is_directory && skip_directories.contains(&name.as_str()) {
-                continue;
-            }
-            let rel = path
-                .strip_prefix(root)
-                .ok()
-                .map(|value| value.display().to_string().replace('\\', "/"))
-                .unwrap_or_else(|| name.clone());
-            if rel.to_ascii_lowercase().contains(&normalized_query) {
-                results.push((path.display().to_string(), rel, is_directory, index));
-                index += 1;
-            }
-            if is_directory {
-                stack.push((path, depth + 1));
-            }
+        let is_directory = file_type.is_dir();
+        let rel = path
+            .strip_prefix(root)
+            .ok()
+            .map(|value| value.display().to_string().replace('\\', "/"))
+            .unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+        if rel.to_ascii_lowercase().contains(&normalized_query) {
+            insert_ranked_file_search_result(
+                &mut results,
+                (path.display().to_string(), rel, is_directory),
+                &normalized_query,
+            );
         }
     }
 
-    results.sort_by(|left, right| {
-        file_search_score(&left.1, &normalized_query)
-            .cmp(&file_search_score(&right.1, &normalized_query))
-            .then_with(|| right.2.cmp(&left.2))
-            .then_with(|| left.1.len().cmp(&right.1.len()))
-            .then_with(|| left.1.cmp(&right.1))
-            .then_with(|| left.3.cmp(&right.3))
-    });
+    results.sort_by(|left, right| compare_file_search_results(left, right, &normalized_query));
     Ok(results
         .into_iter()
-        .take(80)
-        .map(|(path, rel, is_directory, _)| {
+        .map(|(path, rel, is_directory)| {
             json!({
                 "path": path,
                 "rel": rel,
@@ -12912,6 +12915,48 @@ fn search_workspace_files(root: &str, query: &str) -> ApiResult<Vec<Value>> {
             })
         })
         .collect())
+}
+
+fn is_permanently_excluded_workspace_directory(entry: &ignore::DirEntry) -> bool {
+    entry.depth() > 0
+        && entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_dir())
+        && entry.file_name().to_str().is_some_and(|name| {
+            WORKSPACE_FILE_SEARCH_EXCLUDED_DIRECTORIES
+                .iter()
+                .any(|excluded| name.eq_ignore_ascii_case(excluded))
+        })
+}
+
+fn insert_ranked_file_search_result(
+    results: &mut Vec<(String, String, bool)>,
+    candidate: (String, String, bool),
+    normalized_query: &str,
+) {
+    if results.len() < WORKSPACE_FILE_SEARCH_RESULT_LIMIT {
+        results.push(candidate);
+        return;
+    }
+    results.sort_by(|left, right| compare_file_search_results(left, right, normalized_query));
+    if results.last().is_some_and(|worst| {
+        compare_file_search_results(&candidate, worst, normalized_query).is_lt()
+    }) {
+        results.pop();
+        results.push(candidate);
+    }
+}
+
+fn compare_file_search_results(
+    left: &(String, String, bool),
+    right: &(String, String, bool),
+    normalized_query: &str,
+) -> Ordering {
+    file_search_score(&left.1, normalized_query)
+        .cmp(&file_search_score(&right.1, normalized_query))
+        .then_with(|| right.2.cmp(&left.2))
+        .then_with(|| left.1.len().cmp(&right.1.len()))
+        .then_with(|| left.1.cmp(&right.1))
 }
 
 fn file_search_score(rel: &str, normalized_query: &str) -> u8 {
@@ -19204,6 +19249,7 @@ async fn get_or_create_claude_runtime(
         process.envs(&channel_runtime.env);
     }
     process.env("CODEM_THREAD_ID", thread_id);
+    process.env("CODEM_PERMISSION_MODE", permission_mode);
     let mut child = process
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -21710,7 +21756,7 @@ mod tests {
         list_agent_plugin_marketplaces_value, list_agent_skills_value, list_slash_commands_value,
         mark_fork_provider_succeeded, mark_request_user_input_submitted,
         normalize_agent_plugin_action, normalize_agent_runtime_settings,
-        normalize_open_with_settings, normalize_pi_probe_summary,
+        normalize_general_settings, normalize_open_with_settings, normalize_pi_probe_summary,
         normalize_request_user_input_answer_value, open_initialized_workspace_database,
         parse_grok_cli_version, parse_grok_latest_version, parse_macos_system_proxy_environment,
         parse_npm_latest_version, parse_pi_installed_packages, parse_request_user_input_event,
@@ -27840,7 +27886,7 @@ mod tests {
         fs::write(source.join("spec.ts"), "export const spec = true;\n").unwrap();
 
         let root_path = root.0.to_string_lossy();
-        let results = search_workspace_files(&root_path, "src\\spec").unwrap();
+        let results = search_workspace_files(&root_path, "src\\spec", false).unwrap();
         let relative_paths = results
             .iter()
             .filter_map(|item| item.get("rel").and_then(Value::as_str))
@@ -27848,6 +27894,89 @@ mod tests {
 
         assert_eq!(relative_paths, vec!["src/spec", "src/spec.ts"]);
         assert_eq!(results[0].get("isDirectory"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn workspace_file_search_has_no_depth_or_match_scan_limit() {
+        let root = TestDirectory::new("workspace-file-search-unbounded");
+        let deep = root
+            .0
+            .join("one")
+            .join("two")
+            .join("three")
+            .join("four")
+            .join("five");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("needle"), "deep match\n").unwrap();
+        for index in 0..520 {
+            fs::write(
+                root.0.join(format!("needle-decoy-{index:03}.txt")),
+                "decoy\n",
+            )
+            .unwrap();
+        }
+
+        let root_path = root.0.to_string_lossy();
+        let results = search_workspace_files(&root_path, "needle", false).unwrap();
+        let relative_paths = results
+            .iter()
+            .filter_map(|item| item.get("rel").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert_eq!(results.len(), super::WORKSPACE_FILE_SEARCH_RESULT_LIMIT);
+        assert!(relative_paths.contains(&"one/two/three/four/five/needle"));
+    }
+
+    #[test]
+    fn workspace_file_search_applies_gitignore_only_when_enabled() {
+        let root = TestDirectory::new("workspace-file-search-gitignore");
+        let ignored = root.0.join("ignored");
+        let included = root.0.join("included");
+        fs::create_dir_all(&ignored).unwrap();
+        fs::create_dir_all(&included).unwrap();
+        fs::write(root.0.join(".gitignore"), "ignored/\n").unwrap();
+        fs::write(ignored.join("searchable.txt"), "ignored\n").unwrap();
+        fs::write(included.join("searchable.txt"), "included\n").unwrap();
+
+        let root_path = root.0.to_string_lossy();
+        let unfiltered = search_workspace_files(&root_path, "searchable", false).unwrap();
+        let filtered = search_workspace_files(&root_path, "searchable", true).unwrap();
+
+        assert_eq!(unfiltered.len(), 2);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0]["rel"], "included/searchable.txt");
+    }
+
+    #[test]
+    fn workspace_file_search_always_skips_generated_directories() {
+        let root = TestDirectory::new("workspace-file-search-permanent-excludes");
+        for directory in [".git", "node_modules", "target", "dist"] {
+            let excluded = root.0.join(directory);
+            fs::create_dir_all(&excluded).unwrap();
+            fs::write(excluded.join("permanent-hit.txt"), "excluded\n").unwrap();
+        }
+        let root_path = root.0.to_string_lossy();
+
+        assert!(search_workspace_files(&root_path, "permanent-hit", false)
+            .unwrap()
+            .is_empty());
+        assert!(search_workspace_files(&root_path, "permanent-hit", true)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn workspace_file_search_gitignore_setting_defaults_off_and_preserves_explicit_choice() {
+        assert_eq!(
+            normalize_general_settings(Some(&json!({})))["workspaceFileSearchRespectGitignore"],
+            Value::Bool(false)
+        );
+        assert_eq!(
+            normalize_general_settings(Some(&json!({
+                "workspaceFileSearchRespectGitignore": true
+            })))["workspaceFileSearchRespectGitignore"],
+            Value::Bool(true)
+        );
     }
 
     #[test]

@@ -13,7 +13,10 @@ const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'ut
 
 test('conversation context only renders real Agent Mux runs', () => {
   assert.match(componentSource, /agentRuns: AgentMuxRun\[\]/);
-  assert.match(componentSource, /AgentInvocationGroup/);
+  assert.match(componentSource, /groupAgentMuxRunsByConversation\(agentRuns\)\.map\(\(runs\) => runs\[0\]\)/);
+  assert.match(componentSource, /conversationRuns\.filter\(\(run\) => run\.status === 'running'/);
+  assert.match(componentSource, /conversationRuns\.slice\(0, 3\)/);
+  assert.match(componentSource, /conversation-context-agents/);
   assert.doesNotMatch(componentSource, /Claude 子代理|Codex 子代理|原生子代理/);
   assert.match(componentSource, /data-display-mode=/);
   assert.match(appSource, /filterAgentMuxRunsForThread\(overview\.runs, activeThreadId\)/);
@@ -22,7 +25,8 @@ test('conversation context only renders real Agent Mux runs', () => {
 test('prototype is mounted in the primary conversation and hides for the workbench', () => {
   assert.match(appSource, /!rightWorkbenchOpen \? \(/);
   assert.match(headerSource, /context-island-toggle/);
-  assert.match(paneSource, /<AgentInvocationGroup runs=\{agentMuxRuns\} onOpenRun=\{onOpenAgentRun\} \/>/);
+  assert.doesNotMatch(paneSource, /AgentInvocationGroup|agentMuxRuns/);
+  assert.match(appSource, /agentRuns=\{activeThreadAgentMuxRuns\}/);
 });
 
 test('Agent rows open their run directly in the right workbench without the old overview tab', () => {

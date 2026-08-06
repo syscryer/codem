@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { cancelAgentMuxProviderRun, createAgentMuxProfile, createAgentMuxRun, createAgentMuxRunEvent, deleteAgentMuxProfile, getAgentMuxOverview, getAgentMuxRuntimeInfo, getAgentMuxSkillSource, listAgentMuxRunEvents, probeAgentMuxAgent, startAgentMuxProviderRun, stopAgentMuxRuntime, syncAgentMuxSkillSource, updateAgentMuxProfile, updateAgentMuxProfileStatus, updateAgentMuxRun } from '../lib/agent-mux-api';
+import { agentMuxConversationKey, groupAgentMuxRunsByConversation } from '../lib/agent-mux-api';
 import type { AgentMuxMetrics, AgentMuxRun, AgentMuxRunEvent, AgentMuxRuntimeInfo, AgentMuxSkillSource, AgentMuxSkillTarget } from '../lib/agent-mux-api';
 import { fetchAgentChannelBootstrap, testAgentChannel } from '../lib/agent-channel-api';
+import { buildAgentChannelModelCatalog } from '../lib/agent-channel-selection';
 import { fetchAgentModelCatalog, fetchAgentProviderRegistry } from '../lib/agent-provider-registry';
 import { installSkillFromPath } from '../lib/plugins';
 import { buildAgentMuxConversationTurn } from '../lib/agent-mux-events';
@@ -17,7 +19,7 @@ import {
 } from '../lib/agent-run-events';
 import { openExternalUrl } from '../lib/markdown-link';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
-import type { AgentChannel, AgentModelOption, AgentProviderId, AgentRunEvent, AgentSystemChannel, ProjectSummary } from '../types';
+import type { AgentChannel, AgentModelCatalog, AgentProviderId, AgentRunEvent, AgentSystemChannel, ProjectSummary } from '../types';
 import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID } from '../constants';
 import { AgentProviderIcon } from './AgentProviderIcon';
 import { AgentMuxAvatar, AGENT_MUX_AVATAR_OPTIONS } from './AgentMuxAvatar';
@@ -130,7 +132,7 @@ ${profiles.length > 0 ? profiles.join('\n') : '- 当前没有已检测可用的�
 
 1. 每次调用前执行 \`& $agentMux agents --json${appDataArg}\` 获取最新可用配置，不能只依赖安装时快照。
 2. 按能力等级、用途和标签选择 status=available 的 profileId。
-3. 执行 \`& $agentMux invoke --profile '<profileId>' --caller '<当前主 Agent 名称>' --working-directory '<absolute-path>' --permission default --prompt '<task>'${appDataArg}\`。调用方只填写 Agent 名称（如 OpenAI Codex、Claude Code、OpenCode），不要填写或推测会话名称。
+3. 执行 \`& $agentMux invoke --profile '<profileId>' --caller '<当前主 Agent 名称>' --working-directory '<absolute-path>' --permission default --prompt '<task>'${appDataArg}\`。调用方只填写 Agent 名称（如 OpenAI Codex、Claude Code、OpenCode），不要填写或推测会话名称。同一 CodeM 主会话再次调用相同 profileId 和工作区时，CLI 会自动续用该子 Agent 的会话，适合追问和返工；切换主会话、配置或工作区会新建会话。若外层 CodeM 会话是“完全访问”，CLI 会自动让子 Agent 继承最高权限；其他权限模式保持原样。
 4. CLI stdout 是 Agent 公开输出；非零退出码表示真实失败，不得伪装成功。
 5. 查询运行使用 \`& $agentMux status --json${appDataArg}\`，取消运行使用 \`& $agentMux cancel --run '<runId>'${appDataArg}\`。
 6. 不得直接读取 discovery 文件；Runtime token 由 CLI 内部管理。
@@ -154,7 +156,7 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
   const [agentChannels, setAgentChannels] = useState<AgentChannel[]>([]);
   const [agentSystemChannels, setAgentSystemChannels] = useState<AgentSystemChannel[]>([]);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
-  const [runEvents, setRunEvents] = useState<AgentMuxRunEvent[]>([]);
+  const [runEventsById, setRunEventsById] = useState<Record<string, AgentMuxRunEvent[]>>({});
   const [liveRunTurns, setLiveRunTurns] = useState<Record<string, AgentMuxConversationTurn>>({});
   const [startingRun, setStartingRun] = useState(false);
   const [runtimeInfo, setRuntimeInfo] = useState<AgentMuxRuntimeInfo>({ cliPath: 'codem-agent-mux', appDataDir: '', runtimeManaged: false });
@@ -167,7 +169,13 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const selectedRunIdRef = useRef(selectedRunId);
   const selectedAgent = agentRecords.find((agent) => agent.id === selectedAgentId) ?? agentRecords[0];
-  const selectedRun = runRecords.find((run) => run.id === selectedRunId) ?? runRecords[0];
+  const selectedRun = runRecords.find((run) => run.id === selectedRunId);
+  const selectedConversationRuns = useMemo(() => {
+    if (!selectedRun) return [];
+    const key = agentMuxConversationKey(selectedRun);
+    if (!key) return [selectedRun];
+    return runRecords.filter((run) => agentMuxConversationKey(run) === key).sort((a, b) => runRecords.indexOf(b) - runRecords.indexOf(a));
+  }, [runRecords, selectedRun]);
   const skillText = useMemo(() => buildSkillText(agentRecords, runtimeInfo.cliPath, runtimeInfo.appDataDir), [agentRecords, runtimeInfo.appDataDir, runtimeInfo.cliPath]);
   const availableProfiles = useMemo(() => agentRecords.flatMap((agent) => agent.profiles).filter((profile) => profile.status === 'available'), [agentRecords]);
   const skillInstallTargets = useMemo<SkillInstallTarget[]>(() => SKILL_TARGETS.map((target) => ({
@@ -189,7 +197,6 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
       setRunRecords(overview.runs);
       setMetrics(overview.metrics);
       setSelectedAgentId((current) => current || overview.agents[0]?.id || '');
-      setSelectedRunId((current) => current || overview.runs[0]?.id || '');
       setBackendStatus('connected');
     }).catch((error) => {
       if (disposed) return;
@@ -226,18 +233,18 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
   }, [skillText]);
 
   useEffect(() => {
-    if (!selectedRunId) {
-      setRunEvents([]);
+    if (view !== 'monitor' || !selectedConversationRuns.length) {
+      setRunEventsById({});
       return;
     }
     let disposed = false;
-    const refresh = () => void listAgentMuxRunEvents(selectedRunId)
-      .then((events) => { if (!disposed) setRunEvents(events); })
-      .catch(() => { if (!disposed) setRunEvents([]); });
+    const refresh = () => void Promise.all(selectedConversationRuns.map(async (run) => [run.id, await listAgentMuxRunEvents(run.id)] as const))
+      .then((entries) => { if (!disposed) setRunEventsById(Object.fromEntries(entries)); })
+      .catch(() => { if (!disposed) setRunEventsById({}); });
     refresh();
     const timer = window.setInterval(refresh, 1200);
     return () => { disposed = true; window.clearInterval(timer); };
-  }, [selectedRunId]);
+  }, [selectedConversationRuns, view]);
 
   useEffect(() => {
     void fetchAgentChannelBootstrap().then((bootstrap) => {
@@ -471,9 +478,7 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
       const terminal = { status: null as RunStatus | null };
       const persistEvent = async (agentEvent: AgentRunEvent) => {
         const storedEvent = await createAgentMuxRunEvent(muxRun!.id, agentEvent);
-        if (selectedRunIdRef.current === muxRun!.id) {
-          setRunEvents((current) => [...current, storedEvent]);
-        }
+        if (selectedRunIdRef.current === muxRun!.id) setRunEventsById((current) => ({ ...current, [muxRun!.id]: [...(current[muxRun!.id] ?? []), storedEvent] }));
       };
       const flushPendingEvent = async () => {
         if (!pendingEvent) return;
@@ -523,17 +528,12 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
       const summary = (transcriptTurn.assistantText.trim() || transcriptTurn.activity || (status === 'waiting' ? '等待用户处理' : status === 'completed' ? '任务已完成' : status === 'cancelled' ? '任务已取消' : 'Agent 流未返回完成事件')).slice(0, 500);
       const updated = await updateAgentMuxRun(muxRun.id, { status, duration, summary });
       setRunRecords((current) => current.map((run) => run.id === updated.id ? updated : run));
-      if (selectedRunIdRef.current === muxRun.id) {
-        setRunEvents(await listAgentMuxRunEvents(muxRun.id));
-      }
       setMetrics((await getAgentMuxOverview()).metrics);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Agent Mux 运行失败';
       if (muxRun) {
         const storedError = await createAgentMuxRunEvent(muxRun.id, { type: 'error', runId: muxRun.providerRunId ?? muxRun.id, message }).catch(() => null);
-        if (storedError && selectedRunIdRef.current === muxRun.id) {
-          setRunEvents((current) => [...current, storedError]);
-        }
+        if (storedError && selectedRunIdRef.current === muxRun.id) setRunEventsById((current) => ({ ...current, [muxRun!.id]: [...(current[muxRun!.id] ?? []), storedError] }));
         const failed = await updateAgentMuxRun(muxRun.id, { status: 'failed', duration: formatRunDuration(Date.now() - startedAt), summary: message }).catch(() => null);
         if (failed) setRunRecords((current) => current.map((run) => run.id === failed.id ? failed : run));
       }
@@ -557,9 +557,6 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
       await createAgentMuxRunEvent(run.id, { type: 'done', runId: run.providerRunId, result: '', stopReason: 'cancelled' });
       const updated = await updateAgentMuxRun(run.id, { status: 'cancelled', summary: '任务已取消' });
       setRunRecords((current) => current.map((item) => item.id === updated.id ? updated : item));
-      if (selectedRunIdRef.current === run.id) {
-        setRunEvents(await listAgentMuxRunEvents(run.id));
-      }
       setLiveRunTurns((current) => {
         const next = { ...current };
         delete next[run.id];
@@ -617,7 +614,7 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
 
       {view === 'overview' ? <OverviewView agents={agentRecords} runs={runRecords} metrics={metrics} onOpenRuns={() => setView('monitor')} onOpenRun={(runId) => { selectedRunIdRef.current = runId; setSelectedRunId(runId); setView('monitor'); }} onOpenAgents={() => setView('agents')} onOpenSkill={() => setView('skill')} /> : null}
       {view === 'agents' ? (selectedAgent ? <AgentsView agents={agentRecords} selected={selectedAgent} selectedId={selectedAgentId} profiles={availableProfiles.length} onSelect={setSelectedAgentId} onAddProfile={() => setProfileDialog({ agentId: selectedAgent.id })} onEditProfile={(profile) => setProfileDialog({ agentId: selectedAgent.id, profile })} onDeleteProfile={(profile) => deleteProfile(selectedAgent.id, profile)} onToggleProfile={(profile) => toggleProfile(selectedAgent.id, profile)} onTestProfile={(profile) => testProfile(selectedAgent.id, profile)} testingProfileId={testingProfileId} testMessage={testMessage} /> : <EmptyState title="暂无 Agent 配置" detail="后端未返回可管理的 Agent 配置。" />) : null}
-      {view === 'monitor' ? <MonitorView agents={agentRecords} runs={runRecords} projects={projects} selected={selectedRun} events={runEvents} liveTurn={selectedRun?.status === 'running' ? liveRunTurns[selectedRun.id] : undefined} onSelect={(runId) => { selectedRunIdRef.current = runId; setSelectedRunId(runId); }} onCancel={cancelRun} /> : null}
+      {view === 'monitor' ? <MonitorView agents={agentRecords} runs={runRecords} projects={projects} selected={selectedRun} conversationRuns={selectedConversationRuns} eventsByRunId={runEventsById} liveTurns={liveRunTurns} onSelect={(runId) => { selectedRunIdRef.current = runId; setSelectedRunId(runId); }} onCancel={cancelRun} /> : null}
       {view === 'skill' ? <SkillView agents={agentRecords} skillText={skillText} copied={copied} source={skillSource} targets={skillInstallTargets} installPending={skillInstallPending} installMessage={skillInstallMessage} copiedPath={copiedSkillPath} copiedInstruction={copiedInstallInstruction} cliPath={runtimeInfo.cliPath} runtimeManaged={runtimeInfo.runtimeManaged} onCopy={copySkill} onCopyPath={copySkillPath} onCopyInstruction={copyInstallInstruction} onInstall={installSkillTarget} onInstallAll={installSkillToAll} onExport={exportSkill} onStopRuntime={stopRuntime} /> : null}
       {profileDialog && selectedAgent ? <AddRuntimeProfileDialog key={`${profileDialog.agentId}:${profileDialog.profile?.id ?? 'new'}`} agent={agentRecords.find((agent) => agent.id === profileDialog.agentId) ?? selectedAgent} agents={agentRecords} profile={profileDialog.profile} allowAgentSelection={profileDialog.allowAgentSelection === true} channels={agentChannels} systemChannels={agentSystemChannels} onAgentChange={(agentId) => setProfileDialog((current) => current ? { ...current, agentId } : current)} onClose={() => setProfileDialog(null)} onSave={saveProfile} /> : null}
       {runDialogOpen ? <RunTaskDialog agents={agentRecords} projects={projects} activeProjectId={activeProjectId} starting={startingRun} onClose={() => setRunDialogOpen(false)} onStart={startRun} /> : null}
@@ -679,34 +676,36 @@ function AgentsView({ agents: agentItems, selected, selectedId, onSelect, profil
   );
 }
 
-function MonitorView({ agents, runs: items, projects, selected, events, liveTurn, onSelect, onCancel }: { agents: AgentRecord[]; runs: RunRecord[]; projects: ProjectSummary[]; selected?: RunRecord; events: AgentMuxRunEvent[]; liveTurn?: AgentMuxConversationTurn; onSelect: (id: string) => void; onCancel: (run: RunRecord) => Promise<void> }) {
+function MonitorView({ agents, runs: items, projects, selected, conversationRuns, eventsByRunId, liveTurns, onSelect, onCancel }: { agents: AgentRecord[]; runs: RunRecord[]; projects: ProjectSummary[]; selected?: RunRecord; conversationRuns: RunRecord[]; eventsByRunId: Record<string, AgentMuxRunEvent[]>; liveTurns: Record<string, AgentMuxConversationTurn>; onSelect: (id: string) => void; onCancel: (run: RunRecord) => Promise<void> }) {
   const [collapsedWorkspaceKeys, setCollapsedWorkspaceKeys] = useState<Set<string>>(() => new Set());
-  const runningCount = items.filter((run) => run.status === 'running').length;
-  const failedCount = items.filter((run) => run.status === 'failed').length;
-  const workspaceGroups = useMemo(() => groupAgentMuxRunsByWorkspace(items, projects), [items, projects]);
+  const conversationItems = useMemo(() => groupAgentMuxRunsByConversation(items).map((runs) => runs[0]), [items]);
+  const runningCount = conversationItems.filter((run) => run.status === 'running').length;
+  const failedCount = conversationItems.filter((run) => run.status === 'failed').length;
+  const workspaceGroups = useMemo(() => groupAgentMuxRunsByWorkspace(conversationItems, projects), [conversationItems, projects]);
+  const selectedConversationKey = selected ? agentMuxConversationKey(selected) : null;
   const toggleWorkspaceGroup = (key: string) => setCollapsedWorkspaceKeys((current) => {
     const next = new Set(current);
     if (next.has(key)) next.delete(key); else next.add(key);
     return next;
   });
   const selectedAgentId = selected ? agentIdForRun(selected, agents) : '';
-  return <div className="agent-mux-page agent-mux-split-page agent-mux-monitor-page"><div className="agent-mux-list-panel"><div className="agent-mux-list-header"><div><h2>运行监控</h2><p>按工作区查看所有 Agent Mux 调用。</p></div><button type="button" className="agent-mux-icon-button" title="刷新" onClick={() => selected && onSelect(selected.id)}><RefreshCw size={15} /></button></div><div className="agent-mux-filter-bar"><span className="active">全部 {items.length}</span><span>运行中 {runningCount}</span><span>失败 {failedCount}</span></div><div className="agent-mux-run-list">{workspaceGroups.length > 0 ? workspaceGroups.map((group) => { const expanded = !collapsedWorkspaceKeys.has(group.key); return <section className="agent-mux-workspace-group" key={group.key}><button type="button" className="agent-mux-workspace-group-head" aria-expanded={expanded} onClick={() => toggleWorkspaceGroup(group.key)}><ChevronRight className={`agent-mux-workspace-chevron${expanded ? ' is-expanded' : ''}`} size={13} /><FolderOpen size={14} /><span><strong>{group.name}</strong><small title={group.path}>{group.path}</small></span><b>{group.runs.length}</b></button>{expanded ? group.runs.map((run) => { const agentId = agentIdForRun(run, agents); const providerId = agentProviderId(agentId) ?? agentId; return <button type="button" key={run.id} className={`agent-mux-run-item${selected?.id === run.id ? ' selected' : ''}`} onClick={() => onSelect(run.id)} title={`${run.target} · ${run.profile}`}><RunIcon status={run.status} /><AgentMuxAvatar avatar={run.avatar} providerId={providerId} size="small" /><span><strong>{runDisplayName(run)}</strong><small>{run.target} · {run.profile}</small></span><time>{run.started}</time></button>; }) : null}</section>; }) : <EmptyState title="暂无运行记录" detail="真实 Agent 调用产生记录后，会在这里显示状态和输出。" />}</div></div><div className="agent-mux-detail-panel">{selected ? <AgentMuxRunDetail run={selected} events={events} liveTurn={liveTurn} providerId={agentProviderId(selectedAgentId) ?? selectedAgentId} onCancel={() => onCancel(selected)} /> : <EmptyState title="请选择运行记录" detail="暂无可查看的 Agent Mux 运行。" />}</div></div>;
+  return <div className="agent-mux-page agent-mux-split-page agent-mux-monitor-page"><div className="agent-mux-list-panel"><div className="agent-mux-list-header"><div><h2>运行监控</h2><p>按工作区查看所有 Agent Mux 调用。</p></div><button type="button" className="agent-mux-icon-button" title="刷新" onClick={() => selected && onSelect(selected.id)}><RefreshCw size={15} /></button></div><div className="agent-mux-filter-bar"><span className="active">全部 {conversationItems.length}</span><span>运行中 {runningCount}</span><span>失败 {failedCount}</span></div><div className="agent-mux-run-list">{workspaceGroups.length > 0 ? workspaceGroups.map((group) => { const expanded = !collapsedWorkspaceKeys.has(group.key); return <section className="agent-mux-workspace-group" key={group.key}><button type="button" className="agent-mux-workspace-group-head" aria-expanded={expanded} onClick={() => toggleWorkspaceGroup(group.key)}><ChevronRight className={`agent-mux-workspace-chevron${expanded ? ' is-expanded' : ''}`} size={13} /><FolderOpen size={14} /><span><strong>{group.name}</strong><small title={group.path}>{group.path}</small></span><b>{group.runs.length}</b></button>{expanded ? group.runs.map((run) => { const agentId = agentIdForRun(run, agents); const providerId = agentProviderId(agentId) ?? agentId; const selectedConversation = selected?.id === run.id || Boolean(selectedConversationKey && agentMuxConversationKey(run) === selectedConversationKey); return <button type="button" key={run.id} className={`agent-mux-run-item${selectedConversation ? ' selected' : ''}`} onClick={() => onSelect(run.id)} title={`${run.target} · ${run.profile}`}><RunIcon status={run.status} /><AgentMuxAvatar avatar={run.avatar} providerId={providerId} size="small" /><span><strong>{runDisplayName(run)}</strong><small>{run.target} · {run.profile}</small></span><time>{run.started}</time></button>; }) : null}</section>; }) : <EmptyState title="暂无运行记录" detail="真实 Agent 调用产生记录后，会在这里显示状态和输出。" />}</div></div><div className="agent-mux-detail-panel">{selected ? <AgentMuxRunDetail runs={conversationRuns} eventsByRunId={eventsByRunId} liveTurns={liveTurns} providerId={agentProviderId(selectedAgentId) ?? selectedAgentId} onCancel={() => onCancel(selected)} /> : null}</div></div>;
 }
 
-export function AgentMuxRunDetail({ run, events, liveTurn, providerId, onCancel, onBack }: { run: RunRecord; events: AgentMuxRunEvent[]; liveTurn?: AgentMuxConversationTurn; providerId: string; onCancel?: () => void | Promise<void>; onBack?: () => void }) {
-  return <>{onBack ? <button type="button" className="agent-mux-workbench-back" onClick={onBack}><ArrowLeft size={15} />返回</button> : null}<div className="agent-mux-detail-heading"><div><span className="agent-mux-detail-kicker">{run.id} · {run.skill}</span><div className="agent-mux-detail-title"><AgentMuxAvatar avatar={run.avatar} providerId={providerId} size="large" /><div><h2>{runDisplayName(run)}</h2><small>{run.target} · {run.profile}</small></div></div><div className="agent-mux-run-prompt"><span>调用提示词</span><p>{run.prompt || '旧记录未保存原始提示词'}</p></div></div>{run.status === 'running' && run.providerRunId && onCancel ? <button type="button" className="agent-mux-stop-button" title="取消运行" aria-label="取消运行" onClick={() => void onCancel()}><Square size={13} fill="currentColor" /></button> : null}</div><div className="agent-mux-run-summary"><Metric label="状态" value={runLabel(run.status)} accent={run.status === 'running'} success={run.status === 'completed'} /><Metric label="调用方" value={run.caller} /><Metric label="运行配置" value={run.profile} /><Metric label="耗时" value={run.duration} /></div><section className="agent-mux-detail-section"><div className="agent-mux-section-title"><div><h3>输出</h3><p>复用聊天的统一 Agent 事件解析与展示。</p></div><span className="agent-mux-live"><span />{run.status === 'running' ? '实时' : '已记录'}</span></div><AgentMuxRunLog run={run} events={events} liveTurn={liveTurn} /></section></>;
+export function AgentMuxRunDetail({ runs, eventsByRunId, liveTurns, run, events, liveTurn, providerId, onCancel, onBack }: { runs?: RunRecord[]; eventsByRunId?: Record<string, AgentMuxRunEvent[]>; liveTurns?: Record<string, AgentMuxConversationTurn>; run?: RunRecord; events?: AgentMuxRunEvent[]; liveTurn?: AgentMuxConversationTurn; providerId: string; onCancel?: () => void | Promise<void>; onBack?: () => void }) {
+  const timelineRuns = runs?.length ? runs : run ? [run] : [];
+  const latest = timelineRuns[timelineRuns.length - 1];
+  if (!latest) return null;
+  const timelineEvents = eventsByRunId ?? (run ? { [run.id]: events ?? [] } : {});
+  const timelineTurns = liveTurns ?? (run && liveTurn ? { [run.id]: liveTurn } : {});
+  return <>{onBack ? <button type="button" className="agent-mux-workbench-back" onClick={onBack}><ArrowLeft size={15} />返回</button> : null}<div className="agent-mux-detail-heading"><div className="agent-mux-detail-title"><AgentMuxAvatar avatar={latest.avatar} providerId={providerId} size="large" /><div><div className="agent-mux-detail-name-row"><h2>{runDisplayName(latest)}</h2><span className="agent-mux-detail-status" data-status={latest.status}>{runLabel(latest.status)}</span></div><div className="agent-mux-detail-meta"><span title={latest.profile}>{latest.profile}</span><span>调用方 {latest.caller}</span><span>{timelineRuns.length} 轮</span><span className="agent-mux-detail-run-id" title={`${latest.id} · ${latest.skill}`}>{latest.id} · {latest.skill}</span></div></div></div>{latest.status === 'running' && latest.providerRunId && onCancel ? <button type="button" className="agent-mux-stop-button" title="取消运行" aria-label="取消运行" onClick={() => void onCancel()}><Square size={13} fill="currentColor" /></button> : null}</div><div className="conversation agent-mux-conversation-log">{timelineRuns.map((item) => <AgentMuxRunLog key={item.id} run={item} events={timelineEvents[item.id] ?? []} liveTurn={timelineTurns[item.id]} />)}</div></>;
 }
 
 export function AgentMuxRunLog({ run, events, liveTurn }: { run: RunRecord; events: AgentMuxRunEvent[]; liveTurn?: AgentMuxConversationTurn }) {
   const storedTurn = useMemo(() => buildAgentMuxConversationTurn(run, events), [events, run]);
   const turn = liveTurn ?? storedTurn;
-  if (events.length === 0 && !liveTurn) {
-    return <div className="agent-mux-log agent-mux-log-empty"><EmptyState title="暂无输出事件" detail="任务开始输出后会实时显示在这里。" /></div>;
-  }
-
   return (
-    <div className="agent-mux-log agent-mux-conversation-log">
-      <ConversationTurnView
+    <ConversationTurnView
         turn={turn}
         nowMs={Date.now()}
         isLiveRunning={run.status === 'running'}
@@ -726,8 +725,7 @@ export function AgentMuxRunLog({ run, events, liveTurn }: { run: RunRecord; even
         onSubmitRequestUserInput={async () => false}
         onSubmitRuntimeRecoveryAction={async () => false}
         onSubmitApprovalDecision={async () => false}
-      />
-    </div>
+    />
   );
 }
 
@@ -835,28 +833,28 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
   const providerId = agentProviderId(agent.id);
   const availableChannels = providerId ? channels.filter((channel) => channel.providerId === providerId && channel.enabled) : [];
   const availableSystemChannels = providerId ? systemChannels.filter((channel) => channel.providerId === providerId && channel.configured) : [];
-  const channelOptions = [...availableSystemChannels.map((channel) => ({ id: 'system', name: channel.name || '系统渠道', provider: providerLabel(providerId ?? ''), models: channel.model ? [{ id: channel.model, name: channel.model }] : [] })), ...availableChannels.map((channel) => ({ id: channel.id, name: channel.name, provider: providerLabel(channel.providerId), models: channel.models.filter((model) => model.enabled).map((model) => ({ id: model.modelId, name: model.displayName || model.modelId })) }))];
+  const channelOptions = [...availableSystemChannels.map((channel) => ({ id: 'system', name: channel.name || '系统渠道', provider: providerLabel(providerId ?? '') })), ...availableChannels.map((channel) => ({ id: channel.id, name: channel.name, provider: providerLabel(channel.providerId) }))];
   const initialChannel = channelOptions.find((channel) => channel.id === (profile?.channelId ?? 'system')) ?? channelOptions[0];
   const [channelId, setChannelId] = useState(profile?.channelId ?? initialChannel?.id ?? '');
   const selectedChannel = channelOptions.find((channel) => channel.id === channelId) ?? initialChannel;
-  const [nativeModels, setNativeModels] = useState<AgentModelOption[]>([]);
+  const selectedAgentChannel = channelId === 'system' ? undefined : availableChannels.find((channel) => channel.id === channelId);
+  const [nativeModelCatalog, setNativeModelCatalog] = useState<AgentModelCatalog | null | undefined>(undefined);
   useEffect(() => {
     if (!providerId) {
-      setNativeModels([]);
+      setNativeModelCatalog(null);
       return;
     }
     const controller = new AbortController();
-    void fetchAgentModelCatalog(providerId, { signal: controller.signal }).then((catalog) => setNativeModels(catalog.models)).catch(() => setNativeModels([]));
+    setNativeModelCatalog(undefined);
+    void fetchAgentModelCatalog(providerId, { signal: controller.signal }).then(setNativeModelCatalog).catch(() => setNativeModelCatalog(null));
     return () => controller.abort();
   }, [providerId]);
-  const selectedModels = selectedChannel?.models.length
-    ? selectedChannel.models.map((item) => {
-        const nativeModel = nativeModels.find((candidate) => candidate.id === item.id);
-        return { ...nativeModel, id: item.id, label: item.name } as AgentModelOption;
-      })
-    : nativeModels;
-  const [provider, setProvider] = useState(profile?.provider ?? selectedChannel?.provider ?? '');
-  const [model, setModel] = useState(profile?.model ?? selectedChannel?.models[0]?.id ?? '');
+  const selectedCatalog = providerId
+    ? buildAgentChannelModelCatalog(providerId, selectedAgentChannel, nativeModelCatalog ?? null)
+    : null;
+  const selectedModels = selectedCatalog?.models ?? [];
+  const provider = selectedChannel?.provider ?? profile?.provider ?? '';
+  const [model, setModel] = useState(profile?.model ?? '');
   const [reasoningEffort, setReasoningEffort] = useState(profile?.reasoningEffort ?? '');
   const [level, setLevel] = useState<RuntimeProfile['level']>(profile?.level ?? '标准');
   const [role, setRole] = useState(profile?.role ?? '备用');
@@ -865,13 +863,22 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
   const capabilityOptions = agentCapabilityOptions(agent.id);
   const [primaryCapability, setPrimaryCapability] = useState(profile?.tags[0] ?? capabilityOptions[0] ?? '');
   const [secondaryCapability, setSecondaryCapability] = useState(profile?.tags[1] ?? '');
+  const modelCatalogReady = channelId !== 'system' || nativeModelCatalog !== undefined;
+  const defaultModelId = selectedCatalog?.defaultModelId
+    ?? selectedModels.find((item) => item.isDefault)?.id
+    ?? selectedModels[0]?.id
+    ?? '';
+  const selectedModelIds = selectedModels.map((item) => item.id).join('\0');
   useEffect(() => {
-    if (!model && selectedModels[0]) setModel(selectedModels[0].id);
-  }, [model, selectedModels]);
+    if (modelCatalogReady && !selectedModels.some((item) => item.id === model)) {
+      setModel(defaultModelId);
+      setReasoningEffort('');
+    }
+  }, [defaultModelId, model, modelCatalogReady, selectedModelIds]);
   const selectedModel = selectedModels.find((item) => item.id === model);
   const reasoningOptions = [
     { value: '', label: selectedModel?.defaultReasoningEffort ? `跟随模型默认（${formatReasoningLabel(selectedModel.defaultReasoningEffort)}）` : '跟随模型默认' },
-    ...(selectedModel?.supportedReasoningEfforts ?? []).map((effort) => ({ value: effort.id, label: formatReasoningLabel(effort.id), description: effort.description })),
+    ...(selectedModel?.supportedReasoningEfforts ?? []).map((effort) => ({ value: effort.id, label: formatReasoningLabel(effort.id), description: 'description' in effort ? effort.description : undefined })),
   ];
 
   const save = () => {
@@ -900,11 +907,11 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
           <label className="agent-mux-form-field"><span>Agent 类型</span>{allowAgentSelection ? <StandardSelect ariaLabel="选择 Agent 类型" value={agent.id} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={agents.map((item) => ({ value: item.id, label: item.name }))} onChange={onAgentChange} /> : <div className="agent-mux-readonly-field"><AgentProviderIcon providerId={agentProviderId(agent.id) ?? agent.id} size={15} />{agent.name}</div>}</label>
           <label className="agent-mux-form-field"><span>昵称 <em>可选，最多 32 个字符</em></span><input value={nickname} maxLength={32} placeholder="例如：审查员、小深" onChange={(event) => setNickname(event.target.value)} /></label>
           <div className="agent-mux-form-field"><span>图标 <em>可选</em></span><AgentMuxAvatarSelect value={avatar} providerId={providerId ?? agent.id} onChange={setAvatar} /></div>
+          <label className="agent-mux-form-field"><span>渠道 <em>来自 Agent 设置，密钥不复制</em></span><StandardSelect ariaLabel="选择渠道" value={channelId} placeholder="选择已配置渠道" className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={channelOptions.map((channel) => ({ value: channel.id, label: channel.name }))} onChange={(next) => { setChannelId(next); setModel(''); setReasoningEffort(''); }} /></label>
           <div className="agent-mux-form-grid">
             <label className="agent-mux-form-field"><span>供应商</span><div className="agent-mux-readonly-field">{provider || '请先选择渠道'}</div></label>
-            <label className="agent-mux-form-field"><span>模型</span><StandardSelect ariaLabel="选择模型" value={model} placeholder={selectedModels.length ? '选择模型' : '该渠道没有模型目录'} disabled={!selectedChannel || selectedModels.length === 0} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={selectedModels.map((item) => ({ value: item.id, label: item.label }))} onChange={(next) => { setModel(next); setReasoningEffort(''); }} /></label>
+            <label className="agent-mux-form-field"><span>模型</span><StandardSelect ariaLabel="选择模型" value={model} placeholder={modelCatalogReady && selectedModels.length === 0 ? '该渠道没有可用模型' : '选择模型'} disabled={!selectedChannel || !modelCatalogReady || selectedModels.length === 0} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={selectedModels.map((item) => ({ value: item.id, label: item.label }))} onChange={(next) => { setModel(next); setReasoningEffort(''); }} /></label>
           </div>
-          <label className="agent-mux-form-field"><span>渠道 <em>来自 Agent 设置，密钥不复制</em></span><StandardSelect ariaLabel="选择渠道" value={channelId} placeholder="选择已配置渠道" className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={channelOptions.map((channel) => ({ value: channel.id, label: channel.name }))} onChange={(next) => { const option = channelOptions.find((item) => item.id === next); const models = option?.models.length ? option.models : nativeModels; setChannelId(next); setProvider(option?.provider ?? ''); setModel(models[0]?.id ?? ''); setReasoningEffort(''); }} /></label>
           <label className="agent-mux-form-field"><span>思考等级 <em>默认跟随模型</em></span><StandardSelect ariaLabel="选择思考等级" value={reasoningEffort} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={reasoningOptions} onChange={setReasoningEffort} /></label>
           <div className="agent-mux-form-grid">
             <label className="agent-mux-form-field"><span>能力等级 <em>可选</em></span><StandardSelect<RuntimeProfile['level']> ariaLabel="选择能力等级" value={level} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={['未评级', '轻量', '标准', '高级'].map((value) => ({ value: value as RuntimeProfile['level'], label: value }))} onChange={setLevel} /></label>

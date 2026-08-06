@@ -53,8 +53,10 @@ import {
 import { buildNewChatTitleFromSubmission, shouldAutoRenameThreadTitle } from '../lib/new-chat-draft';
 import {
   collectThreadModelPreferences,
+  isModelSelectionChannelReady,
   reasoningEffortForThreadModel,
   updateThreadModelReasoningEffort,
+  type ThreadModelPreferences,
 } from '../lib/thread-model-preferences';
 import type { ThreadActivityNoticeKind } from '../lib/thread-activity-notices';
 import type {
@@ -177,6 +179,7 @@ type UseClaudeRunArgs = {
   activeProjectPath?: string;
   activeThreadId: string | null;
   activeThreadSummary: ThreadSummary | null;
+  isNewChatDraft: boolean;
   appModelSettings: ModelSettings;
   defaultPermissionMode: PermissionMode;
   autoGuideQueuedPrompts: boolean;
@@ -226,11 +229,20 @@ type UseClaudeRunArgs = {
   }) => void;
 };
 
+type ClaudeDraftSelection = {
+  permissionMode?: PermissionMode;
+  channelId?: string;
+  model?: string;
+  effort?: ClaudeEffortSelection;
+  modelPreferences: ThreadModelPreferences;
+};
+
 export function useClaudeRun({
   activeProjectId,
   activeProjectPath,
   activeThreadId,
   activeThreadSummary,
+  isNewChatDraft,
   appModelSettings,
   defaultPermissionMode,
   autoGuideQueuedPrompts,
@@ -280,6 +292,7 @@ export function useClaudeRun({
   const effortRef = useRef<ClaudeEffortSelection>('default');
   const channelIdRef = useRef(SYSTEM_AGENT_CHANNEL_ID);
   const modelPreferencesRef = useRef(collectThreadModelPreferences(activeThreadSummary));
+  const draftSelectionRef = useRef<ClaudeDraftSelection>({ modelPreferences: {} });
 
   const runningThreadIds = Object.keys(activeRunsByThreadId);
   const isRunning = runningThreadIds.length > 0;
@@ -318,6 +331,9 @@ export function useClaudeRun({
   }, []);
 
   useEffect(() => {
+    if (!activeThreadSummary && !isNewChatDraft) {
+      return;
+    }
     if (!activeThreadSummary && agentChannelsLoading) {
       return;
     }
@@ -330,17 +346,27 @@ export function useClaudeRun({
     channelSelectionResetKeyRef.current = resetKey;
     const nextChannelId = activeThreadSummary
       ? threadAgentChannelId(activeThreadSummary.agentChannelId)
-      : claudeDefaultChannelId;
+      : draftSelectionRef.current.channelId ?? claudeDefaultChannelId;
     channelIdRef.current = nextChannelId;
     setChannelIdState(nextChannelId);
+    if (!activeThreadSummary) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        channelId: nextChannelId,
+      };
+    }
   }, [
     activeThreadSummary?.agentChannelId,
     activeThreadSummary?.id,
     agentChannelsLoading,
     claudeDefaultChannelId,
+    isNewChatDraft,
   ]);
 
   useEffect(() => {
+    if (!activeThreadSummary && !isNewChatDraft) {
+      return;
+    }
     const selectedChannelId = channelIdRef.current;
     if (
       agentChannelsLoading
@@ -362,6 +388,15 @@ export function useClaudeRun({
     setChannelIdState(SYSTEM_AGENT_CHANNEL_ID);
     setModelState(DEFAULT_MODEL_VALUE);
     setEffortState('default');
+    if (!activeThreadSummary) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        channelId: SYSTEM_AGENT_CHANNEL_ID,
+        model: DEFAULT_MODEL_VALUE,
+        effort: 'default',
+        modelPreferences: {},
+      };
+    }
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, {
         channelId: null,
@@ -371,15 +406,33 @@ export function useClaudeRun({
         showToast(error instanceof Error ? error.message : '清理失效 Claude Code 渠道失败', 'error');
       });
     }
-  }, [activeThreadId, agentChannels, agentChannelsLoading, persistThreadMetadata, showToast]);
+  }, [
+    activeThreadId,
+    activeThreadSummary,
+    agentChannels,
+    agentChannelsLoading,
+    isNewChatDraft,
+    persistThreadMetadata,
+    showToast,
+  ]);
 
   useEffect(() => {
+    if (!activeThreadSummary && !isNewChatDraft) {
+      return;
+    }
+    const draftSelection = draftSelectionRef.current;
+    const targetChannelId = activeThreadSummary
+      ? threadAgentChannelId(activeThreadSummary.agentChannelId)
+      : draftSelection.channelId ?? claudeDefaultChannelId;
+    if (!isModelSelectionChannelReady(channelId, targetChannelId)) {
+      return;
+    }
     const resetKey = [
-      activeThreadSummary?.id ?? '',
+      activeThreadSummary?.id ?? (isNewChatDraft ? 'draft' : ''),
       channelId,
-      activeThreadSummary?.model ?? '',
-      activeThreadSummary?.reasoningEffort ?? '',
-      JSON.stringify(activeThreadSummary?.modelPreferences ?? {}),
+      activeThreadSummary?.model ?? draftSelection.model ?? '',
+      activeThreadSummary?.reasoningEffort ?? draftSelection.effort ?? '',
+      JSON.stringify(activeThreadSummary?.modelPreferences ?? draftSelection.modelPreferences),
       appModelSettings.defaultModelId,
       models
         .map((option) => `${option.id}:${option.model ?? ''}:${option.supportsContext1m ? '1m' : ''}:${option.context1mModel ?? ''}:${option.contextWindowTokens ?? ''}`)
@@ -391,11 +444,13 @@ export function useClaudeRun({
 
     modelSelectionResetKeyRef.current = resetKey;
     const nextModel = resolveInitialClaudeModelId(
-      activeThreadSummary?.model,
+      activeThreadSummary?.model ?? draftSelection.model,
       models,
       channelId === SYSTEM_AGENT_CHANNEL_ID ? appModelSettings.defaultModelId : DEFAULT_MODEL_VALUE,
     );
-    let nextPreferences = collectThreadModelPreferences(activeThreadSummary);
+    let nextPreferences = activeThreadSummary
+      ? collectThreadModelPreferences(activeThreadSummary)
+      : draftSelection.modelPreferences;
     const savedEffort = reasoningEffortForThreadModel(nextPreferences, nextModel);
     const nextEffort = normalizeClaudeEffortSelection(savedEffort);
     if (savedEffort && nextEffort === 'default') {
@@ -415,13 +470,24 @@ export function useClaudeRun({
     effortRef.current = nextEffort;
     setModelState(nextModel);
     setEffortState(nextEffort);
+    if (!activeThreadSummary) {
+      draftSelectionRef.current = {
+        ...draftSelection,
+        model: nextModel,
+        effort: nextEffort,
+        modelPreferences: nextPreferences,
+      };
+    }
   }, [
     activeThreadSummary?.id,
     activeThreadSummary?.model,
     activeThreadSummary?.reasoningEffort,
     activeThreadSummary?.modelPreferences,
+    activeThreadSummary?.agentChannelId,
     channelId,
+    claudeDefaultChannelId,
     appModelSettings.defaultModelId,
+    isNewChatDraft,
     models,
   ]);
 
@@ -445,12 +511,31 @@ export function useClaudeRun({
   }, [activeThreadSummary]);
 
   useEffect(() => {
-    const nextPermissionMode = isVisiblePermissionMode(activeThreadSummary?.permissionMode)
-      ? activeThreadSummary.permissionMode
-      : defaultPermissionMode;
+    if (!activeThreadSummary && !isNewChatDraft) {
+      return;
+    }
+    const draftPermissionMode = draftSelectionRef.current.permissionMode;
+    const nextPermissionMode = activeThreadSummary
+      ? isVisiblePermissionMode(activeThreadSummary.permissionMode)
+        ? activeThreadSummary.permissionMode
+        : defaultPermissionMode
+      : isVisiblePermissionMode(draftPermissionMode)
+        ? draftPermissionMode
+        : defaultPermissionMode;
     permissionModeRef.current = nextPermissionMode;
     setPermissionMode(nextPermissionMode);
-  }, [activeThreadSummary?.id, activeThreadSummary?.permissionMode, defaultPermissionMode]);
+    if (!activeThreadSummary) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        permissionMode: nextPermissionMode,
+      };
+    }
+  }, [
+    activeThreadSummary?.id,
+    activeThreadSummary?.permissionMode,
+    defaultPermissionMode,
+    isNewChatDraft,
+  ]);
 
   useEffect(() => {
     if (runningThreadIds.length === 0) {
@@ -2149,6 +2234,12 @@ export function useClaudeRun({
     const previousMode = permissionModeRef.current;
     permissionModeRef.current = mode;
     setPermissionMode(mode);
+    if (isNewChatDraft) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        permissionMode: mode,
+      };
+    }
 
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, { permissionMode: mode }).catch((error) => {
@@ -2169,6 +2260,14 @@ export function useClaudeRun({
     effortRef.current = nextEffort;
     setModelState(nextModel);
     setEffortState(nextEffort);
+    if (isNewChatDraft) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        model: nextModel,
+        effort: nextEffort,
+        modelPreferences: modelPreferencesRef.current,
+      };
+    }
 
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, {
@@ -2211,6 +2310,15 @@ export function useClaudeRun({
     setChannelIdState(nextChannelId);
     setModelState(DEFAULT_MODEL_VALUE);
     setEffortState('default');
+    if (isNewChatDraft) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        channelId: nextChannelId,
+        model: DEFAULT_MODEL_VALUE,
+        effort: 'default',
+        modelPreferences: {},
+      };
+    }
 
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, {
@@ -2242,6 +2350,14 @@ export function useClaudeRun({
     );
     effortRef.current = normalizedEffort;
     setEffortState(normalizedEffort);
+    if (isNewChatDraft) {
+      draftSelectionRef.current = {
+        ...draftSelectionRef.current,
+        model: modelRef.current,
+        effort: normalizedEffort,
+        modelPreferences: modelPreferencesRef.current,
+      };
+    }
     if (activeThreadId) {
       void persistThreadMetadata(activeThreadId, {
         model: modelRef.current === DEFAULT_MODEL_VALUE ? null : modelRef.current,

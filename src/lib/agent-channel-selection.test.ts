@@ -241,6 +241,25 @@ test('system Codex catalog fills official DeepSeek reasoning levels when missing
   );
 });
 
+test('system Agent channel keeps the complete native model catalog', () => {
+  const catalog = buildAgentChannelModelCatalog(OPENAI_CODEX_PROVIDER_ID, undefined, {
+    providerId: OPENAI_CODEX_PROVIDER_ID,
+    defaultModelId: 'gpt-5.6-sol',
+    models: [
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol', isDefault: true, supportedReasoningEfforts: [] },
+      { id: 'gpt-5.6-terra', label: 'GPT-5.6-Terra', isDefault: false, supportedReasoningEfforts: [] },
+      { id: 'gpt-5.6-luna', label: 'GPT-5.6-Luna', isDefault: false, supportedReasoningEfforts: [] },
+    ],
+  });
+
+  assert.equal(catalog?.defaultModelId, 'gpt-5.6-sol');
+  assert.deepEqual(catalog?.models.map((model) => model.id), [
+    'gpt-5.6-sol',
+    'gpt-5.6-terra',
+    'gpt-5.6-luna',
+  ]);
+});
+
 test('background queued runs keep the persisted thread channel', () => {
   assert.deepEqual(
     resolveRunAgentChannelSelection({

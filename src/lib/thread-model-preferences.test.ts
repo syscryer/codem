@@ -3,6 +3,7 @@ import test from 'node:test';
 import { DEFAULT_MODEL_VALUE } from '../constants.js';
 import {
   collectThreadModelPreferences,
+  isModelSelectionChannelReady,
   reasoningEffortForThreadModel,
   threadModelPreferenceKey,
   updateThreadModelReasoningEffort,
@@ -13,6 +14,11 @@ test('provider default model keeps a stable preference key', () => {
   assert.equal(threadModelPreferenceKey(null), DEFAULT_MODEL_VALUE);
   assert.equal(threadModelPreferenceKey(DEFAULT_MODEL_VALUE), DEFAULT_MODEL_VALUE);
   assert.equal(threadModelPreferenceKey('model-a'), 'model-a');
+});
+
+test('draft model restoration waits for the draft channel transition', () => {
+  assert.equal(isModelSelectionChannelReady('thread-channel', 'draft-channel'), false);
+  assert.equal(isModelSelectionChannelReady('draft-channel', 'draft-channel'), true);
 });
 
 test('legacy current effort is merged into the current model preference', () => {

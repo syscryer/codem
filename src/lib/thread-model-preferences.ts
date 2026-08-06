@@ -3,6 +3,13 @@ import type { ThreadSummary } from '../types.js';
 
 export type ThreadModelPreferences = Record<string, string>;
 
+export function isModelSelectionChannelReady(
+  currentChannelId: string,
+  targetChannelId: string,
+) {
+  return currentChannelId === targetChannelId;
+}
+
 export function threadModelPreferenceKey(modelId?: string | null) {
   const normalized = modelId?.trim();
   return normalized && normalized !== DEFAULT_MODEL_VALUE ? normalized : DEFAULT_MODEL_VALUE;

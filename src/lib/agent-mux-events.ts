@@ -9,7 +9,7 @@ export function buildAgentMuxConversationTurn(
   let turn: ConversationTurn = {
     id: `agent-mux-${run.id}`,
     backendRunId: run.providerRunId ?? run.id,
-    userText: '',
+    userText: run.prompt || '旧记录未保存原始提示词',
     workspace: run.workingDirectory ?? '',
     assistantText: '',
     tools: [],
@@ -94,7 +94,8 @@ function legacyPhase(message: string): TurnPhase {
 }
 
 function reconcileAgentMuxRunState(turn: ConversationTurn, run: AgentMuxRun): ConversationTurn {
-  const durationMs = turn.durationMs ?? parseAgentMuxDuration(run.duration);
+  const persistedDurationMs = parseAgentMuxDuration(run.duration);
+  const durationMs = persistedDurationMs ?? turn.durationMs;
   if (turn.status === 'done' || turn.status === 'error' || turn.status === 'stopped') {
     return { ...turn, durationMs };
   }
@@ -122,7 +123,10 @@ function parseAgentMuxEventTime(value: string | undefined) {
   if (!value) {
     return Date.now();
   }
-  const timestamp = Date.parse(value);
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    ? `${value.replace(' ', 'T')}Z`
+    : value;
+  const timestamp = Date.parse(normalized);
   return Number.isFinite(timestamp) ? timestamp : Date.now();
 }
 

@@ -1,6 +1,5 @@
 import { ArrowDown } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import { AgentInvocationGroup } from './ConversationContextPrototype';
 import { ConversationTurnView } from './ConversationTurn';
 import { findLatestChangedFilesTurnId } from '../lib/conversation-changed-files';
 import { resolveEmptyConversationCopy } from '../lib/new-chat-draft';
@@ -16,7 +15,6 @@ import type {
   WebLinkOpenTarget,
   WorkbenchPreviewRequest,
 } from '../types';
-import type { AgentMuxRun } from '../lib/agent-mux-api';
 
 const BOTTOM_ANCHOR_THRESHOLD_PX = 96;
 const HISTORY_AUTO_LOAD_THRESHOLD_PX = 240;
@@ -45,8 +43,6 @@ type ConversationPaneProps = {
   clockNowMs: number;
   isRunning: boolean;
   activeTurnId: string;
-  agentMuxRuns?: AgentMuxRun[];
-  onOpenAgentRun?: (run: AgentMuxRun) => void;
   transcriptRef: RefObject<HTMLDivElement | null>;
   bottomRef: RefObject<HTMLDivElement | null>;
   undoneTurnIds: Record<string, boolean>;
@@ -103,8 +99,6 @@ export function ConversationPane({
   clockNowMs,
   isRunning,
   activeTurnId,
-  agentMuxRuns = [],
-  onOpenAgentRun = () => undefined,
   transcriptRef,
   bottomRef,
   undoneTurnIds,
@@ -380,7 +374,6 @@ export function ConversationPane({
             })}
           </>
         )}
-        <AgentInvocationGroup runs={agentMuxRuns} onOpenRun={onOpenAgentRun} />
         <div ref={bottomRef} />
       </section>
       {showBottomAnchor ? (

@@ -37,6 +37,7 @@ export type AgentMuxRun = {
   providerRunId?: string | null;
   workingDirectory?: string | null;
   threadId?: string | null;
+  sessionId?: string | null;
 };
 
 export type AgentMuxRunEvent = {
@@ -60,6 +61,31 @@ export type AgentMuxOverview = {
   runs: AgentMuxRun[];
   metrics: AgentMuxMetrics;
 };
+
+/** Stable grouping key for repeated calls to the same child-agent session. */
+export function agentMuxConversationKey(run: AgentMuxRun): string | null {
+  if (!run.threadId || !run.profileId || !run.workingDirectory) return null;
+  return [run.threadId, run.profileId, run.workingDirectory].join('\u001f');
+}
+
+export function groupAgentMuxRunsByConversation(runs: AgentMuxRun[]): AgentMuxRun[][] {
+  const groups = new Map<string, AgentMuxRun[]>();
+  return runs.reduce<AgentMuxRun[][]>((result, run) => {
+    const key = agentMuxConversationKey(run);
+    if (!key) {
+      result.push([run]);
+      return result;
+    }
+    const group = groups.get(key);
+    if (group) group.push(run);
+    else {
+      const next = [run];
+      groups.set(key, next);
+      result.push(next);
+    }
+    return result;
+  }, []);
+}
 
 export type AgentMuxRuntimeInfo = { cliPath: string; appDataDir: string; runtimeManaged: boolean };
 

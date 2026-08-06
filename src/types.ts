@@ -694,6 +694,7 @@ export type GeneralSettings = {
   autoCheckAppUpdate: boolean;
   showDebugButton: boolean;
   collapseIntermediateProcess: boolean;
+  workspaceFileSearchRespectGitignore: boolean;
   defaultPermissionMode: PermissionMode;
   reviewHideNoiseFilesByDefault: boolean;
   reviewDefaultDisplayMode: ReviewDisplayMode;
