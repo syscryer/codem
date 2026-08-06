@@ -32,11 +32,11 @@ test('App routes Grok, Codex, and OpenCode through the generic hook without chan
   assert.doesNotMatch(agentRunSource, /\/api\/claude\/run/);
 });
 
-test('default Agent only drives new chat creation paths', () => {
+test('default Agent updates only untouched new chat drafts and drives creation paths', () => {
   assert.match(appSource, /defaultProviderId: agentRuntime\.defaultProviderId/);
   assert.match(
     agentRunSource,
-    /const providerId = defaultProviderIdRef\.current;[\s\S]*setDraftProviderId\(providerId\);[\s\S]*resetDraftModelSelection\(providerId\)/,
+    /const previousDefaultProviderId = defaultProviderIdRef\.current;[\s\S]*defaultProviderIdRef\.current = defaultProviderId;[\s\S]*current === previousDefaultProviderId \? defaultProviderId : current/,
   );
   assert.match(agentRunSource, /providerId,/);
   assert.match(claudeRunSource, /providerId: CLAUDE_CODE_PROVIDER_ID/);

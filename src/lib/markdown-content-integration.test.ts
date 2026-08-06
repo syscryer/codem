@@ -20,6 +20,7 @@ test('聊天与 Agent Mux 共用标准事件 reducer 和会话展示组件', () 
   assert.match(agentMuxSource, /buildAgentMuxConversationTurn\(run, events\)/);
   assert.match(agentMuxSource, /<ConversationTurnView/);
   assert.match(agentMuxSource, /transcriptTurn = applyAgentRunEventToTurn\(transcriptTurn, event\);[\s\S]{0,180}setLiveRunTurns/);
-  assert.match(agentMuxSource, /liveTurn=\{selectedRun\?\.status === 'running'/);
+  assert.match(agentMuxSource, /liveTurns=\{liveRunTurns\}/);
+  assert.match(agentMuxSource, /liveTurn=\{timelineTurns\[item\.id\]\}/);
   assert.doesNotMatch(agentMuxSource, /useConversation/);
 });

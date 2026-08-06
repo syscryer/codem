@@ -36,6 +36,7 @@ CodeM 是一个面向本地编码 Agent 的桌面工作台。
 
 - 调用本机 `claude`、`codex`、`grok`、`opencode` 与 `pi` CLI，并实时展示 Agent 输出
 - 支持 Pi Agent 原生 RPC 热会话、动态模型、思考级别、渠道、权限确认和用户提问
+- 支持 Agent Mux 统一配置与调用本机 Agent，可通过独立 Runtime、CLI 和 Skill 在 CodeM 关闭后继续运行、监控和取消任务
 - 按项目管理聊天，会话可以继续复用 `sessionId`
 - 支持 Codex 原生会话压缩，以及 Codex、Claude 在新聊天中继续当前会话
 - 支持切换工作目录、停止运行、继续输入和队列发送
@@ -45,6 +46,7 @@ CodeM 是一个面向本地编码 Agent 的桌面工作台。
 - 支持 `TodoWrite` 计划卡片和运行状态展示
 - 支持项目级 Git 分支和变更数量展示
 - 支持 Claude、Codex、Grok、OpenCode 与 Pi 的文件产出卡片、修改摘要和 Diff 审查
+- 支持 DeepSeek Responses 渠道，以及当前会话 Git、计划、输出文件、网址和 Agent Mux 运行的只读上下文摘要
 - 支持工作台视图，可以查看文件、审查、浏览器，并在应用内预览网页链接
 - 支持主题、强调色、窗口材质、界面密度和字体设置
 - 项目、线程、消息和工具调用会持久化到本机 SQLite

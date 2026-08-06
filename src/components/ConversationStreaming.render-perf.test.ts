@@ -3,26 +3,24 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const turnSource = readFileSync(new URL('./ConversationTurn.tsx', import.meta.url), 'utf8');
+const markdownSource = readFileSync(new URL('./MarkdownContent.tsx', import.meta.url), 'utf8');
 const agentRunSource = readFileSync(new URL('../hooks/useAgentRun.ts', import.meta.url), 'utf8');
 const claudeRunSource = readFileSync(new URL('../hooks/useClaudeRun.ts', import.meta.url), 'utf8');
 const workspaceSource = readFileSync(new URL('../hooks/useWorkspaceState.ts', import.meta.url), 'utf8');
 
 test('streaming markdown memoizes expensive parsing behind deferred content', () => {
-  assert.match(turnSource, /const deferredContent = useDeferredValue\(content\);/);
-  assert.match(turnSource, /const DeferredMarkdownContent = memo\(function DeferredMarkdownContent/);
-  assert.match(
-    turnSource,
-    /<DeferredMarkdownContent\s+content=\{deferredContent\}\s+onPreviewImage=\{onPreviewImage\}\s+onOpenLocalFile=\{onOpenLocalFile\}/,
-  );
-  assert.match(turnSource, /\{content\}\s*<\/ReactMarkdown>/);
+  assert.match(turnSource, /import \{ MarkdownContent \} from '\.\/MarkdownContent';/);
+  assert.match(markdownSource, /export const MarkdownContent = memo\(function MarkdownContent/);
+  assert.match(markdownSource, /const deferredContent = useDeferredValue\(content\);/);
+  assert.match(markdownSource, /\{deferredContent\}\s*<\/ReactMarkdown>/);
 });
 
 test('markdown code blocks keep a stable renderer across conversation refreshes', () => {
-  assert.match(turnSource, /function MarkdownCodeBlock\(\{ children \}/);
-  assert.match(turnSource, /const markdownComponents = useMemo\(\(\) => \(\{/);
-  assert.match(turnSource, /pre: MarkdownCodeBlock/);
-  assert.match(turnSource, /components=\{markdownComponents\}/);
-  assert.doesNotMatch(turnSource, /pre\(\{ children \}\) \{/);
+  assert.match(markdownSource, /function MarkdownCodeBlock\(\{ children \}/);
+  assert.match(markdownSource, /const markdownComponents = useMemo\(\(\) => \(\{/);
+  assert.match(markdownSource, /pre: MarkdownCodeBlock/);
+  assert.match(markdownSource, /components=\{markdownComponents\}/);
+  assert.doesNotMatch(markdownSource, /pre\(\{ children \}\) \{/);
 });
 
 test('generic agent deltas do not schedule a full-history persist every animation frame', () => {

@@ -10,6 +10,7 @@ const ordinaryChatHeaderSource = readFileSync(new URL('../components/OrdinaryCha
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
 const turnSource = readFileSync(new URL('../components/ConversationTurn.tsx', import.meta.url), 'utf8');
+const markdownSource = readFileSync(new URL('../components/MarkdownContent.tsx', import.meta.url), 'utf8');
 
 test('macOS 不再注册会随光标合成更新的 CSS app-region', () => {
   assert.doesNotMatch(stylesSource, /-webkit-app-region\s*:/);
@@ -35,15 +36,13 @@ test('隐藏工作区只在重新显示时接收最新渲染', () => {
 });
 
 test('Claude 流式阶段保留完整 Markdown，并跳过相同 deferred 内容的重复解析', () => {
-  assert.match(turnSource, /const DeferredMarkdownContent = memo\(function DeferredMarkdownContent/);
-  assert.match(
-    turnSource,
-    /<DeferredMarkdownContent\s+content=\{deferredContent\}\s+onPreviewImage=\{onPreviewImage\}\s+onOpenLocalFile=\{onOpenLocalFile\}[\s\S]*?\/>/,
-  );
+  assert.match(turnSource, /<MarkdownContent/);
   assert.match(turnSource, /onOpenLocalFileContextMenu=/);
   assert.match(turnSource, /onOpenWebUrl=/);
   assert.match(turnSource, /onOpenWebContextMenu=/);
-  assert.match(turnSource, /<ReactMarkdown[\s\S]*?\{content\}\s*<\/ReactMarkdown>/);
+  assert.match(markdownSource, /export const MarkdownContent = memo\(function MarkdownContent/);
+  assert.match(markdownSource, /const deferredContent = useDeferredValue\(content\);/);
+  assert.match(markdownSource, /<ReactMarkdown[\s\S]*?\{deferredContent\}\s*<\/ReactMarkdown>/);
   assert.doesNotMatch(turnSource, /if \(streaming\)/);
 });
 
