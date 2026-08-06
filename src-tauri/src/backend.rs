@@ -19309,6 +19309,7 @@ fn is_claude_runtime_compatible(
 }
 
 fn build_run_stream_response(state: AppState, run_id: String) -> ApiResult<Response> {
+    let response_run_id = run_id.clone();
     let stream = async_stream::stream! {
         let mut index = 0_usize;
         loop {
@@ -19336,6 +19337,7 @@ fn build_run_stream_response(state: AppState, run_id: String) -> ApiResult<Respo
     Response::builder()
         .header("Content-Type", "application/x-ndjson; charset=utf-8")
         .header("Cache-Control", "no-cache, no-transform")
+        .header("X-CodeM-Agent-Run-Id", response_run_id)
         .body(Body::from_stream(stream))
         .map_err(|error| ApiError::internal(format!("构建 Claude 响应失败: {error}")))
 }

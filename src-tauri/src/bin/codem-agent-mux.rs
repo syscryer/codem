@@ -465,20 +465,17 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
         json!({ "status": "running" }),
     )
     .await?;
-    let response = api
-        .raw_post(
-            "/api/agents/run",
-            json!({
-                "providerId": provider_id,
-                "channelId": channel_id,
-                "prompt": prompt,
-                "workingDirectory": working_directory,
-                "model": model,
-                "reasoningEffort": reasoning_effort,
-                "permissionMode": permission_mode,
-            }),
-        )
-        .await?;
+    let (endpoint, payload, claude_runtime_id) = agent_run_request(
+        provider_id,
+        &run_id,
+        channel_id,
+        &prompt,
+        &working_directory,
+        model,
+        reasoning_effort,
+        &permission_mode,
+    );
+    let response = api.raw_post(endpoint, payload).await?;
     if !response.status().is_success() {
         let message = response
             .text()
@@ -549,6 +546,9 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
     }
     .await;
     if let Err(error) = stream_result {
+        if let Some(runtime_id) = claude_runtime_id.as_deref() {
+            let _ = close_claude_runtime(&api, runtime_id).await;
+        }
         let _ = flush_output(&api, &run_id, &mut output_buffer).await;
         let _ = api.event(&run_id, "error", &error).await;
         let _ = api
@@ -562,6 +562,9 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
             )
             .await;
         return Err(error);
+    }
+    if let Some(runtime_id) = claude_runtime_id.as_deref() {
+        let _ = close_claude_runtime(&api, runtime_id).await;
     }
     let summary = if answer.trim().is_empty() {
         match status {
@@ -588,6 +591,57 @@ fn optional_environment_value(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn agent_run_request(
+    provider_id: &str,
+    run_id: &str,
+    channel_id: Option<&str>,
+    prompt: &str,
+    working_directory: &str,
+    model: &str,
+    reasoning_effort: Option<&str>,
+    permission_mode: &str,
+) -> (&'static str, Value, Option<String>) {
+    if provider_id == PROVIDER_CLAUDE {
+        let runtime_id = format!("agent-mux-{run_id}");
+        return (
+            "/api/claude/run",
+            json!({
+                "threadId": runtime_id,
+                "channelId": channel_id,
+                "prompt": prompt,
+                "workingDirectory": working_directory,
+                "model": model,
+                "effort": reasoning_effort,
+                "permissionMode": permission_mode,
+            }),
+            Some(runtime_id),
+        );
+    }
+
+    (
+        "/api/agents/run",
+        json!({
+            "providerId": provider_id,
+            "channelId": channel_id,
+            "prompt": prompt,
+            "workingDirectory": working_directory,
+            "model": model,
+            "reasoningEffort": reasoning_effort,
+            "permissionMode": permission_mode,
+        }),
+        None,
+    )
+}
+
+async fn close_claude_runtime(api: &ApiClient, runtime_id: &str) -> Result<(), String> {
+    api.post(
+        &format!("/api/claude/runtime/{runtime_id}/close"),
+        Value::Null,
+    )
+    .await
+    .map(|_| ())
 }
 
 async fn consume_event(
@@ -718,7 +772,7 @@ async fn cancel(args: &[String], app_data_dir: &Path) -> Result<(), String> {
         .get("providerRunId")
         .and_then(Value::as_str)
         .ok_or_else(|| "运行还没有底层 Agent ID".to_string())?;
-    api.delete(&format!("/api/agents/run/{provider_run_id}"))
+    api.delete(&cancel_agent_endpoint(run, provider_run_id))
         .await?;
     api.event(&run_id, "cancelled", "用户取消了运行").await?;
     let final_run = api
@@ -780,6 +834,15 @@ fn provider_id(agent_id: &str) -> Option<&'static str> {
         "pi" => Some(PROVIDER_PI),
         "claude" => Some(PROVIDER_CLAUDE),
         _ => None,
+    }
+}
+
+fn cancel_agent_endpoint(run: &Value, provider_run_id: &str) -> String {
+    let is_claude = run.get("target").and_then(Value::as_str) == Some("Claude Code");
+    if is_claude {
+        format!("/api/claude/run/{provider_run_id}")
+    } else {
+        format!("/api/agents/run/{provider_run_id}")
     }
 }
 
@@ -949,6 +1012,38 @@ mod tests {
         );
         assert_eq!(optional_environment_value(Some("  ".to_string())), None);
         assert_eq!(optional_environment_value(None), None);
+    }
+
+    #[test]
+    fn claude_request_uses_an_isolated_runtime_and_claude_contract() {
+        let (endpoint, payload, runtime_id) = agent_run_request(
+            PROVIDER_CLAUDE,
+            "mux-42",
+            Some("channel-1"),
+            "只回复 OK",
+            "D:/workspace",
+            "MiniMax-M3",
+            Some("high"),
+            "default",
+        );
+
+        assert_eq!(endpoint, "/api/claude/run");
+        assert_eq!(runtime_id.as_deref(), Some("agent-mux-mux-42"));
+        assert_eq!(payload["threadId"], "agent-mux-mux-42");
+        assert_eq!(payload["effort"], "high");
+        assert!(payload.get("reasoningEffort").is_none());
+    }
+
+    #[test]
+    fn agent_cancel_uses_the_matching_runtime_endpoint() {
+        assert_eq!(
+            cancel_agent_endpoint(&json!({ "target": "Claude Code" }), "run-1"),
+            "/api/claude/run/run-1"
+        );
+        assert_eq!(
+            cancel_agent_endpoint(&json!({ "target": "OpenAI Codex" }), "run-2"),
+            "/api/agents/run/run-2"
+        );
     }
 }
 

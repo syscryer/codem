@@ -591,15 +591,8 @@ async fn update_run(
     let connection = service.connection()?;
     ensure_schema(&connection)?;
     let existing = read_run(&connection, &run_id)?.ok_or_else(|| client_error("运行记录不存在"))?;
-    let terminal_status = matches!(
-        existing.status.as_str(),
-        "completed" | "failed" | "waiting" | "cancelled"
-    );
-    let conflicting_terminal_update = terminal_status
-        && payload
-            .status
-            .as_deref()
-            .is_some_and(|status| status != existing.status);
+    let conflicting_terminal_update =
+        terminal_update_conflicts(&existing.status, payload.status.as_deref());
     let status = (!conflicting_terminal_update)
         .then_some(payload.status)
         .flatten();
@@ -620,6 +613,26 @@ async fn update_run(
     }
     let run = read_run(&connection, &run_id)?.ok_or_else(|| client_error("运行记录不存在"))?;
     Ok(Json(run))
+}
+
+fn terminal_update_conflicts(existing_status: &str, requested_status: Option<&str>) -> bool {
+    let Some(requested_status) = requested_status else {
+        return false;
+    };
+    if !matches!(
+        existing_status,
+        "completed" | "failed" | "waiting" | "cancelled"
+    ) {
+        return false;
+    }
+    if requested_status == existing_status {
+        return false;
+    }
+
+    // A cancellation can race with the provider stream reporting a failed or
+    // waiting run. Preserve the explicit user action, but never reopen a
+    // completed run or replace an already persisted cancellation.
+    !(requested_status == "cancelled" && matches!(existing_status, "failed" | "waiting"))
 }
 
 async fn list_run_events(
@@ -1241,6 +1254,17 @@ mod tests {
                 .thread_id,
             None
         );
+    }
+
+    #[test]
+    fn cancellation_wins_over_provider_failure_race() {
+        assert!(!terminal_update_conflicts("failed", Some("cancelled")));
+        assert!(!terminal_update_conflicts("waiting", Some("cancelled")));
+        assert!(!terminal_update_conflicts("running", Some("cancelled")));
+        assert!(!terminal_update_conflicts("cancelled", Some("cancelled")));
+        assert!(terminal_update_conflicts("completed", Some("cancelled")));
+        assert!(terminal_update_conflicts("cancelled", Some("failed")));
+        assert!(!terminal_update_conflicts("failed", None));
     }
 
     #[test]
