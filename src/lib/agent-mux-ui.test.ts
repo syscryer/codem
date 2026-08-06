@@ -28,6 +28,13 @@ test('Agent Mux overview rows open the selected monitor run', () => {
   assert.match(componentSource, /className="agent-mux-call-row" onClick=\{onOpen\}/);
 });
 
+test('Agent Mux monitor defaults to the first run without overriding a valid selection', () => {
+  assert.match(componentSource, /if \(current && runRecords\.some\(\(run\) => run\.id === current\)\) return current;/);
+  assert.match(componentSource, /groupAgentMuxRunsByConversation\(runRecords\)\[0\]\?\.\[0\]\?\.id \?\? ''/);
+  assert.match(componentSource, /items\.length === 0 \? <EmptyState icon=\{Activity\} title="暂无运行记录"/);
+  assert.match(stylesSource, /\.agent-mux-detail-panel > \.agent-mux-empty-state \{ min-height: 100%; flex: 1; \}/);
+});
+
 test('Agent Mux monitor shows profile avatars in run rows and details', () => {
   assert.match(componentSource, /<MonitorView agents=\{agentRecords\}/);
   assert.match(componentSource, /<AgentMuxAvatar avatar=\{run\.avatar\} providerId=\{providerId\} size="small"/);

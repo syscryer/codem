@@ -31,6 +31,7 @@ export type AgentMuxRun = {
   status: 'running' | 'completed' | 'failed' | 'queued' | 'waiting' | 'cancelled';
   duration: string;
   started: string;
+  createdAt?: string;
   prompt: string;
   summary: string;
   profileId?: string | null;

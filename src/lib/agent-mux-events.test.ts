@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentMuxRun, AgentMuxRunEvent } from './agent-mux-api.js';
-import { buildAgentMuxConversationTurn } from './agent-mux-events.js';
+import { buildAgentMuxConversationTurn, formatAgentMuxRelativeTime, parseAgentMuxTimestamp } from './agent-mux-events.js';
 import type { AgentRunEvent } from '../types.js';
 
 const run: AgentMuxRun = {
@@ -87,6 +87,16 @@ test('SQLite UTC 时间不按浏览器本地时区解析', () => {
   ]);
 
   assert.equal(transcript.startedAtMs, Date.parse('2026-08-06T07:24:30Z'));
+  assert.equal(parseAgentMuxTimestamp('2026-08-06 07:24:30'), Date.parse('2026-08-06T07:24:30Z'));
+});
+
+test('运行记录按真实创建时间显示相对时间', () => {
+  const now = Date.parse('2026-08-06T09:24:30Z');
+  assert.equal(formatAgentMuxRelativeTime('2026-08-06 09:24:15', '旧标签', now), '刚刚');
+  assert.equal(formatAgentMuxRelativeTime('2026-08-06 09:02:30', '旧标签', now), '22 分钟前');
+  assert.equal(formatAgentMuxRelativeTime('2026-08-06 07:24:30', '旧标签', now), '2 小时前');
+  assert.equal(formatAgentMuxRelativeTime('2026-08-05 07:24:30', '旧标签', now), '1 天前');
+  assert.equal(formatAgentMuxRelativeTime(undefined, '旧标签', now), '旧标签');
 });
 
 test('已完成运行优先使用数据库固化耗时', () => {

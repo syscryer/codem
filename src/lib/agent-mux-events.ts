@@ -16,7 +16,7 @@ export function buildAgentMuxConversationTurn(
     items: [],
     status: run.status === 'queued' ? 'pending' : 'running',
     activity: run.status === 'queued' ? '等待运行' : `正在运行 ${run.target}`,
-    startedAtMs: parseAgentMuxEventTime(events[0]?.createdAt),
+    startedAtMs: parseAgentMuxTimestamp(events[0]?.createdAt) ?? Date.now(),
     pendingUserInputRequests: [],
     pendingApprovalRequests: [],
     providerName: run.target,
@@ -119,15 +119,36 @@ function reconcileAgentMuxRunState(turn: ConversationTurn, run: AgentMuxRun): Co
   };
 }
 
-function parseAgentMuxEventTime(value: string | undefined) {
+export function parseAgentMuxTimestamp(value: string | undefined) {
   if (!value) {
-    return Date.now();
+    return undefined;
   }
   const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
     ? `${value.replace(' ', 'T')}Z`
     : value;
   const timestamp = Date.parse(normalized);
-  return Number.isFinite(timestamp) ? timestamp : Date.now();
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+export function formatAgentMuxRelativeTime(value: string | undefined, fallback = '刚刚', nowMs = Date.now()) {
+  const timestamp = parseAgentMuxTimestamp(value);
+  if (timestamp === undefined) return fallback;
+  const diffMinutes = Math.max(0, Math.floor((nowMs - timestamp) / 60_000));
+  if (diffMinutes < 1) return '刚刚';
+  if (diffMinutes < 60) return `${diffMinutes} 分钟前`;
+  const hours = Math.floor(diffMinutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} 天前`;
+  const date = new Date(timestamp);
+  const now = new Date(nowMs);
+  const prefix = date.getFullYear() === now.getFullYear() ? '' : `${date.getFullYear()}/`;
+  return `${prefix}${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+export function formatAgentMuxExactTime(value: string | undefined) {
+  const timestamp = parseAgentMuxTimestamp(value);
+  return timestamp === undefined ? undefined : new Date(timestamp).toLocaleString('zh-CN', { hour12: false });
 }
 
 function parseAgentMuxDuration(value: string) {

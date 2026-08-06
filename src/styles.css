@@ -25962,8 +25962,10 @@ div[data-popover-portal] > * {
 .agent-mux-panel-heading button { display: inline-flex; align-items: center; gap: 3px; border: 0; padding: 4px; background: transparent; color: var(--mux-blue); font-size: 11px; cursor: pointer; }
 .agent-mux-call-list, .agent-mux-health-list { padding: 6px 0; }
 .agent-mux-empty-state { display: flex; min-height: 96px; align-items: center; justify-content: center; flex-direction: column; gap: 5px; padding: 18px 22px; color: var(--mux-muted); text-align: center; }
+.agent-mux-empty-state > svg { margin-bottom: 3px; color: color-mix(in srgb, var(--mux-blue) 72%, var(--mux-muted)); }
 .agent-mux-empty-state strong { color: var(--mux-text); font-size: 13px; font-weight: 600; }
 .agent-mux-empty-state span { max-width: 360px; font-size: 11px; line-height: 1.6; }
+.agent-mux-detail-panel > .agent-mux-empty-state { min-height: 100%; flex: 1; }
 .agent-mux-call-row, .agent-mux-health-row { display: flex; align-items: center; gap: 11px; min-height: 57px; padding: 0 18px; }
 .agent-mux-call-row { width: 100%; border: 0; background: transparent; color: var(--mux-text); font: inherit; text-align: left; cursor: pointer; }
 .agent-mux-call-row:hover { background: var(--mux-soft); }

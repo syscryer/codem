@@ -101,6 +101,8 @@ pub struct RunRecord {
     pub status: String,
     pub duration: String,
     pub started: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
     pub prompt: String,
     pub summary: String,
     #[serde(rename = "profileId")]
@@ -875,7 +877,7 @@ fn read_overview(connection: &Connection) -> Result<AgentMuxOverview, (StatusCod
 
 fn read_runs(connection: &Connection) -> Result<Vec<RunRecord>, (StatusCode, Json<Value>)> {
     let mut statement = connection
-        .prepare("SELECT id, caller, target, profile, skill, status, duration, started, prompt, summary, profile_id, provider_run_id, working_directory, thread_id, nickname, avatar, session_id FROM agent_mux_runs ORDER BY created_at DESC, rowid DESC LIMIT 100")
+        .prepare("SELECT id, caller, target, profile, skill, status, duration, started, prompt, summary, profile_id, provider_run_id, working_directory, thread_id, nickname, avatar, session_id, created_at FROM agent_mux_runs ORDER BY created_at DESC, rowid DESC LIMIT 100")
         .map_err(internal_error)?;
     let runs = statement
         .query_map([], |row| {
@@ -897,6 +899,7 @@ fn read_runs(connection: &Connection) -> Result<Vec<RunRecord>, (StatusCode, Jso
                 nickname: row.get(14)?,
                 avatar: row.get(15)?,
                 session_id: row.get(16)?,
+                created_at: row.get(17)?,
             })
         })
         .map_err(internal_error)?
@@ -911,7 +914,7 @@ fn read_run(
 ) -> Result<Option<RunRecord>, (StatusCode, Json<Value>)> {
     connection
         .query_row(
-            "SELECT id, caller, target, profile, skill, status, duration, started, prompt, summary, profile_id, provider_run_id, working_directory, thread_id, nickname, avatar, session_id FROM agent_mux_runs WHERE id = ?1",
+            "SELECT id, caller, target, profile, skill, status, duration, started, prompt, summary, profile_id, provider_run_id, working_directory, thread_id, nickname, avatar, session_id, created_at FROM agent_mux_runs WHERE id = ?1",
             [id],
             |row| {
                 Ok(RunRecord {
@@ -932,6 +935,7 @@ fn read_run(
                     nickname: row.get(14)?,
                     avatar: row.get(15)?,
                     session_id: row.get(16)?,
+                    created_at: row.get(17)?,
                 })
             },
         )
@@ -1252,6 +1256,24 @@ mod tests {
         assert_eq!(overview.metrics.running, 1);
         assert_eq!(overview.metrics.today_calls, 2);
         assert_eq!(overview.metrics.success_rate, Some(100.0));
+    }
+
+    #[test]
+    fn run_records_expose_the_persisted_utc_creation_time() {
+        let connection = test_connection();
+        connection.execute(
+            "INSERT INTO agent_mux_runs (id, caller, target, profile, skill, status, created_at) VALUES ('timed-run', 'CodeM', 'Codex', 'OpenAI / sol', 'codem-agent-mux', 'completed', '2026-08-05 12:12:19')",
+            [],
+        ).expect("insert timed Agent Mux run");
+
+        let run = read_run(&connection, "timed-run")
+            .expect("read timed run")
+            .expect("timed run exists");
+        assert_eq!(run.created_at, "2026-08-05 12:12:19");
+        assert_eq!(
+            serde_json::to_value(run).expect("serialize timed run")["createdAt"],
+            "2026-08-05 12:12:19"
+        );
     }
 
     #[test]
