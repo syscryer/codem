@@ -19006,9 +19006,22 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .settings-usage-head-actions {
-  display: inline-flex;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 1.15fr) minmax(190px, 1fr) auto auto;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
+}
+
+.settings-usage-section-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 16px;
+}
+
+.settings-usage-section-head > h1 {
+  text-align: center;
 }
 
 .settings-usage-refresh-button {
@@ -19022,6 +19035,7 @@ button.git-conflict-overview-row:focus-visible,
 .settings-usage-range-control,
 .settings-usage-project-control,
 .settings-usage-provider-control {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -19037,6 +19051,18 @@ button.git-conflict-overview-row:focus-visible,
 
 .settings-usage-agent-filter button {
   min-width: 34px;
+}
+
+.settings-usage-agent-filter,
+.settings-usage-range-control .settings-segmented {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.settings-usage-provider-control,
+.settings-usage-project-control,
+.settings-usage-range-control {
+  justify-content: flex-start;
 }
 
 .settings-usage-project-select {
@@ -19618,7 +19644,11 @@ button.git-conflict-overview-row:focus-visible,
   .settings-usage-trend-head,
   .settings-usage-head-actions {
     align-items: flex-start;
-    flex-direction: column;
+  }
+
+  .settings-usage-head-actions {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
   }
 
   .settings-usage-chart-shell {
@@ -19627,6 +19657,17 @@ button.git-conflict-overview-row:focus-visible,
 
   .settings-usage-floating-tooltip {
     width: min(210px, calc(100vw - 64px));
+  }
+}
+
+@media (max-width: 1180px) and (min-width: 901px) {
+  .settings-usage-head-actions {
+    grid-template-columns: minmax(240px, 1fr) minmax(220px, 1fr);
+    row-gap: 10px;
+  }
+
+  .settings-usage-refresh-button {
+    justify-self: start;
   }
 }
 

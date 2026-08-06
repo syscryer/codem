@@ -83,7 +83,7 @@ export function UsageSettingsSection() {
 
   return (
     <section className="settings-page-section">
-      <header className="settings-section-head settings-section-head-row">
+      <header className="settings-section-head settings-section-head-row settings-usage-section-head">
         <h1>使用情况</h1>
         <div className="settings-usage-head-actions">
           <div className="settings-usage-provider-control">
