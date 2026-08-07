@@ -433,6 +433,7 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
     let prompt = option(args, "--prompt").ok_or_else(|| "invoke 缺少 --prompt".to_string())?;
     let working_directory = option(args, "--working-directory").unwrap_or_else(|| ".".to_string());
     let requested_permission_mode = option(args, "--permission");
+    let requested_reasoning_effort = option(args, "--reasoning-effort");
     let inherited_permission_mode = env::var("CODEM_PERMISSION_MODE").ok();
     let permission_mode = resolve_permission_mode(
         requested_permission_mode.as_deref(),
@@ -451,7 +452,10 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
         .get("model")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let reasoning_effort = profile.get("reasoningEffort").and_then(Value::as_str);
+    let reasoning_effort = resolve_reasoning_effort(
+        requested_reasoning_effort.as_deref(),
+        profile.get("reasoningEffort").and_then(Value::as_str),
+    )?;
     let nickname = profile.get("nickname").and_then(Value::as_str);
     let avatar = profile.get("avatar").and_then(Value::as_str);
     let profile_id = profile
@@ -507,7 +511,7 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
         &prompt,
         &working_directory,
         model,
-        reasoning_effort,
+        reasoning_effort.as_deref(),
         &permission_mode,
         resumed_session_id.as_deref(),
     );
@@ -725,6 +729,45 @@ async fn close_claude_runtime(api: &ApiClient, runtime_id: &str) -> Result<(), S
     .map(|_| ())
 }
 
+fn resolve_reasoning_effort(
+    requested: Option<&str>,
+    profile_default: Option<&str>,
+) -> Result<Option<String>, String> {
+    if let Some(requested) = requested {
+        let requested = requested.trim();
+        if requested.is_empty() {
+            return Err("--reasoning-effort 不能为空".to_string());
+        }
+        return Ok(Some(requested.to_string()));
+    }
+
+    Ok(profile_default
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string))
+}
+
+fn runtime_event_message<'a>(event: &'a Value, event_type: &'a str) -> &'a str {
+    ["message", "label", "name"]
+        .into_iter()
+        .find_map(|key| {
+            event
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or(event_type)
+}
+
+fn fallback_event_message<'a>(event_type: &'a str, message: &'a str) -> &'a str {
+    if message.trim().is_empty() {
+        event_type
+    } else {
+        message
+    }
+}
+
 async fn consume_event(
     api: &ApiClient,
     run_id: &str,
@@ -774,12 +817,7 @@ async fn consume_event(
         "status" | "phase" | "tool-start" | "tool-input-delta" | "tool-stop" | "tool-result"
         | "usage" => {
             flush_text_buffers(api, run_id, output_buffer, thinking_buffer).await?;
-            let message = event
-                .get("message")
-                .or_else(|| event.get("label"))
-                .or_else(|| event.get("name"))
-                .and_then(Value::as_str)
-                .unwrap_or(event_type);
+            let message = runtime_event_message(&event, event_type);
             if !message.starts_with("Ignoring malformed agent role definition:") {
                 let event_message = if event_type == "tool-start" {
                     format!("调用工具：{message}")
@@ -1058,7 +1096,7 @@ fn caller_label(args: &[String]) -> Result<String, String> {
 }
 
 fn print_help() {
-    println!("codem-agent-mux ensure|agents --json|invoke --prompt <text> [--profile <id>] [--caller <agent>] [--working-directory <path>] [--permission <mode>]|status --json|cancel --run <id>|stop");
+    println!("codem-agent-mux ensure|agents --json|invoke --prompt <text> [--profile <id>] [--caller <agent>] [--working-directory <path>] [--permission <mode>] [--reasoning-effort <level>]|status --json|cancel --run <id>|stop");
 }
 
 struct ApiClient {
@@ -1136,6 +1174,11 @@ impl ApiClient {
         message: &str,
         payload: Option<Value>,
     ) -> Result<(), String> {
+        let event_type = event_type.trim();
+        if event_type.is_empty() {
+            return Err("Agent 事件缺少类型".to_string());
+        }
+        let message = fallback_event_message(event_type, message);
         self.post(
             &format!("/api/agent-mux/runs/{run_id}/events"),
             agent_mux_event_body(event_type, message, payload),
@@ -1228,6 +1271,51 @@ mod tests {
     }
 
     #[test]
+    fn explicit_reasoning_effort_overrides_profile_default() {
+        assert_eq!(
+            resolve_reasoning_effort(Some(" max "), Some("high"))
+                .unwrap()
+                .as_deref(),
+            Some("max")
+        );
+        assert_eq!(
+            resolve_reasoning_effort(None, Some(" high "))
+                .unwrap()
+                .as_deref(),
+            Some("high")
+        );
+        assert!(resolve_reasoning_effort(Some(" "), Some("high")).is_err());
+    }
+
+    #[test]
+    fn runtime_event_message_skips_blank_fields() {
+        let event = json!({
+            "type": "tool-start",
+            "message": "  ",
+            "label": "\t",
+            "name": " Read "
+        });
+
+        assert_eq!(runtime_event_message(&event, "tool-start"), "Read");
+    }
+
+    #[test]
+    fn runtime_event_message_falls_back_for_blank_tool_event_name() {
+        let event = json!({
+            "type": "tool-result",
+            "name": "\n"
+        });
+
+        assert_eq!(runtime_event_message(&event, "tool-result"), "tool-result");
+    }
+
+    #[test]
+    fn fallback_event_message_prevents_blank_outbound_events() {
+        assert_eq!(fallback_event_message("error", " \t"), "error");
+        assert_eq!(fallback_event_message("delta", " visible "), " visible ");
+    }
+
+    #[test]
     fn machine_json_output_is_ascii_safe_and_round_trips_unicode() {
         let value = json!({
             "nickname": "小猫",
@@ -1306,6 +1394,20 @@ mod tests {
         assert_eq!(payload["effort"], "high");
         assert_eq!(payload["sessionId"], "session-42");
         assert!(payload.get("reasoningEffort").is_none());
+
+        let (_, codex_payload, _) = agent_run_request(
+            PROVIDER_CODEX,
+            "mux-43",
+            None,
+            "Reply OK",
+            "D:/workspace",
+            "gpt-5.6-sol",
+            Some("xhigh"),
+            "default",
+            None,
+        );
+        assert_eq!(codex_payload["reasoningEffort"], "xhigh");
+        assert!(codex_payload.get("effort").is_none());
     }
 
     #[test]

@@ -132,10 +132,11 @@ ${profiles.length > 0 ? profiles.join('\n') : '- 当前没有已检测可用的�
 
 1. 每次调用前执行 \`& $agentMux agents --json${appDataArg}\` 获取最新可用配置，不能只依赖安装时快照。
 2. 按能力等级、用途和标签选择 status=available 的 profileId。
-3. 执行 \`& $agentMux invoke --profile '<profileId>' --caller '<当前主 Agent 名称>' --working-directory '<absolute-path>' --permission default --prompt '<task>'${appDataArg}\`。调用方只填写 Agent 名称（如 OpenAI Codex、Claude Code、OpenCode），不要填写或推测会话名称。同一 CodeM 主会话再次调用相同 profileId 和工作区时，CLI 会自动续用该子 Agent 的会话，适合追问和返工；切换主会话、配置或工作区会新建会话。若外层 CodeM 会话是“完全访问”，CLI 会自动让子 Agent 继承最高权限；其他权限模式保持原样。
-4. CLI stdout 是 Agent 公开输出；非零退出码表示真实失败，不得伪装成功。
-5. 查询运行使用 \`& $agentMux status --json${appDataArg}\`，取消运行使用 \`& $agentMux cancel --run '<runId>'${appDataArg}\`。
-6. 不得直接读取 discovery 文件；Runtime token 由 CLI 内部管理。
+3. 执行 \`& $agentMux invoke --profile '<profileId>' --caller '<当前主 Agent 名称>' --working-directory '<absolute-path>' --permission default --prompt '<task>'${appDataArg}\`。需要覆盖 Profile 默认思考等级时，增加 \`--reasoning-effort '<level>'\`；显式值优先，省略时继续使用 Profile 配置。调用方只填写 Agent 名称（如 OpenAI Codex、Claude Code、OpenCode），不要填写或推测会话名称。同一 CodeM 主会话再次调用相同 profileId 和工作区时，CLI 会自动续用该子 Agent 的会话，适合追问和返工；切换主会话、配置或工作区会新建会话。若外层 CodeM 会话是“完全访问”，CLI 会自动让子 Agent 继承最高权限；其他权限模式保持原样。
+4. 思考等级按 Agent 和模型区分：Claude Code 支持 \`low/medium/high/xhigh/max\` 及 CodeM 的 \`ultracode\`；OpenAI Codex 和 Pi 使用各自动态模型目录，仅在调用方已知可用值时传入；Grok Build 和 OpenCode 当前不支持。无法确认时省略该参数。
+5. CLI stdout 是 Agent 公开输出；非零退出码表示真实失败，不得伪装成功。
+6. 查询运行使用 \`& $agentMux status --json${appDataArg}\`，取消运行使用 \`& $agentMux cancel --run '<runId>'${appDataArg}\`。
+7. 不得直接读取 discovery 文件；Runtime token 由 CLI 内部管理。
 
 通用独立运行当前支持 OpenAI Codex 和 Grok Build。Pi 需要 CodeM threadId，Claude Code尚未接入通用独立运行。接口失败时必须返回真实错误，不得伪装成功。
 `;

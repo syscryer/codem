@@ -127,6 +127,8 @@ test('Agent Mux profile configuration selects the channel before its model catal
 
 test('Agent Mux skill records the caller agent without requesting a session name', () => {
   assert.match(componentSource, /--caller '<当前主 Agent 名称>'/);
+  assert.match(componentSource, /--reasoning-effort '<level>'/);
+  assert.match(componentSource, /Grok Build 和 OpenCode 当前不支持/);
   assert.match(componentSource, /--app-data/);
   assert.match(apiSource, /appDataDir: string/);
   assert.match(componentSource, /不要填写或推测会话名称/);
@@ -138,6 +140,7 @@ test('Agent Mux profiles default reasoning to the model and pass explicit choice
   assert.match(componentSource, /reasoningEffort: reasoningEffort \|\| null/);
   assert.match(componentSource, /reasoningEffort: input\.profile\.reasoningEffort/);
   assert.match(apiSource, /reasoningEffort: input\.reasoningEffort \|\| undefined/);
+  assert.match(cliSource, /option\(args, "--reasoning-effort"\)/);
   assert.match(cliSource, /profile\.get\("reasoningEffort"\)/);
   assert.match(cliSource, /"reasoningEffort": reasoning_effort/);
 });
