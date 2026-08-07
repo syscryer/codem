@@ -1,6 +1,6 @@
 [package]
 name = "codem"
-version = "0.1.21"
+version = "0.1.22"
 description = "CodeM desktop shell"
 authors = ["MNL"]
 license = "MIT"

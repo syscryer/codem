@@ -31,12 +31,12 @@ test('workspace session running state uses an activity icon instead of a circle 
 });
 
 test('workspace session status supports Grok, Codex, and OpenCode managed hot runtimes', () => {
-  assert.match(componentSource, /OPENAI_CODEX_PROVIDER_ID/);
-  assert.match(componentSource, /GROK_BUILD_PROVIDER_ID/);
-  assert.match(componentSource, /OPENCODE_PROVIDER_ID/);
+  assert.match(componentSource, /resolveChatRuntimeKind/);
+  assert.match(componentSource, /runtimeKind === 'generic'/);
+  assert.match(componentSource, /getAgentProviderMetadata/);
   assert.match(componentSource, /\/api\/agents\/runtime\/\$\{encodeURIComponent\(activeThread\.id\)\}/);
   assert.match(componentSource, /method: 'DELETE'/);
-  assert.match(componentSource, /Codex app-server/);
-  assert.match(componentSource, /OpenCode ACP/);
+  assert.match(componentSource, /agentRuntimeProtocol/);
+  assert.match(componentSource, /protocolLabel/);
   assert.match(componentSource, /进程仍在后台保留，下次发送会直接复用/);
 });

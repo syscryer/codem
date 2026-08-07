@@ -366,14 +366,15 @@ test('Pi Agent is represented across settings, diagnostics, and capability surfa
   assert.equal(resolveProviderDiagnostics(provider, null, null, null, null, probe).auth, '已认证 · 3 个模型');
   assert.equal(getProviderInstallDocsUrl('pi-agent'), 'https://pi.dev/docs/latest/quickstart');
   assert.match(providerSettingsSource, /probePiAgent/);
-  assert.match(providerTabsSource, /id: 'pi-agent', label: 'Pi'/);
+  assert.match(providerTabsSource, /AGENT_PROVIDER_METADATA/);
+  assert.match(providerTabsSource, /providers = AGENT_PROVIDER_METADATA\.map/);
   assert.match(providerIconSource, /PI_AGENT_PROVIDER_ID/);
   assert.match(providerIconSource, /const PI_PATH =/);
-  assert.match(providerIconSource, /providerId === PI_AGENT_PROVIDER_ID\s*\? PI_PATH/);
+  assert.match(providerIconSource, /\[PI_AGENT_PROVIDER_ID\]: PI_PATH/);
   assert.doesNotMatch(providerIconSource, /providerId === PI_AGENT_PROVIDER_ID\) \{\s*return <Bot/);
   assert.match(mcpSettingsSource, /Pi Agent 当前不支持由 CodeM 管理 MCP/);
   assert.match(globalPromptSource, /~\/\.pi\/agent\/AGENTS\.md/);
-  assert.match(usageSettingsSource, /'pi-agent'/);
+  assert.match(usageSettingsSource, /AGENT_PROVIDER_IDS/);
   assert.match(pluginsSuiteSource, /Pi Packages/);
   assert.match(pluginsSuiteSource, /~\/\.pi\/agent\/skills/);
   assert.match(pluginsSuiteSource, /emptyText=\{providerId === 'pi-agent' \? '暂无已安装 Pi Packages'/);
