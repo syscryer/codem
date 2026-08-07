@@ -7,6 +7,7 @@ import type {
   AiChatSummary,
   ApprovalDecision,
   ApprovalRequest,
+  ComposerSendShortcut,
   ConversationTurn,
   RequestUserInputRequest,
   WebLinkOpenTarget,
@@ -18,6 +19,7 @@ import { OrdinaryChatHeader } from './OrdinaryChatHeader';
 
 type OrdinaryChatWorkspaceProps = {
   chat: ReturnTypeUseOrdinaryChat;
+  composerSendShortcut?: ComposerSendShortcut;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
   onOpenWebLink: (url: string, target?: WebLinkOpenTarget) => void | Promise<void>;
   onCopyWebLink: (url: string) => void | Promise<void>;
@@ -29,6 +31,7 @@ type OrdinaryChatWorkspaceProps = {
 
 export function OrdinaryChatWorkspace({
   chat,
+  composerSendShortcut = 'enter',
   showToast,
   onOpenWebLink,
   onCopyWebLink,
@@ -193,6 +196,7 @@ export function OrdinaryChatWorkspace({
 
       <Composer
         variant="ordinary"
+        sendShortcut={composerSendShortcut}
         agent="generic"
         providerId={chat.selectedProviderId}
         providers={providerDescriptors}

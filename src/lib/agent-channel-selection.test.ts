@@ -4,9 +4,11 @@ import {
   CLAUDE_CODE_PROVIDER_ID,
   GROK_BUILD_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
+  OPENCODE_PROVIDER_ID,
 } from '../constants.js';
 import type { AgentChannel, AiProviderTemplate } from '../types.js';
 import {
+  agentChannelMetadataPatch,
   agentChannelTemplate,
   defaultAgentChannelId,
   isAgentChannelSelectionAvailable,
@@ -179,7 +181,7 @@ test('Grok keeps its ACP session when its channel changes', () => {
   );
 });
 
-test('Codex keeps its session when its channel changes', () => {
+test('Codex starts a new provider session when its channel changes', () => {
   assert.deepEqual(
     resolveRunAgentChannelSelection({
       providerId: OPENAI_CODEX_PROVIDER_ID,
@@ -188,8 +190,22 @@ test('Codex keeps its session when its channel changes', () => {
       persistedChannelId: 'codex-a',
       selectedChannelId: 'codex-b',
     }),
-    { channelId: 'codex-b', channelChanged: true, reuseSession: true },
+    { channelId: 'codex-b', channelChanged: true, reuseSession: false },
   );
+});
+
+test('persisting a Codex channel change clears its channel-bound session', () => {
+  assert.deepEqual(agentChannelMetadataPatch(OPENAI_CODEX_PROVIDER_ID, 'codex-b'), {
+    channelId: 'codex-b',
+    model: null,
+    reasoningEffort: null,
+    sessionId: null,
+  });
+  assert.deepEqual(agentChannelMetadataPatch(GROK_BUILD_PROVIDER_ID, 'grok-b'), {
+    channelId: 'grok-b',
+    model: null,
+    reasoningEffort: null,
+  });
 });
 
 test('channel model capabilities expose DeepSeek reasoning levels to Codex', () => {
@@ -301,6 +317,37 @@ test('custom Claude channel falls back to Claude Code reasoning levels', () => {
     catalog?.models[0]?.supportedReasoningEfforts.map((effort) => effort.id),
     ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
   );
+});
+
+test('custom OpenCode channel inherits verbose variants by provider-prefixed model id', () => {
+  const catalog = buildAgentChannelModelCatalog(OPENCODE_PROVIDER_ID, {
+    ...channels[0],
+    id: 'open-code-go',
+    providerId: OPENCODE_PROVIDER_ID,
+    name: 'OpenCode Go',
+    protocol: 'openai_chat',
+    models: [{
+      id: 'model-1',
+      channelId: 'open-code-go',
+      modelId: 'qwen3.8-max',
+      displayName: 'Qwen 3.8 Max',
+      enabled: true,
+      isDefault: true,
+      capabilities: {},
+      createdAt: '',
+      updatedAt: '',
+    }],
+  }, {
+    providerId: OPENCODE_PROVIDER_ID,
+    defaultModelId: 'codem_open_code_go/qwen3.8-max',
+    models: [{
+      id: 'codem_open_code_go/qwen3.8-max',
+      label: 'Qwen 3.8 Max',
+      isDefault: true,
+      supportedReasoningEfforts: [{ id: 'low' }, { id: 'high' }],
+    }],
+  });
+  assert.deepEqual(catalog?.models[0]?.supportedReasoningEfforts.map((effort) => effort.id), ['low', 'high']);
 });
 
 test('background queued runs keep the persisted thread channel', () => {

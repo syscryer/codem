@@ -2339,6 +2339,7 @@ export default function App() {
             ) : appView.kind === 'ordinary-chat' ? (
               <OrdinaryChatWorkspace
                 chat={ordinaryChat}
+                composerSendShortcut={shortcuts.composerSend}
                 showToast={showToast}
                 onOpenWebLink={handleOpenWebLink}
                 onCopyWebLink={handleCopyWebLink}

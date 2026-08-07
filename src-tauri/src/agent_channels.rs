@@ -253,7 +253,10 @@ impl AgentChannelService {
             return Err("Agent 渠道已停用".to_string());
         }
         let api_key = self.secrets.get(&channel.secret_slot)?;
-        let models = list_models(&connection, &channel.id)?;
+        let mut models = list_models(&connection, &channel.id)?;
+        for model in &mut models {
+            apply_known_model_capabilities(&channel, model);
+        }
         build_runtime(
             self.app_data_dir.as_ref(),
             &channel,
@@ -1445,6 +1448,26 @@ fn apply_known_model_capabilities(
     channel: &StoredAgentChannel,
     model: &mut AgentChannelModelSummary,
 ) {
+    let model_id = model.model_id.trim().to_ascii_lowercase();
+    if is_opencode_go_channel(channel) && (model_id.starts_with("qwen3.") || model_id == "glm-5.2")
+    {
+        if !model.capabilities.is_object() {
+            model.capabilities = json!({});
+        }
+        let capabilities = model
+            .capabilities
+            .as_object_mut()
+            .expect("known model capabilities must be an object");
+        capabilities.entry("reasoning").or_insert(json!(true));
+        capabilities
+            .entry("defaultReasoningEffort")
+            .or_insert(json!("high"));
+        capabilities.entry("reasoningEfforts").or_insert(json!([
+            { "id": "high", "label": "高", "description": "适合复杂任务的深度推理" },
+            { "id": "max", "label": "最大", "description": "为最困难任务提供最大推理深度" }
+        ]));
+        return;
+    }
     let is_official_deepseek_responses = channel.protocol == AiProtocol::OpenaiResponses
         && Url::parse(&channel.base_url)
             .ok()
@@ -1485,6 +1508,42 @@ fn apply_known_model_capabilities(
             "description": "为最困难任务提供最大推理深度"
         }
     ]));
+}
+
+fn is_opencode_go_channel(channel: &StoredAgentChannel) -> bool {
+    channel.template_id.as_deref() == Some("opencode-go")
+        || Url::parse(&channel.base_url).ok().is_some_and(|url| {
+            url.host_str()
+                .is_some_and(|host| host.eq_ignore_ascii_case("opencode.ai"))
+                && url.path().trim_end_matches('/') == "/zen/go/v1"
+        })
+}
+
+fn opencode_model_variants(model: &AgentChannelModelSummary, package: &str) -> Value {
+    let Some(efforts) = model
+        .capabilities
+        .get("reasoningEfforts")
+        .and_then(Value::as_array)
+    else {
+        return json!({});
+    };
+    Value::Object(
+        efforts
+            .iter()
+            .filter_map(|effort| {
+                let id = effort
+                    .as_str()
+                    .or_else(|| effort.get("id").and_then(Value::as_str))?;
+                let options = if package == "@ai-sdk/anthropic" {
+                    let budget = if id == "max" { 31_999 } else { 16_000 };
+                    json!({ "thinking": { "type": "enabled", "budgetTokens": budget } })
+                } else {
+                    json!({ "reasoningEffort": id })
+                };
+                Some((id.to_string(), options))
+            })
+            .collect(),
+    )
 }
 
 fn get_model(
@@ -1911,10 +1970,16 @@ fn build_runtime(
         }
         OPENCODE_PROVIDER_ID => {
             let provider_key = format!("codem_{}", channel.id.replace('-', "_"));
-            let package = match channel.protocol {
-                AiProtocol::AnthropicMessages => "@ai-sdk/anthropic",
-                AiProtocol::OpenaiResponses => "@ai-sdk/openai",
-                AiProtocol::OpenaiChat => "@ai-sdk/openai-compatible",
+            let uses_opencode_go_anthropic = is_opencode_go_channel(channel)
+                && selected_model.as_deref().is_some_and(|model| {
+                    let model = model.to_ascii_lowercase();
+                    model.starts_with("qwen3.") || model.starts_with("minimax-")
+                });
+            let package = match (uses_opencode_go_anthropic, &channel.protocol) {
+                (true, _) => "@ai-sdk/anthropic",
+                (_, AiProtocol::AnthropicMessages) => "@ai-sdk/anthropic",
+                (_, AiProtocol::OpenaiResponses) => "@ai-sdk/openai",
+                (_, AiProtocol::OpenaiChat) => "@ai-sdk/openai-compatible",
                 _ => {
                     return Err(
                         "OpenCode 渠道仅支持 OpenAI Responses、Chat 或 Anthropic Messages 接口"
@@ -1922,7 +1987,7 @@ fn build_runtime(
                     )
                 }
             };
-            let runtime_base_url = if channel.protocol == AiProtocol::AnthropicMessages {
+            let runtime_base_url = if package == "@ai-sdk/anthropic" {
                 opencode_anthropic_base_url(&channel.base_url)?
             } else {
                 channel.base_url.clone()
@@ -1931,9 +1996,12 @@ fn build_runtime(
                 .iter()
                 .filter(|model| model.enabled)
                 .map(|model| {
+                    let mut model = model.clone();
+                    apply_known_model_capabilities(channel, &mut model);
+                    let variants = opencode_model_variants(&model, package);
                     (
                         model.model_id.clone(),
-                        json!({ "name": model.display_name }),
+                        json!({ "name": model.display_name, "variants": variants }),
                     )
                 })
                 .collect::<serde_json::Map<_, _>>();
@@ -2469,6 +2537,71 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["low", "high", "max"]
         );
+    }
+
+    #[test]
+    fn opencode_go_qwen_and_glm_expose_native_variants() {
+        let channel = StoredAgentChannel {
+            id: "open-code-go".to_string(),
+            provider_id: OPENCODE_PROVIDER_ID.to_string(),
+            name: "OpenCode Go".to_string(),
+            protocol: AiProtocol::OpenaiChat,
+            base_url: "https://opencode.ai/zen/go/v1".to_string(),
+            models_url: Some("https://opencode.ai/zen/go/v1/models".to_string()),
+            template_id: Some("opencode-go".to_string()),
+            enabled: true,
+            is_default: true,
+            secret_slot: "secret:opencode-go".to_string(),
+            created_at: "2026-08-07T00:00:00Z".to_string(),
+            updated_at: "2026-08-07T00:00:00Z".to_string(),
+        };
+        let models = vec![AgentChannelModelSummary {
+            id: "qwen-model".to_string(),
+            channel_id: channel.id.clone(),
+            model_id: "qwen3.8-max".to_string(),
+            display_name: "Qwen3.8 Max".to_string(),
+            enabled: true,
+            is_default: true,
+            capabilities: json!({}),
+            created_at: "2026-08-07T00:00:00Z".to_string(),
+            updated_at: "2026-08-07T00:00:00Z".to_string(),
+        }];
+
+        let runtime = build_runtime(
+            std::env::temp_dir().as_path(),
+            &channel,
+            &models,
+            Some("qwen3.8-max"),
+            "test-key",
+            None,
+            None,
+        )
+        .expect("build OpenCode Go Qwen runtime");
+        let config: Value = serde_json::from_str(
+            runtime
+                .env
+                .get("OPENCODE_CONFIG_CONTENT")
+                .expect("OpenCode config content"),
+        )
+        .expect("parse OpenCode config content");
+        let provider = &config["provider"]["codem_open_code_go"];
+        assert_eq!(provider["npm"], "@ai-sdk/anthropic");
+        assert_eq!(
+            provider["models"]["qwen3.8-max"]["variants"]["high"]["thinking"]["budgetTokens"],
+            16_000
+        );
+        assert_eq!(
+            provider["models"]["qwen3.8-max"]["variants"]["max"]["thinking"]["budgetTokens"],
+            31_999
+        );
+
+        let mut glm = models[0].clone();
+        glm.model_id = "glm-5.2".to_string();
+        glm.capabilities = json!({});
+        apply_known_model_capabilities(&channel, &mut glm);
+        let variants = opencode_model_variants(&glm, "@ai-sdk/openai-compatible");
+        assert_eq!(variants["high"]["reasoningEffort"], "high");
+        assert_eq!(variants["max"]["reasoningEffort"], "max");
     }
 
     #[test]

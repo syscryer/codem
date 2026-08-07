@@ -66,10 +66,10 @@ test('agent model catalog cache exposes stale data while refreshing it', async (
 });
 
 test('forced refresh bypasses a fresh entry and keeps providers isolated', async () => {
-  const calls: Array<{ providerId: string; refresh: boolean }> = [];
+  const calls: Array<{ providerId: string; refresh: boolean; channelId?: string }> = [];
   const cache = createAgentModelCatalogCache({
-    loader: async (providerId, refresh) => {
-      calls.push({ providerId, refresh });
+    loader: async (providerId, refresh, channelId) => {
+      calls.push({ providerId, refresh, ...(channelId ? { channelId } : {}) });
       return catalog(providerId, refresh ? 'forced' : 'initial');
     },
   });
@@ -86,6 +86,17 @@ test('forced refresh bypasses a fresh entry and keeps providers isolated', async
   ]);
   assert.equal(cache.peek('openai-codex')?.catalog.defaultModelId, 'openai-codex-forced');
   assert.equal(cache.peek('opencode')?.catalog.defaultModelId, 'opencode-initial');
+});
+
+test('agent model catalog cache isolates OpenCode channels', async () => {
+  const cache = createAgentModelCatalogCache({
+    loader: async (providerId, _refresh, channelId) => catalog(providerId, channelId ?? 'system'),
+  });
+
+  await cache.load('opencode', { channelId: 'open-code-go' });
+  await cache.load('opencode', { channelId: 'another-channel' });
+  assert.equal(cache.peek('opencode', 'open-code-go')?.catalog.defaultModelId, 'opencode-open-code-go');
+  assert.equal(cache.peek('opencode', 'another-channel')?.catalog.defaultModelId, 'opencode-another-channel');
 });
 
 test('failed refresh preserves the last usable model catalog', async () => {
@@ -107,12 +118,12 @@ test('failed refresh preserves the last usable model catalog', async () => {
 
 test('useAgentRun prewarms the default provider and keeps cached draft controls synchronous', () => {
   assert.match(agentRunSource, /agentModelCatalogCache\.load\(defaultProviderId\)/);
-  assert.match(agentRunSource, /resetDraftModelSelection\(providerId\)/);
-  assert.match(agentRunSource, /const snapshot = [\s\S]*agentModelCatalogCache\.peek\(providerId\)/);
-  assert.match(agentRunSource, /if \(snapshot\.stale\) \{[\s\S]*agentModelCatalogCache\.load\(providerId\)/);
+  assert.match(agentRunSource, /resetDraftModelSelection\(providerId, nextChannelId\)/);
+  assert.match(agentRunSource, /const snapshot = [\s\S]*agentModelCatalogCache\.peek\(\s*providerId/);
+  assert.match(agentRunSource, /if \(snapshot\.stale\) \{[\s\S]*agentModelCatalogCache\.load\(providerId, \{ channelId:/);
 });
 
 test('manual model refresh bypasses both frontend and backend caches', () => {
-  assert.match(agentRunSource, /agentModelCatalogCache\.load\(providerId, \{ force: true \}\)/);
-  assert.match(providerRegistrySource, /options\?\.refresh \? '\?refresh=true' : ''/);
+  assert.match(agentRunSource, /agentModelCatalogCache\.load\(providerId, \{ force: true, channelId: modelCatalogChannelId \}\)/);
+  assert.match(providerRegistrySource, /query\.set\('refresh', 'true'\)/);
 });

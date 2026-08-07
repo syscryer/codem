@@ -29,7 +29,7 @@ import { agentChannelTemplate, enabledAgentChannels, SYSTEM_AGENT_CHANNEL_ID, sy
 import { modelContext1mMenuActionLabel, modelMenuDescriptionLabel, modelMenuPrimaryLabel, modelTriggerLabel, permissionLabel } from '../lib/ui-labels';
 import { getQueuedPromptGuideSelection, type QueuedPromptStatus } from '../lib/queued-prompts';
 import type { CompactAvailability } from '../lib/codex-compact';
-import type { AgentChannel, AgentModelCatalog, AgentModelOption, AgentProviderDescriptor, AgentSystemChannel, AgentType, AiChatReasoningEffort, AiKnowledgeBaseSummary, AiProviderTemplate, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ConversationTurn, InputContentBlock, McpServerSummary, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
+import type { AgentChannel, AgentModelCatalog, AgentModelOption, AgentProviderDescriptor, AgentSystemChannel, AgentType, AiChatReasoningEffort, AiKnowledgeBaseSummary, AiProviderTemplate, ClaudeContextRequestState, ClaudeEffortSelection, ClaudeModelOption, ComposerSendShortcut, ConversationTurn, InputContentBlock, McpServerSummary, PermissionMode, SlashCommand, UserImageAttachment } from '../types';
 
 type PendingComposerAttachment =
   | {
@@ -90,6 +90,7 @@ const claudeEffortOptions: Array<{
 
 type ComposerProps = {
   variant?: 'agent' | 'ordinary';
+  sendShortcut?: ComposerSendShortcut;
   agent: AgentType;
   providerId: string;
   providers: AgentProviderDescriptor[];
@@ -176,6 +177,7 @@ type ComposerProps = {
 
 export function Composer({
   variant = 'agent',
+  sendShortcut = 'enter',
   agent,
   providerId,
   providers,
@@ -1107,6 +1109,7 @@ export function Composer({
         metaKey: event.metaKey,
         altKey: event.altKey,
         isComposing: event.nativeEvent.isComposing,
+        sendShortcut,
       })
     ) {
       event.preventDefault();
@@ -1115,6 +1118,16 @@ export function Composer({
         return;
       }
       event.currentTarget.form?.requestSubmit();
+    } else if (
+      variant === 'ordinary'
+      && sendShortcut === 'enter'
+      && event.key === 'Enter'
+      && !event.shiftKey
+      && !event.altKey
+      && !event.nativeEvent.isComposing
+      && (event.ctrlKey || event.metaKey)
+    ) {
+      event.preventDefault();
     }
   }
 
@@ -1997,10 +2010,10 @@ export function Composer({
                     <span className="model-trigger-chevron" aria-hidden="true" />
                   </button>
                 </div>}
-                {agent === 'codex' && agentReasoningEffortOptions.length > 0 ? (
+                {(agent === 'codex' || agent === 'opencode') && agentReasoningEffortOptions.length > 0 ? (
                   <div className="effort-picker" ref={effortMenuRef}>
                     <PopoverPortal open={effortMenuOpen} anchorRef={effortMenuRef} placement="top-end">
-                      <div className="effort-menu" role="menu" aria-label="Codex 思考级别">
+                      <div className="effort-menu" role="menu" aria-label={`${providerName} 思考级别`}>
                         <div className="model-menu-title">思考级别</div>
                         {agentReasoningEffortOptions.map((item) => (
                           <button
@@ -2031,7 +2044,7 @@ export function Composer({
                       className="effort-trigger"
                       aria-expanded={effortMenuOpen}
                       disabled={isRunning}
-                      title={isRunning ? 'Codex 运行中，思考级别已锁定' : 'Codex reasoning effort'}
+                      title={isRunning ? `${providerName} 运行中，思考级别已锁定` : `${providerName} reasoning effort`}
                       onClick={() => setEffortMenuOpen((value) => !value)}
                     >
                       <Brain size={14} />

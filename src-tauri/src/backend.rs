@@ -5075,7 +5075,7 @@ async fn create_thread(
         normalize_thread_metadata_value(payload.reasoning_effort.as_deref(), "reasoningEffort")?;
     if !provider_supports_reasoning_effort(provider) && reasoning_effort.is_some() {
         return Err(ApiError::bad_request(
-            "reasoningEffort 目前仅支持 Claude Code 或 OpenAI Codex 聊天",
+            "reasoningEffort 目前仅支持 Claude Code、OpenAI Codex、OpenCode 或 Pi 聊天",
         ));
     }
     let channel_id = state
@@ -9043,7 +9043,10 @@ fn read_thread_metadata_payload(value: Option<&Value>, field: &str) -> ApiResult
 fn provider_supports_reasoning_effort(provider: &str) -> bool {
     matches!(
         provider,
-        CLAUDE_CODE_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID | PI_AGENT_PROVIDER_ID
+        CLAUDE_CODE_PROVIDER_ID
+            | OPENAI_CODEX_PROVIDER_ID
+            | OPENCODE_PROVIDER_ID
+            | PI_AGENT_PROVIDER_ID
     )
 }
 
@@ -10637,7 +10640,7 @@ fn update_thread_metadata_from_payload(
     };
     if !provider_supports_reasoning_effort(&thread.provider) && reasoning_effort.is_some() {
         return Err(ApiError::bad_request(
-            "reasoningEffort 目前仅支持 Claude Code 或 OpenAI Codex 聊天",
+            "reasoningEffort 目前仅支持 Claude Code、OpenAI Codex、OpenCode 或 Pi 聊天",
         ));
     }
     let permission_mode = if has_permission_mode {
@@ -10678,8 +10681,15 @@ fn update_thread_metadata_from_payload(
     } else {
         thread.agent_channel_id.clone()
     };
-    let agent_channel_fingerprint = if has_channel_id && agent_channel_id != thread.agent_channel_id
-    {
+    let channel_changed = has_channel_id && agent_channel_id != thread.agent_channel_id;
+    // Codex sessions retain the provider configuration from their original
+    // channel, so a channel switch must start a fresh session.
+    let session_id = if thread.provider == OPENAI_CODEX_PROVIDER_ID && channel_changed {
+        None
+    } else {
+        session_id
+    };
+    let agent_channel_fingerprint = if channel_changed {
         None
     } else {
         thread.agent_channel_fingerprint.clone()
@@ -26738,6 +26748,7 @@ mod tests {
             resolve_thread_create_permission_mode(PI_AGENT_PROVIDER_ID, Some("dontAsk")).is_err()
         );
         assert!(provider_supports_reasoning_effort(PI_AGENT_PROVIDER_ID));
+        assert!(provider_supports_reasoning_effort(OPENCODE_PROVIDER_ID));
     }
 
     #[test]
@@ -27192,6 +27203,34 @@ mod tests {
         assert_eq!(model.as_deref(), Some("gpt-codex-fast"));
         assert_eq!(reasoning_effort.as_deref(), Some("high"));
         assert_eq!(permission_mode.as_deref(), Some("auto"));
+
+        connection
+            .execute(
+                "UPDATE threads SET agent_channel_id = 'channel-a', agent_channel_fingerprint = 'fingerprint-a' WHERE id = ?",
+                params![thread_id],
+            )
+            .expect("bind Codex channel");
+        update_thread_metadata_from_payload(
+            &mut connection,
+            &thread_id,
+            &json!({ "channelId": null }),
+            &channel_service,
+        )
+        .expect("switch Codex channel");
+        let (session_id, channel_id, fingerprint): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = connection
+            .query_row(
+                "SELECT session_id, agent_channel_id, agent_channel_fingerprint FROM threads WHERE id = ?",
+                params![thread_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read switched Codex thread");
+        assert_eq!(session_id, None);
+        assert_eq!(channel_id, None);
+        assert_eq!(fingerprint, None);
         assert!(update_thread_metadata_from_payload(
             &mut connection,
             &thread_id,

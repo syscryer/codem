@@ -7,7 +7,7 @@ import type {
   AiProviderTemplate,
   ClaudeModelOption,
 } from '../types';
-import { CLAUDE_CODE_PROVIDER_ID } from '../constants';
+import { CLAUDE_CODE_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID } from '../constants';
 
 export const SYSTEM_AGENT_CHANNEL_ID = 'system';
 
@@ -100,8 +100,17 @@ export function requestAgentChannelId(channelId: string) {
   return channelId === SYSTEM_AGENT_CHANNEL_ID ? undefined : channelId;
 }
 
+export function agentChannelMetadataPatch(providerId: string, channelId: string) {
+  return {
+    channelId: requestAgentChannelId(channelId) ?? null,
+    model: null,
+    reasoningEffort: null,
+    ...(providerId === OPENAI_CODEX_PROVIDER_ID ? { sessionId: null } : {}),
+  };
+}
+
 export function resolveRunAgentChannelSelection({
-  providerId: _providerId,
+  providerId,
   threadId,
   activeThreadId,
   persistedChannelId,
@@ -121,9 +130,9 @@ export function resolveRunAgentChannelSelection({
   return {
     channelId: requestAgentChannelId(selected),
     channelChanged,
-    // Grok scopes its runtime home to the CodeM thread, so a runtime restart
-    // can load the same ACP session after a channel change.
-    reuseSession: true,
+    // Codex app-server sessions retain the model-provider configuration from
+    // their original channel. Reusing one would route the new turn incorrectly.
+    reuseSession: providerId !== OPENAI_CODEX_PROVIDER_ID || !channelChanged,
   };
 }
 
@@ -168,7 +177,8 @@ export function buildAgentChannelModelCatalog(
     providerId,
     defaultModelId: defaultModel?.modelId,
     models: enabledModels.map((model) => {
-      const native = nativeCatalog?.models.find((item) => item.id === model.modelId);
+      const native = nativeCatalog?.models.find((item) =>
+        item.id === model.modelId || item.id.endsWith(`/${model.modelId}`));
       const configuredEfforts = capabilityReasoningEfforts(model.capabilities);
       return {
         id: model.modelId,

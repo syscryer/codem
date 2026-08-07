@@ -20107,7 +20107,7 @@ button.git-conflict-overview-row:focus-visible,
     color-mix(in srgb, var(--app-surface) 90%, transparent) !important;
 }
 
-:is(.codex-desktop, .popover-portal-host) :is(.project-menu-popover, .thread-menu-popover) {
+:is(.codex-desktop, .popover-portal-host) :is(.add-project-menu-popover, .project-menu-popover, .thread-menu-popover) {
   border-color: color-mix(in srgb, var(--app-border) 86%, transparent);
   background:
     linear-gradient(
@@ -20125,7 +20125,7 @@ button.git-conflict-overview-row:focus-visible,
   -webkit-backdrop-filter: blur(34px) saturate(1.28);
 }
 
-:is(.codex-desktop, .popover-portal-host) :is(.project-menu-popover, .thread-menu-popover)::before {
+:is(.codex-desktop, .popover-portal-host) :is(.add-project-menu-popover, .project-menu-popover, .thread-menu-popover)::before {
   background:
     radial-gradient(ellipse at 18% 0%, color-mix(in srgb, var(--app-surface) 30%, transparent), transparent 44%),
     repeating-linear-gradient(
@@ -20137,7 +20137,7 @@ button.git-conflict-overview-row:focus-visible,
   background-blend-mode: normal, soft-light, normal;
 }
 
-:is(.codex-desktop, .popover-portal-host) :is(.project-menu-popover, .thread-menu-popover)::after {
+:is(.codex-desktop, .popover-portal-host) :is(.add-project-menu-popover, .project-menu-popover, .thread-menu-popover)::after {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 20%, transparent), transparent 38%),
     linear-gradient(110deg, color-mix(in srgb, var(--app-surface) 12%, transparent), transparent 30%, transparent 72%, color-mix(in srgb, var(--app-border) 10%, transparent));

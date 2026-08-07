@@ -8,7 +8,7 @@ type CacheEntry = {
   loadedAt: number;
 };
 
-type CatalogLoader = (providerId: string, refresh: boolean) => Promise<AgentModelCatalog>;
+type CatalogLoader = (providerId: string, refresh: boolean, channelId?: string) => Promise<AgentModelCatalog>;
 
 export type AgentModelCatalogSnapshot = {
   catalog: AgentModelCatalog;
@@ -22,8 +22,8 @@ export function createAgentModelCatalogCache(options?: {
   maxAgeMs?: number;
   now?: () => number;
 }) {
-  const loader = options?.loader ?? ((providerId, refresh) =>
-    fetchAgentModelCatalog(providerId, { refresh }));
+  const loader = options?.loader ?? ((providerId, refresh, channelId) =>
+    fetchAgentModelCatalog(providerId, { refresh, channelId }));
   const maxAgeMs = options?.maxAgeMs ?? DEFAULT_MAX_AGE_MS;
   const now = options?.now ?? Date.now;
   const entries = new Map<string, CacheEntry>();
@@ -31,8 +31,12 @@ export function createAgentModelCatalogCache(options?: {
   const refreshRequests = new Map<string, Promise<AgentModelCatalog>>();
   const generations = new Map<string, number>();
 
-  function peek(providerId: string): AgentModelCatalogSnapshot | null {
-    const entry = entries.get(providerId);
+  function cacheKey(providerId: string, channelId?: string) {
+    return `${providerId}\u0000${channelId?.trim() || 'system'}`;
+  }
+
+  function peek(providerId: string, channelId?: string): AgentModelCatalogSnapshot | null {
+    const entry = entries.get(cacheKey(providerId, channelId));
     if (!entry) {
       return null;
     }
@@ -42,48 +46,49 @@ export function createAgentModelCatalogCache(options?: {
     };
   }
 
-  function load(providerId: string, options?: { force?: boolean }) {
+  function load(providerId: string, options?: { force?: boolean; channelId?: string }) {
     const force = options?.force === true;
-    const snapshot = peek(providerId);
+    const key = cacheKey(providerId, options?.channelId);
+    const snapshot = peek(providerId, options?.channelId);
     if (!force && snapshot && !snapshot.stale) {
       return Promise.resolve(snapshot.catalog);
     }
 
     if (!force) {
-      const refreshing = refreshRequests.get(providerId);
+      const refreshing = refreshRequests.get(key);
       if (refreshing) {
         return refreshing;
       }
-      const existing = requests.get(providerId);
+      const existing = requests.get(key);
       if (existing) {
         return existing;
       }
     } else {
-      const existing = refreshRequests.get(providerId);
+      const existing = refreshRequests.get(key);
       if (existing) {
         return existing;
       }
     }
 
-    const generation = (generations.get(providerId) ?? 0) + 1;
-    generations.set(providerId, generation);
+    const generation = (generations.get(key) ?? 0) + 1;
+    generations.set(key, generation);
     const target = force ? refreshRequests : requests;
-    const request = loader(providerId, force)
+    const request = loader(providerId, force, options?.channelId)
       .then((catalog) => {
         if (catalog.providerId !== providerId) {
           throw new Error('模型目录 Provider 与请求不一致');
         }
-        if (generations.get(providerId) === generation) {
-          entries.set(providerId, { catalog, loadedAt: now() });
+        if (generations.get(key) === generation) {
+          entries.set(key, { catalog, loadedAt: now() });
         }
         return catalog;
       })
       .finally(() => {
-        if (target.get(providerId) === request) {
-          target.delete(providerId);
+        if (target.get(key) === request) {
+          target.delete(key);
         }
       });
-    target.set(providerId, request);
+    target.set(key, request);
     return request;
   }
 

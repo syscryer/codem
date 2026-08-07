@@ -119,11 +119,14 @@ export async function runAgentLifecycleAction(
 
 export async function fetchAgentModelCatalog(
   providerId: string,
-  options?: { signal?: AbortSignal; refresh?: boolean },
+  options?: { signal?: AbortSignal; refresh?: boolean; channelId?: string },
 ): Promise<AgentModelCatalog> {
-  const refreshQuery = options?.refresh ? '?refresh=true' : '';
+  const query = new URLSearchParams();
+  if (options?.refresh) query.set('refresh', 'true');
+  if (options?.channelId?.trim()) query.set('channelId', options.channelId.trim());
+  const queryString = query.toString();
   const response = await fetch(
-    `/api/agents/${encodeURIComponent(providerId)}/models${refreshQuery}`,
+    `/api/agents/${encodeURIComponent(providerId)}/models${queryString ? `?${queryString}` : ''}`,
     { signal: options?.signal },
   );
   if (!response.ok) {

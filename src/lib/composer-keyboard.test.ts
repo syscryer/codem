@@ -16,5 +16,7 @@ test('普通聊天 Composer 的 Enter 发送契约保留换行和输入法组合
   assert.equal(shouldSubmitComposerOnEnter({ ...base, shiftKey: true }), false);
   assert.equal(shouldSubmitComposerOnEnter({ ...base, isComposing: true }), false);
   assert.equal(shouldSubmitComposerOnEnter({ ...base, ctrlKey: true }), false);
+  assert.equal(shouldSubmitComposerOnEnter({ ...base, ctrlKey: true, sendShortcut: 'modEnter' }), true);
+  assert.equal(shouldSubmitComposerOnEnter({ ...base, sendShortcut: 'modEnter' }), false);
   assert.equal(shouldSubmitComposerOnEnter({ ...base, key: 'Tab' }), false);
 });

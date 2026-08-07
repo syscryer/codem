@@ -29,7 +29,7 @@ test('菜单材质作用域包含独立宿主且没有复用桌面根容器类',
   );
   assert.match(
     stylesSource,
-    /:is\(\.codex-desktop,\s*\.popover-portal-host\)\s+:is\(\.project-menu-popover,\s*\.thread-menu-popover\)\s*\{[^}]*backdrop-filter:\s*blur\(34px\)/s,
+    /:is\(\.codex-desktop,\s*\.popover-portal-host\)\s+:is\(\.add-project-menu-popover,\s*\.project-menu-popover,\s*\.thread-menu-popover\)\s*\{[^}]*backdrop-filter:\s*blur\(34px\)/s,
   );
   assert.match(
     stylesSource,

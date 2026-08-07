@@ -140,6 +140,7 @@ struct AcpRunTask {
     requested_session_id: Option<String>,
     permission_mode: &'static str,
     model: Option<String>,
+    reasoning_effort: Option<String>,
     environment: BTreeMap<String, String>,
     cancel: watch::Receiver<bool>,
     control: mpsc::UnboundedReceiver<AgentControlCommand>,
@@ -702,6 +703,8 @@ struct AgentModelCatalog {
 struct AgentModelsQuery {
     #[serde(default)]
     refresh: bool,
+    #[serde(rename = "channelId")]
+    channel_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1019,9 +1022,11 @@ async fn agent_models(
 ) -> AgentApiResult<Json<AgentModelCatalog>> {
     let provider_id = provider_id.trim();
     if !query.refresh {
-        if let Some(catalog) =
-            read_cached_agent_model_catalog(&state.model_catalog_cache, provider_id, Instant::now())
-        {
+        if let Some(catalog) = read_cached_agent_model_catalog(
+            &state.model_catalog_cache,
+            &catalog_cache_key(provider_id, query.channel_id.as_deref()),
+            Instant::now(),
+        ) {
             return Ok(Json(catalog));
         }
     }
@@ -1118,8 +1123,17 @@ async fn agent_models(
                 resolve_agent_command(&state, provider_id, query.refresh).ok_or_else(|| {
                     AgentApiError::bad_request("未找到可由 CodeM 启动的 OpenCode CLI")
                 })?;
-            let output = background_agent_command(&command)
+            let channel_runtime = state
+                .agent_channels
+                .resolve_runtime(provider_id, query.channel_id.as_deref(), None, None, None)
+                .map_err(AgentApiError::internal)?;
+            let mut command = background_agent_command(&command);
+            if let Some(runtime) = channel_runtime {
+                command.envs(runtime.env);
+            }
+            let output = command
                 .arg("models")
+                .arg("--verbose")
                 .current_dir(&cwd)
                 .kill_on_drop(true)
                 .output()
@@ -1169,12 +1183,22 @@ async fn agent_models(
     if let Ok(Json(catalog)) = &result {
         store_cached_agent_model_catalog(
             &state.model_catalog_cache,
-            provider_id,
+            &catalog_cache_key(provider_id, query.channel_id.as_deref()),
             catalog.clone(),
             Instant::now(),
         );
     }
     result
+}
+
+fn catalog_cache_key(provider_id: &str, channel_id: Option<&str>) -> String {
+    format!(
+        "{}\u{0}{}",
+        provider_id,
+        channel_id
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or("system")
+    )
 }
 
 fn read_cached_agent_model_catalog(
@@ -1270,34 +1294,123 @@ fn store_cached_agent_command(
 }
 
 fn parse_opencode_models(value: &str) -> Vec<AgentModelSummary> {
+    let mut models: Vec<AgentModelSummary> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    value
-        .lines()
-        .map(str::trim)
-        .filter(|line| {
-            !line.is_empty()
-                && line.len() <= 512
-                && line.contains('/')
-                && !line.chars().any(char::is_control)
-        })
-        .filter(|line| seen.insert((*line).to_string()))
-        .take(1000)
-        .map(|id| {
-            let (provider, label) = id
+    let mut json = String::new();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for line in value.lines() {
+        let trimmed = line.trim();
+        if depth == 0 && trimmed.starts_with('{') {
+            json.clear();
+        }
+        if depth > 0 || trimmed.starts_with('{') {
+            json.push_str(line);
+            json.push('\n');
+            for ch in line.chars() {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' && in_string {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = !in_string;
+                } else if !in_string && ch == '{' {
+                    depth += 1;
+                } else if !in_string && ch == '}' {
+                    depth = depth.saturating_sub(1);
+                }
+            }
+            if depth == 0 {
+                if let Ok(metadata) = serde_json::from_str::<Value>(&json) {
+                    if let Some(model) = opencode_model_from_metadata(&metadata) {
+                        if let Some(existing) = models.iter_mut().find(|item| item.id == model.id) {
+                            *existing = model;
+                        } else {
+                            seen.insert(model.id.clone());
+                            models.push(model);
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        if !trimmed.is_empty()
+            && trimmed.len() <= 512
+            && trimmed.contains('/')
+            && !trimmed.chars().any(char::is_whitespace)
+            && seen.insert(trimmed.to_string())
+        {
+            let (provider, label) = trimmed
                 .split_once('/')
                 .map(|(provider, model)| (provider, model))
-                .unwrap_or(("OpenCode", id));
-            AgentModelSummary {
-                id: id.to_string(),
+                .unwrap_or(("OpenCode", trimmed));
+            models.push(AgentModelSummary {
+                id: trimmed.to_string(),
                 label: label.to_string(),
                 description: Some(provider.to_string()),
                 context_window_tokens: None,
                 is_default: false,
                 default_reasoning_effort: None,
                 supported_reasoning_efforts: Vec::new(),
-            }
+            });
+        }
+        if models.len() >= 1000 {
+            break;
+        }
+    }
+    models
+}
+
+fn opencode_model_from_metadata(metadata: &Value) -> Option<AgentModelSummary> {
+    let provider = metadata.get("providerID").and_then(Value::as_str)?.trim();
+    let model_id = metadata.get("id").and_then(Value::as_str)?.trim();
+    if provider.is_empty() || model_id.is_empty() {
+        return None;
+    }
+    let mut supported_reasoning_efforts = metadata
+        .get("variants")
+        .and_then(Value::as_object)
+        .map(|variants| {
+            variants
+                .keys()
+                .filter(|id| !id.is_empty())
+                .map(|id| AgentReasoningEffortSummary {
+                    id: id.clone(),
+                    description: None,
+                })
+                .collect::<Vec<_>>()
         })
-        .collect()
+        .unwrap_or_default();
+    supported_reasoning_efforts.sort_by_key(|effort| match effort.id.as_str() {
+        "none" => 0,
+        "minimal" => 1,
+        "low" => 2,
+        "medium" => 3,
+        "high" => 4,
+        "xhigh" => 5,
+        "max" => 6,
+        _ => 7,
+    });
+    let default_reasoning_effort = supported_reasoning_efforts
+        .iter()
+        .find(|effort| effort.id == "high")
+        .or_else(|| supported_reasoning_efforts.first())
+        .map(|effort| effort.id.clone());
+    Some(AgentModelSummary {
+        id: format!("{provider}/{model_id}"),
+        label: metadata
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(model_id)
+            .to_string(),
+        description: Some(provider.to_string()),
+        context_window_tokens: metadata.pointer("/limit/context").and_then(Value::as_u64),
+        is_default: false,
+        default_reasoning_effort,
+        supported_reasoning_efforts,
+    })
 }
 
 fn background_agent_command(program: &str) -> tokio::process::Command {
@@ -1412,7 +1525,10 @@ async fn start_agent_run(
             .map_err(AgentApiError::internal)?;
     }
     let reasoning_effort = normalize_optional_id(payload.reasoning_effort, "reasoningEffort")?;
-    if driver == AgentDriverKind::Acp && reasoning_effort.is_some() {
+    if driver == AgentDriverKind::Acp
+        && reasoning_effort.is_some()
+        && provider_id != OPENCODE_PROVIDER_ID
+    {
         return Err(AgentApiError::bad_request(
             "当前 ACP Agent 模型目录未提供 reasoning effort 能力",
         ));
@@ -1504,6 +1620,7 @@ async fn start_agent_run(
                         requested_session_id: session_id,
                         permission_mode,
                         model,
+                        reasoning_effort,
                         environment,
                         cancel: cancel_receiver,
                         control: control_receiver,
@@ -2544,6 +2661,7 @@ async fn start_live_agent_runtime(
                 &config.working_directory,
                 requested_session_id,
                 config.model.as_deref(),
+                config.reasoning_effort.as_deref(),
                 &config.environment,
             )
             .await?;
@@ -2812,6 +2930,7 @@ async fn prepare_acp_session(
     working_directory: &Path,
     requested_session_id: Option<&str>,
     model: Option<&str>,
+    reasoning_effort: Option<&str>,
     environment: &BTreeMap<String, String>,
 ) -> Result<(AcpSessionSummary, bool), String> {
     let initialize = client
@@ -2875,6 +2994,14 @@ async fn prepare_acp_session(
             .map_err(public_acp_error)?;
         }
     }
+    if provider_id == OPENCODE_PROVIDER_ID {
+        if let Some(variant) = reasoning_effort {
+            client
+                .set_config_option(&session.session_id, "effort", variant)
+                .await
+                .map_err(public_acp_error)?;
+        }
+    }
     Ok((session, resumed))
 }
 
@@ -2916,6 +3043,7 @@ async fn execute_acp_run(task: AcpRunTask) {
         requested_session_id,
         permission_mode,
         model,
+        reasoning_effort,
         environment,
         cancel,
         mut control,
@@ -2950,6 +3078,7 @@ async fn execute_acp_run(task: AcpRunTask) {
             &working_directory,
             requested_session_id.as_deref(),
             model.as_deref(),
+            reasoning_effort.as_deref(),
             &environment,
         )
         .await?;
@@ -7398,6 +7527,26 @@ mod tests {
             Some("minimax-cn-coding-plan")
         );
         assert_eq!(models[1].id, "opencode/gpt-5.4");
+    }
+
+    #[test]
+    fn opencode_model_catalog_parses_verbose_variants() {
+        let models = parse_opencode_models(
+            "opencode-go/kimi-k3\n{\n  \"id\": \"kimi-k3\",\n  \"providerID\": \"opencode-go\",\n  \"name\": \"Kimi K3\",\n  \"limit\": { \"context\": 262144 },\n  \"variants\": {\n    \"low\": { \"reasoningEffort\": \"low\" },\n    \"high\": { \"reasoningEffort\": \"high\" },\n    \"max\": { \"reasoningEffort\": \"max\" }\n  }\n}\n",
+        );
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "opencode-go/kimi-k3");
+        assert_eq!(models[0].label, "Kimi K3");
+        assert_eq!(models[0].context_window_tokens, Some(262144));
+        assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            models[0]
+                .supported_reasoning_efforts
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["low", "high", "max"]
+        );
     }
 
     #[test]

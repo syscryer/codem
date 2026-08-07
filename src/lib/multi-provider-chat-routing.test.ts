@@ -53,7 +53,10 @@ test('generic Agent composer follows provider attachment capabilities and suppor
   assert.match(appSource, /supportsQueue=\{activeUsesClaude \|\| activeUsesGenericAgent\}/);
   assert.match(composerSource, /agent === 'claude' \? \(/);
   assert.match(composerSource, /agentModelCatalog\?\.models\.map/);
-  assert.match(composerSource, /agent === 'codex' && agentReasoningEffortOptions\.length > 0/);
+  assert.match(
+    composerSource,
+    /\(agent === 'codex' \|\| agent === 'opencode'\) && agentReasoningEffortOptions\.length > 0/,
+  );
   assert.match(composerSource, /onRetryAgentModels/);
   assert.match(composerSource, /textOnlyInputMessage = `\$\{providerName\} 当前不支持附件输入/);
   assert.match(composerSource, /providerId === OPENAI_CODEX_PROVIDER_ID/);

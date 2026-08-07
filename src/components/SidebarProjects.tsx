@@ -1,15 +1,12 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   AlignJustify,
-  Blocks,
   Check,
-  Clock3,
   Copy,
   Download,
   LoaderCircle,
   MessageSquarePlus,
   MessageSquareText,
-  Network,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -18,10 +15,8 @@ import {
   MoreHorizontal,
   Pin,
   PinOff,
-  Plus,
   Pencil,
   RefreshCw,
-  Search,
   Settings,
   Trash2,
   X,
@@ -29,6 +24,7 @@ import {
   SquareSplitHorizontal,
   Zap,
 } from 'lucide-react';
+import { CodeMIcon } from './CodeMIcon';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { PopoverPortal } from './PopoverPortal';
 import { resolveSidebarThreadStatus, type SidebarThreadStatusKind } from '../lib/sidebar-thread-status';
@@ -567,21 +563,18 @@ export function SidebarProjects({
     <aside className="app-sidebar">
       <nav className="sidebar-primary">
         <button type="button" onClick={onCreatePrimaryChat}>
-          <span><Plus size={14} /></span> 新建任务
-        </button>
-        <button type="button" onClick={onCreateOrdinaryChat}>
-          <span><MessageSquareText size={14} /></span> 新建聊天
+          <span><CodeMIcon name="task" size={16} /></span> 新建任务
         </button>
         <button type="button" onClick={onToggleSearch}>
-          <span><Search size={14} /></span> 搜索
+          <span><CodeMIcon name="search" size={16} /></span> 搜索
           <kbd>Ctrl+G</kbd>
         </button>
         <button type="button" className={agentHubActive ? 'active' : ''} onClick={onOpenAgentHub}>
-          <span><Network size={14} /></span> Agent Hub
+          <span><CodeMIcon name="hub" size={16} /></span> Agent Hub
         </button>
-        <button type="button" onClick={onOpenPlugins}><span><Blocks size={14} /></span> 插件</button>
+        <button type="button" onClick={onOpenPlugins}><span><CodeMIcon name="plugins" size={16} /></span> 插件</button>
         <button type="button" className={automationsActive ? 'active' : ''} onClick={onOpenAutomations}>
-          <span><Clock3 size={14} /></span> 自动化
+          <span><CodeMIcon name="automation" size={16} /></span> 自动化
         </button>
       </nav>
 

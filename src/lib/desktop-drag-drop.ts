@@ -21,9 +21,9 @@ export function subscribeDesktopDragDrop(handlers: DesktopDragDropHandlers): () 
 
   void (async () => {
     try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      const currentWindow = getCurrentWindow();
-      const handler = await currentWindow.onDragDropEvent((event) => {
+      const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+      const currentWebview = getCurrentWebview();
+      const handler = await currentWebview.onDragDropEvent((event) => {
         const payload = event.payload as { type?: string; paths?: string[] };
         const phase = payload?.type;
         if (phase === 'enter' || phase === 'over' || phase === 'leave' || phase === 'drop') {

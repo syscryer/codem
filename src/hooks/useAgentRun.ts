@@ -20,6 +20,7 @@ import {
 } from '../lib/agent-provider-registry';
 import { agentModelCatalogCache } from '../lib/agent-model-catalog-cache';
 import {
+  agentChannelMetadataPatch,
   buildAgentChannelModelCatalog,
   defaultAgentChannelId,
   getAgentChannel,
@@ -263,7 +264,12 @@ export function useAgentRun({
   const [reasoningEffort, setReasoningEffortState] = useState('');
   const [channelId, setChannelIdState] = useState(SYSTEM_AGENT_CHANNEL_ID);
   const [modelCatalog, setModelCatalog] = useState<AgentModelCatalog | null>(
-    () => agentModelCatalogCache.peek(initialProviderId)?.catalog ?? null,
+    () => agentModelCatalogCache.peek(
+      initialProviderId,
+      initialProviderId === OPENCODE_PROVIDER_ID
+        ? threadAgentChannelId(activeThreadSummary?.agentChannelId)
+        : undefined,
+    )?.catalog ?? null,
   );
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
@@ -305,6 +311,10 @@ export function useAgentRun({
   );
   const selectedProviderId = activeThreadSummary?.provider || draftProviderId;
   selectedProviderIdRef.current = selectedProviderId;
+  const modelCatalogChannelId = selectedProviderId === OPENCODE_PROVIDER_ID
+    && channelId !== SYSTEM_AGENT_CHANNEL_ID
+    ? channelId
+    : undefined;
   const nativeModelCatalog = modelCatalog?.providerId === selectedProviderId ? modelCatalog : null;
   const selectedChannel = getAgentChannel(agentChannels, selectedProviderId, channelId);
   const selectedProviderDefaultChannelId = defaultAgentChannelId(
@@ -576,7 +586,7 @@ export function useAgentRun({
       setModelSelectionWarning('');
       return;
     }
-    const snapshot = agentModelCatalogCache.peek(selectedProviderId);
+    const snapshot = agentModelCatalogCache.peek(selectedProviderId, modelCatalogChannelId);
     const usesCodeMChannel = channelId !== SYSTEM_AGENT_CHANNEL_ID;
     if (snapshot) {
       setModelCatalog(snapshot.catalog);
@@ -592,7 +602,7 @@ export function useAgentRun({
     }
 
     let cancelled = false;
-    void agentModelCatalogCache.load(selectedProviderId)
+    void agentModelCatalogCache.load(selectedProviderId, { channelId: modelCatalogChannelId })
       .then((catalog) => {
         if (!cancelled) {
           setModelCatalog(catalog);
@@ -612,7 +622,7 @@ export function useAgentRun({
     return () => {
       cancelled = true;
     };
-  }, [channelId, selectedProviderId]);
+  }, [channelId, modelCatalogChannelId, selectedProviderId]);
 
   useEffect(() => {
     if (!activeThreadSummary && !isNewChatDraft) {
@@ -795,7 +805,7 @@ export function useAgentRun({
         reasoningEffort: '',
         modelPreferences: {},
       };
-      resetDraftModelSelection(providerId);
+      resetDraftModelSelection(providerId, nextChannelId);
       setModelSelectionWarning('');
       return true;
     }
@@ -816,7 +826,7 @@ export function useAgentRun({
         reasoningEffort: '',
         modelPreferences: {},
       };
-      resetDraftModelSelection(providerId);
+      resetDraftModelSelection(providerId, nextChannelId);
       setModelSelectionWarning('');
     }
     setDraftProviderId(providerId);
@@ -838,10 +848,15 @@ export function useAgentRun({
     setReasoningEffortState(nextEffort);
   }
 
-  function resetDraftModelSelection(providerId: string) {
+  function resetDraftModelSelection(providerId: string, nextChannelId?: string) {
     modelPreferencesRef.current = {};
     const snapshot = resolveChatRuntimeKind(providerId) === 'generic'
-      ? agentModelCatalogCache.peek(providerId)
+      ? agentModelCatalogCache.peek(
+        providerId,
+        providerId === OPENCODE_PROVIDER_ID && nextChannelId !== SYSTEM_AGENT_CHANNEL_ID
+          ? nextChannelId
+          : undefined,
+      )
       : undefined;
     const cached = snapshot?.catalog;
     if (!cached) {
@@ -870,8 +885,13 @@ export function useAgentRun({
       };
     }
     if (snapshot.stale) {
-      void agentModelCatalogCache.load(providerId).then((catalog) => {
-        if (selectedProviderIdRef.current === providerId) {
+      const catalogChannelId = providerId === OPENCODE_PROVIDER_ID
+        && nextChannelId !== SYSTEM_AGENT_CHANNEL_ID
+        ? nextChannelId
+        : undefined;
+      void agentModelCatalogCache.load(providerId, { channelId: catalogChannelId }).then((catalog) => {
+        if (selectedProviderIdRef.current === providerId
+          && channelIdRef.current === (nextChannelId ?? channelIdRef.current)) {
           setModelCatalog(catalog);
         }
       }).catch(() => undefined);
@@ -1011,13 +1031,13 @@ export function useAgentRun({
 
   function retryModelCatalog() {
     const providerId = selectedProviderId;
-    const snapshot = agentModelCatalogCache.peek(providerId);
+    const snapshot = agentModelCatalogCache.peek(providerId, modelCatalogChannelId);
     if (snapshot) {
       setModelCatalog(snapshot.catalog);
     }
     setModelsLoading(true);
     setModelsError('');
-    void agentModelCatalogCache.load(providerId, { force: true })
+    void agentModelCatalogCache.load(providerId, { force: true, channelId: modelCatalogChannelId })
       .then((catalog) => {
         if (selectedProviderIdRef.current === providerId) {
           setModelCatalog(catalog);
@@ -1073,11 +1093,10 @@ export function useAgentRun({
     }
 
     if (activeThreadId) {
-      void persistThreadMetadata(activeThreadId, {
-        channelId: requestAgentChannelId(nextChannelId) ?? null,
-        model: null,
-        reasoningEffort: null,
-      }).catch((error) => {
+      void persistThreadMetadata(
+        activeThreadId,
+        agentChannelMetadataPatch(selectedProviderId, nextChannelId),
+      ).catch((error) => {
         channelIdRef.current = previousChannelId;
         modelPreferencesRef.current = previousPreferences;
         setChannelIdState(previousChannelId);
