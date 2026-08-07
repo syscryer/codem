@@ -19899,6 +19899,16 @@ button.git-conflict-overview-row:focus-visible,
   white-space: nowrap;
 }
 
+.standard-select-option-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.standard-select-option-content > :is(svg, img) {
+  flex: 0 0 auto;
+}
+
 .settings-select-menu-item.current {
   color: #202020;
 }
@@ -26240,6 +26250,14 @@ div[data-popover-portal] > * {
 .agent-mux-select-trigger:disabled { cursor: not-allowed; opacity: 0.55; }
 .agent-mux-select-menu { max-height: min(320px, calc(100vh - 40px)); overflow-y: auto; }
 .agent-mux-select-option { height: 35px; border-radius: 7px; font-size: 11px; }
+.agent-mux-select-trigger .agent-provider-brand-icon,
+.agent-mux-select-option .agent-provider-brand-icon { color: var(--mux-text, #1f1f1f); }
+.agent-mux-select-trigger .agent-provider-brand-icon-claude-code,
+.agent-mux-select-option .agent-provider-brand-icon-claude-code { color: #d97757; }
+.agent-mux-select-trigger .agent-provider-brand-icon-pi-agent,
+.agent-mux-select-option .agent-provider-brand-icon-pi-agent { color: #7c3aed; }
+.agent-mux-select-trigger .agent-provider-brand-icon-opencode,
+.agent-mux-select-option .agent-provider-brand-icon-opencode { color: #0f766e; }
 .agent-mux-avatar-select { width: 100%; }
 .agent-mux-avatar-trigger { width: 100%; height: 40px; }
 .agent-mux-avatar-trigger > span { display: flex; align-items: center; gap: 9px; }

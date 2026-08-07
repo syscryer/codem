@@ -1,7 +1,9 @@
 import { Activity, Check, GitBranchPlus, GitFork, LayoutPanelLeft, Link2, Plus, RefreshCw, Zap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID } from '../constants';
+import { CLAUDE_CODE_PROVIDER_ID } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
+import { getAgentProviderMetadata } from '../lib/agent-provider-metadata';
+import { resolveChatRuntimeKind } from '../lib/agent-provider-registry';
 import { normalizeAgentRuntimeStatus } from '../lib/thread-runtime-statuses';
 import { fetchProjectWorktrees } from '../lib/worktree-api';
 import {
@@ -63,10 +65,9 @@ export function WorkspaceStatus({
   onOpenWorktreePath,
   onCreateWorktree,
 }: WorkspaceStatusProps) {
-  const usesClaudeRuntime = activeThread?.provider === CLAUDE_CODE_PROVIDER_ID;
-  const usesAgentRuntime = activeThread?.provider === GROK_BUILD_PROVIDER_ID ||
-    activeThread?.provider === OPENAI_CODEX_PROVIDER_ID ||
-    activeThread?.provider === OPENCODE_PROVIDER_ID;
+  const runtimeKind = resolveChatRuntimeKind(activeThread?.provider ?? '');
+  const usesClaudeRuntime = runtimeKind === 'claude';
+  const usesAgentRuntime = runtimeKind === 'generic';
   const usesManagedRuntime = usesClaudeRuntime || usesAgentRuntime;
   const [menuOpen, setMenuOpen] = useState(false);
   const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
@@ -744,26 +745,13 @@ function workspaceSessionDescription(state: WorkspaceSessionButtonState, provide
 }
 
 function providerDisplayName(provider?: string) {
-  if (!provider || provider === CLAUDE_CODE_PROVIDER_ID) {
-    return 'Claude Code';
-  }
-  if (provider === GROK_BUILD_PROVIDER_ID) {
-    return 'Grok Build';
-  }
-  if (provider === OPENAI_CODEX_PROVIDER_ID) {
-    return 'OpenAI Codex';
-  }
-  if (provider === OPENCODE_PROVIDER_ID) {
-    return 'OpenCode';
-  }
-  return provider;
+  return getAgentProviderMetadata(provider ?? CLAUDE_CODE_PROVIDER_ID)?.displayName
+    ?? provider
+    ?? 'Claude Code';
 }
 
 function agentRuntimeProtocol(provider?: string) {
-  if (provider === OPENAI_CODEX_PROVIDER_ID) {
-    return 'Codex app-server';
-  }
-  return provider === OPENCODE_PROVIDER_ID ? 'OpenCode ACP' : 'ACP';
+  return provider ? getAgentProviderMetadata(provider)?.protocolLabel ?? '未知' : '未知';
 }
 
 function compactIdentifier(value: string) {

@@ -34,6 +34,7 @@ import type {
 } from '../../types';
 import type { AgentRuntimeSettingsUpdate } from '../../hooks/useAppSettings';
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss';
+import { AGENT_PROVIDER_IDS } from '../../lib/agent-provider-metadata';
 import {
   fetchAgentLatestVersion,
   fetchAgentSettingsDiagnostics,
@@ -122,9 +123,7 @@ export function AgentProviderSettings({
   ) => {
     setDetailsError('');
 
-    const providerIds = requestedProviderIds ?? (
-      ['claude-code', 'openai-codex', 'grok-build', 'opencode', 'pi-agent'] satisfies AgentProviderId[]
-    );
+    const providerIds = requestedProviderIds ?? AGENT_PROVIDER_IDS;
     const loadingState = Object.fromEntries(providerIds.map((providerId) => [providerId, true]));
     setDiagnosticsLoading((current) => ({ ...current, ...loadingState }));
     setLatestVersionLoading((current) => ({ ...current, ...loadingState }));

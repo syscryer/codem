@@ -1,3 +1,4 @@
+use crate::agent_runtime::is_active_agent_provider_id;
 use axum::{
     extract::{Path as AxumPath, State},
     http::StatusCode,
@@ -745,10 +746,7 @@ fn normalize_save_request(
     let prompt = normalize_required_text(request.prompt, MAX_PROMPT_CHARS, "提示词")?;
     let project_id = normalize_required_text(request.project_id, 512, "项目")?;
     let provider_id = normalize_required_text(request.provider_id, 64, "Agent")?;
-    if !matches!(
-        provider_id.as_str(),
-        "claude-code" | "grok-build" | "openai-codex" | "opencode"
-    ) {
+    if !is_active_agent_provider_id(&provider_id) {
         return Err(AutomationApiError::bad_request("不支持的 Agent"));
     }
     let permission_mode = normalize_required_text(request.permission_mode, 64, "权限")?;
@@ -984,6 +982,19 @@ mod tests {
         service.delete(&created.id).unwrap();
         assert!(service.bootstrap().unwrap().automations.is_empty());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn automation_accepts_pi_and_rejects_unknown_providers() {
+        let mut pi = request(2_000);
+        pi.provider_id = "pi-agent".to_string();
+        assert!(normalize_save_request(pi).is_ok());
+
+        let mut unknown = request(2_000);
+        unknown.provider_id = "future-provider".to_string();
+        let error = normalize_save_request(unknown).expect_err("unknown provider must fail");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.message, "不支持的 Agent");
     }
 
     #[test]

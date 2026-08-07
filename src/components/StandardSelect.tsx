@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { PopoverPortal } from './PopoverPortal';
@@ -6,6 +7,7 @@ import { PopoverPortal } from './PopoverPortal';
 export type StandardSelectOption<T extends string> = {
   value: T;
   label: string;
+  icon?: ReactNode;
   disabled?: boolean;
 };
 
@@ -73,7 +75,10 @@ export function StandardSelect<T extends string>({
         disabled={disabled}
         onClick={() => setOpen((current) => !current)}
       >
-        <span>{selected?.label ?? placeholder}</span>
+        <span className="standard-select-option-content">
+          {selected?.icon}
+          <span>{selected?.label ?? placeholder}</span>
+        </span>
         <ChevronDown size={15} className="settings-select-chevron" />
       </button>
       <PopoverPortal open={open && !disabled} anchorRef={anchorRef} placement="bottom-start" offset={offset} matchAnchorWidth>
@@ -96,7 +101,10 @@ export function StandardSelect<T extends string>({
                 setOpen(false);
               }}
             >
-              <span>{option.label}</span>
+              <span className="standard-select-option-content">
+                {option.icon}
+                <span>{option.label}</span>
+              </span>
               {option.value === value ? <Check size={15} /> : null}
             </button>
           ))}

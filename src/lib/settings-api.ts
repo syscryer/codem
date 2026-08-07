@@ -3,11 +3,9 @@ import {
   CLAUDE_CODE_PROVIDER_ID,
   CLAUDE_MODEL_SLOT_VALUES,
   DEFAULT_CUSTOM_ACCENT_COLOR,
-  GROK_BUILD_PROVIDER_ID,
   normalizeAccentHexColor,
-  OPENAI_CODEX_PROVIDER_ID,
-  OPENCODE_PROVIDER_ID,
 } from '../constants';
+import { isAgentProviderId } from './agent-provider-metadata';
 import { cloneDefaultWorkbenchIgnorePatterns, mergeWorkbenchIgnorePatterns } from './review-ignore-patterns';
 import type {
   AgentProviderId,
@@ -317,12 +315,7 @@ export function normalizeAgentRuntimeSettings(value: unknown): AgentRuntimeSetti
 }
 
 function normalizeAgentProviderId(value: unknown): AgentProviderId {
-  if (
-    value === CLAUDE_CODE_PROVIDER_ID
-    || value === GROK_BUILD_PROVIDER_ID
-    || value === OPENAI_CODEX_PROVIDER_ID
-    || value === OPENCODE_PROVIDER_ID
-  ) {
+  if (isAgentProviderId(value)) {
     return value;
   }
   return defaultAgentRuntimeSettings.defaultProviderId;

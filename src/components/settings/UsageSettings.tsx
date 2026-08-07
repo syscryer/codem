@@ -2,6 +2,7 @@ import { BarChart3, Check, ChevronDown, Clock3, Coins, MessageSquareText, Refres
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss';
+import { AGENT_PROVIDER_IDS } from '../../lib/agent-provider-metadata';
 import { fetchUsageStats } from '../../lib/settings-api';
 import { filterUsageProjects } from '../../lib/usage-project-filter';
 import { buildUsageTrendBuckets, type UsageTrendBucketUnit, type UsageTrendRange } from '../../lib/usage-trend';
@@ -90,7 +91,7 @@ export function UsageSettingsSection() {
             <span>Agent</span>
             <div className="settings-segmented settings-usage-agent-filter" aria-label="按 Agent 筛选">
               <button type="button" className={selectedProviderId === 'all' ? 'active' : ''} onClick={() => setSelectedProviderId('all')}>全部</button>
-              {(['claude-code', 'openai-codex', 'grok-build', 'opencode', 'pi-agent'] as AgentProviderId[]).map((providerId) => (
+              {AGENT_PROVIDER_IDS.map((providerId) => (
                 <button key={providerId} type="button" className={selectedProviderId === providerId ? 'active' : ''} aria-label={providerId} onClick={() => setSelectedProviderId(providerId)}>
                   <AgentProviderIcon providerId={providerId} size={15} />
                 </button>

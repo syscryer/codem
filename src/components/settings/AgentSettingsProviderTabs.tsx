@@ -1,5 +1,6 @@
 import { MessageCircle } from 'lucide-react';
 import type { AgentProviderId } from '../../types';
+import { AGENT_PROVIDER_METADATA } from '../../lib/agent-provider-metadata';
 import { AgentProviderIcon } from '../AgentProviderIcon';
 
 type AgentSettingsProviderTabsProps = {
@@ -10,13 +11,10 @@ type AgentSettingsProviderTabsProps = {
   disabled?: boolean;
 };
 
-const providers: Array<{ id: AgentProviderId; label: string }> = [
-  { id: 'claude-code', label: 'Claude Code' },
-  { id: 'openai-codex', label: 'OpenAI Codex' },
-  { id: 'grok-build', label: 'Grok Build' },
-  { id: 'opencode', label: 'OpenCode' },
-  { id: 'pi-agent', label: 'Pi' },
-];
+const providers = AGENT_PROVIDER_METADATA.map((provider) => ({
+  id: provider.id,
+  label: provider.displayName,
+}));
 
 export function AgentSettingsProviderTabs({
   value,

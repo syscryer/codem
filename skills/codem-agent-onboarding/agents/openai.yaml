@@ -1,0 +1,4 @@
+interface:
+  display_name: "CodeM Agent 接入"
+  short_description: "标准化 CodeM 新增 Agent Provider 的全链路适配与验收"
+  default_prompt: "Use $codem-agent-onboarding to standardize and verify a new CodeM Agent provider."

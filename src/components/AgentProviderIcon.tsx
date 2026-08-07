@@ -7,6 +7,8 @@ import {
   OPENCODE_PROVIDER_ID,
   PI_AGENT_PROVIDER_ID,
 } from '../constants';
+import { isAgentProviderId } from '../lib/agent-provider-metadata';
+import type { AgentProviderId } from '../types';
 
 type AgentProviderIconProps = {
   providerId: string;
@@ -20,6 +22,14 @@ const GROK_PATH = 'M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.5
 const OPENCODE_PATH = 'M16 6H8v12h8V6zm4 16H4V2h16v20z';
 const PI_PATH = 'M0 0h6v24H0zM6 0h12v12h-6V6H6zM6 12h6v6H6zM18 12h6v12h-6z';
 
+const PROVIDER_PATHS = {
+  [CLAUDE_CODE_PROVIDER_ID]: CLAUDE_PATH,
+  [OPENAI_CODEX_PROVIDER_ID]: OPENAI_PATH,
+  [GROK_BUILD_PROVIDER_ID]: GROK_PATH,
+  [OPENCODE_PROVIDER_ID]: OPENCODE_PATH,
+  [PI_AGENT_PROVIDER_ID]: PI_PATH,
+} satisfies Record<AgentProviderId, string>;
+
 // 通用品牌路径来源于 Lobe Icons（MIT）；Pi 路径按产品标识本地绘制，不增加运行时依赖。
 export function AgentProviderIcon({ providerId, size = 16, className = '' }: AgentProviderIconProps) {
   const classes = `agent-provider-brand-icon agent-provider-brand-icon-${providerId}${className ? ` ${className}` : ''}`;
@@ -27,17 +37,7 @@ export function AgentProviderIcon({ providerId, size = 16, className = '' }: Age
   if (providerId === CODEM_AGENT_PROVIDER_ID) {
     return <img className={`${classes} agent-provider-brand-icon-image`} src="/icon.png" alt="" width={size} height={size} aria-hidden="true" />;
   }
-  const path = providerId === CLAUDE_CODE_PROVIDER_ID
-    ? CLAUDE_PATH
-    : providerId === GROK_BUILD_PROVIDER_ID
-      ? GROK_PATH
-      : providerId === OPENAI_CODEX_PROVIDER_ID
-        ? OPENAI_PATH
-        : providerId === OPENCODE_PROVIDER_ID
-          ? OPENCODE_PATH
-          : providerId === PI_AGENT_PROVIDER_ID
-            ? PI_PATH
-            : null;
+  const path = isAgentProviderId(providerId) ? PROVIDER_PATHS[providerId] : null;
 
   if (!path) {
     return <Bot className={classes} size={size} aria-hidden="true" />;

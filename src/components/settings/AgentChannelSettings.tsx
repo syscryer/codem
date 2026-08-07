@@ -33,6 +33,7 @@ import {
 } from '../../lib/agent-channel-api';
 import { copyAgentChannelToChat } from '../../lib/provider-import-api';
 import { openExternalUrl } from '../../lib/markdown-link';
+import { getAgentProviderDisplayName } from '../../lib/agent-provider-metadata';
 import {
   agentChannelTemplate,
   shouldPreservePendingAgentChannelSelection,
@@ -94,14 +95,6 @@ type BusyAction =
   | 'default'
   | 'copy'
   | '';
-
-const providerLabels: Record<AgentProviderId, string> = {
-  'claude-code': 'Claude Code',
-  'openai-codex': 'OpenAI Codex',
-  'grok-build': 'Grok Build',
-  opencode: 'OpenCode',
-  'pi-agent': 'Pi',
-};
 
 const protocolLabels: Record<AiChatProtocol, string> = {
   openai_responses: 'OpenAI Responses',
@@ -692,7 +685,7 @@ export function AgentChannelSettings({
               <section className="ai-manager-section agent-channel-editor">
                 <div className="ai-manager-section-head">
                   <div>
-                    <h3>{creating ? `新增 ${providerLabels[providerId]} 渠道` : '渠道配置'}</h3>
+                    <h3>{creating ? `新增 ${getAgentProviderDisplayName(providerId)} 渠道` : '渠道配置'}</h3>
                     <p>此配置只注入 CodeM 启动的 Agent 子进程，不修改系统或 CC Switch。</p>
                   </div>
                   <div className="ai-manager-section-head-actions">
@@ -846,7 +839,7 @@ export function AgentChannelSettings({
               </section>
             </>
           ) : (
-            <div className="ai-manager-empty agent-channel-empty"><Route size={30} /><h3>为 {providerLabels[providerId]} 新增渠道</h3><p>系统渠道始终可用；只有需要在 CodeM 内切换独立渠道时才需要新增。</p><button type="button" onClick={startNewChannel}><Plus size={14} />新增渠道</button></div>
+            <div className="ai-manager-empty agent-channel-empty"><Route size={30} /><h3>为 {getAgentProviderDisplayName(providerId)} 新增渠道</h3><p>系统渠道始终可用；只有需要在 CodeM 内切换独立渠道时才需要新增。</p><button type="button" onClick={startNewChannel}><Plus size={14} />新增渠道</button></div>
           )}
         </div>
       </div>
@@ -855,7 +848,7 @@ export function AgentChannelSettings({
       {modelPickerOpen && discoveredModels ? (
         <AiModelPickerDialog
           open
-          providerName={draft.name || providerLabels[providerId]}
+          providerName={draft.name || getAgentProviderDisplayName(providerId)}
           models={discoveredModels}
           existingModelIds={new Set((selectedChannel?.models ?? []).map((model) => model.modelId.toLocaleLowerCase()))}
           onClose={() => { setModelPickerOpen(false); setDiscoveredModels(null); }}

@@ -17,13 +17,7 @@ import type {
   OpenCodeAcpProbeResult,
   PiRpcProbeResult,
 } from '../types.js';
-import {
-  CLAUDE_CODE_PROVIDER_ID,
-  GROK_BUILD_PROVIDER_ID,
-  OPENAI_CODEX_PROVIDER_ID,
-  OPENCODE_PROVIDER_ID,
-  PI_AGENT_PROVIDER_ID,
-} from '../constants.js';
+import { getAgentProviderMetadata } from './agent-provider-metadata.js';
 
 const CAPABILITY_SUPPORT = new Set<AgentCapabilitySupport>([
   'supported',
@@ -228,18 +222,7 @@ export function listSelectableAgentProviders(registry: AgentProviderRegistry) {
 }
 
 export function resolveChatRuntimeKind(providerId: string) {
-  if (providerId === CLAUDE_CODE_PROVIDER_ID) {
-    return 'claude' as const;
-  }
-  if (
-    providerId === GROK_BUILD_PROVIDER_ID
-    || providerId === OPENAI_CODEX_PROVIDER_ID
-    || providerId === OPENCODE_PROVIDER_ID
-    || providerId === PI_AGENT_PROVIDER_ID
-  ) {
-    return 'generic' as const;
-  }
-  return 'unsupported' as const;
+  return getAgentProviderMetadata(providerId)?.runtimeKind ?? 'unsupported';
 }
 
 export function normalizeCodexAppServerProbe(value: unknown): CodexAppServerProbeResult {

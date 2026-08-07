@@ -11,6 +11,17 @@ pub const CODEM_AGENT_PROVIDER_ID: &str = "codem-agent";
 pub const DEFAULT_AGENT_PERMISSION_MODE: &str = "default";
 pub const DEFAULT_GROK_PERMISSION_MODE: &str = DEFAULT_AGENT_PERMISSION_MODE;
 
+pub fn is_active_agent_provider_id(provider_id: &str) -> bool {
+    matches!(
+        provider_id,
+        CLAUDE_CODE_PROVIDER_ID
+            | GROK_BUILD_PROVIDER_ID
+            | OPENAI_CODEX_PROVIDER_ID
+            | OPENCODE_PROVIDER_ID
+            | PI_AGENT_PROVIDER_ID
+    )
+}
+
 pub fn normalize_agent_permission_mode(value: Option<&str>) -> Option<&'static str> {
     match value.map(str::trim).filter(|value| !value.is_empty()) {
         None | Some("default") => Some(DEFAULT_AGENT_PERMISSION_MODE),
@@ -582,11 +593,11 @@ fn runtime_detected_capabilities() -> AgentCapabilities {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_provider_registry, normalize_grok_permission_mode, AgentApprovalOption,
-        AgentApprovalRequest, AgentCancelSupport, AgentCapabilitySupport, AgentCompactionSource,
-        AgentCompactionStatus, AgentProviderLifecycle, AgentRunEvent, CLAUDE_CODE_PROVIDER_ID,
-        GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID,
-        PI_AGENT_PROVIDER_ID,
+        agent_provider_registry, is_active_agent_provider_id, normalize_grok_permission_mode,
+        AgentApprovalOption, AgentApprovalRequest, AgentCancelSupport, AgentCapabilitySupport,
+        AgentCompactionSource, AgentCompactionStatus, AgentProviderLifecycle, AgentRunEvent,
+        CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     };
     use serde_json::json;
     use std::collections::HashSet;
@@ -631,6 +642,23 @@ mod tests {
             .collect::<HashSet<_>>();
 
         assert_eq!(ids.len(), registry.providers.len());
+    }
+
+    #[test]
+    fn active_provider_id_validation_covers_the_registry() {
+        let registry = agent_provider_registry(true, true, true, true, true);
+        let active_ids = registry
+            .providers
+            .iter()
+            .filter(|provider| provider.lifecycle == AgentProviderLifecycle::Active)
+            .map(|provider| provider.id)
+            .collect::<Vec<_>>();
+
+        assert!(active_ids
+            .iter()
+            .all(|provider_id| is_active_agent_provider_id(provider_id)));
+        assert!(!is_active_agent_provider_id("codem-agent"));
+        assert!(!is_active_agent_provider_id("future-provider"));
     }
 
     #[test]

@@ -25,4 +25,7 @@ test('全局标准下拉复用主题菜单和 Portal', () => {
   assert.match(standardSelectSource, /settings-select-menu standard-select-menu/);
   assert.match(standardSelectSource, /<PopoverPortal open=\{open && !disabled\}/);
   assert.match(standardSelectSource, /event\.key === 'Escape'/);
+  assert.match(standardSelectSource, /icon\?: ReactNode/);
+  assert.match(standardSelectSource, /\{selected\?\.icon\}/);
+  assert.match(standardSelectSource, /\{option\.icon\}/);
 });

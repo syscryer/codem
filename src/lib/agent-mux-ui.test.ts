@@ -107,6 +107,7 @@ test('Agent Mux offers nickname and an internal avatar dropdown with legacy fall
 test('global add profile allows selecting an agent while scoped profile actions stay locked', () => {
   assert.match(componentSource, /setProfileDialog\(\{ agentId: selectedAgent\.id, allowAgentSelection: true \}\)/);
   assert.match(componentSource, /allowAgentSelection \? <StandardSelect ariaLabel="选择 Agent 类型"/);
+  assert.match(componentSource, /icon: <AgentProviderIcon providerId=\{agentProviderId\(item\.id\) \?\? item\.id\} size=\{15\} \/>/);
   assert.match(componentSource, /onAddProfile=\{\(\) => setProfileDialog\(\{ agentId: selectedAgent\.id \}\)\}/);
   assert.match(componentSource, /onEditProfile=\{\(profile\) => setProfileDialog\(\{ agentId: selectedAgent\.id, profile \}\)\}/);
 });
