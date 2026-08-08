@@ -611,9 +611,9 @@ svg {
 }
 
 .window-nav button.window-nav-sidebar-toggle svg {
-  width: 20px;
-  height: 20px;
-  stroke-width: 1.25;
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.1;
 }
 
 .window-nav button:disabled {
@@ -646,7 +646,7 @@ svg {
   height: 24px;
   padding: 0 9px;
   border-radius: 7px;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .desktop-menubar.is-macos .desktop-menu-trigger {
@@ -866,7 +866,7 @@ svg {
   flex-direction: column;
   background: var(--sidebar-bg);
   border-right: 1px solid #dedede;
-  color: #4b4f56;
+  color: #383d44;
   overflow: hidden;
 }
 
@@ -932,16 +932,26 @@ svg {
   gap: 10px;
   justify-content: flex-start;
   padding: 7px 12px;
-  color: #9ca0a6;
+  color: #5f646b;
   font-size: 13px;
 }
 
 .sidebar-primary button > span,
 .sidebar-footer button > span {
-  width: 14px;
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
   display: inline-grid;
   place-items: center;
-  color: #b4b8be;
+  line-height: 0;
+  color: inherit;
+}
+
+.sidebar-primary button > span svg {
+  width: 17.5px;
+  height: 17.5px;
+  display: block;
+  transform: translateY(1px);
 }
 
 .sidebar-primary button kbd {
@@ -1002,7 +1012,7 @@ svg {
   display: flex;
   justify-content: space-between;
   padding: 9px 10px 8px;
-  color: #8b9096;
+  color: #737980;
   font-size: 12px;
 }
 
@@ -1648,9 +1658,9 @@ svg {
 }
 
 .icon-button {
-  width: 30px;
-  height: 30px;
-  display: inline-grid;
+width: 30px;
+height: 30px;
+display: inline-grid;
   place-items: center;
   color: #717171;
   font-size: 13px;
@@ -19899,6 +19909,23 @@ button.git-conflict-overview-row:focus-visible,
   white-space: nowrap;
 }
 
+.context-island-toggle svg,
+.right-workbench-toggle svg,
+.right-workbench-close svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.5;
+  transform: translateY(-1px);
+}
+
+.right-workbench-toggle svg {
+  transform: translateY(-1px);
+}
+
+.right-workbench-toggle {
+  margin-right: -10px;
+}
+
 .standard-select-option-content {
   display: inline-flex;
   align-items: center;
@@ -20069,13 +20096,13 @@ button.git-conflict-overview-row:focus-visible,
 
 .codex-desktop .sidebar-primary button,
 .codex-desktop .sidebar-footer button {
-  color: color-mix(in srgb, var(--app-muted) 78%, var(--app-text) 22%);
+  color: color-mix(in srgb, var(--app-muted) 58%, var(--app-text) 42%);
   font-size: 14px;
 }
 
 .codex-desktop .sidebar-primary button > span,
 .codex-desktop .sidebar-footer button > span {
-  color: color-mix(in srgb, var(--app-muted) 82%, var(--app-text) 18%);
+  color: inherit;
 }
 
 :is(.codex-desktop, .popover-portal-host) :is(.workspace-menu, .open-app-dropdown, .model-menu, .effort-menu, .permission-menu, .composer-add-menu, .status-branch-menu, .status-run-menu, .settings-select-menu, .desktop-menu-popover) {

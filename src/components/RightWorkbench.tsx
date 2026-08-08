@@ -21,7 +21,6 @@ import {
   Link2,
   LoaderCircle,
   MoreHorizontal,
-  PanelRightClose,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -37,6 +36,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProper
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PopoverPortal } from './PopoverPortal';
+import { SidebarToggleIcon } from './AppMenubar';
 import { AgentMuxRunDetail } from './AgentMuxPrototype';
 import { AgentMuxAvatar } from './AgentMuxAvatar';
 import { agentProvider } from './ConversationContextPrototype';
@@ -279,7 +279,7 @@ export function RightWorkbench({
           onClick={() => onSelectTab('browser')}
         />
         <button type="button" className="right-workbench-close" title="收起工作台" onClick={onClose}>
-          <PanelRightClose size={15} />
+          <SidebarToggleIcon visible />
         </button>
       </div>
 

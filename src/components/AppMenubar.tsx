@@ -513,20 +513,23 @@ function formatUpdateReleaseMeta(value?: string) {
   }).format(date)} · GitHub Release`;
 }
 
-function SidebarToggleIcon({ visible }: { visible: boolean }) {
+export function SidebarToggleIcon({ visible }: { visible: boolean }) {
   const railX = visible ? 6 : 11;
 
   return (
     <svg
+      width="16"
+      height="16"
       viewBox="0 0 20 20"
       fill="none"
       stroke="currentColor"
+      strokeWidth="1.1"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <rect x="3.5" y="3.5" width="13" height="13" rx="3" />
-      <rect x={railX} y="6.25" width="3" height="7.5" rx="1" fill="currentColor" stroke="none" />
+      <rect x="2.5" y="2.5" width="15" height="15" rx="3" />
+      <rect x={railX} y="5.25" width="3" height="9.5" rx="1" fill="currentColor" stroke="none" />
     </svg>
   );
 }

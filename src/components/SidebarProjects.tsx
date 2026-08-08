@@ -563,18 +563,18 @@ export function SidebarProjects({
     <aside className="app-sidebar">
       <nav className="sidebar-primary">
         <button type="button" onClick={onCreatePrimaryChat}>
-          <span><CodeMIcon name="task" size={16} /></span> 新建任务
+          <span><CodeMIcon name="task" /></span> 新建任务
         </button>
         <button type="button" onClick={onToggleSearch}>
-          <span><CodeMIcon name="search" size={16} /></span> 搜索
+          <span><CodeMIcon name="search" /></span> 搜索
           <kbd>Ctrl+G</kbd>
         </button>
         <button type="button" className={agentHubActive ? 'active' : ''} onClick={onOpenAgentHub}>
-          <span><CodeMIcon name="hub" size={16} /></span> Agent Hub
+          <span><CodeMIcon name="hub" /></span> Agent Hub
         </button>
-        <button type="button" onClick={onOpenPlugins}><span><CodeMIcon name="plugins" size={16} /></span> 插件</button>
+        <button type="button" onClick={onOpenPlugins}><span><CodeMIcon name="plugins" /></span> 插件</button>
         <button type="button" className={automationsActive ? 'active' : ''} onClick={onOpenAutomations}>
-          <span><CodeMIcon name="automation" size={16} /></span> 自动化
+          <span><CodeMIcon name="automation" /></span> 自动化
         </button>
       </nav>
 

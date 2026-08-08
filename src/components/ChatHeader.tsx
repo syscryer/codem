@@ -10,7 +10,6 @@ import {
   GitPullRequest,
   FolderOpen,
   LoaderCircle,
-  Layers3,
   MessageSquarePlus,
   MoreHorizontal,
   Pencil,
@@ -18,13 +17,13 @@ import {
   PinOff,
   Play,
   RefreshCw,
-  SquareSplitHorizontal,
   TerminalSquare,
   Trash2,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { PopoverPortal } from './PopoverPortal';
+import { SidebarToggleIcon } from './AppMenubar';
 import { getGitDiffBadgeLabels } from '../lib/git-diff';
 import { getOpenAppIcon } from '../lib/open-app-icons';
 import type {
@@ -350,17 +349,17 @@ export function ChatHeaderActions({
           aria-pressed={contextIslandOpen}
           onClick={onToggleContextIsland}
         >
-          <Layers3 size={15} />
+          <SidebarToggleIcon visible={contextIslandOpen} />
         </button>
       ) : null}
       {!rightWorkbenchOpen ? (
         <button
           type="button"
-          className="icon-button"
+          className="icon-button right-workbench-toggle"
           title="展开右侧工作台"
           onClick={onToggleRightWorkbench}
         >
-          <SquareSplitHorizontal size={15} />
+          <SidebarToggleIcon visible={false} />
         </button>
       ) : null}
     </div>
