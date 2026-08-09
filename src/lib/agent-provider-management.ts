@@ -9,6 +9,7 @@ import type {
   ClaudeModelInfo,
   CodexAppServerProbeResult,
   GrokAcpProbeResult,
+  GeminiAcpProbeResult,
   OpenCodeAcpProbeResult,
   PiRpcProbeResult,
 } from '../types.js';
@@ -34,6 +35,7 @@ const AGENT_INSTALL_DOCS_URLS: Partial<Record<AgentProviderId, string>> = {
   'openai-codex': 'https://developers.openai.com/codex/cli/',
   opencode: 'https://opencode.ai/docs/',
   'pi-agent': 'https://pi.dev/docs/latest/quickstart',
+  'gemini-cli': 'https://geminicli.com/docs/get-started/installation/',
 };
 
 export function getProviderInstallDocsUrl(providerId: AgentProviderId) {
@@ -104,6 +106,7 @@ export function resolveProviderStatus(
   codexProbe: CodexAppServerProbeResult | null = null,
   openCodeProbe: OpenCodeAcpProbeResult | null = null,
   piProbe: PiRpcProbeResult | null = null,
+  geminiProbe: GeminiAcpProbeResult | null = null,
 ): { label: string; tone: ProviderStatusTone } {
   if (provider.id === 'claude-code') {
     const available = claudeCliInfo?.installed === true || provider.available === true;
@@ -147,6 +150,14 @@ export function resolveProviderStatus(
     }
     return { label: '已检测', tone: 'positive' };
   }
+  if (provider.id === 'gemini-cli' && geminiProbe) {
+    if (!geminiProbe.installed) {
+      return { label: '未安装', tone: 'negative' };
+    }
+    return geminiProbe.initialized
+      ? { label: '已检测', tone: 'positive' }
+      : { label: '待处理', tone: 'warning' };
+  }
   return provider.lifecycle === 'planned'
     ? { label: '规划中', tone: 'muted' }
     : { label: provider.available ? '可用' : '不可用', tone: provider.available ? 'positive' : 'negative' };
@@ -159,6 +170,7 @@ export function resolveProviderDiagnostics(
   codexProbe: CodexAppServerProbeResult | null = null,
   openCodeProbe: OpenCodeAcpProbeResult | null = null,
   piProbe: PiRpcProbeResult | null = null,
+  geminiProbe: GeminiAcpProbeResult | null = null,
 ) {
   if (provider.id === 'claude-code') {
     const installed = claudeCliInfo?.installed === true || provider.available === true;
@@ -213,6 +225,14 @@ export function resolveProviderDiagnostics(
       command: piProbe?.command ?? '',
     };
   }
+  if (provider.id === 'gemini-cli') {
+    return {
+      cli: geminiProbe ? (geminiProbe.installed ? '已安装' : '未安装') : '未检测',
+      auth: geminiProbe?.initialized ? '由系统配置或 CodeM 渠道管理' : '未检测',
+      version: geminiProbe?.version ?? geminiProbe?.probe?.initialize.agentVersion ?? '未知',
+      command: geminiProbe?.command ?? '',
+    };
+  }
   return {
     cli: provider.id === 'codem-agent' ? '待实现' : '待接入检测',
     auth: '未检测',
@@ -225,6 +245,7 @@ export function getProviderModels(
   providerId: string,
   claudeModels: ClaudeModelInfo,
   grokProbe: GrokAcpProbeResult | null,
+  geminiProbe: GeminiAcpProbeResult | null = null,
 ): ProviderModelSummary[] {
   if (providerId === 'claude-code') {
     return claudeModels.models
@@ -244,6 +265,15 @@ export function getProviderModels(
       current: model.modelId === initialize.currentModelId,
     })) ?? [];
   }
+  if (providerId === 'gemini-cli') {
+    const initialize = geminiProbe?.probe?.initialize;
+    return initialize?.models.map((model) => ({
+      id: model.modelId,
+      label: model.name,
+      detail: model.contextTokens ? formatTokenCount(model.contextTokens) : undefined,
+      current: model.modelId === initialize.currentModelId,
+    })) ?? [];
+  }
   return [];
 }
 
@@ -254,6 +284,7 @@ export function formatProviderListMeta(
   codexProbe: CodexAppServerProbeResult | null = null,
   openCodeProbe: OpenCodeAcpProbeResult | null = null,
   piProbe: PiRpcProbeResult | null = null,
+  geminiProbe: GeminiAcpProbeResult | null = null,
 ) {
   if (provider.id === 'claude-code' && claudeCliInfo?.version) {
     return `v${claudeCliInfo.version} · ${provider.driverId}`;
@@ -269,6 +300,9 @@ export function formatProviderListMeta(
   }
   if (provider.id === 'pi-agent' && piProbe) {
     return `${piProbe.nodeVersion ?? 'Node 未知'} · ${provider.driverId}`;
+  }
+  if (provider.id === 'gemini-cli' && geminiProbe?.version) {
+    return `v${geminiProbe.version} · ${provider.driverId}`;
   }
   return provider.driverId;
 }
@@ -384,6 +418,19 @@ export function getPiProbeStatusMessage(
     return `检测完成：Pi RPC 可用，已读取 ${result.probe.modelCount} 个模型和 ${result.probe.thinkingLevels.length} 个思考级别。`;
   }
   return '尚未检测。检测会启动一次本机 Pi RPC 子进程，不读取或展示 API Key。';
+}
+
+export function getGeminiProbeStatusMessage(
+  state: 'idle' | 'checking' | 'ready' | 'error',
+  result: GeminiAcpProbeResult | null,
+  error: string,
+) {
+  if (state === 'checking') return '正在检测 Gemini CLI ACP';
+  if (state === 'error') return error || '检测 Gemini CLI 失败';
+  if (state !== 'ready' || !result) return '尚未检测 Gemini CLI ACP';
+  if (!result.installed) return result.error || '未安装 Gemini CLI';
+  if (!result.initialized) return result.error || 'Gemini CLI ACP 初始化失败';
+  return 'Gemini CLI ACP 已就绪；认证由系统配置或 CodeM 渠道决定';
 }
 
 function formatTokenCount(tokens: number) {

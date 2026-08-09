@@ -1,7 +1,7 @@
 use crate::{
     agent_runtime::{
-        CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+        CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
+        OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     },
     ordinary_chat::{
         provider::{discover_models, test_provider, validate_protocol_model, PROVIDER_TEMPLATES},
@@ -241,7 +241,11 @@ impl AgentChannelService {
         requested_session_id: Option<&str>,
     ) -> Result<Option<AgentChannelRuntime>, String> {
         let Some(channel_id) = normalize_channel_id(channel_id) else {
-            return Ok(None);
+            return if provider_id == GEMINI_CLI_PROVIDER_ID {
+                resolve_gemini_system_runtime(selected_model)
+            } else {
+                Ok(None)
+            };
         };
         let connection = self.open_database()?;
         let channel = get_stored_channel(&connection, channel_id)?
@@ -457,7 +461,8 @@ fn validate_provider_id(value: &str) -> AgentChannelApiResult<&str> {
         | OPENAI_CODEX_PROVIDER_ID
         | GROK_BUILD_PROVIDER_ID
         | OPENCODE_PROVIDER_ID
-        | PI_AGENT_PROVIDER_ID => Ok(value),
+        | PI_AGENT_PROVIDER_ID
+        | GEMINI_CLI_PROVIDER_ID => Ok(value),
         _ => Err(AgentChannelApiError::bad_request("不支持的 Agent")),
     }
 }
@@ -478,6 +483,7 @@ fn validate_protocol(provider_id: &str, protocol: AiProtocol) -> AgentChannelApi
             protocol,
             AiProtocol::OpenaiChat | AiProtocol::OpenaiResponses | AiProtocol::AnthropicMessages
         ),
+        GEMINI_CLI_PROVIDER_ID => protocol == AiProtocol::GeminiGenerateContent,
         _ => false,
     };
     if supported {
@@ -526,6 +532,7 @@ fn system_channel_summaries() -> Vec<SystemChannelSummary> {
         read_grok_system_channel(),
         read_opencode_system_channel(cc_switch.get("opencode").cloned()),
         read_pi_system_channel(),
+        read_gemini_system_channel(),
     ]
 }
 
@@ -691,6 +698,111 @@ fn read_pi_system_channel() -> SystemChannelSummary {
     )
 }
 
+fn read_gemini_system_channel() -> SystemChannelSummary {
+    let gemini_dir = home_dir().map(|home| home.join(".gemini"));
+    let path = gemini_dir.as_ref().map(|path| path.join("settings.json"));
+    let file_env = gemini_dir
+        .as_ref()
+        .map(|path| path.join(".env"))
+        .filter(|path| path.is_file())
+        .and_then(|path| read_gemini_env_file(&path).ok())
+        .unwrap_or_default();
+    let settings = path.as_deref().and_then(read_json_file);
+    let base_url = env::var("GOOGLE_GEMINI_BASE_URL")
+        .ok()
+        .and_then(|value| non_empty_string(&value))
+        .or_else(|| file_env.get("GOOGLE_GEMINI_BASE_URL").cloned());
+    let model = env::var("GEMINI_MODEL")
+        .ok()
+        .and_then(|value| non_empty_string(&value))
+        .or_else(|| file_env.get("GEMINI_MODEL").cloned())
+        .or_else(|| {
+            settings
+                .as_ref()
+                .and_then(|value| value.pointer("/model/name"))
+                .and_then(Value::as_str)
+                .and_then(non_empty_string)
+        });
+    system_channel_summary(
+        GEMINI_CLI_PROVIDER_ID,
+        path,
+        base_url,
+        model,
+        Some(AiProtocol::GeminiGenerateContent),
+        None,
+    )
+}
+
+const GEMINI_SYSTEM_ENV_KEYS: &[&str] = &[
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_GEMINI_BASE_URL",
+    "GEMINI_MODEL",
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "GOOGLE_GENAI_USE_GCA",
+    "GOOGLE_VERTEX_BASE_URL",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GEMINI_API_KEY_AUTH_MECHANISM",
+];
+
+fn read_gemini_env_file(path: &Path) -> Result<BTreeMap<String, String>, String> {
+    let mut values = BTreeMap::new();
+    let entries = dotenvy::from_path_iter(path)
+        .map_err(|error| format!("读取 Gemini CLI 环境配置失败: {error}"))?;
+    for entry in entries {
+        let (key, value) =
+            entry.map_err(|error| format!("解析 Gemini CLI 环境配置失败: {error}"))?;
+        if GEMINI_SYSTEM_ENV_KEYS.contains(&key.as_str()) && !value.trim().is_empty() {
+            values.insert(key, value);
+        }
+    }
+    Ok(values)
+}
+
+fn resolve_gemini_system_runtime(
+    selected_model: Option<&str>,
+) -> Result<Option<AgentChannelRuntime>, String> {
+    let Some(path) = home_dir().map(|home| home.join(".gemini").join(".env")) else {
+        return Ok(None);
+    };
+    build_gemini_system_runtime(&path, selected_model)
+}
+
+fn build_gemini_system_runtime(
+    path: &Path,
+    selected_model: Option<&str>,
+) -> Result<Option<AgentChannelRuntime>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let mut environment = read_gemini_env_file(&path)?;
+    if environment.is_empty() {
+        return Ok(None);
+    }
+    let effective_model = selected_model
+        .map(str::to_string)
+        .or_else(|| environment.get("GEMINI_MODEL").cloned());
+    if let Some(model) = effective_model.as_deref() {
+        environment.insert("GEMINI_MODEL".to_string(), model.to_string());
+    }
+    let mut fingerprint_source = path.to_string_lossy().to_string();
+    for (key, value) in &environment {
+        fingerprint_source.push('|');
+        fingerprint_source.push_str(key);
+        fingerprint_source.push('=');
+        fingerprint_source.push_str(value);
+    }
+    Ok(Some(AgentChannelRuntime {
+        channel_id: "system".to_string(),
+        fingerprint: hex_digest(fingerprint_source.as_bytes()),
+        env: environment,
+        codex_config_args: Vec::new(),
+        effective_model,
+        claude_settings_path: None,
+    }))
+}
+
 fn system_channel_summary(
     provider_id: &'static str,
     path: Option<PathBuf>,
@@ -808,6 +920,7 @@ async fn channels_bootstrap(
         GROK_BUILD_PROVIDER_ID,
         OPENCODE_PROVIDER_ID,
         PI_AGENT_PROVIDER_ID,
+        GEMINI_CLI_PROVIDER_ID,
     ] {
         repair_default_channel(&connection, provider_id).map_err(AgentChannelApiError::internal)?;
     }
@@ -2047,6 +2160,29 @@ fn build_runtime(
                 effective_model = Some(format!("{provider_key}/{model}"));
             }
         }
+        GEMINI_CLI_PROVIDER_ID => {
+            if channel.protocol != AiProtocol::GeminiGenerateContent {
+                return Err("Gemini CLI 渠道仅支持 Gemini Generate Content 接口".to_string());
+            }
+            env.insert("GEMINI_API_KEY".to_string(), api_key.to_string());
+            env.insert(
+                "GOOGLE_GEMINI_BASE_URL".to_string(),
+                channel.base_url.clone(),
+            );
+            if let Some(model) = selected_model.as_deref() {
+                env.insert("GEMINI_MODEL".to_string(), model.to_string());
+            }
+            let runtime_home = app_data_dir
+                .join("agent-runtimes")
+                .join("gemini")
+                .join(&channel.id);
+            fs::create_dir_all(&runtime_home)
+                .map_err(|error| format!("创建 Gemini 渠道运行目录失败: {error}"))?;
+            env.insert(
+                "GEMINI_CLI_HOME".to_string(),
+                runtime_home.to_string_lossy().to_string(),
+            );
+        }
         _ => return Err("不支持的 Agent 渠道".to_string()),
     }
     let mut fingerprint_source = format!(
@@ -2493,6 +2629,10 @@ mod tests {
         assert!(validate_protocol(OPENCODE_PROVIDER_ID, AiProtocol::OpenaiChat).is_ok());
         assert!(validate_protocol(OPENCODE_PROVIDER_ID, AiProtocol::OpenaiResponses).is_ok());
         assert!(validate_protocol(OPENCODE_PROVIDER_ID, AiProtocol::AnthropicMessages).is_ok());
+        assert!(
+            validate_protocol(GEMINI_CLI_PROVIDER_ID, AiProtocol::GeminiGenerateContent).is_ok()
+        );
+        assert!(validate_protocol(GEMINI_CLI_PROVIDER_ID, AiProtocol::OpenaiChat).is_err());
 
         assert!(validate_protocol(CLAUDE_CODE_PROVIDER_ID, AiProtocol::OpenaiChat).is_err());
     }
@@ -2616,6 +2756,115 @@ mod tests {
         assert!(system_channel_summaries()
             .iter()
             .any(|channel| channel.provider_id == PI_AGENT_PROVIDER_ID && channel.id == "system"));
+    }
+
+    #[test]
+    fn gemini_custom_channel_isolates_home_and_injects_gemini_credentials() {
+        let root = std::env::temp_dir().join(format!(
+            "codem-gemini-agent-channel-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let channel = StoredAgentChannel {
+            id: "channel-gemini".to_string(),
+            provider_id: GEMINI_CLI_PROVIDER_ID.to_string(),
+            name: "Gemini Proxy".to_string(),
+            protocol: AiProtocol::GeminiGenerateContent,
+            base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            models_url: None,
+            template_id: None,
+            enabled: true,
+            is_default: false,
+            secret_slot: "secret:channel-gemini".to_string(),
+            created_at: "2026-08-09T00:00:00Z".to_string(),
+            updated_at: "2026-08-09T00:00:00Z".to_string(),
+        };
+        let models = vec![AgentChannelModelSummary {
+            id: "model-gemini".to_string(),
+            channel_id: channel.id.clone(),
+            model_id: "gemini-2.5-pro".to_string(),
+            display_name: "Gemini 2.5 Pro".to_string(),
+            enabled: true,
+            is_default: true,
+            capabilities: json!({}),
+            created_at: "2026-08-09T00:00:00Z".to_string(),
+            updated_at: "2026-08-09T00:00:00Z".to_string(),
+        }];
+
+        let runtime = build_runtime(
+            &root,
+            &channel,
+            &models,
+            Some("gemini-2.5-pro"),
+            "gemini-secret",
+            None,
+            None,
+        )
+        .expect("build Gemini runtime");
+
+        assert_eq!(
+            runtime.env.get("GEMINI_API_KEY").map(String::as_str),
+            Some("gemini-secret")
+        );
+        assert_eq!(
+            runtime
+                .env
+                .get("GOOGLE_GEMINI_BASE_URL")
+                .map(String::as_str),
+            Some("https://generativelanguage.googleapis.com/v1beta")
+        );
+        assert_eq!(
+            runtime.env.get("GEMINI_MODEL").map(String::as_str),
+            Some("gemini-2.5-pro")
+        );
+        let runtime_home = root
+            .join("agent-runtimes")
+            .join("gemini")
+            .join("channel-gemini");
+        assert_eq!(
+            runtime.env.get("GEMINI_CLI_HOME").map(String::as_str),
+            Some(runtime_home.to_string_lossy().as_ref())
+        );
+        assert!(runtime_home.is_dir());
+        assert!(!runtime.fingerprint.contains("gemini-secret"));
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn gemini_system_channel_loads_only_supported_env_without_persisting_the_secret() {
+        let root = std::env::temp_dir().join(format!(
+            "codem-gemini-system-channel-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join(".env");
+        fs::write(
+            &path,
+            concat!(
+                "GEMINI_API_KEY=system-secret\n",
+                "GOOGLE_GEMINI_BASE_URL=https://proxy.example.com/gemini\n",
+                "GEMINI_MODEL=gemini-old\n",
+                "UNRELATED_SECRET=must-not-pass-through\n",
+            ),
+        )
+        .unwrap();
+
+        let runtime = build_gemini_system_runtime(&path, Some("gemini-selected"))
+            .expect("read Gemini system runtime")
+            .expect("Gemini system runtime");
+
+        assert_eq!(runtime.channel_id, "system");
+        assert_eq!(runtime.effective_model.as_deref(), Some("gemini-selected"));
+        assert_eq!(
+            runtime.env.get("GEMINI_API_KEY").map(String::as_str),
+            Some("system-secret")
+        );
+        assert_eq!(
+            runtime.env.get("GEMINI_MODEL").map(String::as_str),
+            Some("gemini-selected")
+        );
+        assert!(!runtime.env.contains_key("UNRELATED_SECRET"));
+        assert!(!runtime.fingerprint.contains("system-secret"));
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

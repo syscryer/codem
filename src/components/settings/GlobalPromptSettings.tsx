@@ -138,7 +138,9 @@ export function GlobalPromptSettingsSection({ defaultProviderId, projectPath }: 
 }
 
 function globalRulesFileName(providerId: AgentProviderId) {
-  return providerId === 'claude-code' ? 'CLAUDE.md' : 'AGENTS.md';
+  if (providerId === 'claude-code') return 'CLAUDE.md';
+  if (providerId === 'gemini-cli') return 'GEMINI.md';
+  return 'AGENTS.md';
 }
 
 function rulesFallbackPath(providerId: AgentProviderId, scope: 'global' | 'project', projectPath?: string | null) {
@@ -149,6 +151,7 @@ function rulesFallbackPath(providerId: AgentProviderId, scope: 'global' | 'proje
   if (providerId === 'grok-build') return '~/.grok/AGENTS.md';
   if (providerId === 'opencode') return '~/.config/opencode/AGENTS.md';
   if (providerId === 'pi-agent') return '~/.pi/agent/AGENTS.md';
+  if (providerId === 'gemini-cli') return '~/.gemini/GEMINI.md';
   return '~/.claude/CLAUDE.md';
 }
 

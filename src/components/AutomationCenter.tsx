@@ -17,6 +17,7 @@ import {
   CLAUDE_CODE_PROVIDER_ID,
   DEFAULT_MODEL_VALUE,
   GROK_BUILD_PROVIDER_ID,
+  GEMINI_CLI_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
   permissionMenuModes,
@@ -96,6 +97,7 @@ const PROVIDER_FALLBACKS = [
   { id: OPENAI_CODEX_PROVIDER_ID, displayName: 'OpenAI Codex' },
   { id: GROK_BUILD_PROVIDER_ID, displayName: 'Grok Build' },
   { id: OPENCODE_PROVIDER_ID, displayName: 'OpenCode' },
+  { id: GEMINI_CLI_PROVIDER_ID, displayName: 'Gemini CLI' },
 ] as const;
 
 const SCHEDULE_OPTIONS: Array<{ value: AutomationSchedule['kind']; label: string }> = [

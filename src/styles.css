@@ -3465,6 +3465,10 @@ display: inline-grid;
   color: #d97757;
 }
 
+.agent-provider-brand-icon-gemini-cli {
+  color: #3186ff;
+}
+
 .agent-provider-brand-icon-image {
   object-fit: contain;
 }

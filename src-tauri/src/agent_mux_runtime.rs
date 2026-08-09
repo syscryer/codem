@@ -11,7 +11,7 @@ use std::{
 pub const DISCOVERY_FILE_NAME: &str = "agent-mux-runtime.json";
 pub const LOCK_FILE_NAME: &str = "agent-mux-runtime.lock";
 pub const RUNTIME_TOKEN_ENV: &str = "CODEM_AGENT_MUX_RUNTIME_TOKEN";
-pub const RUNTIME_PROTOCOL_VERSION: u32 = 1;
+pub const RUNTIME_PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -246,6 +246,15 @@ mod tests {
         )
         .expect("read legacy discovery");
         assert_eq!(discovery.protocol_version, 0);
+        assert!(!discovery.is_protocol_compatible());
+    }
+
+    #[test]
+    fn previous_runtime_protocol_requires_refresh() {
+        let discovery: RuntimeDiscovery = serde_json::from_str(
+            r#"{"endpoint":"http://127.0.0.1:3210","port":3210,"pid":42,"version":"0.1.23","protocolVersion":1,"token":"old-token","startedAt":1}"#,
+        )
+        .expect("read previous discovery");
         assert!(!discovery.is_protocol_compatible());
     }
 

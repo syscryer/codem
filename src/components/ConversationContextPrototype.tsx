@@ -17,7 +17,7 @@ import {
   Search,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID } from '../constants';
+import { CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { groupAgentMuxRunsByConversation, type AgentMuxRun } from '../lib/agent-mux-api';
 import type { ConversationPlanPreview } from '../lib/conversation-plan';
@@ -230,6 +230,7 @@ export function agentProvider(run: AgentMuxRun) {
   if (value.includes('grok')) return GROK_BUILD_PROVIDER_ID;
   if (value.includes('opencode')) return OPENCODE_PROVIDER_ID;
   if (value.includes('pi')) return PI_AGENT_PROVIDER_ID;
+  if (value.includes('gemini')) return GEMINI_CLI_PROVIDER_ID;
   return OPENAI_CODEX_PROVIDER_ID;
 }
 

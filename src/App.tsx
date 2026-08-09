@@ -31,7 +31,7 @@ import { useAutomations } from './hooks/useAutomations';
 import { useBackgroundOperations } from './hooks/useBackgroundOperations';
 import { useOrdinaryChat } from './hooks/useOrdinaryChat';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
-import { APP_UPDATE_CHECK_INTERVAL_MS, CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
+import { APP_UPDATE_CHECK_INTERVAL_MS, CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
 import {
   buildCompactSlashCommandSubmission,
   buildContextSlashCardResult,
@@ -769,6 +769,8 @@ export default function App() {
         ? 'codex' as const
         : activeProviderId === OPENCODE_PROVIDER_ID
           ? 'opencode' as const
+          : activeProviderId === GEMINI_CLI_PROVIDER_ID
+            ? 'gemini' as const
         : 'generic' as const;
   const activeProviderCapabilities = agentProviders.find((provider) => provider.id === activeProviderId)?.capabilities;
   const allowAgentAttachments = activeUsesClaude || Boolean(

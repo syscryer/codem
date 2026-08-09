@@ -13,6 +13,7 @@ export const GROK_BUILD_PROVIDER_ID = 'grok-build';
 export const OPENAI_CODEX_PROVIDER_ID = 'openai-codex';
 export const OPENCODE_PROVIDER_ID = 'opencode';
 export const PI_AGENT_PROVIDER_ID = 'pi-agent';
+export const GEMINI_CLI_PROVIDER_ID = 'gemini-cli';
 export const CODEM_AGENT_PROVIDER_ID = 'codem-agent';
 export const APP_UPDATE_CHECK_INTERVAL_MS = 2 * 60 * 60 * 1000;
 export const CLAUDE_MODEL_SLOT_VALUES = ['sonnet', 'sonnet[1m]', 'opus', 'opus[1m]', 'haiku'] as const;

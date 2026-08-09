@@ -7,9 +7,11 @@ import {
   normalizeAgentModelCatalog,
   normalizeAgentProviderRegistry,
   normalizeCodexAppServerProbe,
+  normalizeGeminiAcpProbe,
   normalizeGrokAcpProbe,
   normalizeOpenCodeAcpProbe,
   normalizePiRpcProbe,
+  probeGeminiAgent,
   probePiAgent,
   resolveChatRuntimeKind,
 } from './agent-provider-registry.js';
@@ -207,6 +209,7 @@ test('enabled Grok is selectable without routing unknown providers to Claude', (
   assert.equal(resolveChatRuntimeKind('openai-codex'), 'generic');
   assert.equal(resolveChatRuntimeKind('opencode'), 'generic');
   assert.equal(resolveChatRuntimeKind('pi-agent'), 'generic');
+  assert.equal(resolveChatRuntimeKind('gemini-cli'), 'generic');
   assert.equal(resolveChatRuntimeKind('future-provider'), 'unsupported');
 });
 
@@ -409,6 +412,57 @@ test('OpenCode probe rejects impossible initialized state', () => {
     () => normalizeOpenCodeAcpProbe({ installed: false, initialized: true }),
     /不能处于已初始化状态/,
   );
+});
+
+test('Gemini ACP probe keeps only public initialization metadata', () => {
+  const result = normalizeGeminiAcpProbe({
+    installed: true,
+    initialized: true,
+    command: 'C:/tools/gemini.cmd',
+    version: '0.54.4',
+    apiKey: 'must-not-survive',
+    probe: {
+      initialize: {
+        protocolVersion: 1,
+        loadSession: true,
+        promptCapabilities: { image: true, audio: false, embeddedContext: true },
+        mcpCapabilities: { http: true, sse: true },
+        authMethods: [],
+        defaultAuthMethodId: null,
+        agentVersion: '0.54.4',
+        currentModelId: 'gemini-2.5-pro',
+        models: [{ modelId: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', contextTokens: 1048576 }],
+        credentials: { token: 'private' },
+      },
+    },
+  });
+
+  assert.equal(result.probe?.initialize.currentModelId, 'gemini-2.5-pro');
+  assert.equal(result.probe?.initialize.models[0]?.contextTokens, 1048576);
+  assert.doesNotMatch(JSON.stringify(result), /must-not-survive|credentials|private/);
+});
+
+test('Gemini probe uses the shared ACP probe endpoint', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  let requestedMethod = '';
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    requestedUrl = String(input);
+    requestedMethod = init?.method ?? 'GET';
+    return new Response(JSON.stringify({
+      installed: false,
+      initialized: false,
+      error: '未找到 Gemini CLI',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    const result = await probeGeminiAgent();
+    assert.equal(result.installed, false);
+    assert.equal(requestedUrl, '/api/agents/gemini/probe');
+    assert.equal(requestedMethod, 'POST');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('Pi RPC probe keeps only bounded public runtime diagnostics', () => {

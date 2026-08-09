@@ -1,6 +1,7 @@
 import {
   CLAUDE_CODE_PROVIDER_ID,
   GROK_BUILD_PROVIDER_ID,
+  GEMINI_CLI_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
   PI_AGENT_PROVIDER_ID,
@@ -52,6 +53,13 @@ export const AGENT_PROVIDER_METADATA_BY_ID = {
     driverId: 'pi-rpc',
     runtimeKind: 'generic',
     protocolLabel: 'Pi RPC',
+  },
+  [GEMINI_CLI_PROVIDER_ID]: {
+    id: GEMINI_CLI_PROVIDER_ID,
+    displayName: 'Gemini CLI',
+    driverId: 'acp',
+    runtimeKind: 'generic',
+    protocolLabel: 'Gemini ACP',
   },
 } satisfies Record<AgentProviderId, AgentProviderMetadata>;
 

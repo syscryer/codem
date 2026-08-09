@@ -2,7 +2,7 @@ use crate::acp::{probe_acp_agent, probe_acp_initialize};
 use crate::agent_runtime::{
     agent_plan_snapshot_from_tool_input, agent_plan_snapshot_from_value, agent_provider_registry,
     normalize_agent_permission_mode, AgentPlanSnapshot, AgentPlanStep, AgentPlanStepStatus,
-    AgentProviderRegistry, CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
+    AgentProviderRegistry, CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
     OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
 };
 use crate::codex_app_server::{
@@ -71,6 +71,7 @@ const GROK_CLI_WINDOWS_INSTALL_SCRIPT: &str =
     "$ErrorActionPreference = 'Stop'; irm https://x.ai/cli/install.ps1 | iex";
 const GROK_CLI_MACOS_INSTALL_COMMAND: &str = "curl -fsSL https://x.ai/cli/install.sh | bash";
 const OPENCODE_CLI_INSTALL_COMMAND: &str = "npm install -g opencode-ai@latest";
+const GEMINI_CLI_INSTALL_COMMAND: &str = "npm install -g @google/gemini-cli@latest";
 const NPM_REGISTRY_URL: &str = "https://registry.npmjs.org";
 const NPM_MIRROR_REGISTRY_URL: &str = "https://registry.npmmirror.com";
 const NPM_CONFIG_USER_AGENT_ENV: &str = "npm_config_user_agent";
@@ -994,6 +995,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         resolve_codex_command,
         resolve_opencode_command,
         resolve_pi_command,
+        resolve_gemini_command,
         agent_channels.clone(),
     );
     let agent_mux = crate::agent_mux::AgentMuxService::new(app_data_dir.clone());
@@ -1097,6 +1099,7 @@ fn create_router(state: AppState) -> Router {
         .route("/api/agents/codex/probe", post(codex_app_server_probe))
         .route("/api/agents/opencode/probe", post(opencode_acp_probe))
         .route("/api/agents/pi/probe", post(pi_rpc_probe))
+        .route("/api/agents/gemini/probe", post(gemini_acp_probe))
         .route("/api/claude/models", get(claude_models))
         .route("/api/settings", get(get_settings))
         .route("/api/settings/appearance", put(update_appearance_settings))
@@ -1432,6 +1435,10 @@ async fn agent_providers(State(state): State<AppState>) -> Json<AgentProviderReg
             .agent_runs
             .resolve_command(PI_AGENT_PROVIDER_ID, false)
             .is_some(),
+        state
+            .agent_runs
+            .resolve_command(GEMINI_CLI_PROVIDER_ID, false)
+            .is_some(),
     ))
 }
 
@@ -1462,18 +1469,12 @@ async fn agent_settings_diagnostics(
     let install_command = build_agent_lifecycle_plan(provider_id, "install", None)?.display_command;
     let update_command =
         build_agent_lifecycle_plan(provider_id, "update", command.as_deref())?.display_command;
-    let (diagnostic_command, diagnostic_args): (&str, Option<&[&str]>) = match provider_id {
-        OPENAI_CODEX_PROVIDER_ID => ("codex doctor --json", Some(&["doctor", "--json"])),
-        GROK_BUILD_PROVIDER_ID => ("grok inspect --json", Some(&["inspect", "--json"])),
-        OPENCODE_PROVIDER_ID => ("opencode debug info", Some(&["debug", "info"])),
-        PI_AGENT_PROVIDER_ID => ("pi --version", Some(&["--version"])),
-        _ => ("claude doctor", None),
-    };
+    let (diagnostic_command, diagnostic_args) = agent_settings_diagnostic_spec(provider_id)?;
     let diagnostic = if run_diagnostic {
-        if let (Some(command), Some(arguments)) = (command.as_deref(), diagnostic_args) {
+        if let Some(command) = command.as_deref() {
             let settings = read_app_settings(&state).unwrap_or_else(|_| default_app_settings());
             let mut process = background_command(command);
-            process.args(arguments);
+            process.args(diagnostic_args);
             let proxy = configured_agent_proxy_environment(&settings).or_else(|| {
                 let system = resolve_system_proxy_environment();
                 (!system.is_empty()).then_some(system)
@@ -1522,11 +1523,27 @@ async fn agent_settings_diagnostics(
         "diagnosticCommand": diagnostic_command,
         "diagnostic": diagnostic,
         "capabilities": {
-            "plugins": command.is_some() && provider_id != OPENCODE_PROVIDER_ID,
+            "plugins": command.is_some()
+                && !matches!(provider_id, OPENCODE_PROVIDER_ID | GEMINI_CLI_PROVIDER_ID),
             "mcp": command.is_some() && provider_id != PI_AGENT_PROVIDER_ID,
             "skills": true,
         }
     })))
+}
+
+fn agent_settings_diagnostic_spec(
+    provider_id: &str,
+) -> ApiResult<(&'static str, &'static [&'static str])> {
+    let spec: (&'static str, &'static [&'static str]) = match provider_id {
+        CLAUDE_CODE_PROVIDER_ID => ("claude doctor", &["doctor"]),
+        OPENAI_CODEX_PROVIDER_ID => ("codex doctor --json", &["doctor", "--json"]),
+        GROK_BUILD_PROVIDER_ID => ("grok inspect --json", &["inspect", "--json"]),
+        OPENCODE_PROVIDER_ID => ("opencode debug info", &["debug", "info"]),
+        PI_AGENT_PROVIDER_ID => ("pi --version", &["--version"]),
+        GEMINI_CLI_PROVIDER_ID => ("gemini --version", &["--version"]),
+        _ => return Err(ApiError::bad_request("不支持的 Agent Provider")),
+    };
+    Ok(spec)
 }
 
 async fn agent_latest_version(
@@ -1636,6 +1653,7 @@ fn agent_npm_package_name(provider_id: &str) -> Option<&'static str> {
         OPENAI_CODEX_PROVIDER_ID => Some("@openai/codex"),
         OPENCODE_PROVIDER_ID => Some("opencode-ai"),
         PI_AGENT_PROVIDER_ID => Some("@earendil-works/pi-coding-agent"),
+        GEMINI_CLI_PROVIDER_ID => Some("@google/gemini-cli"),
         _ => None,
     }
 }
@@ -2459,6 +2477,7 @@ fn build_agent_lifecycle_plan(
         ),
         OPENAI_CODEX_PROVIDER_ID => ("@openai/codex@latest", CODEX_CLI_INSTALL_COMMAND),
         OPENCODE_PROVIDER_ID => ("opencode-ai@latest", OPENCODE_CLI_INSTALL_COMMAND),
+        GEMINI_CLI_PROVIDER_ID => ("@google/gemini-cli@latest", GEMINI_CLI_INSTALL_COMMAND),
         GROK_BUILD_PROVIDER_ID if action == "update" => {
             return Ok(lifecycle_plan("grok", ["update"], "grok update"));
         }
@@ -2608,6 +2627,7 @@ fn package_manager_lifecycle_plan(provider_id: &str, command: &str) -> Option<Ag
         CLAUDE_CODE_PROVIDER_ID => "@anthropic-ai/claude-code",
         OPENAI_CODEX_PROVIDER_ID => "@openai/codex",
         OPENCODE_PROVIDER_ID => "opencode-ai",
+        GEMINI_CLI_PROVIDER_ID => "@google/gemini-cli",
         _ => return None,
     };
     let normalized = command.replace('\\', "/").to_ascii_lowercase();
@@ -2649,6 +2669,7 @@ fn package_manager_lifecycle_plan(provider_id: &str, command: &str) -> Option<Ag
         let formula = match provider_id {
             OPENAI_CODEX_PROVIDER_ID => "codex",
             OPENCODE_PROVIDER_ID => "opencode",
+            GEMINI_CLI_PROVIDER_ID => "gemini-cli",
             _ => "claude-code",
         };
         return Some(lifecycle_plan(
@@ -6318,6 +6339,8 @@ fn normalize_agent_runtime_settings(value: Option<&Value>) -> Value {
                 GROK_BUILD_PROVIDER_ID,
                 OPENAI_CODEX_PROVIDER_ID,
                 OPENCODE_PROVIDER_ID,
+                PI_AGENT_PROVIDER_ID,
+                GEMINI_CLI_PROVIDER_ID,
             ],
             CLAUDE_CODE_PROVIDER_ID,
         ),
@@ -7849,6 +7872,122 @@ async fn opencode_acp_probe() -> Json<Value> {
     }
 }
 
+async fn gemini_acp_probe() -> Json<Value> {
+    let Some(command) = resolve_gemini_command() else {
+        return Json(json!({
+            "installed": false,
+            "initialized": false,
+            "error": "未找到可由 CodeM 启动的 Gemini CLI",
+        }));
+    };
+    let version = read_cli_version(&command);
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    match probe_acp_initialize(
+        &command,
+        &["--experimental-acp"],
+        &cwd,
+        env!("CARGO_PKG_VERSION"),
+    )
+    .await
+    {
+        Ok(initialize) => Json(json!({
+            "installed": true,
+            "initialized": true,
+            "command": command,
+            "version": version,
+            "probe": { "initialize": initialize },
+        })),
+        Err(error) => Json(json!({
+            "installed": true,
+            "initialized": false,
+            "command": command,
+            "version": version,
+            "error": error.public_message(),
+        })),
+    }
+}
+
+fn resolve_gemini_command() -> Option<String> {
+    if let Some(command) = env::var("GEMINI_CLI_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| command_reports_version(value))
+    {
+        return Some(command);
+    }
+
+    #[cfg(target_os = "windows")]
+    let lookup = {
+        let mut command = background_command("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command gemini -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
+        ]);
+        command_output_with_timeout(&mut command, std::time::Duration::from_secs(3))
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let lookup = background_command("which").arg("gemini").output().ok();
+
+    lookup
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| {
+            stdout
+                .lines()
+                .map(str::trim)
+                .filter(|candidate| !candidate.is_empty())
+                .find(|candidate| command_reports_version(candidate))
+                .map(ToString::to_string)
+        })
+        .or_else(resolve_default_gemini_command)
+}
+
+fn resolve_default_gemini_command() -> Option<String> {
+    let home = home_dir()?;
+    let mut candidates = Vec::new();
+    if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {
+        candidates.push(app_data.join("npm").join(if cfg!(target_os = "windows") {
+            "gemini.cmd"
+        } else {
+            "gemini"
+        }));
+    }
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        candidates.push(
+            local_app_data
+                .join("pnpm")
+                .join(if cfg!(target_os = "windows") {
+                    "gemini.cmd"
+                } else {
+                    "gemini"
+                }),
+        );
+    }
+    candidates.extend([
+        home.join(".volta")
+            .join("bin")
+            .join(if cfg!(target_os = "windows") {
+                "gemini.cmd"
+            } else {
+                "gemini"
+            }),
+        home.join(".bun")
+            .join("bin")
+            .join(if cfg!(target_os = "windows") {
+                "gemini.exe"
+            } else {
+                "gemini"
+            }),
+        home.join(".local").join("bin").join("gemini"),
+    ]);
+    resolve_first_runnable_command(candidates)
+}
+
 fn resolve_opencode_command() -> Option<String> {
     if let Some(command) = env::var("OPENCODE_CLI_PATH")
         .ok()
@@ -8982,13 +9121,15 @@ where
         GROK_BUILD_PROVIDER_ID
         | OPENAI_CODEX_PROVIDER_ID
         | OPENCODE_PROVIDER_ID
-        | PI_AGENT_PROVIDER_ID => {
+        | PI_AGENT_PROVIDER_ID
+        | GEMINI_CLI_PROVIDER_ID => {
             if provider_available(provider_id) {
                 return Ok(match provider_id {
                     GROK_BUILD_PROVIDER_ID => GROK_BUILD_PROVIDER_ID,
                     OPENAI_CODEX_PROVIDER_ID => OPENAI_CODEX_PROVIDER_ID,
                     OPENCODE_PROVIDER_ID => OPENCODE_PROVIDER_ID,
                     PI_AGENT_PROVIDER_ID => PI_AGENT_PROVIDER_ID,
+                    GEMINI_CLI_PROVIDER_ID => GEMINI_CLI_PROVIDER_ID,
                     _ => unreachable!(),
                 });
             }
@@ -8997,6 +9138,7 @@ where
                 OPENAI_CODEX_PROVIDER_ID => "未找到可由 CodeM 启动的 Codex CLI",
                 OPENCODE_PROVIDER_ID => "未找到可由 CodeM 启动的 OpenCode CLI",
                 PI_AGENT_PROVIDER_ID => "未找到可由 CodeM 启动的 Pi CLI",
+                GEMINI_CLI_PROVIDER_ID => "未找到可由 CodeM 启动的 Gemini CLI",
                 _ => unreachable!(),
             }))
         }
@@ -9014,6 +9156,7 @@ fn resolve_thread_create_permission_mode(
             | OPENAI_CODEX_PROVIDER_ID
             | OPENCODE_PROVIDER_ID
             | PI_AGENT_PROVIDER_ID
+            | GEMINI_CLI_PROVIDER_ID
     ) {
         return normalize_agent_permission_mode(permission_mode)
             .map(|mode| Some(mode.to_string()))
@@ -10659,7 +10802,10 @@ fn update_thread_metadata_from_payload(
             .map(ToString::to_string);
         if matches!(
             thread.provider.as_str(),
-            GROK_BUILD_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID | OPENCODE_PROVIDER_ID
+            GROK_BUILD_PROVIDER_ID
+                | OPENAI_CODEX_PROVIDER_ID
+                | OPENCODE_PROVIDER_ID
+                | GEMINI_CLI_PROVIDER_ID
         ) {
             Some(
                 normalize_agent_permission_mode(requested_permission_mode.as_deref())
@@ -14314,6 +14460,7 @@ fn settings_provider_id(value: Option<&str>) -> ApiResult<&str> {
         Some(OPENAI_CODEX_PROVIDER_ID) => Ok(OPENAI_CODEX_PROVIDER_ID),
         Some(OPENCODE_PROVIDER_ID) => Ok(OPENCODE_PROVIDER_ID),
         Some(PI_AGENT_PROVIDER_ID) => Ok(PI_AGENT_PROVIDER_ID),
+        Some(GEMINI_CLI_PROVIDER_ID) => Ok(GEMINI_CLI_PROVIDER_ID),
         Some(_) => Err(ApiError::bad_request("不支持的 Agent Provider")),
     }
 }
@@ -14324,6 +14471,7 @@ fn agent_config_directory_name(provider_id: &str) -> &'static str {
         OPENAI_CODEX_PROVIDER_ID => ".codex",
         OPENCODE_PROVIDER_ID => ".opencode",
         PI_AGENT_PROVIDER_ID => ".pi",
+        GEMINI_CLI_PROVIDER_ID => ".gemini",
         _ => ".claude",
     }
 }
@@ -14348,13 +14496,11 @@ fn resolve_agent_rules_path(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| ApiError::bad_request("项目级规则需要 projectPath"))?;
-        return Ok(
-            PathBuf::from(project_path).join(if provider_id == CLAUDE_CODE_PROVIDER_ID {
-                "CLAUDE.md"
-            } else {
-                "AGENTS.md"
-            }),
-        );
+        return Ok(PathBuf::from(project_path).join(match provider_id {
+            CLAUDE_CODE_PROVIDER_ID => "CLAUDE.md",
+            GEMINI_CLI_PROVIDER_ID => "GEMINI.md",
+            _ => "AGENTS.md",
+        }));
     }
     if scope != "global" {
         return Err(ApiError::bad_request("规则 scope 仅支持 global 或 project"));
@@ -14365,6 +14511,7 @@ fn resolve_agent_rules_path(
         OPENAI_CODEX_PROVIDER_ID => home.join(".codex").join("AGENTS.md"),
         OPENCODE_PROVIDER_ID => home.join(".config").join("opencode").join("AGENTS.md"),
         PI_AGENT_PROVIDER_ID => home.join(".pi").join("agent").join("AGENTS.md"),
+        GEMINI_CLI_PROVIDER_ID => home.join(".gemini").join("GEMINI.md"),
         _ => home.join(".claude").join("CLAUDE.md"),
     })
 }
@@ -14559,6 +14706,8 @@ async fn update_mcp_config(
         let path = resolve_agent_mcp_config_path(provider_id, &scope, project_path)?;
         if provider_id == OPENCODE_PROVIDER_ID {
             write_opencode_mcp_config(&path, &config)?;
+        } else if provider_id == GEMINI_CLI_PROVIDER_ID {
+            write_gemini_mcp_config(&path, &config)?;
         } else {
             write_toml_mcp_config(&path, &config)?;
         }
@@ -14604,6 +14753,8 @@ async fn open_mcp_config(Json(payload): Json<Value>) -> ApiResult<Json<Value>> {
         let path = resolve_agent_mcp_config_path(provider_id, scope, project_path)?;
         if provider_id == OPENCODE_PROVIDER_ID {
             ensure_opencode_config_file(&path)?;
+        } else if provider_id == GEMINI_CLI_PROVIDER_ID {
+            ensure_gemini_config_file(&path)?;
         } else {
             ensure_toml_config_file(&path)?;
         }
@@ -14957,9 +15108,9 @@ fn build_agent_plugin_command_args(
 }
 
 fn ensure_agent_plugin_management_supported(provider_id: &str) -> ApiResult<()> {
-    if provider_id == OPENCODE_PROVIDER_ID {
+    if matches!(provider_id, OPENCODE_PROVIDER_ID | GEMINI_CLI_PROVIDER_ID) {
         return Err(ApiError::bad_request(
-            "OpenCode 当前不提供稳定的插件市场管理接口",
+            "当前 Agent 不提供稳定的插件市场管理接口",
         ));
     }
     Ok(())
@@ -14987,6 +15138,8 @@ fn read_agent_mcp_config_snapshot(
     let read_config = |path: &Path| {
         if provider_id == OPENCODE_PROVIDER_ID {
             read_opencode_mcp_config(path)
+        } else if provider_id == GEMINI_CLI_PROVIDER_ID {
+            read_gemini_mcp_config(path)
         } else {
             read_toml_mcp_config(path)
         }
@@ -15027,6 +15180,11 @@ fn resolve_agent_mcp_config_path(
                 .map(|home| home.join(".config").join("opencode").join("opencode.json"))
                 .ok_or_else(|| ApiError::internal("无法定位用户目录"));
         }
+        if provider_id == GEMINI_CLI_PROVIDER_ID {
+            return home_dir()
+                .map(|home| home.join(".gemini").join("settings.json"))
+                .ok_or_else(|| ApiError::internal("无法定位用户目录"));
+        }
         return home_dir()
             .map(|home| home.join(directory).join("config.toml"))
             .ok_or_else(|| ApiError::internal("无法定位用户目录"));
@@ -15037,6 +15195,9 @@ fn resolve_agent_mcp_config_path(
         .ok_or_else(|| ApiError::bad_request("当前没有活动项目"))?;
     if provider_id == OPENCODE_PROVIDER_ID {
         return Ok(PathBuf::from(project).join(directory).join("opencode.json"));
+    }
+    if provider_id == GEMINI_CLI_PROVIDER_ID {
+        return Ok(PathBuf::from(project).join(directory).join("settings.json"));
     }
     Ok(PathBuf::from(project).join(directory).join("config.toml"))
 }
@@ -15532,6 +15693,32 @@ fn ensure_opencode_config_file(path: &Path) -> ApiResult<()> {
     )
 }
 
+fn read_gemini_mcp_config(path: &Path) -> ApiResult<Value> {
+    Ok(normalize_mcp_config(
+        &read_json_file_if_exists(path)?.unwrap_or(Value::Null),
+    ))
+}
+
+fn write_gemini_mcp_config(path: &Path, config: &Value) -> ApiResult<()> {
+    let mut root = read_json_file_if_exists(path)?.unwrap_or_else(|| json!({}));
+    if !root.is_object() {
+        root = json!({});
+    }
+    root["mcpServers"] = config
+        .get("mcpServers")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    write_json_file_pretty(path, &root)
+}
+
+fn ensure_gemini_config_file(path: &Path) -> ApiResult<()> {
+    if path.is_file() {
+        read_json_file_if_exists(path)?;
+        return Ok(());
+    }
+    write_json_file_pretty(path, &json!({ "mcpServers": {} }))
+}
+
 fn read_toml_mcp_config(path: &Path) -> ApiResult<Value> {
     if path.as_os_str().is_empty() || !path.exists() {
         return Ok(json!({ "mcpServers": {} }));
@@ -15988,6 +16175,7 @@ fn resolve_agent_settings_command(provider_id: &str) -> Option<String> {
         OPENAI_CODEX_PROVIDER_ID => resolve_codex_command(),
         OPENCODE_PROVIDER_ID => resolve_opencode_command(),
         PI_AGENT_PROVIDER_ID => resolve_pi_command(),
+        GEMINI_CLI_PROVIDER_ID => resolve_gemini_command(),
         _ => resolve_claude_command(),
     }
 }
@@ -16077,7 +16265,7 @@ fn list_agent_installed_plugins_value(provider_id: &str) -> ApiResult<Value> {
     if provider_id == CLAUDE_CODE_PROVIDER_ID {
         return Ok(list_installed_plugins_value());
     }
-    if provider_id == OPENCODE_PROVIDER_ID {
+    if matches!(provider_id, OPENCODE_PROVIDER_ID | GEMINI_CLI_PROVIDER_ID) {
         return Ok(json!([]));
     }
     if provider_id == PI_AGENT_PROVIDER_ID {
@@ -16103,7 +16291,10 @@ fn list_agent_plugin_marketplaces_value(provider_id: &str) -> ApiResult<Value> {
     if provider_id == CLAUDE_CODE_PROVIDER_ID {
         return Ok(list_plugin_marketplaces_value());
     }
-    if matches!(provider_id, OPENCODE_PROVIDER_ID | PI_AGENT_PROVIDER_ID) {
+    if matches!(
+        provider_id,
+        OPENCODE_PROVIDER_ID | PI_AGENT_PROVIDER_ID | GEMINI_CLI_PROVIDER_ID
+    ) {
         return Ok(json!([]));
     }
     let available_payload =
@@ -21986,8 +22177,9 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_global_config_directory, apply_agent_lifecycle_proxy_environment,
-        build_agent_lifecycle_plan, build_agent_plugin_command_args, build_claude_input_message,
+        agent_global_config_directory, agent_settings_diagnostic_spec,
+        apply_agent_lifecycle_proxy_environment, build_agent_lifecycle_plan,
+        build_agent_plugin_command_args, build_claude_input_message,
         build_request_user_input_response_answers, build_usage_provider_rows,
         claude_input_message_has_content, claude_install_display_command,
         claude_install_lifecycle_plan, claude_uninstalled_update_lifecycle_plan,
@@ -22010,12 +22202,12 @@ mod tests {
         parse_npm_latest_version, parse_pi_installed_packages, parse_request_user_input_event,
         pi_node_version_supported, prepare_thread_fork_operation,
         probe_claude_thread_fork_capability, provider_supports_reasoning_effort,
-        read_agent_mcp_config_snapshot, read_fork_source_thread, read_opencode_mcp_config,
-        read_state_value, read_stored_thread_history, read_thread_detail,
+        read_agent_mcp_config_snapshot, read_fork_source_thread, read_gemini_mcp_config,
+        read_opencode_mcp_config, read_state_value, read_stored_thread_history, read_thread_detail,
         read_thread_fork_operation, read_thread_summary, recover_stale_thread_fork_operations,
         remove_thread_row, resolve_codex_command, resolve_command_from_path,
-        resolve_first_runnable_command, resolve_grok_command, resolve_opencode_command,
-        resolve_pi_command, resolve_requested_thread_provider,
+        resolve_first_runnable_command, resolve_gemini_command, resolve_grok_command,
+        resolve_opencode_command, resolve_pi_command, resolve_requested_thread_provider,
         resolve_thread_create_permission_mode, resolve_workspace_relative_path, runtime_auth,
         sanitize_agent_lifecycle_output, sanitize_external_command_result, search_workspace_files,
         select_runnable_command_candidate, should_emit_claude_raw_event, should_store_run_event,
@@ -22023,14 +22215,15 @@ mod tests {
         update_thread_metadata_from_payload, validate_desktop_file_path,
         validate_managed_agent_skill_path, wait_for_background_command_group_exit,
         windows_claude_install_lifecycle_plan, windows_shell_execute_error_message,
-        write_opencode_mcp_config, write_state_value, write_thread_history, ActiveRunRecord,
-        ApiError, AppState, ClaudeContextRequestError, ClaudeContextRequestRecord,
-        ClaudeRuntimeRecord, ForkSourceThread, ThreadForkCapabilityRequest, ThreadForkOperation,
-        ThreadForkOperationStatus, ThreadForkRequest, ThreadForkTestDriver,
+        write_gemini_mcp_config, write_opencode_mcp_config, write_state_value,
+        write_thread_history, ActiveRunRecord, ApiError, AppState, ClaudeContextRequestError,
+        ClaudeContextRequestRecord, ClaudeRuntimeRecord, ForkSourceThread,
+        ThreadForkCapabilityRequest, ThreadForkOperation, ThreadForkOperationStatus,
+        ThreadForkRequest, ThreadForkTestDriver,
     };
     use crate::agent_runtime::{
-        CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+        CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
+        OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     };
     use crate::codex_app_server::{
         CodexForkOutcome, CodexStoredItem, CodexStoredTurn, CodexUserInput,
@@ -22080,6 +22273,7 @@ mod tests {
                 resolve_codex_command,
                 resolve_opencode_command,
                 resolve_pi_command,
+                resolve_gemini_command,
                 agent_channels,
             ),
             workspace_write_lock: Arc::new(Mutex::new(())),
@@ -26052,6 +26246,35 @@ mod tests {
     }
 
     #[test]
+    fn agent_settings_diagnostics_use_explicit_provider_arguments() {
+        assert_eq!(
+            agent_settings_diagnostic_spec(CLAUDE_CODE_PROVIDER_ID).unwrap(),
+            ("claude doctor", &["doctor"][..])
+        );
+        assert_eq!(
+            agent_settings_diagnostic_spec(OPENAI_CODEX_PROVIDER_ID).unwrap(),
+            ("codex doctor --json", &["doctor", "--json"][..])
+        );
+        assert_eq!(
+            agent_settings_diagnostic_spec(GROK_BUILD_PROVIDER_ID).unwrap(),
+            ("grok inspect --json", &["inspect", "--json"][..])
+        );
+        assert_eq!(
+            agent_settings_diagnostic_spec(OPENCODE_PROVIDER_ID).unwrap(),
+            ("opencode debug info", &["debug", "info"][..])
+        );
+        assert_eq!(
+            agent_settings_diagnostic_spec(PI_AGENT_PROVIDER_ID).unwrap(),
+            ("pi --version", &["--version"][..])
+        );
+        assert_eq!(
+            agent_settings_diagnostic_spec(GEMINI_CLI_PROVIDER_ID).unwrap(),
+            ("gemini --version", &["--version"][..])
+        );
+        assert!(agent_settings_diagnostic_spec("unknown-provider").is_err());
+    }
+
+    #[test]
     fn agent_lifecycle_npm_mirror_retry_only_accepts_supported_package_managers() {
         for program in ["npm.cmd", "pnpm.exe", "bun"] {
             let plan = lifecycle_plan(program, ["install"], "install Agent");
@@ -26798,6 +27021,7 @@ mod tests {
                 resolve_codex_command,
                 resolve_opencode_command,
                 resolve_pi_command,
+                resolve_gemini_command,
                 agent_channels,
             ),
             workspace_write_lock: Arc::new(Mutex::new(())),
@@ -26914,6 +27138,42 @@ mod tests {
     }
 
     #[test]
+    fn gemini_mcp_round_trip_preserves_unrelated_config_fields() {
+        let root = TestDirectory::new("gemini-mcp-round-trip");
+        let path = root.0.join("settings.json");
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&json!({
+                "theme": "Default",
+                "model": { "name": "gemini-2.5-pro" },
+                "security": { "auth": { "selectedType": "gemini-api-key" } },
+                "mcpServers": {
+                    "local": { "command": "npx", "args": ["-y", "@playwright/mcp"] }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut normalized = read_gemini_mcp_config(&path).unwrap();
+        normalized["mcpServers"]["local"]["args"] =
+            json!(["-y", "@modelcontextprotocol/server-filesystem"]);
+        write_gemini_mcp_config(&path, &normalized).unwrap();
+
+        let persisted: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["theme"], "Default");
+        assert_eq!(persisted["model"]["name"], "gemini-2.5-pro");
+        assert_eq!(
+            persisted["security"]["auth"]["selectedType"],
+            "gemini-api-key"
+        );
+        assert_eq!(
+            persisted["mcpServers"]["local"]["args"],
+            json!(["-y", "@modelcontextprotocol/server-filesystem"])
+        );
+    }
+
+    #[test]
     fn thread_provider_defaults_to_claude_and_requires_installed_agents() {
         assert_eq!(
             resolve_requested_thread_provider(None, |_| {
@@ -26958,6 +27218,16 @@ mod tests {
             .expect("enabled Pi provider"),
             PI_AGENT_PROVIDER_ID
         );
+        assert!(
+            resolve_requested_thread_provider(Some(GEMINI_CLI_PROVIDER_ID), |_| false).is_err()
+        );
+        assert_eq!(
+            resolve_requested_thread_provider(Some(GEMINI_CLI_PROVIDER_ID), |provider_id| {
+                provider_id == GEMINI_CLI_PROVIDER_ID
+            })
+            .expect("enabled Gemini provider"),
+            GEMINI_CLI_PROVIDER_ID
+        );
         assert_eq!(
             resolve_thread_create_permission_mode(GROK_BUILD_PROVIDER_ID, None)
                 .expect("default Grok permission")
@@ -26984,6 +27254,15 @@ mod tests {
                 .expect("Pi permission")
                 .as_deref(),
             Some("auto")
+        );
+        assert_eq!(
+            resolve_thread_create_permission_mode(
+                GEMINI_CLI_PROVIDER_ID,
+                Some("bypassPermissions")
+            )
+            .expect("Gemini permission")
+            .as_deref(),
+            Some("bypassPermissions")
         );
         assert!(
             resolve_thread_create_permission_mode(PI_AGENT_PROVIDER_ID, Some("dontAsk")).is_err()

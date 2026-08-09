@@ -28,6 +28,7 @@ import type {
   ClaudeCliVersionInfo,
   ClaudeModelInfo,
   CodexAppServerProbeResult,
+  GeminiAcpProbeResult,
   GrokAcpProbeResult,
   OpenCodeAcpProbeResult,
   PiRpcProbeResult,
@@ -39,6 +40,7 @@ import {
   fetchAgentLatestVersion,
   fetchAgentSettingsDiagnostics,
   probeCodexAgent,
+  probeGeminiAgent,
   probeGrokAgent,
   probeOpenCodeAgent,
   probePiAgent,
@@ -48,6 +50,7 @@ import {
   formatProviderCapabilityState,
   formatProviderListMeta,
   getCodexProbeStatusMessage,
+  getGeminiProbeStatusMessage,
   getGrokProbeStatusMessage,
   getOpenCodeProbeStatusMessage,
   getPiProbeStatusMessage,
@@ -107,6 +110,9 @@ export function AgentProviderSettings({
   const [piProbeState, setPiProbeState] = useState<ProviderProbeState>('idle');
   const [piProbe, setPiProbe] = useState<PiRpcProbeResult | null>(null);
   const [piProbeError, setPiProbeError] = useState('');
+  const [geminiProbeState, setGeminiProbeState] = useState<ProviderProbeState>('idle');
+  const [geminiProbe, setGeminiProbe] = useState<GeminiAcpProbeResult | null>(null);
+  const [geminiProbeError, setGeminiProbeError] = useState('');
   const [agentRuntimeSaving, setAgentRuntimeSaving] = useState(false);
   const [diagnosticCheckingProviderId, setDiagnosticCheckingProviderId] = useState<AgentProviderId | null>(null);
   const [lifecycleAction, setLifecycleAction] = useState<{ providerId: AgentProviderId; action: 'install' | 'update' } | null>(null);
@@ -117,6 +123,7 @@ export function AgentProviderSettings({
   const codexControllerRef = useRef<AbortController | null>(null);
   const openCodeControllerRef = useRef<AbortController | null>(null);
   const piControllerRef = useRef<AbortController | null>(null);
+  const geminiControllerRef = useRef<AbortController | null>(null);
 
   const loadProviderDetails = useCallback(async (
     requestedProviderIds?: AgentProviderId[],
@@ -253,6 +260,7 @@ export function AgentProviderSettings({
       codexControllerRef.current?.abort();
       openCodeControllerRef.current?.abort();
       piControllerRef.current?.abort();
+      geminiControllerRef.current?.abort();
     };
   }, [loadProviderDetails]);
 
@@ -409,6 +417,25 @@ export function AgentProviderSettings({
     }
   }
 
+  async function runGeminiProbe() {
+    if (geminiProbeState === 'checking') return;
+    geminiControllerRef.current?.abort();
+    const controller = new AbortController();
+    geminiControllerRef.current = controller;
+    setGeminiProbeState('checking');
+    setGeminiProbeError('');
+    try {
+      const result = await probeGeminiAgent(controller.signal);
+      if (controller.signal.aborted) return;
+      setGeminiProbe(result);
+      setGeminiProbeState('ready');
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setGeminiProbeError(error instanceof Error ? error.message : '检测 Gemini CLI 失败');
+      setGeminiProbeState('error');
+    }
+  }
+
   async function updateDefaultProvider(defaultProviderId: AgentProviderId) {
     if (agentRuntimeSaving || defaultProviderId === agentRuntime.defaultProviderId) {
       return;
@@ -462,6 +489,8 @@ export function AgentProviderSettings({
             ? runOpenCodeProbe()
             : providerId === 'pi-agent'
               ? runPiProbe()
+              : providerId === 'gemini-cli'
+                ? runGeminiProbe()
             : Promise.resolve();
       await Promise.allSettled([
         Promise.resolve().then(() => onRefreshProviders()),
@@ -549,7 +578,7 @@ export function AgentProviderSettings({
             ) : null}
             {providersLoading && providers.length === 0 ? <AgentProviderListSkeleton /> : null}
             {effectiveProviders.map((provider) => {
-              const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe);
+              const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe, geminiProbe);
               return (
                 <button
                   key={provider.id}
@@ -563,7 +592,7 @@ export function AgentProviderSettings({
                   </span>
                   <span className="agent-provider-list-copy">
                     <strong>{provider.displayName}</strong>
-                    <small>{formatProviderListMeta(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe)}</small>
+                    <small>{formatProviderListMeta(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe, geminiProbe)}</small>
                   </span>
                   <ProviderStatusIcon tone={status.tone} label={status.label} compact />
                 </button>
@@ -615,6 +644,9 @@ export function AgentProviderSettings({
               piProbe={piProbe}
               piProbeState={piProbeState}
               piProbeError={piProbeError}
+              geminiProbe={geminiProbe}
+              geminiProbeState={geminiProbeState}
+              geminiProbeError={geminiProbeError}
               settingsDiagnostics={settingsDiagnostics[selectedProvider.id as AgentProviderId] ?? null}
               diagnosticsLoading={Boolean(diagnosticsLoading[selectedProvider.id as AgentProviderId])}
               latestVersionLoading={Boolean(latestVersionLoading[selectedProvider.id as AgentProviderId])}
@@ -622,6 +654,7 @@ export function AgentProviderSettings({
               onProbeCodex={runCodexProbe}
               onProbeOpenCode={runOpenCodeProbe}
               onProbePi={runPiProbe}
+              onProbeGemini={runGeminiProbe}
               onRefresh={() => loadProviderDetails([selectedProvider.id as AgentProviderId])}
               diagnosticChecking={diagnosticCheckingProviderId === selectedProvider.id}
               onRunNativeDiagnostic={() => runNativeDiagnostic(selectedProvider.id as AgentProviderId)}
@@ -781,6 +814,9 @@ function defaultAgentProviderName(providerId: AgentProviderId) {
   if (providerId === 'pi-agent') {
     return 'Pi';
   }
+  if (providerId === 'gemini-cli') {
+    return 'Gemini CLI';
+  }
   return 'Claude Code';
 }
 
@@ -800,6 +836,9 @@ function ProviderDetail({
   piProbe,
   piProbeState,
   piProbeError,
+  geminiProbe,
+  geminiProbeState,
+  geminiProbeError,
   settingsDiagnostics,
   diagnosticsLoading,
   latestVersionLoading,
@@ -807,6 +846,7 @@ function ProviderDetail({
   onProbeCodex,
   onProbeOpenCode,
   onProbePi,
+  onProbeGemini,
   onRefresh,
   diagnosticChecking,
   onRunNativeDiagnostic,
@@ -828,6 +868,9 @@ function ProviderDetail({
   piProbe: PiRpcProbeResult | null;
   piProbeState: ProviderProbeState;
   piProbeError: string;
+  geminiProbe: GeminiAcpProbeResult | null;
+  geminiProbeState: ProviderProbeState;
+  geminiProbeError: string;
   settingsDiagnostics: AgentSettingsDiagnostics | null;
   diagnosticsLoading: boolean;
   latestVersionLoading: boolean;
@@ -835,14 +878,15 @@ function ProviderDetail({
   onProbeCodex: () => Promise<void>;
   onProbeOpenCode: () => Promise<void>;
   onProbePi: () => Promise<void>;
+  onProbeGemini: () => Promise<void>;
   onRefresh: () => Promise<void>;
   diagnosticChecking: boolean;
   onRunNativeDiagnostic: () => Promise<void>;
   lifecycleAction: 'install' | 'update' | null;
   onRunLifecycleAction: (action: 'install' | 'update') => void;
 }) {
-  const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe);
-  const diagnostics = resolveProviderDiagnostics(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe);
+  const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe, geminiProbe);
+  const diagnostics = resolveProviderDiagnostics(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe, geminiProbe);
   const effectiveCliStatus = diagnostics.cli === '未检测' && settingsDiagnostics?.installed
     ? '已安装'
     : diagnostics.cli;
@@ -864,7 +908,7 @@ function ProviderDetail({
         ? { label: '已是最新', tone: 'latest' }
         : { label: '已安装', tone: 'installed' };
   const capabilityGroups = getProviderCapabilityGroups(provider);
-  const models = getProviderModels(provider.id, claudeModels, grokProbe);
+  const models = getProviderModels(provider.id, claudeModels, grokProbe, geminiProbe);
   const grokStatusMessage = getGrokProbeStatusMessage(grokProbeState, grokProbe, grokProbeError);
   const codexStatusMessage = getCodexProbeStatusMessage(
     codexProbeState,
@@ -877,6 +921,7 @@ function ProviderDetail({
     openCodeProbeError,
   );
   const piStatusMessage = getPiProbeStatusMessage(piProbeState, piProbe, piProbeError);
+  const geminiStatusMessage = getGeminiProbeStatusMessage(geminiProbeState, geminiProbe, geminiProbeError);
   const probeState = provider.id === 'grok-build'
     ? grokProbeState
     : provider.id === 'openai-codex'
@@ -885,6 +930,8 @@ function ProviderDetail({
         ? openCodeProbeState
         : provider.id === 'pi-agent'
           ? piProbeState
+          : provider.id === 'gemini-cli'
+            ? geminiProbeState
       : 'idle';
   const probeResultAvailable = provider.id === 'grok-build'
     ? Boolean(grokProbe?.probe?.authenticated)
@@ -894,6 +941,8 @@ function ProviderDetail({
         ? Boolean(openCodeProbe?.probe?.configured)
         : provider.id === 'pi-agent'
           ? Boolean(piProbe?.probe?.authenticated)
+          : provider.id === 'gemini-cli'
+            ? Boolean(geminiProbe?.initialized)
       : false;
   const installDocsUrl = provider.id === 'claude-code'
     ? claudeCliInfo?.setupUrl ?? getProviderInstallDocsUrl(provider.id as AgentProviderId)
@@ -927,7 +976,7 @@ function ProviderDetail({
               <span>安装文档</span>
             </button>
           ) : null}
-          {provider.id === 'grok-build' || provider.id === 'openai-codex' || provider.id === 'opencode' || provider.id === 'pi-agent' ? (
+          {provider.id === 'grok-build' || provider.id === 'openai-codex' || provider.id === 'opencode' || provider.id === 'pi-agent' || provider.id === 'gemini-cli' ? (
             <>
               <button
                 type="button"
@@ -940,7 +989,9 @@ function ProviderDetail({
                       ? onProbeCodex()
                       : provider.id === 'opencode'
                         ? onProbeOpenCode()
-                        : onProbePi()
+                        : provider.id === 'pi-agent'
+                          ? onProbePi()
+                          : onProbeGemini()
                 )}
               >
                 {probeState === 'checking' ? (
@@ -1102,6 +1153,17 @@ function ProviderDetail({
         </div>
       ) : null}
 
+      {provider.id === 'gemini-cli' ? (
+        <div className="agent-provider-live-status" aria-live="polite">
+          {geminiProbeState === 'checking' ? <LoaderCircle size={15} className="spin" /> : null}
+          {geminiProbeState === 'error' || (geminiProbeState === 'ready' && !probeResultAvailable) ? (
+            <AlertCircle size={15} />
+          ) : null}
+          {geminiProbeState === 'ready' && probeResultAvailable ? <CheckCircle2 size={15} /> : null}
+          <span>{geminiStatusMessage}</span>
+        </div>
+      ) : null}
+
       {provider.id === 'pi-agent' && piProbe?.probe ? (
         <div className="agent-provider-live-status">
           <span>
@@ -1117,6 +1179,10 @@ function ProviderDetail({
 
       {provider.id === 'opencode' && openCodeProbe?.probe ? (
         <DetectedAcpCapabilities probe={openCodeProbe} />
+      ) : null}
+
+      {provider.id === 'gemini-cli' && geminiProbe?.probe ? (
+        <DetectedAcpCapabilities probe={geminiProbe} />
       ) : null}
 
       <div className="agent-provider-section">
@@ -1284,7 +1350,7 @@ function CapabilityState({ item }: { item: ProviderCapabilityItem }) {
   );
 }
 
-function DetectedAcpCapabilities({ probe }: { probe: GrokAcpProbeResult | OpenCodeAcpProbeResult }) {
+function DetectedAcpCapabilities({ probe }: { probe: GrokAcpProbeResult | OpenCodeAcpProbeResult | GeminiAcpProbeResult }) {
   const initialize = probe.probe?.initialize;
   if (!initialize) {
     return null;

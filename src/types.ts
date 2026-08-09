@@ -401,6 +401,17 @@ export type CompactOperationMetadata = {
   error?: string;
 };
 
+export type GeminiAcpProbeResult = {
+  installed: boolean;
+  initialized: boolean;
+  command: string | null;
+  version: string | null;
+  error: string | null;
+  probe: {
+    initialize: GrokAcpProbeSummary['initialize'];
+  } | null;
+};
+
 export type CodexCompactCapability = {
   state: CodexCompactCapabilityState;
   message?: string;
@@ -867,7 +878,8 @@ export type AgentProviderId =
   | 'grok-build'
   | 'openai-codex'
   | 'opencode'
-  | 'pi-agent';
+  | 'pi-agent'
+  | 'gemini-cli';
 
 export type AutomationSchedule =
   | {

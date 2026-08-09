@@ -26,6 +26,7 @@ const agentChannelProtocols: Record<AgentProviderId, readonly AiChatProtocol[]> 
   'grok-build': ['openai_chat', 'openai_responses', 'anthropic_messages'],
   opencode: ['openai_chat', 'openai_responses', 'anthropic_messages'],
   'pi-agent': ['openai_chat', 'openai_responses', 'anthropic_messages'],
+  'gemini-cli': ['gemini_generate_content'],
 };
 
 export function protocolsForAgent(providerId: AgentProviderId): AiChatProtocol[] {
@@ -56,6 +57,9 @@ export function agentChannelProtocolHint(
     return protocol === 'openai_responses'
       ? 'OpenCode 将通过 OpenAI SDK 连接上游 /responses 接口。'
       : 'OpenCode 的普通 OpenAI 兼容渠道使用 Chat Completions。';
+  }
+  if (providerId === 'gemini-cli') {
+    return 'Gemini CLI 使用原生 Gemini Generate Content 接口连接此渠道。';
   }
   return '';
 }

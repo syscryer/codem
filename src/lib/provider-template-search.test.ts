@@ -143,6 +143,7 @@ test('Agent 渠道接口矩阵使用真实运行协议并让 Grok 默认选择 O
     'anthropic_messages',
   ]);
   assert.deepEqual(protocolsForAgent('opencode'), ['openai_chat', 'openai_responses', 'anthropic_messages']);
+  assert.deepEqual(protocolsForAgent('gemini-cli'), ['gemini_generate_content']);
   assert.match(
     agentChannelProtocolHint('grok-build', 'openai_responses'),
     /上游明确提供 \/responses.*OpenAI Chat/,

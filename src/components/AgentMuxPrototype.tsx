@@ -20,7 +20,7 @@ import {
 import { openExternalUrl } from '../lib/markdown-link';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import type { AgentChannel, AgentModelCatalog, AgentProviderId, AgentRunEvent, AgentSystemChannel, ProjectSummary } from '../types';
-import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID } from '../constants';
+import { CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID } from '../constants';
 import { AgentProviderIcon } from './AgentProviderIcon';
 import { AgentMuxAvatar, AGENT_MUX_AVATAR_OPTIONS } from './AgentMuxAvatar';
 import { ConversationTurnView } from './ConversationTurn';
@@ -89,6 +89,7 @@ const SKILL_TARGETS: Array<{ providerId: AgentProviderId; label: string }> = [
   { providerId: GROK_BUILD_PROVIDER_ID, label: 'Grok Build' },
   { providerId: PI_AGENT_PROVIDER_ID, label: 'Pi Agent' },
   { providerId: OPENCODE_PROVIDER_ID, label: 'OpenCode' },
+  { providerId: GEMINI_CLI_PROVIDER_ID, label: 'Gemini CLI' },
 ];
 
 type SkillInstallTarget = AgentMuxSkillTarget & {
@@ -138,7 +139,7 @@ ${profiles.length > 0 ? profiles.join('\n') : '- 当前没有已检测可用的�
 6. 查询运行使用 \`& $agentMux status --json${appDataArg}\`，取消运行使用 \`& $agentMux cancel --run '<runId>'${appDataArg}\`。
 7. 不得直接读取 discovery 文件；Runtime token 由 CLI 内部管理。
 
-通用独立运行当前支持 OpenAI Codex 和 Grok Build。Pi 需要 CodeM threadId，Claude Code尚未接入通用独立运行。接口失败时必须返回真实错误，不得伪装成功。
+通用独立运行当前支持 OpenAI Codex、Grok Build 与 Gemini CLI。Pi 需要 CodeM threadId，Claude Code 尚未接入通用独立运行。接口失败时必须返回真实错误，不得伪装成功。
 `;
 }
 
@@ -626,7 +627,7 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
       {view === 'agents' ? (selectedAgent ? <AgentsView agents={agentRecords} selected={selectedAgent} selectedId={selectedAgentId} profiles={availableProfiles.length} onSelect={setSelectedAgentId} onAddProfile={() => setProfileDialog({ agentId: selectedAgent.id })} onEditProfile={(profile) => setProfileDialog({ agentId: selectedAgent.id, profile })} onDeleteProfile={(profile) => deleteProfile(selectedAgent.id, profile)} onToggleProfile={(profile) => toggleProfile(selectedAgent.id, profile)} onTestProfile={(profile) => testProfile(selectedAgent.id, profile)} testingProfileId={testingProfileId} testMessage={testMessage} /> : <EmptyState title="暂无 Agent 配置" detail="后端未返回可管理的 Agent 配置。" />) : null}
       {view === 'monitor' ? <MonitorView agents={agentRecords} runs={runRecords} projects={projects} selected={selectedRun} conversationRuns={selectedConversationRuns} eventsByRunId={runEventsById} liveTurns={liveRunTurns} onSelect={(runId) => { selectedRunIdRef.current = runId; setSelectedRunId(runId); }} onCancel={cancelRun} /> : null}
       {view === 'skill' ? <SkillView agents={agentRecords} skillText={skillText} copied={copied} source={skillSource} targets={skillInstallTargets} installPending={skillInstallPending} installMessage={skillInstallMessage} copiedPath={copiedSkillPath} copiedInstruction={copiedInstallInstruction} cliPath={runtimeInfo.cliPath} runtimeManaged={runtimeInfo.runtimeManaged} onCopy={copySkill} onCopyPath={copySkillPath} onCopyInstruction={copyInstallInstruction} onInstall={installSkillTarget} onInstallAll={installSkillToAll} onExport={exportSkill} onStopRuntime={stopRuntime} /> : null}
-      {profileDialog && selectedAgent ? <AddRuntimeProfileDialog key={`${profileDialog.agentId}:${profileDialog.profile?.id ?? 'new'}`} agent={agentRecords.find((agent) => agent.id === profileDialog.agentId) ?? selectedAgent} agents={agentRecords} profile={profileDialog.profile} allowAgentSelection={profileDialog.allowAgentSelection === true} channels={agentChannels} systemChannels={agentSystemChannels} onAgentChange={(agentId) => setProfileDialog((current) => current ? { ...current, agentId } : current)} onClose={() => setProfileDialog(null)} onSave={saveProfile} /> : null}
+      {profileDialog && selectedAgent ? <AddRuntimeProfileDialog key={`${profileDialog.agentId}:${profileDialog.profile?.id ?? 'new'}`} agent={agentRecords.find((agent) => agent.id === profileDialog.agentId) ?? selectedAgent} agents={agentRecords} profile={profileDialog.profile} allowAgentSelection={profileDialog.allowAgentSelection === true} channels={agentChannels} systemChannels={agentSystemChannels} providerAvailability={skillProviderAvailability} onAgentChange={(agentId) => setProfileDialog((current) => current ? { ...current, agentId } : current)} onClose={() => setProfileDialog(null)} onSave={saveProfile} /> : null}
       {runDialogOpen ? <RunTaskDialog agents={agentRecords} projects={projects} activeProjectId={activeProjectId} starting={startingRun} onClose={() => setRunDialogOpen(false)} onStart={startRun} /> : null}
       {confirmation ? <AgentMuxConfirmDialog confirmation={confirmation} onClose={() => setConfirmation(null)} onConfirm={() => { const action = confirmation.action; setConfirmation(null); void action(); }} /> : null}
     </section>
@@ -839,7 +840,7 @@ function AgentMuxConfirmDialog({ confirmation, onClose, onConfirm }: { confirmat
   return <div className="dialog-backdrop agent-mux-confirm-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="dialog-card agent-mux-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="agent-mux-confirm-title"><div className="dialog-head"><h3 id="agent-mux-confirm-title">{confirmation.title}</h3><p>{confirmation.description}</p></div><div className="dialog-actions"><button type="button" className="dialog-button secondary" onClick={onClose}>取消</button><button type="button" className={`dialog-button ${confirmation.tone}`} onClick={onConfirm}>{confirmation.confirmLabel}</button></div></div></div>;
 }
 
-function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, channels, systemChannels, onAgentChange, onClose, onSave }: { agent: AgentRecord; agents: AgentRecord[]; profile?: RuntimeProfile; allowAgentSelection: boolean; channels: AgentChannel[]; systemChannels: AgentSystemChannel[]; onAgentChange: (agentId: string) => void; onClose: () => void; onSave: (profile: RuntimeProfile) => void }) {
+function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, channels, systemChannels, providerAvailability, onAgentChange, onClose, onSave }: { agent: AgentRecord; agents: AgentRecord[]; profile?: RuntimeProfile; allowAgentSelection: boolean; channels: AgentChannel[]; systemChannels: AgentSystemChannel[]; providerAvailability: Record<string, boolean>; onAgentChange: (agentId: string) => void; onClose: () => void; onSave: (profile: RuntimeProfile) => void }) {
   const providerId = agentProviderId(agent.id);
   const availableChannels = providerId ? channels.filter((channel) => channel.providerId === providerId && channel.enabled) : [];
   const availableSystemChannels = providerId ? systemChannels.filter((channel) => channel.providerId === providerId && channel.configured) : [];
@@ -851,7 +852,7 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
   const selectedAgentChannel = channelId === 'system' ? undefined : availableChannels.find((channel) => channel.id === channelId);
   const [nativeModelCatalog, setNativeModelCatalog] = useState<AgentModelCatalog | null | undefined>(undefined);
   useEffect(() => {
-    if (!providerId) {
+    if (!providerId || providerAvailability[providerId] !== true) {
       setNativeModelCatalog(null);
       return;
     }
@@ -863,7 +864,7 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
     setNativeModelCatalog(undefined);
     void fetchAgentModelCatalog(providerId, { signal: controller.signal }).then(setNativeModelCatalog).catch(() => setNativeModelCatalog(null));
     return () => controller.abort();
-  }, [providerId]);
+  }, [providerAvailability, providerId]);
   const selectedCatalog = providerId
     ? channelId === 'system'
       ? buildAgentSystemChannelModelCatalog(providerId, selectedSystemChannel, nativeModelCatalog ?? null)
@@ -961,11 +962,11 @@ function ProfileRow({ agentId, profile, onEdit, onDelete, onToggle, onTest, test
 function RunIcon({ status }: { status: RunStatus }) { if (status === 'completed') return <CheckCircle2 className="agent-mux-run-icon completed" size={16} />; if (status === 'failed') return <CircleAlert className="agent-mux-run-icon failed" size={16} />; if (status === 'queued' || status === 'waiting' || status === 'cancelled') return <Clock3 className="agent-mux-run-icon queued" size={16} />; return <Activity className="agent-mux-run-icon running" size={16} />; }
 function RunStartedTime({ run }: { run: RunRecord }) { return <time title={formatAgentMuxExactTime(run.createdAt)}>{formatAgentMuxRelativeTime(run.createdAt, run.started)}</time>; }
 function runLabel(status: RunStatus) { return status === 'running' ? '运行中' : status === 'completed' ? '已完成' : status === 'failed' ? '失败' : status === 'waiting' ? '等待处理' : status === 'cancelled' ? '已取消' : '排队中'; }
-function providerLabel(providerId: string) { return providerId === OPENAI_CODEX_PROVIDER_ID ? 'OpenAI Codex' : providerId === CLAUDE_CODE_PROVIDER_ID ? 'Claude Code' : providerId === GROK_BUILD_PROVIDER_ID ? 'Grok Build' : providerId === PI_AGENT_PROVIDER_ID ? 'Pi Agent' : providerId === OPENCODE_PROVIDER_ID ? 'OpenCode' : providerId; }
+function providerLabel(providerId: string) { return providerId === OPENAI_CODEX_PROVIDER_ID ? 'OpenAI Codex' : providerId === CLAUDE_CODE_PROVIDER_ID ? 'Claude Code' : providerId === GROK_BUILD_PROVIDER_ID ? 'Grok Build' : providerId === PI_AGENT_PROVIDER_ID ? 'Pi Agent' : providerId === OPENCODE_PROVIDER_ID ? 'OpenCode' : providerId === GEMINI_CLI_PROVIDER_ID ? 'Gemini CLI' : providerId; }
 function formatReasoningLabel(value: string) { return value.toLowerCase() === 'xhigh' ? 'XHigh' : value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : '跟随模型默认'; }
-function agentProviderId(agentId: string): AgentProviderId | null { const id = agentId.toLowerCase(); return id === 'codex' || id === 'openai codex' ? OPENAI_CODEX_PROVIDER_ID : id === 'claude' || id === 'claude code' ? CLAUDE_CODE_PROVIDER_ID : id === 'grok' || id === 'grok build' ? GROK_BUILD_PROVIDER_ID : id === 'pi' || id === 'pi agent' ? PI_AGENT_PROVIDER_ID : id === 'opencode' ? OPENCODE_PROVIDER_ID : null; }
+function agentProviderId(agentId: string): AgentProviderId | null { const id = agentId.toLowerCase(); return id === 'codex' || id === 'openai codex' ? OPENAI_CODEX_PROVIDER_ID : id === 'claude' || id === 'claude code' ? CLAUDE_CODE_PROVIDER_ID : id === 'grok' || id === 'grok build' ? GROK_BUILD_PROVIDER_ID : id === 'pi' || id === 'pi agent' ? PI_AGENT_PROVIDER_ID : id === 'opencode' ? OPENCODE_PROVIDER_ID : id === 'gemini' || id === 'gemini cli' ? GEMINI_CLI_PROVIDER_ID : null; }
 function agentIdForRun(run: RunRecord, agents: AgentRecord[]) { return agents.find((agent) => agent.name === run.target)?.id ?? run.target; }
 function profileDisplayName(profile: RuntimeProfile) { return profile.nickname?.trim() || `${profile.provider} / ${profile.model}`; }
 function runDisplayName(run: RunRecord) { return run.nickname?.trim() || run.target; }
 function formatRunDuration(durationMs: number) { const seconds = Math.max(0, Math.round(durationMs / 1000)); return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`; }
-function agentCapabilityOptions(agentId: string) { return agentId === 'codex' ? ['代码生成', '代码审查', '复杂实现', '测试验证', '快速修改'] : agentId === 'claude' ? ['代码编辑', '项目审查', '终端操作', '长任务', '文档处理'] : agentId === 'grok' ? ['快速探索', '小范围修改', '信息检索', '代码验证'] : agentId === 'opencode' ? ['代码编辑', 'ACP', '多模型', '项目任务', '工具调用'] : ['自动化', '低延迟', '脚本任务', '验证']; }
+function agentCapabilityOptions(agentId: string) { return agentId === 'codex' ? ['代码生成', '代码审查', '复杂实现', '测试验证', '快速修改'] : agentId === 'claude' ? ['代码编辑', '项目审查', '终端操作', '长任务', '文档处理'] : agentId === 'grok' ? ['快速探索', '小范围修改', '信息检索', '代码验证'] : agentId === 'opencode' ? ['代码编辑', 'ACP', '多模型', '项目任务', '工具调用'] : agentId === 'gemini' ? ['代码编辑', 'ACP', 'Gemini', '项目任务', '工具调用'] : ['自动化', '低延迟', '脚本任务', '验证']; }

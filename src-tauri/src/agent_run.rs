@@ -11,8 +11,8 @@ use crate::{
         AgentApprovalRequest, AgentCompactCapabilityState, AgentCompactCapabilitySummary,
         AgentCompactionSource, AgentCompactionStatus, AgentControlCommand, AgentPermissionDecision,
         AgentRunEvent, AgentUsageSnapshot, AgentUserInputOption, AgentUserInputQuestion,
-        AgentUserInputRequest, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+        AgentUserInputRequest, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
+        OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     },
     codex_app_server::{
         CodexAppServerError, CodexCompactCapability, CodexCompactionEvent,
@@ -80,6 +80,7 @@ struct CommandResolvers {
     codex: CommandResolver,
     opencode: CommandResolver,
     pi: CommandResolver,
+    gemini: CommandResolver,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -741,6 +742,7 @@ impl AgentRunService {
         codex_command_resolver: fn() -> Option<String>,
         opencode_command_resolver: fn() -> Option<String>,
         pi_command_resolver: fn() -> Option<String>,
+        gemini_command_resolver: fn() -> Option<String>,
         agent_channels: AgentChannelService,
     ) -> Self {
         Self {
@@ -756,6 +758,7 @@ impl AgentRunService {
                     codex: codex_command_resolver,
                     opencode: opencode_command_resolver,
                     pi: pi_command_resolver,
+                    gemini: gemini_command_resolver,
                 },
                 agent_channels,
             },
@@ -1176,6 +1179,52 @@ async fn agent_models(
                 .map(Json)
                 .map_err(|error| AgentApiError::internal(public_pi_error(error)))
         }
+        GEMINI_CLI_PROVIDER_ID => {
+            let command = resolve_agent_command(&state, provider_id, query.refresh)
+                .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 Gemini CLI"))?;
+            let channel_runtime = state
+                .agent_channels
+                .resolve_runtime(provider_id, query.channel_id.as_deref(), None, None, None)
+                .map_err(AgentApiError::internal)?;
+            let environment = channel_runtime
+                .as_ref()
+                .map(|runtime| runtime.env.clone())
+                .unwrap_or_default();
+            let arguments = acp_arguments(provider_id, "default")
+                .map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
+            let mut client = AcpStdioClient::spawn_with_env_and_removals(
+                &command,
+                &arguments,
+                &cwd,
+                &environment,
+                gemini_removed_environment(provider_id, &environment),
+            )
+            .await
+            .map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
+            let result = client.initialize(env!("CARGO_PKG_VERSION")).await;
+            client.shutdown().await;
+            let initialize =
+                result.map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
+            let default_model_id = initialize.current_model_id.clone();
+            let models = initialize
+                .models
+                .into_iter()
+                .map(|model| AgentModelSummary {
+                    is_default: default_model_id.as_deref() == Some(model.model_id.as_str()),
+                    id: model.model_id,
+                    label: model.name,
+                    description: None,
+                    context_window_tokens: model.context_tokens,
+                    default_reasoning_effort: None,
+                    supported_reasoning_efforts: Vec::new(),
+                })
+                .collect();
+            Ok(Json(AgentModelCatalog {
+                provider_id: GEMINI_CLI_PROVIDER_ID.to_string(),
+                default_model_id,
+                models,
+            }))
+        }
         _ => Err(AgentApiError::bad_request(
             "当前 Provider 不提供动态模型目录",
         )),
@@ -1251,6 +1300,7 @@ fn resolve_agent_command(
         OPENAI_CODEX_PROVIDER_ID => (state.command_resolvers.codex)(),
         OPENCODE_PROVIDER_ID => (state.command_resolvers.opencode)(),
         PI_AGENT_PROVIDER_ID => (state.command_resolvers.pi)(),
+        GEMINI_CLI_PROVIDER_ID => (state.command_resolvers.gemini)(),
         _ => None,
     }?;
     store_cached_agent_command(
@@ -1438,6 +1488,12 @@ async fn start_agent_run(
                 AgentApiError::bad_request("未找到可由 CodeM 启动的 OpenCode CLI")
             })?,
             "OpenCode",
+        ),
+        GEMINI_CLI_PROVIDER_ID => (
+            AgentDriverKind::Acp,
+            resolve_agent_command(&state, provider_id, false)
+                .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 Gemini CLI"))?,
+            "Gemini CLI",
         ),
         OPENAI_CODEX_PROVIDER_ID => (
             AgentDriverKind::CodexAppServer,
@@ -2662,6 +2718,7 @@ async fn start_live_agent_runtime(
                 requested_session_id,
                 config.model.as_deref(),
                 config.reasoning_effort.as_deref(),
+                config.permission_mode,
                 &config.environment,
             )
             .await?;
@@ -2883,6 +2940,15 @@ fn runtime_status_message(
         (OPENCODE_PROVIDER_ID, AgentDriverKind::Acp, false, false) => {
             "已创建 OpenCode ACP 会话".to_string()
         }
+        (GEMINI_CLI_PROVIDER_ID, AgentDriverKind::Acp, true, _) => {
+            "已复用 Gemini CLI 热会话".to_string()
+        }
+        (GEMINI_CLI_PROVIDER_ID, AgentDriverKind::Acp, false, true) => {
+            "已恢复 Gemini CLI ACP 会话".to_string()
+        }
+        (GEMINI_CLI_PROVIDER_ID, AgentDriverKind::Acp, false, false) => {
+            "已创建 Gemini CLI ACP 会话".to_string()
+        }
         (_, AgentDriverKind::CodexAppServer, true, _) => "已复用 OpenAI Codex 热会话".to_string(),
         (_, AgentDriverKind::CodexAppServer, false, true) => "已恢复 OpenAI Codex 会话".to_string(),
         (_, AgentDriverKind::CodexAppServer, false, false) => {
@@ -2921,7 +2987,34 @@ async fn spawn_acp_client(
     environment: &BTreeMap<String, String>,
 ) -> Result<AcpStdioClient, AcpError> {
     let arguments = acp_arguments(provider_id, permission_mode)?;
-    AcpStdioClient::spawn_with_env(command, &arguments, working_directory, environment).await
+    AcpStdioClient::spawn_with_env_and_removals(
+        command,
+        &arguments,
+        working_directory,
+        environment,
+        gemini_removed_environment(provider_id, environment),
+    )
+    .await
+}
+
+fn gemini_removed_environment<'a>(
+    provider_id: &str,
+    environment: &'a BTreeMap<String, String>,
+) -> &'a [&'a str] {
+    const CONFLICTING_ENVIRONMENT: &[&str] = &[
+        "GOOGLE_API_KEY",
+        "GOOGLE_GENAI_USE_VERTEXAI",
+        "GOOGLE_GENAI_USE_GCA",
+        "GOOGLE_VERTEX_BASE_URL",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+        "GEMINI_API_KEY_AUTH_MECHANISM",
+    ];
+    if provider_id == GEMINI_CLI_PROVIDER_ID && environment.contains_key("GEMINI_CLI_HOME") {
+        CONFLICTING_ENVIRONMENT
+    } else {
+        &[]
+    }
 }
 
 async fn prepare_acp_session(
@@ -2931,17 +3024,18 @@ async fn prepare_acp_session(
     requested_session_id: Option<&str>,
     model: Option<&str>,
     reasoning_effort: Option<&str>,
+    permission_mode: &'static str,
     environment: &BTreeMap<String, String>,
 ) -> Result<(AcpSessionSummary, bool), String> {
     let initialize = client
         .initialize(env!("CARGO_PKG_VERSION"))
         .await
-        .map_err(public_acp_error)?;
+        .map_err(|error| public_acp_prepare_error(provider_id, "初始化", error))?;
     if provider_id == GROK_BUILD_PROVIDER_ID && !grok_uses_channel_credentials(environment) {
         client
             .authenticate_cached_token_if_available(&initialize)
             .await
-            .map_err(public_acp_error)?;
+            .map_err(|error| public_acp_prepare_error(provider_id, "认证", error))?;
     }
     let (session, resumed) = if let Some(session_id) = requested_session_id {
         if initialize.load_session {
@@ -2954,7 +3048,9 @@ async fn prepare_acp_session(
                     client
                         .new_session(working_directory)
                         .await
-                        .map_err(public_acp_error)?,
+                        .map_err(|error| {
+                            public_acp_prepare_error(provider_id, "创建会话", error)
+                        })?,
                     false,
                 ),
             }
@@ -2963,7 +3059,7 @@ async fn prepare_acp_session(
                 client
                     .new_session(working_directory)
                     .await
-                    .map_err(public_acp_error)?,
+                    .map_err(|error| public_acp_prepare_error(provider_id, "创建会话", error))?,
                 false,
             )
         }
@@ -2972,7 +3068,7 @@ async fn prepare_acp_session(
             client
                 .new_session(working_directory)
                 .await
-                .map_err(public_acp_error)?,
+                .map_err(|error| public_acp_prepare_error(provider_id, "创建会话", error))?,
             false,
         )
     };
@@ -2983,7 +3079,9 @@ async fn prepare_acp_session(
             initialize.current_model_id.as_deref(),
         ) {
             match provider_id {
-                GROK_BUILD_PROVIDER_ID => client.set_model(&session.session_id, model).await,
+                GROK_BUILD_PROVIDER_ID | GEMINI_CLI_PROVIDER_ID => {
+                    client.set_model(&session.session_id, model).await
+                }
                 OPENCODE_PROVIDER_ID => {
                     client
                         .set_config_option(&session.session_id, "model", model)
@@ -2991,7 +3089,7 @@ async fn prepare_acp_session(
                 }
                 _ => unreachable!("ACP profile validated before session initialization"),
             }
-            .map_err(public_acp_error)?;
+            .map_err(|error| public_acp_prepare_error(provider_id, "切换模型", error))?;
         }
     }
     if provider_id == OPENCODE_PROVIDER_ID {
@@ -2999,8 +3097,14 @@ async fn prepare_acp_session(
             client
                 .set_config_option(&session.session_id, "effort", variant)
                 .await
-                .map_err(public_acp_error)?;
+                .map_err(|error| public_acp_prepare_error(provider_id, "切换推理等级", error))?;
         }
+    }
+    if provider_id == GEMINI_CLI_PROVIDER_ID {
+        client
+            .set_mode(&session.session_id, gemini_mode_id(permission_mode))
+            .await
+            .map_err(|error| public_acp_prepare_error(provider_id, "切换权限模式", error))?;
     }
     Ok((session, resumed))
 }
@@ -3027,6 +3131,7 @@ fn agent_provider_display_name(provider_id: &str) -> &'static str {
     match provider_id {
         GROK_BUILD_PROVIDER_ID => "Grok Build",
         OPENCODE_PROVIDER_ID => "OpenCode",
+        GEMINI_CLI_PROVIDER_ID => "Gemini CLI",
         OPENAI_CODEX_PROVIDER_ID => "OpenAI Codex",
         _ => "Agent Provider",
     }
@@ -3079,6 +3184,7 @@ async fn execute_acp_run(task: AcpRunTask) {
             requested_session_id.as_deref(),
             model.as_deref(),
             reasoning_effort.as_deref(),
+            permission_mode,
             &environment,
         )
         .await?;
@@ -5833,6 +5939,14 @@ fn public_acp_error(error: AcpError) -> String {
     }
 }
 
+fn public_acp_prepare_error(provider_id: &str, operation: &str, error: AcpError) -> String {
+    format!(
+        "{} {operation}失败：{}",
+        agent_provider_display_name(provider_id),
+        public_acp_error(error)
+    )
+}
+
 fn sanitize_public_error_detail(message: &str) -> String {
     let sanitized = message
         .lines()
@@ -6836,9 +6950,18 @@ fn acp_arguments(
     match provider_id {
         GROK_BUILD_PROVIDER_ID => Ok(grok_acp_arguments(permission_mode).to_vec()),
         OPENCODE_PROVIDER_ID => Ok(vec!["acp"]),
+        GEMINI_CLI_PROVIDER_ID => Ok(vec!["--skip-trust", "--acp"]),
         _ => Err(AcpError::Protocol(
             "当前 Provider 没有可用 ACP 启动配置".to_string(),
         )),
+    }
+}
+
+fn gemini_mode_id(permission_mode: &'static str) -> &'static str {
+    match permission_mode {
+        "auto" => "autoEdit",
+        "bypassPermissions" => "yolo",
+        _ => "default",
     }
 }
 
@@ -6868,25 +6991,26 @@ mod tests {
         build_pi_prompt, cancelled_before_prompt_outcome, classify_codex_fork_error,
         compact_capability_cache_key, complete_fork_command, ensure_compact_reconcile_runtime_idle,
         fail_fork_command, find_grok_runtime_error_detail, fork_capability_cache_key,
-        grok_acp_arguments, grok_acp_error_with_runtime_detail, grok_uses_channel_credentials,
-        guide_ack_response, normalize_agent_input, normalize_guide_prompt, parse_opencode_models,
-        pi_model_catalog, pi_model_parts, pi_rpc_arguments, pi_usage_snapshot,
-        probe_compact_capability_cached, probe_fork_capability_cached, public_acp_error,
-        public_codex_error, push_compact_failure_event, read_cached_agent_command,
-        read_cached_agent_model_catalog, runtime_can_reuse, sanitize_grok_runtime_error_detail,
-        should_retry_grok_channel_prompt, should_set_acp_model, store_cached_agent_command,
-        store_cached_agent_model_catalog, summarize_codex_compact_capability,
-        validate_compact_runtime_session, AcpEventMapper, AgentCompactReconcileResponse,
-        AgentCompactReconcileState, AgentDriverInput, AgentDriverKind, AgentForkCapabilityState,
-        AgentForkCapabilitySummary, AgentForkReconcileResult, AgentInputContentBlock,
-        AgentModelCatalog, AgentModelSummary, AgentRunRecord, AgentRunService, AgentRunState,
-        AgentRuntimeCommand, AgentRuntimeCompact, AgentRuntimeConfig, AgentRuntimeFork,
-        AgentRuntimeForkMode, AgentRuntimePhase, AgentRuntimeRecord, AgentRuntimeRun,
-        AgentThreadControlConfig, AgentThreadForkError, CodexCompactCapabilityRequest,
-        CodexEventMapper, CodexForkOutcome, CommandResolvers, GuideAckOutcome,
-        GuideAgentRunRequest, LiveAgentRuntime, PiEventMapper, ReconcileAgentCompactRequest,
-        RuntimeExecution, StartAgentCompactRequest, StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL,
-        AUTOMATION_EXECUTION_CONTEXT, MODEL_CATALOG_CACHE_TTL,
+        gemini_mode_id, gemini_removed_environment, grok_acp_arguments,
+        grok_acp_error_with_runtime_detail, grok_uses_channel_credentials, guide_ack_response,
+        normalize_agent_input, normalize_guide_prompt, parse_opencode_models, pi_model_catalog,
+        pi_model_parts, pi_rpc_arguments, pi_usage_snapshot, probe_compact_capability_cached,
+        probe_fork_capability_cached, public_acp_error, public_codex_error,
+        push_compact_failure_event, read_cached_agent_command, read_cached_agent_model_catalog,
+        runtime_can_reuse, sanitize_grok_runtime_error_detail, should_retry_grok_channel_prompt,
+        should_set_acp_model, store_cached_agent_command, store_cached_agent_model_catalog,
+        summarize_codex_compact_capability, validate_compact_runtime_session, AcpEventMapper,
+        AgentCompactReconcileResponse, AgentCompactReconcileState, AgentDriverInput,
+        AgentDriverKind, AgentForkCapabilityState, AgentForkCapabilitySummary,
+        AgentForkReconcileResult, AgentInputContentBlock, AgentModelCatalog, AgentModelSummary,
+        AgentRunRecord, AgentRunService, AgentRunState, AgentRuntimeCommand, AgentRuntimeCompact,
+        AgentRuntimeConfig, AgentRuntimeFork, AgentRuntimeForkMode, AgentRuntimePhase,
+        AgentRuntimeRecord, AgentRuntimeRun, AgentThreadControlConfig, AgentThreadForkError,
+        CodexCompactCapabilityRequest, CodexEventMapper, CodexForkOutcome, CommandResolvers,
+        GuideAckOutcome, GuideAgentRunRequest, LiveAgentRuntime, PiEventMapper,
+        ReconcileAgentCompactRequest, RuntimeExecution, StartAgentCompactRequest,
+        StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL, AUTOMATION_EXECUTION_CONTEXT,
+        MODEL_CATALOG_CACHE_TTL,
     };
     use crate::{
         acp::{
@@ -6896,8 +7020,8 @@ mod tests {
         agent_channels::AgentChannelService,
         agent_runtime::{
             AgentCompactCapabilityState, AgentCompactCapabilitySummary, AgentCompactionStatus,
-            AgentControlCommand, AgentPermissionDecision, AgentRunEvent, OPENAI_CODEX_PROVIDER_ID,
-            PI_AGENT_PROVIDER_ID,
+            AgentControlCommand, AgentPermissionDecision, AgentRunEvent, GEMINI_CLI_PROVIDER_ID,
+            OPENAI_CODEX_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
         },
         codex_app_server::{CodexAppServerError, CodexRuntimeEvent, CodexUserInput},
         pi_rpc::{PiModel, PiPromptInput, PiRuntimeEvent, PiState, PiStdioClient},
@@ -7188,6 +7312,7 @@ mod tests {
                 codex: || None,
                 opencode: || None,
                 pi: || None,
+                gemini: || None,
             },
             agent_channels: test_agent_channel_service(),
         }
@@ -7416,6 +7541,7 @@ mod tests {
             counting_codex_command_resolver,
             || None,
             || None,
+            || None,
             test_agent_channel_service(),
         );
 
@@ -7506,6 +7632,28 @@ mod tests {
             acp_arguments("grok-build", "auto").expect("Grok ACP arguments"),
             vec!["--permission-mode", "auto", "agent", "stdio"]
         );
+        assert_eq!(
+            acp_arguments(GEMINI_CLI_PROVIDER_ID, "default").expect("Gemini ACP arguments"),
+            vec!["--skip-trust", "--acp"]
+        );
+    }
+
+    #[test]
+    fn gemini_permission_modes_and_isolated_environment_are_explicit() {
+        assert_eq!(gemini_mode_id("default"), "default");
+        assert_eq!(gemini_mode_id("auto"), "autoEdit");
+        assert_eq!(gemini_mode_id("bypassPermissions"), "yolo");
+
+        let mut environment = BTreeMap::new();
+        assert!(gemini_removed_environment(GEMINI_CLI_PROVIDER_ID, &environment).is_empty());
+        environment.insert(
+            "GEMINI_CLI_HOME".to_string(),
+            "D:/codem/gemini/channel".to_string(),
+        );
+        let removed = gemini_removed_environment(GEMINI_CLI_PROVIDER_ID, &environment);
+        assert!(removed.contains(&"GOOGLE_API_KEY"));
+        assert!(removed.contains(&"GOOGLE_GENAI_USE_VERTEXAI"));
+        assert!(removed.contains(&"GOOGLE_CLOUD_PROJECT"));
     }
 
     #[test]

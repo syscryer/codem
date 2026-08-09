@@ -159,6 +159,20 @@ export function updateAgentMuxProfile(profile: AgentMuxRuntimeProfile) { return 
 export function deleteAgentMuxProfile(profileId: string) { return request<void>(`/api/agent-mux/profiles/${encodeURIComponent(profileId)}`, { method: 'DELETE' }); }
 export function updateAgentMuxProfileStatus(profileId: string, status: AgentMuxRuntimeProfile['status']) { return request<AgentMuxRuntimeProfile>(`/api/agent-mux/profiles/${encodeURIComponent(profileId)}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }); }
 
+export function resolveClaudeAgentMuxProbe(result: AgentSettingsDiagnostics) {
+  const version = result.version ? ` ${result.version}` : '';
+  if (!result.installed || !result.diagnostic.available) {
+    return { available: false, message: 'Claude Code 未安装或诊断命令不可用' };
+  }
+  if (result.diagnostic.success === false) {
+    return { available: false, message: 'Claude Code 诊断命令执行失败' };
+  }
+  if (result.diagnostic.success === null) {
+    return { available: true, message: `Claude Code${version} 已检测 · 当前 Runtime 未返回诊断结果` };
+  }
+  return { available: true, message: `Claude Code${version} 已连接` };
+}
+
 export async function probeAgentMuxAgent(agentId: string) {
   if (agentId === 'codex') {
     const result = await probeCodexAgent();
@@ -182,12 +196,11 @@ export async function probeAgentMuxAgent(agentId: string) {
   }
   if (agentId === 'claude') {
     const result = await fetchAgentSettingsDiagnostics(CLAUDE_CODE_PROVIDER_ID, undefined, true);
-    const available = result.installed && result.diagnostic.success === true;
-    return { available, message: available ? `Claude Code ${result.version ?? ''} 已连接`.trim() : 'Claude Code 未安装或诊断命令执行失败' };
+    return resolveClaudeAgentMuxProbe(result);
   }
   return { available: false, message: '当前 Agent 类型暂未接入真实连接检查' };
 }
 import { fetchAgentSettingsDiagnostics, probeCodexAgent, probeGrokAgent, probeOpenCodeAgent, probePiAgent } from './agent-provider-registry';
 import { CLAUDE_CODE_PROVIDER_ID } from '../constants';
 import { getAgentRunEventLogMessage } from './agent-run-events';
-import type { AgentRunEvent } from '../types';
+import type { AgentRunEvent, AgentSettingsDiagnostics } from '../types';

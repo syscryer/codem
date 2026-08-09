@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
 import { ArrowUp, BookOpen, Brain, Check, ChevronDown, CornerDownRight, Globe, Image, Lightbulb, Loader2, Mic, Pencil, Plus, Puzzle, RefreshCw, Route, Server, ServerCog, Shield, Square, Unlock, X, Zap } from 'lucide-react';
-import { CLAUDE_CODE_PROVIDER_ID, DEFAULT_MODEL_VALUE, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, permissionMenuModes } from '../constants';
+import { CLAUDE_CODE_PROVIDER_ID, DEFAULT_MODEL_VALUE, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
 import { buildComposerContextUsage, shouldRefreshNativeContextOnOpen } from '../lib/composer-context-usage';
@@ -2684,6 +2684,9 @@ function providerDisplayName(providerId: string) {
   }
   if (providerId === OPENCODE_PROVIDER_ID) {
     return 'OpenCode';
+  }
+  if (providerId === GEMINI_CLI_PROVIDER_ID) {
+    return 'Gemini CLI';
   }
   return providerId;
 }

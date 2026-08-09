@@ -1202,6 +1202,9 @@ function mcpLocationDescription(providerId: AgentProviderId) {
   if (providerId === 'opencode') {
     return <>直接管理 <code>~/.config/opencode/opencode.json</code> 与项目内 <code>.opencode/opencode.json</code> 的 <code>mcp</code>，保存时保留其他 OpenCode 配置。</>;
   }
+  if (providerId === 'gemini-cli') {
+    return <>直接管理 <code>~/.gemini/settings.json</code> 与项目内 <code>.gemini/settings.json</code> 的 <code>mcpServers</code>，保存时保留其他 Gemini CLI 配置。</>;
+  }
   return <>直接管理 <code>~/.claude/mcp.json</code>、项目 <code>.mcp.json</code> 与 <code>~/.claude.json</code>。</>;
 }
 

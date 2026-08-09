@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CLAUDE_CODE_PROVIDER_ID,
   DEFAULT_MODEL_VALUE,
+  GEMINI_CLI_PROVIDER_ID,
   GROK_BUILD_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
@@ -266,7 +267,7 @@ export function useAgentRun({
   const [modelCatalog, setModelCatalog] = useState<AgentModelCatalog | null>(
     () => agentModelCatalogCache.peek(
       initialProviderId,
-      initialProviderId === OPENCODE_PROVIDER_ID
+      agentProviderCatalogUsesChannel(initialProviderId)
         ? threadAgentChannelId(activeThreadSummary?.agentChannelId)
         : undefined,
     )?.catalog ?? null,
@@ -311,7 +312,7 @@ export function useAgentRun({
   );
   const selectedProviderId = activeThreadSummary?.provider || draftProviderId;
   selectedProviderIdRef.current = selectedProviderId;
-  const modelCatalogChannelId = selectedProviderId === OPENCODE_PROVIDER_ID
+  const modelCatalogChannelId = agentProviderCatalogUsesChannel(selectedProviderId)
     && channelId !== SYSTEM_AGENT_CHANNEL_ID
     ? channelId
     : undefined;
@@ -853,7 +854,7 @@ export function useAgentRun({
     const snapshot = resolveChatRuntimeKind(providerId) === 'generic'
       ? agentModelCatalogCache.peek(
         providerId,
-        providerId === OPENCODE_PROVIDER_ID && nextChannelId !== SYSTEM_AGENT_CHANNEL_ID
+        agentProviderCatalogUsesChannel(providerId) && nextChannelId !== SYSTEM_AGENT_CHANNEL_ID
           ? nextChannelId
           : undefined,
       )
@@ -885,7 +886,7 @@ export function useAgentRun({
       };
     }
     if (snapshot.stale) {
-      const catalogChannelId = providerId === OPENCODE_PROVIDER_ID
+      const catalogChannelId = agentProviderCatalogUsesChannel(providerId)
         && nextChannelId !== SYSTEM_AGENT_CHANNEL_ID
         ? nextChannelId
         : undefined;
@@ -2609,6 +2610,9 @@ function getProviderRunError(
     if (providerId === PI_AGENT_PROVIDER_ID) {
       return '未检测到可由 CodeM 启动的 Pi CLI，请安装 Pi、检查 Node 版本与 PATH 或设置 PI_CLI_PATH 后重启。';
     }
+    if (providerId === GEMINI_CLI_PROVIDER_ID) {
+      return '未检测到可由 CodeM 启动的 Gemini CLI，请安装 Gemini CLI、检查 PATH 或设置 GEMINI_CLI_PATH 后重启。';
+    }
     return '未检测到可用的 grok CLI，请安装或检查 PATH 后重启。';
   }
   if (!provider.selectable) {
@@ -2627,7 +2631,13 @@ function providerDisplayName(providerId: string, providers: AgentProviderDescrip
           ? 'OpenCode'
           : providerId === PI_AGENT_PROVIDER_ID
             ? 'Pi'
+            : providerId === GEMINI_CLI_PROVIDER_ID
+              ? 'Gemini CLI'
         : providerId);
+}
+
+function agentProviderCatalogUsesChannel(providerId: string) {
+  return providerId === OPENCODE_PROVIDER_ID || providerId === GEMINI_CLI_PROVIDER_ID;
 }
 
 function resolveCompactCapabilityRuntime(input: {

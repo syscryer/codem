@@ -14,6 +14,7 @@ import type {
   CodexAppServerProbeResult,
   GrokAcpProbeResult,
   GrokAcpProbeSummary,
+  GeminiAcpProbeResult,
   OpenCodeAcpProbeResult,
   PiRpcProbeResult,
 } from '../types.js';
@@ -225,6 +226,17 @@ export function resolveChatRuntimeKind(providerId: string) {
   return getAgentProviderMetadata(providerId)?.runtimeKind ?? 'unsupported';
 }
 
+export async function probeGeminiAgent(signal?: AbortSignal): Promise<GeminiAcpProbeResult> {
+  const response = await fetch('/api/agents/gemini/probe', {
+    method: 'POST',
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error('检测 Gemini CLI 失败');
+  }
+  return normalizeGeminiAcpProbe(await response.json());
+}
+
 export function normalizeCodexAppServerProbe(value: unknown): CodexAppServerProbeResult {
   const result = requireRecord(value, 'codexProbe');
   const installed = requireBoolean(result.installed, 'codexProbe.installed');
@@ -351,6 +363,34 @@ export function normalizePiRpcProbe(value: unknown): PiRpcProbeResult {
     initialized,
     command: optionalString(result.command),
     nodeVersion: optionalString(result.nodeVersion),
+    error: optionalString(result.error),
+    probe,
+  };
+}
+
+export function normalizeGeminiAcpProbe(value: unknown): GeminiAcpProbeResult {
+  const result = requireRecord(value, 'geminiProbe');
+  const installed = requireBoolean(result.installed, 'geminiProbe.installed');
+  const initialized = requireBoolean(result.initialized, 'geminiProbe.initialized');
+  if (!installed && initialized) {
+    throw new Error('Gemini CLI 未安装时不能处于已初始化状态');
+  }
+  let probe: GeminiAcpProbeResult['probe'] = null;
+  if (initialized) {
+    const summary = requireRecord(result.probe, 'geminiProbe.probe');
+    const normalized = normalizeGrokProbeSummary({
+      initialize: summary.initialize,
+      authenticated: false,
+      authMethodId: null,
+      authError: null,
+    }, 'geminiProbe.probe');
+    probe = { initialize: normalized.initialize };
+  }
+  return {
+    installed,
+    initialized,
+    command: optionalString(result.command),
+    version: optionalString(result.version),
     error: optionalString(result.error),
     probe,
   };

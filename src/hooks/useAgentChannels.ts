@@ -15,6 +15,7 @@ const EMPTY_BOOTSTRAP: AgentChannelBootstrap = {
     'grok-build': 'system',
     opencode: 'system',
     'pi-agent': 'system',
+    'gemini-cli': 'system',
   },
 };
 

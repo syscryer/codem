@@ -5,6 +5,7 @@ import type {
   AgentProviderDescriptor,
   AgentSettingsDiagnostics,
   ClaudeCliVersionInfo,
+  GeminiAcpProbeResult,
   OpenCodeAcpProbeResult,
   PiRpcProbeResult,
 } from '../types.js';
@@ -128,13 +129,15 @@ test('Agent command facts use compact copy icons', () => {
   assert.doesNotMatch(providerSettingsSource, /copied \? '已复制' : '复制'/);
 });
 
-test('provider management keeps Grok, Codex, and OpenCode detection explicit and non-reentrant', () => {
+test('provider management keeps ACP and RPC detection explicit and non-reentrant', () => {
   assert.match(providerSettingsSource, /async function runGrokProbe\(\)/);
   assert.match(providerSettingsSource, /async function runCodexProbe\(\)/);
   assert.match(providerSettingsSource, /async function runOpenCodeProbe\(\)/);
+  assert.match(providerSettingsSource, /async function runGeminiProbe\(\)/);
   assert.match(providerSettingsSource, /probeGrokAgent\(controller\.signal\)/);
   assert.match(providerSettingsSource, /probeCodexAgent\(controller\.signal\)/);
   assert.match(providerSettingsSource, /probeOpenCodeAgent\(controller\.signal\)/);
+  assert.match(providerSettingsSource, /probeGeminiAgent\(controller\.signal\)/);
   assert.match(providerSettingsSource, /disabled=\{probeState === 'checking' \|\| diagnosticChecking\}/);
   assert.match(providerSettingsSource, /fetchAgentSettingsDiagnostics\(providerId, undefined, true\)/);
   assert.doesNotMatch(
@@ -379,4 +382,59 @@ test('Pi Agent is represented across settings, diagnostics, and capability surfa
   assert.match(pluginsSuiteSource, /~\/\.pi\/agent\/skills/);
   assert.match(pluginsSuiteSource, /emptyText=\{providerId === 'pi-agent' \? '暂无已安装 Pi Packages'/);
   assert.match(installedPluginsPanelSource, /emptyText = '暂无已安装插件'/);
+});
+
+test('Gemini CLI is represented across settings, diagnostics, rules, MCP, and skills', () => {
+  const provider = {
+    id: 'gemini-cli',
+    displayName: 'Gemini CLI',
+    driverId: 'acp',
+    lifecycle: 'active',
+    available: true,
+    selectable: true,
+    capabilities: {
+      sessions: { create: 'supported', resume: 'supported', list: 'unsupported', import: 'unsupported' },
+      input: { text: 'supported', images: 'supported', fileReferences: 'supported' },
+      tools: { streaming: 'supported', approval: 'supported', userInput: 'supported', mcp: 'supported' },
+      runtime: { cancel: 'soft', reconnect: 'supported', concurrentSessions: 'supported' },
+    },
+  } satisfies AgentProviderDescriptor;
+  const probe: GeminiAcpProbeResult = {
+    installed: true,
+    initialized: true,
+    command: 'C:/tools/gemini.cmd',
+    version: '0.54.4',
+    error: null,
+    probe: {
+      initialize: {
+        protocolVersion: 1,
+        loadSession: true,
+        promptCapabilities: { image: true, audio: false, embeddedContext: true },
+        mcpCapabilities: { http: true, sse: true },
+        authMethods: [],
+        defaultAuthMethodId: null,
+        agentVersion: '0.54.4',
+        currentModelId: 'gemini-2.5-pro',
+        models: [],
+      },
+    },
+  };
+
+  assert.deepEqual(resolveProviderStatus(provider, null, null, null, null, null, probe), {
+    label: '已检测',
+    tone: 'positive',
+  });
+  assert.equal(
+    resolveProviderDiagnostics(provider, null, null, null, null, null, probe).auth,
+    '由系统配置或 CodeM 渠道管理',
+  );
+  assert.equal(getProviderInstallDocsUrl('gemini-cli'), 'https://geminicli.com/docs/get-started/installation/');
+  assert.match(providerSettingsSource, /probeGeminiAgent/);
+  assert.match(providerSettingsSource, /getGeminiProbeStatusMessage/);
+  assert.match(providerIconSource, /GEMINI_CLI_PROVIDER_ID/);
+  assert.match(globalPromptSource, /~\/\.gemini\/GEMINI\.md/);
+  assert.match(mcpSettingsSource, /~\/\.gemini\/settings\.json/);
+  assert.match(pluginsSuiteSource, /~\/\.gemini\/skills/);
+  assert.match(pluginsSuiteSource, /Gemini CLI 当前没有供 CodeM 管理的稳定插件接口/);
+  assert.match(pluginsSuiteSource, /if \(pluginsUnsupported\) \{[\s\S]*fetchPluginSkills\(providerId, projectPath\)[\s\S]*setInstalled\(\[\]\)[\s\S]*setMarketplaces\(\[\]\)/);
 });

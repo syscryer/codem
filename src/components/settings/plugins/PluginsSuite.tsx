@@ -66,6 +66,7 @@ export function PluginsSuite({
   const [pluginInstallScope, setPluginInstallScope] = useState<PluginScope>('user');
   const [pickingSkillDirectory, setPickingSkillDirectory] = useState(false);
   const [skillImportDialogOpen, setSkillImportDialogOpen] = useState(false);
+  const pluginsUnsupported = providerId === 'opencode' || providerId === 'gemini-cli';
 
   useEffect(() => {
     void refreshAll();
@@ -90,14 +91,21 @@ export function PluginsSuite({
     setError('');
     setErrorDetail('');
     try {
-      const [nextInstalled, nextMarketplaces, nextSkills] = await Promise.all([
-        fetchInstalledPlugins(providerId),
-        fetchMarketplaces(providerId),
-        fetchPluginSkills(providerId, projectPath),
-      ]);
-      setInstalled(nextInstalled);
-      setMarketplaces(nextMarketplaces);
-      setSkills(nextSkills);
+      if (pluginsUnsupported) {
+        const nextSkills = await fetchPluginSkills(providerId, projectPath);
+        setInstalled([]);
+        setMarketplaces([]);
+        setSkills(nextSkills);
+      } else {
+        const [nextInstalled, nextMarketplaces, nextSkills] = await Promise.all([
+          fetchInstalledPlugins(providerId),
+          fetchMarketplaces(providerId),
+          fetchPluginSkills(providerId, projectPath),
+        ]);
+        setInstalled(nextInstalled);
+        setMarketplaces(nextMarketplaces);
+        setSkills(nextSkills);
+      }
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : '读取插件数据失败');
       setErrorDetail(loadError instanceof Error ? loadError.message : '');
@@ -219,7 +227,7 @@ export function PluginsSuite({
               </button>
             </div>
 
-            {tab === 'plugins' && providerId !== 'opencode' && providerId !== 'pi-agent' ? (
+            {tab === 'plugins' && !pluginsUnsupported && providerId !== 'pi-agent' ? (
               <div className="plugins-secondary-tabs" aria-label="插件分类">
                 <button type="button" className={subTab === 'installed' ? 'active' : ''} onClick={() => setSubTab('installed')}>
                   <span>已安装</span>
@@ -249,13 +257,19 @@ export function PluginsSuite({
           </div>
         ) : null}
 
+        {providerId === 'gemini-cli' && tab === 'plugins' ? (
+          <div className="plugins-help-panel">
+            <span>Gemini CLI 当前没有供 CodeM 管理的稳定插件接口；Skills 与 MCP 仍可在对应页面管理。</span>
+          </div>
+        ) : null}
+
         {providerId === 'pi-agent' && tab === 'plugins' ? (
           <div className="plugins-help-panel">
             <span>Pi Packages 由 Pi 原生命令管理；安装、更新和移除会直接调用当前 Pi CLI。</span>
           </div>
         ) : null}
 
-        {tab === 'plugins' && providerId !== 'opencode' ? (
+        {tab === 'plugins' && !pluginsUnsupported ? (
           <>
             <div className="plugins-toolbar">
               <label className="settings-search">
@@ -367,14 +381,14 @@ export function PluginsSuite({
           </>
         )}
 
-        {loading && (tab !== 'plugins' || providerId !== 'opencode') ? <div className="settings-list-empty">正在读取插件数据</div> : null}
-        {!loading && error && (tab !== 'plugins' || providerId !== 'opencode') ? (
+        {loading && (tab !== 'plugins' || !pluginsUnsupported) ? <div className="settings-list-empty">正在读取插件数据</div> : null}
+        {!loading && error && (tab !== 'plugins' || !pluginsUnsupported) ? (
           <div className="plugins-error-panel">
             <strong>{error}</strong>
             {errorDetail && errorDetail !== error ? <small>{errorDetail}</small> : null}
           </div>
         ) : null}
-        {!loading && !error && tab === 'plugins' && providerId !== 'opencode' && subTab === 'installed' ? (
+        {!loading && !error && tab === 'plugins' && !pluginsUnsupported && subTab === 'installed' ? (
           <InstalledPluginsPanel
             items={filteredInstalled}
             busy={busy}
@@ -404,7 +418,7 @@ export function PluginsSuite({
             }}
           />
         ) : null}
-        {!loading && !error && tab === 'plugins' && providerId !== 'opencode' && providerId !== 'pi-agent' && subTab === 'discover' ? (
+        {!loading && !error && tab === 'plugins' && !pluginsUnsupported && providerId !== 'pi-agent' && subTab === 'discover' ? (
           <DiscoverPluginsPanel
             items={discoverItems}
             busy={busy}
@@ -415,7 +429,7 @@ export function PluginsSuite({
             }}
           />
         ) : null}
-        {!loading && !error && tab === 'plugins' && providerId !== 'opencode' && providerId !== 'pi-agent' && subTab === 'marketplaces' ? (
+        {!loading && !error && tab === 'plugins' && !pluginsUnsupported && providerId !== 'pi-agent' && subTab === 'marketplaces' ? (
           <MarketplacesPanel
             items={filteredMarketplaces}
             busy={busy}
@@ -595,6 +609,9 @@ function skillInstallLocationLabel(providerId: AgentProviderId) {
   }
   if (providerId === 'opencode') {
     return <>用户级写入 <code>~/.config/opencode/skills</code>；项目级写入当前项目的 <code>.opencode/skills</code>。</>;
+  }
+  if (providerId === 'gemini-cli') {
+    return <>用户级写入 <code>~/.gemini/skills</code>；项目级写入当前项目的 <code>.gemini/skills</code>。</>;
   }
   const directory = providerId === 'openai-codex'
     ? '.codex'

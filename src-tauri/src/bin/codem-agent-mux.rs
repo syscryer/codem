@@ -35,6 +35,7 @@ const PROVIDER_CODEX: &str = "openai-codex";
 const PROVIDER_GROK: &str = "grok-build";
 const PROVIDER_PI: &str = "pi-agent";
 const PROVIDER_CLAUDE: &str = "claude-code";
+const PROVIDER_GEMINI: &str = "gemini-cli";
 
 struct RuntimeLock {
     path: PathBuf,
@@ -1042,6 +1043,7 @@ fn provider_id(agent_id: &str) -> Option<&'static str> {
         "grok" => Some(PROVIDER_GROK),
         "pi" => Some(PROVIDER_PI),
         "claude" => Some(PROVIDER_CLAUDE),
+        "gemini" => Some(PROVIDER_GEMINI),
         _ => None,
     }
 }
@@ -1408,6 +1410,30 @@ mod tests {
         );
         assert_eq!(codex_payload["reasoningEffort"], "xhigh");
         assert!(codex_payload.get("effort").is_none());
+    }
+
+    #[test]
+    fn gemini_agent_uses_the_shared_agent_runtime() {
+        assert_eq!(provider_id("gemini"), Some(PROVIDER_GEMINI));
+
+        let (endpoint, payload, runtime_id) = agent_run_request(
+            PROVIDER_GEMINI,
+            "mux-gemini",
+            Some("channel-gemini"),
+            "Reply OK",
+            "D:/workspace",
+            "gemini-2.5-pro",
+            None,
+            "auto",
+            Some("session-gemini"),
+        );
+
+        assert_eq!(endpoint, "/api/agents/run");
+        assert_eq!(payload["providerId"], PROVIDER_GEMINI);
+        assert_eq!(payload["channelId"], "channel-gemini");
+        assert_eq!(payload["permissionMode"], "auto");
+        assert_eq!(payload["sessionId"], "session-gemini");
+        assert!(runtime_id.is_none());
     }
 
     #[test]

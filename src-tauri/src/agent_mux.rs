@@ -390,7 +390,7 @@ fn agent_mux_skill_source_directory(service: &AgentMuxService) -> PathBuf {
         .join(AGENT_MUX_SKILL_NAME)
 }
 
-fn skill_install_targets(home: &FsPath) -> [(&'static str, PathBuf); 5] {
+fn skill_install_targets(home: &FsPath) -> [(&'static str, PathBuf); 6] {
     [
         ("claude-code", home.join(".claude").join("skills")),
         ("openai-codex", home.join(".codex").join("skills")),
@@ -400,6 +400,7 @@ fn skill_install_targets(home: &FsPath) -> [(&'static str, PathBuf); 5] {
             "opencode",
             home.join(".config").join("opencode").join("skills"),
         ),
+        ("gemini-cli", home.join(".gemini").join("skills")),
     ]
 }
 
@@ -778,6 +779,12 @@ fn ensure_agent_catalog(connection: &Connection) -> Result<(), (StatusCode, Json
             "通过 ACP 接入的开放式编码 Agent。",
             &["代码编辑", "ACP", "多模型"],
         ),
+        (
+            "gemini",
+            "Gemini CLI",
+            "通过 ACP 接入的 Gemini 编码 Agent。",
+            &["代码编辑", "ACP", "Gemini"],
+        ),
     ];
     for (id, name, description, tags) in agents {
         tx.execute("INSERT OR IGNORE INTO agent_mux_agents (id, name, description, tags_json) VALUES (?1, ?2, ?3, ?4)", params![id, name, description, serde_json::to_string(tags).map_err(internal_error)?]).map_err(internal_error)?;
@@ -1149,8 +1156,9 @@ mod tests {
         let connection = test_connection();
         let overview = read_overview(&connection).expect("read Agent Mux overview");
 
-        assert_eq!(overview.agents.len(), 5);
+        assert_eq!(overview.agents.len(), 6);
         assert!(overview.agents.iter().any(|agent| agent.id == "opencode"));
+        assert!(overview.agents.iter().any(|agent| agent.id == "gemini"));
         assert!(overview
             .agents
             .iter()
@@ -1188,7 +1196,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_adds_opencode_to_existing_databases() {
+    fn catalog_adds_acp_agents_to_existing_databases() {
         let connection = Connection::open_in_memory().expect("open Agent Mux database");
         ensure_schema(&connection).expect("create Agent Mux schema");
         connection.execute("INSERT INTO agent_mux_agents (id, name, description, tags_json) VALUES ('codex', 'OpenAI Codex', 'existing', '[]')", []).expect("insert existing catalog row");
@@ -1203,6 +1211,14 @@ mod tests {
             )
             .expect("count OpenCode catalog rows");
         assert_eq!(opencode_count, 1);
+        let gemini_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM agent_mux_agents WHERE id = 'gemini'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count Gemini catalog rows");
+        assert_eq!(gemini_count, 1);
     }
 
     #[test]

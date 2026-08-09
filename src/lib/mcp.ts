@@ -5,6 +5,7 @@ import type {
   McpManagedScope,
   McpServerConfig,
 } from '../types';
+import { isAgentProviderId } from './agent-provider-metadata';
 
 export function normalizeMcpConfig(value: unknown): McpConfigFile {
   if (!isRecord(value)) {
@@ -93,18 +94,14 @@ export async function openMcpConfig(
   }
 }
 
-function normalizeMcpManagementResponse(value: unknown): McpManagementResponse {
+export function normalizeMcpManagementResponse(value: unknown): McpManagementResponse {
   const record = isRecord(value) ? value : {};
   const paths = isRecord(record.paths) ? record.paths : {};
   const configs = isRecord(record.configs) ? record.configs : {};
   const overview = isRecord(record.overview) ? record.overview : {};
 
   return {
-    providerId: record.providerId === 'openai-codex'
-      || record.providerId === 'grok-build'
-      || record.providerId === 'opencode'
-      ? record.providerId
-      : 'claude-code',
+    providerId: isAgentProviderId(record.providerId) ? record.providerId : 'claude-code',
     supportsClaudeJson: Boolean(record.supportsClaudeJson),
     paths: {
       global: normalizeOptionalString(paths.global),

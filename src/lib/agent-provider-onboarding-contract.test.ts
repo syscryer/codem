@@ -10,7 +10,7 @@ import {
 import { resolveChatRuntimeKind } from './agent-provider-registry.js';
 
 test('Agent Provider metadata is complete, unique, and routable', () => {
-  assert.equal(AGENT_PROVIDER_METADATA.length, 5);
+  assert.equal(AGENT_PROVIDER_METADATA.length, 6);
   assert.equal(new Set(AGENT_PROVIDER_IDS).size, AGENT_PROVIDER_IDS.length);
 
   for (const provider of AGENT_PROVIDER_METADATA) {
@@ -25,6 +25,13 @@ test('Agent Provider metadata is complete, unique, and routable', () => {
   assert.equal(isAgentProviderId('future-provider'), false);
   assert.equal(getAgentProviderMetadata('future-provider'), undefined);
   assert.equal(resolveChatRuntimeKind('future-provider'), 'unsupported');
+  assert.deepEqual(getAgentProviderMetadata('gemini-cli'), {
+    id: 'gemini-cli',
+    displayName: 'Gemini CLI',
+    driverId: 'acp',
+    runtimeKind: 'generic',
+    protocolLabel: 'Gemini ACP',
+  });
 });
 
 test('high-risk Provider surfaces consume shared metadata', () => {

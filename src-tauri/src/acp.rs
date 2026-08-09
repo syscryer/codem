@@ -405,7 +405,7 @@ where
             .request(
                 "session/new",
                 json!({
-                    "cwd": cwd.to_string_lossy(),
+                    "cwd": acp_path_string(cwd),
                     "mcpServers": [],
                 }),
                 ACP_REQUEST_TIMEOUT,
@@ -424,7 +424,7 @@ where
                 "session/load",
                 json!({
                     "sessionId": session_id,
-                    "cwd": cwd.to_string_lossy(),
+                    "cwd": acp_path_string(cwd),
                     "mcpServers": [],
                 }),
                 ACP_REQUEST_TIMEOUT,
@@ -441,6 +441,19 @@ where
             json!({
                 "sessionId": session_id,
                 "modelId": model_id,
+            }),
+            ACP_REQUEST_TIMEOUT,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn set_mode(&mut self, session_id: &str, mode_id: &str) -> Result<(), AcpError> {
+        self.request(
+            "session/set_mode",
+            json!({
+                "sessionId": session_id,
+                "modeId": mode_id,
             }),
             ACP_REQUEST_TIMEOUT,
         )
@@ -995,6 +1008,14 @@ where
     }
 }
 
+fn acp_path_string(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{unc}");
+    }
+    value.strip_prefix(r"\\?\").unwrap_or(&value).to_string()
+}
+
 pub struct AcpStdioClient {
     child: Child,
     connection: AcpConnection<ChildStdout, ChildStdin>,
@@ -1012,6 +1033,16 @@ impl AcpStdioClient {
         cwd: &Path,
         environment: &BTreeMap<String, String>,
     ) -> Result<Self, AcpError> {
+        Self::spawn_with_env_and_removals(program, arguments, cwd, environment, &[]).await
+    }
+
+    pub async fn spawn_with_env_and_removals(
+        program: &str,
+        arguments: &[&str],
+        cwd: &Path,
+        environment: &BTreeMap<String, String>,
+        removed_environment: &[&str],
+    ) -> Result<Self, AcpError> {
         let mut command = Command::new(program);
         command
             .args(arguments)
@@ -1021,6 +1052,9 @@ impl AcpStdioClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        for name in removed_environment {
+            command.env_remove(name);
+        }
         configure_background_command(&mut command);
         let mut child = command.spawn()?;
         let stdin = child
@@ -1085,6 +1119,10 @@ impl AcpStdioClient {
 
     pub async fn set_model(&mut self, session_id: &str, model_id: &str) -> Result<(), AcpError> {
         self.connection.set_model(session_id, model_id).await
+    }
+
+    pub async fn set_mode(&mut self, session_id: &str, mode_id: &str) -> Result<(), AcpError> {
+        self.connection.set_mode(session_id, mode_id).await
     }
 
     pub async fn set_config_option(
@@ -2477,12 +2515,28 @@ fn configure_background_command(_command: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::{
-        cached_token_auth_method_id, collect_session_update, parse_acp_usage,
+        acp_path_string, cached_token_auth_method_id, collect_session_update, parse_acp_usage,
         parse_session_usage_update, parse_tool_call, parse_tool_call_update,
         summarize_initialize_result, AcpConnection, AcpEmbeddedResource, AcpError,
         AcpPermissionPolicy, AcpPromptCapabilities, AcpPromptInput, AcpPromptOutcome,
         AcpRuntimeEvent, AcpStdioClient,
     };
+
+    #[test]
+    fn acp_paths_remove_windows_verbatim_prefixes_for_provider_json() {
+        assert_eq!(
+            acp_path_string(Path::new(r"\\?\D:\workspace\codem")),
+            r"D:\workspace\codem"
+        );
+        assert_eq!(
+            acp_path_string(Path::new(r"\\?\UNC\server\share\codem")),
+            r"\\server\share\codem"
+        );
+        assert_eq!(
+            acp_path_string(Path::new(r"D:\workspace\codem")),
+            r"D:\workspace\codem"
+        );
+    }
 
     #[test]
     fn acp_rpc_error_points_to_channel_configuration_without_exposing_details() {
@@ -3162,6 +3216,20 @@ mod tests {
                 }),
             )
             .await;
+
+            let set_mode = read_json_line(&mut lines).await;
+            assert_eq!(set_mode["method"], "session/set_mode");
+            assert_eq!(set_mode["params"]["sessionId"], "session-1");
+            assert_eq!(set_mode["params"]["modeId"], "autoEdit");
+            write_json_line(
+                &mut server_writer,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": set_mode["id"],
+                    "result": { "currentModeId": "autoEdit" }
+                }),
+            )
+            .await;
         });
 
         let mut client = AcpConnection::new(client_reader, client_writer);
@@ -3184,6 +3252,7 @@ mod tests {
             .await
             .unwrap();
         client.set_model("session-1", "model-2").await.unwrap();
+        client.set_mode("session-1", "autoEdit").await.unwrap();
         server.await.unwrap();
     }
 
