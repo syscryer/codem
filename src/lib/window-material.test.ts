@@ -205,7 +205,7 @@ test('桌面菜单栏不再使用独立高光层分割侧边栏材质', () => {
 test('桌面标题栏左侧导航按钮颜色与菜单文字对齐', () => {
   assert.match(
     stylesSource,
-    /\.desktop-menu-trigger\s*\{[^}]*font-size:\s*13px;[^}]*\}/s,
+    /\.desktop-menu-trigger\s*\{[^}]*font-size:\s*14px;[^}]*\}/s,
   );
   assert.match(
     stylesSource,

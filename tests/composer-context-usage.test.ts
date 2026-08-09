@@ -34,14 +34,14 @@ function createTurn(overrides: Partial<ConversationTurn> = {}): ConversationTurn
   };
 }
 
-test('buildComposerContextUsage only exposes the indicator for claude', () => {
+test('buildComposerContextUsage exposes the indicator for Claude and Codex', () => {
   const usage = buildComposerContextUsage({
     agent: 'codex',
     model: 'claude-sonnet-4-5',
     turns: [],
   });
 
-  assert.equal(usage.visible, false);
+  assert.equal(usage.visible, true);
 });
 
 test('buildComposerContextUsage excludes output tokens from used context percentage', () => {

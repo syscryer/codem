@@ -134,6 +134,7 @@ test('resolveOpenWithSettingsUpdate normalizes selected target and custom tools'
   });
 
   assert.deepEqual(next, {
+    ...defaultOpenWithSettings,
     selectedTargetId: 'custom-editor',
     customTargets: [
       {
