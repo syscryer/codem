@@ -1709,6 +1709,7 @@ export function useClaudeRun({
 
     if (
       event.type === 'thinking-delta' ||
+      event.type === 'plan-updated' ||
       event.type === 'tool-input-delta' ||
       event.type === 'subagent-delta'
     ) {
@@ -1929,6 +1930,16 @@ export function useClaudeRun({
           items: appendThinkingItem(turn.items, event.text),
         };
       });
+      return;
+    }
+
+    if (event.type === 'plan-updated') {
+      updateRunningTurn(context, (turn) => ({
+        ...turn,
+        status: 'running',
+        plan: event.plan,
+      }));
+      schedulePersistThreadHistory(context.threadId);
       return;
     }
 

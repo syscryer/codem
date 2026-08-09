@@ -1,8 +1,9 @@
 use crate::acp::{probe_acp_agent, probe_acp_initialize};
 use crate::agent_runtime::{
-    agent_provider_registry, normalize_agent_permission_mode, AgentProviderRegistry,
-    CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-    OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+    agent_plan_snapshot_from_tool_input, agent_plan_snapshot_from_value, agent_provider_registry,
+    normalize_agent_permission_mode, AgentPlanSnapshot, AgentPlanStep, AgentPlanStepStatus,
+    AgentProviderRegistry, CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
+    OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
 };
 use crate::codex_app_server::{
     probe_codex_app_server, CodexStoredItem, CodexStoredTurn, CodexUserInput,
@@ -326,6 +327,9 @@ struct ActiveRunRecord {
     paused_for_user_input: bool,
     block_type_by_index: std::collections::HashMap<i64, String>,
     tool_input_accumulators: std::collections::HashMap<i64, ToolInputAccumulator>,
+    claude_plan_steps: Vec<AgentPlanStep>,
+    claude_plan_tool_names: std::collections::HashMap<String, String>,
+    emitted_plan_tool_use_ids: std::collections::HashSet<String>,
     last_phase_event: Option<Value>,
 }
 
@@ -3046,6 +3050,9 @@ async fn claude_run(
         paused_for_user_input: false,
         block_type_by_index: std::collections::HashMap::new(),
         tool_input_accumulators: std::collections::HashMap::new(),
+        claude_plan_steps: Vec::new(),
+        claude_plan_tool_names: std::collections::HashMap::new(),
+        emitted_plan_tool_use_ids: std::collections::HashSet::new(),
         last_phase_event: None,
     };
     match state.runs.lock() {
@@ -20462,6 +20469,15 @@ fn map_claude_json_line(run_id: &str, line: &str, run: &mut ActiveRunRecord) -> 
                     );
                     return events;
                 }
+                emit_claude_plan_tool_input(
+                    run_id,
+                    run,
+                    tool_name,
+                    tool_use_id,
+                    input,
+                    is_sidechain,
+                    &mut events,
+                );
             }
         }
     }
@@ -20491,6 +20507,14 @@ fn map_claude_json_line(run_id: &str, line: &str, run: &mut ActiveRunRecord) -> 
                     }));
                     continue;
                 }
+                emit_claude_plan_tool_result(
+                    run_id,
+                    run,
+                    tool_use_id,
+                    &content_text,
+                    is_error || is_sidechain,
+                    &mut events,
+                );
                 events.push(json!({
                     "type": "tool-result",
                     "runId": run_id,
@@ -20815,6 +20839,17 @@ fn map_claude_stream_event(
                 } else {
                     return;
                 }
+                if let Some(input) = parse_json_object(&accumulator.input_text) {
+                    emit_claude_plan_tool_input(
+                        run_id,
+                        run,
+                        &accumulator.name,
+                        accumulator.tool_use_id.as_deref(),
+                        &input,
+                        event_is_sidechain,
+                        events,
+                    );
+                }
             }
             if current_block_type.as_deref() == Some("tool_use") {
                 events.push(json!({
@@ -20859,6 +20894,209 @@ fn emit_structured_tool_events_from_accumulator(
             accumulator.emitted_approval_request = true;
             events.push(json!({ "type": "approval-request", "runId": run_id, "request": request }));
         }
+    }
+}
+
+fn emit_claude_plan_tool_input(
+    run_id: &str,
+    run: &mut ActiveRunRecord,
+    tool_name: &str,
+    tool_use_id: Option<&str>,
+    input: &Value,
+    is_sidechain: bool,
+    events: &mut Vec<Value>,
+) {
+    if let Some(tool_use_id) = tool_use_id {
+        run.claude_plan_tool_names
+            .insert(tool_use_id.to_string(), tool_name.to_string());
+    }
+    if is_sidechain {
+        return;
+    }
+    let event_key = tool_use_id
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("{}:{}", tool_name, input));
+    if run.emitted_plan_tool_use_ids.contains(&event_key) {
+        return;
+    }
+    let Some(plan) = apply_claude_plan_tool_input(run, tool_name, tool_use_id, input) else {
+        return;
+    };
+    run.emitted_plan_tool_use_ids.insert(event_key);
+    events.push(json!({ "type": "plan-updated", "runId": run_id, "plan": plan }));
+}
+
+fn apply_claude_plan_tool_input(
+    run: &mut ActiveRunRecord,
+    tool_name: &str,
+    tool_use_id: Option<&str>,
+    input: &Value,
+) -> Option<AgentPlanSnapshot> {
+    let normalized = normalize_claude_plan_tool_name(tool_name);
+    if matches!(normalized.as_str(), "todowrite" | "updateplan") {
+        let plan = agent_plan_snapshot_from_tool_input(tool_name, input)?;
+        run.claude_plan_steps = plan.steps.clone();
+        return Some(plan);
+    }
+
+    if normalized == "taskcreate" {
+        let mut task = input.as_object()?.clone();
+        if !task.contains_key("id") {
+            if let Some(tool_use_id) = tool_use_id {
+                task.insert("id".to_string(), Value::String(tool_use_id.to_string()));
+            }
+        }
+        if !task.contains_key("status") {
+            task.insert("status".to_string(), Value::String("pending".to_string()));
+        }
+        let plan = agent_plan_snapshot_from_value(&json!({ "tasks": [task] }))?;
+        let step = plan.steps.into_iter().next()?;
+        upsert_claude_plan_step(&mut run.claude_plan_steps, step);
+        return Some(current_claude_plan(run));
+    }
+
+    if normalized == "taskupdate" {
+        let task_id = input
+            .get("taskId")
+            .or_else(|| input.get("task_id"))
+            .or_else(|| input.get("id"))
+            .and_then(Value::as_str)?;
+        if input
+            .get("status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| status.eq_ignore_ascii_case("deleted"))
+        {
+            let previous_len = run.claude_plan_steps.len();
+            run.claude_plan_steps
+                .retain(|step| step.id.as_deref() != Some(task_id));
+            return (run.claude_plan_steps.len() != previous_len).then(|| current_claude_plan(run));
+        }
+
+        let existing = run
+            .claude_plan_steps
+            .iter()
+            .find(|step| step.id.as_deref() == Some(task_id))
+            .cloned();
+        let mut task = input.as_object()?.clone();
+        task.insert("id".to_string(), Value::String(task_id.to_string()));
+        if !task.contains_key("content") && !task.contains_key("subject") {
+            let content = existing.as_ref()?.content.clone();
+            task.insert("content".to_string(), Value::String(content));
+        }
+        if !task.contains_key("status") {
+            let status = existing
+                .as_ref()
+                .map(|step| agent_plan_status_value(step.status))
+                .unwrap_or("pending");
+            task.insert("status".to_string(), Value::String(status.to_string()));
+        }
+        let plan = agent_plan_snapshot_from_value(&json!({ "tasks": [task] }))?;
+        let mut step = plan.steps.into_iter().next()?;
+        if let Some(existing) = existing {
+            step.priority = step.priority.or(existing.priority);
+            step.owner = step.owner.or(existing.owner);
+            if step.blocked_by.is_empty() {
+                step.blocked_by = existing.blocked_by;
+            }
+        }
+        upsert_claude_plan_step(&mut run.claude_plan_steps, step);
+        return Some(current_claude_plan(run));
+    }
+
+    None
+}
+
+fn emit_claude_plan_tool_result(
+    run_id: &str,
+    run: &mut ActiveRunRecord,
+    tool_use_id: Option<&str>,
+    content: &str,
+    ignore: bool,
+    events: &mut Vec<Value>,
+) {
+    if ignore {
+        return;
+    }
+    let Some(tool_use_id) = tool_use_id else {
+        return;
+    };
+    let Some(tool_name) = run.claude_plan_tool_names.get(tool_use_id).cloned() else {
+        return;
+    };
+    let normalized = normalize_claude_plan_tool_name(&tool_name);
+    if !matches!(normalized.as_str(), "taskcreate" | "tasklist" | "taskget") {
+        return;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(content.trim()) else {
+        return;
+    };
+    let plan = agent_plan_snapshot_from_value(&value).or_else(|| {
+        (normalized == "taskget")
+            .then(|| agent_plan_snapshot_from_value(&json!({ "tasks": [value] })))
+            .flatten()
+    });
+    let Some(plan) = plan else {
+        return;
+    };
+    if normalized == "tasklist" {
+        run.claude_plan_steps = plan.steps;
+    } else if normalized == "taskcreate" {
+        if let Some(returned_step) = plan.steps.into_iter().next() {
+            if let Some(index) = run
+                .claude_plan_steps
+                .iter()
+                .position(|step| step.id.as_deref() == Some(tool_use_id))
+            {
+                run.claude_plan_steps[index] = returned_step;
+            } else {
+                upsert_claude_plan_step(&mut run.claude_plan_steps, returned_step);
+            }
+        }
+    } else {
+        for step in plan.steps {
+            upsert_claude_plan_step(&mut run.claude_plan_steps, step);
+        }
+    }
+    events.push(json!({
+        "type": "plan-updated",
+        "runId": run_id,
+        "plan": current_claude_plan(run),
+    }));
+}
+
+fn normalize_claude_plan_tool_name(tool_name: &str) -> String {
+    tool_name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn upsert_claude_plan_step(steps: &mut Vec<AgentPlanStep>, step: AgentPlanStep) {
+    if let Some(index) = step.id.as_deref().and_then(|id| {
+        steps
+            .iter()
+            .position(|existing| existing.id.as_deref() == Some(id))
+    }) {
+        steps[index] = step;
+    } else {
+        steps.push(step);
+    }
+}
+
+fn current_claude_plan(run: &ActiveRunRecord) -> AgentPlanSnapshot {
+    AgentPlanSnapshot {
+        explanation: None,
+        steps: run.claude_plan_steps.clone(),
+    }
+}
+
+fn agent_plan_status_value(status: AgentPlanStepStatus) -> &'static str {
+    match status {
+        AgentPlanStepStatus::Pending => "pending",
+        AgentPlanStepStatus::InProgress => "in_progress",
+        AgentPlanStepStatus::Completed => "completed",
+        AgentPlanStepStatus::Unknown => "unknown",
     }
 }
 
@@ -21764,7 +22002,7 @@ mod tests {
         install_skill_directory_safely, is_agent_lifecycle_network_failure, lifecycle_plan,
         lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
         list_agent_plugin_marketplaces_value, list_agent_skills_value, list_slash_commands_value,
-        mark_fork_provider_succeeded, mark_request_user_input_submitted,
+        map_claude_json_line, mark_fork_provider_succeeded, mark_request_user_input_submitted,
         normalize_agent_plugin_action, normalize_agent_runtime_settings,
         normalize_general_settings, normalize_open_with_settings, normalize_pi_probe_summary,
         normalize_request_user_input_answer_value, open_initialized_workspace_database,
@@ -22177,6 +22415,9 @@ mod tests {
             paused_for_user_input: false,
             block_type_by_index: std::collections::HashMap::new(),
             tool_input_accumulators: std::collections::HashMap::new(),
+            claude_plan_steps: Vec::new(),
+            claude_plan_tool_names: std::collections::HashMap::new(),
+            emitted_plan_tool_use_ids: std::collections::HashSet::new(),
             last_phase_event: None,
         };
         state
@@ -28450,6 +28691,146 @@ mod tests {
             default_grok_command_path(&home, false),
             home.join(".grok").join("bin").join("grok")
         );
+    }
+
+    #[test]
+    fn agent_plan_claude_todo_and_task_tools_emit_unified_snapshots() {
+        let directory = TestDirectory::new("claude-plan-events");
+        let state = test_app_state(directory.0.clone());
+        inject_active_run(&state, "run-plan-1", "thread-plan-1", false);
+
+        let mut runs = state.runs.lock().expect("lock runs");
+        let run = runs.get_mut("run-plan-1").expect("active run");
+        let todo_events = map_claude_json_line(
+            "run-plan-1",
+            &json!({
+                "type": "assistant",
+                "message": {
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "todo-1",
+                        "name": "TodoWrite",
+                        "input": {
+                            "todos": [
+                                { "content": "分析", "status": "completed" },
+                                { "content": "实现", "status": "in_progress" }
+                            ]
+                        }
+                    }]
+                }
+            })
+            .to_string(),
+            run,
+        );
+        assert!(todo_events.iter().any(|event| {
+            event.get("type").and_then(Value::as_str) == Some("plan-updated")
+                && event
+                    .pointer("/plan/steps/1/content")
+                    .and_then(Value::as_str)
+                    == Some("实现")
+        }));
+
+        let create_events = map_claude_json_line(
+            "run-plan-1",
+            &json!({
+                "type": "assistant",
+                "message": {
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "task-1",
+                        "name": "TaskCreate",
+                        "input": { "subject": "补测试", "activeForm": "正在补测试" }
+                    }]
+                }
+            })
+            .to_string(),
+            run,
+        );
+        assert!(create_events.iter().any(|event| {
+            event.get("type").and_then(Value::as_str) == Some("plan-updated")
+                && event.pointer("/plan/steps/2/id").and_then(Value::as_str) == Some("task-1")
+        }));
+
+        let create_result_events = map_claude_json_line(
+            "run-plan-1",
+            &json!({
+                "type": "user",
+                "message": {
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "task-1",
+                        "content": "{\"task\":{\"id\":\"server-task-1\",\"subject\":\"补测试\"}}"
+                    }]
+                }
+            })
+            .to_string(),
+            run,
+        );
+        assert!(create_result_events.iter().any(|event| {
+            event.get("type").and_then(Value::as_str) == Some("plan-updated")
+                && event.pointer("/plan/steps/2/id").and_then(Value::as_str)
+                    == Some("server-task-1")
+        }));
+
+        let update_events = map_claude_json_line(
+            "run-plan-1",
+            &json!({
+                "type": "assistant",
+                "message": {
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "task-update-1",
+                        "name": "TaskUpdate",
+                        "input": { "taskId": "server-task-1", "status": "completed" }
+                    }]
+                }
+            })
+            .to_string(),
+            run,
+        );
+        assert!(update_events.iter().any(|event| {
+            event.get("type").and_then(Value::as_str) == Some("plan-updated")
+                && event
+                    .pointer("/plan/steps/2/status")
+                    .and_then(Value::as_str)
+                    == Some("completed")
+        }));
+
+        let _ = map_claude_json_line(
+            "run-plan-1",
+            &json!({
+                "type": "assistant",
+                "message": {
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "task-list-1",
+                        "name": "TaskList",
+                        "input": {}
+                    }]
+                }
+            })
+            .to_string(),
+            run,
+        );
+        let list_events = map_claude_json_line(
+            "run-plan-1",
+            &json!({
+                "type": "user",
+                "message": {
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "task-list-1",
+                        "content": "{\"tasks\":[{\"id\":\"server-1\",\"subject\":\"服务端任务\",\"status\":\"in_progress\"}]}"
+                    }]
+                }
+            })
+            .to_string(),
+            run,
+        );
+        assert!(list_events.iter().any(|event| {
+            event.get("type").and_then(Value::as_str) == Some("plan-updated")
+                && event.pointer("/plan/steps/0/id").and_then(Value::as_str) == Some("server-1")
+        }));
     }
 
     #[test]

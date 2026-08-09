@@ -63,6 +63,9 @@ test('onboarding gate retains artifact, link, context, and status coverage', () 
     'utf8',
   );
   assert.match(spec, /## Conversation And Artifact Contract/);
+  assert.match(spec, /### Structured Plan And Progress/);
+  assert.match(spec, /TodoWrite.*update_plan.*Provider 原生计划事件/s);
+  assert.match(spec, /会话上下文岛只消费统一计划投影/);
   assert.match(spec, /## Context And Status Contract/);
   assert.match(spec, /## Verification Matrix/);
 });

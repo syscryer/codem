@@ -70,6 +70,12 @@ export function applyAgentRunEventToTurn(
         activity: '思考中',
         phase: 'thinking',
       };
+    case 'plan-updated':
+      return {
+        ...current,
+        status: 'running',
+        plan: event.plan,
+      };
     case 'phase':
       return {
         ...current,
@@ -232,6 +238,8 @@ export function getAgentRunEventLogMessage(event: AgentRunEvent) {
       return event.text.trim() ? event.text : '生成回复中';
     case 'thinking-delta':
       return event.text.trim() ? event.text : '思考中';
+    case 'plan-updated':
+      return `计划已更新：${event.plan.steps.length} 项`;
     case 'phase':
       return event.label || '运行阶段更新';
     case 'usage':

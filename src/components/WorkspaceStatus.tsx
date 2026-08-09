@@ -16,6 +16,8 @@ import { PopoverPortal } from './PopoverPortal';
 import type { AgentRuntimeStatus, GitBranchSummary, GitWorktreeInfo, GitWorktreeList, PermissionMode, ProjectSummary, ThreadDetail, ThreadRuntimeStatus } from '../types';
 
 type WorkspaceStatusProps = {
+  variant?: 'footer' | 'island';
+  showBranch?: boolean;
   activeProject: ProjectSummary | null;
   activeThread: ThreadDetail | null;
   isActiveThreadRunning: boolean;
@@ -56,6 +58,8 @@ type ActiveRunPayload =
     };
 
 export function WorkspaceStatus({
+  variant = 'footer',
+  showBranch = true,
   activeProject,
   activeThread,
   isActiveThreadRunning,
@@ -375,12 +379,22 @@ export function WorkspaceStatus({
     activeRun: runStatus ?? { active: false },
     runtime: runtimeStatus ?? { threadId: activeThread?.id ?? '', alive: false, activeRun: false },
   };
+  const connectionSummary = [
+    sessionActiveRun ? '后台运行' : '无后台',
+    usesManagedRuntime
+      ? `热连接${formatHotRuntimeState(sessionActiveRun, sessionRuntimeAlive)}`
+      : '按需启动',
+    usesClaudeRuntime && runtimeStatus?.pid ? `PID ${runtimeStatus.pid}` : null,
+    usesAgentRuntime ? agentRuntimeProtocol(activeThread?.provider) : null,
+  ].filter(Boolean).join(' · ');
+
+  const popoverAbove = variant === 'footer';
 
   return (
-    <footer className="workspace-status">
+    <footer className={`workspace-status${variant === 'island' ? ' is-island' : ''}`}>
       <div className="status-workspace-picker" ref={worktreeMenuRef}>
-        <PopoverPortal open={worktreeMenuOpen} anchorRef={worktreeMenuRef} placement="top-start">
-          <div className="status-branch-menu status-worktree-menu" role="menu" aria-label="Git 工作树">
+        <PopoverPortal open={worktreeMenuOpen} anchorRef={worktreeMenuRef} placement={popoverAbove ? 'top-start' : 'left-start'} offset={popoverAbove ? 8 : 3} sideBoundarySelector={popoverAbove ? undefined : '.conversation-context-island'}>
+          <div className={`status-branch-menu status-worktree-menu${variant === 'island' ? ' is-island' : ''}`} role="menu" aria-label="Git 工作树">
             <div className="status-branch-menu-title">切换工作树</div>
             {worktreesLoading ? <div className="status-branch-menu-state">正在读取工作树...</div> : null}
             {!worktreesLoading && worktreesError ? <div className="status-branch-menu-error">{worktreesError}</div> : null}
@@ -447,8 +461,8 @@ export function WorkspaceStatus({
           {canSelectWorktree ? <span className="footer-chevron" aria-hidden="true" /> : null}
         </button>
       </div>
-      <div className="status-branch-picker" ref={branchMenuRef}>
-        <PopoverPortal open={menuOpen} anchorRef={branchMenuRef} placement="top-start">
+      {showBranch ? <div className="status-branch-picker" ref={branchMenuRef}>
+        <PopoverPortal open={menuOpen} anchorRef={branchMenuRef} placement={popoverAbove ? 'top-start' : 'bottom-start'}>
           <div className="status-branch-menu" role="menu" aria-label="Git 分支">
             <div className="status-branch-menu-title">切换分支</div>
             {loading ? <div className="status-branch-menu-state">正在读取分支...</div> : null}
@@ -503,11 +517,11 @@ export function WorkspaceStatus({
           <span>{activeProject?.gitBranch ?? '未检测到 Git'}</span>
           {canSelectBranch ? <span className="footer-chevron" aria-hidden="true" /> : null}
         </button>
-      </div>
+      </div> : null}
       <span className="status-spacer" />
       <div className="status-run-picker" ref={runStatusRef}>
-        <PopoverPortal open={runStatusOpen} anchorRef={runStatusRef} placement="top-end">
-          <div className="status-run-menu" role="dialog" aria-label={`${providerDisplayName(activeThread?.provider)} 运行状态`}>
+        <PopoverPortal open={runStatusOpen} anchorRef={runStatusRef} placement={popoverAbove ? 'top-end' : 'left-start'} offset={popoverAbove ? 8 : 3} sideBoundarySelector={popoverAbove ? undefined : '.conversation-context-island'}>
+          <div className={`status-run-menu${variant === 'island' ? ' is-island' : ''}`} role="dialog" aria-label={`${providerDisplayName(activeThread?.provider)} 运行状态`}>
             <div className={`status-run-head is-${sessionButtonState.id}`}>
               <span className="status-session-icon" aria-hidden="true">
                 <WorkspaceSessionStateIcon state={sessionButtonState} />
@@ -550,14 +564,14 @@ export function WorkspaceStatus({
                   </section>
                 ) : null}
 
-                <section className="status-run-section">
+                <section className="status-run-section status-run-overview">
                   <h4>当前会话</h4>
                   <StatusRunRow label="Provider" value={providerDisplayName(activeThread?.provider)} />
                   <StatusRunRow label="回合" value={sessionUsage.turnCountLabel} />
-                  <StatusRunRow label="耗时" value={sessionUsage.durationLabel} />
+                  {sessionUsage.durationLabel !== '-' ? <StatusRunRow label="耗时" value={sessionUsage.durationLabel} /> : null}
                   <StatusRunRow label="输入/输出" value={sessionTokenUsageLabel} />
                   {sessionCacheUsageLabel ? <StatusRunRow label="缓存" value={sessionCacheUsageLabel} /> : null}
-                  <StatusRunRow label="Cost" value={sessionUsage.costLabel} />
+                  {sessionUsage.costLabel !== '-' ? <StatusRunRow label="Cost" value={sessionUsage.costLabel} /> : null}
                 </section>
 
                 {activeThread?.sessionId ? (
@@ -565,7 +579,7 @@ export function WorkspaceStatus({
                     <h4>Session</h4>
                     <StatusRunRow
                       label="Session"
-                      value={activeThread.sessionId}
+                      value={compactIdentifier(activeThread.sessionId)}
                       title={activeThread.sessionId}
                     />
                     <StatusRunRow label="工作目录" value={activeThread.workingDirectory || activeProject?.path || '-'} />
@@ -579,25 +593,15 @@ export function WorkspaceStatus({
 
                 <section className="status-run-section">
                   <h4>连接</h4>
-                  <StatusRunRow label="后台运行" value={sessionActiveRun ? '是' : '无'} />
-                  {usesManagedRuntime ? (
-                    <>
-                      <StatusRunRow label="热连接" value={formatHotRuntimeState(sessionActiveRun, sessionRuntimeAlive)} />
-                      {usesClaudeRuntime ? (
-                        <StatusRunRow label="PID" value={runtimeStatus?.pid ? String(runtimeStatus.pid) : '-'} />
-                      ) : (
-                        <StatusRunRow label="运行协议" value={agentRuntimeProtocol(activeThread?.provider)} />
-                      )}
-                    </>
-                  ) : (
-                    <StatusRunRow label="运行协议" value="按需启动" />
-                  )}
+                  <p className="status-run-summary">{connectionSummary}</p>
                 </section>
 
                 {usesManagedRuntime && sessionButtonState.id === 'hot' ? (
                   <section className="status-run-section">
                     <h4>会话配置</h4>
-                    <StatusRunRow label="模型" value={runtimeModelLabel(runtimeStatus, activeThread)} />
+                    {runtimeModelLabel(runtimeStatus, activeThread) !== '-' ? (
+                      <StatusRunRow label="模型" value={runtimeModelLabel(runtimeStatus, activeThread)} />
+                    ) : null}
                     <StatusRunRow label="权限" value={runtimePermissionLabel(runtimeStatus, activeThread)} />
                   </section>
                 ) : null}

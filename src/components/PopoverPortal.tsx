@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
-type Placement = 'bottom-start' | 'bottom-end' | 'top-start' | 'top-end';
+type Placement = 'bottom-start' | 'bottom-end' | 'top-start' | 'top-end' | 'left-start';
 type VirtualAnchor = { x: number; y: number };
 
 const POPOVER_CONTEXT_ATTRIBUTES = [
@@ -41,6 +41,7 @@ type PopoverPortalProps = {
   placement?: Placement;
   offset?: number;
   matchAnchorWidth?: boolean;
+  sideBoundarySelector?: string;
 };
 
 export function PopoverPortal({
@@ -51,6 +52,7 @@ export function PopoverPortal({
   placement = 'bottom-end',
   offset = 8,
   matchAnchorWidth = false,
+  sideBoundarySelector,
 }: PopoverPortalProps) {
   const portalRef = useRef<HTMLDivElement>(null);
 
@@ -132,6 +134,23 @@ export function PopoverPortal({
           style.left = '';
           style.right = `${Math.max(4, vw - rect.right)}px`;
           break;
+        case 'left-start': {
+          const sideBoundary = sideBoundarySelector
+            ? anchor.closest<HTMLElement>(sideBoundarySelector)?.getBoundingClientRect()
+            : null;
+          const left = (sideBoundary?.left ?? rect.left) - mw - offset;
+          style.bottom = '';
+          if (left >= 4) {
+            style.top = `${Math.max(4, Math.min(rect.top, vh - mh - 4))}px`;
+            style.left = `${left}px`;
+            style.right = '';
+          } else {
+            style.top = `${Math.max(4, Math.min(rect.bottom + offset, vh - mh - 4))}px`;
+            style.left = '';
+            style.right = `${Math.max(4, vw - rect.right)}px`;
+          }
+          break;
+        }
       }
     }
 
@@ -148,7 +167,7 @@ export function PopoverPortal({
       window.removeEventListener('scroll', applyPosition, true);
       window.removeEventListener('resize', applyPosition);
     };
-  }, [open, anchorRef, virtualAnchor, placement, offset, matchAnchorWidth]);
+  }, [open, anchorRef, virtualAnchor, placement, offset, matchAnchorWidth, sideBoundarySelector]);
 
   if (!open) return null;
 

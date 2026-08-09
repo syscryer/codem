@@ -47,7 +47,12 @@ test('标准 AgentRunEvent 使用聊天 reducer 重建文本和工具顺序', ()
       content: 'ok',
     }),
     stored(4, 'delta', '已完成。', { type: 'delta', runId: 'provider-run-1', text: '已完成。' }),
-    stored(5, 'done', '运行完成', {
+    stored(5, 'plan-updated', '计划已更新', {
+      type: 'plan-updated',
+      runId: 'provider-run-1',
+      plan: { steps: [{ id: '1', content: '检查当前改动', status: 'completed' }] },
+    }),
+    stored(6, 'done', '运行完成', {
       type: 'done',
       runId: 'provider-run-1',
       result: '先读取。已完成。',
@@ -59,6 +64,7 @@ test('标准 AgentRunEvent 使用聊天 reducer 重建文本和工具顺序', ()
   assert.equal(transcript.assistantText, '先读取。已完成。');
   assert.deepEqual(transcript.items.map((item) => item.type), ['text', 'tool', 'text']);
   assert.equal(transcript.tools[0]?.resultText, 'ok');
+  assert.equal(transcript.plan?.steps[0]?.content, '检查当前改动');
   assert.equal(transcript.workspace, 'D:/workspace');
   assert.equal(transcript.userText, run.prompt);
   assert.equal(transcript.durationMs, 4_000);

@@ -243,6 +243,187 @@ pub struct AgentCompactCapabilitySummary {
     pub message: Option<String>,
 }
 
+const MAX_AGENT_PLAN_STEPS: usize = 64;
+const MAX_AGENT_PLAN_TEXT_BYTES: usize = 8 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentPlanStepStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPlanStep {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub content: String,
+    pub status: AgentPlanStepStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPlanSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+    pub steps: Vec<AgentPlanStep>,
+}
+
+pub fn agent_plan_snapshot_from_tool_input(
+    tool_name: &str,
+    input: &Value,
+) -> Option<AgentPlanSnapshot> {
+    let normalized_name = tool_name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    let object = input.as_object()?;
+    let has_todos = object
+        .get("todos")
+        .is_some_and(|value| value.is_array() || value.is_object());
+    let has_other_plan_collection = ["plan", "steps"].into_iter().any(|key| {
+        object
+            .get(key)
+            .is_some_and(|value| value.is_array() || value.is_object())
+    });
+    let is_plan_tool = ["todo", "plan", "task", "progress"]
+        .into_iter()
+        .any(|marker| normalized_name.contains(marker));
+    if !has_todos && !(has_other_plan_collection && is_plan_tool) {
+        return None;
+    }
+    agent_plan_snapshot_from_value(input)
+}
+
+pub fn agent_plan_snapshot_from_value(value: &Value) -> Option<AgentPlanSnapshot> {
+    let (collection, explanation, singular) = if value.is_array() {
+        (value, None, false)
+    } else {
+        let root = value.as_object()?;
+        let state = root.get("state").and_then(Value::as_object).unwrap_or(root);
+        let (collection_key, collection) = ["todos", "plan", "steps", "tasks", "task"]
+            .into_iter()
+            .find_map(|key| state.get(key).map(|value| (key, value)))?;
+        let explanation = root
+            .get("explanation")
+            .or_else(|| state.get("explanation"))
+            .and_then(Value::as_str)
+            .map(bounded_plan_string)
+            .filter(|value| !value.is_empty());
+        (collection, explanation, collection_key == "task")
+    };
+
+    let mut steps = Vec::new();
+    if singular {
+        if let Some(step) = normalize_agent_plan_step(collection, None) {
+            steps.push(step);
+        }
+        return Some(AgentPlanSnapshot { explanation, steps });
+    }
+    match collection {
+        Value::Array(items) => {
+            for item in items.iter().take(MAX_AGENT_PLAN_STEPS) {
+                if let Some(step) = normalize_agent_plan_step(item, None) {
+                    steps.push(step);
+                }
+            }
+        }
+        Value::Object(items) => {
+            for (id, item) in items.iter().take(MAX_AGENT_PLAN_STEPS) {
+                if let Some(step) = normalize_agent_plan_step(item, Some(id)) {
+                    steps.push(step);
+                }
+            }
+        }
+        _ => return None,
+    }
+
+    Some(AgentPlanSnapshot { explanation, steps })
+}
+
+fn normalize_agent_plan_step(value: &Value, fallback_id: Option<&str>) -> Option<AgentPlanStep> {
+    let item = value.as_object()?;
+    let content = ["content", "step", "subject", "text", "title", "description"]
+        .into_iter()
+        .find_map(|key| item.get(key).and_then(Value::as_str))
+        .map(bounded_plan_string)
+        .filter(|value| !value.is_empty())?;
+    let id = ["id", "taskId", "task_id"]
+        .into_iter()
+        .find_map(|key| item.get(key).and_then(Value::as_str))
+        .or(fallback_id)
+        .map(bounded_plan_string)
+        .filter(|value| !value.is_empty());
+    let status = match item
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', ' '], "_")
+        .as_str()
+    {
+        "pending" | "todo" | "not_started" => AgentPlanStepStatus::Pending,
+        "inprogress" | "in_progress" | "running" | "active" => AgentPlanStepStatus::InProgress,
+        "completed" | "complete" | "done" | "cancelled" | "canceled" | "deleted" => {
+            AgentPlanStepStatus::Completed
+        }
+        _ => AgentPlanStepStatus::Unknown,
+    };
+    let priority = item
+        .get("priority")
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| matches!(value.as_str(), "high" | "medium" | "low"));
+    let owner = item
+        .get("owner")
+        .and_then(Value::as_str)
+        .map(bounded_plan_string)
+        .filter(|value| !value.is_empty());
+    let blocked_by = item
+        .get("blockedBy")
+        .or_else(|| item.get("blocked_by"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .take(MAX_AGENT_PLAN_STEPS)
+        .map(bounded_plan_string)
+        .filter(|value| !value.is_empty())
+        .collect();
+
+    Some(AgentPlanStep {
+        id,
+        content,
+        status,
+        priority,
+        owner,
+        blocked_by,
+    })
+}
+
+fn bounded_plan_string(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() <= MAX_AGENT_PLAN_TEXT_BYTES {
+        return trimmed.to_string();
+    }
+    let mut end = MAX_AGENT_PLAN_TEXT_BYTES;
+    while end > 0 && !trimmed.is_char_boundary(end) {
+        end -= 1;
+    }
+    trimmed[..end].to_string()
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(
     tag = "type",
@@ -272,6 +453,10 @@ pub enum AgentRunEvent {
     ThinkingDelta {
         run_id: String,
         text: String,
+    },
+    PlanUpdated {
+        run_id: String,
+        plan: AgentPlanSnapshot,
     },
     Usage {
         run_id: String,
@@ -593,14 +778,86 @@ fn runtime_detected_capabilities() -> AgentCapabilities {
 #[cfg(test)]
 mod tests {
     use super::{
+        agent_plan_snapshot_from_tool_input, agent_plan_snapshot_from_value,
         agent_provider_registry, is_active_agent_provider_id, normalize_grok_permission_mode,
         AgentApprovalOption, AgentApprovalRequest, AgentCancelSupport, AgentCapabilitySupport,
-        AgentCompactionSource, AgentCompactionStatus, AgentProviderLifecycle, AgentRunEvent,
-        CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        AgentCompactionSource, AgentCompactionStatus, AgentPlanStepStatus, AgentProviderLifecycle,
+        AgentRunEvent, CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
         OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     };
     use serde_json::json;
     use std::collections::HashSet;
+
+    #[test]
+    fn agent_plan_normalizes_codex_grok_and_opencode_shapes() {
+        let codex = agent_plan_snapshot_from_value(&json!({
+            "explanation": "执行顺序",
+            "plan": [
+                { "step": "检查项目", "status": "inProgress" },
+                { "step": "运行测试", "status": "pending" }
+            ]
+        }))
+        .expect("Codex plan");
+        assert_eq!(codex.explanation.as_deref(), Some("执行顺序"));
+        assert_eq!(codex.steps[0].status, AgentPlanStepStatus::InProgress);
+
+        let grok = agent_plan_snapshot_from_value(&json!({
+            "type": "Todo",
+            "todos": {
+                "2": { "content": "验证结果", "status": "completed" },
+                "1": { "content": "定位问题", "status": "in_progress" }
+            }
+        }))
+        .expect("Grok todos");
+        assert_eq!(grok.steps.len(), 2);
+        assert_eq!(grok.steps[0].id.as_deref(), Some("1"));
+
+        let opencode = agent_plan_snapshot_from_tool_input(
+            "todowrite",
+            &json!({
+                "todos": [{
+                    "content": "实现修复",
+                    "status": "cancelled",
+                    "priority": "high"
+                }]
+            }),
+        )
+        .expect("OpenCode todos");
+        assert_eq!(opencode.steps[0].status, AgentPlanStepStatus::Completed);
+        assert_eq!(opencode.steps[0].priority.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn agent_plan_event_uses_stable_camel_case_contract() {
+        let plan = agent_plan_snapshot_from_value(&json!({
+            "todos": [{
+                "id": "task-1",
+                "content": "检查项目",
+                "status": "in_progress",
+                "blockedBy": ["task-0"]
+            }]
+        }))
+        .expect("plan");
+        assert_eq!(
+            serde_json::to_value(AgentRunEvent::PlanUpdated {
+                run_id: "run-1".to_string(),
+                plan,
+            })
+            .expect("serialize"),
+            json!({
+                "type": "plan-updated",
+                "runId": "run-1",
+                "plan": {
+                    "steps": [{
+                        "id": "task-1",
+                        "content": "检查项目",
+                        "status": "in_progress",
+                        "blockedBy": ["task-0"]
+                    }]
+                }
+            })
+        );
+    }
 
     #[test]
     fn context_compaction_event_uses_stable_camel_case_contract() {

@@ -9,6 +9,8 @@ const componentSource = readFileSync(
 const appSource = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
 const headerSource = readFileSync(new URL('../components/ChatHeader.tsx', import.meta.url), 'utf8');
 const paneSource = readFileSync(new URL('../components/ConversationPane.tsx', import.meta.url), 'utf8');
+const workspaceStatusSource = readFileSync(new URL('../components/WorkspaceStatus.tsx', import.meta.url), 'utf8');
+const popoverSource = readFileSync(new URL('../components/PopoverPortal.tsx', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
 test('conversation context only renders real Agent Mux runs', () => {
@@ -63,4 +65,23 @@ test('context island wires real Git tools and plan progress', () => {
   assert.match(componentSource, /aria-label="选择 Git 分支"/);
   assert.match(componentSource, /plan\.counts\.completed/);
   assert.match(componentSource, /onLoadBranches\(project\.id\)/);
+  assert.match(appSource, /getLatestConversationPlanPreview\(activeThread\)/);
+  assert.doesNotMatch(appSource, /getLatestTodoWritePreview|normalizeToolName\(tool\.name\)/);
+});
+
+test('workspace, Git, and runtime status live in the context island without a footer grid row', () => {
+  assert.match(componentSource, /status: ReactNode/);
+  assert.match(componentSource, /conversation-context-status/);
+  assert.match(componentSource, /conversation-context-non-git/);
+  assert.match(appSource, /status=\{\([\s\S]*?<WorkspaceStatus[\s\S]*?variant="island"/);
+  assert.equal(appSource.match(/<WorkspaceStatus/g)?.length, 1);
+  assert.match(workspaceStatusSource, /variant\?: 'footer' \| 'island'/);
+  assert.match(workspaceStatusSource, /popoverAbove \? 'top-start' : 'left-start'/);
+  assert.match(workspaceStatusSource, /popoverAbove \? 'top-end' : 'left-start'/);
+  assert.match(popoverSource, /'left-start'/);
+  assert.match(popoverSource, /sideBoundarySelector/);
+  assert.match(popoverSource, /\(sideBoundary\?\.left \?\? rect\.left\) - mw - offset/);
+  assert.match(workspaceStatusSource, /sideBoundarySelector=\{popoverAbove \? undefined : '\.conversation-context-island'\}/);
+  assert.match(stylesSource, /\.conversation-context-status \.workspace-status \{[\s\S]*?display: grid;/);
+  assert.match(stylesSource, /\.terminal-panel \{[\s\S]*?grid-row: 4;/);
 });

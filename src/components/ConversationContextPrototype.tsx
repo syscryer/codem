@@ -17,10 +17,11 @@ import {
   Search,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { groupAgentMuxRunsByConversation, type AgentMuxRun } from '../lib/agent-mux-api';
+import type { ConversationPlanPreview } from '../lib/conversation-plan';
 import type { ConversationOutputFile } from '../lib/conversation-output-files';
 import type { GitBranchSummary, ProjectSummary } from '../types';
 import { AgentMuxAvatar } from './AgentMuxAvatar';
@@ -35,12 +36,10 @@ const DISPLAY_MODES: Array<{ value: ContextDisplayMode; label: string }> = [
   { value: 'collapsed', label: '始终收起' },
 ];
 
-export type ConversationContextPlan = {
-  todos: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' | 'unknown' }>;
-  counts: Record<'pending' | 'in_progress' | 'completed' | 'unknown', number>;
-};
+export type ConversationContextPlan = ConversationPlanPreview;
 
 type ConversationContextIslandProps = {
+  status: ReactNode;
   narrowOpen: boolean;
   onNarrowOpenChange: (open: boolean) => void;
   project: ProjectSummary | null;
@@ -60,6 +59,7 @@ type ConversationContextIslandProps = {
 };
 
 export function ConversationContextIsland({
+  status,
   narrowOpen,
   onNarrowOpenChange,
   project,
@@ -133,7 +133,7 @@ export function ConversationContextIsland({
     }
   }
 
-  if (!project && !plan && !agentRuns.length && !outputFiles.length && !localUrls.length) return null;
+  if (!project && !plan && !agentRuns.length && !outputFiles.length && !localUrls.length && !status) return null;
 
   const agentSummary = runningCount
     ? `${runningCount} 个 Agent Mux 正在运行`
@@ -174,7 +174,7 @@ export function ConversationContextIsland({
               </button>
               <div ref={branchRef}>
                 <button type="button" className="conversation-context-tool-row" aria-haspopup="dialog" aria-expanded={branchOpen} onClick={() => void toggleBranches()}><GitBranch size={14} /><span><strong>{project.gitBranch ?? '未识别分支'}</strong><small>当前分支</small></span><ChevronDown size={13} /></button>
-                <PopoverPortal open={branchOpen} anchorRef={branchRef} placement="bottom-end" offset={6}>
+                <PopoverPortal open={branchOpen} anchorRef={branchRef} placement="left-start" offset={3} sideBoundarySelector=".conversation-context-island">
                   <div className="conversation-context-branch-menu" role="dialog" aria-label="选择 Git 分支">
                     <label className="conversation-context-branch-search"><Search size={14} /><input type="search" value={branchQuery} onChange={(event) => setBranchQuery(event.target.value)} placeholder="搜索分支" aria-label="搜索分支" /></label>
                     <div className="conversation-context-branch-list">
@@ -189,7 +189,14 @@ export function ConversationContextIsland({
               <button type="button" className="conversation-context-tool-row" onClick={onOpenGitCommit}><GitCommitHorizontal size={14} /><span><strong>提交或推送</strong><small>打开 Git 工作台</small></span></button>
             </div>
           </div>
+        ) : project ? (
+          <div className="conversation-context-section conversation-context-non-git">
+            <GitFork size={14} />
+            <span><strong>未检测到 Git</strong><small>{project.name}</small></span>
+          </div>
         ) : null}
+
+        <div className="conversation-context-status">{status}</div>
 
         {plan ? (
           <div className="conversation-context-section conversation-context-progress">

@@ -8,16 +8,16 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const componentSource = readFileSync(resolve(testDir, 'WorkspaceStatus.tsx'), 'utf8');
 const stylesSource = readFileSync(resolve(testDir, '../styles.css'), 'utf8');
 
-test('workspace session popover removes recent prompt and shows the full session id', () => {
+test('workspace session popover truncates the visible session id while preserving the full title', () => {
   assert.doesNotMatch(componentSource, /<h4>最近请求<\/h4>/);
   assert.doesNotMatch(componentSource, /quoteCompactText/);
-  assert.match(componentSource, /label="Session"[\s\S]*value=\{activeThread\.sessionId\}[\s\S]*title=\{activeThread\.sessionId\}/);
+  assert.match(componentSource, /label="Session"[\s\S]*value=\{compactIdentifier\(activeThread\.sessionId\)\}[\s\S]*title=\{activeThread\.sessionId\}/);
 });
 
-test('workspace session popover keeps normal content compact without its own vertical scroller', () => {
+test('workspace session popover uses an internal scroller only when compact content exceeds the viewport', () => {
   assert.doesNotMatch(componentSource, /status-session-hero/);
   assert.match(componentSource, /className=\{`status-run-head is-\$\{sessionButtonState\.id\}`\}/);
-  assert.match(stylesSource, /\.status-run-content\s*\{[^}]*overflow-y:\s*visible;/s);
+  assert.match(stylesSource, /\.status-run-content\s*\{[^}]*overflow-y:\s*auto;/s);
 });
 
 test('workspace session idle state uses a connection icon instead of a hollow circle', () => {

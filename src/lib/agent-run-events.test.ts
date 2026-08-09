@@ -4,6 +4,7 @@ import {
   applyAgentRunEventToTurn,
   coalesceAgentRunTranscriptEvent,
   consumeAgentRunEventStream,
+  shouldPersistAgentRunTranscriptEvent,
   shouldSettleAgentStreamAsStopped,
 } from './agent-run-events.js';
 import type { AgentRunEvent, ConversationTurn } from '../types.js';
@@ -118,6 +119,34 @@ test('generic Agent reducer preserves public thinking before approvals and user 
   assert.equal(turn.pendingApprovalRequests?.[0]?.requestId, 'approval-1');
   assert.equal(turn.pendingUserInputRequests?.[0]?.requestId, 'question-1');
   assert.equal(turn.activity, '等待补充信息');
+});
+
+test('unified Agent plan events replace the current turn snapshot', () => {
+  let turn = apply(createTurn(), {
+    type: 'plan-updated',
+    runId: 'run-1',
+    plan: {
+      explanation: '执行顺序',
+      steps: [
+        { id: '1', content: '分析', status: 'completed' },
+        { id: '2', content: '实现', status: 'in_progress', priority: 'high' },
+      ],
+    },
+  });
+  assert.equal(turn.status, 'running');
+  assert.equal(turn.plan?.steps[1]?.content, '实现');
+
+  turn = apply(turn, {
+    type: 'plan-updated',
+    runId: 'run-1',
+    plan: { steps: [{ id: '2', content: '实现', status: 'completed' }] },
+  });
+  assert.deepEqual(turn.plan?.steps.map((step) => step.status), ['completed']);
+  assert.equal(shouldPersistAgentRunTranscriptEvent({
+    type: 'plan-updated',
+    runId: 'run-1',
+    plan: turn.plan!,
+  }), true);
 });
 
 test('cancelled generic Agent runs settle as stopped', () => {

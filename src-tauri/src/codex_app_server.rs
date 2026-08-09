@@ -1,6 +1,7 @@
 use crate::agent_runtime::{
-    AgentApprovalOption, AgentApprovalRequest, AgentControlCommand, AgentPermissionDecision,
-    AgentUsageSnapshot, AgentUserInputOption, AgentUserInputQuestion, AgentUserInputRequest,
+    agent_plan_snapshot_from_value, AgentApprovalOption, AgentApprovalRequest, AgentControlCommand,
+    AgentPermissionDecision, AgentPlanSnapshot, AgentUsageSnapshot, AgentUserInputOption,
+    AgentUserInputQuestion, AgentUserInputRequest,
 };
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -172,6 +173,9 @@ pub enum CodexRuntimeEvent {
         message: String,
     },
     Thinking,
+    PlanUpdated {
+        plan: AgentPlanSnapshot,
+    },
     TextDelta {
         text: String,
     },
@@ -1825,6 +1829,11 @@ where
                 .and_then(Value::as_str)
                 .map(ToString::to_string)
                 .or_else(|| turn_id.clone());
+        }
+        "turn/plan/updated" => {
+            if let Some(plan) = agent_plan_snapshot_from_value(params) {
+                on_event(CodexRuntimeEvent::PlanUpdated { plan });
+            }
         }
         "item/agentMessage/delta" => {
             if let Some(delta) = params.get("delta").and_then(Value::as_str) {
@@ -4313,7 +4322,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn streams_text_tools_and_resolves_codex_interactions() {
+    async fn agent_plan_streams_text_tools_and_resolves_codex_interactions() {
         let (mut connection, mut lines, mut writer) = mock_connection();
         let (cancel_sender, cancel_receiver) = watch::channel(false);
         let (control_sender, mut control_receiver) = mpsc::unbounded_channel();
@@ -4357,6 +4366,22 @@ mod tests {
         .await;
         write_wire(
             &mut writer,
+            json!({
+                "method": "turn/plan/updated",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "explanation": "执行顺序",
+                    "plan": [
+                        { "step": "检查项目", "status": "completed" },
+                        { "step": "实现功能", "status": "inProgress" }
+                    ]
+                }
+            }),
+        )
+        .await;
+        write_wire(
+            &mut writer,
             json!({ "method": "item/reasoning/summaryTextDelta", "params": { "threadId": "thread-1", "turnId": "turn-1", "itemId": "reasoning-1", "summaryIndex": 0, "delta": "private summary" } }),
         )
         .await;
@@ -4376,6 +4401,12 @@ mod tests {
         )
         .await;
 
+        assert!(matches!(
+            next_event(&mut event_receiver).await,
+            CodexRuntimeEvent::PlanUpdated { plan }
+                if plan.steps.len() == 2
+                    && plan.steps[1].status == crate::agent_runtime::AgentPlanStepStatus::InProgress
+        ));
         assert!(matches!(
             next_event(&mut event_receiver).await,
             CodexRuntimeEvent::Thinking

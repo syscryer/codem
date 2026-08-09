@@ -1534,10 +1534,11 @@ svg {
   --chat-header-height: 44px;
   container-name: chat-surface;
   container-type: inline-size;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto auto var(--workspace-footer-height);
+  grid-template-rows: minmax(0, 1fr) auto auto;
   overflow: hidden;
   background: #ffffff;
   border-top-left-radius: 12px;
@@ -6151,11 +6152,11 @@ display: inline-grid;
 }
 
 .codex-desktop .chat-shell {
-  grid-template-rows: minmax(0, 1fr) auto auto var(--workspace-footer-height) auto;
+  grid-template-rows: minmax(0, 1fr) auto auto auto;
 }
 
 .terminal-panel {
-  grid-row: 5;
+  grid-row: 4;
   grid-column: 1;
   position: relative;
   z-index: 7;
@@ -8961,12 +8962,13 @@ body.git-history-resizing {
   z-index: 5;
   display: flex;
   justify-content: center;
-  padding: 0 calc(12px + var(--conversation-context-track, 0)) 14px 12px;
+  padding: 0 calc(12px + var(--conversation-context-track, 0px)) 14px 12px;
   background: transparent;
 }
 
 .composer-card {
   width: min(100%, var(--composer-max-width));
+  min-width: 0;
   overflow: visible;
   border: 1px solid #d8d8d8;
   border-radius: 17px;
@@ -9409,6 +9411,68 @@ body.git-history-resizing {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+@container chat-surface (max-width: 560px) {
+  .composer-toolbar {
+    gap: 4px;
+  }
+
+  .composer-left-tools,
+  .composer-right-tools {
+    gap: 4px;
+    flex-wrap: nowrap;
+  }
+
+  .composer-left-tools {
+    flex: 1 1 auto;
+    overflow: hidden;
+  }
+
+  .composer-right-tools {
+    flex: 0 0 auto;
+  }
+
+  .composer-left-tools:has(.provider-picker) .agent-channel-trigger,
+  .composer-left-tools:has(.provider-picker)
+    > .permission-picker:not(.provider-picker):not(.agent-channel-picker)
+    > .permission-trigger,
+  .composer-right-tools .effort-trigger {
+    width: 26px;
+    min-width: 26px;
+    justify-content: center;
+    gap: 0;
+    padding: 0;
+  }
+
+  .composer-left-tools:has(.provider-picker)
+    .agent-channel-trigger
+    > span:not(.provider-brand-icon),
+  .composer-left-tools:has(.provider-picker)
+    > .permission-picker:not(.provider-picker):not(.agent-channel-picker)
+    > .permission-trigger
+    > span,
+  .composer-right-tools .effort-trigger > span {
+    display: none;
+  }
+
+  .composer-right-tools .model-trigger {
+    min-width: 0;
+    max-width: 54px;
+  }
+
+  .composer-right-tools .model-trigger > span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@container chat-surface (max-width: 420px) {
+  .composer-right-tools > .plain-icon {
+    display: none;
+  }
 }
 
 .composer-add-anchor {
@@ -17714,9 +17778,9 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 .conversation-context-heading-copy strong {
-  color: var(--app-text-strong, #1f1f1f);
-  font-size: 12px;
-  font-weight: 650;
+  color: var(--app-muted, #77736c);
+  font-size: 13px;
+  font-weight: 400;
 }
 
 .conversation-context-heading-copy small {
@@ -17836,8 +17900,8 @@ button.git-conflict-overview-row:focus-visible,
 .conversation-context-agent-copy strong {
   overflow: hidden;
   color: var(--app-text, #242424);
-  font-size: 11px;
-  font-weight: 620;
+  font-size: 12px;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -17873,12 +17937,6 @@ button.git-conflict-overview-row:focus-visible,
   border-radius: 10px;
   background: var(--app-surface, #ffffff);
   box-shadow: 0 16px 38px rgba(15, 23, 42, 0.16);
-}
-
-@media (min-width: 1180px) {
-  .conversation-context-branch-menu {
-    transform: translateX(calc(-100% - 8px));
-  }
 }
 
 .conversation-context-branch-search {
@@ -18222,8 +18280,7 @@ button.git-conflict-overview-row:focus-visible,
   .conversation-context-island[data-display-mode="expanded"] ~ :is(
     .conversation-shell,
     .task-dock,
-    .composer,
-    .workspace-status
+    .composer
   ) {
     --conversation-context-track: max(0px, calc(1580px - 100cqi));
     --conversation-context-shift: min(0px, calc(50cqi - 790px));
@@ -18243,6 +18300,10 @@ button.git-conflict-overview-row:focus-visible,
 @container chat-surface (max-width: 1179px) {
   .context-island-toggle {
     display: inline-grid;
+  }
+
+  .right-workbench-toggle {
+    display: none;
   }
 
   .conversation-context-island {
@@ -19909,6 +19970,73 @@ button.git-conflict-overview-row:focus-visible,
   white-space: nowrap;
 }
 
+.conversation-context-status {
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--app-border, #e2e8f0) 58%, transparent),
+      color-mix(in srgb, var(--app-border, #e2e8f0) 58%, transparent)
+    )
+    center bottom / calc(100% - 28px) 1px no-repeat;
+}
+
+.conversation-context-status .workspace-status {
+  width: 100%;
+  height: auto;
+  margin: 0;
+  display: grid;
+  padding: 5px 8px;
+  gap: 2px;
+  background: transparent;
+  translate: none;
+}
+
+.conversation-context-status .workspace-status > :is(.status-workspace-picker, .status-run-picker) {
+  width: 100%;
+  height: auto;
+}
+
+.conversation-context-status .status-item {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: var(--app-text, #242424);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.conversation-context-status .status-spacer {
+  display: none;
+}
+
+.conversation-context-status .footer-chevron {
+  margin-left: auto;
+}
+
+.conversation-context-non-git {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--app-muted, #77736c);
+}
+
+.conversation-context-non-git span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.conversation-context-non-git strong {
+  color: var(--app-text, #242424);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.conversation-context-non-git small {
+  font-size: 10px;
+}
+
 .context-island-toggle svg,
 .right-workbench-toggle svg,
 .right-workbench-close svg {
@@ -20539,10 +20667,10 @@ button.git-conflict-overview-row:focus-visible,
   right: 0;
   bottom: calc(100% + 8px);
   z-index: 20;
-  width: min(430px, calc(100vw - 48px));
-  max-height: none;
+  width: min(360px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
   display: grid;
-  grid-template-rows: auto auto;
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -20648,7 +20776,7 @@ button.git-conflict-overview-row:focus-visible,
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 }
 
@@ -20680,13 +20808,14 @@ button.git-conflict-overview-row:focus-visible,
   min-height: 0;
   display: grid;
   align-content: start;
-  overflow-x: visible;
-  overflow-y: visible;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .status-session-icon {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   display: inline-grid;
   place-items: center;
   border-radius: 8px;
@@ -20725,8 +20854,8 @@ button.git-conflict-overview-row:focus-visible,
 
 .status-run-section {
   display: grid;
-  gap: 7px;
-  padding: 10px 12px;
+  gap: 4px;
+  padding: 8px 10px;
   border-top: 1px solid rgba(0, 0, 0, 0.06);
 }
 
@@ -20740,10 +20869,10 @@ button.git-conflict-overview-row:focus-visible,
 
 .status-run-row {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
+  grid-template-columns: 72px minmax(0, 1fr);
   align-items: baseline;
   gap: 10px;
-  min-height: 19px;
+  min-height: 17px;
   color: #777777;
   font-size: 12px;
   line-height: 1.35;
@@ -20777,8 +20906,8 @@ button.git-conflict-overview-row:focus-visible,
 .status-run-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: 6px;
+  padding: 7px 10px;
   border-top: 1px solid rgba(0, 0, 0, 0.06);
 }
 
@@ -21465,6 +21594,44 @@ button.git-conflict-overview-row:focus-visible,
   font-size: 12px;
 }
 
+.status-run-overview {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 14px;
+}
+
+.status-run-overview h4 {
+  grid-column: 1 / -1;
+}
+
+.status-run-overview .status-run-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1px;
+}
+
+.status-run-overview .status-run-row span {
+  color: #8a8a8a;
+  font-size: 10px;
+}
+
+.status-run-summary {
+  margin: 0;
+  overflow: hidden;
+  color: #4f4f4f;
+  font-size: 12px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codex-desktop .conversation-context-status .workspace-status {
+  padding: 5px 8px;
+  background: transparent;
+}
+
+.codex-desktop .conversation-context-status .status-item {
+  color: var(--app-text, #242424);
+}
+
 .codex-desktop .status-item,
 .codex-desktop .status-branch-trigger,
 .codex-desktop .status-run-trigger {
@@ -22060,6 +22227,14 @@ button.git-conflict-overview-row:focus-visible,
 
 .codex-desktop[data-density="compact"] .composer-toolbar {
   padding: 4px 8px 7px;
+}
+
+@container chat-surface (max-width: 560px) {
+  .codex-desktop .composer,
+  .codex-desktop[data-density="compact"] .composer {
+    padding-inline: 20px;
+    padding-bottom: 20px;
+  }
 }
 
 .codex-desktop[data-density="compact"] .settings-page-section {

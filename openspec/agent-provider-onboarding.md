@@ -71,7 +71,7 @@ Backend 使用 `agent_runtime.rs` 的共享 Provider ID 校验。自动化、渠
 
 - 图片、内联文件和文件引用。
 - 工具流、文件变化和 Diff。
-- 权限审批、Plan 和结构化用户输入。
+- 权限审批、结构化 Plan/步骤进度和结构化用户输入。
 - 模型、思考等级、usage 和费用。
 - MCP、Skills、插件或 Packages。
 - Context、Compact、Fork、Archive、Steer 和原生 Review。
@@ -128,6 +128,16 @@ Provider 事件至少映射到适用的统一事件：
 - 审批和用户提问保持可交互语义，不降级为普通工具错误。
 - `pending/running` 热 turn 不被历史刷新覆盖。
 - 完成 turn 不因实时与历史合并而重复。
+
+### Structured Plan And Progress
+
+Provider 能提供结构化计划或步骤时，必须声明该能力并接入 CodeM 的统一计划投影：
+
+- `TodoWrite`、`update_plan` 和 Provider 原生计划事件都在 Driver/Runtime 层归一化，Frontend 不得按 Provider 或协议字段分支。
+- 每个步骤至少保留可见内容和 `pending`、`in_progress`、`completed`、`unknown` 之一的统一状态；有原生稳定 ID 时必须保留。
+- 会话上下文岛只消费统一计划投影，展示完成数、总数和当前未完成步骤；计划全部完成后收起，且不得回退展示旧计划。
+- 实时 stream、Provider 历史和 SQLite 恢复必须得到一致的最新计划；计划不得跨 thread、run、Provider 或渠道串联。
+- Provider 没有结构化计划数据时标记为 `unsupported`，不得从 assistant 回复、Thinking、终端文本或工具日志文案猜测步骤。
 
 ### Markdown And Links
 
@@ -219,6 +229,7 @@ Provider 事件至少映射到适用的统一事件：
 - 新聊天、运行、队列、guide、取消和恢复。
 - Composer 附件、`@文件` 与能力禁用态。
 - Timeline、Markdown、链接、图片和工具。
+- 结构化 Plan/步骤归一化、历史恢复和会话上下文岛进度。
 - 文件产出、Diff、审查与撤销边界。
 - WorkspaceStatus、会话管理和 runtime 清理。
 - Context、Compact、Fork、Steer 等能力入口。
@@ -234,6 +245,7 @@ Provider 事件至少映射到适用的统一事件：
 - Provider 运行路由、显示名、协议标签、图标和高风险产品列表完整。
 - 输入块到 Provider 协议映射及不支持输入拒绝。
 - 文本、公开思考、工具、审批、提问、usage 和 terminal event 映射。
+- `TodoWrite`、`update_plan` 和 Provider 原生计划事件的统一步骤状态映射。
 - 重复、乱序、超长、敏感和断流事件。
 - `changes[]` 的新增、修改、删除、移动、失败和截断。
 
@@ -242,12 +254,14 @@ Provider 事件至少映射到适用的统一事件：
 - 同一统一事件 fixture 在不同 Provider 下生成相同 timeline 语义。
 - Markdown 外链、本地绝对路径、相对路径、图片和代码块。
 - 输出文档、单文件预览、Diff、审查全部和上下文岛。
+- 不同 Provider 的统一计划 fixture 生成相同的步骤进度和上下文岛语义。
 - 运行状态、热连接、等待用户、完成、失败和取消。
 - 队列、guide 与附件不丢失。
 
 ### Persistence Tests
 
 - SQLite round-trip 后 timeline 类型、顺序和 Provider/session 身份一致。
+- SQLite round-trip 后最新结构化计划、步骤状态和 thread/run 归属一致。
 - 刷新不会覆盖热 turn，也不会重复完成 turn。
 - 无效 session 不写回，Provider 或渠道切换不串会话。
 - 历史、debug 和 trace 不含凭据、base64 或大正文。
@@ -263,7 +277,8 @@ Provider 事件至少映射到适用的统一事件：
 5. 若支持文件修改：生成文档、显示产物卡片、点击打开、Diff 和刷新恢复。
 6. 若支持图片/文件：真实附件发送和历史安全投影。
 7. 若支持审批/提问：真实交互写回。
-8. 渠道切换、应用重启和 thread 隔离。
+8. 若支持结构化计划：真实步骤进度、会话上下文岛展示和刷新恢复。
+9. 渠道切换、应用重启和 thread 隔离。
 
 真实验收缺失时只能标记为开发完成或预览，不能声称完整生产可用。
 
@@ -272,6 +287,7 @@ Provider 事件至少映射到适用的统一事件：
 - Provider 元数据、能力和 Driver 已完成。
 - 最低能力全部通过，支持能力有对应测试。
 - 实时、历史和 SQLite 三条路径一致。
+- 声明支持结构化计划时，步骤归一化、上下文岛进度和刷新恢复已通过验收。
 - 文档输出、链接、上下文和状态完成真实 UI 验收。
 - 安全扫描没有凭据、base64 或敏感 raw event 泄漏。
 - Targeted tests、`npm run typecheck`、Rust format/test 和 `npm run build` 通过。

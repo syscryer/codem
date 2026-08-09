@@ -406,11 +406,28 @@ export type CodexCompactCapability = {
   message?: string;
 };
 
+export type ConversationPlanStepStatus = 'pending' | 'in_progress' | 'completed' | 'unknown';
+
+export type ConversationPlanStep = {
+  id?: string;
+  content: string;
+  status: ConversationPlanStepStatus;
+  priority?: 'high' | 'medium' | 'low';
+  owner?: string;
+  blockedBy?: string[];
+};
+
+export type ConversationPlanSnapshot = {
+  explanation?: string;
+  steps: ConversationPlanStep[];
+};
+
 export type AgentRunEvent =
   | { type: 'status'; runId: string; message: string }
   | { type: 'session'; runId: string; sessionId: string }
   | { type: 'delta'; runId: string; text: string }
   | { type: 'thinking-delta'; runId: string; text: string }
+  | { type: 'plan-updated'; runId: string; plan: ConversationPlanSnapshot }
   | { type: 'trace'; runId: string; name: string; atMs: number; elapsedMs: number; detail?: string }
   | { type: 'phase'; runId: string; phase: TurnPhase; label: string; thoughtCount?: number }
   | ({ type: 'usage'; runId: string } & UsageSnapshot)
@@ -612,6 +629,7 @@ export type ConversationTurn = {
   contextUsage?: UsageSnapshot;
   totalCostUsd?: number;
   thoughtCount?: number;
+  plan?: ConversationPlanSnapshot;
   pendingUserInputRequests?: RequestUserInputRequest[];
   pendingApprovalRequests?: ApprovalRequest[];
   recoveryHint?: RuntimeRecoveryHint;

@@ -1,4 +1,7 @@
-use crate::agent_runtime::{AgentControlCommand, AgentPermissionDecision, AgentUsageSnapshot};
+use crate::agent_runtime::{
+    agent_plan_snapshot_from_tool_input, agent_plan_snapshot_from_value, AgentControlCommand,
+    AgentPermissionDecision, AgentPlanSnapshot, AgentUsageSnapshot,
+};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::{
@@ -294,6 +297,7 @@ pub struct AcpUserInputRequest {
 pub enum AcpRuntimeEvent {
     TextDelta { text: String },
     ThoughtChunk { text: String },
+    PlanUpdated { plan: AgentPlanSnapshot },
     Usage { usage: AgentUsageSnapshot },
     ToolCall { call: AcpToolCall },
     ToolCallUpdate { update: AcpToolCallUpdate },
@@ -1882,8 +1886,8 @@ fn collect_session_update(
     match update_type {
         "agent_message_chunk" => {
             if let Some(text) = update.pointer("/content/text").and_then(Value::as_str) {
-                if is_structured_todo_update(text) {
-                    return Vec::new();
+                if let Some(plan) = parse_structured_todo_update(text) {
+                    return vec![AcpRuntimeEvent::PlanUpdated { plan }];
                 }
                 outcome.text_truncated |=
                     append_bounded(&mut outcome.text, text, MAX_AGENT_MESSAGE_BYTES);
@@ -1911,12 +1915,31 @@ fn collect_session_update(
         }
         "tool_call" => {
             if let Some(call) = parse_tool_call(update) {
-                return vec![AcpRuntimeEvent::ToolCall { call }];
+                let mut events = call
+                    .input
+                    .as_ref()
+                    .and_then(|input| agent_plan_snapshot_from_tool_input(&call.title, input))
+                    .map(|plan| vec![AcpRuntimeEvent::PlanUpdated { plan }])
+                    .unwrap_or_default();
+                events.push(AcpRuntimeEvent::ToolCall { call });
+                return events;
             }
         }
         "tool_call_update" => {
             if let Some(update) = parse_tool_call_update(update) {
-                return vec![AcpRuntimeEvent::ToolCallUpdate { update }];
+                let mut events = update
+                    .input
+                    .as_ref()
+                    .and_then(|input| {
+                        agent_plan_snapshot_from_tool_input(
+                            update.title.as_deref().unwrap_or_default(),
+                            input,
+                        )
+                    })
+                    .map(|plan| vec![AcpRuntimeEvent::PlanUpdated { plan }])
+                    .unwrap_or_default();
+                events.push(AcpRuntimeEvent::ToolCallUpdate { update });
+                return events;
             }
         }
         _ => {}
@@ -1924,17 +1947,20 @@ fn collect_session_update(
     Vec::new()
 }
 
-fn is_structured_todo_update(text: &str) -> bool {
+fn parse_structured_todo_update(text: &str) -> Option<AgentPlanSnapshot> {
     let Ok(Value::Object(root)) = serde_json::from_str::<Value>(text.trim()) else {
-        return false;
+        return None;
     };
     let Some(update) = root.get("TodosUpdated").and_then(Value::as_object) else {
-        return false;
+        return None;
     };
     let Some(state) = update.get("state").and_then(Value::as_object) else {
-        return false;
+        return None;
     };
-    state.get("todos").is_some() && state.get("type").and_then(Value::as_str) == Some("Todo")
+    if state.get("type").and_then(Value::as_str) != Some("Todo") {
+        return None;
+    }
+    agent_plan_snapshot_from_value(&Value::Object(state.clone()))
 }
 
 fn parse_tool_call(value: &Value) -> Option<AcpToolCall> {
@@ -2533,7 +2559,7 @@ mod tests {
     }
 
     #[test]
-    fn acp_session_update_hides_structured_todo_message_but_keeps_normal_json() {
+    fn agent_plan_grok_session_update_emits_structured_plan_but_keeps_normal_json() {
         let mut outcome = AcpPromptOutcome {
             stop_reason: String::new(),
             text: String::new(),
@@ -2564,7 +2590,12 @@ mod tests {
             }
         });
 
-        assert!(collect_session_update("session-1", &params, &mut outcome).is_empty());
+        let plan_events = collect_session_update("session-1", &params, &mut outcome);
+        assert!(matches!(
+            plan_events.as_slice(),
+            [AcpRuntimeEvent::PlanUpdated { plan }]
+                if plan.steps.len() == 1 && plan.steps[0].content == "检查项目"
+        ));
         assert!(outcome.text.is_empty());
 
         let normal_json = json!({ "answer": "这是用户要求的 JSON" }).to_string();
@@ -2581,6 +2612,42 @@ mod tests {
             [AcpRuntimeEvent::TextDelta { text }] if *text == normal_json
         ));
         assert!(outcome.text.contains("用户要求的 JSON"));
+    }
+
+    #[test]
+    fn agent_plan_opencode_todowrite_tool_emits_plan_before_tool_call() {
+        let mut outcome = AcpPromptOutcome {
+            stop_reason: String::new(),
+            text: String::new(),
+            text_truncated: false,
+            thought_chunk_count: 0,
+            update_counts: BTreeMap::new(),
+            client_request_methods: Vec::new(),
+            cancel_sent: false,
+            usage: crate::agent_runtime::AgentUsageSnapshot::default(),
+        };
+        let params = json!({
+            "sessionId": "session-1",
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "todo-1",
+                "title": "todowrite",
+                "status": "in_progress",
+                "rawInput": {
+                    "todos": [
+                        { "content": "分析", "status": "completed" },
+                        { "content": "实现", "status": "in_progress" }
+                    ]
+                }
+            }
+        });
+
+        let events = collect_session_update("session-1", &params, &mut outcome);
+        assert!(matches!(
+            events.as_slice(),
+            [AcpRuntimeEvent::PlanUpdated { plan }, AcpRuntimeEvent::ToolCall { .. }]
+                if plan.steps.len() == 2
+        ));
     }
     use crate::agent_runtime::{AgentControlCommand, AgentPermissionDecision};
     use serde_json::{json, Value};

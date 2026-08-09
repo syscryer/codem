@@ -7,12 +7,12 @@ use crate::{
     },
     agent_channels::AgentChannelService,
     agent_runtime::{
-        normalize_agent_permission_mode, AgentApprovalOption, AgentApprovalRequest,
-        AgentCompactCapabilityState, AgentCompactCapabilitySummary, AgentCompactionSource,
-        AgentCompactionStatus, AgentControlCommand, AgentPermissionDecision, AgentRunEvent,
-        AgentUsageSnapshot, AgentUserInputOption, AgentUserInputQuestion, AgentUserInputRequest,
-        GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID,
-        PI_AGENT_PROVIDER_ID,
+        agent_plan_snapshot_from_tool_input, normalize_agent_permission_mode, AgentApprovalOption,
+        AgentApprovalRequest, AgentCompactCapabilityState, AgentCompactCapabilitySummary,
+        AgentCompactionSource, AgentCompactionStatus, AgentControlCommand, AgentPermissionDecision,
+        AgentRunEvent, AgentUsageSnapshot, AgentUserInputOption, AgentUserInputQuestion,
+        AgentUserInputRequest, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     },
     codex_app_server::{
         CodexAppServerError, CodexCompactCapability, CodexCompactionEvent,
@@ -4336,6 +4336,12 @@ impl PiEventMapper {
                 args,
             } => {
                 if !self.tools.contains_key(&tool_call_id) {
+                    if let Some(plan) = agent_plan_snapshot_from_tool_input(&tool_name, &args) {
+                        events.push(AgentRunEvent::PlanUpdated {
+                            run_id: self.run_id.clone(),
+                            plan,
+                        });
+                    }
                     let block_index = self.next_block_index;
                     self.next_block_index += 1;
                     let saved_args = if args.is_null() {
@@ -5268,6 +5274,10 @@ impl CodexEventMapper {
                 message,
             }],
             CodexRuntimeEvent::Thinking => self.set_phase("thinking", "思考中"),
+            CodexRuntimeEvent::PlanUpdated { plan } => vec![AgentRunEvent::PlanUpdated {
+                run_id: self.run_id.clone(),
+                plan,
+            }],
             CodexRuntimeEvent::TextDelta { text } => {
                 self.current_phase = Some("computing");
                 vec![AgentRunEvent::Delta {
@@ -5457,6 +5467,10 @@ impl AcpEventMapper {
                     text,
                 }]
             }
+            AcpRuntimeEvent::PlanUpdated { plan } => vec![AgentRunEvent::PlanUpdated {
+                run_id: self.run_id.clone(),
+                plan,
+            }],
             AcpRuntimeEvent::InteractionResolved { .. } => self.set_phase("thinking", "思考中"),
             AcpRuntimeEvent::Usage { usage } => vec![AgentRunEvent::Usage {
                 run_id: self.run_id.clone(),
@@ -7911,6 +7925,37 @@ mod tests {
         let settled = mapper.map_event(PiRuntimeEvent::AgentSettled);
         assert!(settled.settled);
         assert!(settled.events.is_empty());
+    }
+
+    #[test]
+    fn agent_plan_pi_extension_todo_tool_is_runtime_detected() {
+        let mut mapper = PiEventMapper::new("run-pi-plan".to_string());
+        let mapped = mapper.map_event(PiRuntimeEvent::ToolStart {
+            tool_call_id: "plan-tool-1".to_string(),
+            tool_name: "project_progress".to_string(),
+            args: json!({
+                "steps": [
+                    { "content": "准备", "status": "completed" },
+                    { "content": "执行", "status": "in_progress" }
+                ]
+            }),
+        });
+
+        assert!(matches!(
+            mapped.events.as_slice(),
+            [AgentRunEvent::PlanUpdated { plan, .. }, AgentRunEvent::ToolStart { .. }]
+                if plan.steps.len() == 2
+        ));
+
+        let plain = mapper.map_event(PiRuntimeEvent::ToolStart {
+            tool_call_id: "read-tool-1".to_string(),
+            tool_name: "read".to_string(),
+            args: json!({ "path": "README.md" }),
+        });
+        assert!(!plain
+            .events
+            .iter()
+            .any(|event| matches!(event, AgentRunEvent::PlanUpdated { .. })));
     }
 
     fn pi_mapper_tool_start(mapper: &mut PiEventMapper, tool_name: &str, args: Value) {

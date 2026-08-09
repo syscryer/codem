@@ -49,6 +49,10 @@ import {
 import { cancelAgentMuxProviderRun, filterAgentMuxRunsForThread, getAgentMuxOverview, updateAgentMuxRun, type AgentMuxRun } from './lib/agent-mux-api';
 import { collectConversationOutputFiles, type ConversationOutputFile } from './lib/conversation-output-files';
 import { extractLocalWebPreviewUrls } from './lib/conversation-web-previews';
+import {
+  formatConversationPlanSummary,
+  getLatestConversationPlanPreview,
+} from './lib/conversation-plan';
 import { matchesShortcut } from './lib/shortcuts';
 import { createSystemCommandItem, settleSystemCommandItem } from './lib/system-command-items';
 import { modelLabel, permissionLabel } from './lib/ui-labels';
@@ -124,7 +128,6 @@ import type {
   ThreadForkAvailability,
   ThreadRuntimeStatus,
   ThreadSummary,
-  ToolStep,
   WebLinkOpenTarget,
   ProjectSummary,
   GitCreateWorktreeResult,
@@ -172,7 +175,6 @@ type GitBackgroundOperationType = 'fetch' | 'pull' | 'push';
 function getGitBackgroundOperationKey(type: GitBackgroundOperationType, projectId: string) {
   return `git-${type}:${projectId}`;
 }
-
 type ComposerSubmission = {
   prompt: string;
   displayText: string;
@@ -367,7 +369,7 @@ export default function App() {
 
   const selectedAgentMuxRun = activeThreadAgentMuxRuns.find((run) => run.id === selectedAgentMuxRunId) ?? null;
 
-  const conversationContextPlan = useMemo(() => getLatestTodoWritePreview(activeThread), [activeThread]);
+  const conversationContextPlan = useMemo(() => getLatestConversationPlanPreview(activeThread), [activeThread]);
   const conversationContextResources = useMemo(() => {
     const outputFiles: ConversationOutputFile[] = [];
     const localUrls: string[] = [];
@@ -2393,6 +2395,20 @@ export default function App() {
 
               {!rightWorkbenchOpen ? (
                 <ConversationContextIsland
+                  status={(
+                    <WorkspaceStatus
+                      variant="island"
+                      showBranch={false}
+                      activeProject={activeProject}
+                      activeThread={activeThread}
+                      isActiveThreadRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
+                      projects={projects}
+                      onLoadBranches={loadProjectGitBranches}
+                      onSelectBranch={switchProjectGitBranch}
+                      onOpenWorktreePath={handleOpenWorktreePath}
+                      onCreateWorktree={(project) => setWorktreeCreateProject(project)}
+                    />
+                  )}
                   narrowOpen={contextIslandNarrowOpen}
                   onNarrowOpenChange={setContextIslandNarrowOpen}
                   project={activeProject}
@@ -2535,17 +2551,6 @@ export default function App() {
                     ? requestThreadCompaction(activeThreadSummary, 'context')
                     : false
                 )}
-              />
-
-              <WorkspaceStatus
-                activeProject={activeProject}
-                activeThread={activeThread}
-                isActiveThreadRunning={Boolean(activeThreadId && runningThreadIds.includes(activeThreadId))}
-                projects={projects}
-                onLoadBranches={loadProjectGitBranches}
-                onSelectBranch={switchProjectGitBranch}
-                onOpenWorktreePath={handleOpenWorktreePath}
-                onCreateWorktree={(project) => setWorktreeCreateProject(project)}
               />
 
               {shouldShowDock ? (
@@ -2826,7 +2831,7 @@ function isSameAppLocation(left: AppLocation | null, right: AppLocation | null) 
 }
 
 function CurrentTaskDock({ activeThread }: { activeThread: ThreadDetail | null }) {
-  const preview = useMemo(() => getLatestTodoWritePreview(activeThread), [activeThread]);
+  const preview = useMemo(() => getLatestConversationPlanPreview(activeThread), [activeThread]);
   if (!preview) {
     return null;
   }
@@ -2837,7 +2842,7 @@ function CurrentTaskDock({ activeThread }: { activeThread: ThreadDetail | null }
         <header className="task-dock-head">
           <div className="task-dock-title">
             <ListChecks size={15} aria-hidden="true" />
-            <span>{formatTodoDockSummary(preview)}</span>
+            <span>{formatConversationPlanSummary(preview)}</span>
           </div>
         </header>
         <ol className="task-dock-list">
@@ -2857,104 +2862,6 @@ function CurrentTaskDock({ activeThread }: { activeThread: ThreadDetail | null }
   );
 }
 
-type TodoDockStatus = 'pending' | 'in_progress' | 'completed' | 'unknown';
-
-type TodoDockPreview = {
-  todos: Array<{
-    content: string;
-    status: TodoDockStatus;
-  }>;
-  counts: Record<TodoDockStatus, number>;
-};
-
-function getLatestTodoWritePreview(activeThread: ThreadDetail | null): TodoDockPreview | null {
-  if (!activeThread) {
-    return null;
-  }
-
-  for (let turnIndex = activeThread.turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
-    const turn = activeThread.turns[turnIndex];
-    if (!isActiveTaskDockTurn(turn)) {
-      continue;
-    }
-
-    for (let toolIndex = turn.tools.length - 1; toolIndex >= 0; toolIndex -= 1) {
-      const preview = getTodoWritePreviewFromTool(turn.tools[toolIndex]);
-      if (preview) {
-        return hasOpenTodoDockItems(preview) ? preview : null;
-      }
-    }
-  }
-
-  return null;
-}
-
-function isActiveTaskDockTurn(turn: ConversationTurn) {
-  return turn.status === 'pending' || turn.status === 'running';
-}
-
-function getTodoWritePreviewFromTool(tool: ToolStep): TodoDockPreview | null {
-  if (normalizeToolName(tool.name) !== 'todowrite') {
-    return null;
-  }
-
-  const input = parseToolJson(tool.inputText);
-  if (!input || !Array.isArray(input.todos)) {
-    return null;
-  }
-
-  const todos = input.todos
-    .map((item) => normalizeTodoDockItem(item))
-    .filter((item): item is TodoDockPreview['todos'][number] => Boolean(item));
-  if (!todos.length) {
-    return null;
-  }
-
-  const counts: Record<TodoDockStatus, number> = {
-    pending: 0,
-    in_progress: 0,
-    completed: 0,
-    unknown: 0,
-  };
-  todos.forEach((todo) => {
-    counts[todo.status] += 1;
-  });
-
-  return { todos, counts };
-}
-
-function normalizeTodoDockItem(item: unknown) {
-  if (!item || typeof item !== 'object') {
-    return null;
-  }
-
-  const record = item as Record<string, unknown>;
-  const content = getStringValue(record.content) ?? getStringValue(record.text) ?? getStringValue(record.title);
-  if (!content) {
-    return null;
-  }
-
-  return {
-    content,
-    status: normalizeTodoDockStatus(getStringValue(record.status)),
-  };
-}
-
-function normalizeTodoDockStatus(status?: string): TodoDockStatus {
-  switch (status) {
-    case 'pending':
-    case 'in_progress':
-    case 'completed':
-      return status;
-    default:
-      return 'unknown';
-  }
-}
-
-function formatTodoDockSummary(preview: TodoDockPreview) {
-  return `共 ${preview.todos.length} 个任务，已经完成 ${preview.counts.completed} 个`;
-}
-
 function formatGitOperationToastTitle(operation: string, result: '完成' | '失败') {
   return /[A-Za-z]$/.test(operation) ? `${operation} ${result}` : `${operation}${result}`;
 }
@@ -2969,32 +2876,4 @@ function isGitOperationStateError(error: unknown) {
     message.includes('not possible to fast-forward') ||
     message.includes('divergent branches'),
   );
-}
-
-function hasOpenTodoDockItems(preview: TodoDockPreview) {
-  return preview.counts.pending > 0 || preview.counts.in_progress > 0 || preview.counts.unknown > 0;
-}
-
-function parseToolJson(value?: string) {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(trimmed);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function getStringValue(value: unknown) {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-
-function normalizeToolName(value: string) {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
