@@ -15,7 +15,6 @@ import {
   MoreHorizontal,
   Plus,
   Search,
-  X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { CLAUDE_CODE_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID } from '../constants';
@@ -40,8 +39,6 @@ export type ConversationContextPlan = ConversationPlanPreview;
 
 type ConversationContextIslandProps = {
   status: ReactNode;
-  narrowOpen: boolean;
-  onNarrowOpenChange: (open: boolean) => void;
   project: ProjectSummary | null;
   plan: ConversationContextPlan | null;
   agentRuns: AgentMuxRun[];
@@ -60,8 +57,6 @@ type ConversationContextIslandProps = {
 
 export function ConversationContextIsland({
   status,
-  narrowOpen,
-  onNarrowOpenChange,
   project,
   plan,
   agentRuns,
@@ -116,7 +111,6 @@ export function ConversationContextIsland({
     setDisplayMode(mode);
     localStorage.setItem(DISPLAY_MODE_KEY, mode);
     setMenuOpen(false);
-    if (mode === 'collapsed') onNarrowOpenChange(false);
   }
 
   async function toggleBranches() {
@@ -142,7 +136,7 @@ export function ConversationContextIsland({
       : project?.name ?? '当前会话';
 
   return (
-    <aside className={`conversation-context-island${narrowOpen ? ' is-narrow-open' : ''}`} data-display-mode={displayMode} aria-label="会话上下文">
+    <aside className="conversation-context-island" data-display-mode={displayMode} aria-label="会话上下文">
       <button type="button" className="conversation-context-capsule" aria-expanded="false" onClick={() => selectDisplayMode('expanded')}>
         {runningCount ? <span className="conversation-context-live-dot" /> : null}
         <span>{conversationRuns.length ? `${conversationRuns.length} 个 Agent` : '会话上下文'}</span>
@@ -162,7 +156,6 @@ export function ConversationContextIsland({
               </div>
             </PopoverPortal>
           </div>
-          <button type="button" className="conversation-context-icon-button conversation-context-narrow-close" title="收起" aria-label="收起会话上下文" onClick={() => onNarrowOpenChange(false)}><X size={14} /></button>
         </div>
 
         {project?.isGitRepo ? (

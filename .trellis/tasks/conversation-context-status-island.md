@@ -41,6 +41,7 @@ Out of scope:
 - `git diff --check`
 
 ## Implementation Record
+- 2026-08-09T03:25:30.415Z 确认最终方案：顶部侧栏按钮仅控制右侧工作台；会话上下文在聊天区域宽度不足 1180px 时自动隐藏，不提供窄屏手动展开；保留现有聊天输入框自适应规则不变。
 
 - 2026-08-08T05:50:29.816Z 会话详情弹层压缩为 360px；当前会话指标改为两列；空耗时、空费用和空模型隐藏；Session ID 仅展示紧凑值且保留完整 title；连接信息合并为单行摘要；左侧 3px 锚定规则保持不变。
 - 2026-08-08T05:30:07.175Z PopoverPortal left-start 新增 sideBoundarySelector，以会话岛外框而非条目内边缘计算横向位置；Git 分支、工作树和会话详情统一保持 3px 岛外间距。
@@ -51,6 +52,7 @@ Out of scope:
 - 2026-08-08T04:55:44.406Z Task created by Trellis automation.
 
 ## Verification Results
+- 2026-08-09T03:27:23.694Z `npm run typecheck; node --import tsx --test src/lib/conversation-context-prototype.test.ts src/components/WorkspaceStatus.panel.test.ts; npm run build; git diff --check`: 全部通过：类型检查无错误，14 项相关测试通过，生产构建成功，差异检查通过。
 
 - 2026-08-08T05:50:31.820Z `git diff --check`: pass
 - 2026-08-08T05:50:31.130Z `node --import tsx --test src/lib/popover-portal.test.ts src/components/WorkspaceStatus.panel.test.ts src/lib/conversation-context-prototype.test.ts`: pass
@@ -62,6 +64,7 @@ Out of scope:
 - 2026-08-08T05:08:50.087Z `npm run typecheck；node --import tsx --test src/components/WorkspaceStatus.panel.test.ts src/lib/conversation-context-prototype.test.ts；git diff --check`: 通过：TypeScript 无错误；13 项相关测试全部通过；差异检查通过。
 
 ## Completion Summary
+- 2026-08-09T03:27:33.224Z 恢复顶部右侧工作台按钮的独立职责；删除窄屏手动展开会话上下文的状态、按钮和样式；聊天区域不足 1180px 时上下文自动隐藏；聊天输入框自适应规则保持不变并增加回归断言。
 
 - 2026-08-08T05:50:42.713Z 完成会话详情紧凑版：360px 宽、两列会话指标、空值隐藏、紧凑 Session ID、连接摘要与内容溢出滚动；保持左侧 3px 定位规则。类型检查、18 项相关测试及 diff 检查均通过。
 - 2026-08-08T05:31:18.324Z 左侧弹层已按会话岛外框精确保留 3px 间距，不再受岛内条目 padding 影响。

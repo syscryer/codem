@@ -26,7 +26,8 @@ test('conversation context only renders real Agent Mux runs', () => {
 
 test('prototype is mounted in the primary conversation and hides for the workbench', () => {
   assert.match(appSource, /!rightWorkbenchOpen \? \(/);
-  assert.match(headerSource, /context-island-toggle/);
+  assert.doesNotMatch(headerSource, /context-island-toggle|onToggleContextIsland/);
+  assert.match(headerSource, /right-workbench-toggle/);
   assert.doesNotMatch(paneSource, /AgentInvocationGroup|agentMuxRuns/);
   assert.match(appSource, /agentRuns=\{activeThreadAgentMuxRuns\}/);
 });
@@ -48,10 +49,17 @@ test('conversation context persists display preference and contains no static ru
 
 test('context island only expands when the right rail has enough room', () => {
   assert.match(stylesSource, /@container chat-surface \(max-width: 1579px\)/);
-  assert.match(stylesSource, /@container chat-surface \(max-width: 1179px\)[\s\S]*?\.context-island-toggle/);
+  assert.match(stylesSource, /@container chat-surface \(max-width: 1179px\) \{\s*\.conversation-context-island \{\s*display: none;/);
+  assert.doesNotMatch(stylesSource, /context-island-toggle|conversation-context-island\.is-narrow-open|conversation-context-narrow-close/);
   assert.match(stylesSource, /\.conversation-context-capsule \{[\s\S]*?margin-left: auto;/);
   assert.match(stylesSource, /--conversation-context-track: max\(0px, calc\(1580px - 100cqi\)\)/);
   assert.doesNotMatch(stylesSource, /data-display-mode="auto"[\s\S]{0,300}--conversation-context-track/);
+});
+
+test('narrow composer responsiveness remains intact', () => {
+  assert.match(stylesSource, /@container chat-surface \(max-width: 560px\)[\s\S]*?\.composer-toolbar \{\s*gap: 4px;/);
+  assert.match(stylesSource, /\.codex-desktop\[data-density="compact"\] \.composer \{\s*padding-inline: 20px;\s*padding-bottom: 20px;/);
+  assert.match(stylesSource, /\.composer-card \{[\s\S]*?min-width: 0;/);
 });
 
 test('context island groups resources into full-width rows', () => {

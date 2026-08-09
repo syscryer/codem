@@ -314,7 +314,6 @@ export default function App() {
   const [navigationHistory, setNavigationHistory] = useState<NavigationHistory>({ past: [], future: [] });
   const [gitDialogMode, setGitDialogMode] = useState<'push' | 'branch' | null>(null);
   const [rightWorkbenchOpen, setRightWorkbenchOpen] = useState(false);
-  const [contextIslandNarrowOpen, setContextIslandNarrowOpen] = useState(false);
   const [activeThreadAgentMuxRuns, setActiveThreadAgentMuxRuns] = useState<AgentMuxRun[]>([]);
   const [selectedAgentMuxRunId, setSelectedAgentMuxRunId] = useState<string | null>(null);
   const [rightWorkbenchTab, setRightWorkbenchTab] = useState<RightWorkbenchTab>('files');
@@ -1775,7 +1774,6 @@ export default function App() {
 
   function openAgentMuxRun(run: AgentMuxRun) {
     setSelectedAgentMuxRunId(run.id);
-    setContextIslandNarrowOpen(false);
     setRightWorkbenchOpen(true);
     setRightWorkbenchTab('agent');
   }
@@ -2375,12 +2373,7 @@ export default function App() {
                 onToggleTerminalDock={toggleTerminalDock}
                 terminalDockAvailable={terminalDockAvailable}
                 rightWorkbenchOpen={rightWorkbenchOpen}
-                contextIslandOpen={contextIslandNarrowOpen}
-                onToggleContextIsland={() => setContextIslandNarrowOpen((value) => !value)}
-                onToggleRightWorkbench={() => {
-                  setContextIslandNarrowOpen(false);
-                  setRightWorkbenchOpen((value) => !value);
-                }}
+                onToggleRightWorkbench={() => setRightWorkbenchOpen((value) => !value)}
                 onOpenReviewWorkbench={openReviewWorkbench}
                 threadForkAvailability={activeThreadSummary
                   ? resolveThreadForkAvailability(activeThreadSummary)
@@ -2409,8 +2402,6 @@ export default function App() {
                       onCreateWorktree={(project) => setWorktreeCreateProject(project)}
                     />
                   )}
-                  narrowOpen={contextIslandNarrowOpen}
-                  onNarrowOpenChange={setContextIslandNarrowOpen}
                   project={activeProject}
                   plan={conversationContextPlan}
                   agentRuns={activeThreadAgentMuxRuns}

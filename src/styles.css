@@ -17674,10 +17674,6 @@ button.git-conflict-overview-row:focus-visible,
   font-size: 16px;
 }
 
-.context-island-toggle {
-  display: none;
-}
-
 .conversation-context-island {
   grid-row: 1;
   grid-column: 1;
@@ -17811,10 +17807,6 @@ button.git-conflict-overview-row:focus-visible,
 .conversation-context-icon-button:hover {
   background: var(--app-surface-muted, #f5f7fa);
   color: var(--app-text, #242424);
-}
-
-.conversation-context-narrow-close {
-  display: none;
 }
 
 .conversation-context-mode-menu {
@@ -18298,34 +18290,8 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 @container chat-surface (max-width: 1179px) {
-  .context-island-toggle {
-    display: inline-grid;
-  }
-
-  .right-workbench-toggle {
-    display: none;
-  }
-
   .conversation-context-island {
     display: none;
-    width: min(320px, calc(100% - 24px));
-    margin-right: 12px;
-  }
-
-  .conversation-context-island.is-narrow-open {
-    display: block;
-  }
-
-  .conversation-context-island.is-narrow-open .conversation-context-panel {
-    display: block;
-  }
-
-  .conversation-context-island.is-narrow-open .conversation-context-capsule {
-    display: none;
-  }
-
-  .conversation-context-narrow-close {
-    display: inline-grid;
   }
 }
 
@@ -20037,7 +20003,6 @@ button.git-conflict-overview-row:focus-visible,
   font-size: 10px;
 }
 
-.context-island-toggle svg,
 .right-workbench-toggle svg,
 .right-workbench-close svg {
   width: 16px;
