@@ -27,8 +27,8 @@ Out of scope:
 ## Acceptance Criteria
 
 - [x] 版本号统一为 0.1.23，发布门禁全部通过。
-- [ ] main 与 v0.1.23 标签同步到 Gitee、GitHub。
-- [ ] GitHub Release 包含三平台安装包、签名、latest.json 和 SHA256SUMS.txt。
+- [x] main 与 v0.1.23 标签同步到 Gitee、GitHub。
+- [x] GitHub Release 包含三平台安装包、签名、latest.json 和 SHA256SUMS.txt。
 
 ## Verification Commands
 
@@ -44,6 +44,7 @@ Out of scope:
 
 - 2026-08-09T07:10:04.049Z 发布任务创建，版本元数据更新为 0.1.23。
 - 2026-08-09T07:16:39.198Z 修正 3 条重构后过时断言，发布门禁全部通过。
+- 2026-08-09T07:36:04.578Z GitHub Actions Release 运行成功，GitHub Release v0.1.23 已生成并包含 19 个产物。
 
 ## Verification Results
 
@@ -53,6 +54,10 @@ Out of scope:
 
 ## Completion Summary
 
+- v0.1.23 已发布：https://github.com/syscryer/codem/releases/tag/v0.1.23
+- 双远端 main 指向 40eabce551a7615951b66fc90b8dd146f726c620，v0.1.23 标签已同步。
+- GitHub Release 包含三平台安装包、签名、latest.json 与 SHA256SUMS.txt。
+
 ## Follow-ups
 
-- 待发布完成后补充。
+- 无。
