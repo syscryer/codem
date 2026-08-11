@@ -11559,13 +11559,27 @@ fn json_array_has_items(value: Option<&Value>) -> bool {
 fn merge_stored_turn_metrics(stored_turns: &[Value], reparsed_turns: Vec<Value>) -> Vec<Value> {
     let mut stored_by_key = std::collections::HashMap::new();
     for (index, turn) in stored_turns.iter().enumerate() {
-        stored_by_key.insert(turn_merge_key(turn, index), turn);
+        stored_by_key
+            .entry(turn_merge_key(turn, index))
+            .or_insert_with(std::collections::VecDeque::new)
+            .push_back(turn);
     }
     reparsed_turns
         .into_iter()
         .enumerate()
         .map(|(index, mut turn)| {
-            if let Some(stored) = stored_by_key.get(&turn_merge_key(&turn, index)) {
+            let stored = stored_by_key
+                .get_mut(&turn_merge_key(&turn, index))
+                .and_then(std::collections::VecDeque::pop_front);
+            if let Some(stored) = stored {
+                if let Some(stored_id) = stored
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    set_json_string(&mut turn, "id", stored_id);
+                }
                 for key in [
                     "inputTokens",
                     "outputTokens",
@@ -11632,15 +11646,20 @@ fn merge_claude_fork_snapshot_history(
 }
 
 fn turn_merge_key(turn: &Value, index: usize) -> String {
+    let session_id = turn
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
     let user_text = turn
         .get("userText")
         .and_then(Value::as_str)
         .map(str::trim)
         .unwrap_or_default();
     if user_text.is_empty() {
-        format!("index:{index}")
+        format!("session:{session_id}:index:{index}")
     } else {
-        format!("user:{user_text}")
+        format!("session:{session_id}:user:{user_text}")
     }
 }
 
@@ -12234,7 +12253,9 @@ fn parse_claude_transcript(transcript_path: &str, session_id: Option<&str>) -> V
                 let content = payload.pointer("/message/content");
                 if !content.is_some_and(contains_tool_result) {
                     let user_text = content.map(extract_user_text).unwrap_or_default();
+                    let turn_id = claude_transcript_turn_id(&payload, session_id, turns.len());
                     turns.push(create_transcript_turn(
+                        &turn_id,
                         &user_text,
                         session_id,
                         timestamp_ms,
@@ -12250,7 +12271,9 @@ fn parse_claude_transcript(transcript_path: &str, session_id: Option<&str>) -> V
                     continue;
                 }
                 if turns.is_empty() {
+                    let turn_id = claude_transcript_turn_id(&payload, session_id, turns.len());
                     turns.push(create_transcript_turn(
+                        &turn_id,
                         "",
                         session_id,
                         timestamp_ms,
@@ -12407,6 +12430,7 @@ fn read_latest_claude_context_snapshot(transcript_path: &str) -> Option<Value> {
 }
 
 fn create_transcript_turn(
+    turn_id: &str,
     user_text: &str,
     session_id: Option<&str>,
     started_at_ms: Option<i64>,
@@ -12414,7 +12438,7 @@ fn create_transcript_turn(
     activity: Option<&str>,
 ) -> Value {
     let mut turn = json!({
-        "id": uuid::Uuid::new_v4().to_string(),
+        "id": turn_id,
         "userText": user_text,
         "assistantText": "",
         "status": status,
@@ -12425,6 +12449,32 @@ fn create_transcript_turn(
     set_json_optional_number(&mut turn, "startedAtMs", started_at_ms);
     set_json_optional_string(&mut turn, "activity", activity);
     turn
+}
+
+fn claude_transcript_turn_id(
+    payload: &Value,
+    session_id: Option<&str>,
+    turn_index: usize,
+) -> String {
+    let provider_session_id = session_id
+        .or_else(|| first_json_string(payload, &["sessionId", "session_id"]))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown-session");
+    let native_turn_id = first_json_string(payload, &["uuid", "promptId"])
+        .or_else(|| payload.pointer("/message/id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(native_turn_id) = native_turn_id {
+        return format!("claude:{provider_session_id}:{native_turn_id}");
+    }
+    let timestamp = payload
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(parse_iso_timestamp_ms)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown-time".to_string());
+    format!("claude:{provider_session_id}:{timestamp}:{turn_index}")
 }
 
 fn parse_iso_timestamp_ms(value: &str) -> Option<i64> {
@@ -28956,6 +29006,7 @@ mod tests {
         let payloads = [
             json!({
                 "type": "user",
+                "uuid": "user-turn-1",
                 "sessionId": session_id,
                 "cwd": cwd,
                 "timestamp": "2026-07-01T01:00:00.000Z",
@@ -28964,10 +29015,16 @@ mod tests {
             }),
             json!({
                 "type": "assistant",
+                "uuid": "assistant-turn-1",
                 "sessionId": session_id,
                 "cwd": cwd,
                 "timestamp": "2026-07-01T01:00:01.000Z",
                 "message": { "role": "assistant", "model": "claude-test", "content": [] }
+            }),
+            json!({
+                "type": "last-prompt",
+                "lastPrompt": "inspect the current project",
+                "sessionId": session_id
             }),
         ];
         let content = payloads
@@ -28977,6 +29034,68 @@ mod tests {
             .join("\n");
         fs::write(&transcript_path, content).expect("write transcript");
         transcript_path
+    }
+
+    #[test]
+    fn claude_transcript_turn_ids_stay_stable_across_reparse() {
+        let fixture = TestDirectory::new("claude-stable-turn-id");
+        let projects_root = fixture.0.join("claude-projects");
+        let workspace = fixture.0.join("workspace");
+        fs::create_dir_all(&projects_root).expect("create projects root");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        let transcript_path = write_claude_transcript(&projects_root, &workspace, "session-stable");
+
+        let first = super::parse_claude_transcript(
+            &transcript_path.display().to_string(),
+            Some("session-stable"),
+        );
+        let second = super::parse_claude_transcript(
+            &transcript_path.display().to_string(),
+            Some("session-stable"),
+        );
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(first[0]["userText"], "inspect the current project");
+        assert_eq!(first[0]["id"], "claude:session-stable:user-turn-1");
+        assert_eq!(first[0]["id"], second[0]["id"]);
+    }
+
+    #[test]
+    fn reparsed_claude_history_preserves_stored_turn_ids_for_repeated_prompts() {
+        let stored = vec![
+            json!({
+                "id": "stored-turn-1",
+                "sessionId": "session-repeat",
+                "userText": "repeat",
+                "inputTokens": 11
+            }),
+            json!({
+                "id": "stored-turn-2",
+                "sessionId": "session-repeat",
+                "userText": "repeat",
+                "inputTokens": 22
+            }),
+        ];
+        let reparsed = vec![
+            json!({
+                "id": "parsed-turn-1",
+                "sessionId": "session-repeat",
+                "userText": "repeat"
+            }),
+            json!({
+                "id": "parsed-turn-2",
+                "sessionId": "session-repeat",
+                "userText": "repeat"
+            }),
+        ];
+
+        let merged = super::merge_stored_turn_metrics(&stored, reparsed);
+
+        assert_eq!(merged[0]["id"], "stored-turn-1");
+        assert_eq!(merged[1]["id"], "stored-turn-2");
+        assert_eq!(merged[0]["inputTokens"], 11);
+        assert_eq!(merged[1]["inputTokens"], 22);
     }
 
     #[test]
