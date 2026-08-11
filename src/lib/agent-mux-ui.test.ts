@@ -105,11 +105,30 @@ test('Agent Mux offers nickname and an internal avatar dropdown with legacy fall
 });
 
 test('global add profile allows selecting an agent while scoped profile actions stay locked', () => {
-  assert.match(componentSource, /setProfileDialog\(\{ agentId: selectedAgent\.id, allowAgentSelection: true \}\)/);
+  assert.match(componentSource, /setProfileDialog\(\{ agentId: agent\.id, allowAgentSelection: true \}\)/);
   assert.match(componentSource, /allowAgentSelection \? <StandardSelect ariaLabel="选择 Agent 类型"/);
   assert.match(componentSource, /icon: <AgentProviderIcon providerId=\{agentProviderId\(item\.id\) \?\? item\.id\} size=\{15\} \/>/);
-  assert.match(componentSource, /onAddProfile=\{\(\) => setProfileDialog\(\{ agentId: selectedAgent\.id \}\)\}/);
-  assert.match(componentSource, /onEditProfile=\{\(profile\) => setProfileDialog\(\{ agentId: selectedAgent\.id, profile \}\)\}/);
+  assert.match(componentSource, /onAddProfile=\{\(agentId\) => setProfileDialog\(\{ agentId: agentId \?\? selectedAgent\?\.id \?\? agentRecords\[0\]\.id, allowAgentSelection: !agentId \}\)\}/);
+  assert.match(componentSource, /onEditProfile=\{\(agentId, profile\) => setProfileDialog\(\{ agentId, profile \}\)\}/);
+});
+
+test('Agent Mux provides an aggregate profile view without duplicating backend data', () => {
+  assert.match(componentSource, /const ALL_AGENTS_ID = '__all__'/);
+  assert.match(componentSource, /useState\(ALL_AGENTS_ID\)/);
+  assert.match(componentSource, />全部配置<\/strong><small>\{agentItems\.length\} 个 Agent · \{profiles\} 个运行配置/);
+  assert.match(componentSource, /agentItems\.flatMap\(\(agent\) => agent\.profiles\.map\(\(profile\) => \(\{ agent, profile \}\)\)\)/);
+  assert.match(componentSource, /agentName=\{isAll \? agent\.name : undefined\}/);
+});
+
+test('Agent Mux profile drawer tests the form and saves new profiles through automatic activation', () => {
+  assert.match(componentSource, /onTest=\{probeProfile\}/);
+  assert.match(componentSource, /const \[testResult, setTestResult\] = useState/);
+  assert.match(componentSource, /useEffect\(\(\) => \{ setTestResult\(null\); \}, \[agent\.id, channelId, model\]\)/);
+  assert.match(componentSource, />\{testing \? '测试中…' : '测试连接'\}<\/button>/);
+  assert.match(componentSource, /<Check size=\{14\} \/>保存并启用/);
+  assert.doesNotMatch(componentSource, /status: profile\?\.status \?\? 'disabled'/);
+  assert.match(componentSource, /connectionChanged \? \(connectionVerified \? 'available' : 'busy'\) : original\.status/);
+  assert.match(componentSource, /updateAgentMuxProfileStatus\(savedProfile\.id, 'offline'\)/);
 });
 
 test('Agent Mux profile configuration selects the channel before its model catalog', () => {

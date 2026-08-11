@@ -3,6 +3,7 @@ import { PopoverPortal } from './PopoverPortal';
 import { FileActionMenu } from './FileActionMenu';
 import { WebLinkActionMenu, type WebLinkMenuTarget } from './WebLinkActionMenu';
 import { ConversationWebPreviewCard } from './ConversationWebPreviewCard';
+import { AuthenticatedImage } from './AuthenticatedImage';
 import { ImagePreviewDialog, type ImagePreviewItem } from './ImagePreviewDialog';
 import { MarkdownContent } from './MarkdownContent';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
@@ -804,7 +805,7 @@ function UserContentBlocks({
                   })
                 }
               >
-                <img
+                <AuthenticatedImage
                   src={buildUserAttachmentPreviewUrl(imagePath, attachmentPreviewScope)}
                   alt={block.name || '图片附件'}
                   className="user-message-attachment-preview"
@@ -854,7 +855,7 @@ function UserAttachmentGallery({
               })
             }
           >
-            <img
+            <AuthenticatedImage
               src={buildUserAttachmentPreviewUrl(attachment.path, attachmentPreviewScope)}
               alt={attachment.name || '图片附件'}
               className="user-message-attachment-preview"

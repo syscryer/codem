@@ -4567,6 +4567,16 @@ display: inline-grid;
   background: #f1f1f1;
 }
 
+.authenticated-image-placeholder {
+  display: grid;
+  place-items: center;
+}
+
+.image-preview-image.authenticated-image-placeholder {
+  width: 160px;
+  height: 160px;
+}
+
 .user-message-attachment-name {
   color: #666666;
   font-size: 11px;
@@ -26277,6 +26287,7 @@ div[data-popover-portal] > * {
 .agent-mux-profile-actions button:hover:not(:disabled) { color: var(--mux-blue); background: color-mix(in srgb, var(--mux-blue) 8%, transparent); }
 .agent-mux-profile-actions button:disabled { cursor: wait; opacity: .55; }
 .agent-mux-inline-message { display: inline-flex; align-items: center; gap: 7px; margin: 10px 0 0; color: #15803d; font-size: 11px; }
+.agent-mux-inline-message.error { color: var(--danger, #dc2626); }
 .agent-mux-routing-note { display: flex; align-items: center; gap: 9px; padding: 12px 13px; border: 1px solid color-mix(in srgb, var(--mux-blue) 22%, var(--mux-border)); border-radius: 7px; color: var(--mux-muted); background: color-mix(in srgb, var(--mux-blue) 5%, var(--mux-surface)); font-size: 11px; }
 .agent-mux-routing-note svg { color: var(--mux-blue); }
 

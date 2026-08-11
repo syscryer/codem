@@ -1134,7 +1134,7 @@ function ProviderDetail({
               </dd>
             </div>
           </dl>
-          {provider.id !== 'hermes-agent' && (!isInstalled || updateAvailable) ? (
+          {!isInstalled || updateAvailable ? (
             <button
               type="button"
               className="settings-action-button primary agent-provider-lifecycle-action"

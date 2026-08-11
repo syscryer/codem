@@ -1,6 +1,7 @@
 import { useEffect, useState, type SyntheticEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
+import { AuthenticatedImage } from './AuthenticatedImage';
 
 export type ImagePreviewItem = {
   src: string;
@@ -82,7 +83,7 @@ export function ImagePreviewDialog({
           <X size={18} />
         </button>
         <div className="image-preview-stage">
-          <img
+          <AuthenticatedImage
             src={preview.src}
             alt={preview.alt}
             className="image-preview-image"

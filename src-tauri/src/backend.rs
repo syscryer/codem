@@ -1614,7 +1614,12 @@ async fn read_agent_latest_version(
     }
 
     if provider_id == HERMES_AGENT_PROVIDER_ID {
-        return read_github_latest_version(HERMES_GITHUB_REPOSITORY, proxy_environment).await;
+        return read_github_latest_version(
+            HERMES_GITHUB_REPOSITORY,
+            proxy_environment,
+            parse_hermes_github_release_version,
+        )
+        .await;
     }
 
     let package = match agent_npm_package_name(provider_id) {
@@ -1653,7 +1658,13 @@ async fn read_agent_latest_version(
             }
         }
         if provider_id == OPENCODE_PROVIDER_ID {
-            if let Ok(version) = fetch_github_latest_version(&client, "anomalyco/opencode").await {
+            if let Ok(version) = fetch_github_latest_version(
+                &client,
+                "anomalyco/opencode",
+                parse_github_release_tag_version,
+            )
+            .await
+            {
                 return AgentLatestVersionCheck {
                     latest_version: Some(version),
                     error: None,
@@ -1671,6 +1682,7 @@ async fn read_agent_latest_version(
 async fn read_github_latest_version(
     repository: &str,
     proxy_environment: Option<&[(String, String)]>,
+    parse_version: fn(&Value) -> Option<String>,
 ) -> AgentLatestVersionCheck {
     let proxy_url = proxy_environment.and_then(|environment| {
         environment
@@ -1690,7 +1702,7 @@ async fn read_github_latest_version(
         let Ok(client) = client_builder.build() else {
             continue;
         };
-        if let Ok(version) = fetch_github_latest_version(&client, repository).await {
+        if let Ok(version) = fetch_github_latest_version(&client, repository, parse_version).await {
             return AgentLatestVersionCheck {
                 latest_version: Some(version),
                 error: None,
@@ -1751,6 +1763,7 @@ fn parse_npm_latest_version(payload: &Value) -> Option<String> {
 async fn fetch_github_latest_version(
     client: &reqwest::Client,
     repository: &str,
+    parse_version: fn(&Value) -> Option<String>,
 ) -> Result<String, ()> {
     let response = client
         .get(format!(
@@ -1764,13 +1777,25 @@ async fn fetch_github_latest_version(
         .error_for_status()
         .map_err(|_| ())?;
     let payload = response.json::<Value>().await.map_err(|_| ())?;
+    parse_version(&payload).ok_or(())
+}
+
+fn parse_github_release_tag_version(payload: &Value) -> Option<String> {
     payload
         .get("tag_name")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.strip_prefix('v').unwrap_or(value).to_string())
-        .ok_or(())
+}
+
+fn parse_hermes_github_release_version(payload: &Value) -> Option<String> {
+    payload
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| value.starts_with("Hermes Agent "))
+        .and_then(extract_agent_semantic_version)
 }
 
 async fn read_grok_latest_version(
@@ -5969,7 +5994,6 @@ async fn update_thread(
     let _guard = lock_workspace_write(&state)?;
     let mut connection = open_initialized_workspace_database(&state)?;
     let mut refresh_workspace = false;
-    let channel_changed = payload.get("channelId").is_some();
 
     if let Some(title) = payload
         .get("title")
@@ -5987,7 +6011,7 @@ async fn update_thread(
         refresh_workspace = true;
     }
 
-    update_thread_metadata_from_payload(
+    let channel_changed = update_thread_metadata_from_payload(
         &mut connection,
         &thread_id,
         &payload,
@@ -10903,7 +10927,7 @@ fn update_thread_metadata_from_payload(
     thread_id: &str,
     payload: &Value,
     agent_channels: &crate::agent_channels::AgentChannelService,
-) -> ApiResult<()> {
+) -> ApiResult<bool> {
     let thread = read_thread_detail(connection, thread_id)?;
     let previous_session_id = thread.session_id.clone();
     let previous_transcript_path = thread.transcript_path.clone();
@@ -10920,7 +10944,7 @@ fn update_thread_metadata_from_payload(
         || has_permission_mode
         || has_channel_id)
     {
-        return Ok(());
+        return Ok(false);
     }
 
     let session_id = if has_session_id {
@@ -11100,7 +11124,8 @@ fn update_thread_metadata_from_payload(
         .map_err(|error| ApiError::internal(format!("更新项目失败: {error}")))?;
     transaction
         .commit()
-        .map_err(|error| ApiError::internal(format!("提交聊天元数据失败: {error}")))
+        .map_err(|error| ApiError::internal(format!("提交聊天元数据失败: {error}")))?;
+    Ok(channel_changed)
 }
 
 fn ignore_imported_session(
@@ -22382,7 +22407,8 @@ mod tests {
         normalize_agent_plugin_action, normalize_agent_runtime_settings,
         normalize_general_settings, normalize_open_with_settings, normalize_pi_probe_summary,
         normalize_request_user_input_answer_value, open_initialized_workspace_database,
-        parse_grok_cli_version, parse_grok_latest_version, parse_macos_system_proxy_environment,
+        parse_github_release_tag_version, parse_grok_cli_version, parse_grok_latest_version,
+        parse_hermes_github_release_version, parse_macos_system_proxy_environment,
         parse_npm_latest_version, parse_pi_installed_packages, parse_request_user_input_event,
         pi_node_version_supported, prepare_thread_fork_operation,
         probe_claude_thread_fork_capability, provider_supports_reasoning_effort,
@@ -26288,6 +26314,37 @@ mod tests {
     }
 
     #[test]
+    fn github_release_tag_version_parser_keeps_generic_agent_behavior() {
+        assert_eq!(
+            parse_github_release_tag_version(&json!({ "tag_name": " v1.2.3 " })).as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            parse_github_release_tag_version(&json!({ "name": "Agent v1.2.3" })),
+            None
+        );
+    }
+
+    #[test]
+    fn hermes_github_release_version_parser_reads_product_version_from_name() {
+        let release = json!({
+            "tag_name": "v2026.8.3",
+            "name": "Hermes Agent v0.20.0 (2026.8.3)"
+        });
+        assert_eq!(
+            parse_hermes_github_release_version(&release).as_deref(),
+            Some("0.20.0")
+        );
+        assert_eq!(
+            parse_hermes_github_release_version(&json!({
+                "tag_name": "v2026.8.3",
+                "name": "2026.8.3"
+            })),
+            None
+        );
+    }
+
+    #[test]
     fn agent_lifecycle_grok_latest_version_parser_reads_official_update_payload() {
         let result = parse_grok_latest_version(
             "Checking for updates...\n{\"currentVersion\":\"0.2.99\",\"latestVersion\":\"0.2.101\",\"updateAvailable\":true,\"installer\":\"internal\",\"channel\":\"stable\",\"autoUpdate\":true,\"error\":null}\n",
@@ -27907,7 +27964,7 @@ mod tests {
             true,
         )
         .expect("create Codex thread");
-        update_thread_metadata_from_payload(
+        let channel_changed = update_thread_metadata_from_payload(
             &mut connection,
             &thread_id,
             &json!({
@@ -27919,6 +27976,7 @@ mod tests {
             &channel_service,
         )
         .expect("store Codex thread");
+        assert!(!channel_changed);
 
         let (provider, session_id, transcript_path, model, reasoning_effort, permission_mode): (
             String,
@@ -27956,13 +28014,14 @@ mod tests {
                 params![thread_id],
             )
             .expect("bind Codex channel");
-        update_thread_metadata_from_payload(
+        let channel_changed = update_thread_metadata_from_payload(
             &mut connection,
             &thread_id,
             &json!({ "channelId": null }),
             &channel_service,
         )
         .expect("switch Codex channel");
+        assert!(channel_changed);
         let (session_id, channel_id, fingerprint): (
             Option<String>,
             Option<String>,
@@ -27977,6 +28036,14 @@ mod tests {
         assert_eq!(session_id, None);
         assert_eq!(channel_id, None);
         assert_eq!(fingerprint, None);
+        let channel_changed = update_thread_metadata_from_payload(
+            &mut connection,
+            &thread_id,
+            &json!({ "channelId": null }),
+            &channel_service,
+        )
+        .expect("keep Codex system channel");
+        assert!(!channel_changed);
         assert!(update_thread_metadata_from_payload(
             &mut connection,
             &thread_id,

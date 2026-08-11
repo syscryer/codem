@@ -466,6 +466,8 @@ test('Hermes management uses runtime detection and the dedicated settings panel'
   assert.match(providerSettingsSource, /HermesSettingsPanel/);
   assert.match(composerSource, /agent === 'codex' \|\| agent === 'opencode' \|\| providerId === 'hermes-agent'/);
   assert.match(providerSettingsSource, /provider\.id === 'hermes-agent'/);
+  assert.match(providerSettingsSource, /\{!isInstalled \|\| updateAvailable \? \(/);
+  assert.doesNotMatch(providerSettingsSource, /provider\.id !== 'hermes-agent' && \(!isInstalled \|\| updateAvailable\)/);
   assert.match(hermesSettingsSource, /'overview' \| 'profiles' \| 'memory' \| 'skills' \| 'mcp' \| 'gateway' \| 'runtime'/);
   assert.match(hermesSettingsSource, /label: '运行信息'/);
   assert.match(hermesSettingsSource, /runtimeContent: ReactNode/);

@@ -56,6 +56,7 @@ import {
 
 type MuxView = 'overview' | 'agents' | 'monitor' | 'skill';
 type RunStatus = 'running' | 'completed' | 'failed' | 'queued' | 'waiting' | 'cancelled';
+const ALL_AGENTS_ID = '__all__';
 
 type RuntimeProfile = {
   id: string;
@@ -147,7 +148,7 @@ ${profiles.length > 0 ? profiles.join('\n') : '- 当前没有已检测可用的�
 export function AgentMuxPrototype({ projects, activeProjectId }: { projects: ProjectSummary[]; activeProjectId: string | null }) {
   const [view, setView] = useState<MuxView>('overview');
   const [agentRecords, setAgentRecords] = useState<AgentRecord[]>([]);
-  const [selectedAgentId, setSelectedAgentId] = useState('');
+  const [selectedAgentId, setSelectedAgentId] = useState(ALL_AGENTS_ID);
   const [runRecords, setRunRecords] = useState<RunRecord[]>([]);
   const [selectedRunId, setSelectedRunId] = useState('');
   const [metrics, setMetrics] = useState<AgentMuxMetrics>({ running: 0, availableAgents: 0, todayCalls: 0, successRate: null });
@@ -171,7 +172,7 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
   const [copiedInstallInstruction, setCopiedInstallInstruction] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const selectedRunIdRef = useRef(selectedRunId);
-  const selectedAgent = agentRecords.find((agent) => agent.id === selectedAgentId) ?? agentRecords[0];
+  const selectedAgent = selectedAgentId === ALL_AGENTS_ID ? null : agentRecords.find((agent) => agent.id === selectedAgentId) ?? null;
   const selectedRun = runRecords.find((run) => run.id === selectedRunId);
   const selectedConversationRuns = useMemo(() => {
     if (!selectedRun) return [];
@@ -208,7 +209,7 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
       setAgentRecords(overview.agents);
       setRunRecords(overview.runs);
       setMetrics(overview.metrics);
-      setSelectedAgentId((current) => current || overview.agents[0]?.id || '');
+      setSelectedAgentId((current) => current === ALL_AGENTS_ID || overview.agents.some((agent) => agent.id === current) ? current : ALL_AGENTS_ID);
       setBackendStatus('connected');
     }).catch((error) => {
       if (disposed) return;
@@ -365,22 +366,52 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
     window.setTimeout(() => setCopiedInstallInstruction(false), 1800);
   };
 
-  const saveProfile = async (profile: RuntimeProfile) => {
-    const agentId = profileDialog?.agentId;
-    if (!agentId) return;
-    try {
-      if (profileDialog.profile) await updateAgentMuxProfile(profile);
-      else await createAgentMuxProfile(agentId, profile);
-    } catch (error) {
-      setTestMessage(error instanceof Error ? error.message : '保存 Agent Mux 配置失败');
-      return;
-    }
+  const probeProfile = (agentId: string, profile: RuntimeProfile) => profile.channelId
+    ? testAgentChannel(profile.channelId).then((value) => ({ available: value.ok, message: value.message }))
+    : probeAgentMuxAgent(agentId);
+
+  const updateProfileInState = (agentId: string, profile: RuntimeProfile) => {
     setAgentRecords((current) => current.map((agent) => {
       if (agent.id !== agentId) return agent;
       const exists = agent.profiles.some((item) => item.id === profile.id);
       return { ...agent, profiles: exists ? agent.profiles.map((item) => item.id === profile.id ? profile : item) : [...agent.profiles, profile] };
     }));
+  };
+
+  const saveProfile = async (profile: RuntimeProfile, connectionVerified: boolean) => {
+    const agentId = profileDialog?.agentId;
+    if (!agentId) return;
+    const original = profileDialog.profile;
+    const connectionChanged = !original || (original.channelId ?? null) !== (profile.channelId ?? null) || original.model !== profile.model;
+    const savedProfile = { ...profile, status: connectionChanged ? (connectionVerified ? 'available' : 'busy') : original.status } as RuntimeProfile;
+    try {
+      if (original) await updateAgentMuxProfile(savedProfile);
+      else await createAgentMuxProfile(agentId, savedProfile);
+    } catch (error) {
+      setTestMessage(error instanceof Error ? error.message : '保存 Agent Mux 配置失败');
+      return;
+    }
+    updateProfileInState(agentId, savedProfile);
     setProfileDialog(null);
+    if (!connectionChanged || connectionVerified) {
+      setTestMessage(connectionVerified ? `${savedProfile.provider} / ${savedProfile.model} 已连接并启用` : '运行配置已保存');
+      return;
+    }
+    setTestingProfileId(savedProfile.id);
+    setTestMessage(`正在检查 ${savedProfile.provider} / ${savedProfile.model} 对应的 Agent 工具...`);
+    try {
+      const result = await probeProfile(agentId, savedProfile);
+      const status = result.available ? 'available' : 'offline';
+      await updateAgentMuxProfileStatus(savedProfile.id, status);
+      updateProfileInState(agentId, { ...savedProfile, status });
+      setTestMessage(result.message);
+    } catch (error) {
+      await updateAgentMuxProfileStatus(savedProfile.id, 'offline').catch(() => undefined);
+      updateProfileInState(agentId, { ...savedProfile, status: 'offline' });
+      setTestMessage(error instanceof Error ? error.message : '连接测试失败');
+    } finally {
+      setTestingProfileId(null);
+    }
   };
 
   const deleteProfile = async (agentId: string, profile: RuntimeProfile, confirmed = false) => {
@@ -419,14 +450,14 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
     try {
       await updateAgentMuxProfileStatus(profile.id, 'busy');
       setAgentRecords((current) => current.map((agent) => agent.id === agentId ? { ...agent, profiles: agent.profiles.map((item) => item.id === profile.id ? { ...item, status: 'busy' } : item) } : agent));
-      const result = profile.channelId
-        ? await testAgentChannel(profile.channelId).then((value) => ({ available: value.ok, message: value.message }))
-        : await probeAgentMuxAgent(agentId);
+      const result = await probeProfile(agentId, profile);
       const status = result.available ? 'available' : 'offline';
       await updateAgentMuxProfileStatus(profile.id, status);
       setAgentRecords((current) => current.map((agent) => agent.id === agentId ? { ...agent, profiles: agent.profiles.map((item) => item.id === profile.id ? { ...item, status } : item) } : agent));
       setTestMessage(result.message);
     } catch (error) {
+      await updateAgentMuxProfileStatus(profile.id, 'offline').catch(() => undefined);
+      updateProfileInState(agentId, { ...profile, status: 'offline' });
       setTestMessage(error instanceof Error ? error.message : '连接测试失败');
     } finally {
       setTestingProfileId(null);
@@ -608,7 +639,7 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
           <Metric label="今日调用" value={String(metrics.todayCalls)} />
           <Metric label="成功率" value={metrics.successRate == null ? '--' : `${metrics.successRate.toFixed(1)}%`} success={metrics.successRate != null} />
         </div>
-        <div className="agent-mux-header-actions"><button type="button" className="agent-mux-secondary-button" onClick={() => setRunDialogOpen(true)} disabled={availableProfiles.length === 0 || startingRun}><Send size={15} />运行任务</button><button type="button" className="agent-mux-primary-button" onClick={() => { if (!selectedAgent) return; setView('agents'); setProfileDialog({ agentId: selectedAgent.id, allowAgentSelection: true }); }} disabled={!selectedAgent}><Plus size={15} />添加配置</button></div>
+        <div className="agent-mux-header-actions"><button type="button" className="agent-mux-secondary-button" onClick={() => setRunDialogOpen(true)} disabled={availableProfiles.length === 0 || startingRun}><Send size={15} />运行任务</button><button type="button" className="agent-mux-primary-button" onClick={() => { const agent = selectedAgent ?? agentRecords[0]; if (!agent) return; setView('agents'); setProfileDialog({ agentId: agent.id, allowAgentSelection: true }); }} disabled={agentRecords.length === 0}><Plus size={15} />添加配置</button></div>
       </header>
 
       <div className="agent-mux-toolbar">
@@ -625,10 +656,10 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
       </div>
 
       {view === 'overview' ? <OverviewView agents={agentRecords} runs={runRecords} metrics={metrics} onOpenRuns={() => setView('monitor')} onOpenRun={(runId) => { selectedRunIdRef.current = runId; setSelectedRunId(runId); setView('monitor'); }} onOpenAgents={() => setView('agents')} onOpenSkill={() => setView('skill')} /> : null}
-      {view === 'agents' ? (selectedAgent ? <AgentsView agents={agentRecords} selected={selectedAgent} selectedId={selectedAgentId} profiles={availableProfiles.length} onSelect={setSelectedAgentId} onAddProfile={() => setProfileDialog({ agentId: selectedAgent.id })} onEditProfile={(profile) => setProfileDialog({ agentId: selectedAgent.id, profile })} onDeleteProfile={(profile) => deleteProfile(selectedAgent.id, profile)} onToggleProfile={(profile) => toggleProfile(selectedAgent.id, profile)} onTestProfile={(profile) => testProfile(selectedAgent.id, profile)} testingProfileId={testingProfileId} testMessage={testMessage} /> : <EmptyState title="暂无 Agent 配置" detail="后端未返回可管理的 Agent 配置。" />) : null}
+      {view === 'agents' ? (agentRecords.length > 0 ? <AgentsView agents={agentRecords} selected={selectedAgent} selectedId={selectedAgentId} profiles={agentRecords.reduce((count, agent) => count + agent.profiles.length, 0)} onSelect={setSelectedAgentId} onAddProfile={(agentId) => setProfileDialog({ agentId: agentId ?? selectedAgent?.id ?? agentRecords[0].id, allowAgentSelection: !agentId })} onEditProfile={(agentId, profile) => setProfileDialog({ agentId, profile })} onDeleteProfile={deleteProfile} onToggleProfile={toggleProfile} onTestProfile={testProfile} testingProfileId={testingProfileId} testMessage={testMessage} /> : <EmptyState title="暂无 Agent 配置" detail="后端未返回可管理的 Agent 配置。" />) : null}
       {view === 'monitor' ? <MonitorView agents={agentRecords} runs={runRecords} projects={projects} selected={selectedRun} conversationRuns={selectedConversationRuns} eventsByRunId={runEventsById} liveTurns={liveRunTurns} onSelect={(runId) => { selectedRunIdRef.current = runId; setSelectedRunId(runId); }} onCancel={cancelRun} /> : null}
       {view === 'skill' ? <SkillView agents={agentRecords} skillText={skillText} copied={copied} source={skillSource} targets={skillInstallTargets} installPending={skillInstallPending} installMessage={skillInstallMessage} copiedPath={copiedSkillPath} copiedInstruction={copiedInstallInstruction} cliPath={runtimeInfo.cliPath} runtimeManaged={runtimeInfo.runtimeManaged} onCopy={copySkill} onCopyPath={copySkillPath} onCopyInstruction={copyInstallInstruction} onInstall={installSkillTarget} onInstallAll={installSkillToAll} onExport={exportSkill} onStopRuntime={stopRuntime} /> : null}
-      {profileDialog && selectedAgent ? <AddRuntimeProfileDialog key={`${profileDialog.agentId}:${profileDialog.profile?.id ?? 'new'}`} agent={agentRecords.find((agent) => agent.id === profileDialog.agentId) ?? selectedAgent} agents={agentRecords} profile={profileDialog.profile} allowAgentSelection={profileDialog.allowAgentSelection === true} channels={agentChannels} systemChannels={agentSystemChannels} providerAvailability={skillProviderAvailability} onAgentChange={(agentId) => setProfileDialog((current) => current ? { ...current, agentId } : current)} onClose={() => setProfileDialog(null)} onSave={saveProfile} /> : null}
+      {profileDialog ? <AddRuntimeProfileDialog key={`${profileDialog.agentId}:${profileDialog.profile?.id ?? 'new'}`} agent={agentRecords.find((agent) => agent.id === profileDialog.agentId) ?? agentRecords[0]} agents={agentRecords} profile={profileDialog.profile} allowAgentSelection={profileDialog.allowAgentSelection === true} channels={agentChannels} systemChannels={agentSystemChannels} providerAvailability={skillProviderAvailability} onAgentChange={(agentId) => setProfileDialog((current) => current ? { ...current, agentId } : current)} onClose={() => setProfileDialog(null)} onTest={probeProfile} onSave={saveProfile} /> : null}
       {runDialogOpen ? <RunTaskDialog agents={agentRecords} projects={projects} activeProjectId={activeProjectId} starting={startingRun} onClose={() => setRunDialogOpen(false)} onStart={startRun} /> : null}
       {confirmation ? <AgentMuxConfirmDialog confirmation={confirmation} onClose={() => setConfirmation(null)} onConfirm={() => { const action = confirmation.action; setConfirmation(null); void action(); }} /> : null}
     </section>
@@ -667,21 +698,26 @@ function OverviewView({ agents: agentItems, runs: items, metrics, onOpenRuns, on
   );
 }
 
-function AgentsView({ agents: agentItems, selected, selectedId, onSelect, profiles, onAddProfile, onEditProfile, onDeleteProfile, onToggleProfile, onTestProfile, testingProfileId, testMessage }: { agents: AgentRecord[]; selected: AgentRecord; selectedId: string; onSelect: (id: string) => void; profiles: number; onAddProfile: () => void; onEditProfile: (profile: RuntimeProfile) => void; onDeleteProfile: (profile: RuntimeProfile) => void; onToggleProfile: (profile: RuntimeProfile) => void; onTestProfile: (profile: RuntimeProfile) => void; testingProfileId: string | null; testMessage: string | null }) {
+function AgentsView({ agents: agentItems, selected, selectedId, onSelect, profiles, onAddProfile, onEditProfile, onDeleteProfile, onToggleProfile, onTestProfile, testingProfileId, testMessage }: { agents: AgentRecord[]; selected: AgentRecord | null; selectedId: string; onSelect: (id: string) => void; profiles: number; onAddProfile: (agentId?: string) => void; onEditProfile: (agentId: string, profile: RuntimeProfile) => void; onDeleteProfile: (agentId: string, profile: RuntimeProfile) => void; onToggleProfile: (agentId: string, profile: RuntimeProfile) => void; onTestProfile: (agentId: string, profile: RuntimeProfile) => void; testingProfileId: string | null; testMessage: string | null }) {
+  const isAll = selectedId === ALL_AGENTS_ID;
+  const displayedProfiles = isAll
+    ? agentItems.flatMap((agent) => agent.profiles.map((profile) => ({ agent, profile })))
+    : selected?.profiles.map((profile) => ({ agent: selected, profile })) ?? [];
   return (
     <div className="agent-mux-page agent-mux-split-page">
       <div className="agent-mux-list-panel">
-        <div className="agent-mux-list-header"><div><h2>Agent 配置</h2><p>具体 Agent 工具及其供应商、模型组合。</p></div><button type="button" className="agent-mux-icon-button" title="添加运行配置" onClick={onAddProfile}><Plus size={16} /></button></div>
+        <div className="agent-mux-list-header"><div><h2>Agent 配置</h2><p>具体 Agent 工具及其供应商、模型组合。</p></div><button type="button" className="agent-mux-icon-button" title="添加运行配置" onClick={() => onAddProfile()}><Plus size={16} /></button></div>
         <label className="agent-mux-search"><Search size={14} /><input placeholder="搜索 Agent" /></label>
         <div className="agent-mux-agent-list">
+          <button type="button" className={`agent-mux-agent-item${isAll ? ' selected' : ''}`} onClick={() => onSelect(ALL_AGENTS_ID)}><span className="agent-mux-agent-mark"><Terminal size={17} /></span><span className="agent-mux-agent-copy"><strong>全部配置</strong><small>{agentItems.length} 个 Agent · {profiles} 个运行配置</small></span><ChevronRight size={15} /></button>
           {agentItems.map((agent) => <button type="button" key={agent.id} className={`agent-mux-agent-item${selectedId === agent.id ? ' selected' : ''}`} onClick={() => onSelect(agent.id)}><span className="agent-mux-agent-mark" data-provider={agent.id}><AgentProviderIcon providerId={agentProviderId(agent.id) ?? agent.id} size={17} /></span><span className="agent-mux-agent-copy"><strong>{agent.name}</strong><small>{agent.profiles.length} 个运行配置 · {agent.tags.slice(0, 2).join(' · ')}</small></span><span className="agent-mux-status-dot" data-status={agent.profiles.some((profile) => profile.status === 'available') ? 'available' : 'offline'} /><ChevronRight size={15} /></button>)}
         </div>
         <div className="agent-mux-list-footer"><span><Bot size={13} />{agentItems.length} 个 Agent</span><span><Terminal size={13} />{profiles} 个配置</span></div>
       </div>
       <div className="agent-mux-detail-panel">
-        <div className="agent-mux-detail-heading"><div><span className="agent-mux-detail-kicker">AGENT TYPE</span><h2>{selected.name}</h2><p>{selected.description}</p></div></div>
-        <div className="agent-mux-tag-row">{selected.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
-        <section className="agent-mux-detail-section"><div className="agent-mux-section-title"><div><h3>运行配置</h3><p>同一个 Agent 可以连接多个供应商和模型。</p></div><button type="button" className="agent-mux-secondary-button" onClick={onAddProfile}><Plus size={14} />添加配置</button></div>{testMessage ? <div className="agent-mux-inline-message"><CheckCircle2 size={14} />{testMessage}</div> : null}<div className="agent-mux-profile-table"><div className="agent-mux-table-head"><span>供应商 / 模型</span><span>能力</span><span>用途</span><span>状态</span><span>操作</span></div>{selected.profiles.map((profile) => <ProfileRow key={profile.id} agentId={selected.id} profile={profile} onEdit={() => onEditProfile(profile)} onDelete={() => onDeleteProfile(profile)} onToggle={() => onToggleProfile(profile)} onTest={() => onTestProfile(profile)} testing={testingProfileId === profile.id} />)}</div></section>
+        <div className="agent-mux-detail-heading"><div><span className="agent-mux-detail-kicker">{isAll ? 'ALL CONFIGURATIONS' : 'AGENT TYPE'}</span><h2>{isAll ? '全部配置' : selected?.name}</h2><p>{isAll ? `${agentItems.length} 个 Agent · ${profiles} 个运行配置` : selected?.description}</p></div></div>
+        {!isAll && selected ? <div className="agent-mux-tag-row">{selected.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
+        <section className="agent-mux-detail-section"><div className="agent-mux-section-title"><div><h3>运行配置</h3><p>{isAll ? '集中维护所有 Agent 的供应商和模型组合。' : '同一个 Agent 可以连接多个供应商和模型。'}</p></div><button type="button" className="agent-mux-secondary-button" onClick={() => onAddProfile(isAll ? undefined : selected?.id)}><Plus size={14} />添加配置</button></div>{testMessage ? <div className="agent-mux-inline-message"><CheckCircle2 size={14} />{testMessage}</div> : null}<div className="agent-mux-profile-table"><div className="agent-mux-table-head"><span>供应商 / 模型</span><span>能力</span><span>用途</span><span>状态</span><span>操作</span></div>{displayedProfiles.map(({ agent, profile }) => <ProfileRow key={`${agent.id}:${profile.id}`} agentId={agent.id} agentName={isAll ? agent.name : undefined} profile={profile} onEdit={() => onEditProfile(agent.id, profile)} onDelete={() => onDeleteProfile(agent.id, profile)} onToggle={() => onToggleProfile(agent.id, profile)} onTest={() => onTestProfile(agent.id, profile)} testing={testingProfileId === profile.id} />)}</div></section>
         <section className="agent-mux-detail-section"><div className="agent-mux-section-title"><div><h3>调度说明</h3><p>Skill 调用时可以按优先级自动选择，也可以指定具体配置。</p></div></div><div className="agent-mux-routing-note"><ShieldCheck size={16} /><span>未评级的配置仍可正常使用；只有开启自动选择时，能力等级才参与路由。</span></div></section>
       </div>
     </div>
@@ -841,7 +877,7 @@ function AgentMuxConfirmDialog({ confirmation, onClose, onConfirm }: { confirmat
   return <div className="dialog-backdrop agent-mux-confirm-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="dialog-card agent-mux-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="agent-mux-confirm-title"><div className="dialog-head"><h3 id="agent-mux-confirm-title">{confirmation.title}</h3><p>{confirmation.description}</p></div><div className="dialog-actions"><button type="button" className="dialog-button secondary" onClick={onClose}>取消</button><button type="button" className={`dialog-button ${confirmation.tone}`} onClick={onConfirm}>{confirmation.confirmLabel}</button></div></div></div>;
 }
 
-function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, channels, systemChannels, providerAvailability, onAgentChange, onClose, onSave }: { agent: AgentRecord; agents: AgentRecord[]; profile?: RuntimeProfile; allowAgentSelection: boolean; channels: AgentChannel[]; systemChannels: AgentSystemChannel[]; providerAvailability: Record<string, boolean>; onAgentChange: (agentId: string) => void; onClose: () => void; onSave: (profile: RuntimeProfile) => void }) {
+function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, channels, systemChannels, providerAvailability, onAgentChange, onClose, onTest, onSave }: { agent: AgentRecord; agents: AgentRecord[]; profile?: RuntimeProfile; allowAgentSelection: boolean; channels: AgentChannel[]; systemChannels: AgentSystemChannel[]; providerAvailability: Record<string, boolean>; onAgentChange: (agentId: string) => void; onClose: () => void; onTest: (agentId: string, profile: RuntimeProfile) => Promise<{ available: boolean; message: string }>; onSave: (profile: RuntimeProfile, connectionVerified: boolean) => void }) {
   const providerId = agentProviderId(agent.id);
   const availableChannels = providerId ? channels.filter((channel) => channel.providerId === providerId && channel.enabled) : [];
   const availableSystemChannels = providerId ? systemChannels.filter((channel) => channel.providerId === providerId && channel.configured) : [];
@@ -882,6 +918,8 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
   const capabilityOptions = agentCapabilityOptions(agent.id);
   const [primaryCapability, setPrimaryCapability] = useState(profile?.tags[0] ?? capabilityOptions[0] ?? '');
   const [secondaryCapability, setSecondaryCapability] = useState(profile?.tags[1] ?? '');
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ fingerprint: string; available: boolean; message: string } | null>(null);
   const modelCatalogReady = channelId !== 'system' || Boolean(selectedSystemChannel?.model?.trim()) || nativeModelCatalog !== undefined;
   const defaultModelId = selectedCatalog?.defaultModelId
     ?? selectedModels.find((item) => item.isDefault)?.id
@@ -895,15 +933,17 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
     }
   }, [defaultModelId, model, modelCatalogReady, selectedModelIds]);
   const selectedModel = selectedModels.find((item) => item.id === model);
+  const fingerprint = `${agent.id}:${channelId}:${model}`;
+  useEffect(() => { setTestResult(null); }, [agent.id, channelId, model]);
   const reasoningOptions = [
     { value: '', label: selectedModel?.defaultReasoningEffort ? `跟随模型默认（${formatReasoningLabel(selectedModel.defaultReasoningEffort)}）` : '跟随模型默认' },
     ...(selectedModel?.supportedReasoningEfforts ?? []).map((effort) => ({ value: effort.id, label: formatReasoningLabel(effort.id), description: 'description' in effort ? effort.description : undefined })),
   ];
 
-  const save = () => {
+  const buildProfile = (status: RuntimeProfile['status']): RuntimeProfile | null => {
     const normalizedModel = model.trim();
-    if (!channelId || !normalizedModel) return;
-    onSave({
+    if (!channelId || !normalizedModel) return null;
+    return {
       id: profile?.id ?? `${agent.id}-${provider.toLowerCase()}-${normalizedModel.toLowerCase()}-${Date.now()}`,
       provider,
       model: normalizedModel,
@@ -913,9 +953,27 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
       level,
       role,
       tags: [primaryCapability, secondaryCapability].filter((tag, index, items) => tag && items.indexOf(tag) === index),
-      status: profile?.status ?? 'disabled',
+      status,
       channelId: channelId === 'system' ? null : channelId,
-    });
+    };
+  };
+  const save = () => {
+    const verified = testResult?.fingerprint === fingerprint && testResult.available;
+    const next = buildProfile(verified ? 'available' : profile?.status ?? 'busy');
+    if (next) onSave(next, Boolean(verified));
+  };
+  const test = async () => {
+    const next = buildProfile('busy');
+    if (!next || testing) return;
+    setTesting(true);
+    try {
+      const result = await onTest(agent.id, next);
+      setTestResult({ fingerprint, ...result });
+    } catch (error) {
+      setTestResult({ fingerprint, available: false, message: error instanceof Error ? error.message : '连接测试失败' });
+    } finally {
+      setTesting(false);
+    }
   };
 
   return (
@@ -938,8 +996,9 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
           </div>
           <div className="agent-mux-form-grid"><label className="agent-mux-form-field"><span>主要能力</span><StandardSelect ariaLabel="选择主要能力" value={primaryCapability} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={capabilityOptions.map((value) => ({ value, label: value }))} onChange={setPrimaryCapability} /></label><label className="agent-mux-form-field"><span>补充能力 <em>可选</em></span><StandardSelect ariaLabel="选择补充能力" value={secondaryCapability} placeholder="无" className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={[{ value: '', label: '无' }, ...capabilityOptions.filter((tag) => tag !== primaryCapability).map((value) => ({ value, label: value }))]} onChange={setSecondaryCapability} /></label></div>
           <div className="agent-mux-form-note"><ShieldCheck size={15} /><span>保存后会加入 {agent.name} 的运行配置，并可被 codem-agent-mux Skill 发现。</span></div>
+          {testResult ? <div className={`agent-mux-inline-message${testResult.available ? '' : ' error'}`}>{testResult.available ? <CheckCircle2 size={14} /> : <CircleAlert size={14} />}{testResult.message}</div> : null}
         </div>
-        <div className="agent-mux-drawer-footer"><button type="button" className="agent-mux-secondary-button" onClick={onClose}>取消</button><button type="button" className="agent-mux-primary-button" onClick={save} disabled={!channelId || !model}><Check size={14} />保存配置</button></div>
+        <div className="agent-mux-drawer-footer"><button type="button" className="agent-mux-secondary-button" onClick={onClose}>取消</button><button type="button" className="agent-mux-secondary-button" onClick={() => void test()} disabled={!channelId || !model || testing}><RefreshCw size={14} />{testing ? '测试中…' : '测试连接'}</button><button type="button" className="agent-mux-primary-button" onClick={save} disabled={!channelId || !model}><Check size={14} />保存并启用</button></div>
       </aside>
     </div>
   );
@@ -959,7 +1018,7 @@ function Tab({ active, icon: Icon, label, onClick }: { active: boolean; icon: ty
 function PanelHeading({ title, meta, icon: Icon, action }: { title: string; meta: string; icon: typeof Activity; action: React.ReactNode }) { return <div className="agent-mux-panel-heading"><div><Icon size={15} /><h3>{title}</h3><span>{meta}</span></div>{action}</div>; }
 function CallRow({ run, onOpen }: { run: RunRecord; onOpen: () => void }) { return <button type="button" className="agent-mux-call-row" onClick={onOpen} aria-label={`查看 ${runDisplayName(run)} 运行详情`} title={`${run.target} · ${run.profile}`}><RunIcon status={run.status} /><AgentMuxAvatar avatar={run.avatar} providerId={agentProviderId(run.target) ?? run.target} size="small" /><span className="agent-mux-call-copy"><strong>{runDisplayName(run)}</strong><small>{run.caller} 调用 · {run.target} · {run.profile}</small></span><span className="agent-mux-call-state">{runLabel(run.status)}</span><ChevronRight size={14} /></button>; }
 function HealthRow({ agent }: { agent: AgentRecord }) { const status = agent.profiles.some((profile) => profile.status === 'available') ? 'available' : agent.profiles.some((profile) => profile.status === 'busy') ? 'busy' : 'offline'; return <div className="agent-mux-health-row"><span className="agent-mux-agent-mark small" data-provider={agent.id}><AgentProviderIcon providerId={agentProviderId(agent.id) ?? agent.id} size={15} /></span><span><strong>{agent.name}</strong><small>{agent.profiles.length} 个运行配置</small></span><span className="agent-mux-status-dot" data-status={status} /><span>{status === 'available' ? '可用' : status === 'busy' ? '检测中' : '未连接'}</span></div>; }
-function ProfileRow({ agentId, profile, onEdit, onDelete, onToggle, onTest, testing }: { agentId: string; profile: RuntimeProfile; onEdit: () => void; onDelete: () => void; onToggle: () => void; onTest: () => void; testing: boolean }) { const profileName = profileDisplayName(profile); const profileMeta = `${profile.provider} / ${profile.model} · 思考 ${profile.reasoningEffort ? formatReasoningLabel(profile.reasoningEffort) : '跟随模型'} · ${profile.tags.join(' · ') || '未设置能力标签'}`; return <div className="agent-mux-profile-row"><span className="agent-mux-profile-name"><AgentMuxAvatar avatar={profile.avatar} providerId={agentProviderId(agentId) ?? agentId} size="small" /><span><strong title={profileName}>{profileName}</strong><small title={profileMeta}>{profileMeta}</small></span></span><span className={`agent-mux-level ${profile.level}`}>{profile.level}</span><span className="agent-mux-profile-role">{profile.role}</span><span className={`agent-mux-profile-status ${profile.status}`}>{testing ? '检测中' : profile.status === 'available' ? '可用' : profile.status === 'busy' ? '检测中' : profile.status === 'offline' ? '连接失败' : '已停用'}</span><span className="agent-mux-profile-actions"><button type="button" title="测试连接" onClick={onTest} disabled={testing}><RefreshCw size={13} /></button><button type="button" title="编辑" onClick={onEdit}><Settings2 size={13} /></button><button type="button" title={profile.status === 'disabled' ? '检测并启用' : '停用'} onClick={onToggle}><Radio size={13} /></button><button type="button" title="删除" onClick={onDelete}><X size={13} /></button></span></div>; }
+function ProfileRow({ agentId, agentName, profile, onEdit, onDelete, onToggle, onTest, testing }: { agentId: string; agentName?: string; profile: RuntimeProfile; onEdit: () => void; onDelete: () => void; onToggle: () => void; onTest: () => void; testing: boolean }) { const profileName = profileDisplayName(profile); const profileMeta = `${agentName ? `${agentName} · ` : ''}${profile.provider} / ${profile.model} · 思考 ${profile.reasoningEffort ? formatReasoningLabel(profile.reasoningEffort) : '跟随模型'} · ${profile.tags.join(' · ') || '未设置能力标签'}`; return <div className="agent-mux-profile-row"><span className="agent-mux-profile-name"><AgentMuxAvatar avatar={profile.avatar} providerId={agentProviderId(agentId) ?? agentId} size="small" /><span><strong title={profileName}>{profileName}</strong><small title={profileMeta}>{profileMeta}</small></span></span><span className={`agent-mux-level ${profile.level}`}>{profile.level}</span><span className="agent-mux-profile-role">{profile.role}</span><span className={`agent-mux-profile-status ${profile.status}`}>{testing ? '检测中' : profile.status === 'available' ? '可用' : profile.status === 'busy' ? '检测中' : profile.status === 'offline' ? '连接失败' : '已停用'}</span><span className="agent-mux-profile-actions"><button type="button" title="测试连接" onClick={onTest} disabled={testing}><RefreshCw size={13} /></button><button type="button" title="编辑" onClick={onEdit}><Settings2 size={13} /></button><button type="button" title={profile.status === 'disabled' ? '检测并启用' : '停用'} onClick={onToggle}><Radio size={13} /></button><button type="button" title="删除" onClick={onDelete}><X size={13} /></button></span></div>; }
 function RunIcon({ status }: { status: RunStatus }) { if (status === 'completed') return <CheckCircle2 className="agent-mux-run-icon completed" size={16} />; if (status === 'failed') return <CircleAlert className="agent-mux-run-icon failed" size={16} />; if (status === 'queued' || status === 'waiting' || status === 'cancelled') return <Clock3 className="agent-mux-run-icon queued" size={16} />; return <Activity className="agent-mux-run-icon running" size={16} />; }
 function RunStartedTime({ run }: { run: RunRecord }) { return <time title={formatAgentMuxExactTime(run.createdAt)}>{formatAgentMuxRelativeTime(run.createdAt, run.started)}</time>; }
 function runLabel(status: RunStatus) { return status === 'running' ? '运行中' : status === 'completed' ? '已完成' : status === 'failed' ? '失败' : status === 'waiting' ? '等待处理' : status === 'cancelled' ? '已取消' : '排队中'; }
