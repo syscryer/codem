@@ -37,6 +37,7 @@ const PROVIDER_PI: &str = "pi-agent";
 const PROVIDER_CLAUDE: &str = "claude-code";
 const PROVIDER_GEMINI: &str = "gemini-cli";
 const PROVIDER_HERMES: &str = "hermes-agent";
+const PROVIDER_OPENCODE: &str = "opencode";
 
 struct RuntimeLock {
     path: PathBuf,
@@ -131,10 +132,11 @@ async fn run(args: Vec<String>, app_data_dir: PathBuf) -> Result<(), String> {
         "agents" => {
             let api = ApiClient::connect(&app_data_dir).await?;
             let overview = api.get("/api/agent-mux/overview").await?;
+            let catalog = available_agent_catalog(&overview);
             if args.iter().any(|arg| arg == "--json") {
-                println!("{}", json_for_stdout(&overview, true)?);
+                println!("{}", json_for_stdout(&catalog, true)?);
             } else {
-                print_agents(&overview);
+                print_agents(&catalog);
             }
             Ok(())
         }
@@ -550,6 +552,8 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
     let mut thinking_buffer = String::new();
     let mut session_id = resumed_session_id;
     let mut status = "failed";
+    let mut terminal_error = None;
+    let mut terminal_seen = false;
     let stream_result = async {
         let mut stop_reading = false;
         while let Some(chunk) = stream.chunk().await.map_err(|error| error.to_string())? {
@@ -566,9 +570,11 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
                     &mut thinking_buffer,
                     &mut session_id,
                     &mut status,
+                    &mut terminal_error,
+                    &mut terminal_seen,
                 )
                 .await?;
-                if status == "waiting" {
+                if terminal_seen {
                     stop_reading = true;
                     break;
                 }
@@ -587,6 +593,8 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
                 &mut thinking_buffer,
                 &mut session_id,
                 &mut status,
+                &mut terminal_error,
+                &mut terminal_seen,
             )
             .await?;
         }
@@ -615,15 +623,11 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
     if let Some(runtime_id) = claude_runtime_id.as_deref() {
         let _ = close_claude_runtime(&api, runtime_id).await;
     }
-    let summary = if answer.trim().is_empty() {
-        match status {
-            "waiting" => "等待用户处理".to_string(),
-            "cancelled" => "任务已取消".to_string(),
-            _ => "Agent 流未返回完成事件".to_string(),
-        }
-    } else {
-        answer.trim().chars().take(500).collect()
-    };
+    if let Some(message) = missing_terminal_output_error(status, &answer) {
+        status = "failed";
+        terminal_error = Some(message.to_string());
+    }
+    let summary = terminal_summary(status, &answer, terminal_error.as_deref());
     let duration = format_duration(started_at.elapsed());
     api.patch(
         &format!("/api/agent-mux/runs/{run_id}"),
@@ -633,7 +637,34 @@ async fn invoke(args: &[String], app_data_dir: &Path) -> Result<(), String> {
     if !answer.is_empty() {
         println!();
     }
+    if status == "failed" {
+        return Err(terminal_error.unwrap_or(summary));
+    }
     Ok(())
+}
+
+fn missing_terminal_output_error(status: &str, answer: &str) -> Option<&'static str> {
+    (status == "completed" && answer.trim().is_empty()).then_some("Agent 已完成，但未返回公开输出")
+}
+
+fn terminal_summary(status: &str, answer: &str, terminal_error: Option<&str>) -> String {
+    if status == "failed" {
+        return terminal_error
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .unwrap_or("Agent 流未返回完成事件")
+            .chars()
+            .take(500)
+            .collect();
+    }
+    if !answer.trim().is_empty() {
+        return answer.trim().chars().take(500).collect();
+    }
+    match status {
+        "waiting" => "等待用户处理".to_string(),
+        "cancelled" => "任务已取消".to_string(),
+        _ => "Agent 流未返回完成事件".to_string(),
+    }
 }
 
 fn optional_environment_value(value: Option<String>) -> Option<String> {
@@ -779,6 +810,8 @@ async fn consume_event(
     thinking_buffer: &mut String,
     session_id: &mut Option<String>,
     status: &mut &str,
+    terminal_error: &mut Option<String>,
+    terminal_seen: &mut bool,
 ) -> Result<(), String> {
     if line.trim().is_empty() {
         return Ok(());
@@ -833,6 +866,7 @@ async fn consume_event(
         "approval-request" | "request-user-input" => {
             flush_text_buffers(api, run_id, output_buffer, thinking_buffer).await?;
             *status = "waiting";
+            *terminal_seen = true;
             api.event(
                 run_id,
                 "waiting",
@@ -848,16 +882,16 @@ async fn consume_event(
         "error" => {
             flush_text_buffers(api, run_id, output_buffer, thinking_buffer).await?;
             *status = "failed";
-            api.event(
-                run_id,
-                "error",
-                event
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Agent 运行失败"),
-                Some(event.clone()),
-            )
-            .await?;
+            *terminal_seen = true;
+            let message = event
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|message| !message.is_empty())
+                .unwrap_or("Agent 运行失败");
+            *terminal_error = Some(message.to_string());
+            api.event(run_id, "error", message, Some(event.clone()))
+                .await?;
         }
         "done" => {
             persist_session_id(api, run_id, &event, session_id).await?;
@@ -880,6 +914,7 @@ async fn consume_event(
             } else {
                 "completed"
             };
+            *terminal_seen = true;
             api.event(run_id, event_type, "运行完成", Some(event.clone()))
                 .await?;
         }
@@ -1046,8 +1081,41 @@ fn provider_id(agent_id: &str) -> Option<&'static str> {
         "claude" => Some(PROVIDER_CLAUDE),
         "gemini" => Some(PROVIDER_GEMINI),
         "hermes" => Some(PROVIDER_HERMES),
+        "opencode" => Some(PROVIDER_OPENCODE),
         _ => None,
     }
+}
+
+fn available_agent_catalog(overview: &Value) -> Value {
+    let agents = overview
+        .get("agents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|agent| {
+            let agent_id = agent.get("id").and_then(Value::as_str)?;
+            provider_id(agent_id)?;
+            let profiles = agent
+                .get("profiles")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|profile| {
+                    profile.get("status").and_then(Value::as_str) == Some("available")
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if profiles.is_empty() {
+                return None;
+            }
+            let mut agent = agent.clone();
+            agent
+                .as_object_mut()?
+                .insert("profiles".to_string(), Value::Array(profiles));
+            Some(agent)
+        })
+        .collect::<Vec<_>>();
+    json!({ "agents": agents })
 }
 
 fn cancel_agent_endpoint(run: &Value, provider_run_id: &str) -> String {
@@ -1320,6 +1388,35 @@ mod tests {
     }
 
     #[test]
+    fn failed_run_summary_preserves_the_terminal_error() {
+        assert_eq!(
+            terminal_summary(
+                "failed",
+                "partial agent output",
+                Some("ACP connection closed")
+            ),
+            "ACP connection closed"
+        );
+        assert_eq!(
+            terminal_summary("failed", "partial agent output", None),
+            "Agent 流未返回完成事件"
+        );
+    }
+
+    #[test]
+    fn completed_run_without_public_output_is_not_silent_success() {
+        assert_eq!(
+            missing_terminal_output_error("completed", "  "),
+            Some("Agent 已完成，但未返回公开输出")
+        );
+        assert_eq!(
+            missing_terminal_output_error("completed", "public answer"),
+            None
+        );
+        assert_eq!(missing_terminal_output_error("waiting", ""), None);
+    }
+
+    #[test]
     fn machine_json_output_is_ascii_safe_and_round_trips_unicode() {
         let value = json!({
             "nickname": "小猫",
@@ -1436,6 +1533,69 @@ mod tests {
         assert_eq!(payload["permissionMode"], "auto");
         assert_eq!(payload["sessionId"], "session-gemini");
         assert!(runtime_id.is_none());
+    }
+
+    #[test]
+    fn opencode_agent_uses_the_shared_agent_runtime() {
+        assert_eq!(provider_id("opencode"), Some(PROVIDER_OPENCODE));
+
+        let (endpoint, payload, runtime_id) = agent_run_request(
+            PROVIDER_OPENCODE,
+            "mux-opencode",
+            Some("channel-opencode"),
+            "Review the current diff",
+            "D:/workspace",
+            "glm-5.2",
+            None,
+            "default",
+            Some("session-opencode"),
+        );
+
+        assert_eq!(endpoint, "/api/agents/run");
+        assert_eq!(payload["providerId"], PROVIDER_OPENCODE);
+        assert_eq!(payload["channelId"], "channel-opencode");
+        assert_eq!(payload["sessionId"], "session-opencode");
+        assert!(runtime_id.is_none());
+    }
+
+    #[test]
+    fn agent_catalog_only_includes_supported_available_profiles() {
+        let overview = json!({
+            "agents": [
+                {
+                    "id": "opencode",
+                    "name": "OpenCode",
+                    "profiles": [
+                        { "id": "available", "status": "available" },
+                        { "id": "disabled", "status": "disabled" }
+                    ]
+                },
+                {
+                    "id": "unsupported",
+                    "name": "Unsupported",
+                    "profiles": [{ "id": "hidden", "status": "available" }]
+                },
+                {
+                    "id": "codex",
+                    "name": "OpenAI Codex",
+                    "profiles": [{ "id": "offline", "status": "offline" }]
+                }
+            ],
+            "metrics": { "running": 1 },
+            "runs": [{ "id": "run-1" }]
+        });
+
+        let catalog = available_agent_catalog(&overview);
+
+        assert_eq!(catalog["agents"].as_array().map(Vec::len), Some(1));
+        assert_eq!(catalog["agents"][0]["id"], "opencode");
+        assert_eq!(
+            catalog["agents"][0]["profiles"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(catalog["agents"][0]["profiles"][0]["id"], "available");
+        assert!(catalog.get("metrics").is_none());
+        assert!(catalog.get("runs").is_none());
     }
 
     #[test]

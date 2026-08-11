@@ -16,7 +16,7 @@ use tokio::{
     process::{Child, ChildStdin, ChildStdout, Command},
     sync::{mpsc, watch},
     task::JoinHandle,
-    time::{sleep, timeout},
+    time::timeout,
 };
 
 const JSONRPC_VERSION: &str = "2.0";
@@ -29,7 +29,6 @@ const MAX_JSON_DEPTH: usize = 6;
 const MAX_TOOL_DIFF_BYTES: usize = 256 * 1024;
 const OMITTED_BASE64_TEXT: &str = "[base64 已省略]";
 pub const ACP_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
-pub const ACP_PROMPT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug)]
 pub enum AcpError {
@@ -564,17 +563,15 @@ where
             usage: AgentUsageSnapshot::default(),
         };
         let mut cancel_channel_open = true;
-        let deadline = sleep(ACP_PROMPT_TIMEOUT);
-        tokio::pin!(deadline);
-
         if *cancel.borrow() {
             self.send_cancel(session_id).await?;
             outcome.cancel_sent = true;
         }
 
+        // Coding-agent turns may legitimately run for a long time. Their lifecycle is
+        // bounded by explicit cancellation, provider exit, or transport/protocol errors.
         loop {
             tokio::select! {
-                _ = &mut deadline => return Err(AcpError::Timeout("session/prompt")),
                 changed = cancel.changed(), if cancel_channel_open && !outcome.cancel_sent => {
                     match changed {
                         Ok(()) if *cancel.borrow() => {

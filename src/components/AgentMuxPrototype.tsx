@@ -107,8 +107,7 @@ type Confirmation = {
   action: () => void | Promise<void>;
 };
 
-function buildSkillText(agentItems: AgentRecord[], cliPath: string, appDataDir: string) {
-  const profiles = agentItems.flatMap((agent) => agent.profiles.filter((profile) => profile.status === 'available').map((profile) => `- profileId: ${profile.id}; agentId: ${agent.id}; providerId: ${agentProviderId(agent.id) ?? 'unsupported'}; model: ${profile.model}; nickname: ${profile.nickname ?? 'unset'}; avatar: ${profile.avatar ?? 'default'}; reasoningEffort: ${profile.reasoningEffort ?? 'model-default'}; channelId: ${profile.channelId ?? 'system'}; level: ${profile.level}; role: ${profile.role}; tags: ${profile.tags.join('、') || '无'}`));
+function buildSkillText(cliPath: string, appDataDir: string) {
   const escapedCliPath = cliPath.replaceAll("'", "''");
   const appDataArg = appDataDir ? ` --app-data '${appDataDir.replaceAll("'", "''")}'` : '';
   return `---
@@ -127,13 +126,9 @@ $agentMux = '${escapedCliPath}'
 & $agentMux agents --json${appDataArg}
 \`\`\`
 
-## 当前可用配置
-
-${profiles.length > 0 ? profiles.join('\n') : '- 当前没有已检测可用的运行配置'}
-
 ## 调用协议
 
-1. 每次调用前执行 \`& $agentMux agents --json${appDataArg}\` 获取最新可用配置，不能只依赖安装时快照。
+1. 每次调用前执行 \`& $agentMux agents --json${appDataArg}\` 获取最新可调用配置；这是 Agent/Profile 状态的唯一可信来源，不得缓存或依赖安装时快照。
 2. 按能力等级、用途和标签选择 status=available 的 profileId。
 3. 执行 \`& $agentMux invoke --profile '<profileId>' --caller '<当前主 Agent 名称>' --working-directory '<absolute-path>' --permission default --prompt '<task>'${appDataArg}\`。需要覆盖 Profile 默认思考等级时，增加 \`--reasoning-effort '<level>'\`；显式值优先，省略时继续使用 Profile 配置。调用方只填写 Agent 名称（如 OpenAI Codex、Claude Code、OpenCode），不要填写或推测会话名称。同一 CodeM 主会话再次调用相同 profileId 和工作区时，CLI 会自动续用该子 Agent 的会话，适合追问和返工；切换主会话、配置或工作区会新建会话。若外层 CodeM 会话是“完全访问”，CLI 会自动让子 Agent 继承最高权限；其他权限模式保持原样。
 4. 思考等级按 Agent 和模型区分：Claude Code 支持 \`low/medium/high/xhigh/max\` 及 CodeM 的 \`ultracode\`；OpenAI Codex 和 Pi 使用各自动态模型目录，仅在调用方已知可用值时传入；Grok Build 和 OpenCode 当前不支持。无法确认时省略该参数。
@@ -141,7 +136,7 @@ ${profiles.length > 0 ? profiles.join('\n') : '- 当前没有已检测可用的�
 6. 查询运行使用 \`& $agentMux status --json${appDataArg}\`，取消运行使用 \`& $agentMux cancel --run '<runId>'${appDataArg}\`。
 7. 不得直接读取 discovery 文件；Runtime token 由 CLI 内部管理。
 
-通用独立运行当前支持 OpenAI Codex、Grok Build 与 Gemini CLI。Pi 需要 CodeM threadId，Claude Code 尚未接入通用独立运行。接口失败时必须返回真实错误，不得伪装成功。
+\`agents --json\` 只返回当前 Runtime 已支持且状态为 available 的配置。接口失败时必须返回真实错误，不得伪装成功。
 `;
 }
 
@@ -180,7 +175,7 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
     if (!key) return [selectedRun];
     return runRecords.filter((run) => agentMuxConversationKey(run) === key).sort((a, b) => runRecords.indexOf(b) - runRecords.indexOf(a));
   }, [runRecords, selectedRun]);
-  const skillText = useMemo(() => buildSkillText(agentRecords, runtimeInfo.cliPath, runtimeInfo.appDataDir), [agentRecords, runtimeInfo.appDataDir, runtimeInfo.cliPath]);
+  const skillText = useMemo(() => buildSkillText(runtimeInfo.cliPath, runtimeInfo.appDataDir), [runtimeInfo.appDataDir, runtimeInfo.cliPath]);
   const availableProfiles = useMemo(() => agentRecords.flatMap((agent) => agent.profiles).filter((profile) => profile.status === 'available'), [agentRecords]);
   const skillInstallTargets = useMemo<SkillInstallTarget[]>(() => SKILL_TARGETS.map((target) => ({
     ...target,
@@ -863,7 +858,7 @@ function SkillView({ agents, skillText, copied, source, targets, installPending,
 }
 
 function RunTaskDialog({ agents, projects, activeProjectId, starting, onClose, onStart }: { agents: AgentRecord[]; projects: ProjectSummary[]; activeProjectId: string | null; starting: boolean; onClose: () => void; onStart: (input: { agentId: string; profile: RuntimeProfile; prompt: string; workingDirectory: string; permissionMode: string }) => Promise<void> }) {
-  const choices = agents.flatMap((agent) => agent.profiles.filter((profile) => profile.status === 'available' && ['codex', 'grok', 'gemini', 'hermes'].includes(agent.id)).map((profile) => ({ agent, profile })));
+  const choices = agents.flatMap((agent) => agent.profiles.filter((profile) => profile.status === 'available' && ['codex', 'grok', 'opencode', 'gemini', 'hermes'].includes(agent.id)).map((profile) => ({ agent, profile })));
   const [choiceId, setChoiceId] = useState(choices[0] ? `${choices[0].agent.id}:${choices[0].profile.id}` : '');
   const [workspaceId, setWorkspaceId] = useState(activeProjectId && projects.some((project) => project.id === activeProjectId) ? activeProjectId : projects[0]?.id ?? '');
   const [permissionMode, setPermissionMode] = useState('default');

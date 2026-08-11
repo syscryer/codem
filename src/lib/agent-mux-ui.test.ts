@@ -10,11 +10,11 @@ const apiSource = readFileSync(new URL('./agent-mux-api.ts', import.meta.url), '
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 const cliSource = readFileSync(new URL('../../src-tauri/src/bin/codem-agent-mux.rs', import.meta.url), 'utf8');
 
-test('Agent Mux exposes OpenCode configuration without claiming independent runtime support', () => {
+test('Agent Mux exposes OpenCode configuration and independent runtime support', () => {
   assert.match(componentSource, /id === 'opencode' \? OPENCODE_PROVIDER_ID/);
   assert.match(componentSource, /providerId === OPENCODE_PROVIDER_ID/);
   assert.match(apiSource, /agentId === 'opencode'[\s\S]*?probeOpenCodeAgent\(\)/);
-  assert.match(componentSource, /\['codex', 'grok', 'gemini', 'hermes'\]\.includes\(agent\.id\)/);
+  assert.match(componentSource, /\['codex', 'grok', 'opencode', 'gemini', 'hermes'\]\.includes\(agent\.id\)/);
   assert.match(componentSource, /className="agent-mux-health-list"[\s\S]*?\{agentItems\.map\(/);
   assert.doesNotMatch(componentSource, /agentItems\.slice\(0,\s*4\)/);
   assert.match(apiSource, /prompt: string;/);
@@ -161,6 +161,17 @@ test('Agent Mux skill records the caller agent without requesting a session name
   assert.match(componentSource, /--app-data/);
   assert.match(apiSource, /appDataDir: string/);
   assert.match(componentSource, /不要填写或推测会话名称/);
+  assert.match(componentSource, /唯一可信来源，不得缓存或依赖安装时快照/);
+  assert.match(componentSource, /只返回当前 Runtime 已支持且状态为 available 的配置/);
+  assert.doesNotMatch(componentSource, /## 当前可用配置/);
+  assert.doesNotMatch(componentSource, /const profiles = agentItems\.flatMap/);
+});
+
+test('Agent Mux CLI exposes a dynamic callable catalog and OpenCode runtime', () => {
+  assert.match(cliSource, /const PROVIDER_OPENCODE: &str = "opencode"/);
+  assert.match(cliSource, /"opencode" => Some\(PROVIDER_OPENCODE\)/);
+  assert.match(cliSource, /let catalog = available_agent_catalog\(&overview\)/);
+  assert.match(cliSource, /json_for_stdout\(&catalog, true\)/);
 });
 
 test('Agent Mux profiles default reasoning to the model and pass explicit choices through', () => {
