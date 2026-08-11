@@ -3,6 +3,7 @@ import type {
   AppearanceSettings,
   AgentNetworkProxySettings,
   AgentChannelBootstrap,
+  AgentChannelModel,
   AgentChannelSettingsFocus,
   AgentRuntimeSettings,
   AgentProviderDescriptor,
@@ -92,6 +93,7 @@ type SettingsViewProps = {
   onRefreshAiChatProviders: () => Promise<void> | void;
   onRefreshAgentProviders: () => Promise<void> | void;
   onRefreshAgentChannels: () => Promise<unknown> | unknown;
+  onUpdateAgentChannelModels: (channelId: string, models: AgentChannelModel[]) => void;
   onReturnWorkspace: () => void;
   returnLabel?: string;
 };
@@ -159,6 +161,7 @@ export function SettingsView({
   onRefreshAiChatProviders,
   onRefreshAgentProviders,
   onRefreshAgentChannels,
+  onUpdateAgentChannelModels,
   onReturnWorkspace,
   returnLabel,
 }: SettingsViewProps) {
@@ -200,6 +203,7 @@ export function SettingsView({
           onUpdateAgentRuntime={onUpdateAgentRuntime}
           onRefreshProviders={onRefreshAgentProviders}
           onRefreshChannels={onRefreshAgentChannels}
+          onUpdateChannelModels={onUpdateAgentChannelModels}
           onRefreshAiChatProviders={onRefreshAiChatProviders}
           showToast={showToast}
         />

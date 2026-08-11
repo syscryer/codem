@@ -10,7 +10,9 @@ import {
 import type { AgentChannel, AiProviderTemplate } from '../types.js';
 import {
   agentChannelMetadataPatch,
+  agentChannelModelSupportsContext1m,
   agentChannelTemplate,
+  buildClaudeChannelModels,
   defaultAgentChannelId,
   isAgentChannelSelectionAvailable,
   resolveRunAgentChannelSelection,
@@ -434,6 +436,32 @@ test('custom Claude channel falls back to Claude Code reasoning levels', () => {
     catalog?.models[0]?.supportedReasoningEfforts.map((effort) => effort.id),
     ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
   );
+});
+
+test('custom Claude channel appends the 1m suffix exactly once when declared', () => {
+  const model = {
+    id: 'minimax-model',
+    channelId: channels[0].id,
+    modelId: 'MiniMax-M3[1m]',
+    displayName: 'MiniMax-M3',
+    enabled: true,
+    isDefault: true,
+    capabilities: { supportsContext1m: true },
+    createdAt: '',
+    updatedAt: '',
+  };
+  const channel = { ...channels[0], models: [model] };
+
+  assert.equal(agentChannelModelSupportsContext1m(model), true);
+  assert.equal(buildClaudeChannelModels(channel, [])[0]?.model, 'MiniMax-M3[1m]');
+  assert.equal(buildClaudeChannelModels(channel, [])[0]?.contextWindowTokens, 1_000_000);
+
+  const disabled = {
+    ...model,
+    capabilities: { supportsContext1m: false },
+  };
+  assert.equal(agentChannelModelSupportsContext1m(disabled), false);
+  assert.equal(buildClaudeChannelModels({ ...channel, models: [disabled] }, [])[0]?.model, 'MiniMax-M3');
 });
 
 test('custom OpenCode channel inherits verbose variants by provider-prefixed model id', () => {

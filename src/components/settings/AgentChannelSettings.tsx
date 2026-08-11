@@ -35,6 +35,7 @@ import { copyAgentChannelToChat } from '../../lib/provider-import-api';
 import { openExternalUrl } from '../../lib/markdown-link';
 import { getAgentProviderDisplayName } from '../../lib/agent-provider-metadata';
 import {
+  agentChannelModelSupportsContext1m,
   agentChannelTemplate,
   shouldPreservePendingAgentChannelSelection,
   systemAgentChannelTemplate,
@@ -70,6 +71,7 @@ type AgentChannelSettingsProps = {
   error: string;
   focusRequest?: AgentChannelSettingsFocus | null;
   onChanged: () => Promise<unknown> | unknown;
+  onModelsUpdated: (channelId: string, models: AgentChannelModel[]) => void;
   aiChatProviders: AiChatProvider[];
   onAiChatProvidersChanged: () => Promise<void> | void;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
@@ -109,6 +111,7 @@ export function AgentChannelSettings({
   error: bootstrapError,
   focusRequest,
   onChanged,
+  onModelsUpdated,
   aiChatProviders,
   onAiChatProvidersChanged,
   showToast,
@@ -122,6 +125,7 @@ export function AgentChannelSettings({
   const [draft, setDraft] = useState<ChannelDraft>(() => emptyDraft('claude-code'));
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
   const [busy, setBusy] = useState<BusyAction>('');
+  const [patchingModelId, setPatchingModelId] = useState('');
   const [localError, setLocalError] = useState('');
   const [testMessage, setTestMessage] = useState('');
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
@@ -142,6 +146,22 @@ export function AgentChannelSettings({
     [bootstrap.channels, providerId],
   );
   const selectedChannel = channels.find((channel) => channel.id === selectedChannelId) ?? null;
+  // Keep model-only updates from resetting the channel form. The model list is
+  // intentionally excluded; these fields describe the form's source channel.
+  const selectedChannelConfigKey = selectedChannel
+    ? [
+        selectedChannel.id,
+        selectedChannel.name,
+        selectedChannel.protocol,
+        selectedChannel.baseUrl,
+        selectedChannel.modelsUrl ?? '',
+        selectedChannel.templateId ?? '',
+        selectedChannel.enabled ? '1' : '0',
+        selectedChannel.isDefault ? '1' : '0',
+        selectedChannel.apiKeySaved ? '1' : '0',
+      ].join('\u0000')
+    : '';
+  const channelIdsKey = channels.map((channel) => channel.id).join('\u0000');
   const systemChannel = bootstrap.systemChannels.find((channel) => channel.providerId === providerId) ?? null;
   const templates = bootstrap.templates;
   const compatibleTemplates = useMemo(
@@ -177,6 +197,7 @@ export function AgentChannelSettings({
   const protocolHint = agentChannelProtocolHint(providerId, draft.protocol);
   const defaultChannelId = bootstrap.defaultChannelIds[providerId] || 'system';
   const systemTemplate = systemAgentChannelTemplate(systemChannel, compatibleTemplates) ?? null;
+  const modelBusy = Boolean(busy || patchingModelId);
 
   useEffect(() => {
     if (!focusRequest) return;
@@ -206,7 +227,7 @@ export function AgentChannelSettings({
     if (selectedChannelId === 'system') {
       return;
     }
-    const nextChannel = channels.find((channel) => channel.id === selectedChannelId);
+    const nextChannel = selectedChannel;
     if (!nextChannel) {
       if (shouldPreservePendingAgentChannelSelection({
         selectedChannelId,
@@ -217,7 +238,7 @@ export function AgentChannelSettings({
       }
       const fallbackId = bootstrap.defaultChannelIds[providerId] || 'system';
       setSelectedChannelId(
-        fallbackId === 'system' || channels.some((channel) => channel.id === fallbackId)
+        fallbackId === 'system' || channelIdsKey.split('\u0000').includes(fallbackId)
           ? fallbackId
           : 'system',
       );
@@ -233,7 +254,7 @@ export function AgentChannelSettings({
       ?? matchTemplate(templates, channelToDraft(nextChannel))?.id
       ?? '',
     );
-  }, [bootstrap.defaultChannelIds, channels, creating, providerId, selectedChannelId, templates]);
+  }, [bootstrap.defaultChannelIds, channelIdsKey, creating, providerId, selectedChannelConfigKey, selectedChannelId, templates]);
 
   function resetMessages() {
     setLocalError('');
@@ -470,15 +491,18 @@ export function AgentChannelSettings({
     }
   }
 
-  async function patchModel(model: AgentChannelModel, update: { enabled?: boolean; isDefault?: boolean }) {
-    setBusy('model');
+  async function patchModel(
+    model: AgentChannelModel,
+    update: { enabled?: boolean; isDefault?: boolean; capabilities?: Record<string, unknown> },
+  ) {
+    setPatchingModelId(model.id);
     try {
-      await updateAgentChannelModel(model.id, update);
-      await onChanged();
+      const result = await updateAgentChannelModel(model.id, update);
+      onModelsUpdated(model.channelId, result.models);
     } catch (modelError) {
       setLocalError(modelError instanceof Error ? modelError.message : '更新模型失败');
     } finally {
-      setBusy('');
+      setPatchingModelId('');
     }
   }
 
@@ -809,7 +833,7 @@ export function AgentChannelSettings({
                   <div><h3>渠道模型</h3><p>模型只属于当前渠道，可远程多选获取，也可手工维护。</p></div>
                   <div className="ai-manager-model-head-actions">
                     <span>{selectedChannel?.models.length ?? 0} 个</span>
-                    <button type="button" className="ai-manager-model-discover-button" disabled={Boolean(busy)} onClick={() => void openModelPicker()}>
+                    <button type="button" className="ai-manager-model-discover-button" disabled={modelBusy} onClick={() => void openModelPicker()}>
                       {busy === 'discover-models' ? <Loader2 size={14} className="spin-icon" /> : <RefreshCw size={14} />}<span>获取模型</span>
                     </button>
                   </div>
@@ -820,9 +844,26 @@ export function AgentChannelSettings({
                     <div key={model.id} className={`ai-manager-model-row${model.enabled ? '' : ' disabled'}`}>
                       <div><strong>{model.displayName}</strong><small>{model.modelId}</small></div>
                       <div className="ai-manager-model-actions">
-                        <button type="button" className={model.isDefault ? 'active' : ''} disabled={Boolean(busy)} onClick={() => void patchModel(model, { isDefault: true, enabled: true })}>{model.isDefault ? '默认' : '设为默认'}</button>
-                        <button type="button" disabled={Boolean(busy)} onClick={() => void patchModel(model, { enabled: !model.enabled })}>{model.enabled ? '禁用' : '启用'}</button>
-                        <button type="button" className="danger" disabled={Boolean(busy)} aria-label={`删除 ${model.displayName}`} onClick={() => confirmDeleteModelId === model.id ? void removeModel(model) : setConfirmDeleteModelId(model.id)}>
+                        {providerId === 'claude-code' ? (
+                          <button
+                            type="button"
+                            className={agentChannelModelSupportsContext1m(model) ? 'active' : ''}
+                            disabled={modelBusy}
+                            aria-pressed={agentChannelModelSupportsContext1m(model)}
+                            title="声明该模型支持 1M 上下文"
+                            onClick={() => void patchModel(model, {
+                              capabilities: {
+                                ...model.capabilities,
+                                supportsContext1m: !agentChannelModelSupportsContext1m(model),
+                              },
+                            })}
+                          >
+                            1M
+                          </button>
+                        ) : null}
+                        <button type="button" className={model.isDefault ? 'active' : ''} disabled={modelBusy} onClick={() => void patchModel(model, { isDefault: true, enabled: true })}>{model.isDefault ? '默认' : '设为默认'}</button>
+                        <button type="button" disabled={modelBusy} onClick={() => void patchModel(model, { enabled: !model.enabled })}>{model.enabled ? '禁用' : '启用'}</button>
+                        <button type="button" className="danger" disabled={modelBusy} aria-label={`删除 ${model.displayName}`} onClick={() => confirmDeleteModelId === model.id ? void removeModel(model) : setConfirmDeleteModelId(model.id)}>
                           {confirmDeleteModelId === model.id ? '确认' : <Trash2 size={14} />}
                         </button>
                       </div>
@@ -834,7 +875,7 @@ export function AgentChannelSettings({
                 <div className="ai-manager-add-model">
                   <input value={newModelId} placeholder="模型 ID" onChange={(event) => setNewModelId(event.target.value)} />
                   <input value={newModelName} placeholder="显示名称（可选）" onChange={(event) => setNewModelName(event.target.value)} />
-                  <button type="button" disabled={!newModelId.trim() || Boolean(busy)} onClick={() => void addModel()}><Plus size={14} />添加</button>
+                  <button type="button" disabled={!newModelId.trim() || modelBusy} onClick={() => void addModel()}><Plus size={14} />添加</button>
                 </div>
               </section>
             </>
@@ -918,6 +959,9 @@ function SystemChannelDetails({
         <SystemChannelField label="接口类型" value={systemChannel?.protocol ? protocolLabels[systemChannel.protocol] : '由 Agent 决定'} />
         <SystemChannelField label="API 地址" value={systemChannel?.baseUrl || '由 Agent 当前配置决定'} wide />
         <SystemChannelField label="当前默认模型" value={systemChannel?.model || '跟随 Agent 默认模型'} />
+        {systemChannel?.providerId === 'claude-code' ? (
+          <SystemChannelField label="1M 上下文" value={systemChannel.supportsContext1m ? '已声明' : '未声明'} />
+        ) : null}
         <SystemChannelField label="配置状态" value={systemChannel?.configured ? '已检测到配置' : '使用 Agent 默认值'} />
         <SystemChannelField label="配置路径" value={systemChannel?.configPath || '未检测到独立配置文件'} wide />
       </div>

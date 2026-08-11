@@ -59,6 +59,15 @@ export function useAgentChannels() {
     }
   }, []);
 
+  const updateChannelModels = useCallback((channelId: string, models: AgentChannelBootstrap['channels'][number]['models']) => {
+    setBootstrap((current) => ({
+      ...current,
+      channels: current.channels.map((channel) =>
+        channel.id === channelId ? { ...channel, models } : channel,
+      ),
+    }));
+  }, []);
+
   useEffect(() => {
     void refresh();
     return () => refreshControllerRef.current?.abort();
@@ -93,5 +102,6 @@ export function useAgentChannels() {
     loading,
     error,
     refresh,
+    updateChannelModels,
   };
 }

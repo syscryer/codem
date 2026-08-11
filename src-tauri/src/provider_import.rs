@@ -2392,14 +2392,14 @@ mod tests {
                 "env": {
                     "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
                     "ANTHROPIC_AUTH_TOKEN": "secret-claude",
-                    "ANTHROPIC_MODEL": "MiniMax-M2.5"
+                    "ANTHROPIC_MODEL": "MiniMax-M2.5[1m]"
                 }
             }),
         )
         .expect("parse Claude channel");
         assert_eq!(claude.target_scope, CLAUDE_CODE_PROVIDER_ID);
         assert_eq!(claude.protocol, AiProtocol::AnthropicMessages);
-        assert_eq!(claude.models[0].model_id, "MiniMax-M2.5");
+        assert_eq!(claude.models[0].model_id, "MiniMax-M2.5[1m]");
 
         let codex = parse_ccswitch_codex(
             "codex-source",

@@ -24,6 +24,7 @@ export type ComposerContextUsage = {
 };
 
 const DEFAULT_CLAUDE_CONTEXT_WINDOW = 200_000;
+const DEFAULT_CODEX_CONTEXT_WINDOW = 258_400;
 const CLAUDE_1M_CONTEXT_WINDOW = 1_000_000;
 const CLAUDE_AUTO_COMPACT_BUFFER = 45_000;
 
@@ -37,11 +38,13 @@ export function buildComposerContextUsage(input: {
 }): ComposerContextUsage {
   const nativeSummaryUsage = resolveNativeContextSummaryUsage(input.nativeContextSummary);
   const nativeSummaryFresh = isNativeContextFreshForTurns(input.nativeContextRequestedAtMs, input.turns);
-  const totalTokens =
-    nativeSummaryUsage.totalTokens ??
-    resolveNativeContextWindow(input.nativeContextWindowTokens) ??
-    resolveLatestRuntimeContextWindow(input.turns) ??
-    resolveClaudeContextWindow(input.model);
+  const runtimeContextWindow = resolveLatestRuntimeContextWindow(input.turns);
+  const totalTokens = input.agent === 'codex'
+    ? runtimeContextWindow ?? DEFAULT_CODEX_CONTEXT_WINDOW
+    : nativeSummaryUsage.totalTokens ??
+      resolveNativeContextWindow(input.nativeContextWindowTokens) ??
+      runtimeContextWindow ??
+      resolveClaudeContextWindow(input.model);
 
   if (input.agent !== 'claude' && input.agent !== 'codex') {
     return createContextUsageResult({
@@ -63,7 +66,7 @@ export function buildComposerContextUsage(input: {
   const hasUsage = nativeSummaryFresh
     ? nativeSummaryUsage.hasUsage ?? usedTokens > 0
     : usedTokens > 0;
-  const compact = resolveCompactState(usedTokens, totalTokens);
+  const compact = resolveCompactState(usedTokens, totalTokens, input.agent === 'claude');
   const percent = (nativeSummaryFresh ? nativeSummaryUsage.percent : undefined) ?? (hasUsage && totalTokens > 0
     ? Math.min(100, Number(((usedTokens / totalTokens) * 100).toFixed(1)))
     : 0);
@@ -230,7 +233,7 @@ function createContextUsageResult(input: {
     usedTokens: 0,
     totalTokens: input.totalTokens,
     level: 'empty',
-    compact: resolveCompactState(0, input.totalTokens),
+    compact: resolveCompactState(0, input.totalTokens, false),
     breakdown: {
       inputTokens: 0,
       cacheCreationInputTokens: 0,
@@ -256,7 +259,16 @@ function resolveUsageLevel(hasUsage: boolean, percent: number): ComposerContextU
   return 'low';
 }
 
-function resolveCompactState(usedTokens: number, totalTokens: number) {
+function resolveCompactState(usedTokens: number, totalTokens: number, enabled: boolean) {
+  if (!enabled) {
+    return {
+      thresholdTokens: 0,
+      remainingTokens: 0,
+      nearThreshold: false,
+      reachedThreshold: false,
+    };
+  }
+
   const thresholdTokens = Math.max(0, totalTokens - CLAUDE_AUTO_COMPACT_BUFFER);
   const remainingTokens = Math.max(0, thresholdTokens - usedTokens);
   const reachedThreshold = usedTokens >= thresholdTokens;

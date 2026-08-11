@@ -83,7 +83,7 @@ const usageWithResultStats = buildComposerContextUsage({
 assert.equal(usageWithResultStats.usedTokens, 128_462);
 assert.equal(usageWithResultStats.breakdown.outputTokens, 1_589);
 
-test('buildComposerContextUsage exposes the context indicator for Codex only among non-Claude agents', () => {
+test('buildComposerContextUsage uses the current effective Codex window before runtime usage arrives', () => {
   const turns = [
     turn({
       inputTokens: 9_664,
@@ -104,9 +104,39 @@ test('buildComposerContextUsage exposes the context indicator for Codex only amo
   });
 
   assert.equal(codexUsage.visible, true);
+  assert.equal(codexUsage.totalTokens, 258_400);
   assert.equal(codexUsage.usedTokens, 21_696);
   assert.equal(codexUsage.hasUsage, true);
+  assert.equal(codexUsage.percent, 8.4);
+  assert.equal(codexUsage.compact.nearThreshold, false);
   assert.equal(grokUsage.visible, false);
+});
+
+test('buildComposerContextUsage lets the native Codex window override the current-model fallback', () => {
+  const usage = buildComposerContextUsage({
+    agent: 'codex',
+    model: 'gpt-5.6-codex',
+    turns: [
+      turn({
+        inputTokens: 120_000,
+        cacheReadInputTokens: 80_000,
+        outputTokens: 5_000,
+        contextUsage: {
+          inputTokens: 120_000,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 80_000,
+          outputTokens: 5_000,
+          modelContextWindow: 400_000,
+          usageSource: 'context',
+        },
+      }),
+    ],
+  });
+
+  assert.equal(usage.totalTokens, 400_000);
+  assert.equal(usage.usedTokens, 200_000);
+  assert.equal(usage.percent, 50);
+  assert.equal(usage.compact.nearThreshold, false);
 });
 
 test('buildComposerContextUsage prefers native 1m context window over stale turn usage', () => {

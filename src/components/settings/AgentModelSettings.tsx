@@ -1,6 +1,6 @@
 import { Bot, Route } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { AgentChannelBootstrap, AgentChannelSettingsFocus, AgentProviderDescriptor, AgentRuntimeSettings, AiChatProvider, ClaudeModelInfo, ToastState } from '../../types';
+import type { AgentChannelBootstrap, AgentChannelModel, AgentChannelSettingsFocus, AgentProviderDescriptor, AgentRuntimeSettings, AiChatProvider, ClaudeModelInfo, ToastState } from '../../types';
 import type { AgentRuntimeSettingsUpdate } from '../../hooks/useAppSettings';
 import { AgentChannelSettings } from './AgentChannelSettings';
 import { AgentProviderSettings } from './AgentProviderSettings';
@@ -21,6 +21,7 @@ type AgentModelSettingsSectionProps = {
   onUpdateAgentRuntime: (update: AgentRuntimeSettingsUpdate) => void | Promise<void>;
   onRefreshProviders: () => Promise<void> | void;
   onRefreshChannels: () => Promise<unknown> | unknown;
+  onUpdateChannelModels: (channelId: string, models: AgentChannelModel[]) => void;
   onRefreshAiChatProviders: () => Promise<void> | void;
   showToast: (message: string, tone?: ToastState['tone']) => void;
 };
@@ -39,6 +40,7 @@ export function AgentModelSettingsSection({
   onUpdateAgentRuntime,
   onRefreshProviders,
   onRefreshChannels,
+  onUpdateChannelModels,
   onRefreshAiChatProviders,
   showToast,
 }: AgentModelSettingsSectionProps) {
@@ -93,6 +95,7 @@ export function AgentModelSettingsSection({
           error={channelsError}
           focusRequest={channelFocus}
           onChanged={onRefreshChannels}
+          onModelsUpdated={onUpdateChannelModels}
           aiChatProviders={aiChatProviders}
           onAiChatProvidersChanged={onRefreshAiChatProviders}
           showToast={showToast}

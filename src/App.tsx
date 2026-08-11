@@ -2233,6 +2233,7 @@ export default function App() {
         }}
         onRefreshAgentProviders={refreshAgentProviders}
         onRefreshAgentChannels={agentChannels.refresh}
+        onUpdateAgentChannelModels={agentChannels.updateChannelModels}
         onReturnWorkspace={returnWorkspace}
         returnLabel={settingsReturnLabel}
       />

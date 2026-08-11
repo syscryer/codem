@@ -158,17 +158,35 @@ export function buildClaudeChannelModels(
       const native = nativeModels.find(
         (item) => item.id === model.modelId || item.model === model.modelId,
       );
+      const supportsContext1m = agentChannelModelSupportsContext1m(model);
       return {
         ...native,
         id: model.modelId,
         label: model.displayName || model.modelId,
-        model: model.modelId,
+        model: claudeContextModelId(model),
         kind: 'custom' as const,
         description: native?.description || channel.name,
-        contextWindowTokens: capabilityNumber(model.capabilities, 'contextWindowTokens')
-          ?? native?.contextWindowTokens,
+        contextWindowTokens: supportsContext1m
+          ? 1_000_000
+          : capabilityNumber(model.capabilities, 'contextWindowTokens') ?? native?.contextWindowTokens,
       };
     });
+}
+
+export function agentChannelModelSupportsContext1m(
+  model: Pick<AgentChannel['models'][number], 'modelId' | 'capabilities'>,
+) {
+  const configured = model.capabilities.supportsContext1m;
+  return typeof configured === 'boolean'
+    ? configured
+    : /\[1m\]$/i.test(model.modelId.trim());
+}
+
+function claudeContextModelId(
+  model: Pick<AgentChannel['models'][number], 'modelId' | 'capabilities'>,
+) {
+  const baseModelId = model.modelId.trim().replace(/\[1m\]$/i, '');
+  return agentChannelModelSupportsContext1m(model) ? `${baseModelId}[1m]` : baseModelId;
 }
 
 export function buildAgentChannelModelCatalog(

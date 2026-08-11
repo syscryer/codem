@@ -90,6 +90,7 @@ struct SystemChannelSummary {
     config_path: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
+    supports_context_1m: bool,
     protocol: Option<AiProtocol>,
     cc_switch_provider_name: Option<String>,
     detail: String,
@@ -575,6 +576,13 @@ fn cc_switch_status() -> CcSwitchStatus {
 
 fn read_claude_system_channel(cc_switch_provider_name: Option<String>) -> SystemChannelSummary {
     let path = home_dir().map(|home| home.join(".claude").join("settings.json"));
+    read_claude_system_channel_from(path, cc_switch_provider_name)
+}
+
+fn read_claude_system_channel_from(
+    path: Option<PathBuf>,
+    cc_switch_provider_name: Option<String>,
+) -> SystemChannelSummary {
     let settings = path.as_deref().and_then(read_json_file);
     let env = settings.as_ref().and_then(|value| value.get("env"));
     let base_url = env
@@ -868,6 +876,10 @@ fn system_channel_summary(
         "system"
     };
     let configured = config_exists || base_url.is_some() || model.is_some();
+    let supports_context_1m = provider_id == CLAUDE_CODE_PROVIDER_ID
+        && model
+            .as_deref()
+            .is_some_and(claude_model_supports_context_1m);
     let detail = match (&cc_switch_provider_name, configured) {
         (Some(name), _) => format!("当前由 CC Switch 管理：{name}"),
         (None, true) => "使用 Agent 的系统当前配置".to_string(),
@@ -882,10 +894,15 @@ fn system_channel_summary(
         config_path: path.map(|path| path.to_string_lossy().to_string()),
         base_url,
         model,
+        supports_context_1m,
         protocol,
         cc_switch_provider_name,
         detail,
     }
+}
+
+fn claude_model_supports_context_1m(model: &str) -> bool {
+    model.trim().to_ascii_lowercase().ends_with("[1m]")
 }
 
 fn read_json_file(path: &Path) -> Option<Value> {
@@ -2794,6 +2811,28 @@ mod tests {
                 params![id, id, id, enabled, is_default],
             )
             .expect("insert model");
+    }
+
+    #[test]
+    fn claude_system_channel_reads_context_1m_from_settings_model() {
+        let root = std::env::temp_dir().join(format!(
+            "codem-claude-system-channel-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).expect("create Claude settings test directory");
+        let path = root.join("settings.json");
+        fs::write(&path, r#"{"env":{"ANTHROPIC_MODEL":"MiniMax-M3[1m]"}}"#)
+            .expect("write Claude settings");
+
+        let summary = read_claude_system_channel_from(Some(path.clone()), None);
+        assert_eq!(summary.model.as_deref(), Some("MiniMax-M3[1m]"));
+        assert!(summary.supports_context_1m);
+
+        fs::write(&path, r#"{"env":{"ANTHROPIC_MODEL":"MiniMax-M3"}}"#)
+            .expect("rewrite Claude settings");
+        let summary = read_claude_system_channel_from(Some(path), None);
+        assert!(!summary.supports_context_1m);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

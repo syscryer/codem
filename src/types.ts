@@ -1001,6 +1001,7 @@ export type AgentSystemChannel = {
   configPath?: string;
   baseUrl?: string;
   model?: string;
+  supportsContext1m?: boolean;
   protocol?: AiChatProtocol;
   ccSwitchProviderName?: string;
   detail: string;
