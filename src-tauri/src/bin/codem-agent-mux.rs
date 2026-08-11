@@ -36,6 +36,7 @@ const PROVIDER_GROK: &str = "grok-build";
 const PROVIDER_PI: &str = "pi-agent";
 const PROVIDER_CLAUDE: &str = "claude-code";
 const PROVIDER_GEMINI: &str = "gemini-cli";
+const PROVIDER_HERMES: &str = "hermes-agent";
 
 struct RuntimeLock {
     path: PathBuf,
@@ -1044,6 +1045,7 @@ fn provider_id(agent_id: &str) -> Option<&'static str> {
         "pi" => Some(PROVIDER_PI),
         "claude" => Some(PROVIDER_CLAUDE),
         "gemini" => Some(PROVIDER_GEMINI),
+        "hermes" => Some(PROVIDER_HERMES),
         _ => None,
     }
 }
@@ -1433,6 +1435,29 @@ mod tests {
         assert_eq!(payload["channelId"], "channel-gemini");
         assert_eq!(payload["permissionMode"], "auto");
         assert_eq!(payload["sessionId"], "session-gemini");
+        assert!(runtime_id.is_none());
+    }
+
+    #[test]
+    fn hermes_agent_uses_the_shared_agent_runtime() {
+        assert_eq!(provider_id("hermes"), Some(PROVIDER_HERMES));
+
+        let (endpoint, payload, runtime_id) = agent_run_request(
+            PROVIDER_HERMES,
+            "mux-hermes",
+            Some("channel-hermes"),
+            "Reply OK",
+            "D:/workspace",
+            "MiniMax-M3",
+            None,
+            "default",
+            Some("session-hermes"),
+        );
+
+        assert_eq!(endpoint, "/api/agents/run");
+        assert_eq!(payload["providerId"], PROVIDER_HERMES);
+        assert_eq!(payload["channelId"], "channel-hermes");
+        assert_eq!(payload["sessionId"], "session-hermes");
         assert!(runtime_id.is_none());
     }
 

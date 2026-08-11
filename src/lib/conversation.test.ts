@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
+  appendDoneResultItem,
   attachToolResult,
   createToolStep,
   mergeLoadedThreadTurns,
@@ -33,6 +34,18 @@ const conversationTurnSource = readFileSync(
   new URL('../components/ConversationTurn.tsx', import.meta.url),
   'utf8',
 );
+
+test('done result follows thinking when no streamed assistant text exists', () => {
+  const items = appendDoneResultItem(
+    [{ id: 'thinking-1', type: 'thinking', text: 'public reasoning' }],
+    '',
+    'Final answer',
+  );
+
+  assert.deepEqual(items.map((item) => item.type), ['thinking', 'text']);
+  assert.equal(items[1]?.type === 'text' ? items[1].text : '', 'Final answer');
+  assert.equal(appendDoneResultItem(items, 'Final answer', 'Final answer'), items);
+});
 
 test('parseDiffContent ignores the trailing split sentinel in a new-file diff', () => {
   const parsed = parseDiffContent([

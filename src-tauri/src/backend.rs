@@ -3,7 +3,7 @@ use crate::agent_runtime::{
     agent_plan_snapshot_from_tool_input, agent_plan_snapshot_from_value, agent_provider_registry,
     normalize_agent_permission_mode, AgentPlanSnapshot, AgentPlanStep, AgentPlanStepStatus,
     AgentProviderRegistry, CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
-    OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+    HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
 };
 use crate::codex_app_server::{
     probe_codex_app_server, CodexStoredItem, CodexStoredTurn, CodexUserInput,
@@ -72,6 +72,12 @@ const GROK_CLI_WINDOWS_INSTALL_SCRIPT: &str =
 const GROK_CLI_MACOS_INSTALL_COMMAND: &str = "curl -fsSL https://x.ai/cli/install.sh | bash";
 const OPENCODE_CLI_INSTALL_COMMAND: &str = "npm install -g opencode-ai@latest";
 const GEMINI_CLI_INSTALL_COMMAND: &str = "npm install -g @google/gemini-cli@latest";
+const HERMES_CLI_UPDATE_COMMAND: &str = "hermes update";
+const HERMES_GITHUB_REPOSITORY: &str = "NousResearch/hermes-agent";
+const HERMES_CLI_MACOS_INSTALL_COMMAND: &str =
+    "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash";
+const HERMES_CLI_WINDOWS_INSTALL_COMMAND: &str =
+    "irm https://hermes-agent.nousresearch.com/install.ps1 | iex";
 const NPM_REGISTRY_URL: &str = "https://registry.npmjs.org";
 const NPM_MIRROR_REGISTRY_URL: &str = "https://registry.npmmirror.com";
 const NPM_CONFIG_USER_AGENT_ENV: &str = "npm_config_user_agent";
@@ -990,6 +996,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         crate::provider_import::ProviderImportService::new(app_data_dir.clone(), secrets.clone());
     let agent_channels =
         crate::agent_channels::AgentChannelService::new(app_data_dir.clone(), secrets);
+    let hermes = crate::hermes::HermesService::new(app_data_dir.clone(), resolve_hermes_command);
     let agent_runs = crate::agent_run::AgentRunService::new(
         resolve_grok_command,
         resolve_codex_command,
@@ -997,6 +1004,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         resolve_pi_command,
         resolve_gemini_command,
         agent_channels.clone(),
+        hermes.clone(),
     );
     let agent_mux = crate::agent_mux::AgentMuxService::new(app_data_dir.clone());
     let state = AppState {
@@ -1032,6 +1040,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         .merge(crate::provider_import::router(provider_import))
         .merge(crate::agent_channels::router(agent_channels))
         .merge(crate::agent_mux::router(agent_mux))
+        .merge(crate::hermes::router(hermes))
         .layer(desktop_cors_layer());
     let app = if let Some(token) = env::var(crate::agent_mux_runtime::RUNTIME_TOKEN_ENV)
         .ok()
@@ -1439,6 +1448,10 @@ async fn agent_providers(State(state): State<AppState>) -> Json<AgentProviderReg
             .agent_runs
             .resolve_command(GEMINI_CLI_PROVIDER_ID, false)
             .is_some(),
+        state
+            .agent_runs
+            .resolve_command(HERMES_AGENT_PROVIDER_ID, false)
+            .is_some(),
     ))
 }
 
@@ -1524,7 +1537,10 @@ async fn agent_settings_diagnostics(
         "diagnostic": diagnostic,
         "capabilities": {
             "plugins": command.is_some()
-                && !matches!(provider_id, OPENCODE_PROVIDER_ID | GEMINI_CLI_PROVIDER_ID),
+                && !matches!(
+                    provider_id,
+                    OPENCODE_PROVIDER_ID | GEMINI_CLI_PROVIDER_ID | HERMES_AGENT_PROVIDER_ID
+                ),
             "mcp": command.is_some() && provider_id != PI_AGENT_PROVIDER_ID,
             "skills": true,
         }
@@ -1541,6 +1557,7 @@ fn agent_settings_diagnostic_spec(
         OPENCODE_PROVIDER_ID => ("opencode debug info", &["debug", "info"]),
         PI_AGENT_PROVIDER_ID => ("pi --version", &["--version"]),
         GEMINI_CLI_PROVIDER_ID => ("gemini --version", &["--version"]),
+        HERMES_AGENT_PROVIDER_ID => ("hermes --version", &["--version"]),
         _ => return Err(ApiError::bad_request("不支持的 Agent Provider")),
     };
     Ok(spec)
@@ -1596,6 +1613,10 @@ async fn read_agent_latest_version(
         return read_grok_latest_version(command, proxy_environment).await;
     }
 
+    if provider_id == HERMES_AGENT_PROVIDER_ID {
+        return read_github_latest_version(HERMES_GITHUB_REPOSITORY, proxy_environment).await;
+    }
+
     let package = match agent_npm_package_name(provider_id) {
         Some(package) => package,
         None => {
@@ -1644,6 +1665,41 @@ async fn read_agent_latest_version(
     AgentLatestVersionCheck {
         latest_version: None,
         error: Some("官方源和国内镜像均无法查询最新版本".to_string()),
+    }
+}
+
+async fn read_github_latest_version(
+    repository: &str,
+    proxy_environment: Option<&[(String, String)]>,
+) -> AgentLatestVersionCheck {
+    let proxy_url = proxy_environment.and_then(|environment| {
+        environment
+            .iter()
+            .find(|(name, _)| name == "https_proxy" || name == "HTTPS_PROXY")
+            .map(|(_, value)| value.clone())
+    });
+    for proxy in [None, proxy_url.as_deref()] {
+        let mut client_builder = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(4))
+            .timeout(std::time::Duration::from_secs(8));
+        if let Some(proxy) = proxy {
+            if let Ok(proxy) = reqwest::Proxy::all(proxy) {
+                client_builder = client_builder.proxy(proxy);
+            }
+        }
+        let Ok(client) = client_builder.build() else {
+            continue;
+        };
+        if let Ok(version) = fetch_github_latest_version(&client, repository).await {
+            return AgentLatestVersionCheck {
+                latest_version: Some(version),
+                error: None,
+            };
+        }
+    }
+    AgentLatestVersionCheck {
+        latest_version: None,
+        error: Some("官方 GitHub Release 无法查询最新版本".to_string()),
     }
 }
 
@@ -2432,6 +2488,26 @@ fn build_agent_lifecycle_plan(
             GROK_CLI_MACOS_INSTALL_COMMAND,
         ));
     }
+    if action == "install" && provider_id == HERMES_AGENT_PROVIDER_ID {
+        #[cfg(target_os = "windows")]
+        return Ok(lifecycle_plan(
+            "powershell.exe",
+            [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                HERMES_CLI_WINDOWS_INSTALL_COMMAND,
+            ],
+            HERMES_CLI_WINDOWS_INSTALL_COMMAND,
+        ));
+        #[cfg(not(target_os = "windows"))]
+        return Ok(lifecycle_plan(
+            "bash",
+            ["-o", "pipefail", "-c", HERMES_CLI_MACOS_INSTALL_COMMAND],
+            HERMES_CLI_MACOS_INSTALL_COMMAND,
+        ));
+    }
     if action == "update" {
         if let Some(command) = installed_command {
             if provider_id == PI_AGENT_PROVIDER_ID {
@@ -2462,12 +2538,22 @@ fn build_agent_lifecycle_plan(
                     &format!("{} upgrade", quote_display_command(command)),
                 ));
             }
+            if provider_id == HERMES_AGENT_PROVIDER_ID {
+                return Ok(lifecycle_plan(
+                    command,
+                    ["update"],
+                    HERMES_CLI_UPDATE_COMMAND,
+                ));
+            }
             if let Some(plan) = package_manager_lifecycle_plan(provider_id, command) {
                 return Ok(plan);
             }
         }
     }
     if action == "update" && provider_id == PI_AGENT_PROVIDER_ID {
+        return build_agent_lifecycle_plan(provider_id, "install", None);
+    }
+    if action == "update" && provider_id == HERMES_AGENT_PROVIDER_ID {
         return build_agent_lifecycle_plan(provider_id, "install", None);
     }
     let (package, display) = match provider_id {
@@ -5103,7 +5189,7 @@ async fn create_thread(
         normalize_thread_metadata_value(payload.reasoning_effort.as_deref(), "reasoningEffort")?;
     if !provider_supports_reasoning_effort(provider) && reasoning_effort.is_some() {
         return Err(ApiError::bad_request(
-            "reasoningEffort 目前仅支持 Claude Code、OpenAI Codex、OpenCode 或 Pi 聊天",
+            "reasoningEffort 目前仅支持 Claude Code、OpenAI Codex、OpenCode、Pi 或 Hermes 聊天",
         ));
     }
     let channel_id = state
@@ -7988,6 +8074,95 @@ fn resolve_default_gemini_command() -> Option<String> {
     resolve_first_runnable_command(candidates)
 }
 
+fn resolve_hermes_command() -> Option<String> {
+    if let Some(command) = env::var("HERMES_CLI_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| command_reports_version(value))
+    {
+        return Some(command);
+    }
+
+    #[cfg(target_os = "windows")]
+    let lookup = {
+        let mut command = background_command("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command hermes -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
+        ]);
+        command_output_with_timeout(&mut command, std::time::Duration::from_secs(3))
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let lookup = background_command("which").arg("hermes").output().ok();
+
+    lookup
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| {
+            stdout
+                .lines()
+                .map(str::trim)
+                .filter(|candidate| !candidate.is_empty())
+                .find(|candidate| command_reports_version(candidate))
+                .map(ToString::to_string)
+        })
+        .or_else(resolve_default_hermes_command)
+}
+
+fn resolve_default_hermes_command() -> Option<String> {
+    let home = home_dir()?;
+    resolve_first_runnable_command(hermes_command_paths(
+        &home,
+        env::var_os("APPDATA").as_deref().map(Path::new),
+        env::var_os("LOCALAPPDATA").as_deref().map(Path::new),
+        Some(env::temp_dir().as_path()),
+        cfg!(target_os = "windows"),
+    ))
+}
+
+fn hermes_command_paths(
+    home: &Path,
+    app_data: Option<&Path>,
+    local_app_data: Option<&Path>,
+    temp_dir: Option<&Path>,
+    windows: bool,
+) -> Vec<PathBuf> {
+    let executable = if windows { "hermes.exe" } else { "hermes" };
+    let mut candidates = vec![home.join(".local").join("bin").join(executable)];
+    if let Some(app_data) = app_data {
+        candidates.push(app_data.join("Python").join("Scripts").join(executable));
+    }
+    if let Some(local_app_data) = local_app_data {
+        candidates.push(
+            local_app_data
+                .join("Programs")
+                .join("Python")
+                .join("Scripts")
+                .join(executable),
+        );
+    }
+    if let Some(temp_dir) = temp_dir {
+        candidates.push(
+            temp_dir
+                .join("codem-hermes-venv")
+                .join(if windows { "Scripts" } else { "bin" })
+                .join(executable),
+        );
+    }
+    if !windows {
+        candidates.extend([
+            PathBuf::from("/usr/local/bin/hermes"),
+            PathBuf::from("/opt/homebrew/bin/hermes"),
+        ]);
+    }
+    candidates
+}
+
 fn resolve_opencode_command() -> Option<String> {
     if let Some(command) = env::var("OPENCODE_CLI_PATH")
         .ok()
@@ -9122,7 +9297,8 @@ where
         | OPENAI_CODEX_PROVIDER_ID
         | OPENCODE_PROVIDER_ID
         | PI_AGENT_PROVIDER_ID
-        | GEMINI_CLI_PROVIDER_ID => {
+        | GEMINI_CLI_PROVIDER_ID
+        | HERMES_AGENT_PROVIDER_ID => {
             if provider_available(provider_id) {
                 return Ok(match provider_id {
                     GROK_BUILD_PROVIDER_ID => GROK_BUILD_PROVIDER_ID,
@@ -9130,6 +9306,7 @@ where
                     OPENCODE_PROVIDER_ID => OPENCODE_PROVIDER_ID,
                     PI_AGENT_PROVIDER_ID => PI_AGENT_PROVIDER_ID,
                     GEMINI_CLI_PROVIDER_ID => GEMINI_CLI_PROVIDER_ID,
+                    HERMES_AGENT_PROVIDER_ID => HERMES_AGENT_PROVIDER_ID,
                     _ => unreachable!(),
                 });
             }
@@ -9139,6 +9316,7 @@ where
                 OPENCODE_PROVIDER_ID => "未找到可由 CodeM 启动的 OpenCode CLI",
                 PI_AGENT_PROVIDER_ID => "未找到可由 CodeM 启动的 Pi CLI",
                 GEMINI_CLI_PROVIDER_ID => "未找到可由 CodeM 启动的 Gemini CLI",
+                HERMES_AGENT_PROVIDER_ID => "未找到可由 CodeM 启动的 Hermes CLI",
                 _ => unreachable!(),
             }))
         }
@@ -9157,6 +9335,7 @@ fn resolve_thread_create_permission_mode(
             | OPENCODE_PROVIDER_ID
             | PI_AGENT_PROVIDER_ID
             | GEMINI_CLI_PROVIDER_ID
+            | HERMES_AGENT_PROVIDER_ID
     ) {
         return normalize_agent_permission_mode(permission_mode)
             .map(|mode| Some(mode.to_string()))
@@ -9197,6 +9376,7 @@ fn provider_supports_reasoning_effort(provider: &str) -> bool {
             | OPENAI_CODEX_PROVIDER_ID
             | OPENCODE_PROVIDER_ID
             | PI_AGENT_PROVIDER_ID
+            | HERMES_AGENT_PROVIDER_ID
     )
 }
 
@@ -10790,7 +10970,7 @@ fn update_thread_metadata_from_payload(
     };
     if !provider_supports_reasoning_effort(&thread.provider) && reasoning_effort.is_some() {
         return Err(ApiError::bad_request(
-            "reasoningEffort 目前仅支持 Claude Code、OpenAI Codex、OpenCode 或 Pi 聊天",
+            "reasoningEffort 目前仅支持 Claude Code、OpenAI Codex、OpenCode、Pi 或 Hermes 聊天",
         ));
     }
     let permission_mode = if has_permission_mode {
@@ -10835,8 +11015,8 @@ fn update_thread_metadata_from_payload(
         thread.agent_channel_id.clone()
     };
     let channel_changed = has_channel_id && agent_channel_id != thread.agent_channel_id;
-    // Codex sessions retain the provider configuration from their original
-    // channel, so a channel switch must start a fresh session.
+    // Codex sessions are channel-bound. Hermes keeps its persistent session
+    // and switches model/provider through the native gateway protocol.
     let session_id = if thread.provider == OPENAI_CODEX_PROVIDER_ID && channel_changed {
         None
     } else {
@@ -14461,6 +14641,7 @@ fn settings_provider_id(value: Option<&str>) -> ApiResult<&str> {
         Some(OPENCODE_PROVIDER_ID) => Ok(OPENCODE_PROVIDER_ID),
         Some(PI_AGENT_PROVIDER_ID) => Ok(PI_AGENT_PROVIDER_ID),
         Some(GEMINI_CLI_PROVIDER_ID) => Ok(GEMINI_CLI_PROVIDER_ID),
+        Some(HERMES_AGENT_PROVIDER_ID) => Ok(HERMES_AGENT_PROVIDER_ID),
         Some(_) => Err(ApiError::bad_request("不支持的 Agent Provider")),
     }
 }
@@ -14472,6 +14653,7 @@ fn agent_config_directory_name(provider_id: &str) -> &'static str {
         OPENCODE_PROVIDER_ID => ".opencode",
         PI_AGENT_PROVIDER_ID => ".pi",
         GEMINI_CLI_PROVIDER_ID => ".gemini",
+        HERMES_AGENT_PROVIDER_ID => ".hermes",
         _ => ".claude",
     }
 }
@@ -14512,6 +14694,7 @@ fn resolve_agent_rules_path(
         OPENCODE_PROVIDER_ID => home.join(".config").join("opencode").join("AGENTS.md"),
         PI_AGENT_PROVIDER_ID => home.join(".pi").join("agent").join("AGENTS.md"),
         GEMINI_CLI_PROVIDER_ID => home.join(".gemini").join("GEMINI.md"),
+        HERMES_AGENT_PROVIDER_ID => home.join(".hermes").join("SOUL.md"),
         _ => home.join(".claude").join("CLAUDE.md"),
     })
 }
@@ -16176,6 +16359,7 @@ fn resolve_agent_settings_command(provider_id: &str) -> Option<String> {
         OPENCODE_PROVIDER_ID => resolve_opencode_command(),
         PI_AGENT_PROVIDER_ID => resolve_pi_command(),
         GEMINI_CLI_PROVIDER_ID => resolve_gemini_command(),
+        HERMES_AGENT_PROVIDER_ID => resolve_hermes_command(),
         _ => resolve_claude_command(),
     }
 }
@@ -22189,7 +22373,7 @@ mod tests {
         create_thread_row, current_claude_install_lifecycle_plan, default_claude_command_paths,
         default_grok_command_path, default_pi_command_paths, desktop_cors_layer,
         ensure_agent_plugin_management_supported, ensure_claude_thread_fork_idle,
-        extract_agent_semantic_version, finalize_local_thread_fork,
+        extract_agent_semantic_version, finalize_local_thread_fork, hermes_command_paths,
         import_claude_sessions_from_root, initialize_workspace_database,
         install_skill_directory_safely, is_agent_lifecycle_network_failure, lifecycle_plan,
         lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
@@ -22219,7 +22403,8 @@ mod tests {
         write_thread_history, ActiveRunRecord, ApiError, AppState, ClaudeContextRequestError,
         ClaudeContextRequestRecord, ClaudeRuntimeRecord, ForkSourceThread,
         ThreadForkCapabilityRequest, ThreadForkOperation, ThreadForkOperationStatus,
-        ThreadForkRequest, ThreadForkTestDriver,
+        ThreadForkRequest, ThreadForkTestDriver, HERMES_AGENT_PROVIDER_ID,
+        HERMES_CLI_UPDATE_COMMAND,
     };
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
@@ -22262,7 +22447,7 @@ mod tests {
         let agent_channels =
             crate::agent_channels::AgentChannelService::new(app_data_dir.clone(), secrets);
         AppState {
-            app_data_dir: Arc::new(app_data_dir),
+            app_data_dir: Arc::new(app_data_dir.clone()),
             settings_write_lock: Arc::new(Mutex::new(())),
             agent_channels: agent_channels.clone(),
             agent_lifecycle_running: Arc::new(tokio::sync::Mutex::new(
@@ -22275,6 +22460,7 @@ mod tests {
                 resolve_pi_command,
                 resolve_gemini_command,
                 agent_channels,
+                crate::hermes::HermesService::new(app_data_dir.clone(), || None),
             ),
             workspace_write_lock: Arc::new(Mutex::new(())),
             workspace_database_init_lock: Arc::new(Mutex::new(())),
@@ -22970,6 +23156,7 @@ mod tests {
             claude_settings_path: Some(std::path::PathBuf::from(
                 "D:/codem/agent-runtimes/claude/channel-1/settings.json",
             )),
+            hermes_provider: None,
         };
 
         let args = super::build_claude_fork_args(&source, Some(&runtime));
@@ -25869,6 +26056,32 @@ mod tests {
     }
 
     #[test]
+    fn hermes_lifecycle_plans_match_the_official_installer_and_update_command() {
+        let install = build_agent_lifecycle_plan(HERMES_AGENT_PROVIDER_ID, "install", None)
+            .expect("build Hermes install plan");
+        assert!(install
+            .display_command
+            .contains("hermes-agent.nousresearch.com"));
+        assert!(!install.program.trim().is_empty());
+        assert!(!install.args.is_empty());
+
+        let update = build_agent_lifecycle_plan(HERMES_AGENT_PROVIDER_ID, "update", Some("hermes"))
+            .expect("build Hermes update plan");
+        assert_eq!(update.program, "hermes");
+        assert_eq!(update.args, vec!["update"]);
+        assert_eq!(update.display_command, HERMES_CLI_UPDATE_COMMAND);
+
+        let update_without_install =
+            build_agent_lifecycle_plan(HERMES_AGENT_PROVIDER_ID, "update", None)
+                .expect("build Hermes install fallback plan");
+        assert_eq!(
+            update_without_install.display_command,
+            install.display_command
+        );
+        assert_eq!(super::HERMES_GITHUB_REPOSITORY, "NousResearch/hermes-agent");
+    }
+
+    #[test]
     fn pi_agent_lifecycle_uses_npm_install_and_native_self_update() {
         let install = build_agent_lifecycle_plan(PI_AGENT_PROVIDER_ID, "install", None)
             .expect("build Pi install plan");
@@ -26422,6 +26635,7 @@ mod tests {
             claude_settings_path: Some(std::path::PathBuf::from(
                 "D:/codem/agent-runtimes/claude/channel-1/settings.json",
             )),
+            hermes_provider: None,
         };
 
         let args = super::build_claude_run_args(&payload, "bypassPermissions", Some(&runtime));
@@ -27023,6 +27237,7 @@ mod tests {
                 resolve_pi_command,
                 resolve_gemini_command,
                 agent_channels,
+                crate::hermes::HermesService::new(test_directory.0.clone(), || None),
             ),
             workspace_write_lock: Arc::new(Mutex::new(())),
             workspace_database_init_lock: Arc::new(Mutex::new(())),
@@ -27228,6 +27443,16 @@ mod tests {
             .expect("enabled Gemini provider"),
             GEMINI_CLI_PROVIDER_ID
         );
+        assert!(
+            resolve_requested_thread_provider(Some(HERMES_AGENT_PROVIDER_ID), |_| false).is_err()
+        );
+        assert_eq!(
+            resolve_requested_thread_provider(Some(HERMES_AGENT_PROVIDER_ID), |provider_id| {
+                provider_id == HERMES_AGENT_PROVIDER_ID
+            })
+            .expect("enabled Hermes provider"),
+            HERMES_AGENT_PROVIDER_ID
+        );
         assert_eq!(
             resolve_thread_create_permission_mode(GROK_BUILD_PROVIDER_ID, None)
                 .expect("default Grok permission")
@@ -27269,6 +27494,7 @@ mod tests {
         );
         assert!(provider_supports_reasoning_effort(PI_AGENT_PROVIDER_ID));
         assert!(provider_supports_reasoning_effort(OPENCODE_PROVIDER_ID));
+        assert!(provider_supports_reasoning_effort(HERMES_AGENT_PROVIDER_ID));
     }
 
     #[test]
@@ -27758,6 +27984,71 @@ mod tests {
             &channel_service,
         )
         .is_err());
+    }
+
+    #[test]
+    fn hermes_channel_switch_preserves_persistent_session() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let channel_root = TestDirectory::new("hermes-thread-channel-service");
+        let channel_service = crate::agent_channels::AgentChannelService::new(
+            channel_root.0.clone(),
+            crate::ordinary_chat::secrets::SecretStore::new(channel_root.0.clone()),
+        );
+        connection
+            .execute(
+                "INSERT INTO projects (id, path, name, custom_name, created_at, updated_at) VALUES ('project', 'D:/workspace', 'workspace', 0, '2026-07-12T00:00:00.000Z', '2026-07-12T00:00:00.000Z')",
+                [],
+            )
+            .expect("insert project");
+
+        let thread_id = create_thread_row(
+            &mut connection,
+            "project",
+            Some("Hermes chat"),
+            HERMES_AGENT_PROVIDER_ID,
+            Some("bypassPermissions"),
+            None,
+            Some("medium"),
+            None,
+            true,
+        )
+        .expect("create Hermes thread");
+        update_thread_metadata_from_payload(
+            &mut connection,
+            &thread_id,
+            &json!({ "sessionId": "hermes-minimax-session" }),
+            &channel_service,
+        )
+        .expect("store Hermes session");
+        connection
+            .execute(
+                "UPDATE threads SET agent_channel_id = 'hermes-minimax', agent_channel_fingerprint = 'minimax-fingerprint' WHERE id = ?",
+                params![thread_id],
+            )
+            .expect("bind Hermes channel");
+
+        update_thread_metadata_from_payload(
+            &mut connection,
+            &thread_id,
+            &json!({ "channelId": null }),
+            &channel_service,
+        )
+        .expect("switch Hermes channel");
+        let (session_id, channel_id, fingerprint): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = connection
+            .query_row(
+                "SELECT session_id, agent_channel_id, agent_channel_fingerprint FROM threads WHERE id = ?",
+                params![thread_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read switched Hermes thread");
+        assert_eq!(session_id.as_deref(), Some("hermes-minimax-session"));
+        assert_eq!(channel_id, None);
+        assert_eq!(fingerprint, None);
     }
 
     fn fork_operation_source(connection: &Connection, id: &str) -> ForkSourceThread {
@@ -28847,6 +29138,20 @@ mod tests {
         assert!(paths.contains(&app_data.join("npm").join("pi.cmd")));
         assert!(paths.contains(&local_app_data.join("pnpm").join("pi.cmd")));
         assert!(paths.contains(&home.join(".bun").join("bin").join("pi.exe")));
+    }
+
+    #[test]
+    fn hermes_command_paths_include_codem_isolated_environment() {
+        let home = PathBuf::from(r"C:\Users\dev");
+        let temp = PathBuf::from(r"C:\Users\dev\AppData\Local\Temp");
+        let paths = hermes_command_paths(&home, None, None, Some(&temp), true);
+
+        assert!(paths.contains(
+            &temp
+                .join("codem-hermes-venv")
+                .join("Scripts")
+                .join("hermes.exe")
+        ));
     }
 
     #[cfg(target_os = "windows")]

@@ -371,6 +371,16 @@ export function appendThinkingItem(items: AssistantItem[], text: string): Assist
   return [...items, { id: crypto.randomUUID(), type: 'thinking', text }];
 }
 
+export function appendDoneResultItem(
+  items: AssistantItem[],
+  assistantText: string,
+  result: string,
+): AssistantItem[] {
+  return assistantText.trim() || !sanitizeVisibleAssistantText(result).trim()
+    ? items
+    : appendTextItem(items, result);
+}
+
 export function syncToolItem(items: AssistantItem[], step: ToolStep): AssistantItem[] {
   const index = items.findIndex((item) => item.type === 'tool' && item.tool.id === step.id);
   if (index === -1) {

@@ -1,7 +1,8 @@
 use crate::{
     agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
-        OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+        HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID,
+        PI_AGENT_PROVIDER_ID,
     },
     ordinary_chat::{
         provider::{discover_models, test_provider, validate_protocol_model, PROVIDER_TEMPLATES},
@@ -43,6 +44,7 @@ pub(crate) struct AgentChannelRuntime {
     pub codex_config_args: Vec<String>,
     pub effective_model: Option<String>,
     pub claude_settings_path: Option<PathBuf>,
+    pub hermes_provider: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -261,6 +263,21 @@ impl AgentChannelService {
         for model in &mut models {
             apply_known_model_capabilities(&channel, model);
         }
+        let hermes_channels = if provider_id == HERMES_AGENT_PROVIDER_ID {
+            let channels = list_enabled_stored_channels_for_provider(&connection, provider_id)?;
+            let mut configured = Vec::with_capacity(channels.len());
+            for channel in channels {
+                let secret = if self.secrets.has(&channel.secret_slot)? {
+                    Some(self.secrets.get(&channel.secret_slot)?)
+                } else {
+                    None
+                };
+                configured.push((channel, secret));
+            }
+            Some(configured)
+        } else {
+            None
+        };
         build_runtime(
             self.app_data_dir.as_ref(),
             &channel,
@@ -269,6 +286,7 @@ impl AgentChannelService {
             &api_key,
             session_scope,
             requested_session_id,
+            hermes_channels.as_deref(),
         )
         .map(Some)
     }
@@ -462,7 +480,8 @@ fn validate_provider_id(value: &str) -> AgentChannelApiResult<&str> {
         | GROK_BUILD_PROVIDER_ID
         | OPENCODE_PROVIDER_ID
         | PI_AGENT_PROVIDER_ID
-        | GEMINI_CLI_PROVIDER_ID => Ok(value),
+        | GEMINI_CLI_PROVIDER_ID
+        | HERMES_AGENT_PROVIDER_ID => Ok(value),
         _ => Err(AgentChannelApiError::bad_request("不支持的 Agent")),
     }
 }
@@ -484,6 +503,10 @@ fn validate_protocol(provider_id: &str, protocol: AiProtocol) -> AgentChannelApi
             AiProtocol::OpenaiChat | AiProtocol::OpenaiResponses | AiProtocol::AnthropicMessages
         ),
         GEMINI_CLI_PROVIDER_ID => protocol == AiProtocol::GeminiGenerateContent,
+        HERMES_AGENT_PROVIDER_ID => matches!(
+            protocol,
+            AiProtocol::AnthropicMessages | AiProtocol::OpenaiChat | AiProtocol::OpenaiResponses
+        ),
         _ => false,
     };
     if supported {
@@ -533,6 +556,7 @@ fn system_channel_summaries() -> Vec<SystemChannelSummary> {
         read_opencode_system_channel(cc_switch.get("opencode").cloned()),
         read_pi_system_channel(),
         read_gemini_system_channel(),
+        read_hermes_system_channel(),
     ]
 }
 
@@ -733,6 +757,31 @@ fn read_gemini_system_channel() -> SystemChannelSummary {
     )
 }
 
+fn read_hermes_system_channel() -> SystemChannelSummary {
+    let path = home_dir().map(|home| home.join(".hermes").join("config.yaml"));
+    let anthropic_base_url = env::var("ANTHROPIC_BASE_URL")
+        .ok()
+        .and_then(|value| non_empty_string(&value));
+    let openai_base_url = env::var("OPENAI_BASE_URL")
+        .ok()
+        .and_then(|value| non_empty_string(&value));
+    let protocol = if anthropic_base_url.is_some() {
+        Some(AiProtocol::AnthropicMessages)
+    } else if openai_base_url.is_some() {
+        Some(AiProtocol::OpenaiChat)
+    } else {
+        None
+    };
+    system_channel_summary(
+        HERMES_AGENT_PROVIDER_ID,
+        path,
+        anthropic_base_url.or(openai_base_url),
+        None,
+        protocol,
+        None,
+    )
+}
+
 const GEMINI_SYSTEM_ENV_KEYS: &[&str] = &[
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
@@ -800,6 +849,7 @@ fn build_gemini_system_runtime(
         codex_config_args: Vec::new(),
         effective_model,
         claude_settings_path: None,
+        hermes_provider: None,
     }))
 }
 
@@ -921,6 +971,7 @@ async fn channels_bootstrap(
         OPENCODE_PROVIDER_ID,
         PI_AGENT_PROVIDER_ID,
         GEMINI_CLI_PROVIDER_ID,
+        HERMES_AGENT_PROVIDER_ID,
     ] {
         repair_default_channel(&connection, provider_id).map_err(AgentChannelApiError::internal)?;
     }
@@ -1191,6 +1242,11 @@ fn remove_agent_channel_runtime(
             .join("agent-runtimes")
             .join("pi")
             .join(&channel.id),
+        HERMES_AGENT_PROVIDER_ID => app_data_dir
+            .join("agent-runtimes")
+            .join("hermes")
+            .join("channels")
+            .join(&channel.id),
         _ => return Ok(()),
     };
     if runtime_home.is_dir() {
@@ -1443,6 +1499,26 @@ fn get_stored_channel(
         )
         .optional()
         .map_err(|error| format!("读取 Agent 渠道失败: {error}"))
+}
+
+fn list_enabled_stored_channels_for_provider(
+    connection: &Connection,
+    provider_id: &str,
+) -> Result<Vec<StoredAgentChannel>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"SELECT id, provider_id, name, protocol, base_url, models_url, template_id,
+                      enabled, is_default, secret_slot, created_at, updated_at
+               FROM agent_channels
+               WHERE provider_id = ? AND enabled = 1
+               ORDER BY id"#,
+        )
+        .map_err(|error| format!("读取 Agent 渠道失败: {error}"))?;
+    let rows = statement
+        .query_map(params![provider_id], map_stored_channel)
+        .map_err(|error| format!("读取 Agent 渠道失败: {error}"))?;
+    rows.map(|row| row.map_err(|error| format!("读取 Agent 渠道失败: {error}")))
+        .collect()
 }
 
 fn ensure_channel_name_available(
@@ -1991,6 +2067,7 @@ fn build_runtime(
     api_key: &str,
     session_scope: Option<&str>,
     requested_session_id: Option<&str>,
+    hermes_channels: Option<&[(StoredAgentChannel, Option<String>)]>,
 ) -> Result<AgentChannelRuntime, String> {
     let selected_model = selected_model
         .map(str::trim)
@@ -2007,6 +2084,8 @@ fn build_runtime(
     let mut codex_config_args = Vec::new();
     let mut effective_model = selected_model.clone();
     let mut claude_settings_path = None;
+    let mut hermes_provider = None;
+    let mut hermes_fingerprint_source = None;
     env.insert(
         "CODEM_AGENT_CHANNEL_API_KEY".to_string(),
         api_key.to_string(),
@@ -2183,19 +2262,70 @@ fn build_runtime(
                 runtime_home.to_string_lossy().to_string(),
             );
         }
+        HERMES_AGENT_PROVIDER_ID => {
+            if !matches!(
+                channel.protocol,
+                AiProtocol::AnthropicMessages
+                    | AiProtocol::OpenaiChat
+                    | AiProtocol::OpenaiResponses
+            ) {
+                return Err(
+                    "Hermes Agent 渠道仅支持 Anthropic Messages、OpenAI Chat 或 Responses 接口"
+                        .to_string(),
+                );
+            }
+        }
         _ => return Err("不支持的 Agent 渠道".to_string()),
     }
-    let mut fingerprint_source = format!(
-        "{}|{}|{}|{}|{}|{}",
-        channel.id,
-        channel.updated_at,
-        channel.protocol.as_str(),
-        channel.base_url,
-        channel.models_url.as_deref().unwrap_or_default(),
-        selected_model.as_deref().unwrap_or_default(),
-    );
-    fingerprint_source.push('|');
-    fingerprint_source.push_str(&hex_digest(api_key.as_bytes()));
+    if channel.provider_id == HERMES_AGENT_PROVIDER_ID {
+        let fallback_channels;
+        let configured_channels = match hermes_channels {
+            Some(channels) => channels,
+            None => {
+                fallback_channels = vec![(channel.clone(), Some(api_key.to_string()))];
+                &fallback_channels
+            }
+        };
+        let (managed_dir, provider) =
+            prepare_hermes_runtime_config(app_data_dir, configured_channels, channel)?;
+        let mut fingerprint = String::from("hermes-managed-v1");
+        for (configured_channel, secret) in configured_channels {
+            fingerprint.push('|');
+            fingerprint.push_str(&configured_channel.id);
+            fingerprint.push('|');
+            fingerprint.push_str(&configured_channel.updated_at);
+            fingerprint.push('|');
+            fingerprint.push_str(configured_channel.protocol.as_str());
+            fingerprint.push('|');
+            fingerprint.push_str(&configured_channel.base_url);
+            if let Some(secret) = secret {
+                env.insert(
+                    hermes_channel_secret_env_key(&configured_channel.id),
+                    secret.clone(),
+                );
+                fingerprint.push('|');
+                fingerprint.push_str(&hex_digest(secret.as_bytes()));
+            }
+        }
+        env.insert(
+            "HERMES_MANAGED_DIR".to_string(),
+            managed_dir.to_string_lossy().to_string(),
+        );
+        hermes_provider = Some(provider);
+        hermes_fingerprint_source = Some(fingerprint);
+    }
+    let fingerprint_source = hermes_fingerprint_source.unwrap_or_else(|| {
+        format!(
+            "{}|{}|{}|{}|{}|{}|{}",
+            channel.id,
+            channel.updated_at,
+            channel.protocol.as_str(),
+            channel.base_url,
+            channel.models_url.as_deref().unwrap_or_default(),
+            selected_model.as_deref().unwrap_or_default(),
+            hex_digest(api_key.as_bytes()),
+        )
+    });
     Ok(AgentChannelRuntime {
         channel_id: channel.id.clone(),
         fingerprint: hex_digest(fingerprint_source.as_bytes()),
@@ -2203,7 +2333,76 @@ fn build_runtime(
         codex_config_args,
         effective_model,
         claude_settings_path,
+        hermes_provider,
     })
+}
+
+fn hermes_channel_secret_env_key(channel_id: &str) -> String {
+    let digest = hex_digest(channel_id.as_bytes());
+    format!(
+        "CODEM_HERMES_CHANNEL_{}_API_KEY",
+        digest[..12].to_ascii_uppercase()
+    )
+}
+
+fn prepare_hermes_runtime_config(
+    app_data_dir: &Path,
+    channels: &[(StoredAgentChannel, Option<String>)],
+    selected_channel: &StoredAgentChannel,
+) -> Result<(PathBuf, String), String> {
+    let selected_provider_key = hermes_provider_key(&selected_channel.id);
+    let managed_dir = app_data_dir
+        .join("agent-runtimes")
+        .join("hermes")
+        .join("managed");
+    fs::create_dir_all(&managed_dir)
+        .map_err(|error| format!("创建 Hermes 渠道管理目录失败: {error}"))?;
+    let mut providers = serde_json::Map::new();
+    for (channel, _) in channels {
+        let api_mode = match channel.protocol {
+            AiProtocol::AnthropicMessages => "anthropic_messages",
+            AiProtocol::OpenaiChat => "chat_completions",
+            AiProtocol::OpenaiResponses => "codex_responses",
+            AiProtocol::GeminiGenerateContent => {
+                return Err("Hermes Agent 渠道不支持 Gemini 接口".to_string())
+            }
+        };
+        providers.insert(
+            hermes_provider_key(&channel.id),
+            json!({
+                "name": channel.name,
+                "base_url": hermes_managed_base_url(channel)?,
+                "key_env": hermes_channel_secret_env_key(&channel.id),
+                "api_mode": api_mode,
+                "enabled": true,
+            }),
+        );
+    }
+    let config = json!({ "providers": providers });
+    let config_path = managed_dir.join("config.yaml");
+    let contents = serde_json::to_vec_pretty(&config)
+        .map_err(|error| format!("序列化 Hermes 渠道配置失败: {error}"))?;
+    fs::write(&config_path, contents)
+        .map_err(|error| format!("写入 Hermes 渠道配置失败: {error}"))?;
+    Ok((managed_dir, format!("custom:{selected_provider_key}")))
+}
+
+fn hermes_provider_key(channel_id: &str) -> String {
+    let channel_hash = hex_digest(channel_id.as_bytes());
+    format!("codem_{}", &channel_hash[..12])
+}
+
+fn hermes_managed_base_url(channel: &StoredAgentChannel) -> Result<String, String> {
+    if channel.protocol != AiProtocol::AnthropicMessages {
+        return Ok(channel.base_url.clone());
+    }
+    let mut url = Url::parse(&channel.base_url)
+        .map_err(|error| format!("Hermes Agent 渠道地址无效: {error}"))?;
+    let path = url.path().trim_end_matches('/');
+    if !path.ends_with("/v1") {
+        url.set_path(&format!("{path}/v1"));
+    }
+    Ok(url.to_string().trim_end_matches('/').to_string())
 }
 
 fn prepare_claude_runtime_settings(
@@ -2715,6 +2914,7 @@ mod tests {
             "test-key",
             None,
             None,
+            None,
         )
         .expect("build OpenCode Go Qwen runtime");
         let config: Value = serde_json::from_str(
@@ -2796,6 +2996,7 @@ mod tests {
             &models,
             Some("gemini-2.5-pro"),
             "gemini-secret",
+            None,
             None,
             None,
         )
@@ -2907,6 +3108,7 @@ mod tests {
             "sk-secret",
             None,
             None,
+            None,
         )
         .expect("build Claude runtime");
         let settings_path = runtime
@@ -2942,6 +3144,114 @@ mod tests {
         assert!(!settings_path.exists());
         assert!(unrelated.exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn hermes_custom_channel_uses_managed_provider_without_persisting_secret() {
+        let root = std::env::temp_dir().join(format!(
+            "codem-hermes-agent-channel-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let channel = StoredAgentChannel {
+            id: "channel-hermes".to_string(),
+            provider_id: HERMES_AGENT_PROVIDER_ID.to_string(),
+            name: "Hermes Proxy".to_string(),
+            protocol: AiProtocol::AnthropicMessages,
+            base_url: "https://api.example.com/anthropic".to_string(),
+            models_url: None,
+            template_id: None,
+            enabled: true,
+            is_default: false,
+            secret_slot: "secret:channel-hermes".to_string(),
+            created_at: "2026-08-10T00:00:00Z".to_string(),
+            updated_at: "2026-08-10T00:00:00Z".to_string(),
+        };
+        let models = vec![AgentChannelModelSummary {
+            id: "model-hermes".to_string(),
+            channel_id: channel.id.clone(),
+            model_id: "MiniMax-M3".to_string(),
+            display_name: "MiniMax-M3".to_string(),
+            enabled: true,
+            is_default: true,
+            capabilities: json!({}),
+            created_at: "2026-08-10T00:00:00Z".to_string(),
+            updated_at: "2026-08-10T00:00:00Z".to_string(),
+        }];
+        let deepseek_channel = StoredAgentChannel {
+            id: "channel-hermes-deepseek".to_string(),
+            provider_id: HERMES_AGENT_PROVIDER_ID.to_string(),
+            name: "Hermes DeepSeek".to_string(),
+            protocol: AiProtocol::OpenaiChat,
+            base_url: "https://api.deepseek.example/v1".to_string(),
+            models_url: None,
+            template_id: None,
+            enabled: true,
+            is_default: false,
+            secret_slot: "secret:channel-hermes-deepseek".to_string(),
+            created_at: "2026-08-10T00:00:00Z".to_string(),
+            updated_at: "2026-08-10T00:00:00Z".to_string(),
+        };
+        let configured_channels = vec![
+            (channel.clone(), Some("sk-secret".to_string())),
+            (deepseek_channel.clone(), Some("sk-deepseek".to_string())),
+        ];
+        let runtime = build_runtime(
+            &root,
+            &channel,
+            &models,
+            Some("MiniMax-M3"),
+            "sk-secret",
+            None,
+            None,
+            Some(&configured_channels),
+        )
+        .expect("build Hermes runtime");
+        let provider = runtime.hermes_provider.as_deref().expect("Hermes provider");
+        assert!(provider.starts_with("custom:codem_"));
+        let secret_env = hermes_channel_secret_env_key(&channel.id);
+        assert_eq!(
+            runtime.env.get(&secret_env).map(String::as_str),
+            Some("sk-secret")
+        );
+        let managed_dir = PathBuf::from(&runtime.env["HERMES_MANAGED_DIR"]);
+        assert_eq!(
+            managed_dir,
+            root.join("agent-runtimes").join("hermes").join("managed")
+        );
+        let config_text = fs::read_to_string(managed_dir.join("config.yaml")).unwrap();
+        let config: Value = serde_json::from_str(&config_text).unwrap();
+        assert_eq!(
+            config["providers"][&provider[7..]]["base_url"],
+            "https://api.example.com/anthropic/v1"
+        );
+        assert_eq!(
+            config["providers"][&provider[7..]]["api_mode"],
+            "anthropic_messages"
+        );
+        let deepseek_provider = hermes_provider_key(&deepseek_channel.id);
+        assert_eq!(
+            config["providers"][&deepseek_provider]["base_url"],
+            "https://api.deepseek.example/v1"
+        );
+        assert_eq!(
+            config["providers"][&deepseek_provider]["api_mode"],
+            "chat_completions"
+        );
+        assert_eq!(
+            runtime
+                .env
+                .get(&hermes_channel_secret_env_key(&deepseek_channel.id))
+                .map(String::as_str),
+            Some("sk-deepseek")
+        );
+        assert!(!runtime.env.contains_key("ANTHROPIC_BASE_URL"));
+        assert!(!runtime.env.contains_key("ANTHROPIC_API_KEY"));
+        assert!(!runtime.env.contains_key("ANTHROPIC_TOKEN"));
+        assert!(!runtime.env.contains_key("OPENAI_BASE_URL"));
+        assert!(!runtime.env.contains_key("OPENAI_API_KEY"));
+        assert!(!config_text.contains("sk-secret"));
+        assert!(!config_text.contains("sk-deepseek"));
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -2982,6 +3292,7 @@ mod tests {
             "sk-secret",
             Some("thread-1"),
             None,
+            None,
         )
         .expect("build Pi runtime");
         let runtime_dir = PathBuf::from(&first.env["PI_CODING_AGENT_DIR"]);
@@ -3020,6 +3331,7 @@ mod tests {
             "sk-secret-2",
             Some("thread-1"),
             None,
+            None,
         )
         .unwrap();
         assert_ne!(first.fingerprint, changed_secret.fingerprint);
@@ -3031,6 +3343,7 @@ mod tests {
             Some("gpt-5"),
             "sk-secret",
             Some("thread-1"),
+            None,
             None,
         )
         .unwrap();
@@ -3265,6 +3578,7 @@ mod tests {
             "test-key",
             None,
             None,
+            None,
         )
         .expect("build OpenCode runtime");
         let config: Value = serde_json::from_str(
@@ -3318,6 +3632,7 @@ mod tests {
             &models,
             Some("deepseek-v4-flash"),
             "test-key",
+            None,
             None,
             None,
         )

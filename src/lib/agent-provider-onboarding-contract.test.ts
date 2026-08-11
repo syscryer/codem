@@ -10,7 +10,7 @@ import {
 import { resolveChatRuntimeKind } from './agent-provider-registry.js';
 
 test('Agent Provider metadata is complete, unique, and routable', () => {
-  assert.equal(AGENT_PROVIDER_METADATA.length, 6);
+  assert.equal(AGENT_PROVIDER_METADATA.length, 7);
   assert.equal(new Set(AGENT_PROVIDER_IDS).size, AGENT_PROVIDER_IDS.length);
 
   for (const provider of AGENT_PROVIDER_METADATA) {
@@ -31,6 +31,13 @@ test('Agent Provider metadata is complete, unique, and routable', () => {
     driverId: 'acp',
     runtimeKind: 'generic',
     protocolLabel: 'Gemini ACP',
+  });
+  assert.deepEqual(getAgentProviderMetadata('hermes-agent'), {
+    id: 'hermes-agent',
+    displayName: 'Hermes Agent',
+    driverId: 'hermes-json-rpc',
+    runtimeKind: 'generic',
+    protocolLabel: 'Hermes JSON-RPC',
   });
 });
 

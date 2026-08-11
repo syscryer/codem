@@ -32,6 +32,11 @@ const providerSettingsSource = await readFile(
   new URL('../components/settings/AgentProviderSettings.tsx', import.meta.url),
   'utf8',
 );
+const hermesSettingsSource = await readFile(
+  new URL('../components/settings/HermesSettingsPanel.tsx', import.meta.url),
+  'utf8',
+);
+const hermesApiSource = await readFile(new URL('./hermes-api.ts', import.meta.url), 'utf8');
 const providerManagementSource = await readFile(
   new URL('./agent-provider-management.ts', import.meta.url),
   'utf8',
@@ -437,4 +442,46 @@ test('Gemini CLI is represented across settings, diagnostics, rules, MCP, and sk
   assert.match(pluginsSuiteSource, /~\/\.gemini\/skills/);
   assert.match(pluginsSuiteSource, /Gemini CLI 当前没有供 CodeM 管理的稳定插件接口/);
   assert.match(pluginsSuiteSource, /if \(pluginsUnsupported\) \{[\s\S]*fetchPluginSkills\(providerId, projectPath\)[\s\S]*setInstalled\(\[\]\)[\s\S]*setMarketplaces\(\[\]\)/);
+});
+
+test('Hermes management uses runtime detection and the dedicated settings panel', () => {
+  const provider = {
+    id: 'hermes-agent',
+    displayName: 'Hermes Agent',
+    driverId: 'hermes-json-rpc',
+    lifecycle: 'active',
+    available: true,
+    selectable: true,
+    capabilities: {
+      sessions: { create: 'supported', resume: 'supported', list: 'supported', import: 'unsupported' },
+      input: { text: 'supported', images: 'runtime-detected', fileReferences: 'supported' },
+      tools: { streaming: 'supported', approval: 'supported', userInput: 'supported', mcp: 'supported' },
+      runtime: { cancel: 'soft', reconnect: 'supported', concurrentSessions: 'supported' },
+    },
+  } satisfies AgentProviderDescriptor;
+
+  assert.deepEqual(resolveProviderStatus(provider, null, null), { label: '运行时可用', tone: 'positive' });
+  assert.equal(resolveProviderDiagnostics(provider, null, null).auth, '沿用系统配置或 CodeM 渠道管理');
+  assert.equal(getProviderInstallDocsUrl('hermes-agent'), 'https://github.com/NousResearch/hermes-agent');
+  assert.match(providerSettingsSource, /HermesSettingsPanel/);
+  assert.match(composerSource, /agent === 'codex' \|\| agent === 'opencode' \|\| providerId === 'hermes-agent'/);
+  assert.match(providerSettingsSource, /provider\.id === 'hermes-agent'/);
+  assert.match(hermesSettingsSource, /'overview' \| 'profiles' \| 'memory' \| 'skills' \| 'mcp' \| 'gateway' \| 'runtime'/);
+  assert.match(hermesSettingsSource, /label: '运行信息'/);
+  assert.match(hermesSettingsSource, /runtimeContent: ReactNode/);
+  assert.match(hermesSettingsSource, /aria-controls=\{`hermes-panel-\$\{id\}`\}/);
+  assert.match(hermesSettingsSource, /HermesStatusPill/);
+  assert.match(hermesSettingsSource, /正在读取 MCP Server/);
+  assert.match(providerSettingsSource, /Hermes 模型与认证由 CodeM 渠道管理/);
+  assert.match(providerSettingsSource, /runtimeContent=\{<>\{providerFactsContent\}\{providerCapabilitiesContent\}\{providerModelsContent\}<\/\>\}/);
+  assert.match(providerSettingsSource, /provider\.id !== 'hermes-agent' \? providerFactsContent : null/);
+  assert.match(providerSettingsSource, /provider\.id !== 'hermes-agent' \? providerCapabilitiesContent : null/);
+  assert.match(providerSettingsSource, /provider\.id !== 'hermes-agent' \? providerModelsContent : null/);
+  assert.match(hermesSettingsSource, /fetchHermesLearningNode/);
+  assert.match(hermesSettingsSource, /fetchHermesSkillContent/);
+  assert.match(hermesSettingsSource, /testHermesMcp/);
+  assert.match(hermesSettingsSource, /gateway\/restart/);
+  assert.match(hermesApiSource, /\/api\/agents\/hermes\/learning\/node\?id=/);
+  assert.match(hermesApiSource, /\/api\/agents\/hermes\/skills\/content\?name=/);
+  assert.match(hermesApiSource, /\/api\/agents\/hermes\/mcp\/servers\/\$\{encodeURIComponent\(name\)\}\/enabled/);
 });

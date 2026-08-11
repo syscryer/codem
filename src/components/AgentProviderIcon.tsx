@@ -1,9 +1,11 @@
 import { Bot } from 'lucide-react';
+import hermesIcon from '../assets/provider-icons/hermes.png';
 import {
   CLAUDE_CODE_PROVIDER_ID,
   CODEM_AGENT_PROVIDER_ID,
   GROK_BUILD_PROVIDER_ID,
   GEMINI_CLI_PROVIDER_ID,
+  HERMES_AGENT_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
   PI_AGENT_PROVIDER_ID,
@@ -23,7 +25,6 @@ const GROK_PATH = 'M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.5
 const OPENCODE_PATH = 'M16 6H8v12h8V6zm4 16H4V2h16v20z';
 const PI_PATH = 'M0 0h6v24H0zM6 0h12v12h-6V6H6zM6 12h6v6H6zM18 12h6v12h-6z';
 const GEMINI_PATH = 'M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975z';
-
 const PROVIDER_PATHS = {
   [CLAUDE_CODE_PROVIDER_ID]: CLAUDE_PATH,
   [OPENAI_CODEX_PROVIDER_ID]: OPENAI_PATH,
@@ -31,6 +32,7 @@ const PROVIDER_PATHS = {
   [OPENCODE_PROVIDER_ID]: OPENCODE_PATH,
   [PI_AGENT_PROVIDER_ID]: PI_PATH,
   [GEMINI_CLI_PROVIDER_ID]: GEMINI_PATH,
+  [HERMES_AGENT_PROVIDER_ID]: hermesIcon,
 } satisfies Record<AgentProviderId, string>;
 
 // 通用品牌路径来源于 Lobe Icons（MIT）；Pi 路径按产品标识本地绘制，不增加运行时依赖。
@@ -39,6 +41,9 @@ export function AgentProviderIcon({ providerId, size = 16, className = '' }: Age
 
   if (providerId === CODEM_AGENT_PROVIDER_ID) {
     return <img className={`${classes} agent-provider-brand-icon-image`} src="/icon.png" alt="" width={size} height={size} aria-hidden="true" />;
+  }
+  if (providerId === HERMES_AGENT_PROVIDER_ID) {
+    return <img className={`${classes} agent-provider-brand-icon-hermes`} src={PROVIDER_PATHS[providerId]} alt="" width={size} height={size} aria-hidden="true" />;
   }
   const path = isAgentProviderId(providerId) ? PROVIDER_PATHS[providerId] : null;
 

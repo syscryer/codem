@@ -390,7 +390,7 @@ fn agent_mux_skill_source_directory(service: &AgentMuxService) -> PathBuf {
         .join(AGENT_MUX_SKILL_NAME)
 }
 
-fn skill_install_targets(home: &FsPath) -> [(&'static str, PathBuf); 6] {
+fn skill_install_targets(home: &FsPath) -> [(&'static str, PathBuf); 7] {
     [
         ("claude-code", home.join(".claude").join("skills")),
         ("openai-codex", home.join(".codex").join("skills")),
@@ -401,6 +401,7 @@ fn skill_install_targets(home: &FsPath) -> [(&'static str, PathBuf); 6] {
             home.join(".config").join("opencode").join("skills"),
         ),
         ("gemini-cli", home.join(".gemini").join("skills")),
+        ("hermes-agent", home.join(".hermes").join("skills")),
     ]
 }
 
@@ -785,6 +786,12 @@ fn ensure_agent_catalog(connection: &Connection) -> Result<(), (StatusCode, Json
             "通过 ACP 接入的 Gemini 编码 Agent。",
             &["代码编辑", "ACP", "Gemini"],
         ),
+        (
+            "hermes",
+            "Hermes Agent",
+            "Hermes native JSON-RPC agent with memory, Skills, and MCP support.",
+            &["coding", "memory", "Skills", "MCP"],
+        ),
     ];
     for (id, name, description, tags) in agents {
         tx.execute("INSERT OR IGNORE INTO agent_mux_agents (id, name, description, tags_json) VALUES (?1, ?2, ?3, ?4)", params![id, name, description, serde_json::to_string(tags).map_err(internal_error)?]).map_err(internal_error)?;
@@ -1156,9 +1163,10 @@ mod tests {
         let connection = test_connection();
         let overview = read_overview(&connection).expect("read Agent Mux overview");
 
-        assert_eq!(overview.agents.len(), 6);
+        assert_eq!(overview.agents.len(), 7);
         assert!(overview.agents.iter().any(|agent| agent.id == "opencode"));
         assert!(overview.agents.iter().any(|agent| agent.id == "gemini"));
+        assert!(overview.agents.iter().any(|agent| agent.id == "hermes"));
         assert!(overview
             .agents
             .iter()
@@ -1219,6 +1227,14 @@ mod tests {
             )
             .expect("count Gemini catalog rows");
         assert_eq!(gemini_count, 1);
+        let hermes_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM agent_mux_agents WHERE id = 'hermes'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count Hermes catalog rows");
+        assert_eq!(hermes_count, 1);
     }
 
     #[test]

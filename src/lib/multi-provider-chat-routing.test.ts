@@ -55,7 +55,7 @@ test('generic Agent composer follows provider attachment capabilities and suppor
   assert.match(composerSource, /agentModelCatalog\?\.models\.map/);
   assert.match(
     composerSource,
-    /\(agent === 'codex' \|\| agent === 'opencode'\) && agentReasoningEffortOptions\.length > 0/,
+    /\(agent === 'codex' \|\| agent === 'opencode' \|\| providerId === 'hermes-agent'\) && agentReasoningEffortOptions\.length > 0/,
   );
   assert.match(composerSource, /onRetryAgentModels/);
   assert.match(composerSource, /textOnlyInputMessage = `\$\{providerName\} 当前不支持附件输入/);

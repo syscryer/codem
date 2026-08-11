@@ -19,6 +19,7 @@ const providerLabels: Record<AgentProviderId, string> = {
   opencode: 'OpenCode',
   'pi-agent': 'Pi',
   'gemini-cli': 'Gemini',
+  'hermes-agent': 'Hermes',
 };
 
 export function SkillsPanel({ items, providerId, busy, onOpen, onDelete, onCopy }: SkillsPanelProps) {

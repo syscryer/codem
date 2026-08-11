@@ -2010,7 +2010,7 @@ export function Composer({
                     <span className="model-trigger-chevron" aria-hidden="true" />
                   </button>
                 </div>}
-                {(agent === 'codex' || agent === 'opencode') && agentReasoningEffortOptions.length > 0 ? (
+                {(agent === 'codex' || agent === 'opencode' || providerId === 'hermes-agent') && agentReasoningEffortOptions.length > 0 ? (
                   <div className="effort-picker" ref={effortMenuRef}>
                     <PopoverPortal open={effortMenuOpen} anchorRef={effortMenuRef} placement="top-end">
                       <div className="effort-menu" role="menu" aria-label={`${providerName} 思考级别`}>

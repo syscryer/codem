@@ -8,6 +8,7 @@ pub const OPENAI_CODEX_PROVIDER_ID: &str = "openai-codex";
 pub const OPENCODE_PROVIDER_ID: &str = "opencode";
 pub const PI_AGENT_PROVIDER_ID: &str = "pi-agent";
 pub const GEMINI_CLI_PROVIDER_ID: &str = "gemini-cli";
+pub const HERMES_AGENT_PROVIDER_ID: &str = "hermes-agent";
 pub const CODEM_AGENT_PROVIDER_ID: &str = "codem-agent";
 pub const DEFAULT_AGENT_PERMISSION_MODE: &str = "default";
 pub const DEFAULT_GROK_PERMISSION_MODE: &str = DEFAULT_AGENT_PERMISSION_MODE;
@@ -21,6 +22,7 @@ pub fn is_active_agent_provider_id(provider_id: &str) -> bool {
             | OPENCODE_PROVIDER_ID
             | PI_AGENT_PROVIDER_ID
             | GEMINI_CLI_PROVIDER_ID
+            | HERMES_AGENT_PROVIDER_ID
     )
 }
 
@@ -530,6 +532,7 @@ pub fn agent_provider_registry(
     opencode_available: bool,
     pi_available: bool,
     gemini_available: bool,
+    hermes_available: bool,
 ) -> AgentProviderRegistry {
     let grok_provider = AgentProviderDescriptor {
         id: GROK_BUILD_PROVIDER_ID,
@@ -576,6 +579,15 @@ pub fn agent_provider_registry(
         selectable: gemini_available,
         capabilities: gemini_capabilities(),
     };
+    let hermes_provider = AgentProviderDescriptor {
+        id: HERMES_AGENT_PROVIDER_ID,
+        display_name: "Hermes Agent",
+        driver_id: "hermes-json-rpc",
+        lifecycle: AgentProviderLifecycle::Active,
+        available: Some(hermes_available),
+        selectable: hermes_available,
+        capabilities: hermes_capabilities(),
+    };
 
     AgentProviderRegistry {
         providers: vec![
@@ -593,6 +605,7 @@ pub fn agent_provider_registry(
             opencode_provider,
             pi_provider,
             gemini_provider,
+            hermes_provider,
             planned_provider(CODEM_AGENT_PROVIDER_ID, "CodeM Agent", "acp"),
         ],
     }
@@ -788,6 +801,35 @@ fn gemini_capabilities() -> AgentCapabilities {
     }
 }
 
+fn hermes_capabilities() -> AgentCapabilities {
+    use AgentCapabilitySupport::{RuntimeDetected, Supported, Unsupported};
+
+    AgentCapabilities {
+        sessions: AgentSessionCapabilities {
+            create: Supported,
+            resume: Supported,
+            list: Supported,
+            import: Unsupported,
+        },
+        input: AgentInputCapabilities {
+            text: Supported,
+            images: RuntimeDetected,
+            file_references: Supported,
+        },
+        tools: AgentToolCapabilities {
+            streaming: Supported,
+            approval: Supported,
+            user_input: Supported,
+            mcp: Supported,
+        },
+        runtime: AgentRuntimeCapabilities {
+            cancel: AgentCancelSupport::Soft,
+            reconnect: Supported,
+            concurrent_sessions: Supported,
+        },
+    }
+}
+
 fn runtime_detected_capabilities() -> AgentCapabilities {
     use AgentCapabilitySupport::RuntimeDetected;
 
@@ -933,7 +975,7 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_keeps_provider_ids_unique() {
-        let registry = agent_provider_registry(true, false, false, false, false, false);
+        let registry = agent_provider_registry(true, false, false, false, false, false, false);
         let ids = registry
             .providers
             .iter()
@@ -945,7 +987,7 @@ mod tests {
 
     #[test]
     fn active_provider_id_validation_covers_the_registry() {
-        let registry = agent_provider_registry(true, true, true, true, true, true);
+        let registry = agent_provider_registry(true, true, true, true, true, true, true);
         let active_ids = registry
             .providers
             .iter()
@@ -974,14 +1016,14 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_keeps_supported_agents_active() {
-        let registry = agent_provider_registry(true, false, false, false, false, false);
+        let registry = agent_provider_registry(true, false, false, false, false, false, false);
         let active = registry
             .providers
             .iter()
             .filter(|provider| provider.lifecycle == AgentProviderLifecycle::Active)
             .collect::<Vec<_>>();
 
-        assert_eq!(active.len(), 6);
+        assert_eq!(active.len(), 7);
         let claude = active
             .iter()
             .find(|provider| provider.id == CLAUDE_CODE_PROVIDER_ID)
@@ -996,7 +1038,7 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_never_selects_planned_providers() {
-        let registry = agent_provider_registry(false, false, false, false, false, false);
+        let registry = agent_provider_registry(false, false, false, false, false, false, false);
 
         for provider in registry
             .providers
@@ -1022,7 +1064,7 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_selects_grok_when_cli_is_available() {
-        let unavailable = agent_provider_registry(true, false, false, false, false, false);
+        let unavailable = agent_provider_registry(true, false, false, false, false, false, false);
         let grok = unavailable
             .providers
             .iter()
@@ -1032,7 +1074,7 @@ mod tests {
         assert_eq!(grok.available, Some(false));
         assert!(!grok.selectable);
 
-        let available = agent_provider_registry(true, true, false, false, false, false);
+        let available = agent_provider_registry(true, true, false, false, false, false, false);
         let grok = available
             .providers
             .iter()
@@ -1056,7 +1098,7 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_selects_codex_when_cli_is_available() {
-        let unavailable = agent_provider_registry(true, true, false, false, false, false);
+        let unavailable = agent_provider_registry(true, true, false, false, false, false, false);
         let codex = unavailable
             .providers
             .iter()
@@ -1066,7 +1108,7 @@ mod tests {
         assert_eq!(codex.available, Some(false));
         assert!(!codex.selectable);
 
-        let available = agent_provider_registry(true, false, true, false, false, false);
+        let available = agent_provider_registry(true, false, true, false, false, false, false);
         let codex = available
             .providers
             .iter()
@@ -1091,7 +1133,7 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_selects_opencode_when_cli_is_available() {
-        let unavailable = agent_provider_registry(true, true, true, false, false, false);
+        let unavailable = agent_provider_registry(true, true, true, false, false, false, false);
         let opencode = unavailable
             .providers
             .iter()
@@ -1101,7 +1143,7 @@ mod tests {
         assert_eq!(opencode.available, Some(false));
         assert!(!opencode.selectable);
 
-        let available = agent_provider_registry(true, false, false, true, false, false);
+        let available = agent_provider_registry(true, false, false, true, false, false, false);
         let opencode = available
             .providers
             .iter()
@@ -1125,7 +1167,7 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_selects_pi_when_cli_is_available() {
-        let registry = agent_provider_registry(false, false, false, false, true, false);
+        let registry = agent_provider_registry(false, false, false, false, true, false, false);
         let pi = registry
             .providers
             .iter()
@@ -1145,7 +1187,7 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_selects_gemini_when_cli_is_available() {
-        let registry = agent_provider_registry(false, false, false, false, false, true);
+        let registry = agent_provider_registry(false, false, false, false, false, true, false);
         let gemini = registry
             .providers
             .iter()

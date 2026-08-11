@@ -14,6 +14,7 @@ import {
 import {
   appendThinkingItem,
   appendTextItem,
+  appendDoneResultItem,
   attachToolResult,
   attachToolResultDeep,
   closeDanglingTurns,
@@ -2098,10 +2099,11 @@ export function useClaudeRun({
           ...turn,
           ...settleRunningToolSteps(turn, 'done'),
           assistantText,
-          items:
-            turn.items.length > 0 || !event.result.trim()
-              ? settleRunningSystemCommandItems(turn.items, 'done')
-              : appendTextItem(settleRunningSystemCommandItems(turn.items, 'done'), event.result),
+          items: appendDoneResultItem(
+            settleRunningSystemCommandItems(turn.items, 'done'),
+            turn.assistantText,
+            event.result,
+          ),
           activity: '运行完成',
           phase: undefined,
           metrics: formatMetrics(event, turn.tools.length),

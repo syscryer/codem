@@ -27,6 +27,7 @@ const agentChannelProtocols: Record<AgentProviderId, readonly AiChatProtocol[]> 
   opencode: ['openai_chat', 'openai_responses', 'anthropic_messages'],
   'pi-agent': ['openai_chat', 'openai_responses', 'anthropic_messages'],
   'gemini-cli': ['gemini_generate_content'],
+  'hermes-agent': ['anthropic_messages', 'openai_chat', 'openai_responses'],
 };
 
 export function protocolsForAgent(providerId: AgentProviderId): AiChatProtocol[] {
@@ -60,6 +61,11 @@ export function agentChannelProtocolHint(
   }
   if (providerId === 'gemini-cli') {
     return 'Gemini CLI 使用原生 Gemini Generate Content 接口连接此渠道。';
+  }
+  if (providerId === 'hermes-agent') {
+    return protocol === 'anthropic_messages'
+      ? 'Hermes 将通过 Anthropic Messages 兼容接口使用该渠道。'
+      : 'Hermes 将通过 OpenAI 兼容接口使用该渠道。';
   }
   return '';
 }

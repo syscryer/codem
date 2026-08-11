@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   CLAUDE_CODE_PROVIDER_ID,
   GROK_BUILD_PROVIDER_ID,
+  HERMES_AGENT_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
 } from '../constants.js';
@@ -19,6 +20,104 @@ import {
   SYSTEM_AGENT_CHANNEL_ID,
   threadAgentChannelId,
 } from './agent-channel-selection.js';
+
+test('Hermes channel models inherit the official reasoning effort catalog', () => {
+  const catalog = buildAgentChannelModelCatalog(HERMES_AGENT_PROVIDER_ID, {
+    id: 'hermes-minimax',
+    providerId: HERMES_AGENT_PROVIDER_ID,
+    name: 'Hermes MiniMax',
+    protocol: 'anthropic_messages',
+    baseUrl: 'https://api.minimaxi.com/anthropic',
+    enabled: true,
+    isDefault: true,
+    apiKeySaved: true,
+    createdAt: '2026-08-10T00:00:00.000Z',
+    updatedAt: '2026-08-10T00:00:00.000Z',
+    models: [{
+      id: 'model-minimax-m3',
+      channelId: 'hermes-minimax',
+      modelId: 'MiniMax-M3',
+      displayName: 'MiniMax-M3',
+      enabled: true,
+      isDefault: true,
+      capabilities: {},
+      createdAt: '2026-08-10T00:00:00.000Z',
+      updatedAt: '2026-08-10T00:00:00.000Z',
+    }],
+  }, null);
+
+  assert.equal(catalog?.models[0]?.defaultReasoningEffort, 'medium');
+  assert.deepEqual(
+    catalog?.models[0]?.supportedReasoningEfforts.map((effort) => effort.id),
+    ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+  );
+});
+
+test('Hermes channels without explicit models keep the native default capability catalog', () => {
+  const catalog = buildAgentChannelModelCatalog(HERMES_AGENT_PROVIDER_ID, {
+    id: 'hermes-deepseek',
+    providerId: HERMES_AGENT_PROVIDER_ID,
+    name: 'Hermes DeepSeek',
+    protocol: 'anthropic_messages',
+    baseUrl: 'https://api.deepseek.com/anthropic',
+    enabled: true,
+    isDefault: true,
+    apiKeySaved: true,
+    createdAt: '2026-08-10T00:00:00.000Z',
+    updatedAt: '2026-08-10T00:00:00.000Z',
+    models: [],
+  }, {
+    providerId: HERMES_AGENT_PROVIDER_ID,
+    defaultModelId: '__default',
+    models: [{
+      id: '__default',
+      label: 'Hermes 配置默认模型',
+      isDefault: true,
+      supportedReasoningEfforts: [],
+    }],
+  });
+
+  assert.equal(catalog?.defaultModelId, '__default');
+  assert.deepEqual(catalog?.models.map((model) => model.id), ['__default']);
+  assert.equal(catalog?.models[0]?.defaultReasoningEffort, 'medium');
+  assert.deepEqual(
+    catalog?.models[0]?.supportedReasoningEfforts.map((effort) => effort.id),
+    ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+  );
+});
+
+test('Hermes channels without explicit models keep reasoning when the native catalog is unavailable', () => {
+  const catalog = buildAgentChannelModelCatalog(HERMES_AGENT_PROVIDER_ID, {
+    id: 'hermes-runtime-default',
+    providerId: HERMES_AGENT_PROVIDER_ID,
+    name: 'Hermes Runtime Default',
+    protocol: 'anthropic_messages',
+    baseUrl: 'https://proxy.example.com/anthropic',
+    enabled: true,
+    isDefault: true,
+    apiKeySaved: true,
+    createdAt: '2026-08-10T00:00:00.000Z',
+    updatedAt: '2026-08-10T00:00:00.000Z',
+    models: [],
+  }, null);
+
+  assert.equal(catalog?.defaultModelId, '__default');
+  assert.equal(catalog?.models[0]?.label, 'Hermes 配置默认模型');
+  assert.equal(catalog?.models[0]?.defaultReasoningEffort, 'medium');
+  assert.deepEqual(
+    catalog?.models[0]?.supportedReasoningEfforts.map((effort) => effort.id),
+    ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+  );
+});
+
+test('non-Hermes channels without explicit models remain empty', () => {
+  const catalog = buildAgentChannelModelCatalog(OPENAI_CODEX_PROVIDER_ID, {
+    ...channels[0],
+    models: [],
+  }, null);
+
+  assert.deepEqual(catalog?.models, []);
+});
 
 const templates = [{
   id: 'deepseek',
@@ -194,6 +293,19 @@ test('Codex starts a new provider session when its channel changes', () => {
   );
 });
 
+test('Hermes preserves its persistent session when its channel changes', () => {
+  assert.deepEqual(
+    resolveRunAgentChannelSelection({
+      providerId: HERMES_AGENT_PROVIDER_ID,
+      threadId: 'active-thread',
+      activeThreadId: 'active-thread',
+      persistedChannelId: 'hermes-minimax',
+      selectedChannelId: 'hermes-deepseek',
+    }),
+    { channelId: 'hermes-deepseek', channelChanged: true, reuseSession: true },
+  );
+});
+
 test('persisting a Codex channel change clears its channel-bound session', () => {
   assert.deepEqual(agentChannelMetadataPatch(OPENAI_CODEX_PROVIDER_ID, 'codex-b'), {
     channelId: 'codex-b',
@@ -203,6 +315,11 @@ test('persisting a Codex channel change clears its channel-bound session', () =>
   });
   assert.deepEqual(agentChannelMetadataPatch(GROK_BUILD_PROVIDER_ID, 'grok-b'), {
     channelId: 'grok-b',
+    model: null,
+    reasoningEffort: null,
+  });
+  assert.deepEqual(agentChannelMetadataPatch(HERMES_AGENT_PROVIDER_ID, 'hermes-deepseek'), {
+    channelId: 'hermes-deepseek',
     model: null,
     reasoningEffort: null,
   });

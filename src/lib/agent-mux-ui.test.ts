@@ -14,7 +14,7 @@ test('Agent Mux exposes OpenCode configuration without claiming independent runt
   assert.match(componentSource, /id === 'opencode' \? OPENCODE_PROVIDER_ID/);
   assert.match(componentSource, /providerId === OPENCODE_PROVIDER_ID/);
   assert.match(apiSource, /agentId === 'opencode'[\s\S]*?probeOpenCodeAgent\(\)/);
-  assert.match(componentSource, /\['codex', 'grok'\]\.includes\(agent\.id\)/);
+  assert.match(componentSource, /\['codex', 'grok', 'gemini', 'hermes'\]\.includes\(agent\.id\)/);
   assert.match(componentSource, /className="agent-mux-health-list"[\s\S]*?\{agentItems\.map\(/);
   assert.doesNotMatch(componentSource, /agentItems\.slice\(0,\s*4\)/);
   assert.match(apiSource, /prompt: string;/);
@@ -126,6 +126,13 @@ test('Agent Mux profile configuration selects the channel before its model catal
   assert.match(dialogSource, /channel\.ccSwitchProviderName\?\.trim\(\) \|\| providerLabel/);
   assert.match(componentSource, /providerAvailability=\{skillProviderAvailability\}/);
   assert.match(dialogSource, /if \(!providerId \|\| providerAvailability\[providerId\] !== true\)/);
+});
+
+test('Agent Mux exposes Hermes as a native JSON-RPC target', () => {
+  assert.match(componentSource, /HERMES_AGENT_PROVIDER_ID/);
+  assert.match(componentSource, /id === 'hermes' \|\| id === 'hermes agent'/);
+  assert.match(cliSource, /const PROVIDER_HERMES: &str = "hermes-agent"/);
+  assert.match(cliSource, /"hermes" => Some\(PROVIDER_HERMES\)/);
 });
 
 test('Agent Mux skill records the caller agent without requesting a session name', () => {

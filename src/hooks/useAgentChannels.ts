@@ -16,6 +16,7 @@ const EMPTY_BOOTSTRAP: AgentChannelBootstrap = {
     opencode: 'system',
     'pi-agent': 'system',
     'gemini-cli': 'system',
+    'hermes-agent': 'system',
   },
 };
 

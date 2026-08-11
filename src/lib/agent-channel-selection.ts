@@ -7,7 +7,12 @@ import type {
   AiProviderTemplate,
   ClaudeModelOption,
 } from '../types';
-import { CLAUDE_CODE_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID } from '../constants';
+import {
+  CLAUDE_CODE_PROVIDER_ID,
+  DEFAULT_MODEL_VALUE,
+  HERMES_AGENT_PROVIDER_ID,
+  OPENAI_CODEX_PROVIDER_ID,
+} from '../constants';
 
 export const SYSTEM_AGENT_CHANNEL_ID = 'system';
 
@@ -105,8 +110,12 @@ export function agentChannelMetadataPatch(providerId: string, channelId: string)
     channelId: requestAgentChannelId(channelId) ?? null,
     model: null,
     reasoningEffort: null,
-    ...(providerId === OPENAI_CODEX_PROVIDER_ID ? { sessionId: null } : {}),
+    ...(agentSessionIsChannelBound(providerId) ? { sessionId: null } : {}),
   };
+}
+
+function agentSessionIsChannelBound(providerId: string) {
+  return providerId === OPENAI_CODEX_PROVIDER_ID;
 }
 
 export function resolveRunAgentChannelSelection({
@@ -130,9 +139,9 @@ export function resolveRunAgentChannelSelection({
   return {
     channelId: requestAgentChannelId(selected),
     channelChanged,
-    // Codex app-server sessions retain the model-provider configuration from
-    // their original channel. Reusing one would route the new turn incorrectly.
-    reuseSession: providerId !== OPENAI_CODEX_PROVIDER_ID || !channelChanged,
+    // Codex sessions are channel-bound. Hermes switches the model/provider on
+    // its persistent session through the native gateway protocol.
+    reuseSession: !agentSessionIsChannelBound(providerId) || !channelChanged,
   };
 }
 
@@ -172,6 +181,26 @@ export function buildAgentChannelModelCatalog(
   }
 
   const enabledModels = channel.models.filter((model) => model.enabled);
+  // Hermes reasoning is a runtime capability. A custom channel may only
+  // configure its endpoint and credentials, so keep the native default model
+  // as the selection anchor instead of hiding the shared Brain control.
+  if (providerId === HERMES_AGENT_PROVIDER_ID && enabledModels.length === 0) {
+    const nativeDefault = nativeCatalog?.models.find((model) => model.id === DEFAULT_MODEL_VALUE);
+    return withKnownAgentModelCapabilities(providerId, {
+      providerId,
+      defaultModelId: DEFAULT_MODEL_VALUE,
+      models: [{
+        id: DEFAULT_MODEL_VALUE,
+        label: nativeDefault?.label || 'Hermes 配置默认模型',
+        description: nativeDefault?.description || channel.name,
+        contextWindowTokens: nativeDefault?.contextWindowTokens,
+        isDefault: true,
+        defaultReasoningEffort: nativeDefault?.defaultReasoningEffort,
+        supportedReasoningEfforts: nativeDefault?.supportedReasoningEfforts ?? [],
+      }],
+    });
+  }
+
   const defaultModel = enabledModels.find((model) => model.isDefault);
   return withKnownAgentModelCapabilities(providerId, {
     providerId,
@@ -237,6 +266,22 @@ function withKnownAgentModelCapabilities(
     models: catalog.models.map((model) => {
       if (model.supportedReasoningEfforts.length > 0) {
         return model;
+      }
+      if (providerId === 'hermes-agent') {
+        return {
+          ...model,
+          defaultReasoningEffort: model.defaultReasoningEffort || 'medium',
+          supportedReasoningEfforts: [
+            { id: 'none', description: '关闭思考' },
+            { id: 'minimal', description: '最少思考' },
+            { id: 'low', description: '较快响应' },
+            { id: 'medium', description: '平衡速度和推理' },
+            { id: 'high', description: '适合复杂任务' },
+            { id: 'xhigh', description: '更深入的推理' },
+            { id: 'max', description: '最大思考强度' },
+            { id: 'ultra', description: '最高思考强度' },
+          ],
+        };
       }
       if (providerId === CLAUDE_CODE_PROVIDER_ID) {
         return {

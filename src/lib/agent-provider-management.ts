@@ -36,6 +36,7 @@ const AGENT_INSTALL_DOCS_URLS: Partial<Record<AgentProviderId, string>> = {
   opencode: 'https://opencode.ai/docs/',
   'pi-agent': 'https://pi.dev/docs/latest/quickstart',
   'gemini-cli': 'https://geminicli.com/docs/get-started/installation/',
+  'hermes-agent': 'https://github.com/NousResearch/hermes-agent',
 };
 
 export function getProviderInstallDocsUrl(providerId: AgentProviderId) {
@@ -108,6 +109,11 @@ export function resolveProviderStatus(
   piProbe: PiRpcProbeResult | null = null,
   geminiProbe: GeminiAcpProbeResult | null = null,
 ): { label: string; tone: ProviderStatusTone } {
+  if (provider.id === 'hermes-agent') {
+    return provider.available
+      ? { label: '运行时可用', tone: 'positive' }
+      : { label: '未检测到 CLI', tone: 'warning' };
+  }
   if (provider.id === 'claude-code') {
     const available = claudeCliInfo?.installed === true || provider.available === true;
     return available
@@ -172,6 +178,14 @@ export function resolveProviderDiagnostics(
   piProbe: PiRpcProbeResult | null = null,
   geminiProbe: GeminiAcpProbeResult | null = null,
 ) {
+  if (provider.id === 'hermes-agent') {
+    return {
+      cli: provider.available ? '已检测到 hermes' : '未检测到 hermes',
+      auth: '沿用系统配置或 CodeM 渠道管理',
+      version: '运行时检测',
+      command: '',
+    };
+  }
   if (provider.id === 'claude-code') {
     const installed = claudeCliInfo?.installed === true || provider.available === true;
     return {

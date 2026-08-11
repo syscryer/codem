@@ -2,6 +2,7 @@ import {
   CLAUDE_CODE_PROVIDER_ID,
   GROK_BUILD_PROVIDER_ID,
   GEMINI_CLI_PROVIDER_ID,
+  HERMES_AGENT_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
   PI_AGENT_PROVIDER_ID,
@@ -60,6 +61,13 @@ export const AGENT_PROVIDER_METADATA_BY_ID = {
     driverId: 'acp',
     runtimeKind: 'generic',
     protocolLabel: 'Gemini ACP',
+  },
+  [HERMES_AGENT_PROVIDER_ID]: {
+    id: HERMES_AGENT_PROVIDER_ID,
+    displayName: 'Hermes Agent',
+    driverId: 'hermes-json-rpc',
+    runtimeKind: 'generic',
+    protocolLabel: 'Hermes JSON-RPC',
   },
 } satisfies Record<AgentProviderId, AgentProviderMetadata>;
 

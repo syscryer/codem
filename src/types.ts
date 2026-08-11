@@ -879,7 +879,8 @@ export type AgentProviderId =
   | 'openai-codex'
   | 'opencode'
   | 'pi-agent'
-  | 'gemini-cli';
+  | 'gemini-cli'
+  | 'hermes-agent';
 
 export type AutomationSchedule =
   | {

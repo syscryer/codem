@@ -67,6 +67,7 @@ import { openExternalUrl } from '../../lib/markdown-link';
 import { readClaudeCliVersionInfo } from '../../lib/settings-runtime';
 import { AgentProviderIcon } from '../AgentProviderIcon';
 import { PopoverPortal } from '../PopoverPortal';
+import { HermesSettingsPanel } from './HermesSettingsPanel';
 
 type ProviderProbeState = 'idle' | 'checking' | 'ready' | 'error';
 
@@ -660,6 +661,7 @@ export function AgentProviderSettings({
               onRunNativeDiagnostic={() => runNativeDiagnostic(selectedProvider.id as AgentProviderId)}
               lifecycleAction={lifecycleAction?.providerId === selectedProvider.id ? lifecycleAction.action : null}
               onRunLifecycleAction={(action) => void runLifecycleAction(selectedProvider.id as AgentProviderId, action)}
+              showToast={showToast}
             />
           </div>
         ) : providersLoading ? (
@@ -798,7 +800,8 @@ function isDefaultAgentProvider(provider: AgentProviderDescriptor): provider is 
     || provider.id === 'grok-build'
     || provider.id === 'openai-codex'
     || provider.id === 'opencode'
-    || provider.id === 'pi-agent';
+    || provider.id === 'pi-agent'
+    || provider.id === 'hermes-agent';
 }
 
 function defaultAgentProviderName(providerId: AgentProviderId) {
@@ -816,6 +819,9 @@ function defaultAgentProviderName(providerId: AgentProviderId) {
   }
   if (providerId === 'gemini-cli') {
     return 'Gemini CLI';
+  }
+  if (providerId === 'hermes-agent') {
+    return 'Hermes Agent';
   }
   return 'Claude Code';
 }
@@ -852,6 +858,7 @@ function ProviderDetail({
   onRunNativeDiagnostic,
   lifecycleAction,
   onRunLifecycleAction,
+  showToast,
 }: {
   provider: AgentProviderDescriptor;
   claudeCliInfo: ClaudeCliVersionInfo | null;
@@ -884,6 +891,7 @@ function ProviderDetail({
   onRunNativeDiagnostic: () => Promise<void>;
   lifecycleAction: 'install' | 'update' | null;
   onRunLifecycleAction: (action: 'install' | 'update') => void;
+  showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
 }) {
   const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe, geminiProbe);
   const diagnostics = resolveProviderDiagnostics(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe, geminiProbe);
@@ -947,6 +955,83 @@ function ProviderDetail({
   const installDocsUrl = provider.id === 'claude-code'
     ? claudeCliInfo?.setupUrl ?? getProviderInstallDocsUrl(provider.id as AgentProviderId)
     : getProviderInstallDocsUrl(provider.id as AgentProviderId);
+  const providerFactsContent = (
+    <dl className="agent-provider-facts">
+      <ProviderFact icon={SquareTerminal} label="CLI" value={effectiveCliStatus} />
+      <ProviderFact icon={KeyRound} label="认证" value={diagnostics.auth} />
+      <ProviderFact icon={Network} label="Driver" value={provider.driverId} code />
+      {effectiveCommand ? (
+        <ProviderFact icon={FileText} label="可执行文件" value={effectiveCommand} code wide />
+      ) : null}
+      {settingsDiagnostics ? (
+        <>
+          <ProviderFact icon={FileText} label="配置目录" value={settingsDiagnostics.configDirectory} code wide />
+          <ProviderFact icon={SquareTerminal} label="安装命令" value={settingsDiagnostics.installCommand} code wide />
+          <ProviderFact icon={RefreshCw} label="更新命令" value={settingsDiagnostics.updateCommand} code wide />
+          <ProviderFact icon={SquareTerminal} label="诊断命令" value={settingsDiagnostics.diagnosticCommand} code wide />
+          <ProviderFact
+            icon={settingsDiagnostics.diagnostic.success === false ? AlertCircle : CheckCircle2}
+            label="诊断状态"
+            value={formatSettingsDiagnosticStatus(settingsDiagnostics)}
+          />
+        </>
+      ) : null}
+    </dl>
+  );
+  const providerCapabilitiesContent = (
+    <div className="agent-provider-section">
+      <div className="agent-provider-section-head">
+        <h3>能力</h3>
+        <span>来自 Provider Registry</span>
+      </div>
+      <div className="agent-provider-capability-groups">
+        {capabilityGroups.map((group) => (
+          <div key={group.title} className="agent-provider-capability-group">
+            <h4>{group.title}</h4>
+            {group.items.map((item) => (
+              <CapabilityState key={item.label} item={item} />
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+  const providerModelsContent = (
+    <div className="agent-provider-section">
+      <div className="agent-provider-section-head">
+        <h3>可用模型</h3>
+        <span>{models.length > 0
+          ? `${models.length} 个`
+          : provider.id === 'opencode' && openCodeProbe?.probe
+            ? `${openCodeProbe.probe.modelCount} 个`
+            : '尚未检测'}</span>
+      </div>
+      {models.length > 0 ? (
+        <div className="agent-provider-models">
+          {models.map((model) => (
+            <div key={model.id} className={`agent-provider-model${model.current ? ' current' : ''}`}>
+              <span>
+                <strong>{model.label}</strong>
+                <code>{model.id}</code>
+              </span>
+              {model.detail ? <small>{model.detail}</small> : null}
+              {model.current ? <span className="agent-provider-current-model">当前</span> : null}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="agent-provider-empty">
+          {provider.lifecycle === 'planned'
+            ? 'Driver 接入后显示运行时模型'
+            : provider.id === 'opencode' && openCodeProbe?.probe
+              ? '完整模型列表会在新建任务的模型菜单中按需读取'
+              : provider.id === 'hermes-agent'
+                ? 'Hermes 模型与认证由 CodeM 渠道管理'
+                : '当前 Provider 未返回模型'}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <section
@@ -1049,7 +1134,7 @@ function ProviderDetail({
               </dd>
             </div>
           </dl>
-          {!isInstalled || updateAvailable ? (
+          {provider.id !== 'hermes-agent' && (!isInstalled || updateAvailable) ? (
             <button
               type="button"
               className="settings-action-button primary agent-provider-lifecycle-action"
@@ -1078,36 +1163,28 @@ function ProviderDetail({
         ) : null}
       </div>
 
-      <div className="agent-provider-badges" aria-label="Provider 状态">
-        <span className={`agent-provider-badge lifecycle-${provider.lifecycle}`}>
-          {provider.lifecycle === 'active' ? '已启用' : '规划中'}
-        </span>
-        <span className={`agent-provider-badge${provider.selectable ? ' selectable' : ''}`}>
-          {provider.selectable ? '聊天可用' : '不可选择'}
-        </span>
-      </div>
+      {provider.id !== 'hermes-agent' ? (
+        <div className="agent-provider-badges" aria-label="Provider 状态">
+          <span className={`agent-provider-badge lifecycle-${provider.lifecycle}`}>
+            {provider.lifecycle === 'active' ? '已启用' : '规划中'}
+          </span>
+          <span className={`agent-provider-badge${provider.selectable ? ' selectable' : ''}`}>
+            {provider.selectable ? '聊天可用' : '不可选择'}
+          </span>
+        </div>
+      ) : null}
 
-      <dl className="agent-provider-facts">
-        <ProviderFact icon={SquareTerminal} label="CLI" value={effectiveCliStatus} />
-        <ProviderFact icon={KeyRound} label="认证" value={diagnostics.auth} />
-        <ProviderFact icon={Network} label="Driver" value={provider.driverId} code />
-        {effectiveCommand ? (
-          <ProviderFact icon={FileText} label="可执行文件" value={effectiveCommand} code wide />
-        ) : null}
-        {settingsDiagnostics ? (
-          <>
-            <ProviderFact icon={FileText} label="配置目录" value={settingsDiagnostics.configDirectory} code wide />
-            <ProviderFact icon={SquareTerminal} label="安装命令" value={settingsDiagnostics.installCommand} code wide />
-            <ProviderFact icon={RefreshCw} label="更新命令" value={settingsDiagnostics.updateCommand} code wide />
-            <ProviderFact icon={SquareTerminal} label="诊断命令" value={settingsDiagnostics.diagnosticCommand} code wide />
-            <ProviderFact
-              icon={settingsDiagnostics.diagnostic.success === false ? AlertCircle : CheckCircle2}
-              label="诊断状态"
-              value={formatSettingsDiagnosticStatus(settingsDiagnostics)}
-            />
-          </>
-        ) : null}
-      </dl>
+      {provider.id === 'hermes-agent' ? (
+        <HermesSettingsPanel
+          showToast={showToast}
+          runtimeContent={<>{providerFactsContent}{providerCapabilitiesContent}{providerModelsContent}</>}
+          runtimeStatus={status}
+          enabled={provider.lifecycle === 'active'}
+          selectable={provider.selectable}
+        />
+      ) : null}
+
+      {provider.id !== 'hermes-agent' ? providerFactsContent : null}
 
       {provider.id === 'grok-build' ? (
         <div className="agent-provider-live-status" aria-live="polite">
@@ -1185,55 +1262,8 @@ function ProviderDetail({
         <DetectedAcpCapabilities probe={geminiProbe} />
       ) : null}
 
-      <div className="agent-provider-section">
-        <div className="agent-provider-section-head">
-          <h3>能力</h3>
-          <span>来自 Provider Registry</span>
-        </div>
-        <div className="agent-provider-capability-groups">
-          {capabilityGroups.map((group) => (
-            <div key={group.title} className="agent-provider-capability-group">
-              <h4>{group.title}</h4>
-              {group.items.map((item) => (
-                <CapabilityState key={item.label} item={item} />
-              ))}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="agent-provider-section">
-        <div className="agent-provider-section-head">
-          <h3>可用模型</h3>
-          <span>{models.length > 0
-            ? `${models.length} 个`
-            : provider.id === 'opencode' && openCodeProbe?.probe
-              ? `${openCodeProbe.probe.modelCount} 个`
-              : '尚未检测'}</span>
-        </div>
-        {models.length > 0 ? (
-          <div className="agent-provider-models">
-            {models.map((model) => (
-              <div key={model.id} className={`agent-provider-model${model.current ? ' current' : ''}`}>
-                <span>
-                  <strong>{model.label}</strong>
-                  <code>{model.id}</code>
-                </span>
-                {model.detail ? <small>{model.detail}</small> : null}
-                {model.current ? <span className="agent-provider-current-model">当前</span> : null}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="agent-provider-empty">
-            {provider.lifecycle === 'planned'
-              ? 'Driver 接入后显示运行时模型'
-              : provider.id === 'opencode' && openCodeProbe?.probe
-                ? '完整模型列表会在新建任务的模型菜单中按需读取'
-                : '当前 Provider 未返回模型'}
-          </div>
-        )}
-      </div>
+      {provider.id !== 'hermes-agent' ? providerCapabilitiesContent : null}
+      {provider.id !== 'hermes-agent' ? providerModelsContent : null}
     </section>
   );
 }

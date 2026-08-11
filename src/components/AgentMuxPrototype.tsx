@@ -20,7 +20,7 @@ import {
 import { openExternalUrl } from '../lib/markdown-link';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import type { AgentChannel, AgentModelCatalog, AgentProviderId, AgentRunEvent, AgentSystemChannel, ProjectSummary } from '../types';
-import { CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID } from '../constants';
+import { CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID } from '../constants';
 import { AgentProviderIcon } from './AgentProviderIcon';
 import { AgentMuxAvatar, AGENT_MUX_AVATAR_OPTIONS } from './AgentMuxAvatar';
 import { ConversationTurnView } from './ConversationTurn';
@@ -90,6 +90,7 @@ const SKILL_TARGETS: Array<{ providerId: AgentProviderId; label: string }> = [
   { providerId: PI_AGENT_PROVIDER_ID, label: 'Pi Agent' },
   { providerId: OPENCODE_PROVIDER_ID, label: 'OpenCode' },
   { providerId: GEMINI_CLI_PROVIDER_ID, label: 'Gemini CLI' },
+  { providerId: HERMES_AGENT_PROVIDER_ID, label: 'Hermes Agent' },
 ];
 
 type SkillInstallTarget = AgentMuxSkillTarget & {
@@ -438,7 +439,7 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
     if (!agent) return;
     const providerId = agentProviderId(input.agentId);
     if (!providerId || providerId === CLAUDE_CODE_PROVIDER_ID || providerId === PI_AGENT_PROVIDER_ID || providerId === OPENCODE_PROVIDER_ID) {
-      setTestMessage(`${agent.name} 暂不支持从 Agent Mux 独立启动；当前可运行 Codex 和 Grok Build。`);
+      setTestMessage(`${agent.name} 暂不支持从 Agent Mux 独立启动；当前可运行 Codex、Grok Build、Gemini CLI 和 Hermes Agent。`);
       return;
     }
     setStartingRun(true);
@@ -826,7 +827,7 @@ function SkillView({ agents, skillText, copied, source, targets, installPending,
 }
 
 function RunTaskDialog({ agents, projects, activeProjectId, starting, onClose, onStart }: { agents: AgentRecord[]; projects: ProjectSummary[]; activeProjectId: string | null; starting: boolean; onClose: () => void; onStart: (input: { agentId: string; profile: RuntimeProfile; prompt: string; workingDirectory: string; permissionMode: string }) => Promise<void> }) {
-  const choices = agents.flatMap((agent) => agent.profiles.filter((profile) => profile.status === 'available' && ['codex', 'grok'].includes(agent.id)).map((profile) => ({ agent, profile })));
+  const choices = agents.flatMap((agent) => agent.profiles.filter((profile) => profile.status === 'available' && ['codex', 'grok', 'gemini', 'hermes'].includes(agent.id)).map((profile) => ({ agent, profile })));
   const [choiceId, setChoiceId] = useState(choices[0] ? `${choices[0].agent.id}:${choices[0].profile.id}` : '');
   const [workspaceId, setWorkspaceId] = useState(activeProjectId && projects.some((project) => project.id === activeProjectId) ? activeProjectId : projects[0]?.id ?? '');
   const [permissionMode, setPermissionMode] = useState('default');
@@ -962,11 +963,11 @@ function ProfileRow({ agentId, profile, onEdit, onDelete, onToggle, onTest, test
 function RunIcon({ status }: { status: RunStatus }) { if (status === 'completed') return <CheckCircle2 className="agent-mux-run-icon completed" size={16} />; if (status === 'failed') return <CircleAlert className="agent-mux-run-icon failed" size={16} />; if (status === 'queued' || status === 'waiting' || status === 'cancelled') return <Clock3 className="agent-mux-run-icon queued" size={16} />; return <Activity className="agent-mux-run-icon running" size={16} />; }
 function RunStartedTime({ run }: { run: RunRecord }) { return <time title={formatAgentMuxExactTime(run.createdAt)}>{formatAgentMuxRelativeTime(run.createdAt, run.started)}</time>; }
 function runLabel(status: RunStatus) { return status === 'running' ? '运行中' : status === 'completed' ? '已完成' : status === 'failed' ? '失败' : status === 'waiting' ? '等待处理' : status === 'cancelled' ? '已取消' : '排队中'; }
-function providerLabel(providerId: string) { return providerId === OPENAI_CODEX_PROVIDER_ID ? 'OpenAI Codex' : providerId === CLAUDE_CODE_PROVIDER_ID ? 'Claude Code' : providerId === GROK_BUILD_PROVIDER_ID ? 'Grok Build' : providerId === PI_AGENT_PROVIDER_ID ? 'Pi Agent' : providerId === OPENCODE_PROVIDER_ID ? 'OpenCode' : providerId === GEMINI_CLI_PROVIDER_ID ? 'Gemini CLI' : providerId; }
+function providerLabel(providerId: string) { return providerId === OPENAI_CODEX_PROVIDER_ID ? 'OpenAI Codex' : providerId === CLAUDE_CODE_PROVIDER_ID ? 'Claude Code' : providerId === GROK_BUILD_PROVIDER_ID ? 'Grok Build' : providerId === PI_AGENT_PROVIDER_ID ? 'Pi Agent' : providerId === OPENCODE_PROVIDER_ID ? 'OpenCode' : providerId === GEMINI_CLI_PROVIDER_ID ? 'Gemini CLI' : providerId === HERMES_AGENT_PROVIDER_ID ? 'Hermes Agent' : providerId; }
 function formatReasoningLabel(value: string) { return value.toLowerCase() === 'xhigh' ? 'XHigh' : value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : '跟随模型默认'; }
-function agentProviderId(agentId: string): AgentProviderId | null { const id = agentId.toLowerCase(); return id === 'codex' || id === 'openai codex' ? OPENAI_CODEX_PROVIDER_ID : id === 'claude' || id === 'claude code' ? CLAUDE_CODE_PROVIDER_ID : id === 'grok' || id === 'grok build' ? GROK_BUILD_PROVIDER_ID : id === 'pi' || id === 'pi agent' ? PI_AGENT_PROVIDER_ID : id === 'opencode' ? OPENCODE_PROVIDER_ID : id === 'gemini' || id === 'gemini cli' ? GEMINI_CLI_PROVIDER_ID : null; }
+function agentProviderId(agentId: string): AgentProviderId | null { const id = agentId.toLowerCase(); return id === 'codex' || id === 'openai codex' ? OPENAI_CODEX_PROVIDER_ID : id === 'claude' || id === 'claude code' ? CLAUDE_CODE_PROVIDER_ID : id === 'grok' || id === 'grok build' ? GROK_BUILD_PROVIDER_ID : id === 'pi' || id === 'pi agent' ? PI_AGENT_PROVIDER_ID : id === 'opencode' ? OPENCODE_PROVIDER_ID : id === 'gemini' || id === 'gemini cli' ? GEMINI_CLI_PROVIDER_ID : id === 'hermes' || id === 'hermes agent' ? HERMES_AGENT_PROVIDER_ID : null; }
 function agentIdForRun(run: RunRecord, agents: AgentRecord[]) { return agents.find((agent) => agent.name === run.target)?.id ?? run.target; }
 function profileDisplayName(profile: RuntimeProfile) { return profile.nickname?.trim() || `${profile.provider} / ${profile.model}`; }
 function runDisplayName(run: RunRecord) { return run.nickname?.trim() || run.target; }
 function formatRunDuration(durationMs: number) { const seconds = Math.max(0, Math.round(durationMs / 1000)); return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`; }
-function agentCapabilityOptions(agentId: string) { return agentId === 'codex' ? ['代码生成', '代码审查', '复杂实现', '测试验证', '快速修改'] : agentId === 'claude' ? ['代码编辑', '项目审查', '终端操作', '长任务', '文档处理'] : agentId === 'grok' ? ['快速探索', '小范围修改', '信息检索', '代码验证'] : agentId === 'opencode' ? ['代码编辑', 'ACP', '多模型', '项目任务', '工具调用'] : agentId === 'gemini' ? ['代码编辑', 'ACP', 'Gemini', '项目任务', '工具调用'] : ['自动化', '低延迟', '脚本任务', '验证']; }
+function agentCapabilityOptions(agentId: string) { return agentId === 'codex' ? ['代码生成', '代码审查', '复杂实现', '测试验证', '快速修改'] : agentId === 'claude' ? ['代码编辑', '项目审查', '终端操作', '长任务', '文档处理'] : agentId === 'grok' ? ['快速探索', '小范围修改', '信息检索', '代码验证'] : agentId === 'opencode' ? ['代码编辑', 'ACP', '多模型', '项目任务', '工具调用'] : agentId === 'gemini' ? ['代码编辑', 'ACP', 'Gemini', '项目任务', '工具调用'] : agentId === 'hermes' ? ['代码执行', '记忆', 'Skills', 'MCP', '多轮会话'] : ['自动化', '低延迟', '脚本任务', '验证']; }

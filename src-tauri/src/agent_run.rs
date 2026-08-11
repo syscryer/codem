@@ -7,11 +7,12 @@ use crate::{
     },
     agent_channels::AgentChannelService,
     agent_runtime::{
-        agent_plan_snapshot_from_tool_input, normalize_agent_permission_mode, AgentApprovalOption,
-        AgentApprovalRequest, AgentCompactCapabilityState, AgentCompactCapabilitySummary,
-        AgentCompactionSource, AgentCompactionStatus, AgentControlCommand, AgentPermissionDecision,
-        AgentRunEvent, AgentUsageSnapshot, AgentUserInputOption, AgentUserInputQuestion,
-        AgentUserInputRequest, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
+        agent_plan_snapshot_from_tool_input, agent_plan_snapshot_from_value,
+        normalize_agent_permission_mode, AgentApprovalOption, AgentApprovalRequest,
+        AgentCompactCapabilityState, AgentCompactCapabilitySummary, AgentCompactionSource,
+        AgentCompactionStatus, AgentControlCommand, AgentPermissionDecision, AgentRunEvent,
+        AgentUsageSnapshot, AgentUserInputOption, AgentUserInputQuestion, AgentUserInputRequest,
+        GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID,
         OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     },
     codex_app_server::{
@@ -19,6 +20,7 @@ use crate::{
         CodexCompactionHistoryState, CodexForkCapability, CodexForkOutcome, CodexRuntimeEvent,
         CodexStdioClient, CodexUserInput,
     },
+    hermes::{HermesClient, HermesRuntimeEvent, HermesService},
     pi_rpc::{PiImage, PiModel, PiPromptInput, PiRpcError, PiRuntimeEvent, PiState, PiStdioClient},
 };
 use axum::{
@@ -88,12 +90,14 @@ enum AgentDriverKind {
     Acp,
     CodexAppServer,
     PiRpc,
+    HermesJsonRpc,
 }
 
 enum AgentDriverInput {
     Acp(Vec<AcpPromptInput>),
     Codex(Vec<CodexUserInput>),
     Pi(PiPromptInput),
+    Hermes(String),
 }
 
 #[derive(Clone)]
@@ -106,6 +110,7 @@ struct AgentRunState {
     fork_capability_cache: Arc<AsyncMutex<HashMap<String, AgentForkCapabilitySummary>>>,
     command_resolvers: CommandResolvers,
     agent_channels: AgentChannelService,
+    hermes: HermesService,
 }
 
 #[derive(Clone)]
@@ -179,6 +184,7 @@ struct AgentRuntimeConfig {
     reasoning_effort: Option<String>,
     channel_id: Option<String>,
     channel_fingerprint: Option<String>,
+    hermes_provider: Option<String>,
     environment: BTreeMap<String, String>,
     codex_config_args: Vec<String>,
     bridge_version: Option<String>,
@@ -458,6 +464,11 @@ enum LiveAgentRuntime {
         client: PiStdioClient,
         session_id: String,
     },
+    Hermes {
+        client: HermesClient,
+        runtime_session_id: String,
+        session_id: String,
+    },
 }
 
 struct RuntimeTurnOutcome {
@@ -700,6 +711,39 @@ struct AgentModelCatalog {
     models: Vec<AgentModelSummary>,
 }
 
+fn hermes_model_catalog() -> AgentModelCatalog {
+    let supported_reasoning_efforts = [
+        ("none", "关闭思考"),
+        ("minimal", "最少思考"),
+        ("low", "较快响应"),
+        ("medium", "平衡速度和推理"),
+        ("high", "适合复杂任务"),
+        ("xhigh", "更深入的推理"),
+        ("max", "最大思考强度"),
+        ("ultra", "最高思考强度"),
+    ]
+    .into_iter()
+    .map(|(id, description)| AgentReasoningEffortSummary {
+        id: id.to_string(),
+        description: Some(description.to_string()),
+    })
+    .collect();
+
+    AgentModelCatalog {
+        provider_id: HERMES_AGENT_PROVIDER_ID.to_string(),
+        default_model_id: Some("__default".to_string()),
+        models: vec![AgentModelSummary {
+            id: "__default".to_string(),
+            label: "Hermes 配置默认模型".to_string(),
+            description: Some("沿用当前 Hermes 档案或 CodeM 渠道配置".to_string()),
+            context_window_tokens: None,
+            is_default: true,
+            default_reasoning_effort: Some("medium".to_string()),
+            supported_reasoning_efforts,
+        }],
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct AgentModelsQuery {
     #[serde(default)]
@@ -744,6 +788,7 @@ impl AgentRunService {
         pi_command_resolver: fn() -> Option<String>,
         gemini_command_resolver: fn() -> Option<String>,
         agent_channels: AgentChannelService,
+        hermes: HermesService,
     ) -> Self {
         Self {
             state: AgentRunState {
@@ -761,6 +806,7 @@ impl AgentRunService {
                     gemini: gemini_command_resolver,
                 },
                 agent_channels,
+                hermes,
             },
         }
     }
@@ -1179,6 +1225,7 @@ async fn agent_models(
                 .map(Json)
                 .map_err(|error| AgentApiError::internal(public_pi_error(error)))
         }
+        HERMES_AGENT_PROVIDER_ID => Ok(Json(hermes_model_catalog())),
         GEMINI_CLI_PROVIDER_ID => {
             let command = resolve_agent_command(&state, provider_id, query.refresh)
                 .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 Gemini CLI"))?;
@@ -1301,6 +1348,7 @@ fn resolve_agent_command(
         OPENCODE_PROVIDER_ID => (state.command_resolvers.opencode)(),
         PI_AGENT_PROVIDER_ID => (state.command_resolvers.pi)(),
         GEMINI_CLI_PROVIDER_ID => (state.command_resolvers.gemini)(),
+        HERMES_AGENT_PROVIDER_ID => state.hermes.resolve_command(refresh),
         _ => None,
     }?;
     store_cached_agent_command(
@@ -1510,6 +1558,12 @@ async fn start_agent_run(
                 .ok_or_else(|| AgentApiError::bad_request("未找到 pi 命令"))?,
             "Pi",
         ),
+        HERMES_AGENT_PROVIDER_ID => (
+            AgentDriverKind::HermesJsonRpc,
+            resolve_agent_command(&state, provider_id, false)
+                .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 Hermes CLI"))?,
+            "Hermes Agent",
+        ),
         _ => {
             return Err(AgentApiError::bad_request(
                 "当前 Provider 不支持通用 Agent 运行",
@@ -1535,6 +1589,12 @@ async fn start_agent_run(
         AgentDriverKind::PiRpc => {
             AgentDriverInput::Pi(build_pi_prompt(&input_blocks, &working_directory)?)
         }
+        AgentDriverKind::HermesJsonRpc => AgentDriverInput::Hermes(build_hermes_prompt(
+            &input_blocks,
+            &working_directory,
+            payload.conversation_context.as_deref(),
+            payload.automation_execution,
+        )?),
     };
     let requested_model = normalize_optional_id(payload.model, "model")?;
     let channel_id = normalize_optional_id(payload.channel_id, "channelId")?;
@@ -1558,6 +1618,9 @@ async fn start_agent_run(
     let channel_fingerprint = channel_runtime
         .as_ref()
         .map(|runtime| runtime.fingerprint.clone());
+    let hermes_provider = channel_runtime
+        .as_ref()
+        .and_then(|runtime| runtime.hermes_provider.clone());
     let mut environment = channel_runtime
         .as_ref()
         .map(|runtime| runtime.env.clone())
@@ -1642,6 +1705,7 @@ async fn start_agent_run(
             reasoning_effort,
             channel_id,
             channel_fingerprint,
+            hermes_provider,
             environment,
             codex_config_args,
             bridge_version: (driver == AgentDriverKind::PiRpc).then(|| "1".to_string()),
@@ -1702,6 +1766,15 @@ async fn start_agent_run(
                     .await;
                 }
                 AgentDriverInput::Pi(_) => unreachable!("Pi RPC runs require a thread runtime"),
+                AgentDriverInput::Hermes(_) => {
+                    task_state.push_terminal(
+                        &task_run_id,
+                        AgentRunEvent::Error {
+                            run_id: task_run_id.clone(),
+                            message: "Hermes Agent 运行需要关联 CodeM threadId".to_string(),
+                        },
+                    );
+                }
             }
         });
     }
@@ -1904,6 +1977,7 @@ fn resolve_compact_runtime_config(
         channel_fingerprint: channel_runtime
             .as_ref()
             .map(|runtime| runtime.fingerprint.clone()),
+        hermes_provider: None,
         environment: channel_runtime
             .as_ref()
             .map(|runtime| runtime.env.clone())
@@ -1928,7 +2002,7 @@ async fn run_agent_runtime_actor(
 ) {
     let first_run_id = command_runtime_id(&first_command);
     let started = tokio::select! {
-        result = start_live_agent_runtime(&config, requested_session_id.as_deref()) => Some(result),
+        result = start_live_agent_runtime(&state.hermes, &config, requested_session_id.as_deref()) => Some(result),
         _ = wait_for_shutdown(&mut shutdown) => None,
     };
     let Some(started) = started else {
@@ -2182,7 +2256,8 @@ impl LiveAgentRuntime {
         match self {
             Self::Acp { session_id, .. }
             | Self::Codex { session_id, .. }
-            | Self::Pi { session_id, .. } => session_id,
+            | Self::Pi { session_id, .. }
+            | Self::Hermes { session_id, .. } => session_id,
         }
     }
 
@@ -2191,6 +2266,7 @@ impl LiveAgentRuntime {
             Self::Acp { client, .. } => client.is_running(),
             Self::Codex { client, .. } => client.is_running(),
             Self::Pi { client, .. } => client.is_running(),
+            Self::Hermes { .. } => true,
         }
     }
 
@@ -2199,6 +2275,7 @@ impl LiveAgentRuntime {
             Self::Acp { client, .. } => client.shutdown().await,
             Self::Codex { client, .. } => client.shutdown().await,
             Self::Pi { client, .. } => client.shutdown().await,
+            Self::Hermes { client, .. } => client.close().await,
         }
     }
 
@@ -2483,6 +2560,90 @@ impl LiveAgentRuntime {
                     }
                 }
             }
+            (
+                Self::Hermes {
+                    client,
+                    runtime_session_id,
+                    session_id,
+                },
+                AgentDriverInput::Hermes(input),
+            ) => {
+                if let Err(error) = client.submit_prompt(runtime_session_id, &input).await {
+                    return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                        message: error,
+                        fatal: true,
+                    }));
+                }
+                let mut text = String::new();
+                let mut cancel_sent = false;
+                loop {
+                    tokio::select! {
+                        event = client.next_event() => {
+                            let event = match event {
+                                Ok(event) => event,
+                                Err(message) => {
+                                    return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                        message,
+                                        fatal: true,
+                                    }));
+                                }
+                            };
+                            if event.session_id.as_deref().is_some_and(|id| id != runtime_session_id) {
+                                continue;
+                            }
+                            match map_hermes_event(&run_id, &event) {
+                                HermesMappedEvent::Emit(events) => {
+                                    for event in events {
+                                        state.push_event(&run_id, event);
+                                    }
+                                }
+                                HermesMappedEvent::Delta(delta, events) => {
+                                    text.push_str(&delta);
+                                    for event in events {
+                                        state.push_event(&run_id, event);
+                                    }
+                                }
+                                HermesMappedEvent::Complete { final_text, stop_reason, usage } => {
+                                    if !final_text.trim().is_empty() {
+                                        text = final_text;
+                                    }
+                                    return RuntimeExecution::Completed(Ok(RuntimeTurnOutcome {
+                                        session_id: session_id.clone(),
+                                        text,
+                                        stop_reason,
+                                        usage,
+                                    }));
+                                }
+                                HermesMappedEvent::Error(message) => {
+                                    return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                        message,
+                                        fatal: false,
+                                    }));
+                                }
+                                HermesMappedEvent::Ignore => {}
+                            }
+                        }
+                        changed = cancel.changed(), if !cancel_sent => {
+                            if changed.is_ok() && *cancel.borrow() {
+                                cancel_sent = true;
+                                if let Err(message) = client.interrupt(runtime_session_id).await {
+                                    return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                        message,
+                                        fatal: false,
+                                    }));
+                                }
+                            }
+                        }
+                        command = control.recv() => {
+                            let Some(command) = command else {
+                                continue;
+                            };
+                            handle_hermes_control(client, runtime_session_id, command).await;
+                        }
+                        _ = wait_for_shutdown(shutdown) => return RuntimeExecution::Closed,
+                    }
+                }
+            }
             _ => RuntimeExecution::Completed(Err(RuntimeTurnError {
                 message: "Agent runtime 与输入协议不匹配".to_string(),
                 fatal: true,
@@ -2697,6 +2858,7 @@ impl LiveAgentRuntime {
 }
 
 async fn start_live_agent_runtime(
+    hermes: &HermesService,
     config: &AgentRuntimeConfig,
     requested_session_id: Option<&str>,
 ) -> Result<(LiveAgentRuntime, bool), String> {
@@ -2810,6 +2972,37 @@ async fn start_live_agent_runtime(
                     session_id: state.session_id,
                 },
                 requested_session_id.is_some(),
+            ))
+        }
+        AgentDriverKind::HermesJsonRpc => {
+            let mut client = hermes
+                .connect(&config.environment, config.channel_fingerprint.as_deref())
+                .await?;
+            let session = client
+                .create_or_resume_session(
+                    requested_session_id,
+                    &config.working_directory,
+                    config.model.as_deref(),
+                    config.reasoning_effort.as_deref(),
+                    config.hermes_provider.as_deref(),
+                )
+                .await?;
+            if let Some(model) = config.model.as_deref() {
+                client
+                    .set_model(
+                        &session.runtime_session_id,
+                        model,
+                        config.hermes_provider.as_deref(),
+                    )
+                    .await?;
+            }
+            Ok((
+                LiveAgentRuntime::Hermes {
+                    client,
+                    runtime_session_id: session.runtime_session_id,
+                    session_id: session.stored_session_id,
+                },
+                session.resumed,
             ))
         }
     }
@@ -2965,6 +3158,9 @@ fn runtime_status_message(
         (_, AgentDriverKind::Acp, true, _) => "已复用 ACP 热会话".to_string(),
         (_, AgentDriverKind::Acp, false, true) => "已恢复 ACP 会话".to_string(),
         (_, AgentDriverKind::Acp, false, false) => "已创建 ACP 会话".to_string(),
+        (_, AgentDriverKind::HermesJsonRpc, true, _) => "已复用 Hermes Agent 档案会话".to_string(),
+        (_, AgentDriverKind::HermesJsonRpc, false, true) => "已恢复 Hermes Agent 会话".to_string(),
+        (_, AgentDriverKind::HermesJsonRpc, false, false) => "已创建 Hermes Agent 会话".to_string(),
     }
 }
 
@@ -6806,6 +7002,393 @@ fn build_pi_prompt(
     })
 }
 
+fn build_hermes_prompt(
+    blocks: &[NormalizedAgentInputBlock],
+    working_directory: &Path,
+    conversation_context: Option<&str>,
+    automation_execution: bool,
+) -> AgentApiResult<String> {
+    if conversation_context.is_some_and(|value| value.len() > MAX_CONVERSATION_CONTEXT_BYTES) {
+        return Err(AgentApiError::bad_request(
+            "conversationContext 超过 128 KiB 限制",
+        ));
+    }
+    let mut parts = Vec::new();
+    if automation_execution {
+        parts.push(AUTOMATION_EXECUTION_CONTEXT.to_string());
+    }
+    if let Some(context) = conversation_context.filter(|value| !value.trim().is_empty()) {
+        parts.push(context.to_string());
+    }
+    for block in blocks {
+        match block {
+            NormalizedAgentInputBlock::Text { text } => parts.push(text.clone()),
+            NormalizedAgentInputBlock::Image { path, data, .. } => {
+                if data.is_some() && path.is_none() {
+                    return Err(AgentApiError::bad_request(
+                        "Hermes Agent 首版暂不支持仅含 base64 的图片，请使用本地图片文件",
+                    ));
+                }
+                let path = path
+                    .as_deref()
+                    .ok_or_else(|| AgentApiError::bad_request("Hermes 图片路径不能为空"))?;
+                let path = resolve_local_input_file(path, working_directory, "图片")?;
+                parts.push(format!(
+                    "本地图片附件：{}\n请按需使用图像或文件工具读取。",
+                    path.to_string_lossy()
+                ));
+            }
+            NormalizedAgentInputBlock::FileText {
+                path, name, text, ..
+            } => parts.push(format!("本地文件：{name}\n路径：{path}\n\n{text}")),
+            NormalizedAgentInputBlock::FileReference { path, name, .. } => parts.push(format!(
+                "本地文件引用：{name}\n路径：{path}\n请按需使用本地文件工具读取。"
+            )),
+            NormalizedAgentInputBlock::AttachmentMetadata {
+                name,
+                mime_type,
+                size,
+                reason,
+            } => parts.push(format_attachment_metadata(
+                name,
+                mime_type.as_deref(),
+                *size,
+                reason,
+            )),
+        }
+    }
+    Ok(parts.join("\n\n"))
+}
+
+#[derive(Debug)]
+enum HermesMappedEvent {
+    Emit(Vec<AgentRunEvent>),
+    Delta(String, Vec<AgentRunEvent>),
+    Complete {
+        final_text: String,
+        stop_reason: String,
+        usage: AgentUsageSnapshot,
+    },
+    Error(String),
+    Ignore,
+}
+
+fn map_hermes_event(run_id: &str, event: &HermesRuntimeEvent) -> HermesMappedEvent {
+    let payload = &event.payload;
+    match event.event_type.as_str() {
+        "message.delta" => {
+            let text = payload
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if text.is_empty() {
+                HermesMappedEvent::Ignore
+            } else {
+                HermesMappedEvent::Delta(
+                    text.clone(),
+                    vec![AgentRunEvent::Delta {
+                        run_id: run_id.to_string(),
+                        text,
+                    }],
+                )
+            }
+        }
+        "reasoning.delta" => payload
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(|text| {
+                HermesMappedEvent::Emit(vec![AgentRunEvent::ThinkingDelta {
+                    run_id: run_id.to_string(),
+                    text: text.to_string(),
+                }])
+            })
+            .unwrap_or(HermesMappedEvent::Ignore),
+        // Hermes uses thinking.delta for spinner copy, while reasoning.available
+        // is a post-hoc snapshot of assistant content. Neither is public reasoning.
+        "thinking.delta" | "reasoning.available" => HermesMappedEvent::Ignore,
+        "status.update" => payload
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(|message| {
+                HermesMappedEvent::Emit(vec![AgentRunEvent::Status {
+                    run_id: run_id.to_string(),
+                    message: message.to_string(),
+                }])
+            })
+            .unwrap_or(HermesMappedEvent::Ignore),
+        "tool.start" => {
+            let tool_use_id = hermes_tool_id(payload);
+            let name = payload
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("tool")
+                .to_string();
+            HermesMappedEvent::Emit(vec![AgentRunEvent::ToolStart {
+                run_id: run_id.to_string(),
+                block_index: hermes_block_index(&tool_use_id),
+                tool_use_id,
+                name,
+                input: payload
+                    .get("args")
+                    .cloned()
+                    .or_else(|| payload.get("context").cloned()),
+            }])
+        }
+        "tool.complete" => {
+            if payload.get("name").and_then(Value::as_str) == Some("todo") {
+                if let Some(plan) = payload
+                    .get("todos")
+                    .and_then(agent_plan_snapshot_from_value)
+                    .or_else(|| agent_plan_snapshot_from_tool_input("todo", payload))
+                {
+                    return HermesMappedEvent::Emit(vec![AgentRunEvent::PlanUpdated {
+                        run_id: run_id.to_string(),
+                        plan,
+                    }]);
+                }
+            }
+            let tool_use_id = hermes_tool_id(payload);
+            let result = payload
+                .get("result_text")
+                .or_else(|| payload.get("summary"))
+                .or_else(|| payload.get("result"))
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| value.to_string())
+                })
+                .unwrap_or_default();
+            HermesMappedEvent::Emit(vec![
+                AgentRunEvent::ToolResult {
+                    run_id: run_id.to_string(),
+                    tool_use_id: tool_use_id.clone(),
+                    content: sanitize_tool_text(&result),
+                    is_error: payload.get("error").is_some(),
+                },
+                AgentRunEvent::ToolStop {
+                    run_id: run_id.to_string(),
+                    block_index: hermes_block_index(&tool_use_id),
+                    tool_use_id,
+                },
+            ])
+        }
+        "approval.request" => {
+            let request_id = payload
+                .get("request_id")
+                .or_else(|| payload.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("hermes-approval")
+                .to_string();
+            let choices = payload
+                .get("choices")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_else(|| vec![json!("once"), json!("deny")]);
+            let options = choices
+                .into_iter()
+                .filter_map(|choice| choice.as_str().map(str::to_string))
+                .map(|choice| AgentApprovalOption {
+                    label: hermes_approval_label(&choice).to_string(),
+                    kind: if choice == "deny" {
+                        "reject"
+                    } else {
+                        "approve"
+                    }
+                    .to_string(),
+                    id: choice,
+                })
+                .collect();
+            HermesMappedEvent::Emit(vec![AgentRunEvent::ApprovalRequest {
+                run_id: run_id.to_string(),
+                request: AgentApprovalRequest {
+                    request_id,
+                    kind: "tool".to_string(),
+                    title: payload
+                        .get("title")
+                        .or_else(|| payload.get("tool"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("Hermes 请求执行操作")
+                        .to_string(),
+                    description: payload
+                        .get("description")
+                        .or_else(|| payload.get("command"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    danger: payload
+                        .get("risk")
+                        .and_then(Value::as_str)
+                        .unwrap_or("medium")
+                        .to_string(),
+                    options,
+                },
+            }])
+        }
+        "clarify.request" => {
+            let request_id = payload
+                .get("request_id")
+                .or_else(|| payload.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("hermes-clarify")
+                .to_string();
+            let question = payload
+                .get("question")
+                .or_else(|| payload.get("prompt"))
+                .and_then(Value::as_str)
+                .unwrap_or("Hermes 需要补充信息")
+                .to_string();
+            HermesMappedEvent::Emit(vec![AgentRunEvent::RequestUserInput {
+                run_id: run_id.to_string(),
+                request: AgentUserInputRequest {
+                    request_id: request_id.clone(),
+                    title: Some("Hermes Agent".to_string()),
+                    description: question.clone(),
+                    questions: vec![AgentUserInputQuestion {
+                        id: request_id,
+                        header: None,
+                        question,
+                        input_type: "text".to_string(),
+                        options: Vec::new(),
+                        multi_select: false,
+                        required: true,
+                        secret: false,
+                    }],
+                },
+            }])
+        }
+        "message.complete" => {
+            let status = payload
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("complete");
+            if status == "error" {
+                return HermesMappedEvent::Error(
+                    payload
+                        .get("error")
+                        .or_else(|| payload.get("text"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("Hermes Agent 运行失败")
+                        .to_string(),
+                );
+            }
+            HermesMappedEvent::Complete {
+                final_text: payload
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                stop_reason: if status == "interrupted" {
+                    "cancelled".to_string()
+                } else {
+                    "end_turn".to_string()
+                },
+                usage: hermes_usage_snapshot(payload.get("usage")),
+            }
+        }
+        "error" => HermesMappedEvent::Error(
+            payload
+                .get("message")
+                .or_else(|| payload.get("error"))
+                .and_then(Value::as_str)
+                .unwrap_or("Hermes Agent 返回错误")
+                .to_string(),
+        ),
+        _ => HermesMappedEvent::Ignore,
+    }
+}
+
+async fn handle_hermes_control(
+    client: &mut HermesClient,
+    session_id: &str,
+    command: AgentControlCommand,
+) {
+    match command {
+        AgentControlCommand::Guide {
+            text,
+            acknowledgement,
+        } => {
+            let _ = acknowledgement.send(client.guide(session_id, &text).await);
+        }
+        AgentControlCommand::Permission {
+            decision,
+            option_id,
+            acknowledgement,
+            ..
+        } => {
+            let choice = match decision {
+                AgentPermissionDecision::Reject => "deny",
+                AgentPermissionDecision::Approve => option_id.as_deref().unwrap_or("once"),
+            };
+            let _ = acknowledgement.send(client.approval(session_id, choice).await);
+        }
+        AgentControlCommand::UserInput {
+            request_id,
+            answers,
+            acknowledgement,
+        } => {
+            let answer = answers
+                .values()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| Value::Object(answers));
+            let _ = acknowledgement.send(client.clarify(session_id, &request_id, answer).await);
+        }
+    }
+}
+
+fn hermes_usage_snapshot(value: Option<&Value>) -> AgentUsageSnapshot {
+    let value = value.unwrap_or(&Value::Null);
+    AgentUsageSnapshot {
+        input_tokens: value
+            .get("input_tokens")
+            .or_else(|| value.get("prompt_tokens"))
+            .and_then(Value::as_u64),
+        output_tokens: value
+            .get("output_tokens")
+            .or_else(|| value.get("completion_tokens"))
+            .and_then(Value::as_u64),
+        cache_creation_input_tokens: value
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64),
+        cache_read_input_tokens: value.get("cache_read_input_tokens").and_then(Value::as_u64),
+        model_context_window: value.get("model_context_window").and_then(Value::as_u64),
+        total_cost_usd: value
+            .get("total_cost_usd")
+            .or_else(|| value.get("cost_usd"))
+            .and_then(Value::as_f64),
+    }
+}
+
+fn hermes_tool_id(payload: &Value) -> String {
+    payload
+        .get("tool_id")
+        .or_else(|| payload.get("id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("hermes-tool-{}", uuid::Uuid::new_v4()))
+}
+
+fn hermes_block_index(tool_id: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tool_id.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn hermes_approval_label(choice: &str) -> &str {
+    match choice {
+        "once" => "允许一次",
+        "session" => "本次会话允许",
+        "always" => "始终允许",
+        "deny" => "拒绝",
+        _ => choice,
+    }
+}
+
 fn read_local_image_for_acp(
     path: &str,
     requested_mime_type: Option<&str>,
@@ -6993,12 +7576,13 @@ mod tests {
         fail_fork_command, find_grok_runtime_error_detail, fork_capability_cache_key,
         gemini_mode_id, gemini_removed_environment, grok_acp_arguments,
         grok_acp_error_with_runtime_detail, grok_uses_channel_credentials, guide_ack_response,
-        normalize_agent_input, normalize_guide_prompt, parse_opencode_models, pi_model_catalog,
-        pi_model_parts, pi_rpc_arguments, pi_usage_snapshot, probe_compact_capability_cached,
-        probe_fork_capability_cached, public_acp_error, public_codex_error,
-        push_compact_failure_event, read_cached_agent_command, read_cached_agent_model_catalog,
-        runtime_can_reuse, sanitize_grok_runtime_error_detail, should_retry_grok_channel_prompt,
-        should_set_acp_model, store_cached_agent_command, store_cached_agent_model_catalog,
+        hermes_model_catalog, map_hermes_event, normalize_agent_input, normalize_guide_prompt,
+        parse_opencode_models, pi_model_catalog, pi_model_parts, pi_rpc_arguments,
+        pi_usage_snapshot, probe_compact_capability_cached, probe_fork_capability_cached,
+        public_acp_error, public_codex_error, push_compact_failure_event,
+        read_cached_agent_command, read_cached_agent_model_catalog, runtime_can_reuse,
+        sanitize_grok_runtime_error_detail, should_retry_grok_channel_prompt, should_set_acp_model,
+        store_cached_agent_command, store_cached_agent_model_catalog,
         summarize_codex_compact_capability, validate_compact_runtime_session, AcpEventMapper,
         AgentCompactReconcileResponse, AgentCompactReconcileState, AgentDriverInput,
         AgentDriverKind, AgentForkCapabilityState, AgentForkCapabilitySummary,
@@ -7007,7 +7591,7 @@ mod tests {
         AgentRuntimeConfig, AgentRuntimeFork, AgentRuntimeForkMode, AgentRuntimePhase,
         AgentRuntimeRecord, AgentRuntimeRun, AgentThreadControlConfig, AgentThreadForkError,
         CodexCompactCapabilityRequest, CodexEventMapper, CodexForkOutcome, CommandResolvers,
-        GuideAckOutcome, GuideAgentRunRequest, LiveAgentRuntime, PiEventMapper,
+        GuideAckOutcome, GuideAgentRunRequest, HermesMappedEvent, LiveAgentRuntime, PiEventMapper,
         ReconcileAgentCompactRequest, RuntimeExecution, StartAgentCompactRequest,
         StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL, AUTOMATION_EXECUTION_CONTEXT,
         MODEL_CATALOG_CACHE_TTL,
@@ -7021,9 +7605,10 @@ mod tests {
         agent_runtime::{
             AgentCompactCapabilityState, AgentCompactCapabilitySummary, AgentCompactionStatus,
             AgentControlCommand, AgentPermissionDecision, AgentRunEvent, GEMINI_CLI_PROVIDER_ID,
-            OPENAI_CODEX_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+            HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
         },
         codex_app_server::{CodexAppServerError, CodexRuntimeEvent, CodexUserInput},
+        hermes::{HermesRuntimeEvent, HermesService},
         pi_rpc::{PiModel, PiPromptInput, PiRuntimeEvent, PiState, PiStdioClient},
     };
     use axum::http::StatusCode;
@@ -7041,6 +7626,79 @@ mod tests {
 
     static COMMAND_RESOLVER_CALLS: AtomicUsize = AtomicUsize::new(0);
     static COMMAND_RESOLVER_AVAILABLE: AtomicBool = AtomicBool::new(true);
+
+    #[test]
+    fn hermes_message_delta_maps_to_shared_delta_event() {
+        let mapped = map_hermes_event(
+            "run-hermes",
+            &HermesRuntimeEvent {
+                event_type: "message.delta".to_string(),
+                session_id: Some("session-hermes".to_string()),
+                payload: json!({ "text": "hello" }),
+            },
+        );
+        match mapped {
+            HermesMappedEvent::Delta(text, events) => {
+                assert_eq!(text, "hello");
+                assert!(
+                    matches!(events.as_slice(), [AgentRunEvent::Delta { run_id, text }] if run_id == "run-hermes" && text == "hello")
+                );
+            }
+            other => panic!("unexpected Hermes mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hermes_only_maps_public_reasoning_delta_to_thinking() {
+        let event = |event_type: &str| HermesRuntimeEvent {
+            event_type: event_type.to_string(),
+            session_id: Some("session-hermes".to_string()),
+            payload: json!({ "text": "reasoning" }),
+        };
+
+        assert!(matches!(
+            map_hermes_event("run-hermes", &event("reasoning.delta")),
+            HermesMappedEvent::Emit(events)
+                if matches!(events.as_slice(), [AgentRunEvent::ThinkingDelta { text, .. }] if text == "reasoning")
+        ));
+        assert!(matches!(
+            map_hermes_event("run-hermes", &event("thinking.delta")),
+            HermesMappedEvent::Ignore
+        ));
+        assert!(matches!(
+            map_hermes_event("run-hermes", &event("reasoning.available")),
+            HermesMappedEvent::Ignore
+        ));
+    }
+
+    #[test]
+    fn hermes_message_complete_maps_usage_and_stop_reason() {
+        let mapped = map_hermes_event(
+            "run-hermes",
+            &HermesRuntimeEvent {
+                event_type: "message.complete".to_string(),
+                session_id: Some("session-hermes".to_string()),
+                payload: json!({
+                    "status": "interrupted",
+                    "text": "partial",
+                    "usage": { "input_tokens": 12, "output_tokens": 3 }
+                }),
+            },
+        );
+        match mapped {
+            HermesMappedEvent::Complete {
+                final_text,
+                stop_reason,
+                usage,
+            } => {
+                assert_eq!(final_text, "partial");
+                assert_eq!(stop_reason, "cancelled");
+                assert_eq!(usage.input_tokens, Some(12));
+                assert_eq!(usage.output_tokens, Some(3));
+            }
+            other => panic!("unexpected Hermes mapping: {other:?}"),
+        }
+    }
 
     #[test]
     fn compact_capability_cache_key_changes_with_channel_runtime() {
@@ -7253,6 +7911,7 @@ mod tests {
             reasoning_effort: None,
             channel_id: None,
             channel_fingerprint: None,
+            hermes_provider: None,
             environment: BTreeMap::new(),
             codex_config_args: Vec::new(),
             bridge_version: None,
@@ -7315,6 +7974,7 @@ mod tests {
                 gemini: || None,
             },
             agent_channels: test_agent_channel_service(),
+            hermes: HermesService::new(std::env::temp_dir(), || None),
         }
     }
 
@@ -7508,6 +8168,23 @@ mod tests {
     }
 
     #[test]
+    fn hermes_model_catalog_exposes_official_reasoning_efforts() {
+        let catalog = hermes_model_catalog();
+        let model = catalog.models.first().expect("Hermes default model");
+        assert_eq!(catalog.provider_id, HERMES_AGENT_PROVIDER_ID);
+        assert_eq!(catalog.default_model_id.as_deref(), Some("__default"));
+        assert_eq!(model.default_reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(
+            model
+                .supported_reasoning_efforts
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>(),
+            ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+        );
+    }
+
+    #[test]
     fn agent_command_cache_reuses_fresh_entries_and_expires_old_ones() {
         let cache = Mutex::new(HashMap::new());
         let resolved_at = Instant::now();
@@ -7543,6 +8220,7 @@ mod tests {
             || None,
             || None,
             test_agent_channel_service(),
+            HermesService::new(std::env::temp_dir(), || None),
         );
 
         assert_eq!(
