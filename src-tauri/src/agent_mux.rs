@@ -16,6 +16,20 @@ use std::{
 const AGENT_MUX_SKILL_NAME: &str = "codem-agent-mux";
 const MAX_AGENT_MUX_SKILL_BYTES: usize = 256 * 1024;
 const MAX_AGENT_MUX_NICKNAME_CHARS: usize = 32;
+const AGENT_MUX_CAPABILITY_LEVELS: [&str; 5] = ["基础", "轻量", "标准", "高级", "顶级"];
+const AGENT_MUX_CAPABILITY_TENDENCIES: [&str; 5] =
+    ["通用", "代码", "前端 / UI", "写作", "数学推理"];
+const AGENT_MUX_PURPOSES: [&str; 9] = [
+    "通用任务",
+    "代码生成",
+    "代码审查",
+    "Bug 排查",
+    "前端实现",
+    "测试验证",
+    "文档写作",
+    "信息分析",
+    "数学推理",
+];
 const AGENT_MUX_AVATARS: [&str; 36] = [
     "rabbit",
     "fox",
@@ -744,6 +758,60 @@ fn ensure_schema(connection: &Connection) -> Result<(), (StatusCode, Json<Value>
     // Older prototypes inserted fixed demo profiles. Remove only those known ids;
     // user-created records are left untouched during migration.
     connection.execute("DELETE FROM agent_mux_profiles WHERE id IN ('codex-sol','codex-terra','codex-luna','codex-deepseek','claude-opus','claude-sonnet','grok-deepseek','pi-gemini')", []).map_err(internal_error)?;
+    migrate_profile_metadata(connection)?;
+    Ok(())
+}
+
+fn migrate_profile_metadata(connection: &Connection) -> Result<(), (StatusCode, Json<Value>)> {
+    let profiles = {
+        let mut statement = connection
+            .prepare("SELECT id, level, tags_json, role FROM agent_mux_profiles")
+            .map_err(internal_error)?;
+        let profiles = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(internal_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(internal_error)?;
+        profiles
+    };
+
+    for (id, level, tags_json, role) in profiles {
+        let tags = parse_tags(tags_json.clone());
+        let migrated_level = if level == "未评级" {
+            "基础"
+        } else {
+            &level
+        };
+        let migrated_tendency =
+            if tags.len() == 1 && AGENT_MUX_CAPABILITY_TENDENCIES.contains(&tags[0].as_str()) {
+                tags[0].clone()
+            } else {
+                infer_capability_tendency(&tags).to_string()
+            };
+        let migrated_role = if AGENT_MUX_PURPOSES.contains(&role.as_str()) {
+            role.clone()
+        } else {
+            infer_profile_purpose(&tags).to_string()
+        };
+        let migrated_tags_json =
+            serde_json::to_string(&vec![migrated_tendency]).map_err(internal_error)?;
+
+        if migrated_level != level || migrated_tags_json != tags_json || migrated_role != role {
+            connection
+                .execute(
+                    "UPDATE agent_mux_profiles SET level = ?2, tags_json = ?3, role = ?4, updated_at = datetime('now') WHERE id = ?1",
+                    params![id, migrated_level, migrated_tags_json, migrated_role],
+                )
+                .map_err(internal_error)?;
+        }
+    }
     Ok(())
 }
 
@@ -1012,8 +1080,152 @@ fn read_metrics(connection: &Connection) -> Result<AgentMuxMetrics, (StatusCode,
 fn normalize_profile_identity(
     profile: &mut RuntimeProfile,
 ) -> Result<(), (StatusCode, Json<Value>)> {
+    normalize_profile_metadata(profile)?;
     normalize_nickname(&mut profile.nickname)?;
     normalize_avatar(&mut profile.avatar)
+}
+
+fn normalize_profile_metadata(
+    profile: &mut RuntimeProfile,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    profile.level = profile.level.trim().to_string();
+    if profile.level == "未评级" {
+        profile.level = "基础".to_string();
+    }
+    if !AGENT_MUX_CAPABILITY_LEVELS.contains(&profile.level.as_str()) {
+        return Err(client_error("能力等级无效"));
+    }
+
+    let tags: Vec<String> = profile
+        .tags
+        .iter()
+        .map(|tag| tag.trim().to_string())
+        .filter(|tag| !tag.is_empty())
+        .collect();
+    let tendency = if tags.len() == 1 && AGENT_MUX_CAPABILITY_TENDENCIES.contains(&tags[0].as_str())
+    {
+        tags[0].clone()
+    } else if tags.is_empty() || tags.iter().all(|tag| is_legacy_capability_tag(tag)) {
+        infer_capability_tendency(&tags).to_string()
+    } else {
+        return Err(client_error("能力偏向无效"));
+    };
+    profile.tags = vec![tendency];
+
+    profile.role = profile.role.trim().to_string();
+    if !AGENT_MUX_PURPOSES.contains(&profile.role.as_str()) {
+        if matches!(
+            profile.role.as_str(),
+            "主执行" | "故障切换" | "备用" | "小任务"
+        ) {
+            profile.role = infer_profile_purpose(&tags).to_string();
+        } else {
+            return Err(client_error("用途无效"));
+        }
+    }
+    Ok(())
+}
+
+fn is_legacy_capability_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "代码生成"
+            | "代码审查"
+            | "复杂实现"
+            | "测试验证"
+            | "快速修改"
+            | "代码编辑"
+            | "项目审查"
+            | "终端操作"
+            | "长任务"
+            | "文档处理"
+            | "快速探索"
+            | "小范围修改"
+            | "信息检索"
+            | "代码验证"
+            | "ACP"
+            | "多模型"
+            | "项目任务"
+            | "工具调用"
+            | "代码执行"
+            | "记忆"
+            | "Skills"
+            | "MCP"
+            | "多轮会话"
+            | "自动化"
+            | "低延迟"
+            | "脚本任务"
+            | "验证"
+    )
+}
+
+fn infer_capability_tendency(tags: &[String]) -> &'static str {
+    if tags
+        .iter()
+        .any(|tag| tag.contains("前端") || tag.contains("UI"))
+    {
+        "前端 / UI"
+    } else if tags
+        .iter()
+        .any(|tag| tag.contains("文档") || tag.contains("写作"))
+    {
+        "写作"
+    } else if tags
+        .iter()
+        .any(|tag| tag.contains("数学") || tag.contains("推理"))
+    {
+        "数学推理"
+    } else if tags.iter().any(|tag| {
+        [
+            "代码", "编程", "项目", "终端", "脚本", "ACP", "MCP", "工具", "Skills",
+        ]
+        .iter()
+        .any(|marker| tag.contains(marker))
+    }) {
+        "代码"
+    } else {
+        "通用"
+    }
+}
+
+fn infer_profile_purpose(tags: &[String]) -> &'static str {
+    if tags.iter().any(|tag| tag.contains("审查")) {
+        "代码审查"
+    } else if tags
+        .iter()
+        .any(|tag| tag.contains("Bug") || tag.contains("排查"))
+    {
+        "Bug 排查"
+    } else if tags
+        .iter()
+        .any(|tag| tag.contains("测试") || tag.contains("验证"))
+    {
+        "测试验证"
+    } else if tags
+        .iter()
+        .any(|tag| tag.contains("前端") || tag.contains("UI"))
+    {
+        "前端实现"
+    } else if tags
+        .iter()
+        .any(|tag| tag.contains("文档") || tag.contains("写作"))
+    {
+        "文档写作"
+    } else if tags
+        .iter()
+        .any(|tag| tag.contains("信息") || tag.contains("探索"))
+    {
+        "信息分析"
+    } else if tags
+        .iter()
+        .any(|tag| tag.contains("数学") || tag.contains("推理"))
+    {
+        "数学推理"
+    } else if infer_capability_tendency(tags) == "代码" {
+        "代码生成"
+    } else {
+        "通用任务"
+    }
 }
 
 fn normalize_run_identity(payload: &mut CreateRunRequest) -> Result<(), (StatusCode, Json<Value>)> {
@@ -1201,6 +1413,16 @@ mod tests {
             .expect("count user profiles");
         assert_eq!(demo_count, 0);
         assert_eq!(user_count, 1);
+        let migrated: (String, String, String) = connection
+            .query_row(
+                "SELECT level, tags_json, role FROM agent_mux_profiles WHERE id = 'user-profile'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read migrated profile metadata");
+        assert_eq!(migrated.0, "基础");
+        assert_eq!(migrated.1, "[\"通用\"]");
+        assert_eq!(migrated.2, "通用任务");
     }
 
     #[test]
@@ -1255,6 +1477,8 @@ mod tests {
         };
 
         normalize_profile_identity(&mut profile).expect("normalize profile identity");
+        assert_eq!(profile.tags, vec!["代码"]);
+        assert_eq!(profile.role, "代码生成");
         write_profile(&connection, "codex", &profile).expect("persist reasoning effort");
         let stored = read_profile(&connection, &profile.id)
             .expect("read profile")
@@ -1265,6 +1489,25 @@ mod tests {
         assert_eq!(stored.reasoning_effort.as_deref(), Some("high"));
         let mut invalid_avatar = Some("https://example.com/avatar.png".to_string());
         assert!(normalize_avatar(&mut invalid_avatar).is_err());
+    }
+
+    #[test]
+    fn profile_metadata_rejects_unknown_values() {
+        let mut profile = RuntimeProfile {
+            id: "invalid-profile".to_string(),
+            provider: "OpenAI Codex".to_string(),
+            model: "gpt-5.6-sol".to_string(),
+            nickname: None,
+            avatar: None,
+            reasoning_effort: None,
+            level: "至尊".to_string(),
+            tags: vec!["随便".to_string()],
+            role: "主力".to_string(),
+            status: "available".to_string(),
+            channel_id: None,
+        };
+
+        assert!(normalize_profile_identity(&mut profile).is_err());
     }
 
     #[test]

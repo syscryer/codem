@@ -1,4 +1,4 @@
-import { Activity, Check, GitBranchPlus, GitFork, LayoutPanelLeft, Link2, Plus, RefreshCw, Zap } from 'lucide-react';
+import { Activity, Check, FolderGit2, GitBranchPlus, GitFork, Link2, Plus, RefreshCw, Zap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { CLAUDE_CODE_PROVIDER_ID } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
@@ -456,8 +456,8 @@ export function WorkspaceStatus({
           disabled={!canSelectWorktree}
           onClick={() => void handleWorktreeTriggerClick()}
         >
-          <LayoutPanelLeft size={12} />
-          <span>工作区</span>
+          <FolderGit2 size={13} />
+          <span>工作树</span>
           {canSelectWorktree ? <span className="footer-chevron" aria-hidden="true" /> : null}
         </button>
       </div>

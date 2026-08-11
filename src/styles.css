@@ -26273,11 +26273,13 @@ div[data-popover-portal] > * {
 .agent-mux-profile-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 620; }
 .agent-mux-profile-name small { overflow: hidden; color: var(--mux-muted); text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
 .agent-mux-level, .agent-mux-profile-status { font-size: 10px; }
-.agent-mux-level { font-weight: 650; }
-.agent-mux-level.高级 { color: #7c3aed; }
-.agent-mux-level.标准 { color: #2563eb; }
-.agent-mux-level.轻量 { color: #15803d; }
-.agent-mux-profile-role { color: var(--mux-muted); font-size: 10px; }
+.agent-mux-level { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-weight: 650; white-space: nowrap; }
+.agent-mux-level-dot { display: inline-block; width: 8px; height: 8px; flex: 0 0 auto; border: 1px solid color-mix(in srgb, var(--mux-text) 28%, var(--mux-border)); border-radius: 50%; background: #fff; box-shadow: 0 0 0 2px color-mix(in srgb, #fff 18%, transparent); }
+.agent-mux-level-dot[data-level="轻量"] { border-color: #22a35a; background: #22c66b; box-shadow: 0 0 0 2px color-mix(in srgb, #22c66b 14%, transparent); }
+.agent-mux-level-dot[data-level="标准"] { border-color: #3277d7; background: #4a8df0; box-shadow: 0 0 0 2px color-mix(in srgb, #4a8df0 14%, transparent); }
+.agent-mux-level-dot[data-level="高级"] { border-color: #8252d4; background: #9b6bea; box-shadow: 0 0 0 2px color-mix(in srgb, #9b6bea 14%, transparent); }
+.agent-mux-level-dot[data-level="顶级"] { border-color: #c58b1d; background: #e8ad2f; box-shadow: 0 0 0 2px color-mix(in srgb, #e8ad2f 16%, transparent); }
+.agent-mux-profile-role { overflow: hidden; color: var(--mux-muted); text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
 .agent-mux-profile-status.available { color: #15803d; }
 .agent-mux-profile-status.busy { color: #b45309; }
 .agent-mux-profile-status.offline { color: var(--mux-muted); }

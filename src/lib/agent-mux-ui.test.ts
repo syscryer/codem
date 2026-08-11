@@ -92,6 +92,17 @@ test('Agent Mux uses the standard themed dropdown instead of native selects', ()
   assert.match(componentSource, /<StandardSelect[\s\S]*?triggerClassName="agent-mux-select-trigger"/);
 });
 
+test('Agent Mux profiles use five capability levels, one tendency, and concrete purposes', () => {
+  assert.match(componentSource, /\{ value: '基础', label: '基础' \}[\s\S]*?\{ value: '顶级', label: '顶级' \}/);
+  assert.match(componentSource, /AGENT_MUX_TENDENCY_OPTIONS = \['通用', '代码', '前端 \/ UI', '写作', '数学推理'\]/);
+  assert.match(componentSource, /AGENT_MUX_PURPOSE_OPTIONS = \['通用任务', '代码生成', '代码审查', 'Bug 排查', '前端实现', '测试验证', '文档写作', '信息分析', '数学推理'\]/);
+  assert.match(componentSource, /<span>能力偏向<\/span><StandardSelect<AgentMuxCapabilityTendency>/);
+  assert.match(componentSource, /tags: \[tendency\]/);
+  assert.doesNotMatch(componentSource, /主要能力|补充能力/);
+  assert.doesNotMatch(componentSource, /options=\{\['主执行', '故障切换', '备用', '小任务'\]/);
+  assert.match(stylesSource, /\.agent-mux-level-dot\[data-level="顶级"\]/);
+});
+
 test('Agent Mux offers nickname and an internal avatar dropdown with legacy fallback', () => {
   assert.match(componentSource, /nickname: nickname\.trim\(\) \|\| null/);
   assert.match(componentSource, /avatar: avatar \|\| null/);

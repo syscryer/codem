@@ -58,6 +58,19 @@ type MuxView = 'overview' | 'agents' | 'monitor' | 'skill';
 type RunStatus = 'running' | 'completed' | 'failed' | 'queued' | 'waiting' | 'cancelled';
 const ALL_AGENTS_ID = '__all__';
 
+const AGENT_MUX_LEVEL_OPTIONS = [
+  { value: '基础', label: '基础' },
+  { value: '轻量', label: '轻量' },
+  { value: '标准', label: '标准' },
+  { value: '高级', label: '高级' },
+  { value: '顶级', label: '顶级' },
+] as const;
+const AGENT_MUX_TENDENCY_OPTIONS = ['通用', '代码', '前端 / UI', '写作', '数学推理'] as const;
+const AGENT_MUX_PURPOSE_OPTIONS = ['通用任务', '代码生成', '代码审查', 'Bug 排查', '前端实现', '测试验证', '文档写作', '信息分析', '数学推理'] as const;
+type AgentMuxCapabilityLevel = (typeof AGENT_MUX_LEVEL_OPTIONS)[number]['value'];
+type AgentMuxCapabilityTendency = (typeof AGENT_MUX_TENDENCY_OPTIONS)[number];
+type AgentMuxPurpose = (typeof AGENT_MUX_PURPOSE_OPTIONS)[number];
+
 type RuntimeProfile = {
   id: string;
   provider: string;
@@ -65,9 +78,9 @@ type RuntimeProfile = {
   nickname?: string | null;
   avatar?: string | null;
   reasoningEffort?: string | null;
-  level: '高级' | '标准' | '轻量' | '未评级';
+  level: AgentMuxCapabilityLevel;
   tags: string[];
-  role: string;
+  role: AgentMuxPurpose;
   status: 'available' | 'busy' | 'offline' | 'disabled';
   channelId?: string | null;
 };
@@ -129,7 +142,7 @@ $agentMux = '${escapedCliPath}'
 ## 调用协议
 
 1. 每次调用前执行 \`& $agentMux agents --json${appDataArg}\` 获取最新可调用配置；这是 Agent/Profile 状态的唯一可信来源，不得缓存或依赖安装时快照。
-2. 按能力等级、用途和标签选择 status=available 的 profileId。
+2. 按 Profile 元数据选择 status=available 的 profileId：\`level\` 是五级能力等级，\`tags[0]\` 是能力偏向，\`role\` 是具体任务用途；\`role\` 不是主执行、备用或故障切换等工作流角色。
 3. 执行 \`& $agentMux invoke --profile '<profileId>' --caller '<当前主 Agent 名称>' --working-directory '<absolute-path>' --permission default --prompt '<task>'${appDataArg}\`。需要覆盖 Profile 默认思考等级时，增加 \`--reasoning-effort '<level>'\`；显式值优先，省略时继续使用 Profile 配置。调用方只填写 Agent 名称（如 OpenAI Codex、Claude Code、OpenCode），不要填写或推测会话名称。同一 CodeM 主会话再次调用相同 profileId 和工作区时，CLI 会自动续用该子 Agent 的会话，适合追问和返工；切换主会话、配置或工作区会新建会话。若外层 CodeM 会话是“完全访问”，CLI 会自动让子 Agent 继承最高权限；其他权限模式保持原样。
 4. 思考等级按 Agent 和模型区分：Claude Code 支持 \`low/medium/high/xhigh/max\` 及 CodeM 的 \`ultracode\`；OpenAI Codex 和 Pi 使用各自动态模型目录，仅在调用方已知可用值时传入；Grok Build 和 OpenCode 当前不支持。无法确认时省略该参数。
 5. CLI stdout 是 Agent 公开输出；非零退出码表示真实失败，不得伪装成功。
@@ -712,8 +725,7 @@ function AgentsView({ agents: agentItems, selected, selectedId, onSelect, profil
       <div className="agent-mux-detail-panel">
         <div className="agent-mux-detail-heading"><div><span className="agent-mux-detail-kicker">{isAll ? 'ALL CONFIGURATIONS' : 'AGENT TYPE'}</span><h2>{isAll ? '全部配置' : selected?.name}</h2><p>{isAll ? `${agentItems.length} 个 Agent · ${profiles} 个运行配置` : selected?.description}</p></div></div>
         {!isAll && selected ? <div className="agent-mux-tag-row">{selected.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
-        <section className="agent-mux-detail-section"><div className="agent-mux-section-title"><div><h3>运行配置</h3><p>{isAll ? '集中维护所有 Agent 的供应商和模型组合。' : '同一个 Agent 可以连接多个供应商和模型。'}</p></div><button type="button" className="agent-mux-secondary-button" onClick={() => onAddProfile(isAll ? undefined : selected?.id)}><Plus size={14} />添加配置</button></div>{testMessage ? <div className="agent-mux-inline-message"><CheckCircle2 size={14} />{testMessage}</div> : null}<div className="agent-mux-profile-table"><div className="agent-mux-table-head"><span>供应商 / 模型</span><span>能力</span><span>用途</span><span>状态</span><span>操作</span></div>{displayedProfiles.map(({ agent, profile }) => <ProfileRow key={`${agent.id}:${profile.id}`} agentId={agent.id} agentName={isAll ? agent.name : undefined} profile={profile} onEdit={() => onEditProfile(agent.id, profile)} onDelete={() => onDeleteProfile(agent.id, profile)} onToggle={() => onToggleProfile(agent.id, profile)} onTest={() => onTestProfile(agent.id, profile)} testing={testingProfileId === profile.id} />)}</div></section>
-        <section className="agent-mux-detail-section"><div className="agent-mux-section-title"><div><h3>调度说明</h3><p>Skill 调用时可以按优先级自动选择，也可以指定具体配置。</p></div></div><div className="agent-mux-routing-note"><ShieldCheck size={16} /><span>未评级的配置仍可正常使用；只有开启自动选择时，能力等级才参与路由。</span></div></section>
+        <section className="agent-mux-detail-section"><div className="agent-mux-section-title"><div><h3>运行配置</h3><p>{isAll ? '集中维护所有 Agent 的供应商和模型组合。' : '同一个 Agent 可以连接多个供应商和模型。'}</p></div><button type="button" className="agent-mux-secondary-button" onClick={() => onAddProfile(isAll ? undefined : selected?.id)}><Plus size={14} />添加配置</button></div>{testMessage ? <div className="agent-mux-inline-message"><CheckCircle2 size={14} />{testMessage}</div> : null}<div className="agent-mux-profile-table"><div className="agent-mux-table-head"><span>供应商 / 模型</span><span>等级</span><span>用途</span><span>状态</span><span>操作</span></div>{displayedProfiles.map(({ agent, profile }) => <ProfileRow key={`${agent.id}:${profile.id}`} agentId={agent.id} agentName={isAll ? agent.name : undefined} profile={profile} onEdit={() => onEditProfile(agent.id, profile)} onDelete={() => onDeleteProfile(agent.id, profile)} onToggle={() => onToggleProfile(agent.id, profile)} onTest={() => onTestProfile(agent.id, profile)} testing={testingProfileId === profile.id} />)}</div></section>
       </div>
     </div>
   );
@@ -907,12 +919,10 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
   const [model, setModel] = useState(profile?.model ?? '');
   const [reasoningEffort, setReasoningEffort] = useState(profile?.reasoningEffort ?? '');
   const [level, setLevel] = useState<RuntimeProfile['level']>(profile?.level ?? '标准');
-  const [role, setRole] = useState(profile?.role ?? '备用');
+  const [purpose, setPurpose] = useState<AgentMuxPurpose>(profile?.role ?? '通用任务');
   const [nickname, setNickname] = useState(profile?.nickname ?? '');
   const [avatar, setAvatar] = useState(profile?.avatar ?? '');
-  const capabilityOptions = agentCapabilityOptions(agent.id);
-  const [primaryCapability, setPrimaryCapability] = useState(profile?.tags[0] ?? capabilityOptions[0] ?? '');
-  const [secondaryCapability, setSecondaryCapability] = useState(profile?.tags[1] ?? '');
+  const [tendency, setTendency] = useState<AgentMuxCapabilityTendency>((profile?.tags[0] as AgentMuxCapabilityTendency | undefined) ?? '通用');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ fingerprint: string; available: boolean; message: string } | null>(null);
   const modelCatalogReady = channelId !== 'system' || Boolean(selectedSystemChannel?.model?.trim()) || nativeModelCatalog !== undefined;
@@ -946,8 +956,8 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
       avatar: avatar || null,
       reasoningEffort: reasoningEffort || null,
       level,
-      role,
-      tags: [primaryCapability, secondaryCapability].filter((tag, index, items) => tag && items.indexOf(tag) === index),
+      role: purpose,
+      tags: [tendency],
       status,
       channelId: channelId === 'system' ? null : channelId,
     };
@@ -986,10 +996,10 @@ function AddRuntimeProfileDialog({ agent, agents, profile, allowAgentSelection, 
           </div>
           <label className="agent-mux-form-field"><span>思考等级 <em>默认跟随模型</em></span><StandardSelect ariaLabel="选择思考等级" value={reasoningEffort} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={reasoningOptions} onChange={setReasoningEffort} /></label>
           <div className="agent-mux-form-grid">
-            <label className="agent-mux-form-field"><span>能力等级 <em>可选</em></span><StandardSelect<RuntimeProfile['level']> ariaLabel="选择能力等级" value={level} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={['未评级', '轻量', '标准', '高级'].map((value) => ({ value: value as RuntimeProfile['level'], label: value }))} onChange={setLevel} /></label>
-            <label className="agent-mux-form-field"><span>用途</span><StandardSelect ariaLabel="选择用途" value={role} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={['主执行', '故障切换', '备用', '小任务'].map((value) => ({ value, label: value }))} onChange={setRole} /></label>
+            <label className="agent-mux-form-field"><span>能力等级</span><StandardSelect<AgentMuxCapabilityLevel> ariaLabel="选择能力等级" value={level} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={AGENT_MUX_LEVEL_OPTIONS.map((option) => ({ ...option, icon: <span className="agent-mux-level-dot" data-level={option.value} aria-hidden="true" /> }))} onChange={setLevel} /></label>
+            <label className="agent-mux-form-field"><span>能力偏向</span><StandardSelect<AgentMuxCapabilityTendency> ariaLabel="选择能力偏向" value={tendency} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={AGENT_MUX_TENDENCY_OPTIONS.map((value) => ({ value, label: value }))} onChange={setTendency} /></label>
           </div>
-          <div className="agent-mux-form-grid"><label className="agent-mux-form-field"><span>主要能力</span><StandardSelect ariaLabel="选择主要能力" value={primaryCapability} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={capabilityOptions.map((value) => ({ value, label: value }))} onChange={setPrimaryCapability} /></label><label className="agent-mux-form-field"><span>补充能力 <em>可选</em></span><StandardSelect ariaLabel="选择补充能力" value={secondaryCapability} placeholder="无" className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={[{ value: '', label: '无' }, ...capabilityOptions.filter((tag) => tag !== primaryCapability).map((value) => ({ value, label: value }))]} onChange={setSecondaryCapability} /></label></div>
+          <label className="agent-mux-form-field"><span>用途</span><StandardSelect<AgentMuxPurpose> ariaLabel="选择用途" value={purpose} className="agent-mux-select" triggerClassName="agent-mux-select-trigger" menuClassName="agent-mux-select-menu" optionClassName="agent-mux-select-option" offset={7} options={AGENT_MUX_PURPOSE_OPTIONS.map((value) => ({ value, label: value }))} onChange={setPurpose} /></label>
           <div className="agent-mux-form-note"><ShieldCheck size={15} /><span>保存后会加入 {agent.name} 的运行配置，并可被 codem-agent-mux Skill 发现。</span></div>
           {testResult ? <div className={`agent-mux-inline-message${testResult.available ? '' : ' error'}`}>{testResult.available ? <CheckCircle2 size={14} /> : <CircleAlert size={14} />}{testResult.message}</div> : null}
         </div>
@@ -1013,7 +1023,7 @@ function Tab({ active, icon: Icon, label, onClick }: { active: boolean; icon: ty
 function PanelHeading({ title, meta, icon: Icon, action }: { title: string; meta: string; icon: typeof Activity; action: React.ReactNode }) { return <div className="agent-mux-panel-heading"><div><Icon size={15} /><h3>{title}</h3><span>{meta}</span></div>{action}</div>; }
 function CallRow({ run, onOpen }: { run: RunRecord; onOpen: () => void }) { return <button type="button" className="agent-mux-call-row" onClick={onOpen} aria-label={`查看 ${runDisplayName(run)} 运行详情`} title={`${run.target} · ${run.profile}`}><RunIcon status={run.status} /><AgentMuxAvatar avatar={run.avatar} providerId={agentProviderId(run.target) ?? run.target} size="small" /><span className="agent-mux-call-copy"><strong>{runDisplayName(run)}</strong><small>{run.caller} 调用 · {run.target} · {run.profile}</small></span><span className="agent-mux-call-state">{runLabel(run.status)}</span><ChevronRight size={14} /></button>; }
 function HealthRow({ agent }: { agent: AgentRecord }) { const status = agent.profiles.some((profile) => profile.status === 'available') ? 'available' : agent.profiles.some((profile) => profile.status === 'busy') ? 'busy' : 'offline'; return <div className="agent-mux-health-row"><span className="agent-mux-agent-mark small" data-provider={agent.id}><AgentProviderIcon providerId={agentProviderId(agent.id) ?? agent.id} size={15} /></span><span><strong>{agent.name}</strong><small>{agent.profiles.length} 个运行配置</small></span><span className="agent-mux-status-dot" data-status={status} /><span>{status === 'available' ? '可用' : status === 'busy' ? '检测中' : '未连接'}</span></div>; }
-function ProfileRow({ agentId, agentName, profile, onEdit, onDelete, onToggle, onTest, testing }: { agentId: string; agentName?: string; profile: RuntimeProfile; onEdit: () => void; onDelete: () => void; onToggle: () => void; onTest: () => void; testing: boolean }) { const profileName = profileDisplayName(profile); const profileMeta = `${agentName ? `${agentName} · ` : ''}${profile.provider} / ${profile.model} · 思考 ${profile.reasoningEffort ? formatReasoningLabel(profile.reasoningEffort) : '跟随模型'} · ${profile.tags.join(' · ') || '未设置能力标签'}`; return <div className="agent-mux-profile-row"><span className="agent-mux-profile-name"><AgentMuxAvatar avatar={profile.avatar} providerId={agentProviderId(agentId) ?? agentId} size="small" /><span><strong title={profileName}>{profileName}</strong><small title={profileMeta}>{profileMeta}</small></span></span><span className={`agent-mux-level ${profile.level}`}>{profile.level}</span><span className="agent-mux-profile-role">{profile.role}</span><span className={`agent-mux-profile-status ${profile.status}`}>{testing ? '检测中' : profile.status === 'available' ? '可用' : profile.status === 'busy' ? '检测中' : profile.status === 'offline' ? '连接失败' : '已停用'}</span><span className="agent-mux-profile-actions"><button type="button" title="测试连接" onClick={onTest} disabled={testing}><RefreshCw size={13} /></button><button type="button" title="编辑" onClick={onEdit}><Settings2 size={13} /></button><button type="button" title={profile.status === 'disabled' ? '检测并启用' : '停用'} onClick={onToggle}><Radio size={13} /></button><button type="button" title="删除" onClick={onDelete}><X size={13} /></button></span></div>; }
+function ProfileRow({ agentId, agentName, profile, onEdit, onDelete, onToggle, onTest, testing }: { agentId: string; agentName?: string; profile: RuntimeProfile; onEdit: () => void; onDelete: () => void; onToggle: () => void; onTest: () => void; testing: boolean }) { const profileName = profileDisplayName(profile); const profileMeta = `${agentName ? `${agentName} · ` : ''}${profile.provider} / ${profile.model} · 思考 ${profile.reasoningEffort ? formatReasoningLabel(profile.reasoningEffort) : '跟随模型'} · 偏向 ${profile.tags[0]}`; return <div className="agent-mux-profile-row"><span className="agent-mux-profile-name"><AgentMuxAvatar avatar={profile.avatar} providerId={agentProviderId(agentId) ?? agentId} size="small" /><span><strong title={profileName}>{profileName}</strong><small title={profileMeta}>{profileMeta}</small></span></span><span className="agent-mux-level" data-level={profile.level}><span className="agent-mux-level-dot" data-level={profile.level} aria-hidden="true" />{profile.level}</span><span className="agent-mux-profile-role" title={profile.role}>{profile.role}</span><span className={`agent-mux-profile-status ${profile.status}`}>{testing ? '检测中' : profile.status === 'available' ? '可用' : profile.status === 'busy' ? '检测中' : profile.status === 'offline' ? '连接失败' : '已停用'}</span><span className="agent-mux-profile-actions"><button type="button" title="测试连接" onClick={onTest} disabled={testing}><RefreshCw size={13} /></button><button type="button" title="编辑" onClick={onEdit}><Settings2 size={13} /></button><button type="button" title={profile.status === 'disabled' ? '检测并启用' : '停用'} onClick={onToggle}><Radio size={13} /></button><button type="button" title="删除" onClick={onDelete}><X size={13} /></button></span></div>; }
 function RunIcon({ status }: { status: RunStatus }) { if (status === 'completed') return <CheckCircle2 className="agent-mux-run-icon completed" size={16} />; if (status === 'failed') return <CircleAlert className="agent-mux-run-icon failed" size={16} />; if (status === 'queued' || status === 'waiting' || status === 'cancelled') return <Clock3 className="agent-mux-run-icon queued" size={16} />; return <Activity className="agent-mux-run-icon running" size={16} />; }
 function RunStartedTime({ run }: { run: RunRecord }) { return <time title={formatAgentMuxExactTime(run.createdAt)}>{formatAgentMuxRelativeTime(run.createdAt, run.started)}</time>; }
 function runLabel(status: RunStatus) { return status === 'running' ? '运行中' : status === 'completed' ? '已完成' : status === 'failed' ? '失败' : status === 'waiting' ? '等待处理' : status === 'cancelled' ? '已取消' : '排队中'; }
@@ -1024,4 +1034,3 @@ function agentIdForRun(run: RunRecord, agents: AgentRecord[]) { return agents.fi
 function profileDisplayName(profile: RuntimeProfile) { return profile.nickname?.trim() || `${profile.provider} / ${profile.model}`; }
 function runDisplayName(run: RunRecord) { return run.nickname?.trim() || run.target; }
 function formatRunDuration(durationMs: number) { const seconds = Math.max(0, Math.round(durationMs / 1000)); return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`; }
-function agentCapabilityOptions(agentId: string) { return agentId === 'codex' ? ['代码生成', '代码审查', '复杂实现', '测试验证', '快速修改'] : agentId === 'claude' ? ['代码编辑', '项目审查', '终端操作', '长任务', '文档处理'] : agentId === 'grok' ? ['快速探索', '小范围修改', '信息检索', '代码验证'] : agentId === 'opencode' ? ['代码编辑', 'ACP', '多模型', '项目任务', '工具调用'] : agentId === 'gemini' ? ['代码编辑', 'ACP', 'Gemini', '项目任务', '工具调用'] : agentId === 'hermes' ? ['代码执行', '记忆', 'Skills', 'MCP', '多轮会话'] : ['自动化', '低延迟', '脚本任务', '验证']; }

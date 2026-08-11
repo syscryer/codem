@@ -5,9 +5,9 @@ export type AgentMuxRuntimeProfile = {
   nickname?: string | null;
   avatar?: string | null;
   reasoningEffort?: string | null;
-  level: '高级' | '标准' | '轻量' | '未评级';
+  level: '基础' | '轻量' | '标准' | '高级' | '顶级';
   tags: string[];
-  role: string;
+  role: '通用任务' | '代码生成' | '代码审查' | 'Bug 排查' | '前端实现' | '测试验证' | '文档写作' | '信息分析' | '数学推理';
   status: 'available' | 'busy' | 'offline' | 'disabled';
   channelId?: string | null;
 };
