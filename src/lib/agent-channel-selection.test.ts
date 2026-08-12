@@ -359,7 +359,7 @@ test('channel model capabilities expose DeepSeek reasoning levels to Codex', () 
   );
 });
 
-test('system Codex catalog fills official DeepSeek reasoning levels when missing', () => {
+test('system catalog does not infer reasoning levels from a model id', () => {
   const catalog = buildAgentChannelModelCatalog(OPENAI_CODEX_PROVIDER_ID, undefined, {
     providerId: OPENAI_CODEX_PROVIDER_ID,
     defaultModelId: 'deepseek-v4-flash',
@@ -370,11 +370,8 @@ test('system Codex catalog fills official DeepSeek reasoning levels when missing
       supportedReasoningEfforts: [],
     }],
   });
-  assert.equal(catalog?.models[0]?.defaultReasoningEffort, 'high');
-  assert.deepEqual(
-    catalog?.models[0]?.supportedReasoningEfforts.map((effort) => effort.id),
-    ['low', 'high', 'max'],
-  );
+  assert.equal(catalog?.models[0]?.defaultReasoningEffort, undefined);
+  assert.deepEqual(catalog?.models[0]?.supportedReasoningEfforts, []);
 });
 
 test('system Agent channel keeps the complete native model catalog', () => {
@@ -493,6 +490,33 @@ test('custom OpenCode channel inherits verbose variants by provider-prefixed mod
     }],
   });
   assert.deepEqual(catalog?.models[0]?.supportedReasoningEfforts.map((effort) => effort.id), ['low', 'high']);
+});
+
+test('custom OpenCode channel supports arbitrary model ids with declared variants', () => {
+  const catalog = buildAgentChannelModelCatalog(OPENCODE_PROVIDER_ID, {
+    ...channels[0],
+    id: 'custom-opencode',
+    providerId: OPENCODE_PROVIDER_ID,
+    models: [{
+      id: 'future-model',
+      channelId: 'custom-opencode',
+      modelId: 'future-model-1',
+      displayName: 'Future Model 1',
+      enabled: true,
+      isDefault: true,
+      capabilities: {
+        defaultReasoningEffort: 'medium',
+        reasoningEfforts: ['low', 'medium', 'high'],
+      },
+      createdAt: '',
+      updatedAt: '',
+    }],
+  }, null);
+  assert.equal(catalog?.models[0]?.defaultReasoningEffort, 'medium');
+  assert.deepEqual(
+    catalog?.models[0]?.supportedReasoningEfforts.map((effort) => effort.id),
+    ['low', 'medium', 'high'],
+  );
 });
 
 test('background queued runs keep the persisted thread channel', () => {

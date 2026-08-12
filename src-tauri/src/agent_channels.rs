@@ -1654,9 +1654,7 @@ fn apply_known_model_capabilities(
     channel: &StoredAgentChannel,
     model: &mut AgentChannelModelSummary,
 ) {
-    let model_id = model.model_id.trim().to_ascii_lowercase();
-    if is_opencode_go_channel(channel) && (model_id.starts_with("qwen3.") || model_id == "glm-5.2")
-    {
+    if is_opencode_go_channel(channel) {
         if !model.capabilities.is_object() {
             model.capabilities = json!({});
         }
@@ -2918,7 +2916,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_go_qwen_and_glm_expose_native_variants() {
+    fn opencode_go_exposes_template_variants_for_every_model() {
         let channel = StoredAgentChannel {
             id: "open-code-go".to_string(),
             provider_id: OPENCODE_PROVIDER_ID.to_string(),
@@ -2934,10 +2932,10 @@ mod tests {
             updated_at: "2026-08-07T00:00:00Z".to_string(),
         };
         let models = vec![AgentChannelModelSummary {
-            id: "qwen-model".to_string(),
+            id: "future-model".to_string(),
             channel_id: channel.id.clone(),
-            model_id: "qwen3.8-max".to_string(),
-            display_name: "Qwen3.8 Max".to_string(),
+            model_id: "future-model-1".to_string(),
+            display_name: "Future Model 1".to_string(),
             enabled: true,
             is_default: true,
             capabilities: json!({}),
@@ -2949,13 +2947,13 @@ mod tests {
             std::env::temp_dir().as_path(),
             &channel,
             &models,
-            Some("qwen3.8-max"),
+            Some("future-model-1"),
             "test-key",
             None,
             None,
             None,
         )
-        .expect("build OpenCode Go Qwen runtime");
+        .expect("build OpenCode Go runtime");
         let config: Value = serde_json::from_str(
             runtime
                 .env
@@ -2964,23 +2962,23 @@ mod tests {
         )
         .expect("parse OpenCode config content");
         let provider = &config["provider"]["codem_open_code_go"];
-        assert_eq!(provider["npm"], "@ai-sdk/anthropic");
+        assert_eq!(provider["npm"], "@ai-sdk/openai-compatible");
         assert_eq!(
-            provider["models"]["qwen3.8-max"]["variants"]["high"]["thinking"]["budgetTokens"],
-            16_000
+            provider["models"]["future-model-1"]["variants"]["high"]["reasoningEffort"],
+            "high"
         );
         assert_eq!(
-            provider["models"]["qwen3.8-max"]["variants"]["max"]["thinking"]["budgetTokens"],
-            31_999
+            provider["models"]["future-model-1"]["variants"]["max"]["reasoningEffort"],
+            "max"
         );
-
-        let mut glm = models[0].clone();
-        glm.model_id = "glm-5.2".to_string();
-        glm.capabilities = json!({});
-        apply_known_model_capabilities(&channel, &mut glm);
-        let variants = opencode_model_variants(&glm, "@ai-sdk/openai-compatible");
-        assert_eq!(variants["high"]["reasoningEffort"], "high");
-        assert_eq!(variants["max"]["reasoningEffort"], "max");
+        let mut explicit = models[0].clone();
+        explicit.capabilities = json!({
+            "defaultReasoningEffort": "medium",
+            "reasoningEfforts": [{ "id": "medium" }]
+        });
+        apply_known_model_capabilities(&channel, &mut explicit);
+        assert_eq!(explicit.capabilities["defaultReasoningEffort"], "medium");
+        assert_eq!(explicit.capabilities["reasoningEfforts"][0]["id"], "medium");
     }
 
     #[test]

@@ -314,18 +314,7 @@ function withKnownAgentModelCapabilities(
           ],
         };
       }
-      if (model.id.trim().toLocaleLowerCase() !== 'deepseek-v4-flash') {
-        return model;
-      }
-      return {
-        ...model,
-        defaultReasoningEffort: model.defaultReasoningEffort || 'high',
-        supportedReasoningEfforts: [
-          { id: 'low', description: '响应更快，使用较轻的推理' },
-          { id: 'high', description: '适合复杂任务的深度推理' },
-          { id: 'max', description: '为最困难任务提供最大推理深度' },
-        ],
-      };
+      return model;
     }),
   } satisfies AgentModelCatalog;
 }
