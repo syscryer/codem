@@ -502,6 +502,13 @@ fn main() {
                     &format!("default window material failed: {error}"),
                 );
             }
+            #[cfg(windows)]
+            if let Err(error) = platform::preserve_unfocused_material(&app_handle) {
+                log_desktop_event(
+                    &app_handle,
+                    &format!("unfocused window material hook failed: {error}"),
+                );
+            }
             match resolve_backend_startup_target(&app_handle) {
                 Ok(target) => start_backend_startup_check(app_handle, target),
                 Err(error) => {
@@ -1389,22 +1396,76 @@ mod platform {
     use windows::{
         core::{w, HSTRING, PCWSTR},
         Win32::{
-            Foundation::HWND,
+            Foundation::{HWND, LPARAM, LRESULT, WPARAM},
             Graphics::Dwm::{
                 DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_SYSTEMBACKDROP_TYPE,
             },
             UI::{
-                Shell::{SetCurrentProcessExplicitAppUserModelID, ShellExecuteW},
+                Shell::{
+                    DefSubclassProc, SetCurrentProcessExplicitAppUserModelID, SetWindowSubclass,
+                    ShellExecuteW,
+                },
                 WindowsAndMessaging::{GetParent, SW_SHOWNORMAL},
             },
         },
     };
 
     const CODEM_APP_USER_MODEL_ID: &str = "com.mnl.codem";
+    const WINDOW_MATERIAL_SUBCLASS_ID: usize = 0x434f4445;
 
     pub fn declare_process_app_user_model_id() {
         unsafe {
             let _ = SetCurrentProcessExplicitAppUserModelID(w!("com.mnl.codem"));
+        }
+    }
+
+    pub fn preserve_unfocused_material(app: &tauri::AppHandle) -> Result<(), String> {
+        let hwnd = main_hwnd(app)?;
+        let installed = unsafe {
+            SetWindowSubclass(
+                hwnd,
+                Some(window_material_subclass_proc),
+                WINDOW_MATERIAL_SUBCLASS_ID,
+                0,
+            )
+        };
+
+        if installed.as_bool() {
+            Ok(())
+        } else {
+            Err("安装窗口材质消息钩子失败".to_string())
+        }
+    }
+
+    unsafe extern "system" fn window_material_subclass_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _subclass_id: usize,
+        _ref_data: usize,
+    ) -> LRESULT {
+        if should_preserve_active_material(msg, wparam.0) {
+            return LRESULT(1);
+        }
+
+        DefSubclassProc(hwnd, msg, wparam, lparam)
+    }
+
+    fn should_preserve_active_material(msg: u32, wparam: usize) -> bool {
+        msg == windows::Win32::UI::WindowsAndMessaging::WM_NCACTIVATE && wparam == 0
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::should_preserve_active_material;
+        use windows::Win32::UI::WindowsAndMessaging::{WM_ACTIVATE, WM_NCACTIVATE};
+
+        #[test]
+        fn preserves_only_non_client_deactivation() {
+            assert!(should_preserve_active_material(WM_NCACTIVATE, 0));
+            assert!(!should_preserve_active_material(WM_NCACTIVATE, 1));
+            assert!(!should_preserve_active_material(WM_ACTIVATE, 0));
         }
     }
 
