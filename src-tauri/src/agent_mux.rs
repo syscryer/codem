@@ -283,6 +283,22 @@ pub fn router(service: AgentMuxService) -> Router {
         .route("/api/agent-mux/runs", get(list_runs).post(create_run))
         .route("/api/agent-mux/runs/{run_id}", patch(update_run))
         .route(
+            "/api/agent-mux/workflows",
+            get(list_workflows).post(create_workflow),
+        )
+        .route(
+            "/api/agent-mux/workflows/{workflow_id}",
+            put(update_workflow).delete(delete_workflow),
+        )
+        .route(
+            "/api/agent-mux/workflow-runs",
+            get(list_workflow_runs).post(create_workflow_run),
+        )
+        .route(
+            "/api/agent-mux/workflow-runs/{run_id}",
+            put(update_workflow_run),
+        )
+        .route(
             "/api/agent-mux/runs/{run_id}/events",
             get(list_run_events).post(create_run_event),
         )
@@ -599,6 +615,136 @@ async fn update_profile_status(
     Ok(Json(profile))
 }
 
+async fn list_workflows(State(service): State<AgentMuxService>) -> ApiResult<Vec<Value>> {
+    let connection = service.connection()?;
+    ensure_schema(&connection)?;
+    read_json_documents(&connection, "agent_mux_workflows").map(Json)
+}
+
+async fn create_workflow(
+    State(service): State<AgentMuxService>,
+    Json(document): Json<Value>,
+) -> ApiResult<Value> {
+    let connection = service.connection()?;
+    ensure_schema(&connection)?;
+    write_json_document(&connection, "agent_mux_workflows", &document, false)?;
+    Ok(Json(document))
+}
+
+async fn update_workflow(
+    Path(workflow_id): Path<String>,
+    State(service): State<AgentMuxService>,
+    Json(mut document): Json<Value>,
+) -> ApiResult<Value> {
+    let connection = service.connection()?;
+    ensure_schema(&connection)?;
+    set_document_id(&mut document, &workflow_id)?;
+    write_json_document(&connection, "agent_mux_workflows", &document, true)?;
+    Ok(Json(document))
+}
+
+async fn delete_workflow(
+    Path(workflow_id): Path<String>,
+    State(service): State<AgentMuxService>,
+) -> Result<StatusCode, (StatusCode, Json<Value>)> {
+    let connection = service.connection()?;
+    ensure_schema(&connection)?;
+    connection
+        .execute(
+            "DELETE FROM agent_mux_workflows WHERE id = ?1",
+            [&workflow_id],
+        )
+        .map_err(internal_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_workflow_runs(State(service): State<AgentMuxService>) -> ApiResult<Vec<Value>> {
+    let connection = service.connection()?;
+    ensure_schema(&connection)?;
+    read_json_documents(&connection, "agent_mux_workflow_runs").map(Json)
+}
+
+async fn create_workflow_run(
+    State(service): State<AgentMuxService>,
+    Json(document): Json<Value>,
+) -> ApiResult<Value> {
+    let connection = service.connection()?;
+    ensure_schema(&connection)?;
+    write_json_document(&connection, "agent_mux_workflow_runs", &document, false)?;
+    Ok(Json(document))
+}
+
+async fn update_workflow_run(
+    Path(run_id): Path<String>,
+    State(service): State<AgentMuxService>,
+    Json(mut document): Json<Value>,
+) -> ApiResult<Value> {
+    let connection = service.connection()?;
+    ensure_schema(&connection)?;
+    set_document_id(&mut document, &run_id)?;
+    write_json_document(&connection, "agent_mux_workflow_runs", &document, true)?;
+    Ok(Json(document))
+}
+
+fn read_json_documents(
+    connection: &Connection,
+    table: &str,
+) -> Result<Vec<Value>, (StatusCode, Json<Value>)> {
+    let query =
+        format!("SELECT document_json FROM {table} ORDER BY updated_at DESC, created_at DESC");
+    let mut statement = connection.prepare(&query).map_err(internal_error)?;
+    let documents = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(internal_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal_error)?;
+    documents
+        .into_iter()
+        .map(|document| serde_json::from_str(&document).map_err(internal_error))
+        .collect()
+}
+
+fn set_document_id(document: &mut Value, id: &str) -> Result<(), (StatusCode, Json<Value>)> {
+    let object = document
+        .as_object_mut()
+        .ok_or_else(|| client_error("工作流文档必须是对象"))?;
+    object.insert("id".to_string(), Value::String(id.to_string()));
+    Ok(())
+}
+
+fn write_json_document(
+    connection: &Connection,
+    table: &str,
+    document: &Value,
+    update_only: bool,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let id = document
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| client_error("工作流文档缺少 id"))?;
+    let document_json = serde_json::to_string(document).map_err(internal_error)?;
+    let changed = if update_only {
+        connection.execute(
+            &format!(
+                "UPDATE {table} SET document_json = ?2, updated_at = datetime('now') WHERE id = ?1"
+            ),
+            params![id, document_json],
+        )
+    } else {
+        connection.execute(
+            &format!("INSERT INTO {table} (id, document_json) VALUES (?1, ?2)"),
+            params![id, document_json],
+        )
+    }
+    .map_err(internal_error)?;
+    if update_only && changed == 0 {
+        return Err(client_error("工作流记录不存在"));
+    }
+    Ok(())
+}
+
 async fn list_runs(State(service): State<AgentMuxService>) -> ApiResult<Vec<RunRecord>> {
     let connection = service.connection()?;
     ensure_schema(&connection)?;
@@ -720,7 +866,7 @@ async fn create_run_event(
 fn ensure_schema(connection: &Connection) -> Result<(), (StatusCode, Json<Value>)> {
     connection
         .execute_batch(
-            "CREATE TABLE IF NOT EXISTS agent_mux_agents (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, tags_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))); CREATE TABLE IF NOT EXISTS agent_mux_profiles (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agent_mux_agents(id) ON DELETE CASCADE, provider TEXT NOT NULL, model TEXT NOT NULL, reasoning_effort TEXT, level TEXT NOT NULL, tags_json TEXT NOT NULL, role TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))); CREATE INDEX IF NOT EXISTS idx_agent_mux_profiles_agent ON agent_mux_profiles(agent_id); CREATE TABLE IF NOT EXISTS agent_mux_runs (id TEXT PRIMARY KEY, caller TEXT NOT NULL, target TEXT NOT NULL, profile TEXT NOT NULL, skill TEXT NOT NULL, status TEXT NOT NULL, duration TEXT NOT NULL DEFAULT '--', started TEXT NOT NULL DEFAULT '刚刚', prompt TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))); CREATE INDEX IF NOT EXISTS idx_agent_mux_runs_created ON agent_mux_runs(created_at DESC); CREATE INDEX IF NOT EXISTS idx_agent_mux_runs_status ON agent_mux_runs(status); CREATE TABLE IF NOT EXISTS agent_mux_run_events (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES agent_mux_runs(id) ON DELETE CASCADE, event_type TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))); CREATE INDEX IF NOT EXISTS idx_agent_mux_run_events_run ON agent_mux_run_events(run_id, id);",
+            "CREATE TABLE IF NOT EXISTS agent_mux_agents (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, tags_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))); CREATE TABLE IF NOT EXISTS agent_mux_profiles (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agent_mux_agents(id) ON DELETE CASCADE, provider TEXT NOT NULL, model TEXT NOT NULL, reasoning_effort TEXT, level TEXT NOT NULL, tags_json TEXT NOT NULL, role TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))); CREATE INDEX IF NOT EXISTS idx_agent_mux_profiles_agent ON agent_mux_profiles(agent_id); CREATE TABLE IF NOT EXISTS agent_mux_runs (id TEXT PRIMARY KEY, caller TEXT NOT NULL, target TEXT NOT NULL, profile TEXT NOT NULL, skill TEXT NOT NULL, status TEXT NOT NULL, duration TEXT NOT NULL DEFAULT '--', started TEXT NOT NULL DEFAULT '刚刚', prompt TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))); CREATE INDEX IF NOT EXISTS idx_agent_mux_runs_created ON agent_mux_runs(created_at DESC); CREATE INDEX IF NOT EXISTS idx_agent_mux_runs_status ON agent_mux_runs(status); CREATE TABLE IF NOT EXISTS agent_mux_run_events (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES agent_mux_runs(id) ON DELETE CASCADE, event_type TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))); CREATE INDEX IF NOT EXISTS idx_agent_mux_run_events_run ON agent_mux_run_events(run_id, id); CREATE TABLE IF NOT EXISTS agent_mux_workflows (id TEXT PRIMARY KEY, document_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))); CREATE INDEX IF NOT EXISTS idx_agent_mux_workflows_updated ON agent_mux_workflows(updated_at DESC); CREATE TABLE IF NOT EXISTS agent_mux_workflow_runs (id TEXT PRIMARY KEY, document_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))); CREATE INDEX IF NOT EXISTS idx_agent_mux_workflow_runs_updated ON agent_mux_workflow_runs(updated_at DESC);",
         )
         .map_err(internal_error)?;
     let has_channel_id: bool = connection
@@ -1387,6 +1533,30 @@ mod tests {
         assert_eq!(overview.metrics.running, 0);
         assert_eq!(overview.metrics.today_calls, 0);
         assert_eq!(overview.metrics.success_rate, None);
+    }
+
+    #[test]
+    fn workflow_documents_round_trip_and_updates_preserve_identity() {
+        let connection = test_connection();
+        let original = serde_json::json!({
+            "id": "workflow-1",
+            "name": "方案评审",
+            "nodes": [],
+            "edges": []
+        });
+        write_json_document(&connection, "agent_mux_workflows", &original, false)
+            .expect("create workflow document");
+
+        let mut updated = serde_json::json!({ "name": "方案评审 V2", "nodes": [], "edges": [] });
+        set_document_id(&mut updated, "workflow-1").expect("set workflow id");
+        write_json_document(&connection, "agent_mux_workflows", &updated, true)
+            .expect("update workflow document");
+
+        let workflows = read_json_documents(&connection, "agent_mux_workflows")
+            .expect("read workflow documents");
+        assert_eq!(workflows, vec![updated]);
+        assert!(write_json_document(&connection, "agent_mux_workflows", &original, false).is_err());
+        assert!(write_json_document(&connection, "agent_mux_workflows", &original, true).is_ok());
     }
 
     #[test]

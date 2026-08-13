@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { cancelAgentMuxProviderRun, createAgentMuxProfile, createAgentMuxRun, createAgentMuxRunEvent, deleteAgentMuxProfile, getAgentMuxOverview, getAgentMuxRuntimeInfo, getAgentMuxSkillSource, listAgentMuxRunEvents, probeAgentMuxAgent, startAgentMuxProviderRun, stopAgentMuxRuntime, syncAgentMuxSkillSource, updateAgentMuxProfile, updateAgentMuxProfileStatus, updateAgentMuxRun } from '../lib/agent-mux-api';
 import { agentMuxConversationKey, groupAgentMuxRunsByConversation } from '../lib/agent-mux-api';
 import type { AgentMuxMetrics, AgentMuxRun, AgentMuxRunEvent, AgentMuxRuntimeInfo, AgentMuxSkillSource, AgentMuxSkillTarget } from '../lib/agent-mux-api';
@@ -51,10 +51,11 @@ import {
   Square,
   Sparkles,
   Terminal,
+  Workflow,
   X,
 } from 'lucide-react';
 
-type MuxView = 'overview' | 'agents' | 'monitor' | 'skill';
+type MuxView = 'overview' | 'agents' | 'workflows' | 'monitor' | 'skill';
 type RunStatus = 'running' | 'completed' | 'failed' | 'queued' | 'waiting' | 'cancelled';
 const ALL_AGENTS_ID = '__all__';
 
@@ -112,6 +113,10 @@ type SkillInstallTarget = AgentMuxSkillTarget & {
   available: boolean;
 };
 
+const WorkflowPrototype = lazy(() => import('./WorkflowPrototype').then((module) => ({
+  default: module.WorkflowPrototype,
+})));
+
 type Confirmation = {
   title: string;
   description: string;
@@ -125,7 +130,7 @@ function buildSkillText(cliPath: string, appDataDir: string) {
   const appDataArg = appDataDir ? ` --app-data '${appDataDir.replaceAll("'", "''")}'` : '';
   return `---
 name: codem-agent-mux
-description: 发现并调用 CodeM Agent Mux 中已检测可用的执行 Agent
+description: 发现并调用 CodeM Agent Mux 中已检测可用的执行 Agent 和已启用工作流
 ---
 
 # CodeM Agent Mux
@@ -137,7 +142,19 @@ description: 发现并调用 CodeM Agent Mux 中已检测可用的执行 Agent
 \`\`\`powershell
 $agentMux = '${escapedCliPath}'
 & $agentMux agents --json${appDataArg}
+& $agentMux workflows --json${appDataArg}
 \`\`\`
+
+## 工作流协议
+
+用户明确要求“使用 / 启动 / 调用工作流”或点名某个工作流时：
+
+1. 先执行 \`& $agentMux workflows --json${appDataArg}\` 获取最新已启用工作流；只允许使用返回目录中的工作流，草稿和已下线工作流不可调用。
+2. 按用户点名的名称或 id 精确选择工作流。没有匹配时说明未找到；多个候选时让用户确认，不得自行猜测。
+3. 将本次用户消息作为工作流目标。按 \`nodes\` 和 \`edges\` 的 DAG 依赖执行：依赖已满足的节点可以并行，不要把并行步骤压成一次普通调用。
+4. \`start\` 读取目标和当前上下文；\`agent\` 优先使用节点的 \`profileId\`，没有显式绑定时按 \`agentId\` 角色从最新 Agent 目录选择可用配置（architect / implementer 对应 Codex，reviewer 对应 Claude Code，verifier 对应 Pi Agent）；\`discussion\` 对 proposer 和 reviewer 应用同样规则，持续提案、审查、修订，直到满足 \`satisfactionRule\` 或达到 \`maxRounds\`；\`approval\` 必须停下等待用户确认；\`end\` 汇总所有上游公开结果。
+5. 调用节点时使用下方 \`invoke\` 协议，并在 prompt 中包含工作流目标、当前节点说明和必要的上游公开结果。显式绑定的配置不可用或角色没有可用配置时必须报告真实失败，不得换成无关 Agent 或伪装执行。
+6. 向用户明确说明已启动的工作流名称，并在结束时汇总节点结果；任何非零退出码、等待或失败状态都必须原样反映。
 
 ## 调用协议
 
@@ -639,7 +656,7 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
       <header className="agent-mux-header">
         <div className="agent-mux-title-block">
           <h1>Agent Hub</h1>
-          <p>配置可调用 Agent，生成一个 Agent Mux Skill，并集中监控运行状态。</p>
+          <p>配置可调用 Agent，编排工作流，并集中监控运行状态。</p>
         </div>
         <div className="agent-mux-header-metrics">
           <Metric label="运行中" value={String(metrics.running)} accent />
@@ -654,6 +671,7 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
         <nav className="agent-mux-tabs" aria-label="Agent Hub 页面">
           <Tab active={view === 'overview'} icon={Activity} label="概览" onClick={() => setView('overview')} />
           <Tab active={view === 'agents'} icon={Bot} label="Agent Mux" onClick={() => setView('agents')} />
+          <Tab active={view === 'workflows'} icon={Workflow} label="工作流" onClick={() => setView('workflows')} />
           <Tab active={view === 'monitor'} icon={Radio} label="运行监控" onClick={() => setView('monitor')} />
           <Tab active={view === 'skill'} icon={Sparkles} label="Agent Mux Skill" onClick={() => setView('skill')} />
         </nav>
@@ -665,6 +683,7 @@ export function AgentMuxPrototype({ projects, activeProjectId }: { projects: Pro
 
       {view === 'overview' ? <OverviewView agents={agentRecords} runs={runRecords} metrics={metrics} onOpenRuns={() => setView('monitor')} onOpenRun={(runId) => { selectedRunIdRef.current = runId; setSelectedRunId(runId); setView('monitor'); }} onOpenAgents={() => setView('agents')} onOpenSkill={() => setView('skill')} /> : null}
       {view === 'agents' ? (agentRecords.length > 0 ? <AgentsView agents={agentRecords} selected={selectedAgent} selectedId={selectedAgentId} profiles={agentRecords.reduce((count, agent) => count + agent.profiles.length, 0)} onSelect={setSelectedAgentId} onAddProfile={(agentId) => setProfileDialog({ agentId: agentId ?? selectedAgent?.id ?? agentRecords[0].id, allowAgentSelection: !agentId })} onEditProfile={(agentId, profile) => setProfileDialog({ agentId, profile })} onDeleteProfile={deleteProfile} onToggleProfile={toggleProfile} onTestProfile={testProfile} testingProfileId={testingProfileId} testMessage={testMessage} /> : <EmptyState title="暂无 Agent 配置" detail="后端未返回可管理的 Agent 配置。" />) : null}
+      {view === 'workflows' ? <Suspense fallback={<div className="workflow-loading">正在加载工作流画布...</div>}><WorkflowPrototype agentRecords={agentRecords} workingDirectory={projects.find((project) => project.id === activeProjectId)?.path ?? ''} /></Suspense> : null}
       {view === 'monitor' ? <MonitorView agents={agentRecords} runs={runRecords} projects={projects} selected={selectedRun} conversationRuns={selectedConversationRuns} eventsByRunId={runEventsById} liveTurns={liveRunTurns} onSelect={(runId) => { selectedRunIdRef.current = runId; setSelectedRunId(runId); }} onCancel={cancelRun} /> : null}
       {view === 'skill' ? <SkillView agents={agentRecords} skillText={skillText} copied={copied} source={skillSource} targets={skillInstallTargets} installPending={skillInstallPending} installMessage={skillInstallMessage} copiedPath={copiedSkillPath} copiedInstruction={copiedInstallInstruction} cliPath={runtimeInfo.cliPath} runtimeManaged={runtimeInfo.runtimeManaged} onCopy={copySkill} onCopyPath={copySkillPath} onCopyInstruction={copyInstallInstruction} onInstall={installSkillTarget} onInstallAll={installSkillToAll} onExport={exportSkill} onStopRuntime={stopRuntime} /> : null}
       {profileDialog ? <AddRuntimeProfileDialog key={`${profileDialog.agentId}:${profileDialog.profile?.id ?? 'new'}`} agent={agentRecords.find((agent) => agent.id === profileDialog.agentId) ?? agentRecords[0]} agents={agentRecords} profile={profileDialog.profile} allowAgentSelection={profileDialog.allowAgentSelection === true} channels={agentChannels} systemChannels={agentSystemChannels} providerAvailability={skillProviderAvailability} onAgentChange={(agentId) => setProfileDialog((current) => current ? { ...current, agentId } : current)} onClose={() => setProfileDialog(null)} onTest={probeProfile} onSave={saveProfile} /> : null}

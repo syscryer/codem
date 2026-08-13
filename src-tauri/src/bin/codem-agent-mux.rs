@@ -140,6 +140,17 @@ async fn run(args: Vec<String>, app_data_dir: PathBuf) -> Result<(), String> {
             }
             Ok(())
         }
+        "workflows" => {
+            let api = ApiClient::connect(&app_data_dir).await?;
+            let workflows = api.get("/api/agent-mux/workflows").await?;
+            let catalog = active_workflow_catalog(&workflows)?;
+            if args.iter().any(|arg| arg == "--json") {
+                println!("{}", json_for_stdout(&catalog, true)?);
+            } else {
+                print_workflows(&catalog);
+            }
+            Ok(())
+        }
         "status" => {
             let discovery = read_live_discovery(&app_data_dir).await?;
             let api = ApiClient::from_discovery(&discovery)?;
@@ -1118,6 +1129,44 @@ fn available_agent_catalog(overview: &Value) -> Value {
     json!({ "agents": agents })
 }
 
+fn active_workflow_catalog(workflows: &Value) -> Result<Value, String> {
+    let workflows = workflows
+        .as_array()
+        .ok_or_else(|| "工作流目录无效".to_string())?
+        .iter()
+        .filter(|workflow| workflow.get("status").and_then(Value::as_str) == Some("active"))
+        .cloned()
+        .collect::<Vec<_>>();
+    Ok(json!({ "workflows": workflows }))
+}
+
+fn print_workflows(catalog: &Value) {
+    let Some(workflows) = catalog.get("workflows").and_then(Value::as_array) else {
+        return;
+    };
+    if workflows.is_empty() {
+        println!("没有已启用工作流");
+        return;
+    }
+    for workflow in workflows {
+        println!(
+            "{}\t{}\t{}",
+            workflow
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            workflow
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("未命名工作流"),
+            workflow
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        );
+    }
+}
+
 fn cancel_agent_endpoint(run: &Value, provider_run_id: &str) -> String {
     let is_claude = run.get("target").and_then(Value::as_str) == Some("Claude Code");
     if is_claude {
@@ -1168,7 +1217,7 @@ fn caller_label(args: &[String]) -> Result<String, String> {
 }
 
 fn print_help() {
-    println!("codem-agent-mux ensure|agents --json|invoke --prompt <text> [--profile <id>] [--caller <agent>] [--working-directory <path>] [--permission <mode>] [--reasoning-effort <level>]|status --json|cancel --run <id>|stop");
+    println!("codem-agent-mux ensure|agents --json|workflows --json|invoke --prompt <text> [--profile <id>] [--caller <agent>] [--working-directory <path>] [--permission <mode>] [--reasoning-effort <level>]|status --json|cancel --run <id>|stop");
 }
 
 struct ApiClient {
@@ -1596,6 +1645,20 @@ mod tests {
         assert_eq!(catalog["agents"][0]["profiles"][0]["id"], "available");
         assert!(catalog.get("metrics").is_none());
         assert!(catalog.get("runs").is_none());
+    }
+
+    #[test]
+    fn workflow_catalog_only_includes_active_definitions() {
+        let workflows = json!([
+            { "id": "active-1", "name": "方案评审", "status": "active", "nodes": [], "edges": [] },
+            { "id": "draft-1", "name": "未发布草稿", "status": "draft", "nodes": [], "edges": [] }
+        ]);
+
+        let catalog = active_workflow_catalog(&workflows).unwrap();
+
+        assert_eq!(catalog["workflows"].as_array().map(Vec::len), Some(1));
+        assert_eq!(catalog["workflows"][0]["id"], "active-1");
+        assert!(active_workflow_catalog(&json!({})).is_err());
     }
 
     #[test]

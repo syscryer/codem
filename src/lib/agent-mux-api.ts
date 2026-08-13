@@ -159,6 +159,14 @@ export function updateAgentMuxProfile(profile: AgentMuxRuntimeProfile) { return 
 export function deleteAgentMuxProfile(profileId: string) { return request<void>(`/api/agent-mux/profiles/${encodeURIComponent(profileId)}`, { method: 'DELETE' }); }
 export function updateAgentMuxProfileStatus(profileId: string, status: AgentMuxRuntimeProfile['status']) { return request<AgentMuxRuntimeProfile>(`/api/agent-mux/profiles/${encodeURIComponent(profileId)}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }); }
 
+export function listWorkflowDefinitions() { return request<unknown[]>('/api/agent-mux/workflows', { cache: 'no-store' }); }
+export function createWorkflowDefinition(workflow: unknown) { return request<unknown>('/api/agent-mux/workflows', { method: 'POST', body: JSON.stringify(workflow) }); }
+export function updateWorkflowDefinition(workflowId: string, workflow: unknown) { return request<unknown>(`/api/agent-mux/workflows/${encodeURIComponent(workflowId)}`, { method: 'PUT', body: JSON.stringify(workflow) }); }
+export function deleteWorkflowDefinition(workflowId: string) { return request<void>(`/api/agent-mux/workflows/${encodeURIComponent(workflowId)}`, { method: 'DELETE' }); }
+export function listWorkflowRunHistory() { return request<unknown[]>('/api/agent-mux/workflow-runs', { cache: 'no-store' }); }
+export function createWorkflowRun(run: unknown) { return request<unknown>('/api/agent-mux/workflow-runs', { method: 'POST', body: JSON.stringify(run) }); }
+export function updateWorkflowRun(runId: string, run: unknown) { return request<unknown>(`/api/agent-mux/workflow-runs/${encodeURIComponent(runId)}`, { method: 'PUT', body: JSON.stringify(run) }); }
+
 export function resolveClaudeAgentMuxProbe(result: AgentSettingsDiagnostics) {
   const version = result.version ? ` ${result.version}` : '';
   if (!result.installed || !result.diagnostic.available) {
