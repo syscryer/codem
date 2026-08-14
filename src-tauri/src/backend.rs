@@ -2,8 +2,9 @@ use crate::acp::{probe_acp_agent, probe_acp_initialize};
 use crate::agent_runtime::{
     agent_plan_snapshot_from_tool_input, agent_plan_snapshot_from_value, agent_provider_registry,
     normalize_agent_permission_mode, AgentPlanSnapshot, AgentPlanStep, AgentPlanStepStatus,
-    AgentProviderRegistry, CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
-    HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+    AgentProviderRegistry, CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID,
+    GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID,
+    OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
 };
 use crate::codex_app_server::{
     probe_codex_app_server, CodexStoredItem, CodexStoredTurn, CodexUserInput,
@@ -72,6 +73,7 @@ const GROK_CLI_WINDOWS_INSTALL_SCRIPT: &str =
 const GROK_CLI_MACOS_INSTALL_COMMAND: &str = "curl -fsSL https://x.ai/cli/install.sh | bash";
 const OPENCODE_CLI_INSTALL_COMMAND: &str = "npm install -g opencode-ai@latest";
 const GEMINI_CLI_INSTALL_COMMAND: &str = "npm install -g @google/gemini-cli@latest";
+const DSH_CLI_INSTALL_COMMAND: &str = "npm install -g @deepseek-ai/dsh@latest";
 const HERMES_CLI_UPDATE_COMMAND: &str = "hermes update";
 const HERMES_GITHUB_REPOSITORY: &str = "NousResearch/hermes-agent";
 const HERMES_CLI_MACOS_INSTALL_COMMAND: &str =
@@ -997,13 +999,16 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
     let agent_channels =
         crate::agent_channels::AgentChannelService::new(app_data_dir.clone(), secrets);
     let hermes = crate::hermes::HermesService::new(app_data_dir.clone(), resolve_hermes_command);
+    let dsh = crate::dsh::DshService::new();
     let agent_runs = crate::agent_run::AgentRunService::new(
         resolve_grok_command,
         resolve_codex_command,
         resolve_opencode_command,
         resolve_pi_command,
         resolve_gemini_command,
+        resolve_dsh_command,
         agent_channels.clone(),
+        dsh,
         hermes.clone(),
     );
     let agent_mux = crate::agent_mux::AgentMuxService::new(app_data_dir.clone());
@@ -1452,6 +1457,10 @@ async fn agent_providers(State(state): State<AppState>) -> Json<AgentProviderReg
             .agent_runs
             .resolve_command(HERMES_AGENT_PROVIDER_ID, false)
             .is_some(),
+        state
+            .agent_runs
+            .resolve_command(DEEPSEEK_DSH_PROVIDER_ID, false)
+            .is_some(),
     ))
 }
 
@@ -1469,6 +1478,8 @@ async fn agent_settings_diagnostics(
     let version_output = command.as_deref().and_then(|command| {
         if provider_id == GROK_BUILD_PROVIDER_ID {
             read_grok_cli_version(command)
+        } else if provider_id == DEEPSEEK_DSH_PROVIDER_ID {
+            read_dsh_cli_version(command)
         } else {
             read_cli_version(command)
         }
@@ -1486,7 +1497,11 @@ async fn agent_settings_diagnostics(
     let diagnostic = if run_diagnostic {
         if let Some(command) = command.as_deref() {
             let settings = read_app_settings(&state).unwrap_or_else(|_| default_app_settings());
-            let mut process = background_command(command);
+            let mut process = if provider_id == DEEPSEEK_DSH_PROVIDER_ID {
+                dsh_background_command(command)
+            } else {
+                background_command(command)
+            };
             process.args(diagnostic_args);
             let proxy = configured_agent_proxy_environment(&settings).or_else(|| {
                 let system = resolve_system_proxy_environment();
@@ -1558,6 +1573,7 @@ fn agent_settings_diagnostic_spec(
         PI_AGENT_PROVIDER_ID => ("pi --version", &["--version"]),
         GEMINI_CLI_PROVIDER_ID => ("gemini --version", &["--version"]),
         HERMES_AGENT_PROVIDER_ID => ("hermes --version", &["--version"]),
+        DEEPSEEK_DSH_PROVIDER_ID => ("dsh --version", &["--version"]),
         _ => return Err(ApiError::bad_request("不支持的 Agent Provider")),
     };
     Ok(spec)
@@ -1722,6 +1738,7 @@ fn agent_npm_package_name(provider_id: &str) -> Option<&'static str> {
         OPENCODE_PROVIDER_ID => Some("opencode-ai"),
         PI_AGENT_PROVIDER_ID => Some("@earendil-works/pi-coding-agent"),
         GEMINI_CLI_PROVIDER_ID => Some("@google/gemini-cli"),
+        DEEPSEEK_DSH_PROVIDER_ID => Some("@deepseek-ai/dsh"),
         _ => None,
     }
 }
@@ -2589,6 +2606,7 @@ fn build_agent_lifecycle_plan(
         OPENAI_CODEX_PROVIDER_ID => ("@openai/codex@latest", CODEX_CLI_INSTALL_COMMAND),
         OPENCODE_PROVIDER_ID => ("opencode-ai@latest", OPENCODE_CLI_INSTALL_COMMAND),
         GEMINI_CLI_PROVIDER_ID => ("@google/gemini-cli@latest", GEMINI_CLI_INSTALL_COMMAND),
+        DEEPSEEK_DSH_PROVIDER_ID => ("@deepseek-ai/dsh@latest", DSH_CLI_INSTALL_COMMAND),
         GROK_BUILD_PROVIDER_ID if action == "update" => {
             return Ok(lifecycle_plan("grok", ["update"], "grok update"));
         }
@@ -2739,6 +2757,7 @@ fn package_manager_lifecycle_plan(provider_id: &str, command: &str) -> Option<Ag
         OPENAI_CODEX_PROVIDER_ID => "@openai/codex",
         OPENCODE_PROVIDER_ID => "opencode-ai",
         GEMINI_CLI_PROVIDER_ID => "@google/gemini-cli",
+        DEEPSEEK_DSH_PROVIDER_ID => "@deepseek-ai/dsh",
         _ => return None,
     };
     let normalized = command.replace('\\', "/").to_ascii_lowercase();
@@ -6451,8 +6470,22 @@ fn normalize_agent_runtime_settings(value: Option<&Value>) -> Value {
                 OPENCODE_PROVIDER_ID,
                 PI_AGENT_PROVIDER_ID,
                 GEMINI_CLI_PROVIDER_ID,
+                HERMES_AGENT_PROVIDER_ID,
+                DEEPSEEK_DSH_PROVIDER_ID,
             ],
             CLAUDE_CODE_PROVIDER_ID,
+        ),
+        "dshProfile": limited_string(record.and_then(|item| item.get("dshProfile")), 64)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "headless".to_string()),
+        "dshAgentPreset": limited_string(record.and_then(|item| item.get("dshAgentPreset")), 64)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "standard".to_string()),
+        "dshToolsMode": enum_setting(
+            record,
+            "dshToolsMode",
+            &["native", "code", "both"],
+            "native",
         ),
     })
 }
@@ -8149,6 +8182,84 @@ fn resolve_default_hermes_command() -> Option<String> {
     ))
 }
 
+fn resolve_dsh_command() -> Option<String> {
+    if let Some(command) = env::var("DSH_CLI_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| dsh_command_reports_version(value))
+    {
+        return Some(command);
+    }
+
+    #[cfg(target_os = "windows")]
+    let lookup = {
+        let mut command = background_command("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command dsh -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
+        ]);
+        command_output_with_timeout(&mut command, std::time::Duration::from_secs(3))
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let lookup = background_command("which").arg("dsh").output().ok();
+
+    lookup
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| {
+            stdout
+                .lines()
+                .map(str::trim)
+                .filter(|candidate| !candidate.is_empty())
+                .find(|candidate| dsh_command_reports_version(candidate))
+                .map(ToString::to_string)
+        })
+        .or_else(resolve_default_dsh_command)
+}
+
+fn resolve_default_dsh_command() -> Option<String> {
+    let home = home_dir()?;
+    let mut candidates = Vec::new();
+    if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {
+        candidates.push(app_data.join("npm").join(if cfg!(target_os = "windows") {
+            "dsh.cmd"
+        } else {
+            "dsh"
+        }));
+    }
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        candidates.push(
+            local_app_data
+                .join("pnpm")
+                .join(if cfg!(target_os = "windows") {
+                    "dsh.cmd"
+                } else {
+                    "dsh"
+                }),
+        );
+    }
+    candidates.extend([
+        home.join(".volta")
+            .join("bin")
+            .join(if cfg!(target_os = "windows") {
+                "dsh.cmd"
+            } else {
+                "dsh"
+            }),
+        home.join(".local").join("bin").join("dsh"),
+    ]);
+    candidates
+        .into_iter()
+        .filter(|candidate| candidate.is_file())
+        .map(|candidate| candidate.to_string_lossy().to_string())
+        .find(|candidate| dsh_command_reports_version(candidate))
+}
+
 fn hermes_command_paths(
     home: &Path,
     app_data: Option<&Path>,
@@ -8320,6 +8431,63 @@ fn command_reports_version(command: &str) -> bool {
     }
 }
 
+fn dsh_background_command(command: &str) -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        let path = Path::new(command);
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if extension.eq_ignore_ascii_case("ps1") {
+            let mut process = background_command("powershell.exe");
+            process.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+            process.arg(path);
+            return process;
+        }
+        if extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat") {
+            let powershell_script = path.with_extension("ps1");
+            if powershell_script.is_file() {
+                let mut process = background_command("powershell.exe");
+                process.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+                process.arg(powershell_script);
+                return process;
+            }
+            let mut process = background_command("cmd.exe");
+            process.args(["/D", "/S", "/C"]);
+            process.arg(path);
+            return process;
+        }
+    }
+    background_command(command)
+}
+
+fn dsh_command_reports_version(command: &str) -> bool {
+    let mut child = match dsh_background_command(command)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
 fn read_cli_version(command: &str) -> Option<String> {
     let mut process = background_command(command);
     process.arg("--version");
@@ -8337,6 +8505,24 @@ fn read_cli_version(command: &str) -> Option<String> {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .map(ToString::to_string)
+}
+
+fn read_dsh_cli_version(command: &str) -> Option<String> {
+    let mut process = dsh_background_command(command);
+    process.arg("--version");
+    let output = command_output_with_timeout(&mut process, std::time::Duration::from_secs(4))?;
+    if !output.status.success() {
+        return None;
+    }
+    format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .lines()
+    .map(str::trim)
+    .find(|line| !line.is_empty())
+    .map(ToString::to_string)
 }
 
 fn read_grok_cli_version(command: &str) -> Option<String> {
@@ -9322,7 +9508,8 @@ where
         | OPENCODE_PROVIDER_ID
         | PI_AGENT_PROVIDER_ID
         | GEMINI_CLI_PROVIDER_ID
-        | HERMES_AGENT_PROVIDER_ID => {
+        | HERMES_AGENT_PROVIDER_ID
+        | DEEPSEEK_DSH_PROVIDER_ID => {
             if provider_available(provider_id) {
                 return Ok(match provider_id {
                     GROK_BUILD_PROVIDER_ID => GROK_BUILD_PROVIDER_ID,
@@ -9331,6 +9518,7 @@ where
                     PI_AGENT_PROVIDER_ID => PI_AGENT_PROVIDER_ID,
                     GEMINI_CLI_PROVIDER_ID => GEMINI_CLI_PROVIDER_ID,
                     HERMES_AGENT_PROVIDER_ID => HERMES_AGENT_PROVIDER_ID,
+                    DEEPSEEK_DSH_PROVIDER_ID => DEEPSEEK_DSH_PROVIDER_ID,
                     _ => unreachable!(),
                 });
             }
@@ -9341,6 +9529,7 @@ where
                 PI_AGENT_PROVIDER_ID => "未找到可由 CodeM 启动的 Pi CLI",
                 GEMINI_CLI_PROVIDER_ID => "未找到可由 CodeM 启动的 Gemini CLI",
                 HERMES_AGENT_PROVIDER_ID => "未找到可由 CodeM 启动的 Hermes CLI",
+                DEEPSEEK_DSH_PROVIDER_ID => "未找到可由 CodeM 启动的 DeepSeek DSH CLI",
                 _ => unreachable!(),
             }))
         }
@@ -9360,6 +9549,7 @@ fn resolve_thread_create_permission_mode(
             | PI_AGENT_PROVIDER_ID
             | GEMINI_CLI_PROVIDER_ID
             | HERMES_AGENT_PROVIDER_ID
+            | DEEPSEEK_DSH_PROVIDER_ID
     ) {
         return normalize_agent_permission_mode(permission_mode)
             .map(|mode| Some(mode.to_string()))
@@ -9401,6 +9591,7 @@ fn provider_supports_reasoning_effort(provider: &str) -> bool {
             | OPENCODE_PROVIDER_ID
             | PI_AGENT_PROVIDER_ID
             | HERMES_AGENT_PROVIDER_ID
+            | DEEPSEEK_DSH_PROVIDER_ID
     )
 }
 
@@ -14717,6 +14908,7 @@ fn settings_provider_id(value: Option<&str>) -> ApiResult<&str> {
         Some(PI_AGENT_PROVIDER_ID) => Ok(PI_AGENT_PROVIDER_ID),
         Some(GEMINI_CLI_PROVIDER_ID) => Ok(GEMINI_CLI_PROVIDER_ID),
         Some(HERMES_AGENT_PROVIDER_ID) => Ok(HERMES_AGENT_PROVIDER_ID),
+        Some(DEEPSEEK_DSH_PROVIDER_ID) => Ok(DEEPSEEK_DSH_PROVIDER_ID),
         Some(_) => Err(ApiError::bad_request("不支持的 Agent Provider")),
     }
 }
@@ -14729,6 +14921,7 @@ fn agent_config_directory_name(provider_id: &str) -> &'static str {
         PI_AGENT_PROVIDER_ID => ".pi",
         GEMINI_CLI_PROVIDER_ID => ".gemini",
         HERMES_AGENT_PROVIDER_ID => ".hermes",
+        DEEPSEEK_DSH_PROVIDER_ID => ".dsh",
         _ => ".claude",
     }
 }
@@ -22483,8 +22676,9 @@ mod tests {
         HERMES_CLI_UPDATE_COMMAND,
     };
     use crate::agent_runtime::{
-        CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
-        OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+        CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID,
+        GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID,
+        PI_AGENT_PROVIDER_ID,
     };
     use crate::codex_app_server::{
         CodexForkOutcome, CodexStoredItem, CodexStoredTurn, CodexUserInput,
@@ -22535,7 +22729,9 @@ mod tests {
                 resolve_opencode_command,
                 resolve_pi_command,
                 resolve_gemini_command,
+                || None,
                 agent_channels,
+                crate::dsh::DshService::new(),
                 crate::hermes::HermesService::new(app_data_dir.clone(), || None),
             ),
             workspace_write_lock: Arc::new(Mutex::new(())),
@@ -27343,7 +27539,9 @@ mod tests {
                 resolve_opencode_command,
                 resolve_pi_command,
                 resolve_gemini_command,
+                || None,
                 agent_channels,
+                crate::dsh::DshService::new(),
                 crate::hermes::HermesService::new(test_directory.0.clone(), || None),
             ),
             workspace_write_lock: Arc::new(Mutex::new(())),
@@ -27560,6 +27758,16 @@ mod tests {
             .expect("enabled Hermes provider"),
             HERMES_AGENT_PROVIDER_ID
         );
+        assert!(
+            resolve_requested_thread_provider(Some(DEEPSEEK_DSH_PROVIDER_ID), |_| false).is_err()
+        );
+        assert_eq!(
+            resolve_requested_thread_provider(Some(DEEPSEEK_DSH_PROVIDER_ID), |provider_id| {
+                provider_id == DEEPSEEK_DSH_PROVIDER_ID
+            })
+            .expect("enabled DSH provider"),
+            DEEPSEEK_DSH_PROVIDER_ID
+        );
         assert_eq!(
             resolve_thread_create_permission_mode(GROK_BUILD_PROVIDER_ID, None)
                 .expect("default Grok permission")
@@ -27596,6 +27804,12 @@ mod tests {
             .as_deref(),
             Some("bypassPermissions")
         );
+        assert_eq!(
+            resolve_thread_create_permission_mode(DEEPSEEK_DSH_PROVIDER_ID, Some("auto"))
+                .expect("DSH permission")
+                .as_deref(),
+            Some("auto")
+        );
         assert!(
             resolve_thread_create_permission_mode(PI_AGENT_PROVIDER_ID, Some("dontAsk")).is_err()
         );
@@ -27610,6 +27824,9 @@ mod tests {
             normalize_agent_runtime_settings(None),
             json!({
                 "defaultProviderId": CLAUDE_CODE_PROVIDER_ID,
+                "dshProfile": "headless",
+                "dshAgentPreset": "standard",
+                "dshToolsMode": "native",
             })
         );
         assert_eq!(
@@ -27619,6 +27836,9 @@ mod tests {
             }))),
             json!({
                 "defaultProviderId": OPENAI_CODEX_PROVIDER_ID,
+                "dshProfile": "headless",
+                "dshAgentPreset": "standard",
+                "dshToolsMode": "native",
             })
         );
         assert_eq!(
@@ -27627,6 +27847,9 @@ mod tests {
             }))),
             json!({
                 "defaultProviderId": CLAUDE_CODE_PROVIDER_ID,
+                "dshProfile": "headless",
+                "dshAgentPreset": "standard",
+                "dshToolsMode": "native",
             })
         );
     }

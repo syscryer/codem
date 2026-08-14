@@ -63,10 +63,14 @@ export function ComposerContextIndicator({
     }
   }
 
-  const ringStyle = {
-    background: `conic-gradient(${levelColors[usage.level]} ${usage.percent * 3.6}deg, #e7e9ee ${usage.percent * 3.6}deg 360deg)`,
-  } satisfies CSSProperties;
+  const visibleSweep = usage.hasUsage ? Math.max(14, usage.percent * 3.6) : 0;
+  const ringStyle: CSSProperties & Record<'--composer-context-color' | '--composer-context-fill', string> = {
+    '--composer-context-color': levelColors[usage.level],
+    '--composer-context-fill': usage.hasUsage ? `${levelColors[usage.level]}18` : 'transparent',
+    background: `conic-gradient(${levelColors[usage.level]} ${visibleSweep}deg, var(--app-border, #e7e9ee) ${visibleSweep}deg 360deg)`,
+  };
   const usageBreakdownRows = buildUsageBreakdownRows(usage);
+  const runtimeStatRows = buildRuntimeStatRows(usage);
   const nativeMetaItems = nativeSummary
     ? [
         {
@@ -157,6 +161,13 @@ export function ComposerContextIndicator({
               ))}
             </dl>
           ) : null}
+          {runtimeStatRows.length > 0 ? (
+            <dl className="composer-context-card-breakdown" aria-label="运行统计">
+              {runtimeStatRows.map((item) => (
+                <div key={item.label}><dt>{item.label}</dt><dd>{item.value}</dd></div>
+              ))}
+            </dl>
+          ) : null}
           {usage.compact.nearThreshold ? (
             <p className={`composer-context-card-status${usage.compact.reachedThreshold ? ' is-critical' : ' is-near'}`}>
               {usage.compact.reachedThreshold ? '已到自动压缩区间' : '接近自动压缩区间'}
@@ -220,37 +231,61 @@ function formatCompactDecimal(value: number) {
 }
 
 function buildUsageBreakdownRows(usage: ComposerContextUsage) {
-  const hasRuntimeUsage =
-    usage.breakdown.inputTokens > 0 ||
-    usage.breakdown.outputTokens > 0 ||
-    usage.breakdown.cacheReadInputTokens > 0 ||
-    usage.breakdown.cacheCreationInputTokens > 0;
-  if (!hasRuntimeUsage) {
-    return [];
+  const contextRows = [
+    { key: 'systemTokens', label: '系统提示词', title: '当前上下文中的系统提示词用量' },
+    { key: 'toolsTokens', label: '工具', title: '当前上下文中的工具定义用量' },
+    { key: 'messageTokens', label: '对话消息', title: '当前上下文中的对话消息用量' },
+  ] as const;
+  const availableContextRows = contextRows.filter((item) => usage.breakdown.available[item.key]);
+  if (availableContextRows.length > 0) {
+    return availableContextRows.map((item) => ({
+      label: item.label,
+      value: formatTokenDetail(usage.breakdown[item.key]),
+      title: item.title,
+    }));
   }
 
-  return [
-    {
-      label: '输入',
-      value: formatTokenDetail(usage.breakdown.inputTokens),
-      title: '本轮发送给模型的非缓存输入',
-    },
-    {
-      label: '缓存读取',
-      value: formatTokenDetail(usage.breakdown.cacheReadInputTokens),
-      title: '本轮命中的缓存输入',
-    },
-    {
-      label: '缓存写入',
-      value: formatTokenDetail(usage.breakdown.cacheCreationInputTokens),
-      title: '本轮新写入缓存的输入',
-    },
-    {
-      label: '输出',
-      value: formatTokenDetail(usage.breakdown.outputTokens),
-      title: '本轮模型输出',
-    },
-  ];
+  const tokenRows = [
+    { key: 'inputTokens', label: '输入', title: '本轮发送给模型的非缓存输入' },
+    { key: 'cacheReadInputTokens', label: '缓存读取', title: '本轮命中的缓存输入' },
+    { key: 'cacheCreationInputTokens', label: '缓存写入', title: '本轮新写入缓存的输入' },
+    { key: 'outputTokens', label: '输出', title: '本轮模型输出' },
+  ] as const;
+  return tokenRows
+    .filter((item) => usage.breakdown.available[item.key])
+    .map((item) => ({
+      label: item.label,
+      value: formatTokenDetail(usage.breakdown[item.key]),
+      title: item.title,
+    }));
+}
+
+function buildRuntimeStatRows(usage: ComposerContextUsage) {
+  const rows: Array<{ label: string; value: string }> = [];
+  if (usage.stats.available.turns) rows.push({ label: '回合', value: `${usage.stats.turns}` });
+  if (usage.stats.available.steps) rows.push({ label: '步骤', value: `${usage.stats.steps}` });
+  if (usage.stats.available.llmMs) rows.push({ label: '模型耗时', value: formatDuration(usage.stats.llmMs) });
+  if (usage.stats.available.toolMs) rows.push({ label: '工具耗时', value: formatDuration(usage.stats.toolMs) });
+  if (usage.stats.available.firstTokenMs) {
+    rows.push({
+      label: '首 token',
+      value: usage.stats.available.firstTokenSteps
+        ? formatAverageDuration(usage.stats.firstTokenMs, usage.stats.firstTokenSteps)
+        : formatDuration(usage.stats.firstTokenMs),
+    });
+  }
+  if (usage.stats.available.decodeMs && usage.stats.available.decodeTokens) {
+    rows.push({ label: '生成速度', value: formatDecodeSpeed(usage.stats.decodeTokens, usage.stats.decodeMs) });
+  }
+  return rows;
+}
+
+function formatAverageDuration(totalMs: number, count: number) {
+  return count > 0 ? formatDuration(Math.round(totalMs / count)) : '—';
+}
+
+function formatDecodeSpeed(tokens: number, durationMs: number) {
+  return tokens > 0 && durationMs > 0 ? `${Math.round(tokens / (durationMs / 1000))} tok/s` : '—';
 }
 
 function formatTokenDetail(value: number) {

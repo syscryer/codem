@@ -12,14 +12,16 @@ use crate::{
         AgentCompactCapabilityState, AgentCompactCapabilitySummary, AgentCompactionSource,
         AgentCompactionStatus, AgentControlCommand, AgentPermissionDecision, AgentRunEvent,
         AgentUsageSnapshot, AgentUserInputOption, AgentUserInputQuestion, AgentUserInputRequest,
-        GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID,
-        OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+        DEEPSEEK_DSH_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
+        HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID,
+        PI_AGENT_PROVIDER_ID,
     },
     codex_app_server::{
         CodexAppServerError, CodexCompactCapability, CodexCompactionEvent,
         CodexCompactionHistoryState, CodexForkCapability, CodexForkOutcome, CodexRuntimeEvent,
         CodexStdioClient, CodexUserInput,
     },
+    dsh::{DshClient, DshRuntimeEvent, DshService},
     hermes::{HermesClient, HermesRuntimeEvent, HermesService},
     pi_rpc::{PiImage, PiModel, PiPromptInput, PiRpcError, PiRuntimeEvent, PiState, PiStdioClient},
 };
@@ -42,10 +44,14 @@ use std::{
     future::Future,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
+    process::Stdio,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex, Notify};
+use tokio::{
+    io::AsyncReadExt,
+    sync::{mpsc, oneshot, watch, Mutex as AsyncMutex, Notify},
+};
 
 const RUN_RETENTION: Duration = Duration::from_secs(10 * 60);
 const CONTROL_ACK_TIMEOUT: Duration = Duration::from_secs(20);
@@ -72,6 +78,7 @@ const TOOL_DIFF_TRIM_MARKER: &str = " [Diff 已截断]\n";
 const TOOL_RESULT_TRIM_MARKER: &str = " [Diff 已截断]\n";
 const MODEL_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const AGENT_COMMAND_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const AGENT_COMMAND_NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(60);
 const AUTOMATION_EXECUTION_CONTEXT: &str = "[CodeM 自动化执行上下文]\n当前运行是 CodeM 已调度任务的一次执行。只完成本次任务，不要创建、修改、删除或查询任何定时任务、Cron、计划或唤醒任务。";
 
 type CommandResolver = fn() -> Option<String>;
@@ -83,6 +90,7 @@ struct CommandResolvers {
     opencode: CommandResolver,
     pi: CommandResolver,
     gemini: CommandResolver,
+    dsh: CommandResolver,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +99,7 @@ enum AgentDriverKind {
     CodexAppServer,
     PiRpc,
     HermesJsonRpc,
+    DshWebApi,
 }
 
 enum AgentDriverInput {
@@ -98,6 +107,7 @@ enum AgentDriverInput {
     Codex(Vec<CodexUserInput>),
     Pi(PiPromptInput),
     Hermes(String),
+    Dsh(String),
 }
 
 #[derive(Clone)]
@@ -110,6 +120,7 @@ struct AgentRunState {
     fork_capability_cache: Arc<AsyncMutex<HashMap<String, AgentForkCapabilitySummary>>>,
     command_resolvers: CommandResolvers,
     agent_channels: AgentChannelService,
+    dsh: DshService,
     hermes: HermesService,
 }
 
@@ -121,7 +132,7 @@ struct CachedAgentModelCatalog {
 
 #[derive(Clone)]
 struct CachedAgentCommand {
-    command: String,
+    command: Option<String>,
     resolved_at: Instant,
 }
 
@@ -168,9 +179,29 @@ struct CodexRunTask {
     control: mpsc::UnboundedReceiver<AgentControlCommand>,
 }
 
+struct DshRunTask {
+    state: AgentRunState,
+    run_id: String,
+    command: String,
+    working_directory: PathBuf,
+    prompt: String,
+    profile: String,
+    tools_mode: String,
+    permission_mode: &'static str,
+    model: Option<String>,
+    environment: BTreeMap<String, String>,
+    cancel: watch::Receiver<bool>,
+}
+
 #[derive(Clone)]
 pub(crate) struct AgentRunService {
     state: AgentRunState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DshRuntimeConfig {
+    agent_preset: String,
+    tools_mode: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -185,6 +216,7 @@ struct AgentRuntimeConfig {
     channel_id: Option<String>,
     channel_fingerprint: Option<String>,
     hermes_provider: Option<String>,
+    dsh: Option<DshRuntimeConfig>,
     environment: BTreeMap<String, String>,
     codex_config_args: Vec<String>,
     bridge_version: Option<String>,
@@ -469,6 +501,10 @@ enum LiveAgentRuntime {
         runtime_session_id: String,
         session_id: String,
     },
+    Dsh {
+        client: DshClient,
+        session_id: String,
+    },
 }
 
 struct RuntimeTurnOutcome {
@@ -571,6 +607,12 @@ struct StartAgentRunRequest {
     conversation_context: Option<String>,
     #[serde(default)]
     automation_execution: bool,
+    #[serde(default)]
+    dsh_profile: Option<String>,
+    #[serde(default)]
+    dsh_agent_preset: Option<String>,
+    #[serde(default)]
+    dsh_tools_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -744,11 +786,87 @@ fn hermes_model_catalog() -> AgentModelCatalog {
     }
 }
 
+fn dsh_model_catalog(value: &Value) -> AgentModelCatalog {
+    let models = value
+        .get("groups")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|group| {
+            let provider = group.get("id").and_then(Value::as_str).unwrap_or_default();
+            group
+                .get("models")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(move |model| {
+                    let model_id = model.get("id").and_then(Value::as_str)?;
+                    let reasoning = model.get("reasoning").unwrap_or(&Value::Null);
+                    Some(AgentModelSummary {
+                        id: format!("{provider}/{model_id}"),
+                        label: model
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or(model_id)
+                            .to_string(),
+                        description: model
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        context_window_tokens: model
+                            .get("contextWindow")
+                            .or_else(|| model.get("contextWindowTokens"))
+                            .and_then(Value::as_u64),
+                        is_default: false,
+                        default_reasoning_effort: reasoning
+                            .get("defaultEffort")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        supported_reasoning_efforts: reasoning
+                            .get("efforts")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|effort| {
+                                Some(AgentReasoningEffortSummary {
+                                    id: effort.get("id")?.as_str()?.to_string(),
+                                    description: effort
+                                        .get("description")
+                                        .or_else(|| effort.get("name"))
+                                        .and_then(Value::as_str)
+                                        .map(str::to_string),
+                                })
+                            })
+                            .collect(),
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    let default_model_id = models.first().map(|model| model.id.clone());
+    AgentModelCatalog {
+        provider_id: DEEPSEEK_DSH_PROVIDER_ID.to_string(),
+        default_model_id: default_model_id.clone(),
+        models: models
+            .into_iter()
+            .map(|mut model| {
+                model.is_default = default_model_id.as_deref() == Some(model.id.as_str());
+                model
+            })
+            .collect(),
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct AgentModelsQuery {
     #[serde(default)]
     refresh: bool,
     #[serde(rename = "channelId")]
+    channel_id: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DshBootstrapQuery {
     channel_id: Option<String>,
 }
 
@@ -787,7 +905,9 @@ impl AgentRunService {
         opencode_command_resolver: fn() -> Option<String>,
         pi_command_resolver: fn() -> Option<String>,
         gemini_command_resolver: fn() -> Option<String>,
+        dsh_command_resolver: fn() -> Option<String>,
         agent_channels: AgentChannelService,
+        dsh: DshService,
         hermes: HermesService,
     ) -> Self {
         Self {
@@ -804,8 +924,10 @@ impl AgentRunService {
                     opencode: opencode_command_resolver,
                     pi: pi_command_resolver,
                     gemini: gemini_command_resolver,
+                    dsh: dsh_command_resolver,
                 },
                 agent_channels,
+                dsh,
                 hermes,
             },
         }
@@ -1000,6 +1122,8 @@ pub(crate) fn router(service: AgentRunService) -> Router {
             post(reconcile_agent_compact),
         )
         .route("/api/agents/run", post(start_agent_run))
+        .route("/api/agents/dsh/bootstrap", get(dsh_bootstrap))
+        .route("/api/agents/dsh/projections", get(dsh_projections))
         .route("/api/agents/run/{run_id}/events", get(agent_run_events))
         .route(
             "/api/agents/run/{run_id}/approval-decision",
@@ -1013,6 +1137,138 @@ pub(crate) fn router(service: AgentRunService) -> Router {
         .route("/api/agents/run/{run_id}", delete(cancel_agent_run))
         .layer(DefaultBodyLimit::max(MAX_AGENT_REQUEST_BYTES))
         .with_state(state)
+}
+
+async fn dsh_bootstrap(
+    State(state): State<AgentRunState>,
+    Query(query): Query<DshBootstrapQuery>,
+) -> AgentApiResult<Json<Value>> {
+    let command = resolve_agent_command(&state, DEEPSEEK_DSH_PROVIDER_ID, false)
+        .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 DSH CLI"))?;
+    let channel_id = normalize_optional_id(query.channel_id, "channelId")?;
+    let channel_runtime = state
+        .agent_channels
+        .resolve_runtime(
+            DEEPSEEK_DSH_PROVIDER_ID,
+            channel_id.as_deref(),
+            None,
+            None,
+            None,
+        )
+        .map_err(AgentApiError::bad_request)?;
+    let environment = channel_runtime
+        .as_ref()
+        .map(|runtime| runtime.env.clone())
+        .unwrap_or_default();
+    let fingerprint = channel_runtime
+        .as_ref()
+        .map(|runtime| runtime.fingerprint.as_str());
+    let working_directory = env::current_dir()
+        .map_err(|error| AgentApiError::internal(format!("读取当前工作目录失败: {error}")))?;
+    let client = state
+        .dsh
+        .connect(
+            &command,
+            &working_directory,
+            &environment,
+            fingerprint,
+            None,
+            "native",
+            "workspace-write",
+        )
+        .await
+        .map_err(AgentApiError::internal)?;
+    let (presets, providers, models, settings) = tokio::try_join!(
+        client.call("agentPreset.list", json!({})),
+        client.call("llm.providers", json!({})),
+        client.call("llm.models", json!({})),
+        client.call("settings.describe", json!({})),
+    )
+    .map_err(AgentApiError::internal)?;
+    Ok(Json(json!({
+        "presets": presets,
+        "providers": providers,
+        "models": models,
+        "settings": settings,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DshProjectionQuery {
+    session_id: String,
+    working_directory: String,
+    channel_id: Option<String>,
+    permission_mode: Option<String>,
+    tools_mode: Option<String>,
+}
+
+async fn dsh_projections(
+    State(state): State<AgentRunState>,
+    Query(query): Query<DshProjectionQuery>,
+) -> AgentApiResult<Json<Value>> {
+    let session_id = query.session_id.trim();
+    if session_id.is_empty() {
+        return Err(AgentApiError::bad_request("DSH sessionId 不能为空"));
+    }
+    let working_directory = query.working_directory.trim();
+    if working_directory.is_empty() {
+        return Err(AgentApiError::bad_request("DSH workingDirectory 不能为空"));
+    }
+    let tools_mode = match query.tools_mode.as_deref().map(str::trim) {
+        None | Some("") | Some("native") => "native",
+        Some("code") => "code",
+        Some("both") => "both",
+        Some(_) => return Err(AgentApiError::bad_request("DSH toolsMode 无效")),
+    };
+    let permission_mode =
+        normalize_agent_permission_mode(query.permission_mode.as_deref()).unwrap_or("default");
+    let command = resolve_agent_command(&state, DEEPSEEK_DSH_PROVIDER_ID, false)
+        .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 DSH CLI"))?;
+    let channel_id = normalize_optional_id(query.channel_id, "channelId")?;
+    let channel_runtime = state
+        .agent_channels
+        .resolve_runtime(
+            DEEPSEEK_DSH_PROVIDER_ID,
+            channel_id.as_deref(),
+            None,
+            None,
+            None,
+        )
+        .map_err(AgentApiError::bad_request)?;
+    let environment = channel_runtime
+        .as_ref()
+        .map(|runtime| runtime.env.clone())
+        .unwrap_or_default();
+    let fingerprint = channel_runtime
+        .as_ref()
+        .map(|runtime| runtime.fingerprint.as_str());
+    let projections = match state.dsh.projections(session_id).await {
+        Ok(value) => value,
+        Err(_) => {
+            let client = state
+                .dsh
+                .connect(
+                    &command,
+                    Path::new(working_directory),
+                    &environment,
+                    fingerprint,
+                    None,
+                    tools_mode,
+                    dsh_permission_mode(permission_mode),
+                )
+                .await
+                .map_err(AgentApiError::internal)?;
+            client
+                .projections(session_id)
+                .await
+                .map_err(AgentApiError::internal)?
+        }
+    };
+    Ok(Json(json!({
+        "usage": dsh_projection_usage(&projections),
+        "usageSource": "context",
+    })))
 }
 
 async fn codex_compact_capability(
@@ -1226,6 +1482,43 @@ async fn agent_models(
                 .map_err(|error| AgentApiError::internal(public_pi_error(error)))
         }
         HERMES_AGENT_PROVIDER_ID => Ok(Json(hermes_model_catalog())),
+        DEEPSEEK_DSH_PROVIDER_ID => {
+            let command = resolve_agent_command(&state, provider_id, query.refresh)
+                .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 DSH CLI"))?;
+            let channel_runtime = state
+                .agent_channels
+                .resolve_runtime(provider_id, query.channel_id.as_deref(), None, None, None)
+                .map_err(AgentApiError::internal)?;
+            let environment = channel_runtime
+                .as_ref()
+                .map(|runtime| runtime.env.clone())
+                .unwrap_or_default();
+            let fingerprint = channel_runtime
+                .as_ref()
+                .map(|runtime| runtime.fingerprint.as_str());
+            let client = state
+                .dsh
+                .connect(
+                    &command,
+                    &cwd,
+                    &environment,
+                    fingerprint,
+                    None,
+                    "native",
+                    "workspace-write",
+                )
+                .await
+                .map_err(AgentApiError::internal)?;
+            let value = client
+                .call("llm.models", json!({}))
+                .await
+                .map_err(AgentApiError::internal)?;
+            let catalog = dsh_model_catalog(&value);
+            if catalog.models.is_empty() {
+                return Err(AgentApiError::bad_request("DSH 当前没有可用模型"));
+            }
+            Ok(Json(catalog))
+        }
         GEMINI_CLI_PROVIDER_ID => {
             let command = resolve_agent_command(&state, provider_id, query.refresh)
                 .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 Gemini CLI"))?;
@@ -1334,12 +1627,10 @@ fn resolve_agent_command(
         if let Ok(mut cache) = state.command_cache.lock() {
             cache.remove(provider_id);
         }
-    } else {
-        if let Some(command) =
-            read_cached_agent_command(&state.command_cache, provider_id, Instant::now())
-        {
-            return Some(command);
-        }
+    } else if let Some(command) =
+        read_cached_agent_command(&state.command_cache, provider_id, Instant::now())
+    {
+        return command;
     }
 
     let command = match provider_id {
@@ -1348,26 +1639,32 @@ fn resolve_agent_command(
         OPENCODE_PROVIDER_ID => (state.command_resolvers.opencode)(),
         PI_AGENT_PROVIDER_ID => (state.command_resolvers.pi)(),
         GEMINI_CLI_PROVIDER_ID => (state.command_resolvers.gemini)(),
+        DEEPSEEK_DSH_PROVIDER_ID => (state.command_resolvers.dsh)(),
         HERMES_AGENT_PROVIDER_ID => state.hermes.resolve_command(refresh),
         _ => None,
-    }?;
+    };
     store_cached_agent_command(
         &state.command_cache,
         provider_id,
         command.clone(),
         Instant::now(),
     );
-    Some(command)
+    command
 }
 
 fn read_cached_agent_command(
     cache: &Mutex<HashMap<String, CachedAgentCommand>>,
     provider_id: &str,
     now: Instant,
-) -> Option<String> {
+) -> Option<Option<String>> {
     let mut cache = cache.lock().ok()?;
     let entry = cache.get(provider_id)?;
-    if now.saturating_duration_since(entry.resolved_at) >= AGENT_COMMAND_CACHE_TTL {
+    let ttl = if entry.command.is_some() {
+        AGENT_COMMAND_CACHE_TTL
+    } else {
+        AGENT_COMMAND_NEGATIVE_CACHE_TTL
+    };
+    if now.saturating_duration_since(entry.resolved_at) >= ttl {
         cache.remove(provider_id);
         return None;
     }
@@ -1377,7 +1674,7 @@ fn read_cached_agent_command(
 fn store_cached_agent_command(
     cache: &Mutex<HashMap<String, CachedAgentCommand>>,
     provider_id: &str,
-    command: String,
+    command: Option<String>,
     resolved_at: Instant,
 ) {
     if let Ok(mut cache) = cache.lock() {
@@ -1564,6 +1861,12 @@ async fn start_agent_run(
                 .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 Hermes CLI"))?,
             "Hermes Agent",
         ),
+        DEEPSEEK_DSH_PROVIDER_ID => (
+            AgentDriverKind::DshWebApi,
+            resolve_agent_command(&state, provider_id, false)
+                .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 DSH CLI"))?,
+            "DeepSeek DSH",
+        ),
         _ => {
             return Err(AgentApiError::bad_request(
                 "当前 Provider 不支持通用 Agent 运行",
@@ -1590,6 +1893,12 @@ async fn start_agent_run(
             AgentDriverInput::Pi(build_pi_prompt(&input_blocks, &working_directory)?)
         }
         AgentDriverKind::HermesJsonRpc => AgentDriverInput::Hermes(build_hermes_prompt(
+            &input_blocks,
+            &working_directory,
+            payload.conversation_context.as_deref(),
+            payload.automation_execution,
+        )?),
+        AgentDriverKind::DshWebApi => AgentDriverInput::Dsh(build_hermes_prompt(
             &input_blocks,
             &working_directory,
             payload.conversation_context.as_deref(),
@@ -1660,6 +1969,41 @@ async fn start_agent_run(
         "CODEM_PERMISSION_MODE".to_string(),
         permission_mode.to_string(),
     );
+    let (dsh_profile, dsh_runtime_config) = if driver == AgentDriverKind::DshWebApi {
+        let profile = payload
+            .dsh_profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("headless")
+            .to_string();
+        let agent_preset = payload
+            .dsh_agent_preset
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("standard")
+            .to_string();
+        let tools_mode = match payload.dsh_tools_mode.as_deref().map(str::trim) {
+            None | Some("") | Some("native") => "native".to_string(),
+            Some("code") => "code".to_string(),
+            Some("both") => "both".to_string(),
+            Some(_) => {
+                return Err(AgentApiError::bad_request(
+                    "dshToolsMode 仅支持 native、code 或 both",
+                ))
+            }
+        };
+        (
+            profile,
+            Some(DshRuntimeConfig {
+                agent_preset,
+                tools_mode,
+            }),
+        )
+    } else {
+        ("headless".to_string(), None)
+    };
     if driver == AgentDriverKind::PiRpc && thread_id.is_none() {
         return Err(AgentApiError::bad_request(
             "Pi Agent 运行需要关联 CodeM threadId",
@@ -1694,7 +2038,26 @@ async fn start_agent_run(
     );
     let provider_id = provider_id.to_string();
 
-    if let Some(thread_id) = thread_id {
+    if driver == AgentDriverKind::DshWebApi && thread_id.is_none() {
+        let AgentDriverInput::Dsh(prompt) = driver_input else {
+            unreachable!("DSH driver input validated above")
+        };
+        let dsh_config =
+            dsh_runtime_config.expect("DSH requests always create a DSH runtime configuration");
+        tokio::spawn(execute_dsh_run(DshRunTask {
+            state: state.clone(),
+            run_id: run_id.clone(),
+            command,
+            working_directory,
+            prompt,
+            profile: dsh_profile,
+            tools_mode: dsh_config.tools_mode,
+            permission_mode,
+            model,
+            environment,
+            cancel: cancel_receiver,
+        }));
+    } else if let Some(thread_id) = thread_id {
         let config = AgentRuntimeConfig {
             provider_id: provider_id.clone(),
             driver,
@@ -1706,6 +2069,7 @@ async fn start_agent_run(
             channel_id,
             channel_fingerprint,
             hermes_provider,
+            dsh: dsh_runtime_config,
             environment,
             codex_config_args,
             bridge_version: (driver == AgentDriverKind::PiRpc).then(|| "1".to_string()),
@@ -1774,6 +2138,9 @@ async fn start_agent_run(
                             message: "Hermes Agent 运行需要关联 CodeM threadId".to_string(),
                         },
                     );
+                }
+                AgentDriverInput::Dsh(_) => {
+                    unreachable!("DSH Web API runs require a thread runtime")
                 }
             }
         });
@@ -1978,6 +2345,7 @@ fn resolve_compact_runtime_config(
             .as_ref()
             .map(|runtime| runtime.fingerprint.clone()),
         hermes_provider: None,
+        dsh: None,
         environment: channel_runtime
             .as_ref()
             .map(|runtime| runtime.env.clone())
@@ -2002,7 +2370,7 @@ async fn run_agent_runtime_actor(
 ) {
     let first_run_id = command_runtime_id(&first_command);
     let started = tokio::select! {
-        result = start_live_agent_runtime(&state.hermes, &config, requested_session_id.as_deref()) => Some(result),
+        result = start_live_agent_runtime(&state.dsh, &state.hermes, &config, requested_session_id.as_deref()) => Some(result),
         _ = wait_for_shutdown(&mut shutdown) => None,
     };
     let Some(started) = started else {
@@ -2257,7 +2625,8 @@ impl LiveAgentRuntime {
             Self::Acp { session_id, .. }
             | Self::Codex { session_id, .. }
             | Self::Pi { session_id, .. }
-            | Self::Hermes { session_id, .. } => session_id,
+            | Self::Hermes { session_id, .. }
+            | Self::Dsh { session_id, .. } => session_id,
         }
     }
 
@@ -2267,6 +2636,7 @@ impl LiveAgentRuntime {
             Self::Codex { client, .. } => client.is_running(),
             Self::Pi { client, .. } => client.is_running(),
             Self::Hermes { .. } => true,
+            Self::Dsh { .. } => true,
         }
     }
 
@@ -2276,6 +2646,7 @@ impl LiveAgentRuntime {
             Self::Codex { client, .. } => client.shutdown().await,
             Self::Pi { client, .. } => client.shutdown().await,
             Self::Hermes { client, .. } => client.close().await,
+            Self::Dsh { client, .. } => client.close().await,
         }
     }
 
@@ -2644,6 +3015,99 @@ impl LiveAgentRuntime {
                     }
                 }
             }
+            (Self::Dsh { client, session_id }, AgentDriverInput::Dsh(input)) => {
+                if let Err(message) = client.prompt(session_id, &input).await {
+                    return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                        message,
+                        fatal: false,
+                    }));
+                }
+                let mut text = String::new();
+                let mut latest_usage = AgentUsageSnapshot::default();
+                let mut cancel_sent = false;
+                loop {
+                    tokio::select! {
+                        event = client.next_event() => {
+                            let event = match event {
+                                Ok(event) => event,
+                                Err(message) => {
+                                    return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                        message,
+                                        fatal: true,
+                                    }));
+                                }
+                            };
+                            if event.session_id.as_deref().is_some_and(|id| id != session_id) {
+                                continue;
+                            }
+                            match map_dsh_event(&run_id, &event) {
+                                DshMappedEvent::Emit(events) => {
+                                    for event in events {
+                                        state.push_event(&run_id, event);
+                                    }
+                                }
+                                DshMappedEvent::Delta(delta, events) => {
+                                    text.push_str(&delta);
+                                    for event in events {
+                                        state.push_event(&run_id, event);
+                                    }
+                                }
+                                DshMappedEvent::Usage(usage) => {
+                                    latest_usage = usage.clone();
+                                    state.push_event(&run_id, AgentRunEvent::Usage {
+                                        run_id: run_id.clone(),
+                                        usage,
+                                        usage_source: "message",
+                                    });
+                                }
+                                DshMappedEvent::Complete(stop_reason) => {
+                                    if let Ok(projections) = client.projections(session_id).await {
+                                        let context_usage = dsh_projection_usage(&projections);
+                                        if context_usage != AgentUsageSnapshot::default() {
+                                            state.push_event(&run_id, AgentRunEvent::Usage {
+                                                run_id: run_id.clone(),
+                                                usage: context_usage,
+                                                usage_source: "context",
+                                            });
+                                        }
+                                    }
+                                    return RuntimeExecution::Completed(Ok(RuntimeTurnOutcome {
+                                        session_id: session_id.clone(),
+                                        text,
+                                        stop_reason,
+                                        usage: latest_usage,
+                                    }));
+                                }
+                                DshMappedEvent::Error(message) => {
+                                    return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                        message,
+                                        fatal: false,
+                                    }));
+                                }
+                                DshMappedEvent::Ignore => {}
+                            }
+                        }
+                        changed = cancel.changed(), if !cancel_sent => {
+                            if changed.is_ok() && *cancel.borrow() {
+                                cancel_sent = true;
+                                if let Err(message) = client.cancel(session_id).await {
+                                    return RuntimeExecution::Completed(Err(RuntimeTurnError {
+                                        message,
+                                        fatal: false,
+                                    }));
+                                }
+                            }
+                        }
+                        command = control.recv() => {
+                            let Some(command) = command else {
+                                continue;
+                            };
+                            handle_dsh_control(client, session_id, command).await;
+                        }
+                        _ = wait_for_shutdown(shutdown) => return RuntimeExecution::Closed,
+                    }
+                }
+            }
             _ => RuntimeExecution::Completed(Err(RuntimeTurnError {
                 message: "Agent runtime 与输入协议不匹配".to_string(),
                 fatal: true,
@@ -2858,6 +3322,7 @@ impl LiveAgentRuntime {
 }
 
 async fn start_live_agent_runtime(
+    dsh: &DshService,
     hermes: &HermesService,
     config: &AgentRuntimeConfig,
     requested_session_id: Option<&str>,
@@ -3005,6 +3470,50 @@ async fn start_live_agent_runtime(
                 session.resumed,
             ))
         }
+        AgentDriverKind::DshWebApi => {
+            let dsh_config = config
+                .dsh
+                .as_ref()
+                .ok_or_else(|| "DSH 热会话缺少运行配置".to_string())?;
+            let client = dsh
+                .connect(
+                    &config.command,
+                    &config.working_directory,
+                    &config.environment,
+                    config.channel_fingerprint.as_deref(),
+                    None,
+                    &dsh_config.tools_mode,
+                    dsh_permission_mode(config.permission_mode),
+                )
+                .await?;
+            let session = client
+                .create_or_resume_session(
+                    requested_session_id,
+                    &config.working_directory,
+                    &dsh_config.agent_preset,
+                )
+                .await?;
+            if let Some(model) = config
+                .model
+                .as_deref()
+                .filter(|model| *model != "__default")
+            {
+                client
+                    .select_model(
+                        &session.session_id,
+                        model,
+                        config.reasoning_effort.as_deref(),
+                    )
+                    .await?;
+            }
+            Ok((
+                LiveAgentRuntime::Dsh {
+                    client,
+                    session_id: session.session_id,
+                },
+                session.resumed,
+            ))
+        }
     }
 }
 
@@ -3056,6 +3565,7 @@ fn pi_usage_snapshot(stats: &Value) -> AgentUsageSnapshot {
         cache_read_input_tokens: tokens.get("cacheRead").and_then(Value::as_u64),
         model_context_window: stats.get("contextTokens").and_then(Value::as_u64),
         total_cost_usd: stats.get("cost").and_then(Value::as_f64),
+        ..Default::default()
     }
 }
 
@@ -3161,7 +3671,260 @@ fn runtime_status_message(
         (_, AgentDriverKind::HermesJsonRpc, true, _) => "已复用 Hermes Agent 档案会话".to_string(),
         (_, AgentDriverKind::HermesJsonRpc, false, true) => "已恢复 Hermes Agent 会话".to_string(),
         (_, AgentDriverKind::HermesJsonRpc, false, false) => "已创建 Hermes Agent 会话".to_string(),
+        (DEEPSEEK_DSH_PROVIDER_ID, AgentDriverKind::DshWebApi, true, _) => {
+            "已复用 DeepSeek DSH Web 会话".to_string()
+        }
+        (DEEPSEEK_DSH_PROVIDER_ID, AgentDriverKind::DshWebApi, false, true) => {
+            "已恢复 DeepSeek DSH Web 会话".to_string()
+        }
+        (_, AgentDriverKind::DshWebApi, false, true) => "已恢复 DeepSeek DSH Web 会话".to_string(),
+        (_, AgentDriverKind::DshWebApi, false, false) => "已创建 DeepSeek DSH Web 会话".to_string(),
+        (_, AgentDriverKind::DshWebApi, true, _) => "已复用 DeepSeek DSH Web 会话".to_string(),
     }
+}
+
+fn dsh_permission_mode(permission_mode: &str) -> &'static str {
+    match permission_mode {
+        "bypassPermissions" => "danger-full-access",
+        _ => "workspace-write",
+    }
+}
+
+fn dsh_process_command(command: &str) -> tokio::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let path = Path::new(command);
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if extension.eq_ignore_ascii_case("ps1") {
+            let mut process = background_agent_command("powershell.exe");
+            process.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+            process.arg(path);
+            return process;
+        }
+        if extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat") {
+            let powershell_script = path.with_extension("ps1");
+            if powershell_script.is_file() {
+                let mut process = background_agent_command("powershell.exe");
+                process.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+                process.arg(powershell_script);
+                return process;
+            }
+            let mut process = background_agent_command("cmd.exe");
+            process.args(["/D", "/S", "/C"]);
+            process.arg(path);
+            return process;
+        }
+    }
+    background_agent_command(command)
+}
+
+async fn execute_dsh_run(task: DshRunTask) {
+    let DshRunTask {
+        state,
+        run_id,
+        command,
+        working_directory,
+        prompt,
+        profile,
+        tools_mode,
+        permission_mode,
+        model,
+        mut environment,
+        mut cancel,
+    } = task;
+    environment.insert("DSH_TOOLS_MODE".to_string(), tools_mode);
+    environment.insert(
+        "DSH_PERMISSION_MODE".to_string(),
+        dsh_permission_mode(permission_mode).to_string(),
+    );
+    if let Some(api_key) = environment.get("CODEM_AGENT_CHANNEL_API_KEY").cloned() {
+        environment.insert("DEEPSEEK_API_KEY".to_string(), api_key);
+    }
+
+    state.push_event(
+        &run_id,
+        AgentRunEvent::Status {
+            run_id: run_id.clone(),
+            message: runtime_status_message(
+                DEEPSEEK_DSH_PROVIDER_ID,
+                AgentDriverKind::DshWebApi,
+                false,
+                false,
+            ),
+        },
+    );
+    state.push_event(&run_id, agent_phase_event(&run_id, "thinking", "执行中"));
+
+    let model_patch = match model.as_deref().filter(|model| *model != "__default") {
+        Some(model) => match write_dsh_model_patch(&run_id, model) {
+            Ok(path) => Some(path),
+            Err(error) => {
+                state.push_terminal(
+                    &run_id,
+                    AgentRunEvent::Error {
+                        run_id: run_id.clone(),
+                        message: error,
+                    },
+                );
+                return;
+            }
+        },
+        None => None,
+    };
+    let mut process = dsh_process_command(&command);
+    process
+        .current_dir(&working_directory)
+        .args(["--profile", &profile]);
+    if let Some(path) = model_patch.as_deref() {
+        process.arg("--patch").arg(path);
+    }
+    process
+        .arg(&prompt)
+        .envs(&environment)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = match process.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(path) = model_patch {
+                let _ = fs::remove_file(path);
+            }
+            state.push_terminal(
+                &run_id,
+                AgentRunEvent::Error {
+                    run_id: run_id.clone(),
+                    message: format!(
+                        "启动 DeepSeek DSH 失败：{}",
+                        sanitize_public_error_detail(&error.to_string())
+                    ),
+                },
+            );
+            return;
+        }
+    };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        if let Some(mut stdout) = stdout {
+            stdout.read_to_end(&mut bytes).await?;
+        }
+        Ok::<_, std::io::Error>(bytes)
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        if let Some(mut stderr) = stderr {
+            stderr.read_to_end(&mut bytes).await?;
+        }
+        Ok::<_, std::io::Error>(bytes)
+    });
+
+    let cancelled = tokio::select! {
+        status = child.wait() => {
+            match status {
+                Ok(status) => Some(status),
+                Err(error) => {
+                    if let Some(path) = model_patch {
+                        let _ = fs::remove_file(path);
+                    }
+                    state.push_terminal(&run_id, AgentRunEvent::Error {
+                        run_id: run_id.clone(),
+                        message: format!("等待 DeepSeek DSH 结束失败：{}", sanitize_public_error_detail(&error.to_string())),
+                    });
+                    return;
+                }
+            }
+        }
+        _ = cancel.changed() => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            None
+        }
+    };
+    let stdout = stdout_task
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    let stderr = stderr_task
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    if let Some(path) = model_patch {
+        let _ = fs::remove_file(path);
+    }
+    if cancelled.is_none() {
+        state.push_terminal(
+            &run_id,
+            AgentRunEvent::Done {
+                run_id: run_id.clone(),
+                session_id: String::new(),
+                result: String::new(),
+                stop_reason: "cancelled".to_string(),
+                usage: AgentUsageSnapshot::default(),
+                usage_source: "unavailable",
+            },
+        );
+        return;
+    }
+    let output = String::from_utf8_lossy(&stdout).trim().to_string();
+    let status = cancelled.expect("checked above");
+    if !status.success() {
+        let detail = String::from_utf8_lossy(&stderr);
+        state.push_terminal(
+            &run_id,
+            AgentRunEvent::Error {
+                run_id: run_id.clone(),
+                message: format!(
+                    "DeepSeek DSH 执行失败：{}",
+                    sanitize_public_error_detail(&detail)
+                ),
+            },
+        );
+        return;
+    }
+    if !output.is_empty() {
+        state.push_event(
+            &run_id,
+            AgentRunEvent::Delta {
+                run_id: run_id.clone(),
+                text: output.clone(),
+            },
+        );
+    }
+    state.push_terminal(
+        &run_id,
+        AgentRunEvent::Done {
+            run_id: run_id.clone(),
+            session_id: String::new(),
+            result: String::new(),
+            stop_reason: "completed".to_string(),
+            usage: AgentUsageSnapshot::default(),
+            usage_source: "unavailable",
+        },
+    );
+}
+
+fn write_dsh_model_patch(run_id: &str, model: &str) -> Result<PathBuf, String> {
+    let directory = env::temp_dir().join("codem").join("dsh-patches");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("创建 DSH 临时配置目录失败: {error}"))?;
+    let path = directory.join(format!("{run_id}.yml"));
+    let quoted_model =
+        serde_json::to_string(model).map_err(|error| format!("序列化 DSH 模型失败: {error}"))?;
+    fs::write(
+        &path,
+        format!(
+            "- id: agent-default-model\n  config:\n    provider: deepseek-official\n    model: {quoted_model}\n"
+        ),
+    )
+    .map_err(|error| format!("写入 DSH 临时模型配置失败: {error}"))?;
+    Ok(path)
 }
 
 fn acp_error_is_fatal(error: &AcpError) -> bool {
@@ -7073,6 +7836,311 @@ enum HermesMappedEvent {
     Ignore,
 }
 
+#[derive(Debug)]
+enum DshMappedEvent {
+    Emit(Vec<AgentRunEvent>),
+    Delta(String, Vec<AgentRunEvent>),
+    Usage(AgentUsageSnapshot),
+    Complete(String),
+    Error(String),
+    Ignore,
+}
+
+fn map_dsh_event(run_id: &str, event: &DshRuntimeEvent) -> DshMappedEvent {
+    match event.event_type.as_str() {
+        "session/event" => {
+            let Some(session_event) = event.payload.get("event") else {
+                return DshMappedEvent::Ignore;
+            };
+            let data = session_event.get("data").unwrap_or(&Value::Null);
+            match session_event
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+            {
+                "assistant/chunk" => {
+                    let chunk = data.get("chunk").unwrap_or(&Value::Null);
+                    let text = chunk
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    match chunk
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                    {
+                        "text-delta" if !text.is_empty() => DshMappedEvent::Delta(
+                            text.to_string(),
+                            vec![AgentRunEvent::Delta {
+                                run_id: run_id.to_string(),
+                                text: text.to_string(),
+                            }],
+                        ),
+                        "reasoning-delta" if !text.is_empty() => {
+                            DshMappedEvent::Emit(vec![AgentRunEvent::ThinkingDelta {
+                                run_id: run_id.to_string(),
+                                text: text.to_string(),
+                            }])
+                        }
+                        _ => DshMappedEvent::Ignore,
+                    }
+                }
+                "assistant/message" => DshMappedEvent::Usage(dsh_message_usage(
+                    data.get("usage").unwrap_or(&Value::Null),
+                )),
+                "tool/call" => {
+                    let tool_use_id = data
+                        .get("callId")
+                        .and_then(Value::as_str)
+                        .unwrap_or("dsh-tool")
+                        .to_string();
+                    let input = data
+                        .get("arguments")
+                        .and_then(Value::as_str)
+                        .and_then(|value| serde_json::from_str(value).ok())
+                        .or_else(|| data.get("arguments").cloned());
+                    DshMappedEvent::Emit(vec![AgentRunEvent::ToolStart {
+                        run_id: run_id.to_string(),
+                        block_index: hermes_block_index(&tool_use_id),
+                        tool_use_id,
+                        name: data
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("tool")
+                            .to_string(),
+                        input,
+                    }])
+                }
+                "tool/result" => {
+                    let message = data.get("message").unwrap_or(data);
+                    let tool_use_id = message
+                        .get("toolCallId")
+                        .or_else(|| message.get("callId"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("dsh-tool")
+                        .to_string();
+                    let content = message
+                        .get("content")
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .map(str::to_string)
+                                .unwrap_or_else(|| value.to_string())
+                        })
+                        .unwrap_or_default();
+                    DshMappedEvent::Emit(vec![
+                        AgentRunEvent::ToolResult {
+                            run_id: run_id.to_string(),
+                            tool_use_id: tool_use_id.clone(),
+                            content: sanitize_tool_text(&content),
+                            is_error: data.get("error").is_some(),
+                        },
+                        AgentRunEvent::ToolStop {
+                            run_id: run_id.to_string(),
+                            block_index: hermes_block_index(&tool_use_id),
+                            tool_use_id,
+                        },
+                    ])
+                }
+                "todo/write" => data
+                    .get("todos")
+                    .and_then(agent_plan_snapshot_from_value)
+                    .map(|plan| {
+                        DshMappedEvent::Emit(vec![AgentRunEvent::PlanUpdated {
+                            run_id: run_id.to_string(),
+                            plan,
+                        }])
+                    })
+                    .unwrap_or(DshMappedEvent::Ignore),
+                "turn/end" => {
+                    let reason = data.get("reason");
+                    let error = reason
+                        .and_then(|reason| reason.get("error"))
+                        .and_then(|error| error.get("message").or(Some(error)))
+                        .and_then(Value::as_str);
+                    if let Some(message) = error {
+                        DshMappedEvent::Error(message.to_string())
+                    } else {
+                        let stop_reason = reason
+                            .and_then(|reason| reason.get("type").or_else(|| reason.get("kind")))
+                            .and_then(Value::as_str)
+                            .unwrap_or("end_turn")
+                            .to_string();
+                        DshMappedEvent::Complete(stop_reason)
+                    }
+                }
+                _ => DshMappedEvent::Ignore,
+            }
+        }
+        "approval/requested" => DshMappedEvent::Emit(vec![AgentRunEvent::ApprovalRequest {
+            run_id: run_id.to_string(),
+            request: AgentApprovalRequest {
+                request_id: format!(
+                    "{}:{}",
+                    event.rpc_id,
+                    event
+                        .payload
+                        .get("approvalId")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                ),
+                kind: "tool".to_string(),
+                title: event
+                    .payload
+                    .get("toolName")
+                    .and_then(Value::as_str)
+                    .unwrap_or("DSH 请求执行操作")
+                    .to_string(),
+                description: event
+                    .payload
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                danger: "medium".to_string(),
+                options: vec![
+                    AgentApprovalOption {
+                        id: event
+                            .payload
+                            .get("approvalId")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        label: "允许一次".to_string(),
+                        kind: "approve".to_string(),
+                    },
+                    AgentApprovalOption {
+                        id: "reject".to_string(),
+                        label: "拒绝".to_string(),
+                        kind: "reject".to_string(),
+                    },
+                ],
+            },
+        }]),
+        "question/requested" => {
+            let questions = event
+                .payload
+                .get("questions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|question| {
+                    let id = question.get("id")?.as_str()?.to_string();
+                    let options = question
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|option| {
+                            let label = option.get("label")?.as_str()?.to_string();
+                            Some(AgentUserInputOption {
+                                value: label.clone(),
+                                label,
+                                description: option
+                                    .get("description")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    Some(AgentUserInputQuestion {
+                        id,
+                        header: question
+                            .get("header")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        question: question.get("question")?.as_str()?.to_string(),
+                        input_type: if options.is_empty() { "text" } else { "select" }.to_string(),
+                        options,
+                        multi_select: question
+                            .get("multiSelect")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        required: true,
+                        secret: false,
+                    })
+                })
+                .collect::<Vec<_>>();
+            if questions.is_empty() {
+                DshMappedEvent::Ignore
+            } else {
+                DshMappedEvent::Emit(vec![AgentRunEvent::RequestUserInput {
+                    run_id: run_id.to_string(),
+                    request: AgentUserInputRequest {
+                        request_id: event.rpc_id.clone(),
+                        title: Some("DeepSeek DSH".to_string()),
+                        description: "DSH 需要补充信息".to_string(),
+                        questions,
+                    },
+                }])
+            }
+        }
+        "stream/error" => DshMappedEvent::Error(
+            event
+                .payload
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("DSH 事件流失败")
+                .to_string(),
+        ),
+        _ => DshMappedEvent::Ignore,
+    }
+}
+
+fn dsh_message_usage(value: &Value) -> AgentUsageSnapshot {
+    AgentUsageSnapshot {
+        input_tokens: value
+            .get("inputTokens")
+            .or_else(|| value.get("input_tokens"))
+            .and_then(Value::as_u64),
+        output_tokens: value
+            .get("outputTokens")
+            .or_else(|| value.get("output_tokens"))
+            .and_then(Value::as_u64),
+        cache_creation_input_tokens: value
+            .get("cacheWriteTokens")
+            .or_else(|| value.get("cache_creation_input_tokens"))
+            .and_then(Value::as_u64),
+        cache_read_input_tokens: value
+            .get("cacheReadTokens")
+            .or_else(|| value.get("cache_read_input_tokens"))
+            .and_then(Value::as_u64),
+        ..Default::default()
+    }
+}
+
+fn dsh_projection_usage(value: &Value) -> AgentUsageSnapshot {
+    let token_usage = value.get("tokenUsage").unwrap_or(&Value::Null);
+    let pressure = value.get("contextPressure").unwrap_or(&Value::Null);
+    let breakdown = value.get("contextBreakdown").unwrap_or(&Value::Null);
+    let stats = value.get("sessionStats").unwrap_or(&Value::Null);
+    AgentUsageSnapshot {
+        input_tokens: token_usage
+            .get("uncachedInputTokens")
+            .and_then(Value::as_u64),
+        output_tokens: token_usage.get("outputTokens").and_then(Value::as_u64),
+        cache_creation_input_tokens: token_usage.get("cacheWriteTokens").and_then(Value::as_u64),
+        cache_read_input_tokens: token_usage.get("cacheReadTokens").and_then(Value::as_u64),
+        model_context_window: pressure.get("contextWindow").and_then(Value::as_u64),
+        context_used_tokens: pressure
+            .get("projectedTokens")
+            .or_else(|| pressure.get("pressureTokens"))
+            .and_then(Value::as_u64),
+        context_system_tokens: breakdown.get("systemTokens").and_then(Value::as_u64),
+        context_tools_tokens: breakdown.get("toolsTokens").and_then(Value::as_u64),
+        context_message_tokens: breakdown.get("messageTokens").and_then(Value::as_u64),
+        turn_count: stats.get("turns").and_then(Value::as_u64),
+        step_count: stats.get("steps").and_then(Value::as_u64),
+        llm_duration_ms: stats.get("llmMs").and_then(Value::as_u64),
+        tool_duration_ms: stats.get("toolMs").and_then(Value::as_u64),
+        first_token_duration_ms: stats.get("ttftMs").and_then(Value::as_u64),
+        first_token_steps: stats.get("ttftSteps").and_then(Value::as_u64),
+        decode_duration_ms: stats.get("decodeMs").and_then(Value::as_u64),
+        decode_tokens: stats.get("decodeTokens").and_then(Value::as_u64),
+        total_cost_usd: None,
+    }
+}
+
 fn map_hermes_event(run_id: &str, event: &HermesRuntimeEvent) -> HermesMappedEvent {
     let payload = &event.payload;
     match event.event_type.as_str() {
@@ -7339,6 +8407,51 @@ async fn handle_hermes_control(
     }
 }
 
+async fn handle_dsh_control(
+    client: &mut DshClient,
+    session_id: &str,
+    command: AgentControlCommand,
+) {
+    match command {
+        AgentControlCommand::Guide {
+            acknowledgement, ..
+        } => {
+            let _ = acknowledgement.send(Err("DSH 当前不支持运行中引导".to_string()));
+        }
+        AgentControlCommand::Permission {
+            request_id,
+            decision,
+            acknowledgement,
+            ..
+        } => {
+            let (rpc_id, approval_id) = request_id
+                .split_once(':')
+                .unwrap_or((request_id.as_str(), ""));
+            let _ = acknowledgement.send(
+                client
+                    .respond_approval(
+                        rpc_id,
+                        session_id,
+                        approval_id,
+                        decision == AgentPermissionDecision::Approve,
+                    )
+                    .await,
+            );
+        }
+        AgentControlCommand::UserInput {
+            request_id,
+            answers,
+            acknowledgement,
+        } => {
+            let _ = acknowledgement.send(
+                client
+                    .respond_questions(&request_id, session_id, &answers)
+                    .await,
+            );
+        }
+    }
+}
+
 fn hermes_usage_snapshot(value: Option<&Value>) -> AgentUsageSnapshot {
     let value = value.unwrap_or(&Value::Null);
     AgentUsageSnapshot {
@@ -7359,6 +8472,7 @@ fn hermes_usage_snapshot(value: Option<&Value>) -> AgentUsageSnapshot {
             .get("total_cost_usd")
             .or_else(|| value.get("cost_usd"))
             .and_then(Value::as_f64),
+        ..Default::default()
     }
 }
 
@@ -7572,17 +8686,18 @@ mod tests {
     use super::{
         acp_arguments, acp_permission_policy, await_guide_ack, build_acp_prompt, build_codex_input,
         build_pi_prompt, cancelled_before_prompt_outcome, classify_codex_fork_error,
-        compact_capability_cache_key, complete_fork_command, ensure_compact_reconcile_runtime_idle,
+        compact_capability_cache_key, complete_fork_command, dsh_model_catalog,
+        dsh_permission_mode, dsh_projection_usage, ensure_compact_reconcile_runtime_idle,
         fail_fork_command, find_grok_runtime_error_detail, fork_capability_cache_key,
         gemini_mode_id, gemini_removed_environment, grok_acp_arguments,
         grok_acp_error_with_runtime_detail, grok_uses_channel_credentials, guide_ack_response,
-        hermes_model_catalog, map_hermes_event, normalize_agent_input, normalize_guide_prompt,
-        parse_opencode_models, pi_model_catalog, pi_model_parts, pi_rpc_arguments,
-        pi_usage_snapshot, probe_compact_capability_cached, probe_fork_capability_cached,
-        public_acp_error, public_codex_error, push_compact_failure_event,
-        read_cached_agent_command, read_cached_agent_model_catalog, runtime_can_reuse,
-        sanitize_grok_runtime_error_detail, should_retry_grok_channel_prompt, should_set_acp_model,
-        store_cached_agent_command, store_cached_agent_model_catalog,
+        hermes_model_catalog, map_dsh_event, map_hermes_event, normalize_agent_input,
+        normalize_guide_prompt, parse_opencode_models, pi_model_catalog, pi_model_parts,
+        pi_rpc_arguments, pi_usage_snapshot, probe_compact_capability_cached,
+        probe_fork_capability_cached, public_acp_error, public_codex_error,
+        push_compact_failure_event, read_cached_agent_command, read_cached_agent_model_catalog,
+        runtime_can_reuse, sanitize_grok_runtime_error_detail, should_retry_grok_channel_prompt,
+        should_set_acp_model, store_cached_agent_command, store_cached_agent_model_catalog,
         summarize_codex_compact_capability, validate_compact_runtime_session, AcpEventMapper,
         AgentCompactReconcileResponse, AgentCompactReconcileState, AgentDriverInput,
         AgentDriverKind, AgentForkCapabilityState, AgentForkCapabilitySummary,
@@ -7591,10 +8706,10 @@ mod tests {
         AgentRuntimeConfig, AgentRuntimeFork, AgentRuntimeForkMode, AgentRuntimePhase,
         AgentRuntimeRecord, AgentRuntimeRun, AgentThreadControlConfig, AgentThreadForkError,
         CodexCompactCapabilityRequest, CodexEventMapper, CodexForkOutcome, CommandResolvers,
-        GuideAckOutcome, GuideAgentRunRequest, HermesMappedEvent, LiveAgentRuntime, PiEventMapper,
-        ReconcileAgentCompactRequest, RuntimeExecution, StartAgentCompactRequest,
-        StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL, AUTOMATION_EXECUTION_CONTEXT,
-        MODEL_CATALOG_CACHE_TTL,
+        DshMappedEvent, DshRuntimeConfig, GuideAckOutcome, GuideAgentRunRequest, HermesMappedEvent,
+        LiveAgentRuntime, PiEventMapper, ReconcileAgentCompactRequest, RuntimeExecution,
+        StartAgentCompactRequest, StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL,
+        AGENT_COMMAND_NEGATIVE_CACHE_TTL, AUTOMATION_EXECUTION_CONTEXT, MODEL_CATALOG_CACHE_TTL,
     };
     use crate::{
         acp::{
@@ -7604,10 +8719,12 @@ mod tests {
         agent_channels::AgentChannelService,
         agent_runtime::{
             AgentCompactCapabilityState, AgentCompactCapabilitySummary, AgentCompactionStatus,
-            AgentControlCommand, AgentPermissionDecision, AgentRunEvent, GEMINI_CLI_PROVIDER_ID,
-            HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+            AgentControlCommand, AgentPermissionDecision, AgentRunEvent, DEEPSEEK_DSH_PROVIDER_ID,
+            GEMINI_CLI_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+            PI_AGENT_PROVIDER_ID,
         },
         codex_app_server::{CodexAppServerError, CodexRuntimeEvent, CodexUserInput},
+        dsh::{DshRuntimeEvent, DshService},
         hermes::{HermesRuntimeEvent, HermesService},
         pi_rpc::{PiModel, PiPromptInput, PiRuntimeEvent, PiState, PiStdioClient},
     };
@@ -7626,6 +8743,62 @@ mod tests {
 
     static COMMAND_RESOLVER_CALLS: AtomicUsize = AtomicUsize::new(0);
     static COMMAND_RESOLVER_AVAILABLE: AtomicBool = AtomicBool::new(true);
+
+    #[test]
+    fn dsh_permission_modes_follow_codem_access_levels() {
+        assert_eq!(dsh_permission_mode("default"), "workspace-write");
+        assert_eq!(dsh_permission_mode("acceptEdits"), "workspace-write");
+        assert_eq!(
+            dsh_permission_mode("bypassPermissions"),
+            "danger-full-access"
+        );
+    }
+
+    #[test]
+    fn dsh_model_patch_uses_official_provider_and_escaped_model() {
+        let path = super::write_dsh_model_patch("test-model-patch", "deepseek-v4-\"flash\"")
+            .expect("write DSH model patch");
+        let content = fs::read_to_string(&path).expect("read DSH model patch");
+        let _ = fs::remove_file(path);
+
+        assert!(content.contains("provider: deepseek-official"));
+        assert!(content.contains("model: \"deepseek-v4-\\\"flash\\\"\""));
+    }
+
+    #[test]
+    fn dsh_text_delta_maps_to_shared_delta_event() {
+        let mapped = map_dsh_event(
+            "run-dsh",
+            &DshRuntimeEvent {
+                rpc_id: "rpc-1".to_string(),
+                event_type: "session/event".to_string(),
+                session_id: Some("session-dsh".to_string()),
+                payload: json!({
+                    "type": "session/event",
+                    "sessionId": "session-dsh",
+                    "event": {
+                        "type": "assistant/chunk",
+                        "seq": 1,
+                        "time": 1,
+                        "data": {
+                            "turn": 1,
+                            "step": 1,
+                            "chunk": { "type": "text-delta", "index": 0, "text": "hello" }
+                        }
+                    }
+                }),
+            },
+        );
+        match mapped {
+            DshMappedEvent::Delta(text, events) => {
+                assert_eq!(text, "hello");
+                assert!(
+                    matches!(events.as_slice(), [AgentRunEvent::Delta { run_id, text }] if run_id == "run-dsh" && text == "hello")
+                );
+            }
+            other => panic!("unexpected DSH mapping: {other:?}"),
+        }
+    }
 
     #[test]
     fn hermes_message_delta_maps_to_shared_delta_event() {
@@ -7912,6 +9085,7 @@ mod tests {
             channel_id: None,
             channel_fingerprint: None,
             hermes_provider: None,
+            dsh: None,
             environment: BTreeMap::new(),
             codex_config_args: Vec::new(),
             bridge_version: None,
@@ -7972,8 +9146,10 @@ mod tests {
                 opencode: || None,
                 pi: || None,
                 gemini: || None,
+                dsh: || None,
             },
             agent_channels: test_agent_channel_service(),
+            dsh: DshService::new(),
             hermes: HermesService::new(std::env::temp_dir(), || None),
         }
     }
@@ -8185,25 +9361,127 @@ mod tests {
     }
 
     #[test]
+    fn dsh_model_catalog_uses_provider_qualified_ids_and_reasoning_efforts() {
+        let catalog = dsh_model_catalog(&json!({
+            "groups": [{
+                "id": "deepseek-official",
+                "models": [{
+                    "id": "deepseek-v4-flash",
+                    "name": "DeepSeek-V4-Flash",
+                    "reasoning": {
+                        "efforts": [
+                            { "id": "off", "name": "Off" },
+                            { "id": "high", "name": "High" },
+                            { "id": "max", "name": "Max" }
+                        ],
+                        "defaultEffort": "high"
+                    }
+                }]
+            }]
+        }));
+
+        assert_eq!(
+            catalog.default_model_id.as_deref(),
+            Some("deepseek-official/deepseek-v4-flash")
+        );
+        assert_eq!(catalog.models[0].id, "deepseek-official/deepseek-v4-flash");
+        assert!(catalog.models[0].is_default);
+        assert_eq!(
+            catalog.models[0].default_reasoning_effort.as_deref(),
+            Some("high")
+        );
+        assert_eq!(catalog.models[0].supported_reasoning_efforts.len(), 3);
+    }
+
+    #[test]
+    fn dsh_projection_usage_maps_context_breakdown_and_runtime_stats() {
+        let usage = dsh_projection_usage(&json!({
+            "sessionStats": {
+                "turns": 1,
+                "steps": 2,
+                "llmMs": 199284,
+                "toolMs": 18,
+                "ttftMs": 2041,
+                "ttftSteps": 2,
+                "decodeMs": 197243,
+                "decodeTokens": 25121
+            },
+            "tokenUsage": {
+                "uncachedInputTokens": 8206,
+                "outputTokens": 25121,
+                "cacheReadTokens": 29824,
+                "cacheWriteTokens": 0
+            },
+            "contextPressure": {
+                "pressureTokens": 29990,
+                "projectedTokens": 31876,
+                "contextWindow": 1000000
+            },
+            "contextBreakdown": {
+                "systemTokens": 1554,
+                "toolsTokens": 6670,
+                "messageTokens": 17766
+            }
+        }));
+
+        assert_eq!(usage.context_used_tokens, Some(31876));
+        assert_eq!(usage.model_context_window, Some(1000000));
+        assert_eq!(usage.context_system_tokens, Some(1554));
+        assert_eq!(usage.context_tools_tokens, Some(6670));
+        assert_eq!(usage.context_message_tokens, Some(17766));
+        assert_eq!(usage.turn_count, Some(1));
+        assert_eq!(usage.step_count, Some(2));
+        assert_eq!(usage.decode_tokens, Some(25121));
+    }
+
+    #[test]
     fn agent_command_cache_reuses_fresh_entries_and_expires_old_ones() {
         let cache = Mutex::new(HashMap::new());
         let resolved_at = Instant::now();
         store_cached_agent_command(
             &cache,
             "openai-codex",
-            "C:/tools/codex.exe".to_string(),
+            Some("C:/tools/codex.exe".to_string()),
             resolved_at,
         );
 
         assert_eq!(
             read_cached_agent_command(&cache, "openai-codex", resolved_at),
-            Some("C:/tools/codex.exe".to_string())
+            Some(Some("C:/tools/codex.exe".to_string()))
+        );
+        assert_eq!(
+            read_cached_agent_command(
+                &cache,
+                "openai-codex",
+                resolved_at + AGENT_COMMAND_NEGATIVE_CACHE_TTL,
+            ),
+            Some(Some("C:/tools/codex.exe".to_string()))
         );
         assert_eq!(
             read_cached_agent_command(
                 &cache,
                 "openai-codex",
                 resolved_at + AGENT_COMMAND_CACHE_TTL,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn agent_command_negative_cache_expires_quickly() {
+        let cache = Mutex::new(HashMap::new());
+        let resolved_at = Instant::now();
+        store_cached_agent_command(&cache, "deepseek-dsh", None, resolved_at);
+
+        assert_eq!(
+            read_cached_agent_command(&cache, "deepseek-dsh", resolved_at),
+            Some(None)
+        );
+        assert_eq!(
+            read_cached_agent_command(
+                &cache,
+                "deepseek-dsh",
+                resolved_at + AGENT_COMMAND_NEGATIVE_CACHE_TTL,
             ),
             None
         );
@@ -8219,7 +9497,9 @@ mod tests {
             || None,
             || None,
             || None,
+            || None,
             test_agent_channel_service(),
+            DshService::new(),
             HermesService::new(std::env::temp_dir(), || None),
         );
 
@@ -8243,7 +9523,17 @@ mod tests {
         assert_eq!(service.resolve_command("openai-codex", true), None);
         assert_eq!(COMMAND_RESOLVER_CALLS.load(Ordering::SeqCst), 2);
 
+        // 负缓存生效：未过 TTL 前不再重复探测未安装的命令
+        assert_eq!(service.resolve_command("openai-codex", false), None);
+        assert_eq!(COMMAND_RESOLVER_CALLS.load(Ordering::SeqCst), 2);
+
         COMMAND_RESOLVER_AVAILABLE.store(true, Ordering::SeqCst);
+        // 强制刷新绕过负缓存重新探测，安装/诊断流程依赖该路径
+        assert_eq!(
+            service.resolve_command("openai-codex", true).as_deref(),
+            Some("C:/tools/codex.exe")
+        );
+        assert_eq!(COMMAND_RESOLVER_CALLS.load(Ordering::SeqCst), 3);
         assert_eq!(
             service.resolve_command("openai-codex", false).as_deref(),
             Some("C:/tools/codex.exe")
@@ -8682,6 +9972,7 @@ mod tests {
     #[test]
     fn hot_runtime_reuse_requires_matching_config_and_session() {
         let config = test_runtime_config();
+        assert_eq!(config.dsh, None);
         let (command, _commands) = mpsc::unbounded_channel();
         let (shutdown, _shutdown) = watch::channel(false);
         let runtime = AgentRuntimeRecord {
@@ -8702,6 +9993,39 @@ mod tests {
         let mut changed = config.clone();
         changed.permission_mode = "auto";
         assert!(!runtime_can_reuse(&runtime, &changed, Some("session-1")));
+    }
+
+    #[test]
+    fn dsh_hot_runtime_reuse_requires_matching_dsh_config() {
+        let mut config = test_runtime_config();
+        config.provider_id = DEEPSEEK_DSH_PROVIDER_ID.to_string();
+        config.driver = AgentDriverKind::DshWebApi;
+        config.dsh = Some(DshRuntimeConfig {
+            agent_preset: "standard".to_string(),
+            tools_mode: "native".to_string(),
+        });
+        let (command, _commands) = mpsc::unbounded_channel();
+        let (shutdown, _shutdown) = watch::channel(false);
+        let runtime = AgentRuntimeRecord {
+            runtime_id: "runtime-dsh-1".to_string(),
+            config: config.clone(),
+            session_id: Some("session-dsh-1".to_string()),
+            phase: AgentRuntimePhase::Ready,
+            current_run_id: None,
+            command: Some(command),
+            shutdown,
+            last_error: None,
+        };
+
+        assert!(runtime_can_reuse(&runtime, &config, Some("session-dsh-1")));
+
+        let mut changed = config;
+        changed.dsh.as_mut().unwrap().tools_mode = "both".to_string();
+        assert!(!runtime_can_reuse(
+            &runtime,
+            &changed,
+            Some("session-dsh-1")
+        ));
     }
 
     #[test]

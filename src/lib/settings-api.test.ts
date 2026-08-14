@@ -6,10 +6,48 @@ import {
   defaultAgentRuntimeSettings,
   defaultGeneralSettings,
   defaultOpenWithSettings,
+  fetchDshSessionUsage,
   normalizeAgentRuntimeSettings,
   normalizeGeneralSettings,
   normalizeOpenWithSettings,
 } from './settings-api.js';
+
+test('fetchDshSessionUsage reads native DSH projection data for an existing session', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  globalThis.fetch = async (input) => {
+    requestedUrl = String(input);
+    return new Response(JSON.stringify({
+      usage: {
+        contextUsedTokens: 31_876,
+        modelContextWindow: 1_000_000,
+        contextSystemTokens: 1_554,
+        contextToolsTokens: 6_670,
+        contextMessageTokens: 17_766,
+      },
+      usageSource: 'context',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    const usage = await fetchDshSessionUsage({
+      sessionId: 'session-dsh',
+      workingDirectory: 'D:\\Projects\\demo',
+      channelId: 'system',
+      permissionMode: 'bypassPermissions',
+      toolsMode: 'native',
+    });
+    assert.match(requestedUrl, /^\/api\/agents\/dsh\/projections\?/);
+    assert.match(requestedUrl, /sessionId=session-dsh/);
+    assert.match(requestedUrl, /toolsMode=native/);
+    assert.equal(usage.contextUsedTokens, 31_876);
+    assert.equal(usage.modelContextWindow, 1_000_000);
+    assert.equal(usage.contextToolsTokens, 6_670);
+    assert.equal(usage.usageSource, 'context');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test('网页链接默认使用外部浏览器并只保留受支持的设置值', () => {
   assert.equal(defaultOpenWithSettings.webLinkOpenTarget, 'external');
@@ -43,7 +81,12 @@ test('normalizeAgentRuntimeSettings defaults to Claude Code and preserves suppor
   assert.equal(normalizeAgentRuntimeSettings({ defaultProviderId: 'unknown-provider' }).defaultProviderId, 'claude-code');
   assert.deepEqual(
     normalizeAgentRuntimeSettings({ experimentalAgentRunEnabled: false, defaultProviderId: 'opencode' }),
-    { defaultProviderId: 'opencode' },
+    {
+      defaultProviderId: 'opencode',
+      dshProfile: 'headless',
+      dshAgentPreset: 'standard',
+      dshToolsMode: 'native',
+    },
   );
 });
 

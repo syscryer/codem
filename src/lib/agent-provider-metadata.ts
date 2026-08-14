@@ -1,5 +1,6 @@
 import {
   CLAUDE_CODE_PROVIDER_ID,
+  DEEPSEEK_DSH_PROVIDER_ID,
   GROK_BUILD_PROVIDER_ID,
   GEMINI_CLI_PROVIDER_ID,
   HERMES_AGENT_PROVIDER_ID,
@@ -68,6 +69,13 @@ export const AGENT_PROVIDER_METADATA_BY_ID = {
     driverId: 'hermes-json-rpc',
     runtimeKind: 'generic',
     protocolLabel: 'Hermes JSON-RPC',
+  },
+  [DEEPSEEK_DSH_PROVIDER_ID]: {
+    id: DEEPSEEK_DSH_PROVIDER_ID,
+    displayName: 'DeepSeek DSH',
+    driverId: 'dsh-web-api',
+    runtimeKind: 'generic',
+    protocolLabel: 'DSH Web API',
   },
 } satisfies Record<AgentProviderId, AgentProviderMetadata>;
 

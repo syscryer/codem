@@ -2,7 +2,7 @@
 
 CodeM 是一个面向本地编码 Agent 的桌面工作台。
 
-它把本机 Claude Code、OpenAI Codex、Grok Build、OpenCode、Pi Agent 与 Gemini CLI 接入统一图形界面，让你可以管理项目、继续热会话、查看运行过程、处理权限确认，并把聊天记录和项目状态保存在本机。
+它把本机 Claude Code、OpenAI Codex、Grok Build、OpenCode、Pi Agent、Gemini CLI 与 DeepSeek DSH 接入统一图形界面，让你可以管理项目、继续热会话、查看运行过程、处理权限确认，并把聊天记录和项目状态保存在本机。
 
 > CodeM 直接使用各 Agent 的原生 CLI、会话和配置目录，不接管账号凭据，也不会自动同步不同 Agent 的配置。
 
@@ -34,7 +34,7 @@ CodeM 是一个面向本地编码 Agent 的桌面工作台。
 
 ## 当前能做什么
 
-- 调用本机 `claude`、`codex`、`grok`、`opencode`、`pi` 与 `gemini` CLI，并实时展示 Agent 输出
+- 调用本机 `claude`、`codex`、`grok`、`opencode`、`pi`、`gemini` 与 `dsh` CLI，并展示 Agent 输出
 - 统一 Agent Provider 的检测、配置、模型目录与渠道选择；切换默认渠道不会覆盖手动选择的模型
 - 支持 Pi Agent 原生 RPC 热会话、动态模型、思考级别、渠道、权限确认和用户提问
 - 支持 Agent Mux 统一配置与调用本机 Agent，可通过独立 Runtime、CLI 和 Skill 在 CodeM 关闭后继续运行、监控和取消任务
@@ -63,7 +63,7 @@ CodeM 是一个面向本地编码 Agent 的桌面工作台。
 
 ## 快速开始
 
-先确认本机至少安装了一个受支持的 Agent CLI。Claude Code、Codex、Grok Build、OpenCode、Pi Agent 与 Gemini CLI 都可以在“Agent 设置”中检测、安装或更新：
+先确认本机至少安装了一个受支持的 Agent CLI。Claude Code、Codex、Grok Build、OpenCode、Pi Agent、Gemini CLI 与 DeepSeek DSH 都可以在“Agent 设置”中检测、安装或更新：
 
 ```bash
 claude --help
@@ -72,6 +72,7 @@ grok --version
 opencode --version
 pi --version
 gemini --version
+dsh --version
 ```
 
 CodeM 不保存这些 CLI 的系统登录凭据。OpenCode 可通过 `OPENCODE_CLI_PATH` 指定可执行文件，Windows 会自动避开不能直接启动的 npm `.cmd` / `.ps1` 包装脚本。Pi Agent 的安装和更新需要 Node.js `22.19.0` 或更高版本与 npm；Gemini CLI 的系统渠道沿用其本机登录与配置，CodeM 自定义渠道则通过现有渠道密钥存储注入 Gemini API Key，并使用独立运行目录。未使用这些 Agent 时，CodeM 安装包本身仍不依赖系统 Node.js。
@@ -121,7 +122,7 @@ npm run desktop:dev
 - 前端：React + Vite
 - 桌面壳：Tauri
 - 后端：Rust + Axum
-- Agent 调用：本机 `claude`、`codex`、`grok`、`opencode`、`pi`、`gemini` CLI
+- Agent 调用：本机 `claude`、`codex`、`grok`、`opencode`、`pi`、`gemini`、`dsh` CLI
 - 本地持久化：SQLite（Rust rusqlite）
 
 ## 打包

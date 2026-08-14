@@ -368,13 +368,14 @@ export function Composer({
   const contextUsage = useMemo(
     () => buildComposerContextUsage({
       agent,
+      providerId,
       model,
       turns,
       nativeContextSummary,
       nativeContextRequestedAtMs: nativeContext?.requestedAtMs,
       nativeContextWindowTokens: selectedModelOption?.contextWindowTokens,
     }),
-    [agent, model, nativeContext?.requestedAtMs, nativeContextSummary, selectedModelOption?.contextWindowTokens, turns],
+    [agent, model, nativeContext?.requestedAtMs, nativeContextSummary, providerId, selectedModelOption?.contextWindowTokens, turns],
   );
   const shouldRefreshClaudeContextOnOpen = useMemo(
     () => agent === 'claude' && shouldRefreshNativeContextOnOpen({
@@ -2010,7 +2011,7 @@ export function Composer({
                     <span className="model-trigger-chevron" aria-hidden="true" />
                   </button>
                 </div>}
-                {(agent === 'codex' || agent === 'opencode' || providerId === 'hermes-agent') && agentReasoningEffortOptions.length > 0 ? (
+                {(agent === 'codex' || agent === 'opencode' || providerId === 'hermes-agent' || providerId === 'deepseek-dsh') && agentReasoningEffortOptions.length > 0 ? (
                   <div className="effort-picker" ref={effortMenuRef}>
                     <PopoverPortal open={effortMenuOpen} anchorRef={effortMenuRef} placement="top-end">
                       <div className="effort-menu" role="menu" aria-label={`${providerName} 思考级别`}>
@@ -2053,11 +2054,11 @@ export function Composer({
                     </button>
                   </div>
                 ) : null}
-                {agent === 'codex' && compactAvailability ? (
+                {(agent === 'codex' || providerId === 'deepseek-dsh') && (compactAvailability || providerId === 'deepseek-dsh') ? (
                   <ComposerContextIndicator
                     usage={contextUsage}
-                    compactAvailability={compactAvailability}
-                    onCompactContext={onCompactContext}
+                    compactAvailability={providerId === 'deepseek-dsh' ? undefined : compactAvailability}
+                    onCompactContext={providerId === 'deepseek-dsh' ? undefined : onCompactContext}
                   />
                 ) : null}
               </>

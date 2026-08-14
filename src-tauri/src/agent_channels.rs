@@ -1,8 +1,8 @@
 use crate::{
     agent_runtime::{
-        CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
-        HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID,
-        PI_AGENT_PROVIDER_ID,
+        CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID,
+        GROK_BUILD_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     },
     ordinary_chat::{
         provider::{discover_models, test_provider, validate_protocol_model, PROVIDER_TEMPLATES},
@@ -482,7 +482,8 @@ fn validate_provider_id(value: &str) -> AgentChannelApiResult<&str> {
         | OPENCODE_PROVIDER_ID
         | PI_AGENT_PROVIDER_ID
         | GEMINI_CLI_PROVIDER_ID
-        | HERMES_AGENT_PROVIDER_ID => Ok(value),
+        | HERMES_AGENT_PROVIDER_ID
+        | DEEPSEEK_DSH_PROVIDER_ID => Ok(value),
         _ => Err(AgentChannelApiError::bad_request("不支持的 Agent")),
     }
 }
@@ -508,6 +509,7 @@ fn validate_protocol(provider_id: &str, protocol: AiProtocol) -> AgentChannelApi
             protocol,
             AiProtocol::AnthropicMessages | AiProtocol::OpenaiChat | AiProtocol::OpenaiResponses
         ),
+        DEEPSEEK_DSH_PROVIDER_ID => protocol == AiProtocol::OpenaiChat,
         _ => false,
     };
     if supported {
@@ -989,6 +991,7 @@ async fn channels_bootstrap(
         PI_AGENT_PROVIDER_ID,
         GEMINI_CLI_PROVIDER_ID,
         HERMES_AGENT_PROVIDER_ID,
+        DEEPSEEK_DSH_PROVIDER_ID,
     ] {
         repair_default_channel(&connection, provider_id).map_err(AgentChannelApiError::internal)?;
     }
@@ -2290,6 +2293,13 @@ fn build_runtime(
                 );
             }
         }
+        DEEPSEEK_DSH_PROVIDER_ID => {
+            if channel.protocol != AiProtocol::OpenaiChat {
+                return Err("DeepSeek DSH 渠道仅支持 OpenAI Chat 接口".to_string());
+            }
+            env.insert("DEEPSEEK_API_KEY".to_string(), api_key.to_string());
+            env.insert("DEEPSEEK_BASE_URL".to_string(), channel.base_url.clone());
+        }
         _ => return Err("不支持的 Agent 渠道".to_string()),
     }
     if channel.provider_id == HERMES_AGENT_PROVIDER_ID {
@@ -2869,6 +2879,8 @@ mod tests {
             validate_protocol(GEMINI_CLI_PROVIDER_ID, AiProtocol::GeminiGenerateContent).is_ok()
         );
         assert!(validate_protocol(GEMINI_CLI_PROVIDER_ID, AiProtocol::OpenaiChat).is_err());
+        assert!(validate_protocol(DEEPSEEK_DSH_PROVIDER_ID, AiProtocol::OpenaiChat).is_ok());
+        assert!(validate_protocol(DEEPSEEK_DSH_PROVIDER_ID, AiProtocol::OpenaiResponses).is_err());
 
         assert!(validate_protocol(CLAUDE_CODE_PROVIDER_ID, AiProtocol::OpenaiChat).is_err());
     }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CLAUDE_CODE_PROVIDER_ID,
+  DEEPSEEK_DSH_PROVIDER_ID,
   DEFAULT_MODEL_VALUE,
   GEMINI_CLI_PROVIDER_ID,
   GROK_BUILD_PROVIDER_ID,
@@ -169,6 +170,9 @@ type CompactCapabilityEntry = CodexCompactCapability & {
 type UseAgentRunArgs = {
   defaultProviderId: AgentProviderId;
   defaultPermissionMode: PermissionMode;
+  dshProfile: string;
+  dshAgentPreset: string;
+  dshToolsMode: 'native' | 'code' | 'both';
   agentChannels: AgentChannel[];
   defaultAgentChannelIds: Record<AgentProviderId, string>;
   agentChannelsLoading: boolean;
@@ -235,6 +239,9 @@ const AGENT_CANCEL_FALLBACK_MS = 6000;
 export function useAgentRun({
   defaultProviderId,
   defaultPermissionMode,
+  dshProfile,
+  dshAgentPreset,
+  dshToolsMode,
   agentChannels,
   defaultAgentChannelIds,
   agentChannelsLoading,
@@ -2137,6 +2144,9 @@ export function useAgentRun({
             model: context.model,
             reasoningEffort: context.reasoningEffort,
             channelId: context.channelId,
+            ...(context.providerId === DEEPSEEK_DSH_PROVIDER_ID
+              ? { dshProfile, dshAgentPreset, dshToolsMode }
+              : {}),
             automationExecution: submission.automationExecution === true,
           }),
           signal: controller.signal,

@@ -139,6 +139,90 @@ test('buildComposerContextUsage lets the native Codex window override the curren
   assert.equal(usage.compact.nearThreshold, false);
 });
 
+test('buildComposerContextUsage uses DSH projections for context and runtime stats', () => {
+  const usage = buildComposerContextUsage({
+    agent: 'generic',
+    providerId: 'deepseek-dsh',
+    model: 'deepseek-official/deepseek-v4-flash',
+    turns: [
+      turn({
+        providerId: 'deepseek-dsh',
+        contextUsage: {
+          inputTokens: 8_206,
+          outputTokens: 25_121,
+          cacheReadInputTokens: 29_824,
+          cacheCreationInputTokens: 0,
+          modelContextWindow: 1_000_000,
+          contextUsedTokens: 31_876,
+          contextSystemTokens: 1_554,
+          contextToolsTokens: 6_670,
+          contextMessageTokens: 17_766,
+          turnCount: 1,
+          stepCount: 2,
+          llmDurationMs: 199_284,
+          toolDurationMs: 18,
+          firstTokenDurationMs: 2_041,
+          firstTokenSteps: 2,
+          decodeDurationMs: 197_243,
+          decodeTokens: 25_121,
+          usageSource: 'context',
+        },
+      }),
+    ],
+  });
+
+  assert.equal(usage.visible, true);
+  assert.equal(usage.usedTokens, 31_876);
+  assert.equal(usage.totalTokens, 1_000_000);
+  assert.equal(usage.breakdown.systemTokens, 1_554);
+  assert.equal(usage.breakdown.toolsTokens, 6_670);
+  assert.equal(usage.breakdown.messageTokens, 17_766);
+  assert.deepEqual(usage.breakdown.available, {
+    inputTokens: true,
+    cacheCreationInputTokens: true,
+    cacheReadInputTokens: true,
+    outputTokens: true,
+    systemTokens: true,
+    toolsTokens: true,
+    messageTokens: true,
+  });
+  assert.equal(usage.stats.turns, 1);
+  assert.equal(usage.stats.steps, 2);
+  assert.equal(usage.stats.decodeTokens, 25_121);
+  assert.equal(usage.stats.available.toolMs, true);
+});
+
+test('buildComposerContextUsage exposes only usage fields provided by the agent', () => {
+  const usage = buildComposerContextUsage({
+    agent: 'generic',
+    providerId: 'grok-build',
+    model: 'grok-default',
+    turns: [
+      turn({
+        contextUsage: {
+          outputTokens: 0,
+          modelContextWindow: 128_000,
+          contextUsedTokens: 4_000,
+          contextToolsTokens: 0,
+          toolDurationMs: 18,
+          usageSource: 'context',
+        },
+      }),
+    ],
+  });
+
+  assert.equal(usage.visible, true);
+  assert.equal(usage.usedTokens, 4_000);
+  assert.equal(usage.totalTokens, 128_000);
+  assert.equal(usage.breakdown.available.outputTokens, true);
+  assert.equal(usage.breakdown.available.toolsTokens, true);
+  assert.equal(usage.breakdown.available.inputTokens, false);
+  assert.equal(usage.breakdown.available.systemTokens, false);
+  assert.equal(usage.stats.toolMs, 18);
+  assert.equal(usage.stats.available.toolMs, true);
+  assert.equal(usage.stats.available.turns, false);
+});
+
 test('buildComposerContextUsage prefers native 1m context window over stale turn usage', () => {
   const usage = buildComposerContextUsage({
     agent: 'claude',

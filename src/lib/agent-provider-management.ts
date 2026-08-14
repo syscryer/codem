@@ -37,6 +37,7 @@ const AGENT_INSTALL_DOCS_URLS: Partial<Record<AgentProviderId, string>> = {
   'pi-agent': 'https://pi.dev/docs/latest/quickstart',
   'gemini-cli': 'https://geminicli.com/docs/get-started/installation/',
   'hermes-agent': 'https://github.com/NousResearch/hermes-agent',
+  'deepseek-dsh': 'https://github.com/deepseek-ai/deepseek-harness',
 };
 
 export function getProviderInstallDocsUrl(providerId: AgentProviderId) {
@@ -109,7 +110,7 @@ export function resolveProviderStatus(
   piProbe: PiRpcProbeResult | null = null,
   geminiProbe: GeminiAcpProbeResult | null = null,
 ): { label: string; tone: ProviderStatusTone } {
-  if (provider.id === 'hermes-agent') {
+  if (provider.id === 'hermes-agent' || provider.id === 'deepseek-dsh') {
     return provider.available
       ? { label: '运行时可用', tone: 'positive' }
       : { label: '未检测到 CLI', tone: 'warning' };
@@ -178,9 +179,11 @@ export function resolveProviderDiagnostics(
   piProbe: PiRpcProbeResult | null = null,
   geminiProbe: GeminiAcpProbeResult | null = null,
 ) {
-  if (provider.id === 'hermes-agent') {
+  if (provider.id === 'hermes-agent' || provider.id === 'deepseek-dsh') {
     return {
-      cli: provider.available ? '已检测到 hermes' : '未检测到 hermes',
+      cli: provider.available
+        ? `已检测到 ${provider.id === 'deepseek-dsh' ? 'dsh' : 'hermes'}`
+        : `未检测到 ${provider.id === 'deepseek-dsh' ? 'dsh' : 'hermes'}`,
       auth: '沿用系统配置或 CodeM 渠道管理',
       version: '运行时检测',
       command: '',

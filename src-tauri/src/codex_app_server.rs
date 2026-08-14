@@ -2034,6 +2034,7 @@ fn parse_codex_usage(token_usage: &Value) -> Option<AgentUsageSnapshot> {
             .get("modelContextWindow")
             .and_then(Value::as_u64),
         total_cost_usd: None,
+        ..Default::default()
     })
 }
 

@@ -548,6 +548,45 @@ test('mergeUsageSnapshot keeps the previous context usage when a stream frame re
   assert.equal(patch.cacheReadInputTokens, 0);
 });
 
+test('mergeUsageSnapshot preserves provided zero-value capabilities without clearing token totals', () => {
+  const turn = turnWithContextUsage({
+    inputTokens: 75,
+    outputTokens: 211,
+    usageSource: 'message',
+  });
+
+  const patch = mergeUsageSnapshot(turn, {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    contextToolsTokens: 0,
+    toolDurationMs: 0,
+    usageSource: 'context',
+  });
+
+  assert.deepEqual(patch.contextUsage, {
+    inputTokens: 75,
+    outputTokens: 211,
+    cacheCreationInputTokens: 0,
+    contextToolsTokens: 0,
+    toolDurationMs: 0,
+    usageSource: 'context',
+  });
+});
+
+function turnWithContextUsage(contextUsage: NonNullable<ConversationTurn['contextUsage']>): ConversationTurn {
+  return {
+    id: 'turn-context-usage',
+    userText: '',
+    workspace: 'D:\\project\\codem',
+    assistantText: '',
+    tools: [],
+    items: [],
+    status: 'running',
+    contextUsage,
+  };
+}
+
 test('single-select custom answers and preset options stay mutually exclusive', () => {
   const initial = {
     selectedOptions: { framework: [0] },

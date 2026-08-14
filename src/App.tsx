@@ -31,7 +31,7 @@ import { useAutomations } from './hooks/useAutomations';
 import { useBackgroundOperations } from './hooks/useBackgroundOperations';
 import { useOrdinaryChat } from './hooks/useOrdinaryChat';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
-import { APP_UPDATE_CHECK_INTERVAL_MS, CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
+import { APP_UPDATE_CHECK_INTERVAL_MS, CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
 import {
   buildCompactSlashCommandSubmission,
   buildContextSlashCardResult,
@@ -79,6 +79,8 @@ import { resolveChatRuntimeKind } from './lib/agent-provider-registry';
 import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
 import { openExternalUrl } from './lib/markdown-link';
 import { fetchGitRemote, pullGitBranch, pushGitBranch, undoConversationChanges } from './lib/git-api';
+import { mergeUsageSnapshot } from './lib/conversation';
+import { fetchDshSessionUsage } from './lib/settings-api';
 import { areThreadRuntimeStatusesEqual, fetchThreadRuntimeStatuses } from './lib/thread-runtime-statuses';
 import {
   buildGitOperationToastDetail,
@@ -229,6 +231,7 @@ export default function App() {
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const chatWorkspaceRef = useRef<HTMLDivElement | null>(null);
   const appRootRef = useRef<HTMLDivElement | null>(null);
+  const dshProjectionRequestsRef = useRef(new Set<string>());
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
   const workspaceState = useWorkspaceState();
@@ -714,6 +717,9 @@ export default function App() {
   } = useAgentRun({
     defaultProviderId: agentRuntime.defaultProviderId,
     defaultPermissionMode: general.defaultPermissionMode,
+    dshProfile: agentRuntime.dshProfile,
+    dshAgentPreset: agentRuntime.dshAgentPreset,
+    dshToolsMode: agentRuntime.dshToolsMode,
     agentChannels: agentChannels.bootstrap.channels,
     defaultAgentChannelIds: agentChannels.bootstrap.defaultChannelIds,
     agentChannelsLoading: agentChannels.loading,
@@ -772,6 +778,62 @@ export default function App() {
           : activeProviderId === GEMINI_CLI_PROVIDER_ID
             ? 'gemini' as const
         : 'generic' as const;
+
+  useEffect(() => {
+    if (
+      activeProviderId !== DEEPSEEK_DSH_PROVIDER_ID
+      || !activeThreadSummary?.sessionId
+      || !activeThread?.historyLoaded
+    ) {
+      return;
+    }
+    const targetTurn = [...activeThread.turns]
+      .reverse()
+      .find((turn) => turn.status !== 'pending');
+    if (!targetTurn || targetTurn.contextUsage?.contextUsedTokens !== undefined) {
+      return;
+    }
+    const requestKey = `${activeThreadSummary.id}:${activeThreadSummary.sessionId}:${targetTurn.id}`;
+    if (dshProjectionRequestsRef.current.has(requestKey)) {
+      return;
+    }
+    dshProjectionRequestsRef.current.add(requestKey);
+
+    void fetchDshSessionUsage({
+      sessionId: activeThreadSummary.sessionId,
+      workingDirectory: activeThreadSummary.workingDirectory,
+      channelId: activeThreadSummary.agentChannelId || genericAgentChannelId,
+      permissionMode: activeThreadSummary.permissionMode || genericAgentPermissionMode,
+      toolsMode: agentRuntime.dshToolsMode,
+    }).then((usage) => {
+      const hasUsage = [
+        usage.contextUsedTokens,
+        usage.modelContextWindow,
+        usage.inputTokens,
+        usage.cacheReadInputTokens,
+      ].some((value) => typeof value === 'number' && value > 0);
+      if (!hasUsage) {
+        return;
+      }
+      updateThreadTurn(activeThreadSummary.id, targetTurn.id, (turn) => ({
+        ...turn,
+        ...mergeUsageSnapshot(turn, usage),
+      }), activeThreadSummary);
+      schedulePersistThreadHistory(activeThreadSummary.id);
+    }).catch(() => {
+      dshProjectionRequestsRef.current.delete(requestKey);
+    });
+  }, [
+    activeProviderId,
+    activeThread?.historyLoaded,
+    activeThread?.turns,
+    activeThreadSummary,
+    agentRuntime.dshToolsMode,
+    genericAgentChannelId,
+    genericAgentPermissionMode,
+    schedulePersistThreadHistory,
+    updateThreadTurn,
+  ]);
   const activeProviderCapabilities = agentProviders.find((provider) => provider.id === activeProviderId)?.capabilities;
   const allowAgentAttachments = activeUsesClaude || Boolean(
     activeUsesGenericAgent && activeProviderCapabilities && (

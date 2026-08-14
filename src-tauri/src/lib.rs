@@ -8,6 +8,7 @@ pub mod automation;
 pub mod backend;
 pub mod claude_session_fork;
 pub mod codex_app_server;
+pub mod dsh;
 pub mod hermes;
 pub mod ordinary_chat;
 pub mod pi_rpc;

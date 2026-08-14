@@ -1350,6 +1350,7 @@ fn parse_acp_usage(value: Option<&Value>) -> AgentUsageSnapshot {
             .get("totalCostUsd")
             .or_else(|| value.get("total_cost_usd"))
             .and_then(Value::as_f64),
+        ..Default::default()
     }
 }
 
@@ -1374,6 +1375,7 @@ fn parse_session_usage_update(value: &Value) -> Option<AgentUsageSnapshot> {
         cache_read_input_tokens: None,
         model_context_window: Some(size),
         total_cost_usd,
+        ..Default::default()
     })
 }
 

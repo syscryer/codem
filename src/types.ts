@@ -256,6 +256,18 @@ export type UsageSnapshot = {
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
   modelContextWindow?: number;
+  contextUsedTokens?: number;
+  contextSystemTokens?: number;
+  contextToolsTokens?: number;
+  contextMessageTokens?: number;
+  turnCount?: number;
+  stepCount?: number;
+  llmDurationMs?: number;
+  toolDurationMs?: number;
+  firstTokenDurationMs?: number;
+  firstTokenSteps?: number;
+  decodeDurationMs?: number;
+  decodeTokens?: number;
   usageSource?: 'context' | 'message' | 'result';
 };
 
@@ -880,7 +892,8 @@ export type AgentProviderId =
   | 'opencode'
   | 'pi-agent'
   | 'gemini-cli'
-  | 'hermes-agent';
+  | 'hermes-agent'
+  | 'deepseek-dsh';
 
 export type AutomationSchedule =
   | {
@@ -1028,6 +1041,9 @@ export type AgentChannelSettingsFocus = {
 
 export type AgentRuntimeSettings = {
   defaultProviderId: AgentProviderId;
+  dshProfile: string;
+  dshAgentPreset: string;
+  dshToolsMode: 'native' | 'code' | 'both';
 };
 
 export type AppSettings = {

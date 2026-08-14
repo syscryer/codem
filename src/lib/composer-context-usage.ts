@@ -20,6 +20,38 @@ export type ComposerContextUsage = {
     cacheCreationInputTokens: number;
     cacheReadInputTokens: number;
     outputTokens: number;
+    systemTokens: number;
+    toolsTokens: number;
+    messageTokens: number;
+    available: {
+      inputTokens: boolean;
+      cacheCreationInputTokens: boolean;
+      cacheReadInputTokens: boolean;
+      outputTokens: boolean;
+      systemTokens: boolean;
+      toolsTokens: boolean;
+      messageTokens: boolean;
+    };
+  };
+  stats: {
+    turns: number;
+    steps: number;
+    llmMs: number;
+    toolMs: number;
+    firstTokenMs: number;
+    firstTokenSteps: number;
+    decodeMs: number;
+    decodeTokens: number;
+    available: {
+      turns: boolean;
+      steps: boolean;
+      llmMs: boolean;
+      toolMs: boolean;
+      firstTokenMs: boolean;
+      firstTokenSteps: boolean;
+      decodeMs: boolean;
+      decodeTokens: boolean;
+    };
   };
 };
 
@@ -30,6 +62,7 @@ const CLAUDE_AUTO_COMPACT_BUFFER = 45_000;
 
 export function buildComposerContextUsage(input: {
   agent: AgentType;
+  providerId?: string;
   model: string;
   turns: ConversationTurn[];
   nativeContextSummary?: Pick<ClaudeContextSummary, 'usedTokens' | 'totalTokens' | 'freeTokens' | 'percent'>;
@@ -41,12 +74,18 @@ export function buildComposerContextUsage(input: {
   const runtimeContextWindow = resolveLatestRuntimeContextWindow(input.turns);
   const totalTokens = input.agent === 'codex'
     ? runtimeContextWindow ?? DEFAULT_CODEX_CONTEXT_WINDOW
-    : nativeSummaryUsage.totalTokens ??
-      resolveNativeContextWindow(input.nativeContextWindowTokens) ??
-      runtimeContextWindow ??
-      resolveClaudeContextWindow(input.model);
+    : input.agent === 'claude'
+      ? nativeSummaryUsage.totalTokens ??
+        resolveNativeContextWindow(input.nativeContextWindowTokens) ??
+        runtimeContextWindow ??
+        resolveClaudeContextWindow(input.model)
+      : resolveNativeContextWindow(input.nativeContextWindowTokens) ?? runtimeContextWindow ?? 0;
 
-  if (input.agent !== 'claude' && input.agent !== 'codex') {
+  const supportsContextUsage = input.agent === 'claude'
+    || input.agent === 'codex'
+    || input.providerId === 'deepseek-dsh'
+    || input.turns.some((turn) => Boolean(turn.contextUsage));
+  if (!supportsContextUsage) {
     return createContextUsageResult({
       visible: false,
       totalTokens,
@@ -54,7 +93,7 @@ export function buildComposerContextUsage(input: {
   }
 
   const breakdown = resolveLatestUsageBreakdown(input.turns, totalTokens);
-  const runtimeUsedTokens =
+  const runtimeUsedTokens = breakdown.contextUsedTokens ??
     breakdown.inputTokens +
     breakdown.cacheCreationInputTokens +
     breakdown.cacheReadInputTokens;
@@ -80,6 +119,7 @@ export function buildComposerContextUsage(input: {
     level: resolveUsageLevel(hasUsage, percent),
     compact,
     breakdown,
+    stats: resolveLatestRuntimeStats(input.turns),
   };
 }
 
@@ -137,16 +177,32 @@ function resolveNativeContextSummaryUsage(summary: Pick<ClaudeContextSummary, 'u
 function resolveLatestUsageBreakdown(turns: ConversationTurn[], totalTokens: number) {
   for (let index = turns.length - 1; index >= 0; index -= 1) {
     const turn = turns[index];
-    const source = turn.contextUsage ?? turn;
+    const usage = turn.contextUsage;
+    const source = usage ?? turn;
     const breakdown = {
       inputTokens: source.inputTokens ?? 0,
       cacheCreationInputTokens: source.cacheCreationInputTokens ?? 0,
       cacheReadInputTokens: source.cacheReadInputTokens ?? 0,
       outputTokens: source.outputTokens ?? 0,
+      contextUsedTokens: usage?.contextUsedTokens,
+      systemTokens: usage?.contextSystemTokens ?? 0,
+      toolsTokens: usage?.contextToolsTokens ?? 0,
+      messageTokens: usage?.contextMessageTokens ?? 0,
+      available: {
+        inputTokens: hasFiniteNumber(source.inputTokens),
+        cacheCreationInputTokens: hasFiniteNumber(source.cacheCreationInputTokens),
+        cacheReadInputTokens: hasFiniteNumber(source.cacheReadInputTokens),
+        outputTokens: hasFiniteNumber(source.outputTokens),
+        systemTokens: hasFiniteNumber(usage?.contextSystemTokens),
+        toolsTokens: hasFiniteNumber(usage?.contextToolsTokens),
+        messageTokens: hasFiniteNumber(usage?.contextMessageTokens),
+      },
     };
-    const currentTokens = breakdown.inputTokens + breakdown.cacheCreationInputTokens + breakdown.cacheReadInputTokens;
+    const currentTokens = breakdown.contextUsedTokens ??
+      breakdown.inputTokens + breakdown.cacheCreationInputTokens + breakdown.cacheReadInputTokens;
 
     if (
+      typeof breakdown.contextUsedTokens === 'number' ||
       breakdown.inputTokens > 0 ||
       breakdown.cacheCreationInputTokens > 0 ||
       breakdown.cacheReadInputTokens > 0
@@ -163,6 +219,11 @@ function resolveLatestUsageBreakdown(turns: ConversationTurn[], totalTokens: num
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: 0,
     outputTokens: 0,
+      contextUsedTokens: undefined,
+      systemTokens: 0,
+      toolsTokens: 0,
+      messageTokens: 0,
+      available: emptyBreakdownAvailability(),
   };
 }
 
@@ -239,8 +300,83 @@ function createContextUsageResult(input: {
       cacheCreationInputTokens: 0,
       cacheReadInputTokens: 0,
       outputTokens: 0,
+      systemTokens: 0,
+      toolsTokens: 0,
+      messageTokens: 0,
+      available: emptyBreakdownAvailability(),
+    },
+    stats: emptyRuntimeStats(),
+  };
+}
+
+function resolveLatestRuntimeStats(turns: ConversationTurn[]) {
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const source = turns[index].contextUsage;
+    if (!source) continue;
+    const available = {
+      turns: hasFiniteNumber(source.turnCount),
+      steps: hasFiniteNumber(source.stepCount),
+      llmMs: hasFiniteNumber(source.llmDurationMs),
+      toolMs: hasFiniteNumber(source.toolDurationMs),
+      firstTokenMs: hasFiniteNumber(source.firstTokenDurationMs),
+      firstTokenSteps: hasFiniteNumber(source.firstTokenSteps),
+      decodeMs: hasFiniteNumber(source.decodeDurationMs),
+      decodeTokens: hasFiniteNumber(source.decodeTokens),
+    };
+    if (Object.values(available).some(Boolean)) {
+      return {
+        turns: source.turnCount ?? 0,
+        steps: source.stepCount ?? 0,
+        llmMs: source.llmDurationMs ?? 0,
+        toolMs: source.toolDurationMs ?? 0,
+        firstTokenMs: source.firstTokenDurationMs ?? 0,
+        firstTokenSteps: source.firstTokenSteps ?? 0,
+        decodeMs: source.decodeDurationMs ?? 0,
+        decodeTokens: source.decodeTokens ?? 0,
+        available,
+      };
+    }
+  }
+  return emptyRuntimeStats();
+}
+
+function emptyBreakdownAvailability() {
+  return {
+    inputTokens: false,
+    cacheCreationInputTokens: false,
+    cacheReadInputTokens: false,
+    outputTokens: false,
+    systemTokens: false,
+    toolsTokens: false,
+    messageTokens: false,
+  };
+}
+
+function emptyRuntimeStats() {
+  return {
+    turns: 0,
+    steps: 0,
+    llmMs: 0,
+    toolMs: 0,
+    firstTokenMs: 0,
+    firstTokenSteps: 0,
+    decodeMs: 0,
+    decodeTokens: 0,
+    available: {
+      turns: false,
+      steps: false,
+      llmMs: false,
+      toolMs: false,
+      firstTokenMs: false,
+      firstTokenSteps: false,
+      decodeMs: false,
+      decodeTokens: false,
     },
   };
+}
+
+function hasFiniteNumber(value: number | undefined) {
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
 function resolveUsageLevel(hasUsage: boolean, percent: number): ComposerContextUsageLevel {

@@ -68,6 +68,7 @@ import { readClaudeCliVersionInfo } from '../../lib/settings-runtime';
 import { AgentProviderIcon } from '../AgentProviderIcon';
 import { PopoverPortal } from '../PopoverPortal';
 import { HermesSettingsPanel } from './HermesSettingsPanel';
+import { DshSettingsPanel } from './DshSettingsPanel';
 
 type ProviderProbeState = 'idle' | 'checking' | 'ready' | 'error';
 
@@ -662,6 +663,8 @@ export function AgentProviderSettings({
               lifecycleAction={lifecycleAction?.providerId === selectedProvider.id ? lifecycleAction.action : null}
               onRunLifecycleAction={(action) => void runLifecycleAction(selectedProvider.id as AgentProviderId, action)}
               showToast={showToast}
+              agentRuntime={agentRuntime}
+              onUpdateAgentRuntime={onUpdateAgentRuntime}
             />
           </div>
         ) : providersLoading ? (
@@ -801,7 +804,8 @@ function isDefaultAgentProvider(provider: AgentProviderDescriptor): provider is 
     || provider.id === 'openai-codex'
     || provider.id === 'opencode'
     || provider.id === 'pi-agent'
-    || provider.id === 'hermes-agent';
+    || provider.id === 'hermes-agent'
+    || provider.id === 'deepseek-dsh';
 }
 
 function defaultAgentProviderName(providerId: AgentProviderId) {
@@ -822,6 +826,9 @@ function defaultAgentProviderName(providerId: AgentProviderId) {
   }
   if (providerId === 'hermes-agent') {
     return 'Hermes Agent';
+  }
+  if (providerId === 'deepseek-dsh') {
+    return 'DeepSeek DSH';
   }
   return 'Claude Code';
 }
@@ -859,6 +866,8 @@ function ProviderDetail({
   lifecycleAction,
   onRunLifecycleAction,
   showToast,
+  agentRuntime,
+  onUpdateAgentRuntime,
 }: {
   provider: AgentProviderDescriptor;
   claudeCliInfo: ClaudeCliVersionInfo | null;
@@ -892,6 +901,8 @@ function ProviderDetail({
   lifecycleAction: 'install' | 'update' | null;
   onRunLifecycleAction: (action: 'install' | 'update') => void;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
+  agentRuntime: AgentRuntimeSettings;
+  onUpdateAgentRuntime: (update: AgentRuntimeSettingsUpdate) => void | Promise<void>;
 }) {
   const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe, geminiProbe);
   const diagnostics = resolveProviderDiagnostics(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe, geminiProbe);
@@ -1035,7 +1046,7 @@ function ProviderDetail({
 
   return (
     <section
-      className="agent-provider-detail"
+      className={`agent-provider-detail provider-${provider.id}`}
       aria-labelledby={`agent-provider-${provider.id}`}
       aria-busy={probeState === 'checking'}
     >
@@ -1184,7 +1195,16 @@ function ProviderDetail({
         />
       ) : null}
 
-      {provider.id !== 'hermes-agent' ? providerFactsContent : null}
+      {provider.id === 'deepseek-dsh' ? (
+        <DshSettingsPanel
+          agentRuntime={agentRuntime}
+          onUpdateAgentRuntime={onUpdateAgentRuntime}
+          showToast={showToast}
+          runtimeContent={<>{providerFactsContent}{providerCapabilitiesContent}{providerModelsContent}</>}
+        />
+      ) : null}
+
+      {provider.id !== 'hermes-agent' && provider.id !== 'deepseek-dsh' ? providerFactsContent : null}
 
       {provider.id === 'grok-build' ? (
         <div className="agent-provider-live-status" aria-live="polite">
@@ -1262,8 +1282,8 @@ function ProviderDetail({
         <DetectedAcpCapabilities probe={geminiProbe} />
       ) : null}
 
-      {provider.id !== 'hermes-agent' ? providerCapabilitiesContent : null}
-      {provider.id !== 'hermes-agent' ? providerModelsContent : null}
+      {provider.id !== 'hermes-agent' && provider.id !== 'deepseek-dsh' ? providerCapabilitiesContent : null}
+      {provider.id !== 'hermes-agent' && provider.id !== 'deepseek-dsh' ? providerModelsContent : null}
     </section>
   );
 }

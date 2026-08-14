@@ -538,24 +538,68 @@ function mergeContextUsageSnapshot(
     return current;
   }
 
-  if (hasPositiveContextUsageTokenSnapshot(snapshot)) {
-    return {
-      ...snapshot,
-      outputTokens: snapshot.outputTokens ?? current?.outputTokens,
-      modelContextWindow: snapshot.modelContextWindow ?? current?.modelContextWindow,
-    };
-  }
-
-  if (!current) {
-    return undefined;
-  }
-
-  return {
-    ...current,
-    outputTokens: positiveNumberOrUndefined(snapshot.outputTokens) ?? current.outputTokens,
-    modelContextWindow: positiveNumberOrUndefined(snapshot.modelContextWindow) ?? current.modelContextWindow,
+  const next: UsageSnapshot = current ? { ...current } : {};
+  let changed = false;
+  const mergeNumber = (key: UsageNumberKey, allowZeroOverwrite: boolean) => {
+    const value = nonNegativeNumberOrUndefined(snapshot[key]);
+    if (value === undefined) {
+      return;
+    }
+    const currentValue = current?.[key];
+    if (!allowZeroOverwrite && value === 0 && positiveNumberOrUndefined(currentValue) !== undefined) {
+      return;
+    }
+    if (currentValue !== value) {
+      Object.assign(next, { [key]: value });
+      changed = true;
+    }
   };
+
+  for (const key of TOKEN_USAGE_KEYS) {
+    mergeNumber(key, false);
+  }
+  for (const key of CONTEXT_DETAIL_USAGE_KEYS) {
+    mergeNumber(key, true);
+  }
+
+  const modelContextWindow = positiveNumberOrUndefined(snapshot.modelContextWindow);
+  if (modelContextWindow !== undefined && current?.modelContextWindow !== modelContextWindow) {
+    next.modelContextWindow = modelContextWindow;
+    changed = true;
+  }
+
+  if (!changed) {
+    return current;
+  }
+  if (snapshot.usageSource) {
+    next.usageSource = snapshot.usageSource;
+  }
+  return next;
 }
+
+type UsageNumberKey = Exclude<keyof UsageSnapshot, 'usageSource' | 'modelContextWindow'>;
+
+const TOKEN_USAGE_KEYS = [
+  'inputTokens',
+  'outputTokens',
+  'cacheCreationInputTokens',
+  'cacheReadInputTokens',
+] as const satisfies readonly UsageNumberKey[];
+
+const CONTEXT_DETAIL_USAGE_KEYS = [
+  'contextUsedTokens',
+  'contextSystemTokens',
+  'contextToolsTokens',
+  'contextMessageTokens',
+  'turnCount',
+  'stepCount',
+  'llmDurationMs',
+  'toolDurationMs',
+  'firstTokenDurationMs',
+  'firstTokenSteps',
+  'decodeDurationMs',
+  'decodeTokens',
+] as const satisfies readonly UsageNumberKey[];
 
 function hasPositiveUsageTokenSnapshot(snapshot: UsageSnapshot) {
   return (
@@ -566,16 +610,12 @@ function hasPositiveUsageTokenSnapshot(snapshot: UsageSnapshot) {
   );
 }
 
-function hasPositiveContextUsageTokenSnapshot(snapshot: UsageSnapshot) {
-  return (
-    positiveNumberOrUndefined(snapshot.inputTokens) !== undefined ||
-    positiveNumberOrUndefined(snapshot.cacheCreationInputTokens) !== undefined ||
-    positiveNumberOrUndefined(snapshot.cacheReadInputTokens) !== undefined
-  );
-}
-
 function positiveNumberOrUndefined(value: number | undefined) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function nonNegativeNumberOrUndefined(value: number | undefined) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 export function getElapsedDuration(turn: ConversationTurn) {
