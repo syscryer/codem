@@ -886,9 +886,14 @@ struct UserInputResponseRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GuideAgentRunRequest {
-    prompt: String,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    content_blocks: Option<Vec<AgentInputContentBlock>>,
+    #[serde(default)]
+    working_directory: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1186,6 +1191,7 @@ async fn dsh_bootstrap(
     )
     .map_err(AgentApiError::internal)?;
     Ok(Json(json!({
+        "webUiUrl": client.web_ui_url(),
         "presets": presets,
         "providers": providers,
         "models": models,
@@ -4439,10 +4445,6 @@ async fn agent_run_guide(
     AxumPath(run_id): AxumPath<String>,
     Json(payload): Json<GuideAgentRunRequest>,
 ) -> Response {
-    let prompt = match normalize_guide_prompt(payload.prompt) {
-        Ok(prompt) => prompt,
-        Err(error) => return error.into_response(),
-    };
     let (provider_id, control) = match state.guide_control_sender(&run_id) {
         Ok(target) => target,
         Err(error) => return error.into_response(),
@@ -4452,10 +4454,22 @@ async fn agent_run_guide(
             "当前 Agent 不支持运行中引导".to_string(),
         ));
     }
+    let working_directory = match resolve_working_directory(&payload.working_directory) {
+        Ok(path) => path,
+        Err(error) => return error.into_response(),
+    };
+    let input_blocks =
+        match normalize_agent_input(payload.prompt.as_deref(), payload.content_blocks) {
+            Ok(blocks) => blocks,
+            Err(error) => return error.into_response(),
+        };
     let (acknowledgement, receiver) = oneshot::channel();
     if control
         .send(AgentControlCommand::Guide {
-            text: prompt,
+            input: match build_codex_input(&input_blocks, &working_directory, false) {
+                Ok(input) => input,
+                Err(error) => return error.into_response(),
+            },
             acknowledgement,
         })
         .is_err()
@@ -4509,17 +4523,6 @@ async fn await_control_ack(receiver: oneshot::Receiver<Result<(), String>>) -> A
         )),
         Err(_) => Err(AgentApiError::conflict("Agent 控制请求响应超时")),
     }
-}
-
-fn normalize_guide_prompt(prompt: String) -> AgentApiResult<String> {
-    let prompt = prompt.trim();
-    if prompt.is_empty() {
-        return Err(AgentApiError::bad_request("prompt 不能为空"));
-    }
-    if prompt.len() > MAX_PROMPT_BYTES {
-        return Err(AgentApiError::bad_request("prompt 过长"));
-    }
-    Ok(prompt.to_string())
 }
 
 async fn await_guide_ack(
@@ -8375,9 +8378,13 @@ async fn handle_hermes_control(
 ) {
     match command {
         AgentControlCommand::Guide {
-            text,
+            input,
             acknowledgement,
         } => {
+            let Some(text) = guide_text_from_codex_input(input) else {
+                let _ = acknowledgement.send(Err("Hermes 运行中引导仅支持文本内容".to_string()));
+                return;
+            };
             let _ = acknowledgement.send(client.guide(session_id, &text).await);
         }
         AgentControlCommand::Permission {
@@ -8405,6 +8412,20 @@ async fn handle_hermes_control(
             let _ = acknowledgement.send(client.clarify(session_id, &request_id, answer).await);
         }
     }
+}
+
+fn guide_text_from_codex_input(input: Vec<CodexUserInput>) -> Option<String> {
+    let text = input
+        .into_iter()
+        .filter_map(|item| match item {
+            CodexUserInput::Text { text } => Some(text),
+            _ => None,
+        })
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!text.is_empty()).then_some(text)
 }
 
 async fn handle_dsh_control(
@@ -8691,8 +8712,8 @@ mod tests {
         fail_fork_command, find_grok_runtime_error_detail, fork_capability_cache_key,
         gemini_mode_id, gemini_removed_environment, grok_acp_arguments,
         grok_acp_error_with_runtime_detail, grok_uses_channel_credentials, guide_ack_response,
-        hermes_model_catalog, map_dsh_event, map_hermes_event, normalize_agent_input,
-        normalize_guide_prompt, parse_opencode_models, pi_model_catalog, pi_model_parts,
+        guide_text_from_codex_input, hermes_model_catalog, map_dsh_event, map_hermes_event,
+        normalize_agent_input, parse_opencode_models, pi_model_catalog, pi_model_parts,
         pi_rpc_arguments, pi_usage_snapshot, probe_compact_capability_cached,
         probe_fork_capability_cached, public_acp_error, public_codex_error,
         push_compact_failure_event, read_cached_agent_command, read_cached_agent_model_catalog,
@@ -9201,7 +9222,9 @@ mod tests {
             axum::extract::State(state.clone()),
             axum::extract::Path("run-grok".to_string()),
             axum::Json(GuideAgentRunRequest {
-                prompt: "inspect".to_string(),
+                prompt: Some("inspect".to_string()),
+                content_blocks: None,
+                working_directory: "D:/workspace".to_string(),
             }),
         )
         .await;
@@ -9225,24 +9248,45 @@ mod tests {
     }
 
     #[test]
-    fn guide_request_accepts_only_a_non_empty_text_prompt() {
+    fn guide_request_accepts_structured_text_image_and_document_inputs() {
         let payload = serde_json::from_value::<GuideAgentRunRequest>(json!({
-            "prompt": "  inspect the current failure  "
+            "prompt": "inspect the current failure",
+            "workingDirectory": "D:/workspace",
+            "contentBlocks": [
+                { "type": "text", "text": "inspect the current failure" },
+                { "type": "image", "data": "aGVsbG8=", "mimeType": "image/png" },
+                { "type": "file_text", "path": "D:/workspace/notes.md", "name": "notes.md", "text": "context" }
+            ]
         }))
         .expect("valid guide request");
-        assert_eq!(
-            normalize_guide_prompt(payload.prompt).expect("normalized prompt"),
-            "inspect the current failure"
-        );
+        let blocks = normalize_agent_input(payload.prompt.as_deref(), payload.content_blocks)
+            .expect("normalize structured guide input");
+        let input = build_codex_input(&blocks, Path::new("D:/workspace"), false)
+            .expect("build structured guide input");
+        assert!(matches!(input[0], CodexUserInput::Text { .. }));
+        assert!(matches!(input[1], CodexUserInput::Image { .. }));
+        assert!(matches!(input[2], CodexUserInput::Text { .. }));
+    }
 
-        assert!(serde_json::from_value::<GuideAgentRunRequest>(json!({
-            "prompt": "inspect",
-            "attachments": []
-        }))
-        .is_err());
-        let error = normalize_guide_prompt(" \r\n\t ".to_string())
-            .expect_err("blank guide prompt must fail");
-        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    #[test]
+    fn hermes_guide_text_ignores_attachments_and_rejects_empty_text() {
+        assert_eq!(
+            guide_text_from_codex_input(vec![
+                CodexUserInput::LocalImage {
+                    path: "D:/workspace/screenshot.png".to_string(),
+                },
+                CodexUserInput::Text {
+                    text: " inspect this ".to_string(),
+                },
+            ]),
+            Some("inspect this".to_string())
+        );
+        assert_eq!(
+            guide_text_from_codex_input(vec![CodexUserInput::LocalImage {
+                path: "D:/workspace/screenshot.png".to_string(),
+            }]),
+            None
+        );
     }
 
     #[tokio::test]

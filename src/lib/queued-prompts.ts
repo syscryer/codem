@@ -152,25 +152,22 @@ export function getCodexQueuedPromptGuideContent({
       reason: '正在准备附件和文件引用。',
     };
   }
-  if (attachments?.length || contentBlocks?.some((block) => block.type !== 'text')) {
-    return {
-      available: false as const,
-      reason: 'Codex 运行中引导暂只支持纯文本消息。',
-    };
-  }
   const text = contentBlocks?.length
     ? contentBlocks
         .flatMap((block) => block.type === 'text' ? [block.text.trim()] : [])
         .filter(Boolean)
         .join('\n\n')
     : prompt.trim();
-  if (!text) {
+  if (!text && !attachments?.length && !contentBlocks?.some((block) => block.type !== 'text')) {
     return {
       available: false as const,
-      reason: '缺少可引导的文本内容。',
+      reason: '缺少可引导的消息内容。',
     };
   }
-  return { available: true as const, text };
+  const attachmentName = contentBlocks
+    ?.flatMap((block) => block.type !== 'text' && 'name' in block && block.name ? [block.name] : [])[0]
+    || attachments?.find((attachment) => attachment.name)?.name;
+  return { available: true as const, text: text || prompt.trim() || attachmentName || '附件消息' };
 }
 
 export function resolveQueuedPromptRunOptions(

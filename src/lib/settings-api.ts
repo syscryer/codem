@@ -150,6 +150,7 @@ export async function saveAgentRuntimeSettings(
 }
 
 export type DshNativeBootstrap = {
+  webUiUrl: string;
   presets: {
     presets: Array<{ id: string; trust: 'system' | 'user'; isDefault: boolean; name?: string; description?: string; broken?: string }>;
     authorable: boolean;

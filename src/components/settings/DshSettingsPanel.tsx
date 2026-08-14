@@ -4,7 +4,10 @@ import {
   CircleGauge,
   CircleCheck,
   CircleDashed,
+  Copy,
   Cpu,
+  ExternalLink,
+  Globe2,
   Layers3,
   RefreshCw,
   Server,
@@ -18,6 +21,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { AgentRuntimeSettings } from '../../types';
 import type { AgentRuntimeSettingsUpdate } from '../../hooks/useAppSettings';
 import { fetchDshNativeBootstrap, type DshNativeBootstrap } from '../../lib/settings-api';
+import { openExternalUrl } from '../../lib/markdown-link';
 import { AgentProviderIcon } from '../AgentProviderIcon';
 
 type DshTab = 'overview' | 'presets' | 'tools' | 'native' | 'runtime';
@@ -53,11 +57,10 @@ const toolModes = [
 
 export function DshSettingsPanel({ agentRuntime, onUpdateAgentRuntime, showToast, runtimeContent }: DshSettingsPanelProps) {
   const [tab, setTab] = useState<DshTab>('overview');
-  const [profile, setProfile] = useState(agentRuntime.dshProfile);
   const [native, setNative] = useState<DshNativeBootstrap | null>(null);
   const [loading, setLoading] = useState(false);
+  const [webUiCopied, setWebUiCopied] = useState(false);
 
-  useEffect(() => setProfile(agentRuntime.dshProfile), [agentRuntime.dshProfile]);
   useEffect(() => { void refreshNative(); }, []);
 
   const presets = native?.presets.presets.length ? native.presets.presets : fallbackPresets;
@@ -86,6 +89,17 @@ export function DshSettingsPanel({ agentRuntime, onUpdateAgentRuntime, showToast
       showToast(error instanceof Error ? error.message : '读取 DSH 原生能力失败', 'error');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function copyWebUiUrl() {
+    if (!native?.webUiUrl) return;
+    try {
+      await navigator.clipboard.writeText(native.webUiUrl);
+      setWebUiCopied(true);
+      window.setTimeout(() => setWebUiCopied(false), 1600);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '复制 Web UI 地址失败', 'error');
     }
   }
 
@@ -148,6 +162,7 @@ export function DshSettingsPanel({ agentRuntime, onUpdateAgentRuntime, showToast
               <DshFact icon={Cpu} value={String(activeProviderCount)} label="已启用供应商" />
               <DshFact icon={Boxes} value={String(modelCount)} label="可用模型" />
             </div>
+            <DshWebUiLink url={native?.webUiUrl} copied={webUiCopied} onCopy={() => void copyWebUiUrl()} />
             <div className="dsh-info-note">
               <ShieldCheck size={16} />
               <span>权限继续跟随 CodeM。Agent 模式和工具模式会用于新建会话，已有会话保持创建时的配置。</span>
@@ -225,17 +240,43 @@ export function DshSettingsPanel({ agentRuntime, onUpdateAgentRuntime, showToast
           <div className="dsh-settings-stack">
             <section className="dsh-runtime-card">
               <div className="dsh-section-intro"><div><h4>Web Host</h4><p>CodeM 托管 HTTP RPC 与 WebSocket 实时事件服务。</p></div><span><Server size={14} />自动管理</span></div>
-              <label className="dsh-profile-field">
-                <span>Headless 兼容 Profile</span>
-                <input value={profile} placeholder="headless" onChange={(event) => setProfile(event.target.value)} onBlur={() => void update({ dshProfile: profile.trim() || 'headless' }, 'DSH Profile 已保存')} />
-                <small>仅用于没有 CodeM 聊天上下文的兼容任务，正常聊天使用 Web Session。</small>
-              </label>
             </section>
             {runtimeContent}
           </div>
         ) : null}
       </div>
     </section>
+  );
+}
+
+function DshWebUiLink({ url, copied, onCopy }: { url?: string; copied: boolean; onCopy: () => void }) {
+  return (
+    <div className="dsh-web-ui-link">
+      <span className="dsh-web-ui-icon" aria-hidden="true"><Globe2 size={15} /></span>
+      <div className="dsh-web-ui-copy">
+        <span>Web UI 地址</span>
+        {url ? (
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            title="在浏览器中打开 DSH Web UI"
+            onClick={(event) => {
+              event.preventDefault();
+              void openExternalUrl(url);
+            }}
+          >
+            <span className="dsh-web-ui-url">{url}</span>
+            <ExternalLink size={13} />
+          </a>
+        ) : <small>DSH Web Host 尚未就绪</small>}
+      </div>
+      {url ? (
+        <button type="button" className="settings-icon-button" title={copied ? '已复制' : '复制 Web UI 地址'} aria-label={copied ? '已复制 Web UI 地址' : '复制 Web UI 地址'} onClick={onCopy}>
+          {copied ? <Check size={14} /> : <Copy size={14} />}
+        </button>
+      ) : null}
+    </div>
   );
 }
 

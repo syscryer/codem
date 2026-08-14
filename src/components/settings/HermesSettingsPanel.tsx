@@ -7,6 +7,7 @@ import {
   CircleDashed,
   Database,
   Eye,
+  ExternalLink,
   FileText,
   Gauge,
   LoaderCircle,
@@ -46,6 +47,7 @@ import {
 } from '../../lib/hermes-api';
 import { AgentProviderIcon } from '../AgentProviderIcon';
 import { HERMES_AGENT_PROVIDER_ID } from '../../constants';
+import { openExternalUrl } from '../../lib/markdown-link';
 
 type HermesTab = 'overview' | 'profiles' | 'memory' | 'skills' | 'mcp' | 'gateway' | 'runtime';
 type HermesStatusTone = 'positive' | 'negative' | 'warning' | 'neutral' | 'muted';
@@ -159,17 +161,31 @@ export function HermesSettingsPanel({
 
   async function runAction(action: Parameters<typeof hermesAction>[0], success: string) {
     setBusy(true);
+    let result: HermesValue;
     try {
-      const result = await hermesAction(action);
+      result = await hermesAction(action);
       setActionResult(result);
-      showToast(success, 'success');
-      await loadBootstrap();
-      if (tab !== 'overview' && tab !== 'profiles' && tab !== 'runtime') await loadResource(tab);
     } catch (requestError) {
       showToast(requestError instanceof Error ? requestError.message : 'Hermes 操作失败', 'error');
-    } finally {
       setBusy(false);
+      return;
     }
+
+    setBusy(false);
+    if (action === 'runtime/dashboard') {
+      const dashboardUrl = typeof result.url === 'string' ? result.url : '';
+      if (!dashboardUrl || !(await openExternalUrl(dashboardUrl))) {
+        showToast(dashboardUrl ? `Web UI 已启动，请手动打开 ${dashboardUrl}` : 'Web UI 已启动，但未返回访问地址', 'info');
+      } else {
+        showToast(success, 'success');
+      }
+    } else {
+      showToast(success, 'success');
+    }
+
+    // The action already succeeded; a refresh failure must not turn it into an error toast.
+    await loadBootstrap();
+    if (tab !== 'overview' && tab !== 'profiles' && tab !== 'runtime') await loadResource(tab);
   }
 
   async function selectProfile(nextProfile: string) {
@@ -471,10 +487,13 @@ export function HermesSettingsPanel({
                   <span className="hermes-control-icon" aria-hidden="true"><Power size={16} /></span>
                   <div>
                     <h4>Agent 后端</h4>
-                    <p title={String(backend?.baseUrl ?? '')}>{String(backend?.baseUrl || (backendRunning === true ? '地址未返回' : '当前未运行'))}</p>
+                    <p title={String(backend?.baseUrl ?? '')}>
+                      {backend?.baseUrl ? <code>{String(backend.baseUrl)}</code> : String(backendRunning === true ? '地址未返回' : '当前未运行')}
+                    </p>
                   </div>
                 </div>
                 <div className="settings-list-actions hermes-settings-actions">
+                  <button type="button" className="settings-action-button" disabled={busy || backendRunning !== true} onClick={() => void runAction('runtime/dashboard', '已打开 Hermes Web UI')}><ExternalLink size={14} />打开 Web UI</button>
                   <button type="button" className="settings-action-button" disabled={busy || backendRunning === true} onClick={() => void runAction('runtime/start', 'Hermes 已启动')}><Play size={14} />启动</button>
                   <button type="button" className="settings-action-button" disabled={busy || backendRunning !== true} onClick={() => void runAction('runtime/stop', 'Hermes 已停止')}><Square size={14} />停止</button>
                   <button type="button" className="settings-action-button" disabled={busy} onClick={() => void runAction('runtime/restart', 'Hermes 已重启')}><RotateCw size={14} />重启</button>

@@ -21,12 +21,12 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  AgentLifecycleStatus,
   AgentProviderId,
   AgentRuntimeSettings,
   AgentProviderDescriptor,
   AgentSettingsDiagnostics,
   ClaudeCliVersionInfo,
-  ClaudeModelInfo,
   CodexAppServerProbeResult,
   GeminiAcpProbeResult,
   GrokAcpProbeResult,
@@ -37,6 +37,7 @@ import type { AgentRuntimeSettingsUpdate } from '../../hooks/useAppSettings';
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss';
 import { AGENT_PROVIDER_IDS } from '../../lib/agent-provider-metadata';
 import {
+  fetchAgentLifecycleStatus,
   fetchAgentLatestVersion,
   fetchAgentSettingsDiagnostics,
   probeCodexAgent,
@@ -56,7 +57,6 @@ import {
   getPiProbeStatusMessage,
   getProviderInstallDocsUrl,
   getProviderCapabilityGroups,
-  getProviderModels,
   reconcileProviderAvailability,
   resolveProviderDiagnostics,
   resolveProviderStatus,
@@ -74,7 +74,6 @@ type ProviderProbeState = 'idle' | 'checking' | 'ready' | 'error';
 
 type AgentProviderSettingsProps = {
   agentRuntime: AgentRuntimeSettings;
-  claudeModels: ClaudeModelInfo;
   providers: AgentProviderDescriptor[];
   providersLoading: boolean;
   providersError: string;
@@ -85,7 +84,6 @@ type AgentProviderSettingsProps = {
 
 export function AgentProviderSettings({
   agentRuntime,
-  claudeModels,
   providers,
   providersLoading,
   providersError,
@@ -118,6 +116,9 @@ export function AgentProviderSettings({
   const [agentRuntimeSaving, setAgentRuntimeSaving] = useState(false);
   const [diagnosticCheckingProviderId, setDiagnosticCheckingProviderId] = useState<AgentProviderId | null>(null);
   const [lifecycleAction, setLifecycleAction] = useState<{ providerId: AgentProviderId; action: 'install' | 'update' } | null>(null);
+  const [lifecycleStatuses, setLifecycleStatuses] = useState<Partial<Record<AgentProviderId, AgentLifecycleStatus>>>({});
+  const selectedLifecycleRunning = lifecycleStatuses[selectedProviderId as AgentProviderId]?.running ?? false;
+  const lifecycleActionRef = useRef<{ providerId: AgentProviderId; action: 'install' | 'update' } | null>(null);
   const registrySyncAttemptsRef = useRef(new Set<string>());
   const claudeInfoRequestIdRef = useRef(0);
   const detailsControllersRef = useRef(new Map<AgentProviderId, AbortController>());
@@ -162,6 +163,17 @@ export function AgentProviderSettings({
       const isCurrentRequest = () => (
         detailsControllersRef.current.get(providerId) === controller && !controller.signal.aborted
       );
+      try {
+        const lifecycleStatus = await fetchAgentLifecycleStatus(providerId, controller.signal);
+        if (!isCurrentRequest()) {
+          return;
+        }
+        setLifecycleStatuses((current) => ({ ...current, [providerId]: lifecycleStatus }));
+      } catch {
+        if (!isCurrentRequest()) {
+          return;
+        }
+      }
       let diagnostics: AgentSettingsDiagnostics;
       try {
         diagnostics = await fetchAgentSettingsDiagnostics(providerId, controller.signal);
@@ -265,6 +277,27 @@ export function AgentProviderSettings({
       geminiControllerRef.current?.abort();
     };
   }, [loadProviderDetails]);
+
+  useEffect(() => {
+    const providerId = selectedProviderId as AgentProviderId;
+    if (!selectedLifecycleRunning) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      void fetchAgentLifecycleStatus(providerId)
+        .then(async (status) => {
+          setLifecycleStatuses((current) => ({ ...current, [providerId]: status }));
+          if (!status.running) {
+            await Promise.allSettled([
+              Promise.resolve().then(() => onRefreshProviders()),
+              loadProviderDetails([providerId]),
+            ]);
+          }
+        })
+        .catch(() => undefined);
+    }, 1500);
+    return () => window.clearInterval(intervalId);
+  }, [loadProviderDetails, onRefreshProviders, selectedLifecycleRunning, selectedProviderId]);
 
   useEffect(() => {
     setSelectedProviderId((current) =>
@@ -474,15 +507,30 @@ export function AgentProviderSettings({
   }
 
   async function runLifecycleAction(providerId: AgentProviderId, action: 'install' | 'update') {
-    if (lifecycleAction) {
+    // State updates are asynchronous; the ref closes the double-click window before the rerender.
+    if (lifecycleAction || lifecycleActionRef.current) {
       return;
     }
-    setLifecycleAction({ providerId, action });
+    const requestedAction = { providerId, action } as const;
+    lifecycleActionRef.current = requestedAction;
+    setLifecycleAction(requestedAction);
+    setLifecycleStatuses((current) => ({
+      ...current,
+      [providerId]: { providerId, running: true, action },
+    }));
     setDetailsError('');
     try {
       const previousVersion = settingsDiagnostics[providerId]?.version ?? null;
       const { result, diagnostics } = await runAgentLifecycleAction(providerId, action);
       setSettingsDiagnostics((current) => ({ ...current, [providerId]: diagnostics }));
+      setLifecycleStatuses((current) => ({
+        ...current,
+        [providerId]: { providerId, running: false, action: null },
+      }));
+      if (lifecycleActionRef.current === requestedAction) {
+        lifecycleActionRef.current = null;
+        setLifecycleAction(null);
+      }
       const probe = providerId === 'grok-build'
         ? runGrokProbe()
         : providerId === 'openai-codex'
@@ -527,10 +575,22 @@ export function AgentProviderSettings({
       const message = error instanceof Error
         ? error.message
         : `${action === 'install' ? '安装' : '更新'} Agent 失败`;
+      try {
+        const status = await fetchAgentLifecycleStatus(providerId);
+        setLifecycleStatuses((current) => ({ ...current, [providerId]: status }));
+        if (status.running) {
+          return;
+        }
+      } catch {
+        // The original lifecycle error remains the actionable failure.
+      }
       setDetailsError(message);
       showToast(message, 'error');
     } finally {
-      setLifecycleAction(null);
+      if (lifecycleActionRef.current === requestedAction) {
+        lifecycleActionRef.current = null;
+        setLifecycleAction(null);
+      }
     }
   }
 
@@ -633,7 +693,6 @@ export function AgentProviderSettings({
             <ProviderDetail
               provider={selectedProvider}
               claudeCliInfo={claudeCliInfo}
-              claudeModels={claudeModels}
               grokProbe={grokProbe}
               grokProbeState={grokProbeState}
               grokProbeError={grokProbeError}
@@ -660,7 +719,9 @@ export function AgentProviderSettings({
               onRefresh={() => loadProviderDetails([selectedProvider.id as AgentProviderId])}
               diagnosticChecking={diagnosticCheckingProviderId === selectedProvider.id}
               onRunNativeDiagnostic={() => runNativeDiagnostic(selectedProvider.id as AgentProviderId)}
-              lifecycleAction={lifecycleAction?.providerId === selectedProvider.id ? lifecycleAction.action : null}
+              lifecycleAction={lifecycleAction?.providerId === selectedProvider.id
+                ? lifecycleAction.action
+                : lifecycleStatuses[selectedProvider.id as AgentProviderId]?.action ?? null}
               onRunLifecycleAction={(action) => void runLifecycleAction(selectedProvider.id as AgentProviderId, action)}
               showToast={showToast}
               agentRuntime={agentRuntime}
@@ -836,7 +897,6 @@ function defaultAgentProviderName(providerId: AgentProviderId) {
 function ProviderDetail({
   provider,
   claudeCliInfo,
-  claudeModels,
   grokProbe,
   grokProbeState,
   grokProbeError,
@@ -871,7 +931,6 @@ function ProviderDetail({
 }: {
   provider: AgentProviderDescriptor;
   claudeCliInfo: ClaudeCliVersionInfo | null;
-  claudeModels: ClaudeModelInfo;
   grokProbe: GrokAcpProbeResult | null;
   grokProbeState: ProviderProbeState;
   grokProbeError: string;
@@ -917,8 +976,12 @@ function ProviderDetail({
   const currentVersion = formatAgentVersion(settingsDiagnostics?.version ?? effectiveVersion);
   const latestVersion = settingsDiagnostics?.latestVersion ?? null;
   const updateAvailable = settingsDiagnostics?.updateAvailable ?? false;
-  const lifecycleStatus = diagnosticsLoading && !settingsDiagnostics
-    ? { label: '检测中', tone: 'installed' }
+  const lifecycleStatus = lifecycleAction === 'install'
+    ? { label: '正在安装', tone: 'running' }
+    : lifecycleAction === 'update'
+      ? { label: '正在更新', tone: 'running' }
+      : diagnosticsLoading && !settingsDiagnostics
+        ? { label: '检测中', tone: 'installed' }
     : !isInstalled
     ? { label: '未安装', tone: 'uninstalled' }
     : updateAvailable
@@ -927,7 +990,6 @@ function ProviderDetail({
         ? { label: '已是最新', tone: 'latest' }
         : { label: '已安装', tone: 'installed' };
   const capabilityGroups = getProviderCapabilityGroups(provider);
-  const models = getProviderModels(provider.id, claudeModels, grokProbe, geminiProbe);
   const grokStatusMessage = getGrokProbeStatusMessage(grokProbeState, grokProbe, grokProbeError);
   const codexStatusMessage = getCodexProbeStatusMessage(
     codexProbeState,
@@ -1007,43 +1069,6 @@ function ProviderDetail({
       </div>
     </div>
   );
-  const providerModelsContent = (
-    <div className="agent-provider-section">
-      <div className="agent-provider-section-head">
-        <h3>可用模型</h3>
-        <span>{models.length > 0
-          ? `${models.length} 个`
-          : provider.id === 'opencode' && openCodeProbe?.probe
-            ? `${openCodeProbe.probe.modelCount} 个`
-            : '尚未检测'}</span>
-      </div>
-      {models.length > 0 ? (
-        <div className="agent-provider-models">
-          {models.map((model) => (
-            <div key={model.id} className={`agent-provider-model${model.current ? ' current' : ''}`}>
-              <span>
-                <strong>{model.label}</strong>
-                <code>{model.id}</code>
-              </span>
-              {model.detail ? <small>{model.detail}</small> : null}
-              {model.current ? <span className="agent-provider-current-model">当前</span> : null}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="agent-provider-empty">
-          {provider.lifecycle === 'planned'
-            ? 'Driver 接入后显示运行时模型'
-            : provider.id === 'opencode' && openCodeProbe?.probe
-              ? '完整模型列表会在新建任务的模型菜单中按需读取'
-              : provider.id === 'hermes-agent'
-                ? 'Hermes 模型与认证由 CodeM 渠道管理'
-                : '当前 Provider 未返回模型'}
-        </div>
-      )}
-    </div>
-  );
-
   return (
     <section
       className={`agent-provider-detail provider-${provider.id}`}
@@ -1119,6 +1144,7 @@ function ProviderDetail({
       <div className="agent-provider-lifecycle" aria-live="polite">
         <div className="agent-provider-lifecycle-main">
           <span className={`agent-provider-version-status ${lifecycleStatus.tone}`}>
+            {lifecycleAction ? <LoaderCircle size={12} className="spin" /> : null}
             {lifecycleStatus.label}
           </span>
           <dl className="agent-provider-version-facts">
@@ -1145,7 +1171,7 @@ function ProviderDetail({
               </dd>
             </div>
           </dl>
-          {!isInstalled || updateAvailable ? (
+          {lifecycleAction || !isInstalled || updateAvailable ? (
             <button
               type="button"
               className="settings-action-button primary agent-provider-lifecycle-action"
@@ -1188,7 +1214,7 @@ function ProviderDetail({
       {provider.id === 'hermes-agent' ? (
         <HermesSettingsPanel
           showToast={showToast}
-          runtimeContent={<>{providerFactsContent}{providerCapabilitiesContent}{providerModelsContent}</>}
+          runtimeContent={<>{providerFactsContent}{providerCapabilitiesContent}</>}
           runtimeStatus={status}
           enabled={provider.lifecycle === 'active'}
           selectable={provider.selectable}
@@ -1200,7 +1226,7 @@ function ProviderDetail({
           agentRuntime={agentRuntime}
           onUpdateAgentRuntime={onUpdateAgentRuntime}
           showToast={showToast}
-          runtimeContent={<>{providerFactsContent}{providerCapabilitiesContent}{providerModelsContent}</>}
+          runtimeContent={<>{providerFactsContent}{providerCapabilitiesContent}</>}
         />
       ) : null}
 
@@ -1283,7 +1309,6 @@ function ProviderDetail({
       ) : null}
 
       {provider.id !== 'hermes-agent' && provider.id !== 'deepseek-dsh' ? providerCapabilitiesContent : null}
-      {provider.id !== 'hermes-agent' && provider.id !== 'deepseek-dsh' ? providerModelsContent : null}
     </section>
   );
 }

@@ -15296,6 +15296,13 @@ button.git-conflict-overview-row:focus-visible,
   white-space: nowrap;
 }
 
+.agent-provider-version-status.running {
+  gap: 5px;
+  border-color: color-mix(in srgb, var(--app-accent, #2563eb) 28%, var(--app-border, #ececec));
+  background: color-mix(in srgb, var(--app-accent, #2563eb) 8%, var(--app-surface, #ffffff));
+  color: color-mix(in srgb, var(--app-accent, #2563eb) 84%, var(--app-text, #242424) 16%);
+}
+
 .agent-provider-version-status.update {
   border-color: color-mix(in srgb, #b45309 28%, var(--app-border, #ececec));
   background: color-mix(in srgb, #f59e0b 9%, var(--app-surface, #ffffff));
@@ -15624,6 +15631,14 @@ button.git-conflict-overview-row:focus-visible,
 .dsh-native-summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dsh-info-note { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border-radius: 8px; background: var(--app-surface-subtle, var(--surface-subtle)); color: var(--app-muted, var(--text-secondary)); font-size: 11px; line-height: 1.5; }
 .dsh-info-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--accent, var(--accent-color)); }
+.dsh-web-ui-link { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; padding: 10px 12px; border: 1px solid var(--app-border, var(--border-subtle)); border-radius: 8px; background: var(--app-surface, var(--surface-raised)); }
+.dsh-web-ui-icon { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 7px; background: color-mix(in srgb, var(--accent, #2374c6) 10%, transparent); color: var(--accent, var(--accent-color)); }
+.dsh-web-ui-copy { min-width: 0; flex: 1 1 auto; display: grid; justify-items: start; gap: 4px; text-align: left; }
+.dsh-web-ui-copy > span { color: var(--app-text-strong, var(--text-primary)); font-size: 12px; font-weight: 600; }
+.dsh-web-ui-copy a { min-width: 0; display: inline-flex; align-items: center; justify-content: flex-start; gap: 5px; color: var(--accent, var(--accent-color)); font-size: 11px; text-decoration: none; }
+.dsh-web-ui-copy a:hover { text-decoration: underline; }
+.dsh-web-ui-url { min-width: 0; overflow: hidden; font: inherit; font-family: var(--app-ui-font-family, var(--font-ui, sans-serif)); text-overflow: ellipsis; white-space: nowrap; }
+.dsh-web-ui-copy small { color: var(--app-muted, var(--text-secondary)); font-size: 11px; }
 .dsh-runtime-card { display: grid; gap: 11px; }
 .dsh-profile-field { display: grid; gap: 7px; color: var(--app-muted, var(--text-secondary)); }
 .dsh-profile-field > span { color: var(--app-text-strong, var(--text-primary)); font-weight: 600; font-size: 12px; }
@@ -15699,72 +15714,6 @@ button.git-conflict-overview-row:focus-visible,
   gap: 4px;
   font-weight: 600;
   white-space: nowrap;
-}
-
-.agent-provider-models {
-  display: grid;
-}
-
-.agent-provider-model {
-  min-width: 0;
-  min-height: 44px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 8px;
-  border-bottom: 1px solid color-mix(in srgb, var(--app-border, #ececec) 72%, transparent);
-}
-
-.agent-provider-model.current {
-  background: color-mix(in srgb, var(--accent, #2374c6) 5%, transparent);
-}
-
-.agent-provider-model > span:first-child {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.agent-provider-model strong,
-.agent-provider-model code {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-provider-model strong {
-  color: var(--app-text-strong, #1f1f1f);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.agent-provider-model code,
-.agent-provider-model small {
-  color: var(--app-muted, #77736c);
-  font-size: 11px;
-}
-
-.agent-provider-model code {
-  font-family: var(--app-code-font-family, var(--code-font));
-}
-
-.agent-provider-current-model {
-  min-height: 22px;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 6px;
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--accent, #2374c6) 9%, var(--app-surface, #ffffff));
-  color: color-mix(in srgb, var(--accent, #2374c6) 82%, var(--app-text, #242424) 18%);
-  font-size: 10px;
-  font-weight: 650;
-}
-
-.agent-provider-empty {
-  padding: 14px 8px 4px;
-  color: var(--app-muted, #77736c);
-  font-size: 12px;
 }
 
 @container agent-provider (max-width: 680px) {

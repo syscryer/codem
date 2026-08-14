@@ -124,7 +124,7 @@ test('getQueuedPromptGuideAvailability blocks guide delivery while the run is in
   );
 });
 
-test('getCodexQueuedPromptGuideContent accepts only ready plain-text queue items', () => {
+test('getCodexQueuedPromptGuideContent accepts text and structured attachments', () => {
   assert.deepEqual(
     getCodexQueuedPromptGuideContent({
       prompt: '继续检查失败路径',
@@ -138,10 +138,15 @@ test('getCodexQueuedPromptGuideContent accepts only ready plain-text queue items
       queueStatus: 'ready',
       contentBlocks: [{ type: 'file_reference', path: 'D:/workspace/a.md', name: 'a.md' }],
     }),
-    {
-      available: false,
-      reason: 'Codex 运行中引导暂只支持纯文本消息。',
-    },
+    { available: true, text: '查看附件' },
+  );
+  assert.deepEqual(
+    getCodexQueuedPromptGuideContent({
+      prompt: '',
+      queueStatus: 'ready',
+      contentBlocks: [{ type: 'file_reference', path: 'D:/workspace/a.md', name: 'a.md' }],
+    }),
+    { available: true, text: 'a.md' },
   );
   assert.deepEqual(
     getCodexQueuedPromptGuideContent({

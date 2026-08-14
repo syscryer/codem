@@ -50,7 +50,7 @@ pub enum AgentPermissionDecision {
 #[derive(Debug)]
 pub enum AgentControlCommand {
     Guide {
-        text: String,
+        input: Vec<crate::codex_app_server::CodexUserInput>,
         acknowledgement: oneshot::Sender<Result<(), String>>,
     },
     Permission {

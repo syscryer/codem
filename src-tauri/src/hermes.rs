@@ -26,6 +26,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, Web
 
 const DEFAULT_PROFILE: &str = "default";
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
+const DASHBOARD_URL: &str = "http://127.0.0.1:9119";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_HTTP_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_LOG_LINES: usize = 500;
@@ -246,6 +247,31 @@ impl HermesService {
         Ok(())
     }
 
+    pub(crate) async fn open_dashboard(&self) -> Result<String, String> {
+        let command = self
+            .resolve_command(false)
+            .ok_or_else(|| "未找到 Hermes CLI，请先安装 hermes 命令".to_string())?;
+        let profile = self.selected_profile();
+        let mut process = Command::new(command);
+        process
+            .args(["--profile", profile.as_str(), "dashboard", "--no-open"])
+            .env("NO_COLOR", "1")
+            .kill_on_drop(false);
+        #[cfg(target_os = "windows")]
+        process.creation_flags(0x08000000);
+        process
+            .spawn()
+            .map_err(|error| format!("启动 Hermes Web UI 失败: {error}"))?;
+
+        for _ in 0..100 {
+            if TcpStream::connect("127.0.0.1:9119").await.is_ok() {
+                return Ok(DASHBOARD_URL.to_string());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Err("Hermes Web UI 启动超时".to_string())
+    }
+
     pub(crate) async fn stop_selected(&self) -> bool {
         let profile = self.selected_profile();
         let key = backend_key(&profile, "system");
@@ -338,6 +364,10 @@ pub(crate) fn router(service: HermesService) -> Router {
         .route(
             "/api/agents/hermes/runtime/restart",
             post(hermes_runtime_restart),
+        )
+        .route(
+            "/api/agents/hermes/runtime/dashboard",
+            post(hermes_runtime_dashboard),
         )
         .route("/api/agents/hermes/profiles", get(hermes_profiles))
         .route(
@@ -479,6 +509,16 @@ async fn hermes_runtime_restart(
         .await
         .map_err(HermesApiError::unavailable)?;
     Ok(Json(json!({ "restarted": true })))
+}
+
+async fn hermes_runtime_dashboard(
+    State(service): State<HermesService>,
+) -> HermesApiResult<Json<Value>> {
+    let url = service
+        .open_dashboard()
+        .await
+        .map_err(HermesApiError::unavailable)?;
+    Ok(Json(json!({ "started": true, "url": url })))
 }
 
 async fn hermes_profiles(State(service): State<HermesService>) -> HermesApiResult<Json<Value>> {

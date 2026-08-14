@@ -186,6 +186,12 @@ export type AgentLifecycleActionResult = {
   mirrorRegistry: string | null;
 };
 
+export type AgentLifecycleStatus = {
+  providerId: AgentProviderId;
+  running: boolean;
+  action: 'install' | 'update' | null;
+};
+
 export type OpenCodeAcpProbeSummary = {
   configured: boolean;
   modelCount: number;

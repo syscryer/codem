@@ -89,7 +89,7 @@ export function deleteHermesMcp(name: string) {
   return requestJson<HermesValue>(`/api/agents/hermes/mcp/servers/${encodeURIComponent(name)}`, jsonRequest('DELETE'));
 }
 
-export function hermesAction(action: 'runtime/start' | 'runtime/stop' | 'runtime/restart' | 'memory/reset' | 'gateway/start' | 'gateway/stop' | 'gateway/restart' | 'diagnostics/doctor' | 'diagnostics/security-audit') {
+export function hermesAction(action: 'runtime/start' | 'runtime/stop' | 'runtime/restart' | 'runtime/dashboard' | 'memory/reset' | 'gateway/start' | 'gateway/stop' | 'gateway/restart' | 'diagnostics/doctor' | 'diagnostics/security-audit') {
   return requestJson<HermesValue>(`/api/agents/hermes/${action}`, jsonRequest('POST', {}));
 }
 

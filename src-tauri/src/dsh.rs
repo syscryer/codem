@@ -249,6 +249,10 @@ impl DshBackend {
 }
 
 impl DshClient {
+    pub(crate) fn web_ui_url(&self) -> &str {
+        &self.backend.base_url
+    }
+
     pub(crate) async fn call(&self, method: &str, payload: Value) -> Result<Value, String> {
         self.backend.rpc(method, payload).await
     }

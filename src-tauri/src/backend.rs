@@ -102,7 +102,7 @@ struct AppState {
     app_data_dir: Arc<PathBuf>,
     settings_write_lock: Arc<Mutex<()>>,
     agent_channels: crate::agent_channels::AgentChannelService,
-    agent_lifecycle_running: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
+    agent_lifecycle_running: Arc<Mutex<std::collections::HashMap<String, String>>>,
     agent_runs: crate::agent_run::AgentRunService,
     workspace_write_lock: Arc<Mutex<()>>,
     workspace_database_init_lock: Arc<Mutex<()>>,
@@ -130,6 +130,19 @@ struct AppState {
     claude_runtime_test_launch: Option<(String, Vec<String>)>,
     #[cfg(test)]
     thread_fork_test_driver: Option<ThreadForkTestDriver>,
+}
+
+struct AgentLifecycleGuard {
+    running: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    provider_id: String,
+}
+
+impl Drop for AgentLifecycleGuard {
+    fn drop(&mut self) {
+        if let Ok(mut running) = self.running.lock() {
+            running.remove(&self.provider_id);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1016,9 +1029,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         app_data_dir: Arc::new(app_data_dir),
         settings_write_lock: Arc::new(Mutex::new(())),
         agent_channels: agent_channels.clone(),
-        agent_lifecycle_running: Arc::new(
-            tokio::sync::Mutex::new(std::collections::HashSet::new()),
-        ),
+        agent_lifecycle_running: Arc::new(Mutex::new(std::collections::HashMap::new())),
         agent_runs,
         workspace_write_lock: Arc::new(Mutex::new(())),
         workspace_database_init_lock: Arc::new(Mutex::new(())),
@@ -1108,7 +1119,10 @@ fn create_router(state: AppState) -> Router {
             get(agent_settings_diagnostics),
         )
         .route("/api/agents/latest-version", get(agent_latest_version))
-        .route("/api/agents/lifecycle", post(agent_lifecycle_action))
+        .route(
+            "/api/agents/lifecycle",
+            get(agent_lifecycle_status).post(agent_lifecycle_action),
+        )
         .route("/api/agents/grok/probe", post(grok_acp_probe))
         .route("/api/agents/codex/probe", post(codex_app_server_probe))
         .route("/api/agents/opencode/probe", post(opencode_acp_probe))
@@ -1895,12 +1909,20 @@ async fn agent_lifecycle_action(
         _ => return Err(ApiError::bad_request_json("不支持的 Agent 操作")),
     };
     let key = provider_id.to_string();
-    {
-        let mut running = state.agent_lifecycle_running.lock().await;
-        if !running.insert(key.clone()) {
+    let _lifecycle_guard = {
+        let mut running = state
+            .agent_lifecycle_running
+            .lock()
+            .map_err(|_| ApiError::internal("读取 Agent 安装状态失败").into_json_body())?;
+        if running.contains_key(&key) {
             return Err(ApiError::conflict("该 Agent 正在执行安装或更新").into_json_body());
         }
-    }
+        running.insert(key.clone(), action.to_string());
+        AgentLifecycleGuard {
+            running: state.agent_lifecycle_running.clone(),
+            provider_id: key,
+        }
+    };
 
     let settings = read_app_settings(&state).unwrap_or_else(|_| default_app_settings());
     let result = execute_agent_lifecycle_action(provider_id, action, &settings)
@@ -1909,8 +1931,25 @@ async fn agent_lifecycle_action(
     if result.is_ok() {
         state.agent_runs.resolve_command(provider_id, true);
     }
-    state.agent_lifecycle_running.lock().await.remove(&key);
     result.map(Json)
+}
+
+async fn agent_lifecycle_status(
+    State(state): State<AppState>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    let provider_id = settings_provider_id(query.get("providerId").map(String::as_str))?;
+    let action = state
+        .agent_lifecycle_running
+        .lock()
+        .map_err(|_| ApiError::internal("读取 Agent 安装状态失败"))?
+        .get(provider_id)
+        .cloned();
+    Ok(Json(json!({
+        "providerId": provider_id,
+        "running": action.is_some(),
+        "action": action,
+    })))
 }
 
 async fn execute_agent_lifecycle_action(
@@ -22720,9 +22759,7 @@ mod tests {
             app_data_dir: Arc::new(app_data_dir.clone()),
             settings_write_lock: Arc::new(Mutex::new(())),
             agent_channels: agent_channels.clone(),
-            agent_lifecycle_running: Arc::new(tokio::sync::Mutex::new(
-                std::collections::HashSet::new(),
-            )),
+            agent_lifecycle_running: Arc::new(Mutex::new(std::collections::HashMap::new())),
             agent_runs: crate::agent_run::AgentRunService::new(
                 resolve_grok_command,
                 resolve_codex_command,
@@ -27530,9 +27567,7 @@ mod tests {
             app_data_dir: Arc::new(test_directory.0.clone()),
             settings_write_lock: Arc::new(Mutex::new(())),
             agent_channels: agent_channels.clone(),
-            agent_lifecycle_running: Arc::new(tokio::sync::Mutex::new(
-                std::collections::HashSet::new(),
-            )),
+            agent_lifecycle_running: Arc::new(Mutex::new(std::collections::HashMap::new())),
             agent_runs: crate::agent_run::AgentRunService::new(
                 resolve_grok_command,
                 resolve_codex_command,

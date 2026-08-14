@@ -10,6 +10,7 @@ import type {
   AgentProviderId,
   AgentLifecycleActionResult,
   AgentLatestVersionCheck,
+  AgentLifecycleStatus,
   AgentSettingsDiagnostics,
   CodexAppServerProbeResult,
   GrokAcpProbeResult,
@@ -224,6 +225,18 @@ export function listSelectableAgentProviders(registry: AgentProviderRegistry) {
 
 export function resolveChatRuntimeKind(providerId: string) {
   return getAgentProviderMetadata(providerId)?.runtimeKind ?? 'unsupported';
+}
+
+export async function fetchAgentLifecycleStatus(
+  providerId: AgentProviderId,
+  signal?: AbortSignal,
+): Promise<AgentLifecycleStatus> {
+  const query = new URLSearchParams({ providerId });
+  const response = await fetch(`/api/agents/lifecycle?${query.toString()}`, { signal });
+  if (!response.ok) {
+    throw new Error('读取 Agent 安装状态失败');
+  }
+  return await response.json() as AgentLifecycleStatus;
 }
 
 export async function probeGeminiAgent(signal?: AbortSignal): Promise<GeminiAcpProbeResult> {

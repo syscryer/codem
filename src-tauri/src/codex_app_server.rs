@@ -1095,7 +1095,7 @@ where
                 }
                 command = control.recv(), if control_channel_open => {
                     match command {
-                        Some(AgentControlCommand::Guide { text, acknowledgement }) => {
+                        Some(AgentControlCommand::Guide { input, acknowledgement }) => {
                             let cancel_requested = *cancel.borrow();
                             self.handle_guide_command(
                                 thread_id,
@@ -1103,7 +1103,7 @@ where
                                 cancel_requested,
                                 cancel_sent,
                                 !pending_interactions.is_empty(),
-                                text,
+                                input,
                                 acknowledgement,
                                 &mut guide_requests,
                             ).await?;
@@ -1238,7 +1238,7 @@ where
         cancel_requested: bool,
         cancel_sent: bool,
         has_pending_interactions: bool,
-        text: String,
+        input: Vec<CodexUserInput>,
         acknowledgement: oneshot::Sender<Result<(), String>>,
         guide_requests: &mut HashMap<u64, oneshot::Sender<Result<(), String>>>,
     ) -> Result<(), CodexAppServerError> {
@@ -1260,7 +1260,7 @@ where
                 json!({
                     "threadId": thread_id,
                     "expectedTurnId": active_turn_id,
-                    "input": [{ "type": "text", "text": text }],
+                    "input": input,
                 }),
             )
             .await?;
@@ -4593,7 +4593,9 @@ mod tests {
         let (guide_ack, guide_result) = oneshot::channel();
         control_sender
             .send(AgentControlCommand::Guide {
-                text: "too late".to_string(),
+                input: vec![CodexUserInput::Text {
+                    text: "too late".to_string(),
+                }],
                 acknowledgement: guide_ack,
             })
             .expect("submit guide while cancelling");
@@ -4627,7 +4629,9 @@ mod tests {
                 true,
                 false,
                 false,
-                "too late".to_string(),
+                vec![CodexUserInput::Text {
+                    text: "too late".to_string(),
+                }],
                 acknowledgement,
                 &mut guide_requests,
             )
@@ -4697,7 +4701,18 @@ mod tests {
         let (acknowledgement, acknowledgement_result) = oneshot::channel();
         control_sender
             .send(AgentControlCommand::Guide {
-                text: "check the failing test".to_string(),
+                input: vec![
+                    CodexUserInput::Text {
+                        text: "check the failing test".to_string(),
+                    },
+                    CodexUserInput::LocalImage {
+                        path: "D:/workspace/screenshot.png".to_string(),
+                    },
+                    CodexUserInput::Text {
+                        text: "本地文件：notes.md\n路径：D:/workspace/notes.md\n\ncontext"
+                            .to_string(),
+                    },
+                ],
                 acknowledgement,
             })
             .expect("submit guide");
@@ -4707,7 +4722,11 @@ mod tests {
         assert_eq!(steer["params"]["expectedTurnId"], "turn-1");
         assert_eq!(
             steer["params"]["input"],
-            json!([{ "type": "text", "text": "check the failing test" }])
+            json!([
+                { "type": "text", "text": "check the failing test" },
+                { "type": "localImage", "path": "D:/workspace/screenshot.png" },
+                { "type": "text", "text": "本地文件：notes.md\n路径：D:/workspace/notes.md\n\ncontext" }
+            ])
         );
         let mut acknowledgement_result = Box::pin(acknowledgement_result);
         assert!(
@@ -4735,7 +4754,9 @@ mod tests {
         let (pending_guide_ack, pending_guide_result) = oneshot::channel();
         control_sender
             .send(AgentControlCommand::Guide {
-                text: "answer before approval".to_string(),
+                input: vec![CodexUserInput::Text {
+                    text: "answer before approval".to_string(),
+                }],
                 acknowledgement: pending_guide_ack,
             })
             .expect("submit guide while approval is pending");
@@ -4787,7 +4808,9 @@ mod tests {
         let (acknowledgement, acknowledgement_result) = oneshot::channel();
         control_sender
             .send(AgentControlCommand::Guide {
-                text: "too early".to_string(),
+                input: vec![CodexUserInput::Text {
+                    text: "too early".to_string(),
+                }],
                 acknowledgement,
             })
             .expect("submit guide");
@@ -4879,7 +4902,9 @@ mod tests {
         let (acknowledgement, acknowledgement_result) = oneshot::channel();
         control_sender
             .send(AgentControlCommand::Guide {
-                text: "unsupported steer".to_string(),
+                input: vec![CodexUserInput::Text {
+                    text: "unsupported steer".to_string(),
+                }],
                 acknowledgement,
             })
             .expect("submit guide");

@@ -28,7 +28,6 @@ type AgentModelSettingsSectionProps = {
 
 export function AgentModelSettingsSection({
   agentRuntime,
-  claudeModels,
   providers,
   providersLoading,
   providersError,
@@ -79,7 +78,6 @@ export function AgentModelSettingsSection({
       <div hidden={activeTab !== 'agents'}>
         <AgentProviderSettings
           agentRuntime={agentRuntime}
-          claudeModels={claudeModels}
           providers={providers}
           providersLoading={providersLoading}
           providersError={providersError}

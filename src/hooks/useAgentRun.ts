@@ -77,6 +77,7 @@ import type {
   AgentProviderId,
   AgentChannel,
   AgentProviderDescriptor,
+  AgentRuntimeStatus,
   AgentModelCatalog,
   AgentRunEvent,
   ApprovalDecision,
@@ -1321,7 +1322,15 @@ export function useAgentRun({
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: guideContent.text }),
+          body: JSON.stringify({
+            prompt: targetPrompt.prompt,
+            contentBlocks: buildRunContentBlocks({
+              prompt: targetPrompt.prompt,
+              attachments: targetPrompt.attachments,
+              contentBlocks: targetPrompt.contentBlocks,
+            }),
+            workingDirectory: context.workingDirectory,
+          }),
         },
       );
       const payload = await response.json().catch(() => null) as {
@@ -2295,10 +2304,7 @@ export function useAgentRun({
     if (context.cancelFallbackTimer === null) {
       context.cancelFallbackTimer = window.setTimeout(() => {
         context.cancelFallbackTimer = null;
-        if (!context.terminal && runContextsByThreadIdRef.current.get(context.threadId) === context) {
-          context.abortController.abort();
-          settleRunWithoutTerminal(context, '已停止');
-        }
+        void reconcileCancelledRun(context);
       }, AGENT_CANCEL_FALLBACK_MS);
     }
     if (context.runId) {
@@ -2324,8 +2330,51 @@ export function useAgentRun({
         content: error instanceof Error ? error.message : '停止 Agent 失败',
         tone: 'error',
       });
-      context.abortController.abort();
-      settleRunWithoutTerminal(context, '已停止');
+      context.cancelRequestSent = false;
+      setRunInterrupting(context, false);
+      updateThreadTurn(context.threadId, context.turnId, (turn) => ({
+        ...turn,
+        activity: '停止请求未确认，可重试停止',
+      }));
+    }
+  }
+
+  async function reconcileCancelledRun(context: AgentRunContext) {
+    if (context.terminal || runContextsByThreadIdRef.current.get(context.threadId) !== context) {
+      return;
+    }
+    try {
+      const response = await fetch(`/api/agents/runtime/${encodeURIComponent(context.threadId)}`);
+      if (!response.ok) {
+        throw new Error((await readErrorResponseText(response)) || '读取 Agent 运行状态失败');
+      }
+      const status = await response.json() as AgentRuntimeStatus;
+      const oldRunReleased = status.phase === 'absent' || (
+        status.currentRunId !== context.runId && status.phase !== 'running'
+      );
+      if (oldRunReleased) {
+        context.abortController.abort();
+        settleRunWithoutTerminal(context, '已停止');
+        return;
+      }
+      context.cancelRequestSent = false;
+      setRunInterrupting(context, false);
+      updateThreadTurn(context.threadId, context.turnId, (turn) => ({
+        ...turn,
+        activity: '仍在停止，可重试停止',
+      }));
+    } catch (error) {
+      appendDebug(context.threadId, {
+        title: 'Agent 停止状态未确认',
+        content: error instanceof Error ? error.message : '读取 Agent 运行状态失败',
+        tone: 'error',
+      });
+      context.cancelRequestSent = false;
+      setRunInterrupting(context, false);
+      updateThreadTurn(context.threadId, context.turnId, (turn) => ({
+        ...turn,
+        activity: '停止状态未确认，可重试停止',
+      }));
     }
   }
 
