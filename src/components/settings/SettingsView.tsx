@@ -45,6 +45,7 @@ import { ShortcutsSettingsSection } from './ShortcutsSettings';
 import { UsageSettingsSection } from './UsageSettings';
 import { WorktreeSettingsSection } from './WorktreeSettings';
 import { NetworkProxySettingsSection } from './NetworkProxySettings';
+import { WebDavSyncSettingsSection } from './WebDavSyncSettingsSection';
 
 type SettingsViewProps = {
   hidden?: boolean;
@@ -112,6 +113,7 @@ const sectionTitles: Record<SettingsSection, string> = {
   globalPrompts: '全局规则',
   openWith: '打开方式',
   networkProxy: '网络代理',
+  sync: '同步',
 };
 
 export function SettingsView({
@@ -296,6 +298,10 @@ export function SettingsView({
           projectPath={activeProject?.path}
         />
       );
+    }
+
+    if (activeSection === 'sync') {
+      return <WebDavSyncSettingsSection showToast={showToast} onRefreshAgentChannels={onRefreshAgentChannels} />;
     }
 
     return <SettingsEmptySection title={sectionTitles[activeSection]} />;

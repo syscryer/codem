@@ -689,7 +689,62 @@ export type SettingsSection =
   | 'plugins'
   | 'globalPrompts'
   | 'openWith'
-  | 'networkProxy';
+  | 'networkProxy'
+  | 'sync';
+
+export type WebDavSyncSettings = {
+  enabled: boolean;
+  baseUrl: string;
+  username: string;
+  passwordSaved: boolean;
+  remoteRoot: string;
+  profile: string;
+  lastSyncAt: string | null;
+  lastSnapshotId: string | null;
+  lastRemoteDevice: string | null;
+  lastError: string | null;
+  updatedAt: string;
+};
+
+export type WebDavSettingsInput = {
+  enabled: boolean;
+  baseUrl: string;
+  username: string;
+  password?: string | null;
+  passwordTouched: boolean;
+  remoteRoot: string;
+  profile: string;
+};
+
+export type WebDavTestResult = {
+  ok: boolean;
+  message: string;
+  latencyMs: number;
+};
+
+export type WebDavRemoteInfo = {
+  exists: boolean;
+  compatible: boolean;
+  reason: string | null;
+  snapshotId: string | null;
+  deviceName: string | null;
+  createdAt: string | null;
+  channelCount: number | null;
+  modelCount: number | null;
+  hasSecrets: boolean | null;
+  dataSize: number | null;
+};
+
+export type WebDavSyncResult = {
+  direction: 'upload' | 'download';
+  snapshotId: string;
+  syncedAt: string;
+  channelCount: number;
+  modelCount: number;
+  secretCount: number;
+  dataSize: number;
+  backupDir: string | null;
+};
 
 export type AgentNetworkProxyProtocol = 'http' | 'https' | 'socks5';
 

@@ -183,7 +183,7 @@ struct UpdateAgentChannelModelRequest {
 }
 
 #[derive(Debug)]
-struct AgentChannelApiError {
+pub(crate) struct AgentChannelApiError {
     status: StatusCode,
     message: String,
 }
@@ -210,6 +210,10 @@ impl AgentChannelApiError {
             status: StatusCode::CONFLICT,
             message: message.into(),
         }
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
     }
 
     fn internal(message: impl Into<String>) -> Self {
@@ -474,7 +478,7 @@ fn require_text<'a>(value: &'a str, message: &str) -> AgentChannelApiResult<&'a 
     }
 }
 
-fn validate_provider_id(value: &str) -> AgentChannelApiResult<&str> {
+pub(crate) fn validate_provider_id(value: &str) -> AgentChannelApiResult<&str> {
     match value {
         CLAUDE_CODE_PROVIDER_ID
         | OPENAI_CODEX_PROVIDER_ID
@@ -488,7 +492,10 @@ fn validate_provider_id(value: &str) -> AgentChannelApiResult<&str> {
     }
 }
 
-fn validate_protocol(provider_id: &str, protocol: AiProtocol) -> AgentChannelApiResult<()> {
+pub(crate) fn validate_protocol(
+    provider_id: &str,
+    protocol: AiProtocol,
+) -> AgentChannelApiResult<()> {
     let supported = match provider_id {
         CLAUDE_CODE_PROVIDER_ID => protocol == AiProtocol::AnthropicMessages,
         OPENAI_CODEX_PROVIDER_ID => protocol == AiProtocol::OpenaiResponses,
@@ -1869,7 +1876,10 @@ fn upsert_model(
     repair_default_model(connection, channel_id)
 }
 
-fn repair_default_channel(connection: &Connection, provider_id: &str) -> Result<(), String> {
+pub(crate) fn repair_default_channel(
+    connection: &Connection,
+    provider_id: &str,
+) -> Result<(), String> {
     let default_channel_id: Option<String> = connection
         .query_row(
             r#"SELECT id FROM agent_channels

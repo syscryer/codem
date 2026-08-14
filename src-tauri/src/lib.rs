@@ -13,3 +13,4 @@ pub mod hermes;
 pub mod ordinary_chat;
 pub mod pi_rpc;
 pub mod provider_import;
+pub mod webdav_sync;

@@ -17990,6 +17990,54 @@ button.git-conflict-overview-row:focus-visible,
   width: 132px;
 }
 
+.webdav-password-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+
+.webdav-password-field .settings-text-input {
+  width: 100%;
+  min-width: 0;
+  padding-right: 34px;
+}
+
+.webdav-password-toggle {
+  position: absolute;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-muted);
+  cursor: pointer;
+}
+
+.webdav-password-toggle:hover {
+  background: color-mix(in srgb, var(--app-text) 10%, transparent);
+}
+
+.webdav-sync-hint {
+  margin: 10px 2px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--app-muted);
+}
+
+.settings-action-button:focus-visible,
+.settings-icon-button:focus-visible,
+.dialog-button:focus-visible,
+.webdav-password-toggle:focus-visible {
+  outline: 2px solid var(--app-focus-outline);
+  outline-offset: 2px;
+}
+
 @media (max-width: 680px) {
   .network-proxy-actions {
     display: grid;

@@ -1003,6 +1003,8 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
 
     let automation = crate::automation::AutomationService::new(app_data_dir.clone());
     let secrets = crate::ordinary_chat::secrets::SecretStore::new(app_data_dir.clone());
+    let webdav_sync =
+        crate::webdav_sync::WebDavSyncService::new(app_data_dir.clone(), secrets.clone());
     let ordinary_chat = crate::ordinary_chat::OrdinaryChatService::with_secrets(
         app_data_dir.clone(),
         secrets.clone(),
@@ -1055,6 +1057,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         .merge(crate::ordinary_chat::router(ordinary_chat))
         .merge(crate::provider_import::router(provider_import))
         .merge(crate::agent_channels::router(agent_channels))
+        .merge(crate::webdav_sync::router(webdav_sync))
         .merge(crate::agent_mux::router(agent_mux))
         .merge(crate::hermes::router(hermes))
         .layer(desktop_cors_layer());

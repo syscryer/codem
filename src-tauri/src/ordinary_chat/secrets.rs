@@ -20,7 +20,7 @@ pub(crate) struct SecretStore {
     lock: Arc<Mutex<()>>,
 }
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 struct SecretPayload {
     secrets: HashMap<String, String>,
 }
@@ -70,6 +70,55 @@ impl SecretStore {
         let mut payload = self.read_payload_unlocked()?;
         if payload.secrets.remove(slot).is_some() {
             self.write_payload_unlocked(&payload)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn entries_with_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<std::collections::BTreeMap<String, String>, String> {
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|_| "API Key 存储锁不可用".to_string())?;
+        Ok(self
+            .read_payload_unlocked()?
+            .secrets
+            .into_iter()
+            .filter(|(slot, _)| slot.starts_with(prefix))
+            .collect())
+    }
+
+    pub(crate) fn replace_prefix_with_rollback<F>(
+        &self,
+        prefix: &str,
+        entries: &std::collections::BTreeMap<String, String>,
+        operation: F,
+    ) -> Result<(), String>
+    where
+        F: FnOnce() -> Result<(), String>,
+    {
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|_| "API Key 存储锁不可用".to_string())?;
+        let original = self.read_payload_unlocked()?;
+        let mut replacement = original.clone();
+        replacement
+            .secrets
+            .retain(|slot, _| !slot.starts_with(prefix));
+        for (slot, value) in entries {
+            replacement.secrets.insert(slot.clone(), value.clone());
+        }
+        self.write_payload_unlocked(&replacement)?;
+        if let Err(operation_error) = operation() {
+            return match self.write_payload_unlocked(&original) {
+                Ok(()) => Err(operation_error),
+                Err(rollback_error) => Err(format!(
+                    "{operation_error}；恢复原 API Key 数据失败: {rollback_error}"
+                )),
+            };
         }
         Ok(())
     }
