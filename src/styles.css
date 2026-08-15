@@ -18258,6 +18258,8 @@ button.git-conflict-overview-row:focus-visible,
   gap: 5px;
   padding: 0 10px;
   font-size: 12px;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .settings-icon-button {
@@ -26277,6 +26279,7 @@ div[data-popover-portal] > * {
 .ai-provider-settings-toolbar > button,
 .agent-channel-copy-button {
   min-height: 30px;
+  flex: 0 0 auto;
   padding: 0 10px;
   display: inline-flex;
   align-items: center;
@@ -26284,6 +26287,7 @@ div[data-popover-portal] > * {
   gap: 6px;
   border-radius: 7px;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .agent-channel-copy-button.confirming {
@@ -28470,6 +28474,10 @@ div[data-popover-portal] > * {
 
 .hermes-resource-list .settings-list-row > div:first-child {
   min-width: 0;
+}
+
+.hermes-resource-list .settings-list-actions {
+  display: inline-flex;
 }
 
 .hermes-resource-list .settings-list-row strong,
