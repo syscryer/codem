@@ -7474,28 +7474,63 @@ fn parse_claude_cli_version(output: &str) -> Option<String> {
 }
 
 fn compare_semantic_versions(left: &str, right: &str) -> i8 {
-    let parse = |value: &str| -> Vec<i64> {
+    use std::cmp::Ordering;
+
+    fn parse(value: &str) -> (&str, Option<&str>) {
+        let value = value.split_once('+').map_or(value, |(version, _)| version);
         value
-            .split(['-', '+'])
-            .next()
-            .unwrap_or(value)
-            .split('.')
-            .map(|piece| piece.parse::<i64>().unwrap_or(0))
-            .collect()
-    };
-    let left_parts = parse(left);
-    let right_parts = parse(right);
+            .split_once('-')
+            .map_or((value, None), |(core, prerelease)| (core, Some(prerelease)))
+    }
+    let (left_core, left_prerelease) = parse(left);
+    let (right_core, right_prerelease) = parse(right);
+    let left_parts = left_core.split('.').collect::<Vec<_>>();
+    let right_parts = right_core.split('.').collect::<Vec<_>>();
     for index in 0..3 {
-        let left_value = *left_parts.get(index).unwrap_or(&0);
-        let right_value = *right_parts.get(index).unwrap_or(&0);
-        if left_value > right_value {
-            return 1;
-        }
-        if left_value < right_value {
-            return -1;
+        let left_value = left_parts
+            .get(index)
+            .and_then(|piece| piece.parse::<u64>().ok())
+            .unwrap_or(0);
+        let right_value = right_parts
+            .get(index)
+            .and_then(|piece| piece.parse::<u64>().ok())
+            .unwrap_or(0);
+        match left_value.cmp(&right_value) {
+            Ordering::Greater => return 1,
+            Ordering::Less => return -1,
+            Ordering::Equal => {}
         }
     }
-    0
+
+    match (left_prerelease, right_prerelease) {
+        (None, None) => 0,
+        (None, Some(_)) => 1,
+        (Some(_), None) => -1,
+        (Some(left), Some(right)) => {
+            let mut left_identifiers = left.split('.');
+            let mut right_identifiers = right.split('.');
+            loop {
+                match (left_identifiers.next(), right_identifiers.next()) {
+                    (None, None) => return 0,
+                    (None, Some(_)) => return -1,
+                    (Some(_), None) => return 1,
+                    (Some(left), Some(right)) => {
+                        let ordering = match (left.parse::<u64>(), right.parse::<u64>()) {
+                            (Ok(left), Ok(right)) => left.cmp(&right),
+                            (Ok(_), Err(_)) => Ordering::Less,
+                            (Err(_), Ok(_)) => Ordering::Greater,
+                            (Err(_), Err(_)) => left.cmp(right),
+                        };
+                        match ordering {
+                            Ordering::Greater => return 1,
+                            Ordering::Less => return -1,
+                            Ordering::Equal => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn extract_agent_semantic_version(value: &str) -> Option<String> {
@@ -22833,13 +22868,14 @@ mod tests {
         claude_input_message_has_content, claude_install_display_command,
         claude_install_lifecycle_plan, claude_runtime_phase_from_events,
         claude_uninstalled_update_lifecycle_plan, codex_snapshot_to_conversation_turns,
-        command_output_with_timeout, compare_project_file_entries, complete_thread_fork_history,
-        configure_agent_lifecycle_environment, create_project_row, create_router,
-        create_runtime_recovery_hint, create_thread_row, current_claude_install_lifecycle_plan,
-        default_claude_command_paths, default_grok_command_path, default_pi_command_paths,
-        desktop_cors_layer, ensure_agent_plugin_management_supported,
-        ensure_claude_thread_fork_idle, extract_agent_semantic_version, finalize_local_thread_fork,
-        hermes_command_paths, import_claude_sessions_from_root, initialize_workspace_database,
+        command_output_with_timeout, compare_project_file_entries, compare_semantic_versions,
+        complete_thread_fork_history, configure_agent_lifecycle_environment, create_project_row,
+        create_router, create_runtime_recovery_hint, create_thread_row,
+        current_claude_install_lifecycle_plan, default_claude_command_paths,
+        default_grok_command_path, default_pi_command_paths, desktop_cors_layer,
+        ensure_agent_plugin_management_supported, ensure_claude_thread_fork_idle,
+        extract_agent_semantic_version, finalize_local_thread_fork, hermes_command_paths,
+        import_claude_sessions_from_root, initialize_workspace_database,
         install_skill_directory_safely, is_agent_lifecycle_network_failure, is_mobile_stop_request,
         lifecycle_plan, lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
         list_agent_plugin_marketplaces_value, list_agent_skills_value, list_slash_commands_value,
@@ -26983,6 +27019,14 @@ mod tests {
             Some("1.18.2-beta.1")
         );
         assert_eq!(extract_agent_semantic_version("version unknown"), None);
+    }
+
+    #[test]
+    fn agent_lifecycle_semantic_version_comparison_handles_prereleases() {
+        assert_eq!(compare_semantic_versions("0.1.0-rc.6", "0.1.0-rc.7"), -1);
+        assert_eq!(compare_semantic_versions("0.1.0-rc.10", "0.1.0-rc.9"), 1);
+        assert_eq!(compare_semantic_versions("0.1.0-rc.7", "0.1.0"), -1);
+        assert_eq!(compare_semantic_versions("0.1.0", "0.1.0-rc.7"), 1);
     }
 
     #[test]
