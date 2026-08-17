@@ -1,0 +1,13 @@
+{
+  "name": "CodeM Mobile",
+  "short_name": "CodeM",
+  "description": "远程查看和控制电脑上的 CodeM Agent 任务",
+  "start_url": "/mobile/tasks",
+  "scope": "/mobile/",
+  "display": "standalone",
+  "background_color": "#f2f2f7",
+  "theme_color": "#f2f2f7",
+  "icons": [
+    { "src": "/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

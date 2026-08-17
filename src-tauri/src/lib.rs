@@ -10,6 +10,7 @@ pub mod claude_session_fork;
 pub mod codex_app_server;
 pub mod dsh;
 pub mod hermes;
+pub mod mobile_companion;
 pub mod ordinary_chat;
 pub mod pi_rpc;
 pub mod provider_import;

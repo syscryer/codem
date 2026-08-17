@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEventHandler } from 'react';
 import { ArrowUp, BookOpen, Brain, Check, ChevronDown, CornerDownRight, Globe, Image, Lightbulb, Loader2, Mic, Pencil, Plus, Puzzle, RefreshCw, Route, Server, ServerCog, Shield, Square, Unlock, X, Zap } from 'lucide-react';
-import { CLAUDE_CODE_PROVIDER_ID, DEFAULT_MODEL_VALUE, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, permissionMenuModes } from '../constants';
+import { CLAUDE_CODE_PROVIDER_ID, CLAUDE_EFFORT_OPTIONS, DEFAULT_MODEL_VALUE, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, permissionMenuModes } from '../constants';
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss';
 import { useSlashCommands } from '../hooks/useSlashCommands';
 import { buildComposerContextUsage, shouldRefreshNativeContextOnOpen } from '../lib/composer-context-usage';
@@ -73,20 +73,6 @@ type FileReferenceSearchResult = {
   rel: string;
   isDirectory: boolean;
 };
-
-const claudeEffortOptions: Array<{
-  value: ClaudeEffortSelection;
-  label: string;
-  description: string;
-}> = [
-  { value: 'default', label: '默认', description: '使用 Claude Code 默认思考级别' },
-  { value: 'low', label: 'Low', description: '更快，适合简单修改' },
-  { value: 'medium', label: 'Medium', description: '平衡速度和推理' },
-  { value: 'high', label: 'High', description: '复杂代码和排查问题' },
-  { value: 'xhigh', label: 'XHigh', description: '更深入的推理' },
-  { value: 'max', label: 'Max', description: '当前会话最高努力级别' },
-  { value: 'ultracode', label: 'Ultracode', description: 'xhigh 与自动 workflows，仅当前会话' },
-];
 
 type ComposerProps = {
   variant?: 'agent' | 'ordinary';
@@ -1864,7 +1850,7 @@ export function Composer({
               <PopoverPortal open={effortMenuOpen} anchorRef={effortMenuRef} placement="top-end">
                 <div className="effort-menu" role="menu">
                   <div className="model-menu-title">思考级别</div>
-                  {claudeEffortOptions.map((item) => (
+                  {CLAUDE_EFFORT_OPTIONS.map((item) => (
                     <button
                       key={item.value}
                       type="button"
@@ -2465,7 +2451,7 @@ function formatAttachmentSize(size: number) {
 }
 
 function effortLabel(effort: ClaudeEffortSelection) {
-  return claudeEffortOptions.find((item) => item.value === effort)?.label ?? '默认';
+  return CLAUDE_EFFORT_OPTIONS.find((item) => item.value === effort)?.label ?? '默认';
 }
 
 function agentModelTriggerLabel(modelId: string, selectedModel?: AgentModelOption) {

@@ -327,12 +327,7 @@ impl DshClient {
         self.backend
             .rpc(
                 "session.selectModel",
-                json!({
-                    "sessionId": session_id,
-                    "provider": provider,
-                    "model": model,
-                    "reasoningEffort": reasoning_effort,
-                }),
+                dsh_select_model_payload(session_id, &provider, &model, reasoning_effort),
             )
             .await?;
         Ok(())
@@ -444,6 +439,23 @@ impl DshClient {
     }
 
     pub(crate) async fn close(self) {}
+}
+
+fn dsh_select_model_payload(
+    session_id: &str,
+    provider: &str,
+    model: &str,
+    reasoning_effort: Option<&str>,
+) -> Value {
+    let mut payload = json!({
+        "sessionId": session_id,
+        "provider": provider,
+        "model": model,
+    });
+    if let Some(reasoning_effort) = reasoning_effort.filter(|value| !value.trim().is_empty()) {
+        payload["reasoningEffort"] = json!(reasoning_effort);
+    }
+    payload
 }
 
 fn resolve_model_selection(selection: &str, catalog: &Value) -> Result<(String, String), String> {
@@ -748,5 +760,25 @@ mod tests {
                 "deepseek-v4-flash".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn dsh_select_model_omits_absent_reasoning_effort() {
+        let payload = dsh_select_model_payload(
+            "session-dsh",
+            "deepseek-official",
+            "deepseek-v4-flash",
+            None,
+        );
+        assert_eq!(payload["sessionId"], "session-dsh");
+        assert!(payload.get("reasoningEffort").is_none());
+
+        let payload = dsh_select_model_payload(
+            "session-dsh",
+            "deepseek-official",
+            "deepseek-v4-flash",
+            Some("high"),
+        );
+        assert_eq!(payload["reasoningEffort"], "high");
     }
 }

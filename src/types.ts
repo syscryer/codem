@@ -578,6 +578,7 @@ export type InputContentBlockSummary =
       mimeType?: string;
       size?: number;
       imageBytes?: number;
+      previewId?: string;
     }
   | {
       type: 'file_text';

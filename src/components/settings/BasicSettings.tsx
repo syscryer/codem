@@ -15,6 +15,7 @@ import {
 } from '../../lib/settings-runtime';
 import { SegmentedControl, SettingsGroup, SettingsRow } from './SettingsControls';
 import { StandardSelect } from '../StandardSelect';
+import { MobileCompanionSettings } from './MobileCompanionSettings';
 
 type BasicSettingsSectionProps = {
   general: GeneralSettings;
@@ -209,6 +210,8 @@ export function BasicSettingsSection({ general, onUpdateGeneral }: BasicSettings
           />
         </SettingsRow>
       </div>
+
+      <MobileCompanionSettings />
 
       <SettingsGroup title="应用更新" insetTitle>
         <SettingsRow

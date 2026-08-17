@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f2f2f7" />
+    <title>CodeM 离线</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100dvh; display: grid; place-items: center; padding: 24px; background: #f2f2f7; color: #1c1c1e; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      main { width: min(100%, 360px); padding: 24px; border: 1px solid rgba(60, 60, 67, 0.16); border-radius: 18px; background: #fff; text-align: center; }
+      h1 { margin: 0 0 10px; font-size: 22px; }
+      p { margin: 0; color: #636366; font-size: 15px; line-height: 1.55; }
+      button { width: 100%; min-height: 48px; margin-top: 20px; border: 0; border-radius: 14px; background: #007aff; color: #fff; font: inherit; font-weight: 700; }
+      @media (prefers-color-scheme: dark) { body { background: #000; color: #f5f5f7; } main { background: #1c1c1e; border-color: #38383a; } p { color: #aeaeb2; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>电脑连接已中断</h1>
+      <p>请确认电脑上的 CodeM 正在运行，并让手机保持在同一局域网。</p>
+      <button type="button" onclick="location.reload()">重新连接</button>
+    </main>
+  </body>
+</html>

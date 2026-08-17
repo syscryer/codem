@@ -114,7 +114,7 @@ function ConversationTurnViewComponent({
   canUndoChangedFiles: boolean;
   activeProject: ProjectSummary | null;
   providerId?: string;
-  attachmentPreviewScope: 'workspace' | 'desktop';
+  attachmentPreviewScope: 'workspace' | 'desktop' | 'mobile';
   collapseIntermediateProcess: boolean;
   thinkingLabel: string;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
@@ -768,7 +768,7 @@ function UserContentBlocks({
   onPreviewImage,
 }: {
   blocks: InputContentBlockSummary[];
-  attachmentPreviewScope: 'workspace' | 'desktop';
+  attachmentPreviewScope: 'workspace' | 'desktop' | 'mobile';
   onPreviewImage: (preview: ImagePreviewItem) => void;
 }) {
   // file_reference 分两种来源：'mention'（@文件，路径已体现在 prompt 文本里）保持隐藏；
@@ -789,8 +789,10 @@ function UserContentBlocks({
   return (
     <div className="user-message-attachments" aria-label="用户附件">
       {visibleBlocks.map((block, index) => {
-        if (block.type === 'image' && block.path) {
-          const imagePath = block.path;
+        const imagePreviewUrl = block.type === 'image'
+          ? buildUserContentBlockPreviewUrl(block, attachmentPreviewScope)
+          : undefined;
+        if (block.type === 'image' && imagePreviewUrl) {
           return (
             <figure key={`${block.type}-${index}`} className="user-message-attachment">
               <button
@@ -798,15 +800,15 @@ function UserContentBlocks({
                 className="user-message-attachment-button"
                 aria-label={`预览图片：${block.name || '图片附件'}`}
                 onClick={() =>
-                  onPreviewImage({
-                    src: buildUserAttachmentPreviewUrl(imagePath, attachmentPreviewScope),
+                onPreviewImage({
+                    src: imagePreviewUrl,
                     alt: block.name || '图片附件',
                     title: block.name || undefined,
                   })
                 }
               >
                 <AuthenticatedImage
-                  src={buildUserAttachmentPreviewUrl(imagePath, attachmentPreviewScope)}
+                  src={imagePreviewUrl}
                   alt={block.name || '图片附件'}
                   className="user-message-attachment-preview"
                   loading="lazy"
@@ -836,7 +838,7 @@ function UserAttachmentGallery({
   onPreviewImage,
 }: {
   attachments: UserImageAttachment[];
-  attachmentPreviewScope?: 'workspace' | 'desktop';
+  attachmentPreviewScope?: 'workspace' | 'desktop' | 'mobile';
   onPreviewImage: (preview: ImagePreviewItem) => void;
 }) {
   return (
@@ -4243,7 +4245,19 @@ function getFileName(filePath: string) {
   return segments[segments.length - 1] || filePath;
 }
 
-function buildUserAttachmentPreviewUrl(filePath: string, scope: 'workspace' | 'desktop') {
+function buildUserContentBlockPreviewUrl(
+  block: Extract<InputContentBlockSummary, { type: 'image' }>,
+  scope: 'workspace' | 'desktop' | 'mobile',
+) {
+  if (scope === 'mobile') {
+    return block.previewId
+      ? `/api/mobile/attachments/${encodeURIComponent(block.previewId)}`
+      : undefined;
+  }
+  return block.path ? buildUserAttachmentPreviewUrl(block.path, scope) : undefined;
+}
+
+function buildUserAttachmentPreviewUrl(filePath: string, scope: 'workspace' | 'desktop' | 'mobile') {
   return scope === 'desktop'
     ? buildDesktopImagePreviewUrl(filePath)
     : buildWorkspaceImagePreviewUrl(filePath);

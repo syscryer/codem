@@ -33,7 +33,7 @@ type ConversationPaneProps = {
   activeProject: ProjectSummary | null;
   activeProjectName?: string;
   providerId?: string;
-  attachmentPreviewScope?: 'workspace' | 'desktop';
+  attachmentPreviewScope?: 'workspace' | 'desktop' | 'mobile';
   emptyDraftTitle?: string;
   emptyDraftDescription?: string;
   emptyDraftActionLabel?: string;
@@ -45,6 +45,9 @@ type ConversationPaneProps = {
   activeTurnId: string;
   transcriptRef: RefObject<HTMLDivElement | null>;
   bottomRef: RefObject<HTMLDivElement | null>;
+  hasEarlierTurns?: boolean;
+  isLoadingEarlierTurns?: boolean;
+  onLoadEarlierTurns?: () => void | Promise<void>;
   undoneTurnIds: Record<string, boolean>;
   onOpenWorkbenchPreview: (request: WorkbenchPreviewRequest) => void;
   onOpenOutputPath: (path: string) => Promise<void>;
@@ -101,6 +104,9 @@ export function ConversationPane({
   activeTurnId,
   transcriptRef,
   bottomRef,
+  hasEarlierTurns = false,
+  isLoadingEarlierTurns = false,
+  onLoadEarlierTurns,
   undoneTurnIds,
   onOpenWorkbenchPreview,
   onOpenOutputPath,
@@ -144,6 +150,8 @@ export function ConversationPane({
     historyLoadAnchorRef.current = null;
   }, [activeThread?.id]);
 
+  const remoteHistoryTurnCount = hasEarlierTurns ? activeThread?.turns.length : undefined;
+
   useLayoutEffect(() => {
     const anchor = historyLoadAnchorRef.current;
     const transcript = transcriptRef.current;
@@ -154,7 +162,7 @@ export function ConversationPane({
     const addedHeight = transcript.scrollHeight - anchor.scrollHeight;
     transcript.scrollTop = anchor.scrollTop + Math.max(0, addedHeight);
     historyLoadAnchorRef.current = null;
-  }, [visibleTurnCount, transcriptRef]);
+  }, [remoteHistoryTurnCount, visibleTurnCount, transcriptRef]);
 
   function syncBottomAnchorVisibility() {
     const transcript = transcriptRef.current;
@@ -192,6 +200,13 @@ export function ConversationPane({
 
     const turnCount = activeThread?.turns.length ?? 0;
     if (visibleTurnCount >= turnCount) {
+      if (hasEarlierTurns && onLoadEarlierTurns && !isLoadingEarlierTurns) {
+        historyLoadAnchorRef.current = {
+          scrollHeight: transcript.scrollHeight,
+          scrollTop: transcript.scrollTop,
+        };
+        void onLoadEarlierTurns();
+      }
       return;
     }
 
@@ -217,7 +232,7 @@ export function ConversationPane({
       transcript.removeEventListener('scroll', handleTranscriptScroll);
       window.removeEventListener('resize', syncBottomAnchorVisibility);
     };
-  }, [activeThread?.id, activeThread?.turns.length, transcriptRef, visibleTurnCount]);
+  }, [activeThread?.id, activeThread?.turns.length, hasEarlierTurns, isLoadingEarlierTurns, onLoadEarlierTurns, transcriptRef, visibleTurnCount]);
 
   useLayoutEffect(() => {
     const threadId = activeThread?.id ?? null;
@@ -334,6 +349,16 @@ export function ConversationPane({
           </div>
         ) : (
           <>
+            {hasEarlierTurns ? (
+              <button
+                type="button"
+                className="conversation-history-load"
+                disabled={isLoadingEarlierTurns}
+                onClick={() => void onLoadEarlierTurns?.()}
+              >
+                {isLoadingEarlierTurns ? '正在加载更早消息…' : '加载更早消息'}
+              </button>
+            ) : null}
             {visibleTurns.map((turn, visibleIndex) => {
               const index = firstVisibleTurnIndex + visibleIndex;
               const canUndoChangedFiles = turn.id === latestChangedFilesTurnId && undoneTurnIds[turn.id] !== true;

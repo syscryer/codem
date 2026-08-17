@@ -218,6 +218,34 @@ test('generic Agent errors preserve the provider detail for the conversation vie
     failed.activity,
     'ACP Provider 请求失败（RPC 429）：All credentials for model grok-4.5 are cooling down',
   );
+  assert.equal(
+    failed.errorMessage,
+    'ACP Provider 请求失败（RPC 429）：All credentials for model grok-4.5 are cooling down',
+  );
+});
+
+test('generic Agent recovery events preserve the actionable hint', () => {
+  const hint = {
+    reason: 'resume-session-missing' as const,
+    message: 'No conversation found with session ID: stale-session',
+    retryable: true,
+    suggestedAction: 'recover' as const,
+    source: 'result' as const,
+  };
+  let turn = apply(createTurn(), {
+    type: 'runtime-reconnect-hint',
+    runId: 'run-1',
+    hint,
+  });
+  turn = apply(turn, {
+    type: 'retryable-error',
+    runId: 'run-1',
+    message: hint.message,
+    hint,
+  });
+
+  assert.deepEqual(turn.recoveryHint, hint);
+  assert.equal(turn.errorMessage, hint.message);
 });
 
 test('cancelled generic Agent streams remain stopped when EOF has no terminal event', () => {

@@ -167,18 +167,28 @@ export function applyAgentRunEventToTurn(
         phase: undefined,
         durationMs: current.durationMs ?? getElapsedDuration(current),
         activity: event.message || 'Agent 运行失败',
+        errorMessage: event.message || current.errorMessage,
         pendingUserInputRequests: [],
         pendingApprovalRequests: [],
       };
     }
+    case 'runtime-reconnect-hint':
+      return {
+        ...current,
+        recoveryHint: event.hint,
+      };
+    case 'retryable-error':
+      return {
+        ...current,
+        recoveryHint: event.hint,
+        errorMessage: event.message || event.hint.message || current.errorMessage,
+      };
     case 'trace':
     case 'claude-event':
     case 'assistant-snapshot':
     case 'raw':
     case 'stderr':
     case 'subagent-delta':
-    case 'runtime-reconnect-hint':
-    case 'retryable-error':
       return current;
     default:
       return current;
@@ -394,6 +404,8 @@ function settleDoneTurn(
     totalCostUsd: event.totalCostUsd ?? withText.totalCostUsd,
     metrics: metrics || withText.metrics,
     activity: stopped ? '已停止' : '运行完成',
+    errorMessage: undefined,
+    recoveryHint: undefined,
     pendingUserInputRequests: [],
     pendingApprovalRequests: [],
   };

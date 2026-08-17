@@ -15,7 +15,7 @@ use axum::{
     extract::{Path as AxumPath, Query, State},
     http::{
         header::{HeaderName, AUTHORIZATION},
-        HeaderValue, Method, Request, StatusCode,
+        HeaderMap, HeaderValue, Method, Request, StatusCode,
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -1027,6 +1027,11 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         hermes.clone(),
     );
     let agent_mux = crate::agent_mux::AgentMuxService::new(app_data_dir.clone());
+    let mobile_companion = crate::mobile_companion::MobileCompanionService::new(
+        app_data_dir.clone(),
+        port,
+        env::var(crate::agent_mux_runtime::RUNTIME_TOKEN_ENV).ok(),
+    );
     let state = AppState {
         app_data_dir: Arc::new(app_data_dir),
         settings_write_lock: Arc::new(Mutex::new(())),
@@ -1060,6 +1065,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         .merge(crate::webdav_sync::router(webdav_sync))
         .merge(crate::agent_mux::router(agent_mux))
         .merge(crate::hermes::router(hermes))
+        .merge(mobile_companion.admin_router())
         .layer(desktop_cors_layer());
     let app = if let Some(token) = env::var(crate::agent_mux_runtime::RUNTIME_TOKEN_ENV)
         .ok()
@@ -1076,6 +1082,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         .map_err(|error| format!("监听 Rust 后端端口失败: {error}"))?;
 
     println!("CodeM Rust backend listening on http://{address}");
+    mobile_companion.start_if_enabled().await;
     axum::serve(listener, app)
         .await
         .map_err(|error| format!("Rust 后端服务异常退出: {error}"))
@@ -1375,6 +1382,10 @@ fn create_router(state: AppState) -> Router {
         .route(
             "/api/threads/{thread_id}/history",
             get(get_thread_history).put(save_thread_history),
+        )
+        .route(
+            "/api/threads/{thread_id}/history/turn",
+            post(merge_thread_history_turn),
         )
         .with_state(state)
         .merge(agent_run_router)
@@ -3732,6 +3743,7 @@ async fn claude_run_interrupt(
 
 async fn claude_run_cancel(
     State(state): State<AppState>,
+    headers: HeaderMap,
     AxumPath(run_id): AxumPath<String>,
 ) -> ApiResult<Json<Value>> {
     let thread_id = state
@@ -3740,13 +3752,43 @@ async fn claude_run_cancel(
         .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?
         .get(&run_id)
         .map(|run| run.thread_id.clone());
-    let cancelled = if let Some(thread_id) = thread_id {
+    let cancelled = if is_mobile_stop_request(&headers) {
+        if let Some(thread_id) = thread_id {
+            let runtime_closed = cancel_thread_runtime(&state, &thread_id)?;
+            if runtime_closed {
+                true
+            } else {
+                let killed = kill_run_child(&state, &run_id)?;
+                push_run_event(
+                    &state,
+                    &run_id,
+                    json!({ "type": "stopped", "runId": run_id, "stopReason": "cancelled" }),
+                );
+                killed
+            }
+        } else {
+            let killed = kill_run_child(&state, &run_id)?;
+            push_run_event(
+                &state,
+                &run_id,
+                json!({ "type": "stopped", "runId": run_id, "stopReason": "cancelled" }),
+            );
+            killed
+        }
+    } else if let Some(thread_id) = thread_id {
         close_thread_runtime(&state, &thread_id)?
     } else {
         kill_run_child(&state, &run_id)?
     };
     mark_run_finished(&state, &run_id);
     Ok(Json(json!({ "cancelled": cancelled })))
+}
+
+fn is_mobile_stop_request(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-codem-mobile-stop")
+        .and_then(|value| value.to_str().ok())
+        == Some("1")
 }
 
 async fn claude_runtime_close(
@@ -3900,20 +3942,76 @@ async fn claude_runtimes(State(state): State<AppState>) -> ApiResult<Json<Value>
     let runtimes = state
         .runtimes
         .lock()
-        .map_err(|error| ApiError::internal(format!("读取 runtime 状态失败: {error}")))?;
+        .map_err(|error| ApiError::internal(format!("读取 runtime 状态失败: {error}")))?
+        .values()
+        .filter(|runtime| !runtime.closed)
+        .map(|runtime| {
+            (
+                runtime.thread_id.clone(),
+                runtime.child_id,
+                runtime.current_run_id.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let runs = state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?;
     let mut statuses = Map::new();
-    for runtime in runtimes.values().filter(|runtime| !runtime.closed) {
+    for (thread_id, child_id, current_run_id) in runtimes {
+        let phase = claude_runtime_phase(
+            current_run_id
+                .as_deref()
+                .and_then(|run_id| runs.get(run_id)),
+            current_run_id.is_some(),
+        );
         statuses.insert(
-            runtime.thread_id.clone(),
+            thread_id.clone(),
             json!({
-                "threadId": runtime.thread_id,
-                "pid": runtime.child_id,
+                "threadId": thread_id,
+                "pid": child_id,
                 "alive": true,
-                "activeRun": runtime.current_run_id.is_some(),
+                "activeRun": current_run_id.is_some(),
+                "currentRunId": current_run_id,
+                "phase": phase,
             }),
         );
     }
     Ok(Json(Value::Object(statuses)))
+}
+
+fn claude_runtime_phase(run: Option<&ActiveRunRecord>, active: bool) -> String {
+    claude_runtime_phase_from_events(
+        run.map(|record| record.events.as_slice()).unwrap_or(&[]),
+        active,
+    )
+}
+
+fn claude_runtime_phase_from_events(events: &[Value], active: bool) -> String {
+    if !active {
+        return "idle".to_string();
+    }
+    for event in events.iter().rev() {
+        match event.get("type").and_then(Value::as_str) {
+            Some("approval-request" | "request-user-input") => return "waiting".to_string(),
+            Some("error") => return "error".to_string(),
+            Some("done") => return "done".to_string(),
+            Some("stopped") => return "stopped".to_string(),
+            Some("phase") => {
+                return event
+                    .get("phase")
+                    .and_then(Value::as_str)
+                    .unwrap_or("running")
+                    .to_string();
+            }
+            Some(
+                "status" | "delta" | "thinking-delta" | "tool-start" | "tool-input-delta"
+                | "tool-stop" | "tool-result",
+            ) => return "running".to_string(),
+            _ => {}
+        }
+    }
+    "running".to_string()
 }
 
 async fn open_with_targets(State(state): State<AppState>) -> Json<Value> {
@@ -6216,6 +6314,40 @@ async fn save_thread_history(
     let mut connection = open_initialized_workspace_database(&state)?;
     write_thread_history(&mut connection, &thread_id, &turns)?;
     Ok(Json(json!({ "ok": true })))
+}
+
+async fn merge_thread_history_turn(
+    State(state): State<AppState>,
+    AxumPath(thread_id): AxumPath<String>,
+    Json(payload): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    let turn = payload
+        .get("turn")
+        .filter(|value| value.is_object())
+        .cloned()
+        .ok_or_else(|| ApiError::bad_request("turn 必须是对象"))?;
+    let _guard = lock_workspace_write(&state)?;
+    let mut connection = open_initialized_workspace_database(&state)?;
+    let changed = merge_thread_history_turn_with_connection(&mut connection, &thread_id, turn)?;
+    Ok(Json(json!({ "ok": true, "changed": changed })))
+}
+
+fn merge_thread_history_turn_with_connection(
+    connection: &mut Connection,
+    thread_id: &str,
+    turn: Value,
+) -> ApiResult<bool> {
+    let mut history = read_thread_history_payload(connection, thread_id)?;
+    let changed = crate::mobile_companion::merge_or_append_mobile_turn(&mut history, turn);
+    if !changed {
+        return Ok(false);
+    }
+    let turns = history
+        .get("turns")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ApiError::internal("线程历史缺少 turns"))?;
+    write_thread_history(connection, thread_id, turns)?;
+    Ok(true)
 }
 
 fn read_workspace_bootstrap(state: &AppState) -> ApiResult<Value> {
@@ -20375,13 +20507,15 @@ fn create_runtime_recovery_hint(message: &str, source: &str) -> Option<Value> {
         || lower == "eof"
     {
         "runtime-ended"
+    } else if (lower.contains("resume") && lower.contains("not exist"))
+        || (lower.contains("no conversation found") && lower.contains("session id"))
+    {
+        "resume-session-missing"
     } else if lower.contains("stale")
         || lower.contains("session expired")
         || lower.contains("thread expired")
     {
         "stale-session"
-    } else if lower.contains("resume") && lower.contains("not exist") {
-        "resume-session-missing"
     } else {
         return None;
     };
@@ -20519,6 +20653,18 @@ fn finish_run_and_close_runtime(state: &AppState, run_id: &str) -> ApiResult<()>
 }
 
 fn close_thread_runtime(state: &AppState, thread_id: &str) -> ApiResult<bool> {
+    close_thread_runtime_with_terminal(state, thread_id, false)
+}
+
+fn cancel_thread_runtime(state: &AppState, thread_id: &str) -> ApiResult<bool> {
+    close_thread_runtime_with_terminal(state, thread_id, true)
+}
+
+fn close_thread_runtime_with_terminal(
+    state: &AppState,
+    thread_id: &str,
+    cancelled: bool,
+) -> ApiResult<bool> {
     mark_delayed_claude_fork_result_unknown(
         state,
         thread_id,
@@ -20540,14 +20686,23 @@ fn close_thread_runtime(state: &AppState, thread_id: &str) -> ApiResult<bool> {
         StatusCode::INTERNAL_SERVER_ERROR,
     );
     if let Some(run_id) = runtime.current_run_id.as_deref() {
-        push_run_event(
-            state,
-            run_id,
-            json!({ "type": "error", "runId": run_id, "message": "Claude 会话已关闭。" }),
-        );
+        if cancelled {
+            push_run_event(
+                state,
+                run_id,
+                json!({ "type": "stopped", "runId": run_id, "stopReason": "cancelled" }),
+            );
+        } else {
+            push_run_event(
+                state,
+                run_id,
+                json!({ "type": "error", "runId": run_id, "message": "Claude 会话已关闭。" }),
+            );
+        }
         mark_run_finished(state, run_id);
     }
-    kill_process_tree(runtime.child_id)
+    let killed = kill_process_tree(runtime.child_id)?;
+    Ok(cancelled || killed)
 }
 
 fn kill_process_tree(child_id: u32) -> ApiResult<bool> {
@@ -22676,29 +22831,30 @@ mod tests {
         build_agent_plugin_command_args, build_claude_input_message,
         build_request_user_input_response_answers, build_usage_provider_rows,
         claude_input_message_has_content, claude_install_display_command,
-        claude_install_lifecycle_plan, claude_uninstalled_update_lifecycle_plan,
-        codex_snapshot_to_conversation_turns, command_output_with_timeout,
-        compare_project_file_entries, complete_thread_fork_history,
+        claude_install_lifecycle_plan, claude_runtime_phase_from_events,
+        claude_uninstalled_update_lifecycle_plan, codex_snapshot_to_conversation_turns,
+        command_output_with_timeout, compare_project_file_entries, complete_thread_fork_history,
         configure_agent_lifecycle_environment, create_project_row, create_router,
-        create_thread_row, current_claude_install_lifecycle_plan, default_claude_command_paths,
-        default_grok_command_path, default_pi_command_paths, desktop_cors_layer,
-        ensure_agent_plugin_management_supported, ensure_claude_thread_fork_idle,
-        extract_agent_semantic_version, finalize_local_thread_fork, hermes_command_paths,
-        import_claude_sessions_from_root, initialize_workspace_database,
-        install_skill_directory_safely, is_agent_lifecycle_network_failure, lifecycle_plan,
-        lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
+        create_runtime_recovery_hint, create_thread_row, current_claude_install_lifecycle_plan,
+        default_claude_command_paths, default_grok_command_path, default_pi_command_paths,
+        desktop_cors_layer, ensure_agent_plugin_management_supported,
+        ensure_claude_thread_fork_idle, extract_agent_semantic_version, finalize_local_thread_fork,
+        hermes_command_paths, import_claude_sessions_from_root, initialize_workspace_database,
+        install_skill_directory_safely, is_agent_lifecycle_network_failure, is_mobile_stop_request,
+        lifecycle_plan, lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
         list_agent_plugin_marketplaces_value, list_agent_skills_value, list_slash_commands_value,
         map_claude_json_line, mark_fork_provider_succeeded, mark_request_user_input_submitted,
-        normalize_agent_plugin_action, normalize_agent_runtime_settings,
-        normalize_general_settings, normalize_open_with_settings, normalize_pi_probe_summary,
-        normalize_request_user_input_answer_value, open_initialized_workspace_database,
-        parse_github_release_tag_version, parse_grok_cli_version, parse_grok_latest_version,
-        parse_hermes_github_release_version, parse_macos_system_proxy_environment,
-        parse_npm_latest_version, parse_pi_installed_packages, parse_request_user_input_event,
-        pi_node_version_supported, prepare_thread_fork_operation,
-        probe_claude_thread_fork_capability, provider_supports_reasoning_effort,
-        read_agent_mcp_config_snapshot, read_fork_source_thread, read_gemini_mcp_config,
-        read_opencode_mcp_config, read_state_value, read_stored_thread_history, read_thread_detail,
+        merge_thread_history_turn_with_connection, normalize_agent_plugin_action,
+        normalize_agent_runtime_settings, normalize_general_settings, normalize_open_with_settings,
+        normalize_pi_probe_summary, normalize_request_user_input_answer_value,
+        open_initialized_workspace_database, parse_github_release_tag_version,
+        parse_grok_cli_version, parse_grok_latest_version, parse_hermes_github_release_version,
+        parse_macos_system_proxy_environment, parse_npm_latest_version,
+        parse_pi_installed_packages, parse_request_user_input_event, pi_node_version_supported,
+        prepare_thread_fork_operation, probe_claude_thread_fork_capability,
+        provider_supports_reasoning_effort, read_agent_mcp_config_snapshot,
+        read_fork_source_thread, read_gemini_mcp_config, read_opencode_mcp_config,
+        read_state_value, read_stored_thread_history, read_thread_detail,
         read_thread_fork_operation, read_thread_summary, recover_stale_thread_fork_operations,
         remove_thread_row, resolve_codex_command, resolve_command_from_path,
         resolve_first_runnable_command, resolve_gemini_command, resolve_grok_command,
@@ -22728,7 +22884,7 @@ mod tests {
     use crate::pi_rpc::{PiModel, PiState};
     use axum::{
         body::Body,
-        http::{header, Method, Request, StatusCode},
+        http::{header, HeaderMap, HeaderValue, Method, Request, StatusCode},
         middleware,
         routing::get,
         Router,
@@ -26342,6 +26498,34 @@ mod tests {
     }
 
     #[test]
+    fn claude_missing_conversation_is_a_recoverable_session_error() {
+        let hint = create_runtime_recovery_hint(
+            "No conversation found with session ID: 94020f31-823e-4d02-bad3-c8fdd58683ff",
+            "result",
+        )
+        .expect("create recovery hint");
+
+        assert_eq!(hint["reason"], "resume-session-missing");
+        assert_eq!(hint["suggestedAction"], "recover");
+        assert_eq!(hint["retryable"], true);
+    }
+
+    #[test]
+    fn claude_runtime_phase_tracks_live_waiting_and_resumed_output() {
+        assert_eq!(claude_runtime_phase_from_events(&[], false), "idle");
+        assert_eq!(claude_runtime_phase_from_events(&[], true), "running");
+        let waiting = vec![json!({ "type": "request-user-input" })];
+        assert_eq!(claude_runtime_phase_from_events(&waiting, true), "waiting");
+        let resumed = vec![
+            json!({ "type": "approval-request" }),
+            json!({ "type": "delta", "text": "继续" }),
+        ];
+        assert_eq!(claude_runtime_phase_from_events(&resumed, true), "running");
+        let failed = vec![json!({ "type": "error", "message": "失败" })];
+        assert_eq!(claude_runtime_phase_from_events(&failed, true), "error");
+    }
+
+    #[test]
     fn agent_lifecycle_plans_only_cover_supported_providers() {
         let claude_plan = build_agent_lifecycle_plan(CLAUDE_CODE_PROVIDER_ID, "install", None)
             .expect("build Claude install plan");
@@ -27508,6 +27692,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn mobile_stop_terminal_is_explicitly_opted_in() {
+        let mut headers = HeaderMap::new();
+        assert!(!is_mobile_stop_request(&headers));
+
+        headers.insert("x-codem-mobile-stop", HeaderValue::from_static("0"));
+        assert!(!is_mobile_stop_request(&headers));
+
+        headers.insert("x-codem-mobile-stop", HeaderValue::from_static("1"));
+        assert!(is_mobile_stop_request(&headers));
+    }
+
     #[tokio::test]
     async fn runtime_auth_protects_api_routes_and_keeps_identity_public() {
         let app = Router::new()
@@ -28436,6 +28632,49 @@ mod tests {
             OPENAI_CODEX_PROVIDER_ID,
             "provider-source",
         )
+    }
+
+    #[test]
+    fn mobile_turn_merge_preserves_the_latest_stored_history() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+        let source = fork_operation_source(&connection, "mobile-merge-thread");
+        write_thread_history(
+            &mut connection,
+            &source.id,
+            &[json!({
+                "id": "desktop-concurrent-turn",
+                "backendRunId": "desktop-run",
+                "userText": "桌面端并发消息",
+                "assistantText": "桌面端结果",
+                "status": "done",
+                "startedAtMs": 1_000,
+                "items": [{ "id": "desktop-text", "type": "text", "text": "桌面端结果" }]
+            })],
+        )
+        .expect("write desktop history");
+
+        let changed = merge_thread_history_turn_with_connection(
+            &mut connection,
+            &source.id,
+            json!({
+                "id": "mobile-turn",
+                "backendRunId": "mobile-run",
+                "userText": "移动端消息",
+                "assistantText": "移动端结果",
+                "status": "done",
+                "startedAtMs": 2_000,
+                "items": [{ "id": "mobile-text", "type": "text", "text": "移动端结果" }]
+            }),
+        )
+        .expect("merge mobile turn");
+
+        assert!(changed);
+        let history = read_stored_thread_history(&connection, &source.id).expect("read history");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0]["id"], "desktop-concurrent-turn");
+        assert_eq!(history[1]["userText"], "移动端消息");
+        assert_eq!(history[1]["assistantText"], "移动端结果");
     }
 
     fn fork_operation_source_with_provider(

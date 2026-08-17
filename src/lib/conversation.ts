@@ -11,6 +11,7 @@ import type {
 import {
   readCompactMetadata,
 } from './codex-compact';
+import { createClientId } from './client-id';
 
 const SIDECHAIN_TOOL_TEXT_MAX_CHARS = 6_000;
 const SUBAGENT_MESSAGE_MAX_COUNT = 8;
@@ -349,7 +350,7 @@ export function appendTextItem(items: AssistantItem[], text: string): AssistantI
     ];
   }
 
-  return [...items, { id: crypto.randomUUID(), type: 'text', text: sanitizedText }];
+  return [...items, { id: createClientId(), type: 'text', text: sanitizedText }];
 }
 
 export function appendThinkingItem(items: AssistantItem[], text: string): AssistantItem[] {
@@ -368,7 +369,7 @@ export function appendThinkingItem(items: AssistantItem[], text: string): Assist
     ];
   }
 
-  return [...items, { id: crypto.randomUUID(), type: 'thinking', text }];
+  return [...items, { id: createClientId(), type: 'thinking', text }];
 }
 
 export function appendDoneResultItem(
@@ -428,7 +429,7 @@ export function attachToolResult(steps: ToolStep[], event: Extract<ClaudeEvent, 
     return [
       ...steps,
       {
-        id: event.toolUseId ?? crypto.randomUUID(),
+        id: event.toolUseId ?? createClientId(),
         name: 'tool_result',
         title: event.isError ? '工具返回异常' : '工具返回结果',
         status: event.isError ? ('error' as const) : ('done' as const),
@@ -1089,9 +1090,9 @@ function normalizeInlineThinkingItems(items: AssistantItem[]) {
     changed = true;
     for (const segment of segments) {
       if (segment.type === 'thinking') {
-        normalized.push({ id: crypto.randomUUID(), type: 'thinking', text: segment.text });
+        normalized.push({ id: createClientId(), type: 'thinking', text: segment.text });
       } else {
-        normalized.push({ ...item, id: crypto.randomUUID(), text: segment.text });
+        normalized.push({ ...item, id: createClientId(), text: segment.text });
       }
     }
   }

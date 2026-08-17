@@ -2,6 +2,7 @@ import type {
   AccentColorPreset,
   AppearanceSettings,
   CodeFontFamilyPreset,
+  ClaudeEffortSelection,
   PanelState,
   PermissionMode,
   UiFontFamilyPreset,
@@ -19,6 +20,20 @@ export const DEEPSEEK_DSH_PROVIDER_ID = 'deepseek-dsh';
 export const CODEM_AGENT_PROVIDER_ID = 'codem-agent';
 export const APP_UPDATE_CHECK_INTERVAL_MS = 2 * 60 * 60 * 1000;
 export const CLAUDE_MODEL_SLOT_VALUES = ['sonnet', 'sonnet[1m]', 'opus', 'opus[1m]', 'haiku'] as const;
+
+export const CLAUDE_EFFORT_OPTIONS: ReadonlyArray<{
+  value: ClaudeEffortSelection;
+  label: string;
+  description: string;
+}> = [
+  { value: 'default', label: '默认', description: '使用 Claude Code 默认思考级别' },
+  { value: 'low', label: 'Low', description: '更快，适合简单修改' },
+  { value: 'medium', label: 'Medium', description: '平衡速度和推理' },
+  { value: 'high', label: 'High', description: '复杂代码和排查问题' },
+  { value: 'xhigh', label: 'XHigh', description: '更深入的推理' },
+  { value: 'max', label: 'Max', description: '当前会话最高努力级别' },
+  { value: 'ultracode', label: 'Ultracode', description: 'xhigh 与自动 workflows，仅当前会话' },
+];
 
 export const permissionModes = [
   'default',

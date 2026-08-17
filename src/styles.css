@@ -5856,6 +5856,25 @@ display: inline-grid;
   outline-offset: 3px;
 }
 
+.conversation-history-load {
+  min-height: 36px;
+  display: block;
+  margin: 8px auto 18px;
+  padding: 0 14px;
+  border: 1px solid var(--app-border, #e5e5e5);
+  border-radius: 10px;
+  background: var(--app-surface, #ffffff);
+  color: var(--app-text-muted, #6b7280);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.conversation-history-load:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
 .empty-state {
   max-width: 760px;
   margin: 20vh auto 0;
@@ -22607,9 +22626,16 @@ button.git-conflict-overview-row:focus-visible,
   background: color-mix(in srgb, var(--accent) 14%, var(--app-surface));
 }
 
-.codex-desktop .settings-action-button:hover,
-.codex-desktop .settings-icon-button:hover {
+.codex-desktop .settings-action-button:hover:not(:disabled),
+.codex-desktop .settings-icon-button:hover:not(:disabled) {
   background: var(--app-hover);
+}
+
+.codex-desktop .settings-action-button.primary:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 88%, var(--app-text-strong) 12%);
+  color: #ffffff;
+  filter: none;
 }
 
 .codex-desktop .settings-toggle span {
@@ -28630,4 +28656,67 @@ div[data-popover-portal] > * {
   .hermes-resource-list .settings-list-actions {
     justify-content: flex-start;
   }
+}
+
+.mobile-password-editor {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.mobile-password-input {
+  min-width: 220px;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--app-border, rgba(60, 60, 67, 0.18));
+  border-radius: 8px;
+  outline: none;
+  background: var(--app-surface, #fff);
+  color: var(--app-text, #1c1c1e);
+}
+
+.mobile-password-input:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--app-border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.mobile-password-feedback {
+  min-height: 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mobile-password-feedback.success {
+  color: var(--success, #16803c);
+}
+
+.mobile-password-feedback.error {
+  color: var(--danger, #d53f3f);
+}
+
+.mobile-device-controls,
+.mobile-device-permissions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mobile-device-controls {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.mobile-device-permissions label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 12px;
 }

@@ -3070,13 +3070,16 @@ function createRuntimeRecoveryHint(
   ) {
     reason = 'runtime-ended';
   } else if (
+    (lower.includes('resume') && lower.includes('not exist'))
+    || (lower.includes('no conversation found') && lower.includes('session id'))
+  ) {
+    reason = 'resume-session-missing';
+  } else if (
     lower.includes('stale') ||
     lower.includes('session expired') ||
     lower.includes('thread expired')
   ) {
     reason = 'stale-session';
-  } else if (lower.includes('resume') && lower.includes('not exist')) {
-    reason = 'resume-session-missing';
   }
 
   if (!reason) {

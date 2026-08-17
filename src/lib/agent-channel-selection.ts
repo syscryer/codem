@@ -16,6 +16,13 @@ import {
 
 export const SYSTEM_AGENT_CHANNEL_ID = 'system';
 
+type AgentChannelSelectionEntry = {
+  id: string;
+  providerId: string;
+  enabled: boolean;
+  isDefault: boolean;
+};
+
 export function getAgentChannel(
   channels: AgentChannel[],
   providerId: string,
@@ -61,7 +68,7 @@ export function systemAgentChannelTemplate(
 }
 
 export function defaultAgentChannelId(
-  channels: AgentChannel[],
+  channels: AgentChannelSelectionEntry[],
   providerId: string,
   configuredChannelId?: string | null,
 ) {
@@ -75,12 +82,12 @@ export function defaultAgentChannelId(
 }
 
 export function isAgentChannelSelectionAvailable(
-  channels: AgentChannel[],
+  channels: AgentChannelSelectionEntry[],
   providerId: string,
   channelId: string,
 ) {
   return channelId === SYSTEM_AGENT_CHANNEL_ID
-    || Boolean(getAgentChannel(channels, providerId, channelId)?.enabled);
+    || Boolean(channels.find((channel) => channel.id === channelId && channel.providerId === providerId)?.enabled);
 }
 
 export function threadAgentChannelId(channelId?: string | null) {
