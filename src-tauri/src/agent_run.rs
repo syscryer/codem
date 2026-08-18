@@ -1631,6 +1631,9 @@ fn resolve_agent_command(
     provider_id: &str,
     refresh: bool,
 ) -> Option<String> {
+    let stale_command = (!refresh)
+        .then(|| expired_cached_agent_command(&state.command_cache, provider_id, Instant::now()))
+        .flatten();
     if refresh {
         if let Ok(mut cache) = state.command_cache.lock() {
             cache.remove(provider_id);
@@ -1650,7 +1653,8 @@ fn resolve_agent_command(
         DEEPSEEK_DSH_PROVIDER_ID => (state.command_resolvers.dsh)(),
         HERMES_AGENT_PROVIDER_ID => state.hermes.resolve_command(refresh),
         _ => None,
-    };
+    }
+    .or(stale_command);
     store_cached_agent_command(
         &state.command_cache,
         provider_id,
@@ -1658,6 +1662,23 @@ fn resolve_agent_command(
         Instant::now(),
     );
     command
+}
+
+fn expired_cached_agent_command(
+    cache: &Mutex<HashMap<String, CachedAgentCommand>>,
+    provider_id: &str,
+    now: Instant,
+) -> Option<String> {
+    let cache = cache.lock().ok()?;
+    let entry = cache.get(provider_id)?;
+    let ttl = if entry.command.is_some() {
+        AGENT_COMMAND_CACHE_TTL
+    } else {
+        AGENT_COMMAND_NEGATIVE_CACHE_TTL
+    };
+    (now.saturating_duration_since(entry.resolved_at) >= ttl)
+        .then(|| entry.command.clone())
+        .flatten()
 }
 
 fn read_cached_agent_command(
@@ -8894,8 +8915,8 @@ mod tests {
         build_pi_prompt, cancelled_before_prompt_outcome, classify_codex_fork_error,
         compact_capability_cache_key, complete_fork_command, dsh_model_catalog,
         dsh_permission_mode, dsh_projection_usage, ensure_compact_reconcile_runtime_idle,
-        fail_fork_command, find_grok_runtime_error_detail, fork_capability_cache_key,
-        gemini_mode_id, gemini_removed_environment, grok_acp_arguments,
+        expired_cached_agent_command, fail_fork_command, find_grok_runtime_error_detail,
+        fork_capability_cache_key, gemini_mode_id, gemini_removed_environment, grok_acp_arguments,
         grok_acp_error_with_runtime_detail, grok_uses_channel_credentials, guide_ack_response,
         guide_text_from_codex_input, hermes_model_catalog, map_dsh_event, map_hermes_event,
         normalize_agent_input, parse_opencode_models, pi_model_catalog, pi_model_parts,
@@ -9751,6 +9772,63 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn expired_positive_command_is_available_for_transient_probe_failures() {
+        let cache = Mutex::new(HashMap::new());
+        let resolved_at = Instant::now();
+        store_cached_agent_command(
+            &cache,
+            "opencode",
+            Some(
+                "C:/Users/test/AppData/Roaming/npm/node_modules/opencode-ai/bin/opencode.exe"
+                    .to_string(),
+            ),
+            resolved_at,
+        );
+
+        assert_eq!(
+            expired_cached_agent_command(
+                &cache,
+                "opencode",
+                resolved_at + AGENT_COMMAND_CACHE_TTL,
+            )
+            .as_deref(),
+            Some("C:/Users/test/AppData/Roaming/npm/node_modules/opencode-ai/bin/opencode.exe")
+        );
+        assert_eq!(
+            expired_cached_agent_command(&cache, "opencode", resolved_at),
+            None
+        );
+    }
+
+    #[test]
+    fn expired_opencode_command_survives_a_transient_resolution_failure() {
+        let service = AgentRunService::new(
+            || None,
+            || None,
+            || None,
+            || None,
+            || None,
+            || None,
+            test_agent_channel_service(),
+            DshService::new(),
+            HermesService::new(std::env::temp_dir(), || None),
+        );
+        let command = "C:/Users/test/AppData/Roaming/npm/node_modules/opencode-ai/bin/opencode.exe";
+        store_cached_agent_command(
+            &service.state.command_cache,
+            "opencode",
+            Some(command.to_string()),
+            Instant::now() - AGENT_COMMAND_CACHE_TTL,
+        );
+
+        assert_eq!(
+            service.resolve_command("opencode", false).as_deref(),
+            Some(command)
+        );
+        assert_eq!(service.resolve_command("opencode", true), None);
     }
 
     #[test]
