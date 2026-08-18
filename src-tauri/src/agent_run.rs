@@ -182,10 +182,12 @@ struct CodexRunTask {
 struct DshRunTask {
     state: AgentRunState,
     run_id: String,
+    dsh: DshService,
     command: String,
     working_directory: PathBuf,
     prompt: String,
     profile: String,
+    agent_preset: String,
     tools_mode: String,
     permission_mode: &'static str,
     model: Option<String>,
@@ -2050,13 +2052,15 @@ async fn start_agent_run(
         };
         let dsh_config =
             dsh_runtime_config.expect("DSH requests always create a DSH runtime configuration");
-        tokio::spawn(execute_dsh_run(DshRunTask {
+        tokio::spawn(execute_dsh_web_run(DshRunTask {
             state: state.clone(),
             run_id: run_id.clone(),
+            dsh: state.dsh.clone(),
             command,
             working_directory,
             prompt,
             profile: dsh_profile,
+            agent_preset: dsh_config.agent_preset,
             tools_mode: dsh_config.tools_mode,
             permission_mode,
             model,
@@ -3727,14 +3731,171 @@ fn dsh_process_command(command: &str) -> tokio::process::Command {
     background_agent_command(command)
 }
 
+async fn execute_dsh_web_run(task: DshRunTask) {
+    let DshRunTask {
+        state,
+        run_id,
+        dsh,
+        command,
+        working_directory,
+        prompt,
+        agent_preset,
+        tools_mode,
+        permission_mode,
+        model,
+        mut environment,
+        mut cancel,
+        ..
+    } = task;
+    if let Some(api_key) = environment.get("CODEM_AGENT_CHANNEL_API_KEY").cloned() {
+        environment.insert("DEEPSEEK_API_KEY".to_string(), api_key);
+    }
+    state.push_event(
+        &run_id,
+        AgentRunEvent::Status {
+            run_id: run_id.clone(),
+            message: runtime_status_message(
+                DEEPSEEK_DSH_PROVIDER_ID,
+                AgentDriverKind::DshWebApi,
+                false,
+                false,
+            ),
+        },
+    );
+    state.push_event(&run_id, agent_phase_event(&run_id, "thinking", "执行中"));
+
+    let mut client = match dsh
+        .connect(
+            &command,
+            &working_directory,
+            &environment,
+            None,
+            None,
+            &tools_mode,
+            dsh_permission_mode(permission_mode),
+        )
+        .await
+    {
+        Ok(client) => client,
+        Err(message) => {
+            state.push_terminal(
+                &run_id,
+                AgentRunEvent::Error {
+                    run_id: run_id.clone(),
+                    message,
+                },
+            );
+            return;
+        }
+    };
+    let session = match client
+        .create_or_resume_session(None, &working_directory, &agent_preset)
+        .await
+    {
+        Ok(session) => session,
+        Err(message) => {
+            state.push_terminal(
+                &run_id,
+                AgentRunEvent::Error {
+                    run_id: run_id.clone(),
+                    message,
+                },
+            );
+            return;
+        }
+    };
+    if let Some(model) = model.as_deref().filter(|model| *model != "__default") {
+        if let Err(message) = client.select_model(&session.session_id, model, None).await {
+            state.push_terminal(
+                &run_id,
+                AgentRunEvent::Error {
+                    run_id: run_id.clone(),
+                    message,
+                },
+            );
+            return;
+        }
+    }
+    if let Err(message) = client.prompt(&session.session_id, &prompt).await {
+        state.push_terminal(
+            &run_id,
+            AgentRunEvent::Error {
+                run_id: run_id.clone(),
+                message,
+            },
+        );
+        return;
+    }
+
+    let mut text = String::new();
+    let mut latest_usage = AgentUsageSnapshot::default();
+    loop {
+        tokio::select! {
+            event = client.next_event() => {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(message) => {
+                        state.push_terminal(&run_id, AgentRunEvent::Error { run_id: run_id.clone(), message });
+                        return;
+                    }
+                };
+                if event.session_id.as_deref().is_some_and(|id| id != session.session_id) {
+                    continue;
+                }
+                match map_dsh_event(&run_id, &event) {
+                    DshMappedEvent::Emit(events) => {
+                        for event in events { state.push_event(&run_id, event); }
+                    }
+                    DshMappedEvent::Delta(delta, events) => {
+                        text.push_str(&delta);
+                        for event in events { state.push_event(&run_id, event); }
+                    }
+                    DshMappedEvent::Usage(usage) => {
+                        latest_usage = usage.clone();
+                        state.push_event(&run_id, AgentRunEvent::Usage {
+                            run_id: run_id.clone(), usage, usage_source: "message",
+                        });
+                    }
+                    DshMappedEvent::Complete(stop_reason) => {
+                        state.push_terminal(&run_id, AgentRunEvent::Done {
+                            run_id: run_id.clone(), session_id: session.session_id.clone(),
+                            result: text, stop_reason, usage: latest_usage, usage_source: "message",
+                        });
+                        return;
+                    }
+                    DshMappedEvent::Error(message) => {
+                        state.push_terminal(&run_id, AgentRunEvent::Error { run_id: run_id.clone(), message });
+                        return;
+                    }
+                    DshMappedEvent::Ignore => {}
+                }
+            }
+            changed = cancel.changed() => {
+                if changed.is_ok() && *cancel.borrow() {
+                    let _ = client.cancel(&session.session_id).await;
+                    state.push_terminal(&run_id, AgentRunEvent::Done {
+                        run_id: run_id.clone(), session_id: session.session_id.clone(),
+                        result: text, stop_reason: "cancelled".to_string(),
+                        usage: latest_usage, usage_source: "message",
+                    });
+                    return;
+                }
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
 async fn execute_dsh_run(task: DshRunTask) {
     let DshRunTask {
         state,
         run_id,
+        dsh: _dsh,
         command,
         working_directory,
         prompt,
         profile,
+        agent_preset: _agent_preset,
         tools_mode,
         permission_mode,
         model,
@@ -7916,10 +8077,8 @@ fn map_dsh_event(run_id: &str, event: &DshRuntimeEvent) -> DshMappedEvent {
                 }
                 "tool/result" => {
                     let message = data.get("message").unwrap_or(data);
-                    let tool_use_id = message
-                        .get("toolCallId")
-                        .or_else(|| message.get("callId"))
-                        .and_then(Value::as_str)
+                    let tool_use_id = dsh_tool_use_id(message)
+                        .or_else(|| dsh_tool_use_id(data))
                         .unwrap_or("dsh-tool")
                         .to_string();
                     let content = message
@@ -8087,6 +8246,32 @@ fn map_dsh_event(run_id: &str, event: &DshRuntimeEvent) -> DshMappedEvent {
                 .to_string(),
         ),
         _ => DshMappedEvent::Ignore,
+    }
+}
+
+fn dsh_tool_use_id(value: &Value) -> Option<&str> {
+    const ID_KEYS: &[&str] = &[
+        "toolCallId",
+        "callId",
+        "tool_call_id",
+        "tool_use_id",
+        "toolUseId",
+    ];
+    match value {
+        Value::Object(object) => {
+            for key in ID_KEYS {
+                if let Some(id) = object
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                {
+                    return Some(id);
+                }
+            }
+            object.values().find_map(dsh_tool_use_id)
+        }
+        Value::Array(values) => values.iter().find_map(dsh_tool_use_id),
+        _ => None,
     }
 }
 
@@ -8816,6 +9001,43 @@ mod tests {
                 assert!(
                     matches!(events.as_slice(), [AgentRunEvent::Delta { run_id, text }] if run_id == "run-dsh" && text == "hello")
                 );
+            }
+            other => panic!("unexpected DSH mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dsh_nested_tool_result_keeps_tool_call_id() {
+        let mapped = map_dsh_event(
+            "run-dsh",
+            &DshRuntimeEvent {
+                rpc_id: "rpc-2".to_string(),
+                event_type: "session/event".to_string(),
+                session_id: Some("session-dsh".to_string()),
+                payload: json!({
+                    "type": "session/event",
+                    "sessionId": "session-dsh",
+                    "event": {
+                        "type": "tool/result",
+                        "data": {
+                            "message": {
+                                "content": "ok",
+                                "result": { "toolCallId": "call_nested" }
+                            }
+                        }
+                    }
+                }),
+            },
+        );
+        match mapped {
+            DshMappedEvent::Emit(events) => {
+                assert!(matches!(
+                    events.as_slice(),
+                    [
+                        AgentRunEvent::ToolResult { tool_use_id, .. },
+                        AgentRunEvent::ToolStop { tool_use_id: stop_id, .. }
+                    ] if tool_use_id == "call_nested" && stop_id == "call_nested"
+                ));
             }
             other => panic!("unexpected DSH mapping: {other:?}"),
         }
