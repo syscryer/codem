@@ -745,16 +745,16 @@ export function AgentChannelSettings({
                 </div>
 
                 <div className="ai-manager-form-grid">
-                  <label><span>渠道名称</span><input value={draft.name} placeholder="例如：MiniMax Coding Plan" onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
                   <label>
                     <span>厂商预设</span>
-          <AgentTemplateDropdown
-            templates={templates}
-            selected={selectedTemplate}
-            protocol={draft.protocol}
-            onChange={applyTemplate}
-          />
+                    <AgentTemplateDropdown
+                      templates={templates}
+                      selected={selectedTemplate}
+                      protocol={draft.protocol}
+                      onChange={applyTemplate}
+                    />
                   </label>
+                  <label><span>渠道名称</span><input value={draft.name} placeholder="例如：MiniMax Coding Plan" onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
                   <div className="ai-manager-template-config wide">
                     {selectedTemplate ? (
                       <div className="ai-manager-template-field">
