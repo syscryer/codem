@@ -9,6 +9,7 @@ import {
   MessageSquareText,
   Palette,
   RotateCcw,
+  ScrollText,
   Server,
   Settings,
   Puzzle,
@@ -40,6 +41,7 @@ const settingsSections: Array<{ id: SettingsSection; label: string; icon: typeof
   { id: 'globalPrompts', label: '全局规则', icon: Braces },
   { id: 'openWith', label: '打开方式', icon: AppWindow },
   { id: 'networkProxy', label: '网络代理', icon: Network },
+  { id: 'logs', label: '日志与诊断', icon: ScrollText },
   { id: 'sync', label: '同步', icon: CloudCog },
 ];
 

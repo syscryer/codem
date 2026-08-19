@@ -691,6 +691,7 @@ export type SettingsSection =
   | 'globalPrompts'
   | 'openWith'
   | 'networkProxy'
+  | 'logs'
   | 'sync';
 
 export type WebDavSyncSettings = {

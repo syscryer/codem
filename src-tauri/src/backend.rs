@@ -1000,6 +1000,14 @@ pub fn run_blocking_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), 
 
 async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String> {
     fs::create_dir_all(&app_data_dir).map_err(|error| format!("创建应用数据目录失败: {error}"))?;
+    crate::app_logging::init(&app_data_dir);
+    let logs_service = crate::app_logging::LogService::new(app_data_dir.clone());
+    tracing::info!(
+        target: "codem::backend",
+        "后端启动中: port={port} pid={} os={}",
+        std::process::id(),
+        std::env::consts::OS
+    );
 
     let automation = crate::automation::AutomationService::new(app_data_dir.clone());
     let secrets = crate::ordinary_chat::secrets::SecretStore::new(app_data_dir.clone());
@@ -1065,6 +1073,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         .merge(crate::webdav_sync::router(webdav_sync))
         .merge(crate::agent_mux::router(agent_mux))
         .merge(crate::hermes::router(hermes))
+        .merge(crate::app_logging::router(logs_service))
         .merge(mobile_companion.admin_router())
         .layer(desktop_cors_layer());
     let app = if let Some(token) = env::var(crate::agent_mux_runtime::RUNTIME_TOKEN_ENV)
@@ -1076,16 +1085,43 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
     } else {
         app
     };
+    let app = app.layer(middleware::from_fn(audit_http));
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .map_err(|error| format!("监听 Rust 后端端口失败: {error}"))?;
 
     println!("CodeM Rust backend listening on http://{address}");
+    tracing::info!(target: "codem::backend", "后端已监听: {address}");
     mobile_companion.start_if_enabled().await;
-    axum::serve(listener, app)
-        .await
-        .map_err(|error| format!("Rust 后端服务异常退出: {error}"))
+    let serve_result = axum::serve(listener, app).await;
+    if let Err(error) = &serve_result {
+        tracing::error!(target: "codem::backend", "后端服务异常退出: {error}");
+    } else {
+        tracing::info!(target: "codem::backend", "后端服务已退出");
+    }
+    serve_result.map_err(|error| format!("Rust 后端服务异常退出: {error}"))
+}
+
+async fn audit_http(request: Request<Body>, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let started = std::time::Instant::now();
+    let response = next.run(request).await;
+    let elapsed_ms = started.elapsed().as_millis();
+    let status = response.status().as_u16();
+    if status >= 400 {
+        tracing::warn!(
+            target: "codem::http",
+            "HTTP {method} {path} -> {status} ({elapsed_ms}ms)"
+        );
+    } else if elapsed_ms >= 2000 {
+        tracing::info!(
+            target: "codem::http",
+            "HTTP {method} {path} -> {status} 慢请求 ({elapsed_ms}ms)"
+        );
+    }
+    response
 }
 
 async fn runtime_auth(token: State<String>, request: Request<Body>, next: Next) -> Response {
@@ -8514,7 +8550,16 @@ fn resolve_opencode_command() -> Option<String> {
         .filter(|value| !value.is_empty())
         .filter(|value| command_reports_version(value))
     {
+        tracing::info!(target: "codem::agent_cli", "OpenCode 使用 OPENCODE_CLI_PATH 指定的命令");
         return Some(command);
+    }
+    if let Ok(value) = env::var("OPENCODE_CLI_PATH") {
+        if !value.trim().is_empty() {
+            tracing::warn!(
+                target: "codem::agent_cli",
+                "OPENCODE_CLI_PATH 已设置但版本检查失败，忽略该覆盖"
+            );
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -8537,15 +8582,48 @@ fn resolve_opencode_command() -> Option<String> {
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .and_then(|stdout| {
-            stdout
+            let candidates: Vec<&str> = stdout
                 .lines()
                 .map(str::trim)
                 .filter(|candidate| !candidate.is_empty())
-                .filter_map(resolve_opencode_command_candidate)
-                .find(|candidate| command_reports_version(candidate))
+                .collect();
+            let mut rejected = 0usize;
+            let matched = candidates
+                .iter()
+                .filter_map(|candidate| resolve_opencode_command_candidate(candidate))
+                .find(|candidate| {
+                    if command_reports_version(candidate) {
+                        true
+                    } else {
+                        rejected += 1;
+                        false
+                    }
+                });
+            if matched.is_none() {
+                tracing::debug!(
+                    target: "codem::agent_cli",
+                    "PATH 查找未获得可运行的 OpenCode: 发现候选 {found} 个，版本检查拒绝 {rejected} 个",
+                    found = candidates.len(),
+                    rejected = rejected
+                );
+            }
+            matched
         });
 
-    path_command.or_else(resolve_default_opencode_command)
+    if let Some(command) = path_command {
+        tracing::debug!(target: "codem::agent_cli", "OpenCode 使用 PATH 中的命令");
+        return Some(command);
+    }
+    let default_command = resolve_default_opencode_command();
+    if default_command.is_some() {
+        tracing::debug!(target: "codem::agent_cli", "OpenCode 使用默认安装位置的命令");
+    } else {
+        tracing::warn!(
+            target: "codem::agent_cli",
+            "未找到 OpenCode CLI：OPENCODE_CLI_PATH 未生效、PATH 查找无可用命令、默认安装位置也不存在"
+        );
+    }
+    default_command
 }
 
 fn resolve_opencode_command_candidate(candidate: &str) -> Option<String> {
@@ -9731,15 +9809,22 @@ where
                     _ => unreachable!(),
                 });
             }
-            Err(ApiError::bad_request(match provider_id {
-                GROK_BUILD_PROVIDER_ID => "未找到 grok 命令",
-                OPENAI_CODEX_PROVIDER_ID => "未找到可由 CodeM 启动的 Codex CLI",
-                OPENCODE_PROVIDER_ID => "未找到可由 CodeM 启动的 OpenCode CLI",
-                PI_AGENT_PROVIDER_ID => "未找到可由 CodeM 启动的 Pi CLI",
-                GEMINI_CLI_PROVIDER_ID => "未找到可由 CodeM 启动的 Gemini CLI",
-                HERMES_AGENT_PROVIDER_ID => "未找到可由 CodeM 启动的 Hermes CLI",
-                DEEPSEEK_DSH_PROVIDER_ID => "未找到可由 CodeM 启动的 DeepSeek DSH CLI",
-                _ => unreachable!(),
+            Err(ApiError::bad_request({
+                let message = match provider_id {
+                    GROK_BUILD_PROVIDER_ID => "未找到 grok 命令",
+                    OPENAI_CODEX_PROVIDER_ID => "未找到可由 CodeM 启动的 Codex CLI",
+                    OPENCODE_PROVIDER_ID => "未找到可由 CodeM 启动的 OpenCode CLI",
+                    PI_AGENT_PROVIDER_ID => "未找到可由 CodeM 启动的 Pi CLI",
+                    GEMINI_CLI_PROVIDER_ID => "未找到可由 CodeM 启动的 Gemini CLI",
+                    HERMES_AGENT_PROVIDER_ID => "未找到可由 CodeM 启动的 Hermes CLI",
+                    DEEPSEEK_DSH_PROVIDER_ID => "未找到可由 CodeM 启动的 DeepSeek DSH CLI",
+                    _ => unreachable!(),
+                };
+                tracing::warn!(
+                    target: "codem::agent_cli",
+                    "Provider CLI 不可用: provider={provider_id} reason={message}"
+                );
+                message
             }))
         }
         _ => Err(ApiError::bad_request("当前 Provider 不可用于新建聊天")),

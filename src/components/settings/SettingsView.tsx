@@ -45,6 +45,7 @@ import { ShortcutsSettingsSection } from './ShortcutsSettings';
 import { UsageSettingsSection } from './UsageSettings';
 import { WorktreeSettingsSection } from './WorktreeSettings';
 import { NetworkProxySettingsSection } from './NetworkProxySettings';
+import { LogsSettingsSection } from './LogsSettings';
 import { WebDavSyncSettingsSection } from './WebDavSyncSettingsSection';
 
 type SettingsViewProps = {
@@ -113,6 +114,7 @@ const sectionTitles: Record<SettingsSection, string> = {
   globalPrompts: '全局规则',
   openWith: '打开方式',
   networkProxy: '网络代理',
+  logs: '日志与诊断',
   sync: '同步',
 };
 
@@ -233,6 +235,10 @@ export function SettingsView({
 
     if (activeSection === 'networkProxy') {
       return <NetworkProxySettingsSection settings={networkProxy} onUpdate={onUpdateNetworkProxy} showToast={showToast} />;
+    }
+
+    if (activeSection === 'logs') {
+      return <LogsSettingsSection showToast={showToast} />;
     }
 
     if (activeSection === 'globalPrompts') {

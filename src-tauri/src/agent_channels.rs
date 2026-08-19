@@ -1364,9 +1364,31 @@ async fn test_channel(
         .secrets
         .get(&channel.secret_slot)
         .map_err(AgentChannelApiError::bad_request)?;
-    let message = test_provider(&as_provider(&channel), &api_key)
-        .await
-        .map_err(AgentChannelApiError::bad_request)?;
+    let message = match test_provider(&as_provider(&channel), &api_key).await {
+        Ok(message) => {
+            tracing::info!(
+                target: "codem::channels",
+                "渠道测试成功: channel={} provider={} protocol={} base_url={}",
+                channel.name,
+                channel.provider_id,
+                channel.protocol.as_str(),
+                channel.base_url
+            );
+            message
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "codem::channels",
+                "渠道测试失败: channel={} provider={} protocol={} base_url={} error={}",
+                channel.name,
+                channel.provider_id,
+                channel.protocol.as_str(),
+                channel.base_url,
+                crate::app_logging::redact_secrets(&error)
+            );
+            return Err(AgentChannelApiError::bad_request(error));
+        }
+    };
     Ok(Json(json!({ "ok": true, "message": message })))
 }
 

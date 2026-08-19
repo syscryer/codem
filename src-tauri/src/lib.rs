@@ -4,6 +4,7 @@ pub mod agent_mux;
 pub mod agent_mux_runtime;
 pub mod agent_run;
 pub mod agent_runtime;
+pub mod app_logging;
 pub mod automation;
 pub mod backend;
 pub mod claude_session_fork;
