@@ -15851,7 +15851,7 @@ fn build_agent_plugin_command_args(
     let mut args = if provider_id == PI_AGENT_PROVIDER_ID {
         vec![normalized.to_string()]
     } else {
-        let mut args = vec!["plugin".to_string()];
+        let mut args = vec![agent_plugin_command_word(provider_id).to_string()];
         if kind == "marketplace" {
             args.push("marketplace".to_string());
         } else if kind != "plugin" {
@@ -15867,7 +15867,10 @@ fn build_agent_plugin_command_args(
 }
 
 fn ensure_agent_plugin_management_supported(provider_id: &str) -> ApiResult<()> {
-    if matches!(provider_id, OPENCODE_PROVIDER_ID | GEMINI_CLI_PROVIDER_ID) {
+    if matches!(
+        provider_id,
+        OPENCODE_PROVIDER_ID | GEMINI_CLI_PROVIDER_ID | DEEPSEEK_DSH_PROVIDER_ID
+    ) {
         return Err(ApiError::bad_request(
             "当前 Agent 不提供稳定的插件市场管理接口",
         ));
@@ -17001,6 +17004,14 @@ fn normalize_agent_plugin_action<'a>(
         .ok_or_else(|| ApiError::bad_request("当前 Agent 不支持该插件操作"))
 }
 
+fn agent_plugin_command_word(provider_id: &str) -> &'static str {
+    if provider_id == HERMES_AGENT_PROVIDER_ID {
+        "plugins"
+    } else {
+        "plugin"
+    }
+}
+
 fn run_agent_json_command(provider_id: &str, arguments: &[&str]) -> ApiResult<Value> {
     let command = resolve_agent_settings_command(provider_id)
         .ok_or_else(|| ApiError::bad_request("未找到 Agent CLI 命令"))?;
@@ -17011,11 +17022,17 @@ fn run_agent_json_command(provider_id: &str, arguments: &[&str]) -> ApiResult<Va
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if !output.status.success() {
-        return Err(ApiError::bad_request(if stderr.is_empty() {
+        let detail = if stderr.is_empty() {
             "Agent CLI 命令执行失败".to_string()
         } else {
             stderr
-        }));
+        };
+        tracing::warn!(
+            target: "codem::plugins",
+            "Agent CLI 命令失败: provider={provider_id} args={arguments:?} detail={}",
+            crate::app_logging::redact_secrets(&detail)
+        );
+        return Err(ApiError::bad_request(detail));
     }
     serde_json::from_str(&stdout)
         .map_err(|error| ApiError::internal(format!("解析 Agent CLI JSON 失败: {error}")))
@@ -17025,14 +17042,20 @@ fn list_agent_installed_plugins_value(provider_id: &str) -> ApiResult<Value> {
     if provider_id == CLAUDE_CODE_PROVIDER_ID {
         return Ok(list_installed_plugins_value());
     }
-    if matches!(provider_id, OPENCODE_PROVIDER_ID | GEMINI_CLI_PROVIDER_ID) {
+    if matches!(
+        provider_id,
+        OPENCODE_PROVIDER_ID | GEMINI_CLI_PROVIDER_ID | DEEPSEEK_DSH_PROVIDER_ID
+    ) {
         return Ok(json!([]));
     }
     if provider_id == PI_AGENT_PROVIDER_ID {
         let output = run_agent_text_command(provider_id, &["list"])?;
         return Ok(parse_pi_installed_packages(&output));
     }
-    let payload = run_agent_json_command(provider_id, &["plugin", "list", "--json"])?;
+    let payload = run_agent_json_command(
+        provider_id,
+        &[agent_plugin_command_word(provider_id), "list", "--json"],
+    )?;
     let items = payload
         .get("installed")
         .and_then(Value::as_array)
@@ -17053,7 +17076,11 @@ fn list_agent_plugin_marketplaces_value(provider_id: &str) -> ApiResult<Value> {
     }
     if matches!(
         provider_id,
-        OPENCODE_PROVIDER_ID | PI_AGENT_PROVIDER_ID | GEMINI_CLI_PROVIDER_ID
+        OPENCODE_PROVIDER_ID
+            | PI_AGENT_PROVIDER_ID
+            | GEMINI_CLI_PROVIDER_ID
+            | HERMES_AGENT_PROVIDER_ID
+            | DEEPSEEK_DSH_PROVIDER_ID
     ) {
         return Ok(json!([]));
     }
@@ -17122,13 +17149,18 @@ fn run_agent_text_command(provider_id: &str, arguments: &[&str]) -> ApiResult<St
         .output()
         .map_err(|error| ApiError::internal(format!("执行 Agent CLI 失败: {error}")))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if !output.status.success() {
-        let detail = sanitize_agent_lifecycle_output(if stderr.trim().is_empty() {
-            &stdout
+        let detail = sanitize_agent_lifecycle_output(if stderr.is_empty() {
+            stdout.trim()
         } else {
             &stderr
         });
+        tracing::warn!(
+            target: "codem::plugins",
+            "Agent CLI 命令失败: provider={provider_id} args={arguments:?} detail={}",
+            crate::app_logging::redact_secrets(&detail)
+        );
         return Err(ApiError::bad_request(if detail.is_empty() {
             "Agent CLI 命令执行失败".to_string()
         } else {
@@ -17206,6 +17238,19 @@ fn normalize_agent_plugin_item(provider_id: &str, item: &Value, installed: bool)
         .and_then(Value::as_str)
         .map(ToString::to_string)
         .unwrap_or_else(|| format!("{name}@{marketplace}"));
+    let enabled = item
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .or_else(|| {
+            if provider_id == HERMES_AGENT_PROVIDER_ID {
+                item.get("status")
+                    .and_then(Value::as_str)
+                    .map(|status| status.eq_ignore_ascii_case("enabled"))
+            } else {
+                None
+            }
+        })
+        .unwrap_or(installed);
     let mut normalized = json!({
         "id": id,
         "name": name,
@@ -17213,7 +17258,7 @@ fn normalize_agent_plugin_item(provider_id: &str, item: &Value, installed: bool)
         "scope": item.get("scope").and_then(Value::as_str).unwrap_or("user"),
         "version": item.get("version").and_then(Value::as_str),
         "description": item.get("description").and_then(Value::as_str),
-        "enabled": item.get("enabled").and_then(Value::as_bool).unwrap_or(installed),
+        "enabled": enabled,
         "installed": installed || item.get("installed").and_then(Value::as_bool).unwrap_or(false),
         "providerId": provider_id,
         "installPath": item.get("installPath").and_then(Value::as_str),
