@@ -25,6 +25,8 @@ use std::{
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use tokio::{sync::watch, task::JoinHandle};
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
@@ -35,6 +37,8 @@ const MOBILE_MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MOBILE_MAX_IMAGE_BYTES: usize = 12 * 1024 * 1024;
 const DEVICE_COOKIE: &str = "codem_mobile_device";
 const FIREWALL_RULE_NAME: &str = "CodeM Mobile Companion";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const MOBILE_STOP_HEADERS: [(&str, &str); 1] = [("x-codem-mobile-stop", "1")];
 
 #[derive(Clone)]
@@ -3548,7 +3552,9 @@ fn replace_mobile_companion_state(
 fn firewall_state(port: u16) -> &'static str {
     #[cfg(windows)]
     {
-        let output = Command::new("netsh")
+        let mut command = Command::new("netsh");
+        command.creation_flags(CREATE_NO_WINDOW);
+        let output = command
             .args([
                 "advfirewall",
                 "firewall",
@@ -3584,9 +3590,12 @@ fn configure_firewall(port: u16, enabled: bool) -> Result<(), String> {
     {
         let port = port.to_string();
         let mut command = Command::new("netsh");
+        command.creation_flags(CREATE_NO_WINDOW);
         command.args(["advfirewall", "firewall"]);
         if enabled {
-            let _ = Command::new("netsh")
+            let mut delete_command = Command::new("netsh");
+            delete_command.creation_flags(CREATE_NO_WINDOW);
+            let _ = delete_command
                 .args([
                     "advfirewall",
                     "firewall",
