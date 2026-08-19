@@ -7217,6 +7217,8 @@ fn normalize_default_model_id(value: Option<&Value>, custom_models: &Value) -> S
         "opus",
         "opus[1m]",
         "haiku",
+        "fable",
+        "fable[1m]",
     ];
     if slots.contains(&candidate.as_str()) {
         return candidate;
@@ -7386,6 +7388,7 @@ fn configured_model_options() -> Value {
     let sonnet_model = configured_env_string("ANTHROPIC_DEFAULT_SONNET_MODEL");
     let opus_model = configured_env_string("ANTHROPIC_DEFAULT_OPUS_MODEL");
     let haiku_model = configured_env_string("ANTHROPIC_DEFAULT_HAIKU_MODEL");
+    let fable_model = configured_env_string("ANTHROPIC_DEFAULT_FABLE_MODEL");
     let context_1m_disabled =
         configured_env_string("CLAUDE_CODE_DISABLE_1M_CONTEXT").is_some_and(|value| {
             matches!(
@@ -7397,6 +7400,7 @@ fn configured_model_options() -> Value {
     let sonnet_value = sonnet_model.as_deref().unwrap_or("sonnet");
     let opus_value = opus_model.as_deref().unwrap_or("opus");
     let haiku_value = haiku_model.as_deref().unwrap_or("haiku");
+    let fable_value = fable_model.as_deref().unwrap_or("fable");
     let mut models = vec![
         json!({
             "id": "__default",
@@ -7432,6 +7436,15 @@ fn configured_model_options() -> Value {
             "description": slot_description("更快，适合简单回复", haiku_model.as_deref()),
             "model": haiku_value,
             "kind": "slot",
+        }),
+        json!({
+            "id": "fable",
+            "label": "Fable",
+            "description": slot_description("最强，适合最难问题（需新版 Claude Code）", fable_model.as_deref()),
+            "model": fable_value,
+            "kind": "slot",
+            "supportsContext1m": can_use_context_1m && can_use_context_1m_alias(fable_value),
+            "context1mModel": with_context_1m_suffix(fable_value),
         }),
     ];
 
@@ -7474,6 +7487,7 @@ fn can_use_context_1m_alias(model: &str) -> bool {
         || normalized.contains("sonnet")
         || normalized.contains("opus")
         || normalized.contains("haiku")
+        || normalized.contains("fable")
 }
 
 fn configured_env_string(key: &str) -> Option<String> {
@@ -22954,7 +22968,8 @@ mod tests {
         claude_install_lifecycle_plan, claude_runtime_phase_from_events,
         claude_uninstalled_update_lifecycle_plan, codex_snapshot_to_conversation_turns,
         command_output_with_timeout, compare_project_file_entries, compare_semantic_versions,
-        complete_thread_fork_history, configure_agent_lifecycle_environment, create_project_row,
+        complete_thread_fork_history, configure_agent_lifecycle_environment,
+        configured_model_options, create_project_row,
         create_router, create_runtime_recovery_hint, create_thread_row,
         current_claude_install_lifecycle_plan, default_claude_command_paths,
         default_grok_command_path, default_pi_command_paths, desktop_cors_layer,
@@ -22966,7 +22981,8 @@ mod tests {
         list_agent_plugin_marketplaces_value, list_agent_skills_value, list_slash_commands_value,
         map_claude_json_line, mark_fork_provider_succeeded, mark_request_user_input_submitted,
         merge_thread_history_turn_with_connection, normalize_agent_plugin_action,
-        normalize_agent_runtime_settings, normalize_general_settings, normalize_open_with_settings,
+        normalize_agent_runtime_settings, normalize_default_model_id, normalize_general_settings,
+        normalize_open_with_settings,
         normalize_pi_probe_summary, normalize_request_user_input_answer_value,
         open_initialized_workspace_database, parse_github_release_tag_version,
         parse_grok_cli_version, parse_grok_latest_version, parse_hermes_github_release_version,
@@ -28215,6 +28231,57 @@ mod tests {
                 "dshToolsMode": "native",
             })
         );
+    }
+
+    #[test]
+    fn model_settings_default_model_id_keeps_fable_slots() {
+        let empty_custom_models = json!([]);
+        assert_eq!(
+            normalize_default_model_id(Some(&json!("fable")), &empty_custom_models),
+            "fable"
+        );
+        assert_eq!(
+            normalize_default_model_id(Some(&json!("fable[1m]")), &empty_custom_models),
+            "fable[1m]"
+        );
+        assert_eq!(
+            normalize_default_model_id(Some(&json!("unknown-slot")), &empty_custom_models),
+            "__default"
+        );
+    }
+
+    #[test]
+    fn configured_model_options_exposes_fable_slot() {
+        let models = configured_model_options();
+        let slots: Vec<&Value> = models
+            .as_array()
+            .expect("model options should be an array")
+            .iter()
+            .filter(|item| item.get("kind").and_then(Value::as_str) == Some("slot"))
+            .collect();
+        let ids: Vec<&str> = slots
+            .iter()
+            .filter_map(|item| item.get("id").and_then(Value::as_str))
+            .collect();
+        assert!(ids.contains(&"sonnet"));
+        assert!(ids.contains(&"opus"));
+        assert!(ids.contains(&"haiku"));
+        assert!(ids.contains(&"fable"));
+
+        let fable = models
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item.get("id").and_then(Value::as_str) == Some("fable"))
+            .expect("fable slot should exist");
+        let fable_model = fable.get("model").and_then(Value::as_str).unwrap_or("");
+        assert!(
+            fable_model.to_ascii_lowercase().contains("fable") || !fable_model.is_empty(),
+            "fable slot should resolve to an alias or a mapped model"
+        );
+        if let Some(context_model) = fable.get("context1mModel").and_then(Value::as_str) {
+            assert!(context_model.to_ascii_lowercase().ends_with("[1m]"));
+        }
     }
 
     #[test]

@@ -24,6 +24,28 @@ test('resolveInitialClaudeModelId falls back when a stale Claude 1M slot is unav
   assert.equal(resolveInitialClaudeModelId('sonnet[1m]', glmModels, '__default'), '__default');
 });
 
+test('resolveInitialClaudeModelId falls back when a stale fable 1M slot is unavailable', () => {
+  assert.equal(resolveInitialClaudeModelId('fable[1m]', glmModels, '__default'), '__default');
+});
+
+test('resolveRunModelSelection keeps a configured fable slot and requests the fable alias', () => {
+  const fableModels: ClaudeModelOption[] = [
+    ...glmModels,
+    { id: 'fable', label: 'Fable', model: 'fable', kind: 'slot', supportsContext1m: true, context1mModel: 'fable[1m]' },
+  ];
+
+  assert.deepEqual(resolveRunModelSelection('fable', fableModels, '__default'), {
+    selectedModelId: 'fable',
+    requestModel: 'fable',
+    staleProviderModel: false,
+  });
+  assert.deepEqual(resolveRunModelSelection('fable[1m]', fableModels, '__default'), {
+    selectedModelId: 'fable[1m]',
+    requestModel: 'fable[1m]',
+    staleProviderModel: false,
+  });
+});
+
 test('resolveInitialClaudeModelId avoids arbitrarily picking a duplicated gateway slot', () => {
   assert.equal(resolveInitialClaudeModelId('glm-5.1', glmModels, '__default'), '__default');
 });

@@ -9,6 +9,7 @@ import {
   fetchDshSessionUsage,
   normalizeAgentRuntimeSettings,
   normalizeGeneralSettings,
+  normalizeModelSettings,
   normalizeOpenWithSettings,
 } from './settings-api.js';
 
@@ -87,6 +88,21 @@ test('normalizeAgentRuntimeSettings defaults to Claude Code and preserves suppor
       dshAgentPreset: 'standard',
       dshToolsMode: 'native',
     },
+  );
+});
+
+test('normalizeModelSettings keeps fable slots as default model choices', () => {
+  assert.equal(
+    normalizeModelSettings({ defaultModelId: 'fable', customModels: [] }).defaultModelId,
+    'fable',
+  );
+  assert.equal(
+    normalizeModelSettings({ defaultModelId: 'fable[1m]', customModels: [] }).defaultModelId,
+    'fable[1m]',
+  );
+  assert.equal(
+    normalizeModelSettings({ defaultModelId: 'unknown-slot', customModels: [] }).defaultModelId,
+    '__default',
   );
 });
 

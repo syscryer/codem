@@ -19,7 +19,7 @@ export const HERMES_AGENT_PROVIDER_ID = 'hermes-agent';
 export const DEEPSEEK_DSH_PROVIDER_ID = 'deepseek-dsh';
 export const CODEM_AGENT_PROVIDER_ID = 'codem-agent';
 export const APP_UPDATE_CHECK_INTERVAL_MS = 2 * 60 * 60 * 1000;
-export const CLAUDE_MODEL_SLOT_VALUES = ['sonnet', 'sonnet[1m]', 'opus', 'opus[1m]', 'haiku'] as const;
+export const CLAUDE_MODEL_SLOT_VALUES = ['sonnet', 'sonnet[1m]', 'opus', 'opus[1m]', 'haiku', 'fable', 'fable[1m]'] as const;
 
 export const CLAUDE_EFFORT_OPTIONS: ReadonlyArray<{
   value: ClaudeEffortSelection;
