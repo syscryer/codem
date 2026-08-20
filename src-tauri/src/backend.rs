@@ -74,6 +74,7 @@ const GROK_CLI_MACOS_INSTALL_COMMAND: &str = "curl -fsSL https://x.ai/cli/instal
 const OPENCODE_CLI_INSTALL_COMMAND: &str = "npm install -g opencode-ai@latest";
 const GEMINI_CLI_INSTALL_COMMAND: &str = "npm install -g @google/gemini-cli@latest";
 const DSH_CLI_INSTALL_COMMAND: &str = "npm install -g @deepseek-ai/dsh@latest";
+const DSH_CLI_PRERELEASE_UPDATE_COMMAND: &str = "npm install -g @deepseek-ai/dsh@next";
 const HERMES_CLI_UPDATE_COMMAND: &str = "hermes update";
 const HERMES_GITHUB_REPOSITORY: &str = "NousResearch/hermes-agent";
 const HERMES_CLI_MACOS_INSTALL_COMMAND: &str =
@@ -1555,8 +1556,13 @@ async fn agent_settings_diagnostics(
     let home = home_dir().ok_or_else(|| ApiError::internal("无法定位用户目录"))?;
     let config_directory = agent_global_config_directory(provider_id, &home);
     let install_command = build_agent_lifecycle_plan(provider_id, "install", None)?.display_command;
-    let update_command =
-        build_agent_lifecycle_plan(provider_id, "update", command.as_deref())?.display_command;
+    let update_command = build_agent_lifecycle_plan_for_version(
+        provider_id,
+        "update",
+        command.as_deref(),
+        version.as_deref(),
+    )?
+    .display_command;
     let (diagnostic_command, diagnostic_args) = agent_settings_diagnostic_spec(provider_id)?;
     let diagnostic = if run_diagnostic {
         if let Some(command) = command.as_deref() {
@@ -1664,6 +1670,7 @@ async fn agent_latest_version(
     let latest_version_check = read_agent_latest_version(
         provider_id,
         command.as_deref(),
+        current_version,
         proxy_environment.as_deref(),
     )
     .await;
@@ -1681,6 +1688,7 @@ async fn agent_latest_version(
 async fn read_agent_latest_version(
     provider_id: &str,
     installed_command: Option<&str>,
+    current_version: Option<&str>,
     proxy_environment: Option<&[(String, String)]>,
 ) -> AgentLatestVersionCheck {
     if provider_id == GROK_BUILD_PROVIDER_ID {
@@ -1730,7 +1738,11 @@ async fn read_agent_latest_version(
             continue;
         };
         for registry in [NPM_REGISTRY_URL, NPM_MIRROR_REGISTRY_URL] {
-            if let Ok(version) = fetch_npm_latest_version(&client, registry, package).await {
+            let include_prerelease = provider_id == DEEPSEEK_DSH_PROVIDER_ID
+                && current_version.is_some_and(|version| version.contains('-'));
+            if let Ok(version) =
+                fetch_npm_latest_version(&client, registry, package, include_prerelease).await
+            {
                 return AgentLatestVersionCheck {
                     latest_version: Some(version),
                     error: None,
@@ -1811,6 +1823,7 @@ async fn fetch_npm_latest_version(
     client: &reqwest::Client,
     registry: &str,
     package: &str,
+    include_prerelease: bool,
 ) -> Result<String, ()> {
     let mut url = url::Url::parse(registry).map_err(|_| ())?;
     url.path_segments_mut()
@@ -1824,11 +1837,11 @@ async fn fetch_npm_latest_version(
         .error_for_status()
         .map_err(|_| ())?;
     let payload = response.json::<Value>().await.map_err(|_| ())?;
-    parse_npm_latest_version(&payload).ok_or(())
+    parse_npm_version(&payload, include_prerelease).ok_or(())
 }
 
-fn parse_npm_latest_version(payload: &Value) -> Option<String> {
-    payload
+fn parse_npm_version(payload: &Value, include_prerelease: bool) -> Option<String> {
+    let latest = payload
         .get("latest")
         .or_else(|| {
             payload
@@ -1838,7 +1851,22 @@ fn parse_npm_latest_version(payload: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
+        .map(ToString::to_string);
+    if !include_prerelease {
+        return latest;
+    }
+    let next = payload
+        .get("next")
+        .or_else(|| payload.get("dist-tags").and_then(|value| value.get("next")))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    match (latest, next) {
+        (Some(latest), Some(next)) if compare_semantic_versions(&latest, &next) < 0 => Some(next),
+        (Some(latest), _) => Some(latest),
+        (None, next) => next,
+    }
 }
 
 async fn fetch_github_latest_version(
@@ -2012,7 +2040,17 @@ async fn execute_agent_lifecycle_action(
         return Err(ApiError::bad_request("Agent 尚未安装，请先执行安装"));
     }
 
-    let plan = build_agent_lifecycle_plan(provider_id, action, command.as_deref())?;
+    let installed_version = if provider_id == DEEPSEEK_DSH_PROVIDER_ID {
+        command.as_deref().and_then(read_dsh_cli_version)
+    } else {
+        None
+    };
+    let plan = build_agent_lifecycle_plan_for_version(
+        provider_id,
+        action,
+        command.as_deref(),
+        installed_version.as_deref(),
+    )?;
     if !lifecycle_program_available(&plan.program) {
         return Err(ApiError::bad_request(
             "未检测到 npm、pnpm 或 bun。请先安装 Node.js 或任一受支持的包管理器后重试",
@@ -2571,6 +2609,23 @@ fn build_agent_lifecycle_plan(
     action: &str,
     installed_command: Option<&str>,
 ) -> ApiResult<AgentLifecyclePlan> {
+    build_agent_lifecycle_plan_for_version(provider_id, action, installed_command, None)
+}
+
+fn build_agent_lifecycle_plan_for_version(
+    provider_id: &str,
+    action: &str,
+    installed_command: Option<&str>,
+    installed_version: Option<&str>,
+) -> ApiResult<AgentLifecyclePlan> {
+    let distribution_tag = if provider_id == DEEPSEEK_DSH_PROVIDER_ID
+        && action == "update"
+        && installed_version.is_some_and(|version| version.contains('-'))
+    {
+        "next"
+    } else {
+        "latest"
+    };
     if action == "install" && provider_id == PI_AGENT_PROVIDER_ID {
         return Ok(lifecycle_plan(
             if cfg!(target_os = "windows") {
@@ -2676,7 +2731,9 @@ fn build_agent_lifecycle_plan(
                     HERMES_CLI_UPDATE_COMMAND,
                 ));
             }
-            if let Some(plan) = package_manager_lifecycle_plan(provider_id, command) {
+            if let Some(plan) =
+                package_manager_lifecycle_plan(provider_id, command, distribution_tag)
+            {
                 return Ok(plan);
             }
         }
@@ -2695,6 +2752,9 @@ fn build_agent_lifecycle_plan(
         OPENAI_CODEX_PROVIDER_ID => ("@openai/codex@latest", CODEX_CLI_INSTALL_COMMAND),
         OPENCODE_PROVIDER_ID => ("opencode-ai@latest", OPENCODE_CLI_INSTALL_COMMAND),
         GEMINI_CLI_PROVIDER_ID => ("@google/gemini-cli@latest", GEMINI_CLI_INSTALL_COMMAND),
+        DEEPSEEK_DSH_PROVIDER_ID if distribution_tag == "next" => {
+            ("@deepseek-ai/dsh@next", DSH_CLI_PRERELEASE_UPDATE_COMMAND)
+        }
         DEEPSEEK_DSH_PROVIDER_ID => ("@deepseek-ai/dsh@latest", DSH_CLI_INSTALL_COMMAND),
         GROK_BUILD_PROVIDER_ID if action == "update" => {
             return Ok(lifecycle_plan("grok", ["update"], "grok update"));
@@ -2840,7 +2900,11 @@ fn claude_install_display_command() -> String {
     current_claude_install_lifecycle_plan().display_command
 }
 
-fn package_manager_lifecycle_plan(provider_id: &str, command: &str) -> Option<AgentLifecyclePlan> {
+fn package_manager_lifecycle_plan(
+    provider_id: &str,
+    command: &str,
+    distribution_tag: &str,
+) -> Option<AgentLifecyclePlan> {
     let package = match provider_id {
         CLAUDE_CODE_PROVIDER_ID => "@anthropic-ai/claude-code",
         OPENAI_CODEX_PROVIDER_ID => "@openai/codex",
@@ -2849,14 +2913,15 @@ fn package_manager_lifecycle_plan(provider_id: &str, command: &str) -> Option<Ag
         DEEPSEEK_DSH_PROVIDER_ID => "@deepseek-ai/dsh",
         _ => return None,
     };
+    let package_reference = format!("{package}@{distribution_tag}");
     let normalized = command.replace('\\', "/").to_ascii_lowercase();
     if normalized.contains("/volta/") {
         let manager = find_nearby_executable(command, &["volta.exe", "volta.cmd", "volta"])?;
         return Some(lifecycle_plan(
             manager.to_string_lossy().as_ref(),
-            ["install", package],
+            ["install", package_reference.as_str()],
             &format!(
-                "{} install {package}",
+                "{} install {package_reference}",
                 quote_display_command(manager.to_string_lossy().as_ref())
             ),
         ));
@@ -2865,9 +2930,9 @@ fn package_manager_lifecycle_plan(provider_id: &str, command: &str) -> Option<Ag
         let manager = find_nearby_executable(command, &["bun.exe", "bun"])?;
         return Some(lifecycle_plan(
             manager.to_string_lossy().as_ref(),
-            ["add", "-g", &format!("{package}@latest")],
+            ["add", "-g", package_reference.as_str()],
             &format!(
-                "{} add -g {package}@latest",
+                "{} add -g {package_reference}",
                 quote_display_command(manager.to_string_lossy().as_ref())
             ),
         ));
@@ -2876,9 +2941,9 @@ fn package_manager_lifecycle_plan(provider_id: &str, command: &str) -> Option<Ag
         let manager = find_nearby_executable(command, &["pnpm.exe", "pnpm.cmd", "pnpm"])?;
         return Some(lifecycle_plan(
             manager.to_string_lossy().as_ref(),
-            ["add", "-g", &format!("{package}@latest")],
+            ["add", "-g", package_reference.as_str()],
             &format!(
-                "{} add -g {package}@latest",
+                "{} add -g {package_reference}",
                 quote_display_command(manager.to_string_lossy().as_ref())
             ),
         ));
@@ -2903,9 +2968,9 @@ fn package_manager_lifecycle_plan(provider_id: &str, command: &str) -> Option<Ag
     let manager = find_nearby_executable(command, &["npm.cmd", "npm.exe", "npm"])?;
     Some(lifecycle_plan(
         manager.to_string_lossy().as_ref(),
-        ["install", "-g", &format!("{package}@latest")],
+        ["install", "-g", package_reference.as_str()],
         &format!(
-            "{} install -g {package}@latest",
+            "{} install -g {package_reference}",
             quote_display_command(manager.to_string_lossy().as_ref())
         ),
     ))
@@ -23007,14 +23072,14 @@ mod tests {
     use super::{
         agent_global_config_directory, agent_settings_diagnostic_spec,
         apply_agent_lifecycle_proxy_environment, build_agent_lifecycle_plan,
-        build_agent_plugin_command_args, build_claude_input_message,
-        build_request_user_input_response_answers, build_usage_provider_rows,
-        claude_input_message_has_content, claude_install_display_command,
-        claude_install_lifecycle_plan, claude_runtime_phase_from_events,
-        claude_uninstalled_update_lifecycle_plan, codex_snapshot_to_conversation_turns,
-        command_output_with_timeout, compare_project_file_entries, compare_semantic_versions,
-        complete_thread_fork_history, configure_agent_lifecycle_environment,
-        configured_model_options, create_project_row,
+        build_agent_lifecycle_plan_for_version, build_agent_plugin_command_args,
+        build_claude_input_message, build_request_user_input_response_answers,
+        build_usage_provider_rows, claude_input_message_has_content,
+        claude_install_display_command, claude_install_lifecycle_plan,
+        claude_runtime_phase_from_events, claude_uninstalled_update_lifecycle_plan,
+        codex_snapshot_to_conversation_turns, command_output_with_timeout,
+        compare_project_file_entries, compare_semantic_versions, complete_thread_fork_history,
+        configure_agent_lifecycle_environment, configured_model_options, create_project_row,
         create_router, create_runtime_recovery_hint, create_thread_row,
         current_claude_install_lifecycle_plan, default_claude_command_paths,
         default_grok_command_path, default_pi_command_paths, desktop_cors_layer,
@@ -23027,16 +23092,15 @@ mod tests {
         map_claude_json_line, mark_fork_provider_succeeded, mark_request_user_input_submitted,
         merge_thread_history_turn_with_connection, normalize_agent_plugin_action,
         normalize_agent_runtime_settings, normalize_default_model_id, normalize_general_settings,
-        normalize_open_with_settings,
-        normalize_pi_probe_summary, normalize_request_user_input_answer_value,
-        open_initialized_workspace_database, parse_github_release_tag_version,
-        parse_grok_cli_version, parse_grok_latest_version, parse_hermes_github_release_version,
-        parse_macos_system_proxy_environment, parse_npm_latest_version,
-        parse_pi_installed_packages, parse_request_user_input_event, pi_node_version_supported,
-        prepare_thread_fork_operation, probe_claude_thread_fork_capability,
-        provider_supports_reasoning_effort, read_agent_mcp_config_snapshot,
-        read_fork_source_thread, read_gemini_mcp_config, read_opencode_mcp_config,
-        read_state_value, read_stored_thread_history, read_thread_detail,
+        normalize_open_with_settings, normalize_pi_probe_summary,
+        normalize_request_user_input_answer_value, open_initialized_workspace_database,
+        parse_github_release_tag_version, parse_grok_cli_version, parse_grok_latest_version,
+        parse_hermes_github_release_version, parse_macos_system_proxy_environment,
+        parse_npm_version, parse_pi_installed_packages, parse_request_user_input_event,
+        pi_node_version_supported, prepare_thread_fork_operation,
+        probe_claude_thread_fork_capability, provider_supports_reasoning_effort,
+        read_agent_mcp_config_snapshot, read_fork_source_thread, read_gemini_mcp_config,
+        read_opencode_mcp_config, read_state_value, read_stored_thread_history, read_thread_detail,
         read_thread_fork_operation, read_thread_summary, recover_stale_thread_fork_operations,
         remove_thread_row, resolve_codex_command, resolve_command_from_path,
         resolve_first_runnable_command, resolve_gemini_command, resolve_grok_command,
@@ -26945,24 +27009,58 @@ mod tests {
     #[test]
     fn agent_lifecycle_npm_latest_version_parser_reads_dist_tag() {
         assert_eq!(
-            parse_npm_latest_version(&json!({ "latest": " 2.1.211 " })).as_deref(),
+            parse_npm_version(&json!({ "latest": " 2.1.211 " }), false).as_deref(),
             Some("2.1.211")
         );
         assert_eq!(
-            parse_npm_latest_version(&json!({
-                "dist-tags": { "latest": "2.1.210" }
-            }))
-            .as_deref(),
+            parse_npm_version(&json!({ "dist-tags": { "latest": "2.1.210" } }), false,).as_deref(),
             Some("2.1.210")
         );
         assert_eq!(
-            parse_npm_latest_version(&json!({ "dist-tags": { "next": "2.2.0" } })),
+            parse_npm_version(&json!({ "dist-tags": { "next": "2.2.0" } }), false),
             None
         );
         assert_eq!(
-            parse_npm_latest_version(&json!({ "dist-tags": { "latest": "  " } })),
+            parse_npm_version(&json!({ "dist-tags": { "latest": "  " } }), false,),
             None
         );
+    }
+
+    #[test]
+    fn dsh_prerelease_version_parser_follows_the_next_dist_tag() {
+        let tags = json!({
+            "latest": "0.1.0-rc.7",
+            "next": "0.1.0-rc.8"
+        });
+        assert_eq!(
+            parse_npm_version(&tags, true).as_deref(),
+            Some("0.1.0-rc.8")
+        );
+        assert_eq!(
+            parse_npm_version(&tags, false).as_deref(),
+            Some("0.1.0-rc.7")
+        );
+    }
+
+    #[test]
+    fn dsh_prerelease_update_plan_uses_the_next_dist_tag() {
+        let install =
+            build_agent_lifecycle_plan_for_version(DEEPSEEK_DSH_PROVIDER_ID, "install", None, None)
+                .unwrap();
+        assert!(install
+            .args
+            .iter()
+            .any(|arg| arg == "@deepseek-ai/dsh@latest"));
+
+        let update = build_agent_lifecycle_plan_for_version(
+            DEEPSEEK_DSH_PROVIDER_ID,
+            "update",
+            Some("dsh"),
+            Some("0.1.0-rc.7"),
+        )
+        .unwrap();
+        assert!(update.args.iter().any(|arg| arg == "@deepseek-ai/dsh@next"));
+        assert!(update.display_command.contains("@deepseek-ai/dsh@next"));
     }
 
     #[test]

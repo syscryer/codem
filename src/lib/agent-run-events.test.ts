@@ -64,6 +64,21 @@ test('generic Agent events preserve text and tool ordering without duplicating f
   assert.equal(turn.tools[0]?.resultText, 'ok');
 });
 
+test('generic Agent stream deltas retain Markdown boundary newlines', () => {
+  let turn = createTurn();
+  turn = apply(turn, { type: 'delta', runId: 'run-1', text: '---' });
+  turn = apply(turn, {
+    type: 'delta',
+    runId: 'run-1',
+    text: '\n\n## 标题\n\n```bash\nprintf "ok"\n```',
+  });
+
+  const expected = '---\n\n## 标题\n\n```bash\nprintf "ok"\n```';
+  assert.equal(turn.assistantText, expected);
+  assert.equal(turn.items.length, 1);
+  assert.equal(turn.items[0]?.type === 'text' ? turn.items[0].text : '', expected);
+});
+
 test('generic Agent events hide trailing OpenCode DCP message ids', () => {
   let turn = createTurn();
   turn = apply(turn, {

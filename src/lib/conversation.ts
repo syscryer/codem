@@ -1141,7 +1141,6 @@ export function sanitizeVisibleAssistantText(text: string) {
       '',
     )
     .replace(/(^|\n)[ \t]*answer for user question[ \t]*(?=\n|$)/gi, '$1')
-    .replace(/^\n+/, '')
     .replace(/\n{3,}/g, '\n\n');
 }
 
