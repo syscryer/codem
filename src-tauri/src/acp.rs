@@ -3417,6 +3417,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn acp_prompt_accepts_end_turn_after_updates_with_distinct_message_ids() {
+        let (client_io, server_io) = duplex(16 * 1024);
+        let (client_reader, client_writer) = split(client_io);
+        let (server_reader, mut server_writer) = split(server_io);
+        let server = tokio::spawn(async move {
+            let mut lines = BufReader::new(server_reader).lines();
+            let prompt = read_json_line(&mut lines).await;
+            write_json_line(
+                &mut server_writer,
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "session-1",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "messageId": "assistant-working",
+                            "content": { "type": "text", "text": "正在检查" }
+                        }
+                    }
+                }),
+            )
+            .await;
+            write_json_line(
+                &mut server_writer,
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "session-1",
+                        "update": {
+                            "sessionUpdate": "agent_thought_chunk",
+                            "messageId": "assistant-final",
+                            "content": { "type": "text", "text": "准备最终结论" }
+                        }
+                    }
+                }),
+            )
+            .await;
+            write_json_line(
+                &mut server_writer,
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "session-1",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "messageId": "assistant-final",
+                            "content": { "type": "text", "text": "   " }
+                        }
+                    }
+                }),
+            )
+            .await;
+            write_json_line(
+                &mut server_writer,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": prompt["id"],
+                    "result": { "stopReason": "end_turn" }
+                }),
+            )
+            .await;
+        });
+
+        let (_cancel_sender, cancel_receiver) = watch::channel(false);
+        let mut client = AcpConnection::new(client_reader, client_writer);
+        let outcome = client
+            .prompt_text("session-1", "review", cancel_receiver)
+            .await
+            .expect("ACP stopReason remains the terminal source of truth");
+
+        assert_eq!(outcome.stop_reason, "end_turn");
+        assert_eq!(outcome.text, "正在检查   ");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn acp_prompt_stream_maps_tools_permission_and_elicitation_without_secrets() {
         let (client_io, server_io) = duplex(64 * 1024);
         let (client_reader, client_writer) = split(client_io);
