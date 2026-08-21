@@ -6350,12 +6350,26 @@ async fn get_thread_history(
     State(state): State<AppState>,
     AxumPath(thread_id): AxumPath<String>,
 ) -> ApiResult<Json<Value>> {
+    let active_run = state
+        .runs
+        .lock()
+        .map_err(|error| ApiError::internal(format!("读取运行状态失败: {error}")))?
+        .values()
+        .find(|run| run.thread_id == thread_id && !run.finished)
+        .cloned();
     let pending = {
         let _guard = lock_workspace_write(&state)?;
         let mut connection = open_initialized_workspace_database(&state)?;
         match read_pending_fork_history_context(&connection, &thread_id)? {
             Some(pending) => Some(pending),
-            None => return read_thread_history_payload(&mut connection, &thread_id).map(Json),
+            None => {
+                let history = read_thread_history_payload_for_active_run(
+                    &mut connection,
+                    &thread_id,
+                    active_run.as_ref(),
+                )?;
+                return Ok(Json(history));
+            }
         }
     };
     let (source, operation) = pending.expect("pending Fork history context");
@@ -11452,6 +11466,12 @@ fn remove_thread_row(connection: &mut Connection, thread_id: &str) -> ApiResult<
         )
         .map_err(|error| ApiError::internal(format!("清理聊天选择失败: {error}")))?;
     transaction
+        .execute(
+            "DELETE FROM app_state WHERE key = ?",
+            params![transcript_sync_state_key(thread_id)],
+        )
+        .map_err(|error| ApiError::internal(format!("清理 transcript 同步状态失败: {error}")))?;
+    transaction
         .commit()
         .map_err(|error| ApiError::internal(format!("提交聊天删除失败: {error}")))
 }
@@ -11955,6 +11975,14 @@ fn codex_snapshot_turn_status(status: &str) -> &'static str {
 }
 
 fn read_thread_history_payload(connection: &mut Connection, thread_id: &str) -> ApiResult<Value> {
+    read_thread_history_payload_for_active_run(connection, thread_id, None)
+}
+
+fn read_thread_history_payload_for_active_run(
+    connection: &mut Connection,
+    thread_id: &str,
+    active_run: Option<&ActiveRunRecord>,
+) -> ApiResult<Value> {
     let thread = read_thread_detail(connection, thread_id)?;
     let stored_turns = read_stored_thread_history(connection, thread_id)?;
     let claude_fork_snapshot = if thread.provider == CLAUDE_CODE_PROVIDER_ID {
@@ -11976,7 +12004,9 @@ fn read_thread_history_payload(connection: &mut Connection, thread_id: &str) -> 
         .flatten()
         .filter(|path| Path::new(path).exists())
     {
-        let should_parse = if turns.is_empty() {
+        let should_parse = if active_run.is_some() {
+            false
+        } else if turns.is_empty() {
             true
         } else {
             should_refresh_stored_history(connection, thread_id, transcript_path, &turns)?
@@ -11992,9 +12022,27 @@ fn read_thread_history_payload(connection: &mut Connection, thread_id: &str) -> 
                 } else {
                     merge_stored_turn_metrics(&stored_turns, reparsed_turns)
                 };
-                write_thread_history(connection, thread_id, &turns)?;
+                if let Some(fingerprint) = transcript_fingerprint(transcript_path) {
+                    write_thread_history_with_transcript_sync(
+                        connection,
+                        thread_id,
+                        &turns,
+                        &fingerprint,
+                    )?;
+                } else {
+                    write_thread_history(connection, thread_id, &turns)?;
+                }
             }
         }
+    }
+    if let Some(active_run) = active_run {
+        let mut history = json!({ "turns": turns });
+        reconcile_active_run_turn_id_in_history(&mut history, active_run);
+        turns = history
+            .get("turns")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
     }
     let visible_turns = if thread.provider == CLAUDE_CODE_PROVIDER_ID {
         remove_claude_local_command_pollution(turns)
@@ -12051,9 +12099,6 @@ fn should_refresh_stored_history(
     {
         return Ok(false);
     }
-    if should_reparse_stored_history(turns) {
-        return Ok(true);
-    }
     is_stored_history_outdated(connection, thread_id, transcript_path)
 }
 
@@ -12062,39 +12107,26 @@ fn is_stored_history_outdated(
     thread_id: &str,
     transcript_path: &str,
 ) -> ApiResult<bool> {
-    let latest_created_at: Option<String> = connection
-        .query_row(
-            "SELECT MAX(created_at) FROM messages WHERE thread_id = ?",
-            params![thread_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| ApiError::internal(format!("读取聊天更新时间失败: {error}")))?
-        .flatten();
-    let Some(latest_created_at) = latest_created_at else {
-        return Ok(true);
+    let Some(current_fingerprint) = transcript_fingerprint(transcript_path) else {
+        return Ok(false);
     };
-    let transcript_updated_at = fs::metadata(transcript_path)
-        .ok()
-        .and_then(|metadata| metadata.modified().ok())
-        .map(chrono::DateTime::<chrono::Utc>::from)
-        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
-    Ok(transcript_updated_at.is_some_and(|value| value > latest_created_at))
+    let stored_fingerprint = read_state_value(connection, &transcript_sync_state_key(thread_id))?;
+    Ok(stored_fingerprint.as_deref() != Some(current_fingerprint.as_str()))
 }
 
-fn should_reparse_stored_history(turns: &[Value]) -> bool {
-    turns.iter().any(|turn| {
-        has_claude_local_command_text(turn.get("userText").and_then(Value::as_str))
-            || has_claude_local_command_text(turn.get("assistantText").and_then(Value::as_str))
-            || turn
-                .get("tools")
-                .and_then(Value::as_array)
-                .is_some_and(|tools| {
-                    tools
-                        .iter()
-                        .any(|tool| tool.get("name").and_then(Value::as_str) == Some("tool_result"))
-                })
-    })
+fn transcript_sync_state_key(thread_id: &str) -> String {
+    format!("transcript-sync:{thread_id}")
+}
+
+fn transcript_fingerprint(transcript_path: &str) -> Option<String> {
+    let metadata = fs::metadata(transcript_path).ok()?;
+    let modified_ns = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(format!("{}:{modified_ns}", metadata.len()))
 }
 
 fn has_pending_human_request(turn: &Value) -> bool {
@@ -12126,15 +12158,28 @@ fn merge_stored_turn_metrics(stored_turns: &[Value], reparsed_turns: Vec<Value>)
         stored_by_key
             .entry(turn_merge_key(turn, index))
             .or_insert_with(std::collections::VecDeque::new)
-            .push_back(turn);
+            .push_back(index);
     }
+    let mut consumed = vec![false; stored_turns.len()];
     reparsed_turns
         .into_iter()
         .enumerate()
         .map(|(index, mut turn)| {
-            let stored = stored_by_key
+            let stored_index = stored_by_key
                 .get_mut(&turn_merge_key(&turn, index))
-                .and_then(std::collections::VecDeque::pop_front);
+                .and_then(|indices| {
+                    while let Some(stored_index) = indices.pop_front() {
+                        if !consumed[stored_index] {
+                            return Some(stored_index);
+                        }
+                    }
+                    None
+                })
+                .or_else(|| unique_turn_fallback_match(stored_turns, &consumed, &turn));
+            let stored = stored_index.map(|stored_index| {
+                consumed[stored_index] = true;
+                &stored_turns[stored_index]
+            });
             if let Some(stored) = stored {
                 if let Some(stored_id) = stored
                     .get("id")
@@ -12165,6 +12210,37 @@ fn merge_stored_turn_metrics(stored_turns: &[Value], reparsed_turns: Vec<Value>)
             turn
         })
         .collect()
+}
+
+fn unique_turn_fallback_match(
+    stored_turns: &[Value],
+    consumed: &[bool],
+    reparsed_turn: &Value,
+) -> Option<usize> {
+    let user_text = reparsed_turn
+        .get("userText")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let reparsed_started_at = reparsed_turn.get("startedAtMs").and_then(Value::as_i64)?;
+    let matches = stored_turns
+        .iter()
+        .enumerate()
+        .filter(|(index, turn)| {
+            !consumed[*index]
+                && turn.get("userText").and_then(Value::as_str).map(str::trim) == Some(user_text)
+                && turn
+                    .get("startedAtMs")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|started_at| started_at.abs_diff(reparsed_started_at) <= 60_000)
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if matches.len() == 1 {
+        matches.into_iter().next()
+    } else {
+        None
+    }
 }
 
 fn merge_claude_fork_snapshot_history(
@@ -12456,6 +12532,28 @@ fn write_thread_history(
         .transaction()
         .map_err(|error| ApiError::internal(format!("保存聊天历史失败: {error}")))?;
     write_thread_history_rows(&transaction, thread_id, turns, &thread.project_id, &now)?;
+    transaction
+        .commit()
+        .map_err(|error| ApiError::internal(format!("提交聊天历史失败: {error}")))
+}
+
+fn write_thread_history_with_transcript_sync(
+    connection: &mut Connection,
+    thread_id: &str,
+    turns: &[Value],
+    fingerprint: &str,
+) -> ApiResult<()> {
+    let thread = read_thread_detail(connection, thread_id)?;
+    let now = current_timestamp();
+    let transaction = connection
+        .transaction()
+        .map_err(|error| ApiError::internal(format!("保存聊天历史失败: {error}")))?;
+    write_thread_history_rows(&transaction, thread_id, turns, &thread.project_id, &now)?;
+    write_state_value(
+        &transaction,
+        &transcript_sync_state_key(thread_id),
+        fingerprint,
+    )?;
     transaction
         .commit()
         .map_err(|error| ApiError::internal(format!("提交聊天历史失败: {error}")))
@@ -22829,6 +22927,57 @@ fn active_run_json(run: &ActiveRunRecord) -> Value {
     })
 }
 
+fn reconcile_active_run_turn_id_in_history(history: &mut Value, run: &ActiveRunRecord) {
+    const MAX_TRANSCRIPT_START_DELAY_MS: i64 = 60_000;
+
+    let Some(turn_id) = run
+        .turn_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let prompt = run.prompt.trim();
+    if prompt.is_empty() {
+        return;
+    }
+    let active_session_id = run
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(turns) = history.get_mut("turns").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    let matching_turn = turns.iter_mut().find(|turn| {
+        let user_text_matches =
+            turn.get("userText").and_then(Value::as_str).map(str::trim) == Some(prompt);
+        let started_during_active_run = turn
+            .get("startedAtMs")
+            .and_then(Value::as_i64)
+            .is_some_and(|value| {
+                value >= run.started_at_ms
+                    && value.saturating_sub(run.started_at_ms) <= MAX_TRANSCRIPT_START_DELAY_MS
+            });
+        let transcript_session_id = turn
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let session_matches = active_session_id.is_none()
+            || transcript_session_id.is_none()
+            || active_session_id == transcript_session_id;
+
+        user_text_matches && started_during_active_run && session_matches
+    });
+
+    if let Some(turn) = matching_turn {
+        turn["id"] = Value::String(turn_id.to_string());
+    }
+}
+
 fn current_timestamp_ms_i64() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -23087,9 +23236,10 @@ mod tests {
         extract_agent_semantic_version, finalize_local_thread_fork, hermes_command_paths,
         import_claude_sessions_from_root, initialize_workspace_database,
         install_skill_directory_safely, is_agent_lifecycle_network_failure, is_mobile_stop_request,
-        lifecycle_plan, lifecycle_plan_supports_npm_mirror, list_agent_installed_plugins_value,
-        list_agent_plugin_marketplaces_value, list_agent_skills_value, list_slash_commands_value,
-        map_claude_json_line, mark_fork_provider_succeeded, mark_request_user_input_submitted,
+        is_stored_history_outdated, lifecycle_plan, lifecycle_plan_supports_npm_mirror,
+        list_agent_installed_plugins_value, list_agent_plugin_marketplaces_value,
+        list_agent_skills_value, list_slash_commands_value, map_claude_json_line,
+        mark_fork_provider_succeeded, mark_request_user_input_submitted,
         merge_thread_history_turn_with_connection, normalize_agent_plugin_action,
         normalize_agent_runtime_settings, normalize_default_model_id, normalize_general_settings,
         normalize_open_with_settings, normalize_pi_probe_summary,
@@ -23101,15 +23251,16 @@ mod tests {
         probe_claude_thread_fork_capability, provider_supports_reasoning_effort,
         read_agent_mcp_config_snapshot, read_fork_source_thread, read_gemini_mcp_config,
         read_opencode_mcp_config, read_state_value, read_stored_thread_history, read_thread_detail,
-        read_thread_fork_operation, read_thread_summary, recover_stale_thread_fork_operations,
-        remove_thread_row, resolve_codex_command, resolve_command_from_path,
-        resolve_first_runnable_command, resolve_gemini_command, resolve_grok_command,
-        resolve_opencode_command, resolve_pi_command, resolve_requested_thread_provider,
-        resolve_thread_create_permission_mode, resolve_workspace_relative_path, runtime_auth,
-        sanitize_agent_lifecycle_output, sanitize_external_command_result, search_workspace_files,
+        read_thread_fork_operation, read_thread_summary, reconcile_active_run_turn_id_in_history,
+        recover_stale_thread_fork_operations, remove_thread_row, resolve_codex_command,
+        resolve_command_from_path, resolve_first_runnable_command, resolve_gemini_command,
+        resolve_grok_command, resolve_opencode_command, resolve_pi_command,
+        resolve_requested_thread_provider, resolve_thread_create_permission_mode,
+        resolve_workspace_relative_path, runtime_auth, sanitize_agent_lifecycle_output,
+        sanitize_external_command_result, search_workspace_files,
         select_runnable_command_candidate, should_emit_claude_raw_event, should_store_run_event,
-        spawn_background_command_group, summarize_content_blocks,
-        update_thread_metadata_from_payload, validate_desktop_file_path,
+        spawn_background_command_group, summarize_content_blocks, transcript_fingerprint,
+        transcript_sync_state_key, update_thread_metadata_from_payload, validate_desktop_file_path,
         validate_managed_agent_skill_path, wait_for_background_command_group_exit,
         windows_claude_install_lifecycle_plan, windows_shell_execute_error_message,
         write_gemini_mcp_config, write_opencode_mcp_config, write_state_value,
@@ -23589,6 +23740,81 @@ mod tests {
             driver_state.claude_capability_count, 1,
             "capability must dispatch to Claude from the source provider"
         );
+    }
+
+    #[test]
+    fn active_run_history_response_reuses_the_client_turn_id_without_collapsing_prior_repeats() {
+        let root = TestDirectory::new("active-run-history-turn-id");
+        let state = test_app_state(root.0.clone());
+        inject_active_run(&state, "run-current", "thread-1", false);
+        let active_run = {
+            let mut runs = state.runs.lock().expect("lock active runs");
+            let run = runs.get_mut("run-current").expect("current run");
+            run.turn_id = Some("client-turn-current".to_string());
+            run.prompt = "repeat".to_string();
+            run.session_id = Some("session-1".to_string());
+            run.started_at_ms = 1_000;
+            run.clone()
+        };
+        let mut history = json!({
+            "turns": [
+                {
+                    "id": "claude:session-1:previous",
+                    "userText": "repeat",
+                    "sessionId": "session-1",
+                    "startedAtMs": 999
+                },
+                {
+                    "id": "claude:session-1:current",
+                    "userText": "repeat",
+                    "sessionId": "session-1",
+                    "startedAtMs": 1_001
+                }
+            ]
+        });
+
+        reconcile_active_run_turn_id_in_history(&mut history, &active_run);
+
+        assert_eq!(history["turns"][0]["id"], "claude:session-1:previous");
+        assert_eq!(history["turns"][1]["id"], "client-turn-current");
+    }
+
+    #[test]
+    fn transcript_history_freshness_uses_persisted_file_fingerprint() {
+        let fixture = TestDirectory::new("transcript-sync-fingerprint");
+        let transcript_path = fixture.0.join("session.jsonl");
+        fs::write(&transcript_path, "first\n").expect("write transcript");
+        let connection = Connection::open_in_memory().expect("open database");
+        initialize_workspace_database(&connection).expect("initialize database");
+
+        assert!(is_stored_history_outdated(
+            &connection,
+            "thread-fingerprint",
+            &transcript_path.display().to_string(),
+        )
+        .expect("read initial freshness"));
+        let fingerprint = transcript_fingerprint(&transcript_path.display().to_string())
+            .expect("read transcript fingerprint");
+        write_state_value(
+            &connection,
+            &transcript_sync_state_key("thread-fingerprint"),
+            fingerprint,
+        )
+        .expect("persist transcript fingerprint");
+        assert!(!is_stored_history_outdated(
+            &connection,
+            "thread-fingerprint",
+            &transcript_path.display().to_string(),
+        )
+        .expect("read persisted freshness"));
+
+        fs::write(&transcript_path, "first\nsecond\n").expect("append transcript");
+        assert!(is_stored_history_outdated(
+            &connection,
+            "thread-fingerprint",
+            &transcript_path.display().to_string(),
+        )
+        .expect("read changed freshness"));
     }
 
     #[tokio::test]
@@ -29935,6 +30161,25 @@ mod tests {
         assert_eq!(merged[1]["id"], "stored-turn-2");
         assert_eq!(merged[0]["inputTokens"], 11);
         assert_eq!(merged[1]["inputTokens"], 22);
+    }
+
+    #[test]
+    fn reparsed_claude_history_preserves_id_when_stored_session_id_is_missing() {
+        let stored = vec![json!({
+            "id": "stored-turn",
+            "userText": "repeat",
+            "startedAtMs": 120_000
+        })];
+        let reparsed = vec![json!({
+            "id": "parsed-turn",
+            "sessionId": "session-reparsed",
+            "userText": "repeat",
+            "startedAtMs": 120_500
+        })];
+
+        let merged = super::merge_stored_turn_metrics(&stored, reparsed);
+
+        assert_eq!(merged[0]["id"], "stored-turn");
     }
 
     #[test]
