@@ -70,13 +70,14 @@ test('Agent providers are formal features without an experimental runtime switch
   assert.doesNotMatch(agentRunSource, /实验运行未开启/);
 });
 
-test('provider settings exposes a persistent default Agent selector with brand icons', () => {
+test('provider settings exposes the persistent default action inside each Agent detail', () => {
   assert.match(settingsViewSource, /agentRuntime=\{agentRuntime\}/);
   assert.match(agentSettingsSource, /onUpdateAgentRuntime=\{onUpdateAgentRuntime\}/);
-  assert.match(providerSettingsSource, /<strong>默认 Agent<\/strong>/);
-  assert.match(providerSettingsSource, /value=\{agentRuntime\.defaultProviderId\}/);
-  assert.match(providerSettingsSource, /<AgentProviderIcon providerId=\{provider\.id\} size=\{16\} \/>/);
-  assert.match(providerSettingsSource, /disabled=\{!selectable\}/);
+  assert.match(providerSettingsSource, /agent-provider-default-badge/);
+  assert.match(providerSettingsSource, /className="settings-action-button agent-provider-set-default"/);
+  assert.match(providerSettingsSource, /agentRuntimeSaving \|\| provider\.lifecycle !== 'active'/);
+  assert.match(providerSettingsSource, /onSetDefault=\{\(\) => void updateDefaultProvider/);
+  assert.doesNotMatch(providerSettingsSource, /<strong>默认 Agent<\/strong>/);
   assert.match(providerSettingsSource, /await onUpdateAgentRuntime\(\{ defaultProviderId \}\)/);
 });
 
@@ -264,7 +265,6 @@ test('successful OpenCode diagnostics reconcile a stale unavailable registry ent
   assert.equal(reconcileProviderAvailability(provider, { ...diagnostics, installed: false }).available, false);
   assert.match(providerSettingsSource, /registrySyncAttemptsRef/);
   assert.match(providerSettingsSource, /\.then\(\(\) => onRefreshProviders\(\)\)/);
-  assert.match(providerSettingsSource, /providers=\{effectiveProviders\}/);
   assert.match(providerSettingsSource, /effectiveProviders\.map\(\(provider\) =>/);
 });
 
@@ -466,7 +466,7 @@ test('Hermes management uses runtime detection and the dedicated settings panel'
   assert.match(providerSettingsSource, /HermesSettingsPanel/);
   assert.match(composerSource, /agent === 'codex' \|\| agent === 'opencode' \|\| providerId === 'hermes-agent'/);
   assert.match(providerSettingsSource, /provider\.id === 'hermes-agent'/);
-  assert.match(providerSettingsSource, /\{!isInstalled \|\| updateAvailable \? \(/);
+  assert.match(providerSettingsSource, /lifecycleAction \|\| !isInstalled \|\| updateAvailable/);
   assert.doesNotMatch(providerSettingsSource, /provider\.id !== 'hermes-agent' && \(!isInstalled \|\| updateAvailable\)/);
   assert.match(hermesSettingsSource, /'overview' \| 'profiles' \| 'memory' \| 'skills' \| 'mcp' \| 'gateway' \| 'runtime'/);
   assert.match(hermesSettingsSource, /label: '运行信息'/);
@@ -474,11 +474,9 @@ test('Hermes management uses runtime detection and the dedicated settings panel'
   assert.match(hermesSettingsSource, /aria-controls=\{`hermes-panel-\$\{id\}`\}/);
   assert.match(hermesSettingsSource, /HermesStatusPill/);
   assert.match(hermesSettingsSource, /正在读取 MCP Server/);
-  assert.match(providerSettingsSource, /Hermes 模型与认证由 CodeM 渠道管理/);
-  assert.match(providerSettingsSource, /runtimeContent=\{<>\{providerFactsContent\}\{providerCapabilitiesContent\}\{providerModelsContent\}<\/\>\}/);
-  assert.match(providerSettingsSource, /provider\.id !== 'hermes-agent' \? providerFactsContent : null/);
-  assert.match(providerSettingsSource, /provider\.id !== 'hermes-agent' \? providerCapabilitiesContent : null/);
-  assert.match(providerSettingsSource, /provider\.id !== 'hermes-agent' \? providerModelsContent : null/);
+  assert.match(providerSettingsSource, /runtimeContent=\{<>\{providerFactsContent\}\{providerCapabilitiesContent\}<\/\>\}/);
+  assert.match(providerSettingsSource, /provider\.id !== 'hermes-agent' && provider\.id !== 'deepseek-dsh' \? providerFactsContent : null/);
+  assert.match(providerSettingsSource, /provider\.id !== 'hermes-agent' && provider\.id !== 'deepseek-dsh' \? providerCapabilitiesContent : null/);
   assert.match(hermesSettingsSource, /fetchHermesLearningNode/);
   assert.match(hermesSettingsSource, /fetchHermesSkillContent/);
   assert.match(hermesSettingsSource, /testHermesMcp/);

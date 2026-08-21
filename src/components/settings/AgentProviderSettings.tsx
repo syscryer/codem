@@ -2,7 +2,6 @@ import {
   AlertCircle,
   Check,
   CheckCircle2,
-  ChevronDown,
   CircleDashed,
   Clock3,
   Copy,
@@ -34,7 +33,6 @@ import type {
   PiRpcProbeResult,
 } from '../../types';
 import type { AgentRuntimeSettingsUpdate } from '../../hooks/useAppSettings';
-import { useOutsideDismiss } from '../../hooks/useOutsideDismiss';
 import { AGENT_PROVIDER_IDS } from '../../lib/agent-provider-metadata';
 import {
   fetchAgentLifecycleStatus,
@@ -66,7 +64,6 @@ import {
 import { openExternalUrl } from '../../lib/markdown-link';
 import { readClaudeCliVersionInfo } from '../../lib/settings-runtime';
 import { AgentProviderIcon } from '../AgentProviderIcon';
-import { PopoverPortal } from '../PopoverPortal';
 import { HermesSettingsPanel } from './HermesSettingsPanel';
 import { DshSettingsPanel } from './DshSettingsPanel';
 
@@ -598,20 +595,6 @@ export function AgentProviderSettings({
     <div
       className="settings-panel agent-provider-shell"
     >
-      <div className="agent-provider-runtime-settings">
-        <div className="agent-provider-default-setting">
-          <div>
-            <strong>默认 Agent</strong>
-            <span>用于以后新建的聊天，已有聊天保持原来的 Provider。</span>
-          </div>
-          <AgentProviderDropdown
-            value={agentRuntime.defaultProviderId}
-            providers={effectiveProviders}
-            disabled={agentRuntimeSaving}
-            onChange={(providerId) => void updateDefaultProvider(providerId)}
-          />
-        </div>
-      </div>
       <div className="agent-provider-manager">
         <aside className="agent-provider-list" aria-label="Agent Provider">
           <div className="agent-provider-list-head">
@@ -725,6 +708,8 @@ export function AgentProviderSettings({
               onRunLifecycleAction={(action) => void runLifecycleAction(selectedProvider.id as AgentProviderId, action)}
               showToast={showToast}
               agentRuntime={agentRuntime}
+              agentRuntimeSaving={agentRuntimeSaving}
+              onSetDefault={() => void updateDefaultProvider(selectedProvider.id as AgentProviderId)}
               onUpdateAgentRuntime={onUpdateAgentRuntime}
             />
           </div>
@@ -776,97 +761,6 @@ function AgentProviderDetailSkeleton() {
       <div className="agent-provider-detail-skeleton-lines"><i /><i /><i /><i /></div>
     </div>
   );
-}
-
-function AgentProviderDropdown({
-  value,
-  providers,
-  disabled,
-  onChange,
-}: {
-  value: AgentProviderId;
-  providers: AgentProviderDescriptor[];
-  disabled: boolean;
-  onChange: (providerId: AgentProviderId) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const anchorRef = useRef<HTMLDivElement | null>(null);
-  const options = providers.filter(isDefaultAgentProvider);
-  const selected = options.find((provider) => provider.id === value) ?? {
-    id: value,
-    displayName: defaultAgentProviderName(value),
-    lifecycle: 'planned' as const,
-    available: null,
-    selectable: false,
-  };
-
-  useOutsideDismiss({
-    selectors: [
-      { selector: '.agent-provider-default-menu', onDismiss: () => setOpen(false), anchorRefs: [anchorRef] },
-    ],
-  });
-
-  return (
-    <div className="settings-select-anchor agent-provider-default-select" ref={anchorRef}>
-      <button
-        type="button"
-        className={`settings-select-trigger${open ? ' open' : ''}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label="选择默认 Agent"
-        disabled={disabled}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span className="agent-provider-default-option-main">
-          <AgentProviderIcon providerId={selected.id} size={16} />
-          <span>{selected.displayName}</span>
-        </span>
-        <ChevronDown size={15} className="settings-select-chevron" />
-      </button>
-      <PopoverPortal open={open} anchorRef={anchorRef} placement="bottom-start" offset={8}>
-        <div className="settings-select-menu agent-provider-default-menu" role="menu" aria-label="选择默认 Agent">
-          {options.map((provider) => {
-            const selectable = provider.lifecycle === 'active' && provider.available === true && provider.selectable;
-            const unavailableLabel = provider.lifecycle === 'planned' ? '未启用' : '不可用';
-            return (
-              <button
-                key={provider.id}
-                type="button"
-                className={`settings-select-menu-item${provider.id === value ? ' current' : ''}`}
-                role="menuitemradio"
-                aria-checked={provider.id === value}
-                disabled={!selectable}
-                onClick={() => {
-                  onChange(provider.id);
-                  setOpen(false);
-                }}
-              >
-                <span className="agent-provider-default-option-main">
-                  <AgentProviderIcon providerId={provider.id} size={16} />
-                  <span>{provider.displayName}</span>
-                </span>
-                {provider.id === value
-                  ? <Check size={15} />
-                  : !selectable
-                    ? <small>{unavailableLabel}</small>
-                    : null}
-              </button>
-            );
-          })}
-        </div>
-      </PopoverPortal>
-    </div>
-  );
-}
-
-function isDefaultAgentProvider(provider: AgentProviderDescriptor): provider is AgentProviderDescriptor & { id: AgentProviderId } {
-  return provider.id === 'claude-code'
-    || provider.id === 'grok-build'
-    || provider.id === 'openai-codex'
-    || provider.id === 'opencode'
-    || provider.id === 'pi-agent'
-    || provider.id === 'hermes-agent'
-    || provider.id === 'deepseek-dsh';
 }
 
 function defaultAgentProviderName(providerId: AgentProviderId) {
@@ -927,6 +821,8 @@ function ProviderDetail({
   onRunLifecycleAction,
   showToast,
   agentRuntime,
+  agentRuntimeSaving,
+  onSetDefault,
   onUpdateAgentRuntime,
 }: {
   provider: AgentProviderDescriptor;
@@ -961,6 +857,8 @@ function ProviderDetail({
   onRunLifecycleAction: (action: 'install' | 'update') => void;
   showToast: (message: string, tone?: 'success' | 'error' | 'info') => void;
   agentRuntime: AgentRuntimeSettings;
+  agentRuntimeSaving: boolean;
+  onSetDefault: () => void;
   onUpdateAgentRuntime: (update: AgentRuntimeSettingsUpdate) => void | Promise<void>;
 }) {
   const status = resolveProviderStatus(provider, claudeCliInfo, grokProbe, codexProbe, openCodeProbe, piProbe, geminiProbe);
@@ -1086,6 +984,22 @@ function ProviderDetail({
           </div>
         </div>
         <div className="agent-provider-detail-actions">
+          {provider.id === agentRuntime.defaultProviderId ? (
+            <span className="agent-provider-default-badge" aria-label="默认 Agent">
+              <Check size={13} />
+              默认 Agent
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="settings-action-button agent-provider-set-default"
+              disabled={agentRuntimeSaving || provider.lifecycle !== 'active' || provider.available !== true || !provider.selectable}
+              onClick={onSetDefault}
+            >
+              <Check size={14} />
+              <span>设为默认</span>
+            </button>
+          )}
           <ProviderStatusIcon tone={status.tone} label={status.label} />
           {installDocsUrl ? (
             <button

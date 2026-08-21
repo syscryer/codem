@@ -14793,43 +14793,6 @@ button.git-conflict-overview-row:focus-visible,
   container-type: inline-size;
 }
 
-.agent-provider-runtime-settings {
-  border-bottom: 1px solid var(--app-border, #ececec);
-  background: var(--app-surface, #ffffff);
-}
-
-.agent-provider-default-setting {
-  min-height: 68px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 20px;
-}
-
-.agent-provider-default-setting > div:first-child {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-
-.agent-provider-default-setting strong {
-  color: var(--app-text-strong, #1f1f1f);
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.agent-provider-default-setting > div:first-child > span {
-  color: var(--app-muted, #77736c);
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.agent-provider-default-select {
-  flex: 0 0 210px;
-  width: 210px;
-}
-
 .agent-settings-provider-tabs {
   width: fit-content;
   max-width: 100%;
@@ -14859,51 +14822,6 @@ button.git-conflict-overview-row:focus-visible,
 
 .agent-settings-provider-tabs .agent-provider-brand-icon {
   flex: 0 0 auto;
-}
-
-.agent-provider-default-option-main {
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.agent-provider-default-option-main > .agent-provider-brand-icon {
-  flex: 0 0 auto;
-}
-
-.agent-provider-default-option-main > .agent-provider-brand-icon-claude-code {
-  color: #d97757;
-}
-
-.agent-provider-default-option-main > :is(
-  .agent-provider-brand-icon-grok-build,
-  .agent-provider-brand-icon-openai-codex,
-  .agent-provider-brand-icon-opencode
-) {
-  color: var(--app-text-strong, #202020);
-}
-
-.agent-provider-default-option-main > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-provider-default-menu .settings-select-menu-item:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.agent-provider-default-menu .settings-select-menu-item:disabled:hover {
-  background: transparent;
-  box-shadow: none;
-}
-
-.agent-provider-default-menu .settings-select-menu-item small {
-  color: var(--app-muted, #77736c);
-  font-size: 11px;
 }
 
 .agent-provider-manager {
@@ -15280,6 +15198,25 @@ button.git-conflict-overview-row:focus-visible,
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.agent-provider-default-badge {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--accent, #2374c6) 32%, var(--app-border, #ececec));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent, #2374c6) 8%, var(--app-surface, #ffffff));
+  color: var(--accent, #2374c6);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.agent-provider-set-default {
+  white-space: nowrap;
 }
 
 .agent-provider-lifecycle {
@@ -15757,16 +15694,6 @@ button.git-conflict-overview-row:focus-visible,
 }
 
 @container agent-provider (max-width: 500px) {
-  .agent-provider-default-setting {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .agent-provider-default-select {
-    width: 100%;
-    flex-basis: auto;
-  }
-
   .agent-provider-list-items,
   .agent-provider-facts,
   .agent-provider-capability-groups {
