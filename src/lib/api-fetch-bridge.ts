@@ -6,6 +6,7 @@ const backendReadyPollMs = 100;
 
 let apiBaseUrl = fallbackApiBaseUrl;
 let apiToken: string | null = null;
+let backendReadyPromise: Promise<void> | null = null;
 
 declare global {
   interface Window {
@@ -21,8 +22,11 @@ export function installApiFetchBridge() {
   const nativeFetch = window.fetch.bind(window);
   window.__codemApiFetchBridgeInstalled = true;
 
-  window.fetch = (input, init) => {
+  window.fetch = async (input, init) => {
     const nextInput = rewriteApiRequest(input);
+    if (backendReadyPromise && isResolvedApiRequest(nextInput, apiBaseUrl)) {
+      await backendReadyPromise;
+    }
     return nativeFetch(nextInput, withApiAuthorization(nextInput, init));
   };
 }
@@ -39,10 +43,11 @@ export async function initializeApiFetchBridge() {
       apiBaseUrl = connection.baseUrl.replace(/\/+$/, '');
       apiToken = typeof connection.token === 'string' && connection.token ? connection.token : null;
     }
-    await waitForBackendReady(apiBaseUrl);
+    backendReadyPromise = waitForBackendReady(apiBaseUrl);
   } catch {
     apiBaseUrl = fallbackApiBaseUrl;
     apiToken = null;
+    backendReadyPromise = null;
   }
 }
 
@@ -134,7 +139,7 @@ async function waitForBackendReady(baseUrl: string) {
     try {
       const headers = apiToken ? { Authorization: `Bearer ${apiToken}` } : undefined;
       const response = await fetch(`${baseUrl}/api/health`, { cache: 'no-store', headers });
-      if (response.ok) {
+      if (response.ok || response.status === 401) {
         return;
       }
     } catch {

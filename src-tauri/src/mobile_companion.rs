@@ -15,6 +15,8 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::{
     collections::HashMap,
     fs,
@@ -25,8 +27,6 @@ use std::{
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use tokio::{sync::watch, task::JoinHandle};
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;

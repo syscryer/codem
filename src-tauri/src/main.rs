@@ -12,7 +12,10 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, Url, WindowEvent};
+use tauri::{
+    webview::PageLoadEvent, AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State,
+    Url, WindowEvent,
+};
 
 const WINDOW_STATE_FILE_NAME: &str = "window-state.json";
 const DESKTOP_LOG_FILE_NAME: &str = "desktop.log";
@@ -490,6 +493,11 @@ fn main() {
         .manage(WindowMaterialState::default());
 
     builder
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main" && payload.event() == PageLoadEvent::Finished {
+                let _ = webview.show();
+            }
+        })
         .setup(|app| {
             let app_handle = app.handle().clone();
             restore_main_window_state(&app_handle);
