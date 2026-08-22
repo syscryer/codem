@@ -19,6 +19,7 @@ import {
   supportsDynamicModelCatalog,
 } from '../lib/mobile-agent-options';
 import { mobileApi } from '../lib/mobile-api';
+import { resolveMobileBrowsableUrl } from '../lib/mobile-browser';
 import type { MobileTaskSettingsRequest } from '../lib/mobile-api';
 import type { MobileBootstrap, MobileModelCatalog } from '../types';
 
@@ -31,11 +32,13 @@ export function TaskDetailPage({
   bootstrap,
   onBack,
   onChanged,
+  onOpenBrowser,
 }: {
   threadId: string;
   bootstrap: MobileBootstrap | null;
   onBack: () => void;
   onChanged: () => Promise<void>;
+  onOpenBrowser: (url: string) => void;
 }) {
   const fallbackTask = bootstrap?.tasks.find((task) => task.threadId === threadId);
   const thread = useMobileThread(threadId, fallbackTask);
@@ -578,7 +581,12 @@ export function TaskDetailPage({
             onOpenWorkbenchPreview={() => undefined}
             onOpenOutputPath={async () => undefined}
             onRevealOutputPath={async () => undefined}
-            onOpenWebLink={async (url) => {
+            onOpenWebLink={async (url, target) => {
+              const browsable = resolveMobileBrowsableUrl(url);
+              if (browsable && target !== 'external') {
+                onOpenBrowser(browsable);
+                return;
+              }
               if (!await openExternalUrl(url)) setActionError('无法打开此链接');
             }}
             onCopyWebLink={async (url) => copyTaskValue(url, '链接已复制')}

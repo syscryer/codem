@@ -32,7 +32,10 @@ use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
 
 const MOBILE_USERNAME: &str = "codem";
-const MOBILE_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'";
+// The mobile shell owns an intentional embedded browser tab. Keep the shell's
+// resources same-origin, but allow the iframe to navigate to user-supplied
+// HTTP(S) pages; without `frame-src`, `default-src 'self'` silently blanks it.
+const MOBILE_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-src 'self' http: https:; frame-ancestors 'none'; base-uri 'none'";
 const MOBILE_MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MOBILE_MAX_IMAGE_BYTES: usize = 12 * 1024 * 1024;
 const DEVICE_COOKIE: &str = "codem_mobile_device";
@@ -3834,7 +3837,12 @@ mod tests {
     fn mobile_content_security_policy_allows_local_attachment_previews_only() {
         assert!(MOBILE_CONTENT_SECURITY_POLICY.contains("img-src 'self' data: blob:"));
         assert!(!MOBILE_CONTENT_SECURITY_POLICY.contains("img-src *"));
-        assert!(!MOBILE_CONTENT_SECURITY_POLICY.contains("https:"));
+        assert!(!MOBILE_CONTENT_SECURITY_POLICY.contains("img-src 'self' data: blob: https:"));
+    }
+
+    #[test]
+    fn mobile_content_security_policy_allows_embedded_browser_pages() {
+        assert!(MOBILE_CONTENT_SECURITY_POLICY.contains("frame-src 'self' http: https:"));
     }
 
     #[test]

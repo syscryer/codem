@@ -9,7 +9,7 @@ export function ConnectPage({ status, error, onAuthenticated }: { status: Mobile
   const [message, setMessage] = useState(error);
   async function login() {
     setBusy(true); setMessage(undefined);
-    try { await mobileApi.login(status?.username || 'codem', password, deviceName()); await onAuthenticated(); history.replaceState(null, '', '/mobile/tasks'); }
+    try { await mobileApi.login(status?.username || 'codem', password, deviceName()); await onAuthenticated(); }
     catch (reason) { setMessage(reason instanceof Error ? reason.message : '登录失败'); }
     finally { setBusy(false); }
   }
