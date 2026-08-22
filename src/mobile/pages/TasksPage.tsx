@@ -1,9 +1,10 @@
 import { useState } from 'react';
+import { Plus } from 'lucide-react';
 import { AgentProviderIcon } from '../../components/AgentProviderIcon';
 import { mobileTaskChannelLabel } from '../lib/mobile-task-channel';
 import type { MobileBootstrap, MobileChannelBootstrap, MobileTask, MobileTaskPhase } from '../types';
 
-export function TasksPage({ data, mode = 'tasks', onOpen }: { data: MobileBootstrap | null; mode?: 'tasks' | 'notifications'; onOpen: (id: string) => void; onNew: () => void }) {
+export function TasksPage({ data, mode = 'tasks', onOpen, onNew }: { data: MobileBootstrap | null; mode?: 'tasks' | 'notifications'; onOpen: (id: string) => void; onNew?: () => void }) {
   const [visibleCount, setVisibleCount] = useState(50);
   const tasks = data?.tasks ?? [];
   const active = tasks.filter((task) => ['running', 'starting', 'waiting'].includes(task.phase));
@@ -15,11 +16,12 @@ export function TasksPage({ data, mode = 'tasks', onOpen }: { data: MobileBootst
     <TaskGroup title="正在进行" tasks={active} channels={data?.channels} onOpen={onOpen} empty="当前没有运行中的任务" />
     <TaskGroup title="最近任务" tasks={recent.slice(0, visibleCount)} channels={data?.channels} onOpen={onOpen} empty="创建任务后会显示在这里" />
     {recent.length > visibleCount ? <button className="mobile-load-more" onClick={() => setVisibleCount((value) => value + 50)}>显示更多任务</button> : null}
+    {onNew ? <button type="button" className="mobile-new-task-fab" onClick={onNew} aria-label="新建任务"><Plus size={24} /></button> : null}
   </>;
 }
 
 function Summary({ value, label, tone }: { value: number; label: string; tone: string }) { return <div className="prototype-summary-item"><strong className={`tone-${tone}`}>{value}</strong><span>{label}</span></div>; }
-function TaskGroup({ title, tasks, channels, onOpen, empty }: { title: string; tasks: MobileTask[]; channels?: MobileChannelBootstrap; onOpen: (id: string) => void; empty: string }) { return <section className="prototype-section"><h2>{title}</h2><div className="prototype-grouped-list">{tasks.length ? tasks.map((task) => <TaskRow key={task.threadId} task={task} channels={channels} onOpen={onOpen} />) : <div className="mobile-empty-row">{empty}</div>}</div></section>; }
+function TaskGroup({ title, tasks, channels, onOpen, empty }: { title: string; tasks: MobileTask[]; channels?: MobileChannelBootstrap; onOpen: (id: string) => void; empty: string }) { return <section className="prototype-section"><div className="mobile-task-group-heading"><h2>{title}</h2></div><div className="prototype-grouped-list">{tasks.length ? tasks.map((task) => <TaskRow key={task.threadId} task={task} channels={channels} onOpen={onOpen} />) : <div className="mobile-empty-row">{empty}</div>}</div></section>; }
 function TaskRow({ task, channels, onOpen }: { task: MobileTask; channels?: MobileChannelBootstrap; onOpen: (id: string) => void }) {
   const summary = task.pendingActions[0]?.title || task.latestActivity;
   const channelLabel = mobileTaskChannelLabel(task, channels);

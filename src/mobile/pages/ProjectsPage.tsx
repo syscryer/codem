@@ -2,14 +2,32 @@ import { useState } from 'react';
 import { ChevronDown, FolderKanban } from 'lucide-react';
 import type { MobileProject } from '../types';
 
+const EXPANDED_PROJECTS_STORAGE_KEY = 'codem-mobile-expanded-projects';
+
+function loadExpandedProjectIds(): Set<string> {
+  try {
+    const stored = localStorage.getItem(EXPANDED_PROJECTS_STORAGE_KEY);
+    const ids: unknown = stored ? JSON.parse(stored) : [];
+    if (!Array.isArray(ids)) return new Set();
+    return new Set(ids.filter((id): id is string => typeof id === 'string'));
+  } catch {
+    return new Set();
+  }
+}
+
 export function ProjectsPage({ projects, onOpen }: { projects: MobileProject[]; onOpen: (id: string) => void; onNew: () => void }) {
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(
-    () => new Set(projects.filter((project) => project.recentTasks.length > 0).map((project) => project.id)),
-  );
+  // 默认全部收起，仅记住用户手动展开过的项目
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(loadExpandedProjectIds);
   const toggleProject = (projectId: string) => setExpandedIds((current) => {
     const next = new Set(current);
     if (next.has(projectId)) next.delete(projectId);
     else next.add(projectId);
+    const knownIds = new Set(projects.map((project) => project.id));
+    try {
+      localStorage.setItem(EXPANDED_PROJECTS_STORAGE_KEY, JSON.stringify([...next].filter((id) => knownIds.has(id))));
+    } catch {
+      // 存储不可用时仅保留本次会话内的展开状态
+    }
     return next;
   });
 
