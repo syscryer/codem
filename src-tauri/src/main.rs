@@ -132,10 +132,27 @@ struct PtySessions {
     sessions: Mutex<HashMap<String, PtySession>>,
 }
 
-#[derive(Default)]
+const DEFAULT_BACKEND_PORT: u16 = 3001;
+type BackendConnectionValue = (u16, Option<String>);
+
 struct BackendPortState {
-    port: Mutex<u16>,
-    token: Mutex<Option<String>>,
+    connection: tokio::sync::watch::Sender<Option<BackendConnectionValue>>,
+    // 持有一个 receiver，保证 Sender 在应用存活期间永不进入 closed 状态
+    _connection_keeper: tokio::sync::watch::Receiver<Option<BackendConnectionValue>>,
+}
+
+impl BackendPortState {
+    fn new() -> Self {
+        let (connection, _connection_keeper) = tokio::sync::watch::channel(None);
+        Self {
+            connection,
+            _connection_keeper,
+        }
+    }
+
+    fn set(&self, port: u16, token: Option<String>) {
+        let _ = self.connection.send(Some((port, token)));
+    }
 }
 
 #[derive(Serialize)]
@@ -438,23 +455,34 @@ fn pick_files(initial_path: Option<String>) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn get_backend_base_url(state: State<'_, BackendPortState>) -> Result<String, String> {
-    let port = *state.port.lock().map_err(|error| error.to_string())?;
+async fn get_backend_base_url(state: State<'_, BackendPortState>) -> Result<String, String> {
+    let (port, _) = wait_for_backend_connection(&state).await?;
     Ok(format!("http://127.0.0.1:{port}"))
 }
 
 #[tauri::command]
-fn get_backend_connection(state: State<'_, BackendPortState>) -> Result<BackendConnection, String> {
-    let port = *state.port.lock().map_err(|error| error.to_string())?;
-    let token = state
-        .token
-        .lock()
-        .map_err(|error| error.to_string())?
-        .clone();
+async fn get_backend_connection(state: State<'_, BackendPortState>) -> Result<BackendConnection, String> {
+    let (port, token) = wait_for_backend_connection(&state).await?;
     Ok(BackendConnection {
         base_url: format!("http://127.0.0.1:{port}"),
         token,
     })
+}
+
+async fn wait_for_backend_connection(
+    state: &BackendPortState,
+) -> Result<BackendConnectionValue, String> {
+    let mut receiver = state.connection.subscribe();
+    loop {
+        let current = receiver.borrow_and_update().clone();
+        if let Some(connection) = current {
+            return Ok(connection);
+        }
+        receiver
+            .changed()
+            .await
+            .map_err(|error| format!("等待后端连接信息失败: {error}"))?;
+    }
 }
 
 #[tauri::command]
@@ -486,10 +514,7 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(updater_builder().build())
         .manage(PtySessions::default())
-        .manage(BackendPortState {
-            port: Mutex::new(3001),
-            token: Mutex::new(None),
-        })
+        .manage(BackendPortState::new())
         .manage(WindowMaterialState::default());
 
     builder
@@ -517,12 +542,22 @@ fn main() {
                     &format!("unfocused window material hook failed: {error}"),
                 );
             }
-            match resolve_backend_startup_target(&app_handle) {
-                Ok(target) => start_backend_startup_check(app_handle, target),
-                Err(error) => {
-                    log_desktop_event(&app_handle, &format!("backend start failed: {error}"))
+            // 后端目标解析可能耗时（stale Agent Mux 关闭确认、ensure 等待），放到后台线程，
+            // 避免阻塞 Tauri 主线程推迟窗口与 WebView 的启动
+            let resolution_handle = app_handle.clone();
+            thread::spawn(move || {
+                match resolve_backend_startup_target(&resolution_handle) {
+                    Ok(target) => start_backend_startup_check(resolution_handle, target),
+                    Err(error) => {
+                        log_desktop_event(
+                            &resolution_handle,
+                            &format!("backend start failed: {error}"),
+                        );
+                        // 保持旧行为：解析失败时回退默认端口，让前端命令解除等待
+                        let _ = set_backend_port(&resolution_handle, DEFAULT_BACKEND_PORT);
+                    }
                 }
-            }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1019,11 +1054,7 @@ fn set_backend_connection(
     token: Option<String>,
 ) -> Result<(), String> {
     let state = app.state::<BackendPortState>();
-    let mut current = state.port.lock().map_err(|error| error.to_string())?;
-    *current = port;
-    drop(current);
-    let mut current_token = state.token.lock().map_err(|error| error.to_string())?;
-    *current_token = token;
+    state.set(port, token);
     log_desktop_event(app, &format!("selected backend port: {port}"));
     Ok(())
 }
@@ -1207,16 +1238,51 @@ mod tests {
         clamp_window_state_to_area, clear_vibrancy_layers, detect_distribution_mode_from_dir,
         has_minimum_window_size, has_success_status, normalize_window_state,
         parse_browser_webview_url, prepare_window_state_for_save, resolve_backend_port_from_value,
-        should_apply_window_material, validate_browser_webview_label, MonitorWorkArea, WindowState,
+        should_apply_window_material, validate_browser_webview_label, wait_for_backend_connection,
+        BackendPortState, DEFAULT_BACKEND_PORT, MonitorWorkArea, WindowState,
     };
     use std::{
         fs,
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     #[test]
     fn resolve_backend_port_from_value_accepts_valid_port() {
         assert_eq!(resolve_backend_port_from_value(Some("3162")), Some(3162));
+    }
+
+    #[tokio::test]
+    async fn backend_connection_wait_returns_already_resolved_value() {
+        let state = BackendPortState::new();
+        state.set(4567, Some("token".to_string()));
+
+        let (port, token) = wait_for_backend_connection(&state)
+            .await
+            .expect("resolved connection");
+
+        assert_eq!(port, 4567);
+        assert_eq!(token.as_deref(), Some("token"));
+    }
+
+    #[tokio::test]
+    async fn backend_connection_wait_blocks_until_resolution_publishes() {
+        let state = std::sync::Arc::new(BackendPortState::new());
+        let setter = std::sync::Arc::clone(&state);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            setter.set(DEFAULT_BACKEND_PORT, None);
+        });
+
+        let connection = tokio::time::timeout(
+            Duration::from_secs(2),
+            wait_for_backend_connection(&state),
+        )
+        .await
+        .expect("wait resolves after set")
+        .expect("connection present");
+
+        assert_eq!(connection.0, DEFAULT_BACKEND_PORT);
+        assert!(connection.1.is_none());
     }
 
     #[test]
