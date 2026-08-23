@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUp, ChevronLeft, CircleStop, Copy, FileText, Link2, LockKeyhole, Mic, MoreHorizontal, Paperclip, RefreshCw, X } from 'lucide-react';
+import { AgentProviderIcon } from '../../components/AgentProviderIcon';
 import { ConversationPane } from '../../components/ConversationPane';
 import { ComposerContextIndicator } from '../../components/ComposerContextIndicator';
 import { ProviderBrandIcon } from '../../components/ProviderBrandIcon';
@@ -51,7 +52,7 @@ export function TaskDetailPage({
   const [selectedChannelId, setSelectedChannelId] = useState('system');
   const [selectedModel, setSelectedModel] = useState('');
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState('');
-  const [selectedPermissionMode, setSelectedPermissionMode] = useState('default');
+  const [selectedPermissionMode, setSelectedPermissionMode] = useState(bootstrap?.defaults?.permissionMode || 'default');
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [attachments, setAttachments] = useState<MobileComposerAttachment[]>([]);
   const [clockNowMs, setClockNowMs] = useState(Date.now());
@@ -508,8 +509,11 @@ export function TaskDetailPage({
           <span>任务</span>
         </button>
         <div className="prototype-detail-title">
-          <strong>{task?.projectName || 'CodeM'}</strong>
-          <span><i className={`status-${task?.phase || 'idle'}`} />{phaseLabel(task?.phase)} · {task?.providerLabel || 'Agent'} · {connectionLabel(running, thread.streamState)}</span>
+          <strong title={task?.title || 'CodeM'}>
+            {task?.providerId ? <AgentProviderIcon providerId={task.providerId} size={13} /> : null}
+            <span className="prototype-detail-title-name">{task?.title || 'CodeM'}</span>
+          </strong>
+          <span title={task?.projectName}>{task?.projectName || '项目'}</span>
         </div>
         <button
           ref={taskMenuTriggerRef}
@@ -690,30 +694,19 @@ export function TaskDetailPage({
           <button type="button" className="prototype-icon-button mobile-voice-disabled" disabled aria-label="语音输入暂未开放" title="语音输入暂未开放">
             <Mic size={18} />
           </button>
-          <button type="button" className="prototype-send-button" disabled={!canSubmit} onClick={() => void send()} aria-label="发送消息">
-            <ArrowUp size={19} />
-          </button>
+          {running && canStop && !prompt.trim() && attachments.length === 0 ? (
+            <button type="button" className="prototype-send-button mobile-stop-button" onClick={() => void stop()} aria-label="停止任务" title="停止任务">
+              <CircleStop size={19} />
+            </button>
+          ) : (
+            <button type="button" className="prototype-send-button" disabled={!canSubmit} onClick={() => void send()} aria-label="发送消息">
+              <ArrowUp size={19} />
+            </button>
+          )}
         </div>
       </section>
     </div>
   );
-}
-
-function phaseLabel(phase?: string) {
-  if (phase === 'running') return '正在运行';
-  if (phase === 'starting') return '正在启动';
-  if (phase === 'waiting') return '等待处理';
-  if (phase === 'done') return '已完成';
-  if (phase === 'error') return '运行失败';
-  if (phase === 'stopped') return '已停止';
-  return '可继续';
-}
-
-function connectionLabel(running: boolean, streamState: string) {
-  if (!running) return '已同步';
-  if (streamState === 'reconnecting') return '重连中';
-  if (streamState === 'connecting') return '连接中';
-  return streamState === 'live' ? '实时' : '已同步';
 }
 
 function normalizePermissionMode(mode?: string) {

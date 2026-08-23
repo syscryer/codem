@@ -626,6 +626,9 @@ async fn mobile_bootstrap(State(state): State<GatewayState>, headers: HeaderMap)
     let channels = proxy_json(&state, Method::GET, "/api/agents/channels/bootstrap", None)
         .await
         .unwrap_or(json!({ "channels": [], "systemChannels": [], "defaultChannelIds": {} }));
+    let settings = proxy_json(&state, Method::GET, "/api/settings", None)
+        .await
+        .unwrap_or(json!({}));
     let mut bootstrap = build_bootstrap(
         workspace,
         claude,
@@ -633,6 +636,7 @@ async fn mobile_bootstrap(State(state): State<GatewayState>, headers: HeaderMap)
         device.permissions,
         providers,
         channels,
+        settings,
     );
     enrich_live_tasks(&state.service, &mut bootstrap);
     Json(bootstrap).into_response()
@@ -2224,6 +2228,7 @@ fn build_bootstrap(
     permissions: Vec<String>,
     providers: Value,
     channels: Value,
+    settings: Value,
 ) -> Value {
     let mut runtime_by_thread = HashMap::<String, Value>::new();
     if let Some(values) = claude.as_object() {
@@ -2282,7 +2287,25 @@ fn build_bootstrap(
         projects.push(json!({ "id": project_id, "name": project_name, "pathLabel": path_label(&string(project,"path")), "branch": project.get("gitBranch"), "dirty": project.get("gitDiff").and_then(|value|value.get("filesChanged")).and_then(Value::as_u64).unwrap_or(0) > 0, "runningTaskCount": recent.iter().filter(|v| matches!(v.get("phase").and_then(Value::as_str), Some("running" | "starting" | "waiting"))).count(), "recentTasks": recent }));
     }
     tasks.sort_by(|a, b| string(b, "updatedAt").cmp(&string(a, "updatedAt")));
-    json!({ "computerName": computer_name(), "connected": true, "permissions": permissions, "tasks": tasks, "projects": projects, "providers": sanitize_providers(providers), "channels": sanitize_channels(channels), "unreadNotifications": 0, "eventCursor": now_ms().to_string() })
+    // 任务创建相关的桌面默认配置：权限模式、默认模型、默认 Agent（渠道默认由 channels.defaultChannelIds 携带）
+    let defaults = json!({
+        "permissionMode": settings
+            .get("general")
+            .and_then(|value| value.get("defaultPermissionMode"))
+            .and_then(Value::as_str)
+            .unwrap_or("default"),
+        "modelId": settings
+            .get("models")
+            .and_then(|value| value.get("defaultModelId"))
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+        "providerId": settings
+            .get("agentRuntime")
+            .and_then(|value| value.get("defaultProviderId"))
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    });
+    json!({ "computerName": computer_name(), "connected": true, "permissions": permissions, "tasks": tasks, "projects": projects, "providers": sanitize_providers(providers), "channels": sanitize_channels(channels), "defaults": defaults, "unreadNotifications": 0, "eventCursor": now_ms().to_string() })
 }
 
 fn sanitize_providers(value: Value) -> Value {
@@ -3968,10 +3991,47 @@ mod tests {
             vec!["view".to_string()],
             json!({ "providers": [] }),
             json!({ "channels": [] }),
+            json!({}),
         );
         assert_eq!(bootstrap["tasks"][0]["phase"], "running");
         assert_eq!(bootstrap["tasks"][0]["activeRunId"], "run");
         assert_eq!(bootstrap["projects"][0]["runningTaskCount"], 1);
+    }
+
+    #[test]
+    fn bootstrap_carries_desktop_task_defaults() {
+        let bootstrap = build_bootstrap(
+            json!({ "projects": [] }),
+            json!([]),
+            json!([]),
+            vec!["view".to_string()],
+            json!({ "providers": [] }),
+            json!({ "channels": [] }),
+            json!({
+                "general": { "defaultPermissionMode": "acceptEdits" },
+                "models": { "defaultModelId": "gpt-5.2" },
+                "agentRuntime": { "defaultProviderId": "openai-codex" },
+            }),
+        );
+        assert_eq!(bootstrap["defaults"]["permissionMode"], "acceptEdits");
+        assert_eq!(bootstrap["defaults"]["modelId"], "gpt-5.2");
+        assert_eq!(bootstrap["defaults"]["providerId"], "openai-codex");
+    }
+
+    #[test]
+    fn bootstrap_defaults_fall_back_when_settings_missing() {
+        let bootstrap = build_bootstrap(
+            json!({ "projects": [] }),
+            json!([]),
+            json!([]),
+            vec!["view".to_string()],
+            json!({ "providers": [] }),
+            json!({ "channels": [] }),
+            json!({}),
+        );
+        assert_eq!(bootstrap["defaults"]["permissionMode"], "default");
+        assert_eq!(bootstrap["defaults"]["modelId"], "");
+        assert_eq!(bootstrap["defaults"]["providerId"], "");
     }
 
     #[test]

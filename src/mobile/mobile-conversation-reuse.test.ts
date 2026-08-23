@@ -234,8 +234,6 @@ test('mobile history images use an authenticated opaque preview id', () => {
 test('mobile realtime state distinguishes idle completion from an actual reconnect', () => {
   assert.match(threadHookSource, /let streamSettled = false/);
   assert.match(threadHookSource, /events\.onerror = \(\) => setStreamState\(streamSettled \? 'idle' : 'reconnecting'\)/);
-  assert.match(detailSource, /connectionLabel\(running, thread\.streamState\)/);
-  assert.match(detailSource, /if \(!running\) return '已同步'/);
 });
 
 test('mobile runtime changes trigger bootstrap without a global polling interval', () => {

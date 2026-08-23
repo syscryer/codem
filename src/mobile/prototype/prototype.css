@@ -531,8 +531,8 @@ body:has(.mobile-prototype) {
   padding-bottom: 3px;
 }
 
-.prototype-detail-title strong,
-.prototype-detail-title span {
+.prototype-detail-title > strong,
+.prototype-detail-title > span {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -540,9 +540,22 @@ body:has(.mobile-prototype) {
 }
 
 .prototype-detail-title strong {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   color: var(--mobile-prototype-label);
   font-size: 14px;
   font-weight: 650;
+}
+
+.prototype-detail-title strong > .agent-provider-brand-icon {
+  flex: 0 0 auto;
+}
+
+.prototype-detail-title-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .prototype-detail-title span {

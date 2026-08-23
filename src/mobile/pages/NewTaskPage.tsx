@@ -16,14 +16,19 @@ import type { MobileBootstrap, MobileModelCatalog } from '../types';
 export function NewTaskPage({ bootstrap, onBack, onCreated }: { bootstrap: MobileBootstrap | null; onBack: () => void; onCreated: (id: string) => void }) {
   const providers = bootstrap?.providers ?? [];
   const selectableProviders = providers.filter((provider) => provider.selectable && provider.available === true);
+  // 运行位置与模型/权限初始值跟随桌面端默认配置
+  const defaultProviderId = bootstrap?.defaults?.providerId;
+  const initialProviderId = selectableProviders.some((provider) => provider.id === defaultProviderId)
+    ? defaultProviderId!
+    : selectableProviders[0]?.id || providers[0]?.id || 'claude-code';
   const [projectId, setProjectId] = useState(bootstrap?.projects[0]?.id || '');
-  const [providerId, setProviderId] = useState(selectableProviders[0]?.id || providers[0]?.id || 'claude-code');
+  const [providerId, setProviderId] = useState(initialProviderId);
   const providerChannels = useMemo(() => (bootstrap?.channels.channels ?? []).filter((channel) => channel.providerId === providerId && channel.enabled), [bootstrap?.channels.channels, providerId]);
   const [channelId, setChannelId] = useState('system');
   const [catalog, setCatalog] = useState<MobileModelCatalog>();
-  const [model, setModel] = useState('');
+  const [model, setModel] = useState(bootstrap?.defaults?.modelId || '');
   const [effort, setEffort] = useState('default');
-  const [permissionMode, setPermissionMode] = useState('default');
+  const [permissionMode, setPermissionMode] = useState(bootstrap?.defaults?.permissionMode || 'default');
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();

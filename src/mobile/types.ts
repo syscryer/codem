@@ -95,6 +95,12 @@ export interface MobileThreadPage {
   liveEventCursor: number;
 }
 
+export interface MobileTaskDefaults {
+  permissionMode?: string;
+  modelId?: string;
+  providerId?: string;
+}
+
 export interface MobileBootstrap {
   computerName: string;
   connected: boolean;
@@ -103,6 +109,7 @@ export interface MobileBootstrap {
   projects: MobileProject[];
   providers: MobileProvider[];
   channels: MobileChannelBootstrap;
+  defaults?: MobileTaskDefaults;
   unreadNotifications: number;
   eventCursor?: string;
 }

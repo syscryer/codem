@@ -1229,3 +1229,18 @@ body:has(.mobile-composer-attachments) .popover-portal-host:has(.composer-contex
 .mobile-new-task-fab:active {
   transform: scale(0.94);
 }
+
+/* 运行中输入框为空时，发送按钮变为停止按钮（与桌面端行为一致） */
+.mobile-live-composer .prototype-send-button.mobile-stop-button {
+  background: #242424;
+  color: #fff;
+  transition: background-color .16s ease, transform .16s ease;
+}
+
+.mobile-live-composer .prototype-send-button.mobile-stop-button:hover {
+  background: #525252;
+}
+
+.mobile-live-composer .prototype-send-button.mobile-stop-button:active {
+  transform: scale(0.94);
+}
