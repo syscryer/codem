@@ -12,9 +12,9 @@ use crate::{
         AgentCompactCapabilityState, AgentCompactCapabilitySummary, AgentCompactionSource,
         AgentCompactionStatus, AgentControlCommand, AgentPermissionDecision, AgentRunEvent,
         AgentUsageSnapshot, AgentUserInputOption, AgentUserInputQuestion, AgentUserInputRequest,
-        DEEPSEEK_DSH_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID,
-        HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID,
-        PI_AGENT_PROVIDER_ID,
+        CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID,
+        GROK_BUILD_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     },
     codex_app_server::{
         CodexAppServerError, CodexCompactCapability, CodexCompactionEvent,
@@ -85,6 +85,7 @@ type CommandResolver = fn() -> Option<String>;
 
 #[derive(Clone, Copy)]
 struct CommandResolvers {
+    claude: CommandResolver,
     grok: CommandResolver,
     codex: CommandResolver,
     opencode: CommandResolver,
@@ -919,6 +920,7 @@ enum GuideAckOutcome {
 
 impl AgentRunService {
     pub(crate) fn new(
+        claude_command_resolver: fn() -> Option<String>,
         grok_command_resolver: fn() -> Option<String>,
         codex_command_resolver: fn() -> Option<String>,
         opencode_command_resolver: fn() -> Option<String>,
@@ -938,6 +940,7 @@ impl AgentRunService {
                 compact_capability_cache: Arc::new(AsyncMutex::new(HashMap::new())),
                 fork_capability_cache: Arc::new(AsyncMutex::new(HashMap::new())),
                 command_resolvers: CommandResolvers {
+                    claude: claude_command_resolver,
                     grok: grok_command_resolver,
                     codex: codex_command_resolver,
                     opencode: opencode_command_resolver,
@@ -1709,6 +1712,7 @@ fn resolve_agent_command(
     }
 
     let command = match provider_id {
+        CLAUDE_CODE_PROVIDER_ID => (state.command_resolvers.claude)(),
         GROK_BUILD_PROVIDER_ID => (state.command_resolvers.grok)(),
         OPENAI_CODEX_PROVIDER_ID => (state.command_resolvers.codex)(),
         OPENCODE_PROVIDER_ID => (state.command_resolvers.opencode)(),
@@ -9485,6 +9489,7 @@ mod tests {
             compact_capability_cache: Arc::new(AsyncMutex::new(HashMap::new())),
             fork_capability_cache: Arc::new(AsyncMutex::new(HashMap::new())),
             command_resolvers: CommandResolvers {
+                claude: || None,
                 grok: || None,
                 codex: || None,
                 opencode: || None,
@@ -9892,6 +9897,7 @@ mod tests {
             || None,
             || None,
             || None,
+            || None,
             test_agent_channel_service(),
             DshService::new(),
             HermesService::new(std::env::temp_dir(), || None),
@@ -9912,10 +9918,45 @@ mod tests {
     }
 
     #[test]
+    fn expired_claude_command_survives_a_transient_resolution_failure() {
+        let service = AgentRunService::new(
+            || None,
+            || None,
+            || None,
+            || None,
+            || None,
+            || None,
+            || None,
+            test_agent_channel_service(),
+            DshService::new(),
+            HermesService::new(std::env::temp_dir(), || None),
+        );
+        let command = "C:/Users/test/AppData/Roaming/npm/claude.cmd";
+        store_cached_agent_command(
+            &service.state.command_cache,
+            crate::agent_runtime::CLAUDE_CODE_PROVIDER_ID,
+            Some(command.to_string()),
+            Instant::now() - AGENT_COMMAND_CACHE_TTL,
+        );
+
+        assert_eq!(
+            service
+                .resolve_command(crate::agent_runtime::CLAUDE_CODE_PROVIDER_ID, false)
+                .as_deref(),
+            Some(command)
+        );
+        assert_eq!(
+            service.resolve_command(crate::agent_runtime::CLAUDE_CODE_PROVIDER_ID, true),
+            None
+        );
+    }
+
+    #[test]
     fn agent_command_resolution_reuses_cache_until_forced_refresh() {
         COMMAND_RESOLVER_CALLS.store(0, Ordering::SeqCst);
         COMMAND_RESOLVER_AVAILABLE.store(true, Ordering::SeqCst);
         let service = AgentRunService::new(
+            || None,
             || None,
             counting_codex_command_resolver,
             || None,

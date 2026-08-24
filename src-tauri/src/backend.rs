@@ -1025,6 +1025,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
     let hermes = crate::hermes::HermesService::new(app_data_dir.clone(), resolve_hermes_command);
     let dsh = crate::dsh::DshService::new();
     let agent_runs = crate::agent_run::AgentRunService::new(
+        resolve_claude_command,
         resolve_grok_command,
         resolve_codex_command,
         resolve_opencode_command,
@@ -3298,11 +3299,17 @@ async fn claude_run(
         .claude_runtime_test_launch
         .as_ref()
         .map(|(command, _)| command.clone())
-        .or_else(resolve_claude_command)
+        .or_else(|| {
+            state
+                .agent_runs
+                .resolve_command(CLAUDE_CODE_PROVIDER_ID, false)
+        })
         .ok_or_else(|| ApiError::bad_request("未找到 claude 命令"))?;
     #[cfg(not(test))]
-    let command =
-        resolve_claude_command().ok_or_else(|| ApiError::bad_request("未找到 claude 命令"))?;
+    let command = state
+        .agent_runs
+        .resolve_command(CLAUDE_CODE_PROVIDER_ID, false)
+        .ok_or_else(|| ApiError::bad_request("未找到 claude 命令"))?;
     let run_id = uuid::Uuid::new_v4().to_string();
     let started_at_ms = current_timestamp_ms_i64();
     let permission_mode = normalize_claude_permission_mode(payload.permission_mode.as_deref());
@@ -23337,6 +23344,7 @@ mod tests {
             agent_channels: agent_channels.clone(),
             agent_lifecycle_running: Arc::new(Mutex::new(std::collections::HashMap::new())),
             agent_runs: crate::agent_run::AgentRunService::new(
+                || None,
                 resolve_grok_command,
                 resolve_codex_command,
                 resolve_opencode_command,
@@ -28302,6 +28310,7 @@ mod tests {
             agent_channels: agent_channels.clone(),
             agent_lifecycle_running: Arc::new(Mutex::new(std::collections::HashMap::new())),
             agent_runs: crate::agent_run::AgentRunService::new(
+                || None,
                 resolve_grok_command,
                 resolve_codex_command,
                 resolve_opencode_command,
