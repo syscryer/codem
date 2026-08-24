@@ -200,6 +200,11 @@ pub(crate) struct AgentRunService {
     state: AgentRunState,
 }
 
+pub(crate) enum DshUpdatePreparationError {
+    Busy(String),
+    Failed(String),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DshRuntimeConfig {
     agent_preset: String,
@@ -356,6 +361,13 @@ enum AgentRuntimePhase {
     Running,
     Closed,
     Failed,
+}
+
+fn dsh_runtime_update_is_busy(phase: AgentRuntimePhase, current_run_id: Option<&str>) -> bool {
+    matches!(
+        phase,
+        AgentRuntimePhase::Starting | AgentRuntimePhase::Running
+    ) || current_run_id.is_some()
 }
 
 struct AgentRuntimeRecord {
@@ -954,6 +966,58 @@ impl AgentRunService {
 
     pub(crate) fn resolve_command(&self, provider_id: &str, refresh: bool) -> Option<String> {
         resolve_agent_command(&self.state, provider_id, refresh)
+    }
+
+    pub(crate) async fn prepare_dsh_update(
+        &self,
+        command: &str,
+    ) -> Result<(), DshUpdatePreparationError> {
+        {
+            let records = self.state.records.lock().map_err(|_| {
+                DshUpdatePreparationError::Failed("读取 DSH 运行状态失败".to_string())
+            })?;
+            if records
+                .values()
+                .any(|record| record.provider_id == DEEPSEEK_DSH_PROVIDER_ID && !record.finished)
+            {
+                return Err(DshUpdatePreparationError::Busy(
+                    "DSH 当前有运行中的任务，请先停止任务后再更新".to_string(),
+                ));
+            }
+        }
+
+        let shutdowns = {
+            let mut runtimes = self.state.runtimes.lock().map_err(|_| {
+                DshUpdatePreparationError::Failed("读取 DSH 热会话失败".to_string())
+            })?;
+            let mut shutdowns = Vec::new();
+            for runtime in runtimes
+                .values_mut()
+                .filter(|runtime| runtime.config.provider_id == DEEPSEEK_DSH_PROVIDER_ID)
+            {
+                if dsh_runtime_update_is_busy(runtime.phase, runtime.current_run_id.as_deref()) {
+                    return Err(DshUpdatePreparationError::Busy(
+                        "DSH 当前有运行中的热会话，请先关闭会话后再更新".to_string(),
+                    ));
+                }
+                if runtime.phase == AgentRuntimePhase::Ready {
+                    runtime.phase = AgentRuntimePhase::Closed;
+                    runtime.command = None;
+                    runtime.last_error = None;
+                    shutdowns.push(runtime.shutdown.clone());
+                }
+            }
+            shutdowns
+        };
+
+        for shutdown in shutdowns {
+            let _ = shutdown.send(true);
+        }
+        self.state
+            .dsh
+            .shutdown_for_update(command)
+            .await
+            .map_err(DshUpdatePreparationError::Failed)
     }
 
     pub(crate) async fn probe_codex_fork_capability(
@@ -8914,17 +8978,18 @@ mod tests {
         acp_arguments, acp_permission_policy, await_guide_ack, build_acp_prompt, build_codex_input,
         build_pi_prompt, cancelled_before_prompt_outcome, classify_codex_fork_error,
         compact_capability_cache_key, complete_fork_command, dsh_model_catalog,
-        dsh_permission_mode, dsh_projection_usage, ensure_compact_reconcile_runtime_idle,
-        expired_cached_agent_command, fail_fork_command, find_grok_runtime_error_detail,
-        fork_capability_cache_key, gemini_mode_id, gemini_removed_environment, grok_acp_arguments,
-        grok_acp_error_with_runtime_detail, grok_uses_channel_credentials, guide_ack_response,
-        guide_text_from_codex_input, hermes_model_catalog, map_dsh_event, map_hermes_event,
-        normalize_agent_input, parse_opencode_models, pi_model_catalog, pi_model_parts,
-        pi_rpc_arguments, pi_usage_snapshot, probe_compact_capability_cached,
-        probe_fork_capability_cached, public_acp_error, public_codex_error,
-        push_compact_failure_event, read_cached_agent_command, read_cached_agent_model_catalog,
-        runtime_can_reuse, sanitize_grok_runtime_error_detail, should_retry_grok_channel_prompt,
-        should_set_acp_model, store_cached_agent_command, store_cached_agent_model_catalog,
+        dsh_permission_mode, dsh_projection_usage, dsh_runtime_update_is_busy,
+        ensure_compact_reconcile_runtime_idle, expired_cached_agent_command, fail_fork_command,
+        find_grok_runtime_error_detail, fork_capability_cache_key, gemini_mode_id,
+        gemini_removed_environment, grok_acp_arguments, grok_acp_error_with_runtime_detail,
+        grok_uses_channel_credentials, guide_ack_response, guide_text_from_codex_input,
+        hermes_model_catalog, map_dsh_event, map_hermes_event, normalize_agent_input,
+        parse_opencode_models, pi_model_catalog, pi_model_parts, pi_rpc_arguments,
+        pi_usage_snapshot, probe_compact_capability_cached, probe_fork_capability_cached,
+        public_acp_error, public_codex_error, push_compact_failure_event,
+        read_cached_agent_command, read_cached_agent_model_catalog, runtime_can_reuse,
+        sanitize_grok_runtime_error_detail, should_retry_grok_channel_prompt, should_set_acp_model,
+        store_cached_agent_command, store_cached_agent_model_catalog,
         summarize_codex_compact_capability, validate_compact_runtime_session, AcpEventMapper,
         AgentCompactReconcileResponse, AgentCompactReconcileState, AgentDriverInput,
         AgentDriverKind, AgentForkCapabilityState, AgentForkCapabilitySummary,
@@ -8970,6 +9035,21 @@ mod tests {
 
     static COMMAND_RESOLVER_CALLS: AtomicUsize = AtomicUsize::new(0);
     static COMMAND_RESOLVER_AVAILABLE: AtomicBool = AtomicBool::new(true);
+
+    #[test]
+    fn dsh_update_rejects_busy_runtime_phases() {
+        assert!(dsh_runtime_update_is_busy(
+            AgentRuntimePhase::Starting,
+            None
+        ));
+        assert!(dsh_runtime_update_is_busy(AgentRuntimePhase::Running, None));
+        assert!(dsh_runtime_update_is_busy(
+            AgentRuntimePhase::Ready,
+            Some("run-1")
+        ));
+        assert!(!dsh_runtime_update_is_busy(AgentRuntimePhase::Ready, None));
+        assert!(!dsh_runtime_update_is_busy(AgentRuntimePhase::Closed, None));
+    }
 
     #[test]
     fn dsh_permission_modes_follow_codem_access_levels() {

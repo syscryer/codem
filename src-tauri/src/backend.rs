@@ -2002,6 +2002,23 @@ async fn agent_lifecycle_action(
         }
     };
 
+    if provider_id == DEEPSEEK_DSH_PROVIDER_ID && action == "update" {
+        let command = resolve_agent_settings_command(provider_id)
+            .ok_or_else(|| ApiError::bad_request("Agent 尚未安装，请先执行安装"))?;
+        state
+            .agent_runs
+            .prepare_dsh_update(&command)
+            .await
+            .map_err(|error| match error {
+                crate::agent_run::DshUpdatePreparationError::Busy(message) => {
+                    ApiError::conflict(message)
+                }
+                crate::agent_run::DshUpdatePreparationError::Failed(message) => {
+                    ApiError::internal(message)
+                }
+            })?;
+    }
+
     let settings = read_app_settings(&state).unwrap_or_else(|_| default_app_settings());
     let result = execute_agent_lifecycle_action(provider_id, action, &settings)
         .await
@@ -2158,6 +2175,8 @@ async fn execute_agent_lifecycle_action(
     let version = command.as_deref().and_then(|command| {
         if provider_id == GROK_BUILD_PROVIDER_ID {
             read_grok_cli_version(command)
+        } else if provider_id == DEEPSEEK_DSH_PROVIDER_ID {
+            read_dsh_cli_version(command)
         } else {
             read_cli_version(command)
         }
@@ -17102,6 +17121,7 @@ fn resolve_agent_settings_command(provider_id: &str) -> Option<String> {
         PI_AGENT_PROVIDER_ID => resolve_pi_command(),
         GEMINI_CLI_PROVIDER_ID => resolve_gemini_command(),
         HERMES_AGENT_PROVIDER_ID => resolve_hermes_command(),
+        DEEPSEEK_DSH_PROVIDER_ID => resolve_dsh_command(),
         _ => resolve_claude_command(),
     }
 }

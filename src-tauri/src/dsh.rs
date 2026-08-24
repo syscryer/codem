@@ -61,6 +61,24 @@ impl DshService {
         Self::default()
     }
 
+    pub(crate) async fn shutdown_all(&self) {
+        let backends = {
+            let mut backends = self.backends.lock().await;
+            backends
+                .drain()
+                .map(|(_, backend)| backend)
+                .collect::<Vec<_>>()
+        };
+        for backend in backends {
+            backend.shutdown().await;
+        }
+    }
+
+    pub(crate) async fn shutdown_for_update(&self, command: &str) -> Result<(), String> {
+        self.shutdown_all().await;
+        shutdown_code_m_web_hosts(command).await
+    }
+
     pub(crate) async fn connect(
         &self,
         command: &str,
@@ -240,12 +258,152 @@ impl DshBackend {
 
     async fn shutdown(&self) {
         let mut child = self.child.lock().await;
-        let _ = child.kill().await;
-        let _ = child.wait().await;
+        terminate_child_tree(&mut child).await;
         if let Some(path) = &self.model_patch {
             let _ = std::fs::remove_file(path);
         }
     }
+}
+
+async fn terminate_child_tree(child: &mut Child) {
+    #[cfg(target_os = "windows")]
+    {
+        let terminated = if let Some(pid) = child.id() {
+            let mut taskkill = Command::new("taskkill.exe");
+            taskkill.creation_flags(0x08000000);
+            taskkill
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .status()
+                .await
+                .is_ok_and(|status| status.success())
+        } else {
+            false
+        };
+        if !terminated {
+            let _ = child.kill().await;
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = child.kill().await;
+    }
+    let _ = child.wait().await;
+}
+
+#[cfg(target_os = "windows")]
+async fn query_code_m_dsh_web_host_pids(command: &str) -> Result<Vec<u32>, String> {
+    let command_path = Path::new(command);
+    let ps1_command = command_path.with_extension("ps1");
+    let script = r#"
+$targets = @($env:CODEM_DSH_COMMAND, $env:CODEM_DSH_COMMAND_PS1) |
+  Where-Object { $_ } |
+  ForEach-Object { $_.ToLowerInvariant() }
+$processes = @(Get-CimInstance Win32_Process)
+$processMap = @{}
+foreach ($process in $processes) {
+  $processMap[[int]$process.ProcessId] = $process
+}
+$processes |
+  Where-Object {
+  $line = $_.CommandLine
+  if (-not $line) { return $false }
+  $normalized = $line.ToLowerInvariant()
+  if (-not $normalized.Contains('--profile web')) { return $false }
+  if (-not $normalized.Contains('--host 127.0.0.1')) { return $false }
+  if (-not $normalized.Contains('--port')) { return $false }
+  $parent = $processMap[[int]$_.ParentProcessId]
+  $isCodeMParent = $parent -and ($parent.Name.ToLowerInvariant() -in @('codem-agent-mux.exe', 'codem.exe', 'codem-backend.exe'))
+  if (-not ($isCodeMParent -or -not $parent)) { return $false }
+  foreach ($target in $targets) {
+    if ($normalized.Contains($target)) { return $true }
+  }
+  return $false
+  } |
+  ForEach-Object { [int]$_.ProcessId }
+"#;
+    let mut process = Command::new("powershell.exe");
+    process.creation_flags(0x08000000);
+    process
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .env("CODEM_DSH_COMMAND", command)
+        .env("CODEM_DSH_COMMAND_PS1", ps1_command.as_os_str());
+    let output = tokio::time::timeout(Duration::from_secs(30), process.output())
+        .await
+        .map_err(|_| "清理 DSH Web Host 超时，请先手动关闭 DSH 后重试".to_string())?
+        .map_err(|error| format!("清理 DSH Web Host 失败: {error}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            "清理 DSH Web Host 失败".to_string()
+        } else {
+            format!("清理 DSH Web Host 失败: {detail}")
+        });
+    }
+    let mut pids = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let pid = line
+            .parse::<u32>()
+            .map_err(|error| format!("清理 DSH Web Host 返回了无效 PID {line:?}: {error}"))?;
+        pids.push(pid);
+    }
+    pids.sort_unstable();
+    pids.dedup();
+    Ok(pids)
+}
+
+#[cfg(target_os = "windows")]
+async fn shutdown_code_m_web_hosts(command: &str) -> Result<(), String> {
+    let pids = query_code_m_dsh_web_host_pids(command).await?;
+    if pids.is_empty() {
+        return Ok(());
+    }
+
+    let mut taskkill = Command::new("taskkill.exe");
+    taskkill.creation_flags(0x08000000);
+    taskkill.args(["/T", "/F"]);
+    for pid in &pids {
+        taskkill.args(["/PID", &pid.to_string()]);
+    }
+    let output = tokio::time::timeout(Duration::from_secs(30), taskkill.output())
+        .await
+        .map_err(|_| "清理 DSH Web Host 超时，请先手动关闭 DSH 后重试".to_string())?
+        .map_err(|error| format!("清理 DSH Web Host 失败: {error}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        tracing::warn!(
+            target: "codem::dsh",
+            ?pids,
+            status = ?output.status,
+            %detail,
+            "批量结束 DSH Web Host 返回非零状态，将通过复查确认"
+        );
+    }
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let remaining = query_code_m_dsh_web_host_pids(command).await?;
+    if remaining.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "清理 DSH Web Host 失败，仍有进程未退出: {remaining:?}"
+        ))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn shutdown_code_m_web_hosts(command: &str) -> Result<(), String> {
+    let _ = command;
+    Ok(())
 }
 
 impl DshClient {

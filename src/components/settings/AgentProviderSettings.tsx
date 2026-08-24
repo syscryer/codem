@@ -581,6 +581,10 @@ export function AgentProviderSettings({
       } catch {
         // The original lifecycle error remains the actionable failure.
       }
+      if (providerId === 'deepseek-dsh') {
+        // Update preparation intentionally stops the Web Host; restore the UI even when npm fails.
+        await loadProviderDetails([providerId]).catch(() => undefined);
+      }
       setDetailsError(message);
       showToast(message, 'error');
     } finally {
