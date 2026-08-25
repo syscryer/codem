@@ -181,12 +181,6 @@ export function AgentChannelSettings({
     () => groupProviderTemplateChannels(selectedVendorTemplates),
     [selectedVendorTemplates],
   );
-  const selectedChannelTemplates = useMemo(
-    () => selectedTemplate
-      ? selectedVendorTemplates.filter((template) => template.channelId === selectedTemplate.channelId)
-      : [],
-    [selectedTemplate, selectedVendorTemplates],
-  );
   const visibleModels = useMemo(() => {
     const query = modelQuery.trim().toLocaleLowerCase();
     if (!query) return selectedChannel?.models ?? [];
@@ -313,16 +307,18 @@ export function AgentChannelSettings({
 
   function applyTemplate(template: AiProviderTemplate | null) {
     setSelectedTemplateId(template?.id ?? '');
+    resetMessages();
     if (!template) return;
     setDraft((current) => ({
       ...current,
       name: current.name.trim() && !creating ? current.name : template.vendorName,
-      protocol: template.protocol,
+      protocol: templateSupportsAgent(template, providerId) ? template.protocol : current.protocol,
       baseUrl: template.baseUrl,
     }));
   }
 
   function applyProtocol(protocol: AiChatProtocol) {
+    resetMessages();
     const matchingTemplate = selectedTemplate
       ? templates.find((template) =>
           template.vendorId === selectedTemplate.vendorId
@@ -334,7 +330,6 @@ export function AgentChannelSettings({
       applyTemplate(matchingTemplate);
       return;
     }
-    setSelectedTemplateId('');
     setDraft((current) => ({ ...current, protocol }));
   }
 
@@ -443,6 +438,22 @@ export function AgentChannelSettings({
     setLocalError('');
     try {
       const result = await discoverAgentChannelModels(channelId);
+      const existingModelsById = new Map(
+        (selectedChannel?.models ?? []).map((model) => [model.modelId.toLocaleLowerCase(), model]),
+      );
+      let refreshedModels: AgentChannelModel[] | null = null;
+      for (const discoveredModel of result.models) {
+        const capabilities = discoveredModel.capabilities;
+        if (!capabilities || Object.keys(capabilities).length === 0) continue;
+        const existingModel = existingModelsById.get(discoveredModel.modelId.toLocaleLowerCase());
+        if (!existingModel) continue;
+        const updateResult = await updateAgentChannelModel(existingModel.id, { capabilities });
+        refreshedModels = updateResult.models;
+      }
+      if (refreshedModels) {
+        onModelsUpdated(channelId, refreshedModels);
+        await onChanged();
+      }
       setDiscoveredModels(result.models);
       setModelPickerOpen(true);
     } catch (discoverError) {
@@ -458,7 +469,11 @@ export function AgentChannelSettings({
     try {
       await addAgentChannelModels(
         selectedChannelId,
-        models.map((model) => ({ modelId: model.modelId, displayName: model.displayName })),
+        models.map((model) => ({
+          modelId: model.modelId,
+          displayName: model.displayName,
+          capabilities: model.capabilities,
+        })),
       );
       setModelPickerOpen(false);
       setDiscoveredModels(null);
@@ -710,7 +725,7 @@ export function AgentChannelSettings({
                 <div className="ai-manager-section-head">
                   <div>
                     <h3>{creating ? `新增 ${getAgentProviderDisplayName(providerId)} 渠道` : '渠道配置'}</h3>
-                    <p>此配置只注入 CodeM 启动的 Agent 子进程，不修改系统或 CC Switch。</p>
+                    <p>仅作用于 CodeM 启动的 {getAgentProviderDisplayName(providerId)}；支持接口：{protocolsForAgent(providerId).map((protocol) => protocolLabels[protocol]).join('、')}。</p>
                   </div>
                   <div className="ai-manager-section-head-actions">
                     {!creating && selectedChannel ? (
@@ -778,17 +793,11 @@ export function AgentChannelSettings({
                     <div className="ai-manager-template-field">
                       <span>接口类型</span>
                       <div className="ai-manager-option-list ai-manager-protocol-options" role="radiogroup" aria-label="Agent 渠道接口类型">
-                        {selectedTemplate
-                          ? selectedChannelTemplates.map((template) => (
-                              <button key={template.id} type="button" role="radio" aria-checked={selectedTemplate.id === template.id} className={selectedTemplate.id === template.id ? 'active' : ''} onClick={() => applyTemplate(template)}>
-                                {protocolLabels[template.protocol]}
-                              </button>
-                            ))
-                          : protocolsForAgent(providerId).map((protocol) => (
-                              <button key={protocol} type="button" role="radio" aria-checked={draft.protocol === protocol} className={draft.protocol === protocol ? 'active' : ''} onClick={() => applyProtocol(protocol)}>
-                                {protocolLabels[protocol]}
-                              </button>
-                            ))}
+                        {protocolsForAgent(providerId).map((protocol) => (
+                          <button key={protocol} type="button" role="radio" aria-checked={draft.protocol === protocol} className={draft.protocol === protocol ? 'active' : ''} onClick={() => applyProtocol(protocol)}>
+                            {protocolLabels[protocol]}
+                          </button>
+                        ))}
                       </div>
                       {protocolHint ? <small className="agent-channel-protocol-note">{protocolHint}</small> : null}
                     </div>
@@ -830,7 +839,7 @@ export function AgentChannelSettings({
 
               <section className="ai-manager-section ai-manager-model-section">
                 <div className="ai-manager-section-head">
-                  <div><h3>渠道模型</h3><p>模型只属于当前渠道，可远程多选获取，也可手工维护。</p></div>
+                  <div><h3>渠道模型</h3><p>模型只属于当前渠道，可远程多选获取，也可手工维护；获取模型时会同步接口返回的思考强度等能力。</p></div>
                   <div className="ai-manager-model-head-actions">
                     <span>{selectedChannel?.models.length ?? 0} 个</span>
                     <button type="button" className="ai-manager-model-discover-button" disabled={modelBusy} onClick={() => void openModelPicker()}>

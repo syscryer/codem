@@ -117,6 +117,20 @@ test('Agent 渠道设置使用两列厂商下拉并将渠道作为独立按钮�
   assert.match(stylesSource, /\.agent-channel-template-menu \.ai-manager-vendor-options\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2,/);
 });
 
+test('Agent 渠道接口类型按 Agent 能力展示，不受供应商预设模板限制', () => {
+  assert.match(agentChannelSettingsSource, /protocolsForAgent\(providerId\)\.map/);
+  assert.doesNotMatch(agentChannelSettingsSource, /selectedChannelTemplates\.map/);
+  assert.match(
+    agentChannelSettingsSource,
+    /protocol:\s*templateSupportsAgent\(template, providerId\)\s*\?\s*template\.protocol\s*:\s*current\.protocol/,
+  );
+});
+
+test('切换接口类型或供应商预设会清理上一次操作错误', () => {
+  assert.match(agentChannelSettingsSource, /function applyTemplate\([\s\S]*?resetMessages\(\)/);
+  assert.match(agentChannelSettingsSource, /function applyProtocol\([\s\S]*?resetMessages\(\)/);
+});
+
 test('Agent 渠道列表优先显示匹配的厂商图标', () => {
   assert.match(
     agentChannelSettingsSource,

@@ -161,6 +161,8 @@ pub(crate) struct UpdateModelRequest {
 pub(crate) struct DiscoveredModel {
     pub model_id: String,
     pub display_name: String,
+    #[serde(skip_serializing_if = "Value::is_null")]
+    pub capabilities: Value,
 }
 
 #[derive(Clone, Debug, Serialize)]

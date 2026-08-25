@@ -445,6 +445,7 @@ function WorkbenchFiles({
   const [navigatorWidth, setNavigatorWidth] = useState(292);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [previewReloadKey, setPreviewReloadKey] = useState('');
   const [commitMessage, setCommitMessage] = useState('');
   const [commitWorking, setCommitWorking] = useState<'commit' | 'push' | null>(null);
   const [commitError, setCommitError] = useState('');
@@ -548,6 +549,19 @@ function WorkbenchFiles({
   const activeProjectIdRef = useRef(activeProject?.id ?? '');
   previewContentRef.current = previewContentByKey;
   activeProjectIdRef.current = activeProject?.id ?? '';
+
+  const refreshActivePreview = useCallback(() => {
+    if (
+      scope !== 'all' ||
+      !activePreviewTabKey ||
+      !activePreviewTab ||
+      isWorkbenchDiffPreviewRequest(activePreviewTab)
+    ) {
+      return;
+    }
+
+    setPreviewReloadKey(activePreviewTabKey);
+  }, [activePreviewTab, activePreviewTabKey, scope]);
 
   useOutsideDismiss({
     refs: [
@@ -669,7 +683,8 @@ function WorkbenchFiles({
       }
 
       const existingContent = previewContentRef.current[activePreviewTabKey];
-      if (existingContent && !existingContent.loading) {
+      const forceReload = previewReloadKey === activePreviewTabKey;
+      if (existingContent && !existingContent.loading && !forceReload) {
         return;
       }
 
@@ -705,12 +720,14 @@ function WorkbenchFiles({
         })
         .finally(() => {
           previewRequestKeysRef.current.delete(requestKey);
+          setPreviewReloadKey((current) => current === activePreviewTabKey ? '' : current);
         });
       return;
     }
 
     const existingContent = previewContentRef.current[activePreviewTabKey];
-    if (existingContent && !existingContent.loading) {
+    const forceReload = previewReloadKey === activePreviewTabKey;
+    if (existingContent && !existingContent.loading && !forceReload) {
       return;
     }
 
@@ -747,8 +764,9 @@ function WorkbenchFiles({
       })
       .finally(() => {
         previewRequestKeysRef.current.delete(requestKey);
+        setPreviewReloadKey((current) => current === activePreviewTabKey ? '' : current);
       });
-  }, [activePreviewPath, activePreviewTab, activePreviewTabKey, activeProject?.id, activeProject?.path, onResolvePreviewContent]);
+  }, [activePreviewPath, activePreviewTab, activePreviewTabKey, activeProject?.id, activeProject?.path, onResolvePreviewContent, previewReloadKey]);
 
   function updateNavigatorVisibility(visible: boolean) {
     if (scope === 'all' && onNavigatorManualVisibilityChange) {
@@ -1528,6 +1546,8 @@ function WorkbenchFiles({
               tabs={previewTabs}
               activeKey={activePreviewKey}
               contentByKey={previewContentByKey}
+              onRefreshPreview={scope === 'all' ? refreshActivePreview : undefined}
+              enableMiddleClickClose={scope === 'all'}
               onSelectTab={onSelectPreviewTab}
               onCloseTab={onClosePreviewTab}
               onCloseTabs={onClosePreviewTabs}
@@ -1729,6 +1749,8 @@ function PreviewPane({
   tabs,
   activeKey,
   contentByKey,
+  onRefreshPreview,
+  enableMiddleClickClose = false,
   onSelectTab,
   onCloseTab,
   onCloseTabs,
@@ -1736,6 +1758,8 @@ function PreviewPane({
   tabs: WorkbenchPreviewTab[];
   activeKey: string;
   contentByKey: Record<string, WorkbenchPreviewContentState>;
+  onRefreshPreview?: () => void;
+  enableMiddleClickClose?: boolean;
   onSelectTab: (key: string) => void;
   onCloseTab: (key: string) => void;
   onCloseTabs: (keys: string[]) => void;
@@ -1884,6 +1908,14 @@ function PreviewPane({
                   type="button"
                   className={`workbench-preview-tab${active ? ' active' : ''}`}
                   onClick={() => onSelectTab(tab.key)}
+                  onAuxClick={(event) => {
+                    if (!enableMiddleClickClose || event.button !== 1) {
+                      return;
+                    }
+
+                    event.preventDefault();
+                    onCloseTab(tab.key);
+                  }}
                 >
                   <WorkbenchFileIcon path={tab.path} type="file" />
                   <span className="workbench-preview-tab-label">
@@ -1907,6 +1939,18 @@ function PreviewPane({
           })}
         </div>
         <div className="workbench-preview-head-actions">
+          {onRefreshPreview && activeTab && !isWorkbenchDiffPreviewRequest(activeTab) ? (
+            <button
+              type="button"
+              className="workbench-icon-button workbench-preview-refresh-button"
+              title="刷新预览"
+              aria-label="刷新预览"
+              disabled={Boolean(activeContent?.loading)}
+              onClick={onRefreshPreview}
+            >
+              <RefreshCw className={activeContent?.loading ? 'spin' : undefined} size={14} />
+            </button>
+          ) : null}
           {activeDiffStats ? (
             <span className="git-history-diff-stats workbench-diff-stats">
               <span className="git-diff-add">+{activeDiffStats.additions}</span>

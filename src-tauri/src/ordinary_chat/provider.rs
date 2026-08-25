@@ -843,6 +843,7 @@ fn token_plan_models(provider: &StoredProvider) -> Option<Vec<DiscoveredModel>> 
             .map(|(model_id, display_name)| DiscoveredModel {
                 model_id: model_id.to_string(),
                 display_name: display_name.to_string(),
+                capabilities: Value::Null,
             })
             .collect(),
     )
@@ -2333,6 +2334,59 @@ fn normalize_action_endpoint(base_url: &str, action: &str) -> Result<Url, String
     Ok(url)
 }
 
+pub(crate) fn model_capabilities(item: &Value) -> Value {
+    let mut capabilities = serde_json::Map::new();
+
+    if let Some(context_window_tokens) = item.get("context_length").and_then(Value::as_u64) {
+        capabilities.insert(
+            "contextWindowTokens".to_string(),
+            Value::from(context_window_tokens),
+        );
+    }
+
+    if let Some(reasoning) = item.get("reasoning").and_then(Value::as_object) {
+        capabilities.insert("reasoning".to_string(), Value::Bool(true));
+        if let Some(default_effort) = reasoning
+            .get("default_effort")
+            .or_else(|| reasoning.get("defaultEffort"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            capabilities.insert(
+                "defaultReasoningEffort".to_string(),
+                Value::String(default_effort.to_string()),
+            );
+        }
+        if let Some(efforts) = reasoning
+            .get("supported_efforts")
+            .or_else(|| reasoning.get("supportedEfforts"))
+            .and_then(Value::as_array)
+        {
+            let efforts = efforts
+                .iter()
+                .filter_map(|effort| {
+                    let id = effort
+                        .as_str()
+                        .or_else(|| effort.get("id").and_then(Value::as_str))?
+                        .trim();
+                    (!id.is_empty()).then(|| {
+                        serde_json::json!({
+                            "id": id,
+                            "label": id,
+                        })
+                    })
+                })
+                .collect::<Vec<_>>();
+            if !efforts.is_empty() {
+                capabilities.insert("reasoningEfforts".to_string(), Value::Array(efforts));
+            }
+        }
+    }
+
+    Value::Object(capabilities)
+}
+
 fn parse_models(protocol: AiProtocol, value: &Value) -> Result<Vec<DiscoveredModel>, String> {
     let items = match protocol {
         AiProtocol::OpenaiResponses | AiProtocol::OpenaiChat | AiProtocol::AnthropicMessages => {
@@ -2369,6 +2423,7 @@ fn parse_models(protocol: AiProtocol, value: &Value) -> Result<Vec<DiscoveredMod
             Some(DiscoveredModel {
                 model_id,
                 display_name,
+                capabilities: model_capabilities(item),
             })
         })
         .collect::<Vec<_>>();
@@ -2529,7 +2584,7 @@ mod tests {
         routing::get,
         Json, Router,
     };
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::collections::BTreeMap;
 
     #[test]
@@ -2893,6 +2948,7 @@ mod tests {
         let model = DiscoveredModel {
             model_id: "MiniMax-M2.7".to_string(),
             display_name: "MiniMax M2.7".to_string(),
+            capabilities: Value::Null,
         };
         let message = test_token_plan_provider(&provider, &model, "test-key")
             .await
@@ -2904,10 +2960,35 @@ mod tests {
     fn parses_openai_and_gemini_model_lists() {
         let openai = parse_models(
             AiProtocol::OpenaiChat,
-            &json!({ "data": [{ "id": "model-b" }, { "id": "model-a" }] }),
+            &json!({
+                "data": [
+                    { "id": "model-b" },
+                    {
+                        "id": "stealth/ox-alpha",
+                        "context_length": 1_048_576,
+                        "reasoning": {
+                            "supported_efforts": ["max", "high", "low"],
+                            "default_effort": "max"
+                        }
+                    },
+                    { "id": "model-a" }
+                ]
+            }),
         )
         .unwrap();
         assert_eq!(openai[0].model_id, "model-a");
+        let ox_alpha = openai
+            .iter()
+            .find(|model| model.model_id == "stealth/ox-alpha")
+            .expect("Ox Alpha model");
+        assert_eq!(ox_alpha.capabilities["defaultReasoningEffort"], "max");
+        assert_eq!(
+            ox_alpha.capabilities["reasoningEfforts"]
+                .as_array()
+                .expect("reasoning efforts")
+                .len(),
+            3,
+        );
         let gemini = parse_models(
             AiProtocol::GeminiGenerateContent,
             &json!({ "models": [{ "name": "models/gemini-test", "displayName": "Gemini Test" }] }),

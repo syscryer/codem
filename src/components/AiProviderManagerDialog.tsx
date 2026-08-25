@@ -402,6 +402,7 @@ export function AiProviderSettingsPanel({
         models.map((model, index) => ({
           modelId: model.modelId,
           displayName: model.displayName,
+          capabilities: model.capabilities,
           enabled: true,
           isDefault: selectedProvider.models.length === 0 && index === 0,
         })),
@@ -1026,12 +1027,16 @@ function mergeDraftModels(current: AiChatModel[], additions: AiDiscoveredModel[]
   additions.forEach((model) => {
     if (existingIds.has(model.modelId.toLocaleLowerCase())) return;
     existingIds.add(model.modelId.toLocaleLowerCase());
-    next.push(createDraftModel(model.modelId, model.displayName));
+    next.push(createDraftModel(model.modelId, model.displayName, model.capabilities));
   });
   return normalizeDraftModels(next);
 }
 
-function createDraftModel(modelId: string, displayName: string): AiChatModel {
+function createDraftModel(
+  modelId: string,
+  displayName: string,
+  capabilities?: Record<string, unknown>,
+): AiChatModel {
   return {
     id: `draft:${modelId}`,
     providerId: '',
@@ -1039,7 +1044,7 @@ function createDraftModel(modelId: string, displayName: string): AiChatModel {
     displayName,
     enabled: true,
     isDefault: false,
-    capabilities: {},
+    capabilities: capabilities ?? {},
     createdAt: '',
     updatedAt: '',
   };

@@ -5,7 +5,10 @@ use crate::{
         OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     },
     ordinary_chat::{
-        provider::{discover_models, test_provider, validate_protocol_model, PROVIDER_TEMPLATES},
+        provider::{
+            discover_models, model_capabilities, test_provider, validate_protocol_model,
+            PROVIDER_TEMPLATES,
+        },
         secrets::SecretStore,
         types::{AiProtocol, DiscoveredModel, StoredProvider},
     },
@@ -2099,6 +2102,7 @@ fn parse_discovered_models(value: &Value) -> Result<Vec<DiscoveredModel>, String
         models.push(DiscoveredModel {
             model_id: model_id.to_string(),
             display_name: display_name.to_string(),
+            capabilities: model_capabilities(item),
         });
     }
     if models.is_empty() {
@@ -2812,6 +2816,37 @@ fn copy_directory(source: &Path, target: &Path, depth: usize) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovered_model_capabilities_preserve_openrouter_reasoning_efforts() {
+        let models = parse_discovered_models(&json!({
+            "data": [{
+                "id": "stealth/ox-alpha",
+                "name": "Ox Alpha",
+                "context_length": 1_048_576,
+                "reasoning": {
+                    "supported_efforts": ["max", "high", "low"],
+                    "default_effort": "max"
+                }
+            }]
+        }))
+        .expect("parse discovered models");
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].model_id, "stealth/ox-alpha");
+        assert_eq!(models[0].capabilities["contextWindowTokens"], 1_048_576);
+        assert_eq!(models[0].capabilities["reasoning"], true);
+        assert_eq!(models[0].capabilities["defaultReasoningEffort"], "max");
+        assert_eq!(
+            models[0].capabilities["reasoningEfforts"]
+                .as_array()
+                .expect("reasoning efforts")
+                .iter()
+                .filter_map(|effort| effort.get("id").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["max", "high", "low"],
+        );
+    }
 
     fn insert_channel(
         connection: &Connection,

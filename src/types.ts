@@ -1644,6 +1644,7 @@ export type AiChatModel = {
 export type AiDiscoveredModel = {
   modelId: string;
   displayName: string;
+  capabilities?: Record<string, unknown>;
 };
 
 export type AiChatProvider = {
