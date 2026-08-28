@@ -19353,7 +19353,7 @@ button.git-conflict-overview-row:focus-visible,
 
 .conversation-context-panel,
 .conversation-context-capsule {
-  border: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 58%, var(--app-surface, #ffffff) 42%);
   background: color-mix(in srgb, var(--app-surface, #ffffff) 96%, transparent);
   box-shadow: 0 12px 30px rgba(15, 23, 42, 0.11);
 }
@@ -28778,4 +28778,112 @@ div[data-popover-portal] > * {
   gap: 5px;
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+/* 参考 Codex：菜单以紧凑的实色面板为主，减少玻璃感和过大的留白。 */
+:is(.codex-desktop, .popover-portal-host) :is(
+  .workspace-menu,
+  .open-app-dropdown,
+  .model-menu,
+  .effort-menu,
+  .permission-menu,
+  .composer-add-menu,
+  .status-branch-menu,
+  .status-run-menu,
+  .settings-select-menu,
+  .desktop-menu-popover,
+  .add-project-menu-popover,
+  .project-menu-popover,
+  .thread-menu-popover,
+  .slash-command-menu,
+  .conversation-output-file-menu,
+  .changed-files-summary-menu,
+  .git-history-filter-menu,
+  .automation-select-menu,
+  .workflow-select-menu,
+  .workbench-preview-overflow-menu,
+  .workbench-preview-context-menu,
+  .workbench-file-context-menu,
+  .workbench-review-options-menu,
+  .workflow-node-context-menu,
+  .conversation-context-mode-menu,
+  .conversation-context-branch-menu,
+  .background-operation-popover,
+  .app-update-popover,
+  .ai-manager-vendor-menu,
+  .agent-mux-select-menu,
+  .agent-mux-avatar-menu,
+  .knowledge-menu,
+  .mcp-menu,
+  .settings-usage-project-menu,
+  .launch-script-popover
+) {
+  border-radius: 14px;
+  border-color: color-mix(in srgb, var(--app-border) 70%, var(--app-surface) 30%);
+  background: color-mix(in srgb, var(--app-surface) 96%, transparent) !important;
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--app-text-strong) 8%, transparent);
+  backdrop-filter: blur(12px) saturate(1.05);
+  -webkit-backdrop-filter: blur(12px) saturate(1.05);
+}
+
+:is(.codex-desktop, .popover-portal-host) :is(
+  .workspace-menu,
+  .open-app-dropdown,
+  .model-menu,
+  .effort-menu,
+  .permission-menu,
+  .composer-add-menu,
+  .status-branch-menu,
+  .status-run-menu,
+  .settings-select-menu,
+  .desktop-menu-popover,
+  .slash-command-menu
+)::before,
+:is(.codex-desktop, .popover-portal-host) :is(
+  .workspace-menu,
+  .open-app-dropdown,
+  .model-menu,
+  .effort-menu,
+  .permission-menu,
+  .composer-add-menu,
+  .status-branch-menu,
+  .status-run-menu,
+  .settings-select-menu,
+  .desktop-menu-popover,
+  .slash-command-menu
+)::after {
+  opacity: 0.35;
+}
+
+:is(.codex-desktop, .popover-portal-host) :is(.model-menu, .effort-menu) {
+  width: min(300px, calc(100vw - 40px));
+  padding: 5px;
+}
+
+:is(.codex-desktop, .popover-portal-host) .model-menu-title {
+  padding: 1px 12px 6px;
+}
+
+:is(.codex-desktop, .popover-portal-host) :is(.model-menu-item, .effort-menu-item) {
+  min-height: 42px;
+  gap: 12px;
+  padding: 6px 12px;
+}
+
+:is(.codex-desktop, .popover-portal-host) .model-menu-item-copy {
+  gap: 3px;
+}
+
+/* Provider 列表内容简单，优先一次展示完整列表；仅在超过视口时才滚动。 */
+:is(.codex-desktop, .popover-portal-host) .provider-menu {
+  max-height: min(760px, calc(100vh - 48px));
+  overflow-y: auto;
+}
+
+:is(.codex-desktop, .popover-portal-host) .provider-menu:not(.ordinary-provider-menu) .model-menu-item-copy small {
+  display: none;
+}
+
+:is(.codex-desktop, .popover-portal-host) .provider-menu:not(.ordinary-provider-menu) .model-menu-item {
+  min-height: 46px;
 }
