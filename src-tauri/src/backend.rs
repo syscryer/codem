@@ -81,6 +81,12 @@ const HERMES_CLI_MACOS_INSTALL_COMMAND: &str =
     "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash";
 const HERMES_CLI_WINDOWS_INSTALL_COMMAND: &str =
     "irm https://hermes-agent.nousresearch.com/install.ps1 | iex";
+#[cfg(target_os = "windows")]
+// The official installer appends its launcher dir to the *registry* User PATH;
+// a running CodeM process keeps the stale pre-install PATH. Re-read both
+// registry hives and prepend them so a fresh install is detectable without an
+// app restart.
+const HERMES_WINDOWS_LOOKUP_SCRIPT: &str = "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $freshPath = @([Environment]::GetEnvironmentVariable('Path','User'), [Environment]::GetEnvironmentVariable('Path','Machine')) | Where-Object { $_ }; if ($freshPath) { $env:Path = [string]::Concat(($freshPath -join ';'), ';', $env:Path) }; Get-Command hermes -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }";
 const NPM_REGISTRY_URL: &str = "https://registry.npmjs.org";
 const NPM_MIRROR_REGISTRY_URL: &str = "https://registry.npmmirror.com";
 const NPM_CONFIG_USER_AGENT_ENV: &str = "npm_config_user_agent";
@@ -8513,7 +8519,7 @@ fn resolve_hermes_command() -> Option<String> {
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command hermes -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
+            HERMES_WINDOWS_LOOKUP_SCRIPT,
         ]);
         command_output_with_timeout(&mut command, std::time::Duration::from_secs(3))
     };
@@ -8632,7 +8638,35 @@ fn hermes_command_paths(
     windows: bool,
 ) -> Vec<PathBuf> {
     let executable = if windows { "hermes.exe" } else { "hermes" };
-    let mut candidates = vec![home.join(".local").join("bin").join(executable)];
+    // Official installer layout (install.ps1 / install.sh): launchers live in
+    // <hermes_home>/bin and are staged only at the very END of the install, so
+    // also probe the managed checkout's venv where the CLI exists one step
+    // earlier. Windows: %LOCALAPPDATA%\hermes; Unix: ~/.hermes.
+    let mut candidates = Vec::new();
+    if windows {
+        if let Some(local_app_data) = local_app_data {
+            let hermes_home = local_app_data.join("hermes");
+            candidates.push(hermes_home.join("bin").join(executable));
+            candidates.push(
+                hermes_home
+                    .join("hermes-agent")
+                    .join("venv")
+                    .join("Scripts")
+                    .join(executable),
+            );
+        }
+    } else {
+        let hermes_home = home.join(".hermes");
+        candidates.push(hermes_home.join("bin").join(executable));
+        candidates.push(
+            hermes_home
+                .join("hermes-agent")
+                .join("venv")
+                .join("bin")
+                .join(executable),
+        );
+    }
+    candidates.push(home.join(".local").join("bin").join(executable));
     if let Some(app_data) = app_data {
         candidates.push(app_data.join("Python").join("Scripts").join(executable));
     }
@@ -8645,6 +8679,8 @@ fn hermes_command_paths(
                 .join(executable),
         );
     }
+    // Legacy CodeM isolated venv in the system temp dir; kept last because a
+    // temp location is wiped by disk cleanup and never re-created today.
     if let Some(temp_dir) = temp_dir {
         candidates.push(
             temp_dir
@@ -30445,12 +30481,57 @@ mod tests {
         let temp = PathBuf::from(r"C:\Users\dev\AppData\Local\Temp");
         let paths = hermes_command_paths(&home, None, None, Some(&temp), true);
 
+        let legacy_venv = temp
+            .join("codem-hermes-venv")
+            .join("Scripts")
+            .join("hermes.exe");
+        assert!(paths.contains(&legacy_venv));
+        assert_eq!(paths.last(), Some(&legacy_venv));
+    }
+
+    #[test]
+    fn hermes_command_paths_cover_official_windows_installer_layout() {
+        let home = PathBuf::from(r"C:\Users\dev");
+        let local_app_data = home.join("AppData").join("Local");
+        let paths = hermes_command_paths(&home, None, Some(&local_app_data), None, true);
+        let hermes_home = local_app_data.join("hermes");
+
+        assert_eq!(
+            paths.first(),
+            Some(&hermes_home.join("bin").join("hermes.exe"))
+        );
         assert!(paths.contains(
-            &temp
-                .join("codem-hermes-venv")
+            &hermes_home
+                .join("hermes-agent")
+                .join("venv")
                 .join("Scripts")
                 .join("hermes.exe")
         ));
+    }
+
+    #[test]
+    fn hermes_command_paths_cover_official_unix_installer_layout() {
+        let home = PathBuf::from("/home/dev");
+        let paths = hermes_command_paths(&home, None, None, None, false);
+        let hermes_home = home.join(".hermes");
+
+        assert_eq!(paths.first(), Some(&hermes_home.join("bin").join("hermes")));
+        assert!(paths.contains(
+            &hermes_home
+                .join("hermes-agent")
+                .join("venv")
+                .join("bin")
+                .join("hermes")
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn hermes_windows_lookup_script_merges_registry_path() {
+        let script = super::HERMES_WINDOWS_LOOKUP_SCRIPT;
+        assert!(script.contains("GetEnvironmentVariable('Path','User')"));
+        assert!(script.contains("GetEnvironmentVariable('Path','Machine')"));
+        assert!(script.contains("Get-Command hermes"));
     }
 
     #[cfg(target_os = "windows")]

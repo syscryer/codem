@@ -461,7 +461,9 @@ async fn get_backend_base_url(state: State<'_, BackendPortState>) -> Result<Stri
 }
 
 #[tauri::command]
-async fn get_backend_connection(state: State<'_, BackendPortState>) -> Result<BackendConnection, String> {
+async fn get_backend_connection(
+    state: State<'_, BackendPortState>,
+) -> Result<BackendConnection, String> {
     let (port, token) = wait_for_backend_connection(&state).await?;
     Ok(BackendConnection {
         base_url: format!("http://127.0.0.1:{port}"),
@@ -1239,7 +1241,7 @@ mod tests {
         has_minimum_window_size, has_success_status, normalize_window_state,
         parse_browser_webview_url, prepare_window_state_for_save, resolve_backend_port_from_value,
         should_apply_window_material, validate_browser_webview_label, wait_for_backend_connection,
-        BackendPortState, DEFAULT_BACKEND_PORT, MonitorWorkArea, WindowState,
+        BackendPortState, MonitorWorkArea, WindowState, DEFAULT_BACKEND_PORT,
     };
     use std::{
         fs,
@@ -1273,13 +1275,11 @@ mod tests {
             setter.set(DEFAULT_BACKEND_PORT, None);
         });
 
-        let connection = tokio::time::timeout(
-            Duration::from_secs(2),
-            wait_for_backend_connection(&state),
-        )
-        .await
-        .expect("wait resolves after set")
-        .expect("connection present");
+        let connection =
+            tokio::time::timeout(Duration::from_secs(2), wait_for_backend_connection(&state))
+                .await
+                .expect("wait resolves after set")
+                .expect("connection present");
 
         assert_eq!(connection.0, DEFAULT_BACKEND_PORT);
         assert!(connection.1.is_none());
