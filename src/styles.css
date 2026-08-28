@@ -6021,13 +6021,86 @@ display: inline-grid;
   word-break: break-word;
 }
 
-.user-message .message-body {
+.user-message-text {
   justify-self: end;
-  padding: 8px 13px;
-  border: 1px solid #eeeeee;
+  position: relative;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--app-border, #eeeeee);
   border-radius: 13px;
-  background: #f6f6f6;
+  background: var(--app-surface-subtle, #f6f6f6);
+}
+
+.user-message-text .message-body {
+  padding: 8px 13px;
   line-height: 1.62;
+}
+
+.user-message-text.is-collapsed .message-body {
+  max-height: var(--user-message-collapsed-height);
+  overflow: hidden;
+}
+
+.user-message-expand-footer {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: flex-end;
+  min-height: 58px;
+  padding: 20px 10px 7px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--app-surface-subtle, #f6f6f6) 0%, transparent),
+    var(--app-surface-subtle, #f6f6f6) 44%
+  );
+}
+
+.user-message-text.is-expanded .user-message-expand-footer {
+  position: static;
+  min-height: 0;
+  padding: 0 10px 7px;
+  background: transparent;
+}
+
+.user-message-expand-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 28px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 7px;
+  color: color-mix(in srgb, var(--app-text, #242424) 72%, transparent);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.user-message-expand-button:hover {
+  color: var(--app-text, #242424);
+  background: color-mix(in srgb, var(--app-text, #242424) 6%, transparent);
+}
+
+.user-message-expand-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent, #d97706) 70%, transparent);
+  outline-offset: 1px;
+}
+
+.user-message-expand-button svg {
+  transition: transform 160ms ease;
+}
+
+.user-message-expand-button svg.expanded {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .user-message-expand-button svg {
+    transition: none;
+  }
 }
 
 .assistant-content {
@@ -22214,7 +22287,7 @@ button.git-conflict-overview-row:focus-visible,
   box-shadow: none;
 }
 
-.codex-desktop .user-message .message-body,
+.codex-desktop .user-message-text,
 .codex-desktop .appearance-preview-composer {
   background: var(--app-surface-subtle);
   border-color: var(--app-border);

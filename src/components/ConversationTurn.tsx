@@ -1,4 +1,15 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 import { PopoverPortal } from './PopoverPortal';
 import { FileActionMenu } from './FileActionMenu';
 import { WebLinkActionMenu, type WebLinkMenuTarget } from './WebLinkActionMenu';
@@ -78,6 +89,10 @@ import type {
 } from '../types';
 
 const CHANGED_FILES_SUMMARY_INITIAL_LIMIT = 8;
+const USER_MESSAGE_COLLAPSED_HEIGHT = 360;
+const USER_MESSAGE_COLLAPSED_STYLE = {
+  '--user-message-collapsed-height': `${USER_MESSAGE_COLLAPSED_HEIGHT}px`,
+} as CSSProperties;
 
 function ConversationTurnViewComponent({
   turn,
@@ -260,7 +275,7 @@ function ConversationTurnViewComponent({
               onPreviewImage={setImagePreview}
             />
           ) : null}
-          {hasUserText ? <div className="message-body preserve-format">{turn.userText}</div> : null}
+          {hasUserText ? <CollapsibleUserMessage text={turn.userText} /> : null}
           {hasUserText || messageTime ? (
             <div className="turn-actions user-turn-actions" aria-label="用户消息操作">
               {hasUserText ? <InlineCopyButton text={turn.userText} title="复制消息" /> : null}
@@ -761,6 +776,57 @@ function shouldShowSystemCommandCode(item: SystemCommandItem) {
 }
 
 export const ConversationTurnView = memo(ConversationTurnViewComponent);
+
+function CollapsibleUserMessage({ text }: { text: string }) {
+  const contentId = useId();
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [collapsible, setCollapsible] = useState(false);
+
+  const measureOverflow = useCallback(() => {
+    const content = contentRef.current;
+    if (!content) {
+      return;
+    }
+    setCollapsible(content.scrollHeight > USER_MESSAGE_COLLAPSED_HEIGHT + 1);
+  }, []);
+
+  useLayoutEffect(() => {
+    measureOverflow();
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const observer = new ResizeObserver(measureOverflow);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [measureOverflow, text]);
+
+  return (
+    <div
+      className={`user-message-text ${expanded ? 'is-expanded' : 'is-collapsed'}${collapsible ? ' is-collapsible' : ''}`}
+      style={USER_MESSAGE_COLLAPSED_STYLE}
+    >
+      <div ref={contentRef} className="message-body preserve-format" id={contentId}>
+        {text}
+      </div>
+      {collapsible ? (
+        <div className="user-message-expand-footer">
+          <button
+            type="button"
+            className="user-message-expand-button"
+            aria-expanded={expanded}
+            aria-controls={contentId}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            <span>{expanded ? '收起' : '显示更多'}</span>
+            <ChevronDown className={expanded ? 'expanded' : ''} size={15} aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function UserContentBlocks({
   blocks,
