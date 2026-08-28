@@ -5505,9 +5505,7 @@ async fn create_thread(
     let reasoning_effort =
         normalize_thread_metadata_value(payload.reasoning_effort.as_deref(), "reasoningEffort")?;
     if !provider_supports_reasoning_effort(provider) && reasoning_effort.is_some() {
-        return Err(ApiError::bad_request(
-            "reasoningEffort 目前仅支持 Claude Code、OpenAI Codex、OpenCode、Pi 或 Hermes 聊天",
-        ));
+        return Err(ApiError::bad_request("当前 Agent 不支持 reasoningEffort"));
     }
     let channel_id = state
         .agent_channels
@@ -10036,6 +10034,7 @@ fn provider_supports_reasoning_effort(provider: &str) -> bool {
     matches!(
         provider,
         CLAUDE_CODE_PROVIDER_ID
+            | GROK_BUILD_PROVIDER_ID
             | OPENAI_CODEX_PROVIDER_ID
             | OPENCODE_PROVIDER_ID
             | PI_AGENT_PROVIDER_ID
@@ -11639,9 +11638,7 @@ fn update_thread_metadata_from_payload(
         thread.reasoning_effort.clone()
     };
     if !provider_supports_reasoning_effort(&thread.provider) && reasoning_effort.is_some() {
-        return Err(ApiError::bad_request(
-            "reasoningEffort 目前仅支持 Claude Code、OpenAI Codex、OpenCode、Pi 或 Hermes 聊天",
-        ));
+        return Err(ApiError::bad_request("当前 Agent 不支持 reasoningEffort"));
     }
     let permission_mode = if has_permission_mode {
         let requested_permission_mode = payload
@@ -28627,6 +28624,7 @@ mod tests {
             resolve_thread_create_permission_mode(PI_AGENT_PROVIDER_ID, Some("dontAsk")).is_err()
         );
         assert!(provider_supports_reasoning_effort(PI_AGENT_PROVIDER_ID));
+        assert!(provider_supports_reasoning_effort(GROK_BUILD_PROVIDER_ID));
         assert!(provider_supports_reasoning_effort(OPENCODE_PROVIDER_ID));
         assert!(provider_supports_reasoning_effort(HERMES_AGENT_PROVIDER_ID));
     }

@@ -88,10 +88,20 @@ pub struct AcpAuthMethodSummary {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AcpReasoningEffortSummary {
+    pub id: String,
+    pub description: Option<String>,
+    pub is_default: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpModelSummary {
     pub model_id: String,
     pub name: String,
     pub context_tokens: Option<u64>,
+    pub default_reasoning_effort: Option<String>,
+    pub supported_reasoning_efforts: Vec<AcpReasoningEffortSummary>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -1416,6 +1426,51 @@ fn summarize_initialize_result(result: &Value) -> Result<AcpInitializeSummary, A
             if model_id.is_empty() {
                 return None;
             }
+            let supports_reasoning_effort = model
+                .pointer("/_meta/supportsReasoningEffort")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let supported_reasoning_efforts = supports_reasoning_effort
+                .then(|| {
+                    model
+                        .pointer("/_meta/reasoningEfforts")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|effort| {
+                            let id = effort.get("id")?.as_str()?.trim();
+                            if id.is_empty() {
+                                return None;
+                            }
+                            Some(AcpReasoningEffortSummary {
+                                id: id.to_string(),
+                                description: optional_string(
+                                    effort.get("description").or_else(|| effort.get("label")),
+                                ),
+                                is_default: effort
+                                    .get("default")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false),
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let advertised_reasoning_effort = supports_reasoning_effort
+                .then(|| optional_string(model.pointer("/_meta/reasoningEffort")))
+                .flatten();
+            let default_reasoning_effort = advertised_reasoning_effort
+                .filter(|id| {
+                    supported_reasoning_efforts
+                        .iter()
+                        .any(|effort| effort.id == *id)
+                })
+                .or_else(|| {
+                    supported_reasoning_efforts
+                        .iter()
+                        .find(|effort| effort.is_default)
+                        .map(|effort| effort.id.clone())
+                });
             Some(AcpModelSummary {
                 model_id: model_id.to_string(),
                 name: model
@@ -1428,6 +1483,8 @@ fn summarize_initialize_result(result: &Value) -> Result<AcpInitializeSummary, A
                 context_tokens: model
                     .pointer("/_meta/totalContextTokens")
                     .and_then(Value::as_u64),
+                default_reasoning_effort,
+                supported_reasoning_efforts,
             })
         })
         .collect();
@@ -2803,7 +2860,30 @@ mod tests {
                     "availableModels": [{
                         "modelId": "grok-4.5",
                         "name": "Grok 4.5",
-                        "_meta": { "totalContextTokens": 500000, "internal": "drop" }
+                        "_meta": {
+                            "totalContextTokens": 500000,
+                            "supportsReasoningEffort": true,
+                            "reasoningEffort": "high",
+                            "reasoningEfforts": [
+                                {
+                                    "id": "high",
+                                    "label": "High Effort",
+                                    "description": "Highest implementation quality",
+                                    "default": true
+                                },
+                                {
+                                    "id": "medium",
+                                    "label": "Medium Effort",
+                                    "default": false
+                                },
+                                {
+                                    "id": "low",
+                                    "label": "Low Effort",
+                                    "default": false
+                                }
+                            ],
+                            "internal": "drop"
+                        }
                     }]
                 }
             }
@@ -2825,6 +2905,24 @@ mod tests {
         assert!(!serialized.contains("secret-adjacent"));
         assert!(!serialized.contains("internal"));
         assert!(serialized.contains("500000"));
+        assert_eq!(
+            summary.models[0].default_reasoning_effort.as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            summary.models[0]
+                .supported_reasoning_efforts
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>(),
+            ["high", "medium", "low"]
+        );
+        assert_eq!(
+            summary.models[0].supported_reasoning_efforts[1]
+                .description
+                .as_deref(),
+            Some("Medium Effort")
+        );
     }
 
     #[test]

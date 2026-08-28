@@ -464,7 +464,7 @@ test('Hermes management uses runtime detection and the dedicated settings panel'
   assert.equal(resolveProviderDiagnostics(provider, null, null).auth, '沿用系统配置或 CodeM 渠道管理');
   assert.equal(getProviderInstallDocsUrl('hermes-agent'), 'https://github.com/NousResearch/hermes-agent');
   assert.match(providerSettingsSource, /HermesSettingsPanel/);
-  assert.match(composerSource, /agent === 'codex' \|\| agent === 'opencode' \|\| providerId === 'hermes-agent'/);
+  assert.match(composerSource, /\{agentReasoningEffortOptions\.length > 0 \? \(/);
   assert.match(providerSettingsSource, /provider\.id === 'hermes-agent'/);
   assert.match(providerSettingsSource, /lifecycleAction \|\| !isInstalled \|\| updateAvailable/);
   assert.doesNotMatch(providerSettingsSource, /provider\.id !== 'hermes-agent' && \(!isInstalled \|\| updateAvailable\)/);

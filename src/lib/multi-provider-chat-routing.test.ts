@@ -53,9 +53,10 @@ test('generic Agent composer follows provider attachment capabilities and suppor
   assert.match(appSource, /supportsQueue=\{activeUsesClaude \|\| activeUsesGenericAgent\}/);
   assert.match(composerSource, /agent === 'claude' \? \(/);
   assert.match(composerSource, /agentModelCatalog\?\.models\.map/);
-  assert.match(
+  assert.match(composerSource, /agentReasoningEffortOptions\.length > 0/);
+  assert.doesNotMatch(
     composerSource,
-    /\(agent === 'codex' \|\| agent === 'opencode' \|\| providerId === 'hermes-agent'\) && agentReasoningEffortOptions\.length > 0/,
+    /agent === 'codex' \|\| agent === 'opencode' \|\| providerId === 'hermes-agent'/,
   );
   assert.match(composerSource, /onRetryAgentModels/);
   assert.match(composerSource, /textOnlyInputMessage = `\$\{providerName\} 当前不支持附件输入/);

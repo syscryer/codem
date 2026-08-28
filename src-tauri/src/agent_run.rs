@@ -1416,7 +1416,7 @@ async fn agent_models(
         GROK_BUILD_PROVIDER_ID => {
             let command = resolve_agent_command(&state, provider_id, query.refresh)
                 .ok_or_else(|| AgentApiError::bad_request("未找到 grok 命令"))?;
-            let arguments = grok_acp_arguments("default");
+            let arguments = grok_acp_arguments("default", None);
             let mut client = AcpStdioClient::spawn(&command, &arguments, &cwd)
                 .await
                 .map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
@@ -1441,8 +1441,15 @@ async fn agent_models(
                     label: model.name,
                     description: None,
                     context_window_tokens: model.context_tokens,
-                    default_reasoning_effort: None,
-                    supported_reasoning_efforts: Vec::new(),
+                    default_reasoning_effort: model.default_reasoning_effort,
+                    supported_reasoning_efforts: model
+                        .supported_reasoning_efforts
+                        .into_iter()
+                        .map(|effort| AgentReasoningEffortSummary {
+                            id: effort.id,
+                            description: effort.description,
+                        })
+                        .collect(),
                 })
                 .collect();
             Ok(Json(AgentModelCatalog {
@@ -1605,7 +1612,7 @@ async fn agent_models(
                 .as_ref()
                 .map(|runtime| runtime.env.clone())
                 .unwrap_or_default();
-            let arguments = acp_arguments(provider_id, "default")
+            let arguments = acp_arguments(provider_id, "default", None)
                 .map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
             let mut client = AcpStdioClient::spawn_with_env_and_removals(
                 &command,
@@ -2052,7 +2059,7 @@ async fn start_agent_run(
     let reasoning_effort = normalize_optional_id(payload.reasoning_effort, "reasoningEffort")?;
     if driver == AgentDriverKind::Acp
         && reasoning_effort.is_some()
-        && provider_id != OPENCODE_PROVIDER_ID
+        && !matches!(provider_id, OPENCODE_PROVIDER_ID | GROK_BUILD_PROVIDER_ID)
     {
         return Err(AgentApiError::bad_request(
             "当前 ACP Agent 模型目录未提供 reasoning effort 能力",
@@ -3432,6 +3439,7 @@ async fn start_live_agent_runtime(
                 &config.command,
                 &config.provider_id,
                 config.permission_mode,
+                config.reasoning_effort.as_deref(),
                 &config.working_directory,
                 &config.environment,
             )
@@ -4198,10 +4206,11 @@ async fn spawn_acp_client(
     command: &str,
     provider_id: &str,
     permission_mode: &'static str,
+    reasoning_effort: Option<&str>,
     working_directory: &Path,
     environment: &BTreeMap<String, String>,
 ) -> Result<AcpStdioClient, AcpError> {
-    let arguments = acp_arguments(provider_id, permission_mode)?;
+    let arguments = acp_arguments(provider_id, permission_mode, reasoning_effort)?;
     AcpStdioClient::spawn_with_env_and_removals(
         command,
         &arguments,
@@ -4372,6 +4381,7 @@ async fn execute_acp_run(task: AcpRunTask) {
         &command,
         &provider_id,
         permission_mode,
+        reasoning_effort.as_deref(),
         &working_directory,
         &environment,
     )
@@ -8931,16 +8941,25 @@ fn normalize_optional_id(value: Option<String>, field: &str) -> AgentApiResult<O
     value.map(|value| required_id(&value, field)).transpose()
 }
 
-fn grok_acp_arguments(permission_mode: &'static str) -> [&'static str; 4] {
-    ["--permission-mode", permission_mode, "agent", "stdio"]
+fn grok_acp_arguments<'a>(
+    permission_mode: &'a str,
+    reasoning_effort: Option<&'a str>,
+) -> Vec<&'a str> {
+    let mut arguments = vec!["--permission-mode", permission_mode];
+    if let Some(reasoning_effort) = reasoning_effort {
+        arguments.extend(["--reasoning-effort", reasoning_effort]);
+    }
+    arguments.extend(["agent", "stdio"]);
+    arguments
 }
 
-fn acp_arguments(
+fn acp_arguments<'a>(
     provider_id: &str,
-    permission_mode: &'static str,
-) -> Result<Vec<&'static str>, AcpError> {
+    permission_mode: &'a str,
+    reasoning_effort: Option<&'a str>,
+) -> Result<Vec<&'a str>, AcpError> {
     match provider_id {
-        GROK_BUILD_PROVIDER_ID => Ok(grok_acp_arguments(permission_mode).to_vec()),
+        GROK_BUILD_PROVIDER_ID => Ok(grok_acp_arguments(permission_mode, reasoning_effort)),
         OPENCODE_PROVIDER_ID => Ok(vec!["acp"]),
         GEMINI_CLI_PROVIDER_ID => Ok(vec!["--skip-trust", "--acp"]),
         _ => Err(AcpError::Protocol(
@@ -10009,8 +10028,19 @@ mod tests {
     #[test]
     fn grok_acp_arguments_keep_permission_mode_as_a_separate_value() {
         assert_eq!(
-            grok_acp_arguments("bypassPermissions"),
+            grok_acp_arguments("bypassPermissions", None),
             ["--permission-mode", "bypassPermissions", "agent", "stdio"]
+        );
+        assert_eq!(
+            grok_acp_arguments("auto", Some("high")),
+            [
+                "--permission-mode",
+                "auto",
+                "--reasoning-effort",
+                "high",
+                "agent",
+                "stdio"
+            ]
         );
     }
 
@@ -10058,15 +10088,23 @@ mod tests {
     #[test]
     fn opencode_acp_uses_the_shared_environment_aware_spawn_path() {
         assert_eq!(
-            acp_arguments("opencode", "bypassPermissions").expect("OpenCode ACP arguments"),
+            acp_arguments("opencode", "bypassPermissions", Some("max"))
+                .expect("OpenCode ACP arguments"),
             vec!["acp"]
         );
         assert_eq!(
-            acp_arguments("grok-build", "auto").expect("Grok ACP arguments"),
-            vec!["--permission-mode", "auto", "agent", "stdio"]
+            acp_arguments("grok-build", "auto", Some("medium")).expect("Grok ACP arguments"),
+            vec![
+                "--permission-mode",
+                "auto",
+                "--reasoning-effort",
+                "medium",
+                "agent",
+                "stdio"
+            ]
         );
         assert_eq!(
-            acp_arguments(GEMINI_CLI_PROVIDER_ID, "default").expect("Gemini ACP arguments"),
+            acp_arguments(GEMINI_CLI_PROVIDER_ID, "default", None).expect("Gemini ACP arguments"),
             vec!["--skip-trust", "--acp"]
         );
     }

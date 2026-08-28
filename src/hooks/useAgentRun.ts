@@ -309,6 +309,14 @@ export function useAgentRun({
   const reasoningEffortRef = useRef('');
   const channelIdRef = useRef(SYSTEM_AGENT_CHANNEL_ID);
   const modelPreferencesRef = useRef(collectThreadModelPreferences(activeThreadSummary));
+  const pendingReasoningEffortRef = useRef<{
+    threadId: string;
+    model: string;
+    reasoningEffort: string;
+    modelPreferences: ThreadModelPreferences;
+    revision: number;
+  } | null>(null);
+  const reasoningEffortRevisionRef = useRef(0);
   const defaultProviderIdRef = useRef(defaultProviderId);
   const selectedProviderIdRef = useRef(initialProviderId);
   const providersControllerRef = useRef<AbortController | null>(null);
@@ -644,25 +652,33 @@ export function useAgentRun({
     if (!isModelSelectionChannelReady(channelId, targetChannelId)) {
       return;
     }
+    const pendingReasoningEffort = activeThreadSummary
+      && pendingReasoningEffortRef.current?.threadId === activeThreadSummary.id
+      ? pendingReasoningEffortRef.current
+      : null;
     if (!currentModelCatalog) {
-      modelPreferencesRef.current = activeThreadSummary ? {} : draftSelection.modelPreferences;
-      setAgentModel(activeThreadSummary ? DEFAULT_MODEL_VALUE : draftSelection.model ?? DEFAULT_MODEL_VALUE);
-      setAgentReasoningEffort(activeThreadSummary ? '' : draftSelection.reasoningEffort ?? '');
+      modelPreferencesRef.current = pendingReasoningEffort?.modelPreferences
+        ?? (activeThreadSummary ? {} : draftSelection.modelPreferences);
+      setAgentModel(pendingReasoningEffort?.model
+        ?? (activeThreadSummary ? DEFAULT_MODEL_VALUE : draftSelection.model ?? DEFAULT_MODEL_VALUE));
+      setAgentReasoningEffort(pendingReasoningEffort?.reasoningEffort
+        ?? (activeThreadSummary ? '' : draftSelection.reasoningEffort ?? ''));
       setModelSelectionWarning('');
       return;
     }
     const threadMatchesCatalog = activeThreadSummary?.provider === currentModelCatalog.providerId;
-    const preferences = threadMatchesCatalog
+    const preferences = pendingReasoningEffort?.modelPreferences ?? (threadMatchesCatalog
       ? collectThreadModelPreferences(activeThreadSummary)
       : isNewChatDraft
         ? draftSelection.modelPreferences
-        : {};
-    const savedModelId = threadMatchesCatalog
+        : {});
+    const savedModelId = pendingReasoningEffort?.model ?? (threadMatchesCatalog
       ? activeThreadSummary?.model
       : isNewChatDraft
         ? draftSelection.model
-        : undefined;
-    const savedReasoningEffort = reasoningEffortForThreadModel(preferences, savedModelId);
+        : undefined);
+    const savedReasoningEffort = pendingReasoningEffort?.reasoningEffort
+      ?? reasoningEffortForThreadModel(preferences, savedModelId);
     modelPreferencesRef.current = preferences;
     const resolved = resolveAgentModelSelection(
       currentModelCatalog,
@@ -1011,6 +1027,8 @@ export function useAgentRun({
     }
     const previousEffort = reasoningEffortRef.current;
     const previousPreferences = modelPreferencesRef.current;
+    const revision = reasoningEffortRevisionRef.current + 1;
+    reasoningEffortRevisionRef.current = revision;
     setAgentReasoningEffort(nextEffort);
     modelPreferencesRef.current = updateThreadModelReasoningEffort(
       previousPreferences,
@@ -1027,10 +1045,25 @@ export function useAgentRun({
       };
     }
     if (activeThreadId) {
+      pendingReasoningEffortRef.current = {
+        threadId: activeThreadId,
+        model: modelRef.current,
+        reasoningEffort: nextEffort,
+        modelPreferences: modelPreferencesRef.current,
+        revision,
+      };
       void persistThreadMetadata(activeThreadId, {
         model: modelRef.current === DEFAULT_MODEL_VALUE ? null : modelRef.current,
         reasoningEffort: nextEffort,
+      }).then(() => {
+        if (pendingReasoningEffortRef.current?.revision === revision) {
+          pendingReasoningEffortRef.current = null;
+        }
       }).catch((error) => {
+        if (pendingReasoningEffortRef.current?.revision !== revision) {
+          return;
+        }
+        pendingReasoningEffortRef.current = null;
         setAgentReasoningEffort(previousEffort);
         modelPreferencesRef.current = previousPreferences;
         showToast(error instanceof Error ? error.message : '保存 Agent 思考级别失败', 'error');

@@ -129,6 +129,7 @@ export function useWorkspaceState() {
   const newChatDraftRef = useRef(false);
   const directoryPickerPromiseRef = useRef<Promise<string | null> | null>(null);
   const persistHistoryStateRef = useRef<Map<string, PersistHistoryState>>(new Map());
+  const threadMetadataPersistQueueRef = useRef(new Map<string, Promise<void>>());
   const pendingLogBatchesRef = useRef<Map<string, PendingWorkspaceLogBatch>>(new Map());
   const pendingLogFlushTimerRef = useRef<number | null>(null);
 
@@ -700,24 +701,35 @@ export function useWorkspaceState() {
   }
 
   async function persistThreadMetadata(threadId: string, payload: ThreadMetadataPatch) {
-    const response = await fetch(`/api/threads/${threadId}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
+    const previous = threadMetadataPersistQueueRef.current.get(threadId) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(async () => {
+      const response = await fetch(`/api/threads/${threadId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const message = (await response.text()).trim();
+        throw new Error(message || '保存聊天设置失败');
+      }
+
+      const result = (await response.json()) as { workspace?: WorkspaceBootstrap };
+      if (result.workspace) {
+        syncWorkspace(result.workspace);
+      } else {
+        updateThreadSummaryLocal(threadId, payload);
+      }
     });
-
-    if (!response.ok) {
-      const message = (await response.text()).trim();
-      throw new Error(message || '保存聊天设置失败');
-    }
-
-    const result = (await response.json()) as { workspace?: WorkspaceBootstrap };
-    if (result.workspace) {
-      syncWorkspace(result.workspace);
-    } else {
-      updateThreadSummaryLocal(threadId, payload);
+    threadMetadataPersistQueueRef.current.set(threadId, current);
+    try {
+      await current;
+    } finally {
+      if (threadMetadataPersistQueueRef.current.get(threadId) === current) {
+        threadMetadataPersistQueueRef.current.delete(threadId);
+      }
     }
   }
 
