@@ -60,6 +60,7 @@ import {
   collectThreadModelPreferences,
   isModelSelectionChannelReady,
   reasoningEffortForThreadModel,
+  shouldKeepPendingReasoningEffort,
   updateThreadModelReasoningEffort,
   type ThreadModelPreferences,
 } from '../lib/thread-model-preferences';
@@ -727,6 +728,17 @@ export function useAgentRun({
     } else {
       setModelSelectionWarning('');
     }
+    if (
+      pendingReasoningEffort
+      && pendingReasoningEffortRef.current?.revision === pendingReasoningEffort.revision
+      && !shouldKeepPendingReasoningEffort(pendingReasoningEffort, {
+        resolvedEffort: resolved.reasoningEffort,
+        threadEffort: activeThreadSummary?.reasoningEffort,
+        threadPreferences: collectThreadModelPreferences(activeThreadSummary),
+      })
+    ) {
+      pendingReasoningEffortRef.current = null;
+    }
   }, [
     activeThreadSummary?.id,
     activeThreadSummary?.model,
@@ -1055,10 +1067,6 @@ export function useAgentRun({
       void persistThreadMetadata(activeThreadId, {
         model: modelRef.current === DEFAULT_MODEL_VALUE ? null : modelRef.current,
         reasoningEffort: nextEffort,
-      }).then(() => {
-        if (pendingReasoningEffortRef.current?.revision === revision) {
-          pendingReasoningEffortRef.current = null;
-        }
       }).catch((error) => {
         if (pendingReasoningEffortRef.current?.revision !== revision) {
           return;

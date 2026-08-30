@@ -9,6 +9,7 @@ import {
 } from '../lib/conversation';
 import { pickDesktopDirectory } from '../lib/desktop-dialog';
 import { resolveNewChatDraftProjectId } from '../lib/new-chat-draft';
+import { nextThreadModelPreferences } from '../lib/thread-model-preferences';
 import {
   threadDetailFromForkResponse,
   threadForkCapabilityKey,
@@ -738,30 +739,7 @@ export function useWorkspaceState() {
       current.map((project) => ({
         ...project,
         threads: project.threads.map((thread) =>
-          thread.id === threadId
-            ? (() => {
-                const channelChanged = hasOwn(payload, 'channelId')
-                  && normalizeAgentChannelId(payload.channelId) !== normalizeAgentChannelId(thread.agentChannelId);
-                return {
-                  ...thread,
-                  sessionId: hasOwn(payload, 'sessionId') ? payload.sessionId ?? '' : thread.sessionId,
-                  workingDirectory: payload.workingDirectory ?? thread.workingDirectory,
-                  model: hasOwn(payload, 'model') ? payload.model ?? undefined : thread.model,
-                  reasoningEffort: hasOwn(payload, 'reasoningEffort')
-                    ? payload.reasoningEffort ?? undefined
-                    : thread.reasoningEffort,
-                  permissionMode: payload.permissionMode ?? thread.permissionMode,
-                  agentChannelId: hasOwn(payload, 'channelId')
-                    ? payload.channelId ?? undefined
-                    : thread.agentChannelId,
-                  agentChannelFingerprint: channelChanged
-                    ? undefined
-                    : thread.agentChannelFingerprint,
-                  updatedAt: new Date().toISOString(),
-                  updatedLabel: '现在',
-                };
-              })()
-            : thread,
+          thread.id === threadId ? applyThreadMetadataPatch(thread, payload) : thread,
         ),
       })),
     );
@@ -771,24 +749,9 @@ export function useWorkspaceState() {
         return current;
       }
 
-      const channelChanged = hasOwn(payload, 'channelId')
-        && normalizeAgentChannelId(payload.channelId) !== normalizeAgentChannelId(existing.agentChannelId);
       return {
         ...current,
-        [threadId]: {
-          ...existing,
-          sessionId: hasOwn(payload, 'sessionId') ? payload.sessionId ?? '' : existing.sessionId,
-          workingDirectory: payload.workingDirectory ?? existing.workingDirectory,
-          model: hasOwn(payload, 'model') ? payload.model ?? undefined : existing.model,
-          reasoningEffort: hasOwn(payload, 'reasoningEffort')
-            ? payload.reasoningEffort ?? undefined
-            : existing.reasoningEffort,
-          permissionMode: payload.permissionMode ?? existing.permissionMode,
-          agentChannelId: hasOwn(payload, 'channelId')
-            ? payload.channelId ?? undefined
-            : existing.agentChannelId,
-          agentChannelFingerprint: channelChanged ? undefined : existing.agentChannelFingerprint,
-        },
+        [threadId]: applyThreadMetadataPatch(existing, payload),
       };
     });
   }
@@ -1829,4 +1792,30 @@ function truncateWorkspaceLogText(value: string, maxChars: number) {
 
 function hasOwn<T extends object>(value: T, key: PropertyKey) {
   return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function applyThreadMetadataPatch<T extends ThreadSummary>(thread: T, payload: ThreadMetadataPatch): T {
+  const channelChanged = hasOwn(payload, 'channelId')
+    && normalizeAgentChannelId(payload.channelId) !== normalizeAgentChannelId(thread.agentChannelId);
+  const nextModel = hasOwn(payload, 'model') ? payload.model ?? undefined : thread.model;
+  const nextReasoningEffort = hasOwn(payload, 'reasoningEffort')
+    ? payload.reasoningEffort ?? undefined
+    : thread.reasoningEffort;
+  const nextModelPreferences = nextThreadModelPreferences(thread, payload, { channelChanged });
+
+  return {
+    ...thread,
+    sessionId: hasOwn(payload, 'sessionId') ? payload.sessionId ?? '' : thread.sessionId,
+    workingDirectory: payload.workingDirectory ?? thread.workingDirectory,
+    model: nextModel,
+    reasoningEffort: nextReasoningEffort,
+    modelPreferences: nextModelPreferences,
+    permissionMode: payload.permissionMode ?? thread.permissionMode,
+    agentChannelId: hasOwn(payload, 'channelId')
+      ? payload.channelId ?? undefined
+      : thread.agentChannelId,
+    agentChannelFingerprint: channelChanged ? undefined : thread.agentChannelFingerprint,
+    updatedAt: new Date().toISOString(),
+    updatedLabel: '现在',
+  };
 }

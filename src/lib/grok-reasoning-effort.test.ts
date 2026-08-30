@@ -52,7 +52,12 @@ test('Grok models without advertised efforts keep the control hidden', () => {
 test('reasoning effort persistence keeps the newest optimistic selection stable', () => {
   assert.match(workspaceSource, /threadMetadataPersistQueueRef/);
   assert.match(workspaceSource, /previous\.catch\(\(\) => undefined\)\.then/);
+  assert.match(workspaceSource, /applyThreadMetadataPatch/);
+  assert.match(workspaceSource, /modelPreferences: nextModelPreferences/);
+  assert.match(workspaceSource, /nextThreadModelPreferences\(thread, payload, \{ channelChanged \}\)/);
   assert.match(agentRunSource, /pendingReasoningEffortRef/);
   assert.match(agentRunSource, /pendingReasoningEffort\?\.reasoningEffort/);
   assert.match(agentRunSource, /pendingReasoningEffortRef\.current\?\.revision !== revision/);
+  assert.match(agentRunSource, /shouldKeepPendingReasoningEffort/);
+  assert.doesNotMatch(agentRunSource, /reasoningEffort: nextEffort,\s*\}\)\.then\(\(\) => \{/);
 });

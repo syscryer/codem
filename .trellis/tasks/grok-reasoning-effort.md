@@ -52,6 +52,9 @@ Out of scope:
 - 桌面开发模式实际检查 Grok 4.6 模型档位、选择和真实运行参数。
 
 ## Implementation Record
+- 2026-08-28T12:30:34.410Z 确认最后一次提交 fa998f0 在 PATCH 成功后立刻清 pending，本地 modelPreferences 仍是旧档位，同步 effect 会把 UI 弹回。现改为当前 reasoningEffort 覆盖同模型旧偏好，本地摘要同步更新 modelPreferences，pending 等到摘要匹配后再清除。
+
+- 2026-08-28T12:17:00.693Z 修复思考级别切换弹回：PATCH 后本地 modelPreferences 未同步，保存成功后又被旧档位覆盖。现改为当前 reasoningEffort 覆盖同模型旧偏好，本地摘要同步更新 modelPreferences，pending 选择等到摘要匹配后再清除。
 - 2026-08-28T09:21:31.993Z 修复 Grok 思考级别切换的异步竞态：同一会话元数据 PATCH 串行化，并在保存确认前保持最新乐观选择。
 
 - 2026-08-28T08:38:16.894Z 补齐 backend.rs 的 provider_supports_reasoning_effort：Grok Build 运行链已支持 reasoning_effort，但创建/更新会话元数据仍遗漏 grok-build，导致切换时 PATCH /api/threads/:id 返回 400。现已加入 GROK_BUILD_PROVIDER_ID，并将错误文案改为按当前 Agent 能力描述。
@@ -60,6 +63,9 @@ Out of scope:
 - 2026-08-28T08:13:00.786Z Task created by Trellis automation.
 
 ## Verification Results
+- 2026-08-28T12:31:18.009Z `node --import tsx --test src/lib/thread-model-preferences.test.ts src/lib/grok-reasoning-effort.test.ts; npm run typecheck`: pass: 10 related tests + typecheck. 浏览器 5173 可开但 3001 拒绝连接，页面停在设置且无项目，未能在 UI 里点 High/Low 做端到端验收。
+
+- 2026-08-28T12:17:00.814Z `node --import tsx --test src/lib/thread-model-preferences.test.ts src/lib/grok-reasoning-effort.test.ts; npm run typecheck`: pass: 8 related tests + typecheck
 - 2026-08-28T09:21:32.650Z `npm run typecheck`: pass
 
 - 2026-08-28T09:21:32.318Z `node --import tsx --test src/**/*.test.ts`: pass: 890 tests
@@ -67,9 +73,12 @@ Out of scope:
 
 ## Completion Summary
 
+- 2026-08-28T12:31:29.662Z 修复 Grok 思考级别切换一次会弹回：当前 reasoningEffort 覆盖同模型旧偏好，本地摘要同步更新 modelPreferences，pending 等到摘要匹配后再清除。相关测试 10 项与 typecheck 通过。
+- 2026-08-28T12:17:19.486Z 修复 Grok 思考级别切换一次会弹回的问题：当前 reasoningEffort 覆盖同模型旧偏好，本地线程摘要同步更新 modelPreferences，pending 选择等到摘要匹配后再清除。
+
 - 2026-08-28T09:21:32.967Z Grok 思考级别切换已修复并完成前端回归、类型检查和延迟请求浏览器验证。
 - 2026-08-28T08:38:17.667Z Grok 4.6 思考强度恢复并修复切换保存 400；模型能力、Composer、ACP 参数、会话元数据、自动化门禁及浏览器/桌面验收全部完成。
 
 ## Follow-ups
 
-- 待补充。
+- 已修复：PATCH 后本地 `modelPreferences` 与 pending 清理对齐；换渠道不再清空各模型思考档位。

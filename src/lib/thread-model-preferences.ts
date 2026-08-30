@@ -29,7 +29,9 @@ export function collectThreadModelPreferences(
 
   const currentEffort = normalizeStoredReasoningEffort(thread?.reasoningEffort);
   const currentModelKey = threadModelPreferenceKey(thread?.model);
-  if (currentEffort && !preferences[currentModelKey]) {
+  // The current thread effort is the source of truth for the active model.
+  // Stale per-model preferences must not override a newer saved selection.
+  if (currentEffort) {
     preferences[currentModelKey] = currentEffort;
   }
   return preferences;
@@ -56,6 +58,55 @@ export function updateThreadModelReasoningEffort(
     delete next[key];
   }
   return next;
+}
+
+export type ThreadMetadataPreferencePatch = {
+  model?: string | null;
+  reasoningEffort?: string | null;
+};
+
+export function nextThreadModelPreferences(
+  thread: Pick<ThreadSummary, 'model' | 'reasoningEffort' | 'modelPreferences'>,
+  payload: ThreadMetadataPreferencePatch,
+  options?: { channelChanged?: boolean },
+): ThreadModelPreferences | undefined {
+  if (options?.channelChanged) {
+    return thread.modelPreferences;
+  }
+  if (!Object.prototype.hasOwnProperty.call(payload, 'model')
+    && !Object.prototype.hasOwnProperty.call(payload, 'reasoningEffort')) {
+    return thread.modelPreferences;
+  }
+
+  const preferences = collectThreadModelPreferences(thread);
+  const nextModel = Object.prototype.hasOwnProperty.call(payload, 'model')
+    ? payload.model
+    : thread.model;
+  const nextEffort = Object.prototype.hasOwnProperty.call(payload, 'reasoningEffort')
+    ? payload.reasoningEffort
+    : reasoningEffortForThreadModel(preferences, nextModel);
+  const nextPreferences = updateThreadModelReasoningEffort(preferences, nextModel, nextEffort);
+  return Object.keys(nextPreferences).length > 0 ? nextPreferences : undefined;
+}
+
+export function shouldKeepPendingReasoningEffort(
+  pending: { model: string; reasoningEffort: string },
+  restored: {
+    resolvedEffort: string;
+    threadEffort?: string | null;
+    threadPreferences?: ThreadModelPreferences;
+  },
+) {
+  if (pending.reasoningEffort !== restored.resolvedEffort) {
+    return true;
+  }
+  if (restored.threadEffort === pending.reasoningEffort) {
+    return false;
+  }
+  return reasoningEffortForThreadModel(
+    restored.threadPreferences ?? {},
+    pending.model,
+  ) !== pending.reasoningEffort;
 }
 
 function normalizeStoredReasoningEffort(value: unknown) {
