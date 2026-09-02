@@ -2297,10 +2297,6 @@ export function useClaudeRun({
   }
 
   function handleChannelSelect(nextChannelId: string) {
-    if (activeThreadId && runContextsByThreadIdRef.current.has(activeThreadId)) {
-      showToast('当前 Claude Code 正在运行，渠道已锁定。', 'info');
-      return false;
-    }
     if (nextChannelId !== SYSTEM_AGENT_CHANNEL_ID) {
       const nextChannel = getAgentChannel(agentChannels, CLAUDE_CODE_PROVIDER_ID, nextChannelId);
       if (!nextChannel?.enabled) {

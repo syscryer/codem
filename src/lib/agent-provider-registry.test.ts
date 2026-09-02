@@ -14,6 +14,7 @@ import {
   probeGeminiAgent,
   probePiAgent,
   resolveChatRuntimeKind,
+  runAgentLifecycleAction,
 } from './agent-provider-registry.js';
 
 test('latest Agent version query uses an independent endpoint and current version', async () => {
@@ -35,6 +36,53 @@ test('latest Agent version query uses an independent endpoint and current versio
     assert.match(requestedUrl, /^\/api\/agents\/latest-version\?/);
     assert.match(requestedUrl, /providerId=openai-codex/);
     assert.match(requestedUrl, /currentVersion=0\.144\.1/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('DSH lifecycle update forwards the detected target version', async () => {
+  const originalFetch = globalThis.fetch;
+  let lifecycleBody: Record<string, unknown> | null = null;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === '/api/agents/lifecycle') {
+      lifecycleBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        providerId: 'deepseek-dsh',
+        action: 'update',
+        installed: true,
+        command: 'C:/Users/test/AppData/Roaming/npm/dsh.cmd',
+        version: '0.1.2-alpha.2',
+        output: 'updated',
+        usedMirror: false,
+        mirrorRegistry: null,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.startsWith('/api/agents/settings-diagnostics?')) {
+      return new Response(JSON.stringify({
+        providerId: 'deepseek-dsh',
+        installed: true,
+        version: '0.1.2-alpha.2',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.startsWith('/api/agents/latest-version?')) {
+      return new Response(JSON.stringify({
+        providerId: 'deepseek-dsh',
+        latestVersion: '0.1.2-alpha.2',
+        updateAvailable: false,
+        error: null,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response(null, { status: 404 });
+  }) as typeof fetch;
+  try {
+    await runAgentLifecycleAction('deepseek-dsh', 'update', '0.1.2-alpha.2');
+    assert.deepEqual(lifecycleBody, {
+      providerId: 'deepseek-dsh',
+      action: 'update',
+      targetVersion: '0.1.2-alpha.2',
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }

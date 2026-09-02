@@ -852,10 +852,14 @@ export function useAgentRun({
       showToast(error, 'info');
       return false;
     }
+    // 渠道选择是全局单值：即使草稿 Provider 未变（例如在聊天内切换回同一个
+    // Provider），也必须重置渠道，否则会残留上一个 Provider 的渠道 id。
     if (draftProviderId !== providerId) {
       setAgentPermissionMode(defaultPermissionMode);
-      channelIdRef.current = nextChannelId;
-      setChannelIdState(nextChannelId);
+    }
+    channelIdRef.current = nextChannelId;
+    setChannelIdState(nextChannelId);
+    if (draftProviderId !== providerId || isNewChatDraft) {
       draftSelectionRef.current = {
         permissionMode: defaultPermissionMode,
         channelId: nextChannelId,
@@ -936,10 +940,6 @@ export function useAgentRun({
   }
 
   function handleModelSelect(nextModel: string) {
-    if (activeThreadId && runContextsByThreadIdRef.current.has(activeThreadId)) {
-      showToast('当前 Agent 正在运行，模型已锁定。', 'info');
-      return;
-    }
     if (!currentModelCatalog && nextModel === DEFAULT_MODEL_VALUE) {
       const previousModel = modelRef.current;
       const previousEffort = reasoningEffortRef.current;
@@ -1026,16 +1026,14 @@ export function useAgentRun({
   }
 
   function handleReasoningEffortSelect(nextEffort: string) {
-    if (activeThreadId && runContextsByThreadIdRef.current.has(activeThreadId)) {
-      showToast('当前 Agent 正在运行，思考级别已锁定。', 'info');
-      return;
-    }
-    const selectedModel = currentModelCatalog
-      ? resolveAgentModelSelection(currentModelCatalog, modelRef.current).selectedModel
-      : undefined;
-    if (!selectedModel?.supportedReasoningEfforts.some((effort) => effort.id === nextEffort)) {
-      showToast('当前模型不支持所选思考级别。', 'error');
-      return;
+    // 模型目录尚未加载完成时跳过本地能力校验，交给后端判断；
+    // 否则目录加载慢或失败的窗口期内所有思考级别选择都会被静默拒绝。
+    if (currentModelCatalog) {
+      const selectedModel = resolveAgentModelSelection(currentModelCatalog, modelRef.current).selectedModel;
+      if (!selectedModel?.supportedReasoningEfforts.some((effort) => effort.id === nextEffort)) {
+        showToast('当前模型不支持所选思考级别。', 'error');
+        return;
+      }
     }
     const previousEffort = reasoningEffortRef.current;
     const previousPreferences = modelPreferencesRef.current;
@@ -1107,16 +1105,16 @@ export function useAgentRun({
   }
 
   function handleChannelSelect(nextChannelId: string) {
-    if (activeThreadId && runContextsByThreadIdRef.current.has(activeThreadId)) {
-      showToast('当前 Agent 正在运行，渠道已锁定。', 'info');
-      return false;
-    }
+    // 切换 Provider 的意图已就绪但尚未随发送生效时，菜单展示的是目标 Provider
+    // 的渠道，不能用当前 thread 的 provider 反查，否则会把可点选的渠道误判为不可用。
+    let nextChannelProviderId = selectedProviderId;
     if (nextChannelId !== SYSTEM_AGENT_CHANNEL_ID) {
-      const nextChannel = getAgentChannel(agentChannels, selectedProviderId, nextChannelId);
+      const nextChannel = agentChannels.find((channel) => channel.id === nextChannelId);
       if (!nextChannel?.enabled) {
         showToast('所选 Agent 渠道不可用。', 'error');
         return false;
       }
+      nextChannelProviderId = nextChannel.providerId;
     }
     if (nextChannelId === channelIdRef.current) {
       return true;
@@ -1145,7 +1143,7 @@ export function useAgentRun({
     if (activeThreadId) {
       void persistThreadMetadata(
         activeThreadId,
-        agentChannelMetadataPatch(selectedProviderId, nextChannelId),
+        agentChannelMetadataPatch(nextChannelProviderId, nextChannelId),
       ).catch((error) => {
         channelIdRef.current = previousChannelId;
         modelPreferencesRef.current = previousPreferences;
@@ -1970,8 +1968,11 @@ export function useAgentRun({
     }
   }
 
-  async function submitPrompt(submission: AgentPromptSubmission) {
-    const providerId = activeThreadSummary?.provider || draftProviderId;
+  async function submitPrompt(
+    submission: AgentPromptSubmission,
+    options?: { thread?: ThreadSummary },
+  ) {
+    const providerId = options?.thread?.provider ?? activeThreadSummary?.provider ?? draftProviderId;
     if (resolveChatRuntimeKind(providerId) !== 'generic') {
       showToast('当前 Provider 不使用通用 Agent 运行链路。', 'error');
       return false;
@@ -1980,14 +1981,20 @@ export function useAgentRun({
     const runModel = modelRef.current === DEFAULT_MODEL_VALUE ? undefined : modelRef.current;
     const runReasoningEffort = reasoningEffortRef.current || undefined;
     const runChannelId = requestAgentChannelId(channelIdRef.current);
-    const thread = await ensureAgentThread(
-      submission,
-      providerId,
-      runPermissionMode,
-      runModel,
-      runReasoningEffort,
-      runChannelId,
-    );
+    let thread: ThreadSummary | null;
+    if (options?.thread) {
+      threadSummariesByIdRef.current.set(options.thread.id, options.thread);
+      thread = options.thread;
+    } else {
+      thread = await ensureAgentThread(
+        submission,
+        providerId,
+        runPermissionMode,
+        runModel,
+        runReasoningEffort,
+        runChannelId,
+      );
+    }
     if (!thread) {
       return false;
     }

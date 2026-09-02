@@ -21,7 +21,6 @@ import type {
   OpenWithTargetsResponse,
   ShortcutSettings,
   UsageStatsResponse,
-  UsageSnapshot,
   UsageTrendPoint,
   UsageThreadRow,
 } from '../types';
@@ -147,65 +146,6 @@ export async function saveAgentRuntimeSettings(
   } catch {
     throw new Error('保存 Agent 运行设置失败');
   }
-}
-
-export type DshNativeBootstrap = {
-  webUiUrl: string;
-  presets: {
-    presets: Array<{ id: string; trust: 'system' | 'user'; isDefault: boolean; name?: string; description?: string; broken?: string }>;
-    authorable: boolean;
-    hasDocument: boolean;
-  };
-  providers: {
-    providers: Array<{ provider: string; displayName: string; settingsNs: string; active: boolean; declared?: boolean }>;
-  };
-  models: {
-    groups: Array<{ id: string; name: string; models: Array<{ id: string; name: string; description?: string }> }>;
-    failures: Array<{ id: string; name: string; message: string }>;
-  };
-  settings: {
-    writable: boolean;
-    hasDocument: boolean;
-    namespaces: Array<{ ns: string; applies: 'live' | 'restart'; revision: number; secrets: Array<{ path: string[]; set: boolean }> }>;
-  };
-};
-
-export async function fetchDshNativeBootstrap(channelId?: string | null): Promise<DshNativeBootstrap> {
-  const query = channelId ? `?channelId=${encodeURIComponent(channelId)}` : '';
-  const response = await fetch(`/api/agents/dsh/bootstrap${query}`, { cache: 'no-store' });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null) as { error?: string } | null;
-    throw new Error(body?.error || '读取 DSH 原生能力失败');
-  }
-  return response.json() as Promise<DshNativeBootstrap>;
-}
-
-export async function fetchDshSessionUsage(input: {
-  sessionId: string;
-  workingDirectory: string;
-  channelId?: string;
-  permissionMode?: string;
-  toolsMode?: 'native' | 'code' | 'both';
-}): Promise<UsageSnapshot> {
-  const query = new URLSearchParams({
-    sessionId: input.sessionId,
-    workingDirectory: input.workingDirectory,
-  });
-  if (input.channelId) query.set('channelId', input.channelId);
-  if (input.permissionMode) query.set('permissionMode', input.permissionMode);
-  if (input.toolsMode) query.set('toolsMode', input.toolsMode);
-  const response = await fetch(`/api/agents/dsh/projections?${query.toString()}`, { cache: 'no-store' });
-  if (!response.ok) {
-    throw new Error('读取 DSH 上下文投影失败');
-  }
-  const payload = await response.json() as {
-    usage?: UsageSnapshot;
-    usageSource?: UsageSnapshot['usageSource'];
-  };
-  return {
-    ...(payload.usage ?? {}),
-    usageSource: payload.usageSource ?? 'context',
-  };
 }
 
 export async function saveAppearanceSettings(appearance: AppearanceSettings): Promise<AppSettings> {

@@ -31,7 +31,7 @@ import { useAutomations } from './hooks/useAutomations';
 import { useBackgroundOperations } from './hooks/useBackgroundOperations';
 import { useOrdinaryChat } from './hooks/useOrdinaryChat';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
-import { APP_UPDATE_CHECK_INTERVAL_MS, CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
+import { APP_UPDATE_CHECK_INTERVAL_MS, CLAUDE_CODE_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, resolveAccentColors, resolveChatFontStack, resolveCodeFontStack, resolveUiFontStack } from './constants';
 import {
   buildCompactSlashCommandSubmission,
   buildContextSlashCardResult,
@@ -54,6 +54,7 @@ import {
   getLatestConversationPlanPreview,
 } from './lib/conversation-plan';
 import { matchesShortcut } from './lib/shortcuts';
+import { buildProviderContinuationTranscript } from './lib/provider-continuation-transcript';
 import { createSystemCommandItem, settleSystemCommandItem } from './lib/system-command-items';
 import { modelLabel, permissionLabel } from './lib/ui-labels';
 import {
@@ -79,8 +80,7 @@ import { resolveChatRuntimeKind } from './lib/agent-provider-registry';
 import { GLOBAL_NEW_CHAT_DRAFT_KEY } from './lib/new-chat-draft';
 import { openExternalUrl } from './lib/markdown-link';
 import { fetchGitRemote, pullGitBranch, pushGitBranch, undoConversationChanges } from './lib/git-api';
-import { mergeUsageSnapshot } from './lib/conversation';
-import { fetchDshSessionUsage } from './lib/settings-api';
+import { isVisiblePermissionMode } from './lib/conversation';
 import { areThreadRuntimeStatusesEqual, fetchThreadRuntimeStatuses } from './lib/thread-runtime-statuses';
 import {
   buildGitOperationToastDetail,
@@ -231,7 +231,6 @@ export default function App() {
   const conversationBottomRef = useRef<HTMLDivElement | null>(null);
   const chatWorkspaceRef = useRef<HTMLDivElement | null>(null);
   const appRootRef = useRef<HTMLDivElement | null>(null);
-  const dshProjectionRequestsRef = useRef(new Set<string>());
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
   const workspaceState = useWorkspaceState();
@@ -619,6 +618,7 @@ export default function App() {
   const wasRunningRef = useRef(false);
   const materialErrorShownRef = useRef(false);
   const appliedWindowMaterialRef = useRef<WindowMaterialMode | null>(null);
+  const pendingProviderSwitchRef = useRef<Promise<ThreadSummary | null>>(Promise.resolve(null));
   const activeThreadRuntimeKind = resolveChatRuntimeKind(activeThreadSummary?.provider ?? '');
   const {
     workspace,
@@ -779,61 +779,6 @@ export default function App() {
             ? 'gemini' as const
         : 'generic' as const;
 
-  useEffect(() => {
-    if (
-      activeProviderId !== DEEPSEEK_DSH_PROVIDER_ID
-      || !activeThreadSummary?.sessionId
-      || !activeThread?.historyLoaded
-    ) {
-      return;
-    }
-    const targetTurn = [...activeThread.turns]
-      .reverse()
-      .find((turn) => turn.status !== 'pending');
-    if (!targetTurn || targetTurn.contextUsage?.contextUsedTokens !== undefined) {
-      return;
-    }
-    const requestKey = `${activeThreadSummary.id}:${activeThreadSummary.sessionId}:${targetTurn.id}`;
-    if (dshProjectionRequestsRef.current.has(requestKey)) {
-      return;
-    }
-    dshProjectionRequestsRef.current.add(requestKey);
-
-    void fetchDshSessionUsage({
-      sessionId: activeThreadSummary.sessionId,
-      workingDirectory: activeThreadSummary.workingDirectory,
-      channelId: activeThreadSummary.agentChannelId || genericAgentChannelId,
-      permissionMode: activeThreadSummary.permissionMode || genericAgentPermissionMode,
-      toolsMode: agentRuntime.dshToolsMode,
-    }).then((usage) => {
-      const hasUsage = [
-        usage.contextUsedTokens,
-        usage.modelContextWindow,
-        usage.inputTokens,
-        usage.cacheReadInputTokens,
-      ].some((value) => typeof value === 'number' && value > 0);
-      if (!hasUsage) {
-        return;
-      }
-      updateThreadTurn(activeThreadSummary.id, targetTurn.id, (turn) => ({
-        ...turn,
-        ...mergeUsageSnapshot(turn, usage),
-      }), activeThreadSummary);
-      schedulePersistThreadHistory(activeThreadSummary.id);
-    }).catch(() => {
-      dshProjectionRequestsRef.current.delete(requestKey);
-    });
-  }, [
-    activeProviderId,
-    activeThread?.historyLoaded,
-    activeThread?.turns,
-    activeThreadSummary,
-    agentRuntime.dshToolsMode,
-    genericAgentChannelId,
-    genericAgentPermissionMode,
-    schedulePersistThreadHistory,
-    updateThreadTurn,
-  ]);
   const activeProviderCapabilities = agentProviders.find((provider) => provider.id === activeProviderId)?.capabilities;
   const allowAgentAttachments = activeUsesClaude || Boolean(
     activeUsesGenericAgent && activeProviderCapabilities && (
@@ -1215,16 +1160,38 @@ export default function App() {
       };
 
   async function handleSubmitPrompt(submission: ComposerSubmission) {
-    if (activeUsesClaude) {
-      return submitClaudePrompt(submission);
+    // 先等在途的 Provider 切换落库，保证"点选后立刻发送"按目标 Provider 路由。
+    const switchedThread = await pendingProviderSwitchRef.current;
+    pendingProviderSwitchRef.current = Promise.resolve(null);
+    const routeProviderId = switchedThread?.provider ?? activeProviderId;
+
+    let injected = false;
+    if (activeThreadId) {
+      const continuation = buildPendingContinuationSubmission(activeThreadId, submission);
+      submission = continuation.submission;
+      injected = continuation.injected;
     }
 
-    if (!activeUsesGenericAgent) {
+    let accepted: boolean | Promise<boolean>;
+    if (resolveChatRuntimeKind(routeProviderId) === 'claude') {
+      accepted = switchedThread
+        ? submitPromptToThread(switchedThread, submission)
+        : submitClaudePrompt(submission);
+    } else if (resolveChatRuntimeKind(routeProviderId) === 'generic') {
+      accepted = submitGenericAgentPrompt(
+        submission,
+        switchedThread ? { thread: switchedThread } : undefined,
+      );
+    } else {
       showToast('当前 Provider 尚未接入主聊天，请新建聊天并选择可用 Provider。', 'error');
       return false;
     }
 
-    return submitGenericAgentPrompt(submission);
+    const delivered = await accepted;
+    if (injected && delivered !== false && activeThreadId) {
+      clearPendingContinuation(activeThreadId);
+    }
+    return delivered;
   }
 
   async function handleSubmitRequestUserInput(
@@ -2558,7 +2525,7 @@ export default function App() {
                 agentSystemChannels={agentChannels.bootstrap.systemChannels}
                 agentChannelTemplates={agentChannels.bootstrap.templates}
                 agentChannelId={activeUsesClaude ? claudeAgentChannelId : genericAgentChannelId}
-                canSelectProvider={!activeThreadSummary}
+                canSelectProvider
                 allowAttachments={allowAgentAttachments}
                 supportsQueue={activeUsesClaude || activeUsesGenericAgent}
                 workspace={workspace}
@@ -2582,7 +2549,7 @@ export default function App() {
                 queuedPrompts={queuedPrompts}
                 queuedPromptGuideAvailability={queuedPromptGuideAvailability}
                 onDraftChange={handleComposerDraftChange}
-                onSelectProvider={selectDraftProvider}
+                onSelectProvider={handleSelectAgentProvider}
                 onSelectAgentChannel={activeUsesClaude ? setClaudeAgentChannelId : handleGenericAgentChannelSelect}
                 onManageAgentChannels={(providerId) => openAgentChannelSettings(providerId as AgentProviderId)}
                 onSubmitPrompt={handleSubmitPrompt}
@@ -2759,6 +2726,86 @@ export default function App() {
     });
   }
 
+  function handleSelectAgentProvider(providerId: string) {
+    if (!activeThreadSummary) {
+      return selectDraftProvider(providerId);
+    }
+    if (providerId === activeThreadSummary.provider) {
+      return true;
+    }
+    // 记录在途切换，发送路径会先等待它落地，避免"点选后立刻发送"被旧
+    // Provider 的闭包状态路由（消息发到错误 Agent 或被后端一致性校验拒绝）。
+    pendingProviderSwitchRef.current = switchThreadProvider(activeThreadSummary, providerId);
+    return true;
+  }
+
+  // 切换在选择的当下立即落到 thread（渠道/模型/权限菜单随 provider 立即一致），
+  // 但新 Agent 只在用户发送下一条消息时才真正开始运行，届时一次性注入此前会话的转录。
+  // 返回切换成功后的线程快照；失败时回滚草稿并返回 null。
+  async function switchThreadProvider(sourceThread: ThreadSummary, nextProviderId: string): Promise<ThreadSummary | null> {
+    const sourceProviderId = sourceThread.provider;
+    if (selectDraftProvider(nextProviderId) === false) {
+      return null;
+    }
+    const inheritedPermissionMode = sourceThread.permissionMode;
+    if (inheritedPermissionMode && isVisiblePermissionMode(inheritedPermissionMode)) {
+      if (resolveChatRuntimeKind(nextProviderId) === 'claude') {
+        handleClaudePermissionModeSelect(inheritedPermissionMode);
+      } else {
+        handleGenericAgentPermissionModeSelect(inheritedPermissionMode);
+      }
+    }
+
+    try {
+      await persistThreadMetadata(sourceThread.id, { providerId: nextProviderId });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '切换 Agent 失败。', 'error');
+      selectDraftProvider(sourceProviderId);
+      return null;
+    }
+    writePendingContinuation(sourceThread.id, sourceProviderId);
+    return {
+      ...sourceThread,
+      provider: nextProviderId,
+      sessionId: '',
+      agentChannelId: undefined,
+      agentChannelFingerprint: undefined,
+    };
+  }
+
+  function buildPendingContinuationSubmission(
+    threadId: string,
+    submission: ComposerSubmission,
+  ): { submission: ComposerSubmission; injected: boolean } {
+    const sourceProviderId = readPendingContinuation(threadId);
+    if (!sourceProviderId || !activeThread || activeThread.id !== threadId) {
+      return { submission, injected: false };
+    }
+    const transcript = buildProviderContinuationTranscript(activeThread.turns, {
+      sourceLabel: `${agentProviderLabel(sourceProviderId)} · ${activeThread.title}`,
+    });
+    if (!transcript) {
+      // 没有任何可转录的完成轮次，标记继续保留也没有意义。
+      clearPendingContinuation(threadId);
+      return { submission, injected: false };
+    }
+    const transcriptBlockText = `${transcript}\n[续接上下文结束。以上是切换 Agent 前的会话记录，仅供理解上下文：直接依据它回答用户的问题，不要使用工具去检索或处理其中内容。以下是用户在切换后发出的新消息]`;
+    // run 请求在有 contentBlocks 时会忽略 prompt 字段，因此转录必须同时
+    // 以 text block 前置注入，prompt 仅作为无 contentBlocks 时的兜底。
+    // 标记由调用方在提交被接受后清除；提交失败时保留，重试仍携带转录。
+    return {
+      submission: {
+        ...submission,
+        prompt: `${transcriptBlockText}\n\n${submission.prompt}`,
+        contentBlocks: [
+          { type: 'text', text: transcriptBlockText },
+          ...(submission.contentBlocks ?? []),
+        ],
+      },
+      injected: true,
+    };
+  }
+
   function handleUndoChangedFiles(turn: ConversationTurn, changes: UndoConversationChange[]) {
     if (!activeProject) {
       showToast('请先选择项目。', 'info');
@@ -2809,6 +2856,53 @@ export default function App() {
       showToast(error instanceof Error ? error.message : '撤销失败', 'error');
     }
   }
+}
+
+const PENDING_CONTINUATION_KEY_PREFIX = 'codem:provider-continuation:';
+
+// 待注入的续接转录标记必须跨组件重载/页面刷新存活，否则热更新或刷新后
+// 首条消息会丢失上下文注入，因此落在 localStorage 而不是内存 ref。
+function readPendingContinuation(threadId: string): string | null {
+  try {
+    return window.localStorage.getItem(PENDING_CONTINUATION_KEY_PREFIX + threadId);
+  } catch {
+    return null;
+  }
+}
+
+function writePendingContinuation(threadId: string, sourceProviderId: string) {
+  try {
+    window.localStorage.setItem(PENDING_CONTINUATION_KEY_PREFIX + threadId, sourceProviderId);
+  } catch {
+    // 存储不可用时静默降级为不注入。
+  }
+}
+
+function clearPendingContinuation(threadId: string) {
+  try {
+    window.localStorage.removeItem(PENDING_CONTINUATION_KEY_PREFIX + threadId);
+  } catch {
+    // 忽略清除失败。
+  }
+}
+
+function agentProviderLabel(providerId: string) {
+  if (providerId === CLAUDE_CODE_PROVIDER_ID) {
+    return 'Claude Code';
+  }
+  if (providerId === GROK_BUILD_PROVIDER_ID) {
+    return 'Grok Build';
+  }
+  if (providerId === OPENAI_CODEX_PROVIDER_ID) {
+    return 'OpenAI Codex';
+  }
+  if (providerId === OPENCODE_PROVIDER_ID) {
+    return 'OpenCode';
+  }
+  if (providerId === GEMINI_CLI_PROVIDER_ID) {
+    return 'Gemini CLI';
+  }
+  return providerId;
 }
 
 function isAppWindowFocused() {

@@ -44,6 +44,7 @@ type ThreadMetadataPatch = {
   reasoningEffort?: string | null;
   permissionMode?: PermissionMode;
   channelId?: string | null;
+  providerId?: string;
 };
 
 type PendingWorkspaceLogBatch = {
@@ -1797,24 +1798,32 @@ function hasOwn<T extends object>(value: T, key: PropertyKey) {
 function applyThreadMetadataPatch<T extends ThreadSummary>(thread: T, payload: ThreadMetadataPatch): T {
   const channelChanged = hasOwn(payload, 'channelId')
     && normalizeAgentChannelId(payload.channelId) !== normalizeAgentChannelId(thread.agentChannelId);
+  const providerChanged = Boolean(payload.providerId && payload.providerId !== thread.provider);
   const nextModel = hasOwn(payload, 'model') ? payload.model ?? undefined : thread.model;
   const nextReasoningEffort = hasOwn(payload, 'reasoningEffort')
     ? payload.reasoningEffort ?? undefined
     : thread.reasoningEffort;
-  const nextModelPreferences = nextThreadModelPreferences(thread, payload, { channelChanged });
+  const nextModelPreferences = providerChanged
+    ? {}
+    : nextThreadModelPreferences(thread, payload, { channelChanged });
 
   return {
     ...thread,
-    sessionId: hasOwn(payload, 'sessionId') ? payload.sessionId ?? '' : thread.sessionId,
+    provider: providerChanged ? payload.providerId! : thread.provider,
+    sessionId: providerChanged
+      ? ''
+      : hasOwn(payload, 'sessionId') ? payload.sessionId ?? '' : thread.sessionId,
     workingDirectory: payload.workingDirectory ?? thread.workingDirectory,
-    model: nextModel,
-    reasoningEffort: nextReasoningEffort,
+    model: providerChanged ? undefined : nextModel,
+    reasoningEffort: providerChanged ? undefined : nextReasoningEffort,
     modelPreferences: nextModelPreferences,
     permissionMode: payload.permissionMode ?? thread.permissionMode,
-    agentChannelId: hasOwn(payload, 'channelId')
-      ? payload.channelId ?? undefined
-      : thread.agentChannelId,
-    agentChannelFingerprint: channelChanged ? undefined : thread.agentChannelFingerprint,
+    agentChannelId: providerChanged
+      ? undefined
+      : hasOwn(payload, 'channelId')
+        ? payload.channelId ?? undefined
+        : thread.agentChannelId,
+    agentChannelFingerprint: channelChanged || providerChanged ? undefined : thread.agentChannelFingerprint,
     updatedAt: new Date().toISOString(),
     updatedLabel: '现在',
   };

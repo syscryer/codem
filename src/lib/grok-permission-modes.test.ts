@@ -39,10 +39,10 @@ test('App keeps Claude and Grok permission state separate', () => {
   );
 });
 
-test('generic Agent permission menu is accessible and locked only while its run is active', () => {
-  assert.match(composerSource, /const permissionSelectionDisabled = agent !== 'claude' && isRunning;/);
+test('generic Agent permission menu stays accessible while its run is active with next-run hint', () => {
+  assert.doesNotMatch(composerSource, /permissionSelectionDisabled/);
   assert.match(composerSource, /role="menu" aria-label="权限模式"/);
   assert.match(composerSource, /role="menuitemradio"/);
-  assert.match(composerSource, /disabled=\{permissionSelectionDisabled\}/);
+  assert.match(composerSource, /权限模式：\$\{permissionLabel\(permissionMode\)\}（运行中修改下一轮生效）/);
   assert.match(composerSource, /完全访问（YOLO）：跳过 \$\{providerName\} 工具权限确认，仅用于可信目录/);
 });

@@ -339,7 +339,6 @@ export function Composer({
     !canSelectProvider || isRunning || (providersLoading && providers.length === 0);
   const ordinarySelectionReady = variant !== 'ordinary'
     || Boolean(selectedProvider?.selectable && selectedProvider.available === true && agentModel);
-  const permissionSelectionDisabled = agent !== 'claude' && isRunning;
   const selectedAgentModelOption = agentModelCatalog
     ? getAgentModelForSelection(agentModelCatalog, agentModel)
     : undefined;
@@ -382,13 +381,6 @@ export function Composer({
     }
     setProviderMenuOpen(false);
   }, [canSelectProvider]);
-
-  useEffect(() => {
-    if (!permissionSelectionDisabled) {
-      return;
-    }
-    setPermissionMenuOpen(false);
-  }, [permissionSelectionDisabled]);
 
   useEffect(() => {
     if (!isRunning) {
@@ -1617,15 +1609,15 @@ export function Composer({
                 className="permission-trigger provider-trigger"
                 aria-expanded={providerMenuOpen}
                 aria-label={
-                  canSelectProvider
-                    ? `选择 Agent Provider，当前为 ${providerName}`
-                    : `当前 Agent Provider：${providerName}`
+                  providerSelectionDisabled && isRunning
+                    ? `${providerName}；运行中，请等待当前回复结束后切换 Provider`
+                    : `选择 Agent Provider，当前为 ${providerName}`
                 }
                 disabled={providerSelectionDisabled}
                 title={
-                  canSelectProvider
-                    ? `选择 Agent Provider，当前为 ${providerName}`
-                    : `${providerName}；Provider 在聊天创建后锁定，请新建聊天后选择`
+                  providerSelectionDisabled && isRunning
+                    ? `${providerName}；运行中，请等待当前回复结束后切换 Provider`
+                    : `选择 Agent Provider，当前为 ${providerName}；切换后在下一条消息发送时生效，并携带当前对话上下文`
                 }
                 onClick={() => setProviderMenuOpen((value) => !value)}
               >
@@ -1635,13 +1627,12 @@ export function Composer({
             {variant !== 'ordinary' ? <div className="permission-picker agent-channel-picker" ref={agentChannelMenuRef}>
               <PopoverPortal open={agentChannelMenuOpen} anchorRef={agentChannelMenuRef} placement="top-start">
                 <div className="model-menu model-menu-compact agent-channel-menu" role="menu" aria-label={`${providerName} 渠道`}>
-                  <div className="model-menu-title">渠道</div>
+                  <div className="model-menu-title">{isRunning ? '渠道（运行中修改下一轮生效）' : '渠道'}</div>
                   <button
                     type="button"
                     className="model-menu-item"
                     role="menuitemradio"
                     aria-checked={agentChannelId === SYSTEM_AGENT_CHANNEL_ID}
-                    disabled={isRunning}
                     onClick={() => {
                       const accepted = onSelectAgentChannel(SYSTEM_AGENT_CHANNEL_ID);
                       if (accepted !== false) {
@@ -1664,16 +1655,15 @@ export function Composer({
                       key={channel.id}
                       type="button"
                       className="model-menu-item"
-                      role="menuitemradio"
-                      aria-checked={agentChannelId === channel.id}
-                      disabled={isRunning}
-                      onClick={() => {
-                        const accepted = onSelectAgentChannel(channel.id);
-                        if (accepted !== false) {
-                          setAgentChannelMenuOpen(false);
-                        }
-                      }}
-                    >
+                        role="menuitemradio"
+                        aria-checked={agentChannelId === channel.id}
+                        onClick={() => {
+                          const accepted = onSelectAgentChannel(channel.id);
+                          if (accepted !== false) {
+                            setAgentChannelMenuOpen(false);
+                          }
+                        }}
+                      >
                       {channelTemplate
                         ? <ProviderBrandIcon icon={channelTemplate.icon} name={channelTemplate.vendorName} size={22} />
                         : <Route size={15} />}
@@ -1707,8 +1697,7 @@ export function Composer({
                 className={`permission-trigger agent-channel-trigger${agentChannelId !== SYSTEM_AGENT_CHANNEL_ID ? ' active' : ''}`}
                 aria-expanded={agentChannelMenuOpen}
                 aria-label={`渠道：${agentChannelName}`}
-                disabled={isRunning}
-                title={isRunning ? `${providerName} 运行中，渠道已锁定` : `渠道：${agentChannelName}`}
+                title={`渠道：${agentChannelName}${isRunning ? '（运行中修改下一轮生效）' : ''}`}
                 onClick={() => setAgentChannelMenuOpen((value) => !value)}
               >
                 {selectedAgentChannelTemplate
@@ -1751,8 +1740,7 @@ export function Composer({
                 className="permission-trigger"
                 aria-expanded={permissionMenuOpen}
                 aria-label={`权限模式：${permissionLabel(permissionMode)}`}
-                disabled={permissionSelectionDisabled}
-                title={permissionSelectionDisabled ? `${providerName} 运行中，权限模式已锁定` : undefined}
+                title={isRunning ? `权限模式：${permissionLabel(permissionMode)}（运行中修改下一轮生效）` : `权限模式：${permissionLabel(permissionMode)}`}
                 onClick={() => setPermissionMenuOpen((value) => !value)}
               >
                 <PermissionModeIcon mode={permissionMode} size={15} />
@@ -1838,8 +1826,8 @@ export function Composer({
                 type="button"
                 className="model-trigger"
                 aria-expanded={modelMenuOpen}
-                disabled={models.length === 0 || isRunning}
-                title="Claude Code model"
+                disabled={models.length === 0}
+                title={`Claude Code model${isRunning ? '（运行中修改下一轮生效）' : ''}`}
                 onClick={() => setModelMenuOpen((value) => !value)}
               >
                 <span>{modelTriggerLabel(model, models)}</span>
@@ -1849,7 +1837,7 @@ export function Composer({
                 <div className="effort-picker" ref={effortMenuRef}>
               <PopoverPortal open={effortMenuOpen} anchorRef={effortMenuRef} placement="top-end">
                 <div className="effort-menu" role="menu">
-                  <div className="model-menu-title">思考级别</div>
+                  <div className="model-menu-title">{isRunning ? '思考级别（运行中修改下一轮生效）' : '思考级别'}</div>
                   {CLAUDE_EFFORT_OPTIONS.map((item) => (
                     <button
                       key={item.value}
@@ -1877,8 +1865,7 @@ export function Composer({
                 type="button"
                 className="effort-trigger"
                 aria-expanded={effortMenuOpen}
-                disabled={isRunning}
-                title="Claude Code effort"
+                title={`Claude Code effort${isRunning ? '（运行中修改下一轮生效）' : ''}`}
                 onClick={() => setEffortMenuOpen((value) => !value)}
               >
                 <Brain size={14} />
@@ -1911,13 +1898,12 @@ export function Composer({
                 ) : <div className="model-picker" ref={modelMenuRef}>
                   <PopoverPortal open={modelMenuOpen} anchorRef={modelMenuRef} placement="top-end">
                     <div className="model-menu model-menu-compact agent-model-menu" role="menu" aria-label={`${providerName} 模型`}>
-                      <div className="model-menu-title">模型</div>
+                      <div className="model-menu-title">{isRunning ? '模型（运行中修改下一轮生效）' : '模型'}</div>
                       <button
                         type="button"
                         className="model-menu-item"
                         role="menuitemradio"
                         aria-checked={agentModel === DEFAULT_MODEL_VALUE}
-                        disabled={isRunning}
                         onClick={() => {
                           onSelectAgentModel(DEFAULT_MODEL_VALUE);
                           setModelMenuOpen(false);
@@ -1962,7 +1948,6 @@ export function Composer({
                             className="model-menu-item"
                             role="menuitemradio"
                             aria-checked={selected}
-                            disabled={isRunning}
                             onClick={() => {
                               onSelectAgentModel(item.id);
                               setModelMenuOpen(false);
@@ -1984,10 +1969,9 @@ export function Composer({
                     className="model-trigger"
                     aria-expanded={modelMenuOpen}
                     aria-label={`${providerName} model`}
-                    disabled={isRunning}
                     title={
                       isRunning
-                        ? `${providerName} 运行中，模型已锁定`
+                        ? `${providerName} model（运行中修改下一轮生效）`
                         : agentModelSelectionWarning || agentModelsError || `${providerName} model`
                     }
                     onClick={() => setModelMenuOpen((value) => !value)}
@@ -2001,7 +1985,7 @@ export function Composer({
                   <div className="effort-picker" ref={effortMenuRef}>
                     <PopoverPortal open={effortMenuOpen} anchorRef={effortMenuRef} placement="top-end">
                       <div className="effort-menu" role="menu" aria-label={`${providerName} 思考级别`}>
-                        <div className="model-menu-title">思考级别</div>
+                        <div className="model-menu-title">{isRunning ? '思考级别（运行中修改下一轮生效）' : '思考级别'}</div>
                         {agentReasoningEffortOptions.map((item) => (
                           <button
                             key={item.id}
@@ -2009,7 +1993,6 @@ export function Composer({
                             className="effort-menu-item"
                             role="menuitemradio"
                             aria-checked={agentReasoningEffort === item.id}
-                            disabled={isRunning}
                             onClick={() => {
                               onSelectAgentReasoningEffort(item.id);
                               setEffortMenuOpen(false);
@@ -2030,8 +2013,11 @@ export function Composer({
                       type="button"
                       className="effort-trigger"
                       aria-expanded={effortMenuOpen}
-                      disabled={isRunning}
-                      title={isRunning ? `${providerName} 运行中，思考级别已锁定` : `${providerName} reasoning effort`}
+                      title={
+                        isRunning
+                          ? `${providerName} reasoning effort（运行中修改下一轮生效）`
+                          : `${providerName} reasoning effort`
+                      }
                       onClick={() => setEffortMenuOpen((value) => !value)}
                     >
                       <Brain size={14} />

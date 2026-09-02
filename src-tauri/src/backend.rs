@@ -844,6 +844,7 @@ struct ClaudeRunRequest {
 struct AgentLifecycleRequest {
     provider_id: Option<String>,
     action: Option<String>,
+    target_version: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1431,6 +1432,11 @@ fn create_router(state: AppState) -> Router {
             "/api/threads/{thread_id}/history/turn",
             post(merge_thread_history_turn),
         )
+        // 长会话的 turns 含完整 thinking/工具输出，轻松超过 axum 默认 2MB 请求体
+        // 上限；超限时历史会持续 413 无法落库，这里放宽到 64MB。
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            64 * 1024 * 1024,
+        ))
         .with_state(state)
         .merge(agent_run_router)
 }
@@ -1848,32 +1854,27 @@ async fn fetch_npm_latest_version(
 }
 
 fn parse_npm_version(payload: &Value, include_prerelease: bool) -> Option<String> {
-    let latest = payload
-        .get("latest")
-        .or_else(|| {
-            payload
-                .get("dist-tags")
-                .and_then(|value| value.get("latest"))
-        })
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
+    let read_tag = |tag: &str| {
+        payload
+            .get(tag)
+            .or_else(|| payload.get("dist-tags").and_then(|value| value.get(tag)))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    };
+    let latest = read_tag("latest");
     if !include_prerelease {
         return latest;
     }
-    let next = payload
-        .get("next")
-        .or_else(|| payload.get("dist-tags").and_then(|value| value.get("next")))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
-    match (latest, next) {
-        (Some(latest), Some(next)) if compare_semantic_versions(&latest, &next) < 0 => Some(next),
-        (Some(latest), _) => Some(latest),
-        (None, next) => next,
-    }
+    [latest, read_tag("next"), read_tag("alpha")]
+        .into_iter()
+        .flatten()
+        .max_by(|left, right| match compare_semantic_versions(left, right) {
+            value if value < 0 => Ordering::Less,
+            value if value > 0 => Ordering::Greater,
+            _ => Ordering::Equal,
+        })
 }
 
 async fn fetch_github_latest_version(
@@ -1993,6 +1994,12 @@ async fn agent_lifecycle_action(
         Some("update") => "update",
         _ => return Err(ApiError::bad_request_json("不支持的 Agent 操作")),
     };
+    let target_version = normalize_agent_lifecycle_target_version(
+        provider_id,
+        action,
+        payload.target_version.as_deref(),
+    )
+    .map_err(ApiError::into_json_body)?;
     let key = provider_id.to_string();
     let _lifecycle_guard = {
         let mut running = state
@@ -2027,9 +2034,10 @@ async fn agent_lifecycle_action(
     }
 
     let settings = read_app_settings(&state).unwrap_or_else(|_| default_app_settings());
-    let result = execute_agent_lifecycle_action(provider_id, action, &settings)
-        .await
-        .map_err(ApiError::into_json_body);
+    let result =
+        execute_agent_lifecycle_action(provider_id, action, &settings, target_version.as_deref())
+            .await
+            .map_err(ApiError::into_json_body);
     if result.is_ok() {
         state.agent_runs.resolve_command(provider_id, true);
     }
@@ -2058,6 +2066,7 @@ async fn execute_agent_lifecycle_action(
     provider_id: &str,
     action: &str,
     settings: &Value,
+    target_version: Option<&str>,
 ) -> ApiResult<Value> {
     let command = resolve_agent_settings_command(provider_id);
     if action == "update" && command.is_none() {
@@ -2069,11 +2078,12 @@ async fn execute_agent_lifecycle_action(
     } else {
         None
     };
-    let plan = build_agent_lifecycle_plan_for_version(
+    let plan = build_agent_lifecycle_plan_for_target(
         provider_id,
         action,
         command.as_deref(),
         installed_version.as_deref(),
+        target_version,
     )?;
     if !lifecycle_program_available(&plan.program) {
         return Err(ApiError::bad_request(
@@ -2644,14 +2654,34 @@ fn build_agent_lifecycle_plan_for_version(
     installed_command: Option<&str>,
     installed_version: Option<&str>,
 ) -> ApiResult<AgentLifecyclePlan> {
-    let distribution_tag = if provider_id == DEEPSEEK_DSH_PROVIDER_ID
-        && action == "update"
-        && installed_version.is_some_and(|version| version.contains('-'))
-    {
-        "next"
-    } else {
-        "latest"
-    };
+    build_agent_lifecycle_plan_for_target(
+        provider_id,
+        action,
+        installed_command,
+        installed_version,
+        None,
+    )
+}
+
+fn build_agent_lifecycle_plan_for_target(
+    provider_id: &str,
+    action: &str,
+    installed_command: Option<&str>,
+    installed_version: Option<&str>,
+    target_version: Option<&str>,
+) -> ApiResult<AgentLifecyclePlan> {
+    let target_version =
+        normalize_agent_lifecycle_target_version(provider_id, action, target_version)?;
+    let distribution_selector = target_version.as_deref().unwrap_or_else(|| {
+        if provider_id == DEEPSEEK_DSH_PROVIDER_ID
+            && action == "update"
+            && installed_version.is_some_and(|version| version.contains('-'))
+        {
+            "next"
+        } else {
+            "latest"
+        }
+    });
     if action == "install" && provider_id == PI_AGENT_PROVIDER_ID {
         return Ok(lifecycle_plan(
             if cfg!(target_os = "windows") {
@@ -2758,7 +2788,7 @@ fn build_agent_lifecycle_plan_for_version(
                 ));
             }
             if let Some(plan) =
-                package_manager_lifecycle_plan(provider_id, command, distribution_tag)
+                package_manager_lifecycle_plan(provider_id, command, distribution_selector)
             {
                 return Ok(plan);
             }
@@ -2770,6 +2800,12 @@ fn build_agent_lifecycle_plan_for_version(
     if action == "update" && provider_id == HERMES_AGENT_PROVIDER_ID {
         return build_agent_lifecycle_plan(provider_id, "install", None);
     }
+    let dsh_package = format!("@deepseek-ai/dsh@{distribution_selector}");
+    let dsh_display = match distribution_selector {
+        "latest" => DSH_CLI_INSTALL_COMMAND.to_string(),
+        "next" => DSH_CLI_PRERELEASE_UPDATE_COMMAND.to_string(),
+        _ => format!("npm install -g {dsh_package}"),
+    };
     let (package, display) = match provider_id {
         CLAUDE_CODE_PROVIDER_ID => (
             "@anthropic-ai/claude-code@latest",
@@ -2778,10 +2814,7 @@ fn build_agent_lifecycle_plan_for_version(
         OPENAI_CODEX_PROVIDER_ID => ("@openai/codex@latest", CODEX_CLI_INSTALL_COMMAND),
         OPENCODE_PROVIDER_ID => ("opencode-ai@latest", OPENCODE_CLI_INSTALL_COMMAND),
         GEMINI_CLI_PROVIDER_ID => ("@google/gemini-cli@latest", GEMINI_CLI_INSTALL_COMMAND),
-        DEEPSEEK_DSH_PROVIDER_ID if distribution_tag == "next" => {
-            ("@deepseek-ai/dsh@next", DSH_CLI_PRERELEASE_UPDATE_COMMAND)
-        }
-        DEEPSEEK_DSH_PROVIDER_ID => ("@deepseek-ai/dsh@latest", DSH_CLI_INSTALL_COMMAND),
+        DEEPSEEK_DSH_PROVIDER_ID => (dsh_package.as_str(), dsh_display.as_str()),
         GROK_BUILD_PROVIDER_ID if action == "update" => {
             return Ok(lifecycle_plan("grok", ["update"], "grok update"));
         }
@@ -2800,6 +2833,30 @@ fn build_agent_lifecycle_plan_for_version(
         ["install", "-g", package],
         display,
     ))
+}
+
+fn normalize_agent_lifecycle_target_version(
+    provider_id: &str,
+    action: &str,
+    target_version: Option<&str>,
+) -> ApiResult<Option<String>> {
+    let Some(target_version) = target_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    if provider_id != DEEPSEEK_DSH_PROVIDER_ID || action != "update" {
+        return Err(ApiError::bad_request(
+            "只有 DeepSeek DSH 更新支持指定目标版本",
+        ));
+    }
+    if target_version.len() > 64
+        || extract_agent_semantic_version(target_version).as_deref() != Some(target_version)
+    {
+        return Err(ApiError::bad_request("DeepSeek DSH 目标版本格式无效"));
+    }
+    Ok(Some(target_version.to_string()))
 }
 
 fn package_manager_install_plan_for_package(
@@ -6312,12 +6369,60 @@ async fn update_thread(
         state.agent_runs.forget_thread(&thread_id);
     }
 
+    let provider_switched =
+        update_thread_provider_from_payload(&mut connection, &thread_id, &payload)?;
+    if provider_switched {
+        let _ = close_thread_runtime(&state, &thread_id);
+        state.agent_runs.forget_thread(&thread_id);
+        refresh_workspace = true;
+    }
+
     if refresh_workspace {
         let workspace = read_workspace_bootstrap_with_connection(&state, &connection)?;
         return Ok(Json(json!({ "ok": true, "workspace": workspace })));
     }
 
     Ok(Json(json!({ "ok": true })))
+}
+
+fn update_thread_provider_from_payload(
+    connection: &mut Connection,
+    thread_id: &str,
+    payload: &Value,
+) -> ApiResult<bool> {
+    let Some(next_provider) = payload
+        .get("providerId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+    ensure_thread_exists(connection, thread_id)?;
+    let current_provider: String = connection
+        .query_row(
+            "SELECT provider FROM threads WHERE id = ?1",
+            params![thread_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| ApiError::internal(format!("读取聊天 Agent 失败: {error}")))?;
+    if current_provider == next_provider {
+        return Ok(false);
+    }
+
+    connection
+        .execute(
+            "UPDATE threads SET provider = ?1, session_id = NULL, transcript_path = NULL, model = NULL, reasoning_effort = NULL, agent_channel_id = NULL, agent_channel_fingerprint = NULL, updated_at = ?2 WHERE id = ?3",
+            params![next_provider, current_timestamp(), thread_id],
+        )
+        .map_err(|error| ApiError::internal(format!("切换聊天 Agent 失败: {error}")))?;
+    connection
+        .execute(
+            "DELETE FROM thread_model_preferences WHERE thread_id = ?1",
+            params![thread_id],
+        )
+        .map_err(|error| ApiError::internal(format!("清理聊天模型偏好失败: {error}")))?;
+    Ok(true)
 }
 
 async fn delete_thread(
@@ -8580,12 +8685,15 @@ fn resolve_dsh_command() -> Option<String> {
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .and_then(|stdout| {
-            stdout
-                .lines()
-                .map(str::trim)
-                .filter(|candidate| !candidate.is_empty())
-                .find(|candidate| dsh_command_reports_version(candidate))
-                .map(ToString::to_string)
+            // npm installs both dsh.ps1 and dsh.cmd on Windows. The
+            // PowerShell shim does not reliably forward an inherited stdin
+            // when it is launched with `-File`, while ACP is a stdin/stdout
+            // protocol. Keep an explicit DSH_CLI_PATH authoritative, but
+            // filter PATH results through the shared Windows spawnability
+            // rule so dsh.cmd wins over dsh.ps1.
+            select_runnable_command_candidate(&stdout, cfg!(target_os = "windows"), |candidate| {
+                dsh_command_reports_version(candidate)
+            })
         })
         .or_else(resolve_default_dsh_command)
 }
@@ -8886,13 +8994,6 @@ fn dsh_background_command(command: &str) -> Command {
             return process;
         }
         if extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat") {
-            let powershell_script = path.with_extension("ps1");
-            if powershell_script.is_file() {
-                let mut process = background_command("powershell.exe");
-                process.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
-                process.arg(powershell_script);
-                return process;
-            }
             let mut process = background_command("cmd.exe");
             process.args(["/D", "/S", "/C"]);
             process.arg(path);
@@ -23281,16 +23382,16 @@ mod tests {
     use super::{
         agent_global_config_directory, agent_settings_diagnostic_spec,
         apply_agent_lifecycle_proxy_environment, build_agent_lifecycle_plan,
-        build_agent_lifecycle_plan_for_version, build_agent_plugin_command_args,
-        build_claude_input_message, build_request_user_input_response_answers,
-        build_usage_provider_rows, claude_input_message_has_content,
-        claude_install_display_command, claude_install_lifecycle_plan,
-        claude_runtime_phase_from_events, claude_uninstalled_update_lifecycle_plan,
-        codex_snapshot_to_conversation_turns, command_output_with_timeout,
-        compare_project_file_entries, compare_semantic_versions, complete_thread_fork_history,
-        configure_agent_lifecycle_environment, configured_model_options, create_project_row,
-        create_router, create_runtime_recovery_hint, create_thread_row,
-        current_claude_install_lifecycle_plan, default_claude_command_paths,
+        build_agent_lifecycle_plan_for_target, build_agent_lifecycle_plan_for_version,
+        build_agent_plugin_command_args, build_claude_input_message,
+        build_request_user_input_response_answers, build_usage_provider_rows,
+        claude_input_message_has_content, claude_install_display_command,
+        claude_install_lifecycle_plan, claude_runtime_phase_from_events,
+        claude_uninstalled_update_lifecycle_plan, codex_snapshot_to_conversation_turns,
+        command_output_with_timeout, compare_project_file_entries, compare_semantic_versions,
+        complete_thread_fork_history, configure_agent_lifecycle_environment,
+        configured_model_options, create_project_row, create_router, create_runtime_recovery_hint,
+        create_thread_row, current_claude_install_lifecycle_plan, default_claude_command_paths,
         default_grok_command_path, default_pi_command_paths, desktop_cors_layer,
         ensure_agent_plugin_management_supported, ensure_claude_thread_fork_idle,
         extract_agent_semantic_version, finalize_local_thread_fork, hermes_command_paths,
@@ -23300,14 +23401,14 @@ mod tests {
         list_agent_installed_plugins_value, list_agent_plugin_marketplaces_value,
         list_agent_skills_value, list_slash_commands_value, map_claude_json_line,
         mark_fork_provider_succeeded, mark_request_user_input_submitted,
-        merge_thread_history_turn_with_connection, normalize_agent_plugin_action,
-        normalize_agent_runtime_settings, normalize_default_model_id, normalize_general_settings,
-        normalize_open_with_settings, normalize_pi_probe_summary,
-        normalize_request_user_input_answer_value, open_initialized_workspace_database,
-        parse_github_release_tag_version, parse_grok_cli_version, parse_grok_latest_version,
-        parse_hermes_github_release_version, parse_macos_system_proxy_environment,
-        parse_npm_version, parse_pi_installed_packages, parse_request_user_input_event,
-        pi_node_version_supported, prepare_thread_fork_operation,
+        merge_thread_history_turn_with_connection, normalize_agent_lifecycle_target_version,
+        normalize_agent_plugin_action, normalize_agent_runtime_settings,
+        normalize_default_model_id, normalize_general_settings, normalize_open_with_settings,
+        normalize_pi_probe_summary, normalize_request_user_input_answer_value,
+        open_initialized_workspace_database, parse_github_release_tag_version,
+        parse_grok_cli_version, parse_grok_latest_version, parse_hermes_github_release_version,
+        parse_macos_system_proxy_environment, parse_npm_version, parse_pi_installed_packages,
+        parse_request_user_input_event, pi_node_version_supported, prepare_thread_fork_operation,
         probe_claude_thread_fork_capability, provider_supports_reasoning_effort,
         read_agent_mcp_config_snapshot, read_fork_source_thread, read_gemini_mcp_config,
         read_opencode_mcp_config, read_state_value, read_stored_thread_history, read_thread_detail,
@@ -23459,6 +23560,101 @@ mod tests {
             .expect("bind Fork source Provider thread");
         drop(connection);
         (root, state, driver, project_id, source_thread_id)
+    }
+
+    #[tokio::test]
+    async fn update_thread_switches_provider_and_clears_session_state() {
+        let root = TestDirectory::new("thread-provider-switch");
+        let project_path = root.0.join("project");
+        fs::create_dir_all(&project_path).expect("create provider-switch project directory");
+        let state = test_app_state(root.0.clone());
+        let mut connection =
+            open_initialized_workspace_database(&state).expect("open provider-switch database");
+        let project_id = create_project_row(&connection, &project_path.to_string_lossy())
+            .expect("create provider-switch project");
+        let thread_id = create_thread_row(
+            &mut connection,
+            &project_id,
+            Some("Switch me"),
+            "claude-code",
+            Some("auto"),
+            Some("sonnet"),
+            None,
+            Some("channel-a"),
+            true,
+        )
+        .expect("create provider-switch thread");
+        connection
+            .execute(
+                "UPDATE threads SET session_id = 'session-old', model = 'sonnet', reasoning_effort = 'high', agent_channel_fingerprint = 'fp-1' WHERE id = ?",
+                params![thread_id],
+            )
+            .expect("bind provider-switch session");
+        connection
+            .execute(
+                "INSERT INTO thread_model_preferences (thread_id, model_id, reasoning_effort, updated_at) VALUES (?1, 'sonnet', 'high', ?2)",
+                params![thread_id, crate::backend::current_timestamp()],
+            )
+            .expect("bind provider-switch model preference");
+        drop(connection);
+
+        let app = create_router(state.clone());
+        let response = run_json_request(
+            &app,
+            Method::PATCH,
+            &format!("/api/threads/{thread_id}"),
+            json!({ "providerId": "grok-build" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert!(
+            payload.get("workspace").is_some(),
+            "provider switch should refresh workspace bootstrap"
+        );
+
+        let connection = Connection::open(state.app_data_dir.join("codem.sqlite"))
+            .expect("reopen provider-switch database");
+        let (provider, session_id, model, reasoning_effort, channel_id, fingerprint): (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) =
+            connection
+                .query_row(
+                    "SELECT provider, session_id, model, reasoning_effort, agent_channel_id, agent_channel_fingerprint FROM threads WHERE id = ?",
+                    params![thread_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )
+                .expect("read switched thread");
+        assert_eq!(provider, "grok-build");
+        assert_eq!(session_id, None);
+        assert_eq!(model, None);
+        assert_eq!(reasoning_effort, None);
+        assert_eq!(channel_id, None);
+        assert_eq!(fingerprint, None);
+        let preference_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM thread_model_preferences WHERE thread_id = ?",
+                params![thread_id],
+                |row| row.get(0),
+            )
+            .expect("count switched thread model preferences");
+        assert_eq!(preference_count, 0);
+
+        let response = run_json_request(
+            &app,
+            Method::PATCH,
+            &format!("/api/threads/{thread_id}"),
+            json!({ "providerId": "grok-build" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     async fn run_json_request(
@@ -27314,18 +27510,31 @@ mod tests {
     }
 
     #[test]
-    fn dsh_prerelease_version_parser_follows_the_next_dist_tag() {
+    fn dsh_prerelease_version_parser_follows_the_highest_published_dist_tag() {
         let tags = json!({
-            "latest": "0.1.0-rc.7",
-            "next": "0.1.0-rc.8"
+            "latest": "0.1.1-rc.2",
+            "next": "0.1.1-rc.2",
+            "alpha": "0.1.2-alpha.2"
         });
         assert_eq!(
             parse_npm_version(&tags, true).as_deref(),
-            Some("0.1.0-rc.8")
+            Some("0.1.2-alpha.2")
         );
         assert_eq!(
             parse_npm_version(&tags, false).as_deref(),
-            Some("0.1.0-rc.7")
+            Some("0.1.1-rc.2")
+        );
+
+        let next_is_newer = json!({
+            "dist-tags": {
+                "latest": "0.1.1-rc.2",
+                "next": "0.1.3-rc.1",
+                "alpha": "0.1.2-alpha.2"
+            }
+        });
+        assert_eq!(
+            parse_npm_version(&next_is_newer, true).as_deref(),
+            Some("0.1.3-rc.1")
         );
     }
 
@@ -27348,6 +27557,51 @@ mod tests {
         .unwrap();
         assert!(update.args.iter().any(|arg| arg == "@deepseek-ai/dsh@next"));
         assert!(update.display_command.contains("@deepseek-ai/dsh@next"));
+    }
+
+    #[test]
+    fn dsh_prerelease_update_plan_uses_the_detected_exact_version() {
+        let update = build_agent_lifecycle_plan_for_target(
+            DEEPSEEK_DSH_PROVIDER_ID,
+            "update",
+            Some("dsh"),
+            Some("0.1.1-rc.2"),
+            Some("0.1.2-alpha.2"),
+        )
+        .unwrap();
+        assert!(update
+            .args
+            .iter()
+            .any(|arg| arg == "@deepseek-ai/dsh@0.1.2-alpha.2"));
+        assert!(update
+            .display_command
+            .contains("@deepseek-ai/dsh@0.1.2-alpha.2"));
+    }
+
+    #[test]
+    fn dsh_lifecycle_target_version_rejects_invalid_or_unrelated_values() {
+        assert_eq!(
+            normalize_agent_lifecycle_target_version(
+                DEEPSEEK_DSH_PROVIDER_ID,
+                "update",
+                Some("0.1.2-alpha.2"),
+            )
+            .unwrap()
+            .as_deref(),
+            Some("0.1.2-alpha.2")
+        );
+        assert!(normalize_agent_lifecycle_target_version(
+            DEEPSEEK_DSH_PROVIDER_ID,
+            "update",
+            Some("0.1.2-alpha.2 --ignore-scripts"),
+        )
+        .is_err());
+        assert!(normalize_agent_lifecycle_target_version(
+            OPENAI_CODEX_PROVIDER_ID,
+            "update",
+            Some("0.1.2-alpha.2"),
+        )
+        .is_err());
     }
 
     #[test]
@@ -30402,6 +30656,20 @@ mod tests {
         assert_eq!(
             select_runnable_command_candidate(lookup, true, |_| true).as_deref(),
             Some("C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd")
+        );
+    }
+
+    #[test]
+    fn windows_dsh_candidates_skip_powershell_shim_for_stdio_protocols() {
+        let lookup = concat!(
+            "C:\\Users\\dev\\AppData\\Roaming\\npm\\dsh.ps1\r\n",
+            "C:\\Users\\dev\\AppData\\Roaming\\npm\\dsh.cmd\r\n",
+            "C:\\Users\\dev\\AppData\\Roaming\\npm\\dsh\r\n",
+        );
+
+        assert_eq!(
+            select_runnable_command_candidate(lookup, true, |_| true).as_deref(),
+            Some("C:\\Users\\dev\\AppData\\Roaming\\npm\\dsh.cmd")
         );
     }
 

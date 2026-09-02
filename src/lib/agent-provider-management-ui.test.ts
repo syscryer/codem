@@ -106,6 +106,11 @@ test('Agent lifecycle refreshes diagnostics and the matching runtime probe', () 
   assert.match(providerSettingsSource, /providerId === 'grok-build'[\s\S]*runGrokProbe\(\)/);
   assert.match(providerSettingsSource, /providerId === 'openai-codex'[\s\S]*runCodexProbe\(\)/);
   assert.match(providerSettingsSource, /providerId === 'opencode'[\s\S]*runOpenCodeProbe\(\)/);
+  assert.match(providerSettingsSource, /providerId === 'deepseek-dsh' && action === 'update'/);
+  assert.match(
+    providerSettingsSource,
+    /runAgentLifecycleAction\(\s*providerId,\s*action,\s*targetVersion,/,
+  );
   assert.match(providerSettingsSource, /安装' : '更新'}完成/);
   assert.match(providerSettingsSource, /diagnostics\.updateAvailable/);
   assert.match(providerSettingsSource, /result\.usedMirror/);

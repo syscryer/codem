@@ -71,11 +71,16 @@ export async function fetchAgentLatestVersion(
 export async function runAgentLifecycleAction(
   providerId: AgentProviderId,
   action: 'install' | 'update',
+  targetVersion?: string,
 ): Promise<{ result: AgentLifecycleActionResult; diagnostics: AgentSettingsDiagnostics }> {
   const response = await fetch('/api/agents/lifecycle', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ providerId, action }),
+    body: JSON.stringify({
+      providerId,
+      action,
+      ...(targetVersion ? { targetVersion } : {}),
+    }),
   });
   if (!response.ok) {
     let message = `${action === 'install' ? '安装' : '更新'} Agent 失败`;

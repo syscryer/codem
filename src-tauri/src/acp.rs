@@ -124,6 +124,7 @@ pub struct AcpMcpCapabilities {
 pub struct AcpInitializeSummary {
     pub protocol_version: u64,
     pub load_session: bool,
+    pub resume_session: bool,
     pub prompt_capabilities: AcpPromptCapabilities,
     pub mcp_capabilities: AcpMcpCapabilities,
     pub auth_methods: Vec<AcpAuthMethodSummary>,
@@ -155,6 +156,23 @@ pub(crate) fn cached_token_auth_method_id(initialize: &AcpInitializeSummary) -> 
 pub struct AcpSessionSummary {
     pub session_id: String,
     pub current_model_id: Option<String>,
+    pub config_options: Vec<AcpConfigOption>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpConfigOption {
+    pub id: String,
+    pub current_value: Option<String>,
+    pub options: Vec<AcpConfigChoice>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpConfigChoice {
+    pub value: String,
+    pub name: String,
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -442,6 +460,25 @@ where
         summarize_session_result(&result, Some(session_id))
     }
 
+    pub async fn resume_session(
+        &mut self,
+        session_id: &str,
+        cwd: &Path,
+    ) -> Result<AcpSessionSummary, AcpError> {
+        let result = self
+            .request(
+                "session/resume",
+                json!({
+                    "sessionId": session_id,
+                    "cwd": acp_path_string(cwd),
+                    "mcpServers": [],
+                }),
+                ACP_REQUEST_TIMEOUT,
+            )
+            .await?;
+        summarize_session_result(&result, Some(session_id))
+    }
+
     pub async fn set_model(&mut self, session_id: &str, model_id: &str) -> Result<(), AcpError> {
         // Grok Build 0.2.x still exposes this ACP compatibility method even though
         // newer ACP drafts model selection as a config option.
@@ -483,6 +520,16 @@ where
                 "configId": config_id,
                 "value": value,
             }),
+            ACP_REQUEST_TIMEOUT,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn close_session(&mut self, session_id: &str) -> Result<(), AcpError> {
+        self.request(
+            "session/close",
+            json!({ "sessionId": session_id }),
             ACP_REQUEST_TIMEOUT,
         )
         .await?;
@@ -1050,9 +1097,8 @@ impl AcpStdioClient {
         environment: &BTreeMap<String, String>,
         removed_environment: &[&str],
     ) -> Result<Self, AcpError> {
-        let mut command = Command::new(program);
+        let mut command = acp_process_command(program, arguments);
         command
-            .args(arguments)
             .envs(environment)
             .current_dir(cwd)
             .stdin(Stdio::piped())
@@ -1124,6 +1170,14 @@ impl AcpStdioClient {
         self.connection.load_session(session_id, cwd).await
     }
 
+    pub async fn resume_session(
+        &mut self,
+        session_id: &str,
+        cwd: &Path,
+    ) -> Result<AcpSessionSummary, AcpError> {
+        self.connection.resume_session(session_id, cwd).await
+    }
+
     pub async fn set_model(&mut self, session_id: &str, model_id: &str) -> Result<(), AcpError> {
         self.connection.set_model(session_id, model_id).await
     }
@@ -1141,6 +1195,10 @@ impl AcpStdioClient {
         self.connection
             .set_config_option(session_id, config_id, value)
             .await
+    }
+
+    pub async fn close_session(&mut self, session_id: &str) -> Result<(), AcpError> {
+        self.connection.close_session(session_id).await
     }
 
     pub async fn prompt_text(
@@ -1217,6 +1275,35 @@ impl AcpStdioClient {
         let _ = timeout(Duration::from_secs(2), self.child.wait()).await;
         self.stderr_task.abort();
     }
+}
+
+fn acp_process_command(program: &str, arguments: &[&str]) -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        let path = Path::new(program);
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if extension.eq_ignore_ascii_case("ps1") {
+            let mut command = Command::new("powershell.exe");
+            command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+            command.arg(path);
+            command.args(arguments);
+            return command;
+        }
+        if extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat") {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/D", "/S", "/C"]);
+            command.arg(path);
+            command.args(arguments);
+            return command;
+        }
+    }
+
+    let mut command = Command::new(program);
+    command.args(arguments);
+    command
 }
 
 pub async fn probe_acp_agent(
@@ -1495,6 +1582,9 @@ fn summarize_initialize_result(result: &Value) -> Result<AcpInitializeSummary, A
             .pointer("/agentCapabilities/loadSession")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        resume_session: result
+            .pointer("/agentCapabilities/sessionCapabilities/resume")
+            .is_some_and(Value::is_object),
         prompt_capabilities: AcpPromptCapabilities {
             image: result
                 .pointer("/agentCapabilities/promptCapabilities/image")
@@ -1544,21 +1634,60 @@ fn summarize_session_result(
         .map(str::trim)
         .filter(|session_id| !session_id.is_empty())
         .ok_or_else(|| AcpError::Protocol("session 响应缺少 sessionId".to_string()))?;
+    let config_options = parse_config_options(result);
     Ok(AcpSessionSummary {
         session_id: session_id.to_string(),
         current_model_id: optional_string(result.pointer("/models/currentModelId")).or_else(|| {
-            result
-                .get("configOptions")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .find(|option| {
-                    option.get("id").and_then(Value::as_str) == Some("model")
-                        || option.get("category").and_then(Value::as_str) == Some("model")
-                })
-                .and_then(|option| optional_string(option.get("currentValue")))
+            config_options
+                .iter()
+                .find(|option| option.id == "model")
+                .and_then(|option| option.current_value.clone())
         }),
+        config_options,
     })
+}
+
+fn parse_config_options(result: &Value) -> Vec<AcpConfigOption> {
+    result
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|option| {
+            let id = option.get("id")?.as_str()?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            Some(AcpConfigOption {
+                id: id.to_string(),
+                current_value: optional_string(option.get("currentValue")),
+                options: parse_config_choices(option.get("options")),
+            })
+        })
+        .collect()
+}
+
+fn parse_config_choices(value: Option<&Value>) -> Vec<AcpConfigChoice> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|choice| {
+            if let (Some(value), Some(name)) = (
+                choice.get("value").and_then(Value::as_str),
+                choice.get("name").and_then(Value::as_str),
+            ) {
+                return vec![AcpConfigChoice {
+                    value: value.to_string(),
+                    name: name.to_string(),
+                    description: optional_string(choice.get("description")),
+                }];
+            }
+            parse_config_choices(choice.get("options"))
+                .into_iter()
+                .collect()
+        })
+        .collect()
 }
 
 fn parse_permission_request(

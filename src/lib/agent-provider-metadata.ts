@@ -73,9 +73,9 @@ export const AGENT_PROVIDER_METADATA_BY_ID = {
   [DEEPSEEK_DSH_PROVIDER_ID]: {
     id: DEEPSEEK_DSH_PROVIDER_ID,
     displayName: 'DeepSeek DSH',
-    driverId: 'dsh-web-api',
+    driverId: 'acp',
     runtimeKind: 'generic',
-    protocolLabel: 'DSH Web API',
+    protocolLabel: 'DSH ACP',
   },
 } satisfies Record<AgentProviderId, AgentProviderMetadata>;
 

@@ -518,7 +518,14 @@ export function AgentProviderSettings({
     setDetailsError('');
     try {
       const previousVersion = settingsDiagnostics[providerId]?.version ?? null;
-      const { result, diagnostics } = await runAgentLifecycleAction(providerId, action);
+      const targetVersion = providerId === 'deepseek-dsh' && action === 'update'
+        ? settingsDiagnostics[providerId]?.latestVersion ?? undefined
+        : undefined;
+      const { result, diagnostics } = await runAgentLifecycleAction(
+        providerId,
+        action,
+        targetVersion,
+      );
       setSettingsDiagnostics((current) => ({ ...current, [providerId]: diagnostics }));
       setLifecycleStatuses((current) => ({
         ...current,

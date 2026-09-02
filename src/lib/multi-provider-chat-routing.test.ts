@@ -9,12 +9,26 @@ const workspaceSource = readFileSync(new URL('../hooks/useWorkspaceState.ts', im
 const agentRunSource = readFileSync(new URL('../hooks/useAgentRun.ts', import.meta.url), 'utf8');
 const claudeRunSource = readFileSync(new URL('../hooks/useClaudeRun.ts', import.meta.url), 'utf8');
 
-test('new chat persists provider ownership and locks the selector after creation', () => {
+test('new chat persists provider ownership and switches in place immediately with next-send transcript', () => {
   assert.match(workspaceSource, /providerId\?: string/);
   assert.match(workspaceSource, /\{ providerId: options\.providerId \}/);
   assert.match(appSource, /providerId=\{activeProviderId\}/);
-  assert.match(appSource, /canSelectProvider=\{!activeThreadSummary\}/);
-  assert.match(composerSource, /Provider 在聊天创建后锁定/);
+  assert.match(appSource, /canSelectProvider\b/);
+  assert.doesNotMatch(appSource, /canSelectProvider=\{!activeThreadSummary\}/);
+  assert.doesNotMatch(appSource, /kind: 'switch-provider'/);
+  assert.doesNotMatch(appSource, /threadProviderOverride/);
+  assert.match(appSource, /switchThreadProvider/);
+  assert.match(appSource, /pendingProviderSwitchRef/);
+  assert.match(appSource, /await pendingProviderSwitchRef\.current/);
+  assert.match(appSource, /writePendingContinuation/);
+  assert.match(appSource, /readPendingContinuation/);
+  assert.match(appSource, /buildPendingContinuationSubmission/);
+  // 提交被接受后才清除续接标记，失败重试仍携带转录。
+  assert.match(appSource, /if \(injected && delivered !== false && activeThreadId\) \{\s*clearPendingContinuation\(activeThreadId\);/);
+  assert.match(appSource, /buildProviderContinuationTranscript/);
+  assert.match(appSource, /persistThreadMetadata\(sourceThread\.id, \{ providerId: nextProviderId \}\)/);
+  assert.match(workspaceSource, /model: providerChanged \? undefined : nextModel/);
+  assert.doesNotMatch(composerSource, /Provider 在聊天创建后锁定/);
 });
 
 test('App routes Grok, Codex, and OpenCode through the generic hook without changing the Claude hook', () => {
@@ -22,8 +36,9 @@ test('App routes Grok, Codex, and OpenCode through the generic hook without chan
   assert.match(appSource, /activeThreadRuntimeKind === 'generic' \? activeThreadId : null/);
   assert.match(appSource, /activeProviderId === OPENAI_CODEX_PROVIDER_ID/);
   assert.match(appSource, /activeProviderId === OPENCODE_PROVIDER_ID/);
-  assert.match(appSource, /return submitClaudePrompt\(submission\)/);
-  assert.match(appSource, /return submitGenericAgentPrompt\(submission\)/);
+  assert.match(appSource, /submitPromptToThread\(switchedThread, submission\)/);
+  assert.match(appSource, /submitGenericAgentPrompt\(\s*submission,\s*switchedThread \? \{ thread: switchedThread \} : undefined,/);
+  assert.match(appSource, /: submitClaudePrompt\(submission\)/);
   assert.match(agentRunSource, /fetch\('\/api\/agents\/run'/);
   assert.match(agentRunSource, /threadId: context\.threadId/);
   assert.match(agentRunSource, /contentBlocks: requestContentBlocks/);

@@ -871,6 +871,80 @@ fn dsh_model_catalog(value: &Value) -> AgentModelCatalog {
     }
 }
 
+fn dsh_acp_model_value(model: &str) -> String {
+    if serde_json::from_str::<Vec<String>>(model).is_ok() {
+        return model.to_string();
+    }
+    let (provider, model_id) = model
+        .split_once('/')
+        .unwrap_or(("deepseek-official", model));
+    json!([provider, model_id]).to_string()
+}
+
+fn dsh_acp_model_id(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    let selected = serde_json::from_str::<Vec<String>>(value).ok()?;
+    (selected.len() == 2 && !selected[0].is_empty() && !selected[1].is_empty())
+        .then(|| selected[0].to_string() + "/" + &selected[1])
+}
+
+fn dsh_acp_model_catalog(session: &AcpSessionSummary) -> AgentModelCatalog {
+    let model_option = session
+        .config_options
+        .iter()
+        .find(|option| option.id == "model");
+    let reasoning_efforts = session
+        .config_options
+        .iter()
+        .find(|option| option.id == "reasoning_effort")
+        .map(|option| {
+            option
+                .options
+                .iter()
+                .map(|choice| AgentReasoningEffortSummary {
+                    id: choice.value.clone(),
+                    description: choice
+                        .description
+                        .clone()
+                        .or_else(|| Some(choice.name.clone())),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let default_reasoning_effort = session
+        .config_options
+        .iter()
+        .find(|option| option.id == "reasoning_effort")
+        .and_then(|option| option.current_value.clone());
+    let default_model_id =
+        dsh_acp_model_id(model_option.and_then(|option| option.current_value.as_deref()));
+    let models = model_option
+        .map(|option| {
+            option
+                .options
+                .iter()
+                .filter_map(|choice| {
+                    let id = dsh_acp_model_id(Some(&choice.value))?;
+                    Some(AgentModelSummary {
+                        is_default: default_model_id.as_deref() == Some(id.as_str()),
+                        id,
+                        label: choice.name.clone(),
+                        description: choice.description.clone(),
+                        context_window_tokens: None,
+                        default_reasoning_effort: default_reasoning_effort.clone(),
+                        supported_reasoning_efforts: reasoning_efforts.clone(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    AgentModelCatalog {
+        provider_id: DEEPSEEK_DSH_PROVIDER_ID.to_string(),
+        default_model_id,
+        models,
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct AgentModelsQuery {
     #[serde(default)]
@@ -1196,8 +1270,6 @@ pub(crate) fn router(service: AgentRunService) -> Router {
             post(reconcile_agent_compact),
         )
         .route("/api/agents/run", post(start_agent_run))
-        .route("/api/agents/dsh/bootstrap", get(dsh_bootstrap))
-        .route("/api/agents/dsh/projections", get(dsh_projections))
         .route("/api/agents/run/{run_id}/events", get(agent_run_events))
         .route(
             "/api/agents/run/{run_id}/approval-decision",
@@ -1575,27 +1647,28 @@ async fn agent_models(
                 .as_ref()
                 .map(|runtime| runtime.env.clone())
                 .unwrap_or_default();
-            let fingerprint = channel_runtime
-                .as_ref()
-                .map(|runtime| runtime.fingerprint.as_str());
-            let client = state
-                .dsh
-                .connect(
-                    &command,
-                    &cwd,
-                    &environment,
-                    fingerprint,
-                    None,
-                    "native",
-                    "workspace-write",
-                )
-                .await
-                .map_err(AgentApiError::internal)?;
-            let value = client
-                .call("llm.models", json!({}))
-                .await
-                .map_err(AgentApiError::internal)?;
-            let catalog = dsh_model_catalog(&value);
+            let arguments = acp_arguments(provider_id, "default", None)
+                .map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
+            let mut client = AcpStdioClient::spawn_with_env_and_removals(
+                &command,
+                &arguments,
+                &cwd,
+                &environment,
+                &[],
+            )
+            .await
+            .map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
+            let result = async {
+                client.initialize(env!("CARGO_PKG_VERSION")).await?;
+                let session = client.new_session(&cwd).await?;
+                let catalog = dsh_acp_model_catalog(&session);
+                client.close_session(&session.session_id).await?;
+                Ok::<_, AcpError>(catalog)
+            }
+            .await;
+            client.shutdown().await;
+            let catalog =
+                result.map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
             if catalog.models.is_empty() {
                 return Err(AgentApiError::bad_request("DSH 当前没有可用模型"));
             }
@@ -1966,7 +2039,7 @@ async fn start_agent_run(
             "Hermes Agent",
         ),
         DEEPSEEK_DSH_PROVIDER_ID => (
-            AgentDriverKind::DshWebApi,
+            AgentDriverKind::Acp,
             resolve_agent_command(&state, provider_id, false)
                 .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 DSH CLI"))?,
             "DeepSeek DSH",
@@ -2059,7 +2132,10 @@ async fn start_agent_run(
     let reasoning_effort = normalize_optional_id(payload.reasoning_effort, "reasoningEffort")?;
     if driver == AgentDriverKind::Acp
         && reasoning_effort.is_some()
-        && !matches!(provider_id, OPENCODE_PROVIDER_ID | GROK_BUILD_PROVIDER_ID)
+        && !matches!(
+            provider_id,
+            OPENCODE_PROVIDER_ID | GROK_BUILD_PROVIDER_ID | DEEPSEEK_DSH_PROVIDER_ID
+        )
     {
         return Err(AgentApiError::bad_request(
             "当前 ACP Agent 模型目录未提供 reasoning effort 能力",
@@ -4261,9 +4337,19 @@ async fn prepare_acp_session(
             .await
             .map_err(|error| public_acp_prepare_error(provider_id, "认证", error))?;
     }
+    let supports_session_resume = if provider_id == DEEPSEEK_DSH_PROVIDER_ID {
+        initialize.resume_session
+    } else {
+        initialize.load_session
+    };
     let (session, resumed) = if let Some(session_id) = requested_session_id {
-        if initialize.load_session {
-            match client.load_session(session_id, working_directory).await {
+        if supports_session_resume {
+            let resume = if provider_id == DEEPSEEK_DSH_PROVIDER_ID {
+                client.resume_session(session_id, working_directory).await
+            } else {
+                client.load_session(session_id, working_directory).await
+            };
+            match resume {
                 Ok(session) => (session, true),
                 // A provider can advertise loadSession while keeping sessions
                 // in channel-local storage. Start a fresh session if that old
@@ -4297,9 +4383,14 @@ async fn prepare_acp_session(
         )
     };
     if let Some(model) = model {
+        let session_model = if provider_id == DEEPSEEK_DSH_PROVIDER_ID {
+            dsh_acp_model_id(session.current_model_id.as_deref())
+        } else {
+            session.current_model_id.clone()
+        };
         if should_set_acp_model(
             Some(model),
-            session.current_model_id.as_deref(),
+            session_model.as_deref(),
             initialize.current_model_id.as_deref(),
         ) {
             match provider_id {
@@ -4309,6 +4400,15 @@ async fn prepare_acp_session(
                 OPENCODE_PROVIDER_ID => {
                     client
                         .set_config_option(&session.session_id, "model", model)
+                        .await
+                }
+                DEEPSEEK_DSH_PROVIDER_ID => {
+                    client
+                        .set_config_option(
+                            &session.session_id,
+                            "model",
+                            &dsh_acp_model_value(model),
+                        )
                         .await
                 }
                 _ => unreachable!("ACP profile validated before session initialization"),
@@ -4322,6 +4422,14 @@ async fn prepare_acp_session(
                 .set_config_option(&session.session_id, "effort", variant)
                 .await
                 .map_err(|error| public_acp_prepare_error(provider_id, "切换推理等级", error))?;
+        }
+    }
+    if provider_id == DEEPSEEK_DSH_PROVIDER_ID {
+        if let Some(effort) = reasoning_effort {
+            client
+                .set_config_option(&session.session_id, "reasoning_effort", effort)
+                .await
+                .map_err(|error| public_acp_prepare_error(provider_id, "切换推理级别", error))?;
         }
     }
     if provider_id == GEMINI_CLI_PROVIDER_ID {
@@ -8962,6 +9070,7 @@ fn acp_arguments<'a>(
         GROK_BUILD_PROVIDER_ID => Ok(grok_acp_arguments(permission_mode, reasoning_effort)),
         OPENCODE_PROVIDER_ID => Ok(vec!["acp"]),
         GEMINI_CLI_PROVIDER_ID => Ok(vec!["--skip-trust", "--acp"]),
+        DEEPSEEK_DSH_PROVIDER_ID => Ok(vec!["--profile", "acp"]),
         _ => Err(AcpError::Protocol(
             "当前 Provider 没有可用 ACP 启动配置".to_string(),
         )),
@@ -9000,8 +9109,8 @@ mod tests {
     use super::{
         acp_arguments, acp_permission_policy, await_guide_ack, build_acp_prompt, build_codex_input,
         build_pi_prompt, cancelled_before_prompt_outcome, classify_codex_fork_error,
-        compact_capability_cache_key, complete_fork_command, dsh_model_catalog,
-        dsh_permission_mode, dsh_projection_usage, dsh_runtime_update_is_busy,
+        compact_capability_cache_key, complete_fork_command, dsh_acp_model_id, dsh_acp_model_value,
+        dsh_model_catalog, dsh_permission_mode, dsh_projection_usage, dsh_runtime_update_is_busy,
         ensure_compact_reconcile_runtime_idle, expired_cached_agent_command, fail_fork_command,
         find_grok_runtime_error_detail, fork_capability_cache_key, gemini_mode_id,
         gemini_removed_environment, grok_acp_arguments, grok_acp_error_with_runtime_detail,
@@ -10106,6 +10215,22 @@ mod tests {
         assert_eq!(
             acp_arguments(GEMINI_CLI_PROVIDER_ID, "default", None).expect("Gemini ACP arguments"),
             vec!["--skip-trust", "--acp"]
+        );
+        assert_eq!(
+            acp_arguments(DEEPSEEK_DSH_PROVIDER_ID, "default", None).expect("DSH ACP arguments"),
+            vec!["--profile", "acp"]
+        );
+    }
+
+    #[test]
+    fn dsh_acp_model_values_use_the_protocol_route_shape() {
+        assert_eq!(
+            dsh_acp_model_value("deepseek-official/deepseek-v4-pro"),
+            "[\"deepseek-official\",\"deepseek-v4-pro\"]"
+        );
+        assert_eq!(
+            dsh_acp_model_id(Some("[\"deepseek-official\",\"deepseek-v4-pro\"]")),
+            Some("deepseek-official/deepseek-v4-pro".to_string())
         );
     }
 

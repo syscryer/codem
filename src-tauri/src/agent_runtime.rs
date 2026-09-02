@@ -618,7 +618,7 @@ pub fn agent_provider_registry(
     let dsh_provider = AgentProviderDescriptor {
         id: DEEPSEEK_DSH_PROVIDER_ID,
         display_name: "DeepSeek DSH",
-        driver_id: "dsh-web-api",
+        driver_id: "acp",
         lifecycle: AgentProviderLifecycle::Active,
         available: Some(dsh_available),
         selectable: dsh_available,
@@ -1293,7 +1293,7 @@ mod tests {
             .find(|provider| provider.id == DEEPSEEK_DSH_PROVIDER_ID)
             .expect("DSH provider");
 
-        assert_eq!(dsh.driver_id, "dsh-web-api");
+        assert_eq!(dsh.driver_id, "acp");
         assert_eq!(dsh.lifecycle, AgentProviderLifecycle::Active);
         assert_eq!(dsh.available, Some(true));
         assert!(dsh.selectable);
