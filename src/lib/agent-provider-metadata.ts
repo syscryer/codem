@@ -4,6 +4,7 @@ import {
   GROK_BUILD_PROVIDER_ID,
   GEMINI_CLI_PROVIDER_ID,
   HERMES_AGENT_PROVIDER_ID,
+  KIMI_CODE_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
   PI_AGENT_PROVIDER_ID,
@@ -76,6 +77,13 @@ export const AGENT_PROVIDER_METADATA_BY_ID = {
     driverId: 'acp',
     runtimeKind: 'generic',
     protocolLabel: 'DSH ACP',
+  },
+  [KIMI_CODE_PROVIDER_ID]: {
+    id: KIMI_CODE_PROVIDER_ID,
+    displayName: 'Kimi Code',
+    driverId: 'acp',
+    runtimeKind: 'generic',
+    protocolLabel: 'Kimi ACP',
   },
 } satisfies Record<AgentProviderId, AgentProviderMetadata>;
 

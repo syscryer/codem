@@ -29,6 +29,7 @@ const agentChannelProtocols: Record<AgentProviderId, readonly AiChatProtocol[]> 
   'gemini-cli': ['gemini_generate_content'],
   'hermes-agent': ['anthropic_messages', 'openai_chat', 'openai_responses'],
   'deepseek-dsh': ['openai_chat'],
+  'kimi-code': ['anthropic_messages', 'openai_chat', 'openai_responses'],
 };
 
 export function protocolsForAgent(providerId: AgentProviderId): AiChatProtocol[] {

@@ -1,3 +1,4 @@
+import { buildProviderContinuationTranscript } from '../lib/provider-continuation-transcript';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CLAUDE_CODE_PROVIDER_ID,
@@ -5,6 +6,7 @@ import {
   DEFAULT_MODEL_VALUE,
   GEMINI_CLI_PROVIDER_ID,
   GROK_BUILD_PROVIDER_ID,
+  KIMI_CODE_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
   PI_AGENT_PROVIDER_ID,
@@ -1973,6 +1975,34 @@ export function useAgentRun({
     options?: { thread?: ThreadSummary },
   ) {
     const providerId = options?.thread?.provider ?? activeThreadSummary?.provider ?? draftProviderId;
+    // Kimi 带图消息走一次性 print 进程（新会话无上下文），注入此前对话转录。
+    // run 请求在有 contentBlocks 时会忽略 prompt 字段，转录必须以 text block
+    // 前置注入 contentBlocks，prompt 仅作无 contentBlocks 时的兜底。
+    const isKimiImageRound = providerId === KIMI_CODE_PROVIDER_ID
+      && Boolean(submission.attachments?.some((a) => a.data || a.path));
+    const kimiContinuationThreadId = options?.thread?.id ?? activeThreadId ?? '';
+    const needsKimiImageTranscript = providerId === KIMI_CODE_PROVIDER_ID
+      && (isKimiImageRound || isKimiPendingContinuationThread(kimiContinuationThreadId));
+    if (needsKimiImageTranscript) {
+      const transcript = buildProviderContinuationTranscript(activeThreadDetail?.turns, {
+        sourceLabel: 'Kimi Code 当前会话',
+      });
+      if (transcript) {
+        const transcriptBlockText = `${transcript}
+[以上为此前会话转录（含最近一次图片轮）。以下是用户的新消息]`;
+        submission = {
+          ...submission,
+          prompt: `${transcriptBlockText}
+
+${submission.prompt}`,
+          contentBlocks: [
+            { type: 'text', text: transcriptBlockText },
+            ...(submission.contentBlocks ?? []),
+          ],
+        };
+      }
+      clearKimiImageContinuation(kimiContinuationThreadId);
+    }
     if (resolveChatRuntimeKind(providerId) !== 'generic') {
       showToast('当前 Provider 不使用通用 Agent 运行链路。', 'error');
       return false;
@@ -1997,6 +2027,12 @@ export function useAgentRun({
     }
     if (!thread) {
       return false;
+    }
+    // 图片轮走一次性 print 进程，其内容不会进入 ACP 会话：在 thread 解析后
+    // （新聊天的首条图片此时才拥有 thread id）写标记，下一轮注入含图片轮的
+    // 完整转录衔接上下文。
+    if (isKimiImageRound) {
+      markKimiImageContinuation(thread.id);
     }
     const submissionContentBlocks = buildRunContentBlocks({
       prompt: submission.prompt,
@@ -2781,5 +2817,37 @@ async function readErrorResponseText(response: Response) {
     return typeof payload.error === 'string' ? payload.error : text;
   } catch {
     return text;
+  }
+}
+
+const KIMI_IMAGE_CONTINUATION_PREFIX = 'codem:kimi-image-continuation:';
+
+function isKimiPendingContinuationThread(threadId: string) {
+  if (!threadId) {
+    return false;
+  }
+  try {
+    return window.localStorage.getItem(KIMI_IMAGE_CONTINUATION_PREFIX + threadId) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function markKimiImageContinuation(threadId: string) {
+  try {
+    window.localStorage.setItem(KIMI_IMAGE_CONTINUATION_PREFIX + threadId, '1');
+  } catch {
+    // 存储不可用时降级为不衔接。
+  }
+}
+
+function clearKimiImageContinuation(threadId: string) {
+  if (!threadId) {
+    return;
+  }
+  try {
+    window.localStorage.removeItem(KIMI_IMAGE_CONTINUATION_PREFIX + threadId);
+  } catch {
+    // 忽略清除失败。
   }
 }

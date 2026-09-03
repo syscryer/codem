@@ -956,7 +956,8 @@ export type AgentProviderId =
   | 'pi-agent'
   | 'gemini-cli'
   | 'hermes-agent'
-  | 'deepseek-dsh';
+  | 'deepseek-dsh'
+  | 'kimi-code';
 
 export type AutomationSchedule =
   | {

@@ -21,6 +21,7 @@ const providerLabels: Record<AgentProviderId, string> = {
   'gemini-cli': 'Gemini',
   'hermes-agent': 'Hermes',
   'deepseek-dsh': 'DSH',
+  'kimi-code': 'Kimi',
 };
 
 export function SkillsPanel({ items, providerId, busy, onOpen, onDelete, onCopy }: SkillsPanelProps) {

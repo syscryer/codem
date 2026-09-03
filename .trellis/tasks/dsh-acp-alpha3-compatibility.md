@@ -89,5 +89,5 @@ Out of scope:
 
 ## Follow-ups
 
-- **已知限制（2026-09-01 实测确认）：`dsh --profile acp`（deepseek-harness-acp 0.0.1 / dsh 0.1.2-alpha.3）不产出流式增量**——直接以 ACP 协议探测，300 字写作请求的完整回复以单条 `agent_message_chunk`（全文一帧、时间跨度 0s）一次性发出，thinking 同样单帧。CodeM 侧的 ACP TextDelta 转发与前端增量渲染链路正常（收不到增量是因为上游没有增量），表现为"等一会一次性出全文"。需上游把 DeepSeek API 的 SSE 流转换为逐 chunk 的 session/update 后，CodeM 内即自动恢复流式观感；CodeM 侧无需改动。
+- **已知限制（2026-09-01 实测确认；2026-09-03 复测 0.1.2-rc.1 仍未解决）**：`dsh --profile acp`（deepseek-harness-acp 0.0.1）不产出流式增量——直接以 ACP 协议探测，300 字写作请求的完整回复以单条 `agent_message_chunk`（全文一帧、时间跨度 0s）一次性发出，thinking 同样单帧。CodeM 侧的 ACP TextDelta 转发与前端增量渲染链路正常（收不到增量是因为上游没有增量），表现为"等一会一次性出全文"。2026-09-03 复测 rc.1：流式仍为一帧全文（dsh-acp 桥仍从 committed session events 派生更新）、ACP image block 仍无响应；会话恢复正常（暗号验证通过）。需上游把 DeepSeek API 的 SSE 流转换为逐 chunk 的 session/update 后，CodeM 内即自动恢复流式观感；CodeM 侧无需改动。
 - 如后续需要在 CodeM 内嵌 DSH Web 管理能力，单独按新版 token/Cookie/Remote carrier 设计，不与 Agent ACP Driver 混用。

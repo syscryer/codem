@@ -4,7 +4,7 @@ use crate::agent_runtime::{
     normalize_agent_permission_mode, AgentPlanSnapshot, AgentPlanStep, AgentPlanStepStatus,
     AgentProviderRegistry, CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID,
     GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID,
-    OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+    KIMI_CODE_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
 };
 use crate::codex_app_server::{
     probe_codex_app_server, CodexStoredItem, CodexStoredTurn, CodexUserInput,
@@ -1039,6 +1039,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         resolve_pi_command,
         resolve_gemini_command,
         resolve_dsh_command,
+        resolve_kimi_command,
         agent_channels.clone(),
         dsh,
         hermes.clone(),
@@ -1539,6 +1540,10 @@ async fn agent_providers(State(state): State<AppState>) -> Json<AgentProviderReg
             .agent_runs
             .resolve_command(DEEPSEEK_DSH_PROVIDER_ID, false)
             .is_some(),
+        state
+            .agent_runs
+            .resolve_command(KIMI_CODE_PROVIDER_ID, false)
+            .is_some(),
     ))
 }
 
@@ -1657,6 +1662,7 @@ fn agent_settings_diagnostic_spec(
         GEMINI_CLI_PROVIDER_ID => ("gemini --version", &["--version"]),
         HERMES_AGENT_PROVIDER_ID => ("hermes --version", &["--version"]),
         DEEPSEEK_DSH_PROVIDER_ID => ("dsh --version", &["--version"]),
+        KIMI_CODE_PROVIDER_ID => ("kimi doctor", &["doctor"]),
         _ => return Err(ApiError::bad_request("不支持的 Agent Provider")),
     };
     Ok(spec)
@@ -1827,6 +1833,7 @@ fn agent_npm_package_name(provider_id: &str) -> Option<&'static str> {
         OPENCODE_PROVIDER_ID => Some("opencode-ai"),
         PI_AGENT_PROVIDER_ID => Some("@earendil-works/pi-coding-agent"),
         GEMINI_CLI_PROVIDER_ID => Some("@google/gemini-cli"),
+        KIMI_CODE_PROVIDER_ID => Some("@moonshot-ai/kimi-code"),
         DEEPSEEK_DSH_PROVIDER_ID => Some("@deepseek-ai/dsh"),
         _ => None,
     }
@@ -2114,9 +2121,18 @@ async fn execute_agent_lifecycle_action(
     } else {
         None
     };
+    // 部分官方安装脚本（如 Hermes 的 install.ps1）内部失败时仍以退出码 0 结束，
+    // 仅在输出里打印 "[X] Installation failed"。仅凭退出码会把这种失败当成功，
+    // 既跳过代理重试，又在找不到可执行文件时给出误导性的"未检测到"提示。
+    let lifecycle_output_failed = |output: &std::process::Output| {
+        !output.status.success()
+            || agent_lifecycle_output_text(output)
+                .to_ascii_lowercase()
+                .contains("installation failed")
+    };
     let retry_with_proxy = matches!(&primary, Err(AgentLifecycleProcessError::Timeout))
         || primary.as_ref().is_ok_and(|output| {
-            !output.status.success()
+            lifecycle_output_failed(output)
                 && is_agent_lifecycle_network_failure(&agent_lifecycle_output_text(output))
         });
     let (output, used_mirror, used_proxy) = if retry_with_proxy && proxy_retry.is_some() {
@@ -2126,9 +2142,10 @@ async fn execute_agent_lifecycle_action(
                 AgentLifecycleProcessError::Timeout => {
                     ApiError::internal("代理重试超时，请检查代理连接")
                 }
-                AgentLifecycleProcessError::Start(error) => {
-                    ApiError::internal(format!("启动代理重试失败: {error}"))
-                }
+                AgentLifecycleProcessError::Start(error) => ApiError::internal(format!(
+                    "启动代理重试失败: {}",
+                    describe_agent_lifecycle_start_error(&error)
+                )),
             })?;
         (output, false, true)
     } else if retry_with_mirror && mirror_eligible {
@@ -2139,9 +2156,10 @@ async fn execute_agent_lifecycle_action(
                     AgentLifecycleProcessError::Timeout => {
                         ApiError::internal("国内镜像重试超时，请检查网络后重试")
                     }
-                    AgentLifecycleProcessError::Start(error) => {
-                        ApiError::internal(format!("启动国内镜像重试失败: {error}"))
-                    }
+                    AgentLifecycleProcessError::Start(error) => ApiError::internal(format!(
+                        "启动国内镜像重试失败: {}",
+                        describe_agent_lifecycle_start_error(&error)
+                    )),
                 })?;
         (output, true, false)
     } else {
@@ -2149,17 +2167,25 @@ async fn execute_agent_lifecycle_action(
             AgentLifecycleProcessError::Timeout => {
                 ApiError::internal("Agent 安装或更新超时，请查看安装命令输出")
             }
-            AgentLifecycleProcessError::Start(error) => {
-                ApiError::internal(format!("启动 Agent 安装或更新失败: {error}"))
-            }
+            AgentLifecycleProcessError::Start(error) => ApiError::internal(format!(
+                "启动 Agent 安装或更新失败: {}",
+                describe_agent_lifecycle_start_error(&error)
+            )),
         })?;
         (output, false, false)
     };
     let output_text = agent_lifecycle_output_text(&output);
     let summary = sanitize_agent_lifecycle_output(&output_text);
-    if !output.status.success() {
+    if lifecycle_output_failed(&output) {
+        // 安装输出已判定为网络失败且没有可用代理时，直接告诉用户下一步动作，
+        // 避免只看到一长段脚本日志而不知道能做什么。
+        let network_hint = if retry_with_proxy && proxy_retry.is_none() {
+            "；安装输出包含网络失败（如无法访问 GitHub / SSL 握手失败），且当前未配置代理。可在设置的\"网络代理\"中配置代理后重试，或参考官方脚本在开启代理的终端中手动安装"
+        } else {
+            ""
+        };
         return Err(ApiError::internal(format!(
-            "Agent {}失败{}（退出码 {:?}）：{}",
+            "Agent {}失败{}{}（退出码 {:?}）：{}",
             if action == "install" {
                 "安装"
             } else {
@@ -2170,6 +2196,7 @@ async fn execute_agent_lifecycle_action(
             } else {
                 ""
             },
+            network_hint,
             output.status.code(),
             summary
         )));
@@ -2221,6 +2248,16 @@ async fn resolve_agent_lifecycle_command_after_success(provider_id: &str) -> Opt
         }
     }
     None
+}
+
+/// 安装/更新进程启动失败时补充常见原因提示：Windows 上"拒绝访问 (os error 5)"
+/// 多为杀毒软件或系统策略拦截安装命令，直接展示裸错误很难自诊断。
+fn describe_agent_lifecycle_start_error(error: &str) -> String {
+    if cfg!(target_os = "windows") && error.contains("os error 5") {
+        format!("{error}；可能被杀毒软件或系统策略拦截，请在杀软的隔离/保护记录中放行或将安装命令加入排除项后重试")
+    } else {
+        error.to_string()
+    }
 }
 
 async fn run_agent_lifecycle_plan(
@@ -2814,6 +2851,10 @@ fn build_agent_lifecycle_plan_for_target(
         OPENAI_CODEX_PROVIDER_ID => ("@openai/codex@latest", CODEX_CLI_INSTALL_COMMAND),
         OPENCODE_PROVIDER_ID => ("opencode-ai@latest", OPENCODE_CLI_INSTALL_COMMAND),
         GEMINI_CLI_PROVIDER_ID => ("@google/gemini-cli@latest", GEMINI_CLI_INSTALL_COMMAND),
+        KIMI_CODE_PROVIDER_ID => (
+            "@moonshot-ai/kimi-code@latest",
+            "npm install -g @moonshot-ai/kimi-code@latest",
+        ),
         DEEPSEEK_DSH_PROVIDER_ID => (dsh_package.as_str(), dsh_display.as_str()),
         GROK_BUILD_PROVIDER_ID if action == "update" => {
             return Ok(lifecycle_plan("grok", ["update"], "grok update"));
@@ -8655,6 +8696,53 @@ fn resolve_default_hermes_command() -> Option<String> {
     ))
 }
 
+fn resolve_kimi_command() -> Option<String> {
+    if let Some(command) = env::var("KIMI_CLI_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| command_reports_version(value))
+    {
+        return Some(command);
+    }
+
+    #[cfg(target_os = "windows")]
+    let lookup = {
+        let mut command = background_command("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command kimi -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
+        ]);
+        command_output_with_timeout(&mut command, std::time::Duration::from_secs(3))
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let lookup = background_command("which").arg("kimi").output().ok();
+
+    lookup
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| {
+            select_runnable_command_candidate(&stdout, cfg!(target_os = "windows"), |candidate| {
+                command_reports_version(candidate)
+            })
+        })
+        .or_else(|| {
+            // Kimi 官方安装器默认写入用户目录，且不一定出现在 PATH。
+            let home = home_dir()?;
+            let candidate = if cfg!(target_os = "windows") {
+                home.join(".kimi-code").join("bin").join("kimi.exe")
+            } else {
+                home.join(".kimi-code").join("bin").join("kimi")
+            };
+            let value = candidate.to_string_lossy().to_string();
+            command_reports_version(&value).then_some(value)
+        })
+}
+
 fn resolve_dsh_command() -> Option<String> {
     if let Some(command) = env::var("DSH_CLI_PATH")
         .ok()
@@ -10050,7 +10138,8 @@ where
         | PI_AGENT_PROVIDER_ID
         | GEMINI_CLI_PROVIDER_ID
         | HERMES_AGENT_PROVIDER_ID
-        | DEEPSEEK_DSH_PROVIDER_ID => {
+        | DEEPSEEK_DSH_PROVIDER_ID
+        | KIMI_CODE_PROVIDER_ID => {
             if provider_available(provider_id) {
                 return Ok(match provider_id {
                     GROK_BUILD_PROVIDER_ID => GROK_BUILD_PROVIDER_ID,
@@ -10060,6 +10149,7 @@ where
                     GEMINI_CLI_PROVIDER_ID => GEMINI_CLI_PROVIDER_ID,
                     HERMES_AGENT_PROVIDER_ID => HERMES_AGENT_PROVIDER_ID,
                     DEEPSEEK_DSH_PROVIDER_ID => DEEPSEEK_DSH_PROVIDER_ID,
+                    KIMI_CODE_PROVIDER_ID => KIMI_CODE_PROVIDER_ID,
                     _ => unreachable!(),
                 });
             }
@@ -10072,6 +10162,7 @@ where
                     GEMINI_CLI_PROVIDER_ID => "未找到可由 CodeM 启动的 Gemini CLI",
                     HERMES_AGENT_PROVIDER_ID => "未找到可由 CodeM 启动的 Hermes CLI",
                     DEEPSEEK_DSH_PROVIDER_ID => "未找到可由 CodeM 启动的 DeepSeek DSH CLI",
+                    KIMI_CODE_PROVIDER_ID => "未找到可由 CodeM 启动的 Kimi CLI",
                     _ => unreachable!(),
                 };
                 tracing::warn!(
@@ -15540,6 +15631,7 @@ fn settings_provider_id(value: Option<&str>) -> ApiResult<&str> {
         Some(GEMINI_CLI_PROVIDER_ID) => Ok(GEMINI_CLI_PROVIDER_ID),
         Some(HERMES_AGENT_PROVIDER_ID) => Ok(HERMES_AGENT_PROVIDER_ID),
         Some(DEEPSEEK_DSH_PROVIDER_ID) => Ok(DEEPSEEK_DSH_PROVIDER_ID),
+        Some(KIMI_CODE_PROVIDER_ID) => Ok(KIMI_CODE_PROVIDER_ID),
         Some(_) => Err(ApiError::bad_request("不支持的 Agent Provider")),
     }
 }
@@ -15553,6 +15645,7 @@ fn agent_config_directory_name(provider_id: &str) -> &'static str {
         GEMINI_CLI_PROVIDER_ID => ".gemini",
         HERMES_AGENT_PROVIDER_ID => ".hermes",
         DEEPSEEK_DSH_PROVIDER_ID => ".dsh",
+        KIMI_CODE_PROVIDER_ID => ".kimi-code",
         _ => ".claude",
     }
 }
@@ -23433,8 +23526,8 @@ mod tests {
     };
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID,
-        GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID,
-        PI_AGENT_PROVIDER_ID,
+        GROK_BUILD_PROVIDER_ID, KIMI_CODE_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     };
     use crate::codex_app_server::{
         CodexForkOutcome, CodexStoredItem, CodexStoredTurn, CodexUserInput,
@@ -23484,6 +23577,7 @@ mod tests {
                 resolve_opencode_command,
                 resolve_pi_command,
                 resolve_gemini_command,
+                || None,
                 || None,
                 agent_channels,
                 crate::dsh::DshService::new(),
@@ -28603,6 +28697,7 @@ mod tests {
                 resolve_opencode_command,
                 resolve_pi_command,
                 resolve_gemini_command,
+                || None,
                 || None,
                 agent_channels,
                 crate::dsh::DshService::new(),

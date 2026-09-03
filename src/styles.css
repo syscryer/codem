@@ -15399,6 +15399,44 @@ button.git-conflict-overview-row:focus-visible,
   line-height: 1.4;
 }
 
+.hermes-install-guide {
+  margin: 10px 0;
+  border: 1px solid color-mix(in srgb, currentColor 18%, var(--app-border, #ececec));
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 4%, var(--app-surface, #ffffff));
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--app-muted, #77736c);
+}
+
+.hermes-install-guide summary {
+  cursor: pointer;
+  color: var(--app-text-strong, #2c2a26);
+  font-weight: 600;
+  font-size: 11px;
+  user-select: none;
+}
+
+.hermes-install-guide[open] summary {
+  margin-bottom: 6px;
+}
+
+.hermes-install-guide ul {
+  margin: 0;
+  padding-left: 16px;
+  display: grid;
+  gap: 4px;
+}
+
+.hermes-install-guide code {
+  font-family: var(--code-font-family, monospace);
+  font-size: 10px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
 .agent-provider-status {
   min-height: 26px;
   display: inline-flex;

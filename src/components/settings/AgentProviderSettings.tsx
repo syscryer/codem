@@ -1137,6 +1137,18 @@ function ProviderDetail({
       ) : null}
 
       {provider.id === 'hermes-agent' ? (
+        <details className="hermes-install-guide">
+          <summary>Hermes 安装说明（官方全家桶安装器 · 含杀毒软件放行指引）</summary>
+          <ul>
+            <li>「一键安装」使用官方脚本，会把 Python、Git、Node、ripgrep、ffmpeg 等运行环境一并装到 <code>%LOCALAPPDATA%\hermes</code>（无需管理员权限），下载量较大属于正常现象。</li>
+            <li>如果安装报「拒绝访问 (os error 5)」，通常是杀毒软件拦截：请在杀软的隔离/保护记录中放行本次拦截，或把 <code>%LOCALAPPDATA%\hermes</code> 目录加入排除项，然后重试安装。</li>
+            <li>也可以改用官方签名安装器 <code>Hermes-Setup.exe</code>（GitHub 仓库 NousResearch/hermes-agent 的 Releases 页下载）手动安装，完成后 CodeM 会自动识别，无需额外配置。</li>
+            <li>旧的损坏安装可先删除 <code>%LOCALAPPDATA%\hermes</code> 目录再重装；用户主目录下的 <code>~/.hermes</code>（配置与技能）不受影响，请保留。</li>
+          </ul>
+        </details>
+      ) : null}
+
+      {provider.id === 'hermes-agent' ? (
         <HermesSettingsPanel
           showToast={showToast}
           runtimeContent={<>{providerFactsContent}{providerCapabilitiesContent}</>}

@@ -13,8 +13,8 @@ use crate::{
         AgentCompactionStatus, AgentControlCommand, AgentPermissionDecision, AgentRunEvent,
         AgentUsageSnapshot, AgentUserInputOption, AgentUserInputQuestion, AgentUserInputRequest,
         CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID,
-        GROK_BUILD_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+        GROK_BUILD_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID, KIMI_CODE_PROVIDER_ID,
+        OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     },
     codex_app_server::{
         CodexAppServerError, CodexCompactCapability, CodexCompactionEvent,
@@ -92,6 +92,7 @@ struct CommandResolvers {
     pi: CommandResolver,
     gemini: CommandResolver,
     dsh: CommandResolver,
+    kimi: CommandResolver,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +110,10 @@ enum AgentDriverInput {
     Pi(PiPromptInput),
     Hermes(String),
     Dsh(String),
+    // Kimi 带图消息：ACP 通道收到 image block 会静默挂死（0.39/0.40 实测），
+    // 改走一次性 `kimi -p --output-format stream-json` 进程，图片以
+    // <image path> 标签注入（print 模式 ReadMediaFile 自动读取）。
+    KimiPrint(Vec<NormalizedAgentInputBlock>),
 }
 
 #[derive(Clone)]
@@ -888,6 +893,38 @@ fn dsh_acp_model_id(value: Option<&str>) -> Option<String> {
         .then(|| selected[0].to_string() + "/" + &selected[1])
 }
 
+// Kimi ACP 的模型目录来自 session configOptions 的 "model" 选择器
+// （如 minimax-cn/MiniMax-M3），值即模型 id，无需协议路由转换。
+fn kimi_acp_model_catalog(session: &AcpSessionSummary) -> AgentModelCatalog {
+    let model_option = session
+        .config_options
+        .iter()
+        .find(|option| option.id == "model");
+    let default_model_id = model_option.and_then(|option| option.current_value.clone());
+    let models = model_option
+        .map(|option| {
+            option
+                .options
+                .iter()
+                .map(|choice| AgentModelSummary {
+                    is_default: default_model_id.as_deref() == Some(choice.value.as_str()),
+                    id: choice.value.clone(),
+                    label: choice.name.clone(),
+                    description: choice.description.clone(),
+                    context_window_tokens: None,
+                    default_reasoning_effort: None,
+                    supported_reasoning_efforts: Vec::new(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    AgentModelCatalog {
+        provider_id: KIMI_CODE_PROVIDER_ID.to_string(),
+        default_model_id,
+        models,
+    }
+}
+
 fn dsh_acp_model_catalog(session: &AcpSessionSummary) -> AgentModelCatalog {
     let model_option = session
         .config_options
@@ -1001,6 +1038,7 @@ impl AgentRunService {
         pi_command_resolver: fn() -> Option<String>,
         gemini_command_resolver: fn() -> Option<String>,
         dsh_command_resolver: fn() -> Option<String>,
+        kimi_command_resolver: fn() -> Option<String>,
         agent_channels: AgentChannelService,
         dsh: DshService,
         hermes: HermesService,
@@ -1021,6 +1059,7 @@ impl AgentRunService {
                     pi: pi_command_resolver,
                     gemini: gemini_command_resolver,
                     dsh: dsh_command_resolver,
+                    kimi: kimi_command_resolver,
                 },
                 agent_channels,
                 dsh,
@@ -1674,6 +1713,39 @@ async fn agent_models(
             }
             Ok(Json(catalog))
         }
+        KIMI_CODE_PROVIDER_ID => {
+            let command = resolve_agent_command(&state, provider_id, query.refresh)
+                .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 Kimi CLI"))?;
+            let arguments = acp_arguments(provider_id, "default", None)
+                .map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
+            let environment = std::collections::BTreeMap::new();
+            let mut client = AcpStdioClient::spawn_with_env_and_removals(
+                &command,
+                &arguments,
+                &cwd,
+                &environment,
+                &[],
+            )
+            .await
+            .map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
+            let result = async {
+                client.initialize(env!("CARGO_PKG_VERSION")).await?;
+                let session = client.new_session(&cwd).await?;
+                let catalog = kimi_acp_model_catalog(&session);
+                client.close_session(&session.session_id).await?;
+                Ok::<_, AcpError>(catalog)
+            }
+            .await;
+            client.shutdown().await;
+            let catalog =
+                result.map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
+            if catalog.models.is_empty() {
+                return Err(AgentApiError::bad_request(
+                    "Kimi 当前没有可用模型，请先运行 kimi provider 配置 LLM provider",
+                ));
+            }
+            Ok(Json(catalog))
+        }
         GEMINI_CLI_PROVIDER_ID => {
             let command = resolve_agent_command(&state, provider_id, query.refresh)
                 .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 Gemini CLI"))?;
@@ -1799,6 +1871,7 @@ fn resolve_agent_command(
         PI_AGENT_PROVIDER_ID => (state.command_resolvers.pi)(),
         GEMINI_CLI_PROVIDER_ID => (state.command_resolvers.gemini)(),
         DEEPSEEK_DSH_PROVIDER_ID => (state.command_resolvers.dsh)(),
+        KIMI_CODE_PROVIDER_ID => (state.command_resolvers.kimi)(),
         HERMES_AGENT_PROVIDER_ID => state.hermes.resolve_command(refresh),
         _ => None,
     }
@@ -2044,6 +2117,12 @@ async fn start_agent_run(
                 .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 DSH CLI"))?,
             "DeepSeek DSH",
         ),
+        KIMI_CODE_PROVIDER_ID => (
+            AgentDriverKind::Acp,
+            resolve_agent_command(&state, provider_id, false)
+                .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 Kimi CLI"))?,
+            "Kimi Code",
+        ),
         _ => {
             return Err(AgentApiError::bad_request(
                 "当前 Provider 不支持通用 Agent 运行",
@@ -2051,36 +2130,46 @@ async fn start_agent_run(
         }
     };
     let input_blocks = normalize_agent_input(payload.prompt.as_deref(), payload.content_blocks)?;
+    // Kimi 的 ACP 通道收到 image block 会静默挂死，带图消息改走一次性 print 进程。
+    let kimi_print_image_run = provider_id == KIMI_CODE_PROVIDER_ID
+        && driver == AgentDriverKind::Acp
+        && input_blocks
+            .iter()
+            .any(|block| matches!(block, NormalizedAgentInputBlock::Image { .. }));
     let working_directory = resolve_working_directory(&payload.working_directory)?;
     let thread_id = normalize_optional_id(payload.thread_id, "threadId")?;
     let session_id = normalize_optional_id(payload.session_id, "sessionId")?;
-    let driver_input = match driver {
-        AgentDriverKind::Acp => AgentDriverInput::Acp(build_acp_prompt(
-            &input_blocks,
-            &working_directory,
-            payload.conversation_context.as_deref(),
-            payload.automation_execution,
-        )?),
-        AgentDriverKind::CodexAppServer => AgentDriverInput::Codex(build_codex_input(
-            &input_blocks,
-            &working_directory,
-            payload.automation_execution,
-        )?),
-        AgentDriverKind::PiRpc => {
-            AgentDriverInput::Pi(build_pi_prompt(&input_blocks, &working_directory)?)
+    let driver_input = if kimi_print_image_run {
+        AgentDriverInput::KimiPrint(input_blocks.clone())
+    } else {
+        match driver {
+            AgentDriverKind::Acp => AgentDriverInput::Acp(build_acp_prompt(
+                &input_blocks,
+                &working_directory,
+                payload.conversation_context.as_deref(),
+                payload.automation_execution,
+            )?),
+            AgentDriverKind::CodexAppServer => AgentDriverInput::Codex(build_codex_input(
+                &input_blocks,
+                &working_directory,
+                payload.automation_execution,
+            )?),
+            AgentDriverKind::PiRpc => {
+                AgentDriverInput::Pi(build_pi_prompt(&input_blocks, &working_directory)?)
+            }
+            AgentDriverKind::HermesJsonRpc => AgentDriverInput::Hermes(build_hermes_prompt(
+                &input_blocks,
+                &working_directory,
+                payload.conversation_context.as_deref(),
+                payload.automation_execution,
+            )?),
+            AgentDriverKind::DshWebApi => AgentDriverInput::Dsh(build_hermes_prompt(
+                &input_blocks,
+                &working_directory,
+                payload.conversation_context.as_deref(),
+                payload.automation_execution,
+            )?),
         }
-        AgentDriverKind::HermesJsonRpc => AgentDriverInput::Hermes(build_hermes_prompt(
-            &input_blocks,
-            &working_directory,
-            payload.conversation_context.as_deref(),
-            payload.automation_execution,
-        )?),
-        AgentDriverKind::DshWebApi => AgentDriverInput::Dsh(build_hermes_prompt(
-            &input_blocks,
-            &working_directory,
-            payload.conversation_context.as_deref(),
-            payload.automation_execution,
-        )?),
     };
     let requested_model = normalize_optional_id(payload.model, "model")?;
     let channel_id = normalize_optional_id(payload.channel_id, "channelId")?;
@@ -2134,7 +2223,10 @@ async fn start_agent_run(
         && reasoning_effort.is_some()
         && !matches!(
             provider_id,
-            OPENCODE_PROVIDER_ID | GROK_BUILD_PROVIDER_ID | DEEPSEEK_DSH_PROVIDER_ID
+            OPENCODE_PROVIDER_ID
+                | GROK_BUILD_PROVIDER_ID
+                | DEEPSEEK_DSH_PROVIDER_ID
+                | KIMI_CODE_PROVIDER_ID
         )
     {
         return Err(AgentApiError::bad_request(
@@ -2145,6 +2237,13 @@ async fn start_agent_run(
         .ok_or_else(|| {
             AgentApiError::bad_request("permissionMode 仅支持 default、auto 或 bypassPermissions")
         })?;
+    // Kimi 图片走一次性 print 进程，该模式权限恒为 auto、无法逐项审批工具调用；
+    // default（手动审批）语义下拒绝该路径，避免绕过用户的权限预期。
+    if kimi_print_image_run && permission_mode == "default" {
+        return Err(AgentApiError::bad_request(
+            "Kimi 图片输入需要自动或完全访问权限：图片通道运行在一次性进程中，无法逐项审批工具调用。请调整权限模式后重试。",
+        ));
+    }
     environment.insert(
         "CODEM_PERMISSION_MODE".to_string(),
         permission_mode.to_string(),
@@ -2218,7 +2317,22 @@ async fn start_agent_run(
     );
     let provider_id = provider_id.to_string();
 
-    if driver == AgentDriverKind::DshWebApi && thread_id.is_none() {
+    if kimi_print_image_run {
+        let AgentDriverInput::KimiPrint(print_input) = driver_input else {
+            unreachable!("kimi print image run validated above")
+        };
+        tokio::spawn(execute_kimi_print_run(KimiPrintRunTask {
+            state: state.clone(),
+            run_id: run_id.clone(),
+            command,
+            working_directory,
+            input: print_input,
+            requested_session_id: session_id,
+            model,
+            environment,
+            cancel: cancel_receiver,
+        }));
+    } else if driver == AgentDriverKind::DshWebApi && thread_id.is_none() {
         let AgentDriverInput::Dsh(prompt) = driver_input else {
             unreachable!("DSH driver input validated above")
         };
@@ -2323,6 +2437,9 @@ async fn start_agent_run(
                 }
                 AgentDriverInput::Dsh(_) => {
                     unreachable!("DSH Web API runs require a thread runtime")
+                }
+                AgentDriverInput::KimiPrint(_) => {
+                    unreachable!("Kimi print runs are dispatched before the runtime path")
                 }
             }
         });
@@ -3848,6 +3965,15 @@ fn runtime_status_message(
         (_, AgentDriverKind::PiRpc, true, _) => "已复用 Pi RPC 热会话".to_string(),
         (_, AgentDriverKind::PiRpc, false, true) => "已恢复 Pi RPC 会话".to_string(),
         (_, AgentDriverKind::PiRpc, false, false) => "已创建 Pi RPC 会话".to_string(),
+        (KIMI_CODE_PROVIDER_ID, AgentDriverKind::Acp, true, _) => {
+            "已复用 Kimi ACP 热会话".to_string()
+        }
+        (KIMI_CODE_PROVIDER_ID, AgentDriverKind::Acp, false, true) => {
+            "已恢复 Kimi ACP 会话".to_string()
+        }
+        (KIMI_CODE_PROVIDER_ID, AgentDriverKind::Acp, false, false) => {
+            "已创建 Kimi ACP 会话".to_string()
+        }
         (_, AgentDriverKind::Acp, true, _) => "已复用 ACP 热会话".to_string(),
         (_, AgentDriverKind::Acp, false, true) => "已恢复 ACP 会话".to_string(),
         (_, AgentDriverKind::Acp, false, false) => "已创建 ACP 会话".to_string(),
@@ -4411,6 +4537,11 @@ async fn prepare_acp_session(
                         )
                         .await
                 }
+                KIMI_CODE_PROVIDER_ID => {
+                    client
+                        .set_config_option(&session.session_id, "model", model)
+                        .await
+                }
                 _ => unreachable!("ACP profile validated before session initialization"),
             }
             .map_err(|error| public_acp_prepare_error(provider_id, "切换模型", error))?;
@@ -4435,6 +4566,17 @@ async fn prepare_acp_session(
     if provider_id == GEMINI_CLI_PROVIDER_ID {
         client
             .set_mode(&session.session_id, gemini_mode_id(permission_mode))
+            .await
+            .map_err(|error| public_acp_prepare_error(provider_id, "切换权限模式", error))?;
+    }
+    if provider_id == KIMI_CODE_PROVIDER_ID {
+        let kimi_mode = match permission_mode {
+            "auto" => "auto",
+            "bypassPermissions" => "yolo",
+            _ => "default",
+        };
+        client
+            .set_mode(&session.session_id, kimi_mode)
             .await
             .map_err(|error| public_acp_prepare_error(provider_id, "切换权限模式", error))?;
     }
@@ -4467,6 +4609,376 @@ fn agent_provider_display_name(provider_id: &str) -> &'static str {
         OPENAI_CODEX_PROVIDER_ID => "OpenAI Codex",
         _ => "Agent Provider",
     }
+}
+
+// Kimi 带图消息的一次性 print 驱动：spawn `kimi -p <prompt> --output-format
+// stream-json`，按行解析四种 NDJSON 形态（meta / assistant 文本 / assistant
+// tool_calls / tool 结果），映射为 CodeM 运行事件。print 模式权限恒为 auto，
+// 无审批与思考输出；文本以整块到达（无 token 级增量）。
+struct KimiPrintRunTask {
+    state: AgentRunState,
+    run_id: String,
+    command: String,
+    working_directory: PathBuf,
+    input: Vec<NormalizedAgentInputBlock>,
+    requested_session_id: Option<String>,
+    model: Option<String>,
+    environment: BTreeMap<String, String>,
+    cancel: watch::Receiver<bool>,
+}
+
+async fn execute_kimi_print_run(task: KimiPrintRunTask) {
+    let KimiPrintRunTask {
+        state,
+        run_id,
+        command,
+        working_directory,
+        input,
+        requested_session_id,
+        model,
+        environment,
+        mut cancel,
+    } = task;
+
+    let mut prompt = String::new();
+    let mut image_tags = 0usize;
+    let mut written_images: Vec<String> = Vec::new();
+    for block in &input {
+        match block {
+            NormalizedAgentInputBlock::Text { text } => {
+                if !text.trim().is_empty() {
+                    if !prompt.is_empty() {
+                        prompt.push('\n');
+                    }
+                    prompt.push_str(text);
+                }
+            }
+            NormalizedAgentInputBlock::Image {
+                path, data, name, ..
+            } => {
+                let resolved_path = match (path.as_deref(), data.as_deref()) {
+                    (Some(path), _) if !path.trim().is_empty() => Some(path.trim().to_string()),
+                    (_, Some(data)) if !data.trim().is_empty() => {
+                        write_kimi_print_image(data, name.as_deref())
+                    }
+                    _ => None,
+                };
+                match resolved_path {
+                    Some(path) => {
+                        if !prompt.is_empty() {
+                            prompt.push('\n');
+                        }
+                        prompt.push_str(&format!("<image path=\"{}\">", path));
+                        image_tags += 1;
+                    }
+                    None => {
+                        state.push_terminal(
+                            &run_id,
+                            AgentRunEvent::Error {
+                                run_id: run_id.clone(),
+                                message: "图片缺少可读取的路径或数据".to_string(),
+                            },
+                        );
+                        return;
+                    }
+                }
+            }
+            NormalizedAgentInputBlock::FileReference { path, name, .. } => {
+                // print 通道只接受文本与图片：文件引用降级为路径提示，交给模型
+                // 自行读取，而不是静默丢弃。
+                if !prompt.is_empty() {
+                    prompt.push('\n');
+                }
+                prompt.push_str(&format!("[文件引用：{}]", path.trim()));
+                let _ = name;
+            }
+            NormalizedAgentInputBlock::FileText { path, name, .. } => {
+                if !prompt.is_empty() {
+                    prompt.push('\n');
+                }
+                prompt.push_str(&format!(
+                    "[内联文件 {}（{}）：内容过长，请按路径读取]",
+                    name.trim(),
+                    path.trim()
+                ));
+            }
+            NormalizedAgentInputBlock::AttachmentMetadata { name, reason, .. } => {
+                if !prompt.is_empty() {
+                    prompt.push('\n');
+                }
+                prompt.push_str(&format!("[附件元数据：{name}（{reason}）]"));
+            }
+        }
+    }
+    if image_tags == 0 || prompt.trim().is_empty() {
+        state.push_terminal(
+            &run_id,
+            AgentRunEvent::Error {
+                run_id: run_id.clone(),
+                message: "Kimi 图片消息缺少有效内容".to_string(),
+            },
+        );
+        return;
+    }
+    // print 模式权限恒为 auto（无审批环节），与用户在 UI 选择的权限模式无关。
+    // 通过提示词软性约束本轮只做图片分析，避免默认权限下执行修改性工具。
+    prompt = format!(
+        "[本轮为图片分析轮：使用 ReadMediaFile 读取图片；除非用户明确要求，         不要执行 Bash、写文件等修改性工具；直接回答后结束。]
+
+{prompt}"
+    );
+    // Windows argv 上限约 32K 字符，给正文与转义留出余量。
+    const KIMI_PRINT_PROMPT_LIMIT: usize = 24_000;
+    if prompt.chars().count() > KIMI_PRINT_PROMPT_LIMIT {
+        let prefix: String = prompt.chars().take(KIMI_PRINT_PROMPT_LIMIT).collect();
+        prompt = format!("{}\n[……内容过长已截断……]", prefix);
+    }
+
+    let mut process = background_agent_command(&command);
+    process
+        .arg("-p")
+        .arg(&prompt)
+        .arg("--output-format")
+        .arg("stream-json")
+        .current_dir(&working_directory)
+        .envs(&environment)
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(model) = model.as_deref() {
+        process.arg("-m").arg(model);
+    }
+
+    let mut child = match process.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            state.push_terminal(
+                &run_id,
+                AgentRunEvent::Error {
+                    run_id: run_id.clone(),
+                    message: format!("启动 Kimi 图片运行失败: {}", error),
+                },
+            );
+            return;
+        }
+    };
+
+    state.push_event(
+        &run_id,
+        AgentRunEvent::Status {
+            run_id: run_id.clone(),
+            message: "已启动 Kimi 图片运行".to_string(),
+        },
+    );
+    if let Some(session_id) = requested_session_id.as_deref() {
+        state.push_event(
+            &run_id,
+            AgentRunEvent::Session {
+                run_id: run_id.clone(),
+                session_id: session_id.to_string(),
+            },
+        );
+    }
+
+    use tokio::io::AsyncBufReadExt;
+    let stdout = child.stdout.take().expect("kimi print stdout piped");
+    // stderr 必须 Drain：piped 后无人读取会在缓冲写满时把子进程写死锁挂起。
+    let stderr = child.stderr.take();
+    let stderr_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut stderr = match stderr {
+            Some(stderr) => stderr,
+            None => return String::new(),
+        };
+        let mut buffer = Vec::new();
+        let _ = stderr.read_to_end(&mut buffer).await;
+        String::from_utf8_lossy(&buffer).trim().to_string()
+    });
+    let mut reader = tokio::io::BufReader::new(stdout);
+    let mut lines = reader.lines();
+    let mut result_text = String::new();
+    let mut block_index: u64 = 0;
+
+    let run = async {
+        while let Ok(Some(line)) = lines.next_line().await {
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let role = value
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            match role {
+                "assistant" => {
+                    if let Some(text) = value.get("content").and_then(Value::as_str) {
+                        if text.is_empty() {
+                            continue;
+                        }
+                        result_text.push_str(text);
+                        state.push_event(
+                            &run_id,
+                            AgentRunEvent::Delta {
+                                run_id: run_id.clone(),
+                                text: text.to_string(),
+                            },
+                        );
+                    }
+                    if let Some(calls) = value.get("tool_calls").and_then(Value::as_array) {
+                        for call in calls {
+                            let Some(function) = call.get("function") else {
+                                continue;
+                            };
+                            let tool_use_id = call
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("kimi-print-tool")
+                                .to_string();
+                            let name = function
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown")
+                                .to_string();
+                            let input = function
+                                .get("arguments")
+                                .and_then(Value::as_str)
+                                .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+                            state.push_event(
+                                &run_id,
+                                AgentRunEvent::ToolStart {
+                                    run_id: run_id.clone(),
+                                    block_index,
+                                    tool_use_id: tool_use_id.clone(),
+                                    name,
+                                    input,
+                                },
+                            );
+                            block_index += 1;
+                        }
+                    }
+                }
+                "tool" => {
+                    let tool_use_id = value
+                        .get("tool_call_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("kimi-print-tool")
+                        .to_string();
+                    let content = value
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    // print 模式的 NDJSON 不带错误标志，按内容特征近似判定，
+                    // 避免把失败命令展示成成功结果。
+                    let head: String = content.to_lowercase().chars().take(300).collect();
+                    let is_error = [
+                        "error:",
+                        "exit code",
+                        "command failed",
+                        "not found",
+                        "permission denied",
+                    ]
+                    .iter()
+                    .any(|marker| head.contains(marker));
+                    state.push_event(
+                        &run_id,
+                        AgentRunEvent::ToolResult {
+                            run_id: run_id.clone(),
+                            tool_use_id,
+                            content,
+                            is_error,
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+        let status = child.wait().await;
+        let stderr_text = stderr_task.await.unwrap_or_default();
+        match status {
+            Ok(status) if !status.success() => Err(format!(
+                "Kimi 图片运行退出码 {:?}{}",
+                status.code(),
+                if stderr_text.is_empty() {
+                    String::new()
+                } else {
+                    format!("：{}", stderr_text.chars().take(400).collect::<String>())
+                }
+            )),
+            Ok(_) => Ok(()),
+            Err(error) => Err(format!("{error}：{stderr_text}")),
+        }
+    };
+
+    let cleanup_images = || {
+        for path in &written_images {
+            let _ = std::fs::remove_file(path);
+        }
+    };
+    tokio::select! {
+        outcome = run => {
+            match outcome {
+                Ok(()) => {
+                    cleanup_images();
+                    state.push_terminal(
+                        &run_id,
+                        AgentRunEvent::Done {
+                            run_id: run_id.clone(),
+                            session_id: requested_session_id.clone().unwrap_or_default(),
+                            result: result_text,
+                            stop_reason: "end_turn".to_string(),
+                            usage: AgentUsageSnapshot::default(),
+                            usage_source: "kimi-print",
+                        },
+                    );
+                }
+                Err(message) => {
+                    cleanup_images();
+                    state.push_terminal(
+                        &run_id,
+                        AgentRunEvent::Error {
+                            run_id: run_id.clone(),
+                            message,
+                        },
+                    );
+                }
+            }
+        }
+        _ = cancel.changed() => {
+            let _ = child.kill().await;
+            cleanup_images();
+            state.push_terminal(
+                &run_id,
+                AgentRunEvent::Done {
+                    run_id: run_id.clone(),
+                    session_id: requested_session_id.clone().unwrap_or_default(),
+                    result: result_text,
+                    stop_reason: "cancelled".to_string(),
+                    usage: AgentUsageSnapshot::default(),
+                    usage_source: "kimi-print",
+                },
+            );
+        }
+    }
+}
+
+fn write_kimi_print_image(data: &str, name: Option<&str>) -> Option<String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.trim().as_bytes())
+        .ok()?;
+    let directory = std::env::temp_dir().join("codem-kimi-images");
+    std::fs::create_dir_all(&directory).ok()?;
+    let extension = name
+        .and_then(|name| name.rsplit_once('.'))
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .filter(|ext| {
+            ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "webp" || ext == "gif"
+        })
+        .unwrap_or_else(|| "png".to_string());
+    let path = directory.join(format!("{}.{}", uuid::Uuid::new_v4(), extension));
+    std::fs::write(&path, bytes).ok()?;
+    Some(path.to_string_lossy().to_string())
 }
 
 async fn execute_acp_run(task: AcpRunTask) {
@@ -9071,6 +9583,7 @@ fn acp_arguments<'a>(
         OPENCODE_PROVIDER_ID => Ok(vec!["acp"]),
         GEMINI_CLI_PROVIDER_ID => Ok(vec!["--skip-trust", "--acp"]),
         DEEPSEEK_DSH_PROVIDER_ID => Ok(vec!["--profile", "acp"]),
+        KIMI_CODE_PROVIDER_ID => Ok(vec!["acp"]),
         _ => Err(AcpError::Protocol(
             "当前 Provider 没有可用 ACP 启动配置".to_string(),
         )),
@@ -9085,10 +9598,10 @@ fn gemini_mode_id(permission_mode: &'static str) -> &'static str {
     }
 }
 
-fn acp_permission_policy(provider_id: &str, permission_mode: &'static str) -> AcpPermissionPolicy {
-    if provider_id != OPENCODE_PROVIDER_ID {
-        return AcpPermissionPolicy::Interactive;
-    }
+fn acp_permission_policy(_provider_id: &str, permission_mode: &'static str) -> AcpPermissionPolicy {
+    // 权限模式语义对所有 ACP Agent 一致：auto/完全访问 表示用户授权自动允许。
+    // 部分 Agent（Grok/Gemini/Kimi）另有服务端 mode 控制，这里只在它们仍发
+    // request_permission 时兜底自动应答；DSH 等纯客户端审批的 Agent 依赖此策略。
     match permission_mode {
         "auto" => AcpPermissionPolicy::AutoApproveOnce,
         "bypassPermissions" => AcpPermissionPolicy::AutoApproveAlways,
@@ -9624,6 +10137,7 @@ mod tests {
                 pi: || None,
                 gemini: || None,
                 dsh: || None,
+                kimi: || None,
             },
             agent_channels: test_agent_channel_service(),
             dsh: DshService::new(),
@@ -10026,6 +10540,7 @@ mod tests {
             || None,
             || None,
             || None,
+            || None,
             test_agent_channel_service(),
             DshService::new(),
             HermesService::new(std::env::temp_dir(), || None),
@@ -10048,6 +10563,7 @@ mod tests {
     #[test]
     fn expired_claude_command_survives_a_transient_resolution_failure() {
         let service = AgentRunService::new(
+            || None,
             || None,
             || None,
             || None,
@@ -10087,6 +10603,7 @@ mod tests {
             || None,
             || None,
             counting_codex_command_resolver,
+            || None,
             || None,
             || None,
             || None,
@@ -10268,6 +10785,14 @@ mod tests {
         );
         assert_eq!(
             acp_permission_policy("grok-build", "bypassPermissions"),
+            AcpPermissionPolicy::AutoApproveAlways
+        );
+        assert_eq!(
+            acp_permission_policy("deepseek-dsh", "bypassPermissions"),
+            AcpPermissionPolicy::AutoApproveAlways
+        );
+        assert_eq!(
+            acp_permission_policy("deepseek-dsh", "default"),
             AcpPermissionPolicy::Interactive
         );
     }

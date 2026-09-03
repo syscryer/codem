@@ -18,6 +18,7 @@ const EMPTY_BOOTSTRAP: AgentChannelBootstrap = {
     'gemini-cli': 'system',
     'hermes-agent': 'system',
     'deepseek-dsh': 'system',
+    'kimi-code': 'system',
   },
 };
 

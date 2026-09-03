@@ -10,6 +10,7 @@ pub const PI_AGENT_PROVIDER_ID: &str = "pi-agent";
 pub const GEMINI_CLI_PROVIDER_ID: &str = "gemini-cli";
 pub const HERMES_AGENT_PROVIDER_ID: &str = "hermes-agent";
 pub const DEEPSEEK_DSH_PROVIDER_ID: &str = "deepseek-dsh";
+pub const KIMI_CODE_PROVIDER_ID: &str = "kimi-code";
 pub const CODEM_AGENT_PROVIDER_ID: &str = "codem-agent";
 pub const DEFAULT_AGENT_PERMISSION_MODE: &str = "default";
 pub const DEFAULT_GROK_PERMISSION_MODE: &str = DEFAULT_AGENT_PERMISSION_MODE;
@@ -25,6 +26,7 @@ pub fn is_active_agent_provider_id(provider_id: &str) -> bool {
             | GEMINI_CLI_PROVIDER_ID
             | HERMES_AGENT_PROVIDER_ID
             | DEEPSEEK_DSH_PROVIDER_ID
+            | KIMI_CODE_PROVIDER_ID
     )
 }
 
@@ -560,6 +562,7 @@ pub fn agent_provider_registry(
     gemini_available: bool,
     hermes_available: bool,
     dsh_available: bool,
+    kimi_available: bool,
 ) -> AgentProviderRegistry {
     let grok_provider = AgentProviderDescriptor {
         id: GROK_BUILD_PROVIDER_ID,
@@ -624,6 +627,15 @@ pub fn agent_provider_registry(
         selectable: dsh_available,
         capabilities: dsh_capabilities(),
     };
+    let kimi_provider = AgentProviderDescriptor {
+        id: KIMI_CODE_PROVIDER_ID,
+        display_name: "Kimi Code",
+        driver_id: "acp",
+        lifecycle: AgentProviderLifecycle::Active,
+        available: Some(kimi_available),
+        selectable: kimi_available,
+        capabilities: kimi_capabilities(),
+    };
 
     AgentProviderRegistry {
         providers: vec![
@@ -643,6 +655,7 @@ pub fn agent_provider_registry(
             gemini_provider,
             hermes_provider,
             dsh_provider,
+            kimi_provider,
             planned_provider(CODEM_AGENT_PROVIDER_ID, "CodeM Agent", "acp"),
         ],
     }
@@ -896,6 +909,39 @@ fn dsh_capabilities() -> AgentCapabilities {
     }
 }
 
+// Kimi Code 0.39.x 实测：ACP 通道文本/思考 token 级流式、session/load 恢复、
+// configOption 模型选择、default/plan/auto/yolo 四种权限模式；图片经一次性
+// print 进程通道支持（ACP 通道会挂死，后端自动分流）；MCP 未经 CodeM 注入
+// 验证，先按保守值声明。
+fn kimi_capabilities() -> AgentCapabilities {
+    use AgentCapabilitySupport::{Supported, Unsupported};
+
+    AgentCapabilities {
+        sessions: AgentSessionCapabilities {
+            create: Supported,
+            resume: Supported,
+            list: Unsupported,
+            import: Unsupported,
+        },
+        input: AgentInputCapabilities {
+            text: Supported,
+            images: Supported,
+            file_references: Supported,
+        },
+        tools: AgentToolCapabilities {
+            streaming: Supported,
+            approval: Supported,
+            user_input: Supported,
+            mcp: Unsupported,
+        },
+        runtime: AgentRuntimeCapabilities {
+            cancel: AgentCancelSupport::Soft,
+            reconnect: Supported,
+            concurrent_sessions: Supported,
+        },
+    }
+}
+
 fn runtime_detected_capabilities() -> AgentCapabilities {
     use AgentCapabilitySupport::RuntimeDetected;
 
@@ -933,8 +979,8 @@ mod tests {
         AgentApprovalOption, AgentApprovalRequest, AgentCancelSupport, AgentCapabilitySupport,
         AgentCompactionSource, AgentCompactionStatus, AgentPlanStepStatus, AgentProviderLifecycle,
         AgentRunEvent, CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID,
-        GROK_BUILD_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID,
-        PI_AGENT_PROVIDER_ID,
+        GROK_BUILD_PROVIDER_ID, KIMI_CODE_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
     };
     use serde_json::json;
     use std::collections::HashSet;
@@ -1043,7 +1089,7 @@ mod tests {
     #[test]
     fn agent_runtime_registry_keeps_provider_ids_unique() {
         let registry =
-            agent_provider_registry(true, false, false, false, false, false, false, false);
+            agent_provider_registry(true, false, false, false, false, false, false, false, false);
         let ids = registry
             .providers
             .iter()
@@ -1055,7 +1101,8 @@ mod tests {
 
     #[test]
     fn active_provider_id_validation_covers_the_registry() {
-        let registry = agent_provider_registry(true, true, true, true, true, true, true, false);
+        let registry =
+            agent_provider_registry(true, true, true, true, true, true, true, false, false);
         let active_ids = registry
             .providers
             .iter()
@@ -1085,14 +1132,14 @@ mod tests {
     #[test]
     fn agent_runtime_registry_keeps_supported_agents_active() {
         let registry =
-            agent_provider_registry(true, false, false, false, false, false, false, false);
+            agent_provider_registry(true, false, false, false, false, false, false, false, false);
         let active = registry
             .providers
             .iter()
             .filter(|provider| provider.lifecycle == AgentProviderLifecycle::Active)
             .collect::<Vec<_>>();
 
-        assert_eq!(active.len(), 8);
+        assert_eq!(active.len(), 9);
         let claude = active
             .iter()
             .find(|provider| provider.id == CLAUDE_CODE_PROVIDER_ID)
@@ -1107,8 +1154,9 @@ mod tests {
 
     #[test]
     fn agent_runtime_registry_never_selects_planned_providers() {
-        let registry =
-            agent_provider_registry(false, false, false, false, false, false, false, false);
+        let registry = agent_provider_registry(
+            false, false, false, false, false, false, false, false, false,
+        );
 
         for provider in registry
             .providers
@@ -1135,7 +1183,7 @@ mod tests {
     #[test]
     fn agent_runtime_registry_selects_grok_when_cli_is_available() {
         let unavailable =
-            agent_provider_registry(true, false, false, false, false, false, false, false);
+            agent_provider_registry(true, false, false, false, false, false, false, false, false);
         let grok = unavailable
             .providers
             .iter()
@@ -1146,7 +1194,7 @@ mod tests {
         assert!(!grok.selectable);
 
         let available =
-            agent_provider_registry(true, true, false, false, false, false, false, false);
+            agent_provider_registry(true, true, false, false, false, false, false, false, false);
         let grok = available
             .providers
             .iter()
@@ -1171,7 +1219,7 @@ mod tests {
     #[test]
     fn agent_runtime_registry_selects_codex_when_cli_is_available() {
         let unavailable =
-            agent_provider_registry(true, true, false, false, false, false, false, false);
+            agent_provider_registry(true, true, false, false, false, false, false, false, false);
         let codex = unavailable
             .providers
             .iter()
@@ -1182,7 +1230,7 @@ mod tests {
         assert!(!codex.selectable);
 
         let available =
-            agent_provider_registry(true, false, true, false, false, false, false, false);
+            agent_provider_registry(true, false, true, false, false, false, false, false, false);
         let codex = available
             .providers
             .iter()
@@ -1208,7 +1256,7 @@ mod tests {
     #[test]
     fn agent_runtime_registry_selects_opencode_when_cli_is_available() {
         let unavailable =
-            agent_provider_registry(true, true, true, false, false, false, false, false);
+            agent_provider_registry(true, true, true, false, false, false, false, false, false);
         let opencode = unavailable
             .providers
             .iter()
@@ -1219,7 +1267,7 @@ mod tests {
         assert!(!opencode.selectable);
 
         let available =
-            agent_provider_registry(true, false, false, true, false, false, false, false);
+            agent_provider_registry(true, false, false, true, false, false, false, false, false);
         let opencode = available
             .providers
             .iter()
@@ -1244,7 +1292,7 @@ mod tests {
     #[test]
     fn agent_runtime_registry_selects_pi_when_cli_is_available() {
         let registry =
-            agent_provider_registry(false, false, false, false, true, false, false, false);
+            agent_provider_registry(false, false, false, false, true, false, false, false, false);
         let pi = registry
             .providers
             .iter()
@@ -1265,7 +1313,7 @@ mod tests {
     #[test]
     fn agent_runtime_registry_selects_gemini_when_cli_is_available() {
         let registry =
-            agent_provider_registry(false, false, false, false, false, true, false, false);
+            agent_provider_registry(false, false, false, false, false, true, false, false, false);
         let gemini = registry
             .providers
             .iter()
@@ -1286,7 +1334,7 @@ mod tests {
     #[test]
     fn agent_runtime_registry_selects_dsh_when_cli_is_available() {
         let registry =
-            agent_provider_registry(false, false, false, false, false, false, false, true);
+            agent_provider_registry(false, false, false, false, false, false, false, true, false);
         let dsh = registry
             .providers
             .iter()
@@ -1302,6 +1350,32 @@ mod tests {
             AgentCapabilitySupport::Supported
         );
         assert_eq!(dsh.capabilities.runtime.cancel, AgentCancelSupport::Soft);
+    }
+
+    #[test]
+    fn agent_runtime_registry_selects_kimi_when_cli_is_available() {
+        let registry =
+            agent_provider_registry(false, false, false, false, false, false, false, false, true);
+        let kimi = registry
+            .providers
+            .iter()
+            .find(|provider| provider.id == KIMI_CODE_PROVIDER_ID)
+            .expect("Kimi provider");
+
+        assert_eq!(kimi.driver_id, "acp");
+        assert_eq!(kimi.display_name, "Kimi Code");
+        assert_eq!(kimi.lifecycle, AgentProviderLifecycle::Active);
+        assert_eq!(kimi.available, Some(true));
+        assert!(kimi.selectable);
+        assert_eq!(
+            kimi.capabilities.sessions.resume,
+            AgentCapabilitySupport::Supported
+        );
+        assert_eq!(
+            kimi.capabilities.tools.mcp,
+            AgentCapabilitySupport::Unsupported
+        );
+        assert_eq!(kimi.capabilities.runtime.cancel, AgentCancelSupport::Soft);
     }
 
     #[test]

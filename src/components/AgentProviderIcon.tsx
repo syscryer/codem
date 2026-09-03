@@ -1,6 +1,7 @@
 import { Bot } from 'lucide-react';
 import deepseekDshIcon from '../assets/provider-icons/deepseek-dsh.svg';
 import hermesIcon from '../assets/provider-icons/hermes.png';
+import kimiCodeIcon from '../assets/provider-icons/kimi-code.png';
 import {
   CLAUDE_CODE_PROVIDER_ID,
   CODEM_AGENT_PROVIDER_ID,
@@ -8,6 +9,7 @@ import {
   GROK_BUILD_PROVIDER_ID,
   GEMINI_CLI_PROVIDER_ID,
   HERMES_AGENT_PROVIDER_ID,
+  KIMI_CODE_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
   PI_AGENT_PROVIDER_ID,
@@ -36,6 +38,7 @@ const PROVIDER_PATHS = {
   [GEMINI_CLI_PROVIDER_ID]: GEMINI_PATH,
   [HERMES_AGENT_PROVIDER_ID]: hermesIcon,
   [DEEPSEEK_DSH_PROVIDER_ID]: deepseekDshIcon,
+  [KIMI_CODE_PROVIDER_ID]: kimiCodeIcon,
 } satisfies Record<AgentProviderId, string>;
 
 // 通用品牌路径来源于 Lobe Icons（MIT）；DSH 图标取自其官方 Web 前端包。
@@ -45,7 +48,11 @@ export function AgentProviderIcon({ providerId, size = 16, className = '' }: Age
   if (providerId === CODEM_AGENT_PROVIDER_ID) {
     return <img className={`${classes} agent-provider-brand-icon-image`} src="/icon.png" alt="" width={size} height={size} aria-hidden="true" />;
   }
-  if (providerId === HERMES_AGENT_PROVIDER_ID || providerId === DEEPSEEK_DSH_PROVIDER_ID) {
+  if (
+    providerId === HERMES_AGENT_PROVIDER_ID
+    || providerId === DEEPSEEK_DSH_PROVIDER_ID
+    || providerId === KIMI_CODE_PROVIDER_ID
+  ) {
     return <img className={`${classes} agent-provider-brand-icon-image`} src={PROVIDER_PATHS[providerId]} alt="" width={size} height={size} aria-hidden="true" />;
   }
   const path = isAgentProviderId(providerId) ? PROVIDER_PATHS[providerId] : null;
