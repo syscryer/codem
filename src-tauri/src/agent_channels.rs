@@ -574,6 +574,7 @@ fn system_channel_summaries() -> Vec<SystemChannelSummary> {
         read_opencode_system_channel(cc_switch.get("opencode").cloned()),
         read_pi_system_channel(),
         read_gemini_system_channel(),
+        read_qwen_system_channel(),
         read_hermes_system_channel(),
     ]
 }
@@ -711,6 +712,32 @@ fn read_opencode_system_channel(cc_switch_provider_name: Option<String>) -> Syst
         model,
         None,
         cc_switch_provider_name,
+    )
+}
+
+fn read_qwen_system_channel() -> SystemChannelSummary {
+    let path = home_dir().map(|home| home.join(".qwen").join("settings.json"));
+    let settings = path.as_deref().and_then(read_json_file);
+    let auth_type = settings
+        .as_ref()
+        .and_then(|value| value.get("auth.type"))
+        .or_else(|| settings.as_ref().and_then(|value| value.get("authType")))
+        .and_then(Value::as_str)
+        .and_then(non_empty_string)
+        .map(|value| value.to_string());
+    let base_url = std::env::var("ANTHROPIC_BASE_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    system_channel_summary(
+        QWEN_CODE_PROVIDER_ID,
+        path,
+        base_url,
+        None,
+        auth_type
+            .as_deref()
+            .map(|_| Some(AiProtocol::AnthropicMessages))
+            .flatten(),
+        None,
     )
 }
 
@@ -2341,6 +2368,25 @@ fn build_runtime(
             }
             env.insert("DEEPSEEK_API_KEY".to_string(), api_key.to_string());
             env.insert("DEEPSEEK_BASE_URL".to_string(), channel.base_url.clone());
+        }
+        QWEN_CODE_PROVIDER_ID => {
+            if !matches!(
+                channel.protocol,
+                AiProtocol::AnthropicMessages
+                    | AiProtocol::OpenaiChat
+                    | AiProtocol::OpenaiResponses
+            ) {
+                return Err(
+                    "Qwen Code 渠道仅支持 Anthropic Messages、OpenAI Chat 或 Responses 接口"
+                        .to_string(),
+                );
+            }
+            // Qwen Code 是 gemini-cli 系 CLI，原生读取 ANTHROPIC_/OPENAI_ 环境变量。
+            env.insert("ANTHROPIC_BASE_URL".to_string(), channel.base_url.clone());
+            env.insert("ANTHROPIC_API_KEY".to_string(), api_key.to_string());
+            env.insert("OPENAI_BASE_URL".to_string(), channel.base_url.clone());
+            env.insert("OPENAI_API_KEY".to_string(), api_key.to_string());
+            env.insert("QWEN_CODE_AUTH_TYPE".to_string(), "anthropic".to_string());
         }
         _ => return Err("不支持的 Agent 渠道".to_string()),
     }

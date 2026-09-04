@@ -4681,6 +4681,19 @@ async fn prepare_acp_session(
             .await
             .map_err(|error| public_acp_prepare_error(provider_id, "切换权限模式", error))?;
     }
+    if provider_id == QWEN_CODE_PROVIDER_ID {
+        // Qwen Code 的 ACP 模式：plan/default/auto-edit/auto/yolo。
+        // CodeM 三档 → Qwen 档位：default→default、auto→auto、完全访问→yolo。
+        let qwen_mode = match permission_mode {
+            "auto" => "auto",
+            "bypassPermissions" => "yolo",
+            _ => "default",
+        };
+        client
+            .set_mode(&session.session_id, qwen_mode)
+            .await
+            .map_err(|error| public_acp_prepare_error(provider_id, "切换权限模式", error))?;
+    }
     Ok((session, resumed))
 }
 
@@ -9685,7 +9698,15 @@ fn acp_arguments<'a>(
         GEMINI_CLI_PROVIDER_ID => Ok(vec!["--skip-trust", "--acp"]),
         DEEPSEEK_DSH_PROVIDER_ID => Ok(vec!["--profile", "acp"]),
         KIMI_CODE_PROVIDER_ID => Ok(vec!["acp"]),
-        QWEN_CODE_PROVIDER_ID => Ok(vec!["--acp"]),
+        QWEN_CODE_PROVIDER_ID => {
+            // 渠道环境注入 ANTHROPIC_BASE_URL/API_KEY 时用 anthropic 协议鉴权；
+            // 无渠道（系统默认）时 qwen CLI 自动检测已完成的本地认证。
+            if std::env::var("QWEN_CODE_AUTH_TYPE").as_deref() == Ok("anthropic") {
+                Ok(vec!["--acp", "--auth-type", "anthropic"])
+            } else {
+                Ok(vec!["--acp"])
+            }
+        }
         _ => Err(AcpError::Protocol(
             "当前 Provider 没有可用 ACP 启动配置".to_string(),
         )),
