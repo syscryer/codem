@@ -38,6 +38,8 @@ const AGENT_INSTALL_DOCS_URLS: Partial<Record<AgentProviderId, string>> = {
   'gemini-cli': 'https://geminicli.com/docs/get-started/installation/',
   'hermes-agent': 'https://github.com/NousResearch/hermes-agent',
   'deepseek-dsh': 'https://github.com/deepseek-ai/deepseek-harness',
+  'kimi-code': 'https://github.com/MoonshotAI/kimi-code',
+  'qwen-code': 'https://qwencode.ai/',
 };
 
 export function getProviderInstallDocsUrl(providerId: AgentProviderId) {
@@ -110,7 +112,12 @@ export function resolveProviderStatus(
   piProbe: PiRpcProbeResult | null = null,
   geminiProbe: GeminiAcpProbeResult | null = null,
 ): { label: string; tone: ProviderStatusTone } {
-  if (provider.id === 'hermes-agent' || provider.id === 'deepseek-dsh') {
+  if (
+    provider.id === 'hermes-agent'
+    || provider.id === 'deepseek-dsh'
+    || provider.id === 'kimi-code'
+    || provider.id === 'qwen-code'
+  ) {
     return provider.available
       ? { label: '运行时可用', tone: 'positive' }
       : { label: '未检测到 CLI', tone: 'warning' };
@@ -179,7 +186,12 @@ export function resolveProviderDiagnostics(
   piProbe: PiRpcProbeResult | null = null,
   geminiProbe: GeminiAcpProbeResult | null = null,
 ) {
-  if (provider.id === 'hermes-agent' || provider.id === 'deepseek-dsh') {
+  if (
+    provider.id === 'hermes-agent'
+    || provider.id === 'deepseek-dsh'
+    || provider.id === 'kimi-code'
+    || provider.id === 'qwen-code'
+  ) {
     return {
       cli: provider.available
         ? `已检测到 ${provider.id === 'deepseek-dsh' ? 'dsh' : 'hermes'}`

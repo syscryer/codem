@@ -6,6 +6,7 @@ import {
   HERMES_AGENT_PROVIDER_ID,
   KIMI_CODE_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
+  QWEN_CODE_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
   PI_AGENT_PROVIDER_ID,
 } from '../constants.js';
@@ -84,6 +85,13 @@ export const AGENT_PROVIDER_METADATA_BY_ID = {
     driverId: 'acp',
     runtimeKind: 'generic',
     protocolLabel: 'Kimi ACP',
+  },
+  [QWEN_CODE_PROVIDER_ID]: {
+    id: QWEN_CODE_PROVIDER_ID,
+    displayName: 'Qwen Code',
+    driverId: 'acp',
+    runtimeKind: 'generic',
+    protocolLabel: 'Qwen ACP',
   },
 } satisfies Record<AgentProviderId, AgentProviderMetadata>;
 

@@ -15,6 +15,7 @@ use crate::{
         CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID,
         GROK_BUILD_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID, KIMI_CODE_PROVIDER_ID,
         OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+        QWEN_CODE_PROVIDER_ID,
     },
     codex_app_server::{
         CodexAppServerError, CodexCompactCapability, CodexCompactionEvent,
@@ -93,6 +94,7 @@ struct CommandResolvers {
     gemini: CommandResolver,
     dsh: CommandResolver,
     kimi: CommandResolver,
+    qwen: CommandResolver,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -895,6 +897,40 @@ fn dsh_acp_model_id(value: Option<&str>) -> Option<String> {
 
 // Kimi ACP 的模型目录来自 session configOptions 的 "model" 选择器
 // （如 minimax-cn/MiniMax-M3），值即模型 id，无需协议路由转换。
+// Qwen Code 的模型目录优先取 configOptions 的 "model" 选择器（与 Kimi 同构），
+// current_model_id 作为默认值来源。
+fn qwen_acp_model_catalog(session: &AcpSessionSummary) -> AgentModelCatalog {
+    let model_option = session
+        .config_options
+        .iter()
+        .find(|option| option.id == "model");
+    let default_model_id = model_option
+        .and_then(|option| option.current_value.clone())
+        .or_else(|| session.current_model_id.clone());
+    let models = model_option
+        .map(|option| {
+            option
+                .options
+                .iter()
+                .map(|choice| AgentModelSummary {
+                    is_default: default_model_id.as_deref() == Some(choice.value.as_str()),
+                    id: choice.value.clone(),
+                    label: choice.name.clone(),
+                    description: choice.description.clone(),
+                    context_window_tokens: None,
+                    default_reasoning_effort: None,
+                    supported_reasoning_efforts: Vec::new(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    AgentModelCatalog {
+        provider_id: QWEN_CODE_PROVIDER_ID.to_string(),
+        default_model_id,
+        models,
+    }
+}
+
 fn kimi_acp_model_catalog(session: &AcpSessionSummary) -> AgentModelCatalog {
     let model_option = session
         .config_options
@@ -1039,6 +1075,7 @@ impl AgentRunService {
         gemini_command_resolver: fn() -> Option<String>,
         dsh_command_resolver: fn() -> Option<String>,
         kimi_command_resolver: fn() -> Option<String>,
+        qwen_command_resolver: fn() -> Option<String>,
         agent_channels: AgentChannelService,
         dsh: DshService,
         hermes: HermesService,
@@ -1060,6 +1097,7 @@ impl AgentRunService {
                     gemini: gemini_command_resolver,
                     dsh: dsh_command_resolver,
                     kimi: kimi_command_resolver,
+                    qwen: qwen_command_resolver,
                 },
                 agent_channels,
                 dsh,
@@ -1792,6 +1830,46 @@ async fn agent_models(
                 models,
             }))
         }
+        QWEN_CODE_PROVIDER_ID => {
+            let command = resolve_agent_command(&state, provider_id, query.refresh)
+                .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 Qwen Code"))?;
+            let channel_runtime = state
+                .agent_channels
+                .resolve_runtime(provider_id, query.channel_id.as_deref(), None, None, None)
+                .map_err(AgentApiError::internal)?;
+            let environment = channel_runtime
+                .as_ref()
+                .map(|runtime| runtime.env.clone())
+                .unwrap_or_default();
+            let arguments = acp_arguments(provider_id, "default", None)
+                .map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
+            let mut client = AcpStdioClient::spawn_with_env_and_removals(
+                &command,
+                &arguments,
+                &cwd,
+                &environment,
+                gemini_removed_environment(provider_id, &environment),
+            )
+            .await
+            .map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
+            let result = async {
+                client.initialize(env!("CARGO_PKG_VERSION")).await?;
+                let session = client.new_session(&cwd).await?;
+                let catalog = qwen_acp_model_catalog(&session);
+                client.close_session(&session.session_id).await?;
+                Ok::<_, AcpError>(catalog)
+            }
+            .await;
+            client.shutdown().await;
+            let catalog =
+                result.map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
+            if catalog.models.is_empty() {
+                return Err(AgentApiError::bad_request(
+                    "Qwen Code 当前没有可用模型，请先完成认证（qwen --auth-type qwen-oauth 或 API key 环境变量）",
+                ));
+            }
+            Ok(Json(catalog))
+        }
         _ => Err(AgentApiError::bad_request(
             "当前 Provider 不提供动态模型目录",
         )),
@@ -1872,6 +1950,7 @@ fn resolve_agent_command(
         GEMINI_CLI_PROVIDER_ID => (state.command_resolvers.gemini)(),
         DEEPSEEK_DSH_PROVIDER_ID => (state.command_resolvers.dsh)(),
         KIMI_CODE_PROVIDER_ID => (state.command_resolvers.kimi)(),
+        QWEN_CODE_PROVIDER_ID => (state.command_resolvers.qwen)(),
         HERMES_AGENT_PROVIDER_ID => state.hermes.resolve_command(refresh),
         _ => None,
     }
@@ -2123,6 +2202,13 @@ async fn start_agent_run(
                 .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 Kimi CLI"))?,
             "Kimi Code",
         ),
+        QWEN_CODE_PROVIDER_ID => (
+            AgentDriverKind::Acp,
+            resolve_agent_command(&state, provider_id, false).ok_or_else(|| {
+                AgentApiError::bad_request("未找到可由 CodeM 启动的 Qwen Code CLI")
+            })?,
+            "Qwen Code",
+        ),
         _ => {
             return Err(AgentApiError::bad_request(
                 "当前 Provider 不支持通用 Agent 运行",
@@ -2227,6 +2313,7 @@ async fn start_agent_run(
                 | GROK_BUILD_PROVIDER_ID
                 | DEEPSEEK_DSH_PROVIDER_ID
                 | KIMI_CODE_PROVIDER_ID
+                | QWEN_CODE_PROVIDER_ID
         )
     {
         return Err(AgentApiError::bad_request(
@@ -3974,6 +4061,15 @@ fn runtime_status_message(
         (KIMI_CODE_PROVIDER_ID, AgentDriverKind::Acp, false, false) => {
             "已创建 Kimi ACP 会话".to_string()
         }
+        (QWEN_CODE_PROVIDER_ID, AgentDriverKind::Acp, true, _) => {
+            "已复用 Qwen Code ACP 热会话".to_string()
+        }
+        (QWEN_CODE_PROVIDER_ID, AgentDriverKind::Acp, false, true) => {
+            "已恢复 Qwen Code ACP 会话".to_string()
+        }
+        (QWEN_CODE_PROVIDER_ID, AgentDriverKind::Acp, false, false) => {
+            "已创建 Qwen Code ACP 会话".to_string()
+        }
         (_, AgentDriverKind::Acp, true, _) => "已复用 ACP 热会话".to_string(),
         (_, AgentDriverKind::Acp, false, true) => "已恢复 ACP 会话".to_string(),
         (_, AgentDriverKind::Acp, false, false) => "已创建 ACP 会话".to_string(),
@@ -4522,6 +4618,11 @@ async fn prepare_acp_session(
             match provider_id {
                 GROK_BUILD_PROVIDER_ID | GEMINI_CLI_PROVIDER_ID => {
                     client.set_model(&session.session_id, model).await
+                }
+                QWEN_CODE_PROVIDER_ID => {
+                    client
+                        .set_config_option(&session.session_id, "model", model)
+                        .await
                 }
                 OPENCODE_PROVIDER_ID => {
                     client
@@ -9584,6 +9685,7 @@ fn acp_arguments<'a>(
         GEMINI_CLI_PROVIDER_ID => Ok(vec!["--skip-trust", "--acp"]),
         DEEPSEEK_DSH_PROVIDER_ID => Ok(vec!["--profile", "acp"]),
         KIMI_CODE_PROVIDER_ID => Ok(vec!["acp"]),
+        QWEN_CODE_PROVIDER_ID => Ok(vec!["--acp"]),
         _ => Err(AcpError::Protocol(
             "当前 Provider 没有可用 ACP 启动配置".to_string(),
         )),
@@ -10138,6 +10240,7 @@ mod tests {
                 gemini: || None,
                 dsh: || None,
                 kimi: || None,
+                qwen: || None,
             },
             agent_channels: test_agent_channel_service(),
             dsh: DshService::new(),
@@ -10541,6 +10644,7 @@ mod tests {
             || None,
             || None,
             || None,
+            || None,
             test_agent_channel_service(),
             DshService::new(),
             HermesService::new(std::env::temp_dir(), || None),
@@ -10563,6 +10667,7 @@ mod tests {
     #[test]
     fn expired_claude_command_survives_a_transient_resolution_failure() {
         let service = AgentRunService::new(
+            || None,
             || None,
             || None,
             || None,
@@ -10603,6 +10708,7 @@ mod tests {
             || None,
             || None,
             counting_codex_command_resolver,
+            || None,
             || None,
             || None,
             || None,

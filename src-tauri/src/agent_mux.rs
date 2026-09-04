@@ -420,7 +420,7 @@ fn agent_mux_skill_source_directory(service: &AgentMuxService) -> PathBuf {
         .join(AGENT_MUX_SKILL_NAME)
 }
 
-fn skill_install_targets(home: &FsPath) -> [(&'static str, PathBuf); 7] {
+fn skill_install_targets(home: &FsPath) -> [(&'static str, PathBuf); 9] {
     [
         ("claude-code", home.join(".claude").join("skills")),
         ("openai-codex", home.join(".codex").join("skills")),
@@ -432,6 +432,8 @@ fn skill_install_targets(home: &FsPath) -> [(&'static str, PathBuf); 7] {
         ),
         ("gemini-cli", home.join(".gemini").join("skills")),
         ("hermes-agent", home.join(".hermes").join("skills")),
+        ("kimi-code", home.join(".kimi-code").join("skills")),
+        ("qwen-code", home.join(".qwen").join("skills")),
     ]
 }
 

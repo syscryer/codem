@@ -796,6 +796,12 @@ function defaultAgentProviderName(providerId: AgentProviderId) {
   if (providerId === 'deepseek-dsh') {
     return 'DeepSeek DSH';
   }
+  if (providerId === 'kimi-code') {
+    return 'Kimi Code';
+  }
+  if (providerId === 'qwen-code') {
+    return 'Qwen Code';
+  }
   return 'Claude Code';
 }
 

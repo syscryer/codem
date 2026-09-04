@@ -19,6 +19,7 @@ const EMPTY_BOOTSTRAP: AgentChannelBootstrap = {
     'hermes-agent': 'system',
     'deepseek-dsh': 'system',
     'kimi-code': 'system',
+    'qwen-code': 'system',
   },
 };
 

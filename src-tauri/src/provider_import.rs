@@ -365,7 +365,9 @@ fn scan_response(
         .map_err(ProviderImportError::internal)?;
     let configs = configs
         .into_iter()
-        .filter(|config| !config.api_key.trim().is_empty())
+        // 无 key 的渠道默认丢弃；但带 unavailable_reason（OAuth 凭据、
+        // 空 base_url 等）的保留为灰条，让用户知道渠道存在及不可导入原因。
+        .filter(|config| !config.api_key.trim().is_empty() || !config.unavailable_reason.is_empty())
         .collect::<Vec<_>>();
     let mut items = Vec::with_capacity(configs.len());
     for config in configs {
@@ -777,7 +779,19 @@ fn parse_ccswitch_codex(
         "chat" | "chat_completions" => AiProtocol::OpenaiChat,
         _ => AiProtocol::OpenaiResponses,
     };
-    let api_key = json_string_path(value, &["auth", "OPENAI_API_KEY"]).unwrap_or_default();
+    // ccswitch 的 codex 渠道 key 有两种存法：auth.OPENAI_API_KEY，或 TOML
+    // model_providers.<key>.experimental_bearer_token（中转站常见）；前者为
+    // null/空时回退读后者，否则渠道会被扫描当成无凭据丢弃。
+    let api_key = json_string_path(value, &["auth", "OPENAI_API_KEY"])
+        .or_else(|| {
+            provider
+                .and_then(|provider| provider.get("experimental_bearer_token"))
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
     let mut models = Vec::new();
     if let Some(model_id) = config.get("model").and_then(toml::Value::as_str) {
         push_external_model(&mut models, model_id.to_string(), model_id.to_string());
@@ -2474,12 +2488,70 @@ mod tests {
             ],
         )
         .expect("scan providers");
-        assert_eq!(response.items.len(), 1);
+        // 有 key 的渠道正常展示；无 key 但带原因的渠道保留为灰条
+        // （importable=false + reason），不再被静默过滤。
+        assert_eq!(response.items.len(), 2);
         assert_eq!(response.items[0].name, "Provider");
+        assert!(response.items[0].importable);
+        assert_eq!(response.items[1].name, "Missing Key");
+        assert!(!response.items[1].importable);
+        assert_eq!(response.items[1].reason, "未配置可迁移的 API Key");
+        assert!(!response.items[1].api_key_available);
         let serialized = serde_json::to_string(&response).expect("serialize scan response");
         assert!(!serialized.contains("sk-must-not-leak"));
         assert!(serialized.contains("apiKeyAvailable"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parses_ccswitch_codex_bearer_token_fallback_and_oauth_reason() {
+        // 中转站常见形态：auth.OPENAI_API_KEY 为 null（挂过 ChatGPT OAuth），
+        // key 实际存在 TOML experimental_bearer_token 中。
+        let bearer = parse_ccswitch_codex(
+            "codex-bearer",
+            "星辰AI-codex特惠",
+            &json!({
+                "auth": {
+                    "OPENAI_API_KEY": null,
+                    "auth_mode": "chatgpt",
+                    "tokens": { "access_token": "jwt" }
+                },
+                "config": "model = 'gpt-5.6'\nmodel_provider = 'custom'\n[model_providers.custom]\nbase_url = 'https://relay.example.com/v1'\nwire_api = 'responses'\nexperimental_bearer_token = 'sk-relay-secret'\n"
+            }),
+        )
+        .expect("parse bearer-token Codex channel");
+        assert_eq!(bearer.target_scope, OPENAI_CODEX_PROVIDER_ID);
+        assert_eq!(bearer.base_url, "https://relay.example.com/v1");
+        assert_eq!(bearer.api_key, "sk-relay-secret");
+        assert!(bearer.unavailable_reason.is_empty());
+
+        // auth.OPENAI_API_KEY 优先于 experimental_bearer_token。
+        let both = parse_ccswitch_codex(
+            "codex-both",
+            "Both Keys",
+            &json!({
+                "auth": { "OPENAI_API_KEY": "sk-primary" },
+                "config": "model_provider = 'custom'\n[model_providers.custom]\nbase_url = 'https://api.example.com/v1'\nexperimental_bearer_token = 'sk-relay-secret'\n"
+            }),
+        )
+        .expect("parse Codex channel with both keys");
+        assert_eq!(both.api_key, "sk-primary");
+
+        // 仅 OAuth tokens、无任何可迁移 key：标记不可导入原因。
+        let oauth = parse_ccswitch_codex(
+            "codex-oauth",
+            "OpenAI Official",
+            &json!({
+                "auth": {
+                    "OPENAI_API_KEY": null,
+                    "auth_mode": "chatgpt",
+                    "tokens": { "access_token": "jwt" }
+                },
+                "config": "model_provider = 'openai'\n"
+            }),
+        )
+        .expect("parse OAuth-only Codex channel");
+        assert_eq!(oauth.unavailable_reason, "OAuth 登录凭据不支持导入");
     }
 
     #[test]

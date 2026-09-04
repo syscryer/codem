@@ -30,6 +30,7 @@ const agentChannelProtocols: Record<AgentProviderId, readonly AiChatProtocol[]> 
   'hermes-agent': ['anthropic_messages', 'openai_chat', 'openai_responses'],
   'deepseek-dsh': ['openai_chat'],
   'kimi-code': ['anthropic_messages', 'openai_chat', 'openai_responses'],
+  'qwen-code': ['anthropic_messages', 'openai_chat', 'openai_responses'],
 };
 
 export function protocolsForAgent(providerId: AgentProviderId): AiChatProtocol[] {

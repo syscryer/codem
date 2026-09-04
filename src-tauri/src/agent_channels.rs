@@ -2,7 +2,7 @@ use crate::{
     agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID,
         GROK_BUILD_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID, QWEN_CODE_PROVIDER_ID,
     },
     ordinary_chat::{
         provider::{
@@ -490,7 +490,8 @@ pub(crate) fn validate_provider_id(value: &str) -> AgentChannelApiResult<&str> {
         | PI_AGENT_PROVIDER_ID
         | GEMINI_CLI_PROVIDER_ID
         | HERMES_AGENT_PROVIDER_ID
-        | DEEPSEEK_DSH_PROVIDER_ID => Ok(value),
+        | DEEPSEEK_DSH_PROVIDER_ID
+        | QWEN_CODE_PROVIDER_ID => Ok(value),
         _ => Err(AgentChannelApiError::bad_request("不支持的 Agent")),
     }
 }
@@ -520,6 +521,10 @@ pub(crate) fn validate_protocol(
             AiProtocol::AnthropicMessages | AiProtocol::OpenaiChat | AiProtocol::OpenaiResponses
         ),
         DEEPSEEK_DSH_PROVIDER_ID => protocol == AiProtocol::OpenaiChat,
+        QWEN_CODE_PROVIDER_ID => matches!(
+            protocol,
+            AiProtocol::OpenaiResponses | AiProtocol::OpenaiChat | AiProtocol::AnthropicMessages
+        ),
         _ => false,
     };
     if supported {
@@ -1002,6 +1007,7 @@ async fn channels_bootstrap(
         GEMINI_CLI_PROVIDER_ID,
         HERMES_AGENT_PROVIDER_ID,
         DEEPSEEK_DSH_PROVIDER_ID,
+        QWEN_CODE_PROVIDER_ID,
     ] {
         repair_default_channel(&connection, provider_id).map_err(AgentChannelApiError::internal)?;
     }

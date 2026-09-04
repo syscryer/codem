@@ -5,6 +5,7 @@ use crate::agent_runtime::{
     AgentProviderRegistry, CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID,
     GEMINI_CLI_PROVIDER_ID, GROK_BUILD_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID,
     KIMI_CODE_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+    QWEN_CODE_PROVIDER_ID,
 };
 use crate::codex_app_server::{
     probe_codex_app_server, CodexStoredItem, CodexStoredTurn, CodexUserInput,
@@ -1040,6 +1041,7 @@ async fn run_with_config(port: u16, app_data_dir: PathBuf) -> Result<(), String>
         resolve_gemini_command,
         resolve_dsh_command,
         resolve_kimi_command,
+        resolve_qwen_command,
         agent_channels.clone(),
         dsh,
         hermes.clone(),
@@ -1544,6 +1546,10 @@ async fn agent_providers(State(state): State<AppState>) -> Json<AgentProviderReg
             .agent_runs
             .resolve_command(KIMI_CODE_PROVIDER_ID, false)
             .is_some(),
+        state
+            .agent_runs
+            .resolve_command(QWEN_CODE_PROVIDER_ID, false)
+            .is_some(),
     ))
 }
 
@@ -1663,6 +1669,7 @@ fn agent_settings_diagnostic_spec(
         HERMES_AGENT_PROVIDER_ID => ("hermes --version", &["--version"]),
         DEEPSEEK_DSH_PROVIDER_ID => ("dsh --version", &["--version"]),
         KIMI_CODE_PROVIDER_ID => ("kimi doctor", &["doctor"]),
+        QWEN_CODE_PROVIDER_ID => ("qwen --version", &["--version"]),
         _ => return Err(ApiError::bad_request("不支持的 Agent Provider")),
     };
     Ok(spec)
@@ -1834,6 +1841,7 @@ fn agent_npm_package_name(provider_id: &str) -> Option<&'static str> {
         PI_AGENT_PROVIDER_ID => Some("@earendil-works/pi-coding-agent"),
         GEMINI_CLI_PROVIDER_ID => Some("@google/gemini-cli"),
         KIMI_CODE_PROVIDER_ID => Some("@moonshot-ai/kimi-code"),
+        QWEN_CODE_PROVIDER_ID => Some("@qwen-code/qwen-code"),
         DEEPSEEK_DSH_PROVIDER_ID => Some("@deepseek-ai/dsh"),
         _ => None,
     }
@@ -2854,6 +2862,10 @@ fn build_agent_lifecycle_plan_for_target(
         KIMI_CODE_PROVIDER_ID => (
             "@moonshot-ai/kimi-code@latest",
             "npm install -g @moonshot-ai/kimi-code@latest",
+        ),
+        QWEN_CODE_PROVIDER_ID => (
+            "@qwen-code/qwen-code@latest",
+            "npm install -g @qwen-code/qwen-code@latest",
         ),
         DEEPSEEK_DSH_PROVIDER_ID => (dsh_package.as_str(), dsh_display.as_str()),
         GROK_BUILD_PROVIDER_ID if action == "update" => {
@@ -8696,6 +8708,52 @@ fn resolve_default_hermes_command() -> Option<String> {
     ))
 }
 
+fn resolve_qwen_command() -> Option<String> {
+    if let Some(command) = env::var("QWEN_CLI_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| command_reports_version(value))
+    {
+        return Some(command);
+    }
+
+    #[cfg(target_os = "windows")]
+    let lookup = {
+        let mut command = background_command("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Command qwen -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Source) { $_.Source } elseif ($_.Path) { $_.Path } }",
+        ]);
+        command_output_with_timeout(&mut command, std::time::Duration::from_secs(3))
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let lookup = background_command("which").arg("qwen").output().ok();
+
+    lookup
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| {
+            select_runnable_command_candidate(&stdout, cfg!(target_os = "windows"), |candidate| {
+                command_reports_version(candidate)
+            })
+        })
+        .or_else(|| {
+            let home = home_dir()?;
+            let candidate = home.join(if cfg!(target_os = "windows") {
+                "AppData\\Roaming\\npm\\qwen.cmd"
+            } else {
+                ".local/bin/qwen"
+            });
+            let value = candidate.to_string_lossy().to_string();
+            command_reports_version(&value).then_some(value)
+        })
+}
+
 fn resolve_kimi_command() -> Option<String> {
     if let Some(command) = env::var("KIMI_CLI_PATH")
         .ok()
@@ -10139,7 +10197,8 @@ where
         | GEMINI_CLI_PROVIDER_ID
         | HERMES_AGENT_PROVIDER_ID
         | DEEPSEEK_DSH_PROVIDER_ID
-        | KIMI_CODE_PROVIDER_ID => {
+        | KIMI_CODE_PROVIDER_ID
+        | QWEN_CODE_PROVIDER_ID => {
             if provider_available(provider_id) {
                 return Ok(match provider_id {
                     GROK_BUILD_PROVIDER_ID => GROK_BUILD_PROVIDER_ID,
@@ -10150,6 +10209,7 @@ where
                     HERMES_AGENT_PROVIDER_ID => HERMES_AGENT_PROVIDER_ID,
                     DEEPSEEK_DSH_PROVIDER_ID => DEEPSEEK_DSH_PROVIDER_ID,
                     KIMI_CODE_PROVIDER_ID => KIMI_CODE_PROVIDER_ID,
+                    QWEN_CODE_PROVIDER_ID => QWEN_CODE_PROVIDER_ID,
                     _ => unreachable!(),
                 });
             }
@@ -10163,6 +10223,7 @@ where
                     HERMES_AGENT_PROVIDER_ID => "未找到可由 CodeM 启动的 Hermes CLI",
                     DEEPSEEK_DSH_PROVIDER_ID => "未找到可由 CodeM 启动的 DeepSeek DSH CLI",
                     KIMI_CODE_PROVIDER_ID => "未找到可由 CodeM 启动的 Kimi CLI",
+                    QWEN_CODE_PROVIDER_ID => "未找到可由 CodeM 启动的 Qwen Code CLI",
                     _ => unreachable!(),
                 };
                 tracing::warn!(
@@ -15632,6 +15693,7 @@ fn settings_provider_id(value: Option<&str>) -> ApiResult<&str> {
         Some(HERMES_AGENT_PROVIDER_ID) => Ok(HERMES_AGENT_PROVIDER_ID),
         Some(DEEPSEEK_DSH_PROVIDER_ID) => Ok(DEEPSEEK_DSH_PROVIDER_ID),
         Some(KIMI_CODE_PROVIDER_ID) => Ok(KIMI_CODE_PROVIDER_ID),
+        Some(QWEN_CODE_PROVIDER_ID) => Ok(QWEN_CODE_PROVIDER_ID),
         Some(_) => Err(ApiError::bad_request("不支持的 Agent Provider")),
     }
 }
@@ -15646,6 +15708,7 @@ fn agent_config_directory_name(provider_id: &str) -> &'static str {
         HERMES_AGENT_PROVIDER_ID => ".hermes",
         DEEPSEEK_DSH_PROVIDER_ID => ".dsh",
         KIMI_CODE_PROVIDER_ID => ".kimi-code",
+        QWEN_CODE_PROVIDER_ID => ".qwen",
         _ => ".claude",
     }
 }
@@ -23527,7 +23590,7 @@ mod tests {
     use crate::agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID,
         GROK_BUILD_PROVIDER_ID, KIMI_CODE_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID, QWEN_CODE_PROVIDER_ID,
     };
     use crate::codex_app_server::{
         CodexForkOutcome, CodexStoredItem, CodexStoredTurn, CodexUserInput,
@@ -23577,6 +23640,7 @@ mod tests {
                 resolve_opencode_command,
                 resolve_pi_command,
                 resolve_gemini_command,
+                || None,
                 || None,
                 || None,
                 agent_channels,
@@ -28697,6 +28761,7 @@ mod tests {
                 resolve_opencode_command,
                 resolve_pi_command,
                 resolve_gemini_command,
+                || None,
                 || None,
                 || None,
                 agent_channels,

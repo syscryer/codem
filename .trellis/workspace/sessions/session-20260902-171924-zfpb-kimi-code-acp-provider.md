@@ -27,3 +27,5 @@
 - 2026-09-03T01:21:41.135Z `npm run typecheck; node --import tsx --test src/lib/*.test.ts; node --import tsx --test src/hooks/*.test.ts; cargo test; rustfmt --check`: typecheck 通过；lib 813 passed；hooks 20 passed；cargo 591+16+21 passed；rustfmt 通过；UI/API 端到端实测通过（流式+会话+模型目录）。
 
 ## Completed
+
+- 2026-09-03T17:33:10.046Z Kimi Code ACP 接入完成并经两轮 review 修复（图片混合通道/权限语义/续接闭环/四处白名单），端到端验证通过，随 0565b87 提交。

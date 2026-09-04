@@ -8,6 +8,7 @@ import {
   GROK_BUILD_PROVIDER_ID,
   KIMI_CODE_PROVIDER_ID,
   OPENAI_CODEX_PROVIDER_ID,
+  QWEN_CODE_PROVIDER_ID,
   OPENCODE_PROVIDER_ID,
   PI_AGENT_PROVIDER_ID,
 } from '../constants';
@@ -2780,7 +2781,11 @@ function providerDisplayName(providerId: string, providers: AgentProviderDescrip
 }
 
 function agentProviderCatalogUsesChannel(providerId: string) {
-  return providerId === OPENCODE_PROVIDER_ID || providerId === GEMINI_CLI_PROVIDER_ID;
+  return (
+    providerId === OPENCODE_PROVIDER_ID
+    || providerId === GEMINI_CLI_PROVIDER_ID
+    || providerId === QWEN_CODE_PROVIDER_ID
+  );
 }
 
 function resolveCompactCapabilityRuntime(input: {
