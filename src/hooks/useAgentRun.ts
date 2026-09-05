@@ -2784,6 +2784,7 @@ function agentProviderCatalogUsesChannel(providerId: string) {
   return (
     providerId === OPENCODE_PROVIDER_ID
     || providerId === GEMINI_CLI_PROVIDER_ID
+    || providerId === KIMI_CODE_PROVIDER_ID
     || providerId === QWEN_CODE_PROVIDER_ID
   );
 }

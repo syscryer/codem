@@ -1063,6 +1063,16 @@ function ProviderDetail({
                 <span>{diagnosticChecking ? '诊断中' : '运行诊断'}</span>
               </button>
             </>
+          ) : provider.id === 'kimi-code' || provider.id === 'qwen-code' || provider.id === 'deepseek-dsh' || provider.id === 'hermes-agent' ? (
+            <button
+              type="button"
+              className="settings-action-button"
+              disabled={diagnosticChecking}
+              onClick={() => void onRunNativeDiagnostic()}
+            >
+              {diagnosticChecking ? <LoaderCircle size={14} className="spin" /> : <SquareTerminal size={14} />}
+              <span>{diagnosticChecking ? '诊断中' : '运行诊断'}</span>
+            </button>
           ) : provider.id === 'claude-code' ? (
             <button type="button" className="settings-action-button" onClick={() => void onRefresh()}>
               <RefreshCw size={14} />

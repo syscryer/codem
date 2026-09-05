@@ -82,6 +82,10 @@ const HERMES_CLI_MACOS_INSTALL_COMMAND: &str =
     "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash";
 const HERMES_CLI_WINDOWS_INSTALL_COMMAND: &str =
     "irm https://hermes-agent.nousresearch.com/install.ps1 | iex";
+const KIMI_CLI_WINDOWS_INSTALL_COMMAND: &str =
+    "irm https://code.kimi.com/kimi-code/install.ps1 | iex";
+const KIMI_CLI_UNIX_INSTALL_COMMAND: &str =
+    "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash";
 #[cfg(target_os = "windows")]
 // The official installer appends its launcher dir to the *registry* User PATH;
 // a running CodeM process keeps the stale pre-install PATH. Re-read both
@@ -2825,6 +2829,11 @@ fn build_agent_lifecycle_plan_for_target(
                     &format!("{} upgrade", quote_display_command(command)),
                 ));
             }
+            if provider_id == KIMI_CODE_PROVIDER_ID && is_native_kimi_command(command) {
+                return Ok(kimi_native_update_lifecycle_plan(cfg!(
+                    target_os = "windows"
+                )));
+            }
             if provider_id == HERMES_AGENT_PROVIDER_ID {
                 return Ok(lifecycle_plan(
                     command,
@@ -3036,6 +3045,28 @@ fn claude_install_display_command() -> String {
     current_claude_install_lifecycle_plan().display_command
 }
 
+fn kimi_native_update_lifecycle_plan(windows: bool) -> AgentLifecyclePlan {
+    if windows {
+        return lifecycle_plan(
+            "powershell.exe",
+            [
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "$ErrorActionPreference = 'Stop'; $env:PSModulePath = \"$PSHOME\\Modules;\" + $env:PSModulePath; Import-Module Microsoft.PowerShell.Utility -Force -ErrorAction Stop; Invoke-RestMethod https://code.kimi.com/kimi-code/install.ps1 | Invoke-Expression",
+            ],
+            KIMI_CLI_WINDOWS_INSTALL_COMMAND,
+        );
+    }
+    lifecycle_plan(
+        "bash",
+        ["-o", "pipefail", "-c", KIMI_CLI_UNIX_INSTALL_COMMAND],
+        KIMI_CLI_UNIX_INSTALL_COMMAND,
+    )
+}
+
 fn package_manager_lifecycle_plan(
     provider_id: &str,
     command: &str,
@@ -3047,6 +3078,8 @@ fn package_manager_lifecycle_plan(
         OPENCODE_PROVIDER_ID => "opencode-ai",
         GEMINI_CLI_PROVIDER_ID => "@google/gemini-cli",
         DEEPSEEK_DSH_PROVIDER_ID => "@deepseek-ai/dsh",
+        KIMI_CODE_PROVIDER_ID => "@moonshot-ai/kimi-code",
+        QWEN_CODE_PROVIDER_ID => "@qwen-code/qwen-code",
         _ => return None,
     };
     let package_reference = format!("{package}@{distribution_tag}");
@@ -3164,6 +3197,11 @@ fn is_native_claude_command(command: &str) -> bool {
 fn is_native_opencode_command(command: &str) -> bool {
     let normalized = command.replace('\\', "/").to_ascii_lowercase();
     normalized.contains("/.opencode/bin/") || normalized.contains("/.local/bin/opencode")
+}
+
+fn is_native_kimi_command(command: &str) -> bool {
+    let normalized = command.replace('\\', "/").to_ascii_lowercase();
+    normalized.contains("/.kimi-code/bin/kimi")
 }
 
 fn quote_display_command(value: &str) -> String {
@@ -17419,6 +17457,8 @@ fn resolve_agent_settings_command(provider_id: &str) -> Option<String> {
         GEMINI_CLI_PROVIDER_ID => resolve_gemini_command(),
         HERMES_AGENT_PROVIDER_ID => resolve_hermes_command(),
         DEEPSEEK_DSH_PROVIDER_ID => resolve_dsh_command(),
+        KIMI_CODE_PROVIDER_ID => resolve_kimi_command(),
+        QWEN_CODE_PROVIDER_ID => resolve_qwen_command(),
         _ => resolve_claude_command(),
     }
 }
@@ -27633,6 +27673,39 @@ mod tests {
             claude_install_display_command(),
             current_claude_install_lifecycle_plan().display_command
         );
+    }
+
+    #[test]
+    fn kimi_update_targets_the_installation_that_runtime_will_execute() {
+        let native_command = r"C:\Users\tester\.kimi-code\bin\kimi.exe";
+        let native =
+            build_agent_lifecycle_plan(KIMI_CODE_PROVIDER_ID, "update", Some(native_command))
+                .expect("build native Kimi update plan");
+        if cfg!(target_os = "windows") {
+            assert_eq!(native.program, "powershell.exe");
+            assert!(native
+                .args
+                .last()
+                .unwrap()
+                .contains("https://code.kimi.com/kimi-code/install.ps1"));
+            assert!(native.args.last().unwrap().contains("PSModulePath"));
+        } else {
+            assert_eq!(native.program, "bash");
+            assert!(native
+                .args
+                .last()
+                .unwrap()
+                .contains("https://code.kimi.com/kimi-code/install.sh"));
+        }
+
+        let npm_command = r"C:\Users\tester\AppData\Roaming\npm\kimi.cmd";
+        let npm = build_agent_lifecycle_plan(KIMI_CODE_PROVIDER_ID, "update", Some(npm_command))
+            .expect("build npm Kimi update plan");
+        assert!(npm
+            .args
+            .iter()
+            .any(|arg| arg == "@moonshot-ai/kimi-code@latest"));
+        assert_ne!(npm.program, npm_command);
     }
 
     #[test]

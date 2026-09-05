@@ -5,6 +5,7 @@
 - Task: .trellis/tasks/qwen-code-acp-provider.md
 
 ## Notes
+- 2026-09-04T14:48:43.082Z Review 后续发现：Kimi 自定义渠道未进入 agent_channels 白名单；Qwen 渠道 auth-type 读取进程全局环境，待后续单独修复。当前切换到用户明确要求的 Kimi 渠道与更新修复。
 
 - 2026-09-04T11:58:50.720Z Qwen Code 三项缺口补齐：(1) 权限模式 set_mode 映射（default→default、auto→auto、bypassPermissions→yolo，Qwen ACP 5 模式中的三档对齐 CodeM）；(2) acp_arguments 动态传 --auth-type anthropic（渠道 env QWEN_CODE_AUTH_TYPE=anthropic 时附加，系统默认时不传让 CLI 自动检测本地认证）；(3) 系统渠道探测 read_qwen_system_channel（读 ~/.qwen/settings.json 的 auth.type + 环境变量 ANTHROPIC_BASE_URL 作为 base_url）。cargo 593+16+21、typecheck、lib 全过。
 - 2026-09-04T10:40:07.715Z Qwen Code 渠道环境注入补齐：build_runtime match 补 QWEN_CODE_PROVIDER_ID 分支——注入 ANTHROPIC_BASE_URL/API_KEY + OPENAI_BASE_URL/API_KEY + QWEN_CODE_AUTH_TYPE=anthropic（Qwen 是 gemini-cli 系 CLI，原生读这些环境变量），支持三种通用协议。同时修复 CodeM API 直测 400 认证问题（之前环境未传递）。端到端探测确认：Qwen ACP + MiniMax anthropic 端点——token 级流式（chunks 多帧 spread 0.2s）、会话恢复正常（暗号答对）、configOptions 有 mode+model、set_config_option model 可用（需 string value 格式修正）。

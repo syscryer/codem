@@ -1754,9 +1754,16 @@ async fn agent_models(
         KIMI_CODE_PROVIDER_ID => {
             let command = resolve_agent_command(&state, provider_id, query.refresh)
                 .ok_or_else(|| AgentApiError::bad_request("未找到可由 CodeM 启动的 Kimi CLI"))?;
+            let channel_runtime = state
+                .agent_channels
+                .resolve_runtime(provider_id, query.channel_id.as_deref(), None, None, None)
+                .map_err(AgentApiError::internal)?;
+            let environment = channel_runtime
+                .as_ref()
+                .map(|runtime| runtime.env.clone())
+                .unwrap_or_default();
             let arguments = acp_arguments(provider_id, "default", None)
                 .map_err(|error| AgentApiError::internal(public_acp_error(error)))?;
-            let environment = std::collections::BTreeMap::new();
             let mut client = AcpStdioClient::spawn_with_env_and_removals(
                 &command,
                 &arguments,
@@ -4741,6 +4748,27 @@ struct KimiPrintRunTask {
     cancel: watch::Receiver<bool>,
 }
 
+#[derive(Default)]
+struct KimiTemporaryImages(Vec<String>);
+
+impl Drop for KimiTemporaryImages {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
+impl KimiTemporaryImages {
+    fn cleanup(&mut self) {
+        for path in self.0.drain(..) {
+            if let Err(error) = std::fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!("清理 Kimi 临时图片失败: {error}");
+                }
+            }
+        }
+    }
+}
+
 async fn execute_kimi_print_run(task: KimiPrintRunTask) {
     let KimiPrintRunTask {
         state,
@@ -4756,7 +4784,7 @@ async fn execute_kimi_print_run(task: KimiPrintRunTask) {
 
     let mut prompt = String::new();
     let mut image_tags = 0usize;
-    let mut written_images: Vec<String> = Vec::new();
+    let mut written_images = KimiTemporaryImages::default();
     for block in &input {
         match block {
             NormalizedAgentInputBlock::Text { text } => {
@@ -4770,19 +4798,17 @@ async fn execute_kimi_print_run(task: KimiPrintRunTask) {
             NormalizedAgentInputBlock::Image {
                 path, data, name, ..
             } => {
-                let resolved_path = match (path.as_deref(), data.as_deref()) {
-                    (Some(path), _) if !path.trim().is_empty() => Some(path.trim().to_string()),
-                    (_, Some(data)) if !data.trim().is_empty() => {
-                        write_kimi_print_image(data, name.as_deref())
-                    }
-                    _ => None,
-                };
+                let resolved_path =
+                    resolve_kimi_print_image(path.as_deref(), data.as_deref(), name.as_deref());
                 match resolved_path {
-                    Some(path) => {
+                    Some((path, temporary)) => {
                         if !prompt.is_empty() {
                             prompt.push('\n');
                         }
                         prompt.push_str(&format!("<image path=\"{}\">", path));
+                        if temporary {
+                            written_images.0.push(path);
+                        }
                         image_tags += 1;
                     }
                     None => {
@@ -4806,15 +4832,13 @@ async fn execute_kimi_print_run(task: KimiPrintRunTask) {
                 prompt.push_str(&format!("[文件引用：{}]", path.trim()));
                 let _ = name;
             }
-            NormalizedAgentInputBlock::FileText { path, name, .. } => {
+            NormalizedAgentInputBlock::FileText {
+                path, name, text, ..
+            } => {
                 if !prompt.is_empty() {
                     prompt.push('\n');
                 }
-                prompt.push_str(&format!(
-                    "[内联文件 {}（{}）：内容过长，请按路径读取]",
-                    name.trim(),
-                    path.trim()
-                ));
+                prompt.push_str(&kimi_print_file_text(path, name, text));
             }
             NormalizedAgentInputBlock::AttachmentMetadata { name, reason, .. } => {
                 if !prompt.is_empty() {
@@ -5024,16 +5048,11 @@ async fn execute_kimi_print_run(task: KimiPrintRunTask) {
         }
     };
 
-    let cleanup_images = || {
-        for path in &written_images {
-            let _ = std::fs::remove_file(path);
-        }
-    };
     tokio::select! {
         outcome = run => {
             match outcome {
                 Ok(()) => {
-                    cleanup_images();
+                    written_images.cleanup();
                     state.push_terminal(
                         &run_id,
                         AgentRunEvent::Done {
@@ -5047,7 +5066,7 @@ async fn execute_kimi_print_run(task: KimiPrintRunTask) {
                     );
                 }
                 Err(message) => {
-                    cleanup_images();
+                    written_images.cleanup();
                     state.push_terminal(
                         &run_id,
                         AgentRunEvent::Error {
@@ -5060,7 +5079,7 @@ async fn execute_kimi_print_run(task: KimiPrintRunTask) {
         }
         _ = cancel.changed() => {
             let _ = child.kill().await;
-            cleanup_images();
+            written_images.cleanup();
             state.push_terminal(
                 &run_id,
                 AgentRunEvent::Done {
@@ -5093,6 +5112,24 @@ fn write_kimi_print_image(data: &str, name: Option<&str>) -> Option<String> {
     let path = directory.join(format!("{}.{}", uuid::Uuid::new_v4(), extension));
     std::fs::write(&path, bytes).ok()?;
     Some(path.to_string_lossy().to_string())
+}
+
+fn resolve_kimi_print_image(
+    path: Option<&str>,
+    data: Option<&str>,
+    name: Option<&str>,
+) -> Option<(String, bool)> {
+    match (path, data) {
+        (Some(path), _) if !path.trim().is_empty() => Some((path.trim().to_string(), false)),
+        (_, Some(data)) if !data.trim().is_empty() => {
+            write_kimi_print_image(data, name).map(|path| (path, true))
+        }
+        _ => None,
+    }
+}
+
+fn kimi_print_file_text(path: &str, name: &str, text: &str) -> String {
+    format!("[内联文件 {}（{}）]\n{}", name.trim(), path.trim(), text)
 }
 
 async fn execute_acp_run(task: AcpRunTask) {
@@ -9751,25 +9788,26 @@ mod tests {
         find_grok_runtime_error_detail, fork_capability_cache_key, gemini_mode_id,
         gemini_removed_environment, grok_acp_arguments, grok_acp_error_with_runtime_detail,
         grok_uses_channel_credentials, guide_ack_response, guide_text_from_codex_input,
-        hermes_model_catalog, map_dsh_event, map_hermes_event, normalize_agent_input,
-        parse_opencode_models, pi_model_catalog, pi_model_parts, pi_rpc_arguments,
-        pi_usage_snapshot, probe_compact_capability_cached, probe_fork_capability_cached,
-        public_acp_error, public_codex_error, push_compact_failure_event,
-        read_cached_agent_command, read_cached_agent_model_catalog, runtime_can_reuse,
-        sanitize_grok_runtime_error_detail, should_retry_grok_channel_prompt, should_set_acp_model,
-        store_cached_agent_command, store_cached_agent_model_catalog,
-        summarize_codex_compact_capability, validate_compact_runtime_session, AcpEventMapper,
-        AgentCompactReconcileResponse, AgentCompactReconcileState, AgentDriverInput,
-        AgentDriverKind, AgentForkCapabilityState, AgentForkCapabilitySummary,
-        AgentForkReconcileResult, AgentInputContentBlock, AgentModelCatalog, AgentModelSummary,
-        AgentRunRecord, AgentRunService, AgentRunState, AgentRuntimeCommand, AgentRuntimeCompact,
-        AgentRuntimeConfig, AgentRuntimeFork, AgentRuntimeForkMode, AgentRuntimePhase,
-        AgentRuntimeRecord, AgentRuntimeRun, AgentThreadControlConfig, AgentThreadForkError,
-        CodexCompactCapabilityRequest, CodexEventMapper, CodexForkOutcome, CommandResolvers,
-        DshMappedEvent, DshRuntimeConfig, GuideAckOutcome, GuideAgentRunRequest, HermesMappedEvent,
-        LiveAgentRuntime, PiEventMapper, ReconcileAgentCompactRequest, RuntimeExecution,
-        StartAgentCompactRequest, StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL,
-        AGENT_COMMAND_NEGATIVE_CACHE_TTL, AUTOMATION_EXECUTION_CONTEXT, MODEL_CATALOG_CACHE_TTL,
+        hermes_model_catalog, kimi_print_file_text, map_dsh_event, map_hermes_event,
+        normalize_agent_input, parse_opencode_models, pi_model_catalog, pi_model_parts,
+        pi_rpc_arguments, pi_usage_snapshot, probe_compact_capability_cached,
+        probe_fork_capability_cached, public_acp_error, public_codex_error,
+        push_compact_failure_event, read_cached_agent_command, read_cached_agent_model_catalog,
+        resolve_kimi_print_image, runtime_can_reuse, sanitize_grok_runtime_error_detail,
+        should_retry_grok_channel_prompt, should_set_acp_model, store_cached_agent_command,
+        store_cached_agent_model_catalog, summarize_codex_compact_capability,
+        validate_compact_runtime_session, AcpEventMapper, AgentCompactReconcileResponse,
+        AgentCompactReconcileState, AgentDriverInput, AgentDriverKind, AgentForkCapabilityState,
+        AgentForkCapabilitySummary, AgentForkReconcileResult, AgentInputContentBlock,
+        AgentModelCatalog, AgentModelSummary, AgentRunRecord, AgentRunService, AgentRunState,
+        AgentRuntimeCommand, AgentRuntimeCompact, AgentRuntimeConfig, AgentRuntimeFork,
+        AgentRuntimeForkMode, AgentRuntimePhase, AgentRuntimeRecord, AgentRuntimeRun,
+        AgentThreadControlConfig, AgentThreadForkError, CodexCompactCapabilityRequest,
+        CodexEventMapper, CodexForkOutcome, CommandResolvers, DshMappedEvent, DshRuntimeConfig,
+        GuideAckOutcome, GuideAgentRunRequest, HermesMappedEvent, LiveAgentRuntime, PiEventMapper,
+        ReconcileAgentCompactRequest, RuntimeExecution, StartAgentCompactRequest,
+        StartAgentRunRequest, AGENT_COMMAND_CACHE_TTL, AGENT_COMMAND_NEGATIVE_CACHE_TTL,
+        AUTOMATION_EXECUTION_CONTEXT, MODEL_CATALOG_CACHE_TTL,
     };
     use crate::{
         acp::{
@@ -10864,6 +10902,29 @@ mod tests {
             acp_arguments(DEEPSEEK_DSH_PROVIDER_ID, "default", None).expect("DSH ACP arguments"),
             vec!["--profile", "acp"]
         );
+    }
+
+    #[test]
+    fn kimi_print_preserves_inline_file_text_and_marks_only_generated_images_temporary() {
+        let inline = kimi_print_file_text("D:/workspace/notes.md", "notes.md", "# Notes");
+        assert!(inline.contains("D:/workspace/notes.md"));
+        assert!(inline.contains("# Notes"));
+
+        let (existing, temporary) = resolve_kimi_print_image(
+            Some("D:/workspace/shot.png"),
+            Some("aGVsbG8="),
+            Some("shot.png"),
+        )
+        .expect("resolve existing image");
+        assert_eq!(existing, "D:/workspace/shot.png");
+        assert!(!temporary);
+
+        let (generated, temporary) =
+            resolve_kimi_print_image(None, Some("aGVsbG8="), Some("shot.png"))
+                .expect("write temporary image");
+        assert!(temporary);
+        assert!(Path::new(&generated).is_file());
+        fs::remove_file(generated).expect("clean temporary image");
     }
 
     #[test]

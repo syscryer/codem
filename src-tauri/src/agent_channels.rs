@@ -1,8 +1,9 @@
 use crate::{
     agent_runtime::{
         CLAUDE_CODE_PROVIDER_ID, DEEPSEEK_DSH_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID,
-        GROK_BUILD_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID, QWEN_CODE_PROVIDER_ID,
+        GROK_BUILD_PROVIDER_ID, HERMES_AGENT_PROVIDER_ID, KIMI_CODE_PROVIDER_ID,
+        OPENAI_CODEX_PROVIDER_ID, OPENCODE_PROVIDER_ID, PI_AGENT_PROVIDER_ID,
+        QWEN_CODE_PROVIDER_ID,
     },
     ordinary_chat::{
         provider::{
@@ -491,6 +492,7 @@ pub(crate) fn validate_provider_id(value: &str) -> AgentChannelApiResult<&str> {
         | GEMINI_CLI_PROVIDER_ID
         | HERMES_AGENT_PROVIDER_ID
         | DEEPSEEK_DSH_PROVIDER_ID
+        | KIMI_CODE_PROVIDER_ID
         | QWEN_CODE_PROVIDER_ID => Ok(value),
         _ => Err(AgentChannelApiError::bad_request("不支持的 Agent")),
     }
@@ -521,6 +523,10 @@ pub(crate) fn validate_protocol(
             AiProtocol::AnthropicMessages | AiProtocol::OpenaiChat | AiProtocol::OpenaiResponses
         ),
         DEEPSEEK_DSH_PROVIDER_ID => protocol == AiProtocol::OpenaiChat,
+        KIMI_CODE_PROVIDER_ID => matches!(
+            protocol,
+            AiProtocol::OpenaiResponses | AiProtocol::OpenaiChat | AiProtocol::AnthropicMessages
+        ),
         QWEN_CODE_PROVIDER_ID => matches!(
             protocol,
             AiProtocol::OpenaiResponses | AiProtocol::OpenaiChat | AiProtocol::AnthropicMessages
@@ -574,6 +580,7 @@ fn system_channel_summaries() -> Vec<SystemChannelSummary> {
         read_opencode_system_channel(cc_switch.get("opencode").cloned()),
         read_pi_system_channel(),
         read_gemini_system_channel(),
+        read_kimi_system_channel(),
         read_qwen_system_channel(),
         read_hermes_system_channel(),
     ]
@@ -739,6 +746,48 @@ fn read_qwen_system_channel() -> SystemChannelSummary {
             .flatten(),
         None,
     )
+}
+
+fn read_kimi_system_channel() -> SystemChannelSummary {
+    let path = home_dir().map(|home| home.join(".kimi-code").join("config.toml"));
+    read_kimi_system_channel_from(path)
+}
+
+fn read_kimi_system_channel_from(path: Option<PathBuf>) -> SystemChannelSummary {
+    let config = path.as_deref().and_then(read_toml_file);
+    let model = config
+        .as_ref()
+        .and_then(|value| value.get("default_model"))
+        .and_then(toml::Value::as_str)
+        .and_then(non_empty_string);
+    let provider_key = model.as_deref().and_then(|model| {
+        config
+            .as_ref()
+            .and_then(|value| value.get("models"))
+            .and_then(|value| value.get(model))
+            .and_then(|value| value.get("provider"))
+            .and_then(toml::Value::as_str)
+    });
+    let provider = provider_key.and_then(|key| {
+        config
+            .as_ref()
+            .and_then(|value| value.get("providers"))
+            .and_then(|value| value.get(key))
+    });
+    let base_url = provider
+        .and_then(|value| value.get("base_url"))
+        .and_then(toml::Value::as_str)
+        .and_then(non_empty_string);
+    let protocol = provider
+        .and_then(|value| value.get("type"))
+        .and_then(toml::Value::as_str)
+        .and_then(|value| match value {
+            "anthropic" => Some(AiProtocol::AnthropicMessages),
+            "openai" => Some(AiProtocol::OpenaiChat),
+            "openai_responses" => Some(AiProtocol::OpenaiResponses),
+            _ => None,
+        });
+    system_channel_summary(KIMI_CODE_PROVIDER_ID, path, base_url, model, protocol, None)
 }
 
 fn read_pi_system_channel() -> SystemChannelSummary {
@@ -1034,6 +1083,7 @@ async fn channels_bootstrap(
         GEMINI_CLI_PROVIDER_ID,
         HERMES_AGENT_PROVIDER_ID,
         DEEPSEEK_DSH_PROVIDER_ID,
+        KIMI_CODE_PROVIDER_ID,
         QWEN_CODE_PROVIDER_ID,
     ] {
         repair_default_channel(&connection, provider_id).map_err(AgentChannelApiError::internal)?;
@@ -2011,6 +2061,7 @@ fn default_channel_ids(connection: &Connection) -> Result<BTreeMap<String, Strin
         (OPENAI_CODEX_PROVIDER_ID.to_string(), "system".to_string()),
         (GROK_BUILD_PROVIDER_ID.to_string(), "system".to_string()),
         (OPENCODE_PROVIDER_ID.to_string(), "system".to_string()),
+        (KIMI_CODE_PROVIDER_ID.to_string(), "system".to_string()),
     ]);
     let mut statement = connection
         .prepare(
@@ -2368,6 +2419,28 @@ fn build_runtime(
             }
             env.insert("DEEPSEEK_API_KEY".to_string(), api_key.to_string());
             env.insert("DEEPSEEK_BASE_URL".to_string(), channel.base_url.clone());
+        }
+        KIMI_CODE_PROVIDER_ID => {
+            let model = selected_model
+                .as_deref()
+                .ok_or_else(|| "Kimi Code 渠道必须选择一个模型".to_string())?;
+            let provider_type =
+                match channel.protocol {
+                    AiProtocol::AnthropicMessages => "anthropic",
+                    AiProtocol::OpenaiChat => "openai",
+                    AiProtocol::OpenaiResponses => "openai_responses",
+                    _ => return Err(
+                        "Kimi Code 渠道仅支持 Anthropic Messages、OpenAI Chat 或 Responses 接口"
+                            .to_string(),
+                    ),
+                };
+            env.insert("KIMI_MODEL_NAME".to_string(), model.to_string());
+            env.insert("KIMI_MODEL_API_KEY".to_string(), api_key.to_string());
+            env.insert("KIMI_MODEL_BASE_URL".to_string(), channel.base_url.clone());
+            env.insert(
+                "KIMI_MODEL_PROVIDER_TYPE".to_string(),
+                provider_type.to_string(),
+            );
         }
         QWEN_CODE_PROVIDER_ID => {
             if !matches!(
@@ -3000,8 +3073,165 @@ mod tests {
         assert!(validate_protocol(GEMINI_CLI_PROVIDER_ID, AiProtocol::OpenaiChat).is_err());
         assert!(validate_protocol(DEEPSEEK_DSH_PROVIDER_ID, AiProtocol::OpenaiChat).is_ok());
         assert!(validate_protocol(DEEPSEEK_DSH_PROVIDER_ID, AiProtocol::OpenaiResponses).is_err());
+        for protocol in [
+            AiProtocol::AnthropicMessages,
+            AiProtocol::OpenaiChat,
+            AiProtocol::OpenaiResponses,
+        ] {
+            assert!(validate_protocol(KIMI_CODE_PROVIDER_ID, protocol).is_ok());
+        }
+        assert!(
+            validate_protocol(KIMI_CODE_PROVIDER_ID, AiProtocol::GeminiGenerateContent).is_err()
+        );
+        assert!(validate_provider_id(KIMI_CODE_PROVIDER_ID).is_ok());
 
         assert!(validate_protocol(CLAUDE_CODE_PROVIDER_ID, AiProtocol::OpenaiChat).is_err());
+    }
+
+    #[test]
+    fn kimi_system_channel_reads_provider_metadata_without_exposing_secret() {
+        let root =
+            std::env::temp_dir().join(format!("codem-kimi-system-channel-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create Kimi config directory");
+        let path = root.join("config.toml");
+        fs::write(
+            &path,
+            r#"default_model = "kimi-test"
+
+[providers.sensenova]
+type = "openai_responses"
+base_url = "https://example.invalid/v1"
+api_key = "must-not-leak"
+
+[models.kimi-test]
+provider = "sensenova"
+"#,
+        )
+        .expect("write Kimi config");
+
+        let summary = read_kimi_system_channel_from(Some(path));
+        assert!(summary.configured);
+        assert_eq!(summary.provider_id, KIMI_CODE_PROVIDER_ID);
+        assert_eq!(summary.model.as_deref(), Some("kimi-test"));
+        assert_eq!(
+            summary.base_url.as_deref(),
+            Some("https://example.invalid/v1")
+        );
+        assert_eq!(summary.protocol, Some(AiProtocol::OpenaiResponses));
+        assert!(!serde_json::to_string(&summary)
+            .expect("serialize Kimi system summary")
+            .contains("must-not-leak"));
+        fs::remove_dir_all(root).expect("clean Kimi config directory");
+    }
+
+    #[test]
+    fn kimi_channel_runtime_uses_ephemeral_model_environment_for_each_protocol() {
+        for (protocol, provider_type) in [
+            (AiProtocol::AnthropicMessages, "anthropic"),
+            (AiProtocol::OpenaiChat, "openai"),
+            (AiProtocol::OpenaiResponses, "openai_responses"),
+        ] {
+            let channel = StoredAgentChannel {
+                id: format!("kimi-{provider_type}"),
+                provider_id: KIMI_CODE_PROVIDER_ID.to_string(),
+                name: "Kimi Test".to_string(),
+                protocol,
+                base_url: "https://example.invalid/v1".to_string(),
+                models_url: None,
+                template_id: None,
+                enabled: true,
+                is_default: true,
+                secret_slot: "secret:kimi".to_string(),
+                created_at: "2026-09-04T00:00:00Z".to_string(),
+                updated_at: "2026-09-04T00:00:00Z".to_string(),
+            };
+            let runtime = build_runtime(
+                std::env::temp_dir().as_path(),
+                &channel,
+                &[],
+                Some("kimi-test"),
+                "test-secret",
+                None,
+                None,
+                None,
+            )
+            .expect("build Kimi channel runtime");
+            assert_eq!(
+                runtime.env.get("KIMI_MODEL_NAME").map(String::as_str),
+                Some("kimi-test")
+            );
+            assert_eq!(
+                runtime.env.get("KIMI_MODEL_API_KEY").map(String::as_str),
+                Some("test-secret")
+            );
+            assert_eq!(
+                runtime.env.get("KIMI_MODEL_BASE_URL").map(String::as_str),
+                Some("https://example.invalid/v1")
+            );
+            assert_eq!(
+                runtime
+                    .env
+                    .get("KIMI_MODEL_PROVIDER_TYPE")
+                    .map(String::as_str),
+                Some(provider_type)
+            );
+            assert!(runtime.claude_settings_path.is_none());
+            assert!(runtime.codex_config_args.is_empty());
+        }
+    }
+
+    #[test]
+    fn kimi_channel_runtime_uses_enabled_default_model_when_selection_is_implicit() {
+        let channel = StoredAgentChannel {
+            id: "kimi-implicit-model".to_string(),
+            provider_id: KIMI_CODE_PROVIDER_ID.to_string(),
+            name: "Kimi Test".to_string(),
+            protocol: AiProtocol::OpenaiResponses,
+            base_url: "https://example.invalid/v1".to_string(),
+            models_url: None,
+            template_id: None,
+            enabled: true,
+            is_default: true,
+            secret_slot: "secret:kimi".to_string(),
+            created_at: "2026-09-04T00:00:00Z".to_string(),
+            updated_at: "2026-09-04T00:00:00Z".to_string(),
+        };
+        let models = vec![AgentChannelModelSummary {
+            id: "model-row".to_string(),
+            channel_id: channel.id.clone(),
+            model_id: "kimi-test".to_string(),
+            display_name: "Kimi Test".to_string(),
+            enabled: true,
+            is_default: true,
+            capabilities: json!({}),
+            created_at: channel.created_at.clone(),
+            updated_at: channel.updated_at.clone(),
+        }];
+
+        let runtime = build_runtime(
+            std::env::temp_dir().as_path(),
+            &channel,
+            &models,
+            None,
+            "test-secret",
+            None,
+            None,
+            None,
+        )
+        .expect("build Kimi channel runtime with implicit model");
+        assert_eq!(runtime.effective_model.as_deref(), Some("kimi-test"));
+        assert_eq!(
+            runtime.env.get("KIMI_MODEL_NAME").map(String::as_str),
+            Some("kimi-test")
+        );
+        assert_eq!(
+            runtime
+                .env
+                .get("KIMI_MODEL_PROVIDER_TYPE")
+                .map(String::as_str),
+            Some("openai_responses")
+        );
     }
 
     #[test]
